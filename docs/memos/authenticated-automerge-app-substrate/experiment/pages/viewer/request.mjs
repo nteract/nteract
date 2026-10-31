@@ -108,3 +108,12 @@ export async function request(
     callerSignal?.removeEventListener("abort", onAbort);
   }
 }
+
+/** Call one Pages tool through /api/tools. */
+export function tool(operation, args = {}) {
+  return request("/api/tools", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ operation, arguments: args }),
+  });
+}

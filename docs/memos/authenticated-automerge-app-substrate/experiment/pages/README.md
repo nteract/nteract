@@ -694,6 +694,18 @@ visible. It never polls while hidden and never reloads by itself.
 | Same build | Nothing | Unchanged |
 | Different build (newer or a rollback), floor at or below this viewer | "Pages changed on the server. Reload to use the current version." | Unchanged |
 | Floor above this viewer's protocol | "Pages changed on the server. This tab can't edit until you reload." | Paused; accepted edits keep saving |
+| Editor chunk failed to load, server on another build | "Pages changed on the server. This tab can't edit until you reload." | No Page opens until reload |
+| Editor chunk failed to load, same build | "Pages couldn't load the editor. Reload to try again." | No Page opens until reload |
+
+The viewer is `app.js`, which renders the shell (header, account, sign-in and
+the Page list), plus content-hashed files under `/chunks/`. `app.js` imports the
+editor chunk at boot, and that chunk waits for the WASM runtimes; the
+[editor-load machine](viewer/editor-load-machine.mjs) tracks the import. A
+release serves only its own chunks, so a tab still running an earlier `app.js`
+can find its editor chunk gone: the path then answers with the app's HTML and
+the import fails. The tab asks `/health` for the build and the banner offers
+Reload. Every asset is served `max-age=0, must-revalidate`, so the reload
+fetches the current `app.js`.
 
 Reload covers everything the tab holds. It pauses edits and waits until every
 accepted edit on the open Page has a durable host receipt. If those edits can't

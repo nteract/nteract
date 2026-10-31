@@ -306,6 +306,10 @@ install`, which targets the shared connector.
 `dns.mjs --apply` creates only an absent owned CNAME; conflicts are rejected.
 Public ingress allows application, auth, sharing, MCP, asset, and sync routes,
 then ends in a catch-all 404. Internal Durable Object routes stay private.
+Page9 also admits the viewer's content-hashed chunks, `/chunks/` followed by
+eight base32 characters and `.js`. `prepare` stages exactly the chunks that
+`build-receipt.json` lists in `viewer_chunks`, and refuses a `public/chunks`
+directory that holds any other file.
 
 The OIDC client must allow `https://<hostname>/oidc` as a redirect URI before
 sign-in works on a new target.

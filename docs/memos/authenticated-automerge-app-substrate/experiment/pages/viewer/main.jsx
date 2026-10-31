@@ -1,7 +1,6 @@
 import "../../../../../../src/styles/notebook-tokens.css";
 import React, { useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
-import * as A from "@automerge/automerge";
 import {
   ChevronDown,
   FileText,
@@ -18,7 +17,8 @@ import {
   Trash2,
   UserRound,
 } from "lucide-react";
-import { PageSession, request, tool, listLocalPages, forgetLocalPage } from "./session.mjs";
+import { request, tool } from "./request.mjs";
+import { listLocalPages, forgetLocalPage } from "./local-catalog.mjs";
 import {
   pagePath,
   readPageRoute,
@@ -29,34 +29,45 @@ import {
 import { maintainBrowserSession } from "./browser-session.mjs";
 import { requestSession } from "./early-session.mjs";
 import { openPageWithRetry } from "./page-open.mjs";
-import { WordgardEditor } from "./WordgardEditor.jsx";
+// app.css carries the editor's styles too, ahead of style.css so the cascade
+// matches the editor modules' own import order.
+import "./table-fragment.css";
+import "./link-popover.css";
+import "./wordgard.css";
+import "./sharing-panel.css";
+import "./comments.css";
+import "./save-status.css";
 import { PagePicker } from "./PagePicker.jsx";
 import { TrashView } from "./TrashView.jsx";
 import { Breadcrumbs, ProjectView } from "./ProjectView.jsx";
 import { listProjects, pageBreadcrumbs } from "./projects.mjs";
 import { closeTrashedSessions, restorePage } from "./trash.mjs";
 import { listAllPages, matchingPages } from "./page-list.mjs";
-import { SharingControls } from "./SharingControls.jsx";
 import { AppearanceControls } from "./AppearanceControls.jsx";
-import { CommentsPanel } from "./CommentsPanel.jsx";
-import { SaveStatus } from "./SaveStatus.jsx";
-import { PageActivity } from "./PageActivity.jsx";
-import { captureCommentDraft } from "./comment-draft.mjs";
-import { writingContinuation } from "./writing-continuation.mjs";
 import { retryKey } from "../model/retry-key.mjs";
-import { orderedBlockIds } from "../model/order.mjs";
 import "./style.css";
 import "./formatting-toolbar.css";
 import { focusCreatedPageTitle, titleHandsOffToBody } from "./title-navigation.mjs";
-import { BuildUpdate } from "./BuildUpdate.jsx";
+import { BuildUpdate, buildMonitor } from "./BuildUpdate.jsx";
 import { reloadGate } from "./build-freshness.mjs";
+import { EditorLoader } from "./editor-loader.mjs";
 import { SessionHost } from "./session-host.mjs";
 import { useStore } from "./store.mjs";
 
+// The editor, and the WASM runtimes it waits for, load beside the shell
+// from boot. A Page session exists only once it has loaded, so code that
+// holds a session reads `editor.module` directly.
+const editor = new EditorLoader({
+  load: () => import("./page-editor.mjs"),
+  checkBuild: () => buildMonitor.check(),
+});
 // The sessions this tab owns. The reload gate follows them from here.
 const host = new SessionHost();
 reloadGate.watch(host);
 const installedSession = (state) => state.current;
+const editorFailed = (state) => state.name === "failed";
+// The build banner already asks for a reload when the editor can't load.
+const bannerShows = (error) => error?.code === "EDITOR_UNAVAILABLE";
 
 function App() {
   const accountDisclosure = useDismissibleDisclosure(),
@@ -87,6 +98,10 @@ function App() {
     [titleFocusRequest, setTitleFocusRequest] = useState(null),
     [localRecoveries, setLocalRecoveries] = useState([]);
   const session = useStore(host.store, installedSession);
+  const editorUnavailable = useStore(editor.store, editorFailed);
+  // Rendered only beside a session; handlers read editor.module when they run.
+  const { WordgardEditor, SharingControls, CommentsPanel, SaveStatus, PageActivity } =
+    editor.module ?? {};
   const auth = useRef(null),
     authentication = useRef(null),
     catalogRevision = useRef(0),
@@ -212,7 +227,7 @@ function App() {
       })
       .catch(() => {});
     if (next.accessReloadRequired && !next.recoveryPending) void reloadAccess(next);
-    const first = orderedBlockIds(next.doc)[0] ?? null;
+    const first = editor.module.orderedBlockIds(next.doc)[0] ?? null;
     activateBlock(first);
     if (focus) setFocusBlock(first);
     return true;
@@ -249,6 +264,8 @@ function App() {
       // still flushing. Wait only for that same Page, never an unrelated one.
       await host.closingFor(authentication.current?.identity?.principal, id);
       if (!host.isCurrent(revision)) return;
+      const { PageSession } = await editor.ready();
+      if (!host.isCurrent(revision)) return;
       const next = await openPageWithRetry(
         () =>
           PageSession.open(id, {
@@ -259,7 +276,7 @@ function App() {
       );
       await install(next, revision, { focus });
     } catch (error) {
-      if (host.isCurrent(revision)) setError(error.message);
+      if (host.isCurrent(revision) && !bannerShows(error)) setError(error.message);
     } finally {
       host.finishRequest(controller);
       if (host.isCurrent(revision)) setOpening(false);
@@ -410,6 +427,7 @@ function App() {
     setPickerError("");
     const revision = host.navigate();
     try {
+      const { PageSession } = await editor.ready();
       const next = await PageSession.create(
         { title: "Untitled" },
         {
@@ -429,7 +447,7 @@ function App() {
       if (await install(next, revision)) setTitleFocusRequest(next);
       void refresh().catch(() => {});
     } catch (error) {
-      if (host.isCurrent(revision)) {
+      if (host.isCurrent(revision) && !bannerShows(error)) {
         setError(error.message);
         setPickerError(error.message);
       }
@@ -476,7 +494,7 @@ function App() {
         page_id: deleting.pageId,
         expected_principal: deleting.identity.principal,
         retry_token: prepared.retry_token,
-        base_heads: A.getHeads(deleting.doc),
+        base_heads: editor.module.pageHeads(deleting.doc),
         idempotency_key: await retryKey(prepared.retry_token),
       });
       if (trashed?.superseded)
@@ -523,7 +541,7 @@ function App() {
     activateBlock(id);
     if (session.canWrite) {
       try {
-        const draft = captureCommentDraft(session.doc, id, selected);
+        const draft = editor.module.captureCommentDraft(session.doc, id, selected);
         const key = crypto.randomUUID();
         composerId.current = key;
         setComposer({ key, draft, quote: selected?.text.replaceAll("\ufffc", "\n") || "" });
@@ -559,7 +577,7 @@ function App() {
   function continueWriting() {
     if (!session || host.current !== session) return;
     try {
-      const id = writingContinuation(session);
+      const id = editor.module.writingContinuation(session);
       if (!id || host.current !== session) return;
       activateBlock(id);
       setFocusBlock(id);
@@ -731,6 +749,7 @@ function App() {
         session={session}
         principal={authentication.current?.identity?.principal}
         onOpenPage={(id) => void open(id)}
+        editorUnavailable={editorUnavailable && !!account}
       />
       {error && (
         <p role="alert" className="error app-error">
@@ -830,7 +849,7 @@ function App() {
                   readOnly={!session.canWrite}
                   onChange={(event) => {
                     try {
-                      session.change((doc) => A.updateText(doc, ["title"], event.target.value));
+                      session.change((doc) => editor.module.setPageTitle(doc, event.target.value));
                     } catch (error) {
                       setError(error.message);
                     }
@@ -838,7 +857,7 @@ function App() {
                   onKeyDown={(event) => {
                     if (!titleHandsOffToBody(event, session.canWrite)) return;
                     event.preventDefault();
-                    const first = orderedBlockIds(session.doc)[0];
+                    const first = editor.module.orderedBlockIds(session.doc)[0];
                     if (first) {
                       activateBlock(first);
                       setFocusBlock(first);

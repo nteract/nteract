@@ -2,14 +2,15 @@ import React, { useEffect, useState, useSyncExternalStore } from "react";
 import { RefreshCw } from "lucide-react";
 import { observeResponses, request } from "./request.mjs";
 import { BuildMonitor, reloadGate } from "./build-freshness.mjs";
+import { EDITOR_UNAVAILABLE } from "./editor-loader.mjs";
 import "./build-update.css";
 
 // One monitor per tab. It outlives Page sessions: a deploy can land while the
 // library is showing, and a raised protocol floor applies to every Page.
-const monitor = new BuildMonitor({
+export const buildMonitor = new BuildMonitor({
   fetchAdvertisement: () => request("/health", { cache: "no-store" }, { timeoutMs: 10_000 }),
 });
-observeResponses(monitor.observeHeaders);
+observeResponses(buildMonitor.observeHeaders);
 
 function downloadMarkdown({ pageId, title, markdown }) {
   const url = URL.createObjectURL(new Blob([markdown], { type: "text/markdown" }));
@@ -21,16 +22,20 @@ function downloadMarkdown({ pageId, title, markdown }) {
 }
 
 /** principal: the signed-in account, so Open is offered only for its Pages.
- * onOpenPage(pageId) opens a Page in this tab. */
-export function BuildUpdate({ session, principal, onOpenPage }) {
-  const { state } = useSyncExternalStore(monitor.subscribe, monitor.getSnapshot);
+ * onOpenPage(pageId) opens a Page in this tab. editorUnavailable: the editor
+ * chunk failed to load, so this tab can't open Pages until it reloads. */
+export function BuildUpdate({ session, principal, onOpenPage, editorUnavailable = false }) {
+  const { state } = useSyncExternalStore(buildMonitor.subscribe, buildMonitor.getSnapshot);
   const [reloading, setReloading] = useState(false),
     [outcome, setOutcome] = useState(null),
     [downloaded, setDownloaded] = useState(() => new Set()),
     [acknowledged, setAcknowledged] = useState(false);
   const required = state === "required";
+  // A newer build usually explains a missing editor chunk; this tab can't edit
+  // until it reloads either way.
+  const blocking = required || (editorUnavailable && state !== "current");
   useEffect(() => {
-    monitor.start();
+    buildMonitor.start();
   }, []);
   useEffect(() => {
     // This viewer's protocol is retired: keep what it already accepted saving,
@@ -39,7 +44,7 @@ export function BuildUpdate({ session, principal, onOpenPage }) {
   }, [required, session]);
   // Opening another Page changes what Reload covers; ask again on the next click.
   useEffect(() => setOutcome(null), [session]);
-  if (state === "current") return null;
+  if (state === "current" && !editorUnavailable) return null;
   async function reload(options) {
     setReloading(true);
     setOutcome(null);
@@ -59,13 +64,17 @@ export function BuildUpdate({ session, principal, onOpenPage }) {
     acknowledged || (pages.length > 0 && pages.every((page) => downloaded.has(page.key)));
   return (
     <div
-      className={required ? "build-update build-update--required" : "build-update"}
-      role={required ? "alert" : "status"}
+      className={
+        blocking || editorUnavailable ? "build-update build-update--required" : "build-update"
+      }
+      role={blocking || editorUnavailable ? "alert" : "status"}
     >
       <p>
-        {required
+        {blocking
           ? "Pages changed on the server. This tab can't edit until you reload."
-          : "Pages changed on the server. Reload to use the current version."}
+          : editorUnavailable
+            ? EDITOR_UNAVAILABLE
+            : "Pages changed on the server. Reload to use the current version."}
       </p>
       {!outcome?.reason && (
         <button type="button" className="primary" onClick={() => reload()} disabled={reloading}>

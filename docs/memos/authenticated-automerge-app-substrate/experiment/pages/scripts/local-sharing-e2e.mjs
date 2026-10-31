@@ -3,7 +3,7 @@
 import { execFileSync, spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { createWriteStream } from "node:fs";
-import { copyFile, cp, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { copyFile, cp, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -252,11 +252,23 @@ try {
   // assets both move to another build id while the browser tab stays open.
   async function deploy(next) {
     if (!/^[0-9a-f]{12}$/.test(next) || next === buildId) throw new Error("Invalid next build");
-    const viewer = path.join(runtime, "public/app.js");
-    const source = await readFile(viewer, "utf8");
-    if (!source.includes(JSON.stringify(buildId)))
-      throw new Error("Viewer bundle does not embed the build id");
-    await writeFile(viewer, source.replaceAll(JSON.stringify(buildId), JSON.stringify(next)));
+    // The build id sits in whichever viewer chunk holds build-identity.mjs.
+    // Chunk names stay put, so an open tab's editor keeps loading.
+    const scripts = [
+      "public/app.js",
+      ...(await readdir(path.join(runtime, "public/chunks"))).map(
+        (name) => `public/chunks/${name}`,
+      ),
+    ];
+    let embedded = false;
+    for (const script of scripts) {
+      const file = path.join(runtime, script);
+      const source = await readFile(file, "utf8");
+      if (!source.includes(JSON.stringify(buildId))) continue;
+      embedded = true;
+      await writeFile(file, source.replaceAll(JSON.stringify(buildId), JSON.stringify(next)));
+    }
+    if (!embedded) throw new Error("Viewer bundle does not embed the build id");
     await build({
       ...workerBuild,
       define: { ...workerBuild.define, __PAGES_BUILD__: JSON.stringify(next) },
