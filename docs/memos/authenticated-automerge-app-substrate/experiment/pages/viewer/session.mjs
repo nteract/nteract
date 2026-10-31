@@ -39,6 +39,7 @@ import { Store } from "./store.mjs";
 import { REJECT, isLive, pauseOf, viewerSessionMachine } from "./session-machine.mjs";
 import {
   OUTAGE_ATTEMPTS,
+  OUTAGE_MS,
   backoffStep,
   reconnectDelay,
   viewerReconnectMachine,
@@ -159,6 +160,10 @@ export class PageSession {
   // status says Offline while retries continue; no banner until the reconnect
   // machine reports an outage. A connection admitted later clears it.
   unreachable = false;
+  // When the current run of transient receipt failures began (Date.now()),
+  // or null. It spans receipt revisions, so edits made during an outage don't
+  // restart the quiet window; only a successful receipt ends the run.
+  receiptOutageSince = null;
   savedHeads = [];
   authProblem = "";
   accessProblem = "";
@@ -1548,14 +1553,18 @@ export class PageSession {
     this.receiptRetryAttempts = 0;
     this.receiptRevision = (this.receiptRevision ?? 0) + 1;
     clearTimeout(this.savedTimer);
-    if (!blocked && !this.localProblem && this.problem === this.receiptState?.problem)
+    // A reported outage stays on screen through new edits until a receipt
+    // succeeds; any other receipt problem belongs to the frontier it was for.
+    const outage = !!this.receiptState?.outage;
+    if (!outage && !blocked && !this.localProblem && this.problem === this.receiptState?.problem)
       this.problem = "";
     this.receiptState = {
       revision: this.receiptRevision,
       heads,
       blocked,
       status: "Saving",
-      problem: "",
+      problem: outage ? SERVER_UNREACHABLE : "",
+      outage,
     };
     this.showReceiptState();
     this.savedTimer = setTimeout(() => {
@@ -1754,6 +1763,7 @@ export class PageSession {
       if (this.problem === state.problem) this.problem = "";
       state.problem = "";
       state.outage = false;
+      this.receiptOutageSince = null;
       state.status = "Saved";
       this.cancelReceiptRetry();
       this.receiptRetryAttempts = 0;
@@ -1775,10 +1785,15 @@ export class PageSession {
         if (!this.authRequired && !this.accessDenied && !this.accessReloadRequired) {
           state.status = this.status = this.localPage ? "Saved locally" : "Unsaved";
           if (isTransientFailure(error)) {
-            // The host may be restarting: retry without a banner. Once the
-            // retries are spent it is an outage, and the next admitted
-            // connection restarts this receipt.
-            state.outage = receiptRetryDelay(this.receiptRetryAttempts ?? 0, true) === undefined;
+            // The host may be restarting: retry without a banner. It is an
+            // outage once the run of transient failures has lasted
+            // OUTAGE_MS, or this receipt's retries are spent; the next
+            // admitted connection then restarts the receipt.
+            const now = Date.now();
+            this.receiptOutageSince ??= now;
+            state.outage =
+              now - this.receiptOutageSince >= OUTAGE_MS ||
+              receiptRetryDelay(this.receiptRetryAttempts ?? 0, true) === undefined;
             if (this.problem === state.problem) this.problem = "";
             state.problem = state.outage ? SERVER_UNREACHABLE : "";
             if (state.outage && !this.localProblem) this.problem = state.problem;

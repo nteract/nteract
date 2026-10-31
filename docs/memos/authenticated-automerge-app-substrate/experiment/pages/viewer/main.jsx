@@ -17,8 +17,8 @@ import {
   Trash2,
   UserRound,
 } from "lucide-react";
-import { isTransientFailure, request, tool } from "./request.mjs";
-import { bannerMessages, failureMessage } from "./alerts.mjs";
+import { request, tool } from "./request.mjs";
+import { bannerMessages, failureMessage, sessionCheckBanner } from "./alerts.mjs";
 import { listLocalPages, forgetLocalPage } from "./local-catalog.mjs";
 import {
   pagePath,
@@ -384,13 +384,13 @@ function App() {
           }
         }
       },
-      onError: (error) => {
+      onError: (error, { outage }) => {
         if (!alive) return;
-        // With a known account a restart is not news: an open Page shows
-        // Offline and retries, and the renewal timer asks again. Only a
-        // first check that can't reach the server needs a banner.
-        if (!(isTransientFailure(error) && authentication.current?.identity))
-          setAuthError(failureMessage(error));
+        const banner = sessionCheckBanner(error, {
+          outage,
+          signedIn: !!authentication.current?.identity,
+        });
+        if (banner !== undefined) setAuthError(banner);
         setAccount((value) => (value === undefined ? null : value));
       },
     });

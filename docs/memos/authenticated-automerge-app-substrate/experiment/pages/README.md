@@ -418,7 +418,12 @@ Page shows Offline or Saved locally and retries without a red banner. Receipts
 retry on the same backoff. From the seventh failure in a row, about 15 to 30
 seconds in, the Page shows one sentence, "Pages can't reach the server. Your
 changes are saved on this device.", and keeps retrying; the next admitted
-connection clears it and restarts the receipt. Each screen renders its banners
+connection clears it and restarts the receipt. Receipts and session checks
+are timed instead of counted (`OUTAGE_MS`, 20 s), because edits and Page
+reconnects trigger them too: receipt failures count from the first one after
+the last successful receipt, across edits, and the session-refresh machine
+tracks a run of unreachable answers, so a library screen whose renewals keep
+failing shows the same sentence until a session request succeeds. Each screen renders its banners
 from one deduplicated list ([alerts.mjs](viewer/alerts.mjs)).
 
 A binding write that never settles still blocks its own signing key until the

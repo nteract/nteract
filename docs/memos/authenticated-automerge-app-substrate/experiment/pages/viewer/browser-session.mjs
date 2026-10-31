@@ -5,6 +5,7 @@
 // starts after they asked: mid-request, they queue one fresh request and every
 // waiter gets its answer. The renewal timer joins the request in flight.
 import { sessionRefreshMachine } from "./session-refresh-machine.mjs";
+import { isTransientFailure } from "./request.mjs";
 import { Store } from "./store.mjs";
 
 const SIGNED_OUT = Object.freeze({ identity: null, canWrite: false });
@@ -12,13 +13,22 @@ const SIGNED_OUT = Object.freeze({ identity: null, canWrite: false });
 function outcomeOf(answer) {
   if (!("error" in answer)) return answer.value?.identity ? "signedIn" : "signedOut";
   const status = answer.error?.status;
-  return status === 401 || status === 403 ? "refused" : "failed";
+  if (status === 401 || status === 403) return "refused";
+  return isTransientFailure(answer.error) ? "unreachable" : "failed";
 }
 
+/**
+ * Keep this tab's session cookie renewed. `onSession(session)` gets each
+ * answer; `onError(error, { outage })` gets each failure. `outage` is true
+ * once transient failures (isTransientFailure) have lasted OUTAGE_MS with no
+ * other answer between them; a transient failure before then is false, and
+ * so is any failure the server answered.
+ */
 export function maintainBrowserSession({
   request,
   onSession,
   onError,
+  now = Date.now,
   document = globalThis.document,
   setTimeout = globalThis.setTimeout,
   clearTimeout = globalThis.clearTimeout,
@@ -58,7 +68,9 @@ export function maintainBrowserSession({
         return;
       }
       case "apply":
-        if (effect.outcome === "failed") onError(settled.error);
+        if (effect.outcome === "failed") onError(settled.error, { outage: false });
+        else if (effect.outcome === "unreachable")
+          onError(settled.error, { outage: effect.outage });
         else onSession(effect.outcome === "refused" ? SIGNED_OUT : settled.value);
         return;
     }
@@ -74,7 +86,7 @@ export function maintainBrowserSession({
 
   function finish(answer) {
     settled = answer;
-    dispatch({ type: "settled", outcome: outcomeOf(answer) });
+    dispatch({ type: "settled", outcome: outcomeOf(answer), at: now() });
   }
 
   function ask(reason) {

@@ -5,6 +5,7 @@ import {
   SERVER_UNREACHABLE_ACTION,
   bannerMessages,
   failureMessage,
+  sessionCheckBanner,
 } from "./alerts.mjs";
 import { request } from "./request.mjs";
 
@@ -78,4 +79,21 @@ test("a screen shows each banner once", () => {
     "a message another notice shows is not repeated",
   );
   assert.deepEqual(bannerMessages([]), []);
+});
+
+test("the session-check banner waits for an outage when the account is known", () => {
+  const down = Object.assign(Error("The server returned an unexpected response (503)"), {
+    status: 503,
+  });
+  assert.equal(sessionCheckBanner(down, { outage: false, signedIn: true }), undefined);
+  assert.equal(sessionCheckBanner(down, { outage: true, signedIn: true }), SERVER_UNREACHABLE);
+  // A first check has nothing else on screen.
+  assert.equal(sessionCheckBanner(down, { signedIn: false }), SERVER_UNREACHABLE_ACTION);
+  // A failure the server answered keeps its message.
+  assert.equal(
+    sessionCheckBanner(Object.assign(Error("Storage is read-only"), { status: 500 }), {
+      signedIn: true,
+    }),
+    "Storage is read-only",
+  );
 });

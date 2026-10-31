@@ -4,7 +4,7 @@ import * as A from "@automerge/automerge";
 import * as N from "@automerge/subduction";
 import { generateAutomergeUrl, interpretAsDocumentId } from "@automerge/automerge-repo";
 import { PageSession } from "./session.mjs";
-import { OUTAGE_ATTEMPTS, REFUSAL_LIMIT, backoffStep } from "./reconnect-machine.mjs";
+import { OUTAGE_ATTEMPTS, OUTAGE_MS, REFUSAL_LIMIT, backoffStep } from "./reconnect-machine.mjs";
 import { SERVER_UNREACHABLE } from "./alerts.mjs";
 
 const drain = () => new Promise((resolve) => setImmediate(resolve));
@@ -19,8 +19,9 @@ function deferred() {
 
 // Exercise the real discovery, authentication, socket lifecycle and receipt
 // methods. Only external I/O and time are controlled; no receipt methods are mocked.
-function fixture(t, { random } = {}) {
-  t.mock.timers.enable({ apis: ["setTimeout"] });
+function fixture(t, { random, date = false } = {}) {
+  // `date` also moves Date.now() with the mocked clock, for elapsed-time rules.
+  t.mock.timers.enable({ apis: date ? ["setTimeout", "Date"] : ["setTimeout"] });
   let doc = A.from({ text: "Pending edit" });
   const identity = { principal: "fixture-owner", displayName: "Fixture owner" };
   const session = new PageSession("receipt-reconnect", {
@@ -923,4 +924,54 @@ test("transient receipt failures retry quietly; an outage reports once and recon
       assert.equal(f.session.problem, "");
     });
   }
+});
+
+test("edits during a receipt outage don't restart its quiet window; one success clears it", async (t) => {
+  const f = fixture(t, { date: true });
+  f.hooks.receipt = () => cloudflare503();
+  await f.start();
+  assert.equal(f.requests.length, 1, "the first receipt failed");
+  const startedAt = Date.now();
+  assert.equal(f.session.problem, "");
+  // Keep typing every 1.5 s. Each edit starts a new receipt revision with a
+  // fresh retry budget, and each receipt fails.
+  let edits = 0;
+  while (Date.now() - startedAt < OUTAGE_MS - 1500) {
+    f.mutate(`Edit ${++edits}`);
+    f.session.queueSaved();
+    assert.equal(f.session.problem, "", `quiet after ${Date.now() - startedAt} ms`);
+    await f.advance(1500);
+  }
+  assert.equal(f.session.problem, "");
+  assert.ok(f.requests.length > edits, "every edit asked for a receipt");
+  // The failure after the threshold reports the outage, despite the edits.
+  for (let i = 0; i < 2; i++) {
+    f.mutate(`Edit ${++edits}`);
+    f.session.queueSaved();
+    await f.advance(1500);
+  }
+  assert.equal(f.session.problem, SERVER_UNREACHABLE);
+  assert.equal(f.session.receiptState.outage, true);
+  // More edits keep it on screen, including while their receipt is pending.
+  for (let i = 0; i < 3; i++) {
+    f.mutate(`Edit ${++edits}`);
+    f.session.queueSaved();
+    assert.equal(f.session.problem, SERVER_UNREACHABLE);
+    await f.advance(1500);
+    assert.equal(f.session.problem, SERVER_UNREACHABLE);
+  }
+  // One successful receipt clears it and ends the run.
+  f.hooks.receipt = ({ heads }) => Response.json({ durableHeads: heads });
+  f.mutate("Saved at last");
+  f.session.queueSaved();
+  await f.advance(300);
+  assert.equal(f.session.status, "Saved");
+  assert.equal(f.session.problem, "");
+  assert.equal(f.session.receiptOutageSince, null);
+  // A new failure starts a new quiet window.
+  f.hooks.receipt = () => cloudflare503();
+  f.mutate("After the outage");
+  f.session.queueSaved();
+  await f.advance(300);
+  assert.equal(f.session.problem, "");
 });

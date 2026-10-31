@@ -4,17 +4,21 @@ import { filter, firstValueFrom } from "rxjs";
 import { loadTable, runTable } from "../shared/machine-test.mjs";
 import { maintainBrowserSession } from "./browser-session.mjs";
 import { sessionRefreshMachine } from "./session-refresh-machine.mjs";
+import { OUTAGE_MS } from "./reconnect-machine.mjs";
+import { SERVER_UNREACHABLE, bannerMessages, sessionCheckBanner } from "./alerts.mjs";
+import { request as pagesRequest } from "./request.mjs";
 
 const TABLE = new URL("../test/fixtures/machines/session-refresh.json", import.meta.url);
 const identity = { principal: "one", displayName: "Kyle" };
 const signedIn = { identity, canWrite: true };
 const signedOut = { identity: null, canWrite: false };
 
-function fixture(request, { onSession } = {}) {
+function fixture(request, { onSession, onError, now } = {}) {
   const timers = new Map(),
     listeners = new Set(),
     sessions = [],
-    errors = [];
+    errors = [],
+    outages = [];
   let id = 0;
   const document = {
     visibilityState: "hidden",
@@ -31,7 +35,12 @@ function fixture(request, { onSession } = {}) {
       sessions.push(value);
       onSession?.(value);
     },
-    onError: (error) => errors.push(error),
+    onError: (error, info) => {
+      errors.push(error);
+      outages.push(info.outage);
+      onError?.(error, info);
+    },
+    ...(now && { now }),
     document,
     setTimeout: (fn, delay) => {
       timers.set(++id, { fn, delay });
@@ -45,6 +54,7 @@ function fixture(request, { onSession } = {}) {
     listeners,
     sessions,
     errors,
+    outages,
     resume() {
       document.visibilityState = "visible";
       for (const fn of listeners) fn();
@@ -83,10 +93,10 @@ const flush = () => new Promise((resolve) => setImmediate(resolve));
 
 test("the session-refresh table runs through the pure machine", async () => {
   assert.deepEqual(await runTable(sessionRefreshMachine, loadTable(TABLE)), {
-    rows: 28,
+    rows: 36,
     pairs: 13,
     unreachable: 2,
-    cases: 11,
+    cases: 15,
   });
 });
 
@@ -275,4 +285,123 @@ test("a transient failure while signed out waits for a retry", async (t) => {
   await assert.rejects(f.maintenance.refresh(), { status: 503 });
   assert.equal(f.errors.length, 1);
   assert.equal(f.timers.size, 0);
+});
+
+/**
+ * A tab's session check as main.jsx shows it: the banner sessionCheckBanner
+ * picks, set by each failure and cleared by each session answer. The server
+ * answers through request(), so gateway pages classify as they do live.
+ */
+function sessionCheckScreen() {
+  let at = 0,
+    answer = "ok",
+    authError = "";
+  const cloudflare = () =>
+    new Response("<!DOCTYPE html><title>503: origin unreachable | Cloudflare</title>", {
+      status: 503,
+      headers: { "Content-Type": "text/html; charset=UTF-8" },
+    });
+  const f = fixture(
+    () =>
+      pagesRequest(
+        "/api/auth/session",
+        {},
+        { fetch: async () => (answer === "ok" ? Response.json(signedIn) : cloudflare()) },
+      ),
+    {
+      now: () => at,
+      onSession: () => {
+        authError = "";
+      },
+      onError: (error, { outage }) => {
+        const banner = sessionCheckBanner(error, { outage, signedIn: true });
+        if (banner !== undefined) authError = banner;
+      },
+    },
+  );
+  return {
+    f,
+    /** The banners the screen shows beside a Page's own problem, if any. */
+    banners: (pageProblem = "") => bannerMessages(["", authError, pageProblem]),
+    set: (next) => (answer = next),
+    /** Let the renewal timer fire `ms` after the last answer. */
+    async renewAfter(ms) {
+      at += ms;
+      await f.tick();
+      await f.idle();
+    },
+    async refreshAfter(ms) {
+      at += ms;
+      await f.maintenance.refresh().catch(() => {});
+    },
+  };
+}
+
+test("a library screen with a persistent 503 shows one notice after the threshold, cleared by success", async (t) => {
+  const screen = sessionCheckScreen();
+  t.after(() => screen.f.maintenance.stop());
+  await screen.f.maintenance.refresh();
+  assert.deepEqual(screen.banners(), []);
+
+  screen.set("down");
+  // The first failed renewal starts the run; it stays quiet.
+  await screen.renewAfter(60_000);
+  assert.deepEqual(screen.f.outages, [false]);
+  assert.deepEqual(screen.banners(), []);
+  assert.equal(screen.f.timers.size, 1, "renewals continue");
+  // The next one is past the threshold: exactly one plain sentence.
+  await screen.renewAfter(60_000);
+  assert.deepEqual(screen.f.outages, [false, true]);
+  assert.deepEqual(screen.banners(), [SERVER_UNREACHABLE]);
+  await screen.renewAfter(60_000);
+  assert.deepEqual(screen.banners(), [SERVER_UNREACHABLE]);
+
+  screen.set("ok");
+  await screen.renewAfter(60_000);
+  assert.deepEqual(screen.banners(), [], "a session answer clears it");
+  assert.equal(screen.f.sessions.length, 2);
+
+  // The run starts over after a success.
+  screen.set("down");
+  await screen.renewAfter(60_000);
+  assert.deepEqual(screen.f.outages.slice(-1), [false]);
+  assert.deepEqual(screen.banners(), []);
+});
+
+test("a healthy Page whose renewal keeps failing shows the same single notice", async (t) => {
+  const screen = sessionCheckScreen();
+  t.after(() => screen.f.maintenance.stop());
+  await screen.f.maintenance.refresh();
+  screen.set("down");
+  // The Page's socket stays up, so its own problem stays empty.
+  await screen.renewAfter(60_000);
+  assert.deepEqual(screen.banners(""), []);
+  await screen.renewAfter(60_000);
+  assert.deepEqual(screen.banners(""), [SERVER_UNREACHABLE]);
+  // A Page that reports its own outage too still shows one notice.
+  assert.deepEqual(screen.banners(SERVER_UNREACHABLE), [SERVER_UNREACHABLE]);
+  screen.set("ok");
+  await screen.renewAfter(60_000);
+  assert.deepEqual(screen.banners(""), []);
+});
+
+test("session refreshes from Page reconnects during a short restart stay quiet", async (t) => {
+  const screen = sessionCheckScreen();
+  t.after(() => screen.f.maintenance.stop());
+  await screen.f.maintenance.refresh();
+  screen.set("down");
+  // Reconnect attempts ask for the session on their backoff, many times in a
+  // few seconds; none of them is an outage.
+  for (const delay of [250, 500, 1000, 2000, 4000]) await screen.refreshAfter(delay);
+  assert.equal(screen.f.outages.length, 5);
+  assert.ok(screen.f.outages.every((outage) => !outage));
+  assert.deepEqual(screen.banners(), []);
+  // The same run, which began with the first failure 250 ms in, reaches
+  // the threshold if it keeps going.
+  await screen.refreshAfter(OUTAGE_MS + 250 - 7750);
+  assert.deepEqual(screen.f.outages.at(-1), true);
+  assert.deepEqual(screen.banners(), [SERVER_UNREACHABLE]);
+  screen.set("ok");
+  await screen.refreshAfter(250);
+  assert.deepEqual(screen.banners(), []);
 });

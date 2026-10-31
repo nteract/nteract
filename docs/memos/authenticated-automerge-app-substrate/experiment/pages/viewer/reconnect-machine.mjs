@@ -48,6 +48,10 @@ export const REFUSAL_LIMIT = 6;
 // 0.5 + 1 + … + 16 s before jitter, so a host restart that takes under about
 // 15 s never shows one.
 export const OUTAGE_ATTEMPTS = 7;
+// The same threshold as elapsed time, for failures that don't follow this
+// backoff: session refreshes and save receipts, which edits and other callers
+// also trigger. Inside the window the seventh reconnect failure lands in.
+export const OUTAGE_MS = 20_000;
 
 /** The backoff step before jitter for a retry after `attempts` earlier ones:
  * 0.5 s doubling to a 60 s cap. */
