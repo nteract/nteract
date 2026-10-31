@@ -858,8 +858,12 @@ try {
   await expect.poll(() => textOf(a)).toBe(diagram);
   await expect.poll(() => textOf(b)).toBe(diagram);
   await previewDiagram(a);
-  for (const page of [a, b])
+  for (const page of [a, b]) {
     await expect(page.locator(".wordgard-diagram")).toContainText("Warehouse");
+    // The rendered view has no header label; the source view names the language.
+    await expect(page.locator(".wordgard-diagram-header")).toHaveText("");
+    await expect(page.locator(".wordgard-diagram")).toHaveAttribute("aria-label", "Diagram");
+  }
   await saved(a);
   checkpoint(stage);
 
