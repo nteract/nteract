@@ -195,13 +195,16 @@ fn unsupported_syntax(source: &str) -> Result<bool> {
     // its spaces:
     // - The dollar rule's spaces are ASCII whitespace, [ \t\n\v\f\r].
     // - Before a line-start `$$`, a space is any character either codec's
-    //   `\s` matched, except CR and LF.
-    // A line starts at the start of input or after LF, CR or CRLF. `(?m)`
-    // and JavaScript's `m` flag disagree on CR, so the pattern has no
-    // multiline flag and writes line starts as `(?:^|\r\n?|\n)`.
+    //   `\s` matched that does not start a line.
+    // A line starts at the start of input or after LF, CR, CRLF, U+2028 or
+    // U+2029, the line terminators of JavaScript's multiline `^`. `(?m)`
+    // disagrees on CR, U+2028 and U+2029, so the pattern has no multiline
+    // flag and writes line starts as `(?:^|\r\n?|[\n\u2028\u2029])`. Line
+    // terminators are not in the prefix class, so the branches never overlap.
+    // `\uXXXX` names the same code point here as in the JavaScript pattern.
     if expression(
         &MATH,
-        r"(?:^|\r\n?|\n)[ \t\v\f\u00a0\u0085\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff]*\$\$|\$\$(?:[^\n$]|\$[^\n$])*\$\$|\$[^ \t\n\v\f\r$](?:[^ \t\n\v\f\r$]|[ \t\v\f\r]+[^ \t\n\v\f\r$])*\$(?:[^0-9]|$)",
+        r"(?:^|\r\n?|[\n\u2028\u2029])[ \t\v\f\u00a0\u0085\u1680\u2000-\u200a\u202f\u205f\u3000\ufeff]*\$\$|\$\$(?:[^\n$]|\$[^\n$])*\$\$|\$[^ \t\n\v\f\r$](?:[^ \t\n\v\f\r$]|[ \t\v\f\r]+[^ \t\n\v\f\r$])*\$(?:[^0-9]|$)",
     )?
     .is_match(&syntax)
         || expression(

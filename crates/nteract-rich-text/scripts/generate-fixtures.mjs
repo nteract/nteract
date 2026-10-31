@@ -85,6 +85,8 @@ const cases = [
   { id: "opaque-display-opener-feff", markdown: "Before\n\ufeff$$\n\\{x\\}", import_id: "opener-feff-import" },
   { id: "opaque-display-opener-leading-bom", markdown: "\ufeff$$\n\\{x\\}", import_id: "opener-leading-bom-import" },
   { id: "opaque-display-opener-nbsp", markdown: "Before\r\u00a0$$\n\\{x\\}", import_id: "opener-nbsp-import" },
+  { id: "opaque-display-opener-line-separator", markdown: "Before\u2028$$\n\\{x\\}", import_id: "opener-line-separator-import" },
+  { id: "opaque-display-opener-paragraph-separator", markdown: "Before\u2029$$\n\\{x\\}", import_id: "opener-paragraph-separator-import" },
   { id: "opaque-display-opener-unicode-spaces", markdown: "Before\r\n \u0085\u1680\u2000\u200a\u2028\u2029\u202f\u205f\u3000$$\n\\{x\\}", import_id: "opener-unicode-spaces-import" },
   { id: "display-opener-zero-width-space-is-content", markdown: "Before\n\u200b$$\n\\{x\\}" },
   { id: "opaque-currency-beside-math", markdown: "$5 and $$x$$", import_id: "currency-math-import" },

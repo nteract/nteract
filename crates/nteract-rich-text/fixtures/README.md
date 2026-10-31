@@ -18,9 +18,9 @@ Pandoc's dollar rule, so currency such as "$30 and $25" stays prose. Both
 codecs treat only ASCII whitespace as a space in that rule; fixtures with
 U+0085, U+FEFF, U+00A0 and U+2028 pin the shared set. A `$$` at a line
 start also stays opaque. Its prefix may contain any character either codec's
-`\s` matched, except CR and LF, so doubtful source stays preserved. A line
-starts at the start of input or after LF, CR or CRLF. Fixtures cover each line
-start, U+00A0, U+FEFF (including a leading BOM) and the other Unicode spaces
+`\s` matched that does not start a line, so doubtful source stays preserved.
+A line starts at the start of input or after LF, CR, CRLF, U+2028 or U+2029.
+Fixtures cover each line start, U+00A0, U+FEFF (including a leading BOM) and the other Unicode spaces
 before `$$`, and a zero-width space that is content. Code spans keep
 backslashes, nested backticks, and trailing spaces literal.
 

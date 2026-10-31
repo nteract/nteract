@@ -1,4 +1,5 @@
 import test from "node:test";
+import { readFileSync } from "node:fs";
 import assert from "node:assert/strict";
 import * as A from "@automerge/automerge";
 import { pmDocFromSpans, pmNodeToSpans } from "@automerge/prosemirror";
@@ -143,12 +144,15 @@ for (const source of [
   "$5 and $$x$$",
   "Costs $5 and $$ x $$ later.",
   // A `$$` at a line start opens display math. A line starts at the start of
-  // input or after LF, CR or CRLF.
+  // input or after LF, CR, CRLF, U+2028 or U+2029.
   "Before\n$$\n\\{x\\}",
   "Before\r$$\n\\{x\\}",
   "Before\r\n$$\r\n\\{x\\}",
   "Before\r \t$$\n\\{x\\}",
   "Before\r\r\v\f$$\r\\{x\\}",
+  "Before\u2028$$\n\\{x\\}",
+  "Before\u2029$$\n\\{x\\}",
+  "Before\u2028 \u00a0$$\n\\{x\\}",
   // Only ASCII whitespace disqualifies a delimiter. Other spaces are content.
   "$\u0085x$",
   "$\ufeffx$",
@@ -193,6 +197,19 @@ test("other characters before $$ do not open display math", () => {
     assert.equal(parseMarkdown(source).firstChild.type.name, "paragraph", JSON.stringify(source));
 });
 
+// Both codecs must classify the same characters. The JS pattern has no flags:
+// multiline anchors differ between engines, and its BMP `\uXXXX` escapes need
+// no `u` flag. The Rust regex crate reads the same text as the same pattern.
+test("the Rust codec uses the same math pattern text, with no JS flags", () => {
+  const rust = readFileSync(
+    new URL("../../../../../../crates/nteract-rich-text/src/import.rs", import.meta.url),
+    "utf8",
+  );
+  const pattern = /&MATH,\s*r"([^"]*)"/.exec(rust)?.[1];
+  assert.equal(pattern, MATH_SYNTAX.source);
+  assert.equal(MATH_SYNTAX.flags, "");
+});
+
 // The math gate runs on every agent write. Unclosed delimiters followed by
 // long runs of spaces and dollars must not backtrack quadratically.
 test("the math gate stays linear on unclosed delimiters", () => {
@@ -216,6 +233,7 @@ test("the math pattern stays linear on runs of line breaks and spaces", () => {
     `$$${"\r$".repeat(100000)}`,
     `${"\r\u00a0\ufeff\u3000".repeat(50000)}x`,
     `${"\n\u2028".repeat(100000)}x`,
+    `${"\u2029 \u3000".repeat(70000)}x`,
   ];
   const started = performance.now();
   for (const source of sources) MATH_SYNTAX.test(source);

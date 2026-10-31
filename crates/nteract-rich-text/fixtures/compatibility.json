@@ -3876,6 +3876,48 @@
       "canonical_markdown": "Before\r $$\n\\{x\\}"
     },
     {
+      "id": "opaque-display-opener-line-separator",
+      "markdown": "Before $$\n\\{x\\}",
+      "import_id": "opener-line-separator-import",
+      "expected_spans": [
+        {
+          "type": "block",
+          "value": {
+            "type": "pages-opaque",
+            "parents": [],
+            "attrs": {
+              "source": "Before $$\n\\{x\\}",
+              "importId": "opener-line-separator-import",
+              "kind": "markdown"
+            },
+            "isEmbed": false
+          }
+        }
+      ],
+      "canonical_markdown": "Before $$\n\\{x\\}"
+    },
+    {
+      "id": "opaque-display-opener-paragraph-separator",
+      "markdown": "Before $$\n\\{x\\}",
+      "import_id": "opener-paragraph-separator-import",
+      "expected_spans": [
+        {
+          "type": "block",
+          "value": {
+            "type": "pages-opaque",
+            "parents": [],
+            "attrs": {
+              "source": "Before $$\n\\{x\\}",
+              "importId": "opener-paragraph-separator-import",
+              "kind": "markdown"
+            },
+            "isEmbed": false
+          }
+        }
+      ],
+      "canonical_markdown": "Before $$\n\\{x\\}"
+    },
+    {
       "id": "opaque-display-opener-unicode-spaces",
       "markdown": "Before\r\n        　$$\n\\{x\\}",
       "import_id": "opener-unicode-spaces-import",

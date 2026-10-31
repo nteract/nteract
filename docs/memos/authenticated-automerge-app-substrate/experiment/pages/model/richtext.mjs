@@ -505,16 +505,19 @@ const tableCellSerializer = new MarkdownSerializer(
 // - The dollar rule's spaces are ASCII whitespace, [ \t\n\v\f\r]. Any other
 //   character is content, so the span counts as math.
 // - Before a line-start `$$`, a space is any character either codec's `\s`
-//   matched, except CR and LF: ASCII space, tab, VT and FF, U+00A0, U+0085,
-//   U+1680, U+2000-U+200A, U+2028, U+2029, U+202F, U+205F, U+3000, U+FEFF.
-// A line starts at the start of input or after LF, CR or CRLF. JS `m` and
-// Rust `(?m)` disagree on CR, so the pattern has no multiline flag and writes
-// line starts as `(?:^|\r\n?|\n)`. CR and LF start lines themselves, so the
-// opener does not skip them and a run of line breaks is scanned once.
-// Each repetition has disjoint branches, so matching is linear.
-// crates/nteract-rich-text/src/import.rs uses the same pattern text.
+//   matched that does not start a line: ASCII space, tab, VT and FF, U+00A0,
+//   U+0085, U+1680, U+2000-U+200A, U+202F, U+205F, U+3000, U+FEFF.
+// A line starts at the start of input or after LF, CR, CRLF, U+2028 or
+// U+2029, the line terminators of JS multiline `^`. JS `m` and Rust `(?m)`
+// disagree on CR, U+2028 and U+2029, so the pattern has no multiline flag
+// and writes line starts as `(?:^|\r\n?|[\n\u2028\u2029])`. Line terminators
+// are not in the prefix class, so the alternatives never overlap and a run
+// of line breaks is scanned once. Each repetition has disjoint branches, so
+// matching is linear. Every `\uXXXX` escape is a BMP code point, which JS
+// reads without the `u` flag; Rust's regex reads the same escape as the same
+// code point. crates/nteract-rich-text/src/import.rs uses this pattern text.
 export const MATH_SYNTAX =
-  /(?:^|\r\n?|\n)[ \t\v\f\u00a0\u0085\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff]*\$\$|\$\$(?:[^\n$]|\$[^\n$])*\$\$|\$[^ \t\n\v\f\r$](?:[^ \t\n\v\f\r$]|[ \t\v\f\r]+[^ \t\n\v\f\r$])*\$(?:[^0-9]|$)/;
+  /(?:^|\r\n?|[\n\u2028\u2029])[ \t\v\f\u00a0\u0085\u1680\u2000-\u200a\u202f\u205f\u3000\ufeff]*\$\$|\$\$(?:[^\n$]|\$[^\n$])*\$\$|\$[^ \t\n\v\f\r$](?:[^ \t\n\v\f\r$]|[ \t\v\f\r]+[^ \t\n\v\f\r$])*\$(?:[^0-9]|$)/;
 // Conservative import gate: unknown syntax is opaque rather than silently discarded.
 export function parseMarkdown(source, importId = "", kind = "markdown") {
   // A task followed by an ordinary inline link is not a reference-link pair.
