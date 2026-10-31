@@ -18,7 +18,12 @@ import {
   UserRound,
 } from "lucide-react";
 import { request, tool } from "./request.mjs";
-import { bannerMessages, failureMessage, sessionCheckBanner } from "./alerts.mjs";
+import {
+  failureMessage,
+  screenBanners,
+  sessionAnswerNotice,
+  sessionCheckBanner,
+} from "./alerts.mjs";
 import { listLocalPages, forgetLocalPage } from "./local-catalog.mjs";
 import {
   pagePath,
@@ -83,7 +88,8 @@ function App() {
     [pages, setPages] = useState([]),
     [, paint] = useState(0),
     [error, setError] = useState(""),
-    [authError, setAuthError] = useState(""),
+    // The session check's banner: { message, signIn } or null.
+    [sessionNotice, setSessionNotice] = useState(null),
     [notice, setNotice] = useState(""),
     [libraryQuery, setLibraryQuery] = useState(""),
     [trashOpen, setTrashOpen] = useState(false),
@@ -361,9 +367,12 @@ function App() {
     const maintenance = maintainBrowserSession({
       // The first refresh takes the request theme.js started (early-session.mjs).
       request: () => requestSession(request),
-      onSession: (result) => {
+      onSession: (result, { refusal }) => {
         if (!alive) return;
-        setAuthError("");
+        // A refusal keeps the sign-out below and says why it happened.
+        setSessionNotice(
+          sessionAnswerNotice(refusal, { signedIn: !!authentication.current?.identity }),
+        );
         const changed = authentication.current?.identity?.principal !== result.identity?.principal;
         if (changed) {
           host.navigate();
@@ -390,7 +399,7 @@ function App() {
           outage,
           signedIn: !!authentication.current?.identity,
         });
-        if (banner !== undefined) setAuthError(banner);
+        if (banner !== undefined) setSessionNotice({ message: banner, signIn: false });
         setAccount((value) => (value === undefined ? null : value));
       },
     });
@@ -414,12 +423,9 @@ function App() {
   }, []);
   const page = session?.snapshot(),
     threads = page?.comments ?? [];
-  // The screen's one banner region. The sign-in prompt and access notice
-  // beside the Page show their own messages with their actions, so neither
-  // is repeated here.
-  const banners = bannerMessages([error, authError, page ? session.problem : ""], {
-    shown: page ? [session.authRequired ? session.authProblem : "", session.accessProblem] : [],
-  });
+  // The screen's one banner region (screenBanners). The sign-in prompt and
+  // access notice beside the Page show their own messages with their actions.
+  const banners = screenBanners({ error, sessionNotice, page: page ? session : null });
   useEffect(() => {
     if (!titleFocusRequest) return;
     const frame = requestAnimationFrame(() => {

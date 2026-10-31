@@ -20,14 +20,22 @@ function deferred() {
 // Exercise the real discovery, authentication, socket lifecycle and receipt
 // methods. Only external I/O and time are controlled; no receipt methods are mocked.
 function fixture(t, { random, date = false } = {}) {
-  // `date` also moves Date.now() with the mocked clock, for elapsed-time rules.
-  t.mock.timers.enable({ apis: date ? ["setTimeout", "Date"] : ["setTimeout"] });
+  // `date` mocks Date too, and performance.now(), the session's default
+  // outage clock, as a fake monotonic clock that moves with the mocked
+  // timers: Date.now() minus every wall-clock jump the test makes with
+  // jumpWall(), the way the real one ignores them.
+  // The mocked wall clock starts a day in, so it can jump back.
+  t.mock.timers.enable(
+    date ? { apis: ["setTimeout", "Date"], now: 86_400_000 } : { apis: ["setTimeout"] },
+  );
+  let wallShift = 0;
   let doc = A.from({ text: "Pending edit" });
   const identity = { principal: "fixture-owner", displayName: "Fixture owner" };
   const session = new PageSession("receipt-reconnect", {
     refreshSession: async () => ({ identity, canWrite: true }),
     random,
   });
+  if (date) t.mock.method(globalThis.performance, "now", () => Date.now() - wallShift);
   const documentId = interpretAsDocumentId(generateAutomergeUrl());
   session.identity = identity;
   session.credentialCanWrite = true;
@@ -121,6 +129,11 @@ function fixture(t, { random, date = false } = {}) {
     async advance(ms) {
       t.mock.timers.tick(ms);
       await drain();
+    },
+    /** Set the wall clock `ms` forward (or back, if negative). */
+    jumpWall(ms) {
+      t.mock.timers.setTime(Date.now() + ms);
+      wallShift += ms;
     },
     async start() {
       await session.openConnection(false);
@@ -974,4 +987,46 @@ test("edits during a receipt outage don't restart its quiet window; one success 
   f.session.queueSaved();
   await f.advance(300);
   assert.equal(f.session.problem, "");
+});
+
+test("a wall-clock jump during a receipt outage neither hides nor hastens the notice", async (t) => {
+  for (const jump of [-3_600_000, 3_600_000]) {
+    await t.test(jump < 0 ? "an hour back" : "an hour forward", async (t) => {
+      const f = fixture(t, { date: true });
+      f.hooks.receipt = () => cloudflare503();
+      await f.start();
+      const quiet = async (ms) => {
+        for (let spent = 0; spent < ms; spent += 1500) {
+          f.mutate(`Edit at ${spent}`);
+          f.session.queueSaved();
+          await f.advance(1500);
+        }
+      };
+      await quiet(6000);
+      f.jumpWall(jump);
+      assert.equal(f.session.problem, "");
+      // Forward: the next failures stay quiet until 20 s of outage.
+      await quiet(OUTAGE_MS - 9000);
+      assert.equal(f.session.problem, "", "no notice before the threshold");
+      // Back: the notice still comes once 20 s have passed.
+      await quiet(4500);
+      assert.equal(f.session.problem, SERVER_UNREACHABLE);
+    });
+  }
+});
+
+test("signing out during an outage drops the stale outage notice for the sign-in prompt", async (t) => {
+  const f = fixture(t, { random: () => 0 });
+  await f.start();
+  f.requests[0].resolve(Response.json({ durableHeads: f.requests[0].heads }));
+  await drain();
+  f.hooks.connect = cloudflare503;
+  await failReconnects(f, OUTAGE_ATTEMPTS);
+  assert.equal(f.session.problem, SERVER_UNREACHABLE);
+  // A renewal answers 401: the viewer hands the Page a signed-out session.
+  assert.equal(f.session.acceptAuthentication({ identity: null, canWrite: false }), false);
+  assert.equal(f.session.authRequired, true);
+  assert.equal(f.session.status, "Sign in to sync");
+  assert.match(f.session.authProblem, /^Sign in again/);
+  assert.equal(f.session.problem, "", "the prompt is the only notice");
 });

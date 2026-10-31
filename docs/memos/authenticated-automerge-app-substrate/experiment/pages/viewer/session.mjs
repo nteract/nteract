@@ -33,6 +33,7 @@ import { MISSING_EDITS_MESSAGE } from "../shared/receipts.mjs";
 import { ADMISSION_CAPABILITY, admissionCloseOutcome } from "../shared/admission.mjs";
 import { isTransientFailure, request } from "./request.mjs";
 import { SERVER_UNREACHABLE } from "./alerts.mjs";
+import { monotonicNow } from "./monotonic.mjs";
 import { activitySnapshot } from "./activity.mjs";
 import { checkpointRecords } from "./checkpoint-records.mjs";
 import { Store } from "./store.mjs";
@@ -160,8 +161,8 @@ export class PageSession {
   // status says Offline while retries continue; no banner until the reconnect
   // machine reports an outage. A connection admitted later clears it.
   unreachable = false;
-  // When the current run of transient receipt failures began (Date.now()),
-  // or null. It spans receipt revisions, so edits made during an outage don't
+  // When the current run of transient receipt failures began, on this.now's
+  // monotonic clock, or null. It spans receipt revisions, so edits made during an outage don't
   // restart the quiet window; only a successful receipt ends the run.
   receiptOutageSince = null;
   savedHeads = [];
@@ -219,6 +220,7 @@ export class PageSession {
       authentication,
       scheduler = asyncScheduler,
       random = Math.random,
+      now = monotonicNow,
     } = {},
   ) {
     this.pageId = pageId;
@@ -226,6 +228,8 @@ export class PageSession {
     this.authentication = authentication;
     this.scheduler = scheduler;
     this.random = random;
+    // The monotonic clock receipt outages are timed with (monotonic.mjs).
+    this.now = now;
   }
   get doc() {
     return this.handle?.doc();
@@ -326,6 +330,7 @@ export class PageSession {
             refreshSession: this.refreshSession,
             scheduler: this.scheduler,
             random: this.random,
+            now: this.now,
           }),
         );
       case "forget": {
@@ -514,6 +519,10 @@ export class PageSession {
   requireSignIn(message = "Sign in again to sync this Page. Keep it open while you sign in.") {
     const { rejected } = this.dispatch({ type: "signIn", ok: false }, () => {
       this.cancelReceiptRetry();
+      // Sync waits for sign-in now; a sync problem from before it is stale.
+      // The next attempt after sign-in shows it again if it still applies.
+      if (this.problem === this.connectionProblem || this.problem === this.receiptState?.problem)
+        this.problem = this.localProblem;
       this.receiptRevision = (this.receiptRevision ?? 0) + 1;
       this.authProblem = message;
       this.status = "Sign in to sync";
@@ -1789,7 +1798,7 @@ export class PageSession {
             // outage once the run of transient failures has lasted
             // OUTAGE_MS, or this receipt's retries are spent; the next
             // admitted connection then restarts the receipt.
-            const now = Date.now();
+            const now = this.now();
             this.receiptOutageSince ??= now;
             state.outage =
               now - this.receiptOutageSince >= OUTAGE_MS ||

@@ -423,7 +423,12 @@ are timed instead of counted (`OUTAGE_MS`, 20 s), because edits and Page
 reconnects trigger them too: receipt failures count from the first one after
 the last successful receipt, across edits, and the session-refresh machine
 tracks a run of unreachable answers, so a library screen whose renewals keep
-failing shows the same sentence until a session request succeeds. Each screen renders its banners
+failing shows the same sentence until a session request succeeds. Both read
+one monotonic clock ([monotonic.mjs](viewer/monotonic.mjs), `performance.now()`),
+so changing the system time can't hide or hasten the notice. A renewal the
+server refuses (401 or 403) still signs the tab out, and says why: "Your
+session ended. Sign in again." or the server's 403 message, or the open
+Page's own sign-in prompt. Each screen renders its banners
 from one deduplicated list ([alerts.mjs](viewer/alerts.mjs)).
 
 A binding write that never settles still blocks its own signing key until the

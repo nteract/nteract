@@ -6,6 +6,7 @@
 // waiter gets its answer. The renewal timer joins the request in flight.
 import { sessionRefreshMachine } from "./session-refresh-machine.mjs";
 import { isTransientFailure } from "./request.mjs";
+import { monotonicNow } from "./monotonic.mjs";
 import { Store } from "./store.mjs";
 
 const SIGNED_OUT = Object.freeze({ identity: null, canWrite: false });
@@ -18,17 +19,20 @@ function outcomeOf(answer) {
 }
 
 /**
- * Keep this tab's session cookie renewed. `onSession(session)` gets each
- * answer; `onError(error, { outage })` gets each failure. `outage` is true
- * once transient failures (isTransientFailure) have lasted OUTAGE_MS with no
- * other answer between them; a transient failure before then is false, and
- * so is any failure the server answered.
+ * Keep this tab's session cookie renewed. `onSession(session, { refusal })`
+ * gets each answer; a 401 or 403 arrives as a signed-out session with the
+ * server's error as `refusal`, so the viewer can say why the account left.
+ * `onError(error, { outage })` gets each other failure. `outage` is true once
+ * transient failures (isTransientFailure) have lasted OUTAGE_MS with no other
+ * answer between them; a transient failure before then is false, and so is
+ * any failure the server answered. `now` is the monotonic clock those runs
+ * are timed with (monotonic.mjs).
  */
 export function maintainBrowserSession({
   request,
   onSession,
   onError,
-  now = Date.now,
+  now = monotonicNow,
   document = globalThis.document,
   setTimeout = globalThis.setTimeout,
   clearTimeout = globalThis.clearTimeout,
@@ -71,7 +75,8 @@ export function maintainBrowserSession({
         if (effect.outcome === "failed") onError(settled.error, { outage: false });
         else if (effect.outcome === "unreachable")
           onError(settled.error, { outage: effect.outage });
-        else onSession(effect.outcome === "refused" ? SIGNED_OUT : settled.value);
+        else if (effect.outcome === "refused") onSession(SIGNED_OUT, { refusal: settled.error });
+        else onSession(settled.value, {});
         return;
     }
     throw new Error(`unknown effect ${effect.type}`);

@@ -9,8 +9,9 @@
  * waiter gets the fresh request's answer instead.
  *
  * States, each but `stopped` carrying `failingSince`: when the first of the
- * current run of `unreachable` answers arrived (the interpreter's clock, in
- * ms), or null when the last answer was anything else:
+ * current run of `unreachable` answers arrived (ms on the interpreter's
+ * monotonic clock, monotonic.mjs), or null when the last answer was anything
+ * else:
  * - idle: no request and no renewal timer. The tab hasn't asked yet, or it is
  *   signed out. `keepAlive` says whether a failed request schedules the next
  *   renewal.
@@ -28,7 +29,9 @@
  *   `signedOut` (no identity), `refused` (401 or 403), `unreachable` (a
  *   transient failure, isTransientFailure: a restart, a gateway error, a lost
  *   connection) or `failed` (anything else, such as a timeout or a 500).
- *   `at` is when it answered; `unreachable` needs it.
+ *   `at` is when it answered, on the same monotonic clock; `unreachable`
+ *   needs it. The machine only subtracts two `at`s, so a wall-clock change
+ *   can't move an outage.
  * - stop: the viewer unmounted.
  *
  * Effects: `request` starts one session request; `cancelTimer` clears the

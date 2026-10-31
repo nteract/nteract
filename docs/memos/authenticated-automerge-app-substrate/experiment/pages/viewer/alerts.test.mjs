@@ -4,7 +4,10 @@ import {
   SERVER_UNREACHABLE,
   SERVER_UNREACHABLE_ACTION,
   bannerMessages,
+  SESSION_ENDED,
   failureMessage,
+  screenBanners,
+  sessionAnswerNotice,
   sessionCheckBanner,
 } from "./alerts.mjs";
 import { request } from "./request.mjs";
@@ -96,4 +99,45 @@ test("the session-check banner waits for an outage when the account is known", (
     }),
     "Storage is read-only",
   );
+});
+
+test("a refused session says why only for a tab that was signed in", () => {
+  const expired = Object.assign(Error("Session expired"), { status: 401 });
+  const forbidden = Object.assign(Error("Sign in with a verified anaconda.com email."), {
+    status: 403,
+  });
+  assert.deepEqual(sessionAnswerNotice(expired, { signedIn: true }), {
+    message: SESSION_ENDED,
+    signIn: true,
+  });
+  assert.deepEqual(sessionAnswerNotice(forbidden, { signedIn: true }), {
+    message: "Sign in with a verified anaconda.com email.",
+    signIn: true,
+  });
+  assert.equal(sessionAnswerNotice(expired, { signedIn: false }), null);
+  assert.equal(sessionAnswerNotice(undefined, { signedIn: true }), null);
+});
+
+test("one banner region per screen", () => {
+  const prompt = "Sign in again to sync this Page. Keep it open while you sign in.";
+  const page = { problem: "", authRequired: false, authProblem: "", accessProblem: "" };
+  const signIn = { message: SESSION_ENDED, signIn: true };
+  const outage = { message: SERVER_UNREACHABLE, signIn: false };
+  assert.deepEqual(screenBanners({ sessionNotice: signIn }), [SESSION_ENDED]);
+  assert.deepEqual(
+    screenBanners({ sessionNotice: outage, page: { ...page, problem: SERVER_UNREACHABLE } }),
+    [SERVER_UNREACHABLE],
+  );
+  // The Page's own sign-in prompt stands in for the sign-in notice, and a
+  // sync problem from before sign-in is not shown beside it.
+  assert.deepEqual(
+    screenBanners({
+      sessionNotice: signIn,
+      page: { ...page, authRequired: true, authProblem: prompt, problem: SERVER_UNREACHABLE },
+    }),
+    [],
+  );
+  assert.deepEqual(screenBanners({ error: "Couldn't copy the link.", sessionNotice: null, page }), [
+    "Couldn't copy the link.",
+  ]);
 });

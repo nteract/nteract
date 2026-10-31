@@ -5,7 +5,13 @@ import { loadTable, runTable } from "../shared/machine-test.mjs";
 import { maintainBrowserSession } from "./browser-session.mjs";
 import { sessionRefreshMachine } from "./session-refresh-machine.mjs";
 import { OUTAGE_MS } from "./reconnect-machine.mjs";
-import { SERVER_UNREACHABLE, bannerMessages, sessionCheckBanner } from "./alerts.mjs";
+import {
+  SERVER_UNREACHABLE,
+  SESSION_ENDED,
+  screenBanners,
+  sessionAnswerNotice,
+  sessionCheckBanner,
+} from "./alerts.mjs";
 import { request as pagesRequest } from "./request.mjs";
 
 const TABLE = new URL("../test/fixtures/machines/session-refresh.json", import.meta.url);
@@ -31,9 +37,9 @@ function fixture(request, { onSession, onError, now } = {}) {
   };
   const maintenance = maintainBrowserSession({
     request,
-    onSession: (value) => {
+    onSession: (value, info) => {
       sessions.push(value);
-      onSession?.(value);
+      onSession?.(value, info);
     },
     onError: (error, info) => {
       errors.push(error);
@@ -288,41 +294,48 @@ test("a transient failure while signed out waits for a retry", async (t) => {
 });
 
 /**
- * A tab's session check as main.jsx shows it: the banner sessionCheckBanner
- * picks, set by each failure and cleared by each session answer. The server
- * answers through request(), so gateway pages classify as they do live.
+ * A tab's session check as main.jsx shows it: the notice sessionCheckBanner
+ * or sessionAnswerNotice picks, set by each answer. The server answers
+ * through request(), so gateway pages and refusals classify as they do live.
+ * `at` is the fake monotonic clock.
  */
-function sessionCheckScreen() {
+function sessionCheckScreen({ injectNow = true } = {}) {
   let at = 0,
     answer = "ok",
-    authError = "";
-  const cloudflare = () =>
-    new Response("<!DOCTYPE html><title>503: origin unreachable | Cloudflare</title>", {
-      status: 503,
-      headers: { "Content-Type": "text/html; charset=UTF-8" },
-    });
+    notice = null,
+    account = null;
+  const responses = {
+    ok: () => Response.json(signedIn),
+    down: () =>
+      new Response("<!DOCTYPE html><title>503: origin unreachable | Cloudflare</title>", {
+        status: 503,
+        headers: { "Content-Type": "text/html; charset=UTF-8" },
+      }),
+    expired: () => Response.json({ error: "Session expired" }, { status: 401 }),
+    forbidden: () =>
+      Response.json({ error: "Sign in with a verified anaconda.com email." }, { status: 403 }),
+  };
   const f = fixture(
-    () =>
-      pagesRequest(
-        "/api/auth/session",
-        {},
-        { fetch: async () => (answer === "ok" ? Response.json(signedIn) : cloudflare()) },
-      ),
+    () => pagesRequest("/api/auth/session", {}, { fetch: async () => responses[answer]() }),
     {
-      now: () => at,
-      onSession: () => {
-        authError = "";
+      ...(injectNow && { now: () => at }),
+      onSession: (result, { refusal }) => {
+        notice = sessionAnswerNotice(refusal, { signedIn: !!account });
+        account = result.identity;
       },
       onError: (error, { outage }) => {
-        const banner = sessionCheckBanner(error, { outage, signedIn: true });
-        if (banner !== undefined) authError = banner;
+        const banner = sessionCheckBanner(error, { outage, signedIn: !!account });
+        if (banner !== undefined) notice = { message: banner, signIn: false };
       },
     },
   );
   return {
     f,
-    /** The banners the screen shows beside a Page's own problem, if any. */
-    banners: (pageProblem = "") => bannerMessages(["", authError, pageProblem]),
+    get at() {
+      return at;
+    },
+    /** The banners the screen shows, beside an open Page if one is given. */
+    banners: (page = null) => screenBanners({ sessionNotice: notice, page }),
     set: (next) => (answer = next),
     /** Let the renewal timer fire `ms` after the last answer. */
     async renewAfter(ms) {
@@ -374,15 +387,18 @@ test("a healthy Page whose renewal keeps failing shows the same single notice", 
   await screen.f.maintenance.refresh();
   screen.set("down");
   // The Page's socket stays up, so its own problem stays empty.
+  const healthy = { problem: "", authRequired: false, authProblem: "", accessProblem: "" };
   await screen.renewAfter(60_000);
-  assert.deepEqual(screen.banners(""), []);
+  assert.deepEqual(screen.banners(healthy), []);
   await screen.renewAfter(60_000);
-  assert.deepEqual(screen.banners(""), [SERVER_UNREACHABLE]);
+  assert.deepEqual(screen.banners(healthy), [SERVER_UNREACHABLE]);
   // A Page that reports its own outage too still shows one notice.
-  assert.deepEqual(screen.banners(SERVER_UNREACHABLE), [SERVER_UNREACHABLE]);
+  assert.deepEqual(screen.banners({ ...healthy, problem: SERVER_UNREACHABLE }), [
+    SERVER_UNREACHABLE,
+  ]);
   screen.set("ok");
   await screen.renewAfter(60_000);
-  assert.deepEqual(screen.banners(""), []);
+  assert.deepEqual(screen.banners(healthy), []);
 });
 
 test("session refreshes from Page reconnects during a short restart stay quiet", async (t) => {
@@ -403,5 +419,80 @@ test("session refreshes from Page reconnects during a short restart stay quiet",
   assert.deepEqual(screen.banners(), [SERVER_UNREACHABLE]);
   screen.set("ok");
   await screen.refreshAfter(250);
+  assert.deepEqual(screen.banners(), []);
+});
+
+test("a wall-clock jump during a session-check outage neither hides nor hastens the notice", async (t) => {
+  // maintainBrowserSession reads performance.now() by default; moving the
+  // mocked wall clock an hour either way changes nothing.
+  t.mock.timers.enable({ apis: ["Date"], now: 86_400_000 });
+  const screen = sessionCheckScreen({ injectNow: false });
+  t.mock.method(globalThis.performance, "now", () => screen.at);
+  t.after(() => screen.f.maintenance.stop());
+  await screen.f.maintenance.refresh();
+  screen.set("down");
+  await screen.refreshAfter(1000);
+  t.mock.timers.setTime(Date.now() + 3_600_000);
+  await screen.refreshAfter(5000);
+  assert.deepEqual(screen.banners(), [], "a forward jump doesn't report early");
+  t.mock.timers.setTime(Date.now() - 7_200_000);
+  await screen.refreshAfter(OUTAGE_MS - 5000);
+  assert.deepEqual(screen.banners(), [SERVER_UNREACHABLE], "a backward jump doesn't delay it");
+});
+
+test("the default outage clock ignores wall-clock jumps", async (t) => {
+  const { monotonicNow } = await import("./monotonic.mjs");
+  t.mock.timers.enable({ apis: ["Date"], now: 86_400_000 });
+  const before = monotonicNow();
+  t.mock.timers.setTime(Date.now() + 3_600_000);
+  const forward = monotonicNow() - before;
+  t.mock.timers.setTime(Date.now() - 7_200_000);
+  const back = monotonicNow() - before;
+  assert.ok(forward >= 0 && forward < 1000, `forward jump moved it ${forward} ms`);
+  assert.ok(back >= forward && back < 1000, `backward jump moved it ${back} ms`);
+});
+
+test("a refused renewal during an outage replaces the notice with one sign-in banner", async (t) => {
+  for (const [answer, message] of [
+    ["expired", SESSION_ENDED],
+    ["forbidden", "Sign in with a verified anaconda.com email."],
+  ]) {
+    await t.test(answer, async (t) => {
+      const screen = sessionCheckScreen();
+      t.after(() => screen.f.maintenance.stop());
+      await screen.f.maintenance.refresh();
+      screen.set("down");
+      await screen.renewAfter(60_000);
+      await screen.renewAfter(60_000);
+      assert.deepEqual(screen.banners(), [SERVER_UNREACHABLE]);
+
+      // The renewal timer's own request is refused: the tab signs out and
+      // says why, instead of silently dropping the outage notice.
+      screen.set(answer);
+      await screen.renewAfter(60_000);
+      assert.equal(screen.f.sessions.at(-1).identity, null, "the auth transition still happens");
+      assert.deepEqual(screen.banners(), [message], "the library screen");
+      // An open Page shows its own sign-in prompt, which is the one banner;
+      // its sync outage from before sign-in isn't shown beside it.
+      const prompt = "Sign in again to sync this Page. Keep it open while you sign in.";
+      assert.deepEqual(
+        screen.banners({
+          problem: SERVER_UNREACHABLE,
+          authRequired: true,
+          authProblem: prompt,
+          accessProblem: "",
+        }),
+        [],
+      );
+      assert.equal(screen.f.timers.size, 0, "signed out, renewals stop");
+    });
+  }
+});
+
+test("a tab that was never signed in gets no session-ended banner", async (t) => {
+  const screen = sessionCheckScreen();
+  t.after(() => screen.f.maintenance.stop());
+  screen.set("expired");
+  await screen.f.maintenance.refresh().catch(() => {});
   assert.deepEqual(screen.banners(), []);
 });
