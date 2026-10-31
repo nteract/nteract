@@ -964,15 +964,15 @@ dialog::backdrop {
 }
 .peer-caret {
   position: relative;
-  border-left: 2px solid #8161aa;
+  border-left: 2px solid var(--peer-color, #8161aa);
   pointer-events: none;
 }
 .peer-caret > span {
   position: absolute;
   bottom: 100%;
   left: -2px;
-  background: #8161aa;
-  color: white;
+  background: var(--peer-color, #8161aa);
+  color: var(--peer-foreground, white);
   font: 11px system-ui;
   padding: 2px 5px;
   white-space: nowrap;
@@ -982,7 +982,13 @@ dialog::backdrop {
   text-overflow: ellipsis;
 }
 .peer-selection {
-  background: #8263ac2b;
+  background: color-mix(in srgb, var(--peer-color, #8263ac) 17%, transparent);
+}
+/* An agent's selection: the passage a search read hit, or the text a write
+   just changed, before it collapses to a caret. */
+.agent-selection {
+  background: color-mix(in srgb, var(--peer-color) 22%, transparent);
+  border-radius: 2px;
 }
 .agent-progress-passage {
   background: color-mix(in srgb, var(--primary) 8%, transparent);
@@ -1167,9 +1173,14 @@ dialog::backdrop {
     overflow-wrap: anywhere;
   }
   .remote-edit,
-  .comment-passage {
+  .comment-passage,
+  .peer-selection,
+  .agent-selection {
     border: 0;
     background: none;
+  }
+  .wordgard-caret-layer {
+    display: none;
   }
 }
 

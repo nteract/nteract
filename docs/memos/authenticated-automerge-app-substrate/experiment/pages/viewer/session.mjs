@@ -144,6 +144,7 @@ export class PageSession {
   presenceObservers = new Set();
   peers = new Map();
   agentProgress = new Map();
+  agentPresence = new Map();
   activityEpoch = null;
   activityRevision = -1;
   presencePaused = false;
@@ -1416,6 +1417,7 @@ export class PageSession {
     this.peers.clear();
     this.profiles = {};
     this.agentProgress.clear();
+    this.agentPresence.clear();
     this.activityEpoch = null;
     this.activityRevision = -1;
     clearTimeout(this.activityTimer);
@@ -1441,6 +1443,7 @@ export class PageSession {
     this.activityEpoch = snapshot.epoch;
     this.activityRevision = snapshot.revision;
     this.agentProgress = snapshot.progress;
+    this.agentPresence = snapshot.agents;
     this.expireActivity();
     this.notify(this.presenceObservers);
     return true;
@@ -1450,15 +1453,17 @@ export class PageSession {
     this.activityTimer = undefined;
     const now = this.now();
     let removed = false;
-    for (const [id, progress] of this.agentProgress) {
-      if (progress.until <= now) {
-        this.agentProgress.delete(id);
-        removed = true;
+    for (const items of [this.agentProgress, this.agentPresence])
+      for (const [id, item] of items) {
+        if (item.until <= now) {
+          items.delete(id);
+          removed = true;
+        }
       }
-    }
     if (removed) this.notify(this.presenceObservers);
-    if (this.agentProgress.size) {
-      const next = Math.min(...[...this.agentProgress.values()].map((item) => item.until));
+    const pending = [...this.agentProgress.values(), ...this.agentPresence.values()];
+    if (pending.length) {
+      const next = Math.min(...pending.map((item) => item.until));
       this.activityTimer = setTimeout(() => this.expireActivity(), Math.max(1, next - now));
       this.activityTimer.unref?.();
     }
@@ -1520,7 +1525,11 @@ export class PageSession {
         value,
         at: this.now(),
         displayName: [profile.displayName, profile.driver].filter(Boolean).join(" · "),
-        profile: { displayName: profile.displayName, driver: profile.driver },
+        profile: {
+          principal: profile.principal,
+          displayName: profile.displayName,
+          driver: profile.driver,
+        },
       });
     } else if (value === null) this.peers.delete(senderId);
     this.notify(this.presenceObservers);

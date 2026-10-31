@@ -20,6 +20,7 @@ import {
   applyPageOperation,
   validateImageInsertion,
 } from "../model/page.mjs";
+import { readTargets, writeTargets } from "../model/agent-presence.mjs";
 import { BACKEND_LIMITS, assertDocumentLimits, assertIntentSize } from "../model/limits.mjs";
 import { handleMcp } from "../mcp.mjs";
 import { invokeProjectApi } from "./project-api.mjs";
@@ -32,6 +33,7 @@ import { MISSING_EDITS_MESSAGE } from "../shared/receipts.mjs";
 import { openingTitleWarning } from "../model/title-warning.mjs";
 import {
   authenticate,
+  agentLabel,
   driverLabel,
   requireSameOrigin,
   requireWrite,
@@ -333,6 +335,8 @@ function forwarded(request, path, body) {
   }
   if (request.headers.has("x-pages-driver") || new URL(request.url).searchParams.has("driver"))
     headers.set("x-pages-driver", driverLabel(request));
+  const agent = agentLabel(request);
+  if (agent) headers.set("x-pages-agent", agent);
   headers.set("content-type", "application/json");
   return new Request(url, { method: "POST", headers, body: JSON.stringify(body) });
 }
@@ -2242,6 +2246,7 @@ export class Page {
     this.activity ??= new PageActivity({
       pageId: this.metadata.pageId,
       access: (identity) => this.policy.account(identity, true),
+      readAccess: (identity) => this.policy.account(identity),
       profiles: () => this.policy.profiles(),
       onChange: (snapshot) => this.broadcastActivity(snapshot),
     });
@@ -2263,6 +2268,20 @@ export class Page {
       this.handle.broadcast(snapshot);
     } catch (error) {
       logFailure(error, "page-activity");
+    }
+  }
+
+  /** Presence describes a call that already succeeded; it never fails it. */
+  publishAgentPresence(identity, type, targetsOf, observedHeads) {
+    try {
+      const doc = this.handle.doc();
+      const heads = observedHeads ?? A.getHeads(doc);
+      const targets = targetsOf(doc).map((target) =>
+        target.kind === "block" || target.heads ? target : { ...target, heads },
+      );
+      this.activityState().agentEvent(identity, type, targets);
+    } catch (error) {
+      logFailure(error, "agent-presence");
     }
   }
 
@@ -2768,6 +2787,22 @@ export class Page {
             body.operation === "read_page_changes"
               ? await readChangesTool(this.handle.doc(), body.arguments ?? {}, options)
               : await readTool(this.handle.doc(), body.operation, body.arguments ?? {}, options);
+          if (
+            body.operation === "read_page" &&
+            result.status === 200 &&
+            state !== "trashed" &&
+            Array.isArray(result.body?.heads)
+          ) {
+            // Native edits can land while authority is issued. Capture the
+            // targets on the revision the agent read; cursors carry them forward.
+            const heads = result.body.heads;
+            this.publishAgentPresence(
+              identity,
+              "read",
+              (doc) => readTargets(A.view(doc, heads), body.arguments ?? {}, result.body),
+              heads,
+            );
+          }
           if (state === "trashed" && result.body && typeof result.body === "object")
             result.body.trash = publicTrash(this.metadata);
           // The gateway turns this into what the caller may see of it.
@@ -2787,6 +2822,9 @@ export class Page {
         const images = Array.isArray(body.arguments?.operations)
           ? body.arguments.operations.filter((op) => (op?.op ?? op?.type) === "insert_image")
           : [];
+        // Where this batch landed, captured inside the change so the cursors
+        // name the characters it wrote. A replayed receipt has no caret.
+        let caret = null;
         const receipt = await documentMutation({
           storage: this.ctx.storage,
           admission: this.admission,
@@ -2817,11 +2855,21 @@ export class Page {
             : undefined,
           apply: (doc, effectiveArgs) => {
             try {
-              return applyPageOperation(doc, {
+              const trace = [];
+              const result = applyPageOperation(doc, {
                 operation: body.operation,
                 arguments: effectiveArgs,
                 identity: publicIdentity(identity),
+                trace,
               });
+              if (["edit_page", "patch_page"].includes(body.operation)) {
+                try {
+                  caret = writeTargets(doc, trace);
+                } catch (error) {
+                  logFailure(error, "agent-presence");
+                }
+              }
+              return result;
             } catch (error) {
               throw new HttpError(400, error.message);
             }
@@ -2834,6 +2882,12 @@ export class Page {
           identity: publicIdentity(identity),
           heads: receipt.heads,
         });
+        if (caret)
+          this.publishAgentPresence(identity, "write", () =>
+            caret.map((target) =>
+              target.kind === "block" ? target : { ...target, heads: receipt.heads },
+            ),
+          );
         return json(receipt);
       }
       throw new HttpError(404, "Not found");

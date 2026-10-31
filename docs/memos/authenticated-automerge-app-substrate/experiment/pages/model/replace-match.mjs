@@ -67,7 +67,7 @@ export function visibleRangeAddress(doc, id, start, end) {
 
 // Mark boundaries do not interrupt visible text, but rich block/embed markers
 // do. Never expose their object-replacement characters to a literal text edit.
-function textSegments(block) {
+export function textSegments(block) {
   if (!isRich(block)) throw Error("replace_match requires a rich-text block");
   if (block.richText.length > MAX_TEXT_LENGTH) throw Error("Block is too large for replace_match");
   const segments = [];
@@ -132,7 +132,7 @@ export function findUniqueVisibleRange(doc, id, input) {
 }
 
 /** Replace one visible text range, preserving every untouched CRDT character. */
-export function replaceMatch(doc, id, input) {
+export function replaceMatch(doc, id, input, trace) {
   const replacement = replacementLiteral(input.replacement, "replacement");
   const { path, start, end } = findUniqueVisibleRange(doc, id, input);
   const commonMarks = A.marks(doc, path).filter((mark) => mark.start <= start && mark.end >= end);
@@ -158,6 +158,7 @@ export function replaceMatch(doc, id, input) {
       )
         A.mark(doc, path, { ...range, expand: markExpand(mark.name) }, mark.name, mark.value);
   }
+  trace?.push({ type: "text", block_id: id, start, end: start + replacement.length });
   return { op: "replace_match", block_id: id, matched: 1 };
 }
 
@@ -180,7 +181,7 @@ export function formatMarks(add) {
 /** Add or remove marks over one visible text range. Text and CRDT identity
  * are unchanged; a mark added over an existing one with a different value
  * replaces that value in the range. */
-export function formatMatch(doc, id, input) {
+export function formatMatch(doc, id, input, trace) {
   const add = formatMarks(input.add);
   const remove = input.remove ?? [];
   if (!Array.isArray(remove) || remove.some((name) => typeof name !== "string"))
@@ -196,6 +197,7 @@ export function formatMatch(doc, id, input) {
   for (const name of remove) A.unmark(doc, path, { start, end, expand: "both" }, name);
   for (const [name, value] of Object.entries(add))
     A.mark(doc, path, { start, end, expand: markExpand(name) }, name, value);
+  trace?.push({ type: "text", block_id: id, start, end });
   return { op: "format_match", block_id: id, matched: 1 };
 }
 

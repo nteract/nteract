@@ -489,7 +489,7 @@ export const tools = [
   ),
   tool(
     "patch_page",
-    "Apply an atomic targeted edit batch. Prefer replace_match for visible prose: replace one literal range, optionally scoped by node_index and context, preserving untouched formatting and comment anchors. Use format_match to add or remove formatting (bold, italic, code, links, highlights) over one literal range without changing its text. conflict_scope:target permits older base_heads only for unchanged native targets in replace_match batches; other patch_page and edit_page operations retain the exact-page revision guard. Conflicts identify passages to reread with read_page_changes. Zero or multiple matches fail the whole batch. Tool edits arrive atomically, without a typing cursor.",
+    "Apply an atomic targeted edit batch. Prefer replace_match for visible prose: replace one literal range, optionally scoped by node_index and context, preserving untouched formatting and comment anchors. Use format_match to add or remove formatting (bold, italic, code, links, highlights) over one literal range without changing its text. conflict_scope:target permits older base_heads only for unchanged native targets in replace_match batches; other patch_page and edit_page operations retain the exact-page revision guard. Conflicts identify passages to reread with read_page_changes. Zero or multiple matches fail the whole batch. Tool edits arrive atomically, without streamed keystrokes; people see your caret where the batch landed.",
     {
       ...guard,
       conflict_scope: {

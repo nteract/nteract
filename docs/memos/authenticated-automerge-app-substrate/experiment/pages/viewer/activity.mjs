@@ -1,4 +1,9 @@
-import { resolveProgressTargets, resolvePeerSelection } from "../model/presence.mjs";
+import {
+  resolveProgressTargets,
+  resolvePeerSelection,
+  validatePeerSelection,
+} from "../model/presence.mjs";
+import { AGENT_PRESENCE, STATES } from "../model/agent-presence.mjs";
 import { monotonicNow } from "./monotonic.mjs";
 
 // Activity lifetimes are elapsed time on the session's monotonic clock
@@ -82,7 +87,66 @@ export function activitySnapshot(message, now = monotonicNow()) {
         until: now + remaining,
       });
   }
-  return { epoch: message.epoch, revision: message.revision, progress };
+  return {
+    epoch: message.epoch,
+    revision: message.revision,
+    progress,
+    agents: agentSnapshot(message.agents, observedAt, now),
+  };
+}
+
+const TEXT_KINDS = ["text", "hit", "passage"];
+
+// Agent entries are validated one at a time: a bad entry drops only itself, so
+// a newer host's agent fields never hide progress or other agents.
+function agentSnapshot(agents, observedAt, now) {
+  const result = new Map();
+  if (!Array.isArray(agents)) return result;
+  for (const item of agents.slice(0, AGENT_PRESENCE.agents)) {
+    if (
+      !item ||
+      !bounded(item.agent_id, 128) ||
+      result.has(item.agent_id) ||
+      !bounded(item.principal, 512) ||
+      !bounded(item.displayName, 256) ||
+      !bounded(item.driver, 128) ||
+      !STATES.includes(item.state) ||
+      !Number.isSafeInteger(item.seq) ||
+      item.seq < 1 ||
+      !Array.isArray(item.targets) ||
+      item.targets.length > AGENT_PRESENCE.maxTargets
+    )
+      continue;
+    const remaining = Date.parse(item.expires_at) - observedAt;
+    if (!Number.isFinite(remaining) || remaining > AGENT_PRESENCE.idleMs || remaining <= 0)
+      continue;
+    const targets = [];
+    for (const target of item.targets) {
+      if (target?.kind === "block" && bounded(target.block_id, 128))
+        targets.push({ kind: "block", block_id: target.block_id });
+      else if (TEXT_KINDS.includes(target?.kind)) {
+        const value = validatePeerSelection(target);
+        if (value) targets.push({ kind: target.kind, ...value });
+      }
+    }
+    result.set(item.agent_id, {
+      agent_id: item.agent_id,
+      principal: item.principal,
+      displayName: item.displayName,
+      driver: item.driver,
+      agent:
+        item.agent === null || item.agent === undefined
+          ? null
+          : bounded(item.agent, 128)
+            ? item.agent
+            : null,
+      state: item.state,
+      seq: item.seq,
+      targets,
+      until: now + remaining,
+    });
+  }
+  return result;
 }
 
 export function activityIdentity(identity) {

@@ -6,6 +6,7 @@ import {
   resolvePeerSelection,
 } from "../model/presence.mjs";
 import { HttpError } from "./auth.mjs";
+import { AGENT_PRESENCE, deadline, transition } from "../model/agent-presence.mjs";
 
 export const ACTIVITY_LIMITS = Object.freeze({
   ttl: 60_000,
@@ -26,8 +27,21 @@ const publicProgress = ({ progress_id, identity, message, targets, updatedAt, ex
   updated_at: iso(updatedAt),
   expires_at: iso(expiresAt),
 });
+const byteSize = (value) => new TextEncoder().encode(JSON.stringify(value)).byteLength;
+const publicAgent = ({ agent_id, identity, record }) => ({
+  agent_id,
+  principal: identity.principal,
+  displayName: identity.displayName,
+  driver: identity.driver,
+  agent: identity.agent ?? null,
+  state: record.state,
+  seq: record.seq,
+  targets: record.targets,
+  updated_at: iso(record.lastCall),
+  expires_at: iso(deadline(record)),
+});
 const assertSize = (value, limit = ACTIVITY_LIMITS.snapshotBytes) => {
-  if (new TextEncoder().encode(JSON.stringify(value)).byteLength > limit)
+  if (byteSize(value) > limit)
     throw Object.assign(
       new HttpError(413, `Page activity exceeds its ${limit / 1024} KiB response budget`),
       {
@@ -49,9 +63,17 @@ const keys = new Set([
  * and are never included in a roster, broadcast, durable receipt, or storage.
  */
 export class PageActivity {
-  constructor({ pageId, access, profiles, onChange = () => {}, now = Date.now }) {
+  constructor({
+    pageId,
+    access,
+    readAccess = access,
+    profiles,
+    onChange = () => {},
+    now = Date.now,
+  }) {
     this.pageId = pageId;
     this.access = access;
+    this.readAccess = readAccess;
     this.profiles = profiles;
     this.onChange = onChange;
     this.now = now;
@@ -59,6 +81,8 @@ export class PageActivity {
     this.revision = 0;
     this.progress = new Map();
     this.selections = new Map();
+    // API agents by principal and driver. Records follow agent-presence.mjs.
+    this.agents = new Map();
   }
 
   permitted(record, now) {
@@ -71,14 +95,88 @@ export class PageActivity {
     }
   }
 
-  snapshotOf(progress = this.progress, revision = this.revision, now = this.now()) {
+  snapshotOf(
+    progress = this.progress,
+    revision = this.revision,
+    now = this.now(),
+    agents = this.agents,
+  ) {
     return {
       kind: "page-activity",
       epoch: this.epoch,
       revision,
       observed_at: iso(now),
       progress: [...progress.values()].map(publicProgress),
+      agents: [...agents.values()].map(publicAgent),
     };
+  }
+
+  agentVisible(entry, now) {
+    if (!(entry.identity.expiresAt > now)) return false;
+    try {
+      const access = this.readAccess(entry.identity);
+      return access.canRead !== false && access.generation === entry.generation;
+    } catch {
+      return false;
+    }
+  }
+
+  /** Record a targeted read or a committed write from an API agent. Presence
+   * never fails the call it describes: an invalid identity or an oversized
+   * snapshot leaves the roster unchanged. */
+  agentEvent(identity, type, targets) {
+    // Only API credentials get agent presence: a person's browser session
+    // already shows their caret. Labels sit under the authenticated account.
+    if (!["oauth", "api-key"].includes(identity?.credentialKind) || !Array.isArray(targets))
+      return false;
+    for (const [value, max] of [
+      [identity.principal, 512],
+      [identity.displayName, 256],
+      [identity.driver, 128],
+    ])
+      if (typeof value !== "string" || !value || value.length > max) return false;
+    if (
+      identity.agent !== undefined &&
+      (typeof identity.agent !== "string" || !identity.agent || identity.agent.length > 128)
+    )
+      return false;
+    let generation;
+    try {
+      const access = this.readAccess(identity);
+      if (access.canRead === false) return false;
+      generation = access.generation;
+    } catch {
+      return false;
+    }
+    this.prune();
+    const now = this.now();
+    // One record per account, harness and session label.
+    const key = [identity.principal, identity.driver, identity.agent ?? ""].join("\u0000");
+    const previous = this.agents.get(key);
+    const record = transition(previous?.record ?? null, {
+      type,
+      at: now,
+      targets: targets.slice(0, AGENT_PRESENCE.maxTargets),
+    });
+    if (!record || record === previous?.record) return false;
+    const candidate = new Map(this.agents);
+    candidate.set(key, {
+      agent_id: previous?.agent_id ?? crypto.randomUUID(),
+      identity: { ...identity },
+      generation,
+      record,
+    });
+    while (candidate.size > AGENT_PRESENCE.agents) {
+      const oldest = [...candidate].sort((a, b) => a[1].record.lastCall - b[1].record.lastCall)[0];
+      candidate.delete(oldest[0]);
+    }
+    const next = this.snapshotOf(this.progress, this.revision + 1, now, candidate);
+    if (byteSize(next) > ACTIVITY_LIMITS.snapshotBytes) return false;
+    this.agents = candidate;
+    this.revision++;
+    this.schedule();
+    this.onChange(this.snapshotOf());
+    return true;
   }
 
   schedule() {
@@ -86,6 +184,7 @@ export class PageActivity {
     const deadlines = [
       ...[...this.progress.values()].map((record) => record.expiresAt),
       ...[...this.selections.values()].map((record) => record.expiresAt),
+      ...[...this.agents.values()].map(({ record }) => deadline(record)),
     ];
     if (!deadlines.length) return;
     this.timer = setTimeout(() => this.prune(), Math.max(1, Math.min(...deadlines) - this.now()));
@@ -98,6 +197,15 @@ export class PageActivity {
     for (const [id, record] of this.progress) {
       if (this.permitted(record, now)) continue;
       this.progress.delete(id);
+      changed = true;
+    }
+    for (const [key, entry] of this.agents) {
+      const record = this.agentVisible(entry, now)
+        ? transition(entry.record, { type: "tick", at: now })
+        : null;
+      if (record === entry.record) continue;
+      if (record) this.agents.set(key, { ...entry, record });
+      else this.agents.delete(key);
       changed = true;
     }
     const profiles = this.profiles();
@@ -279,6 +387,14 @@ export class PageActivity {
         ...publicProgress(record),
         targets: resolveProgressTargets(doc, record.targets),
       })),
+      agents: [...this.agents.values()].map((entry) => ({
+        ...publicAgent(entry),
+        targets: entry.record.targets.map((target) =>
+          target.kind === "block"
+            ? { kind: "block", block_id: target.block_id }
+            : { kind: target.kind, ...resolvePeerSelection(doc, target) },
+        ),
+      })),
     };
     assertSize(result, ACTIVITY_LIMITS.readBytes);
     return result;
@@ -288,6 +404,7 @@ export class PageActivity {
     clearTimeout(this.timer);
     this.selections.clear();
     this.progress.clear();
+    this.agents.clear();
     this.revision++;
     this.onChange(this.snapshotOf());
   }

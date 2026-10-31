@@ -30,6 +30,19 @@ export function driverLabel(request) {
   return value.trim();
 }
 
+/** An agent's optional session label, such as "release agent", so two
+ * sessions of one account and harness show and key as separate agents. It is
+ * trusted like the driver: it always sits under the authenticated account. */
+export function agentLabel(request) {
+  const value =
+    request.headers.get("x-pages-agent") ?? new URL(request.url).searchParams.get("agent");
+  if (value === null) return undefined;
+  // eslint-disable-next-line no-control-regex
+  if (!value.trim() || value.length > 80 || /[\x00-\x1f\x7f]/.test(value))
+    throw new HttpError(400, "Invalid agent label");
+  return value.trim();
+}
+
 export function requireSameOrigin(request, env) {
   const origin = new URL(env.NOTEBOOK_CLOUD_PUBLIC_ORIGIN || request.url).origin;
   const supplied = request.headers.get("origin");
@@ -61,6 +74,7 @@ async function withDomainAccess(identity, env) {
 export async function authenticate(request, env) {
   requireSameOrigin(request, env);
   const driver = driverLabel(request);
+  const agent = agentLabel(request);
   const authorization = request.headers.get("authorization");
   if (authorization) {
     if (!/^Bearer \S+$/i.test(authorization)) throw new HttpError(401, "Use a bearer credential");
@@ -106,6 +120,7 @@ export async function authenticate(request, env) {
                 : grant.clientId === "pages-kilo"
                   ? "Kilo"
                   : "MCP",
+          ...(agent && { agent }),
           canWrite: scopes.has("pages:write"),
           credentialKind: "oauth",
           namespace: grant.identity.namespace,
@@ -151,6 +166,7 @@ export async function authenticate(request, env) {
         principal: identity.principal,
         displayName: identity.metadata.displayName || identity.principal,
         driver,
+        ...(agent && { agent }),
         canWrite: identity.scope === "editor",
         credentialKind: "api-key",
         namespace: identity.metadata.principalNamespace,

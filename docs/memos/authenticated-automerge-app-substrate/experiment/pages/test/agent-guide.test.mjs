@@ -47,7 +47,7 @@ test("GET llms.txt is readable without authentication and explains the supported
     "context_before/context_after",
     "format_match",
     "replace_block_markdown",
-    "does not stream keystrokes or publish an agent cursor",
+    "never streams keystrokes",
     "only the owner can manage access",
     "expected_revision",
     "No anonymous link access",
