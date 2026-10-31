@@ -30,6 +30,21 @@ import { taskLists } from "./wordgard-task-lists.mjs";
 import { markdownShortcuts } from "./wordgard-shortcuts.mjs";
 
 // The editor configuration WordgardEditor installs, minus the DOM.
+const editorConfig = () => [
+  GardState.schemaElement.of(schema.elements),
+  heading(),
+  code(),
+  bulletList(),
+  orderedList(),
+  taskLists(),
+  blockquote(),
+  codeBlock(),
+  markdownShortcuts(),
+  wordgardCodeNewlines,
+  wordgardListStarts,
+  history(),
+];
+
 function fixture(markdown, { comment } = {}) {
   let doc = A.from(createPageData({ pageId: "page_fixture", title: "Shortcuts" }));
   doc = A.change(doc, (d) => initializePage(d, markdown));
@@ -55,20 +70,7 @@ function fixture(markdown, { comment } = {}) {
   const binding = createWordgardBinding(replica, id);
   let state = GardState.create({
     doc: binding.current.doc,
-    config: [
-      GardState.schemaElement.of(schema.elements),
-      heading(),
-      code(),
-      bulletList(),
-      orderedList(),
-      taskLists(),
-      blockquote(),
-      codeBlock(),
-      markdownShortcuts(),
-      wordgardCodeNewlines,
-      wordgardListStarts,
-      history(),
-    ],
+    config: editorConfig(),
   });
   const editor = {
     get state() {
@@ -453,4 +455,69 @@ test("backticks stay literal in code, empty spans, fences, and across breaks; $ 
   h.editor.type("`");
   assert.ok(!h.editor.state.doc.content[0].content.some((n) => Code.isInSet(n.marks)));
   h.binding.destroy();
+});
+
+const codeText = (doc) => {
+  const result = [];
+  doc.iterate((node) => {
+    if (node.isText && Code.isInSet(node.marks)) result.push(node.param);
+  });
+  return result;
+};
+
+test("an opening backtick after an odd run of backslashes stays literal", () => {
+  for (const [typed, text, coded] of [
+    ["\\`text`", "\\`text`", []],
+    ["\\\\`text`", "\\\\text", ["text"]],
+    ["\\\\\\`text`", "\\\\\\`text`", []],
+  ]) {
+    const f = fixture("");
+    f.editor.select(1);
+    f.editor.type(typed);
+    assert.equal(f.editor.state.doc.textContent(), text, typed);
+    assert.deepEqual(codeText(f.editor.state.doc), coded, typed);
+    f.binding.destroy();
+  }
+});
+
+// One keystroke through Wordgard's input-rule pipeline, without the Automerge
+// binding, so the time is the rules' own cost.
+function keystroke(text, typed) {
+  let state = GardState.create({
+    doc: decode([{ type: "text", value: text }]).doc,
+    config: editorConfig(),
+  });
+  const end = state.doc.length - 1;
+  const started = performance.now();
+  for (const tr of Transaction.append(
+    state.update({
+      changes: { from: end, insert: [Leaf.text(typed)] },
+      selection: { anchor: end + typed.length },
+      userEvent: "input.type",
+    }),
+  ))
+    state = tr.state;
+  return { ms: performance.now() - started, state };
+}
+
+test("long runs cost one linear pass per keystroke", () => {
+  const run = 100_000;
+  keystroke("`warm", "`");
+  keystroke("a\n1", " ");
+  for (const [name, text, typed, coded] of [
+    ["no closing backtick", "`" + "x".repeat(run), "y", 0],
+    ["closing backtick", "`" + "x".repeat(run), "`", run],
+    ["no opening backtick", "x".repeat(run), "`", 0],
+    ["U+2028 run", "`" + "\u2028".repeat(run), "y", 0],
+    ["U+2028 run closed", "`" + "\u2028".repeat(run), "`", 0],
+    ["U+2029 run", "`" + "a\u2029".repeat(run / 2), "y", 0],
+    ["U+2029 run closed", "`" + "a\u2029".repeat(run / 2), "`", run],
+    ["backslash run", "\\".repeat(run) + "`x", "`", run % 2 ? 0 : 1],
+    ["digits after a hard break", "a\n" + "1".repeat(run), " ", 0],
+    ["hashes after a hard break", "a\n" + "#".repeat(run), " ", 0],
+  ]) {
+    const { ms, state } = keystroke(text, typed);
+    assert.ok(ms < 50, `${name}: ${ms.toFixed(1)} ms`);
+    assert.equal(codeText(state.doc).join("").length, coded, name);
+  }
 });

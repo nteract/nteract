@@ -202,15 +202,24 @@ function applyBlockRule(state, rules) {
   return null;
 }
 
+// Every block prefix ends in the space just typed, so the rule's regexp only
+// checks that. The line is the text after the last leaf before the caret; a
+// backward scan keeps the per-keystroke cost linear in the line length.
 export const lineStartInputRule = (rules = blockInputRules) =>
   InputRule.define({
-    expr: new RegExp(`${LEAF}([^${LEAF}]*)$`),
-    apply(state, match) {
+    expr: / $/,
+    apply(state, [typed]) {
       if (state.readOnly) return null;
-      const [leaf, line] = match;
-      const node = leaf.from.nodeAfter;
+      const block = typed.to.textblockParent;
+      if (!block) return null;
+      const map = state.textblockMap(block),
+        text = map.text.slice(0, map.toIndex(typed.to.pos));
+      const leaf = text.lastIndexOf(LEAF);
+      if (leaf < 0) return null;
+      const node = state.doc.resolve(map.fromIndex(leaf)).nodeAfter;
       if (!node || !isBreak(node)) return null;
-      if (!rules.some((rule) => rule.expr.test(line.text))) return null;
+      const line = text.slice(leaf + 1);
+      if (!rules.some((rule) => rule.expr.test(line))) return null;
       const cursor = state.sel.head.pos;
       const split = splitLines(state, cursor, cursor);
       if (!split) return null;
@@ -221,9 +230,18 @@ export const lineStartInputRule = (rules = blockInputRules) =>
     },
   });
 
+// ```, optional spaces, and an optional language word. Returns the language
+// ("" for none) or null when the line is not a fence.
+function fenceLanguage(line) {
+  if (!line.startsWith("```")) return null;
+  const language = line.slice(3).trim();
+  if (!language) return "";
+  for (const character of language) if (character === "`" || /\s/.test(character)) return null;
+  return language;
+}
+
 // Wordgard turns a paragraph holding only ``` into a code block on Enter. Do the
 // same for a ``` line after a hard break.
-const FENCE = /^```\s*([^\s`]+\s*)?$/;
 export const lineCodeFence = Command.handler(enter, (editor) => {
   const { state } = editor;
   const { sel } = state;
@@ -236,15 +254,15 @@ export const lineCodeFence = Command.handler(enter, (editor) => {
   const next = runs.find((run) => run.from >= head);
   if (!previous || (next ? next.from !== head : head !== block.end)) return false;
   const map = state.textblockMap(block);
-  const match = FENCE.exec(map.text.slice(map.toIndex(previous.to), map.toIndex(head)));
-  if (!match) return false;
+  const language = fenceLanguage(map.text.slice(map.toIndex(previous.to), map.toIndex(head)));
+  if (language === null) return false;
   const split = splitLines(state, head, head);
   if (!split) return false;
   const fence = split.state.sel.head.textblockParent;
   if (!split.state.doc.schema.canContain(fence.parent.node.type, CodeBlock.type)) return false;
   let tag = CodeBlock;
-  if (match[1] && split.state.schema.has(CodeBlockLanguage))
-    tag = tag.withMarks([CodeBlockLanguage.of(match[1].trim())]);
+  if (language && split.state.schema.has(CodeBlockLanguage))
+    tag = tag.withMarks([CodeBlockLanguage.of(language)]);
   return (
     afterSplit(split, {
       changes: { from: fence.before, to: fence.end, insert: [tag] },
@@ -254,32 +272,58 @@ export const lineCodeFence = Command.handler(enter, (editor) => {
   );
 });
 
+// The span a typed closing backtick ends, as textblock-map indices, or null.
+// The opening backtick is the nearest one before the closing one, found by a
+// backward scan rather than a regexp, so a long run without a closing backtick
+// costs one linear pass. The content must hold non-whitespace and no leaf
+// (hard break or image). An opening backtick that follows another backtick, or
+// an odd number of backslashes, is literal.
+function codeSpan(text) {
+  const close = text.length - 1;
+  if (text[close] !== "`") return null;
+  const open = text.lastIndexOf("`", close - 1);
+  if (open < 0 || text[open - 1] === "`") return null;
+  const content = text.slice(open + 1, close);
+  if (!/\S/.test(content) || content.includes(LEAF)) return null;
+  let slashes = 0;
+  while (text[open - 1 - slashes] === "\\") slashes++;
+  if (slashes % 2) return null;
+  return { open, close };
+}
+
 // `text` followed by a typed closing backtick becomes code-marked `text`. The
 // text keeps its tokens: the rule deletes the two backticks and adds the mark,
 // so undo puts the literal backticks back. Dollar signs get no rule: people
 // type prices.
 export const inlineCodeInputRule = InputRule.define({
-  expr: new RegExp(`(?:^|[^\`])(\`)([^\`${LEAF}]*[^\\s\`${LEAF}][^\`${LEAF}]*)(\`)$`),
-  apply(state, match) {
+  expr: /`$/,
+  apply(state, [typed]) {
     if (state.readOnly) return null;
-    const [, open, text, close] = match;
+    const block = typed.to.textblockParent;
+    if (!block) return null;
+    const map = state.textblockMap(block);
+    const span = codeSpan(map.text.slice(0, map.toIndex(typed.to.pos)));
+    if (!span) return null;
+    const open = map.fromIndex(span.open),
+      start = map.fromIndex(span.open + 1),
+      end = map.fromIndex(span.close),
+      close = map.fromIndex(span.close + 1);
     let coded = false;
-    state.doc.iterate(open.from.pos, close.to.pos, (node) => {
+    state.doc.iterate(open, close, (node) => {
       if (node.isText && Code.isInSet(node.marks)) coded = true;
     });
     if (coded) return null;
     const changes = ChangeSet.create(state.doc, [
-      { from: open.from.pos, to: open.to.pos },
-      { from: text.from.pos, to: text.to.pos, add: Code },
-      { from: close.from.pos, to: close.to.pos },
+      { from: open, to: start },
+      { from: start, to: end, add: Code },
+      { from: end, to: close },
     ]);
-    const end = changes.mapPos(close.from.pos, -1);
     return {
       changes,
       // Text typed after the conversion is prose again.
       selection: GardSelection.Text.create({
-        anchor: end,
-        marks: Code.removeFromSet(state.doc.resolve(text.to.pos).marks()),
+        anchor: changes.mapPos(end, -1),
+        marks: Code.removeFromSet(state.doc.resolve(end).marks()),
       }),
       annotations: history.isolate.of(true),
       userEvent: "input.markdown",
