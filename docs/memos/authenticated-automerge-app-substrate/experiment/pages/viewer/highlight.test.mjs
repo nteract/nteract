@@ -277,37 +277,60 @@ test("unformatting code text keeps its Automerge characters, cursors and comment
 // anchored there detach. Every formatting-only command must keep every one.
 test("every formatting-only command keeps every Automerge cursor in prose and code", async () => {
   const { Emphasis, Code, PagesLink } = await import("./wordgard-model.mjs");
+  // Each command must actually dispatch. Recolor and clear start from a
+  // highlighted selection, and the expected marks are checked afterwards.
+  const dispatched = (editor, command, value) =>
+    assert.equal(Command.dispatch(editor, command, value), true, "command dispatched");
   const commands = [
-    ["bold", (editor) => Command.dispatch(editor, toggleMark, Strong)],
-    ["italic", (editor) => Command.dispatch(editor, toggleMark, Emphasis)],
-    ["inline code", (editor) => Command.dispatch(editor, toggleMark, Code)],
-    ["highlight", (editor) => Command.dispatch(editor, setHighlight, "blue")],
-    ["recolor", (editor) => Command.dispatch(editor, setHighlight, "#ff8800")],
-    ["clear highlight", (editor) => Command.dispatch(editor, clearHighlight)],
+    ["bold", null, (editor) => dispatched(editor, toggleMark, Strong), "strong"],
+    ["italic", null, (editor) => dispatched(editor, toggleMark, Emphasis), "em"],
+    ["inline code", null, (editor) => dispatched(editor, toggleMark, Code), "code"],
+    ["highlight", null, (editor) => dispatched(editor, setHighlight, "blue"), "highlight"],
+    ["recolor", "green", (editor) => dispatched(editor, setHighlight, "#ff8800"), "highlight"],
+    ["clear highlight", "green", (editor) => dispatched(editor, clearHighlight), null],
     [
       "link",
+      null,
       (editor) => {
         const { from, to } = editor.state.selection.main ?? editor.state.selection;
         editor.dispatch({
           changes: { from, to, add: PagesLink.of({ href: "https://example.com", title: null }) },
         });
       },
+      "link",
     ],
   ];
   for (const markdown of [
     "Plain **bold** and *em* with `code` here.",
     "```python\nx = 1\ny = 2\n```",
   ])
-    for (const [name, run] of commands) {
+    for (const [name, seed, run, expectMark] of commands) {
       let page = A.from(createPageData({ pageId: "page_fixture", title: "Cursors" }));
       page = A.change(page, (d) => initializePage(d, markdown));
       const id = orderedBlockIds(page)[0];
       const path = textPath(id);
+      const code = markdown.startsWith("```");
+      // Seed a highlight over the prose so recolor and clear have work to do.
+      if (seed && !code)
+        page = A.change(page, (d) =>
+          A.mark(
+            d,
+            path,
+            { start: 1, end: d.blocks[id].richText.length, expand: "both" },
+            "highlight",
+            seed,
+          ),
+        );
       const text = page.blocks[id].richText;
       const cursors = [...text].map((_, at) => A.getCursor(page, path, at));
       const { binding, editor, replica } = editorFor(page, id);
       editor.select(1, editor.state.doc.length - 1);
-      run(editor);
+      // In code, formatting commands are refused or stripped; only identity matters.
+      if (code) {
+        try {
+          run(editor);
+        } catch {}
+      } else run(editor);
       const after = replica.doc;
       assert.equal(after.blocks[id].richText, text, `${name}: text`);
       cursors.forEach((cursor, at) =>
@@ -317,6 +340,29 @@ test("every formatting-only command keeps every Automerge cursor in prose and co
           `${name} (${markdown.slice(0, 5)}): character ${at}`,
         ),
       );
+      const marks = A.spans(after, path)
+        .filter((span) => span.type === "text")
+        .map((span) => span.marks ?? {});
+      if (code)
+        assert.ok(
+          marks.every((m) => !Object.keys(m).length),
+          `${name}: code stays unformatted`,
+        );
+      else if (expectMark === null)
+        assert.ok(
+          marks.every((m) => !m.highlight),
+          `${name}: no highlight left`,
+        );
+      else
+        assert.ok(
+          marks.some((m) => m[expectMark]),
+          `${name}: ${expectMark} applied`,
+        );
+      if (name === "recolor" && !code)
+        assert.ok(
+          marks.some((m) => m.highlight === "#ff8800"),
+          "recolor: new color",
+        );
       binding.destroy();
     }
 });
