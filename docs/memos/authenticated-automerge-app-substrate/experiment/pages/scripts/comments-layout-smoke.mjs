@@ -316,16 +316,18 @@ try {
     );
   }
 
-  // Comment on selection opens the panel without moving the Page under the
-  // writer, focuses the draft, and keeps it in place while typing.
+  // Comment on selection opens the inline composer beside the passage. The
+  // thread panel stays closed, the Page does not move under the writer, and
+  // the draft keeps focus while typing.
   await page.setViewportSize({ width: 1920, height: 1000 });
   await closeComments(page);
   const beforeSelection = await measure(page);
   await select(page, "reading column");
   await page.getByRole("button", { name: "Comment on selection", exact: true }).click();
-  const draft = page.getByRole("textbox", { name: "Comment on selection", exact: true });
+  const popover = page.getByRole("dialog", { name: "Comment on selection", exact: true });
+  const draft = popover.getByRole("textbox", { name: "Comment on selection", exact: true });
   await expect(draft).toBeFocused();
-  await expect(page.locator(".composer-context")).toHaveText("reading column");
+  await expect(page.locator(".comment-draft-passage")).toHaveText("reading column");
   await settle(page);
   const composing = await measure(page);
   await page.keyboard.type("The column should not move while I type.");
@@ -337,17 +339,26 @@ try {
     composing: composing.article.left,
     typed: typed.article.left,
   };
-  checkDocked("1920 comment on selection", typed, false);
+  check(!typed.panel, "1920 comment on selection: the thread panel stays closed");
   check(
     near(composing.article.left, beforeSelection.article.left) &&
-      near(typed.article.left, composing.article.left),
+      near(typed.article.left, composing.article.left) &&
+      near(typed.article.width, beforeSelection.article.width),
     `1920 comment on selection: column stays put (${beforeSelection.article.left} -> ${composing.article.left} -> ${typed.article.left})`,
   );
+  const passage = await page.locator(".comment-draft-passage").first().boundingBox();
+  const placed = await popover.boundingBox();
+  check(
+    placed.y >= passage.y + passage.height && placed.y - (passage.y + passage.height) <= 24,
+    `1920 comment on selection: popover sits just below the passage (passage bottom ${passage.y + passage.height}, popover top ${placed.y})`,
+  );
+  check(
+    placed.x >= 0 && placed.x + placed.width <= typed.viewport,
+    "1920 comment on selection: popover stays inside the viewport",
+  );
   await expect(draft).toBeFocused();
-  await page
-    .locator(".comment-composer")
-    .getByRole("button", { name: "Cancel", exact: true })
-    .click();
+  await popover.getByRole("button", { name: "Cancel", exact: true }).click();
+  await expect(popover).toHaveCount(0);
   await closeComments(page);
 
   // Browser zoom can produce a fractional CSS viewport. A zoom:2 iframe that is
