@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import * as A from "@automerge/automerge";
-import { REJECTION, admitCommentChanges } from "./comment-authority.mjs";
+import { EntitySet, REJECTION, admitCommentChanges } from "./comment-authority.mjs";
 import {
   addMessage,
   addReaction,
@@ -433,7 +433,7 @@ test("a reaction must target the thread or one of its messages", () => {
       target: "m-missing",
     }),
   );
-  denied(doc, changes, CAROL, REJECTION.INVALID_VALUE);
+  denied(doc, changes, CAROL, REJECTION.INVALID_TARGET);
 });
 
 test("two writes creating one reaction ID in a batch are rejected", () => {
@@ -509,7 +509,7 @@ test("message IDs that join into one key cannot hide a forged author", () => {
     rawMessage(d, "a", "b\u0000c", ALICE);
     rawMessage(d, "a\u0000b", "c", CAROL);
   });
-  denied(doc, changes, CAROL, REJECTION.AUTHOR_MISMATCH);
+  denied(doc, changes, CAROL, REJECTION.INVALID_ID);
 });
 
 test("reaction IDs that join into one key cannot hide a forged principal", () => {
@@ -526,7 +526,21 @@ test("reaction IDs that join into one key cannot hide a forged principal", () =>
       target: s("thread"),
     };
   });
-  denied(doc, changes, CAROL, REJECTION.REACTION_PRINCIPAL_MISMATCH);
+  denied(doc, changes, CAROL, REJECTION.INVALID_ID);
+});
+
+test("touched entities stay distinct per thread whatever their IDs contain", () => {
+  const plan = new EntitySet();
+  plan.add("a", "b\u0000c");
+  plan.add("a\u0000b", "c");
+  assert.deepEqual(
+    [...plan],
+    [
+      ["a", "b\u0000c"],
+      ["a\u0000b", "c"],
+    ],
+  );
+  assert.equal(plan.has("a", "c"), false);
 });
 
 test("new entity IDs are limited to letters, digits, '-' and '_'", () => {
@@ -552,9 +566,9 @@ test("new entity IDs are limited to letters, digits, '-' and '_'", () => {
       };
       rawMessage(d, id, "m", CAROL);
     });
-    denied(doc, thread, CAROL, REJECTION.INVALID_CREATE);
+    denied(doc, thread, CAROL, REJECTION.INVALID_ID);
     const message = edit(doc, (d) => rawMessage(d, "t-alice", id, CAROL));
-    denied(doc, message, CAROL, REJECTION.INVALID_CREATE);
+    denied(doc, message, CAROL, REJECTION.INVALID_ID);
     const reaction = edit(doc, (d) => {
       d.threads["t-alice"].reactions[id] = {
         emoji: s("👍"),
@@ -562,8 +576,15 @@ test("new entity IDs are limited to letters, digits, '-' and '_'", () => {
         target: s("thread"),
       };
     });
-    denied(doc, reaction, CAROL, REJECTION.INVALID_CREATE);
+    denied(doc, reaction, CAROL, REJECTION.INVALID_ID);
   }
+  // "thread" names the thread itself as a reaction target.
+  denied(
+    doc,
+    edit(doc, (d) => rawMessage(d, "t-alice", "thread", CAROL)),
+    CAROL,
+    REJECTION.INVALID_ID,
+  );
   // The writers' own IDs are UUIDs.
   const uuid = crypto.randomUUID();
   allowed(
@@ -573,6 +594,76 @@ test("new entity IDs are limited to letters, digits, '-' and '_'", () => {
     ),
     CAROL,
   );
+});
+
+/** Entities a server wrote before the ID rule, plus a message named
+ * "undefined". Only the admission check is new; this state is legal history. */
+function legacy() {
+  let doc = seed();
+  doc = A.change(doc, (d) => {
+    d.threads["legacy\u0000t"] = {
+      anchor: blockAnchor,
+      status: s("open"),
+      created_by: s(CAROL),
+      messages: {},
+      reactions: {},
+    };
+    rawMessage(d, "legacy\u0000t", "first", CAROL);
+    rawMessage(d, "t-alice", "m\u0000legacy", CAROL);
+    rawMessage(d, "t-alice", "undefined", BOB);
+    d.threads["t-alice"].reactions["r\u0000legacy"] = {
+      emoji: s("👀"),
+      principal: s(CAROL),
+      target: s("thread"),
+    };
+  });
+  return doc;
+}
+const reaction = (fields) => (d) => {
+  d.threads["t-alice"].reactions["r-carol"] = { emoji: s("👍"), principal: s(CAROL), ...fields };
+};
+
+test("a reaction target that is not a valid ID is rejected", () => {
+  const doc = legacy();
+  // The legacy message exists, but its ID never keys a lookup.
+  denied(doc, edit(doc, reaction({ target: s("m\u0000legacy") })), CAROL, REJECTION.INVALID_TARGET);
+});
+
+test("a missing reaction target does not match a message named undefined", () => {
+  const doc = legacy();
+  denied(doc, edit(doc, reaction({})), CAROL, REJECTION.INVALID_TARGET);
+  // The same message is a valid target when it is named.
+  allowed(doc, edit(doc, reaction({ target: s("undefined") })), CAROL);
+});
+
+test("a reaction target that is not a string is rejected", () => {
+  const doc = legacy();
+  for (const target of [7, true, null, { id: "m-alice" }, ["m-alice"]])
+    denied(doc, edit(doc, reaction({ target })), CAROL, REJECTION.INVALID_TARGET);
+});
+
+test("an existing thread with an unsafe ID is not looked up", () => {
+  const doc = legacy();
+  const changes = edit(doc, (d) =>
+    setThreadStatus(d, { threadId: "legacy\u0000t", status: "resolved" }),
+  );
+  denied(doc, changes, BOB, REJECTION.INVALID_ID);
+});
+
+test("an existing message with an unsafe ID is not looked up, even by its author", () => {
+  const doc = legacy();
+  const changes = edit(doc, (d) => {
+    d.threads["t-alice"].messages["m\u0000legacy"].deleted = true;
+  });
+  denied(doc, changes, CAROL, REJECTION.INVALID_ID);
+});
+
+test("an existing reaction with an unsafe ID is not looked up, even by its principal", () => {
+  const doc = legacy();
+  const changes = edit(doc, (d) => {
+    delete d.threads["t-alice"].reactions["r\u0000legacy"];
+  });
+  denied(doc, changes, CAROL, REJECTION.INVALID_ID);
 });
 
 // Remove a reaction
@@ -750,12 +841,17 @@ test("concurrent changes from two authors are each admitted and merge", () => {
 const tick = (ms = 0) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /** The integration shape. One admission document, checked and advanced inside
- * a serialized queue. It moves to `next` only after the batch persists. */
+ * a serialized queue. It moves to `next` only after the batch persists. After
+ * an ambiguous save failure it is rebuilt from what storage holds. */
 class SerialAdmission {
   constructor(doc) {
     this.admitted = doc;
+    this.stored = A.getAllChanges(doc);
     this.tail = Promise.resolve();
     this.decisions = [];
+  }
+  rebuild() {
+    return A.applyChanges(A.init(), this.stored)[0];
   }
   submit(label, changes, principal, persist = () => tick()) {
     const run = this.tail.then(async () => {
@@ -765,12 +861,16 @@ class SerialAdmission {
         return result;
       }
       try {
-        await persist();
+        await persist(changes);
       } catch (error) {
         A.free(result.next);
-        this.decisions.push([label, "persist_failed"]);
+        if (error.ambiguous) {
+          this.admitted = this.rebuild();
+          this.decisions.push([label, "persist_ambiguous"]);
+        } else this.decisions.push([label, "persist_failed"]);
         throw error;
       }
+      this.stored.push(...changes);
       this.admitted = result.next;
       this.decisions.push([label, "accepted"]);
       return result;
@@ -895,6 +995,47 @@ test("a save that fails before writing leaves the admission document where it wa
     ["carol", "accepted"],
   ]);
   assert.equal(String(queue.admitted.threads["t-alice"].messages["m-same"].author), CAROL);
+});
+
+test("after an ambiguous save failure the next batch is checked against storage", async () => {
+  const base = seed();
+  const replica = A.clone(base, { actor: actor() });
+  const added = A.change(replica, (d) =>
+    addMessage(d, { threadId: "t-alice", messageId: "m-same", principal: BOB, body: "Bob" }),
+  );
+  const bob = A.getChanges(base, added);
+  const bobEdit = A.getChanges(
+    added,
+    A.change(added, (d) =>
+      editMessage(d, { threadId: "t-alice", messageId: "m-same", body: "Bob, again" }),
+    ),
+  );
+  const carol = edit(base, (d) =>
+    addMessage(d, { threadId: "t-alice", messageId: "m-same", principal: CAROL, body: "Carol" }),
+  );
+  const queue = new SerialAdmission(base);
+  const results = await Promise.allSettled([
+    // The write lands, then the acknowledgement is lost.
+    queue.submit("bob", bob, BOB, async (changes) => {
+      queue.stored.push(...changes);
+      await tick(2);
+      throw Object.assign(Error("ambiguous save"), { ambiguous: true });
+    }),
+    queue.submit("carol", carol, CAROL),
+    queue.submit("bob-edit", bobEdit, BOB),
+  ]);
+  assert.equal(results[0].status, "rejected");
+  // Without the rebuild, Carol's create would pass against the old document
+  // and Bob's edit would fail with missing_dependencies.
+  assert.equal(admitCommentChanges(base, carol, CAROL).ok, true);
+  assert.deepEqual(queue.decisions, [
+    ["bob", "persist_ambiguous"],
+    ["carol", REJECTION.MESSAGE_REPLACE],
+    ["bob-edit", "accepted"],
+  ]);
+  const message = queue.admitted.threads["t-alice"].messages["m-same"];
+  assert.equal(String(message.author), BOB);
+  assert.equal(A.spans(message, ["body"]).at(-1).value, "Bob, again");
 });
 
 // Cost

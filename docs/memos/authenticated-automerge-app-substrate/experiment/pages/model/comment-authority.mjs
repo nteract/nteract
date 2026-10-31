@@ -69,6 +69,8 @@ export const REJECTION = Object.freeze({
   NOT_MESSAGE_AUTHOR: "not_message_author",
   NOT_REACTION_OWNER: "not_reaction_owner",
   INVALID_VALUE: "invalid_value",
+  INVALID_ID: "invalid_id",
+  INVALID_TARGET: "invalid_target",
 });
 
 const MAX_ID_LENGTH = 128;
@@ -100,8 +102,9 @@ const isMap = (value) =>
   !(value instanceof Date) &&
   !(value instanceof Uint8Array);
 const own = (object, key) => isMap(object) && Object.hasOwn(object, key);
-/** New entity IDs: the writers' UUIDs, or any short base64url-style key. No
- * separators or control characters, so an ID never reads as two. */
+/** Thread, message and reaction IDs: the writers' UUIDs, or any short
+ * base64url-style key. No separators or control characters, so an ID never
+ * reads as two. Every ID is checked before it is used as a lookup key. */
 const ID_PATTERN = new RegExp(`^[A-Za-z0-9_-]{1,${MAX_ID_LENGTH}}$`);
 const safeId = (id) => typeof id === "string" && ID_PATTERN.test(id);
 const boundedString = (value, max = MAX_FIELD_LENGTH) => {
@@ -202,10 +205,16 @@ function validateNewReaction(reaction, thread, principal, where) {
   const emoji = scalar(reaction.emoji);
   if (!emoji?.trim() || emoji.length > MAX_EMOJI_LENGTH)
     reject(REJECTION.INVALID_VALUE, "Reaction emoji must be 1–32 characters", where);
+  // The target is read as a string and checked as an ID before it keys a
+  // lookup: a missing target must not become the key "undefined".
   const target = scalar(reaction.target);
-  if (target !== THREAD_REACTION_TARGET && !own(thread.messages, target))
+  if (target === THREAD_REACTION_TARGET) return;
+  if (target === undefined)
+    reject(REJECTION.INVALID_TARGET, "Reaction target must be a string", where);
+  if (!safeId(target)) reject(REJECTION.INVALID_TARGET, "Reaction target is not a valid ID", where);
+  if (!own(thread.messages, target))
     reject(
-      REJECTION.INVALID_VALUE,
+      REJECTION.INVALID_TARGET,
       "Reaction target must be the thread or one of its messages",
       where,
     );
@@ -213,7 +222,7 @@ function validateNewReaction(reaction, thread, principal, where) {
 
 /** Entity IDs grouped by thread. Nested maps keep every (thread, ID) pair
  * distinct, whatever characters the IDs contain. */
-class EntitySet {
+export class EntitySet {
   #threads = new Map();
   add(threadId, id) {
     let ids = this.#threads.get(threadId);
@@ -228,8 +237,16 @@ class EntitySet {
   }
 }
 
-function requireSafeId(id, kind, where) {
-  if (!safeId(id)) reject(REJECTION.INVALID_CREATE, `Invalid ${kind} ID`, where);
+/** The thread, message and reaction IDs a write path names, checked before
+ * any of them keys a lookup. `thread` is reserved as a message ID because it
+ * is the reaction target for the thread itself. */
+function requireSafeIds(full, where) {
+  if (!safeId(full[1])) reject(REJECTION.INVALID_ID, "Invalid thread ID", where);
+  if (full.length < 4) return;
+  if (full[2] === "messages" && (!safeId(full[3]) || full[3] === THREAD_REACTION_TARGET))
+    reject(REJECTION.INVALID_ID, "Invalid message ID", where);
+  if (full[2] === "reactions" && !safeId(full[3]))
+    reject(REJECTION.INVALID_ID, "Invalid reaction ID", where);
 }
 
 function singleCreate(container, key, where) {
@@ -263,14 +280,11 @@ function validateNewThread(threads, threadId, principal) {
   for (const id of messageIds) {
     singleCreate(thread.messages, id, { ...where, message: id });
     validateNewMessage(thread.messages[id], principal, { ...where, message: id });
-    requireSafeId(id, "message", { ...where, message: id });
   }
   for (const id of Object.keys(thread.reactions)) {
     singleCreate(thread.reactions, id, { ...where, reaction: id });
     validateNewReaction(thread.reactions[id], thread, principal, { ...where, reaction: id });
-    requireSafeId(id, "reaction", { ...where, reaction: id });
   }
-  requireSafeId(threadId, "thread", where);
 }
 
 /** Decide one operation against the admission document. `full` is the
@@ -282,6 +296,7 @@ function checkOperation(op, full, ctx) {
   if (full[0] === "origin") reject(REJECTION.ORIGIN_IMMUTABLE, "origin is immutable", where);
   if (full[0] !== "threads") reject(REJECTION.UNKNOWN_PATH, "Unknown path", where);
   if (full.length === 1) reject(REJECTION.IMMUTABLE_FIELD, "threads cannot be replaced", where);
+  requireSafeIds(full, where);
   const threadId = full[1];
   const before = ctx.thread(threadId);
   const isCreate = op.action === "makeMap" && op.pred.length === 0;
@@ -387,7 +402,6 @@ function finalize(after, plan, principal) {
     const where = { thread: threadId, message: messageId };
     singleCreate(threads[threadId].messages, messageId, where);
     validateNewMessage(threads[threadId].messages[messageId], principal, where);
-    requireSafeId(messageId, "message", where);
   }
   for (const [threadId, messageId] of plan.editedMessages)
     validateMessageEdits(threads[threadId].messages[messageId], {
@@ -412,7 +426,6 @@ function finalize(after, plan, principal) {
     const thread = threads[threadId];
     singleCreate(thread.reactions, reactionId, where);
     validateNewReaction(thread.reactions[reactionId], thread, principal, where);
-    requireSafeId(reactionId, "reaction", where);
   }
   for (const [threadId, reactionId] of plan.removedReactions)
     if (

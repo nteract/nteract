@@ -36,7 +36,9 @@ import { COMMENT_MAX_LENGTH, markdownCommentSpans } from "./comment-content.mjs"
  * `Endpoint = { blockId, textObjectId, relativePositionBase64 }`.
  *
  * Thread, message and reaction IDs match `[A-Za-z0-9_-]{1,128}`. The writers
- * use `crypto.randomUUID()`.
+ * use `crypto.randomUUID()`. `thread` is reserved: as a reaction target it
+ * names the thread itself, so no message may use it as an ID. A reaction
+ * target is always a string.
  *
  * Principals are authenticated account IDs, never session labels or display
  * names. Profiles supply display names at read time.
