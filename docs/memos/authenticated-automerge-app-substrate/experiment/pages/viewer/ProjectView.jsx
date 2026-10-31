@@ -1,12 +1,14 @@
 import { useEffect, useRef, useState } from "react";
-import { FileText, Home, Plus } from "lucide-react";
+import { FileText, FolderInput, Home, MoreHorizontal, Plus } from "lucide-react";
 import { pagePath, projectPath, isPlainNavigation } from "../shared/routes.mjs";
 import { createPageInProject, listProjectPages, projectTree, visibleCrumbs } from "./projects.mjs";
 
 /** One Project: its home Page, then its Pages as a tree. Owner-only for now.
  * Loading and errors stay local and simple here; the Project view moves to the
- * shared RxJS store pattern when the Pages state-machine tooling lands. */
-export function ProjectView({ tool, projectId, onOpen, onBack, onCreated }) {
+ * shared RxJS store pattern when the Pages state-machine tooling lands.
+ * `version` changes when a Page moves, which reloads the tree; `onMove`
+ * opens "Move to…" for a row. */
+export function ProjectView({ tool, projectId, version = 0, onOpen, onBack, onCreated, onMove }) {
   const [project, setProject] = useState(null);
   const [pages, setPages] = useState(null);
   const [error, setError] = useState("");
@@ -14,8 +16,11 @@ export function ProjectView({ tool, projectId, onOpen, onBack, onCreated }) {
   const generation = useRef(0);
   useEffect(() => {
     const revision = ++generation.current;
-    setProject(null);
-    setPages(null);
+    // A reload after a move keeps the current tree on screen until it lands.
+    if (!version) {
+      setProject(null);
+      setPages(null);
+    }
     setError("");
     Promise.all([
       tool("get_project", { project_id: projectId }),
@@ -33,7 +38,7 @@ export function ProjectView({ tool, projectId, onOpen, onBack, onCreated }) {
     return () => {
       generation.current++;
     };
-  }, [projectId]);
+  }, [projectId, version]);
   async function create() {
     setCreating(true);
     setError("");
@@ -104,6 +109,27 @@ export function ProjectView({ tool, projectId, onOpen, onBack, onCreated }) {
                   <span className="page-card-title">{page.title || "Untitled"}</span>
                   {page.home && <span className="page-card-meta">Home</span>}
                 </>,
+              )}
+              {!page.home && onMove && (
+                <details className="document-actions page-row-menu">
+                  <summary
+                    className="icon-button page-row-action"
+                    aria-label={`Actions for ${page.title || "Untitled"}`}
+                    title="Page actions"
+                  >
+                    <MoreHorizontal size={16} aria-hidden="true" />
+                  </summary>
+                  <div className="menu-popover">
+                    <button
+                      onClick={(event) => {
+                        event.currentTarget.closest("details").open = false;
+                        onMove({ page_id: page.page_id, title: page.title || "Untitled" });
+                      }}
+                    >
+                      <FolderInput size={16} aria-hidden="true" /> Move to…
+                    </button>
+                  </div>
+                </details>
               )}
             </li>
           ))}

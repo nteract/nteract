@@ -321,6 +321,13 @@ export function errorResponse(error, stage = "request") {
         "home_page_protected",
         "page_has_children",
         "lifecycle_unsettled",
+        "move_destination_required",
+        "move_unsettled",
+        "invalid_position",
+        "position_sibling_unknown",
+        "placement_cycle",
+        "placement_changed",
+        "not_page_owner",
       ].includes(error?.code) && { code: error.code }),
       ...(["edit_conflict", "resync_required"].includes(error?.code) && {
         ...(Array.isArray(error.details?.conflicts) && {

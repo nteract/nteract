@@ -471,8 +471,8 @@ the ACL has collected.
 Capabilities are named: `read`, `comment`, `edit`, `share`, `administer`,
 `trash`, `restore`, `purge`, `create_items`, `manage_members`, `move_within`,
 `move_out`. A Page never gets `manage_members`, and a project never gets
-`comment`. Nothing checks the `move_*` capabilities, because moves don't exist
-yet. Execute is out of scope for Pages.
+`comment`. Nothing checks the `move_*` capabilities yet: `move_page` is
+owner-only, and the owner holds both. Execute is out of scope for Pages.
 
 decide() runs three steps, in this order:
 
@@ -1078,8 +1078,8 @@ and `/s/<id>` links open `/project/<id>`. See
 [DEPLOYMENT.md](DEPLOYMENT.md#projects-and-their-storage-identity). In this build membership is owner-only: only the owner can open a Project,
 list its Pages or add to it, and nothing inherits access from a Project. A Page in
 a Project is readable by the owner and by anyone with a direct grant on that Page;
-sharing works as before and never reveals the Project. Inherited access, moves and
-a Project change feed come later.
+sharing works as before and never reveals the Project. Inherited access and a
+Project change feed come later.
 
 | Tool | Arguments | Result |
 | --- | --- | --- |
@@ -1090,6 +1090,7 @@ a Project change feed come later.
 | `create_page` | adds `project_id?`, `parent_id?` | adds `project_id`, `parent_id` |
 | `list_pages` | adds `project_id?`, `parent_id?` (`null` = top level), `kind?` | owned rows add `project_id`, `parent_id`, `position`, `home` |
 | `read_page` | unchanged | adds `kind`, `project_id`, `parent_id`, `home`, `breadcrumbs` |
+| `move_page` | `page_id`, `project_id?` (`null` = Your items), `parent_id?`, `position?`, `idempotency_key`, `retry_token?` | `page_id`, `project_id`, `parent_id`, `position`, `descendants` |
 
 Every Project and item operation goes through the caller's own Catalog, which
 calls the Project and Pages with the caller's credentials. A Project never calls a
@@ -1120,6 +1121,38 @@ listing's filters. `read_page` breadcrumbs are computed in the gateway: each
 ancestor and the Project answer with the caller's credentials, so the trail stops at
 the first Page the caller cannot open and `project_id` appears only when the Project
 is readable.
+
+`move_page` moves a Page into a Project, out to Your items, under another Page,
+or to a new `position` (`"first"`, `"last"`, `{before}` or `{after}` a sibling).
+The Page keeps its ID, URL, content, comments and sharing. Only the Page's owner
+can move it, and only into a Project they own. The Catalog refuses a Project's
+home Page (`home_page_protected`), a parent that is the Page or one of its
+sub-pages (`placement_cycle`), a parent in another Project
+(`placement_mismatch`), a Page in Trash (`page_trashed`), a Page shared with the
+caller (`not_page_owner`) and a move that would nest a sub-page past 8 levels
+(`nesting_depth_exceeded`). Refusals happen before anything is reserved.
+
+A move carries its subtree. Sub-pages keep their parent and position; when the
+Project changes, every sub-page, including those in Trash, takes the new
+`space_id`, so a later restore returns it to the right Project. The Catalog
+plans the move against its own entries (root first, then each sub-page whose
+Project changes, top-down) and journals the plan with a pending-move marker in
+one write. [page-move.mjs](worker/page-move.mjs) then drives the plan one Page
+at a time through `/internal/place`. Each step carries the `placement_epoch`
+the Catalog observed as its fence: the Page applies the step once, advances its
+epoch and records the intent key with the epoch it produced, so a lost reply
+replays rather than reapplies; a Page at any other epoch answers `superseded`
+with its placement unchanged. The Catalog projects each answer into the Page's
+`page/` or `trash/` entry, epoch-fenced, and persists the step before the next
+one. Only the root, always the first step, can refuse a move; that releases the
+intent with nothing changed. A sub-page that refuses or has gone is skipped and
+reported. A Page that can't answer leaves the move pending: a retry with the
+same key resumes it, and every `create_page`, `delete_page`, `restore_page` and
+other `move_page` finishes pending moves first, answering `move_unsettled`
+(retryable) while one can't finish. The D1 index follows the same way as a
+restore: each projection marks the Catalog's index dirty, the next listing
+rewrites owner rows from the entries, and D1 only accepts a placement at an
+epoch at least as new as the one it holds.
 
 Trash stays single-Page. `delete_page` on a Page with active sub-pages, or
 sub-pages still being created, returns `page_has_children`; trash the sub-pages

@@ -4,6 +4,7 @@ import { createRoot } from "react-dom/client";
 import {
   ChevronDown,
   FileText,
+  FolderInput,
   FolderOpen,
   LogOut,
   Link,
@@ -46,7 +47,8 @@ import "./save-status.css";
 import { PagePicker } from "./PagePicker.jsx";
 import { TrashView } from "./TrashView.jsx";
 import { Breadcrumbs, ProjectView } from "./ProjectView.jsx";
-import { listProjects, pageBreadcrumbs } from "./projects.mjs";
+import { MoveDialog } from "./MoveDialog.jsx";
+import { listProjects, pagePlacement } from "./projects.mjs";
 import { closeTrashedSessions, restorePage } from "./trash.mjs";
 import { listAllPages, matchingPages } from "./page-list.mjs";
 import { AppearanceControls } from "./AppearanceControls.jsx";
@@ -95,7 +97,13 @@ function App() {
     [trashOpen, setTrashOpen] = useState(false),
     [projects, setProjects] = useState([]),
     [projectOpen, setProjectOpen] = useState(null),
-    [crumbs, setCrumbs] = useState([]);
+    // The open Page's placement as read_page reports it (pagePlacement), or
+    // null until it loads.
+    [placement, setPlacement] = useState(null),
+    // The Page "Move to…" is open for, or null.
+    [moveTarget, setMoveTarget] = useState(null),
+    // Advances after each move so the Project view reloads its tree.
+    [moveVersion, setMoveVersion] = useState(0);
   const [toolbar, setToolbar] = useState(null),
     [toolbarOpen, setToolbarOpen] = useState(false),
     [active, setActive] = useState(null),
@@ -224,14 +232,8 @@ function App() {
       return false;
     }
     setProjectOpen(null);
-    setCrumbs([]);
-    // Breadcrumbs show only the Project and parents this account can open.
-    void pageBreadcrumbs(tool, next.pageId).then(
-      (value) => {
-        if (host.current === next) setCrumbs(value);
-      },
-      () => {},
-    );
+    setPlacement(null);
+    loadPlacement(next);
     next.subscribe(() => {
       if (host.current === next) {
         paint((n) => n + 1);
@@ -249,6 +251,26 @@ function App() {
     activateBlock(first);
     if (focus) setFocusBlock(first);
     return true;
+  }
+  /** Breadcrumbs and placement show only the Project and parents this
+   * account can open. A move reads them again. */
+  function loadPlacement(session = host.current) {
+    if (!session) return;
+    void pagePlacement(tool, session.pageId).then(
+      (value) => {
+        if (host.current === session) setPlacement(value);
+      },
+      () => {},
+    );
+  }
+  /** A move changed a Page's place: relist, reload the Project view, and
+   * reread the open Page's breadcrumbs, which a move of any ancestor changes. */
+  function moved(receipt) {
+    setMoveTarget(null);
+    setNotice(receipt.project_id ? "Page moved" : "Page moved to Your items");
+    setMoveVersion((version) => version + 1);
+    loadPlacement();
+    void refresh().catch(() => {});
   }
   function reloadAccess(previous = host.current) {
     // Reload waits while the old replica archives and closes, e.g. when a
@@ -738,6 +760,22 @@ function App() {
                           <RotateCcw size={16} aria-hidden="true" /> Restore from Trash
                         </button>
                       )}
+                      {session.canDelete &&
+                        !session.trash &&
+                        placement?.page_id === session.pageId &&
+                        !placement.home && (
+                          <button
+                            onClick={() => {
+                              if (documentDisclosure.current) documentDisclosure.current.open = false;
+                              setMoveTarget({
+                                page_id: session.pageId,
+                                title: page.title || "Untitled",
+                              });
+                            }}
+                          >
+                            <FolderInput size={16} aria-hidden="true" /> Move to…
+                          </button>
+                        )}
                       {session.canDelete && (
                         <button className="danger" onClick={remove}>
                           <Trash2 size={16} aria-hidden="true" /> Move to Trash
@@ -827,6 +865,12 @@ function App() {
             creating={creating || !!session?.authRequired}
             error={pickerError}
           />
+          <MoveDialog
+            tool={tool}
+            target={moveTarget}
+            onClose={() => setMoveTarget(null)}
+            onMoved={moved}
+          />
           {page ? (
             <main
               className={commentsOpen ? "workspace document with-comments" : "workspace document"}
@@ -834,7 +878,7 @@ function App() {
               <article ref={article}>
                 <h1 className="document-print-title sr-only">{page.title || "Untitled"}</h1>
                 <Breadcrumbs
-                  crumbs={crumbs}
+                  crumbs={placement?.page_id === session.pageId ? placement.breadcrumbs : []}
                   onOpenProject={(id) => openProject(id)}
                   onOpenPage={open}
                 />
@@ -944,9 +988,11 @@ function App() {
               key={projectOpen}
               tool={tool}
               projectId={projectOpen}
+              version={moveVersion}
               onOpen={(id) => open(id)}
               onBack={() => home(null)}
               onCreated={() => void refresh().catch(() => {})}
+              onMove={setMoveTarget}
             />
           ) : trashOpen ? (
             <TrashView

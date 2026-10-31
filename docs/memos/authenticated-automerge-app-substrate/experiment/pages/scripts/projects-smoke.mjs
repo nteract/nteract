@@ -1,6 +1,7 @@
 // Projects through MCP and the browser on one local OIDC deployment: create a
 // Project and nested Pages over MCP, list them, open them in the browser, follow
-// breadcrumbs, and trash and restore Pages one at a time.
+// breadcrumbs, move a Page into, within and out of the Project, and trash and
+// restore Pages one at a time.
 import assert from "node:assert/strict";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { chromium, expect } from "@playwright/test";
@@ -175,6 +176,100 @@ try {
     `/project/${project.project_id}`,
   );
   complete("A Page under the home Page shows the Project crumb once");
+
+  // Move a loose Page into the Project from its own menu. The breadcrumbs
+  // and the lists follow without a reload.
+  const loose = await ok("owner", "create_page", {
+    title: "Loose draft",
+    markdown: "Written first, organized later.",
+    idempotency_key: crypto.randomUUID(),
+  });
+  await owner.goto(`${origin}/p/${loose.page_id}`);
+  await expect(owner.locator("wg-content").first()).toContainText("organized later", {
+    timeout: 30000,
+  });
+  await expect(owner.getByRole("navigation", { name: "Breadcrumbs" })).toHaveCount(0);
+  await owner.getByLabel("Document actions", { exact: true }).click();
+  await owner.getByRole("button", { name: "Move to…" }).click();
+  const moveDialog = owner.getByRole("dialog", { name: "Move “Loose draft” to…" });
+  await expect(moveDialog.getByRole("radio", { name: /^Your items/ })).toBeDisabled({
+    timeout: 30000,
+  });
+  await moveDialog.getByRole("radio", { name: title, exact: true }).check();
+  await owner.screenshot({ path: `${output}/projects-move-dialog.png` });
+  await moveDialog.getByRole("button", { name: "Move", exact: true }).click();
+  await expect(moveDialog).toBeHidden({ timeout: 30000 });
+  const movedCrumbs = owner.getByRole("navigation", { name: "Breadcrumbs" });
+  await expect(movedCrumbs.getByRole("link", { name: title })).toBeVisible({ timeout: 30000 });
+  await expect(owner.locator("wg-content").first()).toContainText("organized later");
+  const intoProject = await ok("owner", "list_pages", {
+    project_id: project.project_id,
+    parent_id: null,
+  });
+  assert.ok(intoProject.pages.some((page) => page.page_id === loose.page_id));
+  const looseRead = await ok("owner", "read_page", {
+    page_id: loose.page_id,
+    include_content: false,
+  });
+  assert.equal(looseRead.project_id, project.project_id);
+  assert.equal(looseRead.parent_id, null);
+  await owner.screenshot({ path: `${output}/projects-moved-breadcrumbs.png` });
+  complete("The Page menu moved a loose Page into the Project; breadcrumbs updated in place");
+
+  // Nest it under Roadmap over MCP; the Project view and breadcrumbs agree.
+  const moveAuthority = await ok("owner", "list_pages", { limit: 1 });
+  const nested = await ok("owner", "move_page", {
+    page_id: loose.page_id,
+    parent_id: roadmap.page_id,
+    position: "first",
+    retry_token: moveAuthority.retry_token,
+    idempotency_key: moveAuthority.retry_key_prefix + crypto.randomUUID(),
+  });
+  assert.equal(nested.project_id, project.project_id);
+  assert.equal(nested.parent_id, roadmap.page_id);
+  assert.equal(nested.url, `${origin}/p/${loose.page_id}`);
+  const roadmapChildren = await ok("owner", "list_pages", { parent_id: roadmap.page_id });
+  assert.deepEqual(
+    roadmapChildren.pages.map((page) => page.page_id).sort(),
+    [loose.page_id, plan.page_id].sort(),
+  );
+  const nestedRead = await ok("owner", "read_page", {
+    page_id: loose.page_id,
+    include_content: false,
+  });
+  assert.deepEqual(
+    nestedRead.breadcrumbs.map((crumb) => crumb.title),
+    [title, "Roadmap"],
+  );
+  await owner.goto(`${origin}/p/${loose.page_id}`);
+  await expect(owner.getByRole("navigation", { name: "Breadcrumbs" })).toContainText("Roadmap", {
+    timeout: 30000,
+  });
+  complete("MCP move_page nested the Page under Roadmap; list_pages and breadcrumbs agree");
+
+  // Move it back out to Your items from the Project view's row menu.
+  await owner.goto(`${origin}/project/${project.project_id}`);
+  const projectList = owner.getByRole("list", { name: `Pages in ${title}` });
+  await expect(projectList.getByRole("link", { name: "Loose draft" })).toBeVisible({
+    timeout: 30000,
+  });
+  await projectList.getByLabel("Actions for Loose draft", { exact: true }).click();
+  await projectList.getByRole("button", { name: "Move to…" }).click();
+  await moveDialog.getByRole("radio", { name: "Your items", exact: true }).check();
+  await moveDialog.getByRole("button", { name: "Move", exact: true }).click();
+  await expect(moveDialog).toBeHidden({ timeout: 30000 });
+  await expect(projectList.getByRole("link", { name: "Loose draft" })).toHaveCount(0, {
+    timeout: 30000,
+  });
+  const outOfProject = await ok("owner", "list_pages", { project_id: project.project_id });
+  assert.ok(!outOfProject.pages.some((page) => page.page_id === loose.page_id));
+  const outRead = await ok("owner", "read_page", {
+    page_id: loose.page_id,
+    include_content: false,
+  });
+  assert.equal(outRead.project_id, null);
+  assert.deepEqual(outRead.breadcrumbs, []);
+  complete("The Project view's row menu moved the Page back out to Your items");
 
   const authority = await ok("owner", "list_pages");
   const trashPage = (pageId) =>

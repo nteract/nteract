@@ -11,8 +11,11 @@
  * Pages carry their placement in the Page record (`metadata.placement`):
  * `space_id` (null for Your items), `parent_id` (null at the top level),
  * `position` among siblings, `placement_epoch` and `home`. The owner's Catalog
- * entries copy it at creation. Placement only changes when a restore returns
- * a Page whose parent is gone to the top level, which bumps the epoch.
+ * entries copy it at creation. Placement changes in two ways, and each bumps
+ * the epoch: a restore returns a Page whose parent is gone to the top level,
+ * and move_page (page-move.mjs) gives a Page a new Project, parent or
+ * position, carrying its sub-pages into the new Project. The Page records the
+ * last move's intent key with the epoch it produced (`placementMove`).
  *
  * Callers see Projects; project-api.mjs maps the API onto this module.
  * Storage keeps the Space name so a rollback build reads the same records.

@@ -105,6 +105,7 @@ import {
   lifecycleSlotKey,
   observedLifecycleRevision,
   projectLifecycle,
+  projectPlacement,
   pruneTombstonedTrash,
   refreshCatalogTitle,
   releaseLifecycleSlot,
@@ -159,6 +160,7 @@ import {
 // The class name is the storage identity for Projects; see spaces.mjs.
 export { Space } from "./spaces.mjs";
 import { spaceCreationEffect, spaceCreationTransition } from "./space-lifecycle.mjs";
+import { pageMoveEffect, pageMoveStart, pageMoveTransition } from "./page-move.mjs";
 import { handleImportPageImage } from "./import-image.mjs";
 import { serialQueue, serialQueueBounds } from "./serial-queue.mjs";
 import { holdUntilSettled } from "./request-hold.mjs";
@@ -199,6 +201,7 @@ const operations = new Set([
   "delete_page",
   "restore_page",
   "purge_page",
+  "move_page",
   "create_space",
   "list_spaces",
   "get_space",
@@ -313,6 +316,95 @@ const callerLifecycleArguments = ({
   ...requested
 }) => requested;
 
+const MOVE_ARGUMENTS = new Set([
+  "page_id",
+  "space_id",
+  "parent_id",
+  "position",
+  "idempotency_key",
+  "retry_token",
+]);
+/** A pending move holds this marker until it commits or is released. Every
+ * request that could change a placement finishes pending moves first. */
+const MOVE_PENDING_PREFIX = "host/move/pending/";
+const movePendingKey = (operationKey) =>
+  MOVE_PENDING_PREFIX + operationKey.slice("host/operation/".length);
+const moveUnsettled = () =>
+  new HttpError(
+    409,
+    "An earlier move is still settling. Retry shortly; a move_page retry with the same idempotency_key finishes it.",
+    "move_unsettled",
+  );
+
+/** move_page arguments in their stored Space names. `spaceId` is undefined
+ * when the caller named only a parent, null for Your items. */
+function validateMoveInput(args) {
+  if (!args || typeof args !== "object" || Array.isArray(args))
+    throw new HttpError(400, "Invalid move arguments");
+  for (const name of Object.keys(args))
+    if (!MOVE_ARGUMENTS.has(name)) throw new HttpError(400, `Unknown move_page argument ${name}`);
+  const pageId = requirePageIdArgument(args.page_id);
+  const spaceId =
+    args.space_id === undefined || args.space_id === null
+      ? args.space_id
+      : requireSpaceIdArgument(args.space_id);
+  const parentId =
+    args.parent_id === undefined || args.parent_id === null
+      ? null
+      : requirePageIdArgument(args.parent_id, "parent_id");
+  if (spaceId === undefined && !parentId)
+    throw new HttpError(
+      400,
+      "Name a destination: project_id (null for Your items), parent_id, or both",
+      "move_destination_required",
+    );
+  const position = args.position ?? "last";
+  const sibling = (value) =>
+    value && typeof value === "object" && !Array.isArray(value) && Object.keys(value).length === 1;
+  if (
+    !(
+      position === "first" ||
+      position === "last" ||
+      (sibling(position) && "before" in position && validPageId(position.before)) ||
+      (sibling(position) && "after" in position && validPageId(position.after))
+    )
+  )
+    throw new HttpError(
+      400,
+      'position is "first", "last", {"before": page_id} or {"after": page_id}',
+      "invalid_position",
+    );
+  if (typeof position === "object" && [position.before, position.after].includes(pageId))
+    throw new HttpError(400, "position names the Page being moved", "invalid_position");
+  return { pageId, spaceId, parentId, position };
+}
+
+/** A fractional key for `position` among `siblings`, each `{ page_id,
+ * position }` sorted by position. */
+function siblingPosition(siblings, position) {
+  const between = (before, after) => {
+    try {
+      return generateKeyBetween(before, after);
+    } catch {
+      // Equal neighbours can't be split; the end of the list still sorts.
+      return generateKeyBetween(siblings.at(-1)?.position ?? null, null);
+    }
+  };
+  if (position === "first") return between(null, siblings[0]?.position ?? null);
+  if (position === "last") return between(siblings.at(-1)?.position ?? null, null);
+  const target = position.before ?? position.after;
+  const index = siblings.findIndex((sibling) => sibling.page_id === target);
+  if (index < 0)
+    throw new HttpError(
+      400,
+      "position names a Page that isn't a sibling at the destination",
+      "position_sibling_unknown",
+    );
+  if (position.before)
+    return between(siblings[index - 1]?.position ?? null, siblings[index].position);
+  return between(siblings[index].position, siblings[index + 1]?.position ?? null);
+}
+
 function validateCreateInput(args) {
   if (!args || typeof args !== "object" || Array.isArray(args))
     throw new HttpError(400, "Invalid create arguments");
@@ -415,9 +507,13 @@ async function invoke(request, env, operation, args = {}) {
     requireWrite(identity);
   if (["get_space", "update_space"].includes(operation)) requireSpaceIdArgument(args.space_id);
   if (
-    ["list_pages", "create_page", ...Object.keys(lifecycleRoutes), ...spaceOperations].includes(
-      operation,
-    )
+    [
+      "list_pages",
+      "create_page",
+      "move_page",
+      ...Object.keys(lifecycleRoutes),
+      ...spaceOperations,
+    ].includes(operation)
   ) {
     return withinToolDeadline(async (signal) =>
       bufferedResponse(
@@ -860,6 +956,7 @@ export class Catalog {
       requireWrite(identity);
       if (body.operation === "create_space") return await this.createSpace(request, identity, args);
       if (body.operation === "update_space") return await this.updateSpace(request, identity, args);
+      if (body.operation === "move_page") return await this.movePage(request, identity, args);
       const lifecycle = lifecycleRoutes[body.operation];
       if (!["create_page", "register_page"].includes(body.operation) && !lifecycle)
         throw new HttpError(400, "Unknown catalog operation");
@@ -892,6 +989,10 @@ export class Catalog {
           );
       }
       if (body.operation === "create_page") validateCreateInput(args);
+      // A Page created under a parent, or one moving to or from Trash, must
+      // see every placement an interrupted move promised.
+      if (["create_page", "delete_page", "restore_page"].includes(body.operation))
+        await this.settlePendingMoves(request);
       if (registering) {
         requireRegistrationAccount(args, identity);
         A.free(readRegistration(args).doc);
@@ -1302,21 +1403,349 @@ export class Catalog {
           "nesting_depth_exceeded",
         );
     }
-    if (spaceId) {
-      const entry = await storage.get(`space/${spaceId}`);
-      if (!entry || entry.pending) throw spaceNotFound();
-      const response = await this.env.PROJECTS.getByName(spaceId).fetch(
-        forwarded(request, "/internal/space/read", { space_id: spaceId }),
-      );
-      if (response.status === 404) throw spaceNotFound();
-      if (!response.ok) throw new HttpError(503, "Project is temporarily unavailable");
-    }
+    if (spaceId) await this.requireOwnedSpace(request, spaceId);
     return {
       space_id: spaceId,
       parent_id: parentId,
       position: await this.nextPosition(spaceId, parentId),
       placement_epoch: 0,
     };
+  }
+
+  /** A Space that can hold this account's Pages: this account's own entry,
+   * confirmed by the Space record answering the caller's credentials. Only
+   * the owner can read a Space in this build. */
+  async requireOwnedSpace(request, spaceId) {
+    const entry = await this.ctx.storage.get(`space/${spaceId}`);
+    if (!entry || entry.pending) throw spaceNotFound();
+    const response = await this.env.PROJECTS.getByName(spaceId).fetch(
+      forwarded(request, "/internal/space/read", { space_id: spaceId }),
+    );
+    if (response.status === 404) throw spaceNotFound();
+    if (!response.ok) throw new HttpError(503, "Project is temporarily unavailable");
+    await response.body?.cancel().catch(() => {});
+  }
+
+  /**
+   * move_page. The Catalog checks the move against this account's own
+   * entries, plans it (the root, then each descendant whose Project
+   * changes), and journals the plan under the request's key with a pending
+   * marker in one write. page-move.mjs then drives one Page at a time; each
+   * step is fenced by the placement epoch observed at planning time.
+   */
+  async movePage(request, identity, args) {
+    const storage = this.ctx.storage;
+    const input = validateMoveInput(args);
+    const key = mutationKey(args);
+    const digest = await fingerprint("move_page", args, identity);
+    const inspected = await inspectOperation(storage, {
+      key,
+      digest,
+      retryToken: args.retry_token,
+      scope: `catalog:${identity.principal}`,
+      principal: identity.principal,
+    });
+    let intent = inspected.entry;
+    if (intent && !intent.pending) {
+      // A previous attempt may have stored its receipt before sync failed.
+      await storage.sync();
+      return json(intent.receipt);
+    }
+    if (!intent) {
+      await this.settlePendingMoves(request);
+      const plan = await this.planMove(request, input);
+      intent = await reserveOperation(storage, {
+        key,
+        retry: inspected.retry,
+        entry: {
+          fingerprint: digest,
+          pending: true,
+          operation: "move_page",
+          pageId: input.pageId,
+          createdAt: new Date().toISOString(),
+          title: plan.title,
+          descendants: plan.descendants,
+          steps: plan.steps,
+          move: pageMoveStart(plan.steps.length),
+        },
+      });
+      await storage.put({ [key]: intent, [movePendingKey(key)]: { key } });
+    }
+    return this.runMove(request, key, intent);
+  }
+
+  /** Finish every move a crash or an unavailable Page left pending, oldest
+   * marker first. A move that still can't finish refuses the caller as
+   * retryable; it never lets another placement change interleave. */
+  async settlePendingMoves(request) {
+    const storage = this.ctx.storage;
+    for (const [marker, { key }] of await storage.list({ prefix: MOVE_PENDING_PREFIX })) {
+      const intent = await storage.get(key);
+      // A committed or released move leaves at most a stale marker.
+      if (intent?.pending) await this.runMove(request, key, intent);
+      else await storage.delete(marker);
+      if (await storage.get(marker)) throw moveUnsettled();
+    }
+  }
+
+  /** Check a move against this account's entries and plan its steps. */
+  async planMove(request, { pageId, spaceId: requestedSpace, parentId, position }) {
+    const storage = this.ctx.storage;
+    // An unsettled Trash or restore anywhere in the subtree may already have
+    // applied; settle it before trusting any entry.
+    let tree = await this.subtreeOf(pageId);
+    if (tree.unsettled.length) {
+      await this.settleReservations(tree.unsettled);
+      tree = await this.subtreeOf(pageId);
+    }
+    const entry = await storage.get(`page/${pageId}`);
+    if (!entry || entry.reservation) {
+      if (await storage.get(`trash/${pageId}`))
+        throw new HttpError(409, "Restore this Page from Trash before moving it", "page_trashed");
+      if (await storage.get(`shared/${pageId}`))
+        throw new HttpError(403, "Only the Page's owner can move it", "not_page_owner");
+      throw new HttpError(404, "Page not found");
+    }
+    if (entry.pending || tree.unsettled.length || tree.pending) throw lifecycleUnsettled();
+    const current = entryPlacement(entry);
+    if (current.home)
+      throw new HttpError(
+        409,
+        "A Project's home Page stays with its Project; it can't be moved",
+        "home_page_protected",
+      );
+    let spaceId = requestedSpace ?? null;
+    // A top-level Page is at depth 1.
+    let depth = 1;
+    if (parentId) {
+      if (tree.members.some((member) => member.pageId === parentId))
+        throw new HttpError(
+          409,
+          "A Page can't move under itself or one of its sub-pages",
+          "placement_cycle",
+        );
+      const parent = await this.activeParent(parentId);
+      const parentPlacement = entryPlacement(parent);
+      if (requestedSpace !== undefined && parentPlacement.space_id !== requestedSpace)
+        throw new HttpError(
+          400,
+          "parent_id is not in that Project. Omit project_id: a parent implies its Project.",
+          "placement_mismatch",
+        );
+      spaceId = parentPlacement.space_id;
+      depth = 2;
+      for (let cursor = parentPlacement.parent_id; cursor && depth <= MAX_DEPTH; depth++) {
+        const ancestor =
+          (await storage.get(`page/${cursor}`)) ?? (await storage.get(`trash/${cursor}`));
+        cursor = ancestor ? entryPlacement(ancestor).parent_id : null;
+      }
+    }
+    const height = Math.max(...tree.members.map((member) => member.depth));
+    if (depth + height > MAX_DEPTH)
+      throw new HttpError(
+        400,
+        `Pages nest at most ${MAX_DEPTH} levels deep, and this move would nest its sub-pages deeper`,
+        "nesting_depth_exceeded",
+      );
+    if (spaceId) await this.requireOwnedSpace(request, spaceId);
+    const siblings = [...(await catalogEntries(storage, "page/")).values()]
+      .filter((sibling) => {
+        const placement = entryPlacement(sibling);
+        return (
+          sibling.page_id !== pageId &&
+          placement.space_id === spaceId &&
+          placement.parent_id === parentId &&
+          typeof placement.position === "string"
+        );
+      })
+      .map((sibling) => ({ page_id: sibling.page_id, position: entryPlacement(sibling).position }))
+      .sort((a, b) =>
+        a.position === b.position
+          ? a.page_id.localeCompare(b.page_id)
+          : a.position < b.position
+            ? -1
+            : 1,
+      );
+    const steps = [
+      {
+        page_id: pageId,
+        expected_epoch: current.placement_epoch,
+        placement: {
+          space_id: spaceId,
+          parent_id: parentId,
+          position: siblingPosition(siblings, position),
+        },
+      },
+    ];
+    // Sub-pages keep their parent and order. Their Project follows the root.
+    if (spaceId !== current.space_id)
+      for (const member of tree.members) {
+        if (member.pageId === pageId) continue;
+        const placement = entryPlacement(member.entry);
+        if (placement.space_id === spaceId) continue;
+        steps.push({
+          page_id: member.pageId,
+          expected_epoch: placement.placement_epoch,
+          placement: {
+            space_id: spaceId,
+            parent_id: placement.parent_id,
+            position: placement.position ?? "a0",
+          },
+        });
+      }
+    return {
+      title: catalogTitle(entry.title),
+      descendants: tree.members.length - 1,
+      steps,
+    };
+  }
+
+  /** The Page and every owned descendant, active or in Trash, top-down with
+   * each one's depth below the root (the root is 0). `unsettled` lists
+   * members with a Trash or restore reservation; `pending` says a sub-page
+   * is still being created. */
+  async subtreeOf(pageId) {
+    const storage = this.ctx.storage;
+    const known = new Map();
+    const unsettled = new Set();
+    let pending = false;
+    for (const prefix of ["page/", "trash/"])
+      for (const entry of (await storage.list({ prefix, limit: 1000 })).values()) {
+        if (!entry?.page_id) continue;
+        if (entry.reservation) {
+          unsettled.add(entry.page_id);
+          // A restore slot records the parent it returns under.
+          if (!known.has(entry.page_id)) known.set(entry.page_id, { entry, reserved: true });
+          continue;
+        }
+        const seen = known.get(entry.page_id);
+        if (!seen || seen.reserved) known.set(entry.page_id, { entry });
+      }
+    const children = new Map();
+    for (const [id, { entry }] of known) {
+      const parent = entryPlacement(entry).parent_id;
+      if (!parent) continue;
+      if (!children.has(parent)) children.set(parent, []);
+      children.get(parent).push(id);
+    }
+    const members = [];
+    const queue = [{ pageId, depth: 0 }];
+    const visited = new Set();
+    while (queue.length) {
+      const next = queue.shift();
+      if (visited.has(next.pageId)) continue;
+      visited.add(next.pageId);
+      const found = known.get(next.pageId);
+      if (next.pageId !== pageId && found?.entry.pending && !found.entry.reservation) pending = true;
+      members.push({ ...next, entry: found?.entry ?? { page_id: next.pageId } });
+      for (const child of children.get(next.pageId) ?? [])
+        queue.push({ pageId: child, depth: next.depth + 1 });
+    }
+    return {
+      members,
+      unsettled: members.map((member) => member.pageId).filter((id) => unsettled.has(id)),
+      pending,
+    };
+  }
+
+  /** Run a move from its persisted state. Each step's outcome is projected
+   * and the next state persisted before the following step starts, so a
+   * retry resumes at the step it stopped on. */
+  async runMove(request, key, intent) {
+    const storage = this.ctx.storage;
+    let state = intent.move;
+    let refusal;
+    for (let effect = pageMoveEffect(state); effect; ) {
+      let event;
+      if (effect.type === "place_page") {
+        const step = intent.steps[effect.index];
+        const answer = await this.placePage(request, key, step, effect.index === 0);
+        if (answer.unavailable) return answer.reply;
+        if (answer.current) await projectPlacement(storage, step.page_id, answer.current);
+        if (answer.skipped) (intent.skipped ??= []).push(step.page_id);
+        refusal = answer.reply;
+        event = { type: answer.refused ? "refused" : "placed" };
+      } else if (effect.type === "commit_catalog") {
+        const [root] = intent.steps;
+        intent.receipt = {
+          page_id: intent.pageId,
+          moved: true,
+          title: intent.title,
+          space_id: root.placement.space_id,
+          parent_id: root.placement.parent_id,
+          position: root.placement.position,
+          descendants: intent.descendants,
+          ...(intent.skipped?.length && { skipped: intent.skipped }),
+        };
+        intent.pending = false;
+        event = { type: "committed" };
+      } else if (effect.type === "release_intent") {
+        // Only the root refuses a move, and it is the first step: nothing
+        // changed, so a retry starts over as a new request.
+        await storage.delete(key);
+        await storage.delete(movePendingKey(key));
+        await storage.sync();
+        return refusal;
+      } else throw new Error(`A move can't run ${effect.type}`);
+      ({ state, effect } = pageMoveTransition(state, event));
+      if (state.name === "released") continue;
+      intent.move = state;
+      await storage.put(key, intent);
+      if (state.name === "ready") {
+        await storage.delete(movePendingKey(key));
+        await markCatalogIndexDirty(storage);
+        await storage.sync();
+      }
+    }
+    return json(intent.receipt);
+  }
+
+  /** Send one move step to its Page. `unavailable` keeps the move pending;
+   * `refused` releases it when the root refused before changing anything;
+   * `skipped` moves past a descendant that is gone or kept its placement. */
+  async placePage(request, key, step, root) {
+    let response;
+    try {
+      response = await this.env.PAGES.getByName(step.page_id).fetch(
+        forwarded(request, "/internal/place", {
+          page_id: step.page_id,
+          idempotency_key: key.slice("host/operation/".length),
+          expected_epoch: step.expected_epoch,
+          placement: step.placement,
+          ...(root && { root: true }),
+        }),
+      );
+    } catch (error) {
+      logFailure(error, "catalog-move");
+      const unsettled = moveUnsettled();
+      return {
+        unavailable: true,
+        reply: json({ error: unsettled.message, code: unsettled.code, retryable: true }, 503),
+      };
+    }
+    if (response.status === 404)
+      return root ? { refused: true, reply: response } : { skipped: true };
+    if (!response.ok) {
+      if (response.headers.get("x-pages-placement-rejected") === "before-change")
+        return root ? { refused: true, reply: response } : { skipped: true };
+      return { unavailable: true, reply: response };
+    }
+    const { superseded, current } = await response.json();
+    if (!superseded) return { current };
+    if (root)
+      return {
+        refused: true,
+        current,
+        reply: json(
+          {
+            error:
+              "This Page changed placement since the move was planned. List it again and retry with a new idempotency_key.",
+            code: "placement_changed",
+          },
+          409,
+        ),
+      };
+    return { current, skipped: true };
   }
 
   /** The parent's Catalog entry when it can take a new child: owned, created
@@ -2636,6 +3065,18 @@ export class Page {
           return response;
         }
       }
+      if (url.pathname === "/internal/place") {
+        try {
+          return await this.place(request, identity);
+        } catch (error) {
+          // Every 4xx but 404 is raised before the placement changes, so the
+          // Catalog can release a move whose root refused it.
+          if (!(error.status >= 400 && error.status < 500) || error.status === 404) throw error;
+          const response = errorResponse(error, "page-placement");
+          response.headers.set("x-pages-placement-rejected", "before-change");
+          return response;
+        }
+      }
       if (pageState(this.metadata) === "deleted") {
         // Only the owner and current grant holders learn that it was deleted.
         if (admissionRoute && !this.disclosesDeletion(identity.principal))
@@ -2886,6 +3327,55 @@ export class Page {
 
   lifecycleResponse(receipt) {
     return json({ receipt, current: this.lifecycleCurrent() });
+  }
+
+  /** Take one move_page step from the owner's Catalog. The Catalog fences the
+   * step with the placement epoch it observed (`expected_epoch`). The Page
+   * applies it once, advancing the epoch, and records the intent key with
+   * the epoch it produced, so a lost reply replays the same answer. Any
+   * other epoch answers `superseded` with the current placement unchanged.
+   * `root` marks the Page the caller asked to move: only it is refused in
+   * Trash. A descendant in Trash moves with its subtree, so a restore later
+   * returns it to the right Project. */
+  async place(request, identity) {
+    requireWrite(identity);
+    if (pageRelation(this.metadata, identity.principal) !== "owner")
+      throw new HttpError(403, "Only the Page's owner can move it", "not_page_owner");
+    const args = await readJson(request);
+    if (args?.page_id !== this.metadata.pageId) throw new HttpError(400, "Invalid page_id");
+    const key = mutationKey(args);
+    if (!Number.isSafeInteger(args.expected_epoch) || args.expected_epoch < 0)
+      throw new HttpError(400, "Invalid expected_epoch");
+    const state = pageState(this.metadata);
+    if (state === "deleted") throw new HttpError(404, "Page not found");
+    const current = pagePlacement(this.metadata);
+    const recorded = this.metadata.placementMove;
+    if (recorded?.key === key && recorded.epoch === current.placement_epoch)
+      return json({ applied: true, replayed: true, current: this.lifecycleCurrent() });
+    if (current.placement_epoch !== args.expected_epoch)
+      return json({ applied: false, superseded: true, current: this.lifecycleCurrent() });
+    if (current.home)
+      throw new HttpError(
+        409,
+        "A Project's home Page stays with its Project; it can't be moved",
+        "home_page_protected",
+      );
+    if (args.root === true && state === "trashed")
+      throw new HttpError(409, "Restore this Page from Trash before moving it", "page_trashed");
+    const epoch = current.placement_epoch + 1;
+    const placement = validatePlacement({
+      space_id: args.placement?.space_id ?? null,
+      parent_id: args.placement?.parent_id ?? null,
+      position: args.placement?.position,
+      placement_epoch: epoch,
+    });
+    if (placement.parent_id === this.metadata.pageId)
+      throw new HttpError(409, "A Page can't move under itself", "placement_cycle");
+    const next = { ...this.metadata, placement, placementMove: { key, epoch } };
+    await this.ctx.storage.put("host/document", next);
+    await this.ctx.storage.sync();
+    this.metadata = next;
+    return json({ applied: true, current: this.lifecycleCurrent() });
   }
 
   /** Interpret an owner Catalog's trash, restore or purge request. run() has

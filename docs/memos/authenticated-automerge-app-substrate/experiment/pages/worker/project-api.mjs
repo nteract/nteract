@@ -32,6 +32,7 @@ const MAPPED_RESULTS = new Set([
   "delete_page",
   "restore_page",
   "purge_page",
+  "move_page",
 ]);
 
 export const renamedTool = (name) =>

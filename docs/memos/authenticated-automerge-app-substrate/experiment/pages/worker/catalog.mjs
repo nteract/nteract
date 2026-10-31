@@ -16,7 +16,7 @@
 import { markCatalogIndexDirty } from "./catalog-index.mjs";
 import { RETRY_LIFETIME_MS } from "./operation-journal.mjs";
 import { operationIntent } from "./operation-intent.mjs";
-import { placementEntry } from "./spaces.mjs";
+import { entryPlacement, placementEntry } from "./spaces.mjs";
 
 export const CATALOG_LIMIT = 100;
 export const TRASH_LIMIT = 100;
@@ -244,6 +244,23 @@ async function projectEntries(storage, pageId, current) {
     await storage.put(`page/${pageId}`, base);
     await storage.delete(`trash/${pageId}`);
   } else throw new TypeError("Unknown Page lifecycle state");
+}
+
+/** Copy a moved Page's placement into this account's entry for it, active or
+ * in Trash. Placement only moves forward by epoch, so a late or replayed
+ * answer never undoes a newer move. The D1 index reconciles from these
+ * entries. Returns whether an entry changed. */
+export async function projectPlacement(storage, pageId, current) {
+  if (!Number.isSafeInteger(current?.placement_epoch)) return false;
+  for (const key of [`page/${pageId}`, `trash/${pageId}`]) {
+    const entry = await storage.get(key);
+    if (!entry || entry.reservation || entry.pending) continue;
+    if (entryPlacement(entry).placement_epoch > current.placement_epoch) return false;
+    await storage.put(key, { ...entry, ...placementEntry(current) });
+    await markCatalogIndexDirty(storage);
+    return true;
+  }
+  return false;
 }
 
 /** Owned entries under `prefix` by Page ID, without reservations or pending

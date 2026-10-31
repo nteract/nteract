@@ -1639,3 +1639,35 @@ details.account-actions > div a:hover {
   color: var(--foreground);
   text-decoration: underline;
 }
+
+/* "Move to…": the switcher's dialog with one radio row per destination. */
+.move-destinations {
+  max-height: 52dvh;
+}
+.move-destination {
+  cursor: pointer;
+}
+.move-destination input {
+  margin: 0;
+  flex-shrink: 0;
+}
+.move-destination:has(input:checked) {
+  background: var(--accent-soft);
+}
+.move-destination.disabled {
+  cursor: default;
+  color: var(--muted-foreground);
+}
+.move-status {
+  padding: 0 1.2rem 1rem;
+}
+.move-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.5rem;
+  padding: 0.75rem 1.2rem 1rem;
+  border-top: 1px solid var(--border);
+}
+.page-row-menu[open] .page-row-action {
+  opacity: 1;
+}
