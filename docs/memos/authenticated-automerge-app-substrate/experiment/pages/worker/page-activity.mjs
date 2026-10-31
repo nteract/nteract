@@ -22,6 +22,7 @@ const identityView = ({ principal, displayName, driver }) => ({ principal, displ
 const publicProgress = ({ progress_id, identity, message, targets, updatedAt, expiresAt }) => ({
   progress_id,
   ...identityView(identity),
+  agent: identity.agent ?? null,
   message,
   targets,
   updated_at: iso(updatedAt),

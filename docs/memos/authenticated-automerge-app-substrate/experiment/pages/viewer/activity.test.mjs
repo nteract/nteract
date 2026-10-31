@@ -152,3 +152,46 @@ test("agent presence entries are validated one at a time", async () => {
   });
   assert.equal(older.agents.size, 0);
 });
+
+test("a caret and a progress lease from one agent session are one participant", async () => {
+  const { agentParticipants } = await import("./activity.mjs");
+  const who = { principal: "user:kyle", displayName: "Kyle", driver: "Kilo" };
+  const session = {
+    agentPresence: new Map([
+      ["c1", { ...who, agent: "release agent", agent_id: "c1", state: "active", until: 5000 }],
+      ["c2", { ...who, agent: "rich text", agent_id: "c2", state: "idle", until: 5000 }],
+    ]),
+    agentProgress: new Map([
+      ["p1", { ...who, agent: "release agent", progress_id: "p1", message: "Old", until: 3000 }],
+      ["p2", { ...who, agent: "release agent", progress_id: "p2", message: "New", until: 4000 }],
+      ["p3", { ...who, agent: null, progress_id: "p3", message: "No label", until: 4000 }],
+      ["p4", { ...who, agent: "rich text", progress_id: "p4", message: "Expired", until: 500 }],
+    ]),
+  };
+  const participants = agentParticipants(session, 1000);
+  assert.deepEqual(
+    participants.map((p) => [
+      p.agent,
+      p.presence?.agent_id ?? null,
+      p.progress.map((x) => x.message),
+    ]),
+    [
+      ["release agent", "c1", ["New", "Old"]],
+      ["rich text", "c2", []],
+      [null, null, ["No label"]],
+    ],
+  );
+  const counted = pageActivity({ ...session, peers: new Map() }, 1000, {
+    resolveSelections: false,
+  });
+  assert.equal(counted.agents.length, 3);
+});
+
+test("progress snapshots keep the session label", () => {
+  const raw = message();
+  raw.progress[0].agent = "release agent";
+  const snapshot = activitySnapshot(raw, 1000);
+  assert.equal([...snapshot.progress.values()][0].agent, "release agent");
+  const unlabeled = activitySnapshot(message(), 1000);
+  assert.equal([...unlabeled.progress.values()][0].agent, null);
+});

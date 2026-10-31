@@ -200,6 +200,17 @@
   font-weight: 500;
   opacity: 0.85;
 }
+/* An agent's latest progress message, under its name on the caret or dot. */
+.wordgard-caret-layer .peer-caret > span small,
+.wordgard-caret-layer .agent-dot > span small {
+  display: block;
+  max-width: 260px;
+  overflow: hidden;
+  font-weight: 400;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  opacity: 0.9;
+}
 /* Reading: a bar in the left margin beside the passage an agent read. */
 .wordgard-caret-layer .agent-reading {
   position: absolute;

@@ -325,3 +325,19 @@ test("an oversized presence update is dropped without failing the call", (t) => 
   assert.equal(f.activity.agentEvent(agentIdentity(), "write", huge), false);
   assert.equal(f.broadcasts.length, 0);
 });
+
+test("progress carries the agent's session label so it merges with its caret", (t) => {
+  const f = fixture(t);
+  f.activity.report(f.doc, agentIdentity({ driver: "Kilo", agent: "release agent" }), {
+    page_id: pageId,
+    message: "Reviewing",
+  });
+  f.activity.report(f.doc, agentIdentity({ driver: "Kilo" }), { page_id: pageId, message: "Plain" });
+  assert.deepEqual(
+    f.broadcasts.at(-1).progress.map((p) => [p.message, p.agent]),
+    [
+      ["Reviewing", "release agent"],
+      ["Plain", null],
+    ],
+  );
+});

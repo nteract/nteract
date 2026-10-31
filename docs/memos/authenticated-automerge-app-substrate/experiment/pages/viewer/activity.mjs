@@ -82,6 +82,7 @@ export function activitySnapshot(message, now = monotonicNow()) {
         principal: item.principal,
         displayName: item.displayName,
         driver: item.driver,
+        agent: bounded(item.agent, 128) ? item.agent : null,
         message: item.message,
         targets,
         until: now + remaining,
@@ -168,12 +169,45 @@ export function progressPassages(session, now = sessionNow(session)) {
   return result;
 }
 
+/** One key per agent session: account, harness and optional session label.
+ * A caret and a progress lease with the same key are one participant. */
+export const agentKey = (item) =>
+  [item.principal ?? "", item.driver ?? "", item.agent ?? ""].join("\u0000");
+
+/** Agents in this Page, merged: each has its caret or reading marker (if any)
+ * and its live progress leases, newest first. */
+export function agentParticipants(session, now = sessionNow(session)) {
+  const participants = new Map();
+  const entry = (item) => {
+    const key = agentKey(item);
+    if (!participants.has(key))
+      participants.set(key, {
+        key,
+        principal: item.principal,
+        displayName: item.displayName,
+        driver: item.driver,
+        agent: item.agent ?? null,
+        presence: null,
+        progress: [],
+      });
+    return participants.get(key);
+  };
+  for (const item of session.agentPresence?.values() ?? [])
+    if (item.until > now) entry(item).presence = item;
+  for (const item of session.agentProgress?.values() ?? [])
+    if (item.until > now) entry(item).progress.push(item);
+  for (const participant of participants.values())
+    participant.progress.sort((a, b) => b.until - a.until);
+  return [...participants.values()];
+}
+
 export function pageActivity(
   session,
   now = sessionNow(session),
   { resolveSelections = true } = {},
 ) {
   const progress = [...(session.agentProgress?.values() ?? [])].filter((item) => item.until > now);
+  const agents = agentParticipants(session, now);
   const peers = [...(session.peers ?? [])]
     .filter(([, item]) => now - item.at <= 30000)
     .map(([id, item]) => ({
@@ -181,5 +215,5 @@ export function pageActivity(
       ...item,
       ...(resolveSelections ? { selection: resolvePeerSelection(session.doc, item.value) } : {}),
     }));
-  return { progress, peers };
+  return { progress, agents, peers };
 }
