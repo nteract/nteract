@@ -33,6 +33,7 @@ import { MISSING_EDITS_MESSAGE } from "../shared/receipts.mjs";
 import { openingTitleWarning } from "../model/title-warning.mjs";
 import {
   authenticate,
+  agentLabel,
   driverLabel,
   requireSameOrigin,
   requireWrite,
@@ -334,6 +335,8 @@ function forwarded(request, path, body) {
   }
   if (request.headers.has("x-pages-driver") || new URL(request.url).searchParams.has("driver"))
     headers.set("x-pages-driver", driverLabel(request));
+  const agent = agentLabel(request);
+  if (agent) headers.set("x-pages-agent", agent);
   headers.set("content-type", "application/json");
   return new Request(url, { method: "POST", headers, body: JSON.stringify(body) });
 }

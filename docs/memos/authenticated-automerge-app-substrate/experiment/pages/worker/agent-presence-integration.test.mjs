@@ -39,7 +39,7 @@ class Storage {
   async sync() {}
 }
 
-async function fixture(t, driver = "Kilo") {
+async function fixture(t, driver = "Kilo", agent) {
   const auth = await createAuthFixture();
   t.mock.method(globalThis, "fetch", auth.fetch);
   const token = auth.apiKey();
@@ -75,7 +75,11 @@ async function fixture(t, driver = "Kilo") {
     const response = await worker.fetch(
       new Request("https://pages.invalid/api/tools", {
         method: "POST",
-        headers: { authorization: `Bearer ${token}`, "x-pages-driver": driver },
+        headers: {
+          authorization: `Bearer ${token}`,
+          "x-pages-driver": driver,
+          ...(agent && { "x-pages-agent": agent }),
+        },
         body: JSON.stringify({ operation, arguments: { page_id: pageId, ...args } }),
       }),
       auth.env,
@@ -182,12 +186,12 @@ test("block operations target the block; targeted reads show reading markers", a
   assert.equal(presence.agents[0].targets[0].quote, "fade");
 });
 
-test("an API key claiming the Browser driver still shows, marked as declared", async (t) => {
-  const f = await fixture(t, "Browser");
+test("a session label travels from the header to the caret", async (t) => {
+  const f = await fixture(t, "Kilo", "release agent");
   await f.call("read_page", { search: ["fade"] });
   const [agent] = f.agents();
-  assert.equal(agent.driver, "Browser");
-  assert.equal(agent.declared, true);
+  assert.equal(agent.driver, "Kilo");
+  assert.equal(agent.agent, "release agent");
 });
 
 test("reading markers name what the agent read, even if text lands during the read", async (t) => {

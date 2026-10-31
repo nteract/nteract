@@ -30,13 +30,17 @@ export function driverLabel(request) {
   return value.trim();
 }
 
-// A stable id for a bearer token, so presence can tell two keys of one account
-// apart. Kept in host memory only; never broadcast.
-async function credentialDigest(token) {
-  const bytes = new Uint8Array(
-    await crypto.subtle.digest("SHA-256", new TextEncoder().encode(token)),
-  );
-  return [...bytes.slice(0, 16)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+/** An agent's optional session label, such as "release agent", so two
+ * sessions of one account and harness show and key as separate agents. It is
+ * trusted like the driver: it always sits under the authenticated account. */
+export function agentLabel(request) {
+  const value =
+    request.headers.get("x-pages-agent") ?? new URL(request.url).searchParams.get("agent");
+  if (value === null) return undefined;
+  // eslint-disable-next-line no-control-regex
+  if (!value.trim() || value.length > 80 || /[\x00-\x1f\x7f]/.test(value))
+    throw new HttpError(400, "Invalid agent label");
+  return value.trim();
 }
 
 export function requireSameOrigin(request, env) {
@@ -70,6 +74,7 @@ async function withDomainAccess(identity, env) {
 export async function authenticate(request, env) {
   requireSameOrigin(request, env);
   const driver = driverLabel(request);
+  const agent = agentLabel(request);
   const authorization = request.headers.get("authorization");
   if (authorization) {
     if (!/^Bearer \S+$/i.test(authorization)) throw new HttpError(401, "Use a bearer credential");
@@ -103,13 +108,6 @@ export async function authenticate(request, env) {
       const scopes = new Set(grant.scope.split(" "));
       if (!scopes.has("pages:read"))
         throw new HttpError(403, "Pages read permission is required", "oauth_insufficient_scope");
-      const clientLabel = ["pages-chatgpt", "https://chatgpt.com/oauth/client.json"].includes(
-        grant.clientId,
-      )
-        ? "ChatGPT"
-        : grant.clientId === "pages-kilo"
-          ? "Kilo"
-          : "MCP";
       return withDomainAccess(
         {
           principal: grant.identity.principal,
@@ -117,9 +115,12 @@ export async function authenticate(request, env) {
           driver:
             request.headers.has("x-pages-driver") || new URL(request.url).searchParams.has("driver")
               ? driver
-              : clientLabel,
-          // Presence comes from the grant's client binding, not a header.
-          presence: { key: `oauth:${grant.clientId}`, label: clientLabel, declared: false },
+              : ["pages-chatgpt", "https://chatgpt.com/oauth/client.json"].includes(grant.clientId)
+                ? "ChatGPT"
+                : grant.clientId === "pages-kilo"
+                  ? "Kilo"
+                  : "MCP",
+          ...(agent && { agent }),
           canWrite: scopes.has("pages:write"),
           credentialKind: "oauth",
           namespace: grant.identity.namespace,
@@ -165,9 +166,7 @@ export async function authenticate(request, env) {
         principal: identity.principal,
         displayName: identity.metadata.displayName || identity.principal,
         driver,
-        // An API key can name any driver, so presence shows it as declared
-        // and keys records by the key itself.
-        presence: { key: `key:${await credentialDigest(token)}`, label: driver, declared: true },
+        ...(agent && { agent }),
         canWrite: identity.scope === "editor",
         credentialKind: "api-key",
         namespace: identity.metadata.principalNamespace,

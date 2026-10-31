@@ -168,11 +168,12 @@ export function createWordgardCollaboration({
       const identity = activityIdentity(agent);
       const base = {
         session: `agent:${agent.agent_id}`,
-        displayName: identity.driver || identity.name,
-        tag: agent.declared ? "API key" : "agent",
-        title: agent.declared
-          ? `${identity.name}, with an API key labeled "${identity.driver}"`
-          : identity.label,
+        // "Kyle's Kilo · release agent": account, harness, session label.
+        displayName: [`${identity.name}'s ${identity.driver}`, agent.agent]
+          .filter(Boolean)
+          .join(" · "),
+        tag: "agent",
+        title: agent.agent ? `${identity.label} (${agent.agent})` : identity.label,
         color: presenceColor(agent.principal, agent.driver),
         idle: agent.state === "idle",
       };

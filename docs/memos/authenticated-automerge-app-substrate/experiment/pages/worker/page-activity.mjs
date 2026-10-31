@@ -32,8 +32,8 @@ const publicAgent = ({ agent_id, identity, record }) => ({
   agent_id,
   principal: identity.principal,
   displayName: identity.displayName,
-  driver: identity.presence.label,
-  declared: identity.presence.declared,
+  driver: identity.driver,
+  agent: identity.agent ?? null,
   state: record.state,
   seq: record.seq,
   targets: record.targets,
@@ -125,25 +125,21 @@ export class PageActivity {
    * never fails the call it describes: an invalid identity or an oversized
    * snapshot leaves the roster unchanged. */
   agentEvent(identity, type, targets) {
-    // Only API credentials get agent presence. A person's browser session
-    // already shows their caret, and a driver header can't change this.
-    const presence = identity?.presence;
-    if (
-      !["oauth", "api-key"].includes(identity?.credentialKind) ||
-      !presence ||
-      typeof presence.key !== "string" ||
-      !presence.key ||
-      presence.key.length > 128 ||
-      typeof presence.declared !== "boolean" ||
-      !Array.isArray(targets)
-    )
+    // Only API credentials get agent presence: a person's browser session
+    // already shows their caret. Labels sit under the authenticated account.
+    if (!["oauth", "api-key"].includes(identity?.credentialKind) || !Array.isArray(targets))
       return false;
     for (const [value, max] of [
       [identity.principal, 512],
       [identity.displayName, 256],
-      [presence.label, 128],
+      [identity.driver, 128],
     ])
       if (typeof value !== "string" || !value || value.length > max) return false;
+    if (
+      identity.agent !== undefined &&
+      (typeof identity.agent !== "string" || !identity.agent || identity.agent.length > 128)
+    )
+      return false;
     let generation;
     try {
       const access = this.readAccess(identity);
@@ -154,7 +150,8 @@ export class PageActivity {
     }
     this.prune();
     const now = this.now();
-    const key = `${identity.principal}\u0000${presence.key}`;
+    // One record per account, harness and session label.
+    const key = [identity.principal, identity.driver, identity.agent ?? ""].join("\u0000");
     const previous = this.agents.get(key);
     const record = transition(previous?.record ?? null, {
       type,

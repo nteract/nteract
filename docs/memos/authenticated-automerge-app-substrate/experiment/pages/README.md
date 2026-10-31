@@ -958,11 +958,13 @@ concurrent typing. They travel in the `page-activity` snapshot and are never
 written to the document, a receipt or the journal; a replayed receipt publishes
 nothing. A caret is active for 15 s after a write, then fades, and disappears 60 s
 after the agent's last call; a reading marker lasts 10 s. Only API credentials
-get presence: a browser sign-in session publishes nothing, since that person's
-editor shows their own caret. An OAuth agent's label comes from its client
-binding. An API key's label is its own `x-pages-driver`, shown as declared, and
-each key is its own record, so one caller can't replace or hide another's.
-A reading marker's targets are captured on the revision the read returned.
+(an API key or MCP OAuth) get presence: a browser sign-in session publishes
+nothing, since that person's editor shows their own caret. A caret reads
+"Kyle's Kilo · release agent": the account, the `x-pages-driver` harness and an
+optional `x-pages-agent` session label. Labels sit under the authenticated
+account and are trusted as such. Records key by account, harness and session
+label, so two sessions of one account keep separate carets. A reading marker's
+targets are captured on the revision the read returned.
 Each participant's color comes from nteract's cursor palette, keyed by
 principal and driver.
 

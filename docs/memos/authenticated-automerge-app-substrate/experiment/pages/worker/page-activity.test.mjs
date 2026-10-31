@@ -228,13 +228,8 @@ test("reverse selections trust live native peers and expire on server time or di
 });
 
 const blockTarget = (f) => [{ kind: "block", block_id: f.blockId }];
-// An API-key agent; presence keys on the key, and its driver is declared.
-const agentIdentity = (extra = {}, presence = {}) =>
-  identity({
-    credentialKind: "api-key",
-    presence: { key: "key:one", label: "ChatGPT", declared: true, ...presence },
-    ...extra,
-  });
+// An API-key agent session.
+const agentIdentity = (extra = {}) => identity({ credentialKind: "api-key", ...extra });
 
 test("agent presence follows its lifetime on the host's timer", (t) => {
   const f = fixture(t);
@@ -282,34 +277,46 @@ test("agent presence needs an agent driver, current read access and a live crede
   assert.deepEqual(f.broadcasts.at(-1).agents, []);
 });
 
-test("two agents on one account are separate; the roster keeps the most recent eight", (t) => {
+test("records key by account, harness and session label; the roster keeps eight", (t) => {
   const f = fixture(t);
   f.activity.agentEvent(
-    agentIdentity({}, { key: "key:a", label: "Kilo" }),
+    agentIdentity({ driver: "Kilo", agent: "release agent" }),
     "write",
     blockTarget(f),
   );
   f.activity.agentEvent(
-    agentIdentity({}, { key: "key:b", label: "Codex" }),
+    agentIdentity({ driver: "Kilo", agent: "rich text" }),
     "write",
     blockTarget(f),
   );
+  f.activity.agentEvent(agentIdentity({ driver: "Codex" }), "write", blockTarget(f));
   assert.deepEqual(
-    f.broadcasts.at(-1).agents.map((a) => a.driver),
-    ["Kilo", "Codex"],
+    f.broadcasts.at(-1).agents.map((a) => [a.driver, a.agent]),
+    [
+      ["Kilo", "release agent"],
+      ["Kilo", "rich text"],
+      ["Codex", null],
+    ],
   );
+  // The same session writing again updates its own record.
+  f.activity.agentEvent(
+    agentIdentity({ driver: "Kilo", agent: "rich text" }),
+    "read",
+    blockTarget(f),
+  );
+  assert.equal(f.broadcasts.at(-1).agents.length, 3);
   for (let i = 0; i < 9; i++) {
     t.mock.timers.tick(10);
     f.activity.agentEvent(
-      agentIdentity({}, { key: `key:${i}`, label: `Agent ${i}` }),
+      agentIdentity({ driver: "Kilo", agent: `session ${i}` }),
       "write",
       blockTarget(f),
     );
   }
-  const drivers = f.broadcasts.at(-1).agents.map((a) => a.driver);
-  assert.equal(drivers.length, 8);
-  assert.ok(!drivers.includes("Kilo"));
-  assert.ok(drivers.includes("Agent 8"));
+  const agents = f.broadcasts.at(-1).agents.map((a) => a.agent);
+  assert.equal(agents.length, 8);
+  assert.ok(!agents.includes("release agent"));
+  assert.ok(agents.includes("session 8"));
 });
 
 test("an oversized presence update is dropped without failing the call", (t) => {
@@ -317,31 +324,4 @@ test("an oversized presence update is dropped without failing the call", (t) => 
   const huge = Array.from({ length: 3 }, () => ({ kind: "block", block_id: "x".repeat(30_000) }));
   assert.equal(f.activity.agentEvent(agentIdentity(), "write", huge), false);
   assert.equal(f.broadcasts.length, 0);
-});
-
-test("presence keys on the credential, so a driver label can't replace or hide a record", (t) => {
-  const f = fixture(t);
-  const kilo = agentIdentity({}, { key: "oauth:pages-kilo", label: "Kilo", declared: false });
-  f.activity.agentEvent(kilo, "write", blockTarget(f));
-  // Another key on the same account claims to be Kilo: a second, declared record.
-  const spoof = agentIdentity({}, { key: "key:other", label: "Kilo", declared: true });
-  f.activity.agentEvent(spoof, "write", blockTarget(f));
-  let agents = f.broadcasts.at(-1).agents;
-  assert.deepEqual(
-    agents.map((a) => [a.driver, a.declared]),
-    [
-      ["Kilo", false],
-      ["Kilo", true],
-    ],
-  );
-  // Claiming "Browser" with an API key still shows, labeled as declared.
-  const hidden = agentIdentity({}, { key: "key:hide", label: "Browser", declared: true });
-  assert.equal(f.activity.agentEvent(hidden, "read", blockTarget(f)), true);
-  agents = f.broadcasts.at(-1).agents;
-  assert.ok(agents.some((a) => a.driver === "Browser" && a.declared));
-  // No credential key: fail closed.
-  assert.equal(
-    f.activity.agentEvent(agentIdentity({ presence: undefined }), "write", blockTarget(f)),
-    false,
-  );
 });

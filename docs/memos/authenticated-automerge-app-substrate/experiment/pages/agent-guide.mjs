@@ -800,7 +800,10 @@ the Page see your caret where the batch's last operation landed: a selection ove
 the text a replace_match or format_match changed that collapses to a caret, or a
 dot on a block you inserted, moved or replaced. A read_page by section, search,
 node_range or block_ids shows where you are reading; whole-page and outline reads
-show nothing. This presence is derived from your calls; you publish nothing extra. Use report_page_progress for temporary
+show nothing. This presence is derived from your calls; you publish nothing extra. People see
+it as your account and client, such as "Kyle's Kilo". If several sessions share one
+account and client, send an X-Pages-Agent header with a short session label (at
+most 80 characters), such as "release agent"; each label gets its own caret. Use report_page_progress for temporary
 agent activity and read_page_presence for recent selections. Use these tools for document work; /api/sync is a binary native client protocol,
 not a JSON editing endpoint.
 `;

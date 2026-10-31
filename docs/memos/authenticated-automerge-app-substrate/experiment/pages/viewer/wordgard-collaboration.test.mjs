@@ -415,7 +415,7 @@ test("an agent write fills the changed text, then collapses to a labeled caret",
   const map = current(doc).map;
   let [caret] = h.collaboration.carets();
   assert.equal(caret.type, "caret");
-  assert.equal(caret.displayName, "Kilo");
+  assert.equal(caret.displayName, "Kyle Kelley's Kilo");
   assert.equal(caret.tag, "agent");
   assert.equal(caret.title, "Kilo on behalf of Kyle Kelley");
   assert.equal(caret.position, map.amToWg[at + "Tuesday morning".length]);
@@ -458,7 +458,7 @@ test("reading shows a margin bar per passage, fills search hits, and labels once
   assert.deepEqual(
     bars.map((bar) => [bar.type, bar.label]),
     [
-      ["bar", "Kilo is reading"],
+      ["bar", "Kyle Kelley's Kilo is reading"],
       ["bar", ""],
     ],
   );
@@ -483,14 +483,13 @@ test("block targets become a corner dot; other blocks and expired agents show no
   );
 });
 
-test("an API key's declared driver is labeled as such", () => {
+test("a session label follows the account and harness", () => {
   const doc = fixture();
   const h = harness(doc);
   h.replica.agentPresence = new Map([
-    ["a", agent(doc, [{ kind: "block", block_id: "first" }], { declared: true })],
+    ["a", agent(doc, [{ kind: "block", block_id: "first" }], { agent: "release agent" })],
   ]);
   const [dot] = h.collaboration.carets();
-  assert.equal(dot.displayName, "Kilo");
-  assert.equal(dot.tag, "API key");
-  assert.equal(dot.title, 'Kyle Kelley, with an API key labeled "Kilo"');
+  assert.equal(dot.displayName, "Kyle Kelley's Kilo · release agent");
+  assert.equal(dot.title, "Kilo on behalf of Kyle Kelley (release agent)");
 });
