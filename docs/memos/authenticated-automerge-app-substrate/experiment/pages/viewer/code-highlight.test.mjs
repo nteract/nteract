@@ -145,7 +145,11 @@ async function harness() {
   const { wordgardCodeNewlines } = await import("./wordgard-binding.mjs");
   const { projectChanges } = await import("./wordgard-projection.mjs");
   const { codeHighlighting } = await import("./code-highlight.mjs");
-  const config = [GardState.schemaElement.of(schema.elements), wordgardCodeNewlines, codeHighlighting];
+  const config = [
+    GardState.schemaElement.of(schema.elements),
+    wordgardCodeNewlines,
+    codeHighlighting,
+  ];
   const field = codeHighlighting[0];
   const block = (type, params) => ({
     type: "block",
@@ -178,7 +182,10 @@ test("the highlight cap applies before tokenizing", async () => {
     });
     const found = ranges(state);
     assert.ok(found.length > 0);
-    assert.ok(found.every(([, to]) => to <= 1 + 10_000), `every range ends within the cap`);
+    assert.ok(
+      found.every(([, to]) => to <= 1 + 10_000),
+      `every range ends within the cap`,
+    );
   }
 });
 
