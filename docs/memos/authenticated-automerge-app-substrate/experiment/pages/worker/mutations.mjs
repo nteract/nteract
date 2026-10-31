@@ -2,7 +2,10 @@ import * as A from "@automerge/automerge";
 import { assertDocumentLimits, assertIntentSize } from "../model/limits.mjs";
 import { openingTitleWarning } from "../model/title-warning.mjs";
 import { guardPassageEdits } from "../model/passage-edits.mjs";
+import { guardCommentIntent } from "../model/comment-guard.mjs";
 import { inspectOperation, reserveOperation, listOperationEntries } from "./operation-journal.mjs";
+
+const COMMENT_OPERATIONS = ["manage_page_comment", "reply_page_comment"];
 
 function reject(status, message) {
   const error = new Error(message);
@@ -88,8 +91,12 @@ export async function documentMutation({
           code: "invalid_edit_selector",
         },
       );
+    // Comment intents carry their own guard: only a passage comment depends on
+    // text the caller read, and it resolves that text at base_heads.
+    const comment = COMMENT_OPERATIONS.includes(operation);
     if (prepare) {
       if (targetScope) guardPassageEdits(handle.doc(), args.base_heads, args.operations);
+      else if (comment) guardCommentIntent(handle.doc(), operation, args);
       else requireHeads(handle.doc(), args.base_heads);
       await prepare();
     }
@@ -97,8 +104,12 @@ export async function documentMutation({
     const guarded = targetScope
       ? guardPassageEdits(before, args.base_heads, args.operations)
       : null;
-    if (!targetScope) requireHeads(before, args.base_heads);
-    const effectiveArgs = guarded ? { ...args, operations: guarded.operations } : args;
+    const commentArgs =
+      !targetScope && comment ? guardCommentIntent(before, operation, args) : null;
+    if (!targetScope && !comment) requireHeads(before, args.base_heads);
+    const effectiveArgs = guarded
+      ? { ...args, operations: guarded.operations }
+      : (commentArgs ?? args);
     let result, after;
     const candidate = A.clone(before);
     // No await between the head guard and immutable edit construction.

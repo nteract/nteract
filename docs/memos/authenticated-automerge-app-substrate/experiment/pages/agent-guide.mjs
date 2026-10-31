@@ -601,10 +601,11 @@ renew or clear only that session; do not copy the token into a Page or comment.
 Separate agents using one account have separate sessions.
 
 Optionally target up to three passages with targets:[{block_id,match_text}], using
-literal visible text from a fresh read and its heads as expected_heads. The passage
+literal visible text from a read and that read's heads as expected_heads. The passage
 and optional context_before/context_after must identify exactly one occurrence in
-the selected block. Neither the match nor its context may cross a paragraph or
-embed boundary.
+the selected block at that revision. Neither the match nor its context may cross a
+paragraph or embed boundary. Typing since the read does not reject targets;
+presence_revision_changed means the heads are unknown or a passage was deleted.
 Targets follow native cursors through edits. Deleted or replaced passages become
 detached rather than matching unrelated text elsewhere. On renewal, omit targets
 to retain them or pass [] to remove them.
@@ -642,7 +643,7 @@ Pages preserves supplied body content; it does not silently delete headings.
 
 ### Guarded edits
 
-Read before editing. Document edits and deletion require page_id,
+Read before editing. Document edits, comment adds and deletion require page_id,
 base_heads from a read, and idempotency_key. Include retry_token
 from read_page or read_page_changes for edits/comments; use the list_pages token for
 create, delete, restore and purge.
@@ -691,7 +692,7 @@ are unchanged. Unrelated edits, including elsewhere in the same rich-text block,
 are preserved. Deleted/reinserted lookalike text does not count as the same target.
 Overlapping targets in one such batch are rejected; submit one combined edit or
 read again between dependent edits. Structural and Markdown replacements keep the
-exact Page revision guard.
+exact Page revision guard. Comments have their own rules; see below.
 
 An edit_conflict identifies passages to reread. Catch up with read_page_changes,
 reconsider those passages and submit a new request/key. A success includes
@@ -749,6 +750,14 @@ add with block_id and body. Add selected_text to anchor it to a passage in that
 block; occurrence is one-based and defaults to 1. Replies use thread_id and body;
 editing or deleting a message also uses message_id. Comment author labels are
 editable document content, not an audit log.
+
+Comments tolerate concurrent typing. add matches selected_text and occurrence at
+base_heads, the revision you read, and anchors native cursors there. It succeeds
+while the passage still exists, even if the Page changed since. A passage deleted
+since the read returns edit_conflict; unknown heads return resync_required. A block
+comment needs only its block to exist. reply, resolve, reopen, edit and
+delete_message do not read Page text: base_heads is optional and never compared.
+If you send it, keep it unchanged on retries, because it is part of the payload.
 
 For formatted comments, set body_format to "markdown". Bold, italic, links,
 code, lists, checklists, and pipe tables become native rich-text content that

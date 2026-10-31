@@ -48,6 +48,38 @@ export function projectComments(doc) {
       .sort((a, b) => a.createdAt.localeCompare(b.createdAt)),
   }));
 }
+/** A selection target captured by the caller, usually at an older revision.
+ * Symbol keys never arrive through JSON, so a request body cannot forge one.
+ */
+export const resolvedCommentTarget = Symbol("resolvedCommentTarget");
+
+/** Capture cursors for the occurrence-th copy of `selected` in a block's raw
+ * text. `doc` may be a historical view: cursors name characters, so the target
+ * resolves in any later revision that still holds its final character.
+ */
+export function captureSelectionTarget(doc, id, selected, occurrence = 1) {
+  const block = doc.blocks[id];
+  if (!Object.hasOwn(doc.blocks, id) || !block) throw Error("Comment block not found");
+  if (!Number.isSafeInteger(occurrence) || occurrence < 1 || occurrence > 10000)
+    throw Error("Invalid selection occurrence");
+  const name = field(block);
+  let start = -1;
+  for (let i = 0; i < occurrence; i++) {
+    start = block[name].indexOf(selected, start + 1);
+    if (start < 0) throw Error("Selected passage changed; select it again");
+  }
+  const endpoint = (offset) => ({
+    blockId: id,
+    textObjectId: A.getObjectId(block, name),
+    relativePositionBase64: btoa(A.getCursor(doc, ["blocks", id, name], offset)),
+  });
+  return {
+    kind: "selection",
+    anchor: endpoint(start),
+    head: endpoint(start + selected.length - Array.from(selected).at(-1).length),
+  };
+}
+
 export function applyComment(doc, input, identity, nativeSpans) {
   const action = input.action ?? "add",
     now = new Date().toISOString();
@@ -66,27 +98,11 @@ export function applyComment(doc, input, identity, nativeSpans) {
       block = doc.blocks[id];
     if (!Object.hasOwn(doc.blocks, id) || !block) throw Error("Comment block not found");
     let target = { kind: "block", blockId: id };
-    if (input.selected_text) {
-      let start = -1;
-      const selected = String(input.selected_text),
-        occurrence = input.occurrence ?? 1;
-      if (!Number.isSafeInteger(occurrence) || occurrence < 1 || occurrence > 10000)
-        throw Error("Invalid selection occurrence");
-      for (let i = 0; i < occurrence; i++) {
-        start = block[field(block)].indexOf(selected, start + 1);
-        if (start < 0) throw Error("Selected passage changed; select it again");
-      }
-      const endpoint = (offset) => ({
-        blockId: id,
-        textObjectId: A.getObjectId(block, field(block)),
-        relativePositionBase64: btoa(A.getCursor(doc, ["blocks", id, field(block)], offset)),
-      });
-      target = {
-        kind: "selection",
-        anchor: endpoint(start),
-        head: endpoint(start + selected.length - Array.from(selected).at(-1).length),
-      };
-    }
+    if (input[resolvedCommentTarget]) {
+      target = input[resolvedCommentTarget];
+      if (target.anchor?.blockId !== id) throw Error("Selected passage changed; select it again");
+    } else if (input.selected_text)
+      target = captureSelectionTarget(doc, id, String(input.selected_text), input.occurrence ?? 1);
     doc.comments[threadId] = {
       target,
       author,
