@@ -211,4 +211,7 @@ const tokens = GardState.Field.define({
   },
 });
 
-export const codeHighlighting = [tokens, Decoration.Range.source.of((state) => state.field(tokens))];
+export const codeHighlighting = [
+  tokens,
+  Decoration.Range.source.of((state) => state.field(tokens)),
+];

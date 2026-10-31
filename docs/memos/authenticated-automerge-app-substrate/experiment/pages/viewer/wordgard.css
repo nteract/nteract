@@ -165,7 +165,10 @@
 .wordgard-document wg-content pre .wg-t-number {
   color: var(--syntax-number);
 }
-.wordgard-document wg-content pre :is(.wg-t-atom, .wg-t-bool, .wg-t-special, .wg-t-label, .wg-t-macro) {
+.wordgard-document
+  wg-content
+  pre
+  :is(.wg-t-atom, .wg-t-bool, .wg-t-special, .wg-t-label, .wg-t-macro) {
   color: var(--syntax-atom);
 }
 .wordgard-document wg-content pre :is(.wg-t-string, .wg-t-literal) {
