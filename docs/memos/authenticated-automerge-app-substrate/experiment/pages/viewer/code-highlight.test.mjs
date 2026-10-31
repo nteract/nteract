@@ -138,3 +138,87 @@ test("a remote edit with several changed ranges in one code block applies", asyn
     assert.equal(state.field(codeHighlighting[0]).length > 0, tokens, `${language}: tokens`);
   }
 });
+
+async function harness() {
+  const { GardState } = await import("wordgard/state");
+  const { schema, decode } = await import("./wordgard-model.mjs");
+  const { wordgardCodeNewlines } = await import("./wordgard-binding.mjs");
+  const { projectChanges } = await import("./wordgard-projection.mjs");
+  const { codeHighlighting } = await import("./code-highlight.mjs");
+  const config = [GardState.schemaElement.of(schema.elements), wordgardCodeNewlines, codeHighlighting];
+  const field = codeHighlighting[0];
+  const block = (type, params) => ({
+    type: "block",
+    value: { type, parents: [], attrs: params === undefined ? {} : { params }, isEmbed: false },
+  });
+  // Every decoration as [from, to, class], for comparing two fields.
+  const ranges = (state) => {
+    const out = [];
+    const cursor = state.field(field).cursor(0);
+    while (cursor.value) {
+      out.push([cursor.from, cursor.to, JSON.stringify(cursor.value.spec ?? cursor.value)]);
+      cursor.next();
+    }
+    return out;
+  };
+  return { GardState, decode, projectChanges, config, block, ranges };
+}
+
+test("the highlight cap applies before tokenizing", async () => {
+  const { GardState, decode, config, block, ranges } = await harness();
+  for (const source of [
+    // One string token far longer than the cap.
+    `x = "${"a".repeat(30_000)}"\ny = 1`,
+    // Blank lines past the cap, then code.
+    `x = 1${"\n".repeat(12_000)}y = 2`,
+  ]) {
+    const state = GardState.create({
+      doc: decode([block("code-block", "python"), { type: "text", value: source }]).doc,
+      config,
+    });
+    const found = ranges(state);
+    assert.ok(found.length > 0);
+    assert.ok(found.every(([, to]) => to <= 1 + 10_000), `every range ends within the cap`);
+  }
+});
+
+test("structural edits leave the same decorations as a freshly built field", async () => {
+  const { GardState, decode, projectChanges, config, block, ranges } = await harness();
+  const py = (text) => [block("code-block", "python"), { type: "text", value: text }];
+  const para = (text) => [block("paragraph"), { type: "text", value: text }];
+  const cases = [
+    {
+      name: "a code block deleted in the same transaction as an edit",
+      before: [...py("a = 1"), ...para("middle"), ...py("b = 2")],
+      after: [...py("a = 10"), ...para("middle")],
+    },
+    {
+      name: "a code block split in two",
+      before: py("def f():\n  return 1\nx = f()"),
+      after: [...py("def f():\n  return 1"), ...py("x = f()")],
+    },
+    {
+      name: "two code blocks merged",
+      before: [...py("a = 1"), ...py("b = 2")],
+      after: py("a = 1\nb = 2"),
+    },
+    {
+      name: "one edit spanning two blocks",
+      before: [...py("first = 1"), ...para("prose"), ...py("second = 2")],
+      after: [...py("first = 'changed'"), ...para("prose here"), ...py("second = 3")],
+    },
+    {
+      name: "a paragraph turned into code",
+      before: [...para("x = 1"), ...py("y = 2")],
+      after: [...py("x = 1"), ...py("y = 2")],
+    },
+  ];
+  for (const item of cases) {
+    let state = GardState.create({ doc: decode(item.before).doc, config });
+    const target = decode(item.after).doc;
+    state = state.update({ changes: projectChanges(state.doc, target) }).state;
+    assert.ok(state.doc.eq(target), `${item.name}: edit applied`);
+    const fresh = GardState.create({ doc: target, config });
+    assert.deepEqual(ranges(state), ranges(fresh), item.name);
+  }
+});

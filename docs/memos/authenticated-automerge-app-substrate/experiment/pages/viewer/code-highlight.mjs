@@ -158,7 +158,9 @@ export function addCodeBlockTokens(block, pos, add) {
   const start = pos + 1;
   let offset = 0;
   const state = parser.startState ? parser.startState(2) : true;
-  lines: for (const line of text.split("\n")) {
+  // The cap is applied before tokenizing: the tokenizer never sees text past
+  // it, so one huge token or a run of blank lines can't exceed it either.
+  for (const line of text.slice(0, MAX_HIGHLIGHT).split("\n")) {
     const stream = new StringStream(line, 4, 2);
     if (stream.eol()) parser.blankLine?.(state, 2);
     else
@@ -166,7 +168,6 @@ export function addCodeBlockTokens(block, pos, add) {
         const token = readToken(parser.token, stream, state);
         const cls = token && tokenClass(token);
         if (cls) add(decoFor(cls), start + offset + stream.start, start + offset + stream.pos);
-        if (offset + stream.pos > MAX_HIGHLIGHT) break lines;
       }
     offset += line.length + 1;
   }
