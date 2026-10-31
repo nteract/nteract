@@ -3729,6 +3729,102 @@
       "canonical_markdown": "Escapes $$\\frac{a}{b} \\_ \\{x\\}$$ stay."
     },
     {
+      "id": "opaque-display-opener-lf",
+      "markdown": "Before\n$$\n\\{x\\}",
+      "import_id": "opener-lf-import",
+      "expected_spans": [
+        {
+          "type": "block",
+          "value": {
+            "type": "pages-opaque",
+            "parents": [],
+            "attrs": {
+              "source": "Before\n$$\n\\{x\\}",
+              "importId": "opener-lf-import",
+              "kind": "markdown"
+            },
+            "isEmbed": false
+          }
+        }
+      ],
+      "canonical_markdown": "Before\n$$\n\\{x\\}"
+    },
+    {
+      "id": "opaque-display-opener-cr",
+      "markdown": "Before\r$$\n\\{x\\}",
+      "import_id": "opener-cr-import",
+      "expected_spans": [
+        {
+          "type": "block",
+          "value": {
+            "type": "pages-opaque",
+            "parents": [],
+            "attrs": {
+              "source": "Before\r$$\n\\{x\\}",
+              "importId": "opener-cr-import",
+              "kind": "markdown"
+            },
+            "isEmbed": false
+          }
+        }
+      ],
+      "canonical_markdown": "Before\r$$\n\\{x\\}"
+    },
+    {
+      "id": "opaque-display-opener-crlf",
+      "markdown": "Before\r\n$$\r\n\\{x\\}",
+      "import_id": "opener-crlf-import",
+      "expected_spans": [
+        {
+          "type": "block",
+          "value": {
+            "type": "pages-opaque",
+            "parents": [],
+            "attrs": {
+              "source": "Before\r\n$$\r\n\\{x\\}",
+              "importId": "opener-crlf-import",
+              "kind": "markdown"
+            },
+            "isEmbed": false
+          }
+        }
+      ],
+      "canonical_markdown": "Before\r\n$$\r\n\\{x\\}"
+    },
+    {
+      "id": "opaque-display-opener-cr-indented",
+      "markdown": "Before\r\r \t$$\r\\{x\\}",
+      "import_id": "opener-cr-indented-import",
+      "expected_spans": [
+        {
+          "type": "block",
+          "value": {
+            "type": "pages-opaque",
+            "parents": [],
+            "attrs": {
+              "source": "Before\r\r \t$$\r\\{x\\}",
+              "importId": "opener-cr-indented-import",
+              "kind": "markdown"
+            },
+            "isEmbed": false
+          }
+        }
+      ],
+      "canonical_markdown": "Before\r\r \t$$\r\\{x\\}"
+    },
+    {
+      "id": "display-opener-bom-is-content",
+      "markdown": "Before\n﻿$$\n\\{x\\}",
+      "expected_spans": [
+        {
+          "type": "text",
+          "value": "Before ﻿$$ {x}",
+          "marks": {}
+        }
+      ],
+      "canonical_markdown": "Before ﻿$$ {x}"
+    },
+    {
       "id": "opaque-currency-beside-math",
       "markdown": "$5 and $$x$$",
       "import_id": "currency-math-import",

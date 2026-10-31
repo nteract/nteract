@@ -183,23 +183,26 @@ fn unsupported_syntax(source: &str) -> Result<bool> {
         r"(?m)^(\s*(?:>\s*)*[-+*][ \t]+)\[[ xX]\]([ \t]+|$)",
     )?;
     let syntax = task.replace_all(source, "${1}${2}");
-    // Math on one line is preserved, as in the JavaScript `MATH` gate, which
-    // has the same pattern text:
-    // - A `$$` pair is display math, with or without spaces around it.
+    // Math is preserved, as in the JavaScript `MATH` gate, which has the same
+    // pattern text:
+    // - A `$$` at a line start, after optional spaces, opens display math.
+    // - A `$$` pair on one line is display math, with or without spaces.
     // - A `$` pair follows Pandoc's dollar rule: the opening `$` is followed
     //   by a non-space, the closing `$` follows a non-space and is not
     //   followed by a digit. "$30 and $25" stays prose.
     // A space is ASCII whitespace, [ \t\n\v\f\r], and nothing else. Unicode
-    // `\s` here and JavaScript `\s` disagree on U+0085 and U+FEFF. Every other
-    // character, including U+00A0 and U+2028, is content.
+    // `\s` here and JavaScript `\s` disagree on U+0085 and U+FEFF.
+    // A line starts at the start of input or after LF, CR or CRLF. `(?m)`
+    // and JavaScript's `m` flag disagree on CR, so the pattern has no
+    // multiline flag and writes line starts as `(?:^|\r\n?|\n)`.
     if expression(
         &MATH,
-        r"(?m)\$\$(?:[^\n$]|\$[^\n$])*\$\$|\$[^ \t\n\v\f\r$](?:[^ \t\n\v\f\r$]|[ \t\v\f\r]+[^ \t\n\v\f\r$])*\$(?:[^0-9]|$)",
+        r"(?:^|\r\n?|\n)[ \t\v\f]*\$\$|\$\$(?:[^\n$]|\$[^\n$])*\$\$|\$[^ \t\n\v\f\r$](?:[^ \t\n\v\f\r$]|[ \t\v\f\r]+[^ \t\n\v\f\r$])*\$(?:[^0-9]|$)",
     )?
     .is_match(&syntax)
         || expression(
             &UNSUPPORTED,
-            r"(?m)(^|\n)\s*(\$\$|---\s*$)|!?\[[^\]]*\]\s*\[|^\s*\[[^\]]+\]:|~~",
+            r"(?m)(^|\n)\s*(---\s*$)|!?\[[^\]]*\]\s*\[|^\s*\[[^\]]+\]:|~~",
         )?
         .is_match(&syntax)
     {

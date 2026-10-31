@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import * as A from "@automerge/automerge";
 import { pmDocFromSpans, pmNodeToSpans } from "@automerge/prosemirror";
-import { adapter, exportMarkdown, parseMarkdown, richDoc } from "./richtext.mjs";
+import { MATH_SYNTAX, adapter, exportMarkdown, parseMarkdown, richDoc } from "./richtext.mjs";
 import { applyComment } from "./comments.mjs";
 import { commentMarkdown, markdownCommentSpans } from "./comment-content.mjs";
 import {
@@ -142,6 +142,13 @@ for (const source of [
   "$$ \\{x\\} $$",
   "$5 and $$x$$",
   "Costs $5 and $$ x $$ later.",
+  // A `$$` at a line start opens display math. A line starts at the start of
+  // input or after LF, CR or CRLF.
+  "Before\n$$\n\\{x\\}",
+  "Before\r$$\n\\{x\\}",
+  "Before\r\n$$\r\n\\{x\\}",
+  "Before\r \t$$\n\\{x\\}",
+  "Before\r\r\v\f$$\r\\{x\\}",
   // Only ASCII whitespace disqualifies a delimiter. Other spaces are content.
   "$\u0085x$",
   "$\ufeffx$",
@@ -153,6 +160,14 @@ for (const source of [
     const doc = parseMarkdown(source);
     assert.equal(doc.firstChild.type.name, "raw");
     assert.equal(doc.firstChild.attrs.source, source);
+  });
+}
+
+// Only ASCII whitespace may precede a line-start `$$`. U+FEFF and U+00A0
+// are content, so neither line opens display math in either codec.
+for (const source of ["\ufeff$$\n\\{x\\}", "Before\n\ufeff$$\n\\{x\\}", "\u00a0$$\n\\{x\\}"]) {
+  test(`a non-ASCII space before $$ is not a display opener: ${JSON.stringify(source)}`, () => {
+    assert.equal(parseMarkdown(source).firstChild.type.name, "paragraph");
   });
 }
 
@@ -168,6 +183,19 @@ test("the math gate stays linear on unclosed delimiters", () => {
   const started = performance.now();
   for (const source of sources) parseMarkdown(source);
   assert.ok(performance.now() - started < 5000, "200 KB of delimiters parses within 5 s");
+});
+
+test("the math pattern stays linear on runs of line breaks and spaces", () => {
+  const sources = [
+    "\r".repeat(200000),
+    "\n".repeat(200000),
+    `${"\r\n \t\v\f".repeat(40000)}x`,
+    `$a${" \r".repeat(100000)}`,
+    `$$${"\r$".repeat(100000)}`,
+  ];
+  const started = performance.now();
+  for (const source of sources) MATH_SYNTAX.test(source);
+  assert.ok(performance.now() - started < 1000, "200 KB of line breaks scans within 1 s");
 });
 
 // CommonMark code spans: backslashes are literal, a run of N backticks closes

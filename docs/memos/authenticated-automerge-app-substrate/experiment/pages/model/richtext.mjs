@@ -494,18 +494,22 @@ const tableCellSerializer = new MarkdownSerializer(
   { escapeExtraCharacters: /</g },
 );
 
-// Math on one line is preserved, never parsed as prose:
-// - A `$$` pair is display math, with or without spaces inside or around it.
+// Math is preserved, never parsed as prose:
+// - A `$$` at a line start, after optional spaces, opens display math.
+// - A `$$` pair on one line is display math, with or without spaces.
 // - A `$` pair follows Pandoc's dollar rule: the opening `$` is followed by a
 //   non-space, the closing `$` follows a non-space and is not followed by a
 //   digit. Prose such as "$30 and $25" stays native text.
-// A space here is ASCII whitespace, [ \t\n\v\f\r], and nothing else. JS and
-// Rust disagree on `\s` (U+0085, U+FEFF), so the pattern spells the set out.
-// Every other character, including U+00A0 and U+2028, is content, so a
-// doubtful span stays preserved. Each repetition has disjoint branches, so
-// matching is linear. crates/nteract-rich-text/src/import.rs uses this text.
-const MATH =
-  /\$\$(?:[^\n$]|\$[^\n$])*\$\$|\$[^ \t\n\v\f\r$](?:[^ \t\n\v\f\r$]|[ \t\v\f\r]+[^ \t\n\v\f\r$])*\$(?:[^0-9]|$)/m;
+// A space is ASCII whitespace, [ \t\n\v\f\r], and nothing else. JS and Rust
+// disagree on `\s` (U+0085, U+FEFF), so the pattern spells the set out.
+// A line starts at the start of input or after LF, CR or CRLF. JS `m` and
+// Rust `(?m)` disagree on CR, so the pattern has no multiline flag and writes
+// line starts as `(?:^|\r\n?|\n)`. The opener skips only [ \t\v\f]: CR and LF
+// start lines themselves, and skipping them would rescan runs of line breaks.
+// Each repetition has disjoint branches, so matching is linear.
+// crates/nteract-rich-text/src/import.rs uses the same pattern text.
+export const MATH_SYNTAX =
+  /(?:^|\r\n?|\n)[ \t\v\f]*\$\$|\$\$(?:[^\n$]|\$[^\n$])*\$\$|\$[^ \t\n\v\f\r$](?:[^ \t\n\v\f\r$]|[ \t\v\f\r]+[^ \t\n\v\f\r$])*\$(?:[^0-9]|$)/;
 // Conservative import gate: unknown syntax is opaque rather than silently discarded.
 export function parseMarkdown(source, importId = "", kind = "markdown") {
   // A task followed by an ordinary inline link is not a reference-link pair.
@@ -513,10 +517,8 @@ export function parseMarkdown(source, importId = "", kind = "markdown") {
   const syntax = source.replace(/^(\s*(?:>\s*)*[-+*][ \t]+)\[[ xX]\](?=[ \t]|$)/gm, "$1");
   const unsupported =
     kind !== "markdown" ||
-    MATH.test(syntax) ||
-    /(^|\n)\s*(<(?!\/?mark[ \t\r\n>])|\$\$|---\s*$)|!?\[[^\]]*\]\s*\[|^\s*\[[^\]]+\]:|~~/im.test(
-      syntax,
-    );
+    MATH_SYNTAX.test(syntax) ||
+    /(^|\n)\s*(<(?!\/?mark[ \t\r\n>])|---\s*$)|!?\[[^\]]*\]\s*\[|^\s*\[[^\]]+\]:|~~/im.test(syntax);
   return unsupported
     ? schema.node("doc", null, [schema.node("raw", { source, importId, kind })])
     : parser.parse(source);
