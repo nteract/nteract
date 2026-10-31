@@ -3,7 +3,7 @@ import { Observable, animationFrameScheduler, auditTime, fromEvent, merge } from
 import { resolveCommentDraft } from "./comment-draft.mjs";
 import { hasDraftText } from "./comment-composer.mjs";
 import { COMMENTS_SHEET_QUERY } from "./comments-layout.mjs";
-import { commentPopoverPosition, passageRect } from "./comment-popover.mjs";
+import { commentPopoverPosition, commentSheetPosition, passageRect } from "./comment-popover.mjs";
 import { CommentRichText } from "./CommentRichText.jsx";
 import { useStore } from "./store.mjs";
 import "./comments.css";
@@ -84,6 +84,7 @@ function PopoverSurface({ composer, session, containerRef, state, current, body 
   const sheet = useSheetLayout();
   // null only before the first layout pass, which runs before paint.
   const [position, setPosition] = useState(null);
+  const [sheetPlace, setSheetPlace] = useState(null);
   const [draftError, setDraftError] = useState("");
   const sending = state.name === "sending";
   const blockId = current.draft.blockId;
@@ -138,6 +139,33 @@ function PopoverSurface({ composer, session, containerRef, state, current, body 
     return () => subscription.unsubscribe();
   }, [sheet, containerRef, blockId, current.key]);
 
+  useLayoutEffect(() => {
+    // The sheet sits at the bottom of the visual viewport so an on-screen
+    // keyboard that shrinks only that viewport doesn't cover its buttons.
+    // Without visualViewport the stylesheet's `bottom: 0` applies.
+    const viewport = window.visualViewport;
+    if (!sheet || !viewport) {
+      setSheetPlace(null);
+      return;
+    }
+    const place = () => {
+      const next = commentSheetPosition({
+        visualViewport: viewport,
+        layoutHeight: document.documentElement.clientHeight,
+      });
+      setSheetPlace((previous) =>
+        previous?.bottom === next?.bottom && previous?.maxHeight === next?.maxHeight
+          ? previous
+          : next,
+      );
+    };
+    place();
+    const subscription = merge(fromEvent(viewport, "resize"), fromEvent(viewport, "scroll"))
+      .pipe(auditTime(0, animationFrameScheduler))
+      .subscribe(place);
+    return () => subscription.unsubscribe();
+  }, [sheet]);
+
   useEffect(() => {
     // A pointer outside the popover closes it and keeps the text. The pointer
     // decides where focus goes. Menus portaled from the comment editor land
@@ -177,11 +205,15 @@ function PopoverSurface({ composer, session, containerRef, state, current, body 
       aria-label={COMMENT_POPOVER_LABEL}
       data-placement={sheet ? "sheet" : (position?.placement ?? "pending")}
       style={
-        sheet || detached
-          ? undefined
-          : position
-            ? { left: position.left, top: position.top }
-            : { visibility: "hidden" }
+        sheet
+          ? sheetPlace
+            ? { bottom: sheetPlace.bottom, maxHeight: sheetPlace.maxHeight }
+            : undefined
+          : detached
+            ? undefined
+            : position
+              ? { left: position.left, top: position.top }
+              : { visibility: "hidden" }
       }
       onKeyDownCapture={(event) => {
         if (event.key === "Enter" && (event.metaKey || event.ctrlKey) && !event.altKey) {
@@ -225,7 +257,7 @@ function PopoverSurface({ composer, session, containerRef, state, current, body 
             Cancel
           </button>
           <button className="primary" disabled={!canSend}>
-            {sending ? "Commenting…" : "Comment"}
+            {sending ? "Commenting…" : state.error ? "Retry" : "Comment"}
           </button>
         </div>
       </form>

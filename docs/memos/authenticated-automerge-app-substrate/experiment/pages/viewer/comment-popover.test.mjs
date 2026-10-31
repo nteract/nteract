@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { commentPopoverPosition, passageRect } from "./comment-popover.mjs";
+import { commentPopoverPosition, commentSheetPosition, passageRect } from "./comment-popover.mjs";
 
 const viewport = { left: 0, top: 60, right: 1200, bottom: 800 };
 const place = (anchor, size = {}) =>
@@ -66,4 +66,27 @@ test("passageRect spans every line and starts at the first visible segment", () 
   );
   assert.equal(passageRect([]), null);
   assert.equal(passageRect([{ left: 1, top: 5, right: 1, bottom: 5 }]), null);
+});
+
+test("the sheet sits on the visual viewport's bottom edge", () => {
+  const at = (visualViewport) => commentSheetPosition({ visualViewport, layoutHeight: 844 });
+  assert.deepEqual(at({ offsetTop: 0, height: 844 }), { bottom: 0, maxHeight: 560 });
+  assert.deepEqual(
+    at({ offsetTop: 0, height: 500 }),
+    { bottom: 344, maxHeight: 350 },
+    "a keyboard that shrinks only the visual viewport lifts the sheet above it",
+  );
+  assert.deepEqual(
+    at({ offsetTop: 120, height: 500 }),
+    { bottom: 224, maxHeight: 350 },
+    "a scrolled visual viewport moves the sheet with it",
+  );
+  assert.deepEqual(
+    at({ offsetTop: 0, height: 900 }),
+    { bottom: 0, maxHeight: 560 },
+    "never below the layout viewport",
+  );
+  assert.equal(at(undefined), null, "no visualViewport keeps the stylesheet");
+  assert.equal(at({ offsetTop: Number.NaN, height: 500 }), null);
+  assert.equal(at({ offsetTop: 0, height: 0 }), null);
 });

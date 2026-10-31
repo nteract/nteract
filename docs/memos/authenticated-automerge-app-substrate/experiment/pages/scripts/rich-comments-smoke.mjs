@@ -335,13 +335,23 @@ try {
   await expect(panel).toBeVisible();
   await page.setViewportSize({ width: 390, height: 844 });
   await expect(page.locator("#page-comments.comments-sheet")).toBeVisible();
+  // The thread sheet stays non-modal under the composer, so it stays usable.
+  assert.equal(await panel.evaluate((element) => element.matches(":modal")), false);
+  await expect(popover).toHaveClass(/comment-popover-sheet/);
+  await expect(inline).toBeFocused();
+  await inline.press("ControlOrMeta+End");
+  await inline.pressSequentially(" still");
+  await expect(inline).toHaveText("Resize me still");
+  await page.keyboard.press("Escape");
   await expect(popover).toHaveCount(0);
-  await expect(keptDraft.locator(".comment-kept-draft-text")).toHaveText("Resize me");
+  // Closing the composer lets the sheet turn modal with the kept draft.
+  await expect.poll(() => panel.evaluate((element) => element.matches(":modal"))).toBe(true);
+  await expect(keptDraft.locator(".comment-kept-draft-text")).toHaveText("Resize me still");
   await keptDraft.getByRole("button", { name: "Discard", exact: true }).click();
   await expect(keptDraft).toHaveCount(0);
   await page.getByRole("button", { name: "Close comments", exact: true }).click();
   await page.setViewportSize({ width: 1320, height: 1000 });
-  checkpoint("the panel turning modal closes a docked composer back to its kept draft");
+  checkpoint("the thread sheet waits for a docked composer, then lists its kept draft");
   const blocksBefore = (await call("read_page", { page_id: pageId })).blocks;
   await mutate("edit_page", {
     page_id: pageId,
