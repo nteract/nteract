@@ -13,6 +13,7 @@ import {
 } from "@cloud/oidc-session-store.ts";
 import { handleOAuth, mcpAuthChallenge } from "./oauth.mjs";
 import { readAccessToken } from "./oauth-store.mjs";
+import { authenticate } from "./auth.mjs";
 
 class SqliteD1 {
   constructor() {
@@ -760,6 +761,17 @@ test("preconfigured Kilo grants requested read/write/offline scopes only to its 
   const access = await readAccessToken(env, tokens.access_token, { resource: origin + "/mcp" });
   assert.equal(access.clientId, "pages-kilo");
   assert.equal(access.identity.principal, "user:anaconda:person");
+  // Presence uses the client binding; a driver header changes only the
+  // edit attribution label, never who the presence says it is.
+  const identity = await authenticate(
+    new Request(origin + "/mcp", {
+      method: "POST",
+      headers: { authorization: `Bearer ${tokens.access_token}`, "x-pages-driver": "ChatGPT" },
+    }),
+    env,
+  );
+  assert.equal(identity.driver, "ChatGPT");
+  assert.deepEqual(identity.presence, { key: "oauth:pages-kilo", label: "Kilo", declared: false });
   const cancel = await consent(env, login, options);
   const denied = new URL(
     (await approve(env, login, { ...cancel.fields, decision: "cancel" })).headers.get("location"),

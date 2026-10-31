@@ -4,7 +4,6 @@ import * as A from "@automerge/automerge";
 import {
   AGENT_PRESENCE as P,
   deadline,
-  isAgentDriver,
   readTargets,
   transition,
   writeTargets,
@@ -67,14 +66,6 @@ test("deadlines follow the state and a virtual clock walks the whole lifetime", 
   assert.deepEqual(seen, ["active", "idle"]);
   assert.equal(deadline(null), Infinity);
   assert.equal(deadline(transition(null, read(5))), 5 + P.readingMs);
-});
-
-test("only non-browser drivers make agent presence", () => {
-  assert.equal(isAgentDriver("Kilo"), true);
-  assert.equal(isAgentDriver("Browser"), false);
-  assert.equal(isAgentDriver("browser "), false);
-  assert.equal(isAgentDriver(""), false);
-  assert.equal(isAgentDriver(undefined), false);
 });
 
 function fixture(markdown) {

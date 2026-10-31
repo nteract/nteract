@@ -2269,10 +2269,10 @@ export class Page {
   }
 
   /** Presence describes a call that already succeeded; it never fails it. */
-  publishAgentPresence(identity, type, targetsOf) {
+  publishAgentPresence(identity, type, targetsOf, observedHeads) {
     try {
       const doc = this.handle.doc();
-      const heads = A.getHeads(doc);
+      const heads = observedHeads ?? A.getHeads(doc);
       const targets = targetsOf(doc).map((target) =>
         target.kind === "block" || target.heads ? target : { ...target, heads },
       );
@@ -2784,10 +2784,22 @@ export class Page {
             body.operation === "read_page_changes"
               ? await readChangesTool(this.handle.doc(), body.arguments ?? {}, options)
               : await readTool(this.handle.doc(), body.operation, body.arguments ?? {}, options);
-          if (body.operation === "read_page" && result.status === 200 && state !== "trashed")
-            this.publishAgentPresence(identity, "read", (doc) =>
-              readTargets(doc, body.arguments ?? {}, result.body),
+          if (
+            body.operation === "read_page" &&
+            result.status === 200 &&
+            state !== "trashed" &&
+            Array.isArray(result.body?.heads)
+          ) {
+            // Native edits can land while authority is issued. Capture the
+            // targets on the revision the agent read; cursors carry them forward.
+            const heads = result.body.heads;
+            this.publishAgentPresence(
+              identity,
+              "read",
+              (doc) => readTargets(A.view(doc, heads), body.arguments ?? {}, result.body),
+              heads,
             );
+          }
           if (state === "trashed" && result.body && typeof result.body === "object")
             result.body.trash = publicTrash(this.metadata);
           // The gateway turns this into what the caller may see of it.

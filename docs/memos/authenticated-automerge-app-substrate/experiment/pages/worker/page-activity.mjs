@@ -6,7 +6,7 @@ import {
   resolvePeerSelection,
 } from "../model/presence.mjs";
 import { HttpError } from "./auth.mjs";
-import { AGENT_PRESENCE, deadline, isAgentDriver, transition } from "../model/agent-presence.mjs";
+import { AGENT_PRESENCE, deadline, transition } from "../model/agent-presence.mjs";
 
 export const ACTIVITY_LIMITS = Object.freeze({
   ttl: 60_000,
@@ -30,7 +30,10 @@ const publicProgress = ({ progress_id, identity, message, targets, updatedAt, ex
 const byteSize = (value) => new TextEncoder().encode(JSON.stringify(value)).byteLength;
 const publicAgent = ({ agent_id, identity, record }) => ({
   agent_id,
-  ...identityView(identity),
+  principal: identity.principal,
+  displayName: identity.displayName,
+  driver: identity.presence.label,
+  declared: identity.presence.declared,
   state: record.state,
   seq: record.seq,
   targets: record.targets,
@@ -122,14 +125,25 @@ export class PageActivity {
    * never fails the call it describes: an invalid identity or an oversized
    * snapshot leaves the roster unchanged. */
   agentEvent(identity, type, targets) {
-    if (!isAgentDriver(identity?.driver) || !Array.isArray(targets)) return false;
-    for (const [field, max] of [
-      ["principal", 512],
-      ["displayName", 256],
-      ["driver", 128],
+    // Only API credentials get agent presence. A person's browser session
+    // already shows their caret, and a driver header can't change this.
+    const presence = identity?.presence;
+    if (
+      !["oauth", "api-key"].includes(identity?.credentialKind) ||
+      !presence ||
+      typeof presence.key !== "string" ||
+      !presence.key ||
+      presence.key.length > 128 ||
+      typeof presence.declared !== "boolean" ||
+      !Array.isArray(targets)
+    )
+      return false;
+    for (const [value, max] of [
+      [identity.principal, 512],
+      [identity.displayName, 256],
+      [presence.label, 128],
     ])
-      if (typeof identity[field] !== "string" || !identity[field] || identity[field].length > max)
-        return false;
+      if (typeof value !== "string" || !value || value.length > max) return false;
     let generation;
     try {
       const access = this.readAccess(identity);
@@ -140,7 +154,7 @@ export class PageActivity {
     }
     this.prune();
     const now = this.now();
-    const key = `${identity.principal}\u0000${identity.driver}`;
+    const key = `${identity.principal}\u0000${presence.key}`;
     const previous = this.agents.get(key);
     const record = transition(previous?.record ?? null, {
       type,

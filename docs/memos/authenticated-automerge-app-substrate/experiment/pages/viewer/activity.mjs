@@ -134,6 +134,8 @@ function agentSnapshot(agents, observedAt, now) {
       principal: item.principal,
       displayName: item.displayName,
       driver: item.driver,
+      // The driver came from an API key's own header, not a verified client.
+      declared: item.declared === true,
       state: item.state,
       seq: item.seq,
       targets,

@@ -70,11 +70,6 @@ export function deadline(record) {
   return record.lastCall + AGENT_PRESENCE.idleMs;
 }
 
-/** Whether an identity's calls produce agent presence. A person's own browser
- * already publishes their caret, so its tool calls (comments, uploads) don't. */
-export const isAgentDriver = (driver) =>
-  typeof driver === "string" && !!driver.trim() && driver.trim().toLowerCase() !== "browser";
-
 // Same endpoint affinity a browser uses for its own selection.
 function textTarget(doc, kind, id, start, end) {
   const path = textPath(id);

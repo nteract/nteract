@@ -957,9 +957,13 @@ Targets are Automerge cursors captured inside the change, so they follow
 concurrent typing. They travel in the `page-activity` snapshot and are never
 written to the document, a receipt or the journal; a replayed receipt publishes
 nothing. A caret is active for 15 s after a write, then fades, and disappears 60 s
-after the agent's last call; a reading marker lasts 10 s. Calls from the
-`Browser` driver publish nothing, since that person's editor shows their own
-caret. Each participant's color comes from nteract's cursor palette, keyed by
+after the agent's last call; a reading marker lasts 10 s. Only API credentials
+get presence: a browser sign-in session publishes nothing, since that person's
+editor shows their own caret. An OAuth agent's label comes from its client
+binding. An API key's label is its own `x-pages-driver`, shown as declared, and
+each key is its own record, so one caller can't replace or hide another's.
+A reading marker's targets are captured on the revision the read returned.
+Each participant's color comes from nteract's cursor palette, keyed by
 principal and driver.
 
 Comment and progress anchors are native cursors, so they skip the exact-head

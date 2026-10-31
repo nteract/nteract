@@ -12,7 +12,10 @@ import { authenticate } from "./auth.mjs";
 const pageId = "33333333-3333-4333-8333-333333333333";
 class Storage {
   values = new Map();
+  // Tests can hold a read here to let native edits land mid-call.
+  gate = null;
   async get(key) {
+    if (this.gate) await this.gate(key);
     return structuredClone(this.values.get(key));
   }
   async put(key, value) {
@@ -106,6 +109,7 @@ async function fixture(t, driver = "Kilo") {
   };
   return {
     page,
+    handle,
     storage,
     call,
     patch,
@@ -178,11 +182,38 @@ test("block operations target the block; targeted reads show reading markers", a
   assert.equal(presence.agents[0].targets[0].quote, "fade");
 });
 
-test("a person's own browser tool calls publish no agent caret", async (t) => {
+test("an API key claiming the Browser driver still shows, marked as declared", async (t) => {
   const f = await fixture(t, "Browser");
-  await f.patch([
-    { op: "replace_match", block_id: f.blockId(), match_text: "Monday", replacement: "Friday" },
-  ]);
   await f.call("read_page", { search: ["fade"] });
-  assert.deepEqual(f.agents(), []);
+  const [agent] = f.agents();
+  assert.equal(agent.driver, "Browser");
+  assert.equal(agent.declared, true);
+});
+
+test("reading markers name what the agent read, even if text lands during the read", async (t) => {
+  const f = await fixture(t);
+  const id = f.blockId();
+  // Suspend authority issuance, the await after the read snapshot is taken.
+  let release, arrived;
+  const held = new Promise((resolve) => (release = resolve));
+  const reached = new Promise((resolve) => (arrived = resolve));
+  f.storage.gate = async () => {
+    f.storage.gate = null;
+    arrived();
+    await held;
+  };
+  const reading = f.call("read_page", { search: ["fade"] });
+  await reached;
+  // Someone types a new paragraph with another match before the one read.
+  await f.handle.update((doc) =>
+    A.change(doc, (d) => A.splice(d, ["blocks", id, "richText"], 0, 0, "A fade first. ")),
+  );
+  release();
+  const body = await reading;
+  const [agent] = f.agents();
+  assert.equal(agent.targets.length, 1, "only the hit the agent read");
+  assert.deepEqual(agent.targets[0].heads, body.heads);
+  const range = resolvePeerSelection(f.doc(), agent.targets[0]);
+  assert.equal(range.quote, "fade");
+  assert.ok(range.start_utf16 > "A fade first. ".length, "the original hit, carried forward");
 });

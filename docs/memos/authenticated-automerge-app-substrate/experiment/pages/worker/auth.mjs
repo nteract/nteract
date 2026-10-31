@@ -30,6 +30,15 @@ export function driverLabel(request) {
   return value.trim();
 }
 
+// A stable id for a bearer token, so presence can tell two keys of one account
+// apart. Kept in host memory only; never broadcast.
+async function credentialDigest(token) {
+  const bytes = new Uint8Array(
+    await crypto.subtle.digest("SHA-256", new TextEncoder().encode(token)),
+  );
+  return [...bytes.slice(0, 16)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
 export function requireSameOrigin(request, env) {
   const origin = new URL(env.NOTEBOOK_CLOUD_PUBLIC_ORIGIN || request.url).origin;
   const supplied = request.headers.get("origin");
@@ -94,6 +103,13 @@ export async function authenticate(request, env) {
       const scopes = new Set(grant.scope.split(" "));
       if (!scopes.has("pages:read"))
         throw new HttpError(403, "Pages read permission is required", "oauth_insufficient_scope");
+      const clientLabel = ["pages-chatgpt", "https://chatgpt.com/oauth/client.json"].includes(
+        grant.clientId,
+      )
+        ? "ChatGPT"
+        : grant.clientId === "pages-kilo"
+          ? "Kilo"
+          : "MCP";
       return withDomainAccess(
         {
           principal: grant.identity.principal,
@@ -101,11 +117,9 @@ export async function authenticate(request, env) {
           driver:
             request.headers.has("x-pages-driver") || new URL(request.url).searchParams.has("driver")
               ? driver
-              : ["pages-chatgpt", "https://chatgpt.com/oauth/client.json"].includes(grant.clientId)
-                ? "ChatGPT"
-                : grant.clientId === "pages-kilo"
-                  ? "Kilo"
-                  : "MCP",
+              : clientLabel,
+          // Presence comes from the grant's client binding, not a header.
+          presence: { key: `oauth:${grant.clientId}`, label: clientLabel, declared: false },
           canWrite: scopes.has("pages:write"),
           credentialKind: "oauth",
           namespace: grant.identity.namespace,
@@ -151,6 +165,9 @@ export async function authenticate(request, env) {
         principal: identity.principal,
         displayName: identity.metadata.displayName || identity.principal,
         driver,
+        // An API key can name any driver, so presence shows it as declared
+        // and keys records by the key itself.
+        presence: { key: `key:${await credentialDigest(token)}`, label: driver, declared: true },
         canWrite: identity.scope === "editor",
         credentialKind: "api-key",
         namespace: identity.metadata.principalNamespace,

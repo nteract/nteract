@@ -169,8 +169,10 @@ export function createWordgardCollaboration({
       const base = {
         session: `agent:${agent.agent_id}`,
         displayName: identity.driver || identity.name,
-        tag: identity.delegated ? "agent" : "",
-        title: identity.label,
+        tag: agent.declared ? "API key" : "agent",
+        title: agent.declared
+          ? `${identity.name}, with an API key labeled "${identity.driver}"`
+          : identity.label,
         color: presenceColor(agent.principal, agent.driver),
         idle: agent.state === "idle",
       };

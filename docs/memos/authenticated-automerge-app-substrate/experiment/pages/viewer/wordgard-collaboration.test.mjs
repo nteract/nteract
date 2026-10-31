@@ -482,3 +482,15 @@ test("block targets become a corner dot; other blocks and expired agents show no
     [["dot", "agent:agent-1"]],
   );
 });
+
+test("an API key's declared driver is labeled as such", () => {
+  const doc = fixture();
+  const h = harness(doc);
+  h.replica.agentPresence = new Map([
+    ["a", agent(doc, [{ kind: "block", block_id: "first" }], { declared: true })],
+  ]);
+  const [dot] = h.collaboration.carets();
+  assert.equal(dot.displayName, "Kilo");
+  assert.equal(dot.tag, "API key");
+  assert.equal(dot.title, 'Kyle Kelley, with an API key labeled "Kilo"');
+});
