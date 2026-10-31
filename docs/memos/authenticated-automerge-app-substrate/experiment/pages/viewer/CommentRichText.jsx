@@ -34,6 +34,7 @@ import { taskLists } from "./wordgard-task-lists.mjs";
 import { markdownShortcuts } from "./wordgard-shortcuts.mjs";
 import { tablePresentation, tableKeys, selectedTable } from "./wordgard-tables.mjs";
 import { TableMenu } from "./TableMenu.jsx";
+import { codeHighlighting } from "./code-highlight.mjs";
 import {
   insertPlainLineBreak,
   wordgardCodeNewlines,
@@ -86,6 +87,7 @@ function nativeConfig() {
     GardState.schemaElement.of(elements),
     wordgardCodeNewlines,
     wordgardListStarts,
+    codeHighlighting,
     KeyBinding.of({ key: "Shift-Enter", run: insertPlainLineBreak }),
     Decoration.Mark.shape(PagesLink, {
       element: "a",

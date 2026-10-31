@@ -17,6 +17,7 @@ import { history, undo, redo, undoDepth, redoDepth } from "wordgard/history";
 import { tables } from "wordgard/table";
 import { tablePresentation, tableKeys, selectedTable } from "./wordgard-tables.mjs";
 import { TableMenu } from "./TableMenu.jsx";
+import { CODE_LANGUAGES, codeHighlighting } from "./code-highlight.mjs";
 import { HighlightMenu } from "./HighlightMenu.jsx";
 import { monotonicNow } from "./monotonic.mjs";
 import { selectionHighlight, toggleHighlight } from "./highlight.mjs";
@@ -108,26 +109,11 @@ const controls = [
 ];
 const marks = { bold: Strong, italic: Emphasis, code: Code };
 const remoteAnnotations = () => [Transaction.remote.of(true), Transaction.addToHistory.of(false)];
-const languages = [
-  "Mermaid",
-  "Bash",
-  "CSS",
-  "HTML",
-  "JavaScript",
-  "JSON",
-  "Markdown",
-  "Python",
-  "R",
-  "Rust",
-  "SQL",
-  "TypeScript",
-  "YAML",
-];
 const editConfig = (editable) => [
   GardState.readOnly.of(!editable),
   Wordgard.editable.of(editable),
   codeBlockLanguage(),
-  ...(editable ? wordgardCodeLanguages(languages) : []),
+  ...(editable ? wordgardCodeLanguages(CODE_LANGUAGES) : []),
 ];
 
 export function WordgardEditor(props) {
@@ -329,6 +315,7 @@ export function WordgardEditor(props) {
         wordgardWidgets(),
         wordgardCodeNewlines,
         wordgardListStarts,
+        codeHighlighting,
         undoHistory.extension,
         permissions.current.of(editConfig(latest.current.editable)),
         Wordgard.domEventHandler("paste", (event) => acceptImages(imageFiles(event.clipboardData))),

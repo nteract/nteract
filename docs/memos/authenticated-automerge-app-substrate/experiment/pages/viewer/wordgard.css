@@ -125,6 +125,59 @@
   white-space: pre-wrap;
   position: relative;
 }
+/* Syntax tokens (code-highlight.mjs), in nteract's classic editor palette
+   (src/components/editor/highlight-styles.ts). The selectors outrank
+   Wordgard's built-in token theme. */
+.wordgard-document {
+  --syntax-keyword: #d73a49;
+  --syntax-name: #005cc5;
+  --syntax-def: #6f42c1;
+  --syntax-type: #116329;
+  --syntax-number: #005cc5;
+  --syntax-atom: #e36209;
+  --syntax-string: #032f62;
+  --syntax-comment: #6a737d;
+  --syntax-error: #cb2431;
+}
+:root.dark .wordgard-document {
+  --syntax-keyword: #ff7b72;
+  --syntax-name: #c9d1d9;
+  --syntax-def: #d2a8ff;
+  --syntax-type: #7ee787;
+  --syntax-number: #79c0ff;
+  --syntax-atom: #79c0ff;
+  --syntax-string: #a5d6ff;
+  --syntax-comment: #8b949e;
+  --syntax-error: #f97583;
+}
+.wordgard-document wg-content pre .wg-t-keyword {
+  color: var(--syntax-keyword);
+}
+.wordgard-document wg-content pre :is(.wg-t-name, .wg-t-local) {
+  color: var(--syntax-name);
+}
+.wordgard-document wg-content pre :is(.wg-t-def, .wg-t-prop, .wg-t-class) {
+  color: var(--syntax-def);
+}
+.wordgard-document wg-content pre :is(.wg-t-type, .wg-t-namespace) {
+  color: var(--syntax-type);
+}
+.wordgard-document wg-content pre .wg-t-number {
+  color: var(--syntax-number);
+}
+.wordgard-document wg-content pre :is(.wg-t-atom, .wg-t-bool, .wg-t-special, .wg-t-label, .wg-t-macro) {
+  color: var(--syntax-atom);
+}
+.wordgard-document wg-content pre :is(.wg-t-string, .wg-t-literal) {
+  color: var(--syntax-string);
+}
+.wordgard-document wg-content pre .wg-t-comment {
+  color: var(--syntax-comment);
+  font-style: italic;
+}
+.wordgard-document wg-content pre .wg-t-error {
+  color: var(--syntax-error);
+}
 .wordgard-document .wg-code-language {
   font:
     12px/1.4 ui-sans-serif,
