@@ -11,9 +11,9 @@ const TABLE = new URL("../test/fixtures/machines/editor-load.json", import.meta.
 
 test("the editor-load table runs through the pure machine", async () => {
   assert.deepEqual(await runTable(editorLoadMachine, loadTable(TABLE)), {
-    rows: 6,
-    pairs: 6,
-    unreachable: 0,
+    rows: 10,
+    pairs: 10,
+    unreachable: 2,
     cases: 0,
   });
 });
@@ -24,7 +24,7 @@ function deferred() {
   return { promise, resolve, reject };
 }
 
-test("the loader starts the import at once and hands the module to every waiter", async () => {
+test("the loader imports on start and hands the module to every waiter", async () => {
   const module = { PageSession: class {} };
   const pending = deferred();
   let loads = 0,
@@ -33,7 +33,11 @@ test("the loader starts the import at once and hands the module to every waiter"
     load: () => (loads++, pending.promise),
     checkBuild: () => checks++,
   });
-  assert.equal(loads, 1, "the import starts when the loader is created");
+  assert.equal(loads, 0, "an index route lists without the editor");
+  assert.deepEqual(loader.store.snapshot(), { name: "idle" });
+  loader.start();
+  loader.start();
+  assert.equal(loads, 1, "the import starts once");
   assert.equal(loader.store.snapshot().name, "loading");
   assert.equal(loader.module, null);
   const early = loader.ready();
@@ -43,6 +47,17 @@ test("the loader starts the import at once and hands the module to every waiter"
   assert.equal(loader.module, module);
   assert.deepEqual(loader.store.snapshot(), { name: "ready" });
   assert.equal(checks, 0);
+  assert.equal(loads, 1);
+});
+
+test("waiting for the editor starts an import nothing started yet", async () => {
+  const module = { PageSession: class {} };
+  let loads = 0;
+  const loader = new EditorLoader({ load: async () => (loads++, module) });
+  assert.equal(await loader.ready(), module);
+  assert.equal(loads, 1);
+  loader.start();
+  assert.equal(await loader.readyWhile(() => true), module);
   assert.equal(loads, 1);
 });
 

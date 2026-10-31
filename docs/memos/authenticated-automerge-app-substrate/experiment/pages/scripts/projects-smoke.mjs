@@ -1,6 +1,7 @@
 // Projects through MCP and the browser on one local OIDC deployment: create a
 // Project and nested Pages over MCP, list them, open them in the browser, follow
-// breadcrumbs, and trash and restore Pages one at a time.
+// breadcrumbs, browse /pages and /projects on a phone-sized screen, and trash
+// and restore Pages one at a time.
 import assert from "node:assert/strict";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { chromium, expect } from "@playwright/test";
@@ -45,6 +46,8 @@ const ok = async (name, operation, args) => {
   return result.body;
 };
 let owner;
+// Phone-sized tabs, captured too when a step fails.
+const phones = new Map();
 try {
   const title = "Projects fixture " + Date.now();
   const project = await ok("owner", "create_project", {
@@ -135,6 +138,12 @@ try {
   await owner.getByRole("button", { name: /, switch page$/ }).click();
   const switcher = owner.getByRole("dialog", { name: "Pages" });
   await expect(switcher.getByRole("navigation", { name: "Projects" })).toContainText(title);
+  const browse = switcher.getByRole("navigation", { name: "Browse" });
+  await expect(browse.getByRole("link", { name: "All Pages" })).toHaveAttribute("href", "/pages");
+  await expect(browse.getByRole("link", { name: "All Projects" })).toHaveAttribute(
+    "href",
+    "/projects",
+  );
   await switcher.getByRole("button", { name: "Close Pages" }).click();
   complete("Breadcrumbs led back to the Project, and the switcher lists it");
 
@@ -175,6 +184,182 @@ try {
     `/project/${project.project_id}`,
   );
   complete("A Page under the home Page shows the Project crumb once");
+
+  // /pages and /projects on a phone. They list from the shell: the only
+  // chunks a fresh load fetches are the ones index.html preloads for app.js,
+  // never the editor chunk, which waits until a Page opens.
+  const phoneContext = await browser.newContext({
+    viewport: { width: 390, height: 844 },
+    deviceScaleFactor: 3,
+    isMobile: true,
+    hasTouch: true,
+    storageState: await context.storageState(),
+  });
+  const phone = await phoneContext.newPage();
+  phones.set("phone", phone);
+  phone.on("pageerror", (error) => report.errors.push(error.message));
+  const chunks = [];
+  phone.on("request", (request) => {
+    const { pathname } = new URL(request.url());
+    if (/^\/chunks\/[A-Z2-7]{8}\.js$/.test(pathname)) chunks.push(pathname);
+  });
+  const shellChunks = [
+    ...(await (await phoneContext.request.get(`${origin}/`)).text()).matchAll(
+      /rel="modulepreload" href="(\/chunks\/[A-Z2-7]{8}\.js)"/g,
+    ),
+  ].map((match) => match[1]);
+  const editorChunks = () => chunks.filter((chunk) => !shellChunks.includes(chunk));
+  // An agent edits the Page the phone opened from an index route; its caret
+  // must show, with the editor chunk loaded on demand rather than at boot.
+  const agentEdits = async (tab, pageId, matchText, replacement) => {
+    const read = await ok("owner", "read_page", { page_id: pageId });
+    const block = read.blocks.find((entry) => entry.markdown.includes(matchText));
+    assert.ok(block, `read_page finds "${matchText}"`);
+    await ok("owner", "patch_page", {
+      page_id: pageId,
+      base_heads: read.heads,
+      idempotency_key: crypto.randomUUID(),
+      operations: [{ op: "replace_match", block_id: block.id, match_text: matchText, replacement }],
+    });
+    await expect(tab.locator("wg-content").first()).toContainText(replacement, {
+      timeout: 30000,
+    });
+    await expect(
+      tab.locator(".wordgard-caret-layer .peer-caret", { hasText: "Projects E2E agent" }),
+    ).toBeVisible({ timeout: 30000 });
+  };
+  const fitsScreen = async (label) => {
+    const width = await phone.evaluate(() => [
+      document.documentElement.scrollWidth,
+      window.innerWidth,
+    ]);
+    assert.ok(width[0] <= width[1], `${label} scrolls sideways: ${width}`);
+  };
+  const minimumRowHeight = async (list) => {
+    const heights = await list
+      .locator(":scope > li")
+      .evaluateAll((rows) => rows.map((row) => row.getBoundingClientRect().height));
+    assert.ok(heights.length > 0);
+    assert.ok(Math.min(...heights) >= 44, `row heights ${heights}`);
+  };
+
+  await phone.goto(`${origin}/pages`);
+  const allPages = phone.getByRole("list", { name: "All Pages" });
+  await expect(phone.getByRole("heading", { name: "All Pages" })).toBeVisible({ timeout: 60000 });
+  const pageRow = (name) =>
+    allPages.getByRole("listitem").filter({ has: phone.getByRole("link", { name, exact: true }) });
+  for (const name of ["Roadmap", "Q4 plan", "Architecture", title])
+    await expect(pageRow(name).getByRole("link", { name: `Project ${title}` })).toHaveAttribute(
+      "href",
+      `/project/${project.project_id}`,
+    );
+  await fitsScreen("/pages");
+  await minimumRowHeight(allPages);
+  assert.deepEqual(editorChunks(), [], "loading /pages fetched the editor chunk");
+  await phone.screenshot({ path: `${output}/pages-mobile.png` });
+  complete("/pages on a phone lists Pages with Project labels, without the editor chunk");
+
+  await phone.getByRole("searchbox", { name: "Search all Pages" }).fill("Q4");
+  await expect(phone).toHaveURL(`${origin}/pages?q=Q4`);
+  await expect(allPages.getByRole("listitem")).toHaveCount(1);
+  await expect(pageRow("Q4 plan")).toBeVisible();
+  await phone.screenshot({ path: `${output}/pages-search-mobile.png` });
+  // The whole row opens the Page: tap its far edge, away from the title.
+  const row = pageRow("Q4 plan");
+  const box = await row.boundingBox();
+  await row.tap({ position: { x: box.width - 12, y: box.height - 8 } });
+  await expect(phone).toHaveURL(`${origin}/p/${plan.page_id}`);
+  await expect(phone.locator("wg-content").first()).toContainText("The fourth quarter.", {
+    timeout: 30000,
+  });
+  assert.ok(editorChunks().length > 0, "opening a Page loads the editor chunk");
+  await agentEdits(phone, plan.page_id, "The fourth quarter.", "The fourth quarter, revised.");
+  await phone.screenshot({ path: `${output}/agent-caret-from-pages-mobile.png` });
+  await phone.goBack();
+  await expect(phone).toHaveURL(`${origin}/pages?q=Q4`);
+  await expect(phone.getByRole("searchbox", { name: "Search all Pages" })).toHaveValue("Q4");
+  await expect(pageRow("Q4 plan")).toBeVisible();
+  complete(
+    "Search narrowed /pages, a row opened its Page with an agent's caret, and Back returned to the search",
+  );
+
+  await pageRow("Q4 plan")
+    .getByRole("link", { name: `Project ${title}` })
+    .tap();
+  await expect(phone).toHaveURL(`${origin}/project/${project.project_id}`);
+  await expect(phone.getByRole("heading", { name: title })).toBeVisible();
+  await phone.goBack();
+  await expect(phone).toHaveURL(`${origin}/pages?q=Q4`);
+  await expect(pageRow("Q4 plan")).toBeVisible();
+  complete("A Project label opened its Project, and Back returned to /pages");
+
+  await phone
+    .getByRole("navigation", { name: "Browse" })
+    .getByRole("link", { name: "Projects" })
+    .tap();
+  await expect(phone).toHaveURL(`${origin}/projects`);
+  const projectList = phone.getByRole("list", { name: "Projects" });
+  const projectRow = projectList
+    .getByRole("listitem")
+    .filter({ has: phone.getByRole("link", { name: title, exact: true }) });
+  await expect(projectRow).toContainText("Where the launch lives.");
+  await fitsScreen("/projects");
+  await minimumRowHeight(projectList);
+  await phone.screenshot({ path: `${output}/projects-mobile.png` });
+  await projectRow.getByRole("link", { name: title, exact: true }).tap();
+  await expect(phone).toHaveURL(`${origin}/project/${project.project_id}`);
+  await expect(phone.getByRole("list", { name: `Pages in ${title}` })).toBeVisible();
+  await phone.goBack();
+  await expect(phone).toHaveURL(`${origin}/projects`);
+  await expect(projectRow).toBeVisible();
+  complete("/projects lists the Project with its description, opens it, and Back returns");
+
+  const fresh = await phoneContext.newPage();
+  phones.set("fresh", fresh);
+  const freshChunks = [];
+  fresh.on("request", (request) => {
+    const { pathname } = new URL(request.url());
+    if (pathname.startsWith("/chunks/")) freshChunks.push(pathname);
+  });
+  await fresh.goto(`${origin}/projects`);
+  await expect(fresh.getByRole("link", { name: title, exact: true })).toBeVisible({
+    timeout: 60000,
+  });
+  assert.deepEqual(
+    freshChunks.filter((chunk) => !shellChunks.includes(chunk)),
+    [],
+    "loading /projects fetched the editor chunk",
+  );
+  // From that fresh /projects load, into the Project and one of its Pages: the
+  // editor loads on demand there, and an agent's caret shows.
+  await fresh.getByRole("link", { name: title, exact: true }).tap();
+  const inProject = fresh.getByRole("list", { name: `Pages in ${title}` });
+  await inProject.getByRole("link", { name: "Roadmap" }).tap();
+  await expect(fresh).toHaveURL(`${origin}/p/${roadmap.page_id}`);
+  await expect(fresh.locator("wg-content").first()).toContainText("What ships when.", {
+    timeout: 30000,
+  });
+  assert.ok(
+    freshChunks.some((chunk) => !shellChunks.includes(chunk)),
+    "opening a Page from /projects loads the editor chunk",
+  );
+  await agentEdits(fresh, roadmap.page_id, "What ships when.", "What ships when, and why.");
+  await fresh.goBack();
+  await expect(fresh).toHaveURL(`${origin}/project/${project.project_id}`);
+  await fresh.goBack();
+  await expect(fresh).toHaveURL(`${origin}/projects`);
+  await fresh.goto(`${origin}/`);
+  const homeNav = fresh.getByRole("navigation", { name: "Browse" });
+  await expect(homeNav.getByRole("link", { name: "All Pages" })).toHaveAttribute("href", "/pages");
+  await expect(homeNav.getByRole("link", { name: "Projects" })).toHaveAttribute(
+    "href",
+    "/projects",
+  );
+  await fresh.screenshot({ path: `${output}/home-mobile.png` });
+  await phoneContext.close();
+  complete(
+    "A fresh /projects load lists without the editor, a Page in its Project shows an agent's caret, and Home links both index routes",
+  );
 
   const authority = await ok("owner", "list_pages");
   const trashPage = (pageId) =>
@@ -221,6 +406,13 @@ try {
   report.failure = error.stack || error.message;
   if (owner)
     await owner.screenshot({ path: `${output}/failure-owner.png`, fullPage: true }).catch(() => {});
+  for (const [name, tab] of phones) {
+    await tab.screenshot({ path: `${output}/failure-${name}.png`, fullPage: true }).catch(() => {});
+    await tab
+      .content()
+      .then((html) => writeFile(`${output}/failure-${name}.html`, html))
+      .catch(() => {});
+  }
   throw error;
 } finally {
   await writeFile(`${output}/report.json`, JSON.stringify(report, null, 2) + "\n");

@@ -1,7 +1,7 @@
 // Everything the viewer needs to open, show and edit a Page. Importing this
 // module waits for the Automerge and Subduction WASM runtimes, so main.jsx
-// loads it with import() at boot (editor-loader.mjs) and renders the shell
-// without it. Keep every Automerge or Subduction import behind this module;
+// loads it with import() (editor-loader.mjs), at boot or on first use from an
+// index route, and renders the shell without it. Keep every Automerge or Subduction import behind this module;
 // scripts/build.mjs fails the build if app.js can reach the runtimes.
 import * as A from "@automerge/automerge";
 

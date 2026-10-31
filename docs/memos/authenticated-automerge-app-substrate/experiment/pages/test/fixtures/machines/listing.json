@@ -1,0 +1,799 @@
+{
+  "machine": "listing",
+  "description": "One paged list_pages or list_projects listing behind the /pages and /projects index routes. The rows live beside it in viewer/listing.mjs. viewer/listing.test.mjs runs each row through the pure machine.",
+  "states": [
+    "idle",
+    "loading",
+    "ready",
+    "more",
+    "failed",
+    "stalled"
+  ],
+  "events": [
+    "load",
+    "more",
+    "loaded",
+    "failed"
+  ],
+  "unreachable": [
+    [
+      "idle",
+      "loaded",
+      "Nothing is requested before the first load"
+    ],
+    [
+      "idle",
+      "failed",
+      "Nothing is requested before the first load"
+    ]
+  ],
+  "cases": {
+    "loading/loaded": [
+      "current",
+      "stale"
+    ],
+    "loading/failed": [
+      "current",
+      "stale"
+    ],
+    "more/loaded": [
+      "current",
+      "stale"
+    ],
+    "more/failed": [
+      "current",
+      "stale",
+      "expired"
+    ],
+    "ready/more": [
+      "cursor",
+      "end"
+    ]
+  },
+  "rows": [
+    {
+      "label": "opening an index route lists its first page",
+      "state": {
+        "name": "idle"
+      },
+      "event": {
+        "type": "load",
+        "key": "k1",
+        "query": ""
+      },
+      "expect": {
+        "state": {
+          "name": "loading",
+          "key": "k1",
+          "query": ""
+        },
+        "effects": [
+          {
+            "type": "fetch",
+            "key": "k1",
+            "query": "",
+            "cursor": null
+          }
+        ]
+      }
+    },
+    {
+      "label": "a search typed during a load supersedes it",
+      "note": "The superseded request's result arrives with the old key and is ignored.",
+      "state": {
+        "name": "loading",
+        "key": "k1",
+        "query": "road"
+      },
+      "event": {
+        "type": "load",
+        "key": "k2",
+        "query": "plan"
+      },
+      "expect": {
+        "state": {
+          "name": "loading",
+          "key": "k2",
+          "query": "plan"
+        },
+        "effects": [
+          {
+            "type": "fetch",
+            "key": "k2",
+            "query": "plan",
+            "cursor": null
+          }
+        ]
+      }
+    },
+    {
+      "label": "a new search lists from the first page",
+      "note": "Listing keeps the shown rows until the new first page replaces them.",
+      "state": {
+        "name": "ready",
+        "query": "road",
+        "cursor": "c1"
+      },
+      "event": {
+        "type": "load",
+        "key": "k2",
+        "query": "plan"
+      },
+      "expect": {
+        "state": {
+          "name": "loading",
+          "key": "k2",
+          "query": "plan"
+        },
+        "effects": [
+          {
+            "type": "fetch",
+            "key": "k2",
+            "query": "plan",
+            "cursor": null
+          }
+        ]
+      }
+    },
+    {
+      "label": "a search typed while the next page loads supersedes it",
+      "state": {
+        "name": "more",
+        "key": "k1",
+        "query": "road",
+        "cursor": "c1"
+      },
+      "event": {
+        "type": "load",
+        "key": "k2",
+        "query": "plan"
+      },
+      "expect": {
+        "state": {
+          "name": "loading",
+          "key": "k2",
+          "query": "plan"
+        },
+        "effects": [
+          {
+            "type": "fetch",
+            "key": "k2",
+            "query": "plan",
+            "cursor": null
+          }
+        ]
+      }
+    },
+    {
+      "label": "Retry after a failed first page lists it again",
+      "state": {
+        "name": "failed",
+        "query": "road",
+        "message": "Pages can't reach the server. Try again in a moment."
+      },
+      "event": {
+        "type": "load",
+        "key": "k2",
+        "query": "road"
+      },
+      "expect": {
+        "state": {
+          "name": "loading",
+          "key": "k2",
+          "query": "road"
+        },
+        "effects": [
+          {
+            "type": "fetch",
+            "key": "k2",
+            "query": "road",
+            "cursor": null
+          }
+        ]
+      }
+    },
+    {
+      "label": "a new search after Load more stalled starts over",
+      "state": {
+        "name": "stalled",
+        "query": "road",
+        "cursor": "c1",
+        "message": "Pages can't reach the server. Try again in a moment."
+      },
+      "event": {
+        "type": "load",
+        "key": "k2",
+        "query": "plan"
+      },
+      "expect": {
+        "state": {
+          "name": "loading",
+          "key": "k2",
+          "query": "plan"
+        },
+        "effects": [
+          {
+            "type": "fetch",
+            "key": "k2",
+            "query": "plan",
+            "cursor": null
+          }
+        ]
+      }
+    },
+    {
+      "label": "Load more needs a listing first",
+      "state": {
+        "name": "idle"
+      },
+      "event": {
+        "type": "more",
+        "key": "k2"
+      },
+      "expect": {
+        "state": {
+          "name": "idle"
+        },
+        "effects": [],
+        "rejected": "Nothing is listed yet"
+      }
+    },
+    {
+      "label": "Load more waits for the first page",
+      "state": {
+        "name": "loading",
+        "key": "k1",
+        "query": "road"
+      },
+      "event": {
+        "type": "more",
+        "key": "k2"
+      },
+      "expect": {
+        "state": {
+          "name": "loading",
+          "key": "k1",
+          "query": "road"
+        },
+        "effects": [],
+        "rejected": "The first page is still loading"
+      }
+    },
+    {
+      "label": "Load more continues from the cursor",
+      "case": "cursor",
+      "state": {
+        "name": "ready",
+        "query": "road",
+        "cursor": "c1"
+      },
+      "event": {
+        "type": "more",
+        "key": "k2"
+      },
+      "expect": {
+        "state": {
+          "name": "more",
+          "key": "k2",
+          "query": "road",
+          "cursor": "c1"
+        },
+        "effects": [
+          {
+            "type": "fetch",
+            "key": "k2",
+            "query": "road",
+            "cursor": "c1"
+          }
+        ]
+      }
+    },
+    {
+      "label": "the end of the listing has nothing more",
+      "case": "end",
+      "state": {
+        "name": "ready",
+        "query": "road",
+        "cursor": null
+      },
+      "event": {
+        "type": "more",
+        "key": "k2"
+      },
+      "expect": {
+        "state": {
+          "name": "ready",
+          "query": "road",
+          "cursor": null
+        },
+        "effects": [],
+        "rejected": "The listing has no more pages"
+      }
+    },
+    {
+      "label": "a second Load more while one runs does nothing",
+      "state": {
+        "name": "more",
+        "key": "k1",
+        "query": "road",
+        "cursor": "c1"
+      },
+      "event": {
+        "type": "more",
+        "key": "k2"
+      },
+      "expect": {
+        "state": {
+          "name": "more",
+          "key": "k1",
+          "query": "road",
+          "cursor": "c1"
+        },
+        "effects": [],
+        "rejected": "The next page is already loading"
+      }
+    },
+    {
+      "label": "a failed first page has no next page",
+      "state": {
+        "name": "failed",
+        "query": "road",
+        "message": "Pages can't reach the server. Try again in a moment."
+      },
+      "event": {
+        "type": "more",
+        "key": "k2"
+      },
+      "expect": {
+        "state": {
+          "name": "failed",
+          "query": "road",
+          "message": "Pages can't reach the server. Try again in a moment."
+        },
+        "effects": [],
+        "rejected": "The first page failed; load it again"
+      }
+    },
+    {
+      "label": "Retry after Load more stalled requests the same page",
+      "state": {
+        "name": "stalled",
+        "query": "road",
+        "cursor": "c1",
+        "message": "Pages can't reach the server. Try again in a moment."
+      },
+      "event": {
+        "type": "more",
+        "key": "k2"
+      },
+      "expect": {
+        "state": {
+          "name": "more",
+          "key": "k2",
+          "query": "road",
+          "cursor": "c1"
+        },
+        "effects": [
+          {
+            "type": "fetch",
+            "key": "k2",
+            "query": "road",
+            "cursor": "c1"
+          }
+        ]
+      }
+    },
+    {
+      "label": "the first page shows and replaces earlier rows",
+      "case": "current",
+      "state": {
+        "name": "loading",
+        "key": "k1",
+        "query": "road"
+      },
+      "event": {
+        "type": "loaded",
+        "key": "k1",
+        "cursor": "c1"
+      },
+      "expect": {
+        "state": {
+          "name": "ready",
+          "query": "road",
+          "cursor": "c1"
+        },
+        "effects": [
+          {
+            "type": "show",
+            "key": "k1",
+            "append": false
+          }
+        ]
+      }
+    },
+    {
+      "label": "a superseded first page is ignored",
+      "case": "stale",
+      "state": {
+        "name": "loading",
+        "key": "k1",
+        "query": "road"
+      },
+      "event": {
+        "type": "loaded",
+        "key": "k0",
+        "cursor": "c0"
+      },
+      "expect": {
+        "state": {
+          "name": "loading",
+          "key": "k1",
+          "query": "road"
+        },
+        "effects": [],
+        "rejected": "A newer request superseded this one"
+      }
+    },
+    {
+      "label": "a late result after the listing settled is ignored",
+      "state": {
+        "name": "ready",
+        "query": "road",
+        "cursor": "c1"
+      },
+      "event": {
+        "type": "loaded",
+        "key": "k1",
+        "cursor": "c2"
+      },
+      "expect": {
+        "state": {
+          "name": "ready",
+          "query": "road",
+          "cursor": "c1"
+        },
+        "effects": [],
+        "rejected": "No request is in flight"
+      }
+    },
+    {
+      "label": "the next page appends and moves the cursor",
+      "case": "current",
+      "state": {
+        "name": "more",
+        "key": "k1",
+        "query": "road",
+        "cursor": "c1"
+      },
+      "event": {
+        "type": "loaded",
+        "key": "k1",
+        "cursor": null
+      },
+      "expect": {
+        "state": {
+          "name": "ready",
+          "query": "road",
+          "cursor": null
+        },
+        "effects": [
+          {
+            "type": "show",
+            "key": "k1",
+            "append": true
+          }
+        ]
+      }
+    },
+    {
+      "label": "a superseded next page is ignored",
+      "case": "stale",
+      "state": {
+        "name": "more",
+        "key": "k1",
+        "query": "road",
+        "cursor": "c1"
+      },
+      "event": {
+        "type": "loaded",
+        "key": "k0",
+        "cursor": "c9"
+      },
+      "expect": {
+        "state": {
+          "name": "more",
+          "key": "k1",
+          "query": "road",
+          "cursor": "c1"
+        },
+        "effects": [],
+        "rejected": "A newer request superseded this one"
+      }
+    },
+    {
+      "label": "a late result after a failed first page is ignored",
+      "state": {
+        "name": "failed",
+        "query": "road",
+        "message": "Pages can't reach the server. Try again in a moment."
+      },
+      "event": {
+        "type": "loaded",
+        "key": "k1",
+        "cursor": null
+      },
+      "expect": {
+        "state": {
+          "name": "failed",
+          "query": "road",
+          "message": "Pages can't reach the server. Try again in a moment."
+        },
+        "effects": [],
+        "rejected": "No request is in flight"
+      }
+    },
+    {
+      "label": "a late result after Load more stalled is ignored",
+      "state": {
+        "name": "stalled",
+        "query": "road",
+        "cursor": "c1",
+        "message": "Pages can't reach the server. Try again in a moment."
+      },
+      "event": {
+        "type": "loaded",
+        "key": "k1",
+        "cursor": null
+      },
+      "expect": {
+        "state": {
+          "name": "stalled",
+          "query": "road",
+          "cursor": "c1",
+          "message": "Pages can't reach the server. Try again in a moment."
+        },
+        "effects": [],
+        "rejected": "No request is in flight"
+      }
+    },
+    {
+      "label": "a failed first page lists nothing and reports the banner",
+      "case": "current",
+      "state": {
+        "name": "loading",
+        "key": "k1",
+        "query": "road"
+      },
+      "event": {
+        "type": "failed",
+        "key": "k1",
+        "message": "Pages can't reach the server. Try again in a moment.",
+        "code": null
+      },
+      "expect": {
+        "state": {
+          "name": "failed",
+          "query": "road",
+          "message": "Pages can't reach the server. Try again in a moment."
+        },
+        "effects": [
+          {
+            "type": "report",
+            "message": "Pages can't reach the server. Try again in a moment."
+          }
+        ]
+      }
+    },
+    {
+      "label": "a superseded first page's failure is ignored",
+      "case": "stale",
+      "state": {
+        "name": "loading",
+        "key": "k1",
+        "query": "road"
+      },
+      "event": {
+        "type": "failed",
+        "key": "k0",
+        "message": "Pages can't reach the server. Try again in a moment.",
+        "code": null
+      },
+      "expect": {
+        "state": {
+          "name": "loading",
+          "key": "k1",
+          "query": "road"
+        },
+        "effects": [],
+        "rejected": "A newer request superseded this one"
+      }
+    },
+    {
+      "label": "a late failure after the listing settled is ignored",
+      "state": {
+        "name": "ready",
+        "query": "road",
+        "cursor": "c1"
+      },
+      "event": {
+        "type": "failed",
+        "key": "k1",
+        "message": "Pages can't reach the server. Try again in a moment.",
+        "code": null
+      },
+      "expect": {
+        "state": {
+          "name": "ready",
+          "query": "road",
+          "cursor": "c1"
+        },
+        "effects": [],
+        "rejected": "No request is in flight"
+      }
+    },
+    {
+      "label": "a failed next page keeps the rows, reports the banner, and keeps its cursor",
+      "case": "current",
+      "state": {
+        "name": "more",
+        "key": "k1",
+        "query": "road",
+        "cursor": "c1"
+      },
+      "event": {
+        "type": "failed",
+        "key": "k1",
+        "message": "Pages can't reach the server. Try again in a moment.",
+        "code": "NETWORK_ERROR"
+      },
+      "expect": {
+        "state": {
+          "name": "stalled",
+          "query": "road",
+          "cursor": "c1",
+          "message": "Pages can't reach the server. Try again in a moment."
+        },
+        "effects": [
+          {
+            "type": "report",
+            "message": "Pages can't reach the server. Try again in a moment."
+          }
+        ]
+      }
+    },
+    {
+      "label": "a superseded next page's failure is ignored",
+      "case": "stale",
+      "state": {
+        "name": "more",
+        "key": "k1",
+        "query": "road",
+        "cursor": "c1"
+      },
+      "event": {
+        "type": "failed",
+        "key": "k0",
+        "message": "Pages can't reach the server. Try again in a moment.",
+        "code": null
+      },
+      "expect": {
+        "state": {
+          "name": "more",
+          "key": "k1",
+          "query": "road",
+          "cursor": "c1"
+        },
+        "effects": [],
+        "rejected": "A newer request superseded this one"
+      }
+    },
+    {
+      "label": "an expired cursor starts the listing over from its first page",
+      "note": "list_pages rejects a cursor older than a day with invalid_cursor; retrying it can never succeed. The settled request's key names the restart, and the first page replaces the rows.",
+      "case": "expired",
+      "state": {
+        "name": "more",
+        "key": "k1",
+        "query": "road",
+        "cursor": "c1"
+      },
+      "event": {
+        "type": "failed",
+        "key": "k1",
+        "message": "Invalid cursor; restart from the first page",
+        "code": "invalid_cursor"
+      },
+      "expect": {
+        "state": {
+          "name": "loading",
+          "key": "k1",
+          "query": "road"
+        },
+        "effects": [
+          {
+            "type": "fetch",
+            "key": "k1",
+            "query": "road",
+            "cursor": null
+          }
+        ]
+      }
+    },
+    {
+      "label": "a second failure after a failed first page is ignored",
+      "state": {
+        "name": "failed",
+        "query": "road",
+        "message": "Pages can't reach the server. Try again in a moment."
+      },
+      "event": {
+        "type": "failed",
+        "key": "k1",
+        "message": "again",
+        "code": null
+      },
+      "expect": {
+        "state": {
+          "name": "failed",
+          "query": "road",
+          "message": "Pages can't reach the server. Try again in a moment."
+        },
+        "effects": [],
+        "rejected": "No request is in flight"
+      }
+    },
+    {
+      "label": "a second failure after Load more stalled is ignored",
+      "state": {
+        "name": "stalled",
+        "query": "road",
+        "cursor": "c1",
+        "message": "Pages can't reach the server. Try again in a moment."
+      },
+      "event": {
+        "type": "failed",
+        "key": "k1",
+        "message": "again",
+        "code": null
+      },
+      "expect": {
+        "state": {
+          "name": "stalled",
+          "query": "road",
+          "cursor": "c1",
+          "message": "Pages can't reach the server. Try again in a moment."
+        },
+        "effects": [],
+        "rejected": "No request is in flight"
+      }
+    },
+    {
+      "label": "a first page has no cursor to expire, so invalid_cursor is an ordinary failure",
+      "case": "current",
+      "state": {
+        "name": "loading",
+        "key": "k1",
+        "query": "road"
+      },
+      "event": {
+        "type": "failed",
+        "key": "k1",
+        "message": "Invalid cursor; restart from the first page",
+        "code": "invalid_cursor"
+      },
+      "expect": {
+        "state": {
+          "name": "failed",
+          "query": "road",
+          "message": "Invalid cursor; restart from the first page"
+        },
+        "effects": [
+          {
+            "type": "report",
+            "message": "Invalid cursor; restart from the first page"
+          }
+        ]
+      }
+    }
+  ]
+}

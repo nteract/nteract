@@ -15,8 +15,44 @@ export function projectPath(id) {
   return `/project/${id}`;
 }
 
+// The two index routes list what the account can open: every Project, and
+// every Page newest first. /pages keeps its search in `q` so Back restores it.
+export const PROJECTS_PATH = "/projects";
+/** list_pages accepts a query of at most this many UTF-16 code units. */
+export const PAGES_QUERY_MAX = 200;
+/** Cut `value` to at most PAGES_QUERY_MAX UTF-16 code units, by code point:
+ * a cut never keeps half of a surrogate pair, and a lone high surrogate at
+ * the end (a pair something else already split) is dropped. The search box
+ * stores this, so what it shows is what a search sends. */
+export function clampPagesQuery(value) {
+  const text = typeof value === "string" ? value : "";
+  let end = Math.min(text.length, PAGES_QUERY_MAX);
+  // A high surrogate just before the cut either starts a pair the cut splits
+  // or has already lost its partner; drop it either way.
+  const unit = end > 0 ? text.charCodeAt(end - 1) : 0;
+  if (unit >= 0xd800 && unit <= 0xdbff) end--;
+  return end === text.length ? text : text.slice(0, end);
+}
+/** The one rule for a /pages search, wherever it comes from (the search box,
+ * the address, a request): trimmed, then clamped by clampPagesQuery. */
+export function normalizePagesQuery(value) {
+  return clampPagesQuery(typeof value === "string" ? value.trim() : "").trimEnd();
+}
+export function pagesPath(query = "") {
+  const text = normalizePagesQuery(query);
+  return text ? `/pages?${new URLSearchParams({ q: text })}` : "/pages";
+}
+/** Index routes render from the shell alone; the editor chunk waits until a
+ * Page opens. */
+export const isIndexRoute = (route) => route?.kind === "projects" || route?.kind === "pages";
+
 export function readPageRoute(input) {
   const url = new URL(input, "https://pages.invalid");
+  if (/^\/projects\/?$/.test(url.pathname)) return { kind: "projects", path: PROJECTS_PATH };
+  if (/^\/pages\/?$/.test(url.pathname)) {
+    const query = normalizePagesQuery(url.searchParams.get("q"));
+    return { kind: "pages", query, path: pagesPath(query) };
+  }
   // /s/<id> links predate the Project name; they open the Project's own path.
   const project = /^\/(?:project|s)\/([^/]+)\/?$/.exec(url.pathname);
   if (project)
@@ -45,13 +81,23 @@ export function isPlainNavigation(event) {
   );
 }
 
-export function writePageRoute(
-  id,
-  { replace = false, history = globalThis.history, location = globalThis.location } = {},
-) {
+export function writePageRoute(id, options = {}) {
   const path = id ? (isProjectId(id) ? projectPath(id) : pagePath(id)) : "/";
+  writeRoute(path, { ...options, state: { pageId: id ?? null } });
+}
+
+/** Push (or replace) `path` unless the address already shows it. */
+export function writeRoute(
+  path,
+  {
+    replace = false,
+    state = null,
+    history = globalThis.history,
+    location = globalThis.location,
+  } = {},
+) {
   if (`${location.pathname}${location.search}${location.hash}` === path) return;
-  history[replace ? "replaceState" : "pushState"]({ pageId: id ?? null }, "", path);
+  history[replace ? "replaceState" : "pushState"](state, "", path);
 }
 
 export function mergePageListings(remote, local) {

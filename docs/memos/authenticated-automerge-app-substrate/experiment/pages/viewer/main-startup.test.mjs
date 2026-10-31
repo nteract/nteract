@@ -73,8 +73,12 @@ const bundle = await build({
           path: "page-editor",
           namespace: "stub",
         }));
+        // Counts imports, so a test can tell whether a route loaded it.
         build.onLoad({ filter: /.*/, namespace: "stub" }, () => ({
-          contents: "export function onRendererUnavailable() {}",
+          contents:
+            "globalThis.__editorImports = (globalThis.__editorImports ?? 0) + 1;\n" +
+            'if (globalThis.__editorFails) throw new TypeError("Failed to fetch dynamically imported module");\n' +
+            "export function onRendererUnavailable() {}",
           loader: "js",
         }));
         build.onResolve({ filter: /^[^./]/ }, ({ path }) => ({
@@ -89,14 +93,20 @@ const bundle = await build({
 const source = Buffer.from(bundle.outputFiles[0].contents).toString("base64");
 const { act } = await import("react");
 
-/** Mount main.jsx once, with `session` answering /api/auth/session. */
-async function boot(session) {
+/** Mount main.jsx once, with `session` answering /api/auth/session and
+ * `tools` answering /api/tools operations. */
+async function boot(session, tools = {}) {
   document.body.innerHTML = '<div id="root"></div>';
   const requests = [];
-  globalThis.fetch = async (url) => {
+  globalThis.fetch = async (url, init) => {
     const path = new URL(url, "http://localhost/").pathname;
     requests.push(path);
     if (path === "/api/auth/session") return session();
+    if (path === "/api/tools") {
+      const { operation } = JSON.parse(init.body);
+      requests.push(operation);
+      if (tools[operation]) return Response.json(tools[operation]);
+    }
     return Response.json({ error: "Not in this fixture" }, { status: 404 });
   };
   // A fresh module instance per boot: main.jsx renders at import.
@@ -134,4 +144,92 @@ test("a first visit that can't reach the server says so once", async () => {
   );
   assert.equal(document.querySelector("h1")?.textContent, "A place to write together.");
   assert.deepEqual(app.banners(), [SERVER_UNREACHABLE_ACTION]);
+});
+
+const signedIn = () =>
+  Response.json({ identity: { principal: "one", displayName: "Kyle" }, canWrite: true });
+const catalog = {
+  list_pages: { pages: [], next_cursor: null },
+  list_projects: { projects: [], next_cursor: null },
+};
+const settle = async () => {
+  for (let i = 0; i < 10; i++) await act(() => new Promise((resolve) => setTimeout(resolve, 10)));
+};
+
+test("/pages and /projects render from the shell without importing the editor", async () => {
+  for (const [path, heading] of [
+    ["/pages", "All Pages"],
+    ["/projects/", "Projects"],
+  ]) {
+    history.replaceState(null, "", path);
+    const before = globalThis.__editorImports ?? 0;
+    const app = await boot(signedIn, catalog);
+    await settle();
+    assert.equal(document.querySelector("main h1")?.textContent, heading, path);
+    assert.ok(app.requests.includes("list_pages"), path);
+    assert.equal(globalThis.__editorImports ?? 0, before, `${path} imported the editor`);
+    assert.deepEqual(app.banners(), []);
+  }
+  assert.equal(location.pathname, "/projects", "the trailing slash is dropped");
+});
+
+test("Home starts the editor import at boot", async () => {
+  history.replaceState(null, "", "/");
+  const before = globalThis.__editorImports ?? 0;
+  await boot(signedIn, catalog);
+  await settle();
+  assert.equal(document.querySelector("main h1")?.textContent, "Your pages");
+  assert.equal(globalThis.__editorImports, before + 1);
+  const nav = [...document.querySelectorAll(".index-nav a")].map((link) => link.textContent);
+  assert.deepEqual(nav, ["Home", "All Pages", "Projects"]);
+});
+
+test("a Page opened from a /pages search keeps its address when the editor fails to load", async () => {
+  const pageId = "1a160b47-6df1-4983-81eb-489ca5a26812";
+  history.replaceState(null, "", "/pages");
+  globalThis.__editorFails = true;
+  try {
+    await boot(signedIn, {
+      ...catalog,
+      list_pages: { pages: [{ page_id: pageId, title: "Roadmap" }], next_cursor: null },
+    });
+    await settle();
+    const input = document.querySelector('input[type="search"]');
+    await act(() => {
+      Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set.call(
+        input,
+        "road",
+      );
+      input.dispatchEvent(new window.Event("input", { bubbles: true }));
+    });
+    await act(() =>
+      document
+        .querySelector("form[role=search]")
+        .dispatchEvent(new window.Event("submit", { bubbles: true, cancelable: true })),
+    );
+    await settle();
+    assert.equal(location.pathname + location.search, "/pages?q=road");
+    const row = [...document.querySelectorAll(".index-row-link")].find(
+      (link) => link.textContent === "Roadmap",
+    );
+    await act(() => {
+      row.dispatchEvent(
+        new window.MouseEvent("click", { bubbles: true, cancelable: true, button: 0 }),
+      );
+    });
+    await settle();
+    // Reload reloads this address, so it must still name the Page.
+    assert.equal(location.pathname + location.search, `/p/${pageId}`);
+    assert.ok(document.querySelector(".build-update[role=alert]"), "the reload banner shows");
+    // The listing behind the banner kept the search that was typed.
+    assert.equal(document.querySelector("main h1")?.textContent, "All Pages");
+    assert.equal(document.querySelector('input[type="search"]').value, "road");
+    // Back returns to that search, and from there the address follows it again.
+    history.back();
+    await settle();
+    assert.equal(location.pathname + location.search, "/pages?q=road");
+    assert.equal(document.querySelector('input[type="search"]').value, "road");
+  } finally {
+    globalThis.__editorFails = false;
+  }
 });

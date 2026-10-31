@@ -237,6 +237,8 @@ const targets = Object.freeze({
     viewerAssets: true,
     // A Project opens at /project/<id>; older /s/<id> links open it too.
     projectLinks: true,
+    // The viewer's index routes: /projects and /pages.
+    indexRoutes: true,
     firewallTable: "nteract_page9",
     firewallMark: "0x00400000",
     firewallComment: "nteract/preview-infra standalone-page9",

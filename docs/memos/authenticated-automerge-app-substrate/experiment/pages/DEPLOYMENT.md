@@ -327,6 +327,13 @@ the viewer rewrites `/s/<id>` to `/project/<id>`. The publisher migrates only
 from Page9's hashed-asset config to this one, so an older installation must
 publish the hashed-asset release first.
 
+Page9 also admits the viewer's index routes, `/projects` and `/pages`, as exact
+paths with an optional trailing slash. `/pages` keeps its search in `?q=`;
+ingress matches the path only. These are the paths `shared/routes.mjs` opens
+as index routes. The publisher migrates only from Page9's Project-link config
+to this one, so an older installation must publish the Project-link release
+first.
+
 The OIDC client must allow `https://<hostname>/oidc` as a redirect URI before
 sign-in works on a new target.
 

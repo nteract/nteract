@@ -26,7 +26,7 @@ export const EARLY_SESSION_MAX_AGE_MS = 5_000;
 // The viewer's own routes. theme.js also loads on /connect and the OAuth
 // pages, which never check the session; an unknown path just loses the head
 // start.
-const VIEWER_ROUTES = new Set(["home", "page", "project"]);
+const VIEWER_ROUTES = new Set(["home", "page", "project", "projects", "pages"]);
 
 const monotonic = () => globalThis.performance.now();
 

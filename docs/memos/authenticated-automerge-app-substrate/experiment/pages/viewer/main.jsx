@@ -26,9 +26,13 @@ import {
 } from "./alerts.mjs";
 import { listLocalPages, forgetLocalPage } from "./local-catalog.mjs";
 import {
+  PROJECTS_PATH,
+  isIndexRoute,
   pagePath,
+  pagesPath,
   readPageRoute,
   writePageRoute,
+  writeRoute,
   isPlainNavigation,
   pageListing,
 } from "../shared/routes.mjs";
@@ -46,6 +50,7 @@ import "./save-status.css";
 import { PagePicker } from "./PagePicker.jsx";
 import { TrashView } from "./TrashView.jsx";
 import { Breadcrumbs, ProjectView } from "./ProjectView.jsx";
+import { IndexNav, PagesIndex, ProjectsIndex } from "./IndexViews.jsx";
 import { listProjects, pageBreadcrumbs } from "./projects.mjs";
 import { closeTrashedSessions, restorePage } from "./trash.mjs";
 import { listAllPages, matchingPages } from "./page-list.mjs";
@@ -64,9 +69,11 @@ import { focusReturnTarget } from "./focus-return.mjs";
 import { timer } from "rxjs";
 
 // The editor, and the WASM runtimes it waits for, load beside the shell
-// from boot. A Page session exists only once it has loaded, so code that
-// holds a session reads `editor.module` directly. A failed import, or a
-// Mermaid renderer that fails to load later, asks the server for its build.
+// from boot, except on the index routes (/projects, /pages), which only list;
+// there the first Page open or creation starts it. A Page session exists only
+// once it has loaded, so code that holds a session reads `editor.module`
+// directly. A failed import, or a Mermaid renderer that fails to load later,
+// asks the server for its build.
 const editor = new EditorLoader({
   load: () =>
     import("./page-editor.mjs").then((module) => {
@@ -75,6 +82,9 @@ const editor = new EditorLoader({
     }),
   checkBuild: () => buildMonitor.check(),
 });
+if (!isIndexRoute(readPageRoute(location.href))) editor.start();
+// A pointer going down on a Page row is a strong hint a Page opens next.
+const warmEditor = () => editor.start();
 // How long a new thread's passage stays emphasized after the inline composer
 // sends it.
 const CREATED_FLASH_MS = 1600;
@@ -101,6 +111,10 @@ function App() {
     [trashOpen, setTrashOpen] = useState(false),
     [projects, setProjects] = useState([]),
     [projectOpen, setProjectOpen] = useState(null),
+    // An index route: { kind: "projects" | "pages", query, visit, principal }
+    // or null. `visit` remounts the listing for each navigation, Back
+    // included; `query` follows the search typed on /pages.
+    [index, setIndex] = useState(null),
     [crumbs, setCrumbs] = useState([]);
   const [toolbar, setToolbar] = useState(null),
     [toolbarOpen, setToolbarOpen] = useState(false),
@@ -128,6 +142,7 @@ function App() {
   const auth = useRef(null),
     authentication = useRef(null),
     catalogRevision = useRef(0),
+    indexVisits = useRef(0),
     lastRemote = useRef(null),
     creationPending = useRef(false),
     article = useRef(null),
@@ -266,6 +281,7 @@ function App() {
       return false;
     }
     setProjectOpen(null);
+    setIndex(null);
     setCrumbs([]);
     // Breadcrumbs show only the Project and parents this account can open.
     void pageBreadcrumbs(tool, next.pageId).then(
@@ -358,6 +374,7 @@ function App() {
     setPickerOpen(false);
     setTrashOpen(false);
     setProjectOpen(null);
+    setIndex(null);
     if (historyMode !== "none") writePageRoute(null, { replace: historyMode === "replace" });
     if (refreshCatalog) void refresh().catch((error) => showError(error));
   }
@@ -366,6 +383,46 @@ function App() {
     if (historyMode !== "none") writePageRoute(projectId, { replace: historyMode === "replace" });
     setProjectOpen(projectId);
   }
+  /** Show an index route (readPageRoute's `projects` or `pages`). */
+  function openIndex(route, { historyMode = "push" } = {}) {
+    home(null, { historyMode: "none", refreshCatalog: false });
+    if (historyMode !== "none") writeRoute(route.path, { replace: historyMode === "replace" });
+    setIndex({
+      kind: route.kind,
+      query: route.query ?? "",
+      visit: ++indexVisits.current,
+      principal: authentication.current?.identity?.principal ?? null,
+    });
+  }
+  /** The Home · All Pages · Projects nav and the switcher's index links. */
+  function navigateIndex(kind) {
+    if (kind === "home") home(null);
+    else openIndex(readPageRoute(kind === "projects" ? PROJECTS_PATH : pagesPath()));
+  }
+  /** Whether index visit `visit` is still on screen for the account that
+   * started it, at its own address. */
+  const indexCurrent = (visit, principal) =>
+    indexVisits.current === visit &&
+    authentication.current?.identity?.principal === principal &&
+    isIndexRoute(readPageRoute(location.href));
+  /** A listing failure goes to the screen's banner like any failed action,
+   * while its screen is still the one showing. */
+  const reportListing = (visit, principal) => (message) => {
+    if (indexCurrent(visit, principal)) setError(message);
+  };
+  /** A search typed on /pages: the address and the visit's query follow it,
+   * so Back, a reload, or a remount after a failed Page open show it again.
+   * A visit whose address moved on (to the Page it is opening) leaves the
+   * address alone. */
+  const followIndexQuery = (visit, principal) => (query) => {
+    if (!indexCurrent(visit, principal) || readPageRoute(location.href).kind !== "pages") return;
+    setIndex((current) => (current?.visit === visit ? { ...current, query } : current));
+    writeRoute(pagesPath(query), { replace: true });
+  };
+  const retryListing = (retry) => {
+    setError("");
+    retry();
+  };
   function showTrash() {
     home(null, { refreshCatalog: false });
     setTrashOpen(true);
@@ -393,6 +450,8 @@ function App() {
     if (route.kind === "page") void open(route.pageId, { historyMode: "replace" });
     // Replace keeps the address canonical when an older /s/ link opened it.
     else if (route.kind === "project") openProject(route.projectId, { historyMode: "replace" });
+    // Replace drops a trailing slash or an empty search from the address.
+    else if (isIndexRoute(route)) openIndex(route, { historyMode: "replace" });
     else if (route.kind === "home") home(null, { historyMode: "none", refreshCatalog: false });
     else {
       host.navigate();
@@ -678,8 +737,12 @@ function App() {
     element?.scrollIntoView({ block: "center", inline: "nearest" });
   }
   useEffect(() => {
-    document.title = page ? `${page.title || "Untitled"} · Pages` : "Pages · nteract";
-  }, [page?.title]);
+    document.title = page
+      ? `${page.title || "Untitled"} · Pages`
+      : index && !projectOpen && !trashOpen && !opening
+        ? `${index.kind === "pages" ? "All Pages" : "Projects"} · Pages`
+        : "Pages · nteract";
+  }, [page?.title, index, projectOpen, trashOpen, opening]);
   const listedPages = pages.map((item) =>
     item.page_id === page?.page_id ? { ...item, title: page.title } : item,
   );
@@ -870,6 +933,7 @@ function App() {
             onOpen={open}
             onCreate={create}
             onTrash={showTrash}
+            onOpenIndex={navigateIndex}
             projects={projects}
             currentProjectId={projectOpen}
             onOpenProject={(id) => openProject(id)}
@@ -1001,8 +1065,31 @@ function App() {
               tool={tool}
               projectId={projectOpen}
               onOpen={(id) => open(id)}
-              onBack={() => home(null)}
+              onBack={() => navigateIndex("projects")}
               onCreated={() => void refresh().catch(() => {})}
+            />
+          ) : index?.kind === "projects" ? (
+            <ProjectsIndex
+              key={index.visit}
+              tool={tool}
+              onNavigate={navigateIndex}
+              onOpenProject={(id) => openProject(id)}
+              onError={reportListing(index.visit, index.principal)}
+              onRetry={retryListing}
+            />
+          ) : index?.kind === "pages" ? (
+            <PagesIndex
+              key={index.visit}
+              tool={tool}
+              query={index.query}
+              projects={projects}
+              onNavigate={navigateIndex}
+              onQueryChange={followIndexQuery(index.visit, index.principal)}
+              onOpen={(id) => open(id)}
+              onOpenProject={(id) => openProject(id)}
+              onWarm={warmEditor}
+              onError={reportListing(index.visit, index.principal)}
+              onRetry={retryListing}
             />
           ) : trashOpen ? (
             <TrashView
@@ -1022,6 +1109,7 @@ function App() {
             />
           ) : (
             <main className="page-library">
+              <IndexNav current="home" onNavigate={navigateIndex} />
               <div className="library-heading">
                 <h1>Your pages</h1>
                 <div className="library-actions">

@@ -3,7 +3,7 @@ import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import { deploymentProfile, stageTarget, verifyDeployment } from "./profiles.mjs";
-import { routesFor, imagePaths, projectPaths } from "./routes.mjs";
+import { routesFor, imagePaths, indexPaths } from "./routes.mjs";
 
 const accountId = "1cfb529b94b3d6cde3aaf49d1d6ed5e6";
 function publicationPaths(target) {
@@ -194,7 +194,7 @@ export function publishIsolated(stage, { filesystem = fs, run = runCommand } = {
           : target === "page8"
             ? plan.config.replace("|theme[.]js|", "|")
             : target === "page9"
-              ? plan.config.replace(projectPaths, "")
+              ? plan.config.replace(indexPaths, "")
               : null;
   const previousReceipt = previousConfig === null ? null : receiptFor(previousConfig);
   const pendingReceipt =
@@ -267,6 +267,7 @@ export function publishIsolated(stage, { filesystem = fs, run = runCommand } = {
     const chunks = profile.viewerChunks === true;
     const shell = profile.viewerAssets === true;
     const projects = profile.projectLinks === true;
+    const index = profile.indexRoutes === true;
     const uuid = "08c583e5-d29e-4f1e-b06b-333965254e94";
     const assets = "/api/pages/" + uuid + "/assets";
     run("/usr/bin/cloudflared", ["--config", file, "tunnel", "ingress", "validate"]);
@@ -317,6 +318,20 @@ export function publishIsolated(stage, { filesystem = fs, run = runCommand } = {
       ["/projects/prj_" + uuid, "http_status:404"],
       ["/project/", "http_status:404"],
       ["/s/" + uuid, "http_status:404"],
+      ["/projects", index ? plan.listen : "http_status:404"],
+      ["/projects/", index ? plan.listen : "http_status:404"],
+      ["/pages", index ? plan.listen : "http_status:404"],
+      ["/pages/", index ? plan.listen : "http_status:404"],
+      ["/pages?q=roadmap", index ? plan.listen : "http_status:404"],
+      ["/projects//", "http_status:404"],
+      ["/pages//", "http_status:404"],
+      ["/projects/private", "http_status:404"],
+      ["/pages/private", "http_status:404"],
+      ["/pages/" + uuid, "http_status:404"],
+      ["/projectsX", "http_status:404"],
+      ["/pagesX", "http_status:404"],
+      ["/page", "http_status:404"],
+      ["/Pages", "http_status:404"],
       ["/api/sync", plan.listen],
       ["/api/access", sharing ? plan.listen : "http_status:404"],
       ["/api/access/private", "http_status:404"],

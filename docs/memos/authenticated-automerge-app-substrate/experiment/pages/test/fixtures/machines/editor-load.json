@@ -1,17 +1,66 @@
 {
   "machine": "editor-load",
-  "description": "The viewer's one dynamic import of the Page editor chunk (and the WASM runtimes behind it). A failed import stays failed until the tab reloads. Runs against viewer/editor-load-machine.mjs in viewer/editor-loader.test.mjs.",
+  "description": "The viewer's one dynamic import of the Page editor chunk (and the WASM runtimes behind it). It starts at boot on Page routes and on first use from the index routes. A failed import stays failed until the tab reloads. Runs against viewer/editor-load-machine.mjs in viewer/editor-loader.test.mjs.",
   "states": [
+    "idle",
     "loading",
     "ready",
     "failed"
   ],
   "events": [
+    "start",
     "loaded",
     "failed"
   ],
-  "unreachable": [],
+  "unreachable": [
+    [
+      "idle",
+      "loaded",
+      "The import runs only after start"
+    ],
+    [
+      "idle",
+      "failed",
+      "The import runs only after start"
+    ]
+  ],
   "rows": [
+    {
+      "label": "the first start imports the editor",
+      "note": "Boot on a Page route, or the first Page open or creation from an index route.",
+      "state": {
+        "name": "idle"
+      },
+      "event": {
+        "type": "start"
+      },
+      "expect": {
+        "state": {
+          "name": "loading"
+        },
+        "effects": [
+          {
+            "type": "import"
+          }
+        ]
+      }
+    },
+    {
+      "label": "a start during the import waits for it",
+      "state": {
+        "name": "loading"
+      },
+      "event": {
+        "type": "start"
+      },
+      "expect": {
+        "state": {
+          "name": "loading"
+        },
+        "effects": [],
+        "rejected": "The editor import is already running"
+      }
+    },
     {
       "label": "the import resolves: Pages can open",
       "state": {
@@ -109,6 +158,40 @@
       "event": {
         "type": "failed",
         "message": "again"
+      },
+      "expect": {
+        "state": {
+          "name": "failed",
+          "message": "404"
+        },
+        "effects": [],
+        "rejected": "The editor import already settled"
+      }
+    },
+    {
+      "label": "a loaded editor needs no second import",
+      "state": {
+        "name": "ready"
+      },
+      "event": {
+        "type": "start"
+      },
+      "expect": {
+        "state": {
+          "name": "ready"
+        },
+        "effects": [],
+        "rejected": "The editor import already settled"
+      }
+    },
+    {
+      "label": "a failed import is not retried without a reload",
+      "state": {
+        "name": "failed",
+        "message": "404"
+      },
+      "event": {
+        "type": "start"
       },
       "expect": {
         "state": {

@@ -1677,8 +1677,15 @@ details.account-actions > div a:hover {
   border-top: 1px solid var(--border);
 }
 .project-back {
+  min-height: 44px;
   margin: 0 0 0.5rem -0.5rem;
+  padding: 0.55rem 0.75rem;
+  border-radius: 0.5rem;
   color: var(--muted-foreground);
+  text-decoration: none;
+}
+.project-back:hover {
+  background: var(--accent);
 }
 .project-description {
   margin: 0.5rem 0 0;
@@ -1707,4 +1714,185 @@ details.account-actions > div a:hover {
 .breadcrumbs a:hover {
   color: var(--foreground);
   text-decoration: underline;
+}
+
+/* Index routes (/pages, /projects) and the Home · All Pages · Projects nav.
+   Narrow screens first: each row is one link the full width of the screen,
+   at least 56px tall, and a Project label stays a separate 32px target. */
+.index-nav {
+  display: flex;
+  gap: 0.25rem;
+  margin: 0 0 1.5rem;
+  padding: 0.25rem;
+  border-radius: 0.75rem;
+  background: var(--accent);
+}
+.index-nav a {
+  flex: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 44px;
+  padding: 0 0.75rem;
+  border-radius: 0.55rem;
+  color: var(--muted-foreground);
+  font-size: 0.9rem;
+  font-weight: 500;
+  text-decoration: none;
+  white-space: nowrap;
+}
+.index-nav a:hover {
+  color: var(--foreground);
+}
+.index-nav a[aria-current="page"] {
+  background: var(--surface);
+  color: var(--foreground);
+  box-shadow: 0 1px 2px #0000001f;
+}
+.index-nav a:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 1px;
+}
+.index-view .library-heading {
+  margin-bottom: 1rem;
+}
+.index-search {
+  margin: 0;
+}
+.index-searching,
+.index-status {
+  margin: 0 0 1rem;
+}
+.index-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.index-row {
+  position: relative;
+  display: flex;
+  align-items: flex-start;
+  gap: 0.75rem;
+  min-height: 56px;
+  padding: 0.9rem 0.6rem;
+  border-bottom: 1px solid var(--border);
+  border-radius: 0.5rem;
+}
+.index-row:hover,
+.index-row:focus-within {
+  background: var(--accent);
+}
+.index-row-icon {
+  flex-shrink: 0;
+  margin-top: 0.1rem;
+  color: var(--muted-foreground);
+}
+.index-row-body {
+  flex: 1;
+  min-width: 0;
+}
+.index-row-link {
+  display: block;
+  color: inherit;
+  font-size: 1rem;
+  font-weight: 500;
+  line-height: 1.35;
+  text-decoration: none;
+  overflow-wrap: anywhere;
+}
+/* The whole row is the Page or Project link. */
+.index-row-link::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+}
+.index-row-link:focus-visible {
+  outline: 0;
+}
+.index-row-link:focus-visible::after {
+  outline: 2px solid var(--focus);
+  outline-offset: -2px;
+}
+.index-row-detail {
+  margin: 0.25rem 0 0;
+  color: var(--muted-foreground);
+  font-size: 0.875rem;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+.index-row-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.25rem 0.75rem;
+  margin: 0.3rem 0 0;
+  color: var(--muted-foreground);
+  font-size: 0.8rem;
+}
+/* Above the row link, so a tap on the label opens the Project. */
+.index-row-project {
+  position: relative;
+  z-index: 1;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  max-width: 100%;
+  min-height: 32px;
+  margin: -0.35rem 0 -0.35rem -0.5rem;
+  padding: 0 0.5rem;
+  border-radius: 1rem;
+  color: inherit;
+  text-decoration: none;
+}
+.index-row-project span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.index-row-project:hover {
+  background: var(--surface);
+  color: var(--foreground);
+}
+.index-row-project:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 0;
+}
+.index-more {
+  width: 100%;
+  min-height: 48px;
+  margin-top: 1rem;
+}
+.picker-index {
+  display: flex;
+  gap: 0.5rem;
+  margin: 0 1.2rem 1rem;
+}
+.picker-index a {
+  flex: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.4rem;
+  min-height: 44px;
+  border: 1px solid var(--border);
+  border-radius: 0.55rem;
+  color: inherit;
+  font-size: 0.9rem;
+  text-decoration: none;
+}
+.picker-index a:hover {
+  background: var(--accent);
+}
+@media (min-width: 901px) {
+  .index-nav {
+    display: inline-flex;
+  }
+  .index-nav a {
+    flex: none;
+    min-height: 36px;
+  }
+  .index-row {
+    min-height: 64px;
+  }
 }

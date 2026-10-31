@@ -1,7 +1,13 @@
 import { matchingPages } from "./page-list.mjs";
-import { pagePath, projectPath, isPlainNavigation } from "../shared/routes.mjs";
+import {
+  PROJECTS_PATH,
+  pagePath,
+  pagesPath,
+  projectPath,
+  isPlainNavigation,
+} from "../shared/routes.mjs";
 import { useEffect, useRef, useState } from "react";
-import { Boxes, Check, FileText, Plus, Search, Trash2, X } from "lucide-react";
+import { Boxes, Check, FileText, Files, Plus, Search, Trash2, X } from "lucide-react";
 
 export function PagePicker({
   open,
@@ -11,6 +17,7 @@ export function PagePicker({
   onOpen,
   onCreate,
   onTrash,
+  onOpenIndex,
   projects = [],
   currentProjectId,
   onOpenProject,
@@ -47,6 +54,28 @@ export function PagePicker({
             <X size={20} aria-hidden="true" />
           </button>
         </div>
+        {onOpenIndex && (
+          <nav className="picker-index" aria-label="Browse">
+            {[
+              { kind: "pages", href: pagesPath(), label: "All Pages", Icon: Files },
+              { kind: "projects", href: PROJECTS_PATH, label: "All Projects", Icon: Boxes },
+            ].map(({ kind, href, label, Icon }) => (
+              <a
+                key={kind}
+                href={href}
+                onClick={(event) => {
+                  if (!isPlainNavigation(event)) return;
+                  event.preventDefault();
+                  onClose();
+                  onOpenIndex(kind);
+                }}
+              >
+                <Icon size={16} aria-hidden="true" />
+                {label}
+              </a>
+            ))}
+          </nav>
+        )}
         <label className="picker-search">
           <Search size={18} aria-hidden="true" />
           <input
