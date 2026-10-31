@@ -277,7 +277,8 @@ export function createWordgardCollaboration({
       const [range] = wordgardCommentRanges(replica.doc, id, getCurrent()?.map, [
         { id: "draft", state: "open", target: draft.target },
       ]);
-      if (range) add(range.from, range.to, { class: "comment-draft-passage", "data-comment-draft": "" });
+      if (range)
+        add(range.from, range.to, { class: "comment-draft-passage", "data-comment-draft": "" });
     }
     const doc = replica.doc;
     const object = textObject(doc, id);
