@@ -727,8 +727,14 @@ export function projectedBlock(block) {
 
 // Bound the actual spans: JSON.stringify(doc) alone misses block-marker data.
 export function validateRich(block) {
-  const spans = A.spans(block, ["richText"]);
-  if (richSize(block) > 262144) throw Error("Rich block exceeds content limit");
+  validateRichSpans(A.spans(block, ["richText"]));
+}
+
+/** Schema check for native rich-text spans read from any Automerge text
+ * object: a Page block's `richText` or a comments-doc message `body`. */
+export function validateRichSpans(spans, maxBytes = 262144) {
+  if (new TextEncoder().encode(JSON.stringify(spans)).length > maxBytes)
+    throw Error("Rich block exceeds content limit");
   for (const span of spans) {
     if (span.type === "text") {
       for (const [name, value] of Object.entries(span.marks ?? {})) {
@@ -756,7 +762,7 @@ export function validateRich(block) {
         throw Error("Invalid task checked state");
     } else throw Error("Unsupported rich span");
   }
-  const tree = richDoc(block);
+  const tree = pmDocFromSpans(adapter, codeTextUnmarked(spans));
   tree.check();
   tree.descendants((node) => {
     if (
