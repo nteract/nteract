@@ -31,15 +31,15 @@
   --highlight-strength: 38%;
   /* Comment anchors: an orange tint and underline. Their own hue, so they
      read apart from yellow highlights, and never the olive of --warning. */
-  --comment-anchor: oklch(0.8 0.15 55);
-  --comment-anchor-line: oklch(0.66 0.17 50);
+  --comment-anchor: #ffa156;
+  --comment-anchor-line: #e16c10;
   --comment-anchor-fill: 20%;
 }
 :root.dark {
   --warning: #dec179;
   --success: #8bcba9;
-  --comment-anchor: oklch(0.78 0.14 55);
-  --comment-anchor-line: oklch(0.76 0.15 55);
+  --comment-anchor: #fb9d59;
+  --comment-anchor-line: #f99549;
   --comment-anchor-fill: 18%;
 }
 [data-highlight="yellow"] {
@@ -58,19 +58,29 @@
   --pages-highlight: var(--pages-highlight-custom);
 }
 /* Dark mode draws highlights like a real highlighter: a light, opaque fill
-   with dark text. Any translucent yellow over a dark page reads as olive. A
-   custom color keeps its hue at the same lightness as the palette. */
+   with dark text. Any translucent yellow over a dark page reads as olive.
+   A custom property never falls back: an unsupported color function inside
+   one makes `background` invalid, leaving dark text on a dark page. The
+   palette is plain hex (oklch 0.83-0.88 lightness, matched across hues), and
+   relative color syntax is used only where @supports says it parses. */
 :root.dark {
-  --highlight-yellow: oklch(0.88 0.15 92);
-  --highlight-green: oklch(0.85 0.14 152);
-  --highlight-blue: oklch(0.83 0.1 245);
-  --highlight-pink: oklch(0.83 0.11 355);
+  --highlight-yellow: #fbd452;
+  --highlight-green: #81e8a0;
+  --highlight-blue: #8fcfff;
+  --highlight-pink: #ffa9cb;
 }
+/* A custom color keeps its hue at the palette's lightness where relative
+   color syntax exists, and is the yellow fill elsewhere. */
 :root.dark [data-highlight="custom"] {
-  --pages-highlight: oklch(from var(--pages-highlight-custom) 0.85 min(c, 0.15) h);
+  --pages-highlight: var(--highlight-yellow);
+}
+@supports (background: oklch(from red 0.85 min(c, 0.15) h)) {
+  :root.dark [data-highlight="custom"] {
+    --pages-highlight: oklch(from var(--pages-highlight-custom) 0.85 min(c, 0.15) h);
+  }
 }
 :root.dark mark[data-highlight] {
-  color: oklch(0.2 0 0);
+  color: #1a1a1a;
   background: var(--pages-highlight);
 }
 mark[data-highlight] {
