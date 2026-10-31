@@ -72,6 +72,8 @@ test("the head script starts the viewer's exact session request on viewer routes
     "/?page=5f0c4a5e-6c1e-4b0e-9a8f-0d0d4c5e6f70",
     "/p/5f0c4a5e-6c1e-4b0e-9a8f-0d0d4c5e6f70",
     "/project/prj_5f0c4a5e-6c1e-4b0e-9a8f-0d0d4c5e6f70",
+    "/projects",
+    "/pages?q=roadmap",
   ]) {
     const { win, calls } = browser(pathname, () => new Promise(() => {}));
     startEarlySession(win);
@@ -86,7 +88,13 @@ test("the head script starts the viewer's exact session request on viewer routes
 });
 
 test("the head script leaves pages that never check the session alone", () => {
-  for (const pathname of ["/connect", "/oauth/authorize?client_id=x", "/p/not-a-page", "/other"]) {
+  for (const pathname of [
+    "/connect",
+    "/oauth/authorize?client_id=x",
+    "/p/not-a-page",
+    "/other",
+    "/pages/x",
+  ]) {
     const { win, calls } = browser(pathname, () => new Promise(() => {}));
     startEarlySession(win);
     assert.equal(calls.length, 0, pathname);

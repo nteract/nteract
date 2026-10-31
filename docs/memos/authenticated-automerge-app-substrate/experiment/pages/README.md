@@ -106,7 +106,7 @@ was a caret race in the smoke; the editor side is
 | Admission codes, celld restart, and reconnect to Saved | `node scripts/local-sharing-e2e.mjs --admission` | Starts and restarts an isolated fixture |
 | Reload prompt after a deploy under an open tab | `node scripts/local-sharing-e2e.mjs --build-update` | Starts an isolated fixture and swaps its build |
 | Trash, restore, and permanent deletion | `node scripts/local-sharing-e2e.mjs --trash` | Starts an isolated fixture |
-| Projects over MCP and in the browser, breadcrumbs, Trash and restore in a Project | `node scripts/local-sharing-e2e.mjs --projects` | Starts an isolated fixture |
+| Projects over MCP and in the browser, `/projects` and `/pages` on a phone-sized screen, breadcrumbs, Trash and restore in a Project | `node scripts/local-sharing-e2e.mjs --projects` | Starts an isolated fixture |
 | Rollback to a previous build and forward again on one data directory | `node scripts/rollback-qualification.mjs --previous <previous pages dir>` | Starts an isolated fixture; build the previous commit first |
 | Rich comment tables and drafts | `PAGES_ORIGIN=http://localhost:9894 node scripts/rich-comments-smoke.mjs` | Uses the running Wordgard fixture |
 | Comments panel placement at 1920/1440/1100/800px | `PAGES_ORIGIN=http://localhost:9894 node scripts/comments-layout-smoke.mjs` | Uses the running Wordgard fixture |
@@ -723,7 +723,11 @@ visible. It never polls while hidden and never reloads by itself.
 The viewer is `app.js`, which renders the shell (header, account, sign-in and
 the Page list), plus content-hashed files under `/chunks/`. `app.js` imports the
 editor chunk at boot, and that chunk waits for the WASM runtimes; the
-[editor-load machine](viewer/editor-load-machine.mjs) tracks the import. A
+[editor-load machine](viewer/editor-load-machine.mjs) tracks the import. The
+index routes, `/projects` and `/pages`, only list, so they render from the
+shell and its static chunks alone. They start the editor import when a Page
+opens or a new Page is created, or a little earlier when a pointer goes down on
+a Page row. A
 release serves only its own chunks, so a tab still running an earlier `app.js`
 can find its editor chunk gone: the path then answers with the app's HTML and
 the import fails. The tab asks `/health` for the build and the banner offers
@@ -1106,6 +1110,14 @@ list its Pages or add to it, and nothing inherits access from a Project. A Page 
 a Project is readable by the owner and by anyone with a direct grant on that Page;
 sharing works as before and never reveals the Project. Inherited access, moves and
 a Project change feed come later.
+
+The viewer lists them at two index routes. `/projects` shows every Project
+`list_projects` returns, with its description. `/pages` shows every Page
+`list_pages` returns, newest first, including Pages in Projects; an owned
+Page's row links its Project. Search uses `list_pages`' `query` and stays in
+the address as `?q=`, and Load more follows `next_cursor`. `list_pages` has no
+filter for Your items or for shared Pages, so `/pages` has no filter chips;
+shared rows say so instead.
 
 | Tool | Arguments | Result |
 | --- | --- | --- |

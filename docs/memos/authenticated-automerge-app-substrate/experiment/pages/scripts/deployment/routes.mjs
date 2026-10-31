@@ -12,6 +12,11 @@ export const assetPaths =
 // the older /s/<id>, which the viewer rewrites to /project/<id>.
 export const projectPaths =
   "(project|s)/(prj|sp)_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}/?|";
+// Viewer index routes (shared/routes.mjs readPageRoute): every Project the
+// account can open, and every Page. Exact paths with an optional trailing
+// slash; /pages keeps its search in the query string, which ingress doesn't
+// match.
+export const indexPaths = "projects/?|pages/?|";
 export const imagePaths =
   "pages/[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}/assets(/[0-9a-f]{64})?|";
 
@@ -23,6 +28,7 @@ export function routesFor(target = "pages-next", legacy = false) {
   const chunks = profile.viewerChunks ? chunkPaths : "";
   const assets = profile.viewerAssets ? assetPaths : "";
   const projects = profile.projectLinks ? projectPaths : "";
+  const index = profile.indexRoutes ? indexPaths : "";
   // Frozen deployments retain their exact route receipts. Sharing targets expose
   // only the public setup page, its script, and the authenticated access API.
   const sharing = profile.sharing === true;
@@ -40,6 +46,7 @@ export function routesFor(target = "pages-next", legacy = false) {
       (authenticatedAssets ? oauthPaths : "") +
       "(automerge|subduction)[.]wasm|health|mcp|llms[.]txt|p/[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}/?|" +
       projects +
+      index +
       "api/(" +
       access +
       (authenticatedAssets ? imagePaths : "") +

@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { FileText, Home, Plus } from "lucide-react";
-import { pagePath, projectPath, isPlainNavigation } from "../shared/routes.mjs";
+import { PROJECTS_PATH, pagePath, projectPath, isPlainNavigation } from "../shared/routes.mjs";
 import { createPageInProject, listProjectPages, projectTree, visibleCrumbs } from "./projects.mjs";
 
 /** One Project: its home Page, then its Pages as a tree. Owner-only for now.
@@ -65,9 +65,17 @@ export function ProjectView({ tool, projectId, onOpen, onBack, onCreated }) {
     <main className="page-library project-view">
       <div className="library-heading">
         <div>
-          <button className="subtle-button project-back" onClick={onBack}>
-            All pages
-          </button>
+          <a
+            className="subtle-button project-back"
+            href={PROJECTS_PATH}
+            onClick={(event) => {
+              if (!isPlainNavigation(event)) return;
+              event.preventDefault();
+              onBack();
+            }}
+          >
+            Projects
+          </a>
           <h1>{project?.title ?? "Project"}</h1>
           {project?.description && (
             <p className="muted project-description">{project.description}</p>

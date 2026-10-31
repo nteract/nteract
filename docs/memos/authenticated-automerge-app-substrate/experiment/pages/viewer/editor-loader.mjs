@@ -10,30 +10,32 @@ const unavailable = () => Object.assign(Error(EDITOR_UNAVAILABLE), { code: "EDIT
 export class EditorLoader {
   store = new Store(editorLoadMachine.initial);
   #module = null;
+  #load;
   #checkBuild;
-  /** Calls `load` now. `checkBuild` runs once if the import fails. */
+  /** `load` runs once, on the first `start()` or `ready()`. `checkBuild` runs
+   * once if the import fails. */
   constructor({ load, checkBuild = () => {} }) {
+    this.#load = load;
     this.#checkBuild = checkBuild;
-    new Promise((resolve) => resolve(load())).then(
-      (module) => {
-        this.#module = module;
-        this.#dispatch({ type: "loaded" });
-      },
-      (error) => this.#dispatch({ type: "failed", message: String(error?.message ?? error) }),
-    );
+  }
+  /** Begin the import if nothing has yet. Later calls do nothing. */
+  start() {
+    this.#dispatch({ type: "start" });
   }
   /** The editor module once the state is `ready`, otherwise null. */
   get module() {
     return this.#module;
   }
-  /** Resolves with the editor module, or rejects with EDITOR_UNAVAILABLE. */
+  /** Starts the import if needed, then resolves with the editor module, or
+   * rejects with EDITOR_UNAVAILABLE. */
   ready() {
-    return firstValueFrom(this.store.state$.pipe(filter(({ name }) => name !== "loading"))).then(
-      ({ name }) => {
-        if (name !== "ready") throw unavailable();
-        return this.#module;
-      },
-    );
+    this.start();
+    return firstValueFrom(
+      this.store.state$.pipe(filter(({ name }) => name === "ready" || name === "failed")),
+    ).then(({ name }) => {
+      if (name !== "ready") throw unavailable();
+      return this.#module;
+    });
   }
   /** Waits for the editor, then hands it over only if `stillCurrent()` holds.
    * Resolves null when the caller's navigation or account moved on during the
@@ -48,10 +50,21 @@ export class EditorLoader {
     if (result.rejected) return;
     this.store.update(() => result.state);
     for (const effect of result.effects) {
-      if (effect.type !== "checkBuild") throw new Error(`unknown effect ${effect.type}`);
-      try {
-        void Promise.resolve(this.#checkBuild()).catch(() => {});
-      } catch {}
+      if (effect.type === "import") this.#import();
+      else if (effect.type === "checkBuild") {
+        try {
+          void Promise.resolve(this.#checkBuild()).catch(() => {});
+        } catch {}
+      } else throw new Error(`unknown effect ${effect.type}`);
     }
+  }
+  #import() {
+    new Promise((resolve) => resolve(this.#load())).then(
+      (module) => {
+        this.#module = module;
+        this.#dispatch({ type: "loaded" });
+      },
+      (error) => this.#dispatch({ type: "failed", message: String(error?.message ?? error) }),
+    );
   }
 }

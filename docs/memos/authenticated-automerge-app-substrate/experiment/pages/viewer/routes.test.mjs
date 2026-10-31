@@ -4,6 +4,10 @@ import {
   pagePath,
   readPageRoute,
   writePageRoute,
+  writeRoute,
+  pagesPath,
+  isIndexRoute,
+  PROJECTS_PATH,
   isPlainNavigation,
   mergePageListings,
   pageListing,
@@ -41,6 +45,62 @@ test("page and home navigation push history; canonicalization replaces without d
     { method: "pushState", path: `/p/${id}` },
     { method: "pushState", path: "/" },
     { method: "replaceState", path: `/p/${id}` },
+  ]);
+});
+test("/projects and /pages are exact index routes with an optional trailing slash", () => {
+  for (const path of ["/projects", "/projects/", "/projects?from=home"])
+    assert.deepEqual(readPageRoute(path), { kind: "projects", path: PROJECTS_PATH });
+  for (const path of ["/pages", "/pages/", "/pages?q=", "/pages?q=%20%20"])
+    assert.deepEqual(readPageRoute(path), { kind: "pages", query: "", path: "/pages" });
+  assert.deepEqual(readPageRoute("/pages?q=%20road%20map%20"), {
+    kind: "pages",
+    query: "road map",
+    path: "/pages?q=road+map",
+  });
+  assert.equal(readPageRoute(`/pages?q=${"x".repeat(300)}`).query.length, 200);
+  for (const path of [
+    "/projects/x",
+    "/projects//",
+    "/pages/x",
+    "/pages//",
+    "/page",
+    "/project",
+    "/projectsx",
+    "/Pages",
+    `/projects/prj_${id}`,
+    `/pages/${id}`,
+  ])
+    assert.equal(readPageRoute(path).kind, "missing", path);
+  assert.equal(isIndexRoute(readPageRoute("/projects")), true);
+  assert.equal(isIndexRoute(readPageRoute("/pages?q=a")), true);
+  for (const path of ["/", `/p/${id}`, `/project/prj_${id}`, "/missing"])
+    assert.equal(isIndexRoute(readPageRoute(path)), false, path);
+  assert.equal(pagesPath(), "/pages");
+  assert.equal(pagesPath("  "), "/pages");
+  assert.equal(pagesPath("a&b"), "/pages?q=a%26b");
+  assert.equal(readPageRoute(pagesPath("a&b=c")).query, "a&b=c");
+});
+test("index routes push once and search edits replace the entry", () => {
+  const calls = [];
+  const location = { pathname: "/", search: "", hash: "" };
+  const history = Object.fromEntries(
+    ["pushState", "replaceState"].map((method) => [
+      method,
+      (state, _, path) => {
+        calls.push({ method, path, state });
+        const url = new URL(path, "https://pages.invalid");
+        Object.assign(location, { pathname: url.pathname, search: url.search, hash: url.hash });
+      },
+    ]),
+  );
+  writeRoute("/pages", { history, location });
+  writeRoute("/pages", { history, location });
+  writeRoute(pagesPath("road"), { history, location, replace: true });
+  writeRoute(PROJECTS_PATH, { history, location, state: { index: "projects" } });
+  assert.deepEqual(calls, [
+    { method: "pushState", path: "/pages", state: null },
+    { method: "replaceState", path: "/pages?q=road", state: null },
+    { method: "pushState", path: "/projects", state: { index: "projects" } },
   ]);
 });
 test("modified clicks preserve open-in-new-tab behavior", () => {

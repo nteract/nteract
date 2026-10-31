@@ -15,8 +15,24 @@ export function projectPath(id) {
   return `/project/${id}`;
 }
 
+// The two index routes list what the account can open: every Project, and
+// every Page newest first. /pages keeps its search in `q` so Back restores it.
+export const PROJECTS_PATH = "/projects";
+export function pagesPath(query = "") {
+  const text = typeof query === "string" ? query.trim() : "";
+  return text ? `/pages?${new URLSearchParams({ q: text })}` : "/pages";
+}
+/** Index routes render from the shell alone; the editor chunk waits until a
+ * Page opens. */
+export const isIndexRoute = (route) => route?.kind === "projects" || route?.kind === "pages";
+
 export function readPageRoute(input) {
   const url = new URL(input, "https://pages.invalid");
+  if (/^\/projects\/?$/.test(url.pathname)) return { kind: "projects", path: PROJECTS_PATH };
+  if (/^\/pages\/?$/.test(url.pathname)) {
+    const query = (url.searchParams.get("q") ?? "").trim().slice(0, 200);
+    return { kind: "pages", query, path: pagesPath(query) };
+  }
   // /s/<id> links predate the Project name; they open the Project's own path.
   const project = /^\/(?:project|s)\/([^/]+)\/?$/.exec(url.pathname);
   if (project)
@@ -45,13 +61,23 @@ export function isPlainNavigation(event) {
   );
 }
 
-export function writePageRoute(
-  id,
-  { replace = false, history = globalThis.history, location = globalThis.location } = {},
-) {
+export function writePageRoute(id, options = {}) {
   const path = id ? (isProjectId(id) ? projectPath(id) : pagePath(id)) : "/";
+  writeRoute(path, { ...options, state: { pageId: id ?? null } });
+}
+
+/** Push (or replace) `path` unless the address already shows it. */
+export function writeRoute(
+  path,
+  {
+    replace = false,
+    state = null,
+    history = globalThis.history,
+    location = globalThis.location,
+  } = {},
+) {
   if (`${location.pathname}${location.search}${location.hash}` === path) return;
-  history[replace ? "replaceState" : "pushState"]({ pageId: id ?? null }, "", path);
+  history[replace ? "replaceState" : "pushState"](state, "", path);
 }
 
 export function mergePageListings(remote, local) {
