@@ -66,6 +66,7 @@ import {
 } from "./wordgard-binding.mjs";
 import { PagesLink, TaskList, elements } from "./wordgard-model.mjs";
 import { taskLists } from "./wordgard-task-lists.mjs";
+import { markdownShortcuts } from "./wordgard-shortcuts.mjs";
 import { projectChanges } from "./wordgard-projection.mjs";
 import {
   createWordgardCollaboration,
@@ -295,6 +296,7 @@ export function WordgardEditor(props) {
         taskLists(),
         blockquote(),
         codeBlock(),
+        markdownShortcuts(),
         tables({ cellContent: "inline", cellSpanning: false }),
         tablePresentation,
         tableKeys,
