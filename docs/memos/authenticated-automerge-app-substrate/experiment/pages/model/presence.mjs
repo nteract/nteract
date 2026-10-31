@@ -36,6 +36,9 @@ const lastOffset = (text, end) =>
 
 /** Pure, server-side passage capture. These private cursors are never document
  * changes and should only be sent to authenticated readers of the same Page.
+ *
+ * Passages are found at expectedHeads, the revision the caller read, and must
+ * still resolve in `doc`. Unknown heads or a detached passage need a new read.
  */
 export function createProgressTargets(doc, targets, expectedHeads) {
   if (targets === undefined) return [];
@@ -43,13 +46,34 @@ export function createProgressTargets(doc, targets, expectedHeads) {
     invalid("targets must contain at most 3 unique passages");
   if (!targets.length) return [];
   if (!headsValid(expectedHeads))
-    invalid("expected_heads from a current Page read are required for targets");
-  if (JSON.stringify([...expectedHeads].sort()) !== JSON.stringify(A.getHeads(doc).sort()))
+    invalid("expected_heads from a Page read are required for targets");
+  if (!A.hasHeads(doc, expectedHeads))
     fail(
       409,
       "presence_revision_changed",
-      "Page changed; read it again before choosing a progress target",
+      "The read revision is unavailable; read the Page again before choosing a progress target",
     );
+  const exact =
+    JSON.stringify([...expectedHeads].sort()) === JSON.stringify(A.getHeads(doc).sort());
+  // Pin an owned backend to the historical snapshot, then re-view it. See
+  // guardPassageEdits: path helpers on a plain view can read latest state.
+  const owned = exact ? null : A.clone(A.view(doc, expectedHeads));
+  try {
+    const base = owned ? A.view(owned, A.getHeads(owned)) : doc;
+    const anchors = captureProgressTargets(base, targets);
+    if (resolveProgressTargets(doc, anchors).some((target) => target.status !== "attached"))
+      fail(
+        409,
+        "presence_revision_changed",
+        "A progress target passage changed since that read; read the Page again",
+      );
+    return anchors;
+  } finally {
+    if (owned) A.free(owned);
+  }
+}
+
+function captureProgressTargets(doc, targets) {
   const seen = new Set();
   return targets.map((input) => {
     if (

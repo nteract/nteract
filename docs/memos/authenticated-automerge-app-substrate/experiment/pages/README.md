@@ -885,7 +885,8 @@ bodies. Unknown history returns `resync_required`; oversized deltas return
 `changes_budget_exceeded`, never partial success. Advance saved heads only after
 consuming a successful response or resynchronizing with focused reads.
 
-Mutations require observed `base_heads` and an idempotency key. The default
+Mutations require an idempotency key; content edits, comment adds and deletion
+also require observed `base_heads`. The default
 `conflict_scope:"page"` requires exact current heads. `patch_page` can use
 `conflict_scope:"target"` for `replace_match`-only batches: native identity maps
 historical literal ranges into current text, checking text, marks, and structure.
@@ -895,6 +896,17 @@ overlapping batch targets are rejected. Structural/Markdown changes retain the
 exact-head guard. Conflicts provide bounded addresses for focused rereading.
 Guards check the preparation snapshot; native changes can still merge during
 persistence. Tool mutations do not simulate typing or lock out peers.
+
+Comment and progress anchors are native cursors, so they skip the exact-head
+guard. `manage_page_comment` `add` with `selected_text` requires known
+`base_heads`, finds the passage (and `occurrence`) at that revision, and anchors
+its cursors there. It returns `edit_conflict` only when the passage no longer
+resolves, and `resync_required` for unknown heads. A block comment needs only
+its block. Replies, status changes, message edits and deletions touch only the
+thread, so `base_heads` is optional and never compared. `report_page_progress`
+targets follow the same rule with `expected_heads`, failing with
+`presence_revision_changed` for unknown heads or a detached passage. Retries
+still replay the recorded receipt; these guards run only for new intents.
 
 `edit_page` supports structural operations including `insert_markdown`,
 `move_block`, and `insert_image`. Placement uses stable `after_block_id` values,
