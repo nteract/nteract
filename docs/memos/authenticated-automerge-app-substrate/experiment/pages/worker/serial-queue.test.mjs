@@ -60,6 +60,45 @@ test("a failed request does not stop the next one", async () => {
   assert.equal(await queue(async () => "next"), "next");
 });
 
+/** Settles to "settled" once `promise` does, or "pending" after a few turns. */
+const state = (promise) =>
+  Promise.race([promise.then(() => "settled"), turns().then(() => "pending")]);
+
+test("each request holds its object request open until its work settles", async () => {
+  const held = [];
+  const queue = serialQueue(objectState({ waitUntil: (promise) => held.push(promise) }), "q");
+  let release;
+  const first = queue(() => new Promise((resolve) => (release = resolve)));
+  const second = queue(async () => {
+    throw Error("boom");
+  });
+  // Registered when queued, while the caller's request is still live.
+  assert.equal(held.length, 2);
+  assert.equal(await state(held[0]), "pending");
+  assert.equal(await state(held[1]), "pending", "a queued request is held while it waits");
+  release("first");
+  assert.equal(await first, "first");
+  await assert.rejects(second, /boom/);
+  // A failed request's hold resolves too: waitUntil never sees a rejection.
+  assert.deepEqual(await Promise.all(held.map(state)), ["settled", "settled"]);
+});
+
+test("a Page holds each queued HTTP request open until it settles", async () => {
+  const held = [];
+  let release;
+  const page = Object.assign(Object.create(Page.prototype), {
+    ctx: { waitUntil: (promise) => held.push(promise) },
+    tail: Promise.resolve(),
+    run: () => new Promise((resolve) => (release = resolve)),
+  });
+  const response = page.fetch(new Request("https://pages.test/internal/tool", { method: "POST" }));
+  assert.equal(held.length, 1);
+  assert.equal(await state(held[0]), "pending");
+  release("answered");
+  assert.equal(await response, "answered");
+  assert.equal(await state(held[0]), "settled");
+});
+
 test("a request that never settles resets the object at the bound", async (t) => {
   const logged = quietLogs(t);
   t.mock.timers.enable({ apis: ["setTimeout", "Date"] });

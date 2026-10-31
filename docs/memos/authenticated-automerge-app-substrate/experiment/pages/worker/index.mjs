@@ -160,7 +160,7 @@ import {
 export { Space } from "./spaces.mjs";
 import { spaceCreationEffect, spaceCreationTransition } from "./space-lifecycle.mjs";
 import { handleImportPageImage } from "./import-image.mjs";
-import { serialQueue, serialQueueBounds } from "./serial-queue.mjs";
+import { holdUntilSettled, serialQueue, serialQueueBounds } from "./serial-queue.mjs";
 import { readTool } from "./tool-reads.mjs";
 import { readChangesTool } from "./tool-changes.mjs";
 import { PageActivity } from "./page-activity.mjs";
@@ -2469,6 +2469,7 @@ export class Page {
       return this.run(request);
     const next = this.tail.then(() => this.run(request));
     this.tail = next.catch(() => {});
+    holdUntilSettled(this.ctx, this.tail);
     return next;
   }
 
