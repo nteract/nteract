@@ -485,3 +485,101 @@ test("a composer closed with text while the sheet waits shows as the kept draft"
   assert.equal(panel().dataset.modal, "true");
   assert.equal(container.querySelector(".comment-kept-draft-text").textContent, "Keep me");
 });
+
+async function surfaces(t) {
+  const container = document.body.appendChild(document.createElement("div"));
+  const root = createRoot(container);
+  const calls = [];
+  const composer = new CommentComposer({
+    send: () => null,
+    focusComposer: () => calls.push("focusComposer"),
+  });
+  const session = { doc: { blocks: { block: {} } }, canWrite: true, comment: async () => {} };
+  await act(() =>
+    root.render(
+      createElement(
+        "div",
+        null,
+        createElement(CommentsPanel, {
+          open: true,
+          session,
+          threads: [],
+          composer,
+          target: null,
+          onClose() {},
+          onReveal() {},
+          onSelect() {},
+        }),
+        createElement(CommentPopover, { composer, session, containerRef: { current: null } }),
+      ),
+    ),
+  );
+  t.after(async () => {
+    await act(() => root.unmount());
+    container.remove();
+    sheet = false;
+  });
+  return {
+    composer,
+    calls,
+    panel: () => container.querySelector("#page-comments"),
+    popover: () => container.querySelector("#comment-popover"),
+  };
+}
+
+test("beside the Page the panel stays focusable while composing", async (t) => {
+  const view = await surfaces(t);
+  await act(() => view.composer.start({ blockId: "block", target: { kind: "selection" } }));
+  assert.equal(view.panel().hasAttribute("inert"), false);
+  const tab = new dom.window.KeyboardEvent("keydown", {
+    key: "Tab",
+    bubbles: true,
+    cancelable: true,
+  });
+  view.popover().querySelector("button").dispatchEvent(tab);
+  assert.equal(tab.defaultPrevented, false, "Tab is not trapped beside the Page");
+});
+
+test("at sheet width the panel is inert under the composer and hands focus over", async (t) => {
+  const view = await surfaces(t);
+  await act(() => view.composer.start({ blockId: "block", target: { kind: "selection" } }));
+  view.calls.length = 0;
+  view.panel().querySelector("button").focus();
+  assert.ok(view.panel().contains(document.activeElement));
+  await setSheet(true);
+  assert.equal(view.panel().hasAttribute("inert"), true);
+  assert.equal(view.popover().hasAttribute("inert"), false, "the sibling composer stays live");
+  assert.equal(view.popover().closest("[inert]"), null);
+  assert.deepEqual(view.calls, ["focusComposer"], "focus moves from the panel into the composer");
+  await act(() => view.composer.cancel());
+  assert.equal(view.panel().hasAttribute("inert"), false, "closing the composer frees the panel");
+  assert.equal(view.panel().dataset.modal, "true");
+});
+
+test("at sheet width Tab and Shift+Tab wrap inside the composer", async (t) => {
+  sheet = true;
+  const view = await surfaces(t);
+  await act(() => {
+    view.composer.start({ blockId: "block", target: { kind: "selection" } });
+    view.composer.change("Text");
+  });
+  const stops = [...view.popover().querySelectorAll("textarea, button:not(:disabled)")];
+  const [first, last] = [stops[0], stops.at(-1)];
+  const press = (target, shiftKey = false) => {
+    const event = new dom.window.KeyboardEvent("keydown", {
+      key: "Tab",
+      shiftKey,
+      bubbles: true,
+      cancelable: true,
+    });
+    act(() => target.dispatchEvent(event));
+    return event;
+  };
+  first.focus();
+  assert.equal(press(first, true).defaultPrevented, true);
+  assert.equal(document.activeElement, last, "Shift+Tab from the first stop wraps to the last");
+  assert.equal(press(last).defaultPrevented, true);
+  assert.equal(document.activeElement, first, "Tab from the last stop wraps to the first");
+  first.focus();
+  assert.equal(press(first).defaultPrevented, false, "Tab between inner stops is the browser's");
+});

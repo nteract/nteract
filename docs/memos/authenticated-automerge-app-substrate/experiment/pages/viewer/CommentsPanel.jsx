@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef, useState } from "react";
+import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import { Check, MessageSquare, RotateCcw, X, Maximize2, Minimize2 } from "lucide-react";
 import { resolveCommentDraft } from "./comment-draft.mjs";
 import { reloadGate } from "./build-freshness.mjs";
@@ -48,6 +48,10 @@ export function CommentsPanel({
   // composer closes. Closing with text leaves the kept draft listed here.
   const composerShowing = draft.state.name === "open" || draft.state.name === "sending";
   const modal = mobile && !composerShowing;
+  // At sheet width the composer covers this sheet, so keyboard focus must not
+  // reach it: Tab could land on hidden controls, and Escape there would close
+  // the panel instead of the composer. Beside the Page it stays usable.
+  const inert = mobile && composerShowing;
   useEffect(() => {
     if (open) setVisited(true);
   }, [open]);
@@ -86,6 +90,13 @@ export function CommentsPanel({
       }
     }
   }, [open, modal]);
+  useLayoutEffect(() => {
+    // Focus left inside an inert subtree is dropped to the body. Hand it to
+    // the composer, whose sheet now owns the keyboard.
+    if (!inert) return;
+    const active = document.activeElement;
+    if (dialog.current?.contains(active) || !active || active === document.body) composer?.focus();
+  }, [inert, composer]);
   useEffect(() => {
     if (!open || !target?.id) return;
     const frame = requestAnimationFrame(() => {
@@ -201,6 +212,7 @@ export function CommentsPanel({
   return (
     <dialog
       ref={dialog}
+      inert={inert}
       id="page-comments"
       className={"comments" + (mobile ? " comments-sheet" : expanded ? " comments-expanded" : "")}
       aria-labelledby="comments-title"
