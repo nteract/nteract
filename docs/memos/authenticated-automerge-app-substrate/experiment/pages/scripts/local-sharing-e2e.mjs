@@ -1,9 +1,19 @@
 // One bounded, headless local OIDC + celld + browser + MCP sharing qualification.
 // No pre-existing server, provider account, credentials, or persistent dev state.
 import { execFileSync, spawn } from "node:child_process";
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { createWriteStream } from "node:fs";
-import { copyFile, cp, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import {
+  copyFile,
+  cp,
+  mkdir,
+  mkdtemp,
+  readFile,
+  readdir,
+  rename,
+  rm,
+  writeFile,
+} from "node:fs/promises";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -12,6 +22,7 @@ import { build } from "esbuild";
 import { celldCborPlugin } from "./celld-cbor.mjs";
 import { CELLD_RELEASE, parseRuntimeVersion } from "./deployment/profiles.mjs";
 import { fixtureWhoamiUrl, generateFixtureKeys } from "./fixtures/local-api-keys.mjs";
+import { digestHash, publicShellAssetDefine, viewerAsset } from "./viewer-chunks.mjs";
 
 const app = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const output = path.resolve(
@@ -158,6 +169,7 @@ try {
         PAGES_E2E_FIXTURE_ID: JSON.stringify(imageSource.identity),
       }),
       ...(buildId ? { __PAGES_BUILD__: JSON.stringify(buildId) } : {}),
+      ...publicShellAssetDefine(path.join(runtime, "public")),
     },
     plugins: [
       celldCborPlugin(),
@@ -250,28 +262,57 @@ try {
   await boot();
   // Simulates a deploy for the build-update smoke: the Worker and the viewer
   // assets both move to another build id while the browser tab stays open.
+  // Hashed files are served immutable, so a file whose bytes change must
+  // change its name, as a rebuild would. Every hashed file moves to a new
+  // name and every reference follows it; the old names stop resolving, as
+  // they do when a release replaces the one before it.
   async function deploy(next) {
     if (!/^[0-9a-f]{12}$/.test(next) || next === buildId) throw new Error("Invalid next build");
-    // The build id sits in whichever viewer chunk holds build-identity.mjs.
-    // Chunk names stay put, so an open tab's editor keeps loading.
-    const scripts = [
-      "public/app.js",
-      ...(await readdir(path.join(runtime, "public/chunks"))).map(
-        (name) => `public/chunks/${name}`,
-      ),
+    const shell = path.join(runtime, "public");
+    const hashed = [
+      ...(await readdir(shell)).filter((name) => viewerAsset(`public/${name}`)),
+      ...(await readdir(path.join(shell, "chunks"))).map((name) => `chunks/${name}`),
     ];
+    const hashOf = (file) => /([A-Z2-7]{8})\.[a-z]+$/.exec(file)[1];
+    const moved = new Map(
+      hashed.map((file) => [
+        hashOf(file),
+        digestHash(
+          createHash("sha256")
+            .update(`${hashOf(file)}:${next}`)
+            .digest("hex"),
+        ),
+      ]),
+    );
+    const retarget = (text) => {
+      for (const [from, to] of moved) text = text.replaceAll(from, to);
+      return text;
+    };
     let embedded = false;
-    for (const script of scripts) {
-      const file = path.join(runtime, script);
-      const source = await readFile(file, "utf8");
-      if (!source.includes(JSON.stringify(buildId))) continue;
-      embedded = true;
-      await writeFile(file, source.replaceAll(JSON.stringify(buildId), JSON.stringify(next)));
+    for (const file of [...hashed, "index.html", "_headers"]) {
+      const from = path.join(shell, file);
+      const to = path.join(shell, retarget(file));
+      if (file.endsWith(".wasm")) {
+        await rename(from, to);
+        continue;
+      }
+      // The build id sits in whichever viewer script holds build-identity.mjs.
+      const source = await readFile(from, "utf8");
+      if (source.includes(JSON.stringify(buildId))) embedded = true;
+      await writeFile(
+        to,
+        retarget(source.replaceAll(JSON.stringify(buildId), JSON.stringify(next))),
+      );
+      if (to !== from) await rm(from);
     }
     if (!embedded) throw new Error("Viewer bundle does not embed the build id");
     await build({
       ...workerBuild,
-      define: { ...workerBuild.define, __PAGES_BUILD__: JSON.stringify(next) },
+      define: {
+        ...workerBuild.define,
+        __PAGES_BUILD__: JSON.stringify(next),
+        ...publicShellAssetDefine(shell),
+      },
     });
     buildId = next;
   }

@@ -4,6 +4,10 @@ export const oauthPaths =
   "oauth/(authorize|token|revoke)|[.]well-known/(oauth-protected-resource(/mcp)?|oauth-authorization-server)|";
 // Content-hashed viewer chunks (scripts/viewer-chunks.mjs VIEWER_CHUNK).
 export const chunkPaths = "chunks/[A-Z2-7]{8}[.]js|";
+// Content-hashed shell assets (scripts/viewer-chunks.mjs VIEWER_ASSET): each
+// source name with its own extension only.
+export const assetPaths =
+  "(app|theme|mermaid)-[A-Z2-7]{8}[.]js|app-[A-Z2-7]{8}[.]css|(automerge|subduction)-[A-Z2-7]{8}[.]wasm|";
 export const imagePaths =
   "pages/[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}/assets(/[0-9a-f]{64})?|";
 
@@ -13,6 +17,7 @@ export function routesFor(target = "pages-next", legacy = false) {
   const renderer = profile.tunnelService ? "mermaid[.]js|" : "";
   const theme = profile.theme ? "theme[.]js|" : "";
   const chunks = profile.viewerChunks ? chunkPaths : "";
+  const assets = profile.viewerAssets ? assetPaths : "";
   // Frozen deployments retain their exact route receipts. Sharing targets expose
   // only the public setup page, its script, and the authenticated access API.
   const sharing = profile.sharing === true;
@@ -24,6 +29,7 @@ export function routesFor(target = "pages-next", legacy = false) {
     : "index[.]html|app[.](js|css)|" +
       theme +
       chunks +
+      assets +
       renderer +
       connect +
       (authenticatedAssets ? oauthPaths : "") +

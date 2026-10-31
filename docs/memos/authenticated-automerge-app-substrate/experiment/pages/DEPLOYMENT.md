@@ -312,6 +312,15 @@ sha256 of its bytes in `viewer_chunks`. `prepare` stages exactly those chunks,
 checks each one's bytes against its digest first, and refuses a changed chunk or
 a `public/chunks` directory that holds any other file.
 
+The shell's own files are hashed the same way: `app-<hash>.js`,
+`app-<hash>.css`, `theme-<hash>.js`, `mermaid-<hash>.js`,
+`automerge-<hash>.wasm` and `subduction-<hash>.wasm`. Page9 admits each name
+with its own extension only. `viewer_assets` in the receipt maps each to its
+sha256, and the name's hash must be the first 40 bits of that digest.
+`prepare` stages exactly those six files, checks their bytes first, and refuses
+any other file of that shape in `public`. The publisher migrates only from
+Page9's chunk-route config to this one.
+
 The OIDC client must allow `https://<hostname>/oidc` as a redirect URI before
 sign-in works on a new target.
 

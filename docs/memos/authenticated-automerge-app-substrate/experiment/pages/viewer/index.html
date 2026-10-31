@@ -7,10 +7,12 @@
     <script src="/theme.js"></script>
     <link rel="stylesheet" href="/app.css" />
     <!-- scripts/build.mjs adds a modulepreload after app.css for each chunk
-         app.js imports. The editor chunk awaits both runtimes before a Page opens.
-         These must match the fetches in scripts/browser-wasm.mjs: same URL, and
-         crossorigin so the preload is a CORS same-origin-credentials fetch like
-         fetch(url). -->
+         app.js imports, and replaces each source name on this page (theme.js,
+         app.css, both WASM files, app.js) with its content-hashed file.
+         The editor chunk awaits both runtimes before a Page opens. These
+         preloads must match the fetches in scripts/browser-wasm.mjs: same URL,
+         and crossorigin so the preload is a CORS same-origin-credentials fetch
+         like fetch(url). -->
     <link rel="preload" href="/automerge.wasm" as="fetch" crossorigin />
     <link rel="preload" href="/subduction.wasm" as="fetch" crossorigin />
     <link rel="describedby" type="text/plain" href="/llms.txt" />

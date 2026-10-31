@@ -3,7 +3,7 @@ import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import { deploymentProfile, stageTarget, verifyDeployment } from "./profiles.mjs";
-import { routesFor, chunkPaths, imagePaths } from "./routes.mjs";
+import { routesFor, assetPaths, imagePaths } from "./routes.mjs";
 
 const accountId = "1cfb529b94b3d6cde3aaf49d1d6ed5e6";
 function publicationPaths(target) {
@@ -194,7 +194,7 @@ export function publishIsolated(stage, { filesystem = fs, run = runCommand } = {
           : target === "page8"
             ? plan.config.replace("|theme[.]js|", "|")
             : target === "page9"
-              ? plan.config.replace("|" + chunkPaths, "|")
+              ? plan.config.replace(assetPaths, "")
               : null;
   const previousReceipt = previousConfig === null ? null : receiptFor(previousConfig);
   const pendingReceipt =
@@ -265,6 +265,7 @@ export function publishIsolated(stage, { filesystem = fs, run = runCommand } = {
     const sharing = profile.sharing === true;
     const oauth = profile.oauth === true;
     const chunks = profile.viewerChunks === true;
+    const shell = profile.viewerAssets === true;
     const assets = "/api/pages/08c583e5-d29e-4f1e-b06b-333965254e94/assets";
     run("/usr/bin/cloudflared", ["--config", file, "tunnel", "ingress", "validate"]);
     for (const [pathname, expected] of [
@@ -288,6 +289,19 @@ export function publishIsolated(stage, { filesystem = fs, run = runCommand } = {
       ["/chunks/ABCDEFGH.css", "http_status:404"],
       ["/chunks/ABCDEFGHI.js", "http_status:404"],
       ["/chunks/", "http_status:404"],
+      ["/app-ABCDEFGH.js", shell ? plan.listen : "http_status:404"],
+      ["/app-ABCDEFGH.css", shell ? plan.listen : "http_status:404"],
+      ["/theme-ABCDEFGH.js", shell ? plan.listen : "http_status:404"],
+      ["/mermaid-ABCDEFGH.js", shell ? plan.listen : "http_status:404"],
+      ["/automerge-ABCDEFGH.wasm", shell ? plan.listen : "http_status:404"],
+      ["/subduction-ABCDEFGH.wasm", shell ? plan.listen : "http_status:404"],
+      ["/app-abcdefgh.js", "http_status:404"],
+      ["/app-ABCDEFGHI.js", "http_status:404"],
+      ["/app-ABCDEFGH.wasm", "http_status:404"],
+      ["/theme-ABCDEFGH.css", "http_status:404"],
+      ["/automerge-ABCDEFGH.js", "http_status:404"],
+      ["/connect-ABCDEFGH.js", "http_status:404"],
+      ["/app-ABCDEFGH.js/private", "http_status:404"],
       ["/api/sync", plan.listen],
       ["/api/access", sharing ? plan.listen : "http_status:404"],
       ["/api/access/private", "http_status:404"],

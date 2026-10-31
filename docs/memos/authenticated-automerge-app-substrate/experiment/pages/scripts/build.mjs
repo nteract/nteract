@@ -2,13 +2,20 @@ import { celldCborPlugin } from "./celld-cbor.mjs";
 import { mermaidSource } from "./browser-mermaid.mjs";
 import { sourceFingerprint, writeBuildReceipt } from "./source-fingerprint.mjs";
 import {
+  VIEWER_ASSETS,
+  hashedAssetPath,
+  headersFile,
+  publicUrl,
+  shellAssetDefine,
   stylesCovered,
+  viewerAsset,
   viewerBuildOptions,
   viewerSplit,
+  withHashedAssets,
   withModulePreloads,
 } from "./viewer-chunks.mjs";
 import { build } from "esbuild";
-import { copyFile, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { copyFile, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -23,11 +30,89 @@ const buildDefine = { __PAGES_BUILD__: JSON.stringify(expectedFingerprint.slice(
 // A failed in-place build must not leave an older receipt beside mixed outputs.
 await rm(path.join(dist, "build-receipt.json"), { force: true });
 await mkdir(path.join(dist, "public"), { recursive: true });
+// Hashed names change with their contents; drop the previous build's files.
+// public/ then serves only this build's shell, never a file under its source
+// name.
+await rm(path.join(dist, "public/chunks"), { recursive: true, force: true });
+for (const name of await readdir(path.join(dist, "public")))
+  if (viewerAsset(`public/${name}`) || VIEWER_ASSETS.includes(name))
+    await rm(path.join(dist, "public", name));
+
+// Source name → hashed dist path for each shell asset (VIEWER_ASSETS).
+const assets = {};
+async function writeAsset(name, bytes) {
+  assets[name] = hashedAssetPath(name, bytes);
+  await writeFile(path.join(dist, assets[name]), bytes);
+}
+const firstOutput = ({ outputFiles }) => outputFiles[0].contents;
+
+await writeAsset(
+  "theme.js",
+  firstOutput(
+    await build({
+      entryPoints: [path.join(app, "viewer/theme-bootstrap.mjs")],
+      bundle: true,
+      format: "iife",
+      platform: "browser",
+      target: "es2022",
+      minify: true,
+      outfile: path.join(dist, "public/theme.js"),
+      write: false,
+    }),
+  ),
+);
+await writeAsset(
+  "mermaid.js",
+  firstOutput(
+    await build({
+      entryPoints: [mermaidSource(app)],
+      bundle: true,
+      format: "esm",
+      platform: "browser",
+      target: "es2022",
+      minify: true,
+      tsconfig: path.join(app, "tsconfig.json"),
+      outfile: path.join(dist, "public/mermaid.js"),
+      write: false,
+      define: { "process.env.NODE_ENV": '"production"' },
+    }),
+  ),
+);
 for (const [module, name] of [
-  ["@automerge/automerge/automerge.wasm", "automerge"],
-  ["@automerge/subduction/wasm", "subduction"],
+  ["@automerge/automerge/automerge.wasm", "automerge.wasm"],
+  ["@automerge/subduction/wasm", "subduction.wasm"],
 ])
-  await copyFile(require.resolve(module), path.join(dist, "public", `${name}.wasm`));
+  await writeAsset(name, await readFile(require.resolve(module)));
+
+const viewer = await build(
+  viewerBuildOptions(
+    app,
+    dist,
+    buildDefine,
+    Object.fromEntries(
+      ["mermaid.js", "automerge.wasm", "subduction.wasm"].map((name) => [
+        name,
+        publicUrl(assets[name]),
+      ]),
+    ),
+  ),
+);
+const { chunks: viewerChunks, preloads, styles } = viewerSplit(viewer.metafile);
+// esbuild also writes CSS for the lazily loaded chunk. app.css already holds
+// those rules, in the order the shell imports them, so nothing loads it.
+const appStyles = await readFile(path.join(dist, "public/app.css"), "utf8");
+for (const file of styles) {
+  if (!stylesCovered(await readFile(path.join(dist, file), "utf8"), appStyles))
+    throw new Error(`app.css is missing rules from ${file}; import that CSS from main.jsx`);
+  await rm(path.join(dist, file));
+}
+// No chunk imports app.js or app.css; only index.html and the Worker's own
+// pages name them. They take their hashed names once the viewer is built.
+for (const name of ["app.js", "app.css"]) {
+  const file = path.join(dist, "public", name);
+  await writeAsset(name, await readFile(file));
+  await rm(file);
+}
 
 await build({
   entryPoints: [path.join(app, "worker/index.mjs")],
@@ -39,7 +124,8 @@ await build({
   tsconfig: path.join(app, "tsconfig.json"),
   external: ["node:*"],
   outfile: path.join(dist, "index.js"),
-  define: buildDefine,
+  // The Worker's own pages (/connect, OAuth) load the hashed theme and styles.
+  define: { ...buildDefine, ...shellAssetDefine(Object.values(assets)) },
   plugins: [
     celldCborPlugin(),
     {
@@ -55,46 +141,24 @@ await build({
     },
   ],
 });
-await build({
-  entryPoints: [path.join(app, "viewer/theme-bootstrap.mjs")],
-  bundle: true,
-  format: "iife",
-  platform: "browser",
-  target: "es2022",
-  minify: true,
-  outfile: path.join(dist, "public/theme.js"),
-});
-// Chunk names are content hashes; drop the previous build's set.
-await rm(path.join(dist, "public/chunks"), { recursive: true, force: true });
-const viewer = await build(viewerBuildOptions(app, dist, buildDefine));
-const { chunks: viewerChunks, preloads, styles } = viewerSplit(viewer.metafile);
-// esbuild also writes CSS for the lazily loaded chunk. app.css already holds
-// those rules, in the order the shell imports them, so nothing loads it.
-const appStyles = await readFile(path.join(dist, "public/app.css"), "utf8");
-for (const file of styles) {
-  if (!stylesCovered(await readFile(path.join(dist, file), "utf8"), appStyles))
-    throw new Error(`app.css is missing rules from ${file}; import that CSS from main.jsx`);
-  await rm(path.join(dist, file));
-}
-await build({
-  entryPoints: [mermaidSource(app)],
-  bundle: true,
-  format: "esm",
-  platform: "browser",
-  target: "es2022",
-  minify: true,
-  tsconfig: path.join(app, "tsconfig.json"),
-  outfile: path.join(dist, "public/mermaid.js"),
-  define: { "process.env.NODE_ENV": '"production"' },
-});
 await copyFile(path.join(app, "viewer/connect-agent.js"), path.join(dist, "public/connect.js"));
 await writeFile(
   path.join(dist, "public/index.html"),
-  withModulePreloads(await readFile(path.join(app, "viewer/index.html"), "utf8"), preloads),
+  withHashedAssets(
+    withModulePreloads(await readFile(path.join(app, "viewer/index.html"), "utf8"), preloads),
+    assets,
+  ),
 );
 await writeFile(
   path.join(dist, "public/_headers"),
-  "/*\n  X-Content-Type-Options: nosniff\n  Referrer-Policy: same-origin\n  Content-Security-Policy: default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' https: data:; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'\n",
+  headersFile(
+    [
+      "X-Content-Type-Options: nosniff",
+      "Referrer-Policy: same-origin",
+      "Content-Security-Policy: default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' https: data:; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'",
+    ],
+    [...viewerChunks, ...Object.values(assets)],
+  ),
 );
 await writeFile(
   path.join(dist, "wrangler.json"),
@@ -136,5 +200,9 @@ await writeFile(
     2,
   ),
 );
-writeBuildReceipt(app, { expectedFingerprint, viewerChunks });
+writeBuildReceipt(app, {
+  expectedFingerprint,
+  viewerChunks,
+  viewerAssets: Object.values(assets),
+});
 console.log("Built native Pages Worker, WASM and viewer into pages/dist.");

@@ -112,14 +112,22 @@ export function sourceFingerprint(app, { root = repository(app) } = {}) {
   return { algorithm: "sha256-paths-and-content-v1", sha256: sha256(JSON.stringify(files)), files };
 }
 
-/** `viewerChunks` lists the viewer's hashed chunk files (paths in dist). The
- * receipt maps each to the sha256 of its bytes as built; staging copies
- * exactly these files and only when their bytes still match. */
-export function writeBuildReceipt(app, { expectedFingerprint, viewerChunks = [] } = {}) {
+/** `viewerChunks` lists the viewer's hashed chunk files and `viewerAssets` its
+ * hashed shell assets (paths in dist). The receipt maps each to the sha256 of
+ * its bytes as built; staging copies exactly these files and only when their
+ * bytes still match. */
+export function writeBuildReceipt(
+  app,
+  { expectedFingerprint, viewerChunks = [], viewerAssets = [] } = {},
+) {
   const root = repository(app);
   const fingerprint = sourceFingerprint(app, { root });
   if (expectedFingerprint && expectedFingerprint !== fingerprint.sha256)
     throw new Error("Source changed during the build; rebuild before validating");
+  const certify = (files) =>
+    Object.fromEntries(
+      [...files].sort().map((file) => [file, sha256(readFileSync(path.join(app, "dist", file)))]),
+    );
   const receipt = {
     schema: 1,
     built_at: new Date().toISOString(),
@@ -129,11 +137,8 @@ export function writeBuildReceipt(app, { expectedFingerprint, viewerChunks = [] 
     ),
     // Matches the X-Pages-Build header and /health `build` of this bundle.
     build_id: fingerprint.sha256.slice(0, 12),
-    viewer_chunks: Object.fromEntries(
-      [...viewerChunks]
-        .sort()
-        .map((file) => [file, sha256(readFileSync(path.join(app, "dist", file)))]),
-    ),
+    viewer_chunks: certify(viewerChunks),
+    viewer_assets: certify(viewerAssets),
     fingerprint,
   };
   writeFileSync(path.join(app, "dist/build-receipt.json"), JSON.stringify(receipt, null, 2) + "\n");

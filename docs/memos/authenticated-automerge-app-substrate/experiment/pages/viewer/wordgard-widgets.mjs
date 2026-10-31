@@ -6,7 +6,16 @@ import { nativeTableSpans } from "../model/richtext.mjs";
 import { tablePreviewFragment } from "./table-fragment.mjs";
 import "./table-fragment.css";
 
+// The renderer is a separate content-hashed file (scripts/browser-mermaid.mjs).
+// A deploy retires this tab's copy, so a failed import usually means the
+// server moved on; main.jsx points onRendererUnavailable at the build check,
+// which raises the reload banner when that's the cause.
 const loadMermaid = () => import("../../../../../../src/components/markdown/mermaid-renderer.ts");
+let rendererUnavailable = () => {};
+/** `listener` runs each time the Mermaid renderer fails to load. */
+export function onRendererUnavailable(listener) {
+  rendererUnavailable = listener;
+}
 const mounted = new WeakMap();
 let diagramId = 0;
 const table = Widget.define({
@@ -282,6 +291,12 @@ const diagram = Widget.define({
     state.timer = setTimeout(
       () =>
         loadMermaid()
+          .catch((error) => {
+            try {
+              rendererUnavailable();
+            } catch {}
+            throw error;
+          })
           .then(({ mountMermaid }) => {
             if (!state.alive) return;
             state.instance = mountMermaid(

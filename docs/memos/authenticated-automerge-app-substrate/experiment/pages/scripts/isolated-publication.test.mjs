@@ -4,7 +4,7 @@ import * as fs from "node:fs";
 import path from "node:path";
 import { tmpdir } from "node:os";
 import { createHash } from "node:crypto";
-import { routesFor, chunkPaths, imagePaths } from "./deployment/routes.mjs";
+import { routesFor, assetPaths, imagePaths } from "./deployment/routes.mjs";
 import { deploymentProfile } from "./deployment/profiles.mjs";
 import { isolatedPublicationPlan, publishIsolated } from "./deployment/isolated-publication.mjs";
 
@@ -265,7 +265,7 @@ function priorConfig(config, target) {
       : target === "page8"
         ? config.replace("|theme[.]js|", "|")
         : target === "page9"
-          ? config.replace("|" + chunkPaths, "|")
+          ? config.replace(assetPaths, "")
           : config.replace("|mermaid[.]js|", "|");
 }
 function previousInstallation(f, { pending = false, newConfig = false } = {}) {
@@ -332,7 +332,7 @@ test("Page8 admits only the exact theme asset while every older route receipt st
     assert.equal(route.test(pathname), false, pathname);
 });
 
-test("Page9 admits only hashed viewer chunks while every older route receipt stays frozen", () => {
+test("Page9 admits only hashed viewer files while every older route receipt stays frozen", () => {
   const frozen = {
     "pages-next": "2dbfabe3e649e0f79afc9df766e0a19c52177b76667d89ad8e45acaaf523e5f3",
     page3: "db474e430d27227ee9bf407beee948ad6cf7f601fafd55c60bbf34effa38200a",
@@ -345,16 +345,29 @@ test("Page9 admits only hashed viewer chunks while every older route receipt sta
   for (const [target, expected] of Object.entries(frozen)) {
     assert.equal(digest(routesFor(target)), expected, target);
     const route = new RegExp(/^    path: (.+)$/m.exec(routesFor(target))[1]);
-    assert.equal(route.test("/chunks/ABCDEFGH.js"), false, target);
+    for (const pathname of ["/chunks/ABCDEFGH.js", "/app-ABCDEFGH.js", "/automerge-ABCDEFGH.wasm"])
+      assert.equal(route.test(pathname), false, `${target} ${pathname}`);
   }
   const current = routesFor("page9");
+  // Page9 already serves #4578's chunk route; the migration adds only the
+  // hashed shell assets to those exact bytes.
   assert.equal(
     digest(priorConfig(current, "page9")),
-    "0b710b48df7a6109f555f1dee0dfb27456382eafab64b749eeb8879dabdcbd95",
+    "f18afa2a0c82ddad000a3724e8c940d0208a46d6c3f50101bd337492e2d59cd7",
     "the permitted migration must start from Page9's exact deployed route bytes",
   );
   const route = new RegExp(/^    path: (.+)$/m.exec(current)[1]);
-  for (const pathname of ["/chunks/ABCDEFGH.js", "/chunks/C5DM4OBS.js", "/chunks/ZZZZ2222.js"])
+  for (const pathname of [
+    "/chunks/ABCDEFGH.js",
+    "/chunks/C5DM4OBS.js",
+    "/chunks/ZZZZ2222.js",
+    "/app-ABCDEFGH.js",
+    "/app-ZONXTRV2.css",
+    "/theme-PYDRB3DW.js",
+    "/mermaid-ETH6F3P4.js",
+    "/automerge-FJQTWO5F.wasm",
+    "/subduction-Y5U24H5D.wasm",
+  ])
     assert.equal(route.test(pathname), true, pathname);
   for (const pathname of [
     "/chunks/",
@@ -367,6 +380,19 @@ test("Page9 admits only hashed viewer chunks while every older route receipt sta
     "/chunks/ABCDEFGH.js/private",
     "/chunks/nested/ABCDEFGH.js",
     "/ABCDEFGH.js",
+    "/app-abcdefgh.js",
+    "/app-ABCDEFG.js",
+    "/app-ABCDEFGHI.js",
+    "/app-ABCDEFGH.wasm",
+    "/app-ABCDEFGH.js/",
+    "/app-ABCDEFGH.js/private",
+    "/theme-ABCDEFGH.css",
+    "/mermaid-ABCDEFGH.css",
+    "/automerge-ABCDEFGH.js",
+    "/subduction-ABCDEFGH.css",
+    "/connect-ABCDEFGH.js",
+    "/index-ABCDEFGH.html",
+    "/chunks/app-ABCDEFGH.js",
   ])
     assert.equal(route.test(pathname), false, pathname);
 });
@@ -1020,7 +1046,7 @@ for (const target of ["page6", "page7", "page8", "page9"])
       assert.ok(paths.includes(pathname), pathname);
   });
 
-test("page9 publisher verifies hashed chunk ingress before starting its connector", (t) => {
+test("page9 publisher verifies hashed chunk and asset ingress before starting its connector", (t) => {
   const f = fixture(t, { target: "page9" });
   f.execute();
   const start = f.calls.findIndex(
@@ -1037,12 +1063,31 @@ test("page9 publisher verifies hashed chunk ingress before starting its connecto
     "/chunks/ABCDEFGH.css",
     "/chunks/ABCDEFGHI.js",
     "/chunks/",
+    "/app-ABCDEFGH.js",
+    "/app-ABCDEFGH.css",
+    "/theme-ABCDEFGH.js",
+    "/mermaid-ABCDEFGH.js",
+    "/automerge-ABCDEFGH.wasm",
+    "/subduction-ABCDEFGH.wasm",
+    "/app-abcdefgh.js",
+    "/app-ABCDEFGHI.js",
+    "/app-ABCDEFGH.wasm",
+    "/theme-ABCDEFGH.css",
+    "/automerge-ABCDEFGH.js",
+    "/connect-ABCDEFGH.js",
+    "/app-ABCDEFGH.js/private",
   ])
     assert.ok(paths.includes(pathname), pathname);
 });
 
-for (const misroutePath of ["/chunks/ABCDEFGH.js", "/chunks/ABCDEFGH.js/private"])
-  test(`Page9 does not activate a connector with misrouted chunk path ${misroutePath}`, (t) => {
+for (const misroutePath of [
+  "/chunks/ABCDEFGH.js",
+  "/chunks/ABCDEFGH.js/private",
+  "/app-ABCDEFGH.js",
+  "/automerge-ABCDEFGH.wasm",
+  "/app-ABCDEFGH.js/private",
+])
+  test(`Page9 does not activate a connector with misrouted hashed path ${misroutePath}`, (t) => {
     const f = fixture(t, { target: "page9", misroutePath });
     assert.throws(f.execute, /Dedicated tunnel route validation failed/);
     assert.equal(

@@ -126,3 +126,42 @@ test("the startup shell preloads each runtime as the request the bundle reuses",
     })),
   );
 });
+
+test("the built shell preloads the hashed runtimes the editor chunk fetches", async () => {
+  const { VIEWER_ASSETS, hashedAssetPath, publicUrl, withHashedAssets } =
+    await import("./viewer-chunks.mjs");
+  const assets = Object.fromEntries(
+    VIEWER_ASSETS.map((name) => [name, hashedAssetPath(name, `bytes of ${name}`)]),
+  );
+  const urls = {
+    automerge: publicUrl(assets["automerge.wasm"]),
+    subduction: publicUrl(assets["subduction.wasm"]),
+  };
+  const html = withHashedAssets(
+    await readFile(path.join(app, "viewer/index.html"), "utf8"),
+    assets,
+  );
+  const head = html.slice(0, html.indexOf("</head>"));
+  const preloads = [...head.matchAll(/<link rel="preload" href="([^"]*)" as="fetch" crossorigin/g)];
+  assert.deepEqual(
+    preloads.map(([, href]) => href),
+    Object.values(urls),
+  );
+  const output = await build({
+    stdin: {
+      contents: 'import "@automerge/automerge"; import "@automerge/subduction";',
+      resolveDir: app,
+    },
+    bundle: true,
+    write: false,
+    format: "esm",
+    platform: "browser",
+    target: "es2022",
+    logLevel: "silent",
+    plugins: [browserWasmPlugin(app, urls)],
+  });
+  const fetched = [...output.outputFiles[0].text.matchAll(/fetch\("([^"]*)"\)/g)].map(
+    ([, url]) => url,
+  );
+  assert.deepEqual(fetched.sort(), Object.values(urls).sort());
+});

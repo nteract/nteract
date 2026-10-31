@@ -232,6 +232,9 @@ const targets = Object.freeze({
     theme: true,
     // The viewer loads its editor from content-hashed /chunks/*.js files.
     viewerChunks: true,
+    // The shell's own files (app.js, app.css, theme.js, mermaid.js and both
+    // WASM runtimes) ship under content-hashed names too.
+    viewerAssets: true,
     firewallTable: "nteract_page9",
     firewallMark: "0x00400000",
     firewallComment: "nteract/preview-infra standalone-page9",

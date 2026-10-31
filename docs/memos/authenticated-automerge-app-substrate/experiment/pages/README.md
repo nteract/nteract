@@ -707,8 +707,18 @@ editor chunk at boot, and that chunk waits for the WASM runtimes; the
 release serves only its own chunks, so a tab still running an earlier `app.js`
 can find its editor chunk gone: the path then answers with the app's HTML and
 the import fails. The tab asks `/health` for the build and the banner offers
-Reload. Every asset is served `max-age=0, must-revalidate`, so the reload
-fetches the current `app.js`.
+Reload. The Mermaid renderer loads only when a diagram shows; a failed import
+asks `/health` the same way.
+
+Every file `index.html` names carries a content hash too: `app-<hash>.js`,
+`app-<hash>.css`, `theme-<hash>.js`, `automerge-<hash>.wasm` and
+`subduction-<hash>.wasm`, plus `mermaid-<hash>.js` from the editor chunk. The
+hash is the first 40 bits of the file's sha256 in base32. `_headers` serves
+each hashed file `public, max-age=31536000, immutable` by its exact path, so
+a return visit revalidates only `index.html`, which stays
+`max-age=0, must-revalidate`. A retired name falls through to the app's HTML
+with the default revalidating header, never the immutable one. The reload
+fetches the current `index.html` and, through it, the current files.
 
 Reload covers everything the tab holds. It pauses edits and waits until every
 accepted edit on the open Page has a durable host receipt. If those edits can't
