@@ -2,7 +2,7 @@ import * as A from "@automerge/automerge/slim";
 import { Decoration } from "wordgard/editor";
 import { selectionContext } from "../model/comments.mjs";
 import { resolvePeerSelection } from "../model/presence.mjs";
-import { activityIdentity, progressPassages } from "./activity.mjs";
+import { activityIdentity, agentKey, newestProgressFirst, progressPassages } from "./activity.mjs";
 import { monotonicNow } from "./monotonic.mjs";
 import { presenceColor } from "./presence-color.mjs";
 
@@ -163,9 +163,18 @@ export function createWordgardCollaboration({
     const at = now();
     const marks = [];
     const live = new Set();
+    // The newest live progress message per agent rides on its caret.
+    const messages = new Map();
+    for (const progress of replica.agentProgress?.values() ?? []) {
+      if (progress.until <= at) continue;
+      const key = agentKey(progress);
+      if (!messages.has(key) || newestProgressFirst(progress, messages.get(key)) < 0)
+        messages.set(key, progress);
+    }
     for (const agent of replica.agentPresence?.values() ?? []) {
       if (agent.until <= at) continue;
       const identity = activityIdentity(agent);
+      const message = messages.get(agentKey(agent))?.message ?? "";
       const base = {
         session: `agent:${agent.agent_id}`,
         // "Kyle's Kilo · release agent": account, harness, session label.
@@ -176,6 +185,7 @@ export function createWordgardCollaboration({
         title: agent.agent ? `${identity.label} (${agent.agent})` : identity.label,
         color: presenceColor(agent.principal, agent.driver),
         idle: agent.state === "idle",
+        message,
       };
       for (const target of agent.targets) {
         if (target.block_id !== id) continue;
@@ -321,7 +331,8 @@ export function createWordgardCollaboration({
     }));
     const reading = new Set();
     for (const mark of agentMarks()) {
-      const { session, displayName, tag, title, color, idle } = mark;
+      const { session, displayName, tag, color, idle, message } = mark;
+      const title = message ? `${mark.title}: ${message}` : mark.title;
       if (mark.type === "caret")
         entries.push({
           type: "caret",
@@ -331,10 +342,11 @@ export function createWordgardCollaboration({
           title,
           color,
           idle,
+          message,
           position: mark.position,
         });
       else if (mark.type === "dot")
-        entries.push({ type: "dot", session, displayName, tag, title, color, idle });
+        entries.push({ type: "dot", session, displayName, tag, title, color, idle, message });
       else {
         // One reading label per agent, on its first passage or hit.
         const first = !reading.has(session);

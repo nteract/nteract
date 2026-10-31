@@ -50,6 +50,9 @@ export function activitySnapshot(message, now = monotonicNow()) {
       return null;
     const remaining = Date.parse(item.expires_at) - observedAt;
     if (!Number.isFinite(remaining) || remaining > 60000) return null;
+    // When the host accepted this update, as a duration before the snapshot,
+    // so ordering uses the host's clock carried onto this session's clock.
+    const age = observedAt - Date.parse(item.updated_at);
     const targets = [];
     for (const anchor of item.targets) {
       if (
@@ -82,9 +85,11 @@ export function activitySnapshot(message, now = monotonicNow()) {
         principal: item.principal,
         displayName: item.displayName,
         driver: item.driver,
+        agent: bounded(item.agent, 128) ? item.agent : null,
         message: item.message,
         targets,
         until: now + remaining,
+        updated: now - (Number.isFinite(age) && age >= 0 ? age : 0),
       });
   }
   return {
@@ -168,12 +173,50 @@ export function progressPassages(session, now = sessionNow(session)) {
   return result;
 }
 
+/** Newest accepted update first. Expiry can't order updates: the host caps a
+ * lease at its credential's expiry, so two late reports can share one. */
+export const newestProgressFirst = (a, b) =>
+  b.updated - a.updated ||
+  (a.progress_id < b.progress_id ? 1 : a.progress_id > b.progress_id ? -1 : 0);
+
+/** One key per agent session: account, harness and optional session label.
+ * A caret and a progress lease with the same key are one participant. */
+export const agentKey = (item) =>
+  [item.principal ?? "", item.driver ?? "", item.agent ?? ""].join("\u0000");
+
+/** Agents in this Page, merged: each has its caret or reading marker (if any)
+ * and its live progress leases, newest first. */
+export function agentParticipants(session, now = sessionNow(session)) {
+  const participants = new Map();
+  const entry = (item) => {
+    const key = agentKey(item);
+    if (!participants.has(key))
+      participants.set(key, {
+        key,
+        principal: item.principal,
+        displayName: item.displayName,
+        driver: item.driver,
+        agent: item.agent ?? null,
+        presence: null,
+        progress: [],
+      });
+    return participants.get(key);
+  };
+  for (const item of session.agentPresence?.values() ?? [])
+    if (item.until > now) entry(item).presence = item;
+  for (const item of session.agentProgress?.values() ?? [])
+    if (item.until > now) entry(item).progress.push(item);
+  for (const participant of participants.values()) participant.progress.sort(newestProgressFirst);
+  return [...participants.values()];
+}
+
 export function pageActivity(
   session,
   now = sessionNow(session),
   { resolveSelections = true } = {},
 ) {
   const progress = [...(session.agentProgress?.values() ?? [])].filter((item) => item.until > now);
+  const agents = agentParticipants(session, now);
   const peers = [...(session.peers ?? [])]
     .filter(([, item]) => now - item.at <= 30000)
     .map(([id, item]) => ({
@@ -181,5 +224,5 @@ export function pageActivity(
       ...item,
       ...(resolveSelections ? { selection: resolvePeerSelection(session.doc, item.value) } : {}),
     }));
-  return { progress, peers };
+  return { progress, agents, peers };
 }

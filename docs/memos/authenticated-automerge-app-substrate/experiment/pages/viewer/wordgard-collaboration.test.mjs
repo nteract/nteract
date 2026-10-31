@@ -493,3 +493,36 @@ test("a session label follows the account and harness", () => {
   assert.equal(dot.displayName, "Kyle Kelley's Kilo · release agent");
   assert.equal(dot.title, "Kilo on behalf of Kyle Kelley (release agent)");
 });
+
+test("an agent's newest progress message rides on its caret", () => {
+  const doc = fixture();
+  const h = harness(doc);
+  h.replica.agentPresence = new Map([
+    ["a", agent(doc, [{ kind: "block", block_id: "first" }], { agent: "release agent" })],
+  ]);
+  const progress = (id, message, until, extra = {}) => [
+    id,
+    {
+      progress_id: id,
+      principal: "user:kyle",
+      displayName: "Kyle Kelley",
+      driver: "Kilo",
+      agent: "release agent",
+      message,
+      until,
+      targets: [],
+      ...extra,
+    },
+  ];
+  h.replica.agentProgress = new Map([
+    // Equal expiries: the later accepted update wins.
+    progress("p1", "Reading the rollout", 9000, { updated: 100 }),
+    progress("p2", "Fixing the table", 9000, { updated: 200 }),
+    progress("p3", "Another session", 9999, { agent: "rich text", updated: 300 }),
+  ]);
+  const [dot] = h.collaboration.carets();
+  assert.equal(dot.message, "Fixing the table");
+  assert.equal(dot.title, "Kilo on behalf of Kyle Kelley (release agent): Fixing the table");
+  h.replica.agentProgress = new Map();
+  assert.equal(h.collaboration.carets()[0].message, "");
+});

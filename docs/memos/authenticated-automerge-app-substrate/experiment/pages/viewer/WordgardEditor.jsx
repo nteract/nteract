@@ -1009,6 +1009,7 @@ export function WordgardEditor(props) {
                   <span>
                     {peer.displayName}
                     {peer.tag && <em>{peer.tag}</em>}
+                    {peer.message && <small>{peer.message}</small>}
                   </span>
                 )}
               </span>
@@ -1025,6 +1026,7 @@ export function WordgardEditor(props) {
                 <span style={{ maxWidth: peer.labelWidth }}>
                   {peer.displayName}
                   {peer.tag && <em>{peer.tag}</em>}
+                  {peer.message && <small>{peer.message}</small>}
                 </span>
               )}
             </span>
