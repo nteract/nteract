@@ -226,3 +226,76 @@ test("reverse selections trust live native peers and expire on server time or di
   assert.deepEqual(f.activity.read(f.doc).participants, []);
   assert.equal(f.activity.selections.size, 0);
 });
+
+const blockTarget = (f) => [{ kind: "block", block_id: f.blockId }];
+
+test("agent presence follows its lifetime on the host's timer", (t) => {
+  const f = fixture(t);
+  assert.equal(f.activity.agentEvent(identity(), "write", blockTarget(f)), true);
+  let [agent] = f.broadcasts.at(-1).agents;
+  assert.equal(agent.state, "active");
+  assert.equal(agent.driver, "ChatGPT");
+  assert.equal(agent.expires_at, new Date(1000 + 15_000).toISOString());
+  t.mock.timers.tick(15_000);
+  [agent] = f.broadcasts.at(-1).agents;
+  assert.equal(agent.state, "idle");
+  t.mock.timers.tick(45_000);
+  assert.deepEqual(f.broadcasts.at(-1).agents, []);
+
+  f.activity.agentEvent(identity(), "read", blockTarget(f));
+  assert.equal(f.broadcasts.at(-1).agents[0].state, "reading");
+  t.mock.timers.tick(10_000);
+  assert.deepEqual(f.broadcasts.at(-1).agents, []);
+});
+
+test("agent presence needs an agent driver, current read access and a live credential", (t) => {
+  const f = fixture(t);
+  const count = () => f.broadcasts.length;
+  assert.equal(
+    f.activity.agentEvent(identity({ driver: "Browser" }), "write", blockTarget(f)),
+    false,
+  );
+  assert.equal(
+    f.activity.agentEvent(identity({ principal: "user:stranger" }), "write", blockTarget(f)),
+    false,
+  );
+  assert.equal(count(), 0);
+  // A viewer can show where it is reading.
+  f.metadata.acl.members["user:viewer"] = { role: "viewer", generation: 1 };
+  const viewer = identity({ principal: "user:viewer", canWrite: false });
+  assert.equal(f.activity.agentEvent(viewer, "read", blockTarget(f)), true);
+  // A generation change hides it at the next prune.
+  f.metadata.acl.members["user:viewer"] = { role: "viewer", generation: 2 };
+  f.activity.prune();
+  assert.deepEqual(f.broadcasts.at(-1).agents, []);
+  // An expiring credential hides its caret when it expires.
+  f.activity.agentEvent(identity({ expiresAt: 3000 }), "write", blockTarget(f));
+  t.mock.timers.tick(2000);
+  f.activity.prune();
+  assert.deepEqual(f.broadcasts.at(-1).agents, []);
+});
+
+test("two agents on one account are separate; the roster keeps the most recent eight", (t) => {
+  const f = fixture(t);
+  f.activity.agentEvent(identity({ driver: "Kilo" }), "write", blockTarget(f));
+  f.activity.agentEvent(identity({ driver: "Codex" }), "write", blockTarget(f));
+  assert.deepEqual(
+    f.broadcasts.at(-1).agents.map((a) => a.driver),
+    ["Kilo", "Codex"],
+  );
+  for (let i = 0; i < 9; i++) {
+    t.mock.timers.tick(10);
+    f.activity.agentEvent(identity({ driver: `Agent ${i}` }), "write", blockTarget(f));
+  }
+  const drivers = f.broadcasts.at(-1).agents.map((a) => a.driver);
+  assert.equal(drivers.length, 8);
+  assert.ok(!drivers.includes("Kilo"));
+  assert.ok(drivers.includes("Agent 8"));
+});
+
+test("an oversized presence update is dropped without failing the call", (t) => {
+  const f = fixture(t);
+  const huge = Array.from({ length: 3 }, () => ({ kind: "block", block_id: "x".repeat(30_000) }));
+  assert.equal(f.activity.agentEvent(identity(), "write", huge), false);
+  assert.equal(f.broadcasts.length, 0);
+});

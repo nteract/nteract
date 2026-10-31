@@ -942,6 +942,26 @@ exact-head guard. Conflicts provide bounded addresses for focused rereading.
 Guards check the preparation snapshot; native changes can still merge during
 persistence. Tool mutations do not simulate typing or lock out peers.
 
+### Agent carets
+
+API agents get presence derived from the calls the host already authorized
+([`model/agent-presence.mjs`](model/agent-presence.mjs)). A committed
+`patch_page` or `edit_page` publishes a caret where its last operation landed: a
+selection over the text a `replace_match` or `format_match` changed, which the
+browser fills for 600 ms before collapsing it to a caret, or a corner dot on a
+block an operation inserted, moved or replaced. A `read_page` by section, search,
+node range or block IDs shows a reading bar; a search with one to three hits also
+fills each hit. Whole-page and outline reads show nothing.
+
+Targets are Automerge cursors captured inside the change, so they follow
+concurrent typing. They travel in the `page-activity` snapshot and are never
+written to the document, a receipt or the journal; a replayed receipt publishes
+nothing. A caret is active for 15 s after a write, then fades, and disappears 60 s
+after the agent's last call; a reading marker lasts 10 s. Calls from the
+`Browser` driver publish nothing, since that person's editor shows their own
+caret. Each participant's color comes from nteract's cursor palette, keyed by
+principal and driver.
+
 Comment and progress anchors are native cursors, so they skip the exact-head
 guard. `manage_page_comment` `add` with `selected_text` requires known
 `base_heads`, finds the passage (and `occurrence`) at that revision, and anchors

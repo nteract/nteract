@@ -395,7 +395,7 @@ test("MCP advertises visible-text replacement separately from Markdown replaceme
   assert.deepEqual(variants[0].required, ["op", "block_id", "match_text", "replacement"]);
   assert.equal(variants[0].properties.context_before.type, "string");
   assert.equal(variants[0].properties.context_after.type, "string");
-  assert.match(patch.description, /without a typing cursor/);
+  assert.match(patch.description, /without streamed keystrokes/);
   const args = {
     page_id: pageId,
     base_heads: ["a".repeat(64)],

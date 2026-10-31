@@ -1,12 +1,17 @@
 import * as A from "@automerge/automerge/slim";
 import { Decoration } from "wordgard/editor";
 import { selectionContext } from "../model/comments.mjs";
+import { resolvePeerSelection } from "../model/presence.mjs";
 import { activityIdentity, progressPassages } from "./activity.mjs";
 import { monotonicNow } from "./monotonic.mjs";
+import { presenceColor } from "./presence-color.mjs";
 
 const pathFor = (id) => ["blocks", id, "richText"];
 const presenceTTL = 30000;
 const illuminationTTL = 2000;
+// How long a write's selection fills the changed text before it collapses to
+// a caret at its end: select, then change.
+export const SELECT_BEAT_MS = 600;
 const textObject = (doc, id) => doc?.blocks?.[id] && A.getObjectId(doc.blocks[id], "richText");
 const mapped = (mapping, position) => {
   const value = mapping?.[position];
@@ -79,6 +84,8 @@ export function createWordgardCollaboration({
   now = () => replica.now?.() ?? monotonicNow(),
 }) {
   const visiblePeers = new Map();
+  // When each agent write (agent id and seq) first resolved in this block.
+  const beats = new Map();
   let illumination = [];
   const activeId = () => {
     const target = getTarget();
@@ -123,6 +130,7 @@ export function createWordgardCollaboration({
             to: Math.max(from, to),
             caret: peer.value.backward ? from : to,
             displayName: latest.displayName || "Collaborator",
+            color: presenceColor(latest.profile?.principal ?? session, latest.profile?.driver),
           };
         } catch {
           return null;
@@ -144,6 +152,50 @@ export function createWordgardCollaboration({
     for (const session of visiblePeers.keys())
       if (!present.has(session)) visiblePeers.delete(session);
     return resolved;
+  }
+
+  // Agent presence resolved for this block. Text targets carry editor
+  // positions; a write's fill shows only during its select beat.
+  function agentMarks() {
+    const doc = replica.doc;
+    const map = getCurrent()?.map;
+    if (!textObject(doc, id) || !map) return [];
+    const at = now();
+    const marks = [];
+    const live = new Set();
+    for (const agent of replica.agentPresence?.values() ?? []) {
+      if (agent.until <= at) continue;
+      const identity = activityIdentity(agent);
+      const base = {
+        session: `agent:${agent.agent_id}`,
+        displayName: identity.driver || identity.name,
+        tag: identity.delegated ? "agent" : "",
+        title: identity.label,
+        color: presenceColor(agent.principal, agent.driver),
+        idle: agent.state === "idle",
+      };
+      for (const target of agent.targets) {
+        if (target.block_id !== id) continue;
+        if (target.kind === "block") {
+          marks.push({ ...base, type: "dot" });
+          continue;
+        }
+        const range = resolvePeerSelection(doc, target);
+        if (range?.status !== "attached") continue;
+        const from = mapped(map.amToWg, range.start_utf16);
+        const to = mapped(map.amToWg, range.end_utf16);
+        if (from === null || to === null) continue;
+        if (target.kind === "text") {
+          const key = `${agent.agent_id}:${agent.seq}`;
+          live.add(key);
+          if (!beats.has(key)) beats.set(key, at);
+          const beat = agent.state === "active" && from < to ? beats.get(key) + SELECT_BEAT_MS : 0;
+          marks.push({ ...base, type: "caret", from, to, position: to, fillUntil: beat });
+        } else marks.push({ ...base, type: target.kind, from, to });
+      }
+    }
+    for (const key of beats.keys()) if (!live.has(key)) beats.delete(key);
+    return marks;
   }
 
   function observeChange(event) {
@@ -179,7 +231,20 @@ export function createWordgardCollaboration({
       if (from < to) entries.push([Decoration.Range.wrapper("span", { attributes }), from, to]);
     };
     for (const peer of peers())
-      add(peer.from, peer.to, { class: "peer-selection", title: peer.displayName });
+      add(peer.from, peer.to, {
+        class: "peer-selection",
+        title: peer.displayName,
+        style: `--peer-color: ${peer.color.background}`,
+      });
+    for (const mark of agentMarks()) {
+      const filled = mark.type === "hit" || (mark.type === "caret" && mark.fillUntil > now());
+      if (filled)
+        add(mark.from, mark.to, {
+          class: "agent-selection",
+          title: mark.type === "hit" ? `${mark.title} is reading` : mark.title,
+          style: `--peer-color: ${mark.color.background}`,
+        });
+    }
     for (const passage of progressPassages(replica, now())) {
       if (passage.block_id !== id) continue;
       const map = getCurrent()?.map;
@@ -243,11 +308,55 @@ export function createWordgardCollaboration({
   // Render these in the host's out-of-flow overlay. Wordgard owns selections
   // and marks; transient cursor DOM must not be copied by its range renderer.
   function carets() {
-    return peers().map(({ session, displayName, caret }) => ({
+    const entries = peers().map(({ session, displayName, caret, color }) => ({
+      type: "caret",
       session,
       displayName,
+      color,
       position: caret,
     }));
+    const reading = new Set();
+    for (const mark of agentMarks()) {
+      const { session, displayName, tag, title, color, idle } = mark;
+      if (mark.type === "caret")
+        entries.push({
+          type: "caret",
+          session,
+          displayName,
+          tag,
+          title,
+          color,
+          idle,
+          position: mark.position,
+        });
+      else if (mark.type === "dot")
+        entries.push({ type: "dot", session, displayName, tag, title, color, idle });
+      else {
+        // One reading label per agent, on its first passage or hit.
+        const first = !reading.has(session);
+        reading.add(session);
+        entries.push({
+          type: "bar",
+          session: `${session}:${mark.from}`,
+          label: first ? `${displayName} is reading` : "",
+          title,
+          color,
+          from: mark.from,
+          to: mark.to,
+        });
+      }
+    }
+    return entries;
+  }
+
+  /** Milliseconds until a select beat ends, so the host can repaint it into
+   * a caret. A delay, not a time: the host's timers don't share this clock. */
+  function nextRepaint() {
+    const at = now();
+    const ends = agentMarks()
+      .map((mark) => mark.fillUntil ?? 0)
+      .filter((until) => until > at);
+    return ends.length ? Math.min(...ends) - at : null;
   }
 
   function commentAtPosition(position) {
@@ -277,11 +386,13 @@ export function createWordgardCollaboration({
   return {
     ranges,
     carets,
+    nextRepaint,
     observeChange,
     revealThread,
     commentAtPosition,
     destroy() {
       visiblePeers.clear();
+      beats.clear();
       illumination = [];
     },
   };

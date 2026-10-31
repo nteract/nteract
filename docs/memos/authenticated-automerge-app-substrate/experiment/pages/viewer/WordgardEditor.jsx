@@ -391,7 +391,8 @@ export function WordgardEditor(props) {
     });
     imageUploader.current = uploader;
     editor.dom.classList.add("wordgard-document");
-    let caretFrame = null;
+    let caretFrame = null,
+      beatTimer;
     const measureCarets = () => {
       if (!alive || caretFrame !== null) return;
       caretFrame = requestAnimationFrame(() => {
@@ -399,8 +400,25 @@ export function WordgardEditor(props) {
         if (!alive || !caretLayer.current) return;
         const origin = caretLayer.current.getBoundingClientRect();
         const bounds = editor.contentDOM.getBoundingClientRect();
+        const visibleTop = Math.max(0, bounds.top),
+          visibleBottom = Math.min(innerHeight, bounds.bottom);
         const next = collab.carets().flatMap((peer) => {
           try {
+            if (peer.type === "dot")
+              return [{ ...peer, left: bounds.right - origin.left, top: bounds.top - origin.top }];
+            if (peer.type === "bar") {
+              const first = editor.coordsAtPos(peer.from),
+                last = editor.coordsAtPos(peer.to);
+              if (last.bottom < visibleTop || first.top > visibleBottom) return [];
+              return [
+                {
+                  ...peer,
+                  left: bounds.left - origin.left,
+                  top: first.top - origin.top,
+                  height: Math.max(last.bottom - first.top, first.bottom - first.top),
+                },
+              ];
+            }
             const rect = editor.coordsAtPos(peer.position);
             const visibleLeft = Math.max(0, bounds.left),
               visibleRight = Math.min(innerWidth, bounds.right),
@@ -433,6 +451,10 @@ export function WordgardEditor(props) {
         setRemoteCarets((previous) =>
           JSON.stringify(previous) === JSON.stringify(next) ? previous : next,
         );
+        // An agent's select beat collapses to a caret on its own schedule.
+        clearTimeout(beatTimer);
+        const beat = collab.nextRepaint();
+        if (beat !== null) beatTimer = setTimeout(repaint, Math.max(16, beat + 16));
       });
     };
     const repaint = () => {
@@ -639,6 +661,7 @@ export function WordgardEditor(props) {
       imageTarget.current = null;
       clearInterval(timer);
       if (caretFrame !== null) cancelAnimationFrame(caretFrame);
+      clearTimeout(beatTimer);
       document.removeEventListener("scroll", measureCarets, true);
       window.removeEventListener("resize", measureCarets);
       resize.disconnect();
@@ -958,16 +981,55 @@ export function WordgardEditor(props) {
       )}
       <div ref={mount} />
       <div ref={caretLayer} className="wordgard-caret-layer" aria-hidden="true">
-        {remoteCarets.map((peer) => (
-          <span
-            key={peer.session}
-            className="peer-caret"
-            data-label-side={peer.labelOnLeft ? "left" : "right"}
-            style={{ left: peer.left, top: peer.top, height: peer.height }}
-          >
-            <span style={{ maxWidth: peer.labelWidth }}>{peer.displayName}</span>
-          </span>
-        ))}
+        {remoteCarets.map((peer) => {
+          const color = peer.color && {
+            "--peer-color": peer.color.background,
+            "--peer-foreground": peer.color.foreground,
+          };
+          if (peer.type === "bar")
+            return (
+              <span
+                key={peer.session}
+                className="agent-reading"
+                title={peer.title}
+                style={{ ...color, left: peer.left, top: peer.top, height: peer.height }}
+              >
+                {peer.label && <span>{peer.label}</span>}
+              </span>
+            );
+          if (peer.type === "dot")
+            return (
+              <span
+                key={peer.session}
+                className={`agent-dot${peer.idle ? " is-idle" : ""}`}
+                title={peer.title}
+                style={{ ...color, left: peer.left, top: peer.top }}
+              >
+                {!peer.idle && (
+                  <span>
+                    {peer.displayName}
+                    {peer.tag && <em>{peer.tag}</em>}
+                  </span>
+                )}
+              </span>
+            );
+          return (
+            <span
+              key={peer.session}
+              className={`peer-caret${peer.idle ? " is-idle" : ""}`}
+              data-label-side={peer.labelOnLeft ? "left" : "right"}
+              title={peer.title}
+              style={{ ...color, left: peer.left, top: peer.top, height: peer.height }}
+            >
+              {!peer.idle && (
+                <span style={{ maxWidth: peer.labelWidth }}>
+                  {peer.displayName}
+                  {peer.tag && <em>{peer.tag}</em>}
+                </span>
+              )}
+            </span>
+          );
+        })}
       </div>
       {link && view.current && (
         <LinkPopover

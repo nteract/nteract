@@ -50,7 +50,9 @@ export function validateImageInsertion(op) {
       "insert_image requires an uploaded asset_id, alt text (up to 2048 characters), and optional after_block_id",
     );
 }
-function applyEdit(doc, op) {
+// `trace` records where each operation landed, for agent presence. It never
+// enters the result, so stored receipts and retries are unchanged.
+function applyEdit(doc, op, trace) {
   const id = op.block_id ?? op.id;
   if (op.op === "set_title") {
     A.updateText(doc, ["title"], String(op.title).slice(0, 1024));
@@ -60,6 +62,7 @@ function applyEdit(doc, op) {
     const value = block(crypto.randomUUID(), positionForInsertion(doc, op.after_block_id));
     doc.blocks[value.id] = value;
     setRichMarkdown(doc, value.id, String(op.markdown ?? ""));
+    trace?.push({ type: "block", block_id: value.id });
     return;
   }
   if (op.op === "insert_image") {
@@ -68,6 +71,7 @@ function applyEdit(doc, op) {
     const asset_url = imageAssetUrl(doc.page_id, op.asset_id);
     doc.blocks[value.id] = value;
     setRichImage(doc, value.id, { src: asset_url, alt: op.alt });
+    trace?.push({ type: "block", block_id: value.id });
     return {
       op: "insert_image",
       block_id: value.id,
@@ -80,16 +84,19 @@ function applyEdit(doc, op) {
   if (op.op === "move_block") {
     if (op.after_block_id !== id)
       doc.blocks[id].position = positionForInsertion(doc, op.after_block_id, id);
+    trace?.push({ type: "block", block_id: id });
     return;
   }
-  if (op.op === "replace_match") return replaceMatch(doc, id, op);
-  if (op.op === "format_match") return formatMatch(doc, id, op);
-  if (op.op === "replace_block_markdown") setRichMarkdown(doc, id, String(op.markdown ?? ""));
-  else if (op.op === "delete_block") {
+  if (op.op === "replace_match") return replaceMatch(doc, id, op, trace);
+  if (op.op === "format_match") return formatMatch(doc, id, op, trace);
+  if (op.op === "replace_block_markdown") {
+    setRichMarkdown(doc, id, String(op.markdown ?? ""));
+    trace?.push({ type: "block", block_id: id });
+  } else if (op.op === "delete_block") {
     delete doc.blocks[id];
   } else throw Error("Unsupported edit operation");
 }
-export function applyPageOperation(doc, { operation, arguments: args = {}, identity }) {
+export function applyPageOperation(doc, { operation, arguments: args = {}, identity, trace }) {
   if (operation === "manage_page_comment" || operation === "reply_page_comment")
     return applyComment(
       doc,
@@ -103,7 +110,7 @@ export function applyPageOperation(doc, { operation, arguments: args = {}, ident
   const edits = [],
     inserted_images = [];
   for (const op of args.operations) {
-    const edit = applyEdit(doc, { ...op, op: op.op ?? op.type });
+    const edit = applyEdit(doc, { ...op, op: op.op ?? op.type }, trace);
     if (edit?.op === "insert_image") {
       const { op: _op, ...image } = edit;
       inserted_images.push(image);

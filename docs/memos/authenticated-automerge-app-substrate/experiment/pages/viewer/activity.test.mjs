@@ -109,3 +109,46 @@ test("progress ranges follow edits, detach on deletion, and never mutate the doc
   );
   assert.equal(progressPassages(session, 1000).length, 0);
 });
+
+test("agent presence entries are validated one at a time", async () => {
+  const { activitySnapshot } = await import("./activity.mjs");
+  const observed = "2026-10-31T00:00:00.000Z";
+  const good = {
+    agent_id: "a1",
+    principal: "user:kyle",
+    displayName: "Kyle",
+    driver: "Kilo",
+    state: "active",
+    seq: 1,
+    targets: [{ kind: "block", block_id: "b1" }, { kind: "mystery" }],
+    updated_at: observed,
+    expires_at: "2026-10-31T00:00:15.000Z",
+  };
+  const snapshot = activitySnapshot(
+    {
+      kind: "page-activity",
+      epoch: "e",
+      revision: 1,
+      observed_at: observed,
+      progress: [],
+      agents: [
+        good,
+        { ...good, agent_id: "bad", state: "typing" },
+        { ...good, agent_id: "late", expires_at: "2026-10-31T00:05:00.000Z" },
+      ],
+    },
+    5000,
+  );
+  assert.deepEqual([...snapshot.agents.keys()], ["a1"]);
+  assert.deepEqual(snapshot.agents.get("a1").targets, [{ kind: "block", block_id: "b1" }]);
+  assert.equal(snapshot.agents.get("a1").until, 5000 + 15_000);
+  // An older host sends no agents at all.
+  const older = activitySnapshot({
+    kind: "page-activity",
+    epoch: "e",
+    revision: 1,
+    observed_at: observed,
+    progress: [],
+  });
+  assert.equal(older.agents.size, 0);
+});

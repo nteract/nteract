@@ -157,7 +157,11 @@ test("presence holds a causal cursor while newer heads are pending, then follows
   assert.ok(
     entries(h.collaboration.ranges())[0].value.eq(
       Decoration.Range.wrapper("span", {
-        attributes: { class: "peer-selection", title: "Kyle Kelley · Browser" },
+        attributes: {
+          class: "peer-selection",
+          title: "Kyle Kelley · Browser",
+          style: `--peer-color: ${first[0].color.background}`,
+        },
       }),
     ),
   );
@@ -386,4 +390,95 @@ test("agent progress decorates anchored Wordgard text without publishing a caret
     d.blocks.first.richText = "Replacement";
   });
   assert.equal(entries(h.collaboration.ranges()).length, 0);
+});
+
+const agent = (doc, targets, extra = {}) => ({
+  agent_id: "agent-1",
+  principal: "user:kyle",
+  displayName: "Kyle Kelley",
+  driver: "Kilo",
+  state: "active",
+  seq: 1,
+  targets,
+  until: 1_000_000,
+  ...extra,
+});
+const textAt = (doc, kind, from, to) => ({ kind, ...presence(doc, from, to) });
+
+test("an agent write fills the changed text, then collapses to a labeled caret", () => {
+  const doc = fixture("Ship on Tuesday morning.");
+  const h = harness(doc);
+  const at = "Ship on ".length;
+  h.replica.agentPresence = new Map([
+    ["agent-1", agent(doc, [textAt(doc, "text", at, at + "Tuesday morning".length)])],
+  ]);
+  const map = current(doc).map;
+  let [caret] = h.collaboration.carets();
+  assert.equal(caret.type, "caret");
+  assert.equal(caret.displayName, "Kilo");
+  assert.equal(caret.tag, "agent");
+  assert.equal(caret.title, "Kilo on behalf of Kyle Kelley");
+  assert.equal(caret.position, map.amToWg[at + "Tuesday morning".length]);
+  let fills = entries(h.collaboration.ranges()).filter((e) =>
+    (e.value.elt.attrs[e.value.elt.attrs.indexOf("class") + 1] ?? "").includes("agent-selection"),
+  );
+  assert.equal(fills.length, 1);
+  assert.equal(fills[0].from, map.amToWg[at]);
+  assert.equal(h.collaboration.nextRepaint(), 600);
+
+  h.setTime(1600);
+  fills = entries(h.collaboration.ranges()).filter((e) =>
+    (e.value.elt.attrs[e.value.elt.attrs.indexOf("class") + 1] ?? "").includes("agent-selection"),
+  );
+  assert.equal(fills.length, 0, "the select beat ends");
+  assert.equal(h.collaboration.nextRepaint(), null);
+  [caret] = h.collaboration.carets();
+  assert.equal(caret.type, "caret");
+
+  // Idle: still placed, faded, no fill.
+  h.replica.agentPresence.get("agent-1").state = "idle";
+  [caret] = h.collaboration.carets();
+  assert.equal(caret.idle, true);
+
+  // A new write (next seq) gets its own beat.
+  h.replica.agentPresence.set("agent-1", agent(doc, [textAt(doc, "text", 0, 4)], { seq: 2 }));
+  assert.equal(h.collaboration.nextRepaint(), 600);
+});
+
+test("reading shows a margin bar per passage, fills search hits, and labels once", () => {
+  const doc = fixture("fade here and fade there");
+  const h = harness(doc);
+  h.replica.agentPresence = new Map([
+    [
+      "agent-1",
+      agent(doc, [textAt(doc, "hit", 0, 4), textAt(doc, "hit", 14, 18)], { state: "reading" }),
+    ],
+  ]);
+  const bars = h.collaboration.carets();
+  assert.deepEqual(
+    bars.map((bar) => [bar.type, bar.label]),
+    [
+      ["bar", "Kilo is reading"],
+      ["bar", ""],
+    ],
+  );
+  const fills = entries(h.collaboration.ranges()).filter((e) =>
+    (e.value.elt.attrs[e.value.elt.attrs.indexOf("class") + 1] ?? "").includes("agent-selection"),
+  );
+  assert.equal(fills.length, 2);
+});
+
+test("block targets become a corner dot; other blocks and expired agents show nothing", () => {
+  const doc = fixture();
+  const h = harness(doc);
+  h.replica.agentPresence = new Map([
+    ["a", agent(doc, [{ kind: "block", block_id: "first" }])],
+    ["b", agent(doc, [{ kind: "block", block_id: "second" }], { agent_id: "b" })],
+    ["c", agent(doc, [{ kind: "block", block_id: "first" }], { agent_id: "c", until: 10 })],
+  ]);
+  const shown = h.collaboration.carets();
+  assert.deepEqual(
+    shown.map((entry) => [entry.type, entry.session]),
+    [["dot", "agent:agent-1"]],
+  );
 });

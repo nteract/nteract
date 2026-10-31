@@ -184,8 +184,67 @@
 .wordgard-caret-layer .peer-caret {
   position: absolute;
   width: 0;
-  border-left: 2px solid #8b5fbf;
+  border-left: 2px solid var(--peer-color, #8b5fbf);
   pointer-events: none;
+}
+/* An agent's caret fades when it stops writing. */
+.wordgard-caret-layer .peer-caret.is-idle {
+  opacity: 0.4;
+}
+.wordgard-caret-layer .peer-caret > span em,
+.wordgard-caret-layer .agent-dot > span em {
+  margin-left: 5px;
+  padding-left: 5px;
+  border-left: 1px solid color-mix(in srgb, currentColor 40%, transparent);
+  font-style: normal;
+  font-weight: 500;
+  opacity: 0.85;
+}
+/* Reading: a bar in the left margin beside the passage an agent read. */
+.wordgard-caret-layer .agent-reading {
+  position: absolute;
+  width: 3px;
+  margin-left: -18px;
+  border-radius: 2px;
+  background: color-mix(in srgb, var(--peer-color) 45%, transparent);
+}
+.wordgard-caret-layer .agent-reading > span {
+  position: absolute;
+  bottom: 100%;
+  left: 0;
+  margin-bottom: 4px;
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--peer-color) 12%, var(--background));
+  color: var(--peer-color);
+  font: 500 11px/1.3 system-ui;
+  white-space: nowrap;
+}
+/* A block without a caret position (an image, a whole inserted block) gets a
+   presence dot on its top-right corner, like nteract's cell presence. */
+.wordgard-caret-layer .agent-dot {
+  position: absolute;
+  width: 14px;
+  height: 14px;
+  margin: -7px 0 0 -7px;
+  border: 2px solid var(--background);
+  border-radius: 50%;
+  background: var(--peer-color);
+  box-shadow: 0 1px 3px #0003;
+}
+.wordgard-caret-layer .agent-dot.is-idle {
+  opacity: 0.4;
+}
+.wordgard-caret-layer .agent-dot > span {
+  position: absolute;
+  top: -2px;
+  right: calc(100% + 6px);
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: var(--peer-color);
+  color: var(--peer-foreground, white);
+  font: 600 11px/1.2 system-ui;
+  white-space: nowrap;
 }
 .wordgard-caret-layer .peer-caret > span {
   max-width: min(220px, 60vw);
