@@ -3,7 +3,7 @@ import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import { deploymentProfile, stageTarget, verifyDeployment } from "./profiles.mjs";
-import { routesFor, assetPaths, imagePaths } from "./routes.mjs";
+import { routesFor, imagePaths, projectPaths } from "./routes.mjs";
 
 const accountId = "1cfb529b94b3d6cde3aaf49d1d6ed5e6";
 function publicationPaths(target) {
@@ -194,7 +194,7 @@ export function publishIsolated(stage, { filesystem = fs, run = runCommand } = {
           : target === "page8"
             ? plan.config.replace("|theme[.]js|", "|")
             : target === "page9"
-              ? plan.config.replace(assetPaths, "")
+              ? plan.config.replace(projectPaths, "")
               : null;
   const previousReceipt = previousConfig === null ? null : receiptFor(previousConfig);
   const pendingReceipt =
@@ -266,7 +266,9 @@ export function publishIsolated(stage, { filesystem = fs, run = runCommand } = {
     const oauth = profile.oauth === true;
     const chunks = profile.viewerChunks === true;
     const shell = profile.viewerAssets === true;
-    const assets = "/api/pages/08c583e5-d29e-4f1e-b06b-333965254e94/assets";
+    const projects = profile.projectLinks === true;
+    const uuid = "08c583e5-d29e-4f1e-b06b-333965254e94";
+    const assets = "/api/pages/" + uuid + "/assets";
     run("/usr/bin/cloudflared", ["--config", file, "tunnel", "ingress", "validate"]);
     for (const [pathname, expected] of [
       ["/", plan.listen],
@@ -302,6 +304,19 @@ export function publishIsolated(stage, { filesystem = fs, run = runCommand } = {
       ["/automerge-ABCDEFGH.js", "http_status:404"],
       ["/connect-ABCDEFGH.js", "http_status:404"],
       ["/app-ABCDEFGH.js/private", "http_status:404"],
+      ["/project/prj_" + uuid, projects ? plan.listen : "http_status:404"],
+      ["/project/prj_" + uuid + "/", projects ? plan.listen : "http_status:404"],
+      ["/project/sp_" + uuid, projects ? plan.listen : "http_status:404"],
+      ["/s/sp_" + uuid, projects ? plan.listen : "http_status:404"],
+      ["/s/prj_" + uuid, projects ? plan.listen : "http_status:404"],
+      ["/project/" + uuid, "http_status:404"],
+      ["/project/prj_not-a-project", "http_status:404"],
+      ["/project/prj_" + uuid.toUpperCase(), "http_status:404"],
+      ["/project/pg_" + uuid, "http_status:404"],
+      ["/project/prj_" + uuid + "/private", "http_status:404"],
+      ["/projects/prj_" + uuid, "http_status:404"],
+      ["/project/", "http_status:404"],
+      ["/s/" + uuid, "http_status:404"],
       ["/api/sync", plan.listen],
       ["/api/access", sharing ? plan.listen : "http_status:404"],
       ["/api/access/private", "http_status:404"],

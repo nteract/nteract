@@ -4,7 +4,8 @@ import * as fs from "node:fs";
 import path from "node:path";
 import { tmpdir } from "node:os";
 import { createHash } from "node:crypto";
-import { routesFor, assetPaths, imagePaths } from "./deployment/routes.mjs";
+import { routesFor, assetPaths, imagePaths, projectPaths } from "./deployment/routes.mjs";
+import { readPageRoute } from "../shared/routes.mjs";
 import { deploymentProfile } from "./deployment/profiles.mjs";
 import { isolatedPublicationPlan, publishIsolated } from "./deployment/isolated-publication.mjs";
 
@@ -265,7 +266,7 @@ function priorConfig(config, target) {
       : target === "page8"
         ? config.replace("|theme[.]js|", "|")
         : target === "page9"
-          ? config.replace(assetPaths, "")
+          ? config.replace(projectPaths, "")
           : config.replace("|mermaid[.]js|", "|");
 }
 function previousInstallation(f, { pending = false, newConfig = false } = {}) {
@@ -349,12 +350,12 @@ test("Page9 admits only hashed viewer files while every older route receipt stay
       assert.equal(route.test(pathname), false, `${target} ${pathname}`);
   }
   const current = routesFor("page9");
-  // Page9 already serves #4578's chunk route; the migration adds only the
-  // hashed shell assets to those exact bytes.
+  // The hashed-asset routes are part of the config Page9 serves (#4582); the
+  // migration adds only Project links to those exact bytes, so removing both
+  // gives back #4578's chunk-route config.
   assert.equal(
-    digest(priorConfig(current, "page9")),
+    digest(priorConfig(current, "page9").replace(assetPaths, "")),
     "f18afa2a0c82ddad000a3724e8c940d0208a46d6c3f50101bd337492e2d59cd7",
-    "the permitted migration must start from Page9's exact deployed route bytes",
   );
   const route = new RegExp(/^    path: (.+)$/m.exec(current)[1]);
   for (const pathname of [
@@ -395,6 +396,98 @@ test("Page9 admits only hashed viewer files while every older route receipt stay
     "/chunks/app-ABCDEFGH.js",
   ])
     assert.equal(route.test(pathname), false, pathname);
+});
+
+const projectUuid = "12345678-1234-4123-8123-123456789abc";
+test("Page9 admits exact Project links while every older route receipt stays frozen", () => {
+  const frozen = {
+    "pages-next": "2dbfabe3e649e0f79afc9df766e0a19c52177b76667d89ad8e45acaaf523e5f3",
+    page3: "db474e430d27227ee9bf407beee948ad6cf7f601fafd55c60bbf34effa38200a",
+    page4: "9c5872feed6898ee236a96dc70226c625d5c3a299c3c3866b351b0f4b41f47de",
+    page5: "4bda4497169b48213638b5085f4ce5e2b9c335cf483d501f965e1c7f8fd8321c",
+    page6: "5240e6014b88bddb73115809c273da72b7e15e5516b67f43db8ed66ad82a12ac",
+    page7: "ed30a9fe9aef61a9f8f42451d81bea1c7fb399181b529081d138a91d259730a8",
+    page8: "c5fb35e6dfc9e1483cf813ed4a3b4c3c84b9bb3d551244aa98f89c5d0e36836a",
+  };
+  for (const [target, expected] of Object.entries(frozen)) {
+    assert.equal(digest(routesFor(target)), expected, target);
+    const route = new RegExp(/^    path: (.+)$/m.exec(routesFor(target))[1]);
+    for (const pathname of [`/project/prj_${projectUuid}`, `/s/sp_${projectUuid}`])
+      assert.equal(route.test(pathname), false, `${target} ${pathname}`);
+  }
+  const current = routesFor("page9");
+  // Page9 serves #4582's hashed-asset config; the migration adds only Project
+  // links to those exact bytes.
+  assert.equal(
+    digest(priorConfig(current, "page9")),
+    "f96c389fd51d3e1e3c1e76ab4c005e578cb2cc13123c256c4025c7237dc1d4b5",
+    "the permitted migration must start from Page9's exact deployed route bytes",
+  );
+  const route = new RegExp(/^    path: (.+)$/m.exec(current)[1]);
+  const admitted = [
+    `/project/prj_${projectUuid}`,
+    `/project/prj_${projectUuid}/`,
+    `/project/sp_${projectUuid}`,
+    `/s/sp_${projectUuid}`,
+    `/s/sp_${projectUuid}/`,
+    `/s/prj_${projectUuid}`,
+  ];
+  const rejected = [
+    "/project",
+    "/project/",
+    "/s/",
+    `/project/${projectUuid}`,
+    `/s/${projectUuid}`,
+    "/project/prj_not-a-project",
+    `/project/prj_${projectUuid.toUpperCase()}`,
+    `/project/prj_${projectUuid.replace("-4123-", "-1123-")}`,
+    `/project/prj_${projectUuid.replace("-8123-", "-c123-")}`,
+    `/project/prj_${projectUuid}0`,
+    `/project/pg_${projectUuid}`,
+    `/project/sp${projectUuid}`,
+    `/project/prj_${projectUuid}//`,
+    `/project/prj_${projectUuid}/private`,
+    `/project/prj_${projectUuid}/p/${projectUuid}`,
+    `/projects/prj_${projectUuid}`,
+    `/x/project/prj_${projectUuid}`,
+    `/s/sp_${projectUuid}/private`,
+    `/space/sp_${projectUuid}`,
+    `/p/prj_${projectUuid}`,
+  ];
+  for (const pathname of admitted) assert.equal(route.test(pathname), true, pathname);
+  for (const pathname of rejected) assert.equal(route.test(pathname), false, pathname);
+  // Ingress admits exactly the Project paths the viewer opens.
+  for (const pathname of [...admitted, ...rejected].filter(
+    (pathname) => !pathname.startsWith("/p/"),
+  ))
+    assert.equal(
+      route.test(pathname),
+      readPageRoute(pathname).kind === "project",
+      `viewer and ingress disagree on ${pathname}`,
+    );
+});
+
+test("page9 publisher refuses to skip the hashed-asset config on its way to Project links", (t) => {
+  const f = fixture(t, { target: "page9" });
+  const plan = isolatedPublicationPlan(inputFor("page9"));
+  const chunkConfig = priorConfig(plan.config, "page9").replace(assetPaths, "");
+  f.write(plan.configPath, chunkConfig);
+  f.write(plan.unitPath, plan.unit);
+  const installation =
+    JSON.stringify({
+      schema: 1,
+      tunnel_id: tunnelId,
+      config_sha256: digest(chunkConfig),
+      unit_sha256: digest(plan.unit),
+    }) + "\n";
+  f.write("/etc/nteract-page9/tunnel-installation.json", installation);
+  assert.throws(f.execute, /Dedicated tunnel installation differs/);
+  assert.equal(fs.readFileSync(f.local(plan.configPath), "utf8"), chunkConfig);
+  assert.equal(
+    fs.readFileSync(f.local("/etc/nteract-page9/tunnel-installation.json"), "utf8"),
+    installation,
+  );
+  assert.equal(f.writes.length, 0);
 });
 
 test("OAuth and private images publish only exact Page7 through Page9 routes while previous targets remain closed", () => {
@@ -1080,14 +1173,48 @@ test("page9 publisher verifies hashed chunk and asset ingress before starting it
     assert.ok(paths.includes(pathname), pathname);
 });
 
+test("page9 publisher verifies Project link ingress before starting its connector", (t) => {
+  const f = fixture(t, { target: "page9" });
+  f.execute();
+  const start = f.calls.findIndex(
+    ({ command, args }) => command === "systemctl" && ["start", "restart"].includes(args[0]),
+  );
+  assert.ok(start >= 0);
+  const paths = f.calls
+    .slice(0, start)
+    .filter(({ command, args }) => command === "/usr/bin/cloudflared" && args.includes("rule"))
+    .map(({ args }) => new URL(args.at(-1)).pathname);
+  const id = "08c583e5-d29e-4f1e-b06b-333965254e94";
+  for (const pathname of [
+    `/project/prj_${id}`,
+    `/project/prj_${id}/`,
+    `/project/sp_${id}`,
+    `/s/sp_${id}`,
+    `/s/prj_${id}`,
+    `/project/${id}`,
+    "/project/prj_not-a-project",
+    `/project/prj_${id.toUpperCase()}`,
+    `/project/pg_${id}`,
+    `/project/prj_${id}/private`,
+    `/projects/prj_${id}`,
+    "/project/",
+    `/s/${id}`,
+  ])
+    assert.ok(paths.includes(pathname), pathname);
+});
+
 for (const misroutePath of [
   "/chunks/ABCDEFGH.js",
   "/chunks/ABCDEFGH.js/private",
   "/app-ABCDEFGH.js",
   "/automerge-ABCDEFGH.wasm",
   "/app-ABCDEFGH.js/private",
+  "/project/prj_08c583e5-d29e-4f1e-b06b-333965254e94",
+  "/s/sp_08c583e5-d29e-4f1e-b06b-333965254e94",
+  "/project/prj_08c583e5-d29e-4f1e-b06b-333965254e94/private",
+  "/project/08c583e5-d29e-4f1e-b06b-333965254e94",
 ])
-  test(`Page9 does not activate a connector with misrouted hashed path ${misroutePath}`, (t) => {
+  test(`Page9 does not activate a connector with misrouted path ${misroutePath}`, (t) => {
     const f = fixture(t, { target: "page9", misroutePath });
     assert.throws(f.execute, /Dedicated tunnel route validation failed/);
     assert.equal(

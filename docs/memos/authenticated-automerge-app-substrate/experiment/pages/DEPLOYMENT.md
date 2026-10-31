@@ -318,8 +318,14 @@ The shell's own files are hashed the same way: `app-<hash>.js`,
 with its own extension only. `viewer_assets` in the receipt maps each to its
 sha256, and the name's hash must be the first 40 bits of that digest.
 `prepare` stages exactly those six files, checks their bytes first, and refuses
-any other file of that shape in `public`. The publisher migrates only from
-Page9's chunk-route config to this one.
+any other file of that shape in `public`.
+
+Page9 admits Project links: `/project/<id>` and the older `/s/<id>`, where the
+ID is `prj_` or `sp_` followed by a lowercase v4 UUID, with an optional
+trailing slash. These are the paths `shared/routes.mjs` opens as a Project;
+the viewer rewrites `/s/<id>` to `/project/<id>`. The publisher migrates only
+from Page9's hashed-asset config to this one, so an older installation must
+publish the hashed-asset release first.
 
 The OIDC client must allow `https://<hostname>/oidc` as a redirect URI before
 sign-in works on a new target.

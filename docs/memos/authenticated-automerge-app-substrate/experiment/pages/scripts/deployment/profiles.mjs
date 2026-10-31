@@ -235,6 +235,8 @@ const targets = Object.freeze({
     // The shell's own files (app.js, app.css, theme.js, mermaid.js and both
     // WASM runtimes) ship under content-hashed names too.
     viewerAssets: true,
+    // A Project opens at /project/<id>; older /s/<id> links open it too.
+    projectLinks: true,
     firewallTable: "nteract_page9",
     firewallMark: "0x00400000",
     firewallComment: "nteract/preview-infra standalone-page9",
