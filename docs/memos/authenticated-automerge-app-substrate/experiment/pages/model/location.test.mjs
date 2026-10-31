@@ -12,6 +12,7 @@ import {
   siblingsOf,
   subtreeOf,
   subtreeSpaceIds,
+  validPositionKey,
   validateEntry,
 } from "./location.mjs";
 
@@ -87,6 +88,9 @@ test("entry shape: space_id only on a root, restore fields only in Trash", () =>
     [entry("a", "a"), /names the entry itself/],
     [{ ...entry("a"), position: "" }, /position/],
     [{ ...entry("a"), position: "a 0" }, /position/],
+    [{ ...entry("a"), position: "a" }, /position/],
+    [{ ...entry("a"), position: "a00" }, /position/],
+    [{ ...entry("a"), position: 7 }, /position/],
     [entry("a", "p", { space_id: PRJ }), /only on a root/],
     [entry("a", null, { space_id: "" }), /space_id/],
     [entry("a", null, { restore_parent_id: "p" }), /only on a trashed/],
@@ -101,6 +105,20 @@ test("entry shape: space_id only on a root, restore fields only in Trash", () =>
   }
   assert.throws(() => validateEntry(entry("a", "p", { space_id: PRJ })), /Invalid location entry/);
   assert.equal(validateEntry(entry("a")).page_id, "a");
+});
+
+test("position keys follow fractional-indexing's own rules", () => {
+  for (const key of ["a0", "a1", "Zz", "b00", "a0V", "a0G1"])
+    assert.equal(validPositionKey(key), true, key);
+  // "a" and "a00" pass an alphanumeric check but break the generator.
+  for (const key of ["a", "a00", "a0a0", "", ".", "a 0", "A", "z", null, 3, "a" + "1".repeat(600)])
+    assert.equal(validPositionKey(key), false, JSON.stringify(key));
+  // A sibling with such a key is an invalid entry, so it never reaches planMove.
+  const s = stateOf(entry("p"), entry("x", "p", { position: "a00" }), entry("m"));
+  assert.deepEqual(
+    checkInvariants(s).map((v) => [v.code, v.page_id]),
+    [["invalid_entry", "x"]],
+  );
 });
 
 test("deriveLocation walks to the root and reports its Project", () => {
@@ -253,6 +271,38 @@ test("depth at the boundary: a subtree fits only where its deepest Page stays wi
   assert.equal(planMove(s, "m1", { parent_id: last }).ok, true);
 });
 
+test("corrupt input: an over-deep chain is enumerated whole, never truncated", () => {
+  // Ten Pages in one chain: one level past MAX_DEPTH, as old or imported data
+  // might be.
+  const length = MAX_DEPTH + 1;
+  const s = stateOf(
+    ...Array.from({ length }, (_, i) => entry(`d${i + 1}`, i ? `d${i}` : null)),
+    entry("other", null, { position: "a1" }),
+  );
+  assert.ok(checkInvariants(s).some((v) => v.code === "nesting_depth_exceeded"));
+  assert.equal(subtreeOf(s.entries, "d1").length, length);
+  assert.deepEqual(
+    subtreeSpaceIds(s.entries, "d1").map((row) => row.page_id),
+    Array.from({ length }, (_, i) => `d${i + 1}`),
+  );
+  // Moving the whole chain anywhere is refused, even to where it already is.
+  assert.equal(planMove(s, "d1", { project_id: null }).code, "nesting_depth_exceeded");
+  assert.equal(planMove(s, "d1", { parent_id: "other" }).code, "nesting_depth_exceeded");
+  // Cutting it below the root repairs it, and the projection names all nine
+  // moved Pages, d10 included.
+  const cut = planMove(s, "d2", { project_id: null });
+  assert.equal(cut.ok, true, JSON.stringify(cut));
+  assert.equal(cut.projection.length, length - 1);
+  assert.equal(cut.projection.at(-1).page_id, `d${length}`);
+  assert.deepEqual(checkInvariants(applyWrite(s, cut)), []);
+  // A Page inside a cycle has no root, but listing below it still ends.
+  const looped = stateOf(entry("a", "b"), entry("b", "a"));
+  assert.deepEqual(
+    subtreeOf(looped.entries, "a").map((member) => member.page_id),
+    ["a", "b"],
+  );
+});
+
 test("a move is one write: the moved entry and the revision, never its descendants", () => {
   const s = world();
   const result = planMove(s, "plan", { project_id: OTHER });
@@ -348,25 +398,50 @@ test("positions: first, last, before and after order the moved Page among siblin
   assert.ok(!ordered(root, null).includes("gone"));
 });
 
-test("equal sibling keys are spread apart in the same write", () => {
-  const s = stateOf(
+test("a move repairs every tie in its destination", () => {
+  const ties = () =>
+    stateOf(
+      entry("p"),
+      entry("x", "p", { position: "a0" }),
+      entry("y", "p", { position: "a0" }),
+      entry("z", "p", { position: "a0" }),
+      entry("w", "p", { position: "a2" }),
+      entry("m", null, { position: "a1" }),
+    );
+  const keysOf = (state) => ordered(state, "p").map((id) => state.entries.get(id).position);
+  const cases = [
+    [{ after: "x" }, ["x", "m", "y", "z", "w"]],
+    // After y: x and y were equal before, and stay distinct after.
+    [{ after: "y" }, ["x", "y", "m", "z", "w"]],
+    [{ before: "x" }, ["m", "x", "y", "z", "w"]],
+    ["first", ["m", "x", "y", "z", "w"]],
+    // A tie away from the insertion point is repaired too.
+    ["last", ["x", "y", "z", "w", "m"]],
+    [{ after: "w" }, ["x", "y", "z", "w", "m"]],
+  ];
+  for (const [position, order] of cases) {
+    const s = ties();
+    assert.deepEqual(ordered(s, "p"), ["x", "y", "z", "w"]);
+    assert.ok(checkInvariants(s).some((v) => v.code === "duplicate_position"));
+    const result = planMove(s, "m", { parent_id: "p" }, position);
+    assert.equal(result.ok, true, JSON.stringify(position));
+    assert.deepEqual(Object.keys(result.entries).sort(), ["m", "y", "z"], JSON.stringify(position));
+    const after = applyWrite(s, result);
+    assert.deepEqual(ordered(after, "p"), order, JSON.stringify(position));
+    const keys = keysOf(after);
+    assert.deepEqual([...keys].sort(), keys, JSON.stringify(position));
+    assert.equal(new Set(keys).size, keys.length, `${JSON.stringify(position)}: distinct keys`);
+    assert.equal(after.entries.get("x").position, "a0", "the first of a run keeps its key");
+    assert.equal(after.entries.get("w").position, "a2", "untied siblings keep their keys");
+    assert.deepEqual(checkInvariants(after), [], JSON.stringify(position));
+  }
+  // Without ties only the moved Page is written.
+  const clean = stateOf(
     entry("p"),
     entry("x", "p", { position: "a0" }),
-    entry("y", "p", { position: "a0" }),
-    entry("z", "p", { position: "a0" }),
-    entry("w", "p", { position: "a2" }),
-    entry("m"),
+    entry("m", null, { position: "a1" }),
   );
-  assert.deepEqual(ordered(s, "p"), ["x", "y", "z", "w"]);
-  const result = planMove(s, "m", { parent_id: "p" }, { after: "x" });
-  assert.equal(result.ok, true);
-  assert.deepEqual(Object.keys(result.entries).sort(), ["m", "y", "z"]);
-  const after = applyWrite(s, result);
-  assert.deepEqual(ordered(after, "p"), ["x", "m", "y", "z", "w"]);
-  const keys = ordered(after, "p").map((id) => after.entries.get(id).position);
-  assert.deepEqual([...keys].sort(), keys);
-  assert.equal(new Set(keys).size, keys.length, "keys are distinct now");
-  assert.equal(after.entries.get("x").position, "a0", "the anchor keeps its key");
+  assert.deepEqual(Object.keys(planMove(clean, "m", { parent_id: "p" }).entries), ["m"]);
 });
 
 test("positionAmong reports bad shapes and unknown siblings", () => {
@@ -407,8 +482,26 @@ test("checkInvariants finds each kind of violation", () => {
     "placement_cycle",
   ]);
   assert.deepEqual(
-    codes(stateOf(entry("h1", null, { space_id: PRJ }), entry("h2", null, { space_id: PRJ }))),
+    codes(
+      stateOf(
+        entry("h1", null, { space_id: PRJ }),
+        entry("h2", null, { space_id: PRJ, position: "a1" }),
+      ),
+    ),
     ["duplicate_home"],
+  );
+  assert.deepEqual(
+    checkInvariants(
+      stateOf(entry("p"), entry("x", "p"), entry("y", "p"), entry("q", null, { position: "a1" })),
+    ),
+    [{ code: "duplicate_position", page_id: "y", detail: "a0" }],
+  );
+  assert.deepEqual(
+    codes(
+      stateOf(entry("p"), entry("x", "p"), entry("t", null, { state: "trashed", position: "a0" })),
+    ),
+    [],
+    "the trashed t shares the root key a0 with p, but Trash isn't a sibling",
   );
   assert.deepEqual(
     codes(
@@ -481,10 +574,25 @@ test("property: random moves on random trees keep every invariant", () => {
   const iterations = Number(process.env.LOCATION_PROPERTY_RUNS || 300);
   let applied = 0;
   let refused = 0;
+  let tied = 0;
   for (let seed = 1; seed <= iterations; seed++) {
     const next = random(seed);
     let state = randomCatalog(next, 5 + Math.floor(next() * 30));
-    assert.deepEqual(checkInvariants(state), [], `seed ${seed}: generator`);
+    // Random keys tie often; ties are the only violation the generator makes.
+    const structural = (current) =>
+      checkInvariants(current).filter((violation) => violation.code !== "duplicate_position");
+    const duplicates = (current) =>
+      checkInvariants(current).filter((violation) => violation.code === "duplicate_position")
+        .length;
+    assert.deepEqual(structural(state), [], `seed ${seed}: generator`);
+    if (duplicates(state)) tied++;
+    // Every parent a move has landed in (null for roots). Each must keep
+    // distinct keys from then on, whatever later moves do.
+    const destinations = new Set();
+    const distinct = (current, parentId) => {
+      const keys = siblingsOf(current.entries, parentId).map((e) => e.position);
+      return new Set(keys).size === keys.length;
+    };
     const ids = [...state.entries.keys()];
     const spaces = [...state.entries.values()].filter((e) => e.space_id).map((e) => e.space_id);
     const pick = (list) => list[Math.floor(next() * list.length)];
@@ -520,13 +628,20 @@ test("property: random moves on random trees keep every invariant", () => {
       applied++;
       state = applyWrite(state, result);
       assert.equal(state.revision, before.revision + 1, where);
-      assert.deepEqual(checkInvariants(state), [], where);
+      assert.deepEqual(structural(state), [], where);
+      assert.ok(duplicates(state) <= duplicates(before), `${where}: no new ties`);
+      destinations.add(result.moved.parent_id);
+      for (const parentId of destinations)
+        assert.ok(distinct(state, parentId), `${where}: ties left under ${parentId}`);
       // Only the moved Page changes its parent; descendants keep theirs.
       for (const [id, previous] of before.entries) {
         const now = state.entries.get(id);
         if (id !== pageId) {
           assert.equal(now.parent_id, previous.parent_id, `${where}: ${id} parent`);
           assert.equal(now.state, previous.state, `${where}: ${id} state`);
+          // Only destination siblings get new keys, and only to repair ties.
+          if (now.position !== previous.position)
+            assert.equal(now.parent_id, result.moved.parent_id, `${where}: ${id} rekeyed`);
         }
       }
       const location = deriveLocation(state.entries, pageId);
@@ -554,4 +669,5 @@ test("property: random moves on random trees keep every invariant", () => {
   // Both outcomes are exercised often.
   assert.ok(applied > iterations * 5, `applied ${applied}`);
   assert.ok(refused > iterations * 2, `refused ${refused}`);
+  assert.ok(tied > iterations / 2, `only ${tied} Catalogs started with ties`);
 });

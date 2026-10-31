@@ -21,7 +21,11 @@
  * - `space_id`: only on a root that is a Project's home Page.
  * - `restore_parent_id`, `restore_space_id`: only on a trashed entry. Where a
  *   restore returns it: under that parent while it is active, otherwise at
- *   that Project's top level, otherwise in Your items.
+ *   that Project's top level, otherwise in Your items. Both are history from
+ *   when the Page was trashed, not live pointers: the parent may since have
+ *   been purged or moved, and the Project deleted. A restore must check each
+ *   against the current tree (an active parent within MAX_DEPTH, a live home
+ *   Page) before using it, and fall through to the next when it fails.
  *
  * The Catalog adapter maps these onto its `page/` and `trash/` keys. This
  * module never reads storage, clocks or randomness.
@@ -50,9 +54,23 @@ export const MOVE_REFUSALS = Object.freeze([
   "position_sibling_unknown",
 ]);
 
-const keyPattern = /^[0-9A-Za-z]+$/;
+/** Longest position key accepted, matching Page block positions. */
+const MAX_KEY_LENGTH = 512;
 const isId = (value) => typeof value === "string" && value.length > 0;
 const compare = (a, b) => (a < b ? -1 : a > b ? 1 : 0);
+
+/** Whether `key` is a fractional-indexing key. The generator applies the
+ * library's own rules (head, integer length, no trailing zero), so a key it
+ * accepts here can't make a later insertion throw. */
+export function validPositionKey(key) {
+  if (typeof key !== "string" || key.length === 0 || key.length > MAX_KEY_LENGTH) return false;
+  try {
+    generateKeyBetween(key, null);
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 /** Problems with one entry's shape, as strings; empty when it is valid.
  * Unknown fields are allowed so the Catalog can keep title and timestamps on
@@ -68,8 +86,7 @@ export function entryProblems(entry, key) {
   if (entry.parent_id !== null && !isId(entry.parent_id))
     problems.push("parent_id must be a page ID or null");
   if (entry.parent_id === entry.page_id) problems.push("parent_id names the entry itself");
-  if (typeof entry.position !== "string" || !keyPattern.test(entry.position))
-    problems.push("position must be a fractional key");
+  if (!validPositionKey(entry.position)) problems.push("position must be a fractional key");
   if ("space_id" in entry) {
     if (!isId(entry.space_id)) problems.push("space_id must be a Project ID");
     if (entry.parent_id !== null) problems.push("space_id belongs only on a root");
@@ -143,8 +160,10 @@ function childrenByParent(map) {
 
 const siblingOrder = (a, b) => compare(a.position, b.position) || compare(a.page_id, b.page_id);
 
-/** The Page and its descendants, top-down, each with its depth below the
- * Page (the Page is 0). Bounded by MAX_DEPTH and visits each entry once. */
+/** The Page and every descendant, top-down, each with its depth below the
+ * Page (the Page is 0). It follows every child link, however deep, and visits
+ * each entry once, so it ends on corrupt input too: an over-deep chain comes
+ * back whole and the caller's depth check sees it. */
 export function subtreeOf(entries, pageId) {
   const map = asMap(entries);
   if (!map.has(pageId)) return [];
@@ -152,7 +171,7 @@ export function subtreeOf(entries, pageId) {
   const members = [];
   const seen = new Set();
   let level = [pageId];
-  for (let depth = 0; level.length && depth < MAX_DEPTH; depth++) {
+  for (let depth = 0; level.length; depth++) {
     const next = [];
     for (const id of level) {
       if (seen.has(id)) continue;
@@ -206,11 +225,13 @@ export function validPosition(position) {
 /**
  * A key for `position` among `siblings` (sorted by siblingOrder, without the
  * Page being placed). Returns `{ ok: true, position, rekeyed }`, where
- * `rekeyed` maps sibling IDs to new keys when equal neighbouring keys had to
- * be spread apart, or `{ ok: false, code }`.
+ * `rekeyed` maps sibling IDs to new keys, or `{ ok: false, code }`.
  *
- * Ties come from concurrent writers in older data or imports. Only the tied
- * siblings to the right of the gap move, matching model/order.mjs.
+ * Equal keys come from concurrent writers in older data or imports. A move
+ * leaves its destination with distinct keys: the first sibling of each run
+ * of equal keys keeps its key, and every other tied sibling is rekeyed in
+ * order, together with the placed Page. Without ties only the placed Page
+ * gets a key.
  */
 export function positionAmong(siblings, position = "last") {
   if (!validPosition(position)) return { ok: false, code: "invalid_position" };
@@ -223,18 +244,41 @@ export function positionAmong(siblings, position = "last") {
     if (at < 0) return { ok: false, code: "position_sibling_unknown" };
     index = position.before ? at : at + 1;
   }
-  const key = (i) => (i >= 0 && i < siblings.length ? siblings[i].position : null);
-  const left = key(index - 1);
-  const right = key(index);
-  if (left === null || right === null || left < right)
-    return { ok: true, position: generateKeyBetween(left, right), rekeyed: {} };
-  // left === right: spread the tied run that starts at `index`.
-  let end = index;
-  while (end < siblings.length && key(end) === right) end++;
-  const keys = generateNKeysBetween(left, key(end), end - index + 1);
+  // Slots in their final order; null is the placed Page. A sibling keeps its
+  // key when it is the first of its run of equal keys. Kept keys are then
+  // distinct and increasing, and every other slot gets a fresh key between
+  // the kept keys around it.
+  const slots = [...siblings.slice(0, index), null, ...siblings.slice(index)];
+  const kept = slots.map((slot, i) => slot !== null && !tiedBefore(slots, i));
   const rekeyed = {};
-  for (let i = index; i < end; i++) rekeyed[siblings[i].page_id] = keys[i - index + 1];
-  return { ok: true, position: keys[0], rekeyed };
+  let placed;
+  for (let i = 0; i < slots.length; ) {
+    if (kept[i]) {
+      i++;
+      continue;
+    }
+    let end = i;
+    while (end < slots.length && !kept[end]) end++;
+    const lower = i > 0 ? slots[i - 1].position : null;
+    const upper = end < slots.length ? slots[end].position : null;
+    const keys = generateNKeysBetween(lower, upper, end - i);
+    for (let j = i; j < end; j++) {
+      if (slots[j] === null) placed = keys[j - i];
+      else rekeyed[slots[j].page_id] = keys[j - i];
+    }
+    i = end;
+  }
+  return { ok: true, position: placed, rekeyed };
+}
+
+/** Whether an earlier sibling, skipping the placed Page, has the same key as
+ * slot `i`. */
+function tiedBefore(slots, i) {
+  for (let j = i - 1; j >= 0; j--) {
+    if (slots[j] === null) continue;
+    return slots[j].position === slots[i].position;
+  }
+  return false;
 }
 
 const refuse = (code, message) => ({ ok: false, code, message });
@@ -376,6 +420,8 @@ export function applyWrite(state, write) {
  * - a trashed entry's parent is null or trashed (`trashed_parent_active`);
  * - no cycles (`placement_cycle`) and no entry deeper than MAX_DEPTH
  *   (`nesting_depth_exceeded`);
+ * - siblings that aren't in Trash have distinct position keys
+ *   (`duplicate_position`, reported for each sibling after the first);
  * - at most one live home Page per Project (`duplicate_home`), and a home Page
  *   stays a root, which entryProblems checks.
  *
@@ -409,6 +455,15 @@ export function checkInvariants(state, { projects } = {}) {
     if (!location.ok && location.problem === "cycle") add("placement_cycle", entry.page_id);
     if (!location.ok && location.problem === "too_deep")
       add("nesting_depth_exceeded", entry.page_id);
+  }
+
+  const keysByParent = new Map();
+  for (const entry of [...map.values()].sort(siblingOrder)) {
+    if (entry.state === "trashed") continue;
+    const keys = keysByParent.get(entry.parent_id) ?? new Set();
+    keysByParent.set(entry.parent_id, keys);
+    if (keys.has(entry.position)) add("duplicate_position", entry.page_id, entry.position);
+    else keys.add(entry.position);
   }
 
   const homes = new Map();
