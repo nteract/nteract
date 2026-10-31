@@ -689,7 +689,8 @@ not spread across the replacement. Untouched characters, marks, and comment
 anchors retain their CRDT identities.
 
 By default conflict_scope:"page" requires the exact current Page revision. For a
-replace_match-only batch, opt into conflict_scope:"target" to allow an older read
+batch of only replace_match and format_match, opt into conflict_scope:"target" to
+allow an older read
 when the addressed native characters, current marks and surrounding node structure
 are unchanged. Unrelated edits, including elsewhere in the same rich-text block,
 are preserved. Deleted/reinserted lookalike text does not count as the same target.

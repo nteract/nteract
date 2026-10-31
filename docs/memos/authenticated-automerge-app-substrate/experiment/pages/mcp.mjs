@@ -132,7 +132,7 @@ const guard = {
     type: "array",
     items: string,
     description:
-      "Observed heads from read_page or read_page_changes. edit_page, patch_page and delete_page require exact current heads by default; patch_page conflict_scope:target accepts older heads for unchanged replace_match targets. manage_page_comment add resolves selected_text at these heads; other comment actions ignore them.",
+      "Observed heads from read_page or read_page_changes. edit_page, patch_page and delete_page require exact current heads by default; patch_page conflict_scope:target accepts older heads for unchanged replace_match and format_match targets. manage_page_comment add resolves selected_text at these heads; other comment actions ignore them.",
   },
   retry_token: {
     ...string,
@@ -489,13 +489,13 @@ export const tools = [
   ),
   tool(
     "patch_page",
-    "Apply an atomic targeted edit batch. Prefer replace_match for visible prose: replace one literal range, optionally scoped by node_index and context, preserving untouched formatting and comment anchors. Use format_match to add or remove formatting (bold, italic, code, links, highlights) over one literal range without changing its text. conflict_scope:target permits older base_heads only for unchanged native targets in replace_match batches; other patch_page and edit_page operations retain the exact-page revision guard. Conflicts identify passages to reread with read_page_changes. Zero or multiple matches fail the whole batch. Tool edits arrive atomically, without streamed keystrokes; people see your caret where the batch landed.",
+    "Apply an atomic targeted edit batch. Prefer replace_match for visible prose: replace one literal range, optionally scoped by node_index and context, preserving untouched formatting and comment anchors. Use format_match to add or remove formatting (bold, italic, code, links, highlights) over one literal range without changing its text. conflict_scope:target permits older base_heads only for unchanged native targets in replace_match and format_match batches; other patch_page and edit_page operations retain the exact-page revision guard. Conflicts identify passages to reread with read_page_changes. Zero or multiple matches fail the whole batch. Tool edits arrive atomically, without streamed keystrokes; people see your caret where the batch landed.",
     {
       ...guard,
       conflict_scope: {
         enum: ["page", "target"],
         description:
-          "Default page requires exact current base_heads. target is opt-in for replace_match-only batches: preserves unrelated newer edits when each target's native text, current formatting and structure still match the base. It checks the snapshot when preparing the edit, not a lock on future human typing. Exact retries always replay their original receipt.",
+          "Default page requires exact current base_heads. target is opt-in for batches of only replace_match and format_match: preserves unrelated newer edits when each target's native text, current formatting and structure still match the base. It checks the snapshot when preparing the edit, not a lock on future human typing. Exact retries always replay their original receipt.",
       },
       operations: {
         type: "array",

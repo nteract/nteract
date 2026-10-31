@@ -937,7 +937,8 @@ consuming a successful response or resynchronizing with focused reads.
 Mutations require an idempotency key; content edits, comment adds and deletion
 also require observed `base_heads`. The default
 `conflict_scope:"page"` requires exact current heads. `patch_page` can use
-`conflict_scope:"target"` for `replace_match`-only batches: native identity maps
+`conflict_scope:"target"` for batches of only `replace_match` and `format_match`:
+native identity maps
 historical literal ranges into current text, checking text, marks, and structure.
 Optional `node_index` narrows the match at the base revision. Unrelated edits,
 even within the same block, survive. Deleted/reinserted text is a new target;
