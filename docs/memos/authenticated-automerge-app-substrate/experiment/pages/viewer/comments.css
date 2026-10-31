@@ -221,6 +221,12 @@
 .comment-popover .error {
   margin: 0 0 0.5rem;
 }
+.comment-popover.comment-popover-detached {
+  left: 50%;
+  top: auto;
+  bottom: 12px;
+  transform: translateX(-50%);
+}
 .comment-popover.comment-popover-sheet {
   inset: auto 0 0;
   width: 100%;

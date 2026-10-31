@@ -68,8 +68,13 @@ export function CommentsPanel({
     // Keep the same forms mounted when the viewport changes. Only modality changes.
     if (element.open) element.close();
     if (open) {
-      if (mobile) element.showModal();
-      else element.show();
+      // A modal sheet makes everything outside it inert, the inline composer
+      // included. Close the composer first: its text stays here as the kept
+      // draft, with Continue and Discard.
+      if (mobile) {
+        composer?.dismiss({ returnFocus: false });
+        element.showModal();
+      } else element.show();
       if (focused?.isConnected && element.contains(focused)) {
         focused.focus({ preventScroll: true });
         if (selection) focused.setSelectionRange(...selection);
@@ -96,8 +101,7 @@ export function CommentsPanel({
   // or here once dismissed) and a reply on any thread, open or resolved. Each
   // of those stays reachable to copy or discard.
   const unsent =
-    (draft.composer && hasDraftText(draft.body)) ||
-    threads.some((t) => hasDraft(drafts[t.id]));
+    (draft.composer && hasDraftText(draft.body)) || threads.some((t) => hasDraft(drafts[t.id]));
   const draftSource = useRef(null);
   useEffect(() => {
     const source = reloadGate.watchDrafts();
@@ -249,9 +253,7 @@ export function CommentsPanel({
                 {draftProblem}. Copy the text, then select a passage and choose Comment again.
               </p>
             )}
-            <p className="comment-kept-draft-text">
-              {keptDraft.body?.markdown ?? keptDraft.body}
-            </p>
+            <p className="comment-kept-draft-text">{keptDraft.body?.markdown ?? keptDraft.body}</p>
             <div className="comment-form-actions">
               {session.canWrite && !draftProblem && (
                 <button type="button" className="primary" onClick={continueDraft}>
