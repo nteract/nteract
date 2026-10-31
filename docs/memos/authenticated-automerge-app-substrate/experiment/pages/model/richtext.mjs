@@ -494,18 +494,27 @@ const tableCellSerializer = new MarkdownSerializer(
   { escapeExtraCharacters: /</g },
 );
 
+// Math on one line is preserved, never parsed as prose:
+// - A `$$` pair is display math, with or without spaces inside or around it.
+// - A `$` pair follows Pandoc's dollar rule: the opening `$` is followed by a
+//   non-space, the closing `$` follows a non-space and is not followed by a
+//   digit. Prose such as "$30 and $25" stays native text.
+// A space here is ASCII whitespace, [ \t\n\v\f\r], and nothing else. JS and
+// Rust disagree on `\s` (U+0085, U+FEFF), so the pattern spells the set out.
+// Every other character, including U+00A0 and U+2028, is content, so a
+// doubtful span stays preserved. Each repetition has disjoint branches, so
+// matching is linear. crates/nteract-rich-text/src/import.rs uses this text.
+const MATH =
+  /\$\$(?:[^\n$]|\$[^\n$])*\$\$|\$[^ \t\n\v\f\r$](?:[^ \t\n\v\f\r$]|[ \t\v\f\r]+[^ \t\n\v\f\r$])*\$(?:[^0-9]|$)/m;
 // Conservative import gate: unknown syntax is opaque rather than silently discarded.
 export function parseMarkdown(source, importId = "", kind = "markdown") {
   // A task followed by an ordinary inline link is not a reference-link pair.
   // Keep the conservative gate, but omit recognized task prefixes from its scan.
   const syntax = source.replace(/^(\s*(?:>\s*)*[-+*][ \t]+)\[[ xX]\](?=[ \t]|$)/gm, "$1");
-  // Inline math uses Pandoc's dollar rule: the opening `$` is followed by a
-  // non-space, the closing `$` follows a non-space and is not followed by a
-  // digit. Prose such as "$30 and $25" stays native text. The Rust codec's
-  // gate in crates/nteract-rich-text/src/import.rs must match this pattern.
   const unsupported =
     kind !== "markdown" ||
-    /(^|\n)\s*(<(?!\/?mark[ \t\r\n>])|\$\$|---\s*$)|\$[^\s$](?:[^\n$]*[^\s$])?\$(?:[^0-9]|$)|!?\[[^\]]*\]\s*\[|^\s*\[[^\]]+\]:|~~/im.test(
+    MATH.test(syntax) ||
+    /(^|\n)\s*(<(?!\/?mark[ \t\r\n>])|\$\$|---\s*$)|!?\[[^\]]*\]\s*\[|^\s*\[[^\]]+\]:|~~/im.test(
       syntax,
     );
   return unsupported

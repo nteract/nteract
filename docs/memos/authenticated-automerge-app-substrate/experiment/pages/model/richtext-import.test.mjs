@@ -115,7 +115,7 @@ test("create_page and replace_block_markdown store the diagnosis as native rich 
 
 // Dollar signs in prose are currency unless they delimit math: an opening `$`
 // is followed by a non-space, and a closing `$` follows a non-space and is not
-// followed by a digit.
+// followed by a digit. Spaces are ASCII whitespace only; see parseMarkdown.
 for (const [label, source] of [
   ["two prices in one line", "No auto-math, so $30 and $25 stay as text."],
   ["a price range", "Budget $5-$10 per seat."],
@@ -130,13 +130,45 @@ for (const [label, source] of [
   });
 }
 
-for (const source of ["The value is $x + 1$.", "$x$", "Inline $a=b$ math", "$$\nx\n$$"]) {
+for (const source of [
+  "The value is $x + 1$.",
+  "$x$",
+  "Inline $a=b$ math",
+  "$$\nx\n$$",
+  // A `$$` pair anywhere on a line is display math, with or without spaces.
+  "Before $$ \\{x\\} $$ after.",
+  "Inline $$x$$ math.",
+  "Escapes $$\\frac{a}{b} \\_ \\{x\\}$$ stay.",
+  "$$ \\{x\\} $$",
+  "$5 and $$x$$",
+  "Costs $5 and $$ x $$ later.",
+  // Only ASCII whitespace disqualifies a delimiter. Other spaces are content.
+  "$\u0085x$",
+  "$\ufeffx$",
+  "$\u00a0x$",
+  "$\u2028x$",
+  "$x\u00a0$",
+]) {
   test(`math source stays opaque: ${JSON.stringify(source)}`, () => {
     const doc = parseMarkdown(source);
     assert.equal(doc.firstChild.type.name, "raw");
     assert.equal(doc.firstChild.attrs.source, source);
   });
 }
+
+// The math gate runs on every agent write. Unclosed delimiters followed by
+// long runs of spaces and dollars must not backtrack quadratically.
+test("the math gate stays linear on unclosed delimiters", () => {
+  const sources = [
+    `$a${" a".repeat(100000)} `,
+    `$$${" a $".repeat(100000)}`,
+    "$ ".repeat(100000),
+    `$a${" ".repeat(200000)}$`,
+  ];
+  const started = performance.now();
+  for (const source of sources) parseMarkdown(source);
+  assert.ok(performance.now() - started < 5000, "200 KB of delimiters parses within 5 s");
+});
 
 // CommonMark code spans: backslashes are literal, a run of N backticks closes
 // only on another run of N, and one leading and trailing space is stripped

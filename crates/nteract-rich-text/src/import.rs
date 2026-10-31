@@ -173,6 +173,7 @@ fn list_prefix_len(source: &str) -> usize {
 
 fn unsupported_syntax(source: &str) -> Result<bool> {
     static TASK_PREFIX: OnceLock<Regex> = OnceLock::new();
+    static MATH: OnceLock<Regex> = OnceLock::new();
     static UNSUPPORTED: OnceLock<Regex> = OnceLock::new();
     static LINE_HTML: OnceLock<Regex> = OnceLock::new();
     // Omit bullet task prefixes before checking for reference links. Unlike
@@ -182,14 +183,25 @@ fn unsupported_syntax(source: &str) -> Result<bool> {
         r"(?m)^(\s*(?:>\s*)*[-+*][ \t]+)\[[ xX]\]([ \t]+|$)",
     )?;
     let syntax = task.replace_all(source, "${1}${2}");
-    // Inline math uses Pandoc's dollar rule, as in the JavaScript gate: the
-    // opening `$` is followed by a non-space, the closing `$` follows a
-    // non-space and is not followed by a digit. "$30 and $25" stays prose.
+    // Math on one line is preserved, as in the JavaScript `MATH` gate, which
+    // has the same pattern text:
+    // - A `$$` pair is display math, with or without spaces around it.
+    // - A `$` pair follows Pandoc's dollar rule: the opening `$` is followed
+    //   by a non-space, the closing `$` follows a non-space and is not
+    //   followed by a digit. "$30 and $25" stays prose.
+    // A space is ASCII whitespace, [ \t\n\v\f\r], and nothing else. Unicode
+    // `\s` here and JavaScript `\s` disagree on U+0085 and U+FEFF. Every other
+    // character, including U+00A0 and U+2028, is content.
     if expression(
-        &UNSUPPORTED,
-        r"(?m)(^|\n)\s*(\$\$|---\s*$)|\$[^\s$](?:[^\n$]*[^\s$])?\$(?:[^0-9]|$)|!?\[[^\]]*\]\s*\[|^\s*\[[^\]]+\]:|~~",
+        &MATH,
+        r"(?m)\$\$(?:[^\n$]|\$[^\n$])*\$\$|\$[^ \t\n\v\f\r$](?:[^ \t\n\v\f\r$]|[ \t\v\f\r]+[^ \t\n\v\f\r$])*\$(?:[^0-9]|$)",
     )?
     .is_match(&syntax)
+        || expression(
+            &UNSUPPORTED,
+            r"(?m)(^|\n)\s*(\$\$|---\s*$)|!?\[[^\]]*\]\s*\[|^\s*\[[^\]]+\]:|~~",
+        )?
+        .is_match(&syntax)
     {
         return Ok(true);
     }
