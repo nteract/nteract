@@ -409,9 +409,10 @@ function App() {
       else home(null, { historyMode: "none", refreshCatalog: false });
     };
     window.addEventListener("popstate", onPopState);
-    maintenance.refresh().catch((error) => {
-      if (alive) showError(error);
-    });
+    // The first answer reaches onSession or onError like every later one,
+    // which decide what to show; a refusal of a tab that was never signed in
+    // shows the signed-out landing and nothing else.
+    maintenance.refresh().catch(() => {});
     return () => {
       alive = false;
       maintenance.stop();

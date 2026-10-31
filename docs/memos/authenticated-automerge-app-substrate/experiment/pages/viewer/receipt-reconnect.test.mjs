@@ -512,7 +512,7 @@ test("refused native admission does not reset reconnect backoff", async (t) => {
   }
   // A connection open beyond the stability threshold resets backoff.
   const stable = f.sockets.at(-1);
-  f.session.socketAdmittedAt.set(stable, Date.now() - 20_000);
+  f.session.socketAdmittedAt.set(stable, f.session.now() - 20_000);
   hostClose(stable, 4409, "access_changed");
   f.session.socketDisconnected(stable);
   assert.equal(f.session.retryAttempts, 1);
@@ -710,7 +710,7 @@ test("a connection admitted past the stability threshold clears both counters", 
   await f.advance(2000);
   assert.equal(f.session.retryTimer, undefined);
   const stable = f.sockets.at(-1);
-  f.session.socketAdmittedAt.set(stable, Date.now() - 20_000);
+  f.session.socketAdmittedAt.set(stable, f.session.now() - 20_000);
   hostClose(stable, 1006, "");
   f.session.socketDisconnected(stable);
   assert.deepEqual(f.session.reconnect$.snapshot(), { name: "waiting", attempts: 1, refusals: 0 });
@@ -718,7 +718,7 @@ test("a connection admitted past the stability threshold clears both counters", 
   // The same admission close on a stable socket is not a refusal either.
   await f.advance(500);
   const proven = f.sockets.at(-1);
-  f.session.socketAdmittedAt.set(proven, Date.now() - 20_000);
+  f.session.socketAdmittedAt.set(proven, f.session.now() - 20_000);
   hostClose(proven, 4409, "access_changed");
   f.session.socketDisconnected(proven);
   assert.deepEqual(f.session.reconnect$.snapshot(), { name: "waiting", attempts: 1, refusals: 0 });
@@ -1029,4 +1029,32 @@ test("signing out during an outage drops the stale outage notice for the sign-in
   assert.equal(f.session.status, "Sign in to sync");
   assert.match(f.session.authProblem, /^Sign in again/);
   assert.equal(f.session.problem, "", "the prompt is the only notice");
+});
+
+test("a wall-clock jump doesn't change whether a socket proved stable", async (t) => {
+  for (const [label, jump, open] of [
+    ["forward, closed at once", 3_600_000, 0],
+    ["back, open 20 s", -3_600_000, 20_000],
+  ]) {
+    await t.test(label, async (t) => {
+      const f = fixture(t, { date: true });
+      await f.start();
+      // Two quick admission refusals build up the backoff.
+      for (const attempts of [1, 2]) {
+        hostClose(f.sockets.at(-1), 4503, "temporarily_unavailable");
+        f.session.socketDisconnected(f.sockets.at(-1));
+        assert.equal(f.session.retryAttempts, attempts);
+        await f.advance(500 * 2 ** (attempts - 1));
+      }
+      // The next socket is admitted; the wall clock jumps while it is open.
+      const socket = f.sockets.at(-1);
+      assert.ok(f.session.socketAdmittedAt.has(socket));
+      await f.advance(open);
+      f.jumpWall(jump);
+      hostClose(socket, 4503, "temporarily_unavailable");
+      f.session.socketDisconnected(socket);
+      // Stable only if it was open 15 s on the monotonic clock.
+      assert.equal(f.session.retryAttempts, open >= 15_000 ? 1 : 3);
+    });
+  }
 });

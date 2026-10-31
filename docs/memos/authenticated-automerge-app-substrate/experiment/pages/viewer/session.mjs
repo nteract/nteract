@@ -228,7 +228,9 @@ export class PageSession {
     this.authentication = authentication;
     this.scheduler = scheduler;
     this.random = random;
-    // The monotonic clock receipt outages are timed with (monotonic.mjs).
+    // The monotonic clock (monotonic.mjs) every elapsed-time rule here reads:
+    // receipt outages, reconnect stability, and presence and agent-progress
+    // lifetimes. Readers of `peers` and `agentProgress` use it too.
     this.now = now;
   }
   get doc() {
@@ -592,7 +594,7 @@ export class PageSession {
     if (!this.sockets.delete(socket)) return;
     this.clearPresence();
     const admittedAt = this.socketAdmittedAt.get(socket);
-    const stable = admittedAt !== undefined && Date.now() - admittedAt >= STABLE_CONNECTION_MS;
+    const stable = admittedAt !== undefined && this.now() - admittedAt >= STABLE_CONNECTION_MS;
     if (stable) this.reconnect({ type: "stable" });
     if (!this.alive || this.authRequired || this.accessDenied || this.accessReloadRequired) return;
     const outcome = this.socketOutcomes.get(socket);
@@ -1240,7 +1242,7 @@ export class PageSession {
         !this.sockets.has(socket)
       )
         return;
-      this.socketAdmittedAt.set(socket, Date.now());
+      this.socketAdmittedAt.set(socket, this.now());
       this.clearConnectionProblem();
       // A receipt that outlasted its transient retries starts over now that
       // the host answers; any other receipt keeps its own retry budget.
@@ -1429,7 +1431,7 @@ export class PageSession {
       this.accessReloadRequired
     )
       return false;
-    const snapshot = activitySnapshot(message);
+    const snapshot = activitySnapshot(message, this.now());
     if (
       !snapshot ||
       (!initial &&
@@ -1446,7 +1448,7 @@ export class PageSession {
   expireActivity() {
     clearTimeout(this.activityTimer);
     this.activityTimer = undefined;
-    const now = Date.now();
+    const now = this.now();
     let removed = false;
     for (const [id, progress] of this.agentProgress) {
       if (progress.until <= now) {
@@ -1516,7 +1518,7 @@ export class PageSession {
     ) {
       this.peers.set(senderId, {
         value,
-        at: Date.now(),
+        at: this.now(),
         displayName: [profile.displayName, profile.driver].filter(Boolean).join(" · "),
         profile: { displayName: profile.displayName, driver: profile.driver },
       });
