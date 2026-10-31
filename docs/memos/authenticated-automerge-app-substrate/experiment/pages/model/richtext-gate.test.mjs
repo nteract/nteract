@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import * as A from "@automerge/automerge";
-import { enableRich, exportMarkdown, parseMarkdown, richDoc } from "./richtext.mjs";
+import { MATH_SYNTAX, enableRich, exportMarkdown, parseMarkdown, richDoc } from "./richtext.mjs";
 
 const opaque = (source) => {
   const doc = parseMarkdown(source);
@@ -55,13 +55,14 @@ for (const [name, source] of Object.entries(runs)) {
   });
 }
 
-// The gate as one regex pass, with the same line and space semantics. It is
-// quadratic on long runs, so the comparison uses short inputs only. Math is
-// gated separately and left out of the alphabet.
+// The gate as `MATH_SYNTAX` plus one regex pass for everything else, with the
+// same line and space semantics. The regex is quadratic on long runs, so the
+// comparison uses short inputs only.
 const reference = (source) => {
   const syntax = source.replace(/^(\s*(?:>\s*)*[-+*][ \t]+)\[[ xX]\](?=[ \t]|$)/gm, "$1");
-  return /(^|\n)\s*(<(?!\/?mark[ \t\r\n>])|---\s*$)|!?\[[^\]]*\]\s*\[|^\s*\[[^\]]+\]:|~~/im.test(
-    syntax,
+  return (
+    MATH_SYNTAX.test(syntax) ||
+    /(^|\n)\s*(<(?!\/?mark[ \t\r\n>])|---\s*$)|!?\[[^\]]*\]\s*\[|^\s*\[[^\]]+\]:|~~/im.test(syntax)
   );
 };
 
@@ -84,6 +85,10 @@ test("the import gate matches the single-regex gate on line-start syntax", () =>
     ["\u2028[a]: x", true],
     ["\u00a0<p>", true],
     ["~~struck~~", true],
+    ["$30 and $25", false],
+    ["$x$", true],
+    ["  $$", true],
+    ["- [ ] $$ x $$", true],
   ]) {
     assert.equal(reference(source), expected, JSON.stringify(source));
     assert.equal(opaque(source), expected, JSON.stringify(source));
@@ -117,6 +122,11 @@ const lineCases = (t) => [
   [`para${t}${t}***${t}more`, false],
   [`para${t}${t}* * *${t}more`, false],
   [`para${t}${t}--- x`, false],
+  // Math and currency
+  [`intro${t}  $$`, true],
+  [`intro${t}\u00a0$$ x $$`, true],
+  [`cost $30${t}and $25`, false],
+  [`$x$${t}y`, true],
   // Reference definitions
   [`intro${t}[a]: https://example.com "Title"`, true],
   [`intro${t}[a]: https://example.com 'Title'`, true],
@@ -188,6 +198,9 @@ test("the import gate matches the single-regex gate on random short input", () =
     "'",
     "=",
     "|",
+    "$",
+    "$$",
+    "3",
   ];
   for (let n = 0; n < 20_000; n++) {
     let source = "";
