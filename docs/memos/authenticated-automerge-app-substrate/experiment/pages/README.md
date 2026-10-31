@@ -341,7 +341,10 @@ re-signing rejected offline edits. Previously accepted history remains available
 revocation cannot retract downloaded documents or images. Historical signer
 provenance does not authenticate arbitrary actor strings inside imported history.
 
-Browser sessions renew while open and on return to the tab. Native sockets retain
+Browser sessions renew while open and on return to the tab. A return to the tab
+or an explicit check that lands while a session request is in flight queues one
+fresh request after it, and only the fresh answer applies (the
+[session-refresh machine](viewer/session-refresh-machine.mjs)). Native sockets retain
 the expiry observed on admission and reconnect with current credentials. API-key
 sockets renew bounded leases through provider verification; caching means provider
 revocation is not instantaneous. A pending or late check cannot revive an expired,
