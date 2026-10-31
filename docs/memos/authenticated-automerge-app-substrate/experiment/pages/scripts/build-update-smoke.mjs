@@ -49,8 +49,23 @@ async function api(page, path, body) {
 }
 const tool = (page, operation, args = {}) =>
   api(page, "/api/tools", { operation, arguments: args });
+// Record the text of every red banner that appears, however briefly, so a
+// deploy's restart can be checked for one after the fact.
+const recordBanners = () => {
+  window.__pagesBanners = [];
+  const seen = new WeakSet();
+  new MutationObserver(() => {
+    for (const alert of document.querySelectorAll(".error[role=alert]")) {
+      if (seen.has(alert)) continue;
+      seen.add(alert);
+      window.__pagesBanners.push(alert.textContent);
+    }
+  }).observe(document, { childList: true, subtree: true, characterData: true });
+};
+const redBanners = (page) => page.evaluate(() => window.__pagesBanners);
 async function signIn(email) {
   const context = await browser.newContext();
+  await context.addInitScript(recordBanners);
   const page = await context.newPage();
   page.on("pageerror", (error) => report.errors.push(error.message));
   const begin = await context.request.get(`${origin}/api/auth/login`, { maxRedirects: 0 });
@@ -199,6 +214,10 @@ try {
   await owner.screenshot({ path: `${output}/update-banner.png` });
   // An optional update never pauses editing.
   await expect(content(owner)).toHaveAttribute("contenteditable", "true");
+  // The restart under the deploy showed Offline, never a red banner, and the
+  // edit made during it saves.
+  await expect(saved(owner)).toBeVisible({ timeout: 60000 });
+  assert.deepEqual(await redBanners(owner), [], "the deploy's restart showed a red banner");
 
   // Leave the Page while receipts fail. After the drain it closes with its
   // IndexedDB checkpoint and the tab keeps only its title. Reload names it and
@@ -281,7 +300,7 @@ try {
     /Before deploy\. During deploy\. Checkpointed\. After banner\./,
   );
   report.completed.push(
-    `Deploy to ${buildB} under an open tab: banner on reconnect; Reload after leaving the Page waited for its receipt`,
+    `Deploy to ${buildB} under an open tab: no red banner through the restart; update banner on reconnect; Reload after leaving the Page waited for its receipt`,
   );
 
   // An unsent reply, then the Worker raises its protocol floor above this

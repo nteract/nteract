@@ -411,6 +411,16 @@ refusing. Retry, the `online` event and signing in again clear both counters and
 reconnect at once; a stable connection clears them too.
 [reconnect-machine.mjs](viewer/reconnect-machine.mjs) holds these transitions.
 
+A host restart is not an error the person can act on. A 502, 503 or 504 (JSON
+or a gateway's HTML page), a JSON error marked `retryable`, and a failed fetch
+are transient (`isTransientFailure` in [request.mjs](viewer/request.mjs)): the
+Page shows Offline or Saved locally and retries without a red banner. Receipts
+retry on the same backoff. From the seventh failure in a row, about 15 to 30
+seconds in, the Page shows one sentence, "Pages can't reach the server. Your
+changes are saved on this device.", and keeps retrying; the next admitted
+connection clears it and restarts the receipt. Each screen renders its banners
+from one deduplicated list ([alerts.mjs](viewer/alerts.mjs)).
+
 A binding write that never settles still blocks its own signing key until the
 host restarts; other keys are unaffected. A rejected write may have taken effect,
 so the host neither issues a competing write nor releases the reservation. If an

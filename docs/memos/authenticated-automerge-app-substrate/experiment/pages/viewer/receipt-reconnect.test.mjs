@@ -4,7 +4,8 @@ import * as A from "@automerge/automerge";
 import * as N from "@automerge/subduction";
 import { generateAutomergeUrl, interpretAsDocumentId } from "@automerge/automerge-repo";
 import { PageSession } from "./session.mjs";
-import { REFUSAL_LIMIT, backoffStep } from "./reconnect-machine.mjs";
+import { OUTAGE_ATTEMPTS, REFUSAL_LIMIT, backoffStep } from "./reconnect-machine.mjs";
+import { SERVER_UNREACHABLE } from "./alerts.mjs";
 
 const drain = () => new Promise((resolve) => setImmediate(resolve));
 function deferred() {
@@ -264,7 +265,7 @@ test("an older asynchronous local change error cannot replace a newer saved cycl
 
 test("automatic reconnect preserves exhausted retry budget; explicit Retry starts a new cycle", async (t) => {
   const f = fixture(t);
-  f.hooks.receipt = () => Response.json({ error: "Storage unavailable" }, { status: 503 });
+  f.hooks.receipt = () => Response.json({ error: "Storage unavailable" }, { status: 500 });
   await f.start();
   const revision = f.session.receiptRevision;
   for (const delay of [500, 1000, 2000]) {
@@ -296,7 +297,7 @@ test("automatic reconnect preserves exhausted retry budget; explicit Retry start
 
 test("a new edit restarts an exhausted cycle while unchanged-head reconnect does not", async (t) => {
   const f = fixture(t);
-  f.hooks.receipt = () => Response.json({ error: "Storage unavailable" }, { status: 503 });
+  f.hooks.receipt = () => Response.json({ error: "Storage unavailable" }, { status: 500 });
   await f.start();
   for (const delay of [500, 1000, 2000]) await f.advance(delay);
   const revision = f.session.receiptRevision;
@@ -318,7 +319,7 @@ test("a new edit restarts an exhausted cycle while unchanged-head reconnect does
 
 test("explicit Retry can obtain a receipt even when native reconnect still fails", async (t) => {
   const f = fixture(t);
-  f.hooks.receipt = () => Response.json({ error: "Storage unavailable" }, { status: 503 });
+  f.hooks.receipt = () => Response.json({ error: "Storage unavailable" }, { status: 500 });
   await f.start();
   for (const delay of [500, 1000, 2000]) await f.advance(delay);
   assert.equal(f.requests.length, 4);
@@ -730,6 +731,196 @@ test("a refusal the next discovery answers with 401 or 403 stops there", async (
       assert.equal(f.session.syncPaused, false);
       await f.advance(3_600_000);
       assert.equal(f.sockets.length, 1);
+    });
+  }
+});
+
+// A deploy restarts the host: for a few seconds the gateway answers with its
+// own error page, or the connection fails outright.
+const cloudflare503 = () =>
+  new Response("<!DOCTYPE html><title>503: origin unreachable | Cloudflare</title>", {
+    status: 503,
+    headers: { "Content-Type": "text/html; charset=UTF-8" },
+  });
+const restartFailures = [
+  ["Cloudflare's HTML 503", { connect: cloudflare503 }],
+  ["an empty 502", { connect: () => new Response(null, { status: 502 }) }],
+  [
+    "a JSON 504",
+    { connect: () => Response.json({ error: "Pages request failed" }, { status: 504 }) },
+  ],
+  [
+    "a retryable JSON 500",
+    {
+      connect: () =>
+        Response.json({ error: "Host busy", code: "host_busy", retryable: true }, { status: 500 }),
+    },
+  ],
+  [
+    "a lost connection",
+    {
+      connect: () => {
+        throw new TypeError("Failed to fetch");
+      },
+    },
+  ],
+  [
+    "a 503 from the session refresh",
+    {
+      refresh: () => {
+        throw Object.assign(Error("The server returned an unexpected response (503)"), {
+          code: "INVALID_RESPONSE",
+          status: 503,
+          httpStatus: 503,
+        });
+      },
+    },
+  ],
+];
+
+/** Drop the live socket and fail `failures` reconnect attempts in a row with
+ * random() = 0, so each retry waits exactly half its backoff step. */
+async function failReconnects(f, failures) {
+  f.session.socketDisconnected(f.sockets.at(-1));
+  for (let i = 1; i < failures; i++) await f.advance(backoffStep(f.session.retryAttempts - 1) / 2);
+}
+function failWith(f, { connect, refresh }) {
+  if (connect) f.hooks.connect = connect;
+  if (refresh) {
+    const working = f.session.refreshSession;
+    f.session.refreshSession = async () => refresh();
+    return () => {
+      f.hooks.connect = undefined;
+      f.session.refreshSession = working;
+    };
+  }
+  return () => {
+    f.hooks.connect = undefined;
+  };
+}
+
+test("a brief host restart shows Offline without a banner, then Saved", async (t) => {
+  for (const [label, failure] of restartFailures) {
+    await t.test(label, async (t) => {
+      const f = fixture(t, { random: () => 0 });
+      await f.start();
+      f.requests[0].resolve(Response.json({ durableHeads: f.requests[0].heads }));
+      await drain();
+      assert.equal(f.session.status, "Saved");
+
+      const recover = failWith(f, failure);
+      await failReconnects(f, 3);
+      assert.equal(f.session.status, "Offline");
+      assert.equal(f.session.problem, "", "a transient failure is not a banner");
+      assert.equal(f.session.connectionProblem, "");
+      assert.ok(f.session.retryTimer, "it keeps retrying");
+
+      // An edit during the restart saves once the host answers again.
+      f.mutate("Typed during the restart");
+      recover();
+      await f.advance(backoffStep(f.session.retryAttempts - 1) / 2);
+      assert.equal(f.session.retryTimer, undefined, "the host admitted the next socket");
+      await f.advance(300);
+      const receipt = f.requests.at(-1);
+      assert.deepEqual(receipt.heads, A.getHeads(f.session.doc));
+      receipt.resolve(Response.json({ durableHeads: receipt.heads }));
+      await drain();
+      assert.equal(f.session.status, "Saved");
+      assert.equal(f.session.problem, "");
+      assert.equal(f.session.unreachable, false);
+    });
+  }
+});
+
+test("an outage past the reconnect threshold shows one plain sentence until the host returns", async (t) => {
+  const f = fixture(t, { random: () => 0 });
+  await f.start();
+  f.requests[0].resolve(Response.json({ durableHeads: f.requests[0].heads }));
+  await drain();
+  f.hooks.connect = cloudflare503;
+  await failReconnects(f, OUTAGE_ATTEMPTS - 1);
+  assert.equal(f.session.problem, "", "no banner before the threshold");
+  await f.advance(backoffStep(f.session.retryAttempts - 1) / 2);
+  assert.equal(f.session.retryAttempts, OUTAGE_ATTEMPTS);
+  assert.equal(f.session.problem, SERVER_UNREACHABLE);
+  assert.doesNotMatch(f.session.problem, /\d{3}/, "no status code");
+  assert.equal(f.session.status, "Offline");
+  assert.ok(f.session.retryTimer, "retries continue past the report");
+  // Later failures repeat the report; it stays one sentence.
+  await f.advance(backoffStep(f.session.retryAttempts - 1) / 2);
+  assert.equal(f.session.problem, SERVER_UNREACHABLE);
+
+  f.hooks.connect = undefined;
+  f.mutate("Typed during the outage");
+  await f.advance(backoffStep(f.session.retryAttempts - 1) / 2);
+  assert.equal(f.session.problem, "", "the banner leaves with the outage");
+  await f.advance(300);
+  const receipt = f.requests.at(-1);
+  receipt.resolve(Response.json({ durableHeads: receipt.heads }));
+  await drain();
+  assert.equal(f.session.status, "Saved");
+  assert.equal(f.session.problem, "");
+});
+
+test("an outage keeps a specific connection failure in front of the plain sentence", async (t) => {
+  const f = fixture(t, { random: () => 0 });
+  await f.start();
+  f.requests[0].resolve(Response.json({ durableHeads: f.requests[0].heads }));
+  await drain();
+  f.hooks.connect = () => Response.json({ error: "Storage is read-only" }, { status: 500 });
+  await failReconnects(f, 2);
+  assert.equal(f.session.problem, "Storage is read-only");
+  f.hooks.connect = cloudflare503;
+  while (f.session.retryAttempts < OUTAGE_ATTEMPTS + 1)
+    await f.advance(backoffStep(f.session.retryAttempts - 1) / 2);
+  assert.equal(f.session.problem, "Storage is read-only");
+  assert.equal(f.session.status, "Offline");
+});
+
+test("transient receipt failures retry quietly; an outage reports once and reconnect restarts it", async (t) => {
+  for (const respond of [
+    () => cloudflare503(),
+    () => Response.json({ error: "Pages request failed" }, { status: 503 }),
+  ]) {
+    await t.test(String(respond().status), async (t) => {
+      const f = fixture(t);
+      f.hooks.receipt = respond;
+      await f.start();
+      assert.equal(f.requests.length, 1);
+      assert.equal(f.session.status, "Unsaved");
+      assert.equal(f.session.problem, "");
+      // A short outage recovers on a retry, without a banner.
+      for (let attempt = 0; attempt < 2; attempt++) {
+        await f.advance(backoffStep(attempt));
+        assert.equal(f.session.problem, "");
+      }
+      f.hooks.receipt = ({ heads }) => Response.json({ durableHeads: heads });
+      await f.advance(backoffStep(2));
+      assert.equal(f.session.status, "Saved");
+      assert.equal(f.session.problem, "");
+
+      // A long one spends the retries and reports in a plain sentence.
+      f.hooks.receipt = respond;
+      f.mutate("Typed during the outage");
+      f.session.queueSaved();
+      await f.advance(300);
+      for (let attempt = 0; attempt < OUTAGE_ATTEMPTS - 1; attempt++) {
+        assert.equal(f.session.problem, "");
+        await f.advance(backoffStep(attempt));
+      }
+      assert.equal(f.session.problem, SERVER_UNREACHABLE);
+      assert.equal(f.session.receiptRetryTimer, undefined);
+      const spent = f.requests.length;
+      await f.advance(3_600_000);
+      assert.equal(f.requests.length, spent, "no retries once spent");
+
+      // The next admitted connection restarts the receipt.
+      f.hooks.receipt = ({ heads }) => Response.json({ durableHeads: heads });
+      await f.session.openConnection(false);
+      await f.advance(300);
+      assert.equal(f.requests.length, spent + 1);
+      assert.equal(f.session.status, "Saved");
+      assert.equal(f.session.problem, "");
     });
   }
 });

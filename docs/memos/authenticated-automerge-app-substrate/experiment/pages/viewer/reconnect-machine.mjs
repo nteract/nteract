@@ -27,18 +27,27 @@
  * a pending retry is dropped).
  *
  * Effects: `schedule` starts the backoff timer for `step` ms (the
- * interpreter applies reconnectDelay's jitter), `cancel` clears it, and
- * `pauseSync` tells the person sync stopped and Retry resumes it.
+ * interpreter applies reconnectDelay's jitter), `cancel` clears it,
+ * `pauseSync` tells the person sync stopped and Retry resumes it, and
+ * `reportOutage` tells the person the host has been unreachable for a while.
+ * Retries continue after `reportOutage`; it repeats on each later transient
+ * failure, so the interpreter shows it idempotently.
  *
  * Transient failures (no status, 5xx, a socket close without an admission
  * code) never count as refusals and never clear them: a flaky host between
- * refusals has not shown the refusal went away.
+ * refusals has not shown the refusal went away. From the OUTAGE_ATTEMPTS-th
+ * failure in a row, a transient failure also reports an outage. A refusal
+ * never does: the host answered.
  */
 import { defineMachine, reject } from "../shared/machine.mjs";
 
 export const BASE_STEP_MS = 500;
 export const MAX_STEP_MS = 60_000;
 export const REFUSAL_LIMIT = 6;
+// The failure in a row that reports an outage. The backoff before it sleeps
+// 0.5 + 1 + … + 16 s before jitter, so a host restart that takes under about
+// 15 s never shows one.
+export const OUTAGE_ATTEMPTS = 7;
 
 /** The backoff step before jitter for a retry after `attempts` earlier ones:
  * 0.5 s doubling to a 60 s cap. */
@@ -72,7 +81,7 @@ export const viewerReconnectSpec = Object.freeze({
   states: ["ready", "waiting", "refused", "paused"],
   events: ["failed", "keyRefused", "stable", "timer", "resume", "halt"],
   cases: {
-    "ready/failed": ["transient", "refusal", "last-refusal"],
+    "ready/failed": ["transient", "outage", "refusal", "last-refusal"],
   },
   validate: {
     states: {
@@ -112,6 +121,7 @@ export const viewerReconnectSpec = Object.freeze({
       },
       cancel: typed([]),
       pauseSync: typed([]),
+      reportOutage: typed([]),
     },
   },
 });
@@ -141,10 +151,11 @@ function transition(state, event) {
             return ok(keep("paused", { attempts: state.attempts, refusals }), {
               type: "pauseSync",
             });
-          return ok(keep("waiting", { attempts: state.attempts + 1, refusals }), {
-            type: "schedule",
-            step: backoffStep(state.attempts),
-          });
+          const attempts = state.attempts + 1;
+          const schedule = { type: "schedule", step: backoffStep(state.attempts) };
+          if (!event.refused && attempts >= OUTAGE_ATTEMPTS)
+            return ok(keep("waiting", { attempts, refusals }), schedule, { type: "reportOutage" });
+          return ok(keep("waiting", { attempts, refusals }), schedule);
         }
         case "keyRefused":
           return ok(keep("refused", state));

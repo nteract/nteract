@@ -31,12 +31,18 @@ import { BACKEND_LIMITS } from "../model/limits.mjs";
 import { retryKey } from "../model/retry-key.mjs";
 import { MISSING_EDITS_MESSAGE } from "../shared/receipts.mjs";
 import { ADMISSION_CAPABILITY, admissionCloseOutcome } from "../shared/admission.mjs";
-import { request } from "./request.mjs";
+import { isTransientFailure, request } from "./request.mjs";
+import { SERVER_UNREACHABLE } from "./alerts.mjs";
 import { activitySnapshot } from "./activity.mjs";
 import { checkpointRecords } from "./checkpoint-records.mjs";
 import { Store } from "./store.mjs";
 import { REJECT, isLive, pauseOf, viewerSessionMachine } from "./session-machine.mjs";
-import { reconnectDelay, viewerReconnectMachine } from "./reconnect-machine.mjs";
+import {
+  OUTAGE_ATTEMPTS,
+  backoffStep,
+  reconnectDelay,
+  viewerReconnectMachine,
+} from "./reconnect-machine.mjs";
 export { request, tool } from "./request.mjs";
 const hex = (bytes) => Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
 const ownerAccess = () => ({
@@ -86,6 +92,17 @@ const SIGNING_KEY_REFUSED =
 const SYNC_PAUSED =
   "Sync paused: the host kept refusing this connection. Your edits stay on this device. Retry to reconnect.";
 const admissionHeaders = { [ADMISSION_CAPABILITY.header]: ADMISSION_CAPABILITY.value };
+// Receipt retries after a failure the host may fix (409 missing edits, 500).
+const RECEIPT_RETRY_DELAYS = [500, 1000, 2000];
+/** The wait before receipt retry `attempt`, or undefined once the retries are
+ * spent. A transient failure retries on the reconnect backoff until the
+ * failure that reports an outage, so a host restart never spends them. */
+const receiptRetryDelay = (attempt, transient) =>
+  transient
+    ? attempt < OUTAGE_ATTEMPTS - 1
+      ? backoffStep(attempt)
+      : undefined
+    : RECEIPT_RETRY_DELAYS[attempt];
 // Not retryable by openPageWithRetry: the same tab key cannot succeed.
 export const signingKeyRefused = (admission, cause) =>
   Object.assign(Error(SIGNING_KEY_REFUSED, cause === undefined ? undefined : { cause }), {
@@ -135,6 +152,13 @@ export class PageSession {
   localDepth = 0;
   status = "Connecting";
   problem = "";
+  // Why the last connection attempt failed, when the person should see it.
+  // It shows as `problem` unless a local save failure is in front of it.
+  connectionProblem = "";
+  // The last connection attempt failed transiently (isTransientFailure). The
+  // status says Offline while retries continue; no banner until the reconnect
+  // machine reports an outage. A connection admitted later clears it.
+  unreachable = false;
   savedHeads = [];
   authProblem = "";
   accessProblem = "";
@@ -592,6 +616,10 @@ export class PageSession {
         case "pauseSync":
           this.showConnectionProblem(SYNC_PAUSED);
           break;
+        case "reportOutage":
+          // A specific failure the person can act on stays in front.
+          if (!this.connectionProblem) this.showConnectionProblem(SERVER_UNREACHABLE);
+          break;
       }
     }
     return result;
@@ -601,6 +629,15 @@ export class PageSession {
   showConnectionProblem(message) {
     this.connectionProblem = message;
     if (!this.localProblem) this.problem = message;
+    this.showConnectionStatus();
+  }
+  /** A connection attempt failed transiently: show Offline without a banner
+   * while the reconnect backoff retries. */
+  showUnreachable() {
+    this.unreachable = true;
+    this.showConnectionStatus();
+  }
+  showConnectionStatus() {
     if (this.receiptState) this.showReceiptState();
     else {
       this.status = this.localPage ? "Saved locally" : "Offline";
@@ -1080,6 +1117,7 @@ export class PageSession {
   clearConnectionProblem() {
     if (this.problem === this.connectionProblem) this.problem = "";
     this.connectionProblem = "";
+    this.unreachable = false;
   }
   connect(refresh = true, recheckDeniedAccess = false) {
     if (!this.alive || this.accessReloadRequired) return Promise.resolve();
@@ -1190,7 +1228,9 @@ export class PageSession {
         return;
       this.socketAdmittedAt.set(socket, Date.now());
       this.clearConnectionProblem();
-      if (this.handle) this.queueSaved();
+      // A receipt that outlasted its transient retries starts over now that
+      // the host answers; any other receipt keeps its own retry budget.
+      if (this.handle) this.queueSaved({ restart: !!this.receiptState?.outage });
       else {
         this.status = "Connected";
         this.emit();
@@ -1242,7 +1282,12 @@ export class PageSession {
           "You no longer have access to this Page. Your local copy is kept on this device.",
           { denied: true },
         );
-      else {
+      else if (isTransientFailure(error)) {
+        // The host may be restarting. Retry quietly; the reconnect machine
+        // reports an outage if this lasts.
+        this.showUnreachable();
+        this.scheduleReconnect({ refused: !!error.admission });
+      } else {
         this.showConnectionProblem(error.message);
         // An admission close during the handshake is a refusal; the next
         // attempt's discovery still stops on 401, 403 or 404.
@@ -1530,7 +1575,8 @@ export class PageSession {
           ? "Sign in to sync"
           : this.localProblem
             ? "Local save failed"
-            : this.connectionProblem && this.receiptState.status !== "Saved locally"
+            : (this.connectionProblem || this.unreachable) &&
+                this.receiptState.status !== "Saved locally"
               ? "Offline"
               : this.receiptState.status;
     if (
@@ -1546,9 +1592,11 @@ export class PageSession {
     clearTimeout(this.receiptRetryTimer);
     this.receiptRetryTimer = undefined;
   }
-  scheduleReceiptRetry(revision, synchronize = false) {
-    const delays = [500, 1000, 2000];
+  /** Retry the receipt for `revision` after its bounded wait. `transient`
+   * failures wait on the reconnect backoff (receiptRetryDelay). */
+  scheduleReceiptRetry(revision, synchronize = false, transient = false) {
     const attempt = this.receiptRetryAttempts ?? 0;
+    const delay = receiptRetryDelay(attempt, transient);
     if (
       !this.alive ||
       this.authRequired ||
@@ -1557,7 +1605,7 @@ export class PageSession {
       this.deleted ||
       revision !== this.receiptRevision ||
       this.receiptRetryTimer ||
-      attempt >= delays.length
+      delay === undefined
     )
       return;
     this.receiptRetryAttempts = attempt + 1;
@@ -1572,7 +1620,7 @@ export class PageSession {
         revision === this.receiptRevision
       )
         void this.saveReceipt({ synchronize });
-    }, delays[attempt]);
+    }, delay);
   }
   async requestWithRenewal(url, options) {
     try {
@@ -1705,6 +1753,7 @@ export class PageSession {
       this.savedHeads = heads;
       if (this.problem === state.problem) this.problem = "";
       state.problem = "";
+      state.outage = false;
       state.status = "Saved";
       this.cancelReceiptRetry();
       this.receiptRetryAttempts = 0;
@@ -1724,14 +1773,26 @@ export class PageSession {
             { denied: true },
           );
         if (!this.authRequired && !this.accessDenied && !this.accessReloadRequired) {
-          state.problem = error.message;
-          if (!this.localProblem) this.problem = error.message;
           state.status = this.status = this.localPage ? "Saved locally" : "Unsaved";
-          if (!error.status || error.status === 409 || error.status >= 500)
-            this.scheduleReceiptRetry(
-              revision,
-              synchronize || (error.status === 409 && error.message === MISSING_EDITS_MESSAGE),
-            );
+          if (isTransientFailure(error)) {
+            // The host may be restarting: retry without a banner. Once the
+            // retries are spent it is an outage, and the next admitted
+            // connection restarts this receipt.
+            state.outage = receiptRetryDelay(this.receiptRetryAttempts ?? 0, true) === undefined;
+            if (this.problem === state.problem) this.problem = "";
+            state.problem = state.outage ? SERVER_UNREACHABLE : "";
+            if (state.outage && !this.localProblem) this.problem = state.problem;
+            this.scheduleReceiptRetry(revision, synchronize, true);
+          } else {
+            state.outage = false;
+            state.problem = error.message;
+            if (!this.localProblem) this.problem = error.message;
+            if (!error.status || error.status === 409 || error.status >= 500)
+              this.scheduleReceiptRetry(
+                revision,
+                synchronize || (error.status === 409 && error.message === MISSING_EDITS_MESSAGE),
+              );
+          }
         }
         this.showReceiptState();
       }
