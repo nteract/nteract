@@ -191,8 +191,11 @@ test("release staging copies only built artifacts, never development credentials
         : [prefix + entry.name],
     );
   }
+  const { createHash } = await import("node:crypto");
+  const sha256 = (value) => createHash("sha256").update(value).digest("hex");
   const chunks = ["public/chunks/ABCDEFGH.js", "public/chunks/IJKLMN23.js"];
-  const receipt = JSON.stringify({ viewer_chunks: chunks });
+  const certified = Object.fromEntries(chunks.map((file) => [file, sha256("artifact:" + file)]));
+  const receipt = JSON.stringify({ viewer_chunks: certified });
   const contents = (artifact) =>
     artifact === "build-receipt.json" ? receipt : "artifact:" + artifact;
   try {
@@ -224,11 +227,28 @@ test("release staging copies only built artifacts, never development credentials
       /differs from the viewer chunks/,
     );
     write(chunks[1], contents(chunks[1]));
-    for (const listed of [undefined, [], ["public/chunks/../index.js"], ["public/app.js"]]) {
+    // A listed chunk whose bytes changed after the build keeps its name, so
+    // only its digest gives it away. Nothing is staged.
+    write(chunks[0], "artifact:tampered");
+    assert.throws(
+      () => stageArtifacts(dist, path.join(root, "tampered-chunk")),
+      /Viewer chunk changed since the build: public[/]chunks[/]ABCDEFGH[.]js/,
+    );
+    assert.throws(() => readdirSync(path.join(root, "tampered-chunk")));
+    write(chunks[0], contents(chunks[0]));
+    for (const listed of [
+      undefined,
+      {},
+      chunks,
+      { "public/chunks/../index.js": certified[chunks[0]] },
+      { "public/app.js": certified[chunks[0]] },
+      { ...certified, [chunks[1]]: "not-a-digest" },
+      { ...certified, [chunks[1]]: certified[chunks[1]].toUpperCase() },
+    ]) {
       write("build-receipt.json", JSON.stringify({ viewer_chunks: listed }));
       assert.throws(
         () => stageArtifacts(dist, path.join(root, "unlisted-chunks")),
-        /must list the viewer chunks/,
+        /must list the viewer chunks with their sha256/,
       );
     }
     assert.throws(() => readdirSync(path.join(root, "stale-chunk")));

@@ -5,6 +5,7 @@ import assert from "node:assert/strict";
 import { loadTable, runTable } from "../shared/machine-test.mjs";
 import { editorLoadMachine } from "./editor-load-machine.mjs";
 import { EDITOR_UNAVAILABLE, EditorLoader } from "./editor-loader.mjs";
+import { SessionHost } from "./session-host.mjs";
 
 const TABLE = new URL("../test/fixtures/machines/editor-load.json", import.meta.url);
 
@@ -83,4 +84,58 @@ test("a failing build check does not escape the loader", async () => {
     },
   });
   await assert.rejects(throwing.ready(), { code: "EDITOR_UNAVAILABLE" });
+});
+
+// main.jsx's create(): navigate, wait for the editor while the navigation and
+// account still hold, then create. Anything that moves either during the
+// download must stop creation before a draft is written.
+async function createAfterEditor(host, loader, account) {
+  const revision = host.navigate();
+  const principal = account.principal;
+  const loaded = await loader.readyWhile(
+    () => host.isCurrent(revision) && account.principal === principal,
+  );
+  if (!loaded) return null;
+  return loaded.PageSession.create({ title: "Untitled" });
+}
+
+for (const [label, interrupt] of [
+  ["a navigation", ({ host }) => host.navigate()],
+  [
+    "an account change",
+    ({ account }) => {
+      account.principal = "someone-else";
+    },
+  ],
+  [
+    "a sign-in that also navigates",
+    ({ host, account }) => {
+      account.principal = "someone-else";
+      host.navigate();
+    },
+  ],
+])
+  test(`${label} during the editor download cancels New Page before it writes`, async () => {
+    const pending = deferred();
+    let creates = 0;
+    const module = { PageSession: { create: async () => (creates++, { pageId: "draft" }) } };
+    const loader = new EditorLoader({ load: () => pending.promise });
+    const host = new SessionHost();
+    const account = { principal: "owner" };
+    const creating = createAfterEditor(host, loader, account);
+    interrupt({ host, account });
+    pending.resolve(module);
+    assert.equal(await creating, null);
+    assert.equal(creates, 0);
+    // With nothing in between, the same flow creates once.
+    assert.deepEqual(await createAfterEditor(host, loader, account), { pageId: "draft" });
+    assert.equal(creates, 1);
+  });
+
+test("readyWhile still reports an editor that failed to load", async () => {
+  const loader = new EditorLoader({ load: () => Promise.reject(new Error("404")) });
+  await assert.rejects(
+    loader.readyWhile(() => false),
+    { code: "EDITOR_UNAVAILABLE" },
+  );
 });

@@ -111,6 +111,10 @@ function App() {
     article = useRef(null),
     titleInput = useRef(null),
     commentsButton = useRef(null);
+  // True while `revision` is the latest navigation and `principal` still the
+  // signed-in account.
+  const navigationCurrent = (revision, principal) =>
+    host.isCurrent(revision) && authentication.current?.identity?.principal === principal;
   const refresh = async () => {
     const identity = authentication.current?.identity;
     if (!identity) return [];
@@ -262,10 +266,12 @@ function App() {
     try {
       // A quick Back may revisit a replica whose final local checkpoint is
       // still flushing. Wait only for that same Page, never an unrelated one.
-      await host.closingFor(authentication.current?.identity?.principal, id);
+      const principal = authentication.current?.identity?.principal;
+      await host.closingFor(principal, id);
       if (!host.isCurrent(revision)) return;
-      const { PageSession } = await editor.ready();
-      if (!host.isCurrent(revision)) return;
+      const loaded = await editor.readyWhile(() => navigationCurrent(revision, principal));
+      if (!loaded) return;
+      const { PageSession } = loaded;
       const next = await openPageWithRetry(
         () =>
           PageSession.open(id, {
@@ -426,8 +432,13 @@ function App() {
     setError("");
     setPickerError("");
     const revision = host.navigate();
+    const principal = authentication.current?.identity?.principal;
     try {
-      const { PageSession } = await editor.ready();
+      // Creating persists a draft. A navigation or account change while the
+      // editor downloads cancels it before anything is written.
+      const loaded = await editor.readyWhile(() => navigationCurrent(revision, principal));
+      if (!loaded) return;
+      const { PageSession } = loaded;
       const next = await PageSession.create(
         { title: "Untitled" },
         {

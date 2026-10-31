@@ -112,8 +112,9 @@ export function sourceFingerprint(app, { root = repository(app) } = {}) {
   return { algorithm: "sha256-paths-and-content-v1", sha256: sha256(JSON.stringify(files)), files };
 }
 
-/** `viewerChunks` lists the viewer's hashed chunk files (paths in dist).
- * Staging copies exactly these. */
+/** `viewerChunks` lists the viewer's hashed chunk files (paths in dist). The
+ * receipt maps each to the sha256 of its bytes as built; staging copies
+ * exactly these files and only when their bytes still match. */
 export function writeBuildReceipt(app, { expectedFingerprint, viewerChunks = [] } = {}) {
   const root = repository(app);
   const fingerprint = sourceFingerprint(app, { root });
@@ -128,7 +129,11 @@ export function writeBuildReceipt(app, { expectedFingerprint, viewerChunks = [] 
     ),
     // Matches the X-Pages-Build header and /health `build` of this bundle.
     build_id: fingerprint.sha256.slice(0, 12),
-    viewer_chunks: [...viewerChunks].sort(),
+    viewer_chunks: Object.fromEntries(
+      [...viewerChunks]
+        .sort()
+        .map((file) => [file, sha256(readFileSync(path.join(app, "dist", file)))]),
+    ),
     fingerprint,
   };
   writeFileSync(path.join(app, "dist/build-receipt.json"), JSON.stringify(receipt, null, 2) + "\n");

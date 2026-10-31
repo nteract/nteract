@@ -363,6 +363,46 @@ try {
     });
   const finalText =
     "Deploy garden. Before deploy. During deploy. Checkpointed. After banner. Floor raised.";
+
+  // New Page while the editor chunk is still downloading, then Home: when the
+  // chunk lands, the abandoned New Page must not create a draft. A created
+  // draft lives in this browser first, so count the library's rows (local and
+  // server Pages) as well as the server catalog.
+  const library = owner.locator(".page-card");
+  const untitled = async () => {
+    await owner.goto(origin);
+    await expect(library.filter({ hasText: title })).toBeVisible({ timeout: 30000 });
+    const rows = await library.filter({ hasText: "Untitled" }).count();
+    const server = (await tool(owner, "list_pages")).body.pages.filter(
+      (page) => page.title === "Untitled",
+    ).length;
+    return { rows, server };
+  };
+  const untitledBefore = await untitled();
+  let releaseEditor;
+  const editorHeld = new Promise((resolve) => (releaseEditor = resolve));
+  await owner.route(`**/${editorChunk}`, async (route) => {
+    await editorHeld;
+    await route.fallback();
+  });
+  await owner.goto(origin);
+  const newPage = owner.getByRole("button", { name: "New Page", exact: true });
+  await newPage.click();
+  await expect(newPage).toBeDisabled();
+  await owner.getByRole("link", { name: "Pages", exact: true }).click();
+  releaseEditor();
+  await expect(newPage).toBeEnabled({ timeout: 30000 });
+  // The editor opens a Page once its chunk lands, so the abandoned create has
+  // had its chance to run.
+  await library.filter({ hasText: title }).click();
+  await paragraph(owner, finalText, { timeout: 30000 });
+  await expect(owner.getByRole("textbox", { name: "Page title" })).toHaveValue(title);
+  await owner.unrouteAll({ behavior: "wait" });
+  assert.deepEqual(await untitled(), untitledBefore, "an abandoned New Page created a draft");
+  report.completed.push(
+    "New Page during the editor download, then Home: no draft created once the editor loaded",
+  );
+
   for (const { label, stale, expected } of [
     {
       label: "same build",

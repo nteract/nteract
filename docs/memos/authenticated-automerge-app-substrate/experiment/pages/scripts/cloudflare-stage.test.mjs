@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { createHash } from "node:crypto";
 import { mkdtempSync, mkdirSync, writeFileSync, readdirSync, rmSync, readFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -16,7 +17,11 @@ test("Cloudflare staging separates native modules from browser assets and exclud
   for (const file of [...releaseArtifacts, chunk])
     writeFileSync(
       path.join(dist, file),
-      file === "build-receipt.json" ? JSON.stringify({ viewer_chunks: [chunk] }) : file,
+      file === "build-receipt.json"
+        ? JSON.stringify({
+            viewer_chunks: { [chunk]: createHash("sha256").update(chunk).digest("hex") },
+          })
+        : file,
     );
   writeFileSync(path.join(dist, ".dev.vars"), "secret-that-must-stay-local");
   mkdirSync(path.join(dist, ".celld"));

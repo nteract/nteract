@@ -35,6 +35,14 @@ export class EditorLoader {
       },
     );
   }
+  /** Waits for the editor, then hands it over only if `stillCurrent()` holds.
+   * Resolves null when the caller's navigation or account moved on during the
+   * wait, so nothing it would have done with the module runs. Rejects with
+   * EDITOR_UNAVAILABLE like `ready()`. */
+  async readyWhile(stillCurrent) {
+    const module = await this.ready();
+    return stillCurrent() ? module : null;
+  }
   #dispatch(event) {
     const result = editorLoadMachine.step(this.store.snapshot(), event);
     if (result.rejected) return;

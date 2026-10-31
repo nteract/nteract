@@ -1,4 +1,13 @@
-import { copyFileSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync } from "node:fs";
+import { createHash } from "node:crypto";
+import {
+  copyFileSync,
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  writeFileSync,
+} from "node:fs";
 import path from "node:path";
 import { VIEWER_CHUNK } from "./viewer-chunks.mjs";
 
@@ -21,27 +30,39 @@ export const releaseArtifacts = Object.freeze([
   "public/_headers",
 ]);
 
-/** The fixed artifacts plus the viewer chunks this build's receipt lists.
- * public/chunks must hold exactly those chunks: a missing one would break
- * the editor, and an extra one was not certified by the receipt. */
-export function releaseArtifactsFor(dist) {
+const SHA256 = /^[0-9a-f]{64}$/;
+const sha256 = (bytes) => createHash("sha256").update(bytes).digest("hex");
+
+/** The viewer chunks this build's receipt certifies: chunk path → sha256 of
+ * its bytes at build time. public/chunks must hold exactly those chunks: a
+ * missing one would break the editor, and an extra one was not certified. */
+export function viewerChunksFor(dist) {
   let chunks;
   try {
     chunks = JSON.parse(readFileSync(path.join(dist, "build-receipt.json"), "utf8")).viewer_chunks;
   } catch {
     throw new Error("Stage a complete build: build-receipt.json is unreadable");
   }
-  if (!Array.isArray(chunks) || !chunks.length || chunks.some((file) => !VIEWER_CHUNK.test(file)))
-    throw new Error("The build receipt must list the viewer chunks");
+  if (
+    !chunks ||
+    typeof chunks !== "object" ||
+    Array.isArray(chunks) ||
+    !Object.keys(chunks).length ||
+    Object.entries(chunks).some(
+      ([file, digest]) =>
+        !VIEWER_CHUNK.test(file) || typeof digest !== "string" || !SHA256.test(digest),
+    )
+  )
+    throw new Error("The build receipt must list the viewer chunks with their sha256");
   const directory = path.join(dist, "public/chunks");
   if (existsSync(directory) && !lstatSync(directory).isDirectory())
     throw new Error("Bundle directories must not be symlinks");
   const present = existsSync(directory)
     ? readdirSync(directory).map((name) => "public/chunks/" + name)
     : [];
-  if (JSON.stringify(present.sort()) !== JSON.stringify([...chunks].sort()))
+  if (JSON.stringify(present.sort()) !== JSON.stringify(Object.keys(chunks).sort()))
     throw new Error("public/chunks differs from the viewer chunks in the build receipt");
-  return [...releaseArtifacts, ...chunks];
+  return chunks;
 }
 
 export function stageArtifacts(dist, destination) {
@@ -52,10 +73,17 @@ export function stageArtifacts(dist, destination) {
   for (const file of releaseArtifacts)
     if (!lstatSync(path.join(dist, file)).isFile())
       throw new Error("Artifact must be a regular file: " + file);
-  const artifacts = releaseArtifactsFor(dist);
-  for (const file of artifacts)
+  // Read each chunk once, check those bytes against the receipt, and stage the
+  // same bytes, so a chunk changed after the build is refused, not shipped.
+  const chunks = Object.entries(viewerChunksFor(dist)).map(([file, digest]) => {
     if (!lstatSync(path.join(dist, file)).isFile())
       throw new Error("Artifact must be a regular file: " + file);
+    const bytes = readFileSync(path.join(dist, file));
+    if (sha256(bytes) !== digest) throw new Error("Viewer chunk changed since the build: " + file);
+    return [file, bytes];
+  });
   mkdirSync(path.join(destination, "public/chunks"), { recursive: true });
-  for (const file of artifacts) copyFileSync(path.join(dist, file), path.join(destination, file));
+  for (const file of releaseArtifacts)
+    copyFileSync(path.join(dist, file), path.join(destination, file));
+  for (const [file, bytes] of chunks) writeFileSync(path.join(destination, file), bytes);
 }
