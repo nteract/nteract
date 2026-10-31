@@ -49,8 +49,9 @@ function browser(pathname, response) {
   return { win, calls, listening };
 }
 
-/** Session maintenance as main.jsx wires it, with fake timers. */
-function maintain(win, now) {
+/** Session maintenance as main.jsx wires it, with fake timers. Pass
+ * `document` to enable its visibility listener. */
+function maintain(win, now, { document = null } = {}) {
   const timers = [],
     sessions = [],
     errors = [];
@@ -58,7 +59,7 @@ function maintain(win, now) {
     request: () => requestSession(request, now ? { win, now } : { win }),
     onSession: (value) => sessions.push(value),
     onError: (error) => errors.push(error),
-    document: null,
+    document,
     setTimeout: (fn) => timers.push(fn),
     clearTimeout: () => {},
   });
@@ -243,6 +244,39 @@ test("becoming visible before the viewer mounts makes the first refresh fetch", 
   assert.deepEqual(await f.maintenance.refresh(), { identity, canWrite: true });
   assert.equal(fetched.length, 1);
   assert.deepEqual(f.sessions, [{ identity, canWrite: true }]);
+  // Signed in, so renewal stays scheduled.
+  assert.equal(f.timers.length, 1);
+  f.maintenance.stop();
+});
+
+test("becoming visible while the taken early request is in flight asks again", async (t) => {
+  // A hidden tab's early check is still in flight when the viewer takes it.
+  // Another tab signs in, then this tab becomes visible before it answers.
+  let answer;
+  const { win } = browser(
+    "/",
+    () =>
+      new Promise((resolve) => {
+        answer = resolve;
+      }),
+  );
+  startEarlySession(win);
+  const fetched = stubFetch(t, () => sessionResponse({ identity, canWrite: true }));
+  const f = maintain(win, undefined, { document: win.document });
+  const first = f.maintenance.refresh();
+  assert.equal(EARLY_SESSION in win, false);
+
+  win.document.visibilityState = "visible";
+  win.document.dispatch("visibilitychange");
+  assert.equal(fetched.length, 0, "the fresh request waits for the one in flight");
+
+  answer(sessionResponse({ identity: null, canWrite: false }));
+  assert.deepEqual(await first, { identity, canWrite: true });
+  assert.equal(fetched.length, 1);
+  assert.equal(fetched[0][0], SESSION_URL);
+  // The stale signed-out answer never reached the viewer.
+  assert.deepEqual(f.sessions, [{ identity, canWrite: true }]);
+  assert.deepEqual(f.errors, []);
   // Signed in, so renewal stays scheduled.
   assert.equal(f.timers.length, 1);
   f.maintenance.stop();
