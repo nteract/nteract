@@ -3645,6 +3645,566 @@
       "canonical_markdown": "The value is $x + 1$."
     },
     {
+      "id": "opaque-display-math-spaced",
+      "markdown": "Before $$ \\{x\\} $$ after.",
+      "import_id": "display-spaced-import",
+      "expected_spans": [
+        {
+          "type": "block",
+          "value": {
+            "type": "pages-opaque",
+            "parents": [],
+            "attrs": {
+              "source": "Before $$ \\{x\\} $$ after.",
+              "importId": "display-spaced-import",
+              "kind": "markdown"
+            },
+            "isEmbed": false
+          }
+        }
+      ],
+      "canonical_markdown": "Before $$ \\{x\\} $$ after."
+    },
+    {
+      "id": "opaque-display-math-inline",
+      "markdown": "Inline $$x$$ math.",
+      "import_id": "display-inline-import",
+      "expected_spans": [
+        {
+          "type": "block",
+          "value": {
+            "type": "pages-opaque",
+            "parents": [],
+            "attrs": {
+              "source": "Inline $$x$$ math.",
+              "importId": "display-inline-import",
+              "kind": "markdown"
+            },
+            "isEmbed": false
+          }
+        }
+      ],
+      "canonical_markdown": "Inline $$x$$ math."
+    },
+    {
+      "id": "opaque-display-math-block",
+      "markdown": "Before\n\n$$\n\\{x\\}\n$$\n\nAfter",
+      "import_id": "display-block-import",
+      "expected_spans": [
+        {
+          "type": "block",
+          "value": {
+            "type": "pages-opaque",
+            "parents": [],
+            "attrs": {
+              "source": "Before\n\n$$\n\\{x\\}\n$$\n\nAfter",
+              "importId": "display-block-import",
+              "kind": "markdown"
+            },
+            "isEmbed": false
+          }
+        }
+      ],
+      "canonical_markdown": "Before\n\n$$\n\\{x\\}\n$$\n\nAfter"
+    },
+    {
+      "id": "opaque-display-math-escapes",
+      "markdown": "Escapes $$\\frac{a}{b} \\_ \\{x\\}$$ stay.",
+      "import_id": "display-escapes-import",
+      "expected_spans": [
+        {
+          "type": "block",
+          "value": {
+            "type": "pages-opaque",
+            "parents": [],
+            "attrs": {
+              "source": "Escapes $$\\frac{a}{b} \\_ \\{x\\}$$ stay.",
+              "importId": "display-escapes-import",
+              "kind": "markdown"
+            },
+            "isEmbed": false
+          }
+        }
+      ],
+      "canonical_markdown": "Escapes $$\\frac{a}{b} \\_ \\{x\\}$$ stay."
+    },
+    {
+      "id": "opaque-display-opener-lf",
+      "markdown": "Before\n$$\n\\{x\\}",
+      "import_id": "opener-lf-import",
+      "expected_spans": [
+        {
+          "type": "block",
+          "value": {
+            "type": "pages-opaque",
+            "parents": [],
+            "attrs": {
+              "source": "Before\n$$\n\\{x\\}",
+              "importId": "opener-lf-import",
+              "kind": "markdown"
+            },
+            "isEmbed": false
+          }
+        }
+      ],
+      "canonical_markdown": "Before\n$$\n\\{x\\}"
+    },
+    {
+      "id": "opaque-display-opener-cr",
+      "markdown": "Before\r$$\n\\{x\\}",
+      "import_id": "opener-cr-import",
+      "expected_spans": [
+        {
+          "type": "block",
+          "value": {
+            "type": "pages-opaque",
+            "parents": [],
+            "attrs": {
+              "source": "Before\r$$\n\\{x\\}",
+              "importId": "opener-cr-import",
+              "kind": "markdown"
+            },
+            "isEmbed": false
+          }
+        }
+      ],
+      "canonical_markdown": "Before\r$$\n\\{x\\}"
+    },
+    {
+      "id": "opaque-display-opener-crlf",
+      "markdown": "Before\r\n$$\r\n\\{x\\}",
+      "import_id": "opener-crlf-import",
+      "expected_spans": [
+        {
+          "type": "block",
+          "value": {
+            "type": "pages-opaque",
+            "parents": [],
+            "attrs": {
+              "source": "Before\r\n$$\r\n\\{x\\}",
+              "importId": "opener-crlf-import",
+              "kind": "markdown"
+            },
+            "isEmbed": false
+          }
+        }
+      ],
+      "canonical_markdown": "Before\r\n$$\r\n\\{x\\}"
+    },
+    {
+      "id": "opaque-display-opener-cr-indented",
+      "markdown": "Before\r\r \t$$\r\\{x\\}",
+      "import_id": "opener-cr-indented-import",
+      "expected_spans": [
+        {
+          "type": "block",
+          "value": {
+            "type": "pages-opaque",
+            "parents": [],
+            "attrs": {
+              "source": "Before\r\r \t$$\r\\{x\\}",
+              "importId": "opener-cr-indented-import",
+              "kind": "markdown"
+            },
+            "isEmbed": false
+          }
+        }
+      ],
+      "canonical_markdown": "Before\r\r \t$$\r\\{x\\}"
+    },
+    {
+      "id": "opaque-display-opener-feff",
+      "markdown": "Before\n﻿$$\n\\{x\\}",
+      "import_id": "opener-feff-import",
+      "expected_spans": [
+        {
+          "type": "block",
+          "value": {
+            "type": "pages-opaque",
+            "parents": [],
+            "attrs": {
+              "source": "Before\n﻿$$\n\\{x\\}",
+              "importId": "opener-feff-import",
+              "kind": "markdown"
+            },
+            "isEmbed": false
+          }
+        }
+      ],
+      "canonical_markdown": "Before\n﻿$$\n\\{x\\}"
+    },
+    {
+      "id": "opaque-display-opener-leading-bom",
+      "markdown": "﻿$$\n\\{x\\}",
+      "import_id": "opener-leading-bom-import",
+      "expected_spans": [
+        {
+          "type": "block",
+          "value": {
+            "type": "pages-opaque",
+            "parents": [],
+            "attrs": {
+              "source": "﻿$$\n\\{x\\}",
+              "importId": "opener-leading-bom-import",
+              "kind": "markdown"
+            },
+            "isEmbed": false
+          }
+        }
+      ],
+      "canonical_markdown": "﻿$$\n\\{x\\}"
+    },
+    {
+      "id": "opaque-display-opener-nbsp",
+      "markdown": "Before\r $$\n\\{x\\}",
+      "import_id": "opener-nbsp-import",
+      "expected_spans": [
+        {
+          "type": "block",
+          "value": {
+            "type": "pages-opaque",
+            "parents": [],
+            "attrs": {
+              "source": "Before\r $$\n\\{x\\}",
+              "importId": "opener-nbsp-import",
+              "kind": "markdown"
+            },
+            "isEmbed": false
+          }
+        }
+      ],
+      "canonical_markdown": "Before\r $$\n\\{x\\}"
+    },
+    {
+      "id": "opaque-display-opener-line-separator",
+      "markdown": "Before $$\n\\{x\\}",
+      "import_id": "opener-line-separator-import",
+      "expected_spans": [
+        {
+          "type": "block",
+          "value": {
+            "type": "pages-opaque",
+            "parents": [],
+            "attrs": {
+              "source": "Before $$\n\\{x\\}",
+              "importId": "opener-line-separator-import",
+              "kind": "markdown"
+            },
+            "isEmbed": false
+          }
+        }
+      ],
+      "canonical_markdown": "Before $$\n\\{x\\}"
+    },
+    {
+      "id": "opaque-display-opener-paragraph-separator",
+      "markdown": "Before $$\n\\{x\\}",
+      "import_id": "opener-paragraph-separator-import",
+      "expected_spans": [
+        {
+          "type": "block",
+          "value": {
+            "type": "pages-opaque",
+            "parents": [],
+            "attrs": {
+              "source": "Before $$\n\\{x\\}",
+              "importId": "opener-paragraph-separator-import",
+              "kind": "markdown"
+            },
+            "isEmbed": false
+          }
+        }
+      ],
+      "canonical_markdown": "Before $$\n\\{x\\}"
+    },
+    {
+      "id": "opaque-display-opener-unicode-spaces",
+      "markdown": "Before\r\n        　$$\n\\{x\\}",
+      "import_id": "opener-unicode-spaces-import",
+      "expected_spans": [
+        {
+          "type": "block",
+          "value": {
+            "type": "pages-opaque",
+            "parents": [],
+            "attrs": {
+              "source": "Before\r\n        　$$\n\\{x\\}",
+              "importId": "opener-unicode-spaces-import",
+              "kind": "markdown"
+            },
+            "isEmbed": false
+          }
+        }
+      ],
+      "canonical_markdown": "Before\r\n        　$$\n\\{x\\}"
+    },
+    {
+      "id": "display-opener-zero-width-space-is-content",
+      "markdown": "Before\n​$$\n\\{x\\}",
+      "expected_spans": [
+        {
+          "type": "text",
+          "value": "Before ​$$ {x}",
+          "marks": {}
+        }
+      ],
+      "canonical_markdown": "Before ​$$ {x}"
+    },
+    {
+      "id": "opaque-currency-beside-math",
+      "markdown": "$5 and $$x$$",
+      "import_id": "currency-math-import",
+      "expected_spans": [
+        {
+          "type": "block",
+          "value": {
+            "type": "pages-opaque",
+            "parents": [],
+            "attrs": {
+              "source": "$5 and $$x$$",
+              "importId": "currency-math-import",
+              "kind": "markdown"
+            },
+            "isEmbed": false
+          }
+        }
+      ],
+      "canonical_markdown": "$5 and $$x$$"
+    },
+    {
+      "id": "opaque-math-nel",
+      "markdown": "$x$",
+      "import_id": "math-nel-import",
+      "expected_spans": [
+        {
+          "type": "block",
+          "value": {
+            "type": "pages-opaque",
+            "parents": [],
+            "attrs": {
+              "source": "$x$",
+              "importId": "math-nel-import",
+              "kind": "markdown"
+            },
+            "isEmbed": false
+          }
+        }
+      ],
+      "canonical_markdown": "$x$"
+    },
+    {
+      "id": "opaque-math-bom",
+      "markdown": "$﻿x$",
+      "import_id": "math-bom-import",
+      "expected_spans": [
+        {
+          "type": "block",
+          "value": {
+            "type": "pages-opaque",
+            "parents": [],
+            "attrs": {
+              "source": "$﻿x$",
+              "importId": "math-bom-import",
+              "kind": "markdown"
+            },
+            "isEmbed": false
+          }
+        }
+      ],
+      "canonical_markdown": "$﻿x$"
+    },
+    {
+      "id": "opaque-math-nbsp",
+      "markdown": "$ x$",
+      "import_id": "math-nbsp-import",
+      "expected_spans": [
+        {
+          "type": "block",
+          "value": {
+            "type": "pages-opaque",
+            "parents": [],
+            "attrs": {
+              "source": "$ x$",
+              "importId": "math-nbsp-import",
+              "kind": "markdown"
+            },
+            "isEmbed": false
+          }
+        }
+      ],
+      "canonical_markdown": "$ x$"
+    },
+    {
+      "id": "opaque-math-line-separator",
+      "markdown": "$ x$",
+      "import_id": "math-line-separator-import",
+      "expected_spans": [
+        {
+          "type": "block",
+          "value": {
+            "type": "pages-opaque",
+            "parents": [],
+            "attrs": {
+              "source": "$ x$",
+              "importId": "math-line-separator-import",
+              "kind": "markdown"
+            },
+            "isEmbed": false
+          }
+        }
+      ],
+      "canonical_markdown": "$ x$"
+    },
+    {
+      "id": "prose-currency-ascii-spaces",
+      "markdown": "Pay $ 5,\t$\u000b6 or 7 $ each.",
+      "expected_spans": [
+        {
+          "type": "text",
+          "value": "Pay $ 5,\t$\u000b6 or 7 $ each.",
+          "marks": {}
+        }
+      ],
+      "canonical_markdown": "Pay $ 5,\t$\u000b6 or 7 $ each."
+    },
+    {
+      "id": "prose-currency",
+      "markdown": "No auto-math, so \"$30 and $25\" stays as text. Budget $5-$10, or 30 $ each.",
+      "expected_spans": [
+        {
+          "type": "text",
+          "value": "No auto-math, so \"$30 and $25\" stays as text. Budget $5-$10, or 30 $ each.",
+          "marks": {}
+        }
+      ],
+      "canonical_markdown": "No auto-math, so \"$30 and $25\" stays as text. Budget $5-$10, or 30 $ each."
+    },
+    {
+      "id": "code-span-literals",
+      "markdown": "Ends with `\\`, then `` `code` ``, ``x`y`` and `## `.\n\n- `- `, `1. `, `> `\n- `` ` ``",
+      "expected_spans": [
+        {
+          "type": "block",
+          "value": {
+            "type": "paragraph",
+            "parents": [],
+            "attrs": {},
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "text",
+          "value": "Ends with ",
+          "marks": {}
+        },
+        {
+          "type": "text",
+          "value": "\\",
+          "marks": {
+            "code": true
+          }
+        },
+        {
+          "type": "text",
+          "value": ", then ",
+          "marks": {}
+        },
+        {
+          "type": "text",
+          "value": "`code`",
+          "marks": {
+            "code": true
+          }
+        },
+        {
+          "type": "text",
+          "value": ", ",
+          "marks": {}
+        },
+        {
+          "type": "text",
+          "value": "x`y",
+          "marks": {
+            "code": true
+          }
+        },
+        {
+          "type": "text",
+          "value": " and ",
+          "marks": {}
+        },
+        {
+          "type": "text",
+          "value": "## ",
+          "marks": {
+            "code": true
+          }
+        },
+        {
+          "type": "text",
+          "value": ".",
+          "marks": {}
+        },
+        {
+          "type": "block",
+          "value": {
+            "type": "unordered-list-item",
+            "parents": [],
+            "attrs": {},
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "text",
+          "value": "- ",
+          "marks": {
+            "code": true
+          }
+        },
+        {
+          "type": "text",
+          "value": ", ",
+          "marks": {}
+        },
+        {
+          "type": "text",
+          "value": "1. ",
+          "marks": {
+            "code": true
+          }
+        },
+        {
+          "type": "text",
+          "value": ", ",
+          "marks": {}
+        },
+        {
+          "type": "text",
+          "value": "> ",
+          "marks": {
+            "code": true
+          }
+        },
+        {
+          "type": "block",
+          "value": {
+            "type": "unordered-list-item",
+            "parents": [],
+            "attrs": {},
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "text",
+          "value": "`",
+          "marks": {
+            "code": true
+          }
+        }
+      ],
+      "canonical_markdown": "Ends with `\\`, then `` `code` ``, `` x`y `` and `## `.\n\n* `- `, `1. `, `> `\n\n* `` ` ``"
+    },
+    {
       "id": "opaque-reference",
       "markdown": "[Guide][ref]\n\n[ref]: https://example.org",
       "import_id": "reference-import",

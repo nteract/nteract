@@ -171,8 +171,31 @@ fn list_prefix_len(source: &str) -> usize {
     }
 }
 
+// Math is preserved, as in the JavaScript `MATH_SYNTAX` gate in
+// `pages/model/richtext.mjs`, which has the same pattern text. The
+// `math_pattern_matches_pages` test compares the two:
+// - A `$$` at a line start, after optional spaces, opens display math.
+// - A `$$` pair on one line is display math, with or without spaces.
+// - A `$` pair follows Pandoc's dollar rule: the opening `$` is followed
+//   by a non-space, the closing `$` follows a non-space and is not
+//   followed by a digit. "$30 and $25" stays prose.
+// When unsure, the source stays preserved. Unicode `\s` here and
+// JavaScript `\s` disagree on U+0085 and U+FEFF, so each rule spells out
+// its spaces:
+// - The dollar rule's spaces are ASCII whitespace, [ \t\n\v\f\r].
+// - Before a line-start `$$`, a space is any character either codec's
+//   `\s` matched that does not start a line.
+// A line starts at the start of input or after LF, CR, CRLF, U+2028 or
+// U+2029, the line terminators of JavaScript's multiline `^`. `(?m)`
+// disagrees on CR, U+2028 and U+2029, so the pattern has no multiline
+// flag and writes line starts as `(?:^|\r\n?|[\n\u2028\u2029])`. Line
+// terminators are not in the prefix class, so the branches never overlap.
+// `\uXXXX` names the same code point here as in the JavaScript pattern.
+const MATH_PATTERN: &str = r"(?:^|\r\n?|[\n\u2028\u2029])[ \t\v\f\u00a0\u0085\u1680\u2000-\u200a\u202f\u205f\u3000\ufeff]*\$\$|\$\$(?:[^\n$]|\$[^\n$])*\$\$|\$[^ \t\n\v\f\r$](?:[^ \t\n\v\f\r$]|[ \t\v\f\r]+[^ \t\n\v\f\r$])*\$(?:[^0-9]|$)";
+
 fn unsupported_syntax(source: &str) -> Result<bool> {
     static TASK_PREFIX: OnceLock<Regex> = OnceLock::new();
+    static MATH: OnceLock<Regex> = OnceLock::new();
     static UNSUPPORTED: OnceLock<Regex> = OnceLock::new();
     static LINE_HTML: OnceLock<Regex> = OnceLock::new();
     // Omit bullet task prefixes before checking for reference links. Unlike
@@ -182,11 +205,12 @@ fn unsupported_syntax(source: &str) -> Result<bool> {
         r"(?m)^(\s*(?:>\s*)*[-+*][ \t]+)\[[ xX]\]([ \t]+|$)",
     )?;
     let syntax = task.replace_all(source, "${1}${2}");
-    if expression(
-        &UNSUPPORTED,
-        r"(?m)(^|\n)\s*(\$\$|---\s*$)|\$[^\n$]+\$|!?\[[^\]]*\]\s*\[|^\s*\[[^\]]+\]:|~~",
-    )?
-    .is_match(&syntax)
+    if expression(&MATH, MATH_PATTERN)?.is_match(&syntax)
+        || expression(
+            &UNSUPPORTED,
+            r"(?m)(^|\n)\s*(---\s*$)|!?\[[^\]]*\]\s*\[|^\s*\[[^\]]+\]:|~~",
+        )?
+        .is_match(&syntax)
     {
         return Ok(true);
     }
@@ -755,6 +779,32 @@ mod tests {
 
     fn import(source: &str) -> Vec<Span> {
         markdown_to_spans(source, &ImportOptions::default()).unwrap()
+    }
+
+    /// The Pages source, read the way `marks.rs` reads its registry. Both
+    /// files exist wherever this crate builds; the Pages CI job checks out
+    /// only its own tree, so the comparison lives here.
+    const PAGES_RICHTEXT: &str = include_str!(
+        "../../../docs/memos/authenticated-automerge-app-substrate/experiment/pages/model/richtext.mjs"
+    );
+
+    #[test]
+    fn math_pattern_matches_pages() {
+        let Some((_, after)) = PAGES_RICHTEXT.split_once("export const MATH_SYNTAX =") else {
+            panic!("Pages exports MATH_SYNTAX");
+        };
+        let Some(body) = after.trim_start().strip_prefix('/') else {
+            panic!("MATH_SYNTAX is a regex literal");
+        };
+        let Some((pattern, rest)) = body.split_once("/;") else {
+            panic!("MATH_SYNTAX ends with a flagless `/;`");
+        };
+        assert!(
+            !pattern.contains('\n') && rest.starts_with('\n'),
+            "MATH_SYNTAX is one flagless literal"
+        );
+        assert_eq!(pattern, MATH_PATTERN);
+        Regex::new(pattern).unwrap();
     }
 
     #[test]
