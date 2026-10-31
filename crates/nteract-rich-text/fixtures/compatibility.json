@@ -3645,6 +3645,143 @@
       "canonical_markdown": "The value is $x + 1$."
     },
     {
+      "id": "prose-currency",
+      "markdown": "No auto-math, so \"$30 and $25\" stays as text. Budget $5-$10, or 30 $ each.",
+      "expected_spans": [
+        {
+          "type": "text",
+          "value": "No auto-math, so \"$30 and $25\" stays as text. Budget $5-$10, or 30 $ each.",
+          "marks": {}
+        }
+      ],
+      "canonical_markdown": "No auto-math, so \"$30 and $25\" stays as text. Budget $5-$10, or 30 $ each."
+    },
+    {
+      "id": "code-span-literals",
+      "markdown": "Ends with `\\`, then `` `code` ``, ``x`y`` and `## `.\n\n- `- `, `1. `, `> `\n- `` ` ``",
+      "expected_spans": [
+        {
+          "type": "block",
+          "value": {
+            "type": "paragraph",
+            "parents": [],
+            "attrs": {},
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "text",
+          "value": "Ends with ",
+          "marks": {}
+        },
+        {
+          "type": "text",
+          "value": "\\",
+          "marks": {
+            "code": true
+          }
+        },
+        {
+          "type": "text",
+          "value": ", then ",
+          "marks": {}
+        },
+        {
+          "type": "text",
+          "value": "`code`",
+          "marks": {
+            "code": true
+          }
+        },
+        {
+          "type": "text",
+          "value": ", ",
+          "marks": {}
+        },
+        {
+          "type": "text",
+          "value": "x`y",
+          "marks": {
+            "code": true
+          }
+        },
+        {
+          "type": "text",
+          "value": " and ",
+          "marks": {}
+        },
+        {
+          "type": "text",
+          "value": "## ",
+          "marks": {
+            "code": true
+          }
+        },
+        {
+          "type": "text",
+          "value": ".",
+          "marks": {}
+        },
+        {
+          "type": "block",
+          "value": {
+            "type": "unordered-list-item",
+            "parents": [],
+            "attrs": {},
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "text",
+          "value": "- ",
+          "marks": {
+            "code": true
+          }
+        },
+        {
+          "type": "text",
+          "value": ", ",
+          "marks": {}
+        },
+        {
+          "type": "text",
+          "value": "1. ",
+          "marks": {
+            "code": true
+          }
+        },
+        {
+          "type": "text",
+          "value": ", ",
+          "marks": {}
+        },
+        {
+          "type": "text",
+          "value": "> ",
+          "marks": {
+            "code": true
+          }
+        },
+        {
+          "type": "block",
+          "value": {
+            "type": "unordered-list-item",
+            "parents": [],
+            "attrs": {},
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "text",
+          "value": "`",
+          "marks": {
+            "code": true
+          }
+        }
+      ],
+      "canonical_markdown": "Ends with `\\`, then `` `code` ``, `` x`y `` and `## `.\n\n* `- `, `1. `, `> `\n\n* `` ` ``"
+    },
+    {
       "id": "opaque-reference",
       "markdown": "[Guide][ref]\n\n[ref]: https://example.org",
       "import_id": "reference-import",

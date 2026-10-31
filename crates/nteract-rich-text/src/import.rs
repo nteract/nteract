@@ -182,9 +182,12 @@ fn unsupported_syntax(source: &str) -> Result<bool> {
         r"(?m)^(\s*(?:>\s*)*[-+*][ \t]+)\[[ xX]\]([ \t]+|$)",
     )?;
     let syntax = task.replace_all(source, "${1}${2}");
+    // Inline math uses Pandoc's dollar rule, as in the JavaScript gate: the
+    // opening `$` is followed by a non-space, the closing `$` follows a
+    // non-space and is not followed by a digit. "$30 and $25" stays prose.
     if expression(
         &UNSUPPORTED,
-        r"(?m)(^|\n)\s*(\$\$|---\s*$)|\$[^\n$]+\$|!?\[[^\]]*\]\s*\[|^\s*\[[^\]]+\]:|~~",
+        r"(?m)(^|\n)\s*(\$\$|---\s*$)|\$[^\s$](?:[^\n$]*[^\s$])?\$(?:[^0-9]|$)|!?\[[^\]]*\]\s*\[|^\s*\[[^\]]+\]:|~~",
     )?
     .is_match(&syntax)
     {

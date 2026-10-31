@@ -499,9 +499,13 @@ export function parseMarkdown(source, importId = "", kind = "markdown") {
   // A task followed by an ordinary inline link is not a reference-link pair.
   // Keep the conservative gate, but omit recognized task prefixes from its scan.
   const syntax = source.replace(/^(\s*(?:>\s*)*[-+*][ \t]+)\[[ xX]\](?=[ \t]|$)/gm, "$1");
+  // Inline math uses Pandoc's dollar rule: the opening `$` is followed by a
+  // non-space, the closing `$` follows a non-space and is not followed by a
+  // digit. Prose such as "$30 and $25" stays native text. The Rust codec's
+  // gate in crates/nteract-rich-text/src/import.rs must match this pattern.
   const unsupported =
     kind !== "markdown" ||
-    /(^|\n)\s*(<(?!\/?mark[ \t\r\n>])|\$\$|---\s*$)|\$[^\n$]+\$|!?\[[^\]]*\]\s*\[|^\s*\[[^\]]+\]:|~~/im.test(
+    /(^|\n)\s*(<(?!\/?mark[ \t\r\n>])|\$\$|---\s*$)|\$[^\s$](?:[^\n$]*[^\s$])?\$(?:[^0-9]|$)|!?\[[^\]]*\]\s*\[|^\s*\[[^\]]+\]:|~~/im.test(
       syntax,
     );
   return unsupported

@@ -12,7 +12,9 @@ paragraphs, nested lists and quotes, tasks, native tables and alignment, empty
 cells, ragged rows, pipes, and table hard breaks. Unsupported HTML, math,
 reference links, strikethrough, and non-Markdown input retain opaque source and
 import provenance. General GFM support is not the Pages compatibility profile:
-bare URLs remain prose, for example.
+bare URLs remain prose, for example. Inline math follows Pandoc's dollar rule,
+so currency such as "$30 and $25" stays prose. Code spans keep backslashes,
+nested backticks, and trailing spaces literal.
 
 Highlights project as `<mark data-color="…">` tags. Fixtures cover marks around
 and inside the tag, palette and hex colors, bare `<mark>` at a line start, table

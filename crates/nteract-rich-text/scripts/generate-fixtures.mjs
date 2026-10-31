@@ -74,6 +74,8 @@ const cases = [
   { id: "opaque-mark-nbsp", markdown: "<mark\u00a0>x</mark>", import_id: "mark-nbsp-import" },
   { id: "opaque-html", markdown: "<section>Preserve this</section>", import_id: "html-import" },
   { id: "opaque-math", markdown: "The value is $x + 1$.", import_id: "math-import" },
+  { id: "prose-currency", markdown: 'No auto-math, so "$30 and $25" stays as text. Budget $5-$10, or 30 $ each.' },
+  { id: "code-span-literals", markdown: "Ends with `\\`, then `` `code` ``, ``x`y`` and `## `.\n\n- `- `, `1. `, `> `\n- `` ` ``" },
   { id: "opaque-reference", markdown: "[Guide][ref]\n\n[ref]: https://example.org", import_id: "reference-import" },
   { id: "opaque-strikethrough", markdown: "Keep ~~this~~ untouched.", import_id: "strike-import" },
   { id: "opaque-rule-gate", markdown: "Before\n\n---\n\nAfter", import_id: "rule-import" },
