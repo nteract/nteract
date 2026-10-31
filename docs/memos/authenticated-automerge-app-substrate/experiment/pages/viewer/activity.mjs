@@ -50,6 +50,9 @@ export function activitySnapshot(message, now = monotonicNow()) {
       return null;
     const remaining = Date.parse(item.expires_at) - observedAt;
     if (!Number.isFinite(remaining) || remaining > 60000) return null;
+    // When the host accepted this update, as a duration before the snapshot,
+    // so ordering uses the host's clock carried onto this session's clock.
+    const age = observedAt - Date.parse(item.updated_at);
     const targets = [];
     for (const anchor of item.targets) {
       if (
@@ -86,6 +89,7 @@ export function activitySnapshot(message, now = monotonicNow()) {
         message: item.message,
         targets,
         until: now + remaining,
+        updated: now - (Number.isFinite(age) && age >= 0 ? age : 0),
       });
   }
   return {
@@ -169,6 +173,12 @@ export function progressPassages(session, now = sessionNow(session)) {
   return result;
 }
 
+/** Newest accepted update first. Expiry can't order updates: the host caps a
+ * lease at its credential's expiry, so two late reports can share one. */
+export const newestProgressFirst = (a, b) =>
+  b.updated - a.updated ||
+  (a.progress_id < b.progress_id ? 1 : a.progress_id > b.progress_id ? -1 : 0);
+
 /** One key per agent session: account, harness and optional session label.
  * A caret and a progress lease with the same key are one participant. */
 export const agentKey = (item) =>
@@ -196,8 +206,7 @@ export function agentParticipants(session, now = sessionNow(session)) {
     if (item.until > now) entry(item).presence = item;
   for (const item of session.agentProgress?.values() ?? [])
     if (item.until > now) entry(item).progress.push(item);
-  for (const participant of participants.values())
-    participant.progress.sort((a, b) => b.until - a.until);
+  for (const participant of participants.values()) participant.progress.sort(newestProgressFirst);
   return [...participants.values()];
 }
 

@@ -2,7 +2,7 @@ import * as A from "@automerge/automerge/slim";
 import { Decoration } from "wordgard/editor";
 import { selectionContext } from "../model/comments.mjs";
 import { resolvePeerSelection } from "../model/presence.mjs";
-import { activityIdentity, agentKey, progressPassages } from "./activity.mjs";
+import { activityIdentity, agentKey, newestProgressFirst, progressPassages } from "./activity.mjs";
 import { monotonicNow } from "./monotonic.mjs";
 import { presenceColor } from "./presence-color.mjs";
 
@@ -168,7 +168,7 @@ export function createWordgardCollaboration({
     for (const progress of replica.agentProgress?.values() ?? []) {
       if (progress.until <= at) continue;
       const key = agentKey(progress);
-      if (!messages.has(key) || messages.get(key).until < progress.until)
+      if (!messages.has(key) || newestProgressFirst(progress, messages.get(key)) < 0)
         messages.set(key, progress);
     }
     for (const agent of replica.agentPresence?.values() ?? []) {
