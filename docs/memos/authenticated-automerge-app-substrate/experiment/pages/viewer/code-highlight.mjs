@@ -51,24 +51,24 @@ export const HIGHLIGHT_LANGUAGES = Object.freeze([
   YAML,
 ]);
 
-// Names people type on a fence that Wordgard's own aliases miss.
-const EXTRA_ALIASES = {
-  py: Python,
-  python3: Python,
-  ipython: Python,
-  jsx: JavaScript,
-  mjs: JavaScript,
-  cjs: JavaScript,
-  tsx: TypeScript,
-  console: Shell,
-  shell: Shell,
-  rs: Rust,
-  jsonc: JSON,
-  golang: Go,
-};
-const byName = new Map(
-  HIGHLIGHT_LANGUAGES.flatMap((language) => language.alias.map((name) => [name, language])),
-);
+// Every name a fence may use: Wordgard's aliases plus the ones people type
+// that it misses. A Map, so names like "constructor" never find inherited
+// object properties.
+const byName = new Map([
+  ...HIGHLIGHT_LANGUAGES.flatMap((language) => language.alias.map((name) => [name, language])),
+  ["py", Python],
+  ["python3", Python],
+  ["ipython", Python],
+  ["jsx", JavaScript],
+  ["mjs", JavaScript],
+  ["cjs", JavaScript],
+  ["tsx", TypeScript],
+  ["console", Shell],
+  ["shell", Shell],
+  ["rs", Rust],
+  ["jsonc", JSON],
+  ["golang", Go],
+]);
 
 /** The highlighter for a code block's stored language. The stored value can be
  * a menu choice ("python"), a typed fence ("Python") or a Markdown info string
@@ -77,10 +77,14 @@ export function languageFor(stored) {
   if (typeof stored !== "string") return null;
   const name = stored.trim().split(/\s+/)[0]?.toLowerCase();
   if (!name) return null;
-  return EXTRA_ALIASES[name] ?? byName.get(name) ?? null;
+  return byName.get(name) ?? null;
 }
 
-export const codeHighlighting = highlightCode({
+// highlightCode returns [theme, language options, decorations]. Pages keeps
+// only the decorations: wordgard.css colors the tokens, and Pages' own menu
+// (CODE_LANGUAGES) lists the languages.
+const [, , decorations] = highlightCode({
   languages: HIGHLIGHT_LANGUAGES,
   getLanguage: (block) => languageFor(block.mark(CodeBlockLanguage)),
 });
+export const codeHighlighting = decorations;
