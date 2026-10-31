@@ -964,6 +964,21 @@ dialog::backdrop {
 .comment-passage-active {
   background: color-mix(in srgb, var(--warning) 24%, transparent);
 }
+/* The passage an open inline composer is commenting on. Focus sits in the
+   popover, so this stands in for the selection it replaced. */
+.comment-draft-passage {
+  background: color-mix(in srgb, var(--warning) 28%, transparent);
+  border-bottom: 2px solid var(--warning);
+}
+/* A thread the inline composer just created pulses once, then rests. */
+.comment-passage-created {
+  animation: comment-created 1.6s ease-out;
+}
+@keyframes comment-created {
+  from {
+    background: color-mix(in srgb, var(--warning) 48%, transparent);
+  }
+}
 .opaque small {
   color: var(--muted-foreground);
 }
@@ -976,7 +991,8 @@ dialog::backdrop {
   }
 }
 @media (prefers-reduced-motion: reduce) {
-  .remote-edit {
+  .remote-edit,
+  .comment-passage-created {
     animation: none;
   }
 }
@@ -1084,7 +1100,8 @@ dialog::backdrop {
   .document-title,
   .document-meta,
   .writing-continuation,
-  .comments {
+  .comments,
+  .comment-popover {
     display: none !important;
   }
   .document,

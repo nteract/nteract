@@ -131,7 +131,16 @@ const editConfig = (editable) => [
 ];
 
 export function WordgardEditor(props) {
-  const { replica, id, editable, toolbarHost, toolbarOpen = false, threads, commentTarget } = props;
+  const {
+    replica,
+    id,
+    editable,
+    toolbarHost,
+    toolbarOpen = false,
+    threads,
+    commentTarget,
+    commentDraft,
+  } = props;
   const latest = useRef(props);
   latest.current = props;
   const mount = useRef(null),
@@ -261,6 +270,7 @@ export function WordgardEditor(props) {
       getCurrent: () => bound.current,
       getThreads: () => latest.current.threads ?? [],
       getTarget: () => latest.current.commentTarget,
+      getDraft: () => latest.current.commentDraft,
     });
     collaboration.current = collab;
     const acceptImages = (files, position) => {
@@ -661,7 +671,7 @@ export function WordgardEditor(props) {
   useEffect(() => {
     if (view.current && !view.current.composing)
       view.current.dispatch({ annotations: remoteAnnotations() });
-  }, [threads, commentTarget, generation]);
+  }, [threads, commentTarget, commentDraft, generation]);
   useEffect(() => {
     if (commentTarget?.source !== "quote") return;
     const thread = threads?.find((thread) => thread.id === commentTarget.id);

@@ -67,6 +67,14 @@ async function mutate(operation, args = {}) {
 }
 async function select(editor, text) {
   await editor.focus();
+  // A script-set range bypasses Wordgard's input handling. Wordgard flushes
+  // typed transactions on the next animation frame and writes their caret to
+  // the DOM, so a range set before that flush is overwritten. Pointer and
+  // keyboard selections go through Wordgard's own handlers and can't land in
+  // that gap, so wait for the frame instead of racing it.
+  await page.evaluate(
+    () => new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done))),
+  );
   await editor.evaluate((element, text) => {
     const walk = document.createTreeWalker(element, NodeFilter.SHOW_TEXT);
     while (walk.nextNode()) {
@@ -114,6 +122,59 @@ try {
     0,
     "closed comments allocate no reply editors",
   );
+  // Comment on a selection opens a composer beside the passage, not the panel.
+  const documentText = page.locator("article wg-content").first();
+  const panel = page.locator("#page-comments");
+  const popover = page.getByRole("dialog", { name: "Comment on selection", exact: true });
+  const inline = popover.getByRole("textbox", { name: "Comment on selection", exact: true });
+  await select(documentText, "discussion");
+  await page.getByRole("button", { name: "Comment on selection", exact: true }).click();
+  await expect(popover).toBeVisible();
+  await expect(inline).toBeFocused();
+  await expect(panel).toBeHidden();
+  await expect(page.locator(".comment-draft-passage")).toHaveText("discussion");
+  const passageBox = await page.locator(".comment-draft-passage").boundingBox();
+  const popoverBox = await popover.boundingBox();
+  const gap = popoverBox.y - (passageBox.y + passageBox.height);
+  assert.ok(gap >= 0 && gap <= 24, `the composer opens just below the passage (gap ${gap})`);
+  assert.ok(
+    Math.abs(popoverBox.x - passageBox.x) <= 2,
+    `the composer lines up with the passage (${popoverBox.x} vs ${passageBox.x})`,
+  );
+  await inline.pressSequentially("Inline note");
+  await page.screenshot({ path: output + "/inline-composer.png" });
+  await page.keyboard.press("Escape");
+  await expect(popover).toHaveCount(0);
+  await expect(documentText).toBeFocused();
+  await expect(panel).toBeHidden();
+  checkpoint("Comment on selection opens an anchored composer; Escape keeps it and refocuses");
+  await select(documentText, "discussion");
+  await page.keyboard.press("ControlOrMeta+Alt+m");
+  await expect(inline).toBeFocused();
+  await expect(inline).toHaveText("Inline note");
+  await inline.press("ControlOrMeta+End");
+  await inline.pressSequentially(" here");
+  await inline.press("ControlOrMeta+Enter");
+  await expect(popover).toHaveCount(0);
+  await expect(page.locator(".comment-passage-created")).toHaveText("discussion");
+  await page.screenshot({ path: output + "/inline-composer-sent.png" });
+  await expect(panel).toBeHidden();
+  await expect(documentText).toBeFocused();
+  await expect
+    .poll(async () =>
+      (await call("read_page", { page_id: pageId })).comments.some(
+        (t) => t.messages[0]?.body === "Inline note here",
+      ),
+    )
+    .toBe(true);
+  await page.getByRole("button", { name: /^Comments/ }).click();
+  const inlineThread = page.locator(".thread", { hasText: "Inline note here" });
+  await expect(inlineThread.locator(".quote")).toHaveText("discussion");
+  await page.getByRole("button", { name: "Close comments", exact: true }).click();
+  await expect(panel).toBeHidden();
+  // The new passage's emphasis fades on its own.
+  await expect(page.locator(".comment-passage-created")).toHaveCount(0);
+  checkpoint("the shortcut reopens the kept draft; Mod+Enter adds the thread without the panel");
   await page.getByRole("button", { name: /^Comments/ }).click();
   const thread = page.locator(`[data-thread-id="${added.thread_id}"]`);
   await expect(thread.locator(".comment-rich-content table")).toBeVisible();
@@ -260,6 +321,135 @@ try {
   await page.emulateMedia({ colorScheme: "dark" });
   await page.screenshot({ path: output + "/dark-comments.png", fullPage: true });
   checkpoint("expanded table discussion at desktop width and dark appearance");
+  await page.emulateMedia({ colorScheme: "light" });
+  const keptDraft = page.locator(".comment-kept-draft");
+  if (await page.locator("#page-comments[open]").count())
+    await page.getByRole("button", { name: "Close comments", exact: true }).click();
+  await select(documentText, "for");
+  await page.getByRole("button", { name: "Comment on selection", exact: true }).click();
+  await inline.pressSequentially("Resize me");
+  await page.keyboard.press("Escape");
+  await page.getByRole("button", { name: /^Comments/ }).click();
+  await keptDraft.getByRole("button", { name: "Continue", exact: true }).click();
+  await expect(inline).toBeFocused();
+  await expect(panel).toBeVisible();
+  // Beside the Page the panel stays usable while composing.
+  const closePanel = page.getByRole("button", { name: "Close comments", exact: true });
+  await closePanel.focus();
+  await expect(closePanel).toBeFocused();
+  await expect(popover).toBeVisible();
+  assert.equal(await panel.evaluate((element) => element.inert), false);
+  await page.setViewportSize({ width: 390, height: 844 });
+  await expect(page.locator("#page-comments.comments-sheet")).toBeVisible();
+  // The thread sheet stays non-modal under the composer, but inert: focus
+  // that was in it moves into the composer, and the keyboard can't reach it.
+  assert.equal(await panel.evaluate((element) => element.matches(":modal")), false);
+  await expect.poll(() => panel.evaluate((element) => element.inert)).toBe(true);
+  await expect(popover).toHaveClass(/comment-popover-sheet/);
+  await expect(inline).toBeFocused();
+  const focusInComposer = () =>
+    page.evaluate(() => !!document.activeElement?.closest("#comment-popover"));
+  await popover.getByRole("button", { name: "Bold", exact: true }).focus();
+  await page.keyboard.press("Shift+Tab");
+  assert.ok(await focusInComposer(), "Shift+Tab from the first control stays in the composer");
+  await expect(popover.getByRole("button", { name: "Comment", exact: true })).toBeFocused();
+  for (let step = 0; step < 12; step++) {
+    await page.keyboard.press("Tab");
+    assert.ok(await focusInComposer(), `Tab ${step + 1} stays in the composer`);
+  }
+  for (let step = 0; step < 12; step++) {
+    await page.keyboard.press("Shift+Tab");
+    assert.ok(await focusInComposer(), `Shift+Tab ${step + 1} stays in the composer`);
+  }
+  await inline.focus();
+  await inline.press("ControlOrMeta+End");
+  await inline.pressSequentially(" still");
+  await expect(inline).toHaveText("Resize me still");
+  await page.keyboard.press("Escape");
+  await expect(popover).toHaveCount(0);
+  await expect(panel).toBeVisible();
+  // Escape closed the composer, not the panel. The sheet turns modal, and
+  // interactive, with the kept draft.
+  await expect.poll(() => panel.evaluate((element) => element.matches(":modal"))).toBe(true);
+  assert.equal(await panel.evaluate((element) => element.inert), false);
+  await expect(keptDraft.locator(".comment-kept-draft-text")).toHaveText("Resize me still");
+  await keptDraft.getByRole("button", { name: "Discard", exact: true }).click();
+  await expect(keptDraft).toHaveCount(0);
+  await page.getByRole("button", { name: "Close comments", exact: true }).click();
+  await page.setViewportSize({ width: 1320, height: 1000 });
+  checkpoint(
+    "the thread sheet waits inert under a docked composer; Tab stays inside, Escape closes only the composer",
+  );
+  const blocksBefore = (await call("read_page", { page_id: pageId })).blocks;
+  await mutate("edit_page", {
+    page_id: pageId,
+    operations: [
+      {
+        op: "insert_markdown",
+        markdown: "A doomed paragraph sits here.",
+        after_block_id: blocksBefore[0].id,
+      },
+    ],
+  });
+  const doomed = page.locator("article wg-content").nth(1);
+  await expect(doomed).toContainText("doomed paragraph");
+  await select(doomed, "doomed");
+  await page.getByRole("button", { name: "Comment on selection", exact: true }).click();
+  await inline.pressSequentially("About to lose my anchor");
+  const doomedId = (await call("read_page", { page_id: pageId })).blocks[1].id;
+  await mutate("edit_page", {
+    page_id: pageId,
+    operations: [{ op: "delete_block", block_id: doomedId }],
+  });
+  await expect(page.locator("article wg-content")).toHaveCount(1);
+  await expect(popover).toBeVisible();
+  await expect(popover).toHaveAttribute("data-placement", "detached");
+  await expect(popover.getByRole("alert")).toContainText("was removed");
+  await expect(inline).toHaveText("About to lose my anchor");
+  await expect(popover.getByRole("button", { name: "Comment", exact: true })).toBeDisabled();
+  await expect(popover.getByRole("button", { name: "Cancel", exact: true })).toBeEnabled();
+  const detachedBox = await popover.boundingBox();
+  assert.ok(
+    detachedBox.y >= 0 && detachedBox.y + detachedBox.height <= 1000 && detachedBox.x >= 0,
+    "the detached composer stays inside the window",
+  );
+  await page.screenshot({ path: output + "/inline-composer-block-deleted.png" });
+  await page.keyboard.press("Escape");
+  await expect(popover).toHaveCount(0);
+  // The draft's block is gone, so focus falls back to the surviving editor.
+  await expect(documentText).toBeFocused();
+  assert.equal(
+    await page.evaluate(() => document.activeElement === document.body),
+    false,
+    "focus never drops to <body>",
+  );
+  await page.getByRole("button", { name: /^Comments/ }).click();
+  await expect(keptDraft.locator(".comment-kept-draft-text")).toHaveText("About to lose my anchor");
+  await expect(keptDraft.getByRole("alert")).toBeVisible();
+  await keptDraft.getByRole("button", { name: "Discard", exact: true }).click();
+  await page.getByRole("button", { name: "Close comments", exact: true }).click();
+  checkpoint("deleting the commented block keeps the composer, its note and Cancel visible");
+  await page.setViewportSize({ width: 390, height: 844 });
+  if (await page.locator("#page-comments[open]").count())
+    await page.getByRole("button", { name: "Close comments", exact: true }).click();
+  await expect(panel).toBeHidden();
+  await select(documentText, "for");
+  await page.getByRole("button", { name: "Comment on selection", exact: true }).click();
+  await expect(popover).toHaveClass(/comment-popover-sheet/);
+  await expect(inline).toBeFocused();
+  await expect(panel).toBeHidden();
+  await inline.pressSequentially("From a phone");
+  const sheetBox = await popover.boundingBox();
+  assert.ok(
+    sheetBox.x <= 1 && sheetBox.width >= 389 && Math.abs(sheetBox.y + sheetBox.height - 844) <= 1,
+    "narrow windows show the composer as a bottom sheet",
+  );
+  await page.screenshot({ path: output + "/inline-composer-mobile.png" });
+  await popover.getByRole("button", { name: "Cancel", exact: true }).click();
+  await expect(popover).toHaveCount(0);
+  await page.getByRole("button", { name: /^Comments/ }).click();
+  await expect(page.locator(".comment-kept-draft")).toHaveCount(0);
+  checkpoint("narrow windows compose in a bottom sheet with only the composer; Cancel discards");
   assert.deepEqual(report.errors, []);
 } finally {
   if (pageId) {
