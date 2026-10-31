@@ -5,6 +5,8 @@ import { GardState, GardSelection } from "wordgard/state";
 import { history, undo } from "wordgard/history";
 import { Command, insertLineBreak, insertText, toggleMark } from "wordgard/command";
 import { enableRich, textPath, blockMarkdown } from "../model/richtext.mjs";
+import { createPageData, initializePage, orderedBlockIds } from "../model/page.mjs";
+import { applyComment, projectComments } from "../model/comments.mjs";
 import { schema, decode, Strong } from "./wordgard-model.mjs";
 import {
   createWordgardBinding,
@@ -128,7 +130,7 @@ function native(spans) {
   );
   return A.change(doc, (d) => A.updateSpans(d, textPath("one"), spans));
 }
-function editorFor(doc) {
+function editorFor(doc, id = "one") {
   const replica = {
     get doc() {
       return doc;
@@ -138,7 +140,7 @@ function editorFor(doc) {
     },
     observeChange: () => () => {},
   };
-  const binding = createWordgardBinding(replica, "one");
+  const binding = createWordgardBinding(replica, id);
   let state = GardState.create({
     doc: binding.current.doc,
     config: [GardState.schemaElement.of(schema.elements), wordgardCodeNewlines, history()],
@@ -154,14 +156,14 @@ function editorFor(doc) {
       const tr = state.update(spec);
       binding.applyEditorTransaction(tr);
       state = tr.state;
-      assert.ok(decode(A.spans(replica.doc, textPath("one"))).doc.eq(state.doc));
+      assert.ok(decode(A.spans(replica.doc, textPath(id))).doc.eq(state.doc));
     },
   };
   const spans = () =>
-    A.spans(replica.doc, textPath("one"))
+    A.spans(replica.doc, textPath(id))
       .filter((span) => span.type === "text")
       .map((span) => [span.value, span.marks ?? {}]);
-  return { binding, editor, spans };
+  return { binding, editor, spans, replica };
 }
 
 test("typing at either edge of a foreign-marked run leaves the new text unmarked", () => {
@@ -232,5 +234,40 @@ test("Shift+Enter inside bold prose inserts an unmarked break and keeps bold for
     ["bo", { strong: true }],
     ["Xld", { strong: true }],
   ]);
+  binding.destroy();
+});
+
+test("unformatting code text keeps its Automerge characters, cursors and comments", () => {
+  let page = A.from(createPageData({ pageId: "page_fixture", title: "Code" }));
+  page = A.change(page, (d) => initializePage(d, "```\nalpha beta\ngamma\n```"));
+  const id = orderedBlockIds(page)[0];
+  page = A.change(page, (d) =>
+    applyComment(
+      d,
+      { action: "add", block_id: id, selected_text: "beta", body: "About beta" },
+      { principal: "account:one", displayName: "Kyle", driver: "Browser" },
+    ),
+  );
+  const path = textPath(id);
+  const text = page.blocks[id].richText;
+  const cursors = [...text].map((_, at) => A.getCursor(page, path, at));
+  const { binding, editor, spans, replica } = editorFor(page, id);
+  const end = editor.state.doc.length - 1;
+  editor.select(1, end);
+  Command.dispatch(editor, toggleMark, Strong);
+  Command.dispatch(editor, setHighlight, "green");
+  const after = replica.doc;
+  assert.equal(after.blocks[id].richText, text);
+  assert.deepEqual(
+    spans().map(([, marks]) => marks),
+    spans().map(() => ({})),
+  );
+  cursors.forEach((cursor, at) => {
+    assert.equal(A.getCursorPosition(after, path, cursor), at, `cursor ${at}`);
+    assert.equal(A.getCursor(after, path, at), cursor, `character ${at}`);
+  });
+  const [thread] = projectComments(after);
+  assert.equal(thread.selectionContext.status, "attached");
+  assert.equal(thread.selectionContext.text, "beta");
   binding.destroy();
 });

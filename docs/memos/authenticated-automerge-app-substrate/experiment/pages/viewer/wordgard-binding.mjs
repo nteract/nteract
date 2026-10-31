@@ -23,32 +23,39 @@ import { MARK_NAMES, markExpand } from "../model/marks.mjs";
 // decode already normalizes those and the native source remains ordinary text.
 // Code text also carries no marks: Markdown fences and the shared codec can't
 // express formatting inside code.
-const stripCodeMarks = (position) => {
+// Mark changes only: replacing the text would create new Automerge characters
+// and detach comments and cursors anchored there. A newline becomes a
+// LineBreak leaf through its own one-character replacement, and mark removals
+// skip those characters so the two kinds of change never overlap.
+const unmark = (from, text, marks) =>
+  marks.length
+    ? text
+        .split("\n")
+        .flatMap((part, i, parts) => {
+          const start = from + parts.slice(0, i).reduce((n, p) => n + p.length + 1, 0);
+          return part ? [{ from: start, to: start + part.length }] : [];
+        })
+        .flatMap((range) => marks.map((mark) => ({ ...range, remove: mark })))
+    : [];
+const normalizeCode = (position) => {
   const changes = [];
   let from = position.start;
   for (const child of position.node.content) {
-    if (child.isText && (child.marks.length || child.param.includes("\n")))
-      changes.push({
-        from,
-        to: from + child.length,
-        insert: child.param
-          .split("\n")
-          .flatMap((part, i) => [...(i ? [LineBreak] : []), ...(part ? [Leaf.text(part)] : [])]),
-      });
+    if (child.isText) {
+      for (let i = child.param.indexOf("\n"); i >= 0; i = child.param.indexOf("\n", i + 1))
+        changes.push({ from: from + i, to: from + i + 1, insert: [LineBreak] });
+      changes.push(...unmark(from, child.param, child.marks));
+    }
     from += child.length;
   }
   return changes.length ? changes : null;
 };
 export const wordgardCodeNewlines = [
-  Correction.onContent(CodeBlock, stripCodeMarks),
+  Correction.onContent(CodeBlock, normalizeCode),
   // onContent sees inserted text; onMarks sees marks added to existing text.
   Correction.onMarks(Leaf.Text, (position) =>
     position.node.marks.length && position.parent?.node.type === CodeBlock.type
-      ? {
-          from: position.before,
-          to: position.before + position.node.length,
-          insert: [Leaf.text(position.node.param)],
-        }
+      ? unmark(position.before, position.node.param, position.node.marks)
       : null,
   ),
 ];
