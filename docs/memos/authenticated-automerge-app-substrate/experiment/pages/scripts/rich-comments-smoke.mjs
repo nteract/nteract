@@ -67,8 +67,11 @@ async function mutate(operation, args = {}) {
 }
 async function select(editor, text) {
   await editor.focus();
-  // Let the editor flush pending input first. A flush after the range is set
-  // writes the editor's earlier caret back over it.
+  // A script-set range bypasses Wordgard's input handling. Wordgard flushes
+  // typed transactions on the next animation frame and writes their caret to
+  // the DOM, so a range set before that flush is overwritten. Pointer and
+  // keyboard selections go through Wordgard's own handlers and can't land in
+  // that gap, so wait for the frame instead of racing it.
   await page.evaluate(
     () => new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done))),
   );
@@ -319,6 +322,68 @@ try {
   await page.screenshot({ path: output + "/dark-comments.png", fullPage: true });
   checkpoint("expanded table discussion at desktop width and dark appearance");
   await page.emulateMedia({ colorScheme: "light" });
+  const keptDraft = page.locator(".comment-kept-draft");
+  if (await page.locator("#page-comments[open]").count())
+    await page.getByRole("button", { name: "Close comments", exact: true }).click();
+  await select(documentText, "for");
+  await page.getByRole("button", { name: "Comment on selection", exact: true }).click();
+  await inline.pressSequentially("Resize me");
+  await page.keyboard.press("Escape");
+  await page.getByRole("button", { name: /^Comments/ }).click();
+  await keptDraft.getByRole("button", { name: "Continue", exact: true }).click();
+  await expect(inline).toBeFocused();
+  await expect(panel).toBeVisible();
+  await page.setViewportSize({ width: 390, height: 844 });
+  await expect(page.locator("#page-comments.comments-sheet")).toBeVisible();
+  await expect(popover).toHaveCount(0);
+  await expect(keptDraft.locator(".comment-kept-draft-text")).toHaveText("Resize me");
+  await keptDraft.getByRole("button", { name: "Discard", exact: true }).click();
+  await expect(keptDraft).toHaveCount(0);
+  await page.getByRole("button", { name: "Close comments", exact: true }).click();
+  await page.setViewportSize({ width: 1320, height: 1000 });
+  checkpoint("the panel turning modal closes a docked composer back to its kept draft");
+  const blocksBefore = (await call("read_page", { page_id: pageId })).blocks;
+  await mutate("edit_page", {
+    page_id: pageId,
+    operations: [
+      {
+        op: "insert_markdown",
+        markdown: "A doomed paragraph sits here.",
+        after_block_id: blocksBefore[0].id,
+      },
+    ],
+  });
+  const doomed = page.locator("article wg-content").nth(1);
+  await expect(doomed).toContainText("doomed paragraph");
+  await select(doomed, "doomed");
+  await page.getByRole("button", { name: "Comment on selection", exact: true }).click();
+  await inline.pressSequentially("About to lose my anchor");
+  const doomedId = (await call("read_page", { page_id: pageId })).blocks[1].id;
+  await mutate("edit_page", {
+    page_id: pageId,
+    operations: [{ op: "delete_block", block_id: doomedId }],
+  });
+  await expect(page.locator("article wg-content")).toHaveCount(1);
+  await expect(popover).toBeVisible();
+  await expect(popover).toHaveAttribute("data-placement", "detached");
+  await expect(popover.getByRole("alert")).toContainText("was removed");
+  await expect(inline).toHaveText("About to lose my anchor");
+  await expect(popover.getByRole("button", { name: "Comment", exact: true })).toBeDisabled();
+  await expect(popover.getByRole("button", { name: "Cancel", exact: true })).toBeEnabled();
+  const detachedBox = await popover.boundingBox();
+  assert.ok(
+    detachedBox.y >= 0 && detachedBox.y + detachedBox.height <= 1000 && detachedBox.x >= 0,
+    "the detached composer stays inside the window",
+  );
+  await page.screenshot({ path: output + "/inline-composer-block-deleted.png" });
+  await page.keyboard.press("Escape");
+  await expect(popover).toHaveCount(0);
+  await page.getByRole("button", { name: /^Comments/ }).click();
+  await expect(keptDraft.locator(".comment-kept-draft-text")).toHaveText("About to lose my anchor");
+  await expect(keptDraft.getByRole("alert")).toBeVisible();
+  await keptDraft.getByRole("button", { name: "Discard", exact: true }).click();
+  await page.getByRole("button", { name: "Close comments", exact: true }).click();
+  checkpoint("deleting the commented block keeps the composer, its note and Cancel visible");
   await page.setViewportSize({ width: 390, height: 844 });
   if (await page.locator("#page-comments[open]").count())
     await page.getByRole("button", { name: "Close comments", exact: true }).click();

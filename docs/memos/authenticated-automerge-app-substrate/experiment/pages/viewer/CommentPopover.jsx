@@ -9,6 +9,11 @@ import { useStore } from "./store.mjs";
 import "./comments.css";
 
 export const COMMENT_POPOVER_LABEL = "Comment on selection";
+export const PASSAGE_REMOVED_NOTE =
+  "The text this comment was on was removed. Select other text and choose Comment to move this draft there, or Cancel.";
+// Placement when the passage and its block are gone: the composer docks at
+// the bottom center of the window so its text, note and Cancel stay usable.
+const DETACHED = Object.freeze({ placement: "detached" });
 
 function useSheetLayout() {
   const [sheet, setSheet] = useState(() => matchMedia(COMMENTS_SHEET_QUERY).matches);
@@ -77,6 +82,7 @@ export function CommentPopover({ composer, session, containerRef }) {
 function PopoverSurface({ composer, session, containerRef, state, current, body }) {
   const dialog = useRef(null);
   const sheet = useSheetLayout();
+  // null only before the first layout pass, which runs before paint.
   const [position, setPosition] = useState(null);
   const [draftError, setDraftError] = useState("");
   const sending = state.name === "sending";
@@ -92,12 +98,16 @@ function PopoverSurface({ composer, session, containerRef, state, current, body 
       const element = dialog.current;
       if (!element) return;
       const box = element.getBoundingClientRect();
-      const next = commentPopoverPosition({
-        anchor: anchorFor(container, blockId),
-        width: box.width,
-        height: box.height,
-        viewport: visibleViewport(),
-      });
+      const anchor = anchorFor(container, blockId);
+      const next =
+        (anchor &&
+          commentPopoverPosition({
+            anchor,
+            width: box.width,
+            height: box.height,
+            viewport: visibleViewport(),
+          })) ||
+        DETACHED;
       setPosition((previous) =>
         previous?.left === next?.left &&
         previous?.top === next?.top &&
@@ -148,20 +158,26 @@ function PopoverSurface({ composer, session, containerRef, state, current, body 
   const disabled = sending || !session.canWrite;
   const canSend = !disabled && !draftProblem && !draftError && hasDraftText(body);
   const markdown = body?.markdown ?? body;
+  // A draft whose passage went away can't be sent: comment-draft.mjs asks the
+  // writer to choose a passage again rather than reattach or detach it.
   const error = draftProblem
-    ? `${draftProblem}.`
+    ? PASSAGE_REMOVED_NOTE
     : draftError || (state.name === "open" ? state.error : "");
+  const detached = !sheet && position?.placement === "detached";
 
   return (
     <dialog
       ref={dialog}
       open
       id="comment-popover"
-      className={"comment-popover" + (sheet ? " comment-popover-sheet" : "")}
+      className={
+        "comment-popover" +
+        (sheet ? " comment-popover-sheet" : detached ? " comment-popover-detached" : "")
+      }
       aria-label={COMMENT_POPOVER_LABEL}
-      data-placement={sheet ? "sheet" : (position?.placement ?? "below")}
+      data-placement={sheet ? "sheet" : (position?.placement ?? "pending")}
       style={
-        sheet
+        sheet || detached
           ? undefined
           : position
             ? { left: position.left, top: position.top }

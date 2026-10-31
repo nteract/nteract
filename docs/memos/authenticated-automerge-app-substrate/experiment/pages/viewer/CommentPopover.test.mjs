@@ -78,7 +78,7 @@ const bundled = await build({
     },
   ],
 });
-const { CommentPopover, COMMENT_POPOVER_LABEL } = await import(
+const { CommentPopover, COMMENT_POPOVER_LABEL, PASSAGE_REMOVED_NOTE } = await import(
   `data:text/javascript;base64,${Buffer.from(bundled.outputFiles[0].contents).toString("base64")}`
 );
 const { CommentComposer } = await import("./comment-composer.mjs");
@@ -101,7 +101,9 @@ async function fixture(t, { canWrite = true, send = () => "thread-1", draft = {}
   });
   const session = { doc: {}, canWrite };
   await act(() =>
-    root.render(createElement(CommentPopover, { composer, session, containerRef: { current: article } })),
+    root.render(
+      createElement(CommentPopover, { composer, session, containerRef: { current: article } }),
+    ),
   );
   t.after(async () => {
     await act(() => root.unmount());
@@ -116,7 +118,9 @@ async function fixture(t, { canWrite = true, send = () => "thread-1", draft = {}
   };
   const key = async (target, init) => {
     await act(async () => {
-      target.dispatchEvent(new dom.window.KeyboardEvent("keydown", { bubbles: true, cancelable: true, ...init }));
+      target.dispatchEvent(
+        new dom.window.KeyboardEvent("keydown", { bubbles: true, cancelable: true, ...init }),
+      );
     });
     await settle();
   };
@@ -171,11 +175,7 @@ for (const modifier of ["metaKey", "ctrlKey"])
     const view = await fixture(t);
     await view.open("Ship it");
     await view.key(view.textbox(), { key: "Enter", [modifier]: true });
-    assert.deepEqual(view.calls, [
-      ["send", "Ship it"],
-      ["flash", "thread-1"],
-      ["returnFocus"],
-    ]);
+    assert.deepEqual(view.calls, [["send", "Ship it"], ["flash", "thread-1"], ["returnFocus"]]);
     assert.equal(view.dialog(), null);
     assert.equal(view.composer.snapshot().state.name, "idle");
   });
@@ -248,11 +248,22 @@ test("a pointer inside the popover keeps it open", async (t) => {
   assert.equal(view.composer.snapshot().state.name, "open");
 });
 
-test("a passage that went away disables Comment and says why", async (t) => {
+test("a deleted passage or block keeps the composer, its note and Cancel visible", async (t) => {
+  // The article holds no highlight and no block: both were deleted.
   const view = await fixture(t, { draft: { broken: true } });
   await view.open("Orphan");
-  assert.match(view.dialog().querySelector('[role="alert"]').textContent, /select it again/);
-  assert.equal(view.button("Comment").disabled, true);
+  const dialog = view.dialog();
+  assert.equal(dialog.dataset.placement, "detached");
+  assert.match(dialog.className, /comment-popover-detached/);
+  assert.equal(dialog.style.visibility, "", "never hidden");
+  assert.equal(dialog.querySelector('[role="alert"]').textContent, PASSAGE_REMOVED_NOTE);
+  assert.equal(view.textbox().value, "Orphan", "the draft text stays");
+  assert.equal(view.button("Comment").disabled, true, "a removed passage can't be sent");
+  assert.equal(view.button("Cancel").disabled, false);
+  await view.key(view.textbox(), { key: "Enter", metaKey: true });
+  assert.deepEqual(view.calls, [], "Mod+Enter sends nothing either");
+  await view.key(view.textbox(), { key: "Escape" });
+  assert.equal(view.composer.snapshot().state.name, "dismissed", "Escape keeps it for the panel");
 });
 
 test("narrow windows show the composer alone as a bottom sheet", async (t) => {

@@ -430,3 +430,41 @@ test("a reply draft kept after write access ends can still be copied or discarde
   assert.equal(reloadGate.hasDrafts(), false);
   assert.equal(f.element("next").querySelector("textarea"), null);
 });
+
+test("turning into the modal sheet closes the inline composer back to its kept draft", async (t) => {
+  const previousMatchMedia = globalThis.matchMedia;
+  const listeners = new Set();
+  const media = {
+    matches: false,
+    addEventListener: (_, listener) => listeners.add(listener),
+    removeEventListener: (_, listener) => listeners.delete(listener),
+  };
+  globalThis.matchMedia = () => media;
+  t.after(() => {
+    globalThis.matchMedia = previousMatchMedia;
+  });
+  const { CommentComposer } = await import("./comment-composer.mjs");
+  const composer = new CommentComposer({ send: () => null });
+  const f = await fixture(t, { composer });
+  // Desktop: the panel is docked open and Continue (or Comment) opened the
+  // composer beside it.
+  await act(() => {
+    composer.start({ blockId: "block", target: { kind: "block", blockId: "block" } }, "quote");
+    composer.change("Still writing");
+  });
+  assert.equal(composer.snapshot().state.name, "open");
+  assert.equal(f.container.querySelector(".comment-kept-draft"), null);
+  await act(() => {
+    media.matches = true;
+    for (const listener of listeners) listener();
+  });
+  assert.equal(composer.snapshot().state.name, "dismissed");
+  assert.equal(composer.snapshot().body, "Still writing");
+  const dialog = f.container.querySelector("dialog");
+  assert.ok(dialog.classList.contains("comments-sheet"));
+  assert.equal(
+    f.container.querySelector(".comment-kept-draft-text").textContent,
+    "Still writing",
+    "the draft shows as an unsent comment in the sheet",
+  );
+});
