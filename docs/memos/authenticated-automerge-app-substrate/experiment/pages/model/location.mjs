@@ -30,7 +30,7 @@
  * The Catalog adapter maps these onto its `page/` and `trash/` keys. This
  * module never reads storage, clocks or randomness.
  */
-import { generateKeyBetween, generateNKeysBetween } from "fractional-indexing";
+import { BASE_62_DIGITS, generateKeyBetween, generateNKeysBetween } from "fractional-indexing";
 
 /** Deepest nesting allowed; a root is at depth 1, so a Project's top-level
  * Pages are at depth 2. The design's open question 2 picks the final value;
@@ -55,15 +55,24 @@ export const MOVE_REFUSALS = Object.freeze([
 ]);
 
 /** Longest position key accepted, matching Page block positions. */
-const MAX_KEY_LENGTH = 512;
+export const MAX_KEY_LENGTH = 512;
+/** A move whose new keys would grow past this rebalances its destination
+ * instead. Repeated inserts at one spot add about one character per six
+ * inserts, so this leaves room well short of MAX_KEY_LENGTH. */
+export const REBALANCE_KEY_LENGTH = 256;
+const DIGITS = new Set(BASE_62_DIGITS);
 const isId = (value) => typeof value === "string" && value.length > 0;
 const compare = (a, b) => (a < b ? -1 : a > b ? 1 : 0);
 
-/** Whether `key` is a fractional-indexing key. The generator applies the
- * library's own rules (head, integer length, no trailing zero), so a key it
- * accepts here can't make a later insertion throw. */
+/** Whether `key` is a fractional-indexing key. Every character must be a
+ * base-62 digit: the generator doesn't check that, and a key such as "a0!"
+ * would sort where new keys can't land between it and its neighbours. The
+ * generator then applies the library's structural rules (head, integer
+ * length, no trailing zero), so a key accepted here can't make a later
+ * insertion throw. */
 export function validPositionKey(key) {
   if (typeof key !== "string" || key.length === 0 || key.length > MAX_KEY_LENGTH) return false;
+  for (const char of key) if (!DIGITS.has(char)) return false;
   try {
     generateKeyBetween(key, null);
     return true;
@@ -232,6 +241,10 @@ export function validPosition(position) {
  * of equal keys keeps its key, and every other tied sibling is rekeyed in
  * order, together with the placed Page. Without ties only the placed Page
  * gets a key.
+ *
+ * If any new key would be longer than REBALANCE_KEY_LENGTH, every sibling
+ * and the placed Page get evenly spaced fresh keys instead, in the same
+ * order. Keys then stay short however often Pages land in one spot.
  */
 export function positionAmong(siblings, position = "last") {
   if (!validPosition(position)) return { ok: false, code: "invalid_position" };
@@ -268,7 +281,15 @@ export function positionAmong(siblings, position = "last") {
     }
     i = end;
   }
-  return { ok: true, position: placed, rekeyed };
+  const lengths = [placed, ...Object.values(rekeyed)].map((key) => key.length);
+  if (Math.max(...lengths) <= REBALANCE_KEY_LENGTH) return { ok: true, position: placed, rekeyed };
+  const fresh = generateNKeysBetween(null, null, slots.length);
+  const rebalanced = {};
+  slots.forEach((slot, i) => {
+    if (slot === null) placed = fresh[i];
+    else if (slot.position !== fresh[i]) rebalanced[slot.page_id] = fresh[i];
+  });
+  return { ok: true, position: placed, rekeyed: rebalanced };
 }
 
 /** Whether an earlier sibling, skipping the placed Page, has the same key as
@@ -299,8 +320,8 @@ const refuse = (code, message) => ({ ok: false, code, message });
  * MOVE_REFUSALS, or `{ ok: true, revision, entries, moved, projection }`:
  * - `revision`: the next location revision.
  * - `entries`: every changed entry by page ID. That's the moved Page, plus
- *   siblings whose tied keys had to be spread. Descendants never change: their
- *   Project follows their ancestors.
+ *   destination siblings rekeyed to repair ties or rebalance long keys.
+ *   Descendants never change: their Project follows their ancestors.
  * - `moved`: `{ page_id, parent_id, space_id, position, descendants }`.
  * - `projection`: derived `space_id` rows for the moved subtree, for D1.
  */
@@ -386,6 +407,9 @@ export function planMove(state, pageId, destination = {}, position = "last") {
     );
 
   const entries = { [pageId]: { ...entry, parent_id: parentId, position: placed.position } };
+  // Rekeyed siblings (tie repair or a rebalance) change only their position.
+  // Their parent and Project stay the same, so they add no D1 space_id rows:
+  // `projection` covers the moved subtree alone.
   for (const [id, key] of Object.entries(placed.rekeyed))
     entries[id] = { ...map.get(id), position: key };
   return {

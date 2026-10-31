@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
   MAX_DEPTH,
+  MAX_KEY_LENGTH,
+  REBALANCE_KEY_LENGTH,
   MOVE_REFUSALS,
   applyWrite,
   checkInvariants,
@@ -108,10 +110,33 @@ test("entry shape: space_id only on a root, restore fields only in Trash", () =>
 });
 
 test("position keys follow fractional-indexing's own rules", () => {
-  for (const key of ["a0", "a1", "Zz", "b00", "a0V", "a0G1"])
+  for (const key of ["a0", "a1", "Zz", "b00", "a0V", "a0G1", "a0Z", "a0a", "a0z"])
     assert.equal(validPositionKey(key), true, key);
+  assert.equal(validPositionKey("a0" + "V".repeat(MAX_KEY_LENGTH - 2)), true, "at the cap");
+  assert.equal(validPositionKey("a0" + "V".repeat(MAX_KEY_LENGTH - 1)), false, "past the cap");
   // "a" and "a00" pass an alphanumeric check but break the generator.
-  for (const key of ["a", "a00", "a0a0", "", ".", "a 0", "A", "z", null, 3, "a" + "1".repeat(600)])
+  for (const key of [
+    "a",
+    "a00",
+    "a0a0",
+    "",
+    ".",
+    "a 0",
+    "A",
+    "z",
+    null,
+    3,
+    "a" + "1".repeat(600),
+    // Structurally fine, but outside the base-62 digits: "a0!" sorts where
+    // new keys between it and "a0" fall outside the interval.
+    "a0!",
+    "a0é",
+    "a0\u{1F600}",
+    // ASCII puts [ \ ] ^ _ ` between Z and a; none is a digit.
+    "a0[",
+    "a0_",
+    "a0`",
+  ])
     assert.equal(validPositionKey(key), false, JSON.stringify(key));
   // A sibling with such a key is an invalid entry, so it never reaches planMove.
   const s = stateOf(entry("p"), entry("x", "p", { position: "a00" }), entry("m"));
@@ -442,6 +467,78 @@ test("a move repairs every tie in its destination", () => {
     entry("m", null, { position: "a1" }),
   );
   assert.deepEqual(Object.keys(planMove(clean, "m", { parent_id: "p" }).entries), ["m"]);
+});
+
+test("a key that would pass the rebalance length rebalances the whole destination", () => {
+  // x and y are adjacent long keys: the next key between them is one longer
+  // than the threshold.
+  const x = "a0" + "V".repeat(REBALANCE_KEY_LENGTH - 2);
+  const s = stateOf(
+    entry("p"),
+    entry("w", "p", { position: "Zz" }),
+    entry("x", "p", { position: x }),
+    entry("y", "p", { position: x + "V" }),
+    entry("z", "p", { position: "a1" }),
+    entry("m", null, { position: "a1" }),
+  );
+  assert.deepEqual(checkInvariants(s), []);
+  const result = planMove(s, "m", { parent_id: "p" }, { after: "x" });
+  assert.equal(result.ok, true);
+  assert.deepEqual(Object.keys(result.entries).sort(), ["m", "w", "x", "y", "z"]);
+  const after = applyWrite(s, result);
+  assert.deepEqual(ordered(after, "p"), ["w", "x", "m", "y", "z"]);
+  for (const id of ["w", "x", "m", "y", "z"])
+    assert.ok(after.entries.get(id).position.length <= 3, id);
+  // Only positions changed, so the projection is the moved Page alone.
+  assert.deepEqual(result.projection, [{ page_id: "m", space_id: null }]);
+  for (const id of ["w", "x", "y", "z"])
+    assert.deepEqual(
+      { ...after.entries.get(id), position: undefined },
+      { ...s.entries.get(id), position: undefined },
+    );
+  assert.deepEqual(checkInvariants(after), []);
+});
+
+test("repeated inserts at one spot never grow a key past the threshold", () => {
+  // Each new Page goes right after x, so each key splits the gap between x
+  // and the previous insert. Without rebalancing the keys would pass
+  // MAX_KEY_LENGTH after about 3,000 inserts.
+  let s = stateOf(
+    entry("p"),
+    entry("x", "p", { position: "a0" }),
+    entry("y", "p", { position: "a1" }),
+  );
+  const order = ["x", "y"];
+  let rebalances = 0;
+  let longest = 0;
+  for (let i = 0; i < 1800; i++) {
+    const id = `m${i}`;
+    s = applyWrite(s, {
+      revision: s.revision,
+      entries: { [id]: entry(id, null, { position: "a5" }) },
+    });
+    const result = planMove(s, id, { parent_id: "p" }, { after: "x" });
+    assert.equal(result.ok, true, `insert ${i}`);
+    const rekeyed = Object.keys(result.entries).filter((key) => key !== id);
+    if (rekeyed.length) {
+      rebalances++;
+      // A rebalance writes every sibling whose key changed, in this one write.
+      assert.ok(rekeyed.length >= order.length - 1, `insert ${i}: ${rekeyed.length} rekeyed`);
+      assert.deepEqual(result.projection, [{ page_id: id, space_id: null }]);
+    }
+    s = applyWrite(s, result);
+    order.splice(1, 0, id);
+    for (const [key, value] of Object.entries(result.entries)) {
+      assert.equal(validPositionKey(value.position), true, `insert ${i}: ${key}`);
+      longest = Math.max(longest, value.position.length);
+    }
+    if (i % 100 === 99 || rekeyed.length)
+      assert.deepEqual(ordered(s, "p"), order, `insert ${i}: order`);
+  }
+  assert.ok(rebalances >= 1, "the threshold was reached");
+  assert.ok(longest <= REBALANCE_KEY_LENGTH, `longest key ${longest}`);
+  assert.deepEqual(ordered(s, "p"), order);
+  assert.deepEqual(checkInvariants(s), []);
 });
 
 test("positionAmong reports bad shapes and unknown siblings", () => {
