@@ -123,7 +123,7 @@ test("a commenter creates a thread as themself", () => {
       body: "Carol asks",
     }),
   );
-  const { doc: next } = allowed(doc, changes, CAROL);
+  const { next } = allowed(doc, changes, CAROL);
   assert.equal(String(next.threads["t-carol"].created_by), CAROL);
   assert.equal(String(next.threads["t-carol"].messages["m-carol"].author), CAROL);
 });
@@ -216,7 +216,7 @@ test("a commenter replies as themself", () => {
   const changes = edit(doc, (d) =>
     addMessage(d, { threadId: "t-alice", messageId: "m-carol", principal: CAROL, body: "+1" }),
   );
-  const { doc: next } = allowed(doc, changes, CAROL);
+  const { next } = allowed(doc, changes, CAROL);
   assert.equal(String(thread(next).messages["m-carol"].author), CAROL);
 });
 
@@ -247,10 +247,10 @@ test("an author edits and soft-deletes their own message", () => {
   const edited = edit(doc, (d) =>
     editMessage(d, { threadId: "t-alice", messageId: "m-bob", body: "Bob, _revised_" }),
   );
-  const { doc: next } = allowed(doc, edited, BOB);
+  const { next } = allowed(doc, edited, BOB);
   assert.equal(A.spans(thread(next).messages["m-bob"], ["body"]).at(-1).value, "revised");
   const removed = edit(next, (d) => deleteMessage(d, { threadId: "t-alice", messageId: "m-bob" }));
-  assert.equal(thread(allowed(next, removed, BOB).doc).messages["m-bob"].deleted, true);
+  assert.equal(thread(allowed(next, removed, BOB).next).messages["m-bob"].deleted, true);
 });
 
 test("editing another author's message body is rejected", () => {
@@ -330,7 +330,7 @@ test("only the thread's creator moves its anchor", () => {
   const changes = edit(doc, (d) =>
     setThreadAnchor(d, { threadId: "t-alice", anchor: selectionAnchor }),
   );
-  const { doc: next } = allowed(doc, changes, ALICE);
+  const { next } = allowed(doc, changes, ALICE);
   assert.equal(String(thread(next).anchor.kind), "selection");
   denied(doc, changes, BOB, REJECTION.NOT_THREAD_CREATOR);
   const nested = edit(doc, (d) => {
@@ -357,7 +357,7 @@ test("a write into a superseded anchor is checked where its author put it", () =
   const late = edit(doc, (d) => {
     d.threads["t-alice"].anchor.blockId = "block-9";
   });
-  const { doc: next } = allowed(doc, moved, ALICE);
+  const { next } = allowed(doc, moved, ALICE);
   const result = allowed(next, late, ALICE);
   assert.ok(result.stats.pathLookups > 1, "resolved at the change's own heads");
   denied(next, late, BOB, REJECTION.NOT_THREAD_CREATOR);
@@ -370,10 +370,10 @@ test("any commenter resolves or reopens a thread", () => {
   const resolved = edit(doc, (d) =>
     setThreadStatus(d, { threadId: "t-alice", status: "resolved" }),
   );
-  const { doc: next } = allowed(doc, resolved, CAROL);
+  const { next } = allowed(doc, resolved, CAROL);
   assert.equal(String(thread(next).status), "resolved");
   const reopened = edit(next, (d) => setThreadStatus(d, { threadId: "t-alice", status: "open" }));
-  assert.equal(String(thread(allowed(next, reopened, BOB).doc).status), "open");
+  assert.equal(String(thread(allowed(next, reopened, BOB).next).status), "open");
 });
 
 test("status must stay open or resolved", () => {
@@ -410,7 +410,7 @@ test("a commenter reacts as themself", () => {
       target: "m-bob",
     }),
   );
-  const { doc: next } = allowed(doc, changes, CAROL);
+  const { next } = allowed(doc, changes, CAROL);
   assert.equal(String(thread(next).reactions["r-carol"].principal), CAROL);
 });
 
@@ -472,12 +472,115 @@ test("conflicting entries inside a thread the batch creates are rejected", () =>
   denied(doc, batch, CAROL, REJECTION.CONFLICTING_CREATE);
 });
 
+// Entity IDs
+
+/** Threads "a" and "a\u0000b", written by the server outside admission. */
+function collidingThreads() {
+  let doc = initCommentsDoc("page10.runtimed.run", { actor: actor() });
+  doc = A.change(doc, (d) => {
+    for (const threadId of ["a", "a\u0000b"])
+      createThread(d, {
+        threadId,
+        messageId: "first",
+        anchor: blockAnchor,
+        principal: BOB,
+        body: "Opening",
+        at: AT,
+      });
+  });
+  return doc;
+}
+
+/** A message map written with raw Automerge calls, not the writers. */
+function rawMessage(d, threadId, messageId, author) {
+  d.threads[threadId].messages[messageId] = { author: s(author), body: "", created_at: s(AT) };
+  // Address the body from its message map: Automerge's string paths cannot
+  // name every key these tests use.
+  const message = d.threads[threadId].messages[messageId];
+  A.splitBlock(message, ["body"], 0, { type: "paragraph", parents: [], attrs: {} });
+  A.splice(message, ["body"], 1, 0, "Signed, " + author);
+}
+
+test("message IDs that join into one key cannot hide a forged author", () => {
+  const doc = collidingThreads();
+  // "a" + "b\u0000c" and "a\u0000b" + "c" both join to "a\u0000b\u0000c".
+  // Carol's own message is written last, after the forged one.
+  const changes = edit(doc, (d) => {
+    rawMessage(d, "a", "b\u0000c", ALICE);
+    rawMessage(d, "a\u0000b", "c", CAROL);
+  });
+  denied(doc, changes, CAROL, REJECTION.AUTHOR_MISMATCH);
+});
+
+test("reaction IDs that join into one key cannot hide a forged principal", () => {
+  const doc = collidingThreads();
+  const changes = edit(doc, (d) => {
+    d.threads.a.reactions["b\u0000c"] = {
+      emoji: s("👎"),
+      principal: s(ALICE),
+      target: s("thread"),
+    };
+    d.threads["a\u0000b"].reactions.c = {
+      emoji: s("👍"),
+      principal: s(CAROL),
+      target: s("thread"),
+    };
+  });
+  denied(doc, changes, CAROL, REJECTION.REACTION_PRINCIPAL_MISMATCH);
+});
+
+test("new entity IDs are limited to letters, digits, '-' and '_'", () => {
+  const doc = seed();
+  const ids = [
+    "a\u0000b",
+    "tab\there",
+    "new\nline",
+    "dot.ted",
+    "slash/ed",
+    "space d",
+    "x".repeat(129),
+    "",
+  ];
+  for (const id of ids) {
+    const thread = edit(doc, (d) => {
+      d.threads[id] = {
+        anchor: blockAnchor,
+        status: s("open"),
+        created_by: s(CAROL),
+        messages: {},
+        reactions: {},
+      };
+      rawMessage(d, id, "m", CAROL);
+    });
+    denied(doc, thread, CAROL, REJECTION.INVALID_CREATE);
+    const message = edit(doc, (d) => rawMessage(d, "t-alice", id, CAROL));
+    denied(doc, message, CAROL, REJECTION.INVALID_CREATE);
+    const reaction = edit(doc, (d) => {
+      d.threads["t-alice"].reactions[id] = {
+        emoji: s("👍"),
+        principal: s(CAROL),
+        target: s("thread"),
+      };
+    });
+    denied(doc, reaction, CAROL, REJECTION.INVALID_CREATE);
+  }
+  // The writers' own IDs are UUIDs.
+  const uuid = crypto.randomUUID();
+  allowed(
+    doc,
+    edit(doc, (d) =>
+      addMessage(d, { threadId: "t-alice", messageId: uuid, principal: CAROL, body: "Hi" }),
+    ),
+    CAROL,
+  );
+});
+
 // Remove a reaction
 
 test("only a reaction's principal removes it", () => {
   const doc = seed();
   const changes = edit(doc, (d) => removeReaction(d, { threadId: "t-alice", reactionId: "r-bob" }));
-  const { doc: next } = allowed(doc, changes, BOB);
+  const { next } = allowed(doc, changes, BOB);
   assert.equal(Object.hasOwn(thread(next).reactions, "r-bob"), false);
   denied(doc, changes, CAROL, REJECTION.NOT_REACTION_OWNER);
 });
@@ -486,7 +589,7 @@ test("two sessions removing the same reaction both succeed", () => {
   const doc = seed();
   const first = edit(doc, (d) => removeReaction(d, { threadId: "t-alice", reactionId: "r-bob" }));
   const second = edit(doc, (d) => removeReaction(d, { threadId: "t-alice", reactionId: "r-bob" }));
-  const { doc: next } = allowed(doc, first, BOB);
+  const { next } = allowed(doc, first, BOB);
   allowed(next, second, BOB);
 });
 
@@ -596,7 +699,7 @@ test("authority keys on the principal, not the session", () => {
       body: "From the CLI",
     }),
   );
-  const { doc: next } = allowed(doc, first, BOB);
+  const { next } = allowed(doc, first, BOB);
   const second = edit(next, (d) =>
     editMessage(d, { threadId: "t-alice", messageId: "m-bob-2", body: "From the browser" }),
   );
@@ -614,8 +717,8 @@ test("concurrent changes from two authors are each admitted and merge", () => {
     editMessage(d, { threadId: "t-alice", messageId: "m-bob", body: "Bob, revised" });
     removeReaction(d, { threadId: "t-alice", reactionId: "r-bob" });
   });
-  const ab = allowed(allowed(doc, alice, ALICE).doc, bob, BOB).doc;
-  const ba = allowed(allowed(doc, bob, BOB).doc, alice, ALICE).doc;
+  const ab = allowed(allowed(doc, alice, ALICE).next, bob, BOB).next;
+  const ba = allowed(allowed(doc, bob, BOB).next, alice, ALICE).next;
   assert.deepEqual(A.getHeads(ab).sort(), A.getHeads(ba).sort());
   assert.deepEqual(A.toJS(ab), A.toJS(ba));
   assert.equal(String(thread(ab).status), "resolved");
@@ -639,12 +742,164 @@ test("concurrent changes from two authors are each admitted and merge", () => {
       body: "B",
     }),
   );
-  denied(allowed(doc, carol, CAROL).doc, bobNew, BOB, REJECTION.THREAD_REPLACE);
+  denied(allowed(doc, carol, CAROL).next, bobNew, BOB, REJECTION.THREAD_REPLACE);
+});
+
+// Serialized admission
+
+const tick = (ms = 0) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/** The integration shape. One admission document, checked and advanced inside
+ * a serialized queue. It moves to `next` only after the batch persists. */
+class SerialAdmission {
+  constructor(doc) {
+    this.admitted = doc;
+    this.tail = Promise.resolve();
+    this.decisions = [];
+  }
+  submit(label, changes, principal, persist = () => tick()) {
+    const run = this.tail.then(async () => {
+      const result = admitCommentChanges(this.admitted, changes, principal);
+      if (!result.ok) {
+        this.decisions.push([label, result.reason.code]);
+        return result;
+      }
+      try {
+        await persist();
+      } catch (error) {
+        A.free(result.next);
+        this.decisions.push([label, "persist_failed"]);
+        throw error;
+      }
+      this.admitted = result.next;
+      this.decisions.push([label, "accepted"]);
+      return result;
+    });
+    this.tail = run.then(
+      () => {},
+      () => {},
+    );
+    return run;
+  }
+}
+
+/** The placement the review rejected: decide when the request arrives, then
+ * queue only the save. Both checks read the same document. */
+function decideBeforeQueue(doc, requests) {
+  const decisions = requests.map(([, changes, principal]) =>
+    admitCommentChanges(doc, changes, principal),
+  );
+  return decisions.map((result) => result.ok);
+}
+
+test("concurrent creates of one absent ID: exactly one is accepted, in queue order", async () => {
+  const base = seed();
+  const bob = edit(base, (d) =>
+    addMessage(d, { threadId: "t-alice", messageId: "m-same", principal: BOB, body: "Bob" }),
+  );
+  const carol = edit(base, (d) =>
+    addMessage(d, { threadId: "t-alice", messageId: "m-same", principal: CAROL, body: "Carol" }),
+  );
+  // Deciding ahead of the queue admits both, and the merge holds two values.
+  assert.deepEqual(
+    decideBeforeQueue(base, [
+      ["bob", bob, BOB],
+      ["carol", carol, CAROL],
+    ]),
+    [true, true],
+  );
+  const raced = A.applyChanges(A.clone(base), [...bob, ...carol])[0];
+  assert.equal(Object.keys(A.getConflicts(raced.threads["t-alice"].messages, "m-same")).length, 2);
+
+  for (const [first, second] of [
+    [
+      ["bob", bob, BOB],
+      ["carol", carol, CAROL],
+    ],
+    [
+      ["carol", carol, CAROL],
+      ["bob", bob, BOB],
+    ],
+  ]) {
+    const queue = new SerialAdmission(base);
+    // The first save is slower, so the second request arrives while it is
+    // still in flight.
+    await Promise.all([
+      queue.submit(...first, () => tick(5)),
+      queue.submit(...second, () => tick(0)),
+    ]);
+    assert.deepEqual(queue.decisions, [
+      [first[0], "accepted"],
+      [second[0], REJECTION.MESSAGE_REPLACE],
+    ]);
+    const message = queue.admitted.threads["t-alice"].messages["m-same"];
+    assert.equal(String(message.author), first[2]);
+    assert.equal(A.getConflicts(queue.admitted.threads["t-alice"].messages, "m-same"), undefined);
+  }
+});
+
+test("dependent changes are decided against the state that holds their dependency", async () => {
+  const base = seed();
+  const replica = A.clone(base, { actor: actor() });
+  const added = A.change(replica, (d) =>
+    addMessage(d, { threadId: "t-alice", messageId: "m-1", principal: CAROL, body: "Draft" }),
+  );
+  const edited = A.change(added, (d) =>
+    editMessage(d, { threadId: "t-alice", messageId: "m-1", body: "Final" }),
+  );
+  const add = A.getChanges(base, added);
+  const revise = A.getChanges(added, edited);
+  // Checked against the document from before the first save, the edit fails.
+  assert.deepEqual(decideBeforeQueue(base, [["revise", revise, CAROL]]), [false]);
+
+  const inOrder = new SerialAdmission(base);
+  await Promise.all([
+    inOrder.submit("add", add, CAROL, () => tick(5)),
+    inOrder.submit("revise", revise, CAROL),
+  ]);
+  assert.deepEqual(inOrder.decisions, [
+    ["add", "accepted"],
+    ["revise", "accepted"],
+  ]);
+  const body = A.spans(inOrder.admitted.threads["t-alice"].messages["m-1"], ["body"]);
+  assert.equal(body.at(-1).value, "Final");
+
+  // Reversed, only the dependency is accepted, and always in this order.
+  const reversed = new SerialAdmission(base);
+  await Promise.all([reversed.submit("revise", revise, CAROL), reversed.submit("add", add, CAROL)]);
+  assert.deepEqual(reversed.decisions, [
+    ["revise", REJECTION.MISSING_DEPENDENCIES],
+    ["add", "accepted"],
+  ]);
+});
+
+test("a save that fails before writing leaves the admission document where it was", async () => {
+  const base = seed();
+  const bob = edit(base, (d) =>
+    addMessage(d, { threadId: "t-alice", messageId: "m-same", principal: BOB, body: "Bob" }),
+  );
+  const carol = edit(base, (d) =>
+    addMessage(d, { threadId: "t-alice", messageId: "m-same", principal: CAROL, body: "Carol" }),
+  );
+  const queue = new SerialAdmission(base);
+  const results = await Promise.allSettled([
+    queue.submit("bob", bob, BOB, async () => {
+      await tick(2);
+      throw Error("storage unavailable");
+    }),
+    queue.submit("carol", carol, CAROL),
+  ]);
+  assert.equal(results[0].status, "rejected");
+  assert.deepEqual(queue.decisions, [
+    ["bob", "persist_failed"],
+    ["carol", "accepted"],
+  ]);
+  assert.equal(String(queue.admitted.threads["t-alice"].messages["m-same"].author), CAROL);
 });
 
 // Cost
 
-test("the check's work depends on the change, not the document", (t) => {
+test("per-operation checks are constant in document size; clone and apply are not", (t) => {
   const small = seed();
   const large = seed(3000);
   const reply = (d) => {
@@ -657,8 +912,8 @@ test("the check's work depends on the change, not the document", (t) => {
     const started = performance.now();
     const result = allowed(doc, changes, CAROL);
     const ms = performance.now() - started;
-    A.free(result.doc);
-    // The native clone and apply are the only steps that see the whole doc.
+    A.free(result.next);
+    // Clone copies the document's backing memory; apply runs on that copy.
     const cloneStarted = performance.now();
     const copy = A.applyChanges(A.clone(doc), changes)[0];
     const cloneMs = performance.now() - cloneStarted;
@@ -670,8 +925,10 @@ test("the check's work depends on the change, not the document", (t) => {
   const a = measure(small);
   const b = measure(large);
   assert.ok(b.bytes > 100 * a.bytes, `large doc is ${b.bytes} bytes`);
+  // Identical counters: the rule checks do the same work on both documents.
   assert.deepEqual(b.stats, a.stats);
   assert.ok(a.stats.entityReads <= 3);
+  // The clone and apply grow with the document; this records how much.
   t.diagnostic(
     `small ${a.bytes} B: ${a.ms.toFixed(2)} ms (clone+apply ${a.cloneMs.toFixed(2)}); ` +
       `large ${b.bytes} B: ${b.ms.toFixed(2)} ms (clone+apply ${b.cloneMs.toFixed(2)}); ` +
