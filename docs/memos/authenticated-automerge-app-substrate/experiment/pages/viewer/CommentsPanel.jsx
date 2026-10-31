@@ -42,6 +42,12 @@ export function CommentsPanel({
   const [drafts, setDrafts] = useState({});
   const [expanded, setExpanded] = useState(false);
   const [visited, setVisited] = useState(open);
+  // A modal sheet makes everything outside it inert, the inline composer
+  // included. While the composer shows (open, sending, or reopened after a
+  // failed send) the sheet stays non-modal under it; it turns modal once the
+  // composer closes. Closing with text leaves the kept draft listed here.
+  const composerShowing = draft.state.name === "open" || draft.state.name === "sending";
+  const modal = mobile && !composerShowing;
   useEffect(() => {
     if (open) setVisited(true);
   }, [open]);
@@ -68,13 +74,8 @@ export function CommentsPanel({
     // Keep the same forms mounted when the viewport changes. Only modality changes.
     if (element.open) element.close();
     if (open) {
-      // A modal sheet makes everything outside it inert, the inline composer
-      // included. Close the composer first: its text stays here as the kept
-      // draft, with Continue and Discard.
-      if (mobile) {
-        composer?.dismiss({ returnFocus: false });
-        element.showModal();
-      } else element.show();
+      if (modal) element.showModal();
+      else element.show();
       if (focused?.isConnected && element.contains(focused)) {
         focused.focus({ preventScroll: true });
         if (selection) focused.setSelectionRange(...selection);
@@ -84,7 +85,7 @@ export function CommentsPanel({
         }
       }
     }
-  }, [open, mobile]);
+  }, [open, modal]);
   useEffect(() => {
     if (!open || !target?.id) return;
     const frame = requestAnimationFrame(() => {
@@ -207,10 +208,10 @@ export function CommentsPanel({
         if (!dialog.current.open && open) onClose();
       }}
       onClick={(event) => {
-        if (mobile && event.target === dialog.current) onClose();
+        if (modal && event.target === dialog.current) onClose();
       }}
       onKeyDown={(event) => {
-        if (!event.defaultPrevented && !mobile && event.key === "Escape") {
+        if (!event.defaultPrevented && !modal && event.key === "Escape") {
           event.preventDefault();
           onClose();
         }

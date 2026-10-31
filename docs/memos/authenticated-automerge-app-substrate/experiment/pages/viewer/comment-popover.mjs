@@ -46,7 +46,9 @@ export function commentPopoverPosition({ anchor, width, height, viewport, margin
     fitsBelow || (!fitsAbove && bottom - anchor.bottom >= anchor.top - top) ? "below" : "above";
   const clamp = (value, low, high) => Math.max(low, Math.min(value, high));
   return {
-    left: Math.round(clamp(anchor.left, left + margin, Math.max(left + margin, right - margin - width))),
+    left: Math.round(
+      clamp(anchor.left, left + margin, Math.max(left + margin, right - margin - width)),
+    ),
     top: Math.round(
       clamp(
         placement === "below" ? below : above,
@@ -55,5 +57,21 @@ export function commentPopoverPosition({ anchor, width, height, viewport, margin
       ),
     ),
     placement,
+  };
+}
+
+/**
+ * Bottom-sheet placement inside the visual viewport. An on-screen keyboard
+ * can shrink only the visual viewport, leaving a `bottom: 0` sheet behind it.
+ * `layoutHeight` is the layout viewport's height (the fixed-position
+ * containing block). Returns the sheet's `bottom` offset and `maxHeight` in
+ * CSS pixels, or null to keep the stylesheet's placement.
+ */
+export function commentSheetPosition({ visualViewport, layoutHeight, maxHeight = 560 }) {
+  const { offsetTop, height } = visualViewport ?? {};
+  if (!finite(offsetTop, height, layoutHeight) || height <= 0 || layoutHeight <= 0) return null;
+  return {
+    bottom: Math.max(0, Math.round(layoutHeight - (offsetTop + height))),
+    maxHeight: Math.round(Math.min(height * 0.7, maxHeight)),
   };
 }
