@@ -31,6 +31,7 @@ import {
   PagesLink,
 } from "./wordgard-model.mjs";
 import { taskLists } from "./wordgard-task-lists.mjs";
+import { markdownShortcuts } from "./wordgard-shortcuts.mjs";
 import { tablePresentation, tableKeys, selectedTable } from "./wordgard-tables.mjs";
 import { TableMenu } from "./TableMenu.jsx";
 import {
@@ -78,6 +79,7 @@ function nativeConfig() {
     taskLists(),
     blockquote(),
     codeBlock(),
+    markdownShortcuts(),
     tables({ cellContent: "inline", cellSpanning: false }),
     tablePresentation,
     tableKeys,

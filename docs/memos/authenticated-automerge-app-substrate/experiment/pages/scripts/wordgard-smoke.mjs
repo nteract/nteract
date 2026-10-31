@@ -828,6 +828,50 @@ try {
   }
   checkpoint(stage);
 
+  stage = "Enter splits paragraphs; block shortcuts and commands work on hard-break lines";
+  const shortcuts = await create("", "Wordgard shortcuts fixture " + Date.now());
+  await content(a).click();
+  await a.keyboard.type("Intro");
+  await a.keyboard.press("Enter");
+  await a.keyboard.type("## Heading");
+  await expect(content(a).locator("h2")).toHaveText("Heading");
+  await a.keyboard.press("Enter");
+  await a.keyboard.type("first");
+  await a.keyboard.press("Shift+Enter");
+  await a.keyboard.type("## Line heading");
+  await expect(content(a).locator("h2")).toHaveCount(2);
+  await a.keyboard.press("Enter");
+  await a.keyboard.type("Run `npm test` now");
+  await expect(content(a).locator("code")).toHaveText("npm test");
+  await a.keyboard.press("Enter");
+  await a.keyboard.type("one");
+  await a.keyboard.press("Shift+Enter");
+  await a.keyboard.type("two");
+  await a.keyboard.press("Shift+Enter");
+  await a.keyboard.type("three");
+  await selectText(a, "two");
+  await a.getByRole("combobox", { name: "Text style" }).selectOption("h1");
+  await expect(content(a).locator("h1")).toHaveText("two");
+  const shortcutMarkdown = [
+    "Intro",
+    "## Heading",
+    "first",
+    "## Line heading",
+    "Run `npm test` now",
+    "one",
+    "# two",
+    "three",
+  ].join("\n\n");
+  await expect
+    .poll(
+      async () => (await call(a, "read_page", { page_id: shortcuts.page_id })).blocks[0].markdown,
+    )
+    .toBe(shortcutMarkdown);
+  await expect(content(b).locator("h1")).toHaveText("two");
+  await expect(content(b).locator("code")).toHaveText("npm test");
+  await saved(a);
+  checkpoint(stage);
+
   stage = "code fence, remote language change preserves active source, Mermaid rendering";
   const code = await create("", "Wordgard rich fixture " + Date.now());
   await content(a).click();
