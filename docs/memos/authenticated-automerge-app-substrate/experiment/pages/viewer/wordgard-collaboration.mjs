@@ -73,6 +73,7 @@ export function createWordgardCollaboration({
   getCurrent,
   getThreads = () => [],
   getTarget = () => null,
+  getDraft = () => null,
   now = Date.now,
 }) {
   const visiblePeers = new Map();
@@ -190,12 +191,26 @@ export function createWordgardCollaboration({
         "data-progress-target": String(passage.index),
       });
     }
+    const created = getTarget()?.source === "created";
     for (const range of commentRanges()) {
       if (range.state !== "open" && range.id !== activeId()) continue;
+      const active = range.id === activeId();
       add(range.from, range.to, {
-        class: "comment-passage" + (range.id === activeId() ? " comment-passage-active" : ""),
+        class:
+          "comment-passage" +
+          (active ? " comment-passage-active" : "") +
+          (active && created ? " comment-passage-created" : ""),
         "data-comment-thread": range.id,
       });
+    }
+    // The open composer's passage stays marked while focus is in the popover,
+    // which also anchors the popover to these elements.
+    const draft = getDraft();
+    if (draft?.target?.kind === "selection") {
+      const [range] = wordgardCommentRanges(replica.doc, id, getCurrent()?.map, [
+        { id: "draft", state: "open", target: draft.target },
+      ]);
+      if (range) add(range.from, range.to, { class: "comment-draft-passage", "data-comment-draft": "" });
     }
     const doc = replica.doc;
     const object = textObject(doc, id);
