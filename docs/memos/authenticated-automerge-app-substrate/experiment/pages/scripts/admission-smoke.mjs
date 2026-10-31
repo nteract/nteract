@@ -82,10 +82,31 @@ const recordCloses = () => {
   };
 };
 const closes = (page) => page.evaluate(() => window.__pagesCloses);
+// Record the text of every red banner that appears, however briefly, so a
+// restart can be checked for one after the fact.
+const recordBanners = () => {
+  window.__pagesBanners = [];
+  const seen = new WeakSet();
+  const scan = () => {
+    for (const banner of document.querySelectorAll(".error[role=alert]")) {
+      if (seen.has(banner)) continue;
+      seen.add(banner);
+      window.__pagesBanners.push(banner.textContent);
+    }
+  };
+  new MutationObserver(scan).observe(document, {
+    childList: true,
+    subtree: true,
+    characterData: true,
+  });
+};
+const banners = (page) => page.evaluate(() => window.__pagesBanners);
+const clearBanners = (page) => page.evaluate(() => (window.__pagesBanners.length = 0));
 
 async function signIn(email) {
   const context = await browser.newContext();
   await context.addInitScript(recordCloses);
+  await context.addInitScript(recordBanners);
   const page = await context.newPage();
   page.on("pageerror", (error) => report.errors.push(error.message));
   const begin = await context.request.get(`${origin}/api/auth/login`, { maxRedirects: 0 });
@@ -261,11 +282,15 @@ try {
   await owner.keyboard.press("ControlOrMeta+End");
   await owner.keyboard.insertText(" Before restart.");
   await expect(saved(owner)).toBeVisible({ timeout: 30000 });
+  await clearBanners(owner);
   const restarted = restartCelld();
   await expect(owner.locator(".save-status--saved")).toHaveCount(0, { timeout: 30000 });
   await owner.keyboard.insertText(" During restart.");
   await restarted;
   await expect(saved(owner)).toBeVisible({ timeout: 60000 });
+  // A restart is not something the person can act on: Offline, then Saved.
+  assert.deepEqual(await banners(owner), [], "a restart showed a red banner");
+  await expect(owner.getByRole("alert")).toHaveCount(0);
   const recovered = await tool(owner, "read_page", { page_id: pageId });
   assert.match(JSON.stringify(recovered.body), /Before restart\. During restart\./);
   report.closes.restart = await closes(owner);
@@ -274,7 +299,41 @@ try {
     report.closes.restart.every(({ code }) => code < 4400 || code >= 4500),
     "restart produced no permanent admission refusal",
   );
-  report.completed.push("Open session survives celld restart; pending edit reaches Saved");
+  report.completed.push(
+    "Open session survives celld restart without a red banner; pending edit reaches Saved",
+  );
+
+  // Behind Cloudflare, a restarting origin answers HTTP with the gateway's
+  // own HTML error page. Receipts and the session check get it while the
+  // native socket stays up. The Page saves locally, retries, and recovers.
+  const gatewayDown = (route) =>
+    route.fulfill({
+      status: 503,
+      contentType: "text/html; charset=UTF-8",
+      body: "<!DOCTYPE html><title>503: origin unreachable | Cloudflare</title>",
+    });
+  const gatewayPaths = (url) =>
+    url.pathname === "/api/saved" ||
+    url.pathname === "/api/auth/session" ||
+    url.pathname === "/api/connect";
+  let gatewayAnswers = 0;
+  await owner.route(gatewayPaths, (route) => {
+    gatewayAnswers++;
+    return gatewayDown(route);
+  });
+  await owner.keyboard.insertText(" Behind the gateway.");
+  await owner.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
+  await expect(saved(owner)).toHaveCount(0, { timeout: 15000 });
+  await expect.poll(() => gatewayAnswers, { timeout: 15000 }).toBeGreaterThanOrEqual(3);
+  await expect(owner.locator(".save-status")).toHaveText(/Saved locally|Unsaved|Offline/);
+  assert.deepEqual(await banners(owner), [], "a gateway 503 showed a red banner");
+  await owner.unrouteAll({ behavior: "wait" });
+  await expect(saved(owner)).toBeVisible({ timeout: 30000 });
+  assert.deepEqual(await banners(owner), []);
+  await expect(owner.getByRole("alert")).toHaveCount(0);
+  report.completed.push(
+    "Gateway HTML 503 on receipts and the session check: no red banner; Saved once it clears",
+  );
 
   // A fresh isolate sets up its D1 session schema once, and the first requests
   // after a restart arrive together. Each must answer on its own.

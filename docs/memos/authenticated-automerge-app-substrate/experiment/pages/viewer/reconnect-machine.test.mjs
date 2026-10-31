@@ -6,6 +6,7 @@ import assert from "node:assert/strict";
 import { loadTable, runTable } from "../shared/machine-test.mjs";
 import {
   MAX_STEP_MS,
+  OUTAGE_ATTEMPTS,
   REFUSAL_LIMIT,
   backoffStep,
   reconnectDelay,
@@ -16,10 +17,10 @@ const TABLE = new URL("../test/fixtures/machines/viewer-reconnect.json", import.
 
 test("the viewer-reconnect table runs through the pure machine", async () => {
   assert.deepEqual(await runTable(viewerReconnectMachine, loadTable(TABLE)), {
-    rows: 31,
+    rows: 32,
     pairs: 24,
     unreachable: 0,
-    cases: 3,
+    cases: 4,
   });
 });
 
@@ -46,11 +47,22 @@ test("equal jitter keeps every delay within [step / 2, step]", () => {
 test("transient failures back off forever while refusals pause at the limit", () => {
   let state = viewerReconnectMachine.initial;
   const steps = [];
+  const outages = [];
   for (let i = 0; i < 12; i++) {
     const result = viewerReconnectMachine.step(state, { type: "failed", refused: false });
     steps.push(result.effects[0].step);
+    outages.push(result.effects.some((effect) => effect.type === "reportOutage"));
     state = viewerReconnectMachine.step(result.state, { type: "timer" }).state;
   }
+  // Retries continue past the outage report, which repeats on every failure.
+  assert.deepEqual(
+    outages,
+    Array.from({ length: 12 }, (_, i) => i + 1 >= OUTAGE_ATTEMPTS),
+  );
+  assert.ok(
+    steps.slice(0, OUTAGE_ATTEMPTS - 1).reduce((sum, step) => sum + step / 2, 0) >= 15_000,
+    "a restart shorter than 15 s never reports an outage",
+  );
   assert.equal(state.name, "ready");
   assert.deepEqual(steps.slice(-5), Array(5).fill(MAX_STEP_MS));
   assert.equal(state.refusals, 0);

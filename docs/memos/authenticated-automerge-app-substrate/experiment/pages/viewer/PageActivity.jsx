@@ -27,7 +27,7 @@ export function PageActivity({ session, disclosure, onReveal }) {
   useEffect(() => {
     if (open) return session.observeChange(() => update((value) => value + 1));
   }, [session, open]);
-  const { progress, peers } = pageActivity(session, Date.now(), { resolveSelections: open });
+  const { progress, peers } = pageActivity(session, session.now(), { resolveSelections: open });
   const count = progress.length + peers.length;
   const passages = open ? progressPassages(session) : [];
   useEffect(() => {

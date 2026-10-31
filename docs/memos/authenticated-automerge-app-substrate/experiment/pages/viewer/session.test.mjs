@@ -104,7 +104,9 @@ test("activity trusts only the current host and ordered snapshots in its admitte
 
 test("activity expires locally despite clock skew and replay cannot extend its lifetime", (t) => {
   t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: 1000 });
-  const session = new PageSession("fixture");
+  // Activity lifetimes run on the session's monotonic clock; here it follows
+  // the mocked timers.
+  const session = new PageSession("fixture", { now: () => Date.now() });
   session.connection = { serverSenderId: "host" };
   session.receiveActivity(activityMessage(), { initial: true });
   assert.equal(session.agentProgress.get("agent-one").until, 61000);

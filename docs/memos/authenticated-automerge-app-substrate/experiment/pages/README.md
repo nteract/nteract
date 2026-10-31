@@ -411,6 +411,26 @@ refusing. Retry, the `online` event and signing in again clear both counters and
 reconnect at once; a stable connection clears them too.
 [reconnect-machine.mjs](viewer/reconnect-machine.mjs) holds these transitions.
 
+A host restart is not an error the person can act on. A 502, 503 or 504 (JSON
+or a gateway's HTML page), a JSON error marked `retryable`, and a failed fetch
+are transient (`isTransientFailure` in [request.mjs](viewer/request.mjs)): the
+Page shows Offline or Saved locally and retries without a red banner. Receipts
+retry on the same backoff. From the seventh failure in a row, about 15 to 30
+seconds in, the Page shows one sentence, "Pages can't reach the server. Your
+changes are saved on this device.", and keeps retrying; the next admitted
+connection clears it and restarts the receipt. Receipts and session checks
+are timed instead of counted (`OUTAGE_MS`, 20 s), because edits and Page
+reconnects trigger them too: receipt failures count from the first one after
+the last successful receipt, across edits, and the session-refresh machine
+tracks a run of unreachable answers, so a library screen whose renewals keep
+failing shows the same sentence until a session request succeeds. Both read
+one monotonic clock ([monotonic.mjs](viewer/monotonic.mjs), `performance.now()`),
+so changing the system time can't hide or hasten the notice. A renewal the
+server refuses (401 or 403) still signs the tab out, and says why: "Your
+session ended. Sign in again." or the server's 403 message, or the open
+Page's own sign-in prompt. Each screen renders its banners
+from one deduplicated list ([alerts.mjs](viewer/alerts.mjs)).
+
 A binding write that never settles still blocks its own signing key until the
 host restarts; other keys are unaffected. A rejected write may have taken effect,
 so the host neither issues a competing write nor releases the reservation. If an

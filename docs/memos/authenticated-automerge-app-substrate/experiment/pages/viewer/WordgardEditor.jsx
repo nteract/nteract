@@ -18,6 +18,7 @@ import { tables } from "wordgard/table";
 import { tablePresentation, tableKeys, selectedTable } from "./wordgard-tables.mjs";
 import { TableMenu } from "./TableMenu.jsx";
 import { HighlightMenu } from "./HighlightMenu.jsx";
+import { monotonicNow } from "./monotonic.mjs";
 import { selectionHighlight, toggleHighlight } from "./highlight.mjs";
 import {
   blockDoc,
@@ -522,9 +523,9 @@ export function WordgardEditor(props) {
         latest.current.onActivate?.();
         latest.current.onSelection?.(selected);
         const presenceKey = `${selection.anchor}:${selection.head}:${A.getHeads(replica.doc).join()}`;
-        if (presenceKey !== lastPresence || Date.now() - lastPresenceAt > 10000) {
+        if (presenceKey !== lastPresence || monotonicNow() - lastPresenceAt > 10000) {
           lastPresence = presenceKey;
-          lastPresenceAt = Date.now();
+          lastPresenceAt = monotonicNow();
           publishWordgardSelection(replica, id, editor, bound.current.map);
         }
       }

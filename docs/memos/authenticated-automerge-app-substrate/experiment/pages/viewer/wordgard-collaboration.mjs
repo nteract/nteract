@@ -2,6 +2,7 @@ import * as A from "@automerge/automerge/slim";
 import { Decoration } from "wordgard/editor";
 import { selectionContext } from "../model/comments.mjs";
 import { activityIdentity, progressPassages } from "./activity.mjs";
+import { monotonicNow } from "./monotonic.mjs";
 
 const pathFor = (id) => ["blocks", id, "richText"];
 const presenceTTL = 30000;
@@ -73,7 +74,8 @@ export function createWordgardCollaboration({
   getCurrent,
   getThreads = () => [],
   getTarget = () => null,
-  now = Date.now,
+  // The replica's monotonic clock, which stamps its peers' `at`.
+  now = () => replica.now?.() ?? monotonicNow(),
 }) {
   const visiblePeers = new Map();
   let illumination = [];

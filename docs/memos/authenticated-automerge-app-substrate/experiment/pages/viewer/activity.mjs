@@ -1,4 +1,10 @@
 import { resolveProgressTargets, resolvePeerSelection } from "../model/presence.mjs";
+import { monotonicNow } from "./monotonic.mjs";
+
+// Activity lifetimes are elapsed time on the session's monotonic clock
+// (PageSession.now, monotonic.mjs): `until` and a peer's `at` are readings of
+// it, so `now` must be too.
+const sessionNow = (session) => session.now?.() ?? monotonicNow();
 
 const bounded = (value, max) =>
   typeof value === "string" && value.length > 0 && value.length <= max;
@@ -10,7 +16,7 @@ const endpoint = (value, blockId) =>
 
 // Keep only the presentation fields from the authenticated host. In particular,
 // a lease token or arbitrary caller-supplied identity never reaches UI state.
-export function activitySnapshot(message, now = Date.now()) {
+export function activitySnapshot(message, now = monotonicNow()) {
   if (
     !message ||
     message.kind !== "page-activity" ||
@@ -86,7 +92,7 @@ export function activityIdentity(identity) {
   return { name, driver, delegated, label: delegated ? `${driver} on behalf of ${name}` : name };
 }
 
-export function progressPassages(session, now = Date.now()) {
+export function progressPassages(session, now = sessionNow(session)) {
   const result = [];
   for (const progress of session.agentProgress?.values() ?? []) {
     if (progress.until <= now) continue;
@@ -98,7 +104,11 @@ export function progressPassages(session, now = Date.now()) {
   return result;
 }
 
-export function pageActivity(session, now = Date.now(), { resolveSelections = true } = {}) {
+export function pageActivity(
+  session,
+  now = sessionNow(session),
+  { resolveSelections = true } = {},
+) {
   const progress = [...(session.agentProgress?.values() ?? [])].filter((item) => item.until > now);
   const peers = [...(session.peers ?? [])]
     .filter(([, item]) => now - item.at <= 30000)

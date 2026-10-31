@@ -18,6 +18,12 @@ import {
   UserRound,
 } from "lucide-react";
 import { request, tool } from "./request.mjs";
+import {
+  failureMessage,
+  screenBanners,
+  sessionAnswerNotice,
+  sessionCheckBanner,
+} from "./alerts.mjs";
 import { listLocalPages, forgetLocalPage } from "./local-catalog.mjs";
 import {
   pagePath,
@@ -82,7 +88,8 @@ function App() {
     [pages, setPages] = useState([]),
     [, paint] = useState(0),
     [error, setError] = useState(""),
-    [authError, setAuthError] = useState(""),
+    // The session check's banner: { message, signIn } or null.
+    [sessionNotice, setSessionNotice] = useState(null),
     [notice, setNotice] = useState(""),
     [libraryQuery, setLibraryQuery] = useState(""),
     [trashOpen, setTrashOpen] = useState(false),
@@ -202,7 +209,9 @@ function App() {
     setTitleFocusRequest(null);
     setLocalRecoveries([]);
   }
-  const showError = (error) => setError(error.message);
+  // Every banner sentence for a failed action comes from failureMessage, so
+  // an unreachable server reads the same wherever it surfaced.
+  const showError = (error) => setError(failureMessage(error));
   /** Leave the installed Page. It keeps syncing until its receipt (bounded)
    * so leaving never drops a save; the host tracks the close. */
   function releaseCurrent(options) {
@@ -287,7 +296,7 @@ function App() {
       );
       await install(next, revision, { focus });
     } catch (error) {
-      if (host.isCurrent(revision) && !bannerShows(error)) setError(error.message);
+      if (host.isCurrent(revision) && !bannerShows(error)) showError(error);
     } finally {
       host.finishRequest(controller);
       if (host.isCurrent(revision)) setOpening(false);
@@ -308,7 +317,7 @@ function App() {
     setTrashOpen(false);
     setProjectOpen(null);
     if (historyMode !== "none") writePageRoute(null, { replace: historyMode === "replace" });
-    if (refreshCatalog) void refresh().catch((error) => setError(error.message));
+    if (refreshCatalog) void refresh().catch((error) => showError(error));
   }
   function openProject(projectId, { historyMode = "push" } = {}) {
     home(null, { historyMode: "none", refreshCatalog: false });
@@ -334,7 +343,7 @@ function App() {
       setNotice("Page restored");
       void refresh().catch(() => {});
     } catch (error) {
-      setError(error.message);
+      showError(error);
     }
   }
   function followRoute() {
@@ -350,7 +359,7 @@ function App() {
       setError("This Page link is not valid.");
     }
     void refresh().catch((error) => {
-      if (!host.current) setError(error.message);
+      if (!host.current) showError(error);
     });
   }
   useEffect(() => {
@@ -358,9 +367,12 @@ function App() {
     const maintenance = maintainBrowserSession({
       // The first refresh takes the request theme.js started (early-session.mjs).
       request: () => requestSession(request),
-      onSession: (result) => {
+      onSession: (result, { refusal }) => {
         if (!alive) return;
-        setAuthError("");
+        // A refusal keeps the sign-out below and says why it happened.
+        setSessionNotice(
+          sessionAnswerNotice(refusal, { signedIn: !!authentication.current?.identity }),
+        );
         const changed = authentication.current?.identity?.principal !== result.identity?.principal;
         if (changed) {
           host.navigate();
@@ -381,9 +393,13 @@ function App() {
           }
         }
       },
-      onError: (error) => {
+      onError: (error, { outage }) => {
         if (!alive) return;
-        setAuthError(error.message);
+        const banner = sessionCheckBanner(error, {
+          outage,
+          signedIn: !!authentication.current?.identity,
+        });
+        if (banner !== undefined) setSessionNotice({ message: banner, signIn: false });
         setAccount((value) => (value === undefined ? null : value));
       },
     });
@@ -393,9 +409,10 @@ function App() {
       else home(null, { historyMode: "none", refreshCatalog: false });
     };
     window.addEventListener("popstate", onPopState);
-    maintenance.refresh().catch((error) => {
-      if (alive) setError(error.message);
-    });
+    // The first answer reaches onSession or onError like every later one,
+    // which decide what to show; a refusal of a tab that was never signed in
+    // shows the signed-out landing and nothing else.
+    maintenance.refresh().catch(() => {});
     return () => {
       alive = false;
       maintenance.stop();
@@ -407,6 +424,9 @@ function App() {
   }, []);
   const page = session?.snapshot(),
     threads = page?.comments ?? [];
+  // The screen's one banner region (screenBanners). The sign-in prompt and
+  // access notice beside the Page show their own messages with their actions.
+  const banners = screenBanners({ error, sessionNotice, page: page ? session : null });
   useEffect(() => {
     if (!titleFocusRequest) return;
     const frame = requestAnimationFrame(() => {
@@ -464,8 +484,8 @@ function App() {
       void refresh().catch(() => {});
     } catch (error) {
       if (host.isCurrent(revision) && !bannerShows(error)) {
-        setError(error.message);
-        setPickerError(error.message);
+        showError(error);
+        setPickerError(failureMessage(error));
       }
     } finally {
       creationPending.current = false;
@@ -538,7 +558,7 @@ function App() {
       setNotice("Moved to Trash");
       await refresh();
     } catch (error) {
-      setError(error.message);
+      showError(error);
     }
   }
   async function signout() {
@@ -549,7 +569,7 @@ function App() {
       if (failed) throw failed;
       location.href = "/";
     } catch (error) {
-      setError(error.message);
+      showError(error);
     }
   }
   function startComment(id, selected) {
@@ -563,7 +583,7 @@ function App() {
         setComposer({ key, draft, quote: selected?.text.replaceAll("\ufffc", "\n") || "" });
         setTarget(null);
       } catch (error) {
-        setError(error.message);
+        showError(error);
         return;
       }
     }
@@ -598,7 +618,7 @@ function App() {
       activateBlock(id);
       setFocusBlock(id);
     } catch (error) {
-      setError(error.message);
+      showError(error);
     }
   }
   function revealProgress(passage) {
@@ -767,19 +787,14 @@ function App() {
         onOpenPage={(id) => void open(id)}
         editorUnavailable={editorUnavailable && !!account}
       />
-      {error && (
-        <p role="alert" className="error app-error">
-          {error}
+      {banners.map((message) => (
+        <p key={message} role="alert" className="error app-error">
+          {message}
         </p>
-      )}
+      ))}
       {notice && (
         <p className="app-notice" role="status">
           {notice}
-        </p>
-      )}
-      {authError && (
-        <p role="alert" className="error app-error">
-          {authError}
         </p>
       )}
       {account === undefined ? (
@@ -843,11 +858,6 @@ function App() {
                     )}
                   </div>
                 )}
-                {session.problem && (
-                  <p className="error" role="alert">
-                    {session.problem}
-                  </p>
-                )}
                 {session.trash && (
                   <div className="access-notice trash-notice" role="status">
                     <p>This Page is in Trash. It is read-only and hidden from collaborators.</p>
@@ -867,7 +877,7 @@ function App() {
                     try {
                       session.change((doc) => editor.module.setPageTitle(doc, event.target.value));
                     } catch (error) {
-                      setError(error.message);
+                      showError(error);
                     }
                   }}
                   onKeyDown={(event) => {

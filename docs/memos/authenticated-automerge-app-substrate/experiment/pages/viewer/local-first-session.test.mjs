@@ -574,7 +574,7 @@ test("receipt retries stop after three attempts and stale, signed-out, or closed
   let requests = 0;
   t.mock.method(globalThis, "fetch", async () => {
     requests++;
-    return Response.json({ error: "Temporary receipt failure" }, { status: 503 });
+    return Response.json({ error: "Temporary receipt failure" }, { status: 500 });
   });
   const bounded = receiptSession();
   await bounded.saveReceipt();
