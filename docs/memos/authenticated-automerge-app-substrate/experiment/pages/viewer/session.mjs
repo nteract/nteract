@@ -37,7 +37,7 @@ import { checkpointRecords } from "./checkpoint-records.mjs";
 import { Store } from "./store.mjs";
 import { REJECT, isLive, pauseOf, viewerSessionMachine } from "./session-machine.mjs";
 import { reconnectDelay, viewerReconnectMachine } from "./reconnect-machine.mjs";
-export { request } from "./request.mjs";
+export { request, tool } from "./request.mjs";
 const hex = (bytes) => Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
 const ownerAccess = () => ({
   role: "owner",
@@ -92,13 +92,6 @@ export const signingKeyRefused = (admission, cause) =>
     code: "SIGNING_KEY_REFUSED",
     admission,
   });
-export function tool(operation, args = {}) {
-  return request("/api/tools", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ operation, arguments: args }),
-  });
-}
 export function pageSyncAddress(pageId, href, activityEpoch) {
   const address = new URL(`/api/sync?page=${encodeURIComponent(pageId)}`, href);
   address.protocol = address.protocol === "https:" ? "wss:" : "ws:";

@@ -1,7 +1,15 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -10,6 +18,13 @@ import vm from "node:vm";
 import { build } from "esbuild";
 import { celldCborPlugin } from "./celld-cbor.mjs";
 import { browserMermaidPlugin, mermaidSource } from "./browser-mermaid.mjs";
+import {
+  VIEWER_CHUNK,
+  stylesCovered,
+  viewerBuildOptions,
+  viewerSplit,
+  withModulePreloads,
+} from "./viewer-chunks.mjs";
 
 const app = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const require = createRequire(import.meta.url);
@@ -94,10 +109,8 @@ test("failed rebuild removes the previous receipt before replacing any artifacts
       "scripts/browser-mermaid.mjs",
       readFileSync(new URL("./browser-mermaid.mjs", import.meta.url), "utf8"),
     );
-    write(
-      "scripts/browser-wasm.mjs",
-      readFileSync(new URL("./browser-wasm.mjs", import.meta.url), "utf8"),
-    );
+    for (const name of ["browser-wasm.mjs", "viewer-chunks.mjs"])
+      write(`scripts/${name}`, readFileSync(new URL(`./${name}`, import.meta.url), "utf8"));
     write(
       "scripts/source-fingerprint.mjs",
       "export const sourceFingerprint = () => ({sha256:'source-B'}); export const writeBuildReceipt = () => {throw new Error('failed build must not certify outputs');};",
@@ -284,4 +297,114 @@ test("shared renderer resolves ESM imports through fixture paths without a root 
     files.some((file) => file.endsWith("experiment/node_modules/dompurify/dist/purify.es.mjs")),
   );
   assert.ok(files.some((file) => file.endsWith("experiment/node_modules/pele/dist/pele.js")));
+});
+
+test("app.js renders the shell without a static path to the WASM runtimes", async (t) => {
+  // Metafile paths are relative to the real dist path; tmpdir() can be a symlink.
+  const dist = realpathSync(mkdtempSync(path.join(tmpdir(), "pages-viewer-split-")));
+  t.after(() => rmSync(dist, { recursive: true, force: true }));
+  const result = await build({
+    ...viewerBuildOptions(app, dist),
+    write: false,
+    logLevel: "silent",
+  });
+  const { chunks, preloads, styles } = viewerSplit(result.metafile);
+  const { outputs } = result.metafile;
+  // Inputs relative to the app; plugin namespaces such as wasm-ready: stay as is.
+  const local = (input) =>
+    /^[\w-]+:/.test(input) ? input : path.relative(app, path.resolve(dist, input));
+  const inputsOf = (files) => files.flatMap((file) => Object.keys(outputs[file].inputs).map(local));
+  const shell = inputsOf(["public/app.js", ...preloads]);
+  for (const editorOnly of [
+    "wasm-ready:pages-wasm-ready",
+    "viewer/session.mjs",
+    "viewer/local-pages.mjs",
+    "viewer/WordgardEditor.jsx",
+  ])
+    assert.equal(shell.includes(editorOnly), false, editorOnly);
+  for (const shellInput of ["viewer/main.jsx", "viewer/local-catalog.mjs"])
+    assert.ok(shell.includes(shellInput), shellInput);
+  // The shell lists local Pages through the byte store's own file, not the
+  // package index that also loads the Subduction glue.
+  assert.equal(
+    shell.some((input) => /automerge-repo-subduction[/]dist[/]index[.]js$/.test(input)),
+    false,
+  );
+  const [editor] = chunks.filter(
+    (file) => local(outputs[file].entryPoint ?? "") === "viewer/page-editor.mjs",
+  );
+  assert.ok(editor, "page-editor.mjs is its own chunk");
+  assert.ok(inputsOf([editor]).includes("wasm-ready:pages-wasm-ready"));
+  assert.deepEqual(
+    outputs["public/app.js"].imports.filter((item) => item.kind === "dynamic-import"),
+    [{ path: editor, kind: "dynamic-import" }],
+  );
+  assert.ok(chunks.every((file) => VIEWER_CHUNK.test(file)));
+  // CSS from the editor chunk is already in app.css, in the shell's import order.
+  const css = (file) => result.outputFiles.find((output) => output.path === path.join(dist, file));
+  for (const file of styles) assert.ok(stylesCovered(css(file).text, css("public/app.css").text));
+});
+
+test("the viewer split check refuses a shell that waits for WASM or an unexpected output", () => {
+  const output = (inputs, imports = []) => ({ inputs, imports, bytes: 1 });
+  const split = (outputs) => viewerSplit({ inputs: {}, outputs });
+  const lazy = { path: "public/chunks/EDITOR23.js", kind: "dynamic-import" };
+  assert.deepEqual(
+    split({
+      "public/app.js": output({ "../viewer/main.jsx": {} }, [
+        { path: "public/chunks/SHARED23.js", kind: "import-statement" },
+        lazy,
+      ]),
+      "public/chunks/SHARED23.js": output({ "../viewer/store.mjs": {} }),
+      "public/chunks/EDITOR23.js": output({ "wasm-ready:pages-wasm-ready": {} }, [
+        { path: "public/chunks/SHARED23.js", kind: "import-statement" },
+      ]),
+      "public/chunks/EDITOR23.css": output({}),
+      "public/app.css": output({}),
+    }),
+    {
+      chunks: ["public/chunks/EDITOR23.js", "public/chunks/SHARED23.js"],
+      preloads: ["public/chunks/SHARED23.js"],
+      styles: ["public/chunks/EDITOR23.css"],
+    },
+  );
+  assert.throws(
+    () =>
+      split({
+        "public/app.js": output({}, [
+          { path: "public/chunks/SHARED23.js", kind: "import-statement" },
+        ]),
+        "public/chunks/SHARED23.js": output({ "wasm-entry:@automerge/automerge": {} }),
+      }),
+    /must not import the WASM runtimes statically/,
+  );
+  assert.throws(
+    () =>
+      split({
+        "public/app.js": output({}, [lazy]),
+        "public/chunks/EDITOR23.js": output({}),
+        "public/editor.js": output({}),
+      }),
+    /Unexpected viewer output public[/]editor[.]js/,
+  );
+  assert.throws(
+    () => split({ "public/app.js": output({}), "public/app.css": output({}) }),
+    /must split the editor/,
+  );
+});
+
+test("index.html preloads exactly the chunks app.js imports", () => {
+  const source = readFileSync(path.join(app, "viewer/index.html"), "utf8");
+  const html = withModulePreloads(source, ["public/chunks/SHARED23.js"]);
+  const stylesheet = '<link rel="stylesheet" href="/app.css" />';
+  const preload = '<link rel="modulepreload" href="/chunks/SHARED23.js" />';
+  assert.equal(html.split(preload).length, 2);
+  assert.ok(html.indexOf(stylesheet) < html.indexOf(preload));
+  assert.ok(html.indexOf(preload) < html.indexOf('<link rel="preload" href="/automerge.wasm"'));
+  assert.equal(withModulePreloads(source, []), source);
+  assert.throws(() => withModulePreloads(html, []), /must not list chunk preloads/);
+  assert.throws(() => withModulePreloads(source, ["public/app.js"]), /Unexpected viewer preload/);
+  assert.throws(() => withModulePreloads("<html></html>", []), /exactly once/);
+  assert.equal(stylesCovered(".a{color:red}", ".b{x:y}.a{color:red}"), true);
+  assert.equal(stylesCovered(".a{color:red}.c{x:z}", ".b{x:y}.a{color:red}"), false);
 });

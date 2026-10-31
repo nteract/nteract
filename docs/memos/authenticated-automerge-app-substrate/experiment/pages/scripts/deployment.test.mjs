@@ -191,8 +191,15 @@ test("release staging copies only built artifacts, never development credentials
         : [prefix + entry.name],
     );
   }
+  const { createHash } = await import("node:crypto");
+  const sha256 = (value) => createHash("sha256").update(value).digest("hex");
+  const chunks = ["public/chunks/ABCDEFGH.js", "public/chunks/IJKLMN23.js"];
+  const certified = Object.fromEntries(chunks.map((file) => [file, sha256("artifact:" + file)]));
+  const receipt = JSON.stringify({ viewer_chunks: certified });
+  const contents = (artifact) =>
+    artifact === "build-receipt.json" ? receipt : "artifact:" + artifact;
   try {
-    for (const artifact of releaseArtifacts) write(artifact, "artifact:" + artifact);
+    for (const artifact of [...releaseArtifacts, ...chunks]) write(artifact, contents(artifact));
     for (const secret of [
       ".dev.vars",
       ".env",
@@ -203,9 +210,50 @@ test("release staging copies only built artifacts, never development credentials
     ])
       write(secret, "DO NOT SHIP");
     stageArtifacts(dist, destination);
-    assert.deepEqual(files(destination).sort(), [...releaseArtifacts].sort());
-    for (const artifact of releaseArtifacts)
-      assert.equal(readFileSync(path.join(destination, artifact), "utf8"), "artifact:" + artifact);
+    assert.deepEqual(files(destination).sort(), [...releaseArtifacts, ...chunks].sort());
+    for (const artifact of [...releaseArtifacts, ...chunks])
+      assert.equal(readFileSync(path.join(destination, artifact), "utf8"), contents(artifact));
+    // public/chunks must match the receipt exactly: a stale chunk from an
+    // earlier build, a missing chunk, or a receipt without the list all fail.
+    write("public/chunks/STALE234.js", "artifact:stale");
+    assert.throws(
+      () => stageArtifacts(dist, path.join(root, "stale-chunk")),
+      /differs from the viewer chunks/,
+    );
+    rmSync(path.join(dist, "public/chunks/STALE234.js"));
+    rmSync(path.join(dist, chunks[1]));
+    assert.throws(
+      () => stageArtifacts(dist, path.join(root, "missing-chunk")),
+      /differs from the viewer chunks/,
+    );
+    write(chunks[1], contents(chunks[1]));
+    // A listed chunk whose bytes changed after the build keeps its name, so
+    // only its digest gives it away. Nothing is staged.
+    write(chunks[0], "artifact:tampered");
+    assert.throws(
+      () => stageArtifacts(dist, path.join(root, "tampered-chunk")),
+      /Viewer chunk changed since the build: public[/]chunks[/]ABCDEFGH[.]js/,
+    );
+    assert.throws(() => readdirSync(path.join(root, "tampered-chunk")));
+    write(chunks[0], contents(chunks[0]));
+    for (const listed of [
+      undefined,
+      {},
+      chunks,
+      { "public/chunks/../index.js": certified[chunks[0]] },
+      { "public/app.js": certified[chunks[0]] },
+      { ...certified, [chunks[1]]: "not-a-digest" },
+      { ...certified, [chunks[1]]: certified[chunks[1]].toUpperCase() },
+    ]) {
+      write("build-receipt.json", JSON.stringify({ viewer_chunks: listed }));
+      assert.throws(
+        () => stageArtifacts(dist, path.join(root, "unlisted-chunks")),
+        /must list the viewer chunks with their sha256/,
+      );
+    }
+    assert.throws(() => readdirSync(path.join(root, "stale-chunk")));
+    assert.throws(() => readdirSync(path.join(root, "unlisted-chunks")));
+    write("build-receipt.json", receipt);
     assert.equal(
       readFileSync(path.join(destination, "public/theme.js"), "utf8"),
       "artifact:public/theme.js",

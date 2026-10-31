@@ -4,7 +4,7 @@ import * as fs from "node:fs";
 import path from "node:path";
 import { tmpdir } from "node:os";
 import { createHash } from "node:crypto";
-import { routesFor, imagePaths } from "./deployment/routes.mjs";
+import { routesFor, chunkPaths, imagePaths } from "./deployment/routes.mjs";
 import { deploymentProfile } from "./deployment/profiles.mjs";
 import { isolatedPublicationPlan, publishIsolated } from "./deployment/isolated-publication.mjs";
 
@@ -264,7 +264,9 @@ function priorConfig(config, target) {
       ? config.replace(imagePaths, "")
       : target === "page8"
         ? config.replace("|theme[.]js|", "|")
-        : config.replace("|mermaid[.]js|", "|");
+        : target === "page9"
+          ? config.replace("|" + chunkPaths, "|")
+          : config.replace("|mermaid[.]js|", "|");
 }
 function previousInstallation(f, { pending = false, newConfig = false } = {}) {
   const plan = isolatedPublicationPlan(inputFor(f.target));
@@ -330,6 +332,45 @@ test("Page8 admits only the exact theme asset while every older route receipt st
     assert.equal(route.test(pathname), false, pathname);
 });
 
+test("Page9 admits only hashed viewer chunks while every older route receipt stays frozen", () => {
+  const frozen = {
+    "pages-next": "2dbfabe3e649e0f79afc9df766e0a19c52177b76667d89ad8e45acaaf523e5f3",
+    page3: "db474e430d27227ee9bf407beee948ad6cf7f601fafd55c60bbf34effa38200a",
+    page4: "9c5872feed6898ee236a96dc70226c625d5c3a299c3c3866b351b0f4b41f47de",
+    page5: "4bda4497169b48213638b5085f4ce5e2b9c335cf483d501f965e1c7f8fd8321c",
+    page6: "5240e6014b88bddb73115809c273da72b7e15e5516b67f43db8ed66ad82a12ac",
+    page7: "ed30a9fe9aef61a9f8f42451d81bea1c7fb399181b529081d138a91d259730a8",
+    page8: "c5fb35e6dfc9e1483cf813ed4a3b4c3c84b9bb3d551244aa98f89c5d0e36836a",
+  };
+  for (const [target, expected] of Object.entries(frozen)) {
+    assert.equal(digest(routesFor(target)), expected, target);
+    const route = new RegExp(/^    path: (.+)$/m.exec(routesFor(target))[1]);
+    assert.equal(route.test("/chunks/ABCDEFGH.js"), false, target);
+  }
+  const current = routesFor("page9");
+  assert.equal(
+    digest(priorConfig(current, "page9")),
+    "0b710b48df7a6109f555f1dee0dfb27456382eafab64b749eeb8879dabdcbd95",
+    "the permitted migration must start from Page9's exact deployed route bytes",
+  );
+  const route = new RegExp(/^    path: (.+)$/m.exec(current)[1]);
+  for (const pathname of ["/chunks/ABCDEFGH.js", "/chunks/C5DM4OBS.js", "/chunks/ZZZZ2222.js"])
+    assert.equal(route.test(pathname), true, pathname);
+  for (const pathname of [
+    "/chunks/",
+    "/chunks/abcdefgh.js",
+    "/chunks/ABCDEFG1.js",
+    "/chunks/ABCDEFGHI.js",
+    "/chunks/ABCDEFG.js",
+    "/chunks/ABCDEFGH.css",
+    "/chunks/ABCDEFGH.js/",
+    "/chunks/ABCDEFGH.js/private",
+    "/chunks/nested/ABCDEFGH.js",
+    "/ABCDEFGH.js",
+  ])
+    assert.equal(route.test(pathname), false, pathname);
+});
+
 test("OAuth and private images publish only exact Page7 through Page9 routes while previous targets remain closed", () => {
   for (const target of [
     "pages-next",
@@ -370,7 +411,7 @@ test("OAuth and private images publish only exact Page7 through Page9 routes whi
   }
 });
 
-for (const target of ["page3", "page5", "page7", "page8"]) {
+for (const target of ["page3", "page5", "page7", "page8", "page9"]) {
   test(`${target} known route upgrade restarts only its dedicated connector then becomes a no-op`, (t) => {
     const f = fixture(t, { target });
     const expected = previousInstallation(f);
@@ -977,6 +1018,40 @@ for (const target of ["page6", "page7", "page8", "page9"])
       imageAssetPath + "/" + "a".repeat(64) + "/private",
     ])
       assert.ok(paths.includes(pathname), pathname);
+  });
+
+test("page9 publisher verifies hashed chunk ingress before starting its connector", (t) => {
+  const f = fixture(t, { target: "page9" });
+  f.execute();
+  const start = f.calls.findIndex(
+    ({ command, args }) => command === "systemctl" && ["start", "restart"].includes(args[0]),
+  );
+  const paths = f.calls
+    .slice(0, start)
+    .filter(({ command, args }) => command === "/usr/bin/cloudflared" && args.includes("rule"))
+    .map(({ args }) => new URL(args.at(-1)).pathname);
+  for (const pathname of [
+    "/chunks/ABCDEFGH.js",
+    "/chunks/abcdefgh.js",
+    "/chunks/ABCDEFGH.js/private",
+    "/chunks/ABCDEFGH.css",
+    "/chunks/ABCDEFGHI.js",
+    "/chunks/",
+  ])
+    assert.ok(paths.includes(pathname), pathname);
+});
+
+for (const misroutePath of ["/chunks/ABCDEFGH.js", "/chunks/ABCDEFGH.js/private"])
+  test(`Page9 does not activate a connector with misrouted chunk path ${misroutePath}`, (t) => {
+    const f = fixture(t, { target: "page9", misroutePath });
+    assert.throws(f.execute, /Dedicated tunnel route validation failed/);
+    assert.equal(
+      f.calls.some(
+        ({ command, args }) =>
+          command === "systemctl" && ["start", "restart", "enable"].includes(args[0]),
+      ),
+      false,
+    );
   });
 
 for (const misroutePath of [

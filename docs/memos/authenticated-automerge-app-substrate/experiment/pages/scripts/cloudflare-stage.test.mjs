@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { createHash } from "node:crypto";
 import { mkdtempSync, mkdirSync, writeFileSync, readdirSync, rmSync, readFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -11,7 +12,17 @@ test("Cloudflare staging separates native modules from browser assets and exclud
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const dist = path.join(dir, "dist");
   mkdirSync(path.join(dist, "public"), { recursive: true });
-  for (const file of releaseArtifacts) writeFileSync(path.join(dist, file), file);
+  const chunk = "public/chunks/ABCDEFGH.js";
+  mkdirSync(path.join(dist, "public/chunks"));
+  for (const file of [...releaseArtifacts, chunk])
+    writeFileSync(
+      path.join(dist, file),
+      file === "build-receipt.json"
+        ? JSON.stringify({
+            viewer_chunks: { [chunk]: createHash("sha256").update(chunk).digest("hex") },
+          })
+        : file,
+    );
   writeFileSync(path.join(dist, ".dev.vars"), "secret-that-must-stay-local");
   mkdirSync(path.join(dist, ".celld"));
   writeFileSync(path.join(dist, ".celld", "private.db"), "private");
@@ -33,6 +44,7 @@ test("Cloudflare staging separates native modules from browser assets and exclud
     readFileSync(path.join(destination, "public/mermaid.js"), "utf8"),
     "public/mermaid.js",
   );
+  assert.deepEqual(readdirSync(path.join(destination, "public/chunks")), ["ABCDEFGH.js"]);
   assert.equal(config.main, "worker/index.js");
   assert.equal(config.d1_databases[0].database_id, id);
   assert.deepEqual(config.r2_buckets, [

@@ -230,6 +230,8 @@ const targets = Object.freeze({
     sharing: true,
     oauth: true,
     theme: true,
+    // The viewer loads its editor from content-hashed /chunks/*.js files.
+    viewerChunks: true,
     firewallTable: "nteract_page9",
     firewallMark: "0x00400000",
     firewallComment: "nteract/preview-infra standalone-page9",

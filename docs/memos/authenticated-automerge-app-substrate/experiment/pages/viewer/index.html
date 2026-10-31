@@ -6,9 +6,11 @@
     <title>Pages · nteract</title>
     <script src="/theme.js"></script>
     <link rel="stylesheet" href="/app.css" />
-    <!-- app.js awaits both runtimes before it renders. These must match the
-         fetches in scripts/browser-wasm.mjs: same URL, and crossorigin so the
-         preload is a CORS same-origin-credentials fetch like fetch(url). -->
+    <!-- scripts/build.mjs adds a modulepreload after app.css for each chunk
+         app.js imports. The editor chunk awaits both runtimes before a Page opens.
+         These must match the fetches in scripts/browser-wasm.mjs: same URL, and
+         crossorigin so the preload is a CORS same-origin-credentials fetch like
+         fetch(url). -->
     <link rel="preload" href="/automerge.wasm" as="fetch" crossorigin />
     <link rel="preload" href="/subduction.wasm" as="fetch" crossorigin />
     <link rel="describedby" type="text/plain" href="/llms.txt" />

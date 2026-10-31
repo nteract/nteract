@@ -3,7 +3,7 @@ import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import { deploymentProfile, stageTarget, verifyDeployment } from "./profiles.mjs";
-import { routesFor, imagePaths } from "./routes.mjs";
+import { routesFor, chunkPaths, imagePaths } from "./routes.mjs";
 
 const accountId = "1cfb529b94b3d6cde3aaf49d1d6ed5e6";
 function publicationPaths(target) {
@@ -193,7 +193,9 @@ export function publishIsolated(stage, { filesystem = fs, run = runCommand } = {
           ? plan.config.replace(imagePaths, "")
           : target === "page8"
             ? plan.config.replace("|theme[.]js|", "|")
-            : null;
+            : target === "page9"
+              ? plan.config.replace("|" + chunkPaths, "|")
+              : null;
   const previousReceipt = previousConfig === null ? null : receiptFor(previousConfig);
   const pendingReceipt =
     previousConfig === null
@@ -262,6 +264,7 @@ export function publishIsolated(stage, { filesystem = fs, run = runCommand } = {
   function validateRoutes(file) {
     const sharing = profile.sharing === true;
     const oauth = profile.oauth === true;
+    const chunks = profile.viewerChunks === true;
     const assets = "/api/pages/08c583e5-d29e-4f1e-b06b-333965254e94/assets";
     run("/usr/bin/cloudflared", ["--config", file, "tunnel", "ingress", "validate"]);
     for (const [pathname, expected] of [
@@ -279,6 +282,12 @@ export function publishIsolated(stage, { filesystem = fs, run = runCommand } = {
       ["/theme.js/private", "http_status:404"],
       ["/themeXjs", "http_status:404"],
       ["/theme.js/", "http_status:404"],
+      ["/chunks/ABCDEFGH.js", chunks ? plan.listen : "http_status:404"],
+      ["/chunks/abcdefgh.js", "http_status:404"],
+      ["/chunks/ABCDEFGH.js/private", "http_status:404"],
+      ["/chunks/ABCDEFGH.css", "http_status:404"],
+      ["/chunks/ABCDEFGHI.js", "http_status:404"],
+      ["/chunks/", "http_status:404"],
       ["/api/sync", plan.listen],
       ["/api/access", sharing ? plan.listen : "http_status:404"],
       ["/api/access/private", "http_status:404"],

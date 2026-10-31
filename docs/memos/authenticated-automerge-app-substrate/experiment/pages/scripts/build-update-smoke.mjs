@@ -137,8 +137,22 @@ try {
   const session = await api(owner, "/api/auth/session");
   assert.equal(session.build, buildA);
   assert.equal(session.minViewerProtocol, "1");
-  const viewerSource = await (await fetch(`${origin}/app.js`)).text();
-  assert.ok(viewerSource.includes(JSON.stringify(buildA)), "viewer embeds the Worker's build");
+  // The build id lives in app.js or one of the chunks it imports.
+  const entry = await (await fetch(`${origin}/app.js`)).text();
+  const viewerSources = [
+    entry,
+    ...(await Promise.all(
+      [...new Set(entry.match(/chunks\/[A-Z2-7]{8}\.js/g))].map(async (chunk) => {
+        const response = await fetch(`${origin}/${chunk}`);
+        assert.match(response.headers.get("content-type") ?? "", /javascript/, chunk);
+        return response.text();
+      }),
+    )),
+  ];
+  assert.ok(
+    viewerSources.some((source) => source.includes(JSON.stringify(buildA))),
+    "viewer embeds the Worker's build",
+  );
   const title = `Deploy fixture ${Date.now()}`;
   const created = await tool(owner, "create_page", {
     title,
@@ -333,6 +347,114 @@ try {
   report.completed.push(
     "Protocol floor above the viewer: edits paused, unsent reply kept read-only and blocked Reload until discarded, accepted edit saved",
   );
+
+  // app.js loads the editor chunk with a dynamic import. A deploy can retire
+  // that chunk before the import runs; the server then answers its path with
+  // the app's HTML, and the import fails. The shell still renders, the banner
+  // asks for a reload, and the reload opens the Page.
+  const editorChunk = /import\("\.\/(chunks\/[A-Z2-7]{8}\.js)"\)/.exec(entry)?.[1];
+  assert.ok(editorChunk, "app.js imports the editor chunk");
+  const retired = (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: "text/html; charset=utf-8",
+      headers: { "cache-control": "no-store" },
+      body: "<!doctype html><title>Pages</title>",
+    });
+  const finalText =
+    "Deploy garden. Before deploy. During deploy. Checkpointed. After banner. Floor raised.";
+
+  // New Page while the editor chunk is still downloading, then Home: when the
+  // chunk lands, the abandoned New Page must not create a draft. A created
+  // draft lives in this browser first, so count the library's rows (local and
+  // server Pages) as well as the server catalog.
+  const library = owner.locator(".page-card");
+  const untitled = async () => {
+    await owner.goto(origin);
+    await expect(library.filter({ hasText: title })).toBeVisible({ timeout: 30000 });
+    const rows = await library.filter({ hasText: "Untitled" }).count();
+    const server = (await tool(owner, "list_pages")).body.pages.filter(
+      (page) => page.title === "Untitled",
+    ).length;
+    return { rows, server };
+  };
+  const untitledBefore = await untitled();
+  let releaseEditor;
+  const editorHeld = new Promise((resolve) => (releaseEditor = resolve));
+  await owner.route(`**/${editorChunk}`, async (route) => {
+    await editorHeld;
+    await route.fallback();
+  });
+  await owner.goto(origin);
+  const newPage = owner.getByRole("button", { name: "New Page", exact: true });
+  await newPage.click();
+  await expect(newPage).toBeDisabled();
+  await owner.getByRole("link", { name: "Pages", exact: true }).click();
+  releaseEditor();
+  await expect(newPage).toBeEnabled({ timeout: 30000 });
+  // The editor opens a Page once its chunk lands, so the abandoned create has
+  // had its chance to run.
+  await library.filter({ hasText: title }).click();
+  await paragraph(owner, finalText, { timeout: 30000 });
+  await expect(owner.getByRole("textbox", { name: "Page title" })).toHaveValue(title);
+  await owner.unrouteAll({ behavior: "wait" });
+  assert.deepEqual(await untitled(), untitledBefore, "an abandoned New Page created a draft");
+  report.completed.push(
+    "New Page during the editor download, then Home: no draft created once the editor loaded",
+  );
+
+  for (const { label, stale, expected } of [
+    {
+      label: "same build",
+      stale: false,
+      expected: "Pages couldn't load the editor. Reload to try again.",
+    },
+    {
+      label: "older build",
+      stale: true,
+      expected: "Pages changed on the server. This tab can't edit until you reload.",
+    },
+  ]) {
+    const older = "d".repeat(12);
+    await owner.route(
+      (url) => url.pathname === "/app.js" || url.pathname.startsWith("/chunks/"),
+      async (route) => {
+        const { pathname } = new URL(route.request().url());
+        if (pathname === `/${editorChunk}`) return retired(route);
+        if (!stale) return route.fallback();
+        // This tab's viewer embeds an older build id than the server's.
+        const response = await route.fetch();
+        const body = (await response.text()).replaceAll(
+          JSON.stringify(buildB),
+          JSON.stringify(older),
+        );
+        // The rewritten body must not be revalidated later under the real ETag.
+        const headers = Object.fromEntries(
+          Object.entries(response.headers()).filter(([name]) => name !== "etag"),
+        );
+        await route.fulfill({
+          response,
+          body,
+          headers: { ...headers, "cache-control": "no-store" },
+        });
+      },
+    );
+    await owner.goto(`${origin}/p/${pageId}`);
+    await expect(banner(owner)).toContainText(expected, { timeout: 30000 });
+    await expect(banner(owner)).toHaveAttribute("role", "alert");
+    await expect(owner.getByRole("button", { name: /, switch page$/ })).toBeVisible();
+    await expect(content(owner)).toHaveCount(0);
+    await owner.screenshot({
+      path: `${output}/editor-unavailable-${stale ? "stale" : "same"}.png`,
+    });
+    await owner.unrouteAll({ behavior: "wait" });
+    await reloadFromBanner(owner);
+    await paragraph(owner, finalText, { timeout: 30000 });
+    await expect(banner(owner)).toHaveCount(0);
+    report.completed.push(
+      `Editor chunk retired under a tab (${label}): shell rendered, banner asked for a reload, reload opened the Page`,
+    );
+  }
   assert.deepEqual(report.errors, []);
 } catch (error) {
   report.failure = error.message;
