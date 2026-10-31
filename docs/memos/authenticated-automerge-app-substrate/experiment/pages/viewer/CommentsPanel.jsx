@@ -2,6 +2,8 @@ import { useEffect, useId, useRef, useState } from "react";
 import { Check, MessageSquare, RotateCcw, X, Maximize2, Minimize2 } from "lucide-react";
 import { resolveCommentDraft } from "./comment-draft.mjs";
 import { reloadGate } from "./build-freshness.mjs";
+import { hasDraftText } from "./comment-composer.mjs";
+import { Store, useStore } from "./store.mjs";
 import { COMMENTS_SHEET_QUERY } from "./comments-layout.mjs";
 import { CommentRichText, CommentContent } from "./CommentRichText.jsx";
 import "./comments.css";
@@ -18,6 +20,8 @@ function CommentAuthor({ author }) {
   );
 }
 
+const NO_COMPOSER = new Store({ state: { name: "idle" }, composer: null, body: "" });
+
 export function CommentsPanel({
   open,
   session,
@@ -27,12 +31,13 @@ export function CommentsPanel({
   onClose,
   onReveal,
   onSelect,
-  onClearComposer,
 }) {
   const dialog = useRef(null),
-    composerElement = useRef(null),
-    previousComposer = useRef(null),
     resolvedDisclosure = useRef(null);
+  // The inline composer (CommentPopover) owns new comments. The panel shows a
+  // draft only after the popover closed with text in it.
+  const draft = useStore(composer?.store ?? NO_COMPOSER);
+  const keptDraft = draft.state.name === "dismissed" ? draft : null;
   const [mobile, setMobile] = useState(() => matchMedia(COMMENTS_SHEET_QUERY).matches);
   const [drafts, setDrafts] = useState({});
   const [expanded, setExpanded] = useState(false);
@@ -42,19 +47,6 @@ export function CommentsPanel({
   }, [open]);
   const [problem, setProblem] = useState("");
   const [changing, setChanging] = useState(null);
-  useEffect(() => {
-    const oldKey = previousComposer.current;
-    const newKey = composer?.key;
-    previousComposer.current = newKey;
-    if (oldKey && newKey && oldKey !== newKey) {
-      // Retargeting keeps the writer's body, with a separate key so an older
-      // pending submission still cannot clear this composer.
-      setDrafts((previous) => ({
-        ...previous,
-        [newKey]: previous[newKey] ?? previous[oldKey] ?? "",
-      }));
-    }
-  }, [composer?.key]);
   useEffect(() => {
     const media = matchMedia(COMMENTS_SHEET_QUERY);
     const update = () => setMobile(media.matches);
@@ -89,15 +81,6 @@ export function CommentsPanel({
     }
   }, [open, mobile]);
   useEffect(() => {
-    if (!open || !composer?.key || target) return;
-    const frame = requestAnimationFrame(() => {
-      const textarea = composerElement.current?.querySelector('[role="textbox"]');
-      textarea?.focus({ preventScroll: true });
-      composerElement.current?.scrollIntoView({ block: "nearest" });
-    });
-    return () => cancelAnimationFrame(frame);
-  }, [open, composer?.key, target]);
-  useEffect(() => {
     if (!open || !target?.id) return;
     const frame = requestAnimationFrame(() => {
       const thread = dialog.current?.querySelector(`[data-thread-id="${CSS.escape(target.id)}"]`);
@@ -108,12 +91,13 @@ export function CommentsPanel({
     return () => cancelAnimationFrame(frame);
   }, [open, target]);
   const changeDraft = (id, value) => setDrafts((previous) => ({ ...previous, [id]: value }));
-  // Drafts exist only here, so a reload asks about every draft that still has
-  // a place in this panel: the composer and a reply on any thread, open or
-  // resolved. Each of those stays reachable to copy or discard.
-  const unsent = [composer?.key, ...threads.map((t) => t.id)]
-    .filter(Boolean)
-    .some((id) => hasDraft(drafts[id]));
+  // Drafts exist only in local UI, so a reload asks about every draft that
+  // still has a place on screen: the inline composer's draft (in the popover,
+  // or here once dismissed) and a reply on any thread, open or resolved. Each
+  // of those stays reachable to copy or discard.
+  const unsent =
+    (draft.composer && hasDraftText(draft.body)) ||
+    threads.some((t) => hasDraft(drafts[t.id]));
   const draftSource = useRef(null);
   useEffect(() => {
     const source = reloadGate.watchDrafts();
@@ -128,18 +112,24 @@ export function CommentsPanel({
   useEffect(() => {
     if (resolvedDraft && resolvedDisclosure.current) resolvedDisclosure.current.open = true;
   }, [resolvedDraft, visited]);
-  let quote = composer?.quote || "",
+  let quote = keptDraft?.composer.quote || "",
     draftProblem = "";
-  if (composer) {
+  if (keptDraft) {
     try {
       quote =
-        resolveCommentDraft(session.doc, composer.draft).selected_text?.replaceAll(
+        resolveCommentDraft(session.doc, keptDraft.composer.draft).selected_text?.replaceAll(
           "\ufffc",
           "\n",
         ) || "";
     } catch (error) {
       draftProblem = error.message;
     }
+  }
+  function continueDraft() {
+    if (mobile) {
+      onClose();
+      requestAnimationFrame(() => composer.reopen());
+    } else composer.reopen();
   }
   async function changeThread(thread) {
     setProblem("");
@@ -250,39 +240,29 @@ export function CommentsPanel({
             {problem}
           </p>
         )}
-        {composer && (session.canWrite || hasDraft(drafts[composer.key])) && (
-          <div className="comment-composer" ref={composerElement}>
+        {keptDraft && (
+          <section className="comment-kept-draft" aria-label="Unsent comment">
+            <p className="muted comment-kept-draft-label">Unsent comment</p>
             {quote && <blockquote className="composer-context">{quote}</blockquote>}
             {draftProblem && (
               <p className="error" role="alert">
-                {draftProblem}. Select a passage and choose Comment again.
+                {draftProblem}. Copy the text, then select a passage and choose Comment again.
               </p>
             )}
-            <CommentForm
-              key={composer.key}
-              label={
-                composer.draft.target.kind === "selection"
-                  ? "Comment on selection"
-                  : "Comment on block"
-              }
-              value={drafts[composer.key] || ""}
-              onChange={(body) => changeDraft(composer.key, body)}
-              disabled={Boolean(draftProblem) || !session.canWrite}
-              submit={(body, spans) => {
-                // No await between resolving the surviving cursors and creating the comment.
-                const target = resolveCommentDraft(session.doc, composer.draft);
-                return session.comment(
-                  { ...target, action: "add", body, body_format: "markdown" },
-                  spans,
-                );
-              }}
-              onSuccess={() => onClearComposer(composer.key)}
-              onCancel={() => {
-                changeDraft(composer.key, "");
-                onClearComposer(composer.key);
-              }}
-            />
-          </div>
+            <p className="comment-kept-draft-text">
+              {keptDraft.body?.markdown ?? keptDraft.body}
+            </p>
+            <div className="comment-form-actions">
+              {session.canWrite && !draftProblem && (
+                <button type="button" className="primary" onClick={continueDraft}>
+                  Continue
+                </button>
+              )}
+              <button type="button" className="subtle-button" onClick={() => composer.cancel()}>
+                Discard
+              </button>
+            </div>
+          </section>
         )}
         {!unresolved.length && (
           <p className="muted comments-empty">

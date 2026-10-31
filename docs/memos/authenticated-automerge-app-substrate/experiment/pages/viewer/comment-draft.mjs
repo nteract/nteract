@@ -82,3 +82,23 @@ export function resolveCommentDraft(doc, draft) {
   if (at !== start || occurrence > 10000) throw changedPassage();
   return { block_id: draft.blockId, selected_text: selected, occurrence };
 }
+
+/**
+ * Add a thread for `draft` through `session.comment` and resolve with the new
+ * thread's id once the change is stored. Resolving and writing happen without
+ * an await between them. The id is read by comparing thread keys around the
+ * local change, which applies synchronously.
+ */
+export async function sendCommentDraft(session, draft, body) {
+  const markdown = body?.markdown ?? body;
+  if (typeof markdown !== "string" || !markdown.trim()) throw Error("Write a comment first");
+  const target = resolveCommentDraft(session.doc, draft);
+  const before = new Set(Object.keys(session.doc.comments ?? {}));
+  const stored = session.comment(
+    { ...target, action: "add", body: markdown, body_format: "markdown" },
+    body?.spans,
+  );
+  const threadId = Object.keys(session.doc.comments ?? {}).find((id) => !before.has(id)) ?? null;
+  await stored;
+  return threadId;
+}

@@ -126,20 +126,20 @@
   font-size: 16px;
 }
 .comments .comment-rich-content p,
-.comments .comment-rich-editor p {
+:is(.comments, .comment-popover) .comment-rich-editor p {
   white-space: pre-wrap;
 }
-.comments .wordgard-document wg-content {
+:is(.comments, .comment-popover) .wordgard-document wg-content {
   line-height: 1.5;
   padding: 0.3rem 0;
 }
-.comments .wordgard-document wg-content p {
+:is(.comments, .comment-popover) .wordgard-document wg-content p {
   margin: 0.25rem 0 0.5rem;
 }
-.comments .wordgard-document wg-content pre {
+:is(.comments, .comment-popover) .wordgard-document wg-content pre {
   padding: 0.65rem 0.85rem;
 }
-.comments .wordgard-document wg-content blockquote {
+:is(.comments, .comment-popover) .wordgard-document wg-content blockquote {
   border-left: 3px solid var(--border);
   margin: 0.75rem 0;
   padding: 0.1rem 0.75rem;
@@ -148,15 +148,15 @@
 .comments .wordgard-task-control:has(input:disabled) {
   cursor: default;
 }
-.comments .wordgard-document wg-content table {
+:is(.comments, .comment-popover) .wordgard-document wg-content table {
   display: block;
   min-width: 0;
   width: max-content;
   max-width: 100%;
   overflow-x: auto;
 }
-.comments .wordgard-document wg-content td,
-.comments .wordgard-document wg-content th {
+:is(.comments, .comment-popover) .wordgard-document wg-content td,
+:is(.comments, .comment-popover) .wordgard-document wg-content th {
   min-width: 100px;
   max-width: 320px;
   white-space: pre-wrap;
@@ -173,7 +173,7 @@
   cursor: pointer;
 }
 @media (pointer: coarse), (max-width: 900px) {
-  .comments .comment-formatting .toolbar-button {
+  :is(.comments, .comment-popover) .comment-formatting .toolbar-button {
     width: 40px;
     height: 40px;
     min-width: 40px;
@@ -186,4 +186,62 @@
   .comments .thread-conversation-actions button {
     min-height: 40px;
   }
+}
+
+/* The inline composer: a popover beside the passage, or a bottom sheet with
+   only the composer while COMMENTS_SHEET_QUERY matches. */
+.comment-popover {
+  position: fixed;
+  z-index: 90;
+  inset: auto;
+  box-sizing: border-box;
+  width: min(380px, calc(100vw - 24px));
+  max-height: calc(100dvh - 24px);
+  margin: 0;
+  padding: 0.6rem 0.75rem 0.65rem;
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: 0.75rem;
+  background: var(--surface);
+  color: var(--foreground);
+  box-shadow: 0 8px 28px #0000001f;
+  font-size: 0.875rem;
+}
+.comment-popover form {
+  margin: 0;
+}
+.comment-popover .comment-rich-editor {
+  margin: 0 0 0.5rem;
+}
+.comment-popover .comment-rich-editor .wordgard-document wg-content {
+  min-height: 56px;
+  max-height: 40vh;
+  overflow-y: auto;
+}
+.comment-popover .error {
+  margin: 0 0 0.5rem;
+}
+.comment-popover.comment-popover-sheet {
+  inset: auto 0 0;
+  width: 100%;
+  max-height: min(70dvh, 560px);
+  border: 0;
+  border-top: 1px solid var(--border);
+  border-radius: 1rem 1rem 0 0;
+  box-shadow: 0 -12px 48px #00000026;
+  padding: 0.75rem 1rem calc(0.75rem + env(safe-area-inset-bottom));
+}
+.comments .comment-kept-draft {
+  padding: 1rem 0 0.9rem;
+  border-bottom: 1px solid var(--line);
+}
+.comments .comment-kept-draft-label {
+  margin: 0 0 0.4rem;
+  font-size: 0.75rem;
+}
+.comments .comment-kept-draft-text {
+  margin: 0.4rem 0 0.6rem;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  user-select: text;
 }

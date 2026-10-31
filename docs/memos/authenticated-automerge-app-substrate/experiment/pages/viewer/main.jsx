@@ -53,6 +53,8 @@ import { reloadGate } from "./build-freshness.mjs";
 import { EditorLoader } from "./editor-loader.mjs";
 import { SessionHost } from "./session-host.mjs";
 import { useStore } from "./store.mjs";
+import { CommentComposer } from "./comment-composer.mjs";
+import { timer } from "rxjs";
 
 // The editor, and the WASM runtimes it waits for, load beside the shell
 // from boot. A Page session exists only once it has loaded, so code that
@@ -66,6 +68,9 @@ const editor = new EditorLoader({
     }),
   checkBuild: () => buildMonitor.check(),
 });
+// How long a new thread's passage stays emphasized after the inline composer
+// sends it.
+const CREATED_FLASH_MS = 1600;
 // The sessions this tab owns. The reload gate follows them from here.
 const host = new SessionHost();
 reloadGate.watch(host);
@@ -93,7 +98,6 @@ function App() {
     [toolbarOpen, setToolbarOpen] = useState(false),
     [active, setActive] = useState(null),
     [commentsOpen, setCommentsOpen] = useState(false),
-    [composer, setComposer] = useState(null),
     [target, setTarget] = useState(null),
     [pickerOpen, setPickerOpen] = useState(false),
     [pickerError, setPickerError] = useState(""),
@@ -105,17 +109,46 @@ function App() {
   const session = useStore(host.store, installedSession);
   const editorUnavailable = useStore(editor.store, editorFailed);
   // Rendered only beside a session; handlers read editor.module when they run.
-  const { WordgardEditor, SharingControls, CommentsPanel, SaveStatus, PageActivity } =
+  const { WordgardEditor, SharingControls, CommentsPanel, CommentPopover, SaveStatus, PageActivity } =
     editor.module ?? {};
   const auth = useRef(null),
     authentication = useRef(null),
     catalogRevision = useRef(0),
     lastRemote = useRef(null),
     creationPending = useRef(false),
-    composerId = useRef(null),
     article = useRef(null),
     titleInput = useRef(null),
     commentsButton = useRef(null);
+  // The inline comment composer. It outlives Pages; resetDocumentUI resets it,
+  // and a send that settles after the reset is ignored by its key.
+  const [composer] = useState(
+    () =>
+      new CommentComposer({
+        send: (current, body) => {
+          const session = host.current;
+          if (!session) throw Error("Page closed");
+          return editor.module.sendCommentDraft(session, current.draft, body);
+        },
+        focusComposer: () =>
+          requestAnimationFrame(() =>
+            document
+              .querySelector('#comment-popover [role="textbox"]')
+              ?.focus({ preventScroll: true }),
+          ),
+        returnFocus: (current) =>
+          requestAnimationFrame(() => {
+            if (!current) return;
+            // Pointer dismissals leave focus where the pointer put it.
+            const block = article.current?.querySelector(
+              `[data-block-id="${CSS.escape(current.draft.blockId)}"] wg-content`,
+            );
+            block?.focus({ preventScroll: true });
+          }),
+        flash: (threadId) =>
+          setTarget({ id: threadId, request: performance.now(), source: "created" }),
+      }),
+  );
+  const composerState = useStore(composer.store);
   // True while `revision` is the latest navigation and `principal` still the
   // signed-in account.
   const navigationCurrent = (revision, principal) =>
@@ -194,8 +227,7 @@ function App() {
   function resetDocumentUI() {
     setActive(null);
     setToolbarOpen(false);
-    composerId.current = null;
-    setComposer(null);
+    composer.reset();
     setTarget(null);
     setCommentsOpen(false);
     setFocusBlock(null);
@@ -552,23 +584,30 @@ function App() {
       setError(error.message);
     }
   }
+  // Comment on a selection opens the inline composer beside it. Readers
+  // without write access get the thread list instead.
   function startComment(id, selected) {
     if (!session || !id || !selected) return;
     activateBlock(id);
-    if (session.canWrite) {
-      try {
-        const draft = editor.module.captureCommentDraft(session.doc, id, selected);
-        const key = crypto.randomUUID();
-        composerId.current = key;
-        setComposer({ key, draft, quote: selected?.text.replaceAll("\ufffc", "\n") || "" });
-        setTarget(null);
-      } catch (error) {
-        setError(error.message);
-        return;
-      }
+    if (!session.canWrite) {
+      setCommentsOpen(true);
+      return;
     }
-    setCommentsOpen(true);
+    try {
+      const draft = editor.module.captureCommentDraft(session.doc, id, selected);
+      if (composer.start(draft, selected.text.replaceAll("\ufffc", "\n"))) setTarget(null);
+    } catch (error) {
+      setError(error.message);
+    }
   }
+  // A new thread's passage shows briefly, then returns to its resting style.
+  useEffect(() => {
+    if (target?.source !== "created") return;
+    const subscription = timer(CREATED_FLASH_MS).subscribe(() =>
+      setTarget((current) => (current === target ? null : current)),
+    );
+    return () => subscription.unsubscribe();
+  }, [target]);
   function closeComments() {
     setCommentsOpen(false);
     requestAnimationFrame(() => commentsButton.current?.focus({ preventScroll: true }));
@@ -895,6 +934,13 @@ function App() {
                         onActivate={() => activateBlock(block.id)}
                         threads={threads}
                         commentTarget={target}
+                        commentDraft={
+                          composerState.composer?.draft.blockId === block.id &&
+                          (composerState.state.name === "open" ||
+                            composerState.state.name === "sending")
+                            ? composerState.composer.draft
+                            : null
+                        }
                       />
                     ) : (
                       <pre>{block.markdown ?? "Unsupported block"}</pre>
@@ -917,12 +963,12 @@ function App() {
                 onClose={closeComments}
                 onReveal={revealComment}
                 onSelect={selectComment}
-                onClearComposer={(key) => {
-                  if (composerId.current === key) {
-                    composerId.current = null;
-                    setComposer(null);
-                  }
-                }}
+              />
+              <CommentPopover
+                key={`popover-${session.pageId}`}
+                composer={composer}
+                session={session}
+                containerRef={article}
               />
             </main>
           ) : opening ? (
