@@ -54,6 +54,36 @@ test("frontmatter without a closing fence has no title", () => {
   assert.equal(mermaidTitle("---\ntitle: Unclosed\npie title Pets"), null);
 });
 
+// Extraction runs synchronously while the editor renders. Hostile source must
+// not stall it through regex backtracking on long whitespace runs.
+test("long whitespace runs extract in linear time", () => {
+  const run = " ".repeat(100_000);
+  const cases = [
+    [`---\ntitle: A${run}B\n---\ngraph TD`, `A${run}B`],
+    [`---\ntitle: A${run}# note\n---\ngraph TD`, "A"],
+    [`---\ntitle: "A"${run}B\n---\ngraph TD`, `"A"${run}B`],
+    [`---\ntitle: 'A'${run}B\n---\ngraph TD`, `'A'${run}B`],
+    [`---\ntitle${run}x\n---\ngraph TD`, null],
+    [`---${run}x\ntitle: A\n---\ngraph TD`, null],
+    [`pie${run}x\n"A": 1`, null],
+    [`pie showData${run}x\n"A": 1`, null],
+    [`gantt\ntitle${run}x${run}B`, `x${run}B`],
+  ];
+  for (const [source, expected] of cases) {
+    const started = performance.now();
+    const title = mermaidTitle(source);
+    const elapsed = performance.now() - started;
+    assert.equal(title, expected);
+    assert.ok(elapsed < 50, `${elapsed.toFixed(1)} ms for ${JSON.stringify(source.slice(0, 16))}`);
+  }
+});
+
+test("a quoted frontmatter title keeps escapes and allows a trailing comment", () => {
+  assert.equal(mermaidTitle('---\ntitle: "Say \\"hi\\"" # c\n---\ngraph TD'), 'Say "hi"');
+  assert.equal(mermaidTitle('---\ntitle: "unterminated # c\n---\ngraph TD'), '"unterminated');
+  assert.equal(mermaidTitle("---\ntitle: A#B\n---\ngraph TD"), "A#B");
+});
+
 test("an HTML-looking title is returned verbatim as text", () => {
   assert.equal(
     mermaidTitle("---\ntitle: <img src=x onerror=alert(1)>\n---\ngraph TD"),

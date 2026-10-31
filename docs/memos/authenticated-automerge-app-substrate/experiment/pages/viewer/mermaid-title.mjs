@@ -25,15 +25,46 @@ const titledTypes = new Set([
   "xychart-beta",
 ]);
 
+// This runs synchronously while the editor renders a diagram, on source any
+// collaborator can write. Every pass below is a single linear scan; regexes in
+// this file stay anchored with no nested or adjacent ambiguous repeats.
+const isSpace = (char) => char === " " || char === "\t";
+
+// A YAML plain scalar ends at the first `#` that follows whitespace.
+function stripComment(value) {
+  for (let index = 1; index < value.length; index++)
+    if (value[index] === "#" && isSpace(value[index - 1])) return value.slice(0, index).trimEnd();
+  return value;
+}
+
+// The text of a value wrapped in `quote`, or null when it is not one. Double
+// quotes take backslash escapes; single quotes escape themselves as `''`.
+function quoted(value, quote, comments) {
+  let text = "";
+  for (let index = 1; index < value.length; index++) {
+    const char = value[index];
+    if (quote === '"' && char === "\\" && index + 1 < value.length) {
+      text += value[++index];
+    } else if (quote === "'" && char === "'" && value[index + 1] === "'") {
+      text += "'";
+      index++;
+    } else if (char === quote) {
+      const rest = value.slice(index + 1).trim();
+      return !rest || (comments && rest.startsWith("#")) ? text : null;
+    } else {
+      text += char;
+    }
+  }
+  return null;
+}
+
 // A quoted value may be followed by a YAML comment; an unquoted one ends at
 // ` #`. Mermaid statement values have no comments, so `comments` is opt-in.
 function unquote(value, comments) {
-  const tail = comments ? String.raw`\s*(?:#.*)?$` : "$";
-  const double = new RegExp(String.raw`^"((?:[^"\\]|\\.)*)"` + tail).exec(value);
-  if (double) return double[1].replace(/\\(.)/g, "$1");
-  const single = new RegExp(`^'((?:[^']|'')*)'` + tail).exec(value);
-  if (single) return single[1].replaceAll("''", "'");
-  return comments ? value.replace(/\s+#.*$/, "") : value;
+  const quote = value[0];
+  const text = quote === '"' || quote === "'" ? quoted(value, quote, comments) : null;
+  if (text !== null) return text;
+  return comments ? stripComment(value) : value;
 }
 
 function frontmatterTitle(lines) {
