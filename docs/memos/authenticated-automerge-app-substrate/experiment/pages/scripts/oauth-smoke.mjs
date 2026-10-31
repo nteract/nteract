@@ -102,7 +102,12 @@ export async function runOAuthSmoke({ origin, output, restart, ownerKey } = {}) 
             ).toString("base64"),
           });
         } else if (url.origin === origin) {
-          await network.send("Fetch.continueRequest", { requestId });
+          // A page that navigates or closes drops its paused requests, such as
+          // the viewer's /health check on a visibility change. Releasing one
+          // then fails with "Invalid InterceptionId"; it never left the browser.
+          await network.send("Fetch.continueRequest", { requestId }).catch((error) => {
+            if (!/Invalid InterceptionId/.test(error.message)) throw error;
+          });
         } else {
           report.errors.push(`Unexpected browser destination: ${url.origin}${url.pathname}`);
           await network.send("Fetch.failRequest", { requestId, errorReason: "BlockedByClient" });

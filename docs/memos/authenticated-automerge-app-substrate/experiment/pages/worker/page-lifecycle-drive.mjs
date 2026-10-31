@@ -347,8 +347,9 @@ export async function host(s, { prune = false, staleBinding = false } = {}) {
   };
   watchStorage(f.storage, h.trace, h.cuts);
   watchDatabase(db, h.cuts);
-  // Migrate now, so no migration write lands inside a row's cuts.
-  await catalogIndexDatabase(f.env);
+  // Migrate now, so no migration write lands inside a row's cuts. The harness
+  // awaits it outright, so no request needs to hold it.
+  await catalogIndexDatabase(f.env, {});
   // Previews sign with a per-Page secret created on first use.
   f.storage.values.set("host/purge-preview-secret", PREVIEW_SECRET);
   if (prune)

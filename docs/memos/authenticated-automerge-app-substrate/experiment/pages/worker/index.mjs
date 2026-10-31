@@ -161,6 +161,7 @@ export { Space } from "./spaces.mjs";
 import { spaceCreationEffect, spaceCreationTransition } from "./space-lifecycle.mjs";
 import { handleImportPageImage } from "./import-image.mjs";
 import { serialQueue, serialQueueBounds } from "./serial-queue.mjs";
+import { holdUntilSettled } from "./request-hold.mjs";
 import { readTool } from "./tool-reads.mjs";
 import { readChangesTool } from "./tool-changes.mjs";
 import { PageActivity } from "./page-activity.mjs";
@@ -744,6 +745,8 @@ export class Catalog {
       if (this.lifecycleReads.size >= lifecycleBounds.concurrency)
         throw Error("Page lifecycle reads are at capacity");
       read = this.readLifecycle(pageId);
+      // Later passes reuse this read after its request stops waiting.
+      holdUntilSettled(this.ctx, read);
       this.lifecycleReads.set(pageId, read);
       const clear = () => {
         if (this.lifecycleReads.get(pageId) === read) this.lifecycleReads.delete(pageId);
@@ -1751,7 +1754,10 @@ export class Catalog {
     const epoch = catalogIndexEpoch(this.env);
     if (epoch) {
       try {
-        const db = await withTimeout(catalogIndexDatabase(this.env), catalogIndexTimeouts.read);
+        const db = await withTimeout(
+          catalogIndexDatabase(this.env, this.ctx),
+          catalogIndexTimeouts.read,
+        );
         await reconcileSpaceIndex({ db, storage, principal: identity.principal, epoch });
         source = spaceIndexSource(db, { principal: identity.principal });
       } catch (error) {
@@ -1885,7 +1891,7 @@ export class Catalog {
     let source;
     if (epoch) {
       try {
-        db = await withTimeout(catalogIndexDatabase(this.env), catalogIndexTimeouts.read);
+        db = await withTimeout(catalogIndexDatabase(this.env, this.ctx), catalogIndexTimeouts.read);
         const ready = await reconcileAccountIndex({
           db,
           storage,
@@ -2348,7 +2354,7 @@ export class Page {
     const run = async () => {
       try {
         await withTimeout(
-          reportPageIndex(this.env, { metadata: this.metadata, ...details }),
+          reportPageIndex(this.env, this.ctx, { metadata: this.metadata, ...details }),
           catalogIndexTimeouts.write,
         );
       } catch (error) {
@@ -2390,7 +2396,7 @@ export class Page {
   async restrictIndex(metadata, revision) {
     try {
       await withTimeout(
-        restrictPageIndex(this.env, metadata, revision),
+        restrictPageIndex(this.env, this.ctx, metadata, revision),
         catalogIndexTimeouts.write,
       );
     } catch (error) {
@@ -2402,7 +2408,10 @@ export class Page {
   async retireIndex() {
     if (!catalogIndexEpoch(this.env)) return;
     try {
-      await withTimeout(retirePageIndex(this.env, this.metadata), catalogIndexTimeouts.write);
+      await withTimeout(
+        retirePageIndex(this.env, this.ctx, this.metadata),
+        catalogIndexTimeouts.write,
+      );
     } catch (error) {
       // Owner rows are confirmed against the Catalog and non-owner rows were
       // removed before commit, so a missed retirement cannot list the Page.
@@ -2465,10 +2474,16 @@ export class Page {
   fetch(request) {
     // Permission changes/claims and HTTP mutations share one admission order.
     // Native frames still run directly through the current DocumentPolicy.
-    if (["/api/sync", "/api/saved"].includes(new URL(request.url).pathname))
-      return this.run(request);
+    // Both paths hold the request until it settles (request-hold.mjs): a save
+    // waits for heads and drains the record store's own serialized flush.
+    if (["/api/sync", "/api/saved"].includes(new URL(request.url).pathname)) {
+      const running = this.run(request);
+      holdUntilSettled(this.ctx, running);
+      return running;
+    }
     const next = this.tail.then(() => this.run(request));
     this.tail = next.catch(() => {});
+    holdUntilSettled(this.ctx, next);
     return next;
   }
 

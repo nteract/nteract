@@ -23,6 +23,7 @@ import { HttpError } from "./auth.mjs";
 import { catalogTitle } from "./catalog.mjs";
 import { configuredDomainView } from "./domain-access.mjs";
 import { validPageId } from "./registration.mjs";
+import { holdUntilSettled } from "./request-hold.mjs";
 import {
   pagePlacement,
   entryPlacement,
@@ -202,8 +203,16 @@ export async function migrateCatalogIndex(
 
 /** One migration attempt per database binding. A caller may time out while it
  * continues, so a slow first access warms the schema for later requests; a
- * stuck attempt expires instead of staying cached. */
-export function catalogIndexDatabase(env) {
+ * stuck attempt expires instead of staying cached.
+ *
+ * `ctx` is the calling object's state, and it is required. The attempt and its
+ * expiry timer run in the request that started it, and every caller stops
+ * waiting at its own read or write bound. Each caller holds the attempt on its
+ * request (request-hold.mjs), so a request that stops waiting cannot strand
+ * it as a cached promise that never settles. */
+export function catalogIndexDatabase(env, ctx) {
+  if (!ctx || typeof ctx !== "object")
+    throw new TypeError("catalogIndexDatabase needs the calling object's ctx");
   const db = env.DB;
   let ready = schemas.get(db);
   if (!ready) {
@@ -220,6 +229,7 @@ export function catalogIndexDatabase(env) {
     );
     schemas.set(db, ready);
   }
+  holdUntilSettled(ctx, ready);
   return ready;
 }
 
@@ -455,10 +465,14 @@ function deleteObserved(db, pageId, principal, revision, updatedAt = null) {
 
 /** Full reconcile from a Page DO's committed host record. Runs after commit,
  * so it may add grants. A deleted Page is retired, never reported. */
-export async function reportPageIndex(env, { metadata, title, observedAt, reader, readerOnly }) {
+export async function reportPageIndex(
+  env,
+  ctx,
+  { metadata, title, observedAt, reader, readerOnly },
+) {
   const state = indexedState(metadata);
   if (state === "deleted") return;
-  const db = await catalogIndexDatabase(env);
+  const db = await catalogIndexDatabase(env, ctx);
   const projection = accessRows(metadata, env, state === "active" ? reader : undefined);
   const listed =
     state === "active" ? projection.rows : projection.rows.filter((row) => row.source === "owner");
@@ -498,8 +512,8 @@ export async function reportPageIndex(env, { metadata, title, observedAt, reader
  * never commits, the Page's next report restores the rows. A trashed or
  * deleted record keeps only the owner row here; `retirePageIndex` changes
  * lifecycle state after durability. */
-export async function restrictPageIndex(env, metadata, revision = revisionOf(metadata)) {
-  const db = await catalogIndexDatabase(env);
+export async function restrictPageIndex(env, ctx, metadata, revision = revisionOf(metadata)) {
+  const db = await catalogIndexDatabase(env, ctx);
   const pageId = metadata.pageId;
   const active = indexedState(metadata) === "active";
   const projection = accessRows(metadata, env);
@@ -520,10 +534,10 @@ export async function restrictPageIndex(env, metadata, revision = revisionOf(met
 
 /** Record a durable trash or deletion. Only call after the host record that
  * says so has crossed its durability barrier: a deleted tombstone is final. */
-export async function retirePageIndex(env, metadata, now = new Date().toISOString()) {
+export async function retirePageIndex(env, ctx, metadata, now = new Date().toISOString()) {
   const state = indexedState(metadata);
   if (state === "active") return;
-  const db = await catalogIndexDatabase(env);
+  const db = await catalogIndexDatabase(env, ctx);
   const pageId = metadata.pageId;
   if (state === "deleted") {
     await db.batch([

@@ -1150,6 +1150,25 @@ stored operation intents. The log line has stage `catalog-queue` or
 `space-queue`, status 503 and reason `request_timeout`. Pages don't use this
 queue: a Page holds live document state and sockets.
 
+celld 0.6.3 cancels a Durable Object request when its caller goes away: the
+client of the gateway request that forwarded it disconnects, such as a tab
+navigating away while its listing is in flight, or the calling object aborts
+its stub fetch. The object request's pending timers and I/O are dropped and its
+promise never settles. A request still waiting in a queue starts in that dead
+context when its turn comes. Either way it holds the queue: a Catalog or Space
+until the 120 s watchdog, a Page or `PageRecords` until the object is
+discarded. So each of those objects passes every request to `ctx.waitUntil`
+when it queues it, through [request-hold.mjs](worker/request-hold.mjs). A
+Page's `/api/saved` and `/api/sync` skip its queue but are held the same way: a
+save waits for heads and drains the record store's serialized flush, and a
+sync's resident socket already holds its own request. A Catalog also holds the
+lifecycle reads that later requests reuse. The catalog index migration is
+shared by every object in an isolate, and its callers stop waiting after 1.5
+or 2.5 s, so `catalogIndexDatabase(env, ctx)` requires the caller's `ctx` and
+holds the migration on it; no Catalog or Page call site can skip the hold. The
+work runs to completion after its caller leaves, and its response is
+discarded.
+
 `update_project` requires `expected_revision`. The Catalog records it in the
 journal intent before the Project sees the request, and every attempt carries it,
 so a retry can never apply once the Project has moved past that revision, even
