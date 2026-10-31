@@ -1,11 +1,11 @@
 import {readFile} from "node:fs/promises";
-import {github} from "./github.mjs";
-import {check, ELIGIBLE_IDS, REPOSITORY, repository, sourceSha, workflowContext} from "./protocol.mjs";
+import {fetchCurrentRun} from "./github.mjs";
+import {check, ELIGIBLE_IDS, repository, sourceSha, workflowContext} from "./protocol.mjs";
 
 // This identifies a status report, not a deployment. The controller rechecks
 // live PR/run provenance and decides whether a stale report is a no-op. Never
 // use this request in place of resolveRequest() for authorize/deploy.
-export async function resolveStatusRequest(env, fetcher = fetch, event) {
+export async function resolveStatusRequest(env, fetcher = fetch, event, runOptions) {
   const context = workflowContext(env);
   check(typeof env.GITHUB_TOKEN === "string" && env.GITHUB_TOKEN.length > 0, "Ephemeral GitHub token required");
   event ??= JSON.parse(await readFile(env.GITHUB_EVENT_PATH, "utf8"));
@@ -16,7 +16,7 @@ export async function resolveStatusRequest(env, fetcher = fetch, event) {
   repository(event.pull_request.base?.repo);
   const action = event.action === "closed" ? "stop" : "deploy";
   if (action === "deploy" || event.pull_request.head?.repo != null) repository(event.pull_request.head?.repo);
-  const run = await github(`/repos/${REPOSITORY}/actions/runs/${context.runId}`, env.GITHUB_TOKEN, fetcher);
+  const run = await fetchCurrentRun(context, env.GITHUB_TOKEN, fetcher, runOptions);
   repository(run.repository);
   repository(run.head_repository);
   check(String(run.id) === context.runId && String(run.run_attempt) === context.runAttempt, "Workflow run mismatch");

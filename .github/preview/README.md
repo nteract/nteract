@@ -31,6 +31,12 @@ cleanup checks the current closed state and leaves deployed-revision lookup to
 the controller; it remains available after a final undeployed push or removal of
 an author from the approved list.
 
+GitHub's run API can trail the job reading it: a running job can see its own
+run as `queued`, or see the previous attempt just after a rerun. The resolvers
+re-read only those lagging views of the same run, for at most 30 seconds, then
+read the PR. The run must still be `in_progress` on the exact run ID and
+attempt; the controller requires the same state.
+
 Closed PRs can disappear from a run's PR-link array. An unmerged closure falls
 back to the exact PR ref plus its head SHA. A merged closure requires the `main`
 base ref, an exact head or merge commit, and GitHub's commit-to-PR association. These

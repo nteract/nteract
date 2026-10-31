@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import {test} from "node:test";
 import {eventRequest, artifactFields, REPOSITORY, REPOSITORY_ID, OWNER_ID} from "./protocol.mjs";
-import {resolveRequest} from "./github.mjs";
+import {fetchCurrentRun, resolveRequest, RUN_SETTLE_DELAYS_MS, runIsSettling} from "./github.mjs";
 
 function fixture(action = "opened") {
   const sha = "a".repeat(40);
@@ -73,6 +73,8 @@ test("rejects forged PR linkage, run attempts, event contexts and closed deploys
     f => {f.run.pull_requests[0].number = 124;},
     f => {f.run.run_attempt = 2;},
     f => {f.run.event = "workflow_dispatch";},
+    f => {f.run.status = "queued";},
+    f => {f.run.status = "completed";},
     f => {f.env.GITHUB_EVENT_NAME = "workflow_dispatch";},
     f => {f.pr.state = "closed";},
     f => {f.pr.base.ref = "other";},
@@ -204,6 +206,97 @@ test("resolves live GitHub metadata using only fixed same-repository endpoints",
   assert.equal(result.githubToken, f.env.GITHUB_TOKEN);
   assert.equal(calls.length, 2);
   assert.ok(calls.every(call => call.url.startsWith(`https://api.github.com/repos/${REPOSITORY}/`) && call.options.redirect === "error"));
+});
+
+// Serves run views in order (repeating the last one) and records every call.
+function laggingGithub(f, views) {
+  const calls = [];
+  const sleeps = [];
+  const fetcher = async url => {
+    calls.push(url.endsWith("/pulls/123") ? "pr" : "run");
+    if (url.endsWith("/pulls/123")) return Response.json(f.pr);
+    return Response.json(views.length > 1 ? views.shift() : views[0]);
+  };
+  return {calls, sleeps, fetcher, options: {sleep: async ms => {sleeps.push(ms);}}};
+}
+
+test("only lagging views of this run and attempt are read again", () => {
+  const context = {runId: "42", runAttempt: "2"};
+  const run = {id: 42, run_attempt: 2};
+  for (const status of ["queued", "requested", "pending", "waiting"]) {
+    assert.equal(runIsSettling({...run, status}, context), true, status);
+  }
+  assert.equal(runIsSettling({...run, run_attempt: 1, status: "completed"}, context), true);
+  assert.equal(runIsSettling({...run, status: "in_progress"}, context), false);
+  assert.equal(runIsSettling({...run, status: "completed"}, context), false);
+  assert.equal(runIsSettling({...run, run_attempt: 3, status: "queued"}, context), false);
+  assert.equal(runIsSettling({...run, id: 43, status: "queued"}, context), false);
+  assert.equal(runIsSettling({...run, run_attempt: "x", status: "queued"}, context), false);
+});
+
+test("a running job that reads its run as queued authorizes once GitHub reports it active", async () => {
+  const f = fixture();
+  const github = laggingGithub(f, [{...f.run, status: "queued"}, {...f.run, status: "queued"}, f.run]);
+  const result = await resolveRequest(f.env, github.fetcher, f.event, github.options);
+  assert.equal(result.action, "deploy");
+  assert.deepEqual(github.sleeps, [1000, 2000]);
+  // The PR is read after the run settles, so its state is not older than the run.
+  assert.deepEqual(github.calls, ["run", "run", "run", "pr"]);
+});
+
+test("a run that never becomes active is rejected after a bounded wait", async () => {
+  const f = fixture();
+  const github = laggingGithub(f, [{...f.run, status: "queued"}]);
+  await assert.rejects(resolveRequest(f.env, github.fetcher, f.event, github.options), /not an active PR event/);
+  assert.deepEqual(github.sleeps, RUN_SETTLE_DELAYS_MS);
+  assert.equal(github.calls.filter(call => call === "run").length, RUN_SETTLE_DELAYS_MS.length + 1);
+  assert.ok(RUN_SETTLE_DELAYS_MS.reduce((total, ms) => total + ms, 0) <= 30_000);
+});
+
+test("a completed run is rejected without waiting", async () => {
+  const f = fixture();
+  const github = laggingGithub(f, [{...f.run, status: "completed"}]);
+  await assert.rejects(resolveRequest(f.env, github.fetcher, f.event, github.options), /not an active PR event/);
+  assert.deepEqual(github.sleeps, []);
+});
+
+test("waiting for an active run never admits another event type", async () => {
+  for (const views of [
+    [{...fixture().run, event: "workflow_dispatch"}],
+    [{...fixture().run, event: "workflow_dispatch", status: "queued"}, {...fixture().run, event: "workflow_dispatch"}],
+  ]) {
+    const f = fixture();
+    const github = laggingGithub(f, views);
+    await assert.rejects(resolveRequest(f.env, github.fetcher, f.event, github.options), /not an active PR event/);
+  }
+});
+
+test("a rerun waits for GitHub to report the current attempt and never accepts another attempt", async () => {
+  const f = fixture();
+  f.env.GITHUB_RUN_ATTEMPT = "2";
+  const current = {...f.run, run_attempt: 2};
+  const previous = {...f.run, run_attempt: 1, status: "completed"};
+  let github = laggingGithub(f, [previous, {...current, status: "queued"}, current]);
+  assert.equal((await resolveRequest(f.env, github.fetcher, f.event, github.options)).runAttempt, "2");
+  assert.deepEqual(github.sleeps, [1000, 2000]);
+
+  github = laggingGithub(f, [previous]);
+  await assert.rejects(resolveRequest(f.env, github.fetcher, f.event, github.options), /Workflow run mismatch/);
+  assert.deepEqual(github.sleeps, RUN_SETTLE_DELAYS_MS);
+
+  github = laggingGithub(f, [{...f.run, run_attempt: 3}]);
+  await assert.rejects(resolveRequest(f.env, github.fetcher, f.event, github.options), /Workflow run mismatch/);
+  assert.deepEqual(github.sleeps, []);
+});
+
+test("run re-reads stay on the fixed endpoint for the current run id", async () => {
+  const f = fixture();
+  const urls = [];
+  await fetchCurrentRun({runId: "42", runAttempt: "1"}, f.env.GITHUB_TOKEN, async url => {
+    urls.push(url);
+    return Response.json(urls.length < 3 ? {...f.run, status: "queued"} : f.run);
+  }, {sleep: async () => {}});
+  assert.deepEqual(urls, Array(3).fill(`https://api.github.com/repos/${REPOSITORY}/actions/runs/42`));
 });
 
 test("does not echo GitHub response bodies on failure", async () => {

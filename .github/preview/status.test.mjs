@@ -21,7 +21,7 @@ async function resolve(f) {
     assert.equal(request.headers.Authorization, "Bearer test-ephemeral-token");
     assert.equal(request.redirect, "error");
     return Response.json(f.run);
-  }, f.event);
+  }, f.event, {sleep: async () => {}});
 }
 
 test("status identity uses the immutable run revision for all supported event types", async () => {
@@ -79,4 +79,17 @@ test("closed status reports tolerate deleted PR branch metadata but still bind t
   assert.equal((await resolve(f)).action, "stop");
   f.run.head_repository.id = 999;
   await assert.rejects(resolve(f), /repository/);
+});
+
+test("status reports wait for a lagging run view and still require an active run", async () => {
+  const f = fixture();
+  const views = [{...f.run, status: "queued"}, {...f.run, run_attempt: 1, status: "completed"}, f.run];
+  const delays = [];
+  const result = await resolveStatusRequest(f.env, async () => Response.json(views.shift()), f.event,
+    {sleep: async ms => {delays.push(ms);}});
+  assert.equal(result.runAttempt, "2");
+  assert.deepEqual(delays, [1000, 2000]);
+  const stuck = fixture();
+  stuck.run.status = "queued";
+  await assert.rejects(resolve(stuck), /not an active PR event/);
 });
