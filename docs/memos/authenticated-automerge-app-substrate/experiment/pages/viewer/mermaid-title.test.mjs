@@ -68,6 +68,19 @@ test("long whitespace runs extract in linear time", () => {
     [`pie${run}x\n"A": 1`, null],
     [`pie showData${run}x\n"A": 1`, null],
     [`gantt\ntitle${run}x${run}B`, `x${run}B`],
+    // U+2028 and U+2029 survive the line split, so each parser path must
+    // treat them as ordinary characters rather than line ends.
+    [`gantt\ntitle${run}X\u2028Y`, "X\u2028Y"],
+    [`gantt\ntitle${run}X\u2029Y`, "X\u2029Y"],
+    [`pie title${run}X\u2028Y\n"A": 1`, "X\u2028Y"],
+    [`pie showData${run}title${run}X\u2029Y\n"A": 1`, "X\u2029Y"],
+    [`pie${run}\u2028title X\n"A": 1`, null],
+    [`pie\u2028${run}title X\n"A": 1`, null],
+    [`---\ntitle: A${run}\u2028B\n---\ngraph TD`, `A${run}\u2028B`],
+    [`---\ntitle: A${run}\u2029# note\n---\ngraph TD`, `A${run}\u2029# note`],
+    [`---\ntitle: "A"${run}\u2028B\n---\ngraph TD`, `"A"${run}\u2028B`],
+    [`---\ntitle${run}\u2028: A\n---\ngraph TD`, null],
+    [`---${run}\u2028\ntitle: A\n---\ngraph TD`, "A"],
   ];
   for (const [source, expected] of cases) {
     const started = performance.now();

@@ -13,8 +13,14 @@
 // The result is plain text: use it as textContent or an attribute value, never
 // as HTML.
 
-const fence = /^---\s*$/;
+// This runs synchronously while the editor renders a diagram, on source any
+// collaborator can write. Parsing is index scanning with startsWith and
+// explicit loops, never a regex with repeats that can both match whitespace.
+// Line separators such as U+2028 survive the line split and are ordinary
+// characters here; String.prototype.trim treats them as whitespace.
+const isSpace = (char) => char === " " || char === "\t";
 const ignorable = (line) => !line.trim() || line.trimStart().startsWith("%%");
+const isFence = (line) => line.startsWith("---") && !line.slice(3).trim();
 const titledTypes = new Set([
   "pie",
   "gantt",
@@ -25,10 +31,17 @@ const titledTypes = new Set([
   "xychart-beta",
 ]);
 
-// This runs synchronously while the editor renders a diagram, on source any
-// collaborator can write. Every pass below is a single linear scan; regexes in
-// this file stay anchored with no nested or adjacent ambiguous repeats.
-const isSpace = (char) => char === " " || char === "\t";
+/** The index after one or more spaces or tabs at `index`, or -1 without any. */
+function afterSpaces(text, index) {
+  if (!isSpace(text[index])) return -1;
+  while (isSpace(text[index])) index++;
+  return index;
+}
+
+/** The index after `word` and its trailing spaces at `index`, or -1. */
+function afterKeyword(text, index, word) {
+  return index >= 0 && text.startsWith(word, index) ? afterSpaces(text, index + word.length) : -1;
+}
 
 // A YAML plain scalar ends at the first `#` that follows whitespace.
 function stripComment(value) {
@@ -70,27 +83,46 @@ function unquote(value, comments) {
 function frontmatterTitle(lines) {
   for (const line of lines) {
     // Top-level key only; nested `title:` under `config:` is something else.
-    const match = /^title\s*:(.*)$/.exec(line);
-    if (!match) continue;
-    const value = match[1].trim();
+    if (!line.startsWith("title")) continue;
+    let index = "title".length;
+    while (isSpace(line[index])) index++;
+    if (line[index] !== ":") continue;
+    const value = line.slice(index + 1).trim();
     // Block scalars (`|`, `>`) are valid YAML but not worth a YAML parser here.
     // A leading `#` is a comment, so the value is empty.
-    if (/^[|>#]/.test(value)) return null;
+    if ("|>#".includes(value[0] ?? "-")) return null;
     return unquote(value, true).trim() || null;
   }
   return null;
 }
 
+/** The text after a title statement in `header` or the `next` line, or null. */
+function statementTitle(header, next) {
+  let typeEnd = 0;
+  while (typeEnd < header.length && !isSpace(header[typeEnd])) typeEnd++;
+  if (!titledTypes.has(header.slice(0, typeEnd).toLowerCase())) return null;
+  // `pie title X` and `pie showData title X` carry the title on the header.
+  let index = afterSpaces(header, typeEnd);
+  const afterShowData = afterKeyword(header, index, "showData");
+  if (afterShowData >= 0) index = afterShowData;
+  const inline = afterKeyword(header, index, "title");
+  if (inline >= 0) return header.slice(inline);
+  const statement = afterKeyword(next, 0, "title");
+  return statement >= 0 ? next.slice(statement) : null;
+}
+
 /** The diagram title from `source`, or null when it has none. */
 export function mermaidTitle(source) {
-  const lines = String(source ?? "")
-    .replace(/^\uFEFF/, "")
-    .split(/\r\n?|\n/);
+  let text = String(source ?? "");
+  if (text.startsWith("\uFEFF")) text = text.slice(1);
+  // `\n?` is a single optional character after a literal, so the split stays
+  // linear; it is the only regex in this file.
+  const lines = text.split(/\r\n?|\n/);
   let start = 0;
   while (start < lines.length && !lines[start].trim()) start++;
   let body = start;
-  if (fence.test(lines[start] ?? "")) {
-    const close = lines.findIndex((line, index) => index > start && fence.test(line));
+  if (isFence(lines[start] ?? "")) {
+    const close = lines.findIndex((line, index) => index > start && isFence(line));
     if (close < 0) return null;
     const title = frontmatterTitle(lines.slice(start + 1, close));
     if (title) return title;
@@ -98,9 +130,6 @@ export function mermaidTitle(source) {
   }
   const statements = lines.slice(body).filter((line) => !ignorable(line));
   const [header = "", next = ""] = statements.map((line) => line.trim());
-  const type = /^\S+/.exec(header)?.[0].toLowerCase();
-  if (!type || !titledTypes.has(type)) return null;
-  const inline = /^\S+(?:\s+showData)?\s+title\s+(.+)$/.exec(header);
-  const statement = inline ?? /^title\s+(.+)$/.exec(next);
-  return statement ? unquote(statement[1].trim()).trim() || null : null;
+  const statement = statementTitle(header, next);
+  return statement === null ? null : unquote(statement.trimEnd()).trim() || null;
 }
