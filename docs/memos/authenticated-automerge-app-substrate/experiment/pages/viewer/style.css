@@ -22,18 +22,25 @@
   --error-soft: color-mix(in srgb, var(--destructive) 10%, var(--surface));
   --success: #22734a;
   --page-header-height: 64px;
-  /* Highlight palette (marks.json). Highlights are a tint over the page, so
-     text keeps --foreground in both themes; dark mode uses a lighter tint. */
+  /* Highlight palette (marks.json). In light mode a highlight is a tint over
+     the page and text keeps --foreground. Dark mode is below. */
   --highlight-yellow: #f5c400;
   --highlight-green: #34c26b;
   --highlight-blue: #4b9cf5;
   --highlight-pink: #f0609e;
   --highlight-strength: 38%;
+  /* Comment anchors: an orange tint and underline. Their own hue, so they
+     read apart from yellow highlights, and never the olive of --warning. */
+  --comment-anchor: oklch(0.8 0.15 55);
+  --comment-anchor-line: oklch(0.66 0.17 50);
+  --comment-anchor-fill: 20%;
 }
 :root.dark {
   --warning: #dec179;
   --success: #8bcba9;
-  --highlight-strength: 30%;
+  --comment-anchor: oklch(0.78 0.14 55);
+  --comment-anchor-line: oklch(0.76 0.15 55);
+  --comment-anchor-fill: 18%;
 }
 [data-highlight="yellow"] {
   --pages-highlight: var(--highlight-yellow);
@@ -49,6 +56,22 @@
 }
 [data-highlight="custom"] {
   --pages-highlight: var(--pages-highlight-custom);
+}
+/* Dark mode draws highlights like a real highlighter: a light, opaque fill
+   with dark text. Any translucent yellow over a dark page reads as olive. A
+   custom color keeps its hue at the same lightness as the palette. */
+:root.dark {
+  --highlight-yellow: oklch(0.88 0.15 92);
+  --highlight-green: oklch(0.85 0.14 152);
+  --highlight-blue: oklch(0.83 0.1 245);
+  --highlight-pink: oklch(0.83 0.11 355);
+}
+:root.dark [data-highlight="custom"] {
+  --pages-highlight: oklch(from var(--pages-highlight-custom) 0.85 min(c, 0.15) h);
+}
+:root.dark mark[data-highlight] {
+  color: oklch(0.2 0 0);
+  background: var(--pages-highlight);
 }
 mark[data-highlight] {
   color: inherit;
@@ -636,6 +659,11 @@ details.document-actions > div button {
     inset 0 -3px 0 color-mix(in oklab, var(--pages-highlight) 80%, transparent),
     inset 0 0 0 1px var(--border);
 }
+:root.dark .highlight-button[data-highlight] {
+  box-shadow:
+    inset 0 -3px 0 var(--pages-highlight),
+    inset 0 0 0 1px var(--border);
+}
 .toolbar-button[aria-pressed="mixed"] {
   background: var(--accent);
   color: var(--foreground);
@@ -954,15 +982,18 @@ dialog::backdrop {
   border-bottom: 2px solid var(--warning);
   animation: illumination 2s ease-out;
 }
-/* Comment anchors and highlights are both translucent fills. Wherever they
-   overlap, the two tints composite, so each stays visible; the underline
-   marks the comment's extent when it sits inside a highlight. */
+/* A comment anchor is a translucent orange fill with an underline. Over a
+   highlight, the underline marks the comment's extent in both themes. */
 .comment-passage {
-  background: color-mix(in srgb, var(--warning) 12%, transparent);
-  border-bottom: 1px solid var(--warning);
+  background: color-mix(in oklab, var(--comment-anchor) var(--comment-anchor-fill), transparent);
+  border-bottom: 2px solid var(--comment-anchor-line);
 }
 .comment-passage-active {
-  background: color-mix(in srgb, var(--warning) 24%, transparent);
+  background: color-mix(
+    in oklab,
+    var(--comment-anchor) calc(var(--comment-anchor-fill) * 2),
+    transparent
+  );
 }
 /* The passage an open inline composer is commenting on. Focus sits in the
    popover, so this stands in for the selection it replaced. */
