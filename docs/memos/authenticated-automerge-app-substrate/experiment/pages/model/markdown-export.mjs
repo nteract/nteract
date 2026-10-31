@@ -1,6 +1,8 @@
 import MarkdownIt from "markdown-it";
 
 const markdown = new MarkdownIt({ html: false });
+// Titles, names and passages are user input. `\s+` consumes a whole run per
+// match, and the other patterns match one character, so each pass is linear.
 const singleLine = (text) => text.replace(/\s+/g, " ").trim();
 const headingText = (title) =>
   title

@@ -250,6 +250,7 @@ tokenizer.core.ruler.before("inline", "pages_tasks", (state) => {
           if (tokens[itemEnd].type === "list_item_open") itemDepth++;
           if (tokens[itemEnd].type === "list_item_close" && --itemDepth === 0) break;
         }
+        // Anchored at the start of the item text, with one run of spaces.
         const item = tokens.slice(j, itemEnd + 1),
           inline =
             item[1]?.type === "paragraph_open" && item[2]?.type === "inline" ? item[2] : null,
@@ -287,7 +288,9 @@ tokenizer.core.ruler.before("inline", "pages_tasks", (state) => {
 // is lost. General HTML stays literal, and code spans retain their own parser.
 tokenizer.inline.ruler.before("html_inline", "table_break", (state, silent) => {
   if (!state.env.pagesTableCell) return false;
-  const match = /^<br\s*\/?\s*>/i.exec(state.src.slice(state.pos));
+  // The second run of spaces follows a required `/`, so the two runs cannot
+  // trade characters while backtracking.
+  const match = /^<br\s*(?:\/\s*)?>/i.exec(state.src.slice(state.pos));
   if (!match) return false;
   if (!silent) state.push("hardbreak", "br", 0);
   state.pos += match[0].length;
@@ -297,7 +300,11 @@ tokenizer.inline.ruler.before("html_inline", "table_break", (state, silent) => {
 // `<mark data-color="…">` and `</mark>`; other HTML stays literal text. The
 // tokenizer emits every tag it recognizes, and the balance pass below turns
 // nested, unopened or unclosed tags back into their source text.
-// Tag whitespace is ASCII only, matching the Rust codec.
+// Tag whitespace is ASCII only, matching the Rust codec. Both patterns are
+// anchored at one `<`. Every run of spaces is followed by `data-color`, `=`, a
+// quote or `>`, none of which is a space, so giving back a space fails on the
+// next character. One attempt reads its run of spaces a bounded number of
+// times, and attempts at different `<` read different runs.
 const HIGHLIGHT_OPEN =
   /^<mark(?:[ \t\r\n]+data-color[ \t\r\n]*=[ \t\r\n]*(?:"([^"<>]*)"|'([^'<>]*)'))?[ \t\r\n]*>/i;
 const HIGHLIGHT_CLOSE = /^<\/mark[ \t\r\n]*>/i;
@@ -422,6 +429,7 @@ const markSerializers = {
 for (const { name } of MARK_REGISTRY.marks)
   if (!markSerializers[name]) throw Error(`No Markdown projection for mark ${name}`);
 // Literal text that looks like a highlight tag is escaped so it reads back as text.
+// The lookahead reads at most six characters.
 const literalHighlightTag = /<(?=\/?mark\b)/gi;
 const serializer = new MarkdownSerializer(
   {
@@ -494,16 +502,108 @@ const tableCellSerializer = new MarkdownSerializer(
   { escapeExtraCharacters: /</g },
 );
 
+// The import gate scans Markdown line by line, once. Page Markdown can be
+// close to the record size limit, so no step may rescan a run of line breaks
+// or spaces. Lines follow JavaScript's multiline `^` and `$`: LF, CR, U+2028
+// and U+2029 each end a line, so CRLF is a line ending at CR followed by an
+// empty line. "Space" is JavaScript `\s`, Unicode spaces included.
+const SPACE = /\s/;
+const isLineBreak = (code) => code === 0x0a || code === 0x0d || code === 0x2028 || code === 0x2029;
+const lineEnd = (source, start) => {
+  let end = start;
+  while (end < source.length && !isLineBreak(source.charCodeAt(end))) end++;
+  return end;
+};
+// ASCII-only case-insensitive match, as a non-Unicode `i` regex reads ASCII.
+const asciiWordAt = (source, at, word) => {
+  for (let i = 0; i < word.length; i++)
+    if ((source.charCodeAt(at + i) | 0x20) !== word.charCodeAt(i)) return false;
+  return true;
+};
+
+// Remove `[ ]`, `[x]` or `[X]` after a bullet marker. The marker may follow
+// spaces and `>` quote markers, and the box must be followed by a space, a tab
+// or the end of its line.
+function omitTaskPrefixes(source) {
+  const parts = [];
+  let copied = 0;
+  for (let start = 0; start <= source.length; ) {
+    const end = lineEnd(source, start);
+    let i = start;
+    while (i < end && (source[i] === ">" || SPACE.test(source[i]))) i++;
+    if (i < end && "-+*".includes(source[i])) {
+      let box = i + 1;
+      while (box < end && (source[box] === " " || source[box] === "\t")) box++;
+      if (
+        box > i + 1 &&
+        box + 2 < end &&
+        source[box] === "[" &&
+        " xX".includes(source[box + 1]) &&
+        source[box + 2] === "]" &&
+        (box + 3 === end || source[box + 3] === " " || source[box + 3] === "\t")
+      ) {
+        parts.push(source.slice(copied, box));
+        copied = box + 3;
+      }
+    }
+    start = end + 1;
+  }
+  if (!copied) return source;
+  parts.push(source.slice(copied));
+  return parts.join("");
+}
+
+// Block syntax the gate preserves, decided by a line's first non-space
+// character: an HTML tag other than `<mark>` or `</mark>`, `$$` display math,
+// a `---` line, or a `[label]:` reference definition. A label may span lines,
+// so its closing bracket is searched in the whole source. That search only
+// moves forward, and each line is read once.
+function unsupportedLineStart(source) {
+  let close = -1;
+  for (let start = 0; start <= source.length; ) {
+    const end = lineEnd(source, start);
+    let i = start;
+    while (i < end && SPACE.test(source[i])) i++;
+    if (i < end) {
+      const char = source[i];
+      if (char === "<") {
+        // The character after `mark` may be the line break that ends the line.
+        const name = source[i + 1] === "/" ? i + 2 : i + 1;
+        if (!asciiWordAt(source, name, "mark") || !" \t\r\n>".includes(source[name + 4] || "x"))
+          return true;
+      } else if (char === "$") {
+        if (source[i + 1] === "$") return true;
+      } else if (char === "-") {
+        if (source.startsWith("---", i)) {
+          let rest = i + 3;
+          while (rest < end && SPACE.test(source[rest])) rest++;
+          if (rest === end) return true;
+        }
+      } else if (char === "[") {
+        if (close !== Infinity && close <= i) {
+          const found = source.indexOf("]", i + 1);
+          close = found === -1 ? Infinity : found;
+        }
+        if (close !== Infinity && close > i + 1 && source[close + 1] === ":") return true;
+      }
+    }
+    start = end + 1;
+  }
+  return false;
+}
+
 // Conservative import gate: unknown syntax is opaque rather than silently discarded.
 export function parseMarkdown(source, importId = "", kind = "markdown") {
   // A task followed by an ordinary inline link is not a reference-link pair.
   // Keep the conservative gate, but omit recognized task prefixes from its scan.
-  const syntax = source.replace(/^(\s*(?:>\s*)*[-+*][ \t]+)\[[ xX]\](?=[ \t]|$)/gm, "$1");
+  const syntax = omitTaskPrefixes(source);
+  // The inline patterns have no overlapping repetition: a label `[...]` stops
+  // at the next bracket of either kind, so each start reads its own segment.
   const unsupported =
     kind !== "markdown" ||
-    /(^|\n)\s*(<(?!\/?mark[ \t\r\n>])|\$\$|---\s*$)|\$[^\n$]+\$|!?\[[^\]]*\]\s*\[|^\s*\[[^\]]+\]:|~~/im.test(
-      syntax,
-    );
+    unsupportedLineStart(syntax) ||
+    /\$[^\n$]+\$/.test(syntax) ||
+    /!?\[[^[\]]*\]\s*\[|~~/.test(syntax);
   return unsupported
     ? schema.node("doc", null, [schema.node("raw", { source, importId, kind })])
     : parser.parse(source);
@@ -522,7 +622,7 @@ export function nativeTableSpans(source) {
 }
 // Markdown has no empty paragraph. The serializer writes an empty leading
 // paragraph as a blank line, which parsers ignore, so drop it rather than
-// suggest the newline is content.
+// suggest the newline is content. The pattern is anchored at the start.
 export function exportMarkdown(doc) {
   return serializer.serialize(doc).replace(/^\n+/, "");
 }
