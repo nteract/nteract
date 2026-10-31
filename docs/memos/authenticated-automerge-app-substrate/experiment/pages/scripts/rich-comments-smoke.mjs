@@ -416,6 +416,13 @@ try {
   await page.screenshot({ path: output + "/inline-composer-block-deleted.png" });
   await page.keyboard.press("Escape");
   await expect(popover).toHaveCount(0);
+  // The draft's block is gone, so focus falls back to the surviving editor.
+  await expect(documentText).toBeFocused();
+  assert.equal(
+    await page.evaluate(() => document.activeElement === document.body),
+    false,
+    "focus never drops to <body>",
+  );
   await page.getByRole("button", { name: /^Comments/ }).click();
   await expect(keptDraft.locator(".comment-kept-draft-text")).toHaveText("About to lose my anchor");
   await expect(keptDraft.getByRole("alert")).toBeVisible();

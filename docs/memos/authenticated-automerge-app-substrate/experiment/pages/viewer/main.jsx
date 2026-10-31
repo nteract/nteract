@@ -60,6 +60,7 @@ import { EditorLoader } from "./editor-loader.mjs";
 import { SessionHost } from "./session-host.mjs";
 import { useStore } from "./store.mjs";
 import { CommentComposer } from "./comment-composer.mjs";
+import { focusReturnTarget } from "./focus-return.mjs";
 import { timer } from "rxjs";
 
 // The editor, and the WASM runtimes it waits for, load beside the shell
@@ -116,8 +117,14 @@ function App() {
   const session = useStore(host.store, installedSession);
   const editorUnavailable = useStore(editor.store, editorFailed);
   // Rendered only beside a session; handlers read editor.module when they run.
-  const { WordgardEditor, SharingControls, CommentsPanel, CommentPopover, SaveStatus, PageActivity } =
-    editor.module ?? {};
+  const {
+    WordgardEditor,
+    SharingControls,
+    CommentsPanel,
+    CommentPopover,
+    SaveStatus,
+    PageActivity,
+  } = editor.module ?? {};
   const auth = useRef(null),
     authentication = useRef(null),
     catalogRevision = useRef(0),
@@ -125,6 +132,7 @@ function App() {
     creationPending = useRef(false),
     article = useRef(null),
     titleInput = useRef(null),
+    activeBlock = useRef(null),
     commentsButton = useRef(null);
   // The inline comment composer. It outlives Pages; resetDocumentUI resets it,
   // and a send that settles after the reset is ignored by its key.
@@ -142,20 +150,22 @@ function App() {
               .querySelector('#comment-popover [role="textbox"]')
               ?.focus({ preventScroll: true }),
           ),
+        // Keyboard closes only; pointer dismissals leave focus where the
+        // pointer put it. The draft's block may be gone by now.
         returnFocus: (current) =>
-          requestAnimationFrame(() => {
-            if (!current) return;
-            // Pointer dismissals leave focus where the pointer put it.
-            const block = article.current?.querySelector(
-              `[data-block-id="${CSS.escape(current.draft.blockId)}"] wg-content`,
-            );
-            block?.focus({ preventScroll: true });
-          }),
+          requestAnimationFrame(() =>
+            focusReturnTarget(article.current, {
+              blockIds: [current?.draft.blockId, activeBlock.current],
+              title: titleInput.current,
+            })?.focus({ preventScroll: true }),
+          ),
         flash: (threadId) =>
           setTarget({ id: threadId, request: performance.now(), source: "created" }),
       }),
   );
   const composerState = useStore(composer.store);
+  // The block whose editor holds the Page's selection, read by returnFocus.
+  activeBlock.current = active;
   // True while `revision` is the latest navigation and `principal` still the
   // signed-in account.
   const navigationCurrent = (revision, principal) =>
