@@ -500,16 +500,21 @@ const tableCellSerializer = new MarkdownSerializer(
 // - A `$` pair follows Pandoc's dollar rule: the opening `$` is followed by a
 //   non-space, the closing `$` follows a non-space and is not followed by a
 //   digit. Prose such as "$30 and $25" stays native text.
-// A space is ASCII whitespace, [ \t\n\v\f\r], and nothing else. JS and Rust
-// disagree on `\s` (U+0085, U+FEFF), so the pattern spells the set out.
+// When unsure, the source stays preserved. Each rule spells out its spaces,
+// because JS and Rust disagree on `\s` (U+0085, U+FEFF):
+// - The dollar rule's spaces are ASCII whitespace, [ \t\n\v\f\r]. Any other
+//   character is content, so the span counts as math.
+// - Before a line-start `$$`, a space is any character either codec's `\s`
+//   matched, except CR and LF: ASCII space, tab, VT and FF, U+00A0, U+0085,
+//   U+1680, U+2000-U+200A, U+2028, U+2029, U+202F, U+205F, U+3000, U+FEFF.
 // A line starts at the start of input or after LF, CR or CRLF. JS `m` and
 // Rust `(?m)` disagree on CR, so the pattern has no multiline flag and writes
-// line starts as `(?:^|\r\n?|\n)`. The opener skips only [ \t\v\f]: CR and LF
-// start lines themselves, and skipping them would rescan runs of line breaks.
+// line starts as `(?:^|\r\n?|\n)`. CR and LF start lines themselves, so the
+// opener does not skip them and a run of line breaks is scanned once.
 // Each repetition has disjoint branches, so matching is linear.
 // crates/nteract-rich-text/src/import.rs uses the same pattern text.
 export const MATH_SYNTAX =
-  /(?:^|\r\n?|\n)[ \t\v\f]*\$\$|\$\$(?:[^\n$]|\$[^\n$])*\$\$|\$[^ \t\n\v\f\r$](?:[^ \t\n\v\f\r$]|[ \t\v\f\r]+[^ \t\n\v\f\r$])*\$(?:[^0-9]|$)/;
+  /(?:^|\r\n?|\n)[ \t\v\f\u00a0\u0085\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff]*\$\$|\$\$(?:[^\n$]|\$[^\n$])*\$\$|\$[^ \t\n\v\f\r$](?:[^ \t\n\v\f\r$]|[ \t\v\f\r]+[^ \t\n\v\f\r$])*\$(?:[^0-9]|$)/;
 // Conservative import gate: unknown syntax is opaque rather than silently discarded.
 export function parseMarkdown(source, importId = "", kind = "markdown") {
   // A task followed by an ordinary inline link is not a reference-link pair.

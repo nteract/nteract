@@ -3813,16 +3813,100 @@
       "canonical_markdown": "Before\r\r \t$$\r\\{x\\}"
     },
     {
-      "id": "display-opener-bom-is-content",
+      "id": "opaque-display-opener-feff",
       "markdown": "Before\n﻿$$\n\\{x\\}",
+      "import_id": "opener-feff-import",
+      "expected_spans": [
+        {
+          "type": "block",
+          "value": {
+            "type": "pages-opaque",
+            "parents": [],
+            "attrs": {
+              "source": "Before\n﻿$$\n\\{x\\}",
+              "importId": "opener-feff-import",
+              "kind": "markdown"
+            },
+            "isEmbed": false
+          }
+        }
+      ],
+      "canonical_markdown": "Before\n﻿$$\n\\{x\\}"
+    },
+    {
+      "id": "opaque-display-opener-leading-bom",
+      "markdown": "﻿$$\n\\{x\\}",
+      "import_id": "opener-leading-bom-import",
+      "expected_spans": [
+        {
+          "type": "block",
+          "value": {
+            "type": "pages-opaque",
+            "parents": [],
+            "attrs": {
+              "source": "﻿$$\n\\{x\\}",
+              "importId": "opener-leading-bom-import",
+              "kind": "markdown"
+            },
+            "isEmbed": false
+          }
+        }
+      ],
+      "canonical_markdown": "﻿$$\n\\{x\\}"
+    },
+    {
+      "id": "opaque-display-opener-nbsp",
+      "markdown": "Before\r $$\n\\{x\\}",
+      "import_id": "opener-nbsp-import",
+      "expected_spans": [
+        {
+          "type": "block",
+          "value": {
+            "type": "pages-opaque",
+            "parents": [],
+            "attrs": {
+              "source": "Before\r $$\n\\{x\\}",
+              "importId": "opener-nbsp-import",
+              "kind": "markdown"
+            },
+            "isEmbed": false
+          }
+        }
+      ],
+      "canonical_markdown": "Before\r $$\n\\{x\\}"
+    },
+    {
+      "id": "opaque-display-opener-unicode-spaces",
+      "markdown": "Before\r\n        　$$\n\\{x\\}",
+      "import_id": "opener-unicode-spaces-import",
+      "expected_spans": [
+        {
+          "type": "block",
+          "value": {
+            "type": "pages-opaque",
+            "parents": [],
+            "attrs": {
+              "source": "Before\r\n        　$$\n\\{x\\}",
+              "importId": "opener-unicode-spaces-import",
+              "kind": "markdown"
+            },
+            "isEmbed": false
+          }
+        }
+      ],
+      "canonical_markdown": "Before\r\n        　$$\n\\{x\\}"
+    },
+    {
+      "id": "display-opener-zero-width-space-is-content",
+      "markdown": "Before\n​$$\n\\{x\\}",
       "expected_spans": [
         {
           "type": "text",
-          "value": "Before ﻿$$ {x}",
+          "value": "Before ​$$ {x}",
           "marks": {}
         }
       ],
-      "canonical_markdown": "Before ﻿$$ {x}"
+      "canonical_markdown": "Before ​$$ {x}"
     },
     {
       "id": "opaque-currency-beside-math",

@@ -163,13 +163,35 @@ for (const source of [
   });
 }
 
-// Only ASCII whitespace may precede a line-start `$$`. U+FEFF and U+00A0
-// are content, so neither line opens display math in either codec.
-for (const source of ["\ufeff$$\n\\{x\\}", "Before\n\ufeff$$\n\\{x\\}", "\u00a0$$\n\\{x\\}"]) {
-  test(`a non-ASCII space before $$ is not a display opener: ${JSON.stringify(source)}`, () => {
-    assert.equal(parseMarkdown(source).firstChild.type.name, "paragraph");
-  });
+// Before a line-start `$$`, any character either codec's `\s` matches is a
+// space, except CR and LF. Each of these lines opens display math.
+for (const space of [
+  "\u00a0",
+  "\u0085",
+  "\u1680",
+  "\u2000",
+  "\u200a",
+  "\u2028",
+  "\u2029",
+  "\u202f",
+  "\u205f",
+  "\u3000",
+  "\ufeff",
+  " \t\v\f\u00a0\ufeff",
+]) {
+  for (const source of [`${space}$$\n\\{x\\}`, `Before\r${space}$$\n\\{x\\}`]) {
+    test(`a Unicode space before $$ opens display math: ${JSON.stringify(source)}`, () => {
+      const doc = parseMarkdown(source);
+      assert.equal(doc.firstChild.type.name, "raw");
+      assert.equal(doc.firstChild.attrs.source, source);
+    });
+  }
 }
+
+test("other characters before $$ do not open display math", () => {
+  for (const source of ["\u200b$$\n\\{x\\}", "x$$\n\\{x\\}", "\u00ad$$\n\\{x\\}"])
+    assert.equal(parseMarkdown(source).firstChild.type.name, "paragraph", JSON.stringify(source));
+});
 
 // The math gate runs on every agent write. Unclosed delimiters followed by
 // long runs of spaces and dollars must not backtrack quadratically.
@@ -192,6 +214,8 @@ test("the math pattern stays linear on runs of line breaks and spaces", () => {
     `${"\r\n \t\v\f".repeat(40000)}x`,
     `$a${" \r".repeat(100000)}`,
     `$$${"\r$".repeat(100000)}`,
+    `${"\r\u00a0\ufeff\u3000".repeat(50000)}x`,
+    `${"\n\u2028".repeat(100000)}x`,
   ];
   const started = performance.now();
   for (const source of sources) MATH_SYNTAX.test(source);

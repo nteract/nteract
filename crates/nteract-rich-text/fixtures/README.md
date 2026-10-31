@@ -17,9 +17,11 @@ preserved, with or without surrounding spaces. Single-dollar math follows
 Pandoc's dollar rule, so currency such as "$30 and $25" stays prose. Both
 codecs treat only ASCII whitespace as a space in that rule; fixtures with
 U+0085, U+FEFF, U+00A0 and U+2028 pin the shared set. A `$$` at a line
-start, after optional ASCII spaces, also stays opaque. A line starts at the
-start of input or after LF, CR or CRLF; fixtures cover each one, and a U+FEFF
-before `$$` that does not open display math. Code spans keep
+start also stays opaque. Its prefix may contain any character either codec's
+`\s` matched, except CR and LF, so doubtful source stays preserved. A line
+starts at the start of input or after LF, CR or CRLF. Fixtures cover each line
+start, U+00A0, U+FEFF (including a leading BOM) and the other Unicode spaces
+before `$$`, and a zero-width space that is content. Code spans keep
 backslashes, nested backticks, and trailing spaces literal.
 
 Highlights project as `<mark data-color="…">` tags. Fixtures cover marks around
