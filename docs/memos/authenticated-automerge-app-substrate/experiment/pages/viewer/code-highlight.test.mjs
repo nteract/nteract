@@ -104,3 +104,37 @@ test("highlighting writes nothing: code spans stay unmarked and comments stay at
   assert.equal(thread.selectionContext.text, "count");
   binding.destroy();
 });
+
+// Wordgard 0.6.2's highlighter replaced a code block once per changed range,
+// so a remote edit with two changed ranges in one block threw and never
+// reached the editor. That broke Mermaid source sync between peers.
+test("a remote edit with several changed ranges in one code block applies", async () => {
+  const { GardState } = await import("wordgard/state");
+  const { schema, decode } = await import("./wordgard-model.mjs");
+  const { wordgardCodeNewlines } = await import("./wordgard-binding.mjs");
+  const { projectChanges } = await import("./wordgard-projection.mjs");
+  const { codeHighlighting } = await import("./code-highlight.mjs");
+  const block = (params) => ({
+    type: "block",
+    value: { type: "code-block", parents: [], attrs: { params }, isEmbed: false },
+  });
+  const source = "def f(x):\n  A = 1  # Dashboard\n  return x";
+  const edited = source.replace("Dashboard", "Overview").replace("A = 1", "B = 22");
+  for (const [language, tokens] of [
+    ["python", true],
+    ["mermaid", false],
+  ]) {
+    let state = GardState.create({
+      doc: decode([block(language), { type: "text", value: source }]).doc,
+      config: [GardState.schemaElement.of(schema.elements), wordgardCodeNewlines, codeHighlighting],
+    });
+    const target = decode([block(language), { type: "text", value: edited }]).doc;
+    const tr = state.update({ changes: projectChanges(state.doc, target) });
+    let ranges = 0;
+    tr.changes.iterChangedRanges(() => ranges++);
+    assert.ok(ranges > 1, `${language}: the edit has several changed ranges`);
+    state = tr.state;
+    assert.ok(state.doc.eq(target), `${language}: the edit applied`);
+    assert.equal(state.field(codeHighlighting[0]).length > 0, tokens, `${language}: tokens`);
+  }
+});
