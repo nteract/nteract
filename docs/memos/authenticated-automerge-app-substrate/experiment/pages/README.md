@@ -1152,7 +1152,10 @@ when it queues it, through [request-hold.mjs](worker/request-hold.mjs). A
 Page's `/api/saved` and `/api/sync` skip its queue but are held the same way: a
 save waits for heads and drains the record store's serialized flush, and a
 sync's resident socket already holds its own request. A Catalog also holds the
-lifecycle reads and catalog index migration that later requests reuse. The
+lifecycle reads that later requests reuse. The catalog index migration is
+shared by every object in an isolate, and its callers stop waiting after 1.5
+or 2.5 s, so `catalogIndexDatabase(env, ctx)` requires the caller's `ctx` and
+holds the migration on it; no Catalog or Page call site can skip the hold. The
 work runs to completion after its caller leaves, and its response is
 discarded.
 

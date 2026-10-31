@@ -726,14 +726,6 @@ export class Catalog {
       current: (pageId) => this.pageLifecycle(pageId),
     });
   }
-  /** The catalog index database. Its migration is shared by every request in
-   * this isolate and outlives a caller that stops waiting at the read bound,
-   * so each caller holds it until it settles. */
-  indexDatabase() {
-    const ready = catalogIndexDatabase(this.env);
-    holdUntilSettled(this.ctx, ready);
-    return ready;
-  }
   /** Read a Page's current lifecycle state. The Catalog may call its Pages;
    * a Page never calls its owner's Catalog.
    */
@@ -1762,7 +1754,10 @@ export class Catalog {
     const epoch = catalogIndexEpoch(this.env);
     if (epoch) {
       try {
-        const db = await withTimeout(this.indexDatabase(), catalogIndexTimeouts.read);
+        const db = await withTimeout(
+          catalogIndexDatabase(this.env, this.ctx),
+          catalogIndexTimeouts.read,
+        );
         await reconcileSpaceIndex({ db, storage, principal: identity.principal, epoch });
         source = spaceIndexSource(db, { principal: identity.principal });
       } catch (error) {
@@ -1896,7 +1891,7 @@ export class Catalog {
     let source;
     if (epoch) {
       try {
-        db = await withTimeout(this.indexDatabase(), catalogIndexTimeouts.read);
+        db = await withTimeout(catalogIndexDatabase(this.env, this.ctx), catalogIndexTimeouts.read);
         const ready = await reconcileAccountIndex({
           db,
           storage,
@@ -2359,7 +2354,7 @@ export class Page {
     const run = async () => {
       try {
         await withTimeout(
-          reportPageIndex(this.env, { metadata: this.metadata, ...details }),
+          reportPageIndex(this.env, this.ctx, { metadata: this.metadata, ...details }),
           catalogIndexTimeouts.write,
         );
       } catch (error) {
@@ -2401,7 +2396,7 @@ export class Page {
   async restrictIndex(metadata, revision) {
     try {
       await withTimeout(
-        restrictPageIndex(this.env, metadata, revision),
+        restrictPageIndex(this.env, this.ctx, metadata, revision),
         catalogIndexTimeouts.write,
       );
     } catch (error) {
@@ -2413,7 +2408,10 @@ export class Page {
   async retireIndex() {
     if (!catalogIndexEpoch(this.env)) return;
     try {
-      await withTimeout(retirePageIndex(this.env, this.metadata), catalogIndexTimeouts.write);
+      await withTimeout(
+        retirePageIndex(this.env, this.ctx, this.metadata),
+        catalogIndexTimeouts.write,
+      );
     } catch (error) {
       // Owner rows are confirmed against the Catalog and non-owner rows were
       // removed before commit, so a missed retirement cannot list the Page.

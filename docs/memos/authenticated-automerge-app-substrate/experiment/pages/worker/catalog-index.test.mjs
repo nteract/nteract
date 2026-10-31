@@ -49,6 +49,9 @@ class Storage {
 }
 
 const id = (n) => `${String(n).padStart(8, "0")}-0000-4000-8000-000000000000`;
+/** Object state for direct index calls; the test awaits each one. */
+const testCtx = {};
+
 const at = (minute) =>
   `2026-10-01T${String(Math.floor(minute / 60)).padStart(2, "0")}:${String(minute % 60).padStart(2, "0")}:00.000Z`;
 const namespace = "user:anaconda-fixture";
@@ -109,7 +112,7 @@ async function seededIndex(t) {
   await migrateCatalogIndex(db);
   const env = { DB: db, PAGES_CATALOG_INDEX: "1" };
   const page = (n, title, updatedAt, acl = { revision: 0, members: {} }) =>
-    reportPageIndex(env, {
+    reportPageIndex(env, testCtx, {
       metadata: { pageId: id(n), owner, deleted: false, acl },
       title,
       observedAt: updatedAt,
@@ -209,7 +212,7 @@ test("a delayed trash retirement cannot undo a restore or a later regrant", asyn
     );
   const state = () =>
     db.rows("SELECT state, lifecycle_revision FROM pages_catalog_pages WHERE page_id = ?", id(1));
-  await reportPageIndex(env, {
+  await reportPageIndex(env, testCtx, {
     metadata: metadata(0, 1, viewer),
     title: "Plan",
     observedAt: at(1),
@@ -217,9 +220,9 @@ test("a delayed trash retirement cannot undo a restore or a later regrant", asyn
   const trashed = metadata(1, 1, viewer, true);
   // Trash's index writes outlive their timeout; the Page is restored first.
   const restored = metadata(2, 1, viewer);
-  await reportPageIndex(env, { metadata: restored, title: "Plan", observedAt: at(3) });
-  await restrictPageIndex(env, trashed);
-  await retirePageIndex(env, trashed, at(4));
+  await reportPageIndex(env, testCtx, { metadata: restored, title: "Plan", observedAt: at(3) });
+  await restrictPageIndex(env, testCtx, trashed);
+  await retirePageIndex(env, testCtx, trashed, at(4));
   assert.deepEqual(state(), [{ state: "active", lifecycle_revision: 2 }]);
   assert.deepEqual(
     rows().map((row) => row.principal),
@@ -227,16 +230,16 @@ test("a delayed trash retirement cannot undo a restore or a later regrant", asyn
   );
   // A regrant after restore survives the same delayed writes.
   const regranted = metadata(2, 2, { [member]: { role: "editor", generation: 1 } });
-  await reportPageIndex(env, { metadata: regranted, title: "Plan", observedAt: at(5) });
-  await retirePageIndex(env, trashed, at(6));
-  await restrictPageIndex(env, trashed);
+  await reportPageIndex(env, testCtx, { metadata: regranted, title: "Plan", observedAt: at(5) });
+  await retirePageIndex(env, testCtx, trashed, at(6));
+  await restrictPageIndex(env, testCtx, trashed);
   assert.deepEqual(state(), [{ state: "active", lifecycle_revision: 2 }]);
   assert.equal(rows().find((row) => row.principal === member).role, "editor");
   // A report from before Trash cannot reactivate a trashed row or re-add members.
   const again = metadata(3, 2, { [member]: { role: "editor", generation: 1 } }, true);
-  await restrictPageIndex(env, again);
-  await retirePageIndex(env, again, at(7));
-  await reportPageIndex(env, { metadata: regranted, title: "Plan", observedAt: at(8) });
+  await restrictPageIndex(env, testCtx, again);
+  await retirePageIndex(env, testCtx, again, at(7));
+  await reportPageIndex(env, testCtx, { metadata: regranted, title: "Plan", observedAt: at(8) });
   assert.deepEqual(state(), [{ state: "trashed", lifecycle_revision: 3 }]);
   assert.deepEqual(
     rows().map((row) => row.principal),
@@ -254,16 +257,20 @@ test("delayed reports from an older ACL revision change nothing", async (t) => {
   });
   const granted = metadata(1, { [member]: { role: "viewer", generation: 1 } });
   const removed = metadata(2, { [member]: { role: "none", generation: 2 } });
-  await reportPageIndex(env, { metadata: granted, title: "Before", observedAt: at(1) });
+  await reportPageIndex(env, testCtx, { metadata: granted, title: "Before", observedAt: at(1) });
   let release;
   db.holdNext = new Promise((resolve) => {
     release = resolve;
   });
   // A report that outlived its caller's timeout is still in flight.
-  const delayed = reportPageIndex(env, { metadata: granted, title: "Old", observedAt: at(2) });
+  const delayed = reportPageIndex(env, testCtx, {
+    metadata: granted,
+    title: "Old",
+    observedAt: at(2),
+  });
   await new Promise((resolve) => setImmediate(resolve));
-  await restrictPageIndex(env, removed);
-  await reportPageIndex(env, { metadata: removed, title: "New", observedAt: at(3) });
+  await restrictPageIndex(env, testCtx, removed);
+  await reportPageIndex(env, testCtx, { metadata: removed, title: "New", observedAt: at(3) });
   release();
   await delayed;
   assert.deepEqual(db.rows("SELECT principal FROM pages_catalog_access ORDER BY principal"), [
@@ -289,7 +296,7 @@ test("restrictions are delete-only; only a durable retirement writes the deleted
     },
   };
   const reader = `${namespace}:reader`;
-  await reportPageIndex(env, {
+  await reportPageIndex(env, testCtx, {
     metadata,
     title: "Plan",
     observedAt: at(1),
@@ -306,7 +313,7 @@ test("restrictions are delete-only; only a durable retirement writes the deleted
   );
   const cleared = { ...metadata, acl: { ...metadata.acl, revision: 3, domainView: null } };
   assert.equal(listingRestricted(metadata, cleared, env), true);
-  await restrictPageIndex(env, cleared);
+  await restrictPageIndex(env, testCtx, cleared);
   assert.ok(!rows().includes(`domain_opened:${reader}`));
   const granted = {
     ...cleared,
@@ -321,17 +328,17 @@ test("restrictions are delete-only; only a durable retirement writes the deleted
     acl: { ...cleared.acl, revision: 4, members: { [member]: { role: "none", generation: 2 } } },
   };
   assert.equal(listingRestricted(cleared, removed, env), true);
-  await restrictPageIndex(env, removed);
+  await restrictPageIndex(env, testCtx, removed);
   assert.deepEqual(rows(), [`owner:${owner}`]);
 
   // Before durability, deletion only drops rows; the Page can still come back.
   const deleted = { ...metadata, deleted: true };
-  await restrictPageIndex(env, deleted);
+  await restrictPageIndex(env, testCtx, deleted);
   assert.deepEqual(rows(), [`owner:${owner}`]);
   assert.equal(db.rows("SELECT state FROM pages_catalog_pages")[0].state, "active");
-  await retirePageIndex(env, deleted);
+  await retirePageIndex(env, testCtx, deleted);
   assert.deepEqual(rows(), []);
-  await reportPageIndex(env, { metadata, title: "Late title", observedAt: at(9) });
+  await reportPageIndex(env, testCtx, { metadata, title: "Late title", observedAt: at(9) });
   assert.deepEqual(rows(), []);
   assert.deepEqual(db.rows("SELECT state, title FROM pages_catalog_pages"), [
     { state: "deleted", title: "" },
@@ -930,7 +937,7 @@ test("pagination is best-effort across concurrent title changes", async (t) => {
     [id(6), id(5)],
   );
   const touch = (n, minute) =>
-    reportPageIndex(f.env, {
+    reportPageIndex(f.env, testCtx, {
       metadata: { pageId: id(n), owner, deleted: false, acl: { revision: 0, members: {} } },
       title: `Owned ${n}`,
       observedAt: at(minute),
@@ -970,7 +977,11 @@ test("a regrant that lands before a delayed prune survives it", async (t) => {
     deleted: false,
     acl: { revision, members: { [member]: { role, generation: revision } } },
   });
-  await reportPageIndex(env, { metadata: metadata(1, "viewer"), title: "Plan", observedAt: at(1) });
+  await reportPageIndex(env, testCtx, {
+    metadata: metadata(1, "viewer"),
+    title: "Plan",
+    observedAt: at(1),
+  });
   let release;
   db.holdNext = new Promise((resolve) => {
     release = resolve;
@@ -978,7 +989,11 @@ test("a regrant that lands before a delayed prune survives it", async (t) => {
   // A listing saw the row at revision 1 and its Page host denied it.
   const prune = pruneIndexRows(db, [{ page_id: id(1), principal: member, revision: 1 }]);
   await new Promise((resolve) => setImmediate(resolve));
-  await reportPageIndex(env, { metadata: metadata(3, "editor"), title: "Plan", observedAt: at(2) });
+  await reportPageIndex(env, testCtx, {
+    metadata: metadata(3, "editor"),
+    title: "Plan",
+    observedAt: at(2),
+  });
   release();
   await prune;
   assert.deepEqual(

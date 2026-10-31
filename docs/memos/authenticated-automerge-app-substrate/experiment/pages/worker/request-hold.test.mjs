@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { SqliteD1 } from "../test/sqlite-d1.mjs";
+import { catalogIndexDatabase, catalogIndexTimeouts } from "./catalog-index.mjs";
 import { Catalog, Page, PageRecords } from "./index.mjs";
 import { holdUntilSettled } from "./request-hold.mjs";
 import { serialQueue } from "./serial-queue.mjs";
@@ -133,4 +135,42 @@ test("a Catalog holds a shared lifecycle read after its caller stops waiting", a
   read.resolve({ state: "active" });
   assert.equal(await state(held[0]), "settled");
   assert.equal(catalog.lifecycleReads.size, 0);
+});
+
+test("the catalog index migration needs its caller's ctx", () => {
+  assert.throws(() => catalogIndexDatabase({ DB: {} }), TypeError);
+});
+
+test("a Page holds the index migration it starts past its reporting deadline", async (t) => {
+  const db = new SqliteD1(":memory:");
+  t.after(() => db.sqlite.close());
+  const migration = deferred();
+  db.holdNext = migration.promise; // The first migration batch is in flight.
+  const write = catalogIndexTimeouts.write;
+  catalogIndexTimeouts.write = 5;
+  t.after(() => (catalogIndexTimeouts.write = write));
+  const { held, ctx } = holding();
+  const stored = new Map();
+  ctx.storage = {
+    put: async (key, value) => void stored.set(key, value),
+    delete: async (key) => void stored.delete(key),
+  };
+  const pageId = "55555555-5555-4555-8555-555555555555";
+  const host = Object.assign(Object.create(Page.prototype), {
+    ctx,
+    env: { DB: db, PAGES_CATALOG_INDEX: "1" },
+    metadata: { pageId, owner: "user:owner", deleted: false, acl: { revision: 0, members: {} } },
+  });
+  const report = () => host.reportIndex({ title: "Plan", observedAt: new Date().toISOString() });
+  await assert.rejects(report(), /timed out/);
+  assert.equal(stored.get("host/index/report-pending"), true, "the report is repeated later");
+  assert.equal(held.length, 1, "the migration is held on the Page's request");
+  assert.equal(await state(held[0]), "pending", "the migration outlives the report");
+  migration.resolve();
+  assert.equal(await state(held[0]), "settled");
+  catalogIndexTimeouts.write = write;
+  await report();
+  assert.deepEqual(db.rows("SELECT page_id, title FROM pages_catalog_pages"), [
+    { page_id: pageId, title: "Plan" },
+  ]);
 });

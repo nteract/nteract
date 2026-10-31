@@ -10,6 +10,9 @@ import { CATALOG_MIGRATIONS, migrateCatalogIndex, reportPageIndex } from "./cata
 import { MAX_DEPTH, validSpaceId } from "./spaces.mjs";
 import { tools } from "../mcp.mjs";
 
+/** Object state for direct index calls; the test awaits each one. */
+const testCtx = {};
+
 class Storage {
   values = new Map();
   async get(key) {
@@ -1135,7 +1138,11 @@ test("rollback: storage written here stays readable by older builds", async (t) 
       )
       .bind(child.page_id, w.owner, title, title.toLowerCase(), at, at)
       .run();
-  await reportPageIndex(w.env, { metadata, title: "Child", observedAt: new Date().toISOString() });
+  await reportPageIndex(w.env, testCtx, {
+    metadata,
+    title: "Child",
+    observedAt: new Date().toISOString(),
+  });
   await legacyUpsert("Child renamed", "2031-01-01T00:00:00.000Z");
   const [row] = w.db.rows(
     "SELECT space_id, parent_id, placement_epoch FROM pages_catalog_pages WHERE page_id = ?",
@@ -1153,7 +1160,7 @@ test("rollback: storage written here stays readable by older builds", async (t) 
     )
     .bind(legacyPage, w.owner, "2026-01-01T00:00:00.000Z", "2026-01-01T00:00:00.000Z")
     .run();
-  await reportPageIndex(w.env, {
+  await reportPageIndex(w.env, testCtx, {
     metadata: { pageId: legacyPage, owner: w.owner, deleted: false },
     title: "Old",
     observedAt: "2026-01-02T00:00:00.000Z",
