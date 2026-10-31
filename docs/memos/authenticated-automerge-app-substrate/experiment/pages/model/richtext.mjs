@@ -515,7 +515,9 @@ const tableCellSerializer = new MarkdownSerializer(
 // of line breaks is scanned once. Each repetition has disjoint branches, so
 // matching is linear. Every `\uXXXX` escape is a BMP code point, which JS
 // reads without the `u` flag; Rust's regex reads the same escape as the same
-// code point. crates/nteract-rich-text/src/import.rs uses this pattern text.
+// code point. crates/nteract-rich-text/src/import.rs uses this pattern text,
+// and its `math_pattern_matches_pages` test reads this literal. Keep it a
+// flagless literal that starts on the line after `MATH_SYNTAX =`.
 export const MATH_SYNTAX =
   /(?:^|\r\n?|[\n\u2028\u2029])[ \t\v\f\u00a0\u0085\u1680\u2000-\u200a\u202f\u205f\u3000\ufeff]*\$\$|\$\$(?:[^\n$]|\$[^\n$])*\$\$|\$[^ \t\n\v\f\r$](?:[^ \t\n\v\f\r$]|[ \t\v\f\r]+[^ \t\n\v\f\r$])*\$(?:[^0-9]|$)/;
 // Conservative import gate: unknown syntax is opaque rather than silently discarded.

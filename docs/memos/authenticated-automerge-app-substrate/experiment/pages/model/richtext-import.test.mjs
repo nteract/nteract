@@ -1,5 +1,4 @@
 import test from "node:test";
-import { readFileSync } from "node:fs";
 import assert from "node:assert/strict";
 import * as A from "@automerge/automerge";
 import { pmDocFromSpans, pmNodeToSpans } from "@automerge/prosemirror";
@@ -197,16 +196,10 @@ test("other characters before $$ do not open display math", () => {
     assert.equal(parseMarkdown(source).firstChild.type.name, "paragraph", JSON.stringify(source));
 });
 
-// Both codecs must classify the same characters. The JS pattern has no flags:
-// multiline anchors differ between engines, and its BMP `\uXXXX` escapes need
-// no `u` flag. The Rust regex crate reads the same text as the same pattern.
-test("the Rust codec uses the same math pattern text, with no JS flags", () => {
-  const rust = readFileSync(
-    new URL("../../../../../../crates/nteract-rich-text/src/import.rs", import.meta.url),
-    "utf8",
-  );
-  const pattern = /&MATH,\s*r"([^"]*)"/.exec(rust)?.[1];
-  assert.equal(pattern, MATH_SYNTAX.source);
+// The pattern has no flags: multiline anchors differ between JS and Rust, and
+// its BMP `\uXXXX` escapes need no `u` flag. The crate's
+// `math_pattern_matches_pages` test checks that Rust uses the same text.
+test("the math pattern has no JS flags", () => {
   assert.equal(MATH_SYNTAX.flags, "");
 });
 
