@@ -6,6 +6,7 @@ import os from "node:os";
 import path from "node:path";
 import { stageCloudflareFiles, cloudflareConfig } from "./cloudflare-stage.mjs";
 import { releaseArtifacts } from "./stage-artifacts.mjs";
+import { VIEWER_ASSETS, hashedAssetPath } from "./viewer-chunks.mjs";
 
 test("Cloudflare staging separates native modules from browser assets and excludes local secrets/state", (t) => {
   const dir = mkdtempSync(path.join(os.tmpdir(), "pages-cloudflare-stage-"));
@@ -13,15 +14,22 @@ test("Cloudflare staging separates native modules from browser assets and exclud
   const dist = path.join(dir, "dist");
   mkdirSync(path.join(dist, "public"), { recursive: true });
   const chunk = "public/chunks/ABCDEFGH.js";
+  const sha256 = (value) => createHash("sha256").update(value).digest("hex");
+  const assets = Object.fromEntries(
+    VIEWER_ASSETS.map((name) => [hashedAssetPath(name, name), name]),
+  );
   mkdirSync(path.join(dist, "public/chunks"));
-  for (const file of [...releaseArtifacts, chunk])
+  for (const file of [...releaseArtifacts, chunk, ...Object.keys(assets)])
     writeFileSync(
       path.join(dist, file),
       file === "build-receipt.json"
         ? JSON.stringify({
-            viewer_chunks: { [chunk]: createHash("sha256").update(chunk).digest("hex") },
+            viewer_chunks: { [chunk]: sha256(chunk) },
+            viewer_assets: Object.fromEntries(
+              Object.entries(assets).map(([path, bytes]) => [path, sha256(bytes)]),
+            ),
           })
-        : file,
+        : (assets[file] ?? file),
     );
   writeFileSync(path.join(dist, ".dev.vars"), "secret-that-must-stay-local");
   mkdirSync(path.join(dist, ".celld"));
@@ -40,10 +48,8 @@ test("Cloudflare staging separates native modules from browser assets and exclud
     "index.js",
     "subduction.wasm",
   ]);
-  assert.equal(
-    readFileSync(path.join(destination, "public/mermaid.js"), "utf8"),
-    "public/mermaid.js",
-  );
+  const mermaid = hashedAssetPath("mermaid.js", "mermaid.js");
+  assert.equal(readFileSync(path.join(destination, mermaid), "utf8"), "mermaid.js");
   assert.deepEqual(readdirSync(path.join(destination, "public/chunks")), ["ABCDEFGH.js"]);
   assert.equal(config.main, "worker/index.js");
   assert.equal(config.d1_databases[0].database_id, id);

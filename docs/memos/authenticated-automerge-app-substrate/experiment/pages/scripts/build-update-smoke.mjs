@@ -15,7 +15,7 @@ assert.equal(typeof process.send, "function", "run through local-sharing-e2e.mjs
 
 const report = { completed: [], errors: [] };
 const browser = await chromium.launch({ headless: true });
-let owner, pageId;
+let owner, pageId, diagramId;
 
 function deploy(build) {
   return new Promise((resolve, reject) => {
@@ -75,6 +75,18 @@ async function reloadFromBanner(page) {
     })
     .toBe(false);
   await page.waitForLoadState("domcontentloaded");
+}
+
+/** The viewer's entry script as the current index.html names it. Every
+ * hashed file is served immutable; index.html revalidates on each visit. */
+async function viewerEntry() {
+  const index = await fetch(`${origin}/`);
+  assert.match(index.headers.get("cache-control") ?? "", /must-revalidate/);
+  const src = /<script type="module" src="(\/app-[A-Z2-7]{8}\.js)">/.exec(await index.text())?.[1];
+  assert.ok(src, "index.html loads a content-hashed app.js");
+  const response = await fetch(origin + src);
+  assert.equal(response.headers.get("cache-control"), "public, max-age=31536000, immutable");
+  return { path: src, source: await response.text() };
 }
 
 const content = (page) => page.locator(".page-block wg-content");
@@ -138,13 +150,14 @@ try {
   assert.equal(session.build, buildA);
   assert.equal(session.minViewerProtocol, "1");
   // The build id lives in app.js or one of the chunks it imports.
-  const entry = await (await fetch(`${origin}/app.js`)).text();
+  const { source: entry } = await viewerEntry();
   const viewerSources = [
     entry,
     ...(await Promise.all(
       [...new Set(entry.match(/chunks\/[A-Z2-7]{8}\.js/g))].map(async (chunk) => {
         const response = await fetch(`${origin}/${chunk}`);
         assert.match(response.headers.get("content-type") ?? "", /javascript/, chunk);
+        assert.match(response.headers.get("cache-control") ?? "", /immutable/, chunk);
         return response.text();
       }),
     )),
@@ -351,8 +364,10 @@ try {
   // app.js loads the editor chunk with a dynamic import. A deploy can retire
   // that chunk before the import runs; the server then answers its path with
   // the app's HTML, and the import fails. The shell still renders, the banner
-  // asks for a reload, and the reload opens the Page.
-  const editorChunk = /import\("\.\/(chunks\/[A-Z2-7]{8}\.js)"\)/.exec(entry)?.[1];
+  // asks for a reload, and the reload opens the Page. The deploy above moved
+  // every hashed name, so read the current entry.
+  const current = await viewerEntry();
+  const editorChunk = /import\("\.\/(chunks\/[A-Z2-7]{8}\.js)"\)/.exec(current.source)?.[1];
   assert.ok(editorChunk, "app.js imports the editor chunk");
   const retired = (route) =>
     route.fulfill({
@@ -417,7 +432,7 @@ try {
   ]) {
     const older = "d".repeat(12);
     await owner.route(
-      (url) => url.pathname === "/app.js" || url.pathname.startsWith("/chunks/"),
+      (url) => url.pathname === current.path || url.pathname.startsWith("/chunks/"),
       async (route) => {
         const { pathname } = new URL(route.request().url());
         if (pathname === `/${editorChunk}`) return retired(route);
@@ -455,6 +470,32 @@ try {
       `Editor chunk retired under a tab (${label}): shell rendered, banner asked for a reload, reload opened the Page`,
     );
   }
+
+  // The Mermaid renderer is a hashed file too, imported only when a diagram
+  // shows. A deploy retires it like a chunk, and the failed import asks
+  // /health for the build so a stale tab sees the banner.
+  const diagram = await tool(owner, "create_page", {
+    title: `Diagram fixture ${Date.now()}`,
+    markdown: "```mermaid\ngraph TD; A-->B\n```",
+    idempotency_key: crypto.randomUUID(),
+  });
+  assert.equal(diagram.status, 200, JSON.stringify(diagram.body));
+  diagramId = diagram.body.page_id;
+  let buildChecks = 0;
+  const countBuildChecks = (request) => {
+    if (new URL(request.url()).pathname === "/health") buildChecks++;
+  };
+  await owner.route((url) => /^\/mermaid-[A-Z2-7]{8}\.js$/.test(url.pathname), retired);
+  await owner.goto(`${origin}/p/${diagramId}`);
+  owner.on("request", countBuildChecks);
+  await expect(owner.locator(".wordgard-diagram > p[role=status]")).toHaveText(
+    "Diagram unavailable.",
+    { timeout: 30000 },
+  );
+  await expect.poll(() => buildChecks, { timeout: 15000 }).toBeGreaterThan(0);
+  owner.off("request", countBuildChecks);
+  await owner.unrouteAll({ behavior: "wait" });
+  report.completed.push("Mermaid renderer retired under a tab: the failed import checked /health");
   assert.deepEqual(report.errors, []);
 } catch (error) {
   report.failure = error.message;
@@ -470,13 +511,17 @@ try {
   if (pageId && owner) {
     try {
       await owner.unrouteAll({ behavior: "ignoreErrors" }).catch(() => {});
-      const r = await tool(owner, "read_page", { page_id: pageId });
-      const d = await tool(owner, "delete_page", {
-        page_id: pageId,
-        base_heads: r.body.heads,
-        idempotency_key: crypto.randomUUID(),
-      });
-      report.cleaned = d.status === 200;
+      let cleaned = true;
+      for (const id of [pageId, diagramId].filter(Boolean)) {
+        const r = await tool(owner, "read_page", { page_id: id });
+        const d = await tool(owner, "delete_page", {
+          page_id: id,
+          base_heads: r.body.heads,
+          idempotency_key: crypto.randomUUID(),
+        });
+        cleaned &&= d.status === 200;
+      }
+      report.cleaned = cleaned;
     } catch (error) {
       report.cleanupError = error.message;
     }

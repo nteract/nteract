@@ -56,9 +56,14 @@ import { useStore } from "./store.mjs";
 
 // The editor, and the WASM runtimes it waits for, load beside the shell
 // from boot. A Page session exists only once it has loaded, so code that
-// holds a session reads `editor.module` directly.
+// holds a session reads `editor.module` directly. A failed import, or a
+// Mermaid renderer that fails to load later, asks the server for its build.
 const editor = new EditorLoader({
-  load: () => import("./page-editor.mjs"),
+  load: () =>
+    import("./page-editor.mjs").then((module) => {
+      module.onRendererUnavailable(() => void buildMonitor.check());
+      return module;
+    }),
   checkBuild: () => buildMonitor.check(),
 });
 // The sessions this tab owns. The reload gate follows them from here.

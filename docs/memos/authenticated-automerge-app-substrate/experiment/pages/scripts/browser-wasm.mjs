@@ -8,6 +8,8 @@ import path from "node:path";
 // viewer/index.html preloads these URLs so the downloads overlap app.js. The
 // browser reuses a preload only when URL and request mode match, so this
 // module issues both requests itself as plain same-origin fetch(url) calls.
+// These are the source names. scripts/build.mjs passes the content-hashed
+// URLs to the plugin and writes the same URLs into index.html's preloads.
 export const BROWSER_WASM_URLS = Object.freeze({
   automerge: "/automerge.wasm",
   subduction: "/subduction.wasm",
@@ -20,7 +22,7 @@ export const BROWSER_WASM_URLS = Object.freeze({
 // index re-exports, so the bundle keeps one copy of the class.
 const SHELL_BYTE_STORE_IMPORTER = /[\\/]viewer[\\/]local-catalog\.mjs$/;
 
-export function browserWasmPlugin(app) {
+export function browserWasmPlugin(app, urls = BROWSER_WASM_URLS) {
   const require = createRequire(path.join(app, "package.json"));
   return {
     name: "browser-wasm",
@@ -53,9 +55,9 @@ export function browserWasmPlugin(app) {
           import { initializeWasm } from "@automerge/automerge/slim";
           import initializeSubduction from "@automerge/subduction/slim";
           await Promise.all([
-            initializeWasm(fetch(${JSON.stringify(BROWSER_WASM_URLS.automerge)})),
+            initializeWasm(fetch(${JSON.stringify(urls.automerge)})),
             initializeSubduction({
-              module_or_path: fetch(${JSON.stringify(BROWSER_WASM_URLS.subduction)}),
+              module_or_path: fetch(${JSON.stringify(urls.subduction)}),
             }),
           ]);
         `,

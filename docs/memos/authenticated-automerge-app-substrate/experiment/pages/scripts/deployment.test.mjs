@@ -192,14 +192,25 @@ test("release staging copies only built artifacts, never development credentials
     );
   }
   const { createHash } = await import("node:crypto");
+  const { VIEWER_ASSETS, hashedAssetPath } = await import("./viewer-chunks.mjs");
   const sha256 = (value) => createHash("sha256").update(value).digest("hex");
   const chunks = ["public/chunks/ABCDEFGH.js", "public/chunks/IJKLMN23.js"];
   const certified = Object.fromEntries(chunks.map((file) => [file, sha256("artifact:" + file)]));
-  const receipt = JSON.stringify({ viewer_chunks: certified });
+  // Each shell asset's name carries the hash of its bytes.
+  const assetBytes = Object.fromEntries(
+    VIEWER_ASSETS.map((name) => [hashedAssetPath(name, "asset:" + name), "asset:" + name]),
+  );
+  const assets = Object.keys(assetBytes);
+  const certifiedAssets = Object.fromEntries(
+    Object.entries(assetBytes).map(([file, bytes]) => [file, sha256(bytes)]),
+  );
+  const receipt = JSON.stringify({ viewer_chunks: certified, viewer_assets: certifiedAssets });
   const contents = (artifact) =>
-    artifact === "build-receipt.json" ? receipt : "artifact:" + artifact;
+    artifact === "build-receipt.json" ? receipt : (assetBytes[artifact] ?? "artifact:" + artifact);
+  const hashed = [...chunks, ...assets];
+  const theme = assets.find((file) => file.startsWith("public/theme-"));
   try {
-    for (const artifact of [...releaseArtifacts, ...chunks]) write(artifact, contents(artifact));
+    for (const artifact of [...releaseArtifacts, ...hashed]) write(artifact, contents(artifact));
     for (const secret of [
       ".dev.vars",
       ".env",
@@ -210,8 +221,8 @@ test("release staging copies only built artifacts, never development credentials
     ])
       write(secret, "DO NOT SHIP");
     stageArtifacts(dist, destination);
-    assert.deepEqual(files(destination).sort(), [...releaseArtifacts, ...chunks].sort());
-    for (const artifact of [...releaseArtifacts, ...chunks])
+    assert.deepEqual(files(destination).sort(), [...releaseArtifacts, ...hashed].sort());
+    for (const artifact of [...releaseArtifacts, ...hashed])
       assert.equal(readFileSync(path.join(destination, artifact), "utf8"), contents(artifact));
     // public/chunks must match the receipt exactly: a stale chunk from an
     // earlier build, a missing chunk, or a receipt without the list all fail.
@@ -245,7 +256,10 @@ test("release staging copies only built artifacts, never development credentials
       { ...certified, [chunks[1]]: "not-a-digest" },
       { ...certified, [chunks[1]]: certified[chunks[1]].toUpperCase() },
     ]) {
-      write("build-receipt.json", JSON.stringify({ viewer_chunks: listed }));
+      write(
+        "build-receipt.json",
+        JSON.stringify({ viewer_chunks: listed, viewer_assets: certifiedAssets }),
+      );
       assert.throws(
         () => stageArtifacts(dist, path.join(root, "unlisted-chunks")),
         /must list the viewer chunks with their sha256/,
@@ -253,15 +267,55 @@ test("release staging copies only built artifacts, never development credentials
     }
     assert.throws(() => readdirSync(path.join(root, "stale-chunk")));
     assert.throws(() => readdirSync(path.join(root, "unlisted-chunks")));
+    // The shell assets follow the same rules, and each name must carry the
+    // hash of the digest it is listed with.
+    const { [theme]: themeDigest, ...withoutTheme } = certifiedAssets;
+    const otherTheme = hashedAssetPath("theme.js", "other theme");
+    for (const listed of [
+      undefined,
+      {},
+      assets,
+      withoutTheme,
+      { ...withoutTheme, [otherTheme]: themeDigest },
+      { ...certifiedAssets, "public/app-ABCDEFGH.js": certifiedAssets[assets[0]] },
+      { ...certifiedAssets, "public/theme.js": themeDigest },
+      { ...certifiedAssets, [theme]: themeDigest.toUpperCase() },
+    ]) {
+      write(
+        "build-receipt.json",
+        JSON.stringify({ viewer_chunks: certified, viewer_assets: listed }),
+      );
+      assert.throws(
+        () => stageArtifacts(dist, path.join(root, "unlisted-assets")),
+        /must list the viewer assets with their sha256/,
+        JSON.stringify(listed),
+      );
+    }
+    assert.throws(() => readdirSync(path.join(root, "unlisted-assets")));
     write("build-receipt.json", receipt);
-    assert.equal(
-      readFileSync(path.join(destination, "public/theme.js"), "utf8"),
-      "artifact:public/theme.js",
+    write(otherTheme, "other theme");
+    assert.throws(
+      () => stageArtifacts(dist, path.join(root, "stale-asset")),
+      /public differs from the viewer assets/,
     );
-    rmSync(path.join(dist, "public/theme.js"));
-    assert.throws(() => stageArtifacts(dist, path.join(root, "missing-theme")), /theme[.]js/);
+    rmSync(path.join(dist, otherTheme));
+    rmSync(path.join(dist, theme));
+    assert.throws(
+      () => stageArtifacts(dist, path.join(root, "missing-theme")),
+      /public differs from the viewer assets/,
+    );
     assert.throws(() => readdirSync(path.join(root, "missing-theme")));
-    write("public/theme.js", "artifact:public/theme.js");
+    write(theme, "asset:tampered");
+    assert.throws(
+      () => stageArtifacts(dist, path.join(root, "tampered-theme")),
+      /Viewer asset changed since the build: public[/]theme-[A-Z2-7]{8}[.]js/,
+    );
+    assert.throws(() => readdirSync(path.join(root, "tampered-theme")));
+    write(theme, contents(theme));
+    rmSync(path.join(dist, "public/connect.js"));
+    assert.throws(() => stageArtifacts(dist, path.join(root, "missing-connect")), /connect[.]js/);
+    assert.throws(() => readdirSync(path.join(root, "missing-connect")));
+    write("public/connect.js", contents("public/connect.js"));
     rmSync(path.join(dist, "index.js"));
     symlinkSync(path.join(dist, ".dev.vars"), path.join(dist, "index.js"));
     assert.throws(() => stageArtifacts(dist, path.join(root, "rejected")), /regular file/);

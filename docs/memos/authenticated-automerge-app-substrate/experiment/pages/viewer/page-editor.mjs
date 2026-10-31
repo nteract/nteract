@@ -10,6 +10,7 @@ export { orderedBlockIds } from "../model/order.mjs";
 export { captureCommentDraft } from "./comment-draft.mjs";
 export { writingContinuation } from "./writing-continuation.mjs";
 export { WordgardEditor } from "./WordgardEditor.jsx";
+export { onRendererUnavailable } from "./wordgard-widgets.mjs";
 export { SharingControls } from "./SharingControls.jsx";
 export { CommentsPanel } from "./CommentsPanel.jsx";
 export { SaveStatus } from "./SaveStatus.jsx";

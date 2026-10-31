@@ -10,6 +10,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { build } from "esbuild";
 import { celldCborPlugin } from "./celld-cbor.mjs";
+import { publicShellAssetDefine } from "./viewer-chunks.mjs";
 import { CELLD_RELEASE, parseRuntimeVersion } from "./deployment/profiles.mjs";
 import { fixtureWhoamiUrl, generateFixtureKeys } from "./fixtures/local-api-keys.mjs";
 import { runOAuthSmoke } from "./oauth-smoke.mjs";
@@ -97,6 +98,7 @@ try {
     define: {
       PAGES_E2E_ORIGIN: JSON.stringify(origin),
       PAGES_E2E_RESPONSES: JSON.stringify(responses),
+      ...publicShellAssetDefine(path.join(runtime, "public")),
     },
     plugins: [
       celldCborPlugin(),

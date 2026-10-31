@@ -19,6 +19,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import assert from "node:assert/strict";
 import { build } from "esbuild";
 import { CELLD_RELEASE, parseRuntimeVersion } from "./deployment/profiles.mjs";
+import { publicShellAssetDefine } from "./viewer-chunks.mjs";
 import { fixtureWhoamiUrl, generateFixtureKeys } from "./fixtures/local-api-keys.mjs";
 
 const current = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -76,6 +77,7 @@ async function install(app) {
       PAGES_E2E_ORIGIN: JSON.stringify(origin),
       PAGES_E2E_RESPONSES: JSON.stringify(responses),
       __PAGES_BUILD__: JSON.stringify(receipt.build_id),
+      ...publicShellAssetDefine(path.join(runtime, "public")),
     },
     logLevel: "warning",
     plugins: [

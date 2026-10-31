@@ -8,6 +8,7 @@ import {
   saveKeyCommand,
   setupPrompt,
 } from "./agent-client-setup.mjs";
+import { STYLESHEET, THEME_SCRIPT } from "./shared/shell-assets.mjs";
 
 const escapeHtml = (value) =>
   value.replace(
@@ -49,7 +50,7 @@ export function connectAgentResponse(request, env) {
       <p class="setup-note">Production and staging credentials are separate. Use a key for this deployment's provider.</p>`;
   const body = `<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Connect an agent · Pages</title><script src="/theme.js"></script><link rel="stylesheet" href="/app.css"><link rel="describedby" type="text/plain" href="/llms.txt"></head>
+<title>Connect an agent · Pages</title><script src="${THEME_SCRIPT}"></script><link rel="stylesheet" href="${STYLESHEET}"><link rel="describedby" type="text/plain" href="/llms.txt"></head>
 <body><header class="app-header"><a class="brand" href="/">Pages</a><a class="setup-guide-link" href="/llms.txt">Agent guide</a></header>
 <main class="agent-setup">
   <h1>Connect an agent</h1>
