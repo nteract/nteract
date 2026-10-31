@@ -138,12 +138,43 @@ try {
   await switcher.getByRole("button", { name: "Close Pages" }).click();
   complete("Breadcrumbs led back to the Project, and the switcher lists it");
 
-  await owner.getByRole("button", { name: "New Page in this Project" }).click();
+  await owner.getByRole("button", { name: "New Page" }).click();
   await expect(owner.getByLabel("Page title")).toBeVisible({ timeout: 30000 });
   await expect(owner.getByRole("navigation", { name: "Breadcrumbs" })).toContainText(title);
   const after = await ok("owner", "list_pages", { project_id: project.project_id });
   assert.equal(after.pages.length, 4);
-  complete("New Page in this Project created a Page at the Project's top level");
+  complete("New Page in a Project created a Page at the Project's top level");
+
+  // The home Page shares the Project's title, so the viewer shows one crumb
+  // for both. The API keeps the home crumb, marked home:true.
+  const underHome = await ok("owner", "create_page", {
+    title: "Architecture",
+    markdown: "How the pieces fit.",
+    parent_id: project.home_page_id,
+    idempotency_key: crypto.randomUUID(),
+  });
+  const underHomeRead = await ok("owner", "read_page", {
+    page_id: underHome.page_id,
+    include_content: false,
+  });
+  assert.deepEqual(
+    underHomeRead.breadcrumbs.map((crumb) => [crumb.kind, crumb.home === true]),
+    [
+      ["project", false],
+      ["page", true],
+    ],
+  );
+  await owner.goto(`${origin}/p/${underHome.page_id}`);
+  await expect(owner.locator("wg-content").first()).toContainText("How the pieces fit.", {
+    timeout: 30000,
+  });
+  const underHomeCrumbs = owner.getByRole("navigation", { name: "Breadcrumbs" });
+  await expect(underHomeCrumbs.getByRole("link")).toHaveCount(1);
+  await expect(underHomeCrumbs.getByRole("link", { name: title })).toHaveAttribute(
+    "href",
+    `/project/${project.project_id}`,
+  );
+  complete("A Page under the home Page shows the Project crumb once");
 
   const authority = await ok("owner", "list_pages");
   const trashPage = (pageId) =>

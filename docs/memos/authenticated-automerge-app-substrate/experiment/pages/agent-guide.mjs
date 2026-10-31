@@ -450,7 +450,8 @@ project_id_as_page_id or page_id_as_project_id, naming the right tool and argume
 - list_pages with project_id lists the Project's Pages at any depth; add
   "parent_id": null for the top level. parent_id alone lists a Page's children.
 - read_page returns kind, project_id, parent_id and breadcrumbs (Project, then
-  parent Pages), each only as far as you can open it.
+  parent Pages), each only as far as you can open it. The home Page's crumb
+  carries home:true.
 
 Every Project has a home Page for orientation, current priorities and guidance
 for people and agents. Read it before organizing or maintaining a Project. It is

@@ -276,6 +276,20 @@ test("a Project is created with its home Page, then read, listed and updated", a
     { kind: "project", project_id: project.project_id, title: "Launch" },
   ]);
 
+  // Pages under the home Page keep it in their chain, marked home:true.
+  const underHome = (await w.createPage({ title: "Plan", parent_id: project.home_page_id })).body;
+  const nested = (await w.createPage({ title: "Risks", parent_id: underHome.page_id })).body;
+  const nestedRead = await w.call("owner", "read_page", {
+    page_id: nested.page_id,
+    include_content: false,
+  });
+  assert.equal(nestedRead.status, 200);
+  assert.deepEqual(nestedRead.body.breadcrumbs, [
+    { kind: "project", project_id: project.project_id, title: "Launch" },
+    { kind: "page", page_id: project.home_page_id, title: "Launch", home: true },
+    { kind: "page", page_id: underHome.page_id, title: "Plan" },
+  ]);
+
   const updateKey = w.key();
   const update = { project_id: project.project_id, title: "Launch v2", expected_revision: 0 };
   const updated = await w.call("owner", "update_project", {

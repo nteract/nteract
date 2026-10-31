@@ -532,6 +532,10 @@ async function placementView(request, env, body, signal) {
     if (placement.home) body.home = true;
     // The whole chain is visible to whoever can read the Space in this build.
     if (!next) chain.unshift({ kind: "space", space_id: space.space_id, title: space.title });
+    // The home Page stands for its Project; viewers may fold its crumb into
+    // the Project's.
+    for (const crumb of chain)
+      if (crumb.kind === "page" && crumb.page_id === space.home_page_id) crumb.home = true;
   }
   body.breadcrumbs = chain;
 }
