@@ -333,25 +333,53 @@ try {
   await keptDraft.getByRole("button", { name: "Continue", exact: true }).click();
   await expect(inline).toBeFocused();
   await expect(panel).toBeVisible();
+  // Beside the Page the panel stays usable while composing.
+  const closePanel = page.getByRole("button", { name: "Close comments", exact: true });
+  await closePanel.focus();
+  await expect(closePanel).toBeFocused();
+  await expect(popover).toBeVisible();
+  assert.equal(await panel.evaluate((element) => element.inert), false);
   await page.setViewportSize({ width: 390, height: 844 });
   await expect(page.locator("#page-comments.comments-sheet")).toBeVisible();
-  // The thread sheet stays non-modal under the composer, so it stays usable.
+  // The thread sheet stays non-modal under the composer, but inert: focus
+  // that was in it moves into the composer, and the keyboard can't reach it.
   assert.equal(await panel.evaluate((element) => element.matches(":modal")), false);
+  await expect.poll(() => panel.evaluate((element) => element.inert)).toBe(true);
   await expect(popover).toHaveClass(/comment-popover-sheet/);
   await expect(inline).toBeFocused();
+  const focusInComposer = () =>
+    page.evaluate(() => !!document.activeElement?.closest("#comment-popover"));
+  await popover.getByRole("button", { name: "Bold", exact: true }).focus();
+  await page.keyboard.press("Shift+Tab");
+  assert.ok(await focusInComposer(), "Shift+Tab from the first control stays in the composer");
+  await expect(popover.getByRole("button", { name: "Comment", exact: true })).toBeFocused();
+  for (let step = 0; step < 12; step++) {
+    await page.keyboard.press("Tab");
+    assert.ok(await focusInComposer(), `Tab ${step + 1} stays in the composer`);
+  }
+  for (let step = 0; step < 12; step++) {
+    await page.keyboard.press("Shift+Tab");
+    assert.ok(await focusInComposer(), `Shift+Tab ${step + 1} stays in the composer`);
+  }
+  await inline.focus();
   await inline.press("ControlOrMeta+End");
   await inline.pressSequentially(" still");
   await expect(inline).toHaveText("Resize me still");
   await page.keyboard.press("Escape");
   await expect(popover).toHaveCount(0);
-  // Closing the composer lets the sheet turn modal with the kept draft.
+  await expect(panel).toBeVisible();
+  // Escape closed the composer, not the panel. The sheet turns modal, and
+  // interactive, with the kept draft.
   await expect.poll(() => panel.evaluate((element) => element.matches(":modal"))).toBe(true);
+  assert.equal(await panel.evaluate((element) => element.inert), false);
   await expect(keptDraft.locator(".comment-kept-draft-text")).toHaveText("Resize me still");
   await keptDraft.getByRole("button", { name: "Discard", exact: true }).click();
   await expect(keptDraft).toHaveCount(0);
   await page.getByRole("button", { name: "Close comments", exact: true }).click();
   await page.setViewportSize({ width: 1320, height: 1000 });
-  checkpoint("the thread sheet waits for a docked composer, then lists its kept draft");
+  checkpoint(
+    "the thread sheet waits inert under a docked composer; Tab stays inside, Escape closes only the composer",
+  );
   const blocksBefore = (await call("read_page", { page_id: pageId })).blocks;
   await mutate("edit_page", {
     page_id: pageId,

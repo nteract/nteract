@@ -63,6 +63,12 @@ export class CommentComposer {
   reset() {
     return this.#dispatch({ type: "reset" });
   }
+  /** Move focus into the visible composer, for a surface that just stopped
+   * accepting focus. Does nothing while the composer is closed. */
+  focus() {
+    const { name } = this.snapshot().state;
+    if (name === "open" || name === "sending") this.#adapters.focusComposer?.();
+  }
   /** Step the machine; on acceptance apply `update` and the state, then run
    * the effects. Returns whether the event was accepted. */
   #dispatch(event, update = (current) => current) {

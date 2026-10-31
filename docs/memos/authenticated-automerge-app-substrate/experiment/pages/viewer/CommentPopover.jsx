@@ -46,6 +46,15 @@ function anchorFor(container, blockId) {
   );
 }
 
+const FOCUSABLE =
+  'button:not(:disabled), input:not(:disabled), select:not(:disabled), textarea:not(:disabled), [contenteditable="true"], a[href], [tabindex]:not([tabindex="-1"])';
+/** The composer's keyboard stops in document order. */
+function focusStops(root) {
+  return [...(root?.querySelectorAll(FOCUSABLE) ?? [])].filter(
+    (element) => !element.closest("[hidden]") && !element.closest("[inert]"),
+  );
+}
+
 function visibleViewport() {
   const viewport = window.visualViewport;
   const left = viewport?.offsetLeft ?? 0,
@@ -223,7 +232,20 @@ function PopoverSurface({ composer, session, containerRef, state, current, body 
         }
       }}
       onKeyDown={(event) => {
-        if (event.key !== "Escape" || event.defaultPrevented) return;
+        if (event.defaultPrevented) return;
+        if (event.key === "Tab" && sheet) {
+          // The sheet covers the bottom of a narrow window. Tab and Shift+Tab
+          // wrap inside it; Escape is the way out. Controls that use Tab
+          // themselves (table cells) prevent the default first.
+          const stops = focusStops(dialog.current);
+          const index = stops.indexOf(document.activeElement);
+          const wrap = event.shiftKey ? index <= 0 : index === stops.length - 1;
+          if (!stops.length || (index >= 0 && !wrap)) return;
+          event.preventDefault();
+          stops.at(event.shiftKey ? -1 : 0)?.focus();
+          return;
+        }
+        if (event.key !== "Escape") return;
         event.preventDefault();
         composer.dismiss({ returnFocus: true });
       }}
