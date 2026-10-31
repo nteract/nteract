@@ -160,7 +160,8 @@ import {
 export { Space } from "./spaces.mjs";
 import { spaceCreationEffect, spaceCreationTransition } from "./space-lifecycle.mjs";
 import { handleImportPageImage } from "./import-image.mjs";
-import { holdUntilSettled, serialQueue, serialQueueBounds } from "./serial-queue.mjs";
+import { serialQueue, serialQueueBounds } from "./serial-queue.mjs";
+import { holdUntilSettled } from "./request-hold.mjs";
 import { readTool } from "./tool-reads.mjs";
 import { readChangesTool } from "./tool-changes.mjs";
 import { PageActivity } from "./page-activity.mjs";
@@ -725,6 +726,14 @@ export class Catalog {
       current: (pageId) => this.pageLifecycle(pageId),
     });
   }
+  /** The catalog index database. Its migration is shared by every request in
+   * this isolate and outlives a caller that stops waiting at the read bound,
+   * so each caller holds it until it settles. */
+  indexDatabase() {
+    const ready = catalogIndexDatabase(this.env);
+    holdUntilSettled(this.ctx, ready);
+    return ready;
+  }
   /** Read a Page's current lifecycle state. The Catalog may call its Pages;
    * a Page never calls its owner's Catalog.
    */
@@ -744,6 +753,8 @@ export class Catalog {
       if (this.lifecycleReads.size >= lifecycleBounds.concurrency)
         throw Error("Page lifecycle reads are at capacity");
       read = this.readLifecycle(pageId);
+      // Later passes reuse this read after its request stops waiting.
+      holdUntilSettled(this.ctx, read);
       this.lifecycleReads.set(pageId, read);
       const clear = () => {
         if (this.lifecycleReads.get(pageId) === read) this.lifecycleReads.delete(pageId);
@@ -1751,7 +1762,7 @@ export class Catalog {
     const epoch = catalogIndexEpoch(this.env);
     if (epoch) {
       try {
-        const db = await withTimeout(catalogIndexDatabase(this.env), catalogIndexTimeouts.read);
+        const db = await withTimeout(this.indexDatabase(), catalogIndexTimeouts.read);
         await reconcileSpaceIndex({ db, storage, principal: identity.principal, epoch });
         source = spaceIndexSource(db, { principal: identity.principal });
       } catch (error) {
@@ -1885,7 +1896,7 @@ export class Catalog {
     let source;
     if (epoch) {
       try {
-        db = await withTimeout(catalogIndexDatabase(this.env), catalogIndexTimeouts.read);
+        db = await withTimeout(this.indexDatabase(), catalogIndexTimeouts.read);
         const ready = await reconcileAccountIndex({
           db,
           storage,
@@ -2465,11 +2476,16 @@ export class Page {
   fetch(request) {
     // Permission changes/claims and HTTP mutations share one admission order.
     // Native frames still run directly through the current DocumentPolicy.
-    if (["/api/sync", "/api/saved"].includes(new URL(request.url).pathname))
-      return this.run(request);
+    // Both paths hold the request until it settles (request-hold.mjs): a save
+    // waits for heads and drains the record store's own serialized flush.
+    if (["/api/sync", "/api/saved"].includes(new URL(request.url).pathname)) {
+      const running = this.run(request);
+      holdUntilSettled(this.ctx, running);
+      return running;
+    }
     const next = this.tail.then(() => this.run(request));
     this.tail = next.catch(() => {});
-    holdUntilSettled(this.ctx, this.tail);
+    holdUntilSettled(this.ctx, next);
     return next;
   }
 

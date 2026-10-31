@@ -1,4 +1,5 @@
 import { logFailure } from "./auth.mjs";
+import { holdUntilSettled } from "./request-hold.mjs";
 
 /*
  * One request at a time for a Durable Object, with a stuck-head watchdog.
@@ -20,7 +21,8 @@ import { logFailure } from "./auth.mjs";
  * from a restart through their stored operation intents.
  *
  * Each queued request also holds itself open with `holdUntilSettled`, so a
- * caller that goes away cannot leave its work half-run at the head.
+ * caller that goes away cannot leave its work half-run at the head
+ * (request-hold.mjs).
  */
 
 /** Mutable so tests can shorten them. A request still running at `runMs` has
@@ -29,25 +31,6 @@ import { logFailure } from "./auth.mjs";
  * projection. A caller without its own deadline needs one, because a reset
  * instance never answers the requests queued on it. */
 export const serialQueueBounds = { runMs: 120_000, projectionMs: 10_000 };
-
-/**
- * Keep the object request that queued `settled` running until it settles.
- *
- * celld 0.6.3 cancels a Durable Object request when the client of the gateway
- * request that forwarded it disconnects, such as a tab navigating away
- * mid-fetch. Work the object request already started then never resumes: its
- * timers and I/O are dropped, and its promise never settles. A request still
- * waiting in a serialized queue starts in that dead context when its turn
- * comes. Either way every later request in the queue waits behind it.
- * `ctx.waitUntil` keeps the request running after its caller goes away, so
- * the work finishes and the queue moves on; its response is discarded.
- * Register it in the same synchronous step that queues the work, while the
- * request is still live. `settled` must not reject. Partial objects without a
- * `ctx`, as unit tests build them, hold nothing.
- */
-export function holdUntilSettled(ctx, settled) {
-  ctx?.waitUntil?.(settled);
-}
 
 const stuckError = () =>
   Object.assign(new Error("A queued request did not settle"), {
