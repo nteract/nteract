@@ -8,6 +8,10 @@ export const chunkPaths = "chunks/[A-Z2-7]{8}[.]js|";
 // source name with its own extension only.
 export const assetPaths =
   "(app|theme|mermaid)-[A-Z2-7]{8}[.]js|app-[A-Z2-7]{8}[.]css|(automerge|subduction)-[A-Z2-7]{8}[.]wasm|";
+// Viewer Project links (shared/routes.mjs readPageRoute): /project/<id> and
+// the older /s/<id>, which the viewer rewrites to /project/<id>.
+export const projectPaths =
+  "(project|s)/(prj|sp)_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}/?|";
 export const imagePaths =
   "pages/[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}/assets(/[0-9a-f]{64})?|";
 
@@ -18,6 +22,7 @@ export function routesFor(target = "pages-next", legacy = false) {
   const theme = profile.theme ? "theme[.]js|" : "";
   const chunks = profile.viewerChunks ? chunkPaths : "";
   const assets = profile.viewerAssets ? assetPaths : "";
+  const projects = profile.projectLinks ? projectPaths : "";
   // Frozen deployments retain their exact route receipts. Sharing targets expose
   // only the public setup page, its script, and the authenticated access API.
   const sharing = profile.sharing === true;
@@ -33,7 +38,9 @@ export function routesFor(target = "pages-next", legacy = false) {
       renderer +
       connect +
       (authenticatedAssets ? oauthPaths : "") +
-      "(automerge|subduction)[.]wasm|health|mcp|llms[.]txt|p/[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}/?|api/(" +
+      "(automerge|subduction)[.]wasm|health|mcp|llms[.]txt|p/[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}/?|" +
+      projects +
+      "api/(" +
       access +
       (authenticatedAssets ? imagePaths : "") +
       "tools|connect|sync|saved|pages/register|auth/(login|logout|session))|oidc";
