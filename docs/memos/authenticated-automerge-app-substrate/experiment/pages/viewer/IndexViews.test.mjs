@@ -262,3 +262,144 @@ test("the index nav links each screen and leaves modified clicks to the browser"
   assert.deepEqual(kinds, ["projects"]);
   await unmount();
 });
+
+function deferred() {
+  let resolve, reject;
+  const promise = new Promise((yes, no) => ((resolve = yes), (reject = no)));
+  return { promise, resolve, reject };
+}
+const setInput = (input, value) =>
+  act(() => {
+    Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set.call(
+      input,
+      value,
+    );
+    input.dispatchEvent(new window.Event("input", { bubbles: true }));
+  });
+const submitSearch = (host) =>
+  act(() =>
+    host
+      .querySelector("form[role=search]")
+      .dispatchEvent(new window.Event("submit", { bubbles: true, cancelable: true })),
+  );
+const pagesProps = (overrides) => ({
+  query: "",
+  projects: [],
+  onNavigate: () => {},
+  onQueryChange: () => {},
+  onOpen: () => {},
+  onOpenProject: () => {},
+  onWarm: () => {},
+  onError: () => {},
+  onRetry: (retry) => retry(),
+  ...overrides,
+});
+
+test("mounting /pages never reports a query change; only a typed search does", async () => {
+  const changes = [];
+  const queries = [];
+  const props = pagesProps({
+    query: "  road  ",
+    tool: async (_, args) => (queries.push(args.query), { pages: [] }),
+    onQueryChange: (query) => changes.push(query),
+  });
+  const app = await mount(createElement(PagesIndex, props));
+  // StrictMode mounts twice; each mount lists the route's own query.
+  assert.deepEqual([...new Set(queries)], ["road"]);
+  assert.deepEqual(changes, [], "a mount never reports a change");
+  const input = app.host.querySelector('input[type="search"]');
+  await setInput(input, "plan");
+  await submitSearch(app.host);
+  await settle();
+  assert.deepEqual(changes, ["plan"]);
+  await app.unmount();
+  // A remount after a failed Page open lists the latest search and is silent.
+  const again = await mount(createElement(PagesIndex, { ...props, query: "plan" }));
+  assert.equal(again.host.querySelector('input[type="search"]').value, "plan");
+  assert.deepEqual(changes, ["plan"]);
+  assert.equal(queries.at(-1), "plan");
+  await again.unmount();
+});
+
+test("a pasted search longer than list_pages allows is cut once, everywhere", async () => {
+  const queries = [];
+  const changes = [];
+  const app = await mount(
+    createElement(
+      PagesIndex,
+      pagesProps({
+        tool: async (_, args) => (queries.push(args.query), { pages: [] }),
+        onQueryChange: (query) => changes.push(query),
+      }),
+    ),
+  );
+  const input = app.host.querySelector('input[type="search"]');
+  assert.equal(input.maxLength, 200);
+  await setInput(input, " " + "z".repeat(300));
+  assert.equal(input.value.length, 200, "the box holds what a request may send");
+  await submitSearch(app.host);
+  await settle();
+  assert.equal(queries.at(-1), "z".repeat(199));
+  assert.deepEqual(changes, ["z".repeat(199)]);
+  await app.unmount();
+});
+
+test("a Load more that fails after the screen unmounts reports nothing", async () => {
+  const errors = [];
+  const next = deferred();
+  const app = await mount(
+    createElement(
+      PagesIndex,
+      pagesProps({
+        tool: async (_, args) =>
+          args.cursor
+            ? next.promise
+            : { pages: [{ page_id: id(1), title: "One" }], next_cursor: "next" },
+        onError: (message) => errors.push(message),
+      }),
+    ),
+  );
+  await click(
+    [...app.host.querySelectorAll("button")].find((b) => b.textContent === "Load more Pages"),
+  );
+  await app.unmount();
+  next.reject(new TypeError("Failed to fetch"));
+  await settle();
+  assert.deepEqual(errors, []);
+});
+
+test("an expired cursor reloads /pages from its first page instead of offering Try again", async () => {
+  const errors = [];
+  const cursors = [];
+  let expired = false;
+  const app = await mount(
+    createElement(
+      PagesIndex,
+      pagesProps({
+        tool: async (_, args) => {
+          cursors.push(args.cursor ?? null);
+          if (args.cursor && expired)
+            throw Object.assign(Error("Invalid cursor; restart from the first page"), {
+              status: 400,
+              code: "invalid_cursor",
+            });
+          return { pages: [{ page_id: id(cursors.length), title: "Row" }], next_cursor: "old" };
+        },
+        onError: (message) => errors.push(message),
+      }),
+    ),
+  );
+  expired = true;
+  await click(
+    [...app.host.querySelectorAll("button")].find((b) => b.textContent === "Load more Pages"),
+  );
+  await settle();
+  assert.deepEqual(cursors.slice(cursors.indexOf("old")), ["old", null]);
+  assert.deepEqual(errors, []);
+  assert.equal(
+    [...app.host.querySelectorAll("button")].some((b) => b.textContent === "Try again"),
+    false,
+  );
+  assert.deepEqual(text(app.host, ".index-row-link"), ["Row"]);
+  await app.unmount();
+});

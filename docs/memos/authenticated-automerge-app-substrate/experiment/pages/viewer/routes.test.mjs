@@ -7,6 +7,8 @@ import {
   writeRoute,
   pagesPath,
   isIndexRoute,
+  normalizePagesQuery,
+  PAGES_QUERY_MAX,
   PROJECTS_PATH,
   isPlainNavigation,
   mergePageListings,
@@ -79,6 +81,26 @@ test("/projects and /pages are exact index routes with an optional trailing slas
   assert.equal(pagesPath("  "), "/pages");
   assert.equal(pagesPath("a&b"), "/pages?q=a%26b");
   assert.equal(readPageRoute(pagesPath("a&b=c")).query, "a&b=c");
+});
+test("a /pages query has one rule for the box, the request and the address", () => {
+  assert.equal(PAGES_QUERY_MAX, 200);
+  assert.equal(normalizePagesQuery(undefined), "");
+  assert.equal(normalizePagesQuery(null), "");
+  assert.equal(normalizePagesQuery("  road  "), "road");
+  assert.equal(normalizePagesQuery("x".repeat(250)), "x".repeat(200));
+  // A cut that would end inside a word with spaces before it drops the spaces.
+  assert.equal(normalizePagesQuery("x".repeat(199) + " yz"), "x".repeat(199));
+  // A cut never leaves half a surrogate pair, which list_pages would count
+  // and the address would mangle.
+  const emoji = "x".repeat(199) + "😀";
+  assert.equal(normalizePagesQuery(emoji), "x".repeat(199));
+  for (const raw of ["  road map ", "x".repeat(300), emoji, "a&b=c"]) {
+    const query = normalizePagesQuery(raw);
+    assert.ok(query.length <= PAGES_QUERY_MAX);
+    assert.equal(normalizePagesQuery(query), query, "normalizing twice changes nothing");
+    assert.equal(readPageRoute(pagesPath(raw)).query, query, "a reload lists the same search");
+    assert.equal(pagesPath(query), pagesPath(raw));
+  }
 });
 test("index routes push once and search edits replace the entry", () => {
   const calls = [];

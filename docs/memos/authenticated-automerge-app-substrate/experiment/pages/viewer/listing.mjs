@@ -3,11 +3,16 @@
 // The store holds the machine state and the rows on screen. A page of rows
 // reaches the store only through the machine's `show` effect, so a superseded
 // request can't overwrite a newer one.
+//
+// A listing does nothing while disconnected: React connects it on mount and
+// disconnects it on unmount. Disconnecting abandons every request in flight,
+// so a reply that lands after the screen is gone, or after the account
+// changed, never reaches the store or the banner.
 import { Subject, asyncScheduler, debounceTime } from "rxjs";
 import { failureMessage } from "./alerts.mjs";
 import { listingMachine } from "./listing-machine.mjs";
 import { Store } from "./store.mjs";
-import { pagePath, projectPath } from "../shared/routes.mjs";
+import { normalizePagesQuery, pagePath, projectPath } from "../shared/routes.mjs";
 
 /** Rows per list_pages request on /pages. */
 export const PAGES_PER_REQUEST = 50;
@@ -41,6 +46,10 @@ export class Listing {
   #searches = new Subject();
   #debounce;
   #scheduler;
+  // Bumped by each disconnect; a request keeps the value it started under
+  // and settles only while that value is current.
+  #connection = 0;
+  #connected = false;
   /**
    * - fetch({ query, cursor }): one page as `{ items, cursor }`, cursor null
    *   at the end. A rejection reports `failed`.
@@ -65,26 +74,37 @@ export class Listing {
   /** Run typed searches while connected. Returns the disconnect, for a React
    * effect's cleanup. */
   connect() {
+    const connection = this.#connection;
+    this.#connected = true;
     const subscription = this.#searches
       .pipe(debounceTime(this.#debounce, this.#scheduler))
       .subscribe((query) => {
         if (query !== this.snapshot().state.query) this.load(query);
       });
-    return () => subscription.unsubscribe();
+    return () => {
+      subscription.unsubscribe();
+      if (connection !== this.#connection) return;
+      this.#connection++;
+      this.#connected = false;
+      this.#results.clear();
+    };
   }
   snapshot() {
     return this.store.snapshot();
   }
-  /** List `query` from its first page now. */
+  /** List `query` from its first page now. Queries follow
+   * normalizePagesQuery, so the request, the address and Back agree. */
   load(query = "") {
-    return this.#dispatch({ type: "load", key: this.#newKey(), query: query.trim() });
+    if (!this.#connected) return false;
+    return this.#dispatch({ type: "load", key: this.#newKey(), query: normalizePagesQuery(query) });
   }
   /** List `query` once typing pauses (while connected). */
   search(query) {
-    this.#searches.next(query.trim());
+    this.#searches.next(normalizePagesQuery(query));
   }
   /** The next page, or a retry of the one that stalled. */
   more() {
+    if (!this.#connected) return false;
     return this.#dispatch({ type: "more", key: this.#newKey() });
   }
   #dispatch(event) {
@@ -113,6 +133,8 @@ export class Listing {
     throw new Error(`unknown effect ${effect.type}`);
   }
   #request({ key, query, cursor }) {
+    const connection = this.#connection;
+    const current = () => connection === this.#connection;
     let pending;
     try {
       pending = this.#fetch({ query, cursor });
@@ -121,11 +143,16 @@ export class Listing {
     }
     Promise.resolve(pending).then(
       (page) => {
+        if (!current()) return;
         this.#results.set(key, Array.isArray(page?.items) ? page.items : []);
         const next = typeof page?.cursor === "string" && page.cursor ? page.cursor : null;
         if (!this.#dispatch({ type: "loaded", key, cursor: next })) this.#results.delete(key);
       },
-      (error) => this.#dispatch({ type: "failed", key, message: failureMessage(error) }),
+      (error) => {
+        if (!current()) return;
+        const code = typeof error?.code === "string" && error.code ? error.code : null;
+        this.#dispatch({ type: "failed", key, message: failureMessage(error), code });
+      },
     );
   }
 }
@@ -138,9 +165,10 @@ const nextCursor = (result) =>
 export const pagesRequest =
   (call, limit = PAGES_PER_REQUEST) =>
   async ({ query, cursor }) => {
+    const text = normalizePagesQuery(query);
     const result = await call("list_pages", {
       limit,
-      ...(query ? { query } : {}),
+      ...(text ? { query: text } : {}),
       ...(cursor ? { cursor } : {}),
     });
     return { items: result.pages ?? [], cursor: nextCursor(result) };

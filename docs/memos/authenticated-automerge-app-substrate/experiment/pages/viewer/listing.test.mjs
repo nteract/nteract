@@ -22,10 +22,10 @@ const TABLE = new URL("../test/fixtures/machines/listing.json", import.meta.url)
 
 test("the listing table runs through the pure machine", async () => {
   assert.deepEqual(await runTable(listingMachine, loadTable(TABLE)), {
-    rows: 27,
+    rows: 29,
     pairs: 22,
     unreachable: 2,
-    cases: 10,
+    cases: 11,
   });
 });
 
@@ -53,7 +53,9 @@ function harness() {
     },
     { newKey: () => `k${++n}`, scheduler },
   );
+  const disconnect = listing.connect();
   return {
+    disconnect,
     listing,
     requests,
     reports,
@@ -111,8 +113,7 @@ test("a search supersedes the request in flight and its late rows never show", a
 });
 
 test("typing searches once it pauses, and only when the query changed", async () => {
-  const { listing, requests, scheduler } = harness();
-  const disconnect = listing.connect();
+  const { listing, requests, scheduler, disconnect } = harness();
   listing.load("");
   requests[0].resolve({ items: [], cursor: null });
   await settle();
@@ -172,6 +173,90 @@ test("a failed Load more keeps the rows and retries the same cursor", async () =
   assert.equal(requests[2].cursor, "c1");
 });
 
+test("an expired cursor starts the listing over; a transient failure keeps its cursor", async () => {
+  const { listing, requests, reports, view, ids } = harness();
+  listing.load("road");
+  requests[0].resolve({ items: [{ id: "a" }, { id: "b" }], cursor: "c1" });
+  await settle();
+  listing.more();
+  requests[1].reject(
+    Object.assign(Error("Pages can't reach the server."), { code: "NETWORK_ERROR" }),
+  );
+  await settle();
+  assert.equal(view().stalled, true);
+  listing.more();
+  assert.equal(requests[2].cursor, "c1", "a transient failure retries the same cursor");
+  // A day later the cursor has expired: the listing restarts, it doesn't stall.
+  requests[2].reject(
+    Object.assign(Error("Invalid cursor; restart from the first page"), {
+      status: 400,
+      code: "invalid_cursor",
+    }),
+  );
+  await settle();
+  assert.deepEqual(
+    requests.slice(3).map(({ query, cursor }) => ({ query, cursor })),
+    [{ query: "road", cursor: null }],
+  );
+  assert.equal(view().stalled, false);
+  assert.equal(view().searching, true, "the old rows show while the first page reloads");
+  assert.equal(reports.length, 1, "the restart reports nothing");
+  requests[3].resolve({ items: [{ id: "new" }, { id: "a" }], cursor: "c2" });
+  await settle();
+  assert.deepEqual(ids(), ["new", "a"], "the first page replaces the rows");
+  assert.equal(view().canLoadMore, true);
+  listing.more();
+  assert.equal(requests[4].cursor, "c2");
+});
+
+test("disconnecting abandons requests in flight: no rows, no banner", async () => {
+  const { listing, requests, reports, ids, disconnect } = harness();
+  listing.load();
+  requests[0].resolve({ items: [{ id: "a" }], cursor: "c1" });
+  await settle();
+  listing.more();
+  disconnect();
+  requests[1].reject(new TypeError("Failed to fetch"));
+  await settle();
+  assert.deepEqual(reports, [], "a screen that is gone reports nothing");
+  assert.deepEqual(ids(), ["a"]);
+  assert.equal(listing.load(), false, "a disconnected listing requests nothing");
+  assert.equal(listing.more(), false);
+  assert.equal(requests.length, 2);
+  // StrictMode reconnects the same listing; the next load wins.
+  listing.connect();
+  listing.load();
+  requests[2].resolve({ items: [{ id: "b" }], cursor: null });
+  await settle();
+  assert.deepEqual(ids(), ["b"]);
+});
+
+test("a late first page after disconnecting never reaches the store", async () => {
+  const { listing, requests, ids, disconnect } = harness();
+  listing.load();
+  disconnect();
+  requests[0].resolve({ items: [{ id: "late" }], cursor: null });
+  await settle();
+  assert.deepEqual(ids(), []);
+});
+
+test("searches and requests follow one query rule: trimmed, at most 200 units", async () => {
+  const { listing, requests, scheduler, view } = harness();
+  const long = "  " + "x".repeat(250) + "  ";
+  listing.load(long);
+  assert.equal(requests[0].query, "x".repeat(200));
+  assert.equal(view().query, "x".repeat(200));
+  listing.search("  road  ");
+  scheduler.flush();
+  assert.equal(requests[1].query, "road");
+  const calls = [];
+  await pagesRequest(async (name, args) => (calls.push(args), { pages: [] }))({
+    query: "y".repeat(300),
+    cursor: null,
+  });
+  assert.equal(calls[0].query.length, 200);
+});
+
 test("a fetch adapter that throws reports like one that rejects", async () => {
   const reports = [];
   const listing = new Listing({
@@ -181,6 +266,7 @@ test("a fetch adapter that throws reports like one that rejects", async () => {
     report: (message) => reports.push(message),
     idOf: (item) => item.id,
   });
+  listing.connect();
   listing.load();
   await settle();
   assert.equal(listing.snapshot().state.name, "failed");

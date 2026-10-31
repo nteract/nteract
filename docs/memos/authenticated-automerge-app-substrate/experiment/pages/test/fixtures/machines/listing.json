@@ -42,7 +42,8 @@
     ],
     "more/failed": [
       "current",
-      "stale"
+      "stale",
+      "expired"
     ],
     "ready/more": [
       "cursor",
@@ -566,7 +567,8 @@
       "event": {
         "type": "failed",
         "key": "k1",
-        "message": "Pages can't reach the server. Try again in a moment."
+        "message": "Pages can't reach the server. Try again in a moment.",
+        "code": null
       },
       "expect": {
         "state": {
@@ -593,7 +595,8 @@
       "event": {
         "type": "failed",
         "key": "k0",
-        "message": "Pages can't reach the server. Try again in a moment."
+        "message": "Pages can't reach the server. Try again in a moment.",
+        "code": null
       },
       "expect": {
         "state": {
@@ -615,7 +618,8 @@
       "event": {
         "type": "failed",
         "key": "k1",
-        "message": "Pages can't reach the server. Try again in a moment."
+        "message": "Pages can't reach the server. Try again in a moment.",
+        "code": null
       },
       "expect": {
         "state": {
@@ -628,7 +632,7 @@
       }
     },
     {
-      "label": "a failed next page keeps the rows and reports the banner",
+      "label": "a failed next page keeps the rows, reports the banner, and keeps its cursor",
       "case": "current",
       "state": {
         "name": "more",
@@ -639,7 +643,8 @@
       "event": {
         "type": "failed",
         "key": "k1",
-        "message": "Pages can't reach the server. Try again in a moment."
+        "message": "Pages can't reach the server. Try again in a moment.",
+        "code": "NETWORK_ERROR"
       },
       "expect": {
         "state": {
@@ -668,7 +673,8 @@
       "event": {
         "type": "failed",
         "key": "k0",
-        "message": "Pages can't reach the server. Try again in a moment."
+        "message": "Pages can't reach the server. Try again in a moment.",
+        "code": null
       },
       "expect": {
         "state": {
@@ -682,6 +688,38 @@
       }
     },
     {
+      "label": "an expired cursor starts the listing over from its first page",
+      "note": "list_pages rejects a cursor older than a day with invalid_cursor; retrying it can never succeed. The settled request's key names the restart, and the first page replaces the rows.",
+      "case": "expired",
+      "state": {
+        "name": "more",
+        "key": "k1",
+        "query": "road",
+        "cursor": "c1"
+      },
+      "event": {
+        "type": "failed",
+        "key": "k1",
+        "message": "Invalid cursor; restart from the first page",
+        "code": "invalid_cursor"
+      },
+      "expect": {
+        "state": {
+          "name": "loading",
+          "key": "k1",
+          "query": "road"
+        },
+        "effects": [
+          {
+            "type": "fetch",
+            "key": "k1",
+            "query": "road",
+            "cursor": null
+          }
+        ]
+      }
+    },
+    {
       "label": "a second failure after a failed first page is ignored",
       "state": {
         "name": "failed",
@@ -691,7 +729,8 @@
       "event": {
         "type": "failed",
         "key": "k1",
-        "message": "again"
+        "message": "again",
+        "code": null
       },
       "expect": {
         "state": {
@@ -714,7 +753,8 @@
       "event": {
         "type": "failed",
         "key": "k1",
-        "message": "again"
+        "message": "again",
+        "code": null
       },
       "expect": {
         "state": {
@@ -725,6 +765,34 @@
         },
         "effects": [],
         "rejected": "No request is in flight"
+      }
+    },
+    {
+      "label": "a first page has no cursor to expire, so invalid_cursor is an ordinary failure",
+      "case": "current",
+      "state": {
+        "name": "loading",
+        "key": "k1",
+        "query": "road"
+      },
+      "event": {
+        "type": "failed",
+        "key": "k1",
+        "message": "Invalid cursor; restart from the first page",
+        "code": "invalid_cursor"
+      },
+      "expect": {
+        "state": {
+          "name": "failed",
+          "query": "road",
+          "message": "Invalid cursor; restart from the first page"
+        },
+        "effects": [
+          {
+            "type": "report",
+            "message": "Invalid cursor; restart from the first page"
+          }
+        ]
       }
     }
   ]

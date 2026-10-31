@@ -111,8 +111,9 @@ function App() {
     [trashOpen, setTrashOpen] = useState(false),
     [projects, setProjects] = useState([]),
     [projectOpen, setProjectOpen] = useState(null),
-    // An index route: { kind: "projects" | "pages", query?, visit } or null.
-    // `visit` remounts the listing for each navigation, Back included.
+    // An index route: { kind: "projects" | "pages", query, visit, principal }
+    // or null. `visit` remounts the listing for each navigation, Back
+    // included; `query` follows the search typed on /pages.
     [index, setIndex] = useState(null),
     [crumbs, setCrumbs] = useState([]);
   const [toolbar, setToolbar] = useState(null),
@@ -386,15 +387,38 @@ function App() {
   function openIndex(route, { historyMode = "push" } = {}) {
     home(null, { historyMode: "none", refreshCatalog: false });
     if (historyMode !== "none") writeRoute(route.path, { replace: historyMode === "replace" });
-    setIndex({ kind: route.kind, query: route.query ?? "", visit: ++indexVisits.current });
+    setIndex({
+      kind: route.kind,
+      query: route.query ?? "",
+      visit: ++indexVisits.current,
+      principal: authentication.current?.identity?.principal ?? null,
+    });
   }
   /** The Home · All Pages · Projects nav and the switcher's index links. */
   function navigateIndex(kind) {
     if (kind === "home") home(null);
     else openIndex(readPageRoute(kind === "projects" ? PROJECTS_PATH : pagesPath()));
   }
-  /** A listing failure goes to the screen's banner like any failed action. */
-  const reportListing = (message) => setError(message);
+  /** Whether index visit `visit` is still on screen for the account that
+   * started it, at its own address. */
+  const indexCurrent = (visit, principal) =>
+    indexVisits.current === visit &&
+    authentication.current?.identity?.principal === principal &&
+    isIndexRoute(readPageRoute(location.href));
+  /** A listing failure goes to the screen's banner like any failed action,
+   * while its screen is still the one showing. */
+  const reportListing = (visit, principal) => (message) => {
+    if (indexCurrent(visit, principal)) setError(message);
+  };
+  /** A search typed on /pages: the address and the visit's query follow it,
+   * so Back, a reload, or a remount after a failed Page open show it again.
+   * A visit whose address moved on (to the Page it is opening) leaves the
+   * address alone. */
+  const followIndexQuery = (visit, principal) => (query) => {
+    if (!indexCurrent(visit, principal) || readPageRoute(location.href).kind !== "pages") return;
+    setIndex((current) => (current?.visit === visit ? { ...current, query } : current));
+    writeRoute(pagesPath(query), { replace: true });
+  };
   const retryListing = (retry) => {
     setError("");
     retry();
@@ -1050,7 +1074,7 @@ function App() {
               tool={tool}
               onNavigate={navigateIndex}
               onOpenProject={(id) => openProject(id)}
-              onError={reportListing}
+              onError={reportListing(index.visit, index.principal)}
               onRetry={retryListing}
             />
           ) : index?.kind === "pages" ? (
@@ -1060,11 +1084,11 @@ function App() {
               query={index.query}
               projects={projects}
               onNavigate={navigateIndex}
-              onQueryChange={(query) => writeRoute(pagesPath(query), { replace: true })}
+              onQueryChange={followIndexQuery(index.visit, index.principal)}
               onOpen={(id) => open(id)}
               onOpenProject={(id) => openProject(id)}
               onWarm={warmEditor}
-              onError={reportListing}
+              onError={reportListing(index.visit, index.principal)}
               onRetry={retryListing}
             />
           ) : trashOpen ? (

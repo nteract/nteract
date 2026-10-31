@@ -21,6 +21,13 @@
  * - more: list the next page (Load more), or retry the one that stalled.
  * - loaded / failed: the request for `key` settled. A key that no longer
  *   matches belongs to a superseded request, so its result is ignored.
+ *   `failed` carries the server's error `code`, or null.
+ *
+ * A cursor expires (list_pages answers `invalid_cursor` after a day), so a
+ * next page that fails that way can never succeed. The listing starts over
+ * from the first page instead of stalling; the expired request has settled,
+ * so its key names the restart. Other failures stall and retry the same
+ * cursor.
  *
  * Effects: `fetch` requests one page; `show` puts the settled request's rows
  * on screen, replacing them for a first page and appending otherwise;
@@ -47,6 +54,11 @@ const fields = (head, keys) => (value) => {
   if (keys.includes("message"))
     check(typeof value.message === "string", "message must be a string");
   if (keys.includes("append")) check(typeof value.append === "boolean", "append is a boolean");
+  if (keys.includes("code"))
+    check(
+      value.code === null || (typeof value.code === "string" && value.code !== ""),
+      "code must be a string or null",
+    );
 };
 const state = (...keys) => fields("name", keys);
 const event = (...keys) => fields("type", keys);
@@ -63,7 +75,7 @@ export const listingSpec = Object.freeze({
     "loading/loaded": ["current", "stale"],
     "loading/failed": ["current", "stale"],
     "more/loaded": ["current", "stale"],
-    "more/failed": ["current", "stale"],
+    "more/failed": ["current", "stale", "expired"],
     "ready/more": ["cursor", "end"],
   },
   validate: {
@@ -79,7 +91,7 @@ export const listingSpec = Object.freeze({
       load: event("key", "query"),
       more: event("key"),
       loaded: event("key", "cursor"),
-      failed: event("key", "message"),
+      failed: event("key", "message", "code"),
     },
     effects: {
       fetch: event("key", "query", "cursor"),
@@ -88,6 +100,9 @@ export const listingSpec = Object.freeze({
     },
   },
 });
+
+/** list_pages' answer for a cursor that expired or was never valid. */
+export const INVALID_CURSOR = "invalid_cursor";
 
 export const REJECT = Object.freeze({
   nothingListed: "Nothing is listed yet",
@@ -120,6 +135,11 @@ function transition(current, input) {
   if (current.name !== "loading" && current.name !== "more") return reject(current, REJECT.idle);
   if (input.key !== current.key) return reject(current, REJECT.stale);
   const append = current.name === "more";
+  if (append && input.type === "failed" && input.code === INVALID_CURSOR)
+    return {
+      state: { name: "loading", key: input.key, query: current.query },
+      effects: [{ type: "fetch", key: input.key, query: current.query, cursor: null }],
+    };
   if (input.type === "loaded")
     return {
       state: { name: "ready", query: current.query, cursor: input.cursor },

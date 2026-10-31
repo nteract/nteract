@@ -18,8 +18,22 @@ export function projectPath(id) {
 // The two index routes list what the account can open: every Project, and
 // every Page newest first. /pages keeps its search in `q` so Back restores it.
 export const PROJECTS_PATH = "/projects";
+/** list_pages accepts a query of at most this many UTF-16 code units. */
+export const PAGES_QUERY_MAX = 200;
+/** The one rule for a /pages search, wherever it comes from (the search box,
+ * the address, a request): trimmed, then cut to PAGES_QUERY_MAX without
+ * splitting a surrogate pair. */
+export function normalizePagesQuery(value) {
+  let text = typeof value === "string" ? value.trim() : "";
+  if (text.length > PAGES_QUERY_MAX) {
+    text = text.slice(0, PAGES_QUERY_MAX);
+    if (/[\uD800-\uDBFF]$/.test(text)) text = text.slice(0, -1);
+    text = text.trimEnd();
+  }
+  return text;
+}
 export function pagesPath(query = "") {
-  const text = typeof query === "string" ? query.trim() : "";
+  const text = normalizePagesQuery(query);
   return text ? `/pages?${new URLSearchParams({ q: text })}` : "/pages";
 }
 /** Index routes render from the shell alone; the editor chunk waits until a
@@ -30,7 +44,7 @@ export function readPageRoute(input) {
   const url = new URL(input, "https://pages.invalid");
   if (/^\/projects\/?$/.test(url.pathname)) return { kind: "projects", path: PROJECTS_PATH };
   if (/^\/pages\/?$/.test(url.pathname)) {
-    const query = (url.searchParams.get("q") ?? "").trim().slice(0, 200);
+    const query = normalizePagesQuery(url.searchParams.get("q"));
     return { kind: "pages", query, path: pagesPath(query) };
   }
   // /s/<id> links predate the Project name; they open the Project's own path.

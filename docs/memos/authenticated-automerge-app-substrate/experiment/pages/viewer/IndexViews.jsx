@@ -5,7 +5,12 @@
 // box's text.
 import { useEffect, useMemo, useState } from "react";
 import { Boxes, FileText, Home, Search } from "lucide-react";
-import { PROJECTS_PATH, isPlainNavigation } from "../shared/routes.mjs";
+import {
+  PAGES_QUERY_MAX,
+  PROJECTS_PATH,
+  isPlainNavigation,
+  normalizePagesQuery,
+} from "../shared/routes.mjs";
 import {
   Listing,
   listingView,
@@ -165,13 +170,17 @@ export function PagesIndex({
       }),
   );
   useEffect(() => {
-    listing.load(query);
-    // The address follows the query actually listed, so Back and a reload
-    // return to the same search.
+    // Mounting lists the route's own query, so it never reports a change:
+    // only a search typed here moves the address, and the owner checks that
+    // the address is still this screen's.
+    let reported = normalizePagesQuery(query);
+    listing.load(reported);
     const subscription = listing.store
       .select((current) => current.state.query)
       .subscribe((listed) => {
-        if (listed !== undefined) onQueryChange(listed);
+        if (listed === undefined || listed === reported) return;
+        reported = listed;
+        onQueryChange(listed);
       });
     return () => subscription.unsubscribe();
   }, [listing]);
@@ -203,10 +212,12 @@ export function PagesIndex({
             placeholder="Search Pages"
             type="search"
             enterKeyHint="search"
+            maxLength={PAGES_QUERY_MAX}
             value={text}
             onChange={(event) => {
-              setText(event.target.value);
-              listing.search(event.target.value);
+              const value = event.target.value.slice(0, PAGES_QUERY_MAX);
+              setText(value);
+              listing.search(value);
             }}
           />
         </label>

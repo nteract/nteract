@@ -1114,10 +1114,11 @@ a Project change feed come later.
 The viewer lists them at two index routes. `/projects` shows every Project
 `list_projects` returns, with its description. `/pages` shows every Page
 `list_pages` returns, newest first, including Pages in Projects; an owned
-Page's row links its Project. Search uses `list_pages`' `query` and stays in
-the address as `?q=`, and Load more follows `next_cursor`. `list_pages` has no
-filter for Your items or for shared Pages, so `/pages` has no filter chips;
-shared rows say so instead.
+Page's row links its Project. Search uses `list_pages`' `query`, trimmed and
+cut to its 200-unit limit, and stays in the address as `?q=`. Load more follows
+`next_cursor`; a cursor that has expired (`invalid_cursor`) starts the listing
+over from its first page. `list_pages` has no filter for Your items or for
+shared Pages, so `/pages` has no filter chips; shared rows say so instead.
 
 | Tool | Arguments | Result |
 | --- | --- | --- |
