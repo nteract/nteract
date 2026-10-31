@@ -69,6 +69,13 @@ export async function createPageInProject(call, projectId) {
   });
 }
 
+/** Crumbs to show: a Project's home Page stands for its Project, so a home
+ * crumb right after its Project crumb is dropped. A home crumb with no Project
+ * crumb before it stays, so the chain still leads somewhere. */
+export function visibleCrumbs(crumbs) {
+  return crumbs.filter((crumb, index) => !(crumb.home && crumbs[index - 1]?.kind === "project"));
+}
+
 /** Breadcrumbs for an open Page, limited to what this account can open. */
 export async function pageBreadcrumbs(call, pageId) {
   const result = await call("read_page", {

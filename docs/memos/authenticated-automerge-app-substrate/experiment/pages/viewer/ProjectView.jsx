@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { FileText, Home, Plus } from "lucide-react";
 import { pagePath, projectPath, isPlainNavigation } from "../shared/routes.mjs";
-import { createPageInProject, listProjectPages, projectTree } from "./projects.mjs";
+import { createPageInProject, listProjectPages, projectTree, visibleCrumbs } from "./projects.mjs";
 
 /** One Project: its home Page, then its Pages as a tree. Owner-only for now.
  * Loading and errors stay local and simple here; the Project view moves to the
@@ -75,7 +75,7 @@ export function ProjectView({ tool, projectId, onOpen, onBack, onCreated }) {
         </div>
         <div className="library-actions">
           <button className="primary" onClick={create} disabled={creating || !project}>
-            <Plus size={18} aria-hidden="true" /> New Page in this Project
+            <Plus size={18} aria-hidden="true" /> New Page
           </button>
         </div>
       </div>
@@ -114,13 +114,14 @@ export function ProjectView({ tool, projectId, onOpen, onBack, onCreated }) {
   );
 }
 
-/** Project › parent Pages above an open Page's title. */
+/** Project › parent Pages above an open Page's title. The Project crumb also
+ * stands for its home Page. */
 export function Breadcrumbs({ crumbs, onOpenProject, onOpenPage }) {
   if (!crumbs?.length) return null;
   return (
     <nav className="breadcrumbs" aria-label="Breadcrumbs">
       <ol>
-        {crumbs.map((crumb) => (
+        {visibleCrumbs(crumbs).map((crumb) => (
           <li key={crumb.project_id ?? crumb.page_id}>
             <a
               href={

@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { readPageRoute, projectPath, writePageRoute } from "../shared/routes.mjs";
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
 import { createPageInProject, listProjectPages, projectTree } from "./projects.mjs";
+import { Breadcrumbs } from "./ProjectView.jsx";
 
 const projectId = "prj_1a160b47-6df1-4983-81eb-489ca5a26812";
 const page = (n) => `0000000${n}-0000-4000-8000-000000000000`;
@@ -85,4 +88,22 @@ test("Project listings follow cursors and new Pages reuse the listing's retry to
   assert.equal(args.project_id, projectId);
   assert.equal(args.retry_token, "token");
   assert.match(args.idempotency_key, /^v1_[0-9a-f]{64}_/);
+});
+
+const crumbTitles = (crumbs) =>
+  [
+    ...renderToStaticMarkup(
+      createElement(Breadcrumbs, { crumbs, onOpenProject() {}, onOpenPage() {} }),
+    ).matchAll(/<a [^>]*>([^<]*)<\/a>/g),
+  ].map((match) => match[1]);
+
+test("a Project's home Page folds into the Project crumb; other parents stay", () => {
+  const projectCrumb = { kind: "project", project_id: projectId, title: "Guide" };
+  const homeCrumb = { kind: "page", page_id: page(1), title: "Guide", home: true };
+  const parentCrumb = { kind: "page", page_id: page(2), title: "Architecture" };
+  assert.deepEqual(crumbTitles([projectCrumb, homeCrumb]), ["Guide"]);
+  assert.deepEqual(crumbTitles([projectCrumb, homeCrumb, parentCrumb]), ["Guide", "Architecture"]);
+  assert.deepEqual(crumbTitles([projectCrumb, parentCrumb]), ["Guide", "Architecture"]);
+  // Without its Project crumb, the home crumb is the only way back up.
+  assert.deepEqual(crumbTitles([homeCrumb, parentCrumb]), ["Guide", "Architecture"]);
 });
