@@ -6,7 +6,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { Boxes, FileText, Home, Search } from "lucide-react";
 import {
-  PAGES_QUERY_MAX,
+  clampPagesQuery,
   PROJECTS_PATH,
   isPlainNavigation,
   normalizePagesQuery,
@@ -212,10 +212,11 @@ export function PagesIndex({
             placeholder="Search Pages"
             type="search"
             enterKeyHint="search"
-            maxLength={PAGES_QUERY_MAX}
             value={text}
             onChange={(event) => {
-              const value = event.target.value.slice(0, PAGES_QUERY_MAX);
+              // Clamped here rather than by maxLength, which counts code
+              // units and can keep half of an emoji.
+              const value = clampPagesQuery(event.target.value);
               setText(value);
               listing.search(value);
             }}

@@ -209,6 +209,25 @@ try {
     ),
   ].map((match) => match[1]);
   const editorChunks = () => chunks.filter((chunk) => !shellChunks.includes(chunk));
+  // An agent edits the Page the phone opened from an index route; its caret
+  // must show, with the editor chunk loaded on demand rather than at boot.
+  const agentEdits = async (tab, pageId, matchText, replacement) => {
+    const read = await ok("owner", "read_page", { page_id: pageId });
+    const block = read.blocks.find((entry) => entry.markdown.includes(matchText));
+    assert.ok(block, `read_page finds "${matchText}"`);
+    await ok("owner", "patch_page", {
+      page_id: pageId,
+      base_heads: read.heads,
+      idempotency_key: crypto.randomUUID(),
+      operations: [{ op: "replace_match", block_id: block.id, match_text: matchText, replacement }],
+    });
+    await expect(tab.locator("wg-content").first()).toContainText(replacement, {
+      timeout: 30000,
+    });
+    await expect(
+      tab.locator(".wordgard-caret-layer .peer-caret", { hasText: "Projects E2E agent" }),
+    ).toBeVisible({ timeout: 30000 });
+  };
   const fitsScreen = async (label) => {
     const width = await phone.evaluate(() => [
       document.documentElement.scrollWidth,
@@ -254,11 +273,15 @@ try {
     timeout: 30000,
   });
   assert.ok(editorChunks().length > 0, "opening a Page loads the editor chunk");
+  await agentEdits(phone, plan.page_id, "The fourth quarter.", "The fourth quarter, revised.");
+  await phone.screenshot({ path: `${output}/agent-caret-from-pages-mobile.png` });
   await phone.goBack();
   await expect(phone).toHaveURL(`${origin}/pages?q=Q4`);
   await expect(phone.getByRole("searchbox", { name: "Search all Pages" })).toHaveValue("Q4");
   await expect(pageRow("Q4 plan")).toBeVisible();
-  complete("Search narrowed /pages, a row opened its Page, and Back returned to the search");
+  complete(
+    "Search narrowed /pages, a row opened its Page with an agent's caret, and Back returned to the search",
+  );
 
   await pageRow("Q4 plan")
     .getByRole("link", { name: `Project ${title}` })
@@ -307,6 +330,24 @@ try {
     [],
     "loading /projects fetched the editor chunk",
   );
+  // From that fresh /projects load, into the Project and one of its Pages: the
+  // editor loads on demand there, and an agent's caret shows.
+  await fresh.getByRole("link", { name: title, exact: true }).tap();
+  const inProject = fresh.getByRole("list", { name: `Pages in ${title}` });
+  await inProject.getByRole("link", { name: "Roadmap" }).tap();
+  await expect(fresh).toHaveURL(`${origin}/p/${roadmap.page_id}`);
+  await expect(fresh.locator("wg-content").first()).toContainText("What ships when.", {
+    timeout: 30000,
+  });
+  assert.ok(
+    freshChunks.some((chunk) => !shellChunks.includes(chunk)),
+    "opening a Page from /projects loads the editor chunk",
+  );
+  await agentEdits(fresh, roadmap.page_id, "What ships when.", "What ships when, and why.");
+  await fresh.goBack();
+  await expect(fresh).toHaveURL(`${origin}/project/${project.project_id}`);
+  await fresh.goBack();
+  await expect(fresh).toHaveURL(`${origin}/projects`);
   await fresh.goto(`${origin}/`);
   const homeNav = fresh.getByRole("navigation", { name: "Browse" });
   await expect(homeNav.getByRole("link", { name: "All Pages" })).toHaveAttribute("href", "/pages");
@@ -316,7 +357,9 @@ try {
   );
   await fresh.screenshot({ path: `${output}/home-mobile.png` });
   await phoneContext.close();
-  complete("A fresh /projects load lists without the editor; Home links both index routes");
+  complete(
+    "A fresh /projects load lists without the editor, a Page in its Project shows an agent's caret, and Home links both index routes",
+  );
 
   const authority = await ok("owner", "list_pages");
   const trashPage = (pageId) =>

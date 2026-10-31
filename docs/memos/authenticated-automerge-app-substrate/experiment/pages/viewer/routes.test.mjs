@@ -7,6 +7,7 @@ import {
   writeRoute,
   pagesPath,
   isIndexRoute,
+  clampPagesQuery,
   normalizePagesQuery,
   PAGES_QUERY_MAX,
   PROJECTS_PATH,
@@ -100,6 +101,25 @@ test("a /pages query has one rule for the box, the request and the address", () 
     assert.equal(normalizePagesQuery(query), query, "normalizing twice changes nothing");
     assert.equal(readPageRoute(pagesPath(raw)).query, query, "a reload lists the same search");
     assert.equal(pagesPath(query), pagesPath(raw));
+  }
+});
+test("the search box clamps by code point, so it holds exactly what a search sends", () => {
+  const ascii = "x".repeat(199);
+  // 199 ASCII units and one emoji is 201 units: the emoji doesn't fit.
+  assert.equal(clampPagesQuery(ascii + "😀"), ascii);
+  assert.equal(clampPagesQuery(ascii + "😀 more"), ascii);
+  // A maxLength-style cut that already split the pair loses the stray half.
+  assert.equal(clampPagesQuery(ascii + "\uD83D"), ascii);
+  // An emoji that fits stays whole; spaces are the caller's to trim.
+  assert.equal(clampPagesQuery("x".repeat(198) + "😀"), "x".repeat(198) + "😀");
+  assert.equal(clampPagesQuery("  road  "), "  road  ");
+  assert.equal(clampPagesQuery(undefined), "");
+  for (const raw of [ascii + "😀", ascii + "\uD83D", "x".repeat(198) + "😀", " " + ascii + "😀"]) {
+    const stored = clampPagesQuery(raw);
+    const query = normalizePagesQuery(stored);
+    assert.equal(normalizePagesQuery(raw), query, "the box and a direct request agree");
+    assert.equal(readPageRoute(pagesPath(stored)).query, query, "and so does the address");
+    assert.equal(query.isWellFormed(), true);
   }
 });
 test("index routes push once and search edits replace the entry", () => {

@@ -20,17 +20,23 @@ export function projectPath(id) {
 export const PROJECTS_PATH = "/projects";
 /** list_pages accepts a query of at most this many UTF-16 code units. */
 export const PAGES_QUERY_MAX = 200;
+/** Cut `value` to at most PAGES_QUERY_MAX UTF-16 code units, by code point:
+ * a cut never keeps half of a surrogate pair, and a lone high surrogate at
+ * the end (a pair something else already split) is dropped. The search box
+ * stores this, so what it shows is what a search sends. */
+export function clampPagesQuery(value) {
+  const text = typeof value === "string" ? value : "";
+  let end = Math.min(text.length, PAGES_QUERY_MAX);
+  // A high surrogate just before the cut either starts a pair the cut splits
+  // or has already lost its partner; drop it either way.
+  const unit = end > 0 ? text.charCodeAt(end - 1) : 0;
+  if (unit >= 0xd800 && unit <= 0xdbff) end--;
+  return end === text.length ? text : text.slice(0, end);
+}
 /** The one rule for a /pages search, wherever it comes from (the search box,
- * the address, a request): trimmed, then cut to PAGES_QUERY_MAX without
- * splitting a surrogate pair. */
+ * the address, a request): trimmed, then clamped by clampPagesQuery. */
 export function normalizePagesQuery(value) {
-  let text = typeof value === "string" ? value.trim() : "";
-  if (text.length > PAGES_QUERY_MAX) {
-    text = text.slice(0, PAGES_QUERY_MAX);
-    if (/[\uD800-\uDBFF]$/.test(text)) text = text.slice(0, -1);
-    text = text.trimEnd();
-  }
-  return text;
+  return clampPagesQuery(typeof value === "string" ? value.trim() : "").trimEnd();
 }
 export function pagesPath(query = "") {
   const text = normalizePagesQuery(query);

@@ -334,7 +334,6 @@ test("a pasted search longer than list_pages allows is cut once, everywhere", as
     ),
   );
   const input = app.host.querySelector('input[type="search"]');
-  assert.equal(input.maxLength, 200);
   await setInput(input, " " + "z".repeat(300));
   assert.equal(input.value.length, 200, "the box holds what a request may send");
   await submitSearch(app.host);
@@ -402,4 +401,35 @@ test("an expired cursor reloads /pages from its first page instead of offering T
   );
   assert.deepEqual(text(app.host, ".index-row-link"), ["Row"]);
   await app.unmount();
+});
+
+test("199 ASCII characters and an emoji, typed or pasted, leave one string everywhere", async () => {
+  const ascii = "x".repeat(199);
+  for (const [label, steps] of [
+    // Typing: the box reaches 199 characters, then the emoji arrives. A
+    // browser's maxLength may already have kept only its high surrogate.
+    ["typed", [ascii, ascii + "😀"]],
+    ["typed past maxLength", [ascii, ascii + "\uD83D"]],
+    ["pasted", [ascii + "😀 and more"]],
+  ]) {
+    const queries = [];
+    const changes = [];
+    const app = await mount(
+      createElement(
+        PagesIndex,
+        pagesProps({
+          tool: async (_, args) => (queries.push(args.query), { pages: [] }),
+          onQueryChange: (query) => changes.push(query),
+        }),
+      ),
+    );
+    const input = app.host.querySelector('input[type="search"]');
+    for (const value of steps) await setInput(input, value);
+    assert.equal(input.value, ascii, `${label}: the box drops the emoji whole`);
+    await submitSearch(app.host);
+    await settle();
+    assert.equal(queries.at(-1), ascii, `${label}: the request`);
+    assert.deepEqual(changes, [ascii], `${label}: the address`);
+    await app.unmount();
+  }
 });
