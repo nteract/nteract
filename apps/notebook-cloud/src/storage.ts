@@ -1,6 +1,7 @@
 import type { AuthenticatedConnection } from "./identity.ts";
 import type { D1PreparedStatement, Env } from "./cloudflare-types.ts";
 import { NOTEBOOK_HOME_SCHEMA } from "./notebook-home-schema.ts";
+import { createSettledLookup } from "./settled-lookup.ts";
 
 export interface NotebookCatalog {
   notebook: NotebookRow;
@@ -520,9 +521,17 @@ const SCHEMA_MIGRATIONS = [
   },
 ];
 
-// Prototype-local schema memo. The Worker binds every room to the same D1
-// database; production multi-binding hosts should scope this per binding.
-const schemaReady = new WeakMap<object, Promise<void>>();
+/** One catalog schema attempt, including migrations and the ACL backfill. */
+export const CATALOG_SCHEMA_ATTEMPT_MS = 30_000;
+
+// Schema readiness per D1 binding, shared by gateway requests and rooms in the
+// isolate. Holds settled readiness only; see settled-lookup.ts.
+const schemaReady = createSettledLookup<object, true>({
+  attemptMs: CATALOG_SCHEMA_ATTEMPT_MS,
+  waitMs: CATALOG_SCHEMA_ATTEMPT_MS,
+  weakKeys: true,
+  timeoutError: () => new Error("D1 catalog schema setup timed out"),
+});
 
 export function snapshotKey(notebookId: string, headsHash: string): string {
   return `n/${encodePathComponent(notebookId)}/snapshots/${encodePathComponent(headsHash)}.am`;
@@ -553,15 +562,10 @@ export async function ensureCatalogSchema(env: Pick<Env, "DB">): Promise<void> {
     return;
   }
 
-  let ready = schemaReady.get(env.DB);
-  if (!ready) {
-    ready = initializeCatalogSchema(env).catch((error: unknown) => {
-      schemaReady.delete(env.DB!);
-      throw error;
-    });
-    schemaReady.set(env.DB, ready);
-  }
-  await ready;
+  await schemaReady.get(env.DB, async () => {
+    await initializeCatalogSchema(env);
+    return { value: true, expiresAt: Infinity };
+  });
 }
 
 async function initializeCatalogSchema(env: Pick<Env, "DB">): Promise<void> {
