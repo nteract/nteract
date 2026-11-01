@@ -1,5 +1,6 @@
 // Adapted from rgbkrk/wordgard-automerge c9c6ea8 (BSD-3-Clause).
 import * as A from "@automerge/automerge/slim";
+import { stickyCaret, stickyCaretPosition } from "../model/sticky-caret.mjs";
 import { ChangeSet, Leaf, Token } from "wordgard/doc";
 import { Correction, GardSelection, GardState, Transaction } from "wordgard/state";
 import { insertLineBreak } from "wordgard/command";
@@ -95,6 +96,26 @@ export const wordgardListStarts = Correction.onContent(OrderedList, (position) =
         insert: [OrderedList.of(1).withMarks(position.node.tag.marks)],
       },
 );
+
+// Where an editor position lands after a binding change event. Positions are
+// carried through native Automerge cursors, so they follow characters rather
+// than a projection diff. A caret sticks to the code point before it (see
+// model/sticky-caret.mjs). Selection ends, and a caret with no character
+// before it, stick to the character after them.
+export function remoteEditorPosition(event, path, pos, { caret = false } = {}) {
+  const { before, after, nativeBefore, nativeAfter } = event;
+  const index = before.map.wgToAm[pos];
+  const textOf = (doc) => path.reduce((value, key) => value?.[key], doc) ?? "";
+  let offset;
+  if (caret && index > 0) {
+    const cursor = stickyCaret(nativeBefore, path, textOf(nativeBefore), index);
+    offset = stickyCaretPosition(nativeAfter, path, textOf(nativeAfter), cursor);
+  } else {
+    const cursor = A.getCursor(nativeBefore, path, index, "after");
+    offset = A.getCursorPosition(nativeAfter, path, cursor);
+  }
+  return after.map.amToWg[offset] ?? after.doc.length - 1;
+}
 
 // Undo history for one editor, in a compartment so a rejected local
 // transaction can drop it. A rejected change stays in the history even though

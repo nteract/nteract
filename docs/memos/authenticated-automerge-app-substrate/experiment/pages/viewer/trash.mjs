@@ -22,6 +22,18 @@ export function closeTrashedSessions(host, sessions, options) {
   );
 }
 
+/** delete_page fences on the heads this tab has seen, so a peer's edit that
+ * lands first refuses the move with stale_heads. The host's message is for
+ * agents ("read_page again"); a person gets one they can act on. */
+export function moveToTrashError(error) {
+  return error?.code === "stale_heads"
+    ? Object.assign(Error("Someone edited this Page while it was moving to Trash. Try again."), {
+        code: error.code,
+        status: error.status,
+      })
+    : error;
+}
+
 /** A superseded result was not applied; the Page changed since the request. */
 function applied(result) {
   if (result?.superseded || result?.applied === false)

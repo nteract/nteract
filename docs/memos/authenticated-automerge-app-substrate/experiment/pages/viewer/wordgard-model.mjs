@@ -76,6 +76,13 @@ export const PagesLink = Mark.Type.define("PagesLink", {
             rel: "noopener noreferrer",
           }
         : {},
+    // Pasted and dropped HTML keeps its links. The raw attribute keeps a
+    // relative link relative; an unsafe scheme keeps the text unlinked.
+    readElement(element) {
+      const href = element.getAttribute("href");
+      if (!href || !safeUrl(href)) return parse.Reject;
+      return { href, title: element.getAttribute("title") || null };
+    },
   },
 });
 // Palette highlights render through theme tokens. A custom color is a raw hex

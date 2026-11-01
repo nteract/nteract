@@ -6,6 +6,7 @@ import {
   TRASH_REQUESTS,
   confirmPurge,
   listTrash,
+  moveToTrashError,
   previewPurge,
   purgeSummary,
   restorePage,
@@ -122,4 +123,17 @@ test("a Trash listing that never ends throws instead of showing part of it", asy
 test("the viewer's largest limit matches the Worker's", () => {
   assert.equal(MAX_PAGE_QUOTA, WORKER_MAX_PAGE_QUOTA);
   assert.ok(TRASH_REQUESTS * 100 >= 4 * MAX_PAGE_QUOTA);
+});
+
+test("a peer's edit that beats Move to Trash gets a message a person can act on", () => {
+  const stale = Object.assign(Error("Page changed; read_page again before editing"), {
+    status: 409,
+    code: "stale_heads",
+  });
+  const mapped = moveToTrashError(stale);
+  assert.equal(mapped.message, "Someone edited this Page while it was moving to Trash. Try again.");
+  assert.equal(mapped.code, "stale_heads");
+  assert.equal(mapped.status, 409);
+  const other = Object.assign(Error("Forbidden"), { status: 403, code: "forbidden" });
+  assert.equal(moveToTrashError(other), other);
 });

@@ -71,6 +71,7 @@ import {
   createWordgardBinding,
   wordgardCodeNewlines,
   insertPlainLineBreak,
+  remoteEditorPosition,
   wordgardHistory,
   wordgardListStarts,
 } from "./wordgard-binding.mjs";
@@ -89,6 +90,7 @@ import { selectionToolbarPosition } from "./selection-toolbar.mjs";
 import { linkDestination } from "./link-destination.mjs";
 import { LinkPopover } from "./LinkPopover.jsx";
 import { selectedImage } from "./image-selection.mjs";
+import { normalizePastedHTML } from "./clipboard-html.mjs";
 import {
   IMAGE_ACCEPT,
   captureImageInsertion,
@@ -346,6 +348,7 @@ export function WordgardEditor(props) {
         uploadPreviews,
         undoHistory.extension,
         permissions.current.of(editConfig(latest.current.editable)),
+        Wordgard.clipboardInputHTMLFilter.of((html) => normalizePastedHTML(html)),
         Wordgard.domEventHandler("paste", (event) => acceptImages(imageFiles(event.clipboardData))),
         Wordgard.domEventHandler("drop", (event) => {
           const files = imageFiles(event.dataTransfer);
@@ -571,18 +574,9 @@ export function WordgardEditor(props) {
         ) {
           const path = ["blocks", id, "richText"];
           try {
-            const translate = (pos) => {
-              const cursor = A.getCursor(
-                event.nativeBefore,
-                path,
-                event.before.map.wgToAm[pos],
-                "after",
-              );
-              const offset = A.getCursorPosition(event.nativeAfter, path, cursor);
-              return event.after.map.amToWg[offset] ?? event.after.doc.length - 1;
-            };
-            const a = translate(anchor),
-              h = translate(head);
+            const caret = anchor === head;
+            const a = remoteEditorPosition(event, path, anchor, { caret }),
+              h = caret ? a : remoteEditorPosition(event, path, head);
             selection = (cx) =>
               GardSelection.range(GardSelection.near(cx, a).anchor, GardSelection.near(cx, h).head);
           } catch {

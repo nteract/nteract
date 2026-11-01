@@ -1,5 +1,6 @@
 import "../../../../../../src/styles/notebook-tokens.css";
-import React, { useEffect, useRef, useState } from "react";
+import React, { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { flushSync } from "react-dom";
 import { createRoot } from "react-dom/client";
 import {
   ChevronDown,
@@ -51,7 +52,7 @@ import { TrashView } from "./TrashView.jsx";
 import { Breadcrumbs, ProjectView } from "./ProjectView.jsx";
 import { IndexNav, PagesIndex, ProjectsIndex } from "./IndexViews.jsx";
 import { listProjects, pageBreadcrumbs } from "./projects.mjs";
-import { closeTrashedSessions, restorePage } from "./trash.mjs";
+import { closeTrashedSessions, moveToTrashError, restorePage } from "./trash.mjs";
 import { listAllPages, matchingPages } from "./page-list.mjs";
 import { quotaNotice } from "./quota.mjs";
 import { AppearanceControls } from "./AppearanceControls.jsx";
@@ -145,6 +146,12 @@ function App() {
     creationPending = useRef(false),
     article = useRef(null),
     titleInput = useRef(null),
+    // The title value this tab last showed and its selection as native
+    // cursors, so a peer's edit can put the caret back on its side.
+    titleSelection = useRef(null),
+    // The title input's composition state (title-selection.mjs). The ref is
+    // read by event handlers; the state re-renders the value an IME shows.
+    titleCompositionRef = useRef(null),
     activeBlock = useRef(null),
     commentsButton = useRef(null);
   // The inline comment composer. It outlives Pages; resetDocumentUI resets it,
@@ -548,6 +555,89 @@ function App() {
     });
     return () => cancelAnimationFrame(frame);
   }, [titleFocusRequest, session]);
+  // React writes a peer's title into the focused input, which moves the
+  // caret to the end. Resolve the selection's cursors in the new document.
+  const shownTitle = page?.title;
+  const [titleComposing, setTitleComposing] = useState(null);
+  // A composition belongs to the Page it began on.
+  useEffect(() => {
+    titleCompositionRef.current = null;
+    setTitleComposing(null);
+  }, [session]);
+  function composing() {
+    const state = titleCompositionRef.current;
+    return !!state && !!editor.module?.composingTitle(state, session);
+  }
+  function titleBase() {
+    const seen = titleSelection.current;
+    return seen?.session === session ? seen : null;
+  }
+  // Every title input event goes through one transition (titleInput in
+  // title-selection.mjs); its effect runs here.
+  function titleEvent(event, input) {
+    const module = editor.module;
+    if (!module || !session) return;
+    const { state, effect } = module.titleInput(titleCompositionRef.current ?? module.TITLE_IDLE, {
+      ...event,
+      session,
+    });
+    titleCompositionRef.current = state;
+    setTitleComposing(module.composingTitle(state, session) ? state.value : null);
+    if (effect?.type !== "commit") return;
+    try {
+      commitTitle(input, effect.base);
+    } catch (error) {
+      showError(error);
+    }
+  }
+  // One title keystroke, or a finished composition, read against the
+  // revision the input showed and written to the current document. When a
+  // peer's change React hadn't shown yet was kept, the input shows the merged
+  // title with the caret carried across, so it matches a revision again.
+  function commitTitle(input, base) {
+    const module = editor.module;
+    const value = input.value;
+    const plan = module.titleChange(session.doc, base, value, input.selectionStart);
+    if (!plan) return;
+    session.change((doc) => module.writeTitle(doc, plan.edits));
+    if (session.doc.title !== value) {
+      input.value = session.doc.title;
+      input.setSelectionRange(plan.caret, plan.caret);
+    }
+    rememberTitleSelection(input);
+  }
+  function rememberTitleSelection(input = titleInput.current) {
+    const module = editor.module;
+    // While an IME composes, the snapshot stays on the revision it began on.
+    if (!input || !session || !module || composing()) return;
+    const previous = titleSelection.current;
+    const snapshot = module.titleSnapshot(
+      session.doc,
+      previous?.input === input && previous.session === session ? previous : null,
+      input.value,
+      input.selectionStart,
+      input.selectionEnd,
+    );
+    if (snapshot)
+      titleSelection.current = { ...snapshot, input, session, direction: input.selectionDirection };
+  }
+  useLayoutEffect(() => {
+    const input = titleInput.current,
+      seen = titleSelection.current;
+    if (!input || shownTitle === undefined) return;
+    if (
+      seen?.input === input &&
+      seen.session === session &&
+      seen.value !== shownTitle &&
+      session.doc.title === shownTitle &&
+      !composing() &&
+      document.activeElement === input
+    ) {
+      const next = editor.module?.resolveTitleSelection(session.doc, seen.cursors);
+      if (next) input.setSelectionRange(next.start, next.end, seen.direction);
+    }
+    rememberTitleSelection(input);
+  }, [shownTitle, session]);
   useEffect(() => {
     if (!focusBlock || !session?.canWrite) return;
     const frame = requestAnimationFrame(() => {
@@ -645,6 +735,8 @@ function App() {
         retry_token: prepared.retry_token,
         base_heads: editor.module.pageHeads(deleting.doc),
         idempotency_key: await retryKey(prepared.retry_token),
+      }).catch((error) => {
+        throw moveToTrashError(error);
       });
       if (trashed?.superseded)
         throw Error("This Page changed before it could move to Trash. Try again.");
@@ -1004,23 +1096,58 @@ function App() {
                   aria-label="Page title"
                   title={page.title || "Untitled"}
                   placeholder="Untitled"
-                  value={page.title}
+                  maxLength={editor.module?.TITLE_MAX_LENGTH}
+                  value={titleComposing ?? page.title}
                   readOnly={!session.canWrite}
-                  onChange={(event) => {
-                    try {
-                      session.change((doc) => editor.module.setPageTitle(doc, event.target.value));
-                    } catch (error) {
-                      showError(error);
-                    }
-                  }}
+                  onSelect={(event) => rememberTitleSelection(event.currentTarget)}
+                  onCompositionStart={(event) =>
+                    titleEvent(
+                      {
+                        type: "compositionstart",
+                        base: titleBase(),
+                        value: event.currentTarget.value,
+                      },
+                      event.currentTarget,
+                    )
+                  }
+                  onCompositionEnd={(event) =>
+                    titleEvent({ type: "compositionend" }, event.currentTarget)
+                  }
+                  onBlur={(event) =>
+                    titleEvent(
+                      { type: "blur", value: event.currentTarget.value },
+                      event.currentTarget,
+                    )
+                  }
+                  onChange={(event) =>
+                    titleEvent(
+                      {
+                        type: "input",
+                        composing: !!event.nativeEvent.isComposing,
+                        base: titleBase(),
+                        value: event.currentTarget.value,
+                      },
+                      event.currentTarget,
+                    )
+                  }
                   onKeyDown={(event) => {
                     if (!titleHandsOffToBody(event, session.canWrite)) return;
                     event.preventDefault();
                     const first = editor.module.orderedBlockIds(session.doc)[0];
-                    if (first) {
-                      activateBlock(first);
-                      setFocusBlock(first);
-                    } else continueWriting();
+                    // Mount and focus the body before the next key: a new Page
+                    // has no block yet, and keys typed while one renders would
+                    // land in the title.
+                    flushSync(() => {
+                      if (first) {
+                        activateBlock(first);
+                        setFocusBlock(first);
+                      } else continueWriting();
+                    });
+                    const id = first ?? editor.module.orderedBlockIds(session.doc)[0];
+                    if (id)
+                      article.current
+                        ?.querySelector(`[data-block-id="${CSS.escape(id)}"] wg-content`)
+                        ?.focus();
                   }}
                 />
                 {page.blocks.map((block) => (
