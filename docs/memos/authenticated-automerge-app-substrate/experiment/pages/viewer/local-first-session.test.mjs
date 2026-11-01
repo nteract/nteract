@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import "fake-indexeddb/auto";
 import * as A from "@automerge/automerge";
-import { PageSession, listLocalPages, forgetLocalPage } from "./session.mjs";
+import { PageSession, listLocalPages, retireLocalPage } from "./session.mjs";
 import { readLocalPage, decodeSnapshot, writeLocalPage, encodeSnapshot } from "./local-pages.mjs";
 import { createPageData, initializePage } from "../model/page.mjs";
 import { extractRecords } from "@automerge/automerge-repo/sedimentree/automerge";
@@ -418,7 +418,7 @@ test("local drafts retain their original account boundary before registration", 
   assert.equal(calls, 0);
   assert.equal(await readLocalPage(other.identity, session.pageId), null);
   await session.close();
-  await forgetLocalPage(auth.identity, session.pageId);
+  await retireLocalPage(auth.identity, session.pageId, { reason: "deleted" });
   assert.equal(await readLocalPage(auth.identity, session.pageId), null);
 });
 
@@ -785,7 +785,7 @@ test("native catch-up cannot publish a stale receipt after either asynchronous b
         else if (invalidate === "account")
           session.acceptAuthentication({ identity: { principal: "other" }, canWrite: true });
         else if (invalidate === "deleted") {
-          session.phase$.update(() => ({ name: "deleted" }));
+          session.phase$.update(() => ({ name: "retired", reason: "deleted" }));
           session.status = "Deleted";
           session.statusId = "deleted";
         } else await session.close();
@@ -886,7 +886,7 @@ test("a deletion marker from another tab terminates stale local checkpoint write
     await session.close();
     finishRefresh(auth);
   });
-  await forgetLocalPage(auth.identity, session.pageId);
+  await retireLocalPage(auth.identity, session.pageId, { reason: "deleted" });
   await session.change((doc) => A.updateText(doc, ["title"], "A stale tab's edit"));
   clearTimeout(session.savedTimer);
   await session.saveReceipt();

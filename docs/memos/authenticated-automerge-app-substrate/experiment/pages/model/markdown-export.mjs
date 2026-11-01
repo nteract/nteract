@@ -77,3 +77,19 @@ export function unsentCommentsMarkdown(page, saved) {
     : "These comments and replies may not have reached the server. Check the Page and add any that are missing.";
   return `\n---\n\n## Unsent comments\n\n${note}\n\n${sections.join("\n\n")}\n`;
 }
+
+/** A Markdown section for comment drafts the person typed but never sent:
+ * `{ kind: "comment" | "reply", body, quote?, thread_id? }`, as recovery
+ * records keep them. Returns "" when there are none. */
+export function commentDraftsMarkdown(drafts) {
+  const sections = (drafts ?? [])
+    .filter((draft) => typeof draft?.body === "string" && draft.body.trim())
+    .map((draft) => {
+      const anchor = singleLine(draft.quote ?? "").slice(0, 120);
+      const heading = anchor ? `### On “${anchor}”` : "### On this Page";
+      const kind = draft.kind === "reply" ? `Reply to thread ${draft.thread_id}` : "New comment";
+      return [heading, kind, quoted(draft.body)].join("\n\n");
+    });
+  if (!sections.length) return "";
+  return `\n---\n\n## Unsent comment drafts\n\nThese drafts were never sent. Add them again if you still need them.\n\n${sections.join("\n\n")}\n`;
+}
