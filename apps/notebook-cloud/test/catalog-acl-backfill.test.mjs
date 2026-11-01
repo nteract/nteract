@@ -8,7 +8,6 @@ import { describe, it } from "node:test";
 import {
   CATALOG_SCHEMA_ATTEMPT_MS,
   ensureCatalogSchema,
-  NOTEBOOK_ACL_OWNER_BACKFILL,
   NOTEBOOK_ACL_PUBLIC_BACKFILL,
   revokeNotebookAclRow,
 } from "../src/storage.ts";
@@ -72,24 +71,24 @@ const PUBLIC_VIEWER = {
   scope: "viewer",
 };
 
-function publicRows(sqlite) {
-  const row = sqlite
+function publicRows(sqlite, notebookId = "published") {
+  return sqlite
     .prepare(
       `SELECT COUNT(*) AS count FROM notebook_acl
-        WHERE notebook_id = 'published' AND subject_kind = 'public'`,
+        WHERE notebook_id = ? AND subject_kind = 'public'`,
     )
-    .get();
-  return row.count;
+    .get(notebookId).count;
 }
 
-function ownerRows(sqlite) {
-  const row = sqlite
+function owners(sqlite, notebookId = "published") {
+  return sqlite
     .prepare(
-      `SELECT COUNT(*) AS count FROM notebook_acl
-        WHERE notebook_id = 'published' AND subject_kind = 'principal' AND scope = 'owner'`,
+      `SELECT subject FROM notebook_acl
+        WHERE notebook_id = ? AND subject_kind = 'principal' AND scope = 'owner'
+        ORDER BY subject`,
     )
-    .get();
-  return row.count;
+    .all(notebookId)
+    .map((row) => row.subject);
 }
 
 function outcomes(sqlite) {
@@ -122,13 +121,10 @@ async function legacyDeployment() {
 }
 
 describe("notebook ACL backfill", () => {
-  it("records both backfills once on a new database", async () => {
+  it("records the public backfill once on a new database", async () => {
     const sqlite = new DatabaseSync(":memory:");
     await ensureCatalogSchema(binding(sqlite).env);
-    assert.deepEqual(outcomes(sqlite), {
-      [NOTEBOOK_ACL_OWNER_BACKFILL]: "applied",
-      [NOTEBOOK_ACL_PUBLIC_BACKFILL]: "applied",
-    });
+    assert.deepEqual(outcomes(sqlite), { [NOTEBOOK_ACL_PUBLIC_BACKFILL]: "applied" });
   });
 
   it("keeps revoked public access revoked when a new isolate initializes the schema", async () => {
@@ -145,19 +141,16 @@ describe("notebook ACL backfill", () => {
     const sqlite = await legacyDeployment();
     const first = binding(sqlite);
     await ensureCatalogSchema(first.env);
-    assert.equal(ownerRows(sqlite), 1);
+    assert.deepEqual(owners(sqlite), ["user:alice"]);
     assert.equal(publicRows(sqlite), 1);
-    assert.deepEqual(outcomes(sqlite), {
-      [NOTEBOOK_ACL_OWNER_BACKFILL]: "applied",
-      [NOTEBOOK_ACL_PUBLIC_BACKFILL]: "applied",
-    });
+    assert.deepEqual(outcomes(sqlite), { [NOTEBOOK_ACL_PUBLIC_BACKFILL]: "applied" });
 
     await revokeNotebookAclRow(first.env, PUBLIC_VIEWER);
     await ensureCatalogSchema(binding(sqlite).env);
     assert.equal(publicRows(sqlite), 0);
   });
 
-  it("records the backfills as skipped on a database that ran them before markers existed", async () => {
+  it("records the public backfill as skipped on a database that ran it before markers existed", async () => {
     const sqlite = await currentDeployment();
     const first = binding(sqlite);
     await revokeNotebookAclRow(first.env, PUBLIC_VIEWER);
@@ -165,12 +158,50 @@ describe("notebook ACL backfill", () => {
     sqlite.exec(`DELETE FROM catalog_backfills`);
 
     await ensureCatalogSchema(binding(sqlite).env);
-    assert.equal(publicRows(sqlite), 0, "existing ACL rows mean the backfill already ran");
-    assert.equal(ownerRows(sqlite), 1);
-    assert.deepEqual(outcomes(sqlite), {
-      [NOTEBOOK_ACL_OWNER_BACKFILL]: "skipped",
-      [NOTEBOOK_ACL_PUBLIC_BACKFILL]: "skipped",
-    });
+    assert.equal(publicRows(sqlite), 0, "existing ACL rows mean the public backfill already ran");
+    assert.deepEqual(owners(sqlite), ["user:alice"]);
+    assert.deepEqual(outcomes(sqlite), { [NOTEBOOK_ACL_PUBLIC_BACKFILL]: "skipped" });
+  });
+
+  it("repairs a missing owner row in a mixed catalog without re-granting revoked access", async () => {
+    const sqlite = await currentDeployment();
+    const first = binding(sqlite);
+    await revokeNotebookAclRow(first.env, PUBLIC_VIEWER);
+    // Notebook B has an owner_principal but no ACL rows at all, beside A's.
+    sqlite.exec(`
+      DELETE FROM catalog_backfills;
+      INSERT INTO notebooks (id, owner_principal, latest_revision_id) VALUES ('legacy', 'user:bob', 'rev-2');
+    `);
+
+    await ensureCatalogSchema(binding(sqlite).env);
+    assert.deepEqual(owners(sqlite, "legacy"), ["user:bob"], "B gets its owner row");
+    assert.equal(publicRows(sqlite), 0, "A's revoked public row stays revoked");
+    assert.equal(publicRows(sqlite, "legacy"), 0, "the public backfill stays skipped");
+    assert.deepEqual(owners(sqlite), ["user:alice"]);
+
+    // The repair runs on every setup and stays idempotent.
+    await ensureCatalogSchema(binding(sqlite).env);
+    assert.deepEqual(owners(sqlite, "legacy"), ["user:bob"]);
+  });
+
+  it("does not re-grant an owner removed after a transfer", async () => {
+    const sqlite = await currentDeployment();
+    const first = binding(sqlite);
+    sqlite.exec(`
+      INSERT INTO notebook_acl (notebook_id, subject_kind, subject, scope, created_by_actor_label)
+        VALUES ('published', 'principal', 'user:yan', 'owner', 'user:alice/browser');
+    `);
+    const removeAlice = {
+      notebookId: "published",
+      subjectKind: "principal",
+      subject: "user:alice",
+      scope: "owner",
+    };
+    assert.equal(await revokeNotebookAclRow(first.env, removeAlice), true);
+    // owner_principal still names alice, the owner before the transfer.
+
+    await ensureCatalogSchema(binding(sqlite).env);
+    assert.deepEqual(owners(sqlite), ["user:yan"]);
   });
 
   it("an abandoned attempt that resumes after a revoke does not re-grant access", async (t) => {
@@ -197,9 +228,6 @@ describe("notebook ACL backfill", () => {
     await turns(200);
     assert.equal(control.batches, 2, "A ran its backfill batch after resuming");
     assert.equal(publicRows(sqlite), 0, "the resumed attempt does not re-grant public access");
-    assert.deepEqual(outcomes(sqlite), {
-      [NOTEBOOK_ACL_OWNER_BACKFILL]: "applied",
-      [NOTEBOOK_ACL_PUBLIC_BACKFILL]: "applied",
-    });
+    assert.deepEqual(outcomes(sqlite), { [NOTEBOOK_ACL_PUBLIC_BACKFILL]: "applied" });
   });
 });

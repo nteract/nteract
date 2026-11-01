@@ -607,72 +607,44 @@ async function tableHasColumn(
   return result.results?.some((row) => row.name === column) ?? false;
 }
 
-export const NOTEBOOK_ACL_OWNER_BACKFILL = "notebook-acl-owner-v1";
 export const NOTEBOOK_ACL_PUBLIC_BACKFILL = "notebook-acl-public-v1";
 
 /**
- * Give notebooks from before `notebook_acl` their owner row, and published ones
- * their public viewer row, exactly once per database.
+ * Bring `notebook_acl` in line with notebooks from before it existed.
  *
- * The backfill must never run again after that: an owner can revoke public
- * access, and a re-run would grant it back. So the decision and the inserts
- * share one D1 batch (a transaction), recorded in `catalog_backfills`:
+ * Public viewer rows for published notebooks are a one-time backfill. It must
+ * never run again: an owner can revoke public access, and a re-run would grant
+ * it back. The decision and the insert share one D1 batch (a transaction),
+ * recorded in `catalog_backfills`:
  *
- * 1. Insert each marker if it is missing. Its outcome is `pending` when
- *    `notebook_acl` is empty, and `skipped` otherwise. Both markers read the
- *    table before any insert.
- * 2. Insert rows only for markers that are `pending`.
- * 3. Mark `pending` markers `applied`.
+ * 1. Insert the marker if it is missing. Its outcome is `pending` when
+ *    `notebook_acl` is empty, and `skipped` otherwise.
+ * 2. Insert public rows only while the marker is `pending`.
+ * 3. Mark a `pending` marker `applied`.
  *
- * A database with ACL rows but no markers already ran this backfill: every
- * schema initialization ran it unconditionally, and migration 0003 ran it once.
- * Create and publish write their own ACL rows. Re-running there could only
- * re-grant revoked access, so it records `skipped`. An empty `notebook_acl` with
- * notebooks in it means the backfill never ran, since each notebook keeps at
- * least one owner row.
+ * A database with ACL rows but no marker already ran the public backfill:
+ * every schema initialization ran it unconditionally, and migration 0003 ran
+ * it once. Publish writes its own public row. Re-running there could only
+ * re-grant revoked access, so it records `skipped`. Whichever batch commits
+ * first records the marker, so a concurrent or abandoned attempt inserts
+ * nothing.
  *
- * Concurrent or abandoned schema attempts are safe: whichever batch commits
- * first records the markers, and every later batch inserts nothing.
+ * Owner rows are a repair that runs on every setup, last in the batch so the
+ * public decision reads `notebook_acl` before it. It gives `owner_principal`
+ * the owner row only for notebooks with no principal owner at all, because
+ * authorization reads owners from `notebook_acl` alone. It never brings back a
+ * removed owner: `revokeNotebookAclRow` keeps at least one owner per notebook,
+ * so a transferred notebook always has its new owner row.
  */
 async function backfillNotebookAcl(env: Pick<Env, "DB">): Promise<void> {
   const db = env.DB!;
-  const decide = (id: string) =>
+  await db.batch([
     db
       .prepare(
         `INSERT OR IGNORE INTO catalog_backfills (id, outcome)
          SELECT ?, CASE WHEN EXISTS (SELECT 1 FROM notebook_acl) THEN 'skipped' ELSE 'pending' END`,
       )
-      .bind(id);
-  const pending = `EXISTS (
-         SELECT 1
-           FROM catalog_backfills AS backfill
-          WHERE backfill.id = ? AND backfill.outcome = 'pending'
-       )`;
-  await db.batch([
-    decide(NOTEBOOK_ACL_OWNER_BACKFILL),
-    decide(NOTEBOOK_ACL_PUBLIC_BACKFILL),
-    db
-      .prepare(
-        `INSERT OR IGNORE INTO notebook_acl (
-       notebook_id,
-       subject_kind,
-       subject,
-       scope,
-       created_at,
-       updated_at,
-       created_by_actor_label
-     )
-     SELECT id,
-            'principal',
-            owner_principal,
-            'owner',
-            created_at,
-            updated_at,
-            'system/schema:notebook-cloud-owner-acl-backfill'
-       FROM notebooks
-      WHERE ${pending}`,
-      )
-      .bind(NOTEBOOK_ACL_OWNER_BACKFILL),
+      .bind(NOTEBOOK_ACL_PUBLIC_BACKFILL),
     db
       .prepare(
         `INSERT OR IGNORE INTO notebook_acl (
@@ -693,16 +665,46 @@ async function backfillNotebookAcl(env: Pick<Env, "DB">): Promise<void> {
             'system/schema:notebook-cloud-public-acl-backfill'
        FROM notebooks
       WHERE latest_revision_id IS NOT NULL
-        AND ${pending}`,
+        AND EXISTS (
+          SELECT 1
+            FROM catalog_backfills AS backfill
+           WHERE backfill.id = ? AND backfill.outcome = 'pending'
+        )`,
       )
       .bind(NOTEBOOK_ACL_PUBLIC_BACKFILL),
     db
       .prepare(
         `UPDATE catalog_backfills
             SET outcome = 'applied'
-          WHERE id IN (?, ?) AND outcome = 'pending'`,
+          WHERE id = ? AND outcome = 'pending'`,
       )
-      .bind(NOTEBOOK_ACL_OWNER_BACKFILL, NOTEBOOK_ACL_PUBLIC_BACKFILL),
+      .bind(NOTEBOOK_ACL_PUBLIC_BACKFILL),
+    db.prepare(
+      `INSERT OR IGNORE INTO notebook_acl (
+       notebook_id,
+       subject_kind,
+       subject,
+       scope,
+       created_at,
+       updated_at,
+       created_by_actor_label
+     )
+     SELECT id,
+            'principal',
+            owner_principal,
+            'owner',
+            created_at,
+            updated_at,
+            'system/schema:notebook-cloud-owner-acl-backfill'
+       FROM notebooks
+      WHERE NOT EXISTS (
+        SELECT 1
+          FROM notebook_acl AS owner_acl
+         WHERE owner_acl.notebook_id = notebooks.id
+           AND owner_acl.subject_kind = 'principal'
+           AND owner_acl.scope = 'owner'
+      )`,
+    ),
   ]);
 }
 

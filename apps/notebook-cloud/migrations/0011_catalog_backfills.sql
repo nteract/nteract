@@ -5,7 +5,7 @@ CREATE TABLE IF NOT EXISTS catalog_backfills (
     recorded_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
   );
 
--- 0003_notebook_acl.sql already ran the owner and public ACL backfills here.
--- Record them so schema initialization never re-grants revoked public access.
+-- 0003_notebook_acl.sql already ran the public ACL backfill here. Record it so
+-- schema initialization never re-grants revoked public access.
 INSERT OR IGNORE INTO catalog_backfills (id, outcome)
-VALUES ('notebook-acl-owner-v1', 'skipped'), ('notebook-acl-public-v1', 'skipped');
+VALUES ('notebook-acl-public-v1', 'skipped');
