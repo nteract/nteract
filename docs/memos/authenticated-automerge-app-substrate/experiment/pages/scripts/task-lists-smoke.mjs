@@ -269,7 +269,10 @@ try {
   const bar = mobile.locator(".mobile-bar");
   await expect(bar).toHaveCount(0);
   const prose = mobile.locator(".page-block wg-content").first();
-  await prose.locator("p").first().click({ position: { x: 24, y: 10 } });
+  await prose
+    .locator("p")
+    .first()
+    .click({ position: { x: 24, y: 10 } });
   await expect(bar).toBeVisible();
   const placement = await bar.evaluate((element) => {
     const r = element.getBoundingClientRect();
@@ -277,15 +280,18 @@ try {
   });
   assert.equal(placement.bottom, placement.height, JSON.stringify(placement));
   assert.equal(placement.width, 390, JSON.stringify(placement));
-  await prose.locator("p").first().evaluate((paragraph) => {
-    const walker = document.createTreeWalker(paragraph, NodeFilter.SHOW_TEXT);
-    const node = walker.nextNode();
-    const range = document.createRange();
-    range.setStart(node, 0);
-    range.setEnd(node, Math.min(4, node.textContent.length));
-    getSelection().removeAllRanges();
-    getSelection().addRange(range);
-  });
+  await prose
+    .locator("p")
+    .first()
+    .evaluate((paragraph) => {
+      const walker = document.createTreeWalker(paragraph, NodeFilter.SHOW_TEXT);
+      const node = walker.nextNode();
+      const range = document.createRange();
+      range.setStart(node, 0);
+      range.setEnd(node, Math.min(4, node.textContent.length));
+      getSelection().removeAllRanges();
+      getSelection().addRange(range);
+    });
   await expect(mobile.locator(".rich-toolbar.is-contextual:not([hidden])")).toHaveCount(0);
   const bold = bar.getByRole("button", { name: "Bold", exact: true });
   await bold.tap();
