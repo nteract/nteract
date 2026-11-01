@@ -481,3 +481,26 @@ test("two long unrelated titles skip the quadratic diff", () => {
   const plan = titleChange(near, null, "ba".repeat(TITLE_MAX_LENGTH / 2), 1);
   assert.ok(plan.work > 0 && plan.work <= TITLE_MAX_LENGTH * TITLE_MAX_LENGTH, `${plan.work}`);
 });
+
+test("equal title text with different characters reads the shown revision", () => {
+  for (const peer of PEERS) {
+    // The input shows "AAA". A peer deleted the first A and appended one,
+    // so the text is "AAA" again, with different characters.
+    const shown = writer("AAA");
+    const base = snapshot(shown, 1);
+    const doc = peerEdit(shown, peer, (d) => {
+      A.splice(d, ["title"], 0, 1);
+      A.splice(d, ["title"], 2, 0, "A");
+    });
+    assert.equal(doc.title, "AAA");
+    // The writer deleted that same first A: the peer already removed it, so
+    // nothing more is deleted and the peer's new A stays.
+    const after = commit(doc, base, "AA", 0);
+    assert.equal(after.doc.title, "AAA");
+    assert.equal(after.caret, 0);
+    // The writer deleted the last shown A instead: that one goes.
+    const last = commit(doc, snapshot(shown, 3), "AA", 2);
+    assert.equal(last.doc.title, "AA");
+    assert.equal(last.caret, 1);
+  }
+});

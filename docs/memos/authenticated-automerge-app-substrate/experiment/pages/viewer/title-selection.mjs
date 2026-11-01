@@ -190,6 +190,8 @@ function titleOps(from, next, caret) {
   return { deleted, runs, at, work: cells > LCS_BUDGET ? 0 : cells };
 }
 
+const sameHeads = (a, b) => a.length === b.length && a.every((head) => b.includes(head));
+
 /** A title input's edit, as splices on the current document, and where the
  * input's caret lands. `base` is the snapshot of what the input showed
  * before the keystroke. A peer's change can reach the document before React
@@ -207,10 +209,13 @@ export function titleChange(doc, base, next, caret) {
   if (base && typeof base.value === "string" && Array.isArray(base.heads)) {
     try {
       const view = A.view(doc, base.heads);
-      // A cursor lookup on a view walks the text at those heads each time;
-      // a clone of the view is a document at them, with the same cursor ids,
-      // built once. It is only read, never written.
-      if (view.title === base.value) shown = view.title === current ? doc : A.clone(view);
+      // Equal text is not equal characters: a peer can delete an "A" and add
+      // another. The live document stands in only for the same revision.
+      // Otherwise the view is read through a clone: a cursor lookup on a view
+      // walks the text at its heads each time, while a clone is a document at
+      // them, with the same cursor ids, built once. It is only read.
+      if (view.title === base.value)
+        shown = sameHeads(base.heads, A.getHeads(doc)) ? doc : A.clone(view);
     } catch {
       /* Unknown heads: read against the current title. */
     }
