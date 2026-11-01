@@ -433,3 +433,29 @@ test("a reply draft kept after write access ends can still be copied or discarde
   assert.equal(reloadGate.hasDrafts(), false);
   assert.equal(f.element("next").querySelector("textarea"), null);
 });
+
+test("reply drafts are readable by the session, so a retirement can archive them", async (t) => {
+  const readers = new Set();
+  const f = await fixture(t);
+  f.props.session = {
+    ...f.props.session,
+    watchCommentDrafts(read) {
+      readers.add(read);
+      return () => readers.delete(read);
+    },
+  };
+  await f.render();
+  assert.equal(readers.size, 1);
+  const [read] = readers;
+  assert.deepEqual(read(), []);
+  await f.click(f.element("next").querySelector(".thread-reply-button"));
+  await f.type(f.element("next").querySelector("textarea"), "Reply typed before the refusal");
+  assert.deepEqual(read(), [
+    {
+      kind: "reply",
+      thread_id: "next",
+      body: "Reply typed before the refusal",
+      quote: "Passage next",
+    },
+  ]);
+});

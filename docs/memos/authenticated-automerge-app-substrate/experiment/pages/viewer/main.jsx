@@ -24,7 +24,7 @@ import {
   sessionAnswerNotice,
   sessionCheckBanner,
 } from "./alerts.mjs";
-import { listLocalPages, forgetLocalPage } from "./local-catalog.mjs";
+import { listLocalPages, retireLocalPage } from "./local-catalog.mjs";
 import {
   PROJECTS_PATH,
   isIndexRoute,
@@ -63,11 +63,12 @@ import "./formatting-toolbar.css";
 import { focusCreatedPageTitle, titleHandsOffToBody } from "./title-navigation.mjs";
 import { BuildUpdate, buildMonitor } from "./BuildUpdate.jsx";
 import { SchemaNotice } from "./SchemaNotice.jsx";
+import { RetiredPage } from "./RetiredPage.jsx";
 import { reloadGate } from "./build-freshness.mjs";
 import { EditorLoader } from "./editor-loader.mjs";
 import { SessionHost } from "./session-host.mjs";
 import { useStore } from "./store.mjs";
-import { CommentComposer } from "./comment-composer.mjs";
+import { CommentComposer, hasDraftText } from "./comment-composer.mjs";
 import { focusReturnTarget } from "./focus-return.mjs";
 import { timer } from "rxjs";
 import { MOBILE_EDITOR_QUERY, trackVisualViewport } from "./visual-viewport.mjs";
@@ -314,20 +315,48 @@ function App() {
       },
       () => {},
     );
+    const listRecoveries = () =>
+      void next
+        .listRecoveries()
+        .then((records) => {
+          if (host.current === next) setLocalRecoveries(records);
+        })
+        .catch(() => {});
+    // The inline composer's draft lives only here. A refusal reads it into
+    // the recovery archive before the UI resets.
+    next.watchCommentDrafts(() => {
+      if (host.current !== next) return [];
+      const { composer: current, body } = composer.snapshot();
+      if (!current || !hasDraftText(body)) return [];
+      return [
+        {
+          kind: "comment",
+          body: body?.markdown ?? body,
+          quote: current.quote,
+        },
+      ];
+    });
+    // A refusal hides the Page at once and archives its copy afterwards:
+    // list the archive again each time a write settles, a retry included.
+    let hiding = next.hidden,
+      settled = next.phase$.snapshot().name;
     next.subscribe(() => {
       if (host.current === next) {
         paint((n) => n + 1);
         if (next.accessReloadRequired && !next.recoveryPending) void reloadAccess(next);
+        if (next.hidden && !hiding) {
+          hiding = true;
+          resetDocumentUI();
+        }
+        const phase = next.phase$.snapshot().name;
+        if ((phase === "retired" || phase === "retireFailed") && phase !== settled)
+          listRecoveries();
+        settled = phase;
       }
     });
-    void next
-      .listRecoveries()
-      .then((records) => {
-        if (host.current === next) setLocalRecoveries(records);
-      })
-      .catch(() => {});
+    listRecoveries();
     if (next.accessReloadRequired && !next.recoveryPending) void reloadAccess(next);
-    const first = editor.module.orderedBlockIds(next.doc)[0] ?? null;
+    const first = next.doc ? (editor.module.orderedBlockIds(next.doc)[0] ?? null) : null;
     activateBlock(first);
     if (focus) setFocusBlock(first);
     return true;
@@ -337,15 +366,23 @@ function App() {
     // restored Page moves from its reader replica to the writer replica.
     return host.reloadAccess(previous, { install, onError: showError });
   }
-  function downloadDraft(record) {
-    const draft = host.current?.exportRecovery(record);
+  function downloadDraft(record, { bundle = false } = {}) {
+    let draft;
+    try {
+      draft = bundle
+        ? host.current?.exportRecoveries(localRecoveries)
+        : host.current?.exportRecovery(record);
+    } catch (error) {
+      showError(error);
+      return;
+    }
     if (!draft) return;
     const url = URL.createObjectURL(
       new Blob([JSON.stringify(draft, null, 2)], { type: "application/json" }),
     );
     const link = document.createElement("a");
     link.href = url;
-    link.download = `${draft.page_id}-local-draft.json`;
+    link.download = `${draft.page_id}-local-${bundle ? "copies" : "draft"}.json`;
     link.click();
     setTimeout(() => URL.revokeObjectURL(url), 1000);
   }
@@ -783,11 +820,15 @@ function App() {
         onError: showError,
       });
       // Keep the local replica: the Page can be restored from Trash. A draft
-      // the host never registered has no Trash entry, so discard it instead of
-      // leaving it listed as saved locally.
+      // the host never registered has no Trash entry, so move it to the
+      // recovery archive instead of leaving it listed as saved locally.
       if (!deleting.localPage?.registered) {
         await closing;
-        await forgetLocalPage(deleting.identity, deleting.pageId);
+        await retireLocalPage(deleting.identity, deleting.pageId, {
+          reason: "deleted",
+          grant: deleting.replicaKey,
+          revision: deleting.access?.revision,
+        });
       }
       setNotice("Moved to Trash");
       await refresh();
@@ -1190,8 +1231,6 @@ function App() {
                         onError={setError}
                         onComment={(selected) => startComment(block.id, selected)}
                         onRevealComment={selectComment}
-                        openComments={openComments}
-                        onOpenComments={toggleComments}
                         toolbarHost={active === block.id ? toolbar : null}
                         toolbarOpen={toolbarOpen}
                         onActivate={() => activateBlock(block.id)}
@@ -1234,6 +1273,14 @@ function App() {
                 containerRef={article}
               />
             </main>
+          ) : session?.hidden ? (
+            <RetiredPage
+              session={session}
+              recoveries={localRecoveries}
+              onDownload={downloadDraft}
+              onRetry={() => void session.retryRetirement()}
+              onHome={() => home(null)}
+            />
           ) : opening ? (
             shownPreview ? (
               <PagePreview preview={shownPreview} />
@@ -1278,14 +1325,14 @@ function App() {
             <TrashView
               tool={tool}
               principal={account.principal}
+              identity={authentication.current?.identity}
               onBack={() => home(null)}
               onOpen={(id) => open(id)}
               onRestored={async () => {
                 setNotice("Page restored");
                 await refresh().catch(() => {});
               }}
-              onPurged={async (id) => {
-                await forgetLocalPage(authentication.current?.identity, id);
+              onPurged={async () => {
                 setNotice("Page deleted permanently");
                 await refresh().catch(() => {});
               }}

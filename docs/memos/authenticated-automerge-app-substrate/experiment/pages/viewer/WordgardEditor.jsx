@@ -19,6 +19,7 @@ import { insertTable, tablePresentation, tableKeys, selectedTable } from "./word
 import { TableMenu } from "./TableMenu.jsx";
 import { CODE_LANGUAGES, codeHighlighting } from "./code-highlight.mjs";
 import { MobileBar } from "./MobileBar.jsx";
+import { mobileCommentScope } from "./mobile-comment.mjs";
 import { MOBILE_EDITOR_QUERY } from "./visual-viewport.mjs";
 import {
   resolveUploadPreview,
@@ -64,7 +65,7 @@ import {
   ListTodo,
   Undo2,
   Redo2,
-  MessageSquare,
+  MessageSquarePlus,
   Link as LinkIcon,
   ImagePlus,
 } from "lucide-react";
@@ -130,7 +131,9 @@ const listControls = [
   ["ordered", "Numbered list", ListOrdered],
   ["task", "Task list", ListTodo],
 ];
-const commentControl = ["comment", "Comment on selection", MessageSquare];
+// The plus marks an action that adds a comment. The header's Comments button,
+// which shows the comments, keeps the plain bubble.
+const commentControl = ["comment", "Comment on selection", MessageSquarePlus];
 // Link and Comment act on a selection; they aren't toggles.
 const actions = new Set(["link", "comment"]);
 const marks = { bold: Strong, italic: Emphasis, strike: Strikethrough, code: Code };
@@ -202,6 +205,20 @@ export function WordgardEditor(props) {
     if (!selected) return false;
     latest.current.onComment?.(selected);
     return true;
+  }
+  // The phone bar's Comment: the selection, or else the caret's whole
+  // paragraph. The desktop toolbar's Comment needs a selection.
+  function commentHere() {
+    const editor = view.current;
+    if (!editor) return false;
+    if (comment()) return true;
+    const block = editor.state.sel.head.textblockParent;
+    if (!block || block.end <= block.start) return false;
+    const { anchor, head } = editor.state.selection;
+    editor.dispatch({ selection: { anchor: block.start, head: block.end } });
+    if (comment()) return true;
+    editor.dispatch({ selection: { anchor, head } });
+    return false;
   }
   function openLink(position) {
     const editor = view.current,
@@ -732,6 +749,10 @@ export function WordgardEditor(props) {
         undo: undoDepth(state) > 0,
         redo: redoDepth(state) > 0,
         comment: !!selected,
+        commentScope: mobileCommentScope({
+          selected: !!selected,
+          paragraphText: block?.textContent(),
+        }),
         link: !!selected || !!PagesLink.isInSet(state.sel.activeMarks),
         bullet: listIsActive(BulletList)(state),
         ordered: listIsActive(OrderedList.of(1))(state),
@@ -1195,12 +1216,11 @@ export function WordgardEditor(props) {
           format={format}
           editable={editable}
           styles={styles}
-          openComments={props.openComments ?? 0}
           editorDom={view.current?.dom}
           onRun={(name) => ownsBar() && run(name)}
           onStyle={(value) => ownsBar() && run(value === "code" ? "code-block" : value)}
           onImage={() => ownsBar() && chooseImage()}
-          onComments={() => props.onOpenComments?.()}
+          onComment={() => ownsBar() && commentHere()}
           onFocusChange={setBarFocus}
         />
       )}

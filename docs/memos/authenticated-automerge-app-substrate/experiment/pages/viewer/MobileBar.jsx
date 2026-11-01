@@ -10,7 +10,6 @@ import {
   List,
   ListOrdered,
   ListTodo,
-  MessageSquare,
   MessageSquarePlus,
   MoreHorizontal,
   Redo2,
@@ -18,6 +17,7 @@ import {
   Table,
   Undo2,
 } from "lucide-react";
+import { MOBILE_COMMENT_HINT, MOBILE_COMMENT_LABELS } from "./mobile-comment.mjs";
 
 // Overflow actions, in the order the mockup shows them.
 const MORE = [
@@ -30,29 +30,38 @@ const MORE = [
   ["code", "Inline code", CodeIcon],
   ["table", "Insert table", Table],
   ["link", "Link", LinkIcon],
-  ["comment", "Comment on selection", MessageSquarePlus],
 ];
+const HINT_MS = 3000;
 
 /**
  * The compact formatting bar for narrow touch screens. It's fixed to the
  * bottom of the visual viewport (--vv-bottom), so it rides above the iOS
  * keyboard and its accessory row. Buttons keep the editor focused, so the
  * keyboard stays up while formatting.
+ *
+ * Every button here acts on the editor. Comment opens the composer for the
+ * selection or, with none, the caret's paragraph (see mobile-comment.mjs).
+ * Showing the open comments is the header's Comments button.
  */
 export function MobileBar({
   format,
   editable,
   styles,
-  openComments,
   onRun,
   onStyle,
   onImage,
-  onComments,
+  onComment,
   onFocusChange,
   barRef,
   editorDom,
 }) {
   const [more, setMore] = useState(false);
+  const [hint, setHint] = useState("");
+  useEffect(() => {
+    if (!hint) return;
+    const timer = setTimeout(() => setHint(""), HINT_MS);
+    return () => clearTimeout(timer);
+  }, [hint]);
   const moreButton = useRef(null),
     menu = useRef(null);
   useEffect(() => {
@@ -81,7 +90,7 @@ export function MobileBar({
   const keep = (event) => event.preventDefault();
   const enabled = (name) =>
     editable &&
-    (name === "undo" || name === "redo" || name === "link" || name === "comment"
+    (name === "undo" || name === "redo" || name === "link"
       ? !!format?.[name]
       : name !== "table" || !format?.table);
   const pick = (name) => {
@@ -147,13 +156,16 @@ export function MobileBar({
       <span className="mobile-bar-spacer" />
       <button
         type="button"
-        className="mobile-bar-button mobile-bar-comments"
-        aria-label={`Comments, ${openComments} open`}
+        className="mobile-bar-button"
+        aria-label={MOBILE_COMMENT_LABELS[format?.commentScope ?? "none"]}
+        disabled={!editable}
         onPointerDown={keep}
-        onClick={onComments}
+        onClick={() => {
+          setMore(false);
+          setHint(onComment() ? "" : MOBILE_COMMENT_HINT);
+        }}
       >
-        <MessageSquare size={20} aria-hidden="true" />
-        {openComments > 0 && <span className="mobile-bar-count">{openComments}</span>}
+        <MessageSquarePlus size={20} aria-hidden="true" />
       </button>
       <button
         ref={moreButton}
@@ -185,6 +197,9 @@ export function MobileBar({
           ))}
         </div>
       )}
+      <p className="mobile-bar-hint" role="status">
+        {hint}
+      </p>
     </div>,
     document.body,
   );
