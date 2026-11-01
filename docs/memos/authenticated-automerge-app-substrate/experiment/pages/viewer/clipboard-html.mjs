@@ -14,7 +14,7 @@ export function normalizePastedHTML(html, parser = new DOMParser()) {
   const doc = parser.parseFromString(html, "text/html");
   let changed = false;
   for (const [from, to, property, off] of RENAMES)
-    for (const element of [...doc.body.querySelectorAll(from)]) {
+    for (const element of doc.body.querySelectorAll(from)) {
       if (off(element.style?.getPropertyValue(property).trim().toLowerCase() ?? "")) continue;
       const replacement = doc.createElement(to);
       for (const { name, value } of element.attributes) replacement.setAttribute(name, value);
