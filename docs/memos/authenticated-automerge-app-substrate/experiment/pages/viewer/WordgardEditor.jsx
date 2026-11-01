@@ -89,6 +89,7 @@ import { selectionToolbarPosition } from "./selection-toolbar.mjs";
 import { linkDestination } from "./link-destination.mjs";
 import { LinkPopover } from "./LinkPopover.jsx";
 import { selectedImage } from "./image-selection.mjs";
+import { normalizePastedHTML } from "./clipboard-html.mjs";
 import {
   IMAGE_ACCEPT,
   captureImageInsertion,
@@ -337,6 +338,7 @@ export function WordgardEditor(props) {
         uploadPreviews,
         undoHistory.extension,
         permissions.current.of(editConfig(latest.current.editable)),
+        Wordgard.clipboardInputHTMLFilter.of((html) => normalizePastedHTML(html)),
         Wordgard.domEventHandler("paste", (event) => acceptImages(imageFiles(event.clipboardData))),
         Wordgard.domEventHandler("drop", (event) => {
           const files = imageFiles(event.dataTransfer);
