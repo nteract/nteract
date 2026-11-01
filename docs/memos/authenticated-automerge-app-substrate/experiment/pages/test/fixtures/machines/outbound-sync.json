@@ -1,0 +1,310 @@
+{
+  "machine": "outbound-sync",
+  "description": "When a viewer PageSession's local sync rounds and caret go out: a 30 ms debounce with a 100 ms maximum wait, an immediate send on flush, and no batching once closed. Runs against viewer/outbound-sync-machine.mjs in viewer/outbound-sync.test.mjs.",
+  "states": [
+    "idle",
+    "waiting",
+    "closed"
+  ],
+  "events": [
+    "request",
+    "timer",
+    "flush",
+    "close"
+  ],
+  "unreachable": [],
+  "cases": {
+    "waiting/request": [
+      "debounce",
+      "deadline",
+      "due"
+    ]
+  },
+  "rows": [
+    {
+      "label": "the first edit arms the debounce",
+      "state": {
+        "name": "idle"
+      },
+      "event": {
+        "type": "request",
+        "at": 1000
+      },
+      "expect": {
+        "state": {
+          "name": "waiting",
+          "first": 1000,
+          "last": 1000
+        },
+        "effects": [
+          {
+            "type": "arm",
+            "ms": 30
+          }
+        ]
+      }
+    },
+    {
+      "label": "a stale timer after a send does nothing",
+      "state": {
+        "name": "idle"
+      },
+      "event": {
+        "type": "timer"
+      },
+      "expect": {
+        "state": {
+          "name": "idle"
+        },
+        "effects": [],
+        "rejected": "No send is armed"
+      }
+    },
+    {
+      "label": "a blur with nothing waiting sends nothing",
+      "state": {
+        "name": "idle"
+      },
+      "event": {
+        "type": "flush"
+      },
+      "expect": {
+        "state": {
+          "name": "idle"
+        },
+        "effects": [],
+        "rejected": "Nothing is waiting to go out"
+      }
+    },
+    {
+      "label": "closing with nothing waiting stops batching",
+      "state": {
+        "name": "idle"
+      },
+      "event": {
+        "type": "close"
+      },
+      "expect": {
+        "state": {
+          "name": "closed"
+        },
+        "effects": []
+      }
+    },
+    {
+      "label": "another keystroke soon after the first re-arms the full debounce",
+      "case": "debounce",
+      "state": {
+        "name": "waiting",
+        "first": 1000,
+        "last": 1000
+      },
+      "event": {
+        "type": "request",
+        "at": 1020
+      },
+      "expect": {
+        "state": {
+          "name": "waiting",
+          "first": 1000,
+          "last": 1020
+        },
+        "effects": [
+          {
+            "type": "arm",
+            "ms": 30
+          }
+        ]
+      }
+    },
+    {
+      "label": "continuous typing arms only up to the maximum wait",
+      "case": "deadline",
+      "state": {
+        "name": "waiting",
+        "first": 1000,
+        "last": 1060
+      },
+      "event": {
+        "type": "request",
+        "at": 1080
+      },
+      "expect": {
+        "state": {
+          "name": "waiting",
+          "first": 1000,
+          "last": 1080
+        },
+        "effects": [
+          {
+            "type": "arm",
+            "ms": 20
+          }
+        ]
+      }
+    },
+    {
+      "label": "a keystroke at the maximum wait sends the whole run",
+      "case": "due",
+      "state": {
+        "name": "waiting",
+        "first": 1000,
+        "last": 1080
+      },
+      "event": {
+        "type": "request",
+        "at": 1100
+      },
+      "expect": {
+        "state": {
+          "name": "idle"
+        },
+        "effects": [
+          {
+            "type": "cancel"
+          },
+          {
+            "type": "send"
+          }
+        ]
+      }
+    },
+    {
+      "label": "a pause in typing sends the run",
+      "state": {
+        "name": "waiting",
+        "first": 1000,
+        "last": 1040
+      },
+      "event": {
+        "type": "timer"
+      },
+      "expect": {
+        "state": {
+          "name": "idle"
+        },
+        "effects": [
+          {
+            "type": "send"
+          }
+        ]
+      }
+    },
+    {
+      "label": "a blur, hidden tab, unload or receipt sends at once",
+      "state": {
+        "name": "waiting",
+        "first": 1000,
+        "last": 1040
+      },
+      "event": {
+        "type": "flush"
+      },
+      "expect": {
+        "state": {
+          "name": "idle"
+        },
+        "effects": [
+          {
+            "type": "cancel"
+          },
+          {
+            "type": "send"
+          }
+        ]
+      }
+    },
+    {
+      "label": "closing sends what waits before stopping",
+      "state": {
+        "name": "waiting",
+        "first": 1000,
+        "last": 1040
+      },
+      "event": {
+        "type": "close"
+      },
+      "expect": {
+        "state": {
+          "name": "closed"
+        },
+        "effects": [
+          {
+            "type": "cancel"
+          },
+          {
+            "type": "send"
+          }
+        ]
+      }
+    },
+    {
+      "label": "after close every store goes out at once",
+      "state": {
+        "name": "closed"
+      },
+      "event": {
+        "type": "request",
+        "at": 5000
+      },
+      "expect": {
+        "state": {
+          "name": "closed"
+        },
+        "effects": [
+          {
+            "type": "send"
+          }
+        ]
+      }
+    },
+    {
+      "label": "no timer runs after close",
+      "state": {
+        "name": "closed"
+      },
+      "event": {
+        "type": "timer"
+      },
+      "expect": {
+        "state": {
+          "name": "closed"
+        },
+        "effects": [],
+        "rejected": "Outbound sync is closed"
+      }
+    },
+    {
+      "label": "a flush after close has nothing to send",
+      "state": {
+        "name": "closed"
+      },
+      "event": {
+        "type": "flush"
+      },
+      "expect": {
+        "state": {
+          "name": "closed"
+        },
+        "effects": [],
+        "rejected": "Outbound sync is closed"
+      }
+    },
+    {
+      "label": "closing twice is refused",
+      "state": {
+        "name": "closed"
+      },
+      "event": {
+        "type": "close"
+      },
+      "expect": {
+        "state": {
+          "name": "closed"
+        },
+        "effects": [],
+        "rejected": "Outbound sync is closed"
+      }
+    }
+  ]
+}
