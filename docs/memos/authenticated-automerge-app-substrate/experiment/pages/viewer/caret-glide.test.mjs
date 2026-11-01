@@ -8,6 +8,7 @@ import {
   createCaretGlide,
   glideTransition,
   createGlideRunner,
+  mediaMatches$,
 } from "./caret-glide.mjs";
 
 const on = { enabled: true, reducedMotion: false, maxJumpPx: 900 };
@@ -261,11 +262,15 @@ function block(config, reducedMotion$) {
     ghostLayer: dom.ghosts,
     settings: config,
     onSettled: (session, anchor) => glide.settle(session, anchor),
+    isCurrent: (effect) => glide.current(effect),
   });
   const subscription = glide.cancels$.subscribe((effects) => runner.run(effects));
   const observe = (carets) => runner.run(glide.observe("one", carets), { x: 5, y: 10 });
+  // The editor's two steps: measure queues effects, React's commit flushes them.
+  const measure = (carets) => runner.queue(glide.observe("one", carets), { x: 5, y: 10 });
+  const commit = () => runner.flush();
   const glides = () => dom.animations.filter((animation) => animation.target === dom.caret);
-  return { ...dom, glide, runner, subscription, observe, glides };
+  return { ...dom, glide, runner, subscription, observe, measure, commit, glides };
 }
 function drive(config, observations, reducedMotion = false) {
   const h = block(config, new BehaviorSubject(reducedMotion));
@@ -425,4 +430,57 @@ test("zero duration jumps with a ghost; zero ghost glides without one", async ()
   ]);
   assert.equal(plain.glides().length, 1);
   assert.equal(plain.ghosts.children.length, 0);
+});
+
+test("reduced motion turned on before React commits drops the queued glide", () => {
+  const preference = new BehaviorSubject(false);
+  const h = block(settings(), preference);
+  h.measure([caret("a1", 15, 30)]);
+  h.commit();
+  // Measurement queues the glide; the preference flips before the commit.
+  h.measure([caret("a2", 215, 130)]);
+  assert.equal(h.glide.state("agent:a").name, "gliding");
+  preference.next(true);
+  h.commit();
+  assert.equal(h.animations.length, 0, "no glide or ghost animation starts");
+  assert.equal(h.ghosts.children.length, 0);
+  assert.equal(h.runner.running, 0);
+  assert.deepEqual(h.glide.state("agent:a"), {
+    name: "resting",
+    anchor: "a2",
+    block: "one",
+    x: 215,
+    y: 130,
+    height: 20,
+  });
+});
+
+test("a queued glide that a newer write replaced before the commit does not run", () => {
+  const h = block(settings(), new BehaviorSubject(false));
+  h.measure([caret("a1", 15, 30)]);
+  h.commit();
+  h.measure([caret("a2", 215, 130)]);
+  h.measure([caret("a3", 15, 330)]);
+  h.commit();
+  const glides = h.glides();
+  assert.equal(glides.length, 1, "only the newest write glides");
+  assert.deepEqual(glides[0].keyframes[0], { transform: "translate(200px, -200px)" });
+});
+
+test("the reduced-motion stream reads the preference when subscribed, not when created", () => {
+  const query = new EventTarget();
+  query.matches = false;
+  const preference$ = mediaMatches$(query);
+  const seen = [];
+  let subscription = preference$.subscribe((value) => seen.push(value));
+  subscription.unsubscribe();
+  // The preference changes while no editor is mounted.
+  query.matches = true;
+  subscription = preference$.subscribe((value) => seen.push(value));
+  const change = new Event("change");
+  change.matches = false;
+  query.matches = false;
+  query.dispatchEvent(change);
+  subscription.unsubscribe();
+  assert.deepEqual(seen, [false, true, false]);
 });

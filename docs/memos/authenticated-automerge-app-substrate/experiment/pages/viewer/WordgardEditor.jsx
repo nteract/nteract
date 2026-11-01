@@ -467,17 +467,15 @@ export function WordgardEditor(props) {
         ghostLayer: ghostLayer.current,
         settings: glide,
         onSettled: (session, anchor) => motion.settle(session, anchor),
+        isCurrent: (effect) => motion.current(effect),
       });
     // Turning on reduced motion snaps every caret to its anchor.
     const glideCancels = motion?.cancels$.subscribe((effects) => glideRunner.run(effects));
-    // Glide effects wait for React to draw each caret at its new position.
-    let measuredCarets = null,
-      pendingGlide = null;
+    // Glide effects wait in the runner for React to draw each caret at its
+    // new position.
+    let measuredCarets = null;
     flushGlide.current = () => {
-      if (!pendingGlide || !alive) return;
-      const { effects, offset } = pendingGlide;
-      pendingGlide = null;
-      glideRunner.run(effects, offset);
+      if (alive) glideRunner?.flush();
     };
     const measureCarets = () => {
       if (!alive || caretFrame !== null) return;
@@ -552,11 +550,10 @@ export function WordgardEditor(props) {
         );
         if (motion) {
           const effects = motion.observe(id, agentCarets);
-          if (effects.length)
-            pendingGlide = {
-              effects: [...(pendingGlide?.effects ?? []), ...effects],
-              offset: { x: origin.left - article.left, y: origin.top - article.top },
-            };
+          glideRunner.queue(effects, {
+            x: origin.left - article.left,
+            y: origin.top - article.top,
+          });
           // Unchanged carets mean no render, so run the effects now.
           const changed = JSON.stringify(measuredCarets) !== JSON.stringify(next);
           measuredCarets = next;

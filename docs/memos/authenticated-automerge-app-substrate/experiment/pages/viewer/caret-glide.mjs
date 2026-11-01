@@ -10,7 +10,7 @@
 // Positions are relative to the Page's article, so a caret that leaves one
 // block's editor and lands in another is still one move, and scrolling does
 // not change them.
-import { distinctUntilChanged, filter, fromEvent, map, of, share, startWith } from "rxjs";
+import { defer, distinctUntilChanged, filter, fromEvent, map, of, share, startWith } from "rxjs";
 
 /** A caret that leaves one block and lands in another within this window is
  * one move. Blocks measure on their own frames, so the old block can report
@@ -185,14 +185,25 @@ export function createCaretGlide({ settings, now, reducedMotion$ = of(false) }) 
       shown.delete(block);
     },
     state: (session) => states.get(session) ?? HIDDEN,
+    /** Whether an effect still matches the state it came from. A glide that
+     * waited for a render is stale once its caret stopped gliding to that
+     * anchor: a newer write, a removal, or reduced motion came first. */
+    current(effect) {
+      if (effect.type !== "glide") return true;
+      const state = states.get(effect.session);
+      return !reduced && state?.name === "gliding" && state.anchor === effect.anchor;
+    },
   };
 }
 
-/** A media query's matches, current value first, then each change. */
+/** A media query's matches: the value at subscribe time, then each change.
+ * The stream outlives its subscribers, so the first value is read late. */
 export const mediaMatches$ = (query) =>
-  fromEvent(query, "change").pipe(
-    map((event) => event.matches),
-    startWith(query.matches),
+  defer(() =>
+    fromEvent(query, "change").pipe(
+      map((event) => event.matches),
+      startWith(query.matches),
+    ),
   );
 
 const glides = new WeakMap();
@@ -208,8 +219,20 @@ export function caretGlideFor(replica, options) {
  * Agent carets carry `data-glide="<session>"`; ghosts go in `ghostLayer`. The
  * Web Animations API moves the caret with a transform, so layout never
  * reflows. Finished glides call `onSettled`.
+ *
+ * Measured effects wait in `queue` until React has drawn each caret at its
+ * new position, then `flush` runs the ones `isCurrent` still accepts. A
+ * cancel drops queued glides for its caret.
  */
-export function createGlideRunner({ layer, ghostLayer, settings, onSettled }) {
+export function createGlideRunner({
+  layer,
+  ghostLayer,
+  settings,
+  onSettled,
+  isCurrent = () => true,
+}) {
+  // Batches of { effects, offset } waiting for a render.
+  let pending = [];
   // session -> { animation, from, to }, in layer coordinates.
   const running = new Map();
   // session -> Set of { element, animation }.
@@ -263,12 +286,24 @@ export function createGlideRunner({ layer, ghostLayer, settings, onSettled }) {
     };
     animation.finished.then(done, done);
   }
-  return {
+  const runner = {
     /** `offset` is the layer's position within the article. */
+    queue(effects, offset) {
+      if (effects.length) pending.push({ effects, offset });
+    },
+    flush() {
+      const batches = pending;
+      pending = [];
+      for (const { effects, offset } of batches) runner.run(effects.filter(isCurrent), offset);
+    },
     run(effects, offset = { x: 0, y: 0 }) {
       for (const effect of effects) {
         const { session } = effect;
         if (effect.type !== "glide") {
+          pending = pending.map((batch) => ({
+            ...batch,
+            effects: batch.effects.filter((queued) => queued.session !== session),
+          }));
           stop(session);
           removeGhosts(session);
           continue;
@@ -316,6 +351,7 @@ export function createGlideRunner({ layer, ghostLayer, settings, onSettled }) {
     },
     /** The editor is gone: stop every glide and remove every ghost. */
     dispose() {
+      pending = [];
       for (const session of running.keys()) stop(session);
       for (const session of ghosts.keys()) removeGhosts(session);
     },
@@ -326,4 +362,5 @@ export function createGlideRunner({ layer, ghostLayer, settings, onSettled }) {
       return [...ghosts.values()].reduce((total, set) => total + set.size, 0);
     },
   };
+  return runner;
 }
