@@ -45,6 +45,16 @@ import {
   reconnectDelay,
   viewerReconnectMachine,
 } from "./reconnect-machine.mjs";
+import { statusLabel, viewerSyncStatusMachine } from "./sync-status-machine.mjs";
+import {
+  acknowledgedHeads,
+  afterAcknowledgement,
+  emptyLocalEdits,
+  hasUnconfirmedLocalEdits,
+  readLocalEdits,
+  retireReplica,
+  withActor,
+} from "./local-edits.mjs";
 export { request, tool } from "./request.mjs";
 const hex = (bytes) => Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
 const ownerAccess = () => ({
@@ -75,7 +85,7 @@ export const STABLE_CONNECTION_MS = 15_000;
 // A Page being left keeps syncing this long for its receipt before closing.
 export const CLOSE_DRAIN_MS = 10_000;
 // Receipt states in which a Page being left may still save.
-const DRAINING_STATES = new Set(["Connecting", "Reconnecting", "Saving"]);
+const DRAINING_STATES = new Set(["Connecting", "Reconnecting", "Syncing", "Saving"]);
 const STALLED_STATES = new Set(["Unsaved", "Offline", "Saved locally"]);
 /** A receipt status as the reload gate reads it. */
 export const saveStateOf = (status) =>
@@ -182,6 +192,9 @@ export class PageSession {
    * signing key, or a pause after repeated admission refusals. `retryTimer`
    * is pending exactly while it is `waiting`. */
   reconnect$ = new Store(viewerReconnectMachine.initial);
+  /** What the status line says about receipts and the connection (see
+   * sync-status-machine.mjs). `status` renders it with the phase's pauses. */
+  sync$ = new Store(viewerSyncStatusMachine.initial);
   // The close's work: checkpoint, release, and a late deletion's forget. It
   // can grow while it runs, so only closeSettled() waits on it.
   #closing;
@@ -423,7 +436,26 @@ export class PageSession {
       if (this.skipCloseCheckpoint) written = true;
       else {
         await this.repo?.flush();
-        await this.persistLocal({ pending: this.status !== "Saved" }, { allowClosed: true });
+        // With no unconfirmed edit, nothing this replica's actors authored
+        // can be unacknowledged, and they can't author again. Decide from
+        // the document and the recorded acknowledgements, never from the
+        // sync machine: a close can run before start() classified the
+        // replica, for example when an open fails partway.
+        let edits,
+          retire = false;
+        try {
+          edits = this.handle ? this.localEditsWithActor() : undefined;
+          retire = !!edits && !hasUnconfirmedLocalEdits(this.doc, edits);
+        } catch {
+          // Keeping every actor is always safe.
+        }
+        await this.persistLocal(
+          {
+            pending: this.status !== "Saved",
+            ...(retire && { localEdits: retireReplica(edits, this.replicaId) }),
+          },
+          { allowClosed: true },
+        );
         written = !!this.localPage && !!this.handle;
       }
     } catch (error) {
@@ -545,9 +577,10 @@ export class PageSession {
       );
       return false;
     }
-    if (this.authRequired && !this.accessDenied && !this.accessReloadRequired)
-      this.status = "Reconnecting";
+    const resuming = this.authRequired && !this.accessDenied && !this.accessReloadRequired;
+    if (resuming) this.syncStatus({ type: "retrying" });
     this.dispatch({ type: "signIn", ok: true });
+    if (resuming) this.renderStatus();
     this.authProblem = "";
     this.identity = result.identity;
     this.credentialCanWrite = !!result.canWrite;
@@ -606,7 +639,8 @@ export class PageSession {
     // The host's admission closes a socket that never proved stable: count it,
     // so a host that keeps refusing pauses instead of retrying forever.
     if (this.scheduleReconnect({ refused: !!outcome && !stable }) === "paused") return;
-    this.status = "Reconnecting";
+    this.syncStatus({ type: "retrying" });
+    this.renderStatus();
     this.emit();
   }
   /** Step the reconnect machine and run its effects. A rejected event
@@ -655,9 +689,10 @@ export class PageSession {
     this.showConnectionStatus();
   }
   showConnectionStatus() {
+    this.syncStatus({ type: "unreachable" });
     if (this.receiptState) this.showReceiptState();
     else {
-      this.status = this.localPage ? "Saved locally" : "Offline";
+      this.renderStatus();
       this.emit();
     }
   }
@@ -818,6 +853,10 @@ export class PageSession {
     await this.initializeLocal(
       this.localPage?.replicaKey ?? replicaKey(this.access, this.canWrite),
     );
+    // Whether this replica opens with edits of its own the host hasn't
+    // confirmed (local-edits.mjs). Only that, never a receipt that was merely
+    // outstanding, makes the status say Saving.
+    let unconfirmed;
     if (creation) {
       const doc = A.change(
         A.from(createPageData({ pageId: this.pageId, title: creation.title })),
@@ -841,6 +880,12 @@ export class PageSession {
         pending: true,
         snapshot,
         registrationProtocol: 1,
+        // The bootstrap and everything after it are this browser's own edits.
+        localEdits: withActor(
+          withActor(emptyLocalEdits(), A.getActorId(doc), this.replicaId),
+          this.actor(),
+          this.replicaId,
+        ),
         registration: {
           expected_principal: this.identity.principal,
           page_id: this.pageId,
@@ -850,7 +895,8 @@ export class PageSession {
           idempotency_key: `v1_${crypto.randomUUID()}`,
         },
       };
-      await writeLocalPage(this.identity, this.localPage);
+      await writeLocalPage(this.identity, this.localPage, { replica: this.replicaId });
+      unconfirmed = true;
     } else if (this.localPage && !this.localPage.resetReplica) {
       // A checkpoint can contain more history than an ordinary edit batch.
       // Merge its bounded complete record set before exposing a handle; this
@@ -864,7 +910,16 @@ export class PageSession {
       }
       this.handle = await this.repo.find(this.localPage.document_id);
       this.canWrite = !!this.canWrite && !!this.localPage.canWrite;
-      if (!this.localPage.pending) this.savedHeads = A.getHeads(this.doc);
+      // Native storage can hold an edit the checkpoint never saw, so decide
+      // from the restored document. A record without localEdits predates
+      // them; its receipt flag is all there is.
+      const edits = readLocalEdits(this.localPage.localEdits);
+      unconfirmed = edits ? hasUnconfirmedLocalEdits(this.doc, edits) : !!this.localPage.pending;
+      // Without unconfirmed local edits, every change here is acknowledged or
+      // came from the host.
+      if (!unconfirmed) this.savedHeads = A.getHeads(this.doc);
+      else if (edits) this.savedHeads = acknowledgedHeads(this.doc, edits);
+      await this.recordActor(edits ?? { ...emptyLocalEdits(), unattributed: unconfirmed });
     } else {
       await this.connect(false);
       if (this.nativeRefused) throw signingKeyRefused(this.refusal);
@@ -917,19 +972,18 @@ export class PageSession {
         registered: true,
         pending: false,
         snapshot: encodeSnapshot(A.save(this.doc)),
+        localEdits: withActor(emptyLocalEdits(), this.actor(), this.replicaId),
       };
-      await writeLocalPage(this.identity, this.localPage);
+      await writeLocalPage(this.identity, this.localPage, { replica: this.replicaId });
+      unconfirmed = false;
     }
     this.handle.on("change", (event) => this.receiveChange(event));
     this.handle.on("ephemeral-message", (event) => this.ephemeral(event));
     if (this.accessDenied)
       this.accessProblem =
         "You no longer have access to this Page. Your local copy is kept on this device.";
-    this.status = this.accessDenied
-      ? "Access removed"
-      : this.connection
-        ? "Connected"
-        : "Saved locally";
+    this.syncStatus({ type: "opened", pending: unconfirmed });
+    this.renderStatus();
     // A pause while opening has already failed start().
     if (this.phase$.snapshot().name === "opening")
       this.dispatch({ type: "opened", denied: this.access?.role === "none" });
@@ -965,6 +1019,15 @@ export class PageSession {
       ),
     );
     this.local = await exclusiveIdentity(scope);
+    // Names this native replica in localEdits without exposing its seed.
+    this.replicaId = hex(
+      new Uint8Array(
+        await crypto.subtle.digest(
+          "SHA-256",
+          new TextEncoder().encode(`pages-native-replica\0${this.local.seed}`),
+        ),
+      ),
+    ).slice(0, 32);
     this.signer = N.MemorySigner.fromBytes(bytes(this.local.seed));
     const peer = this.signer.peerId();
     this.senderId = peer.toString();
@@ -979,6 +1042,34 @@ export class PageSession {
       ...BACKEND_LIMITS,
     });
     this.repo = new Repo({ backend: this.backend });
+  }
+  /** This session's Automerge actor: every local edit it makes carries it. */
+  actor() {
+    return A.getActorId(this.doc);
+  }
+  /** The checkpoint's localEdits with this session's actor recorded. A
+   * checkpoint without valid localEdits predates them: its receipt flag
+   * stands for edits that can't be attributed. */
+  localEditsWithActor() {
+    return withActor(
+      readLocalEdits(this.localPage?.localEdits) ?? {
+        ...emptyLocalEdits(),
+        unattributed: !!this.localPage?.pending,
+      },
+      this.actor(),
+      this.replicaId,
+    );
+  }
+  /** Record this session's actor in the checkpoint before it can edit, so a
+   * crash before the debounced checkpoint still reads its edits as local. */
+  async recordActor(edits) {
+    const recorded = withActor(edits, this.actor(), this.replicaId);
+    if (recorded === edits && this.localPage.localEdits) return;
+    this.localPage = await writeLocalPage(
+      this.identity,
+      { ...this.localPage, localEdits: recorded },
+      { replica: this.replicaId },
+    );
   }
   persistLocal(patch = {}, { allowClosed = false } = {}) {
     if (this.deleted || (!this.alive && !allowClosed) || !this.localPage || !this.handle)
@@ -1000,7 +1091,9 @@ export class PageSession {
       .catch(() => {})
       .then(async () => {
         this.localPage = { ...this.localPage, ...value };
-        this.localPage = await writeLocalPage(this.identity, this.localPage);
+        this.localPage = await writeLocalPage(this.identity, this.localPage, {
+          replica: this.replicaId,
+        });
       });
     this.cacheTail = work;
     return work;
@@ -1245,11 +1338,12 @@ export class PageSession {
         return;
       this.socketAdmittedAt.set(socket, this.now());
       this.clearConnectionProblem();
+      this.syncStatus({ type: "admitted" });
       // A receipt that outlasted its transient retries starts over now that
       // the host answers; any other receipt keeps its own retry budget.
       if (this.handle) this.queueSaved({ restart: !!this.receiptState?.outage });
       else {
-        this.status = "Connected";
+        this.renderStatus();
         this.emit();
       }
     } catch (error) {
@@ -1366,7 +1460,7 @@ export class PageSession {
     this.localDepth++;
     try {
       const stored = this.handle.change(fn);
-      this.queueSaved();
+      this.queueSaved({ edit: true });
       const receipt = this.receiptState;
       Promise.resolve(stored).catch((error) => {
         if (
@@ -1552,7 +1646,9 @@ export class PageSession {
       return pending;
     });
   }
-  queueSaved({ restart = false } = {}) {
+  /** Start a receipt for the current heads. `edit` when a local edit moved
+   * them; remote changes, reconnects and retries only sync. */
+  queueSaved({ restart = false, edit = false } = {}) {
     if (!this.alive || this.deleted) return;
     const heads = this.handle ? A.getHeads(this.doc) : [];
     const blocked = !!(this.authRequired || this.accessDenied || this.accessReloadRequired);
@@ -1582,10 +1678,10 @@ export class PageSession {
       revision: this.receiptRevision,
       heads,
       blocked,
-      status: "Saving",
       problem: outage ? SERVER_UNREACHABLE : "",
       outage,
     };
+    this.syncStatus({ type: "queued", revision: this.receiptRevision, edit });
     this.showReceiptState();
     this.savedTimer = setTimeout(() => {
       this.savedTimer = undefined;
@@ -1595,19 +1691,25 @@ export class PageSession {
   sameReceiptHeads(left, right) {
     return left.length === right.length && left.every((head) => right.includes(head));
   }
+  /** Step the sync-status machine. A rejected event changes nothing. */
+  syncStatus(event) {
+    const result = viewerSyncStatusMachine.step(this.sync$.snapshot(), event);
+    if (!result.rejected) this.sync$.update(() => result.state);
+    return result;
+  }
+  /** Render `status` from the sync-status machine and the phase's pauses. */
+  renderStatus() {
+    this.status = statusLabel(this.sync$.snapshot(), {
+      deleted: this.deleted,
+      accessDenied: this.accessDenied,
+      accessReloadRequired: this.accessReloadRequired,
+      authRequired: this.authRequired,
+      localFailed: !!this.localProblem,
+      localCopy: !!this.localPage,
+    });
+  }
   showReceiptState() {
-    this.status = this.accessDenied
-      ? "Access removed"
-      : this.accessReloadRequired
-        ? "Access changed"
-        : this.authRequired
-          ? "Sign in to sync"
-          : this.localProblem
-            ? "Local save failed"
-            : (this.connectionProblem || this.unreachable) &&
-                this.receiptState.status !== "Saved locally"
-              ? "Offline"
-              : this.receiptState.status;
+    this.renderStatus();
     if (
       !this.authRequired &&
       !this.accessDenied &&
@@ -1674,9 +1776,9 @@ export class PageSession {
         revision: this.receiptRevision,
         heads,
         blocked: !!(this.authRequired || this.accessDenied || this.accessReloadRequired),
-        status: "Saving",
         problem: "",
       };
+      this.syncStatus({ type: "queued", revision: this.receiptRevision ?? 0, edit: false });
     } else if (!this.sameReceiptHeads(this.receiptState.heads, heads)) {
       this.queueSaved();
       return Promise.resolve();
@@ -1692,6 +1794,7 @@ export class PageSession {
   }
   async performSaveReceipt(state, { synchronize = false } = {}) {
     const revision = this.receiptRevision;
+    const receipt = revision ?? 0;
     const isCurrent = () => {
       if (
         !this.alive ||
@@ -1728,7 +1831,7 @@ export class PageSession {
       if (!isCurrent()) return;
       this.localProblem = this.problem = error.message;
       state.problem = error.message;
-      state.status = this.status = "Local save failed";
+      this.renderStatus();
       this.emit();
       return;
     }
@@ -1736,7 +1839,8 @@ export class PageSession {
       if (!isCurrent()) return;
       if (this.localPage && !this.connection) {
         state.localOnly = true;
-        state.status = this.status = "Saved locally";
+        this.syncStatus({ type: "stalled", revision: receipt, localCopy: true });
+        this.renderStatus();
         this.emit();
         return;
       }
@@ -1784,10 +1888,16 @@ export class PageSession {
       state.problem = "";
       state.outage = false;
       this.receiptOutageSince = null;
-      state.status = "Saved";
+      this.syncStatus({ type: "acknowledged", revision: receipt });
       this.cancelReceiptRetry();
       this.receiptRetryAttempts = 0;
-      await this.persistLocal({ pending: false });
+      await this.persistLocal({
+        pending: false,
+        localEdits: afterAcknowledgement(this.doc, this.localEditsWithActor(), heads, {
+          replica: this.replicaId,
+          actor: this.actor(),
+        }),
+      });
       if (!isCurrent()) return;
       this.showReceiptState();
     } catch (error) {
@@ -1803,7 +1913,8 @@ export class PageSession {
             { denied: true },
           );
         if (!this.authRequired && !this.accessDenied && !this.accessReloadRequired) {
-          state.status = this.status = this.localPage ? "Saved locally" : "Unsaved";
+          this.syncStatus({ type: "stalled", revision: receipt, localCopy: !!this.localPage });
+          this.renderStatus();
           if (isTransientFailure(error)) {
             // The host may be restarting: retry without a banner. It is an
             // outage once the run of transient failures has lasted

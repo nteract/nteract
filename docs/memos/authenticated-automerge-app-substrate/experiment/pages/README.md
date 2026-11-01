@@ -432,6 +432,31 @@ session ended. Sign in again." or the server's 403 message, or the open
 Page's own sign-in prompt. Each screen renders its banners
 from one deduplicated list ([alerts.mjs](viewer/alerts.mjs)).
 
+The status line separates syncing from saving. Every head change asks the host
+for a receipt, but only a local edit marks the replica as holding unacknowledged
+work. Catching up on other peers' changes after a reopen says "Syncing"; a
+local edit says "Saving" until a receipt for heads that include it lands, even
+if remote changes arrive in between.
+
+A reopen decides from the restored replica, not from the checkpoint's `pending`
+flag, which only says a receipt was outstanding. The checkpoint's `localEdits`
+records every Automerge actor this browser authored with (each session records
+its fresh actor before it accepts an edit) and the heads the host last
+acknowledged. The replica has unconfirmed work exactly when it holds a change by
+one of those actors outside the acknowledged history. Native storage persists
+an edit before the debounced checkpoint, so a tab that dies in between still
+reopens Saving, and its edit is not claimed as saved. Checkpoints from before
+`localEdits` keep their `pending` flag as unattributed local work until a receipt
+covers them. Each actor is recorded with the native replica it wrote into, and
+only that replica's session drops it: earlier actors once a receipt covers the
+whole replica, its own when it closes with nothing unconfirmed. Another tab's
+actor is never dropped, by count or otherwise, because that tab may be live or
+may be restored later with its native database.
+[local-edits.mjs](viewer/local-edits.mjs) holds these rules.
+[sync-status-machine.mjs](viewer/sync-status-machine.mjs) holds these
+transitions and the label each state renders; a phase pause (sign-in, access,
+deletion) or a failed local save outranks it.
+
 A binding write that never settles still blocks its own signing key until the
 host restarts; other keys are unaffected. A rejected write may have taken effect,
 so the host neither issues a competing write nor releases the reservation. If an

@@ -53,6 +53,7 @@ test("connection, local-only, permission, and failure states remain visible and 
     "Connecting",
     "Connected",
     "Reconnecting",
+    "Syncing",
     "Saving",
     "Saved locally",
     "Offline",
@@ -76,5 +77,6 @@ test("connection, local-only, permission, and failure states remain visible and 
   assert.ok(render("Unsaved").classList.contains("save-status--error"));
   assert.ok(render("Saved locally").classList.contains("save-status--attention"));
   assert.ok(render("Saving").classList.contains("save-status--working"));
+  assert.ok(render("Syncing").classList.contains("save-status--working"));
   assert.equal(render("Connected").querySelector("svg"), null);
 });
