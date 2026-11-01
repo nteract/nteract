@@ -1,5 +1,6 @@
 import "../../../../../../src/styles/notebook-tokens.css";
 import React, { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { flushSync } from "react-dom";
 import { createRoot } from "react-dom/client";
 import {
   ChevronDown,
@@ -1057,10 +1058,20 @@ function App() {
                     if (!titleHandsOffToBody(event, session.canWrite)) return;
                     event.preventDefault();
                     const first = editor.module.orderedBlockIds(session.doc)[0];
-                    if (first) {
-                      activateBlock(first);
-                      setFocusBlock(first);
-                    } else continueWriting();
+                    // Mount and focus the body before the next key: a new Page
+                    // has no block yet, and keys typed while one renders would
+                    // land in the title.
+                    flushSync(() => {
+                      if (first) {
+                        activateBlock(first);
+                        setFocusBlock(first);
+                      } else continueWriting();
+                    });
+                    const id = first ?? editor.module.orderedBlockIds(session.doc)[0];
+                    if (id)
+                      article.current
+                        ?.querySelector(`[data-block-id="${CSS.escape(id)}"] wg-content`)
+                        ?.focus();
                   }}
                 />
                 {page.blocks.map((block) => (
