@@ -29,11 +29,13 @@ import {
   BulletList,
   TaskList,
   PagesLink,
+  PagesImage,
 } from "./wordgard-model.mjs";
 import { taskLists } from "./wordgard-task-lists.mjs";
 import { markdownShortcuts } from "./wordgard-shortcuts.mjs";
-import { tablePresentation, tableKeys, selectedTable } from "./wordgard-tables.mjs";
-import { TableMenu } from "./TableMenu.jsx";
+import { tablePresentation, tableKeys } from "./wordgard-tables.mjs";
+import { setUploadPreview, uploadPreview, uploadPreviews } from "./upload-preview.mjs";
+import { createCommentImageUploader, imageFiles } from "./comment-image.mjs";
 import { codeHighlighting } from "./code-highlight.mjs";
 import {
   insertPlainLineBreak,
@@ -64,8 +66,9 @@ const controls = [
   ["Task list", ListTodo, toggleList, TaskList],
 ];
 
-// Comments use the document's native vocabulary and table commands. Drafts stay
-// local until Send; posted messages are never edited by a viewer selection.
+// Comments use the document's native vocabulary, so tables and images an agent
+// writes render here too. Drafts stay local until Send; posted messages are
+// never edited by a viewer selection.
 function nativeConfig() {
   return [
     blockDoc(),
@@ -101,16 +104,32 @@ function nativeConfig() {
   ];
 }
 
-export function CommentRichText({ value, nativeSpans, onChange, onError, disabled, label }) {
+/**
+ * `images` turns on image paste and drop: `{ pageId, canUpload }`. Uploads use
+ * the Page's asset endpoint, and the draft gets the asset URL the way Page
+ * Markdown does. `onUploadingChange(boolean)` lets the form hold Send while
+ * an image uploads.
+ */
+export function CommentRichText({
+  value,
+  nativeSpans,
+  onChange,
+  onError,
+  disabled,
+  label,
+  images,
+  onUploadingChange,
+}) {
   const mount = useRef(null),
     view = useRef(null),
     compartment = useRef(new GardState.Compartment());
-  const latest = useRef({ value, nativeSpans, onChange, onError, disabled });
-  latest.current = { value, nativeSpans, onChange, onError, disabled };
+  const latest = useRef({ value, nativeSpans, onChange, onError, disabled, images });
+  latest.current = { value, nativeSpans, onChange, onError, disabled, images, onUploadingChange };
   const lastValue = useRef(value);
+  const uploader = useRef(null);
   const [editor, setEditor] = useState(null),
-    [inTable, setInTable] = useState(false),
-    [format, setFormat] = useState({});
+    [format, setFormat] = useState({}),
+    [imageProblem, setImageProblem] = useState("");
   const [link, setLink] = useState(null),
     [href, setHref] = useState("");
   const [linkError, setLinkError] = useState("");
@@ -122,7 +141,6 @@ export function CommentRichText({ value, nativeSpans, onChange, onError, disable
     let alive = true;
     function refreshFormatting(state) {
       if (!alive) return;
-      setInTable(Boolean(selectedTable(state)));
       const selection = state.selection;
       const next = Object.fromEntries(
         controls.map(([name, , command, arg]) => [
@@ -140,11 +158,90 @@ export function CommentRichText({ value, nativeSpans, onChange, onError, disable
         controls.every(([name]) => previous[name] === next[name]) ? previous : next,
       );
     }
+    // Where a pasted or dropped image will land, until its upload starts.
+    let landing = null;
+    const images = createCommentImageUploader({
+      pageId: latest.current.images?.pageId,
+      insert(asset, alt) {
+        const pending = editor.state.field(uploadPreview, false);
+        if (!alive || !pending || editor.state.readOnly)
+          throw Error("The draft changed while the image uploaded. Add it again.");
+        editor.dispatch({
+          changes: {
+            from: pending.pos,
+            insert: [PagesImage.of({ src: asset.url, alt, title: null })],
+            fit: true,
+          },
+          effects: setUploadPreview.of(null),
+          userEvent: "input.image",
+          annotations: history.isolate.of(true),
+        });
+      },
+      onState(state) {
+        if (!alive) return;
+        setImageProblem(state.name === "failed" ? state.message : "");
+        latest.current.onUploadingChange?.(state.name === "uploading");
+        if (state.name === "uploading" && landing) {
+          const { pos, file } = landing;
+          landing = null;
+          const preview = {
+            resolve: () => pos,
+            src: "",
+            name: file.name ?? "",
+            onCancel: () => images.cancel(),
+          };
+          editor.dispatch({ effects: setUploadPreview.of(preview), annotations: quiet() });
+          // A data: URL of the file shows while it uploads (the page CSP
+          // allows data: images, not blob:).
+          if (typeof FileReader === "function") {
+            const reader = new FileReader();
+            reader.onload = () => {
+              const current = editor.state.field(uploadPreview, false);
+              if (
+                !alive ||
+                images.state.name !== "uploading" ||
+                current?.resolve !== preview.resolve
+              )
+                return;
+              editor.dispatch({
+                effects: setUploadPreview.of({
+                  ...preview,
+                  resolve: () => current.pos,
+                  src: reader.result,
+                }),
+                annotations: quiet(),
+              });
+            };
+            reader.readAsDataURL(file);
+          }
+        } else if (state.name !== "uploading" && editor.state.field(uploadPreview, false))
+          editor.dispatch({ effects: setUploadPreview.of(null), annotations: quiet() });
+      },
+    });
+    uploader.current = images;
+    const acceptImages = (files, pos) => {
+      if (!files.length || !latest.current.images) return false;
+      if (latest.current.disabled) return true;
+      landing = { pos: pos ?? editor.state.selection.to, file: files[0] };
+      const handled = images.accept(files, { canUpload: latest.current.images.canUpload });
+      landing = null;
+      return handled;
+    };
     const editor = Wordgard.create({
       parent: mount.current,
       doc: decode(latest.current.nativeSpans ?? markdownCommentSpans(latest.current.value)).doc,
       config: [
         ...nativeConfig(),
+        uploadPreviews,
+        Wordgard.domEventHandler("paste", (event) => acceptImages(imageFiles(event.clipboardData))),
+        Wordgard.domEventHandler("drop", (event) => {
+          const files = imageFiles(event.dataTransfer);
+          if (!files.length) return false;
+          return acceptImages(
+            files,
+            editor.posAtCoords({ x: event.clientX, y: event.clientY })?.pos,
+          );
+        }),
         history(),
         compartment.current.of(permissions(!latest.current.disabled)),
         Wordgard.contentAttributes.of({
@@ -162,6 +259,7 @@ export function CommentRichText({ value, nativeSpans, onChange, onError, disable
             // Re-select rather than applying a stale range after another edit.
             setLink(null);
             setLinkError("");
+            if (images.state.name === "failed") images.cancel();
             try {
               const spans = encode(tr.state.doc),
                 markdown = commentSpansMarkdown(spans);
@@ -188,7 +286,10 @@ export function CommentRichText({ value, nativeSpans, onChange, onError, disable
     setEditor(editor);
     refreshFormatting(editor.state);
     return () => {
+      images.destroy();
+      latest.current.onUploadingChange?.(false);
       alive = false;
+      uploader.current = null;
       editor.dom.remove();
       view.current = null;
     };
@@ -202,11 +303,14 @@ export function CommentRichText({ value, nativeSpans, onChange, onError, disable
   useEffect(() => {
     if (!view.current || value === lastValue.current) return;
     lastValue.current = value;
+    // The draft was replaced: an upload's insertion point is gone with it.
+    if (uploader.current?.state.name === "uploading") uploader.current.cancel();
     view.current.dispatch({
       changes: projectChanges(
         view.current.state.doc,
         decode(nativeSpans ?? markdownCommentSpans(value)).doc,
       ),
+      effects: view.current.state.field(uploadPreview, false) ? setUploadPreview.of(null) : [],
       annotations: quiet(),
     });
   }, [value, nativeSpans]);
@@ -220,8 +324,8 @@ export function CommentRichText({ value, nativeSpans, onChange, onError, disable
     }
   }
   function toolbarKeys(event) {
-    // A table menu is portaled outside the toolbar but still bubbles through
-    // its React parent. Let that menu keep its own keyboard navigation.
+    // Keys from a portaled child still bubble through its React parent; only
+    // the toolbar's own buttons navigate here.
     if (event.defaultPrevented || !event.currentTarget.contains(event.target)) return;
     if (event.key === "Escape") {
       event.preventDefault();
@@ -285,12 +389,6 @@ export function CommentRichText({ value, nativeSpans, onChange, onError, disable
         >
           <LinkIcon size={16} aria-hidden="true" />
         </button>
-        <TableMenu
-          editor={editor}
-          inTable={inTable}
-          editable={!disabled && !!editor}
-          onError={(error) => onError(error.message)}
-        />
       </div>
       {link && (
         <div
@@ -353,7 +451,12 @@ export function CommentRichText({ value, nativeSpans, onChange, onError, disable
           {linkError}
         </p>
       )}
-      <div ref={mount} />
+      {imageProblem && (
+        <p className="error" role="status">
+          {imageProblem}
+        </p>
+      )}
+      <div ref={mount} className="comment-rich-scroll" />
     </div>
   );
 }

@@ -468,6 +468,7 @@ function CommentThread({
             value={value}
             onChange={onChange}
             disabled={!canReply}
+            images={{ pageId: session.pageId, canUpload: session.canWrite }}
             onDiscard={() => {
               onChange("");
               hideReply(!keptDraft);
@@ -510,9 +511,11 @@ function CommentForm({
   cancelLabel = "Cancel",
   onBusyChange,
   onDiscard,
+  images,
 }) {
   const body = value.markdown ?? value;
   const [busy, setBusy] = useState(false);
+  const [uploading, setUploading] = useState(false);
   const [error, setError] = useState("");
   const [draftError, setDraftError] = useState("");
   const [copied, setCopied] = useState(false);
@@ -529,7 +532,7 @@ function CommentForm({
       className={compact ? "comment-reply-form" : undefined}
       onSubmit={async (event) => {
         event.preventDefault();
-        if (busy || disabled || draftError || !body.trim()) return;
+        if (busy || uploading || disabled || draftError || !body.trim()) return;
         setBusy(true);
         onBusyChange?.(true);
         setError("");
@@ -557,6 +560,8 @@ function CommentForm({
           onChange={(markdown, spans) => onChange(spans ? { markdown, spans } : markdown)}
           onError={setDraftError}
           disabled={busy || disabled}
+          images={images}
+          onUploadingChange={setUploading}
         />
       </div>
       {(draftError || error) && (
@@ -565,7 +570,10 @@ function CommentForm({
         </p>
       )}
       <div className="comment-form-actions">
-        <button className="primary" disabled={busy || disabled || draftError || !body.trim()}>
+        <button
+          className="primary"
+          disabled={busy || uploading || disabled || draftError || !body.trim()}
+        >
           Send
         </button>
         {onCancel && (

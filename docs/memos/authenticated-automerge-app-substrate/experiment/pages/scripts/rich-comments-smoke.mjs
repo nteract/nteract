@@ -1,4 +1,5 @@
-// Disposable local OIDC fixture: native comment tables, drafts, modal menus and read-back.
+// Disposable local OIDC fixture: native comment tables from agents, pasted images,
+// drafts, modal menus and read-back.
 import assert from "node:assert/strict";
 import { mkdir, writeFile } from "node:fs/promises";
 import { chromium, expect } from "@playwright/test";
@@ -65,6 +66,38 @@ async function mutate(operation, args = {}) {
     idempotency_key: authority.retry_key_prefix + crypto.randomUUID(),
   });
 }
+/** Put a PNG on the clipboard, as "Copy image" does. */
+async function copyImage(width, height) {
+  await page.evaluate(
+    async ({ width, height }) => {
+      const canvas = document.createElement("canvas");
+      canvas.width = width;
+      canvas.height = height;
+      const g = canvas.getContext("2d");
+      const gradient = g.createLinearGradient(0, 0, width, height);
+      gradient.addColorStop(0, "#4f7cff");
+      gradient.addColorStop(1, "#ffb84f");
+      g.fillStyle = gradient;
+      g.fillRect(0, 0, width, height);
+      const blob = await new Promise((done) => canvas.toBlob(done, "image/png"));
+      await navigator.clipboard.write([new ClipboardItem({ "image/png": blob })]);
+    },
+    { width, height },
+  );
+}
+/** Elements inside `root` that scroll in either direction. */
+const scrollers = (root) =>
+  root.evaluate((element) =>
+    [element, ...element.querySelectorAll("*")]
+      .filter((el) => {
+        const style = getComputedStyle(el);
+        return (
+          (["auto", "scroll"].includes(style.overflowY) && el.scrollHeight > el.clientHeight + 1) ||
+          (["auto", "scroll"].includes(style.overflowX) && el.scrollWidth > el.clientWidth + 1)
+        );
+      })
+      .map((el) => `${el.tagName.toLowerCase()}.${el.className}`),
+  );
 async function select(editor, text) {
   await editor.focus();
   // A script-set range bypasses Wordgard's input handling. Wordgard flushes
@@ -92,6 +125,7 @@ async function select(editor, text) {
   await page.waitForTimeout(60);
 }
 try {
+  await page.context().grantPermissions(["clipboard-read", "clipboard-write"], { origin });
   await page.goto(origin + "/api/auth/login");
   await expect(page.getByRole("button", { name: /, switch page$/ })).toBeVisible();
   const created = await mutate("create_page", {
@@ -203,7 +237,7 @@ try {
   await bold.press("ArrowRight");
   await expect(thread.getByRole("button", { name: "Italic", exact: true })).toBeFocused();
   await page.keyboard.press("End");
-  await expect(thread.getByRole("button", { name: "Insert table", exact: true })).toBeFocused();
+  await expect(thread.getByRole("button", { name: "Link", exact: true })).toBeFocused();
   await page.keyboard.press("Home");
   await expect(bold).toBeFocused();
   await page.keyboard.press("Escape");
@@ -237,56 +271,47 @@ try {
   checkpoint("native formatting and hidden draft survive without submission");
   await editor.press("ControlOrMeta+End");
   await editor.press("Enter");
-  await thread.getByRole("button", { name: "Insert table", exact: true }).click();
-  const menu = page.getByRole("dialog", { name: "Insert table", exact: true });
-  await menu.getByRole("spinbutton", { name: "Columns" }).fill("2");
-  await menu.getByRole("spinbutton", { name: "Rows" }).fill("2");
-  await menu.getByRole("button", { name: "Insert table" }).click();
-  await expect(editor.locator("table")).toBeVisible();
+  // A pasted image takes the Page's asset endpoint; the draft holds its URL.
+  await copyImage(1400, 1000);
+  await editor.press("ControlOrMeta+v");
+  const draftImage = editor.locator("img");
+  await expect(draftImage).toHaveCount(1);
+  await expect(draftImage).toHaveAttribute(
+    "src",
+    new RegExp(`^/api/pages/${pageId}/assets/[0-9a-f]{64}$`),
+  );
+  await expect
+    .poll(() => draftImage.evaluate((img) => img.complete && img.naturalWidth))
+    .toBe(1400);
   assert.equal(
     (await call("read_page", { page_id: pageId })).comments.find((t) => t.id === added.thread_id)
       .messages.length,
     1,
-    "inserting a table never submits its parent comment form",
+    "pasting an image never submits its parent comment form",
   );
-  await page.keyboard.type("Column A");
-  await page.keyboard.press("Tab");
-  await page.keyboard.type("Column B");
-  await page.keyboard.press("Tab");
-  await expect(editor.locator("td, th").nth(2)).toHaveCSS("white-space", "pre-wrap");
-  // Let the DOM settle with a trailing space before entering the next word.
-  // Collapsed whitespace can move the native caret before that space.
-  await page.keyboard.type("Native ");
-  await page.waitForTimeout(80);
-  await page.keyboard.type("cell");
-  await expect(editor.locator("td, th").nth(2)).toHaveText("Native cell");
-  await page.keyboard.press("Tab");
   await page.keyboard.type("Kept");
   await page.setViewportSize({ width: 390, height: 844 });
   await expect(page.locator("#page-comments.comments-sheet")).toBeVisible();
   const touchTarget = await bold.boundingBox();
   assert.ok(touchTarget.width >= 40 && touchTarget.height >= 40);
-  await thread.getByRole("button", { name: "Table options", exact: true }).click();
-  const options = page.getByRole("menu", { name: "Table options" });
-  await expect(options).toBeVisible();
-  assert.equal(await options.evaluate((el) => el.closest("dialog")?.id), "page-comments");
-  await options.getByRole("menuitem", { name: "Insert row below" }).click();
-  await expect(editor.locator("tr")).toHaveCount(3);
-  await editor.locator("td").last().click();
-  await thread.getByRole("button", { name: "Table options", exact: true }).click();
-  await expect(options.getByRole("menuitem").first()).toBeFocused();
-  await page.keyboard.press("Escape");
-  await expect(options).toHaveCount(0);
-  await expect(page.locator("#page-comments")).toBeVisible();
+  await expect(thread.getByRole("button", { name: /^(Insert table|Table options)$/ })).toHaveCount(
+    0,
+  );
   assert.equal(
     await editor.evaluate((el) => el.parentElement.scrollLeft),
     0,
-    "table scrolling does not shift the surrounding prose",
+    "the pasted image does not shift the surrounding prose",
   );
   await page.screenshot({ path: output + "/mobile-draft.png", fullPage: true });
-  checkpoint("native table editing works inside the mobile dialog; Escape closes only its menu");
+  checkpoint(
+    "an image pasted into a reply uploads to the Page and lands in the draft; no table button",
+  );
   await thread.getByRole("button", { name: "Send", exact: true }).click();
-  await expect(thread.locator(".thread-replies .comment-rich-content table")).toBeVisible();
+  const repliedImage = thread.locator(".thread-replies .comment-rich-content img");
+  await expect(repliedImage).toBeVisible();
+  await expect
+    .poll(() => repliedImage.evaluate((img) => img.complete && img.naturalWidth))
+    .toBe(1400);
   await expect
     .poll(async () => {
       const latest = await call("read_page", { page_id: pageId });
@@ -304,12 +329,16 @@ try {
     "href",
     "https://example.com/discussion",
   );
-  assert.match(reply.body, /Native cell/);
-  assert.match(reply.body, /Column A/);
+  // Stored the way Page Markdown stores an image: a Page asset reference.
+  assert.match(
+    reply.body,
+    new RegExp(`!\\[[^\\]]*\\]\\(/api/pages/${pageId}/assets/[0-9a-f]{64}\\)`),
+  );
+  assert.match(reply.body, /Kept/);
   await page.reload();
   await page.getByRole("button", { name: /^Comments/ }).click();
   await thread.getByRole("button", { name: "1 reply", exact: true }).click();
-  await expect(thread.locator(".thread-replies .comment-rich-content table")).toBeVisible();
+  await expect(thread.locator(".thread-replies .comment-rich-content img")).toBeVisible();
   assert.equal(await thread.locator('.comment-rich-content [contenteditable="true"]').count(), 0);
   checkpoint(
     "native reply persists, projects to Markdown, reloads and remains read-only outside composer",
@@ -320,7 +349,7 @@ try {
   await page.screenshot({ path: output + "/wide-comments.png", fullPage: true });
   await page.emulateMedia({ colorScheme: "dark" });
   await page.screenshot({ path: output + "/dark-comments.png", fullPage: true });
-  checkpoint("expanded table discussion at desktop width and dark appearance");
+  checkpoint("expanded discussion at desktop width and dark appearance");
   await page.emulateMedia({ colorScheme: "light" });
   const keptDraft = page.locator(".comment-kept-draft");
   if (await page.locator("#page-comments[open]").count())
@@ -439,6 +468,15 @@ try {
   await expect(inline).toBeFocused();
   await expect(panel).toBeHidden();
   await inline.pressSequentially("From a phone");
+  // A tall pasted image scrolls inside the draft: one scroller, not the
+  // draft and the sheet around it.
+  await copyImage(800, 1600);
+  await inline.press("ControlOrMeta+v");
+  await expect(inline.locator("img")).toHaveCount(1);
+  await expect.poll(() => inline.locator("img").evaluate((img) => img.complete)).toBe(true);
+  await page.waitForTimeout(200);
+  assert.deepEqual(await scrollers(popover), ["div.comment-rich-scroll"]);
+  await expect(popover.getByRole("button", { name: "Comment", exact: true })).toBeInViewport();
   const sheetBox = await popover.boundingBox();
   assert.ok(
     sheetBox.x <= 1 && sheetBox.width >= 389 && Math.abs(sheetBox.y + sheetBox.height - 844) <= 1,
