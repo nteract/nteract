@@ -60,6 +60,15 @@ import {
 import { issueRetryToken, inspectOperation, reserveOperation } from "./operation-journal.mjs";
 import { BufferedRecordStore, RemoteRecordSink } from "./record-persistence.mjs";
 import { RecordMaintenance } from "./record-maintenance.mjs";
+import {
+  ActorAuthorship,
+  commitAuthor,
+  loadActorEntries,
+  observeRecordSaves,
+  ActorPersistence,
+  MAX_ATTESTED_CHANGES,
+  loadCommitAuthors,
+} from "./actor-authorship.mjs";
 export { PageRecords } from "./record-persistence.mjs";
 import {
   DocumentPolicy,
@@ -2390,9 +2399,27 @@ export class Page {
               )
             : new DurableByteStore(ctx.storage);
         if (recordStore.ready) await recordStore.ready;
+        const actorAuthorship = new ActorAuthorship({
+          serverKey,
+          binding: (key) => policy.bindings.get(key),
+          entries: await loadActorEntries(ctx.storage),
+        });
+        // Retries wait on a held timer, as schedulePersistence does from the
+        // same save callback; saves and connects also retry sooner.
+        const actorPersistence = new ActorPersistence(ctx.storage, {
+          hold: (work) => holdUntilSettled(ctx, work),
+          onError: (error) => logFailure(error, "actor-authorship"),
+        });
+        // Before the backend can save or anything is published, rebuild
+        // bindings and conflicts the persisted entries may lack.
+        actorPersistence.enqueue(actorAuthorship.replay(await loadCommitAuthors(recordStore)));
         backend = new SubductionBackend({
           signer,
-          storage: recordStore,
+          // Only the backend's saves attest authors; maintenance and flushes
+          // use recordStore itself.
+          storage: observeRecordSaves(recordStore, (key, value) =>
+            this.recordSaved(actorAuthorship, key, value, actorPersistence),
+          ),
           policy: policy.native(),
           ephemeralPolicy: policy.ephemeral(),
           ...BACKEND_LIMITS,
@@ -2409,6 +2436,8 @@ export class Page {
           }),
           repo,
           recordStore,
+          actorAuthorship,
+          actorPersistence,
         });
         this.recordMaintenance = new RecordMaintenance({
           enabled:
@@ -2419,7 +2448,12 @@ export class Page {
             return backend.compact(documentIdToBinary(this.metadata.documentId), {
               // Both compaction barriers drain the remote record sink. Calling
               // repo/backend.flush here would recurse into its held owner queue.
-              durable: () => recordStore.flush(),
+              // Removed commit records are replay's evidence: their actor
+              // effects must be stored first.
+              durable: async () => {
+                await recordStore.flush();
+                await actorPersistence.durable();
+              },
             });
           },
           waitUntil: (work) => ctx.waitUntil(work),
@@ -2517,6 +2551,78 @@ export class Page {
     } catch (error) {
       // Cleanup must still release socket capacity if the document is closing.
       logFailure(error, "presence-profiles");
+    }
+  }
+
+  /** Attest the author of a commit record the backend just stored. Storage
+   * and broadcast run after the save and never fail it. Actor writes go
+   * through ActorPersistence, which retries a failed write until it lands. */
+  recordSaved(actorAuthorship, key, value, persistence = this.actorPersistence) {
+    persistence?.nudge();
+    const author = commitAuthor(key, value);
+    if (!author) return;
+    const effects = actorAuthorship.observe({ ...author, now: Date.now() });
+    if (effects.put.length || effects.remove.length) persistence?.enqueue(effects);
+    if (effects.delta || effects.attested)
+      this.queueActorDelta(effects.delta ?? {}, effects.attested ?? {});
+  }
+
+  /** Coalesce actor deltas into one broadcast per microtask, so a batch of
+   * saves reported together goes out once. It uses no timer: under celld an
+   * unheld timer set from a native save callback did not deliver. A
+   * retraction drops that actor's pending hashes, so no hash outlives its
+   * actor's retraction. Pending hashes keep the newest MAX_ATTESTED_CHANGES. */
+  queueActorDelta(actorProfiles, attestedChanges) {
+    const pending = (this.actorDelta ??= { actorProfiles: {}, attestedChanges: {} });
+    for (const [actor, profile] of Object.entries(actorProfiles)) {
+      pending.actorProfiles[actor] = profile;
+      if (profile === null)
+        for (const [hash, owner] of Object.entries(pending.attestedChanges))
+          if (owner === actor) delete pending.attestedChanges[hash];
+    }
+    for (const [hash, actor] of Object.entries(attestedChanges)) {
+      delete pending.attestedChanges[hash];
+      pending.attestedChanges[hash] = actor;
+    }
+    const hashes = Object.keys(pending.attestedChanges);
+    for (const hash of hashes.slice(0, Math.max(0, hashes.length - MAX_ATTESTED_CHANGES)))
+      delete pending.attestedChanges[hash];
+    if (this.actorDeltaQueued) return;
+    this.actorDeltaQueued = true;
+    queueMicrotask(() => this.flushActorDelta());
+  }
+
+  flushActorDelta() {
+    this.actorDeltaQueued = false;
+    const delta = this.actorDelta;
+    this.actorDelta = undefined;
+    if (!delta || !this.handle) return;
+    try {
+      this.handle.broadcast({ kind: "actor-profiles", ...delta });
+    } catch (error) {
+      logFailure(error, "actor-profiles");
+    }
+  }
+
+  /** Attested actors and their recent attested change hashes, now. */
+  actorSnapshot() {
+    const now = Date.now();
+    const actorProfiles = this.actorAuthorship?.profiles(now) ?? {};
+    return {
+      actorProfiles,
+      attestedChanges: this.actorAuthorship?.attestedChanges(now, actorProfiles) ?? {},
+    };
+  }
+
+  /** Resend the whole snapshot once a socket subscribes: an attestation made
+   * after its /api/connect response reached only earlier subscribers. */
+  broadcastActorSnapshot() {
+    if (!this.handle || !this.actorAuthorship) return;
+    this.flushActorDelta();
+    try {
+      this.handle.broadcast({ kind: "actor-profiles", ...this.actorSnapshot(), snapshot: true });
+    } catch (error) {
+      logFailure(error, "actor-profiles");
     }
   }
 
@@ -2936,6 +3042,7 @@ export class Page {
         });
       }
       if (url.pathname === "/api/connect" && request.method === "GET") {
+        this.actorPersistence?.nudge();
         this.cacheTitle(identity);
         return json({
           page_id: this.metadata.pageId,
@@ -2954,6 +3061,7 @@ export class Page {
           }),
           ...(state === "trashed" && { trash: publicTrash(this.metadata) }),
           peerProfiles: this.profiles(),
+          ...this.actorSnapshot(),
           activity: this.activityState().snapshot(),
         });
       }
@@ -3818,6 +3926,7 @@ export class Page {
           }
           this.broadcastProfiles();
           this.broadcastActivity();
+          this.broadcastActorSnapshot();
         } finally {
           transport.free();
         }
