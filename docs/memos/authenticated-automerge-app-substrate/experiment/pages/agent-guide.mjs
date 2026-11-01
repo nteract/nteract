@@ -402,6 +402,9 @@ read_page returns title, ordered blocks, comments, heads, retry_token, retry_key
 retry_until. Keep the returned page_id and block IDs. list_pages also returns a
 retry_token for catalog operations (create_page, delete_page, restore_page and
 purge_page). Browser link: ${origin}/p/<page_id>.
+read_page also returns schema_features, the non-baseline features the Page uses (an empty
+array for most Pages); if Pages doesn't support one of them, edits fail with code
+unsupported_schema_feature and the Page stays readable.
 list_pages accepts optional query (title substring), limit (1-100, default 50) and cursor.
 Pass next_cursor back as cursor, with the same query, until it is null. Pagination is not a
 snapshot: concurrent title or sharing changes can move Pages across the cursor. A short or
@@ -801,6 +804,8 @@ succeeds. Every error has a stable code. Branch on code, not on the error messag
 - invalid_comment_selector: the comment's thread, message, block or selected_text
   wasn't found.
 - edit_conflict, resync_required: see Guarded edits above.
+- unsupported_schema_feature: the Page uses features this version of Pages
+  can't edit (listed in unsupported_features). Read it; don't retry the edit.
 - idempotency_conflict: the key was used for a different request. Use a new key.
 - invalid_idempotency_key: the key doesn't match the format above.
 - read_failed: no answer to a read (retryable:true). Retry it.

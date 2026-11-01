@@ -2,6 +2,7 @@ import * as A from "@automerge/automerge";
 import { projectPage } from "../model/page.mjs";
 import { projectReadContent } from "../model/read-content.mjs";
 import { projectReadComments } from "../model/read-comments.mjs";
+import { documentFeatures } from "../model/schema-features.mjs";
 
 export const DEFAULT_READ_BYTES = 128 * 1024;
 const encoder = new TextEncoder();
@@ -158,6 +159,8 @@ export async function readTool(
   const authority = await issueAuthority();
   const common = {
     heads,
+    // The Page's schema stamp; empty when it uses only the baseline.
+    ...(operation === "read_page" && { schema_features: documentFeatures(doc) }),
     ...authority,
     ...(recovery && { recovery }),
     ...(historyIncomplete && { history_incomplete: historyIncomplete }),

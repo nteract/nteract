@@ -61,6 +61,12 @@ No wasm-bindgen runtime is needed for this boundary.
 {"op":"export","spans":[{"type":"text","value":"shared","marks":{"strong":true}}]}
 ```
 
+`{"op":"features","spans":[...]}` returns the schema features those spans need,
+and `{"op":"registry"}` returns the compiled feature registry. Both read Pages'
+`model/features.json` and the optional `feature` field in `model/marks.json`, as
+`model/schema-features.mjs` does; the parity check compares the two. Marks and
+block types without a feature are baseline and need no document stamp.
+
 The `pages-markdown-v1` compatibility profile uses the same `markdown` Rust
 parser crate as `nteract-markdown-engine`. The renderer's GFM profile and this
 interchange profile serve different contracts: bare URLs stay prose, tables

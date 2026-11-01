@@ -1,7 +1,8 @@
 use crate::{marks::validate_mark, CodecError, Result, Span, MAX_DEPTH, MAX_INPUT_BYTES};
 use serde_json::Value;
 
-const BLOCKS: &[&str] = &[
+/// Every block type this codec reads and writes.
+pub(crate) const BLOCKS: &[&str] = &[
     "paragraph",
     "heading",
     "blockquote",

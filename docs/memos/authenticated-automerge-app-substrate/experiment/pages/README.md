@@ -110,6 +110,7 @@ was a caret race in the smoke; the editor side is
 | Rollback to a previous build and forward again on one data directory | `node scripts/rollback-qualification.mjs --previous <previous pages dir>` | Starts an isolated fixture; build the previous commit first |
 | Rich comment tables and drafts | `PAGES_ORIGIN=http://localhost:9894 node scripts/rich-comments-smoke.mjs` | Uses the running Wordgard fixture |
 | Comments panel placement at 1920/1440/1100/800px | `PAGES_ORIGIN=http://localhost:9894 node scripts/comments-layout-smoke.mjs` | Uses the running Wordgard fixture |
+| Schema-feature gate: a Page stamped with an unknown feature opens read-only and refuses tool writes | `PAGES_ORIGIN=http://localhost:9894 node scripts/schema-features-smoke.mjs` | Uses the running Wordgard fixture |
 | Native table editing | `PAGES_ORIGIN=http://localhost:9894 npm run smoke:tables` | Uses the running Wordgard fixture |
 | Passage edits and revision deltas | `PAGES_ORIGIN=http://localhost:9894 node scripts/passages-changes-smoke.mjs` | Uses the running Wordgard fixture |
 | Local creation and navigation | `PAGES_ORIGIN=http://localhost:9894 node scripts/navigation-smoke.mjs` | Uses the running Wordgard fixture |
@@ -179,6 +180,25 @@ references; it does not publish the Page or change asset access.
   plain text and survive edits. Agents edit existing text through
   `replace_match` and `format_match`, which work on native spans; Markdown is
   for reading and for writing whole blocks.
+- **Schema features:** every mark and block type that existed when Page10
+  launched is baseline. A later one names a feature id: a mark in
+  `marks.json`, a block type in [`model/features.json`](model/features.json).
+  A Page that uses one carries a stamp at its document root,
+  `schema: { features: [...] }`, sorted and never shrinking. Unstamped Pages
+  use only the baseline, so no Page10 document needs a migration.
+  [`model/schema-features.mjs`](model/schema-features.mjs) holds the rules:
+
+  | Who | Rule |
+  | --- | --- |
+  | Writer (host tools, import, Wordgard binding, comments) | Adds a feature's id in the same Automerge change that first writes content needing it. Never removes an id. |
+  | Viewer | `unsupported = stamp − BUILD_FEATURES`. Non-empty opens the Page read-only with a Reload notice; sync continues. |
+  | Host | Refuses tool writes and draft registration with `409 unsupported_schema_feature` and `unsupported_features`. Replays of recorded receipts still answer. |
+  | Agents | `read_page` returns `schema_features`, an empty array when unstamped. |
+
+  Concurrent first stamps can conflict on `schema`; readers union every
+  conflicting value and the next writer folds them into the visible list. The
+  stamp is per document; the minimum viewer protocol in [Build updates](#build-updates)
+  is per build and is still what stops an old tab's native sync.
 - **Links:** click for Open, Edit, and Remove; Cmd/Ctrl-click opens directly and
   Cmd/Ctrl+K edits. Incoming edits update or dismiss the link control, and URL
   policy applies both to stored content and navigation.

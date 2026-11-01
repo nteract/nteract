@@ -3,6 +3,7 @@ import { documentIdToBinary } from "@automerge/automerge-repo";
 import { generateKeyBetween } from "fractional-indexing";
 import { assertDocumentLimits } from "../model/limits.mjs";
 import { RICH_FORMAT, validateRich } from "../model/richtext.mjs";
+import { requireSupportedSchema } from "../model/schema-features.mjs";
 import { HttpError } from "./auth.mjs";
 
 export const validPageId = (id) =>
@@ -71,10 +72,16 @@ export function readRegistration(args) {
     }
     if (!Object.keys(doc.blocks).length) throw Error("Page bootstrap needs a block");
     assertDocumentLimits(doc);
+    // A draft from a newer build can use features this host can't express.
+    requireSupportedSchema(doc);
     return { doc, bytes };
   } catch (error) {
     if (doc) A.free(doc);
     if (error.status === 413) throw error;
+    if (error.code === "unsupported_schema_feature")
+      throw Object.assign(new HttpError(409, error.message, error.code), {
+        details: error.details,
+      });
     throw new HttpError(400, "Invalid initial Page snapshot");
   }
 }

@@ -22,9 +22,16 @@ import {
   ListItem,
   CodeBlockLanguage,
   PagesImage,
+  PagesHighlight,
   decode,
   encode,
 } from "./wordgard-model.mjs";
+import { MARK_REGISTRY } from "../model/marks.mjs";
+import {
+  documentFeatures,
+  featureRegistry,
+  installFeatureRegistryForTests,
+} from "../model/schema-features.mjs";
 import {
   commitEditorTransactions,
   createWordgardBinding,
@@ -776,4 +783,64 @@ test("a tab from the previous build rejects structural edits to the new shape wi
   assert.deepEqual(A.save(replica.doc), accepted, "no duplicate image reaches the Page");
   assert.ok(previous.state.doc.eq(restored));
   previous.binding.destroy();
+});
+
+test("editor writes stamp the schema features their content needs in the same change", (t) => {
+  // A test-only registry makes highlights non-baseline.
+  t.after(
+    installFeatureRegistryForTests(
+      featureRegistry(
+        { version: 1, features: [{ id: "test-highlight", description: "For tests." }] },
+        {
+          marks: MARK_REGISTRY.marks.map((mark) =>
+            mark.name === "highlight" ? { ...mark, feature: "test-highlight" } : mark,
+          ),
+        },
+      ),
+    ),
+  );
+  const stampedIn = (replica, before) => {
+    const changes = A.getChanges(before, replica.doc);
+    assert.equal(changes.length, 1);
+    const [applied] = A.applyChanges(A.load(A.save(before)), changes);
+    return documentFeatures(applied);
+  };
+  // Baseline formatting writes no stamp.
+  let replica = fixture("hello world"),
+    binding = createWordgardBinding(replica, "one");
+  binding.applyEditorTransaction(
+    state(binding).update({ changes: { from: 1, to: 6, add: Strong } }),
+  );
+  assert.equal(replica.doc.schema, undefined);
+  // A mark-only change.
+  let before = replica.doc;
+  binding.applyEditorTransaction(
+    state(binding).update({ changes: { from: 7, to: 12, add: PagesHighlight.of("green") } }),
+  );
+  assert.deepEqual(stampedIn(replica, before), ["test-highlight"]);
+  binding.destroy();
+  // Typed text that carries the mark.
+  replica = fixture("hello");
+  binding = createWordgardBinding(replica, "one");
+  before = replica.doc;
+  binding.applyEditorTransaction(
+    state(binding).update({
+      changes: { from: 1, insert: [Leaf.text("new ", [PagesHighlight.of("pink")])] },
+    }),
+  );
+  assert.equal(A.marksAt(replica.doc, textPath("one"), 1).highlight, "pink");
+  assert.deepEqual(stampedIn(replica, before), ["test-highlight"]);
+  binding.destroy();
+  // A structural change re-encodes the block.
+  replica = fixture("hello world");
+  binding = createWordgardBinding(replica, "one");
+  before = replica.doc;
+  const target = schema.doc([
+    Heading.of(2).create([Leaf.text("hello", [PagesHighlight.of("blue")])]),
+    Paragraph.create([Leaf.text(" world")]),
+  ]);
+  const start = state(binding);
+  binding.applyEditorTransaction(start.update({ changes: projectChanges(start.doc, target) }));
+  assert.deepEqual(stampedIn(replica, before), ["test-highlight"]);
+  binding.destroy();
 });

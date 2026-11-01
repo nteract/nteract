@@ -369,7 +369,14 @@ export function errorResponse(error, stage = "request") {
         "home_page_protected",
         "page_has_children",
         "lifecycle_unsettled",
+        "unsupported_schema_feature",
       ].includes(error?.code) && { code: error.code }),
+      ...(error?.code === "unsupported_schema_feature" &&
+        Array.isArray(error.details?.features) && {
+          unsupported_features: error.details.features
+            .slice(0, 32)
+            .map((id) => String(id).slice(0, 64)),
+        }),
       ...(["edit_conflict", "resync_required"].includes(error?.code) && {
         ...(Array.isArray(error.details?.conflicts) && {
           conflicts: error.details.conflicts.slice(0, 10).map((conflict) => ({

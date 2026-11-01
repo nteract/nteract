@@ -71,13 +71,20 @@ test("unfiltered reads preserve the old shape; explicit body reads exclude comme
   const before = A.getHeads(doc);
   const legacy = await read(doc, { page_id: doc.page_id });
   assert.equal(legacy.status, 200);
-  assert.deepEqual(legacy.body, { ...projectPage(doc), heads: before, ...authority });
+  // Additive fields only: schema_features is empty on an unstamped Page.
+  assert.deepEqual(legacy.body, {
+    ...projectPage(doc),
+    heads: before,
+    schema_features: [],
+    ...authority,
+  });
   assert.ok(legacy.body.comments[0].target.anchor.textObjectId);
   const body = await read(doc, { comments: "none" });
   assert.equal(body.status, 200);
   assert.deepEqual(body.body.comments, []);
   assert.equal(body.body.blocks[0].markdown, legacy.body.blocks[0].markdown);
   assert.deepEqual(body.body.heads, before);
+  assert.deepEqual(body.body.schema_features, []);
   assert.deepEqual(A.getHeads(doc), before);
 });
 

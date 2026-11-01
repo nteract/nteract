@@ -532,3 +532,26 @@ test("a changed account cannot cancel an unknown local draft in the wrong catalo
     0,
   );
 });
+
+test("registration refuses a draft stamped with a schema feature this host lacks", async (t) => {
+  const f = await fixture(t),
+    { args, doc } = registration();
+  const stamped = A.change(A.clone(doc), (draft) => {
+    draft.schema = { features: ["future-feature"] };
+  });
+  const request = {
+    ...args,
+    initial_snapshot_base64: Buffer.from(A.save(stamped)).toString("base64"),
+  };
+  assert.throws(() => readRegistration(request), {
+    status: 409,
+    code: "unsupported_schema_feature",
+  });
+  const refused = await f.send(request);
+  assert.equal(refused.status, 409);
+  assert.equal((await refused.json()).code, "unsupported_schema_feature");
+  assert.equal(f.catalog().storage.values.size, 0);
+  assert.equal(f.pages.size, 0);
+  // The same draft without the stamp registers.
+  assert.equal((await f.send(args)).status, 200);
+});

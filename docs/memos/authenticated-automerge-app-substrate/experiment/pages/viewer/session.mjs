@@ -17,6 +17,7 @@ import { SubductionBackend, IndexedDBByteStore } from "@automerge/automerge-repo
 import { applyComment } from "../model/comments.mjs";
 import { createPageData, initializePage, projectPage } from "../model/page.mjs";
 import { unsentCommentsMarkdown } from "../model/markdown-export.mjs";
+import { BUILD_FEATURES, schemaGate as deriveSchemaGate } from "../model/schema-features.mjs";
 import {
   decodeSnapshot,
   encodeSnapshot,
@@ -192,6 +193,11 @@ export class PageSession {
   // Reasons edits are held while the session keeps syncing: the reload gate's
   // "reload" and the build floor's "protocol". They are not lifecycle phases.
   editPauses = new Set();
+  /** The schema gate (model/schema-features.mjs), derived from the replica:
+   * `editable: false` when the Page is stamped with a feature this build
+   * lacks. Its content is then read-only while sync continues; access and
+   * Trash actions are unaffected. Stamps only grow, so it never reopens. */
+  schemaGate = deriveSchemaGate(undefined);
   /** The session's phase (see session-machine.mjs). Every lifecycle flag
    * below derives from it, and effects run from its transitions. */
   phase$ = new Store(viewerSessionMachine.initial);
@@ -242,9 +248,12 @@ export class PageSession {
       scheduler = asyncScheduler,
       random = Math.random,
       now = monotonicNow,
+      buildFeatures = BUILD_FEATURES,
     } = {},
   ) {
     this.pageId = pageId;
+    // The schema features this viewer can edit. Tests inject their own.
+    this.buildFeatures = buildFeatures;
     this.refreshSession = refreshSession;
     this.authentication = authentication;
     this.scheduler = scheduler;
@@ -546,8 +555,18 @@ export class PageSession {
   emit() {
     this.notify(this.listeners);
   }
+  /** Re-derive the schema gate from the replica. Runs before observers see a
+   * change, so an editor never applies a local edit over content it can't
+   * express. */
+  observeSchema() {
+    const gate = deriveSchemaGate(this.doc, this.buildFeatures);
+    if (gate.editable === this.schemaGate.editable) return;
+    this.schemaGate = gate;
+    this.updateCapabilities();
+  }
   receiveChange(event) {
     if (!this.alive) return;
+    this.observeSchema();
     this.resolveToolHints();
     const change = { ...event, remote: this.localDepth === 0 };
     if (this.composing && change.remote) this.deferredBefore ??= event.patchInfo.before;
@@ -607,8 +626,10 @@ export class PageSession {
   }
   updateCapabilities() {
     const enabled = !this.accessDenied && !this.accessReloadRequired && !this.editsPaused;
-    this.canWrite = enabled && !!this.credentialCanWrite && !!this.access?.canWrite;
-    this.canComment = enabled && !!this.credentialCanWrite && !!this.access?.canComment;
+    // Content and comments are document writes; the schema gate holds both.
+    const content = enabled && this.schemaGate.editable;
+    this.canWrite = content && !!this.credentialCanWrite && !!this.access?.canWrite;
+    this.canComment = content && !!this.credentialCanWrite && !!this.access?.canComment;
     this.canManageAccess = enabled && !!this.credentialCanWrite && !!this.access?.canManageAccess;
     this.canDelete = enabled && !!this.credentialCanWrite && !!this.access?.canDelete;
     this.canRestore = enabled && !!this.credentialCanWrite && !!this.access?.canRestore;
@@ -984,6 +1005,7 @@ export class PageSession {
       await writeLocalPage(this.identity, this.localPage, { replica: this.replicaId });
       unconfirmed = false;
     }
+    this.observeSchema();
     this.handle.on("change", (event) => this.receiveChange(event));
     this.handle.on("ephemeral-message", (event) => this.ephemeral(event));
     if (this.accessDenied)
