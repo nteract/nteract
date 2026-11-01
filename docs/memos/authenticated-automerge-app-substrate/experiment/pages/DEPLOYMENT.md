@@ -470,8 +470,9 @@ PAGES_TARGET_TOKEN_FILE=~/.config/pages/anaconda-api-key \
 ```
 
 `--dry-run` checks the bundle and prints where each Page lands without a
-network call. Import refuses the bundle's own source origin. It runs in this
-order:
+network call. Import compares normalized origins and refuses the bundle's own
+source, however it is spelled (case, trailing slash, explicit default port). It
+runs in this order:
 
 1. `create_project` with the bundle's title and description. Its home Page is
    the source home Page's counterpart: import fills it in and never creates a
@@ -485,7 +486,12 @@ order:
    home Page's title and body, the remaining blocks of a multi-block Page, and
    internal links. Source links `/p/<id>`, `/?page=<id>`, `/project/<id>` and
    `/s/<id>`, and root-relative `](/p/<id>` destinations, point at the new IDs.
-   Links to Pages outside the bundle stay as they are and are reported.
+   Only complete links count: the URL starts a line or follows whitespace,
+   `(`, `<`, `[` or a quote, and the ID is followed by the end of a line,
+   whitespace, `/`, `?`, `#`, `)`, `>`, `]`, a quote, or sentence punctuation
+   ending there. A path, query or fragment after the ID is kept. A longer ID or
+   a source URL inside another URL is left alone. Links to Pages outside the
+   bundle stay as they are and are reported.
 4. A listing of the target Project checks that every Page is under its expected
    parent, in source order. Import exits 1 if not.
 
@@ -501,5 +507,18 @@ replays its receipt rather than creating a second Page. A finished import sends
 no writes on rerun. Keep the state file until the import reports success. If it
 is lost, a fresh import refuses a target that already has a Project with the
 bundle's title; delete the partial Project or pass `--allow-existing-title`.
-Retry tokens last seven days: a request still uncertain after that answers
-`retry_expired`, and the importer stops so you can check the target first.
+Retry tokens last seven days. A create still uncertain after that answers
+`retry_expired`: it may have been applied, and nothing can replay it. The
+importer records it as `reconciliation_required` in the state file (operation,
+step, idempotency key and arguments) and refuses every further write until it
+is resolved:
+
+- `--reconcile` lists the target for what the create would have made: a Page
+  with its title under its parent that no other bundle Page maps to, or a
+  Project with its title. Exactly one match is recorded and the import goes on;
+  none or several stops with the candidates.
+- `--accept-missing` sends the create again with a new key. Use it when the
+  target has no such Page.
+
+An expired body edit needs neither: the next run rereads the Page and writes its
+whole body again, which gives the same result whether or not the edit applied.

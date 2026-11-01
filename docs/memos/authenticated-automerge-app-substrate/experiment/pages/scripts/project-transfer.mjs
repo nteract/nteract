@@ -350,12 +350,13 @@ export async function exportProject(
 
 /** What a reviewer needs to know before importing. */
 export function bundleReport(bundle, warnings = []) {
+  const origin = checkOrigin(bundle.source.origin);
   const known = new Map(bundle.pages.map((page) => [page.source_page_id, page.source_page_id]));
   const unresolved = [];
   for (const page of bundle.pages)
     for (const url of rewriteLinks(page.markdown, {
-      sourceOrigin: bundle.source.origin,
-      targetOrigin: bundle.source.origin,
+      sourceOrigin: origin,
+      targetOrigin: origin,
       pages: known,
       projects: new Map([[bundle.source.project_id, bundle.source.project_id]]),
     }).unresolved)
@@ -445,33 +446,51 @@ export function targetPlacement(page, { homeSourceId, targetHomeId, pageIds }) {
 
 const escapeRegExp = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
+// A link starts at the start of a line, after whitespace, or after one of
+// ( < [ " ' and ends at the end of a line, before whitespace, before one of
+// / ? # ) > ] " ', or before sentence punctuation that itself ends there.
+// Anything else is part of a longer ID or another URL.
+const LINK_START = `(?<=^|[\\s(<\\["'])`;
+const CLOSE = `$|[\\s)>\\]"']|[.,;:!](?:$|[\\s)>\\]"'])`;
+const LINK_END = `(?=[/?#]|${CLOSE})`;
+
 /**
- * Point links at the target. Absolute source links (`/p/<id>`, `/?page=<id>`,
- * `/project/<id>`, `/s/<id>`) become absolute target links, and a root-relative
- * `](/p/<id>` link destination stays root-relative. Links to Pages or Projects
- * outside the maps are left alone and returned in `unresolved`.
+ * Point complete source links at the target. Absolute source links (`/p/<id>`,
+ * `/?page=<id>`, `/project/<id>`, `/s/<id>`) become absolute target links, and
+ * a root-relative `](/p/<id>` link destination stays root-relative. Whatever
+ * follows the ID (a path, query or fragment) is kept; the legacy `?page=` form
+ * keeps its other query parameters. A source URL inside another URL, or an ID
+ * followed by more ID characters, is not a link and is left alone. Links to
+ * Pages or Projects outside the maps are left alone and returned in
+ * `unresolved`. `sourceOrigin` must be normalized by checkOrigin.
  */
 export function rewriteLinks(
   markdown,
   { sourceOrigin, targetOrigin, pages, projects = new Map() },
 ) {
+  const origin = escapeRegExp(sourceOrigin);
   const pattern = new RegExp(
-    `${escapeRegExp(sourceOrigin)}(?:/p/(${UUID})|/\\?page=(${UUID})|/(?:project|s)/((?:prj|sp)_${UUID}))|(?<=\\]\\()/p/(${UUID})`,
-    "g",
+    `${LINK_START}${origin}(?:/p/(${UUID})${LINK_END}|/\\?page=(${UUID})(?=[&#]|${CLOSE})(&[^\\s#)>\\]"']*)?|/(?:project|s)/((?:prj|sp)_${UUID})${LINK_END})|(?<=\\]\\()/p/(${UUID})${LINK_END}`,
+    "gm",
   );
   const unresolved = [];
   let rewritten = 0;
-  const result = markdown.replace(pattern, (match, page, legacy, project, relative) => {
-    const id = page ?? legacy ?? relative;
-    const target = id ? pages.get(id) : projects.get(project);
-    if (!target) {
-      unresolved.push(match);
-      return match;
-    }
-    rewritten++;
-    if (relative) return `/p/${target}`;
-    return id ? `${targetOrigin}/p/${target}` : `${targetOrigin}/project/${target}`;
-  });
+  const result = markdown.replace(
+    pattern,
+    (match, page, legacy, legacyQuery, project, relative) => {
+      const id = page ?? legacy ?? relative;
+      const target = id ? pages.get(id) : projects.get(project);
+      if (!target) {
+        unresolved.push(match);
+        return match;
+      }
+      rewritten++;
+      if (relative) return `/p/${target}`;
+      if (legacy)
+        return `${targetOrigin}/p/${target}${legacyQuery ? `?${legacyQuery.slice(1)}` : ""}`;
+      return id ? `${targetOrigin}/p/${target}` : `${targetOrigin}/project/${target}`;
+    },
+  );
   return { markdown: result, rewritten, unresolved };
 }
 
@@ -501,6 +520,7 @@ export function freshState(bundle, targetOrigin) {
     pages: {},
     bodies: {},
     pending: null,
+    reconciliation_required: null,
   };
 }
 
@@ -537,13 +557,82 @@ export function planImport(bundle) {
   });
 }
 
+function reconciliationMessage(record) {
+  return (
+    `The retry window for ${record.operation} "${record.args.title}" (${record.step}, key ` +
+    `${record.idempotency_key}) expired before its outcome was known, so it may have been ` +
+    "applied. No more writes until it is resolved. Rerun with --reconcile to find it on the " +
+    "target and record it, or with --accept-missing to create it again."
+  );
+}
+
+/**
+ * Find what an expired create made, by the arguments it was sent with: a Page
+ * with its title under its parent that no other bundle Page maps to, or a
+ * Project with its title. Exactly one match is required.
+ */
+export async function reconcileCreate(client, state, record, options) {
+  const { title } = record.args;
+  if (record.step === "project") {
+    const matches = [];
+    let cursor;
+    do {
+      const listed = await withRetries(
+        () => client.call("list_projects", { limit: 100, ...(cursor && { cursor }) }),
+        options,
+      );
+      matches.push(...(listed.projects ?? []).filter((entry) => entry.title === title));
+      cursor = typeof listed.next_cursor === "string" ? listed.next_cursor : undefined;
+    } while (cursor);
+    if (matches.length !== 1)
+      throw new TransferError(
+        matches.length
+          ? `${matches.length} Projects are titled "${title}" (${matches.map((entry) => entry.project_id).join(", ")}); delete the extra ones, then --reconcile again`
+          : `No Project titled "${title}" on the target. Rerun with --accept-missing to create it.`,
+      );
+    const project = await withRetries(
+      () => client.call("get_project", { project_id: matches[0].project_id }),
+      options,
+    );
+    return { project_id: project.project_id, home_page_id: project.home_page_id };
+  }
+  const mapped = new Set(Object.values(state.pages));
+  const rows = await listAll(client, { parent_id: record.args.parent_id }, options);
+  const matches = rows.filter(
+    (row) =>
+      row.title === title &&
+      (row.parent_id ?? null) === record.args.parent_id &&
+      !mapped.has(row.page_id),
+  );
+  if (matches.length !== 1)
+    throw new TransferError(
+      matches.length
+        ? `${matches.length} unmapped Pages titled "${title}" are under ${record.args.parent_id} (${matches.map((row) => row.page_id).join(", ")}); move the extra ones to Trash, then --reconcile again`
+        : `No Page titled "${title}" under ${record.args.parent_id}. Rerun with --accept-missing to create it.`,
+    );
+  return { page_id: matches[0].page_id };
+}
+
 export async function importBundle(
   client,
   bundle,
-  { store, now = Date.now, log = () => {}, allowExistingTitle = false, ...options },
+  {
+    store,
+    now = Date.now,
+    log = () => {},
+    allowExistingTitle = false,
+    reconcile = false,
+    acceptMissing = false,
+    ...options
+  },
 ) {
+  if (reconcile && acceptMissing)
+    throw new TransferError("Choose --reconcile or --accept-missing, not both");
   validateBundle(bundle);
-  if (client.origin === bundle.source.origin)
+  // Compare normalized origins: case, a trailing slash or an explicit default
+  // port must not let a bundle write back into its own source.
+  const sourceOrigin = checkOrigin(bundle.source.origin);
+  if (checkOrigin(client.origin) === sourceOrigin)
     throw new TransferError("The target is the bundle's source; import into a different target");
   const home = bundle.pages.find((page) => page.home);
   let state = (await store.load()) ?? freshState(bundle, client.origin);
@@ -566,16 +655,29 @@ export async function importBundle(
     try {
       result = await withRetries(() => client.call(operation, args), options);
     } catch (error) {
+      // The window of an uncertain create closed: the create may have been
+      // applied, and nothing can replay it now. Record it and refuse further
+      // writes until --reconcile finds it or --accept-missing sends it again.
+      // A body edit needs no record: the next run rereads the Page and writes
+      // the whole body again, which converges whether or not it applied.
+      if (error.code === "retry_expired" && (step === "project" || step.startsWith("page:"))) {
+        state.pending = null;
+        state.reconciliation_required = {
+          step,
+          operation,
+          idempotency_key: args.idempotency_key,
+          args,
+          recorded_at: new Date(now()).toISOString(),
+        };
+        await save();
+        throw new TransferError(reconciliationMessage(state.reconciliation_required), {
+          code: "reconciliation_required",
+        });
+      }
       if (!error.uncertain) {
         state.pending = null;
         await save();
       }
-      if (error.code === "retry_expired")
-        throw new TransferError(
-          `${error.message}\nThe earlier ${operation} for ${step} may have been applied. ` +
-            "Check the target before rerunning: a rerun sends it again with a new key.",
-          { code: error.code },
-        );
       throw error;
     }
     commit(result);
@@ -596,6 +698,25 @@ export async function importBundle(
         warnings.push(`${step.slice(5)}: ${warning.code ?? "warning"}`);
     }
   };
+
+  if (state.reconciliation_required) {
+    const record = state.reconciliation_required;
+    if (acceptMissing) {
+      log(`--accept-missing: sending ${record.operation} for ${record.step} again`);
+      state.reconciliation_required = null;
+      await save();
+    } else if (reconcile) {
+      const found = await reconcileCreate(client, state, record, options);
+      if (record.step === "project") {
+        state.project = found;
+        state.pages[home.source_page_id] = found.home_page_id;
+      } else state.pages[record.step.slice(5)] = found.page_id;
+      log(`reconciled ${record.step} with ${found.page_id ?? found.project_id}`);
+      state.reconciliation_required = null;
+      await save();
+    } else
+      throw new TransferError(reconciliationMessage(record), { code: "reconciliation_required" });
+  }
 
   if (state.pending) {
     log(`resuming ${state.pending.operation} for ${state.pending.step}`);
@@ -680,7 +801,7 @@ export async function importBundle(
     const blocks = pageBlocks(page);
     const rewrites = blocks.map((markdown) =>
       rewriteLinks(markdown, {
-        sourceOrigin: bundle.source.origin,
+        sourceOrigin,
         targetOrigin: client.origin,
         pages: ids,
         projects,
@@ -862,7 +983,8 @@ function parseArgs(argv) {
     const arg = rest[i];
     if (!arg.startsWith("--")) throw new TransferError(`Unexpected argument: ${arg}`);
     const name = arg.slice(2);
-    if (["dry-run", "allow-existing-title"].includes(name)) flags[name] = true;
+    if (["dry-run", "allow-existing-title", "reconcile", "accept-missing"].includes(name))
+      flags[name] = true;
     else if (i + 1 < rest.length) flags[name] = rest[++i];
     else throw new TransferError(`--${name} needs a value`);
   }
@@ -871,7 +993,8 @@ function parseArgs(argv) {
 
 const USAGE = `Usage:
   project-transfer.mjs export --source ORIGIN --project PROJECT_ID --out BUNDLE.json
-  project-transfer.mjs import --target ORIGIN --bundle BUNDLE.json [--state STATE.json] [--allow-existing-title]
+  project-transfer.mjs import --target ORIGIN --bundle BUNDLE.json [--state STATE.json]
+      [--allow-existing-title] [--reconcile | --accept-missing]
   project-transfer.mjs import --bundle BUNDLE.json --dry-run
 
 Credentials: PAGES_SOURCE_TOKEN or PAGES_SOURCE_TOKEN_FILE for export,
@@ -937,6 +1060,8 @@ export async function main(argv, env = process.env) {
     const report = await importBundle(client, bundle, {
       store: fileStore(flags.state ?? `${flags.bundle}.state.json`),
       allowExistingTitle: flags["allow-existing-title"] === true,
+      reconcile: flags.reconcile === true,
+      acceptMissing: flags["accept-missing"] === true,
       log,
     });
     printReport(

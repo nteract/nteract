@@ -45,7 +45,9 @@ function fakePages(origin, { placement = "page10", outlinePage = 100 } = {}) {
   const oversize = new Set();
   let clock = 0;
   let tokenCount = 0;
-  const hooks = { dropResponse: null };
+  // dropResponse: apply, then lose the response. before: answer without
+  // applying ("lost" loses the request; an object is the tool's result).
+  const hooks = { dropResponse: null, before: null };
   const fail = (code, error = code) => ({ ok: false, body: { error, code } });
   const head = (page) => page.revision.toString(16).padStart(64, "0");
   async function authority() {
@@ -257,7 +259,9 @@ function fakePages(origin, { placement = "page10", outlinePage = 100 } = {}) {
     const { name, arguments: args } = message.params;
     const count = (counts.get(name) ?? 0) + 1;
     counts.set(name, count);
-    const result = await tools[name](args);
+    const early = hooks.before?.(name, args, count);
+    if (early === "lost") throw new TypeError("fetch failed");
+    const result = early ?? (await tools[name](args));
     calls.push({ name, args, ok: result.ok, replayed: result.replayed === true });
     // The server applied the request, but the caller never hears back.
     if (hooks.dropResponse?.(name, args, count)) throw new TypeError("fetch failed");
@@ -792,4 +796,179 @@ test("the client never puts the token in an error, and sorts errors by certainty
   );
   assert.throws(() => pagesClient({ origin: "http://target.example", token: secret }), /https/);
   assert.throws(() => pagesClient({ origin: `${TARGET}/mcp`, token: secret }), /only the origin/);
+});
+
+test("import refuses a bundle whose source is the target in any spelling", async () => {
+  const { bundle } = linkBundle();
+  for (const spelling of [`${TARGET}/`, "https://TARGET.example", "https://target.example:443"]) {
+    const edited = structuredClone(bundle);
+    edited.source.origin = spelling;
+    const target = fakePages(TARGET);
+    await assert.rejects(
+      importBundle(client(target, TARGET), edited, { store: memoryStore(), ...quick }),
+      /bundle's source/,
+      spelling,
+    );
+    assert.deepEqual(target.calls, [], `${spelling} sent a request`);
+  }
+});
+
+test("a source origin with a trailing slash still rewrites its links", async () => {
+  const { bundle, ids } = linkBundle();
+  bundle.source.origin = `${SOURCE}/`;
+  const target = fakePages(TARGET);
+  const store = memoryStore();
+  await importBundle(client(target, TARGET), bundle, { store, ...quick });
+  const home = target.pages.get(store.peek().pages[ids.home]);
+  assert.equal(
+    home.blocks[0].markdown,
+    `Start at [the child](${TARGET}/p/${store.peek().pages[ids.child]}#intro).`,
+  );
+});
+
+test("rewriteLinks rewrites only complete source links", () => {
+  const id = "66666666-6666-4666-8666-666666666666";
+  const options = { sourceOrigin: SOURCE, targetOrigin: TARGET, pages: new Map([[id, "new"]]) };
+  const rewrite = (text) => rewriteLinks(text, options).markdown;
+  // Partial IDs and URLs embedded in another URL are not links to the source.
+  for (const text of [
+    `${SOURCE}/p/${id}extra`,
+    `${SOURCE}/p/${id}-0`,
+    `https://elsewhere.example/${SOURCE}/p/${id}`,
+    `https://elsewhere.example/go?to=${SOURCE}/p/${id}`,
+    `x${SOURCE}/p/${id}`,
+    `${SOURCE}.evil.example/p/${id}`,
+    `[a](/p/${id}extra)`,
+    `${SOURCE}/?page=${id}x`,
+    `${SOURCE}/p/${id}.json`,
+  ])
+    assert.equal(rewrite(text), text, text);
+  // Queries, fragments and paths after the ID are kept.
+  assert.equal(rewrite(`${SOURCE}/p/${id}?x=1#y`), `${TARGET}/p/new?x=1#y`);
+  assert.equal(rewrite(`[a](${SOURCE}/p/${id}/)`), `[a](${TARGET}/p/new/)`);
+  assert.equal(rewrite(`${SOURCE}/?page=${id}&x=1#y`), `${TARGET}/p/new?x=1#y`);
+  assert.equal(rewrite(`${SOURCE}/?page=${id}#y`), `${TARGET}/p/new#y`);
+  // Every boundary a Markdown link can put around a URL.
+  assert.equal(rewrite(`<${SOURCE}/p/${id}>`), `<${TARGET}/p/new>`);
+  assert.equal(
+    rewrite(`[${SOURCE}/p/${id}](${SOURCE}/p/${id})`),
+    `[${TARGET}/p/new](${TARGET}/p/new)`,
+  );
+  assert.equal(rewrite(`"${SOURCE}/p/${id}"`), `"${TARGET}/p/new"`);
+  assert.equal(rewrite(`line\n${SOURCE}/p/${id}\nnext`), `line\n${TARGET}/p/new\nnext`);
+  assert.equal(rewrite(`[a](/p/${id})`), `[a](/p/new)`);
+  assert.equal(rewrite(`[a](/p/${id}#top)`), `[a](/p/new#top)`);
+  assert.equal(rewrite(`See ${SOURCE}/p/${id}. Then`), `See ${TARGET}/p/new. Then`);
+  assert.equal(rewrite(`(${SOURCE}/p/${id}),`), `(${TARGET}/p/new),`);
+  assert.equal(rewrite(`see /p/${id}`), `see /p/${id}`, "only a link destination is relative");
+});
+
+/** The second create's window closes while its outcome is unknown. */
+async function expiredCreate({ applied }) {
+  const { bundle } = linkBundle();
+  const target = fakePages(TARGET);
+  const store = memoryStore();
+  if (applied)
+    target.hooks.dropResponse = (name, _args, count) => name === "create_page" && count === 2;
+  else
+    target.hooks.before = (name, _args, count) =>
+      name === "create_page" && count === 2 ? "lost" : undefined;
+  await assert.rejects(
+    importBundle(client(target, TARGET), bundle, { store, attempts: 1, ...quick }),
+    (error) => error.uncertain,
+  );
+  target.hooks.dropResponse = null;
+  target.hooks.before = (name) =>
+    name === "create_page"
+      ? { ok: false, body: { error: "Retry window expired", code: "retry_expired" } }
+      : undefined;
+  await assert.rejects(
+    importBundle(client(target, TARGET), bundle, { store, ...quick }),
+    (error) => error.code === "reconciliation_required" && /--reconcile/.test(error.message),
+  );
+  target.hooks.before = null;
+  return { bundle, target, store };
+}
+
+test("an expired create refuses further writes until it is reconciled", async () => {
+  const { bundle, target, store } = await expiredCreate({ applied: true });
+  const record = store.peek().reconciliation_required;
+  assert.equal(record.step, `page:${bundle.pages[2].source_page_id}`);
+  assert.equal(record.operation, "create_page");
+  assert.equal(record.args.title, "Sibling");
+  assert.match(record.idempotency_key, /^v1_/);
+  assert.equal(store.peek().pending, null);
+
+  const before = target.calls.length;
+  await assert.rejects(
+    importBundle(client(target, TARGET), bundle, { store, ...quick }),
+    /reconcile/,
+  );
+  assert.deepEqual(target.calls.slice(before), [], "a refused rerun sends nothing");
+
+  const report = await importBundle(client(target, TARGET), bundle, {
+    store,
+    reconcile: true,
+    ...quick,
+  });
+  assert.equal(target.pages.size, 3, "the Page the expired create made is reused");
+  assert.equal(store.peek().reconciliation_required, null);
+  assert.equal(report.verification.ok, true);
+  const sibling = [...target.pages.values()].find((page) => page.title === "Sibling");
+  assert.equal(store.peek().pages[bundle.pages[2].source_page_id], sibling.page_id);
+});
+
+test("reconcile without a match asks for --accept-missing, which creates the Page", async () => {
+  const { bundle, target, store } = await expiredCreate({ applied: false });
+  await assert.rejects(
+    importBundle(client(target, TARGET), bundle, { store, reconcile: true, ...quick }),
+    /No Page titled "Sibling".*--accept-missing/,
+  );
+  assert.ok(store.peek().reconciliation_required, "a failed reconcile keeps the record");
+  const report = await importBundle(client(target, TARGET), bundle, {
+    store,
+    acceptMissing: true,
+    ...quick,
+  });
+  assert.equal(target.pages.size, 3);
+  assert.equal([...target.pages.values()].filter((page) => page.title === "Sibling").length, 1);
+  assert.equal(report.verification.ok, true);
+  await assert.rejects(
+    importBundle(client(target, TARGET), bundle, {
+      store,
+      reconcile: true,
+      acceptMissing: true,
+      ...quick,
+    }),
+    /not both/,
+  );
+});
+
+test("an expired Project create reconciles to the Project with that title", async () => {
+  const { bundle } = linkBundle();
+  const target = fakePages(TARGET);
+  const store = memoryStore();
+  target.hooks.dropResponse = (name) => name === "create_project";
+  await assert.rejects(
+    importBundle(client(target, TARGET), bundle, { store, attempts: 1, ...quick }),
+    (error) => error.uncertain,
+  );
+  target.hooks.dropResponse = null;
+  target.hooks.before = (name) =>
+    name === "create_project"
+      ? { ok: false, body: { error: "Retry window expired", code: "retry_expired" } }
+      : undefined;
+  await assert.rejects(
+    importBundle(client(target, TARGET), bundle, { store, ...quick }),
+    /reconcile/,
+  );
+  target.hooks.before = null;
+  const report = await importBundle(client(target, TARGET), bundle, {
+    store,
+    reconcile: true,
+    ...quick,
+  });
+  assert.equal(target.projects.size, 1);
+  assert.equal(target.pages.size, 3);
+  assert.equal(report.verification.ok, true);
 });
