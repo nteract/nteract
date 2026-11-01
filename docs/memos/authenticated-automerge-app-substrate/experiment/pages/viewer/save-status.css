@@ -39,11 +39,21 @@
   width: 24px;
   height: 24px;
 }
+/* A plain status (Connected, or a key the table doesn't know) is an opaque
+   ring, so it clears 3:1 on the header and still reads apart from the filled
+   dot of a working state. --muted-foreground is about 4.7:1 on the light
+   background and 7.6:1 on the dark one. */
 .status-dot {
+  box-sizing: border-box;
   width: 9px;
   height: 9px;
+  border: 2px solid var(--muted-foreground);
   border-radius: 50%;
-  background: color-mix(in srgb, var(--muted-foreground) 55%, transparent);
+}
+.save-status--working .status-dot,
+.save-status--attention .status-dot,
+.save-status--error .status-dot {
+  border: 0;
 }
 .save-status--working .status-dot {
   background: var(--muted-foreground);

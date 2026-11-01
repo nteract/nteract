@@ -788,7 +788,11 @@ function App() {
           {page && (
             <div className="document-meta">
               <div className="document-status">
-                <SaveStatus status={session.status} compact={compactStatus} />
+                <SaveStatus
+                  status={session.status}
+                  statusKey={session.statusKey}
+                  compact={compactStatus}
+                />
                 {["Unsaved", "Offline", "Saved locally"].includes(session.status) && (
                   <button
                     className="subtle-button"

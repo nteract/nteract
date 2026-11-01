@@ -75,6 +75,7 @@ test("credential renewal cannot promote a page viewer or restore an explicitly d
   assert.equal(session.canWrite, false);
   assert.equal(session.authRequired, false);
   assert.equal(session.status, "Access removed");
+  assert.equal(session.statusKey, "attention");
   assert.equal(session.identity.principal, auth.identity.principal);
 });
 
