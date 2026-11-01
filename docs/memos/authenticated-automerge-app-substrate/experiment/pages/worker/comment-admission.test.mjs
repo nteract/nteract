@@ -4,6 +4,15 @@ import * as A from "@automerge/automerge";
 import { applyComment } from "../model/comments.mjs";
 import { commentsGenesis } from "../model/comments-doc.mjs";
 import { createHash } from "node:crypto";
+import * as N from "@automerge/subduction";
+import {
+  documentIdToBinary,
+  generateAutomergeUrl,
+  interpretAsDocumentId,
+} from "@automerge/automerge-repo";
+import { extractRecords } from "@automerge/automerge-repo/sedimentree/automerge";
+import { MemoryByteStore, SubductionBackend } from "@automerge/automerge-repo-subduction";
+import { signedIssuer } from "./actor-authorship.mjs";
 import {
   CommentAdmission,
   REFUSAL_BUDGET,
@@ -314,6 +323,78 @@ test("the host's own records pass unchecked; other trees pass straight through",
   await h.store.save(...frame(page, BOB_KEY, OTHER_TREE));
   await h.store.save("subduction-v1/whatever/id", new Uint8Array([1]));
   assert.equal(h.saved.length, 3);
+});
+
+test("the host's fragment records pass: their envelope is tagged STF, not STC", async () => {
+  // The native engine signs a fragment as "STF\0" + issuer and a loose commit
+  // as "STC\0" + issuer. A fragment boundary falls on about one commit in
+  // 256, so the host stores fragment records in ordinary use. Each must read
+  // as the host's, or the host's own write behind it fails.
+  const signer = N.MemorySigner.fromBytes(new Uint8Array(32).fill(23));
+  const serverKey = Buffer.from(signer.verifyingKey()).toString("hex");
+  const id = interpretAsDocumentId(generateAutomergeUrl());
+  const tree = documentIdToBinary(id);
+  const admission = new CommentAdmission({
+    tree: () => Buffer.from(tree).toString("hex"),
+    serverKey,
+    signer: () => undefined,
+    seed: () => undefined,
+  });
+  const refusals = [];
+  const settle = admission.settleRefusal.bind(admission);
+  admission.settleRefusal = (refusal, frame) => {
+    refusals.push(refusal.reason.code);
+    settle(refusal, frame);
+  };
+  const storage = new MemoryByteStore();
+  const backend = new SubductionBackend({ signer, storage: admission.guard(storage) });
+  try {
+    let history = A.init({ actor: "c7".repeat(16) });
+    for (let i = 0; i < 600; i++)
+      history = A.change(history, { time: 0 }, (doc) => {
+        doc.count = i;
+      });
+    const records = extractRecords(history);
+    const fragments = records.filter((record) => record.kind === "fragment");
+    assert.ok(fragments.length > 0, "the history has fragment boundaries");
+    // The host signs and stores each commit in causal order, as its own
+    // writes arrive, then the fragments that cover them.
+    for (const blob of A.getAllChanges(history)) {
+      const change = A.decodeChange(blob);
+      await backend.storeSnapshot(tree, [
+        { kind: "commit", id: change.hash, parents: change.deps, blob },
+      ]);
+    }
+    await backend.storeSnapshot(tree, fragments);
+    await backend.flush([tree]);
+    assert.deepEqual(refusals, []);
+    const stored = (await storage.list("subduction-v1/")).filter((key) =>
+      key.includes("/fragments/"),
+    );
+    assert.ok(stored.length > 0, "the fragment records are stored");
+    for (const key of stored) {
+      const read = recordFrame(key, await storage.load(key), 1 << 24);
+      assert.equal(read.kind, "fragment");
+      assert.equal(read.issuer, serverKey);
+    }
+  } finally {
+    await backend.close();
+    signer.free();
+  }
+});
+
+test("an envelope tagged for the other record kind names no issuer", () => {
+  const change = A.getAllChanges(A.from({ x: 1 }))[0];
+  const [, value] = frame(change, BOB_KEY);
+  const signed = value.slice(112, 112 + new DataView(value.buffer).getUint32(8));
+  assert.equal(signedIssuer(signed), BOB_KEY);
+  assert.equal(signedIssuer(signed, "commit"), BOB_KEY);
+  assert.equal(signedIssuer(signed, "fragment"), null);
+  const fragment = signed.slice();
+  fragment[2] = 0x46;
+  assert.equal(signedIssuer(fragment, "fragment"), BOB_KEY);
+  assert.equal(signedIssuer(fragment), null);
+  assert.equal(signedIssuer(fragment, "snapshot"), null);
 });
 
 test("a group saved at once is checked in causal order, whatever its order", async () => {

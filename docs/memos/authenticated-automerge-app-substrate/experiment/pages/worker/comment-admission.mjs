@@ -64,7 +64,7 @@ export function recordFrame(path, value, maxRecordBytes) {
   if (!match) return null;
   const frame = decodeRecordFrame(value, maxRecordBytes);
   const kind = match[2] === "commits" ? "commit" : "fragment";
-  const issuer = signedIssuer(frame.signed);
+  const issuer = signedIssuer(frame.signed, kind);
   if (frame.tree !== match[1] || frame.kind !== kind || frame.key !== match[3] || !issuer)
     throw Error("Record frame disagrees with its path");
   return { tree: match[1], kind, issuer, blob: frame.blob };

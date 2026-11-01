@@ -12,10 +12,14 @@ export const MAX_ACTORS = 1024;
 export const MAX_ATTESTED_CHANGES = 4096;
 export const ACTOR_PREFIX = "host/actor/";
 
-// Native signed envelope: "STC\0", the issuer's Ed25519 verifying key,
-// the payload, then a 64-byte signature.
-const SIGNED_MAGIC = [0x53, 0x54, 0x43, 0x00];
-const ISSUER_START = SIGNED_MAGIC.length;
+// Native signed envelope: a tag naming what is signed ("STC\0" for a loose
+// commit, "STF\0" for a fragment), the issuer's Ed25519 verifying key, the
+// payload, then a 64-byte signature.
+const SIGNED_MAGIC = Object.freeze({
+  commit: [0x53, 0x54, 0x43, 0x00],
+  fragment: [0x53, 0x54, 0x46, 0x00],
+});
+const ISSUER_START = 4;
 const ISSUER_END = ISSUER_START + 32;
 const MIN_SIGNED_BYTES = ISSUER_END + 64;
 const COMMIT_PATH = /\/commits\/([0-9a-f]{64})$/;
@@ -58,10 +62,13 @@ export function changeHeaderActor(blob) {
   return hex(blob.subarray(actorLength.at, end));
 }
 
-/** The issuer key of a native signed envelope, or null if it isn't one. */
-export function signedIssuer(signed) {
-  if (!(signed instanceof Uint8Array) || signed.length < MIN_SIGNED_BYTES) return null;
-  if (!SIGNED_MAGIC.every((byte, i) => signed[i] === byte)) return null;
+/** The issuer key of a native signed envelope of `kind` ("commit" or
+ * "fragment"), or null if it isn't one. An envelope tagged for the other kind
+ * is not one. */
+export function signedIssuer(signed, kind = "commit") {
+  const magic = Object.hasOwn(SIGNED_MAGIC, kind) ? SIGNED_MAGIC[kind] : null;
+  if (!magic || !(signed instanceof Uint8Array) || signed.length < MIN_SIGNED_BYTES) return null;
+  if (!magic.every((byte, i) => signed[i] === byte)) return null;
   return hex(signed.subarray(ISSUER_START, ISSUER_END));
 }
 
