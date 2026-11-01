@@ -486,12 +486,13 @@ runs in this order:
    home Page's title and body, the remaining blocks of a multi-block Page, and
    internal links. Source links `/p/<id>`, `/?page=<id>`, `/project/<id>` and
    `/s/<id>`, and root-relative `](/p/<id>` destinations, point at the new IDs.
-   Only complete links count: the URL starts a line or follows whitespace,
-   `(`, `<`, `[` or a quote, and the ID is followed by the end of a line,
-   whitespace, `/`, `?`, `#`, `)`, `>`, `]`, a quote, or sentence punctuation
-   ending there. A path, query or fragment after the ID is kept. A longer ID or
-   a source URL inside another URL is left alone. Links to Pages outside the
-   bundle stay as they are and are reported.
+   Links are read as whole tokens: a Markdown link destination `](...)`, an
+   autolink `<...>`, or a bare URL running to whitespace. A token is rewritten
+   only when the whole token is a source URL, so a longer ID or a source URL
+   nested inside another URL is left alone. A path, query or fragment after
+   the ID is kept, and sentence punctuation after a bare URL stays outside it.
+   A root-relative `/p/<id>` counts only as a link destination. Links to Pages
+   outside the bundle stay as they are and are reported.
 4. A listing of the target Project checks that every Page is under its expected
    parent, in source order. Import exits 1 if not.
 
@@ -510,15 +511,20 @@ bundle's title; delete the partial Project or pass `--allow-existing-title`.
 Retry tokens last seven days. A create still uncertain after that answers
 `retry_expired`: it may have been applied, and nothing can replay it. The
 importer records it as `reconciliation_required` in the state file (operation,
-step, idempotency key and arguments) and refuses every further write until it
-is resolved:
+step, idempotency key, arguments, and `requested_at`, when the create was first
+sent) and refuses every further write until it is resolved. A same-title Page
+may be unrelated, so nothing is adopted automatically:
 
-- `--reconcile` lists the target for what the create would have made: a Page
-  with its title under its parent that no other bundle Page maps to, or a
-  Project with its title. Exactly one match is recorded and the import goes on;
-  none or several stops with the candidates.
+- `--reconcile` writes nothing. It lists candidates: unmapped Pages with the
+  create's title under its parent, or Projects with its title, each with its
+  ID, `created_at` and URL, oldest first. Open them before choosing.
+- `--adopt ID` records one candidate and continues. It refuses an ID that is
+  not under the recorded parent, has another title, already maps to a bundle
+  Page, or was created before `requested_at`, allowing two minutes of clock
+  skew (`ADOPT_CLOCK_SKEW_MS`).
 - `--accept-missing` sends the create again with a new key. Use it when the
   target has no such Page.
 
-An expired body edit needs neither: the next run rereads the Page and writes its
-whole body again, which gives the same result whether or not the edit applied.
+An expired body edit needs none of these: the run rereads the Page and writes
+its whole body again, which gives the same result whether or not the edit
+applied.

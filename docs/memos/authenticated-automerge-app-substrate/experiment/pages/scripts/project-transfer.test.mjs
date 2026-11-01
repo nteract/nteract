@@ -44,6 +44,10 @@ function fakePages(origin, { placement = "page10", outlinePage = 100 } = {}) {
   // Pages whose explicit reads exceed the response budget.
   const oversize = new Set();
   let clock = 0;
+  // Server time for created_at, a second per creation from the importer's
+  // fixed clock (quick.now), so everything the fake makes is newer.
+  let serverTime = Date.parse("2026-11-01T00:00:00Z");
+  const createdAt = () => new Date((serverTime += 1000)).toISOString();
   let tokenCount = 0;
   // dropResponse: apply, then lose the response. before: answer without
   // applying ("lost" loses the request; an object is the tool's result).
@@ -80,6 +84,7 @@ function fakePages(origin, { placement = "page10", outlinePage = 100 } = {}) {
       comments: [],
       revision: 1,
       changed: ++clock,
+      created_at: createdAt(),
     };
     pages.set(page.page_id, page);
     return page;
@@ -92,12 +97,19 @@ function fakePages(origin, { placement = "page10", outlinePage = 100 } = {}) {
       project_id,
       home: true,
     });
-    projects.set(project_id, { project_id, title, description, home_page_id: home.page_id });
+    projects.set(project_id, {
+      project_id,
+      title,
+      description,
+      home_page_id: home.page_id,
+      created_at: home.created_at,
+    });
     return { project_id, home };
   }
   const row = (page) => ({
     page_id: page.page_id,
     title: page.title,
+    created_at: page.created_at,
     ...(page.project_id && {
       project_id: page.project_id,
       parent_id: page.parent_id,
@@ -841,6 +853,12 @@ test("rewriteLinks rewrites only complete source links", () => {
     `[a](/p/${id}extra)`,
     `${SOURCE}/?page=${id}x`,
     `${SOURCE}/p/${id}.json`,
+    // A source URL nested in another URL after "(" belongs to that URL.
+    `https://other.example/go?(${SOURCE}/p/${id})`,
+    `see https://other.example/go?(${SOURCE}/p/${id}).`,
+    `[a](https://other.example/go?(${SOURCE}/p/${id}))`,
+    `<https://other.example/go?u=${SOURCE}/p/${id}>`,
+    `[a](https://other.example/${SOURCE}/p/${id})`,
   ])
     assert.equal(rewrite(text), text, text);
   // Queries, fragments and paths after the ID are kept.
@@ -860,6 +878,9 @@ test("rewriteLinks rewrites only complete source links", () => {
   assert.equal(rewrite(`[a](/p/${id}#top)`), `[a](/p/new#top)`);
   assert.equal(rewrite(`See ${SOURCE}/p/${id}. Then`), `See ${TARGET}/p/new. Then`);
   assert.equal(rewrite(`(${SOURCE}/p/${id}),`), `(${TARGET}/p/new),`);
+  assert.equal(rewrite(`(see ${SOURCE}/p/${id})`), `(see ${TARGET}/p/new)`);
+  assert.equal(rewrite(`[a](<${SOURCE}/p/${id}>)`), `[a](<${TARGET}/p/new>)`);
+  assert.equal(rewrite(`[a](${SOURCE}/p/${id} "Title")`), `[a](${TARGET}/p/new "Title")`);
   assert.equal(rewrite(`see /p/${id}`), `see /p/${id}`, "only a link destination is relative");
 });
 
@@ -887,52 +908,123 @@ async function expiredCreate({ applied }) {
     (error) => error.code === "reconciliation_required" && /--reconcile/.test(error.message),
   );
   target.hooks.before = null;
-  return { bundle, target, store };
-}
-
-test("an expired create refuses further writes until it is reconciled", async () => {
-  const { bundle, target, store } = await expiredCreate({ applied: true });
   const record = store.peek().reconciliation_required;
-  assert.equal(record.step, `page:${bundle.pages[2].source_page_id}`);
+  return { bundle, target, store, record, sibling: bundle.pages[2] };
+}
+const writes = (target, from) =>
+  target.calls.slice(from).filter((call) => MUTATIONS.has(call.name));
+
+test("an expired create blocks writes; --reconcile lists candidates and --adopt records one", async () => {
+  const { bundle, target, store, record, sibling } = await expiredCreate({ applied: true });
+  assert.equal(record.step, `page:${sibling.source_page_id}`);
   assert.equal(record.operation, "create_page");
   assert.equal(record.args.title, "Sibling");
+  assert.equal(record.requested_at, "2026-11-01T00:00:00.000Z", "kept from the first send");
   assert.match(record.idempotency_key, /^v1_/);
   assert.equal(store.peek().pending, null);
 
-  const before = target.calls.length;
+  let before = target.calls.length;
   await assert.rejects(
     importBundle(client(target, TARGET), bundle, { store, ...quick }),
-    /reconcile/,
+    /--reconcile/,
   );
   assert.deepEqual(target.calls.slice(before), [], "a refused rerun sends nothing");
 
-  const report = await importBundle(client(target, TARGET), bundle, {
+  before = target.calls.length;
+  const listed = await importBundle(client(target, TARGET), bundle, {
     store,
     reconcile: true,
     ...quick,
   });
-  assert.equal(target.pages.size, 3, "the Page the expired create made is reused");
-  assert.equal(store.peek().reconciliation_required, null);
-  assert.equal(report.verification.ok, true);
-  const sibling = [...target.pages.values()].find((page) => page.title === "Sibling");
-  assert.equal(store.peek().pages[bundle.pages[2].source_page_id], sibling.page_id);
-});
+  const made = [...target.pages.values()].find((page) => page.title === "Sibling");
+  assert.deepEqual(listed.reconciliation.candidates, [
+    {
+      page_id: made.page_id,
+      title: "Sibling",
+      created_at: made.created_at,
+      created_after_request: true,
+      url: `${TARGET}/p/${made.page_id}`,
+    },
+  ]);
+  assert.equal(listed.reconciliation.record.args.retry_token, undefined);
+  assert.deepEqual(writes(target, before), [], "listing candidates writes nothing");
+  assert.ok(store.peek().reconciliation_required, "even a single candidate is not adopted");
+  assert.equal(store.peek().pages[sibling.source_page_id], undefined);
 
-test("reconcile without a match asks for --accept-missing, which creates the Page", async () => {
-  const { bundle, target, store } = await expiredCreate({ applied: false });
-  await assert.rejects(
-    importBundle(client(target, TARGET), bundle, { store, reconcile: true, ...quick }),
-    /No Page titled "Sibling".*--accept-missing/,
-  );
-  assert.ok(store.peek().reconciliation_required, "a failed reconcile keeps the record");
   const report = await importBundle(client(target, TARGET), bundle, {
     store,
-    acceptMissing: true,
+    adopt: made.page_id,
     ...quick,
   });
-  assert.equal(target.pages.size, 3);
-  assert.equal([...target.pages.values()].filter((page) => page.title === "Sibling").length, 1);
+  assert.equal(target.pages.size, 3, "the Page the expired create made is reused");
+  assert.equal(store.peek().reconciliation_required, null);
+  assert.equal(store.peek().pages[sibling.source_page_id], made.page_id);
   assert.equal(report.verification.ok, true);
+});
+
+test("an unrelated same-title Page is never adopted, and --adopt checks parent, title and age", async () => {
+  const { bundle, target, store, record, sibling } = await expiredCreate({ applied: false });
+  const parent = target.pages.get(record.args.parent_id);
+  const [project] = target.projects.values();
+  const seed = (title, parent_id, created_at) => {
+    const page = target.insert({
+      title,
+      blocks: ["Unrelated."],
+      project_id: project.project_id,
+      parent_id,
+    });
+    if (created_at) page.created_at = created_at;
+    return page;
+  };
+  const old = seed("Sibling", parent.page_id, "2026-10-01T00:00:00.000Z");
+  const elsewhere = seed("Sibling", project.home_page_id);
+  const renamed = seed("Other", parent.page_id);
+  const recent = seed("Sibling", parent.page_id);
+
+  const listed = await importBundle(client(target, TARGET), bundle, {
+    store,
+    reconcile: true,
+    ...quick,
+  });
+  assert.deepEqual(
+    listed.reconciliation.candidates.map((entry) => [entry.page_id, entry.created_after_request]),
+    [
+      [old.page_id, false],
+      [recent.page_id, true],
+    ],
+  );
+  assert.equal(listed.reconciliation.candidates.length, 2, "duplicate titles list both");
+  await assert.rejects(
+    importBundle(client(target, TARGET), bundle, { store, ...quick }),
+    /--reconcile/,
+    "listing never adopts",
+  );
+  for (const [page, reason] of [
+    [old, /created at 2026-10-01T00:00:00.000Z, before the create was sent/],
+    [elsewhere, /not under the recorded parent/],
+    [renamed, /its title is "Other"/],
+  ])
+    await assert.rejects(
+      importBundle(client(target, TARGET), bundle, { store, adopt: page.page_id, ...quick }),
+      (error) => error.code === "adopt_refused" && reason.test(error.message),
+    );
+  await assert.rejects(
+    importBundle(client(target, TARGET), bundle, {
+      store,
+      adopt: project.project_id,
+      ...quick,
+    }),
+    /pass a Page ID/,
+  );
+  assert.ok(store.peek().reconciliation_required, "a refused adoption keeps the record");
+  assert.equal(store.peek().pages[sibling.source_page_id], undefined);
+  for (const page of [old, elsewhere, renamed, recent])
+    assert.deepEqual(
+      target.pages.get(page.page_id).blocks.map((block) => block.markdown),
+      ["Unrelated."],
+      "no candidate was overwritten",
+    );
+
   await assert.rejects(
     importBundle(client(target, TARGET), bundle, {
       store,
@@ -940,11 +1032,20 @@ test("reconcile without a match asks for --accept-missing, which creates the Pag
       acceptMissing: true,
       ...quick,
     }),
-    /not both/,
+    /Choose one of/,
   );
+  const report = await importBundle(client(target, TARGET), bundle, {
+    store,
+    acceptMissing: true,
+    ...quick,
+  });
+  const created = target.pages.get(store.peek().pages[sibling.source_page_id]);
+  assert.ok(![old, elsewhere, renamed, recent].some((page) => page.page_id === created.page_id));
+  assert.match(created.blocks[0].markdown, /^See \[child\]/);
+  assert.equal(report.verification.ok, true);
 });
 
-test("an expired Project create reconciles to the Project with that title", async () => {
+test("an expired Project create is adopted only by explicit ID", async () => {
   const { bundle } = linkBundle();
   const target = fakePages(TARGET);
   const store = memoryStore();
@@ -963,12 +1064,62 @@ test("an expired Project create reconciles to the Project with that title", asyn
     /reconcile/,
   );
   target.hooks.before = null;
-  const report = await importBundle(client(target, TARGET), bundle, {
+  const unrelated = target.seedProject({ title: "Linked guide" });
+  target.projects.get(unrelated.project_id).created_at = "2026-10-01T00:00:00.000Z";
+  const listed = await importBundle(client(target, TARGET), bundle, {
     store,
     reconcile: true,
     ...quick,
   });
-  assert.equal(target.projects.size, 1);
-  assert.equal(target.pages.size, 3);
+  assert.equal(listed.reconciliation.candidates.length, 2);
+  assert.equal(target.projects.size, 2);
+  await assert.rejects(
+    importBundle(client(target, TARGET), bundle, { store, adopt: unrelated.project_id, ...quick }),
+    /before the create was sent/,
+  );
+  const made = listed.reconciliation.candidates.find((entry) => entry.created_after_request);
+  const report = await importBundle(client(target, TARGET), bundle, {
+    store,
+    adopt: made.project_id,
+    ...quick,
+  });
+  assert.equal(report.project_id, made.project_id);
+  assert.equal(target.projects.size, 2);
   assert.equal(report.verification.ok, true);
+});
+
+test("an expired body batch is rewritten from a fresh read and converges", async () => {
+  for (const applied of [false, true]) {
+    const { bundle } = linkBundle();
+    const blocks = Array.from({ length: EDIT_BATCH + 30 }, (_, index) => `Block ${index}`);
+    bundle.pages[2].blocks = blocks;
+    bundle.pages[2].markdown = blocks.join("\n\n");
+    const target = fakePages(TARGET);
+    const store = memoryStore();
+    // The Sibling's second batch is the fourth edit_page: home, Child, batch one.
+    const second = (name, _args, count) => name === "edit_page" && count === 4;
+    if (applied) target.hooks.dropResponse = second;
+    else target.hooks.before = (...args) => (second(...args) ? "lost" : undefined);
+    await assert.rejects(
+      importBundle(client(target, TARGET), bundle, { store, attempts: 1, ...quick }),
+      (error) => error.uncertain,
+    );
+    assert.equal(store.peek().pending.operation, "edit_page");
+    target.hooks.dropResponse = null;
+    const expired = store.peek().pending.args.idempotency_key;
+    target.hooks.before = (name, args) =>
+      name === "edit_page" && args.idempotency_key === expired
+        ? { ok: false, body: { error: "Retry window expired", code: "retry_expired" } }
+        : undefined;
+    const report = await importBundle(client(target, TARGET), bundle, { store, ...quick });
+    const page = target.pages.get(store.peek().pages[bundle.pages[2].source_page_id]);
+    assert.deepEqual(
+      page.blocks.map((block) => block.markdown),
+      blocks,
+      `converged after an expired batch that was ${applied ? "" : "not "}applied`,
+    );
+    assert.equal(store.peek().reconciliation_required, null);
+    assert.equal(store.peek().pending, null);
+    assert.equal(report.verification.ok, true);
+  }
 });

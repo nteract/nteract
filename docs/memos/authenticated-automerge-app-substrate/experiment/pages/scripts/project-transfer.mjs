@@ -446,51 +446,84 @@ export function targetPlacement(page, { homeSourceId, targetHomeId, pageIds }) {
 
 const escapeRegExp = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
-// A link starts at the start of a line, after whitespace, or after one of
-// ( < [ " ' and ends at the end of a line, before whitespace, before one of
-// / ? # ) > ] " ', or before sentence punctuation that itself ends there.
-// Anything else is part of a longer ID or another URL.
-const LINK_START = `(?<=^|[\\s(<\\["'])`;
-const CLOSE = `$|[\\s)>\\]"']|[.,;:!](?:$|[\\s)>\\]"'])`;
-const LINK_END = `(?=[/?#]|${CLOSE})`;
+// Link tokens, each taken whole so a URL nested inside another is never
+// matched on its own: a Markdown link destination `](...)`, an autolink
+// `<...>`, or a bare URL that starts a line or follows whitespace, ( [ or a
+// quote and runs to whitespace, < > ] or a quote.
+const LINK_TOKEN =
+  /\]\((<[^>\n]*>|[^\s)]+)|<(https?:\/\/[^\s<>]+)>|(?<=^|[\s(["'])(https?:\/\/[^\s<>\]"']+)/gm;
+const TRAILING = new Set([".", ",", ";", ":", "!", "?"]);
+const count = (text, char) => text.split(char).length - 1;
+
+/** A bare URL without the sentence punctuation or unbalanced `)` after it. */
+function splitTrailing(token) {
+  let end = token.length;
+  for (;;) {
+    const last = token[end - 1];
+    if (TRAILING.has(last)) end--;
+    else if (last === ")" && count(token.slice(0, end), "(") < count(token.slice(0, end), ")"))
+      end--;
+    else break;
+  }
+  return [token.slice(0, end), token.slice(end)];
+}
 
 /**
- * Point complete source links at the target. Absolute source links (`/p/<id>`,
- * `/?page=<id>`, `/project/<id>`, `/s/<id>`) become absolute target links, and
- * a root-relative `](/p/<id>` link destination stays root-relative. Whatever
- * follows the ID (a path, query or fragment) is kept; the legacy `?page=` form
- * keeps its other query parameters. A source URL inside another URL, or an ID
- * followed by more ID characters, is not a link and is left alone. Links to
- * Pages or Projects outside the maps are left alone and returned in
- * `unresolved`. `sourceOrigin` must be normalized by checkOrigin.
+ * Point source links at the target. A link is rewritten only when the whole
+ * token is a source URL: `/p/<id>`, `/?page=<id>`, `/project/<id>` or
+ * `/s/<id>` on the source origin, followed by nothing or by a path, query or
+ * fragment, which is kept. The legacy `?page=` form keeps its other query
+ * parameters. A root-relative `/p/<id>` is a link only as a Markdown link
+ * destination. Links to Pages or Projects outside the maps are left alone and
+ * returned in `unresolved`. `sourceOrigin` must be normalized by checkOrigin.
  */
 export function rewriteLinks(
   markdown,
   { sourceOrigin, targetOrigin, pages, projects = new Map() },
 ) {
   const origin = escapeRegExp(sourceOrigin);
-  const pattern = new RegExp(
-    `${LINK_START}${origin}(?:/p/(${UUID})${LINK_END}|/\\?page=(${UUID})(?=[&#]|${CLOSE})(&[^\\s#)>\\]"']*)?|/(?:project|s)/((?:prj|sp)_${UUID})${LINK_END})|(?<=\\]\\()/p/(${UUID})${LINK_END}`,
-    "gm",
+  const absolute = new RegExp(
+    `^${origin}(?:/p/(${UUID})([/?#].*)?|/\\?page=(${UUID})(&[^#]*)?(#.*)?|/(?:project|s)/((?:prj|sp)_${UUID})([/?#].*)?)$`,
+    "s",
   );
+  const relative = new RegExp(`^/p/(${UUID})([/?#].*)?$`, "s");
   const unresolved = [];
   let rewritten = 0;
-  const result = markdown.replace(
-    pattern,
-    (match, page, legacy, legacyQuery, project, relative) => {
-      const id = page ?? legacy ?? relative;
-      const target = id ? pages.get(id) : projects.get(project);
-      if (!target) {
-        unresolved.push(match);
-        return match;
-      }
+  // The rewritten URL, or null to leave the token as it is.
+  const rewriteUrl = (url, allowRelative) => {
+    const near = allowRelative ? relative.exec(url) : null;
+    if (near) {
+      const target = pages.get(near[1]);
+      if (!target) return (unresolved.push(url), null);
       rewritten++;
-      if (relative) return `/p/${target}`;
-      if (legacy)
-        return `${targetOrigin}/p/${target}${legacyQuery ? `?${legacyQuery.slice(1)}` : ""}`;
-      return id ? `${targetOrigin}/p/${target}` : `${targetOrigin}/project/${target}`;
-    },
-  );
+      return `/p/${target}${near[2] ?? ""}`;
+    }
+    const match = absolute.exec(url);
+    if (!match) return null;
+    const [, page, pageRest, legacy, legacyQuery, legacyFragment, project, projectRest] = match;
+    const id = page ?? legacy;
+    const target = id ? pages.get(id) : projects.get(project);
+    if (!target) return (unresolved.push(url), null);
+    rewritten++;
+    if (page) return `${targetOrigin}/p/${target}${pageRest ?? ""}`;
+    if (legacy)
+      return `${targetOrigin}/p/${target}${legacyQuery ? `?${legacyQuery.slice(1)}` : ""}${legacyFragment ?? ""}`;
+    return `${targetOrigin}/project/${target}${projectRest ?? ""}`;
+  };
+  const result = markdown.replace(LINK_TOKEN, (match, destination, autolink, bare) => {
+    if (destination !== undefined) {
+      const angle = destination.startsWith("<");
+      const next = rewriteUrl(angle ? destination.slice(1, -1) : destination, true);
+      return next === null ? match : `](${angle ? `<${next}>` : next}`;
+    }
+    if (autolink !== undefined) {
+      const next = rewriteUrl(autolink, false);
+      return next === null ? match : `<${next}>`;
+    }
+    const [url, tail] = splitTrailing(bare);
+    const next = rewriteUrl(url, false);
+    return next === null ? match : `${next}${tail}`;
+  });
   return { markdown: result, rewritten, unresolved };
 }
 
@@ -557,60 +590,122 @@ export function planImport(bundle) {
   });
 }
 
+/** How far the target's created_at may trail a create's local requested_at
+ * and still count as made by it: room for clock skew between this machine and
+ * the target, nothing more. */
+export const ADOPT_CLOCK_SKEW_MS = 2 * 60_000;
+
 function reconciliationMessage(record) {
   return (
     `The retry window for ${record.operation} "${record.args.title}" (${record.step}, key ` +
-    `${record.idempotency_key}) expired before its outcome was known, so it may have been ` +
-    "applied. No more writes until it is resolved. Rerun with --reconcile to find it on the " +
-    "target and record it, or with --accept-missing to create it again."
+    `${record.idempotency_key}, first sent ${record.requested_at}) expired before its outcome ` +
+    "was known, so it may have been applied. No more writes until it is resolved. Rerun with " +
+    "--reconcile to list candidates on the target, then --adopt ID to record the one it made, " +
+    "or --accept-missing to create it again."
   );
 }
 
-/**
- * Find what an expired create made, by the arguments it was sent with: a Page
- * with its title under its parent that no other bundle Page maps to, or a
- * Project with its title. Exactly one match is required.
- */
-export async function reconcileCreate(client, state, record, options) {
-  const { title } = record.args;
-  if (record.step === "project") {
-    const matches = [];
-    let cursor;
-    do {
-      const listed = await withRetries(
-        () => client.call("list_projects", { limit: 100, ...(cursor && { cursor }) }),
-        options,
-      );
-      matches.push(...(listed.projects ?? []).filter((entry) => entry.title === title));
-      cursor = typeof listed.next_cursor === "string" ? listed.next_cursor : undefined;
-    } while (cursor);
-    if (matches.length !== 1)
-      throw new TransferError(
-        matches.length
-          ? `${matches.length} Projects are titled "${title}" (${matches.map((entry) => entry.project_id).join(", ")}); delete the extra ones, then --reconcile again`
-          : `No Project titled "${title}" on the target. Rerun with --accept-missing to create it.`,
-      );
-    const project = await withRetries(
-      () => client.call("get_project", { project_id: matches[0].project_id }),
+/** Projects with `title` on the target. */
+async function projectsTitled(client, title, options) {
+  const entries = [];
+  let cursor;
+  do {
+    const listed = await withRetries(
+      () => client.call("list_projects", { limit: 100, ...(cursor && { cursor }) }),
       options,
     );
-    return { project_id: project.project_id, home_page_id: project.home_page_id };
-  }
+    entries.push(...(listed.projects ?? []).filter((entry) => entry.title === title));
+    cursor = typeof listed.next_cursor === "string" ? listed.next_cursor : undefined;
+  } while (cursor);
+  const projects = [];
+  for (const entry of entries)
+    projects.push(
+      await withRetries(
+        () => client.call("get_project", { project_id: entry.project_id }),
+        options,
+      ),
+    );
+  return projects;
+}
+
+const createdAfter = (createdAt, record) =>
+  Date.parse(createdAt) >= Date.parse(record.requested_at) - ADOPT_CLOCK_SKEW_MS;
+
+/**
+ * What an expired create might have made: Pages with its title under its
+ * parent that no other bundle Page maps to, or Projects with its title. A
+ * candidate is only a lead. Uniqueness isn't provenance: a same-title Page may
+ * be unrelated, so nothing is adopted without an explicit --adopt.
+ */
+export async function reconciliationCandidates(client, state, record, options) {
+  const oldestFirst = (candidates) =>
+    candidates.sort((a, b) => String(a.created_at).localeCompare(String(b.created_at)));
+  return oldestFirst(await candidatesFor(client, state, record, options));
+}
+async function candidatesFor(client, state, record, options) {
+  const { title } = record.args;
+  if (record.step === "project")
+    return (await projectsTitled(client, title, options)).map((project) => ({
+      project_id: project.project_id,
+      title: project.title,
+      created_at: project.created_at ?? null,
+      created_after_request: project.created_at ? createdAfter(project.created_at, record) : false,
+      url: `${client.origin}/project/${project.project_id}`,
+    }));
   const mapped = new Set(Object.values(state.pages));
   const rows = await listAll(client, { parent_id: record.args.parent_id }, options);
-  const matches = rows.filter(
-    (row) =>
-      row.title === title &&
-      (row.parent_id ?? null) === record.args.parent_id &&
-      !mapped.has(row.page_id),
-  );
-  if (matches.length !== 1)
-    throw new TransferError(
-      matches.length
-        ? `${matches.length} unmapped Pages titled "${title}" are under ${record.args.parent_id} (${matches.map((row) => row.page_id).join(", ")}); move the extra ones to Trash, then --reconcile again`
-        : `No Page titled "${title}" under ${record.args.parent_id}. Rerun with --accept-missing to create it.`,
+  return rows
+    .filter(
+      (row) =>
+        row.title === title &&
+        (row.parent_id ?? null) === record.args.parent_id &&
+        !mapped.has(row.page_id),
+    )
+    .map((row) => ({
+      page_id: row.page_id,
+      title: row.title,
+      created_at: row.created_at ?? null,
+      created_after_request: row.created_at ? createdAfter(row.created_at, record) : false,
+      url: `${client.origin}/p/${row.page_id}`,
+    }));
+}
+
+/**
+ * Check that `id` is what the expired create made before recording it: under
+ * the recorded parent (Pages), with the recorded title, not already mapped,
+ * and created no earlier than the create was first sent.
+ */
+export async function adoptCreate(client, state, record, id, options) {
+  const refuse = (reason) => {
+    throw new TransferError(`Refusing to adopt ${id}: ${reason}`, { code: "adopt_refused" });
+  };
+  if (!record.requested_at) refuse("the record has no requested_at to check it against");
+  const { title } = record.args;
+  if (record.step === "project") {
+    if (!isProjectId(id)) refuse("the expired create was a Project; pass a Project ID");
+    const project = await withRetries(
+      () => client.call("get_project", { project_id: id }),
+      options,
     );
-  return { page_id: matches[0].page_id };
+    if (project.title !== title) refuse(`its title is "${project.title}", not "${title}"`);
+    if (!project.created_at || !createdAfter(project.created_at, record))
+      refuse(
+        `it was created at ${project.created_at}, before the create was sent at ${record.requested_at}`,
+      );
+    return { project_id: project.project_id, home_page_id: project.home_page_id };
+  }
+  if (!PAGE_ID.test(id)) refuse("the expired create was a Page; pass a Page ID");
+  if (Object.values(state.pages).includes(id)) refuse("another bundle Page already maps to it");
+  const rows = await listAll(client, { parent_id: record.args.parent_id }, options);
+  const row = rows.find((entry) => entry.page_id === id);
+  if (!row || (row.parent_id ?? null) !== record.args.parent_id)
+    refuse(`it is not under the recorded parent ${record.args.parent_id}`);
+  if (row.title !== title) refuse(`its title is "${row.title}", not "${title}"`);
+  if (!row.created_at || !createdAfter(row.created_at, record))
+    refuse(
+      `it was created at ${row.created_at}, before the create was sent at ${record.requested_at}`,
+    );
+  return { page_id: id };
 }
 
 export async function importBundle(
@@ -622,12 +717,13 @@ export async function importBundle(
     log = () => {},
     allowExistingTitle = false,
     reconcile = false,
+    adopt = null,
     acceptMissing = false,
     ...options
   },
 ) {
-  if (reconcile && acceptMissing)
-    throw new TransferError("Choose --reconcile or --accept-missing, not both");
+  if ([reconcile, adopt !== null, acceptMissing].filter(Boolean).length > 1)
+    throw new TransferError("Choose one of --reconcile, --adopt or --accept-missing");
   validateBundle(bundle);
   // Compare normalized origins: case, a trailing slash or an explicit default
   // port must not let a bundle write back into its own source.
@@ -648,8 +744,15 @@ export async function importBundle(
 
   // One request at a time. Its exact arguments are saved before sending, so a
   // rerun after an uncertain failure replays the same token, key and payload.
-  const send = async (step, operation, args, commit) => {
-    state.pending = { step, operation, args };
+  // requested_at is when the request was first sent; a replay keeps it.
+  const send = async (
+    step,
+    operation,
+    args,
+    commit,
+    requestedAt = new Date(now()).toISOString(),
+  ) => {
+    state.pending = { step, operation, args, requested_at: requestedAt };
     await save();
     let result;
     try {
@@ -667,6 +770,7 @@ export async function importBundle(
           operation,
           idempotency_key: args.idempotency_key,
           args,
+          requested_at: requestedAt,
           recorded_at: new Date(now()).toISOString(),
         };
         await save();
@@ -706,26 +810,38 @@ export async function importBundle(
       state.reconciliation_required = null;
       await save();
     } else if (reconcile) {
-      const found = await reconcileCreate(client, state, record, options);
+      // Listing only: the operator picks, or rejects, a candidate.
+      return {
+        reconciliation: {
+          record: { ...record, args: { ...record.args, retry_token: undefined } },
+          candidates: await reconciliationCandidates(client, state, record, options),
+        },
+      };
+    } else if (adopt !== null) {
+      const found = await adoptCreate(client, state, record, adopt, options);
       if (record.step === "project") {
         state.project = found;
         state.pages[home.source_page_id] = found.home_page_id;
       } else state.pages[record.step.slice(5)] = found.page_id;
-      log(`reconciled ${record.step} with ${found.page_id ?? found.project_id}`);
+      log(`adopted ${adopt} for ${record.step}`);
       state.reconciliation_required = null;
       await save();
     } else
       throw new TransferError(reconciliationMessage(record), { code: "reconciliation_required" });
-  }
+  } else if (reconcile || adopt !== null)
+    throw new TransferError("Nothing to reconcile: the state file has no expired create");
 
   if (state.pending) {
-    log(`resuming ${state.pending.operation} for ${state.pending.step}`);
-    await send(
-      state.pending.step,
-      state.pending.operation,
-      state.pending.args,
-      commitFor(state.pending.step),
-    );
+    const { step, operation, args, requested_at } = state.pending;
+    log(`resuming ${operation} for ${step}`);
+    try {
+      await send(step, operation, args, commitFor(step), requested_at);
+    } catch (error) {
+      // An expired body edit: the body pass below rereads the Page and writes
+      // the whole body again, which converges whether or not it applied.
+      if (!(error.code === "retry_expired" && step.startsWith("body:"))) throw error;
+      log(`the retry window for ${step} expired; rewriting that body from a fresh read`);
+    }
   }
 
   // Catalog retry authority for creates. Keys are its prefix plus a nonce from
@@ -994,7 +1110,7 @@ function parseArgs(argv) {
 const USAGE = `Usage:
   project-transfer.mjs export --source ORIGIN --project PROJECT_ID --out BUNDLE.json
   project-transfer.mjs import --target ORIGIN --bundle BUNDLE.json [--state STATE.json]
-      [--allow-existing-title] [--reconcile | --accept-missing]
+      [--allow-existing-title] [--reconcile | --adopt ID | --accept-missing]
   project-transfer.mjs import --bundle BUNDLE.json --dry-run
 
 Credentials: PAGES_SOURCE_TOKEN or PAGES_SOURCE_TOKEN_FILE for export,
@@ -1061,9 +1177,23 @@ export async function main(argv, env = process.env) {
       store: fileStore(flags.state ?? `${flags.bundle}.state.json`),
       allowExistingTitle: flags["allow-existing-title"] === true,
       reconcile: flags.reconcile === true,
+      adopt: flags.adopt ?? null,
       acceptMissing: flags["accept-missing"] === true,
       log,
     });
+    if (report.reconciliation) {
+      const { record, candidates } = report.reconciliation;
+      console.log(reconciliationMessage(record));
+      if (!candidates.length)
+        console.log("No candidates on the target. If none was made, rerun with --accept-missing.");
+      for (const candidate of candidates)
+        console.log(
+          `  ${candidate.page_id ?? candidate.project_id}  "${candidate.title}"  created ${candidate.created_at}` +
+            `${candidate.created_after_request ? "" : " (before the create was sent)"}  ${candidate.url}`,
+        );
+      console.log("Nothing was written. Open each candidate before choosing --adopt ID.");
+      return 1;
+    }
     printReport(
       [
         `Imported "${bundle.project.title}" into ${report.url}`,
