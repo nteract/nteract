@@ -20,6 +20,12 @@ import {
   applyPageOperation,
   validateImageInsertion,
 } from "../model/page.mjs";
+import {
+  documentFeatures,
+  missingFeatures,
+  parseDeclaredFeatures,
+  schemaUnsupported,
+} from "../model/schema-features.mjs";
 import { readTargets, writeTargets } from "../model/agent-presence.mjs";
 import { BACKEND_LIMITS, assertDocumentLimits, assertIntentSize } from "../model/limits.mjs";
 import { handleMcp } from "../mcp.mjs";
@@ -2251,6 +2257,7 @@ export class Page {
               ? { ...(this.policyMetadata ?? this.metadata), recoveryBlocked: true }
               : (this.policyMetadata ?? this.metadata),
           serverKey,
+          schemaFeatures: () => (this.handle ? documentFeatures(this.handle.doc()) : []),
         });
         await policy.load();
         const recordStore =
@@ -2836,8 +2843,8 @@ export class Page {
       if (url.pathname === "/api/sync" && request.method === "GET")
         return this.connect(request, identity);
       if (url.pathname === "/api/saved" && request.method === "POST") {
-        const { heads } = await readJson(request);
-        await this.waitForHeads(heads);
+        const { heads, schema_features } = await readJson(request);
+        await this.waitForHeads(heads, schema_features);
         this.policy.account(await authenticate(request, this.env));
         const durableHeads = A.getHeads(this.handle.doc());
         await this.flush();
@@ -3492,7 +3499,12 @@ export class Page {
     return json(this.metadata.createdReceipt, 201);
   }
 
-  async waitForHeads(heads) {
+  /** `declared` is the schema features the tab's build declared with this
+   * receipt; a build from before the stamp sends none, the baseline. When
+   * heads are missing and that build lacks a stamped id, the native gate has
+   * refused, or will refuse, those edits: answer `schema_unsupported` rather
+   * than wait for heads that can't arrive. */
+  async waitForHeads(heads, declared) {
     if (
       !Array.isArray(heads) ||
       heads.length < 1 ||
@@ -3501,6 +3513,21 @@ export class Page {
     )
       throw new HttpError(400, "Invalid heads");
     if (A.hasHeads(this.handle.doc(), heads)) return;
+    const features =
+      declared === undefined
+        ? []
+        : Array.isArray(declared) && declared.every((id) => typeof id === "string")
+          ? parseDeclaredFeatures(declared.join(","))
+          : null;
+    if (!features) throw new HttpError(400, "Invalid schema_features");
+    const refusal = () => {
+      const missing = missingFeatures(documentFeatures(this.handle.doc()), features);
+      return missing.length
+        ? withAdmissionReason(schemaUnsupported(missing), "schema_unsupported")
+        : null;
+    };
+    const refused = refusal();
+    if (refused) throw refused;
     await new Promise((resolve, reject) => {
       const changed = () => {
         if (A.hasHeads(this.handle.doc(), heads)) {
@@ -3512,7 +3539,8 @@ export class Page {
       const timer = setTimeout(() => {
         this.handle.off("heads-changed", changed);
         reject(
-          withAdmissionReason(new HttpError(409, MISSING_EDITS_MESSAGE), "receipt_heads_missing"),
+          refusal() ??
+            withAdmissionReason(new HttpError(409, MISSING_EDITS_MESSAGE), "receipt_heads_missing"),
         );
       }, 10_000);
       this.handle.on("heads-changed", changed);
@@ -3555,6 +3583,11 @@ export class Page {
           "activity_epoch_changed",
         );
     }
+    // The build's schema features, for the native schema gate in policy.put().
+    // A viewer from before the stamp sends none: the baseline.
+    const declared = new URL(request.url).searchParams.getAll("schema_features");
+    const features = declared.length > 1 ? null : parseDeclaredFeatures(declared[0]);
+    if (!features) throw new HttpError(400, "Invalid schema_features");
     const capacity = this.connectionCapacity(identity);
     if (capacity) return refuseSocket(capacity, identity);
     const pair = new WebSocketPair();
@@ -3637,6 +3670,7 @@ export class Page {
             onRenewal: (expiresAt) => {
               if (identity.credentialKind === "api-key") armExpiry(expiresAt);
             },
+            features,
           });
           wire.onDisconnect(release);
           if (!this.wires.has(wire)) return;

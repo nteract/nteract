@@ -3,6 +3,7 @@ import { assertDocumentLimits, assertIntentSize } from "../model/limits.mjs";
 import { openingTitleWarning } from "../model/title-warning.mjs";
 import { guardPassageEdits } from "../model/passage-edits.mjs";
 import { guardCommentIntent } from "../model/comment-guard.mjs";
+import { requireSupportedSchema } from "../model/schema-features.mjs";
 import { inspectOperation, reserveOperation, listOperationEntries } from "./operation-journal.mjs";
 
 const COMMENT_OPERATIONS = ["manage_page_comment", "reply_page_comment"];
@@ -81,6 +82,9 @@ export async function documentMutation({
         status: 429,
         code: "pending_operation_capacity",
       });
+    // A new intent never edits a Page stamped with a schema feature this build
+    // can't express. A recorded receipt still replays.
+    requireSupportedSchema(handle.doc());
     // Check external prerequisites only for new intents. A retry must replay
     // its original bytes/receipt even if an external service is unavailable.
     const targetScope = args.conflict_scope === "target";
@@ -109,6 +113,8 @@ export async function documentMutation({
       await prepare();
     }
     const before = handle.doc();
+    // Native edits can land while prepare awaits; check the exact base again.
+    requireSupportedSchema(before);
     const guarded = targetScope
       ? guardPassageEdits(before, args.base_heads, args.operations)
       : null;

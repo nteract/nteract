@@ -8,6 +8,13 @@ import { importLegacy, normalizeSpans, pagesRoot } from "./legacy-codec.mjs";
 const { decode, encode } = await import(
   pathToFileURL(resolve(pagesRoot, "viewer/wordgard-model.mjs")).href
 );
+const { FEATURE_REGISTRY, spanFeatures } = await import(
+  pathToFileURL(resolve(pagesRoot, "model/schema-features.mjs")).href
+);
+const { default: featureFile } = await import(
+  pathToFileURL(resolve(pagesRoot, "model/features.json")).href,
+  { with: { type: "json" } }
+);
 
 const args = process.argv.slice(2);
 const option = (name, fallback) => {
@@ -154,6 +161,33 @@ for (const [index, { fixture, doc }] of wordgardCases.entries()) {
   );
 }
 
+// Both codecs read the same registry files. They must agree on every
+// feature, which marks and block types need one, and what each span needs.
+const [registry] = runBoth([{ op: "registry" }]);
+assert.deepEqual(
+  registry,
+  {
+    ok: true,
+    features: featureFile.features.map(({ id, description, blocks = [] }) => ({
+      id,
+      description,
+      blocks,
+    })),
+    marks: Object.fromEntries(FEATURE_REGISTRY.marks),
+    blocks: Object.fromEntries(FEATURE_REGISTRY.blocks),
+  },
+  "Rust and JavaScript read different schema feature registries",
+);
+const featureCases = [
+  ...exportFixtures.map((fixture) => fixture.spans),
+  ...wordgardCases.map(({ spans }) => spans),
+];
+const features = runBoth(featureCases.map((spans) => ({ op: "features", spans })));
+for (const [index, spans] of featureCases.entries()) {
+  assert.equal(features[index].ok, true, features[index].error);
+  assert.deepEqual(features[index].features, spanFeatures(spans), `feature case ${index}`);
+}
+
 const invalid = [
   { op: "export", spans: [{ type: "text", value: "bad mark", marks: { unknown: true } }] },
   { op: "export", spans: [{ type: "text", value: "bad link", marks: { link: "not JSON" } }] },
@@ -168,5 +202,5 @@ for (const result of runBoth(invalid)) {
 }
 
 console.log(
-  `${allImports.length} imports, ${exportFixtures.length} exports and round trips, ${wordgardCases.length} Wordgard round trips, and ${invalid.length} invalid inputs passed (${requestCount} identical native/WASM responses).`,
+  `${allImports.length} imports, ${exportFixtures.length} exports and round trips, ${wordgardCases.length} Wordgard round trips, ${featureCases.length} schema feature checks, and ${invalid.length} invalid inputs passed (${requestCount} identical native/WASM responses).`,
 );

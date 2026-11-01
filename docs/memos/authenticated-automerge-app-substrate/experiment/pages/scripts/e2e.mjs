@@ -44,6 +44,7 @@ const SUITES = Object.freeze([
   { name: "presence", script: "scripts/presence-smoke.mjs", timeout: 3 * minute },
   { name: "title-warning", script: "scripts/title-warning-smoke.mjs", timeout: 2 * minute },
   { name: "native", script: "scripts/smoke.mjs", timeout: 2 * minute },
+  { name: "schema-features", script: "scripts/schema-features-smoke.mjs", timeout: 3 * minute },
   { name: "task-lists", harness: sharing("--task-lists"), timeout: 3 * minute },
   { name: "images", harness: sharing("--images"), timeout: 4 * minute },
   { name: "mcp-images", harness: sharing("--mcp-images"), timeout: 4 * minute },

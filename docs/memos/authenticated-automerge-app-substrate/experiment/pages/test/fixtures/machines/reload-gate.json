@@ -28,7 +28,11 @@
       "accept-checkpoints",
       "discard",
       "receipt-acknowledges",
-      "deleted-releasing"
+      "deleted-releasing",
+      "schema-checkpoints",
+      "schema-failed-retries",
+      "schema-written-accepted",
+      "schema-written-not-accepted"
     ],
     "idle/sessionPhase": [
       "held-new",
@@ -64,9 +68,14 @@
       "direct-close-failed",
       "deleted-released",
       "deleted-still-releasing",
-      "late-deletion"
+      "late-deletion",
+      "schema-writing",
+      "schema-written-reloads",
+      "schema-failed-blocks",
+      "schema-refused-mid-attempt",
+      "schema-refused-again"
     ],
-    "waiting/timeout": ["live-waiting", "closing-still", "none-waiting"]
+    "waiting/timeout": ["live-waiting", "closing-still", "none-waiting", "schema-checkpoint-slow"]
   },
   "rows": [
     {
@@ -3003,6 +3012,593 @@
       "event": { "type": "draft", "present": true },
       "expect": {
         "state": { "name": "reloading", "sessions": [], "records": [], "drafts": true },
+        "effects": []
+      }
+    },
+    {
+      "note": "the host refuses these edits, so the attempt asks for a local checkpoint, not a receipt",
+      "case": "schema-checkpoints",
+      "state": {
+        "name": "idle",
+        "sessions": [
+          {
+            "id": "a",
+            "key": "dev:page-a",
+            "phase": "held",
+            "alive": true,
+            "pending": true,
+            "save": "stalled",
+            "savedHeads": [],
+            "schema": "refused",
+            "title": "Plan"
+          }
+        ],
+        "records": [],
+        "drafts": false
+      },
+      "event": { "type": "reload", "acceptCheckpoints": true, "discard": [] },
+      "expect": {
+        "state": {
+          "name": "waiting",
+          "sessions": [
+            {
+              "id": "a",
+              "key": "dev:page-a",
+              "phase": "held",
+              "alive": true,
+              "pending": true,
+              "save": "stalled",
+              "savedHeads": [],
+              "schema": "refused",
+              "title": "Plan"
+            }
+          ],
+          "records": [],
+          "drafts": false,
+          "attempt": {
+            "acceptCheckpoints": true,
+            "navigated": false,
+            "live": [{ "id": "a", "key": "dev:page-a", "result": null, "savedHeads": [] }],
+            "closing": []
+          }
+        },
+        "effects": [
+          { "type": "pauseEdits", "ids": ["a"] },
+          { "type": "checkpoint", "id": "a" },
+          { "type": "startTimer", "ms": 15000 }
+        ]
+      }
+    },
+    {
+      "note": "a failed checkpoint writes again on the next Reload",
+      "case": "schema-failed-retries",
+      "state": {
+        "name": "idle",
+        "sessions": [
+          {
+            "id": "a",
+            "key": "dev:page-a",
+            "phase": "held",
+            "alive": true,
+            "pending": true,
+            "save": "stalled",
+            "savedHeads": [],
+            "schema": "failed",
+            "title": "Plan"
+          }
+        ],
+        "records": [],
+        "drafts": false
+      },
+      "event": { "type": "reload", "acceptCheckpoints": true, "discard": [] },
+      "expect": {
+        "state": {
+          "name": "waiting",
+          "sessions": [
+            {
+              "id": "a",
+              "key": "dev:page-a",
+              "phase": "held",
+              "alive": true,
+              "pending": true,
+              "save": "stalled",
+              "savedHeads": [],
+              "schema": "failed",
+              "title": "Plan"
+            }
+          ],
+          "records": [],
+          "drafts": false,
+          "attempt": {
+            "acceptCheckpoints": true,
+            "navigated": false,
+            "live": [{ "id": "a", "key": "dev:page-a", "result": null, "savedHeads": [] }],
+            "closing": []
+          }
+        },
+        "effects": [
+          { "type": "pauseEdits", "ids": ["a"] },
+          { "type": "checkpoint", "id": "a" },
+          { "type": "startTimer", "ms": 15000 }
+        ]
+      }
+    },
+    {
+      "note": "the schema notice accepts checkpoints: a written one reloads",
+      "case": "schema-written-accepted",
+      "state": {
+        "name": "idle",
+        "sessions": [
+          {
+            "id": "a",
+            "key": "dev:page-a",
+            "phase": "held",
+            "alive": true,
+            "pending": true,
+            "save": "stalled",
+            "savedHeads": [],
+            "schema": "written",
+            "title": "Plan"
+          }
+        ],
+        "records": [],
+        "drafts": false
+      },
+      "event": { "type": "reload", "acceptCheckpoints": true, "discard": [] },
+      "expect": {
+        "state": {
+          "name": "reloading",
+          "sessions": [
+            {
+              "id": "a",
+              "key": "dev:page-a",
+              "phase": "held",
+              "alive": true,
+              "pending": true,
+              "save": "stalled",
+              "savedHeads": [],
+              "schema": "written",
+              "title": "Plan"
+            }
+          ],
+          "records": [],
+          "drafts": false
+        },
+        "effects": [{ "type": "pauseEdits", "ids": ["a"] }, { "type": "reload" }]
+      }
+    },
+    {
+      "note": "the build banner's Reload lists the open Page like a closed checkpoint",
+      "case": "schema-written-not-accepted",
+      "state": {
+        "name": "idle",
+        "sessions": [
+          {
+            "id": "a",
+            "key": "dev:page-a",
+            "phase": "held",
+            "alive": true,
+            "pending": true,
+            "save": "stalled",
+            "savedHeads": [],
+            "schema": "written",
+            "title": "Plan"
+          }
+        ],
+        "records": [],
+        "drafts": false
+      },
+      "event": { "type": "reload", "acceptCheckpoints": false, "discard": [] },
+      "expect": {
+        "state": {
+          "name": "blocked",
+          "sessions": [
+            {
+              "id": "a",
+              "key": "dev:page-a",
+              "phase": "held",
+              "alive": true,
+              "pending": true,
+              "save": "stalled",
+              "savedHeads": [],
+              "schema": "written",
+              "title": "Plan"
+            }
+          ],
+          "records": [],
+          "drafts": false,
+          "outcome": {
+            "reason": "checkpointed",
+            "pages": [
+              {
+                "key": "dev:page-a",
+                "account": "dev",
+                "pageId": "page-a",
+                "title": "Plan",
+                "checkpointWritten": true
+              }
+            ],
+            "message": "Edits on Plan haven't reached the server yet. They're saved in this browser and sync when you open that Page again."
+          }
+        },
+        "effects": [
+          { "type": "pauseEdits", "ids": ["a"] },
+          { "type": "resumeEdits", "ids": ["a"] }
+        ]
+      }
+    },
+    {
+      "case": "schema-writing",
+      "state": {
+        "name": "waiting",
+        "sessions": [
+          {
+            "id": "a",
+            "key": "dev:page-a",
+            "phase": "held",
+            "alive": true,
+            "pending": true,
+            "save": "stalled",
+            "savedHeads": [],
+            "schema": "refused",
+            "title": "Plan"
+          }
+        ],
+        "records": [],
+        "drafts": false,
+        "attempt": {
+          "acceptCheckpoints": true,
+          "navigated": false,
+          "live": [{ "id": "a", "key": "dev:page-a", "result": null, "savedHeads": [] }],
+          "closing": []
+        }
+      },
+      "event": {
+        "type": "sessionPhase",
+        "id": "a",
+        "key": "dev:page-a",
+        "phase": "held",
+        "alive": true,
+        "pending": true,
+        "save": "stalled",
+        "savedHeads": [],
+        "schema": "writing",
+        "title": "Plan"
+      },
+      "expect": {
+        "state": {
+          "name": "waiting",
+          "sessions": [
+            {
+              "id": "a",
+              "key": "dev:page-a",
+              "phase": "held",
+              "alive": true,
+              "pending": true,
+              "save": "stalled",
+              "savedHeads": [],
+              "schema": "writing",
+              "title": "Plan"
+            }
+          ],
+          "records": [],
+          "drafts": false,
+          "attempt": {
+            "acceptCheckpoints": true,
+            "navigated": false,
+            "live": [{ "id": "a", "key": "dev:page-a", "result": null, "savedHeads": [] }],
+            "closing": []
+          }
+        },
+        "effects": []
+      }
+    },
+    {
+      "note": "refusal, then checkpoint, then reload without the host's receipt",
+      "case": "schema-written-reloads",
+      "state": {
+        "name": "waiting",
+        "sessions": [
+          {
+            "id": "a",
+            "key": "dev:page-a",
+            "phase": "held",
+            "alive": true,
+            "pending": true,
+            "save": "stalled",
+            "savedHeads": [],
+            "schema": "writing",
+            "title": "Plan"
+          }
+        ],
+        "records": [],
+        "drafts": false,
+        "attempt": {
+          "acceptCheckpoints": true,
+          "navigated": false,
+          "live": [{ "id": "a", "key": "dev:page-a", "result": null, "savedHeads": [] }],
+          "closing": []
+        }
+      },
+      "event": {
+        "type": "sessionPhase",
+        "id": "a",
+        "key": "dev:page-a",
+        "phase": "held",
+        "alive": true,
+        "pending": true,
+        "save": "stalled",
+        "savedHeads": [],
+        "schema": "written",
+        "title": "Plan"
+      },
+      "expect": {
+        "state": {
+          "name": "reloading",
+          "sessions": [
+            {
+              "id": "a",
+              "key": "dev:page-a",
+              "phase": "held",
+              "alive": true,
+              "pending": true,
+              "save": "stalled",
+              "savedHeads": [],
+              "schema": "written",
+              "title": "Plan"
+            }
+          ],
+          "records": [],
+          "drafts": false
+        },
+        "effects": [{ "type": "reload" }]
+      }
+    },
+    {
+      "note": "the edits stay pending in the open tab",
+      "case": "schema-failed-blocks",
+      "state": {
+        "name": "waiting",
+        "sessions": [
+          {
+            "id": "a",
+            "key": "dev:page-a",
+            "phase": "held",
+            "alive": true,
+            "pending": true,
+            "save": "stalled",
+            "savedHeads": [],
+            "schema": "writing",
+            "title": "Plan"
+          }
+        ],
+        "records": [],
+        "drafts": false,
+        "attempt": {
+          "acceptCheckpoints": true,
+          "navigated": false,
+          "live": [{ "id": "a", "key": "dev:page-a", "result": null, "savedHeads": [] }],
+          "closing": []
+        }
+      },
+      "event": {
+        "type": "sessionPhase",
+        "id": "a",
+        "key": "dev:page-a",
+        "phase": "held",
+        "alive": true,
+        "pending": true,
+        "save": "stalled",
+        "savedHeads": [],
+        "schema": "failed",
+        "title": "Plan"
+      },
+      "expect": {
+        "state": {
+          "name": "blocked",
+          "sessions": [
+            {
+              "id": "a",
+              "key": "dev:page-a",
+              "phase": "held",
+              "alive": true,
+              "pending": true,
+              "save": "stalled",
+              "savedHeads": [],
+              "schema": "failed",
+              "title": "Plan"
+            }
+          ],
+          "records": [],
+          "drafts": false,
+          "outcome": {
+            "message": "Your edits on this Page couldn't be saved in this browser, so Pages won't reload. Keep this tab open and try Reload again."
+          }
+        },
+        "effects": [{ "type": "resumeEdits", "ids": ["a"] }]
+      }
+    },
+    {
+      "case": "schema-checkpoint-slow",
+      "state": {
+        "name": "waiting",
+        "sessions": [
+          {
+            "id": "a",
+            "key": "dev:page-a",
+            "phase": "held",
+            "alive": true,
+            "pending": true,
+            "save": "stalled",
+            "savedHeads": [],
+            "schema": "writing",
+            "title": "Plan"
+          }
+        ],
+        "records": [],
+        "drafts": false,
+        "attempt": {
+          "acceptCheckpoints": true,
+          "navigated": false,
+          "live": [{ "id": "a", "key": "dev:page-a", "result": null, "savedHeads": [] }],
+          "closing": []
+        }
+      },
+      "event": { "type": "timeout" },
+      "expect": {
+        "state": {
+          "name": "blocked",
+          "sessions": [
+            {
+              "id": "a",
+              "key": "dev:page-a",
+              "phase": "held",
+              "alive": true,
+              "pending": true,
+              "save": "stalled",
+              "savedHeads": [],
+              "schema": "writing",
+              "title": "Plan"
+            }
+          ],
+          "records": [],
+          "drafts": false,
+          "outcome": {
+            "message": "Your latest edits haven't saved yet, so Pages won't reload. Check your connection and try again."
+          }
+        },
+        "effects": [{ "type": "resumeEdits", "ids": ["a"] }]
+      }
+    },
+    {
+      "note": "the banner's Reload was waiting on a receipt; the host's refusal starts the checkpoint",
+      "case": "schema-refused-mid-attempt",
+      "state": {
+        "name": "waiting",
+        "sessions": [
+          {
+            "id": "a",
+            "key": "dev:page-a",
+            "phase": "held",
+            "alive": true,
+            "pending": true,
+            "save": "saving",
+            "savedHeads": []
+          }
+        ],
+        "records": [],
+        "drafts": false,
+        "attempt": {
+          "acceptCheckpoints": false,
+          "navigated": false,
+          "live": [{ "id": "a", "key": "dev:page-a", "result": null, "savedHeads": [] }],
+          "closing": []
+        }
+      },
+      "event": {
+        "type": "sessionPhase",
+        "id": "a",
+        "key": "dev:page-a",
+        "phase": "held",
+        "alive": true,
+        "pending": true,
+        "save": "stalled",
+        "savedHeads": [],
+        "schema": "refused",
+        "title": "Plan"
+      },
+      "expect": {
+        "state": {
+          "name": "waiting",
+          "sessions": [
+            {
+              "id": "a",
+              "key": "dev:page-a",
+              "phase": "held",
+              "alive": true,
+              "pending": true,
+              "save": "stalled",
+              "savedHeads": [],
+              "schema": "refused",
+              "title": "Plan"
+            }
+          ],
+          "records": [],
+          "drafts": false,
+          "attempt": {
+            "acceptCheckpoints": false,
+            "navigated": false,
+            "live": [{ "id": "a", "key": "dev:page-a", "result": null, "savedHeads": [] }],
+            "closing": []
+          }
+        },
+        "effects": [{ "type": "checkpoint", "id": "a" }]
+      }
+    },
+    {
+      "note": "only the first report of the hold asks for a checkpoint",
+      "case": "schema-refused-again",
+      "state": {
+        "name": "waiting",
+        "sessions": [
+          {
+            "id": "a",
+            "key": "dev:page-a",
+            "phase": "held",
+            "alive": true,
+            "pending": true,
+            "save": "stalled",
+            "savedHeads": [],
+            "schema": "refused",
+            "title": "Plan"
+          }
+        ],
+        "records": [],
+        "drafts": false,
+        "attempt": {
+          "acceptCheckpoints": false,
+          "navigated": false,
+          "live": [{ "id": "a", "key": "dev:page-a", "result": null, "savedHeads": [] }],
+          "closing": []
+        }
+      },
+      "event": {
+        "type": "sessionPhase",
+        "id": "a",
+        "key": "dev:page-a",
+        "phase": "held",
+        "alive": true,
+        "pending": true,
+        "save": "saving",
+        "savedHeads": [],
+        "schema": "refused",
+        "title": "Plan"
+      },
+      "expect": {
+        "state": {
+          "name": "waiting",
+          "sessions": [
+            {
+              "id": "a",
+              "key": "dev:page-a",
+              "phase": "held",
+              "alive": true,
+              "pending": true,
+              "save": "saving",
+              "savedHeads": [],
+              "schema": "refused",
+              "title": "Plan"
+            }
+          ],
+          "records": [],
+          "drafts": false,
+          "attempt": {
+            "acceptCheckpoints": false,
+            "navigated": false,
+            "live": [{ "id": "a", "key": "dev:page-a", "result": null, "savedHeads": [] }],
+            "closing": []
+          }
+        },
         "effects": []
       }
     }

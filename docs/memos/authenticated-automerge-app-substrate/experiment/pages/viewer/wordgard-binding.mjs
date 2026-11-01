@@ -16,6 +16,7 @@ import {
 } from "./wordgard-model.mjs";
 import { projectChanges } from "./wordgard-projection.mjs";
 import { MARK_NAMES, markExpand } from "../model/marks.mjs";
+import { stampMarks, stampSpans } from "../model/schema-features.mjs";
 
 // Enter inserts LineBreak leaves, while Wordgard's code clipboard parser can
 // insert text containing newlines. Keep one editor representation before local
@@ -229,8 +230,14 @@ export function createWordgardBinding(replica, id, { encodeSpans = encode } = {}
         },
       );
       return replica.change((d) => {
-        if (structural) A.updateSpans(d, path, encodeSpans(tr.newDoc), expand);
-        else {
+        // Schema features this transaction's content needs join the Page's
+        // stamp in the same change.
+        if (structural) {
+          const spans = encodeSpans(tr.newDoc);
+          A.updateSpans(d, path, spans, expand);
+          stampSpans(d, spans);
+        } else {
+          const written = new Set();
           for (const range of [...replacements].reverse()) {
             const from = original.map.wgToAm[range.from],
               to = original.map.wgToAm[range.to];
@@ -259,8 +266,11 @@ export function createWordgardBinding(replica, id, { encodeSpans = encode } = {}
               ]);
               for (const name of names) {
                 const range = { start: pos, end: pos + length, expand: markExpand(name) };
-                if (desired[name] !== undefined) A.mark(d, path, range, name, desired[name]);
-                else if (present.some((mark) => mark.name === name)) A.unmark(d, path, range, name);
+                if (desired[name] !== undefined) {
+                  A.mark(d, path, range, name, desired[name]);
+                  written.add(name);
+                } else if (present.some((mark) => mark.name === name))
+                  A.unmark(d, path, range, name);
               }
               pos += length;
             }
@@ -271,9 +281,12 @@ export function createWordgardBinding(replica, id, { encodeSpans = encode } = {}
             if (end <= start) continue;
             for (const name of format.remove ?? [])
               A.unmark(d, path, { start, end, expand: "both" }, name);
-            for (const [name, value] of Object.entries(format.add ?? {}))
+            for (const [name, value] of Object.entries(format.add ?? {})) {
               A.mark(d, path, { start, end, expand: markExpand(name) }, name, value);
+              written.add(name);
+            }
           }
+          stampMarks(d, written);
         }
         if (!decode(A.spans(d, path)).doc.eq(tr.newDoc))
           throw Error("Wordgard operation did not reproduce its native Pages projection");
