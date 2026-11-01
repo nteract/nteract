@@ -93,13 +93,14 @@ test("opening a Page that ends in a code block, table or image writes nothing", 
     "```js\nlet x = 1\n```",
     "| a | b |\n| --- | --- |\n| 1 | 2 |",
     `Caption ${image}`,
-    "<div>preserved markup</div>",
   ]) {
     const f = fixture(markdown);
     assert.ok(finalBlock(f.editor.state.doc), markdown);
     assert.equal(f.changes(), 0, markdown);
   }
-  assert.equal(finalBlock(fixture("Just prose").editor.state.doc), null);
+  // Escaped HTML is literal text in a paragraph, like prose.
+  for (const markdown of ["Just prose", "\\<div>literal markup\\</div>"])
+    assert.equal(finalBlock(fixture(markdown).editor.state.doc), null, markdown);
 });
 
 test("ArrowDown on the last line of a final code block, table or image adds a paragraph", () => {

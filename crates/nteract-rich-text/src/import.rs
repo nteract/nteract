@@ -85,7 +85,10 @@ pub fn markdown_to_spans(source: &str, options: &ImportOptions<'_>) -> Result<Ve
     // The general check behind the specific ones: anything the Markdown
     // carried that the spans lost keeps the whole source literal, as the
     // JavaScript `lostContent` does.
-    if !builder.carried.preserved_in(&Carried::from_spans(&builder.spans)) {
+    if !builder
+        .carried
+        .preserved_in(&Carried::from_spans(&builder.spans))
+    {
         return literal_document(original);
     }
     validate_spans(&builder.spans)?;
@@ -702,14 +705,21 @@ impl Carried {
                         .get("link")
                         .and_then(Value::as_str)
                         .and_then(|link| serde_json::from_str::<Value>(link).ok())
-                        .and_then(|link| link.get("href").and_then(Value::as_str).map(str::to_owned))
+                        .and_then(|link| {
+                            link.get("href").and_then(Value::as_str).map(str::to_owned)
+                        })
                     {
                         produced.links.insert(href);
                     }
                 }
                 Span::Block { value } if value.kind == "image" => {
                     let attr = |key: &str| {
-                        value.attrs.get(key).and_then(Value::as_str).unwrap_or("").to_owned()
+                        value
+                            .attrs
+                            .get(key)
+                            .and_then(Value::as_str)
+                            .unwrap_or("")
+                            .to_owned()
                     };
                     produced.images.insert((attr("src"), attr("alt")));
                 }
@@ -722,7 +732,11 @@ impl Carried {
     /// Whether `produced` holds everything this carried: all visible text
     /// with whitespace removed, every link destination and every image.
     fn preserved_in(&self, produced: &Self) -> bool {
-        let squash = |text: &str| text.chars().filter(|c| !c.is_whitespace()).collect::<String>();
+        let squash = |text: &str| {
+            text.chars()
+                .filter(|c| !c.is_whitespace())
+                .collect::<String>()
+        };
         squash(&self.text) == squash(&produced.text)
             && self.links.is_subset(&produced.links)
             && self.images.is_subset(&produced.images)
@@ -1083,7 +1097,9 @@ impl Builder<'_> {
                 }
                 Node::ImageReference(reference) => {
                     let (url, title) = self.definition(&reference.identifier)?;
-                    self.carried.images.insert((url.clone(), reference.alt.clone()));
+                    self.carried
+                        .images
+                        .insert((url.clone(), reference.alt.clone()));
                     self.highlighted_image |= self.highlight.is_some();
                     self.marker(
                         "image",
@@ -1333,7 +1349,9 @@ mod tests {
                 let source = wrap(fixture["markdown"].as_str().unwrap());
                 let spans = import(&source);
                 assert!(
-                    !spans.iter().any(|span| matches!(span, Span::Block { value } if value.kind == "pages-opaque")),
+                    !spans.iter().any(
+                        |span| matches!(span, Span::Block { value } if value.kind == "pages-opaque")
+                    ),
                     "{source}"
                 );
                 if spans == literal_document(&source).unwrap() {
@@ -1368,7 +1386,10 @@ mod tests {
                 checked += 1;
             }
         }
-        assert!(checked > 500 && literal > 0, "{checked} checked, {literal} literal");
+        assert!(
+            checked > 500 && literal > 0,
+            "{checked} checked, {literal} literal"
+        );
         // The case the specific rules missed.
         let source = "| a |\n| - |\n| [<br>](https://example.org) |";
         assert_eq!(import(source), literal_document(source).unwrap());
