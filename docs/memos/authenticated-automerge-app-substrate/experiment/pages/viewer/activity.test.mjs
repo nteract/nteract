@@ -159,6 +159,8 @@ test("agent presence entries are validated one at a time", async () => {
   assert.deepEqual([...snapshot.agents.keys()], ["a1"]);
   assert.deepEqual(snapshot.agents.get("a1").targets, [{ kind: "block", block_id: "b1" }]);
   assert.equal(snapshot.agents.get("a1").until, 5000 + 15_000);
+  // A host that publishes no idle_at fades nothing on this clock.
+  assert.equal(snapshot.agents.get("a1").fadesAt, null);
   // An older host sends no agents at all.
   const older = activitySnapshot({
     kind: "page-activity",
@@ -324,4 +326,63 @@ test("a caret and a lease merge only within one MCP session", async () => {
       ["c2", ["B"]],
     ],
   );
+});
+
+test("a caret fades and expires on the viewer's clock from the times the host published", async () => {
+  const { activitySnapshot, agentStateAt, agentParticipants } = await import("./activity.mjs");
+  const observed = "2026-10-31T00:00:00.000Z";
+  const snapshot = activitySnapshot(
+    {
+      kind: "page-activity",
+      epoch: "e",
+      revision: 1,
+      observed_at: observed,
+      progress: [],
+      agents: [
+        {
+          agent_id: "a1",
+          principal: "user:kyle",
+          displayName: "Kyle",
+          driver: "Kilo",
+          state: "active",
+          seq: 1,
+          targets: [{ kind: "block", block_id: "b1" }],
+          updated_at: observed,
+          idle_at: "2026-10-31T00:00:15.000Z",
+          expires_at: "2026-10-31T00:01:00.000Z",
+        },
+        {
+          agent_id: "r1",
+          principal: "user:kyle",
+          displayName: "Kyle",
+          driver: "Kilo",
+          agent: "reader",
+          state: "reading",
+          seq: 1,
+          targets: [{ kind: "block", block_id: "b1" }],
+          updated_at: observed,
+          idle_at: null,
+          expires_at: "2026-10-31T00:00:10.000Z",
+        },
+      ],
+    },
+    5000,
+  );
+  const caret = snapshot.agents.get("a1");
+  assert.equal(caret.fadesAt, 5000 + 15_000);
+  assert.equal(caret.until, 5000 + 60_000);
+  assert.equal(agentStateAt(caret, 5000 + 14_999), "active");
+  assert.equal(agentStateAt(caret, 5000 + 15_000), "idle");
+  const reading = snapshot.agents.get("r1");
+  assert.equal(reading.fadesAt, null);
+  assert.equal(agentStateAt(reading, 5000 + 9_999), "reading");
+  // Participants carry the state at the time asked for, and drop expired entries.
+  const session = { agentPresence: snapshot.agents, agentProgress: new Map() };
+  const stateOf = (now) =>
+    Object.fromEntries(
+      agentParticipants(session, now).map((p) => [p.presence.agent_id, p.presence.state]),
+    );
+  assert.deepEqual(stateOf(5000 + 9_999), { a1: "active", r1: "reading" });
+  assert.deepEqual(stateOf(5000 + 15_000), { a1: "idle" });
+  assert.deepEqual(stateOf(5000 + 60_000), {});
 });

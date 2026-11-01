@@ -225,6 +225,7 @@ import { countedStorage } from "./catalog-counts.mjs";
 import { forwardedPageLimit, quotaError, quotaRefusal, resolvePageQuota } from "./page-quota.mjs";
 import { serialQueue, serialQueueBounds } from "./serial-queue.mjs";
 import { holdUntilSettled } from "./request-hold.mjs";
+import { legibleEnv } from "./host-busy.mjs";
 import { readTool } from "./tool-reads.mjs";
 import { readChangesTool } from "./tool-changes.mjs";
 import { PageActivity } from "./page-activity.mjs";
@@ -725,7 +726,9 @@ async function locationView(request, env, body, signal) {
 
 export default {
   async fetch(request, env) {
-    return advertiseBuild(request, await gateway.fetch(request, env));
+    // celld answers a stub fetch to a saturated object itself, with a plain
+    // 503; the gateway is the first code that can name it (host-busy.mjs).
+    return advertiseBuild(request, await gateway.fetch(request, legibleEnv(env)));
   },
 };
 

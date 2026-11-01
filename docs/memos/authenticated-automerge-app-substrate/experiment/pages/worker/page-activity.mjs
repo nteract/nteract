@@ -6,7 +6,7 @@ import {
   resolvePeerSelection,
 } from "../model/presence.mjs";
 import { HttpError } from "./auth.mjs";
-import { AGENT_PRESENCE, deadline, transition } from "../model/agent-presence.mjs";
+import { AGENT_PRESENCE, expiry, idleAt, transition } from "../model/agent-presence.mjs";
 
 export const ACTIVITY_LIMITS = Object.freeze({
   ttl: 60_000,
@@ -30,19 +30,27 @@ const publicProgress = ({ progress_id, identity, message, targets, updatedAt, ex
   expires_at: iso(expiresAt),
 });
 const byteSize = (value) => new TextEncoder().encode(JSON.stringify(value)).byteLength;
-const publicAgent = ({ agent_id, identity, record }) => ({
-  agent_id,
-  principal: identity.principal,
-  displayName: identity.displayName,
-  driver: identity.driver,
-  agent: identity.agent ?? null,
-  session: identity.session ?? null,
-  state: record.state,
-  seq: record.seq,
-  targets: record.targets,
-  updated_at: iso(record.lastCall),
-  expires_at: iso(deadline(record)),
-});
+// A record's time-based transitions travel with it: `idle_at` is when an
+// active caret fades (null for a reading marker) and `expires_at` when the
+// entry disappears. Readers apply them on their own clocks, so the host runs
+// no timer to announce them.
+const publicAgent = ({ agent_id, identity, record }) => {
+  const fades = idleAt(record);
+  return {
+    agent_id,
+    principal: identity.principal,
+    displayName: identity.displayName,
+    driver: identity.driver,
+    agent: identity.agent ?? null,
+    session: identity.session ?? null,
+    state: record.state,
+    seq: record.seq,
+    targets: record.targets,
+    updated_at: iso(record.lastCall),
+    idle_at: fades === null ? null : iso(fades),
+    expires_at: iso(expiry(record)),
+  };
+};
 const assertSize = (value, limit = ACTIVITY_LIMITS.snapshotBytes) => {
   if (byteSize(value) > limit)
     throw Object.assign(
@@ -64,6 +72,13 @@ const keys = new Set([
 
 /** Observations have leases, not document history. Tokens stay in this instance
  * and are never included in a roster, broadcast, durable receipt, or storage.
+ *
+ * Expiry is lazy: `prune()` runs before every read, snapshot and event, and
+ * every published entry carries its own `expires_at` (and `idle_at` for a
+ * caret), which viewers apply on their clocks. The host sets no timer for it.
+ * Under celld a timer belongs to the request that set it and keeps that
+ * request in flight until it fires, so a 60 s presence timer per edit would
+ * hold a slot of the Page's per-cell request limit for a minute per edit.
  */
 export class PageActivity {
   constructor({
@@ -203,23 +218,12 @@ export class PageActivity {
     if (byteSize(next) > ACTIVITY_LIMITS.snapshotBytes) return false;
     this.agents = candidate;
     this.revision++;
-    this.schedule();
     this.onChange(this.snapshotOf());
     return true;
   }
 
-  schedule() {
-    clearTimeout(this.timer);
-    const deadlines = [
-      ...[...this.progress.values()].map((record) => record.expiresAt),
-      ...[...this.selections.values()].map((record) => record.expiresAt),
-      ...[...this.agents.values()].map(({ record }) => deadline(record)),
-    ];
-    if (!deadlines.length) return;
-    this.timer = setTimeout(() => this.prune(), Math.max(1, Math.min(...deadlines) - this.now()));
-    this.timer.unref?.();
-  }
-
+  /** Drop what has expired and advance agent records that have faded. A
+   * changed roster is broadcast; an unchanged one is not. */
   prune() {
     const now = this.now();
     let changed = false;
@@ -248,7 +252,6 @@ export class PageActivity {
       )
         this.selections.delete(senderId);
     }
-    this.schedule();
     if (changed) {
       this.revision++;
       this.onChange(this.snapshotOf());
@@ -325,7 +328,6 @@ export class PageActivity {
     if (args.clear) {
       this.progress.delete(args.progress_id);
       this.revision++;
-      this.schedule();
       this.onChange(this.snapshotOf());
       return { page_id: this.pageId, progress_id: args.progress_id, cleared: true };
     }
@@ -360,7 +362,6 @@ export class PageActivity {
     assertSize(this.snapshotOf(candidate, this.revision + 1, now));
     this.progress = candidate;
     this.revision++;
-    this.schedule();
     this.onChange(this.snapshotOf());
     return {
       page_id: this.pageId,
@@ -378,7 +379,6 @@ export class PageActivity {
     const profile = profiles[senderId];
     if (message.value === null) {
       this.selections.delete(senderId);
-      this.schedule();
       return;
     }
     const value = validatePeerSelection(message.value);
@@ -392,7 +392,6 @@ export class PageActivity {
       observedAt: now,
       expiresAt: now + ACTIVITY_LIMITS.selectionTtl,
     });
-    this.schedule();
   }
 
   read(doc) {
@@ -430,7 +429,6 @@ export class PageActivity {
   }
 
   close() {
-    clearTimeout(this.timer);
     this.selections.clear();
     this.progress.clear();
     this.agents.clear();

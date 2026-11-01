@@ -2,7 +2,13 @@ import * as A from "@automerge/automerge/slim";
 import { Decoration } from "wordgard/editor";
 import { selectionContext } from "../model/comments.mjs";
 import { resolvePeerSelection } from "../model/presence.mjs";
-import { activityIdentity, agentKey, newestProgressFirst, progressPassages } from "./activity.mjs";
+import {
+  activityIdentity,
+  agentKey,
+  agentStateAt,
+  newestProgressFirst,
+  progressPassages,
+} from "./activity.mjs";
 import { monotonicNow } from "./monotonic.mjs";
 import { presenceColor } from "./presence-color.mjs";
 
@@ -187,6 +193,11 @@ export function createWordgardCollaboration({
       if (agent.until <= at) continue;
       const identity = activityIdentity(agent);
       const message = messages.get(agentKey(agent))?.message ?? "";
+      // The state on this clock: a published "active" record may have faded
+      // since, with no new roster to say so. Opacity and the select beat
+      // both follow it, so a target that attaches late never fills an idle
+      // caret.
+      const state = agentStateAt(agent, at);
       const base = {
         session: `agent:${agent.agent_id}`,
         // "Kyle's Kilo · release agent": account, harness, session label.
@@ -196,7 +207,7 @@ export function createWordgardCollaboration({
         tag: "agent",
         title: agent.agent ? `${identity.label} (${agent.agent})` : identity.label,
         color: presenceColor(agent.principal, agent.driver, agent.agent, agent.session),
-        idle: agent.state === "idle",
+        idle: state === "idle",
         message,
       };
       for (const target of agent.targets) {
@@ -214,7 +225,7 @@ export function createWordgardCollaboration({
           const key = `${agent.agent_id}:${agent.seq}`;
           live.add(key);
           if (!beats.has(key)) beats.set(key, at);
-          const beat = agent.state === "active" && from < to ? beats.get(key) + SELECT_BEAT_MS : 0;
+          const beat = state === "active" && from < to ? beats.get(key) + SELECT_BEAT_MS : 0;
           // The write this caret marks. Idle fades and text shifting the caret
           // keep it; only the agent's next record changes it.
           const anchor = `${key}:${target.end}`;
