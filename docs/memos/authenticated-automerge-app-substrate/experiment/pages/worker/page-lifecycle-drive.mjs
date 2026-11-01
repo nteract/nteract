@@ -51,9 +51,6 @@ const ROUTES = {
 const REASONS = {
   "Page not found": "page_not_found",
   "Document access denied": "not_owner",
-  "idempotency_key was used for a different request": "idempotency_conflict",
-  "Page changed; read_page again before editing": "heads_mismatch",
-  "base_heads from read_page are required": "heads_invalid",
   "This credential is read-only": "read_only",
 };
 

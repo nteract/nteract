@@ -128,9 +128,33 @@ export function createImageUploader({
     abort = null;
   const current = () =>
     alive && isCurrent() && replica.alive !== false && replica.canWrite !== false;
+  // A data: URL of the chosen file shows it at the insertion point while it
+  // uploads (the page CSP allows data: images, not blob:). Dropped when the
+  // job ends; the page then shows the stored asset.
+  const release = (attempt) => {
+    if (attempt) attempt.preview = null;
+  };
+  const readPreview = (attempt) => {
+    if (typeof FileReader !== "function") return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      if (job !== attempt || !abort || typeof reader.result !== "string") return;
+      attempt.preview = reader.result;
+      onState({
+        pending: true,
+        message: "Uploading image…",
+        retryable: false,
+        target: attempt.target,
+        preview: attempt.preview,
+        name: String(attempt.file?.name ?? ""),
+      });
+    };
+    reader.readAsDataURL(attempt.file);
+  };
   const cancel = () => {
     abort?.abort();
     abort = null;
+    release(job);
     job = null;
     if (alive) onState(null);
   };
@@ -138,7 +162,14 @@ export function createImageUploader({
     if (!current() || job !== attempt) return;
     const controller = new AbortController();
     abort = controller;
-    onState({ pending: true, message: "Uploading image…", retryable: false });
+    onState({
+      pending: true,
+      message: "Uploading image…",
+      retryable: false,
+      target: attempt.target,
+      preview: attempt.preview ?? null,
+      name: String(attempt.file?.name ?? ""),
+    });
     try {
       validateFile(attempt.file);
       resolveImageInsertion(replica, attempt.target, getMap());
@@ -175,6 +206,7 @@ export function createImageUploader({
       job = null;
       abort = null;
       onState(null);
+      release(attempt);
     } catch (error) {
       if (controller.signal.aborted || !alive || job !== attempt) return;
       // Once dispatch may have run, require a new placement rather than risking
@@ -203,8 +235,14 @@ export function createImageUploader({
         onState({ pending: false, message: "Add one image at a time.", retryable: false });
         return;
       }
-      job = { file: files[0], target };
-      return run(job);
+      release(job);
+      job = { file: files[0], target, preview: null };
+      const running = run(job);
+      try {
+        validateFile(files[0]);
+        readPreview(job);
+      } catch {}
+      return running;
     },
     retry() {
       if (job && !job.asset && !abort) return run(job);

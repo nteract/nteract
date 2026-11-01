@@ -253,17 +253,57 @@ const targets = Object.freeze({
     tunnelService: "cloudflared-page9.service",
     frozenTargets: Object.freeze(["page7", "page8"]),
   }),
+  // A fresh, empty target with no data or route compatibility with Page9.
+  page10: Object.freeze({
+    deployment: Object.freeze({
+      host: shared.host,
+      hostname: "page10.runtimed.run",
+      service: "nteract-page10",
+      bucket: shared.bucket,
+      prefix: "standalone/page10",
+      region: shared.region,
+      listen: "127.0.0.1:9480",
+      internalListen: "127.0.0.1:19480",
+      runtime: shared.runtime,
+      requiredVersion: shared.requiredVersion,
+    }),
+    sharing: true,
+    oauth: true,
+    theme: true,
+    // The viewer loads its editor from content-hashed /chunks/*.js files.
+    viewerChunks: true,
+    // The shell's own files (app.js, app.css, theme.js, mermaid.js and both
+    // WASM runtimes) ship under content-hashed names too.
+    viewerAssets: true,
+    // A Project opens at /project/<id>; older /s/<id> links open it too.
+    projectLinks: true,
+    // The viewer's index routes: /projects and /pages.
+    indexRoutes: true,
+    firewallTable: "nteract_page10",
+    firewallMark: "0x00200000",
+    firewallComment: "nteract/preview-infra standalone-page10",
+    asyncPersistence: true,
+    compactRecords: true,
+    companyViewDomains: "anaconda.com",
+    catalogIndex: "1",
+    // The Cloudflare edge forwards an unsampled traceparent, and celld's
+    // default parent-based sampler then drops every request-scoped log line.
+    otelTracesSampler: "always_on",
+    editor: "wordgard",
+    tunnelService: "cloudflared-page10.service",
+    frozenTargets: Object.freeze(["page7", "page8", "page9"]),
+  }),
 });
 export function deploymentProfile(target = "pages-next") {
   if (!Object.hasOwn(targets, target)) throw new Error("Unknown Pages deployment target");
   return targets[target];
 }
-// This release is qualified only for the isolated Page9 prefix.
+// This release is qualified only for the isolated Page10 prefix.
 // Historical profiles remain readable for comparison and frozen-release checks.
 export function assertQualifiedDeploymentTarget(target) {
   deploymentProfile(target);
-  if (target !== "page9")
-    throw new Error("This build is qualified only for page9; earlier deployments are frozen");
+  if (target !== "page10")
+    throw new Error("This build is qualified only for page10; earlier deployments are frozen");
 }
 
 export function selectTarget(argv) {

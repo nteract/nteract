@@ -332,7 +332,10 @@ test("progress carries the agent's session label so it merges with its caret", (
     page_id: pageId,
     message: "Reviewing",
   });
-  f.activity.report(f.doc, agentIdentity({ driver: "Kilo" }), { page_id: pageId, message: "Plain" });
+  f.activity.report(f.doc, agentIdentity({ driver: "Kilo" }), {
+    page_id: pageId,
+    message: "Plain",
+  });
   assert.deepEqual(
     f.broadcasts.at(-1).progress.map((p) => [p.message, p.agent]),
     [

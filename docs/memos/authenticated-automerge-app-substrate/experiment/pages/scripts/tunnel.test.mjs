@@ -10,6 +10,7 @@ import {
   provisionTunnel,
   removeOwnedFiles,
 } from "./deployment/tunnel.mjs";
+import { provisionTarget } from "./deployment/provision.mjs";
 
 const tunnelId = "8e7399d8-7fcf-463a-b2b1-18f5512bedbd";
 
@@ -291,4 +292,270 @@ test("install never replaces a file that appeared after the check", () => {
   );
   assert.equal(readFileSync(path.join(d, "tunnel-provisioning.json"), "utf8"), "existing");
   assert.deepEqual(readdirSync(d), ["tunnel-provisioning.json"]);
+});
+
+// `deploy.mjs provision`: the tunnel step, then DNS for the tunnel it reports.
+const zone = "7de7c86232f80c97a7aabfc880186b63";
+const token = "fixture-token-never-printed";
+
+/** One Cloudflare API: the tunnel fake above plus the runtimed.run DNS zone. */
+function edge(tunnels = [], records = []) {
+  const tunnel = cloudflare(tunnels);
+  const calls = [];
+  const fetchImpl = async (url, init) => {
+    const { pathname } = new URL(url);
+    calls.push({ method: init.method, pathname, authorization: init.headers.Authorization });
+    if (pathname.includes("/cfd_tunnel")) return tunnel.fetchImpl(url, init);
+    if (pathname === `/client/v4/zones/${zone}`)
+      return Response.json({
+        success: true,
+        result: { id: zone, name: "runtimed.run", status: "active", type: "full" },
+      });
+    assert.equal(pathname, `/client/v4/zones/${zone}/dns_records`);
+    if (init.method === "POST") {
+      records = [{ ...JSON.parse(init.body), id: "a".repeat(32) }];
+      return Response.json({ success: true, result: records[0] });
+    }
+    return Response.json({
+      success: true,
+      result: records,
+      result_info: { page: 1, count: records.length, total_count: records.length },
+    });
+  };
+  return { calls, fetchImpl, records: () => records };
+}
+const etcFor = (target) => {
+  const root = mkdtempSync(path.join(tmpdir(), "provision-etc-"));
+  execFileSync("mkdir", [path.join(root, "nteract-" + target)]);
+  return root;
+};
+const page10Record = {
+  id: "a".repeat(32),
+  name: "page10.runtimed.run",
+  type: "CNAME",
+  content: `${tunnelId}.cfargotunnel.com`,
+  proxied: true,
+  ttl: 1,
+  comment: "nteract/pages:experiment:page10",
+};
+
+for (const target of ["pages-next", "page3", "page4", "page5", "page6", "page7", "page8", "page9"])
+  for (const apply of [false, true])
+    test(`provisionTarget refuses frozen ${target} (apply: ${apply}) before any call`, async () => {
+      const cf = edge();
+      const h = host(etcFor(target));
+      await assert.rejects(
+        provisionTarget({ token, target, apply, fetchImpl: cf.fetchImpl, run: h.run }),
+        /qualified only for page10/,
+      );
+      assert.equal(cf.calls.length, 0);
+      assert.equal(h.runs.length, 0);
+    });
+
+test("provision retry after a DNS failure creates only DNS and keeps the tunnel", async () => {
+  const root = etcFor("page10");
+  const cf = edge();
+  const failing = async (url, init) => {
+    const { pathname } = new URL(url);
+    if (pathname.endsWith("/dns_records") && init.method === "POST")
+      return Response.json(
+        { success: false, errors: [{ code: 1000, message: "boom" }] },
+        { status: 500 },
+      );
+    return cf.fetchImpl(url, init);
+  };
+  await assert.rejects(
+    provisionTarget({
+      token,
+      target: "page10",
+      apply: true,
+      fetchImpl: failing,
+      run: host(root).run,
+    }),
+  );
+  const credentials = readFileSync(path.join(root, "nteract-page10", "tunnel.json"), "utf8");
+  assert.deepEqual(cf.records(), []);
+
+  const retry = edge([{ id: tunnelId, name: "nteract-page10" }]);
+  const result = await provisionTarget({
+    token,
+    target: "page10",
+    apply: true,
+    fetchImpl: retry.fetchImpl,
+    run: host(root).run,
+  });
+  assert.equal(result.tunnel.created, false);
+  assert.equal(result.tunnel.installed, true);
+  assert.equal(result.dns.changed, true);
+  assert.deepEqual(retry.records(), [page10Record]);
+  assert.equal(
+    retry.calls.filter(
+      ({ method, pathname }) => method === "POST" && pathname.endsWith("/cfd_tunnel"),
+    ).length,
+    0,
+  );
+  assert.equal(readFileSync(path.join(root, "nteract-page10", "tunnel.json"), "utf8"), credentials);
+});
+
+test("provision inspection before anything exists makes only tunnel reads", async () => {
+  const cf = edge();
+  const h = host(etcFor("page10"));
+  const result = await provisionTarget({
+    token,
+    target: "page10",
+    fetchImpl: cf.fetchImpl,
+    run: h.run,
+  });
+  assert.deepEqual(result, {
+    target: "page10",
+    applied: false,
+    tunnel: { name: "nteract-page10", tunnelId: null, created: false, installed: false },
+    dns: null,
+  });
+  assert.deepEqual(
+    cf.calls.map(({ method, pathname }) => method + " " + pathname.split("/").at(-1)),
+    ["GET cfd_tunnel"],
+  );
+  assert.equal(h.runs.length, 0);
+});
+
+test("provision --apply creates the tunnel, installs it, then points DNS at it", async () => {
+  const root = etcFor("page10");
+  const cf = edge();
+  const result = await provisionTarget({
+    token,
+    target: "page10",
+    apply: true,
+    fetchImpl: cf.fetchImpl,
+    run: host(root).run,
+  });
+  assert.deepEqual(result, {
+    target: "page10",
+    applied: true,
+    tunnel: { name: "nteract-page10", tunnelId, created: true, installed: true },
+    dns: {
+      name: "page10.runtimed.run",
+      target: `${tunnelId}.cfargotunnel.com`,
+      present: true,
+      recordId: "a".repeat(32),
+      changed: true,
+    },
+  });
+  // Tunnel first, then DNS; one create each.
+  assert.deepEqual(
+    cf.calls.map(({ method, pathname }) => method + " " + pathname.split("/").at(-1)),
+    [
+      "GET cfd_tunnel",
+      "POST cfd_tunnel",
+      "GET " + zone,
+      "GET dns_records",
+      "POST dns_records",
+      "GET dns_records",
+    ],
+  );
+  assert.deepEqual(cf.records(), [page10Record]);
+  // The token travels only as the bearer header; the result holds no secret.
+  assert.ok(cf.calls.every(({ authorization }) => authorization === `Bearer ${token}`));
+  assert.equal(JSON.stringify(result).includes(token), false);
+  assert.equal(JSON.stringify(result).includes("TunnelSecret"), false);
+  const d = path.join(root, "nteract-page10");
+  assert.deepEqual(readdirSync(d).sort(), ["tunnel-provisioning.json", "tunnel.json"]);
+  assert.equal(statSync(path.join(d, "tunnel.json")).mode & 0o777, 0o600);
+
+  // A rerun finds both and creates nothing.
+  const again = edge([{ id: tunnelId, name: "nteract-page10" }], cf.records());
+  const rerun = await provisionTarget({
+    token,
+    target: "page10",
+    apply: true,
+    fetchImpl: again.fetchImpl,
+    run: host(root).run,
+  });
+  assert.equal(rerun.tunnel.created, false);
+  assert.equal(rerun.dns.changed, false);
+  assert.ok(again.calls.every(({ method }) => method === "GET"));
+
+  // Inspection afterwards reports both present and writes nothing.
+  const inspect = edge([{ id: tunnelId, name: "nteract-page10" }], cf.records());
+  const seen = await provisionTarget({
+    token,
+    target: "page10",
+    fetchImpl: inspect.fetchImpl,
+    run: host(root).run,
+  });
+  assert.equal(seen.applied, false);
+  assert.equal(seen.tunnel.installed, true);
+  assert.equal(seen.dns.present, true);
+  assert.ok(inspect.calls.every(({ method }) => method === "GET"));
+});
+
+test("provision inspection of an installed tunnel reports missing DNS without creating it", async () => {
+  const root = etcFor("page10");
+  await provisionTunnel({
+    token,
+    target: "page10",
+    apply: true,
+    fetchImpl: cloudflare().fetchImpl,
+    run: host(root).run,
+  });
+  const cf = edge([{ id: tunnelId, name: "nteract-page10" }]);
+  const result = await provisionTarget({
+    token,
+    target: "page10",
+    fetchImpl: cf.fetchImpl,
+    run: host(root).run,
+  });
+  assert.equal(result.tunnel.installed, true);
+  assert.deepEqual(result.dns, {
+    name: "page10.runtimed.run",
+    target: `${tunnelId}.cfargotunnel.com`,
+    present: false,
+    recordId: null,
+    changed: false,
+  });
+  assert.ok(cf.calls.every(({ method }) => method === "GET"));
+});
+
+test("provision refuses a DNS record another target owns", async () => {
+  const root = etcFor("page10");
+  await provisionTunnel({
+    token,
+    target: "page10",
+    apply: true,
+    fetchImpl: cloudflare().fetchImpl,
+    run: host(root).run,
+  });
+  const foreign = { ...page10Record, comment: "nteract/pages:experiment:page9" };
+  const cf = edge([{ id: tunnelId, name: "nteract-page10" }], [foreign]);
+  await assert.rejects(
+    provisionTarget({
+      token,
+      target: "page10",
+      apply: true,
+      fetchImpl: cf.fetchImpl,
+      run: host(root).run,
+    }),
+    /conflicts with exact Pages ownership/,
+  );
+  assert.ok(cf.calls.every(({ method }) => method === "GET"));
+  assert.deepEqual(cf.records(), [foreign]);
+});
+
+test("provision without a token stops before Cloudflare or the host", async () => {
+  for (const missing of [undefined, ""]) {
+    const cf = edge();
+    const h = host(etcFor("page10"));
+    await assert.rejects(
+      provisionTarget({
+        token: missing,
+        target: "page10",
+        apply: true,
+        fetchImpl: cf.fetchImpl,
+        run: h.run,
+      }),
+      /Cloudflare token required/,
+    );
+    assert.equal(cf.calls.length, 0);
+    assert.equal(h.runs.length, 0);
+  }
 });

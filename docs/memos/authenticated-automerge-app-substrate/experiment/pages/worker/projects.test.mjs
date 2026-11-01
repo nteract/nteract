@@ -1783,3 +1783,57 @@ test("a shared parent's hidden children never show through pagination", async (t
   const hidden = children.findIndex((pageId, index) => index >= 10 && !readable.includes(pageId));
   assert.deepEqual(await list(parent, { query: `Hidden ${hidden}` }), none);
 });
+
+test("MCP location refusals carry their stable codes in structuredContent", async (t) => {
+  const w = await world(t);
+  const project = await w.createProject("Codes");
+  // A home Page can't move to Trash on its own.
+  const home = await w.mcp("owner", "delete_page", {
+    page_id: project.home_page_id,
+    base_heads: w.heads(project.home_page_id),
+    idempotency_key: w.key(),
+  });
+  assert.equal(home.isError, true);
+  assert.equal(home.body.code, "home_page_protected");
+  // A parent with sub-pages stays put.
+  const parent = (await w.createPage({ title: "Parent", project_id: project.project_id })).body;
+  const child = (await w.createPage({ title: "Child", parent_id: parent.page_id })).body;
+  const busy = await w.mcp("owner", "delete_page", {
+    page_id: parent.page_id,
+    base_heads: w.heads(parent.page_id),
+    idempotency_key: w.key(),
+  });
+  assert.equal(busy.body.code, "page_has_children");
+  // A parent in another Project, and a parent in Trash.
+  const other = await w.createProject("Other");
+  const mismatch = await w.mcp("owner", "create_page", {
+    title: "Wrong",
+    project_id: other.project_id,
+    parent_id: child.page_id,
+    idempotency_key: w.key(),
+  });
+  assert.equal(mismatch.body.code, "placement_mismatch");
+  const trashed = await w.call("owner", "delete_page", {
+    page_id: child.page_id,
+    base_heads: w.heads(child.page_id),
+    idempotency_key: w.key(),
+  });
+  assert.equal(trashed.status, 200, JSON.stringify(trashed.body));
+  const underTrash = await w.mcp("owner", "create_page", {
+    title: "Orphan",
+    parent_id: child.page_id,
+    idempotency_key: w.key(),
+  });
+  assert.equal(underTrash.body.code, "parent_unavailable");
+  // One level past the model's depth limit.
+  let deepest = parent.page_id;
+  for (let depth = 2; depth <= MAX_DEPTH; depth++)
+    deepest = (await w.createPage({ title: `Depth ${depth}`, parent_id: deepest })).body.page_id;
+  const tooDeep = await w.mcp("owner", "create_page", {
+    title: "Too deep",
+    parent_id: deepest,
+    idempotency_key: w.key(),
+  });
+  assert.equal(tooDeep.isError, true);
+  assert.equal(tooDeep.body.code, "nesting_depth_exceeded");
+});

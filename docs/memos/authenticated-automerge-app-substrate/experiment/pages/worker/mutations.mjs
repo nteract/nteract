@@ -7,9 +7,10 @@ import { inspectOperation, reserveOperation, listOperationEntries } from "./oper
 
 const COMMENT_OPERATIONS = ["manage_page_comment", "reply_page_comment"];
 
-function reject(status, message) {
+function reject(status, message, code) {
   const error = new Error(message);
   error.status = status;
+  error.code = code;
   throw error;
 }
 export function mutationKey(args) {
@@ -17,7 +18,11 @@ export function mutationKey(args) {
     typeof args.idempotency_key !== "string" ||
     !/^[A-Za-z0-9_-]{8,128}$/.test(args.idempotency_key)
   )
-    reject(400, "idempotency_key must contain 8–128 letters, digits, underscores or hyphens");
+    reject(
+      400,
+      "idempotency_key must contain 8–128 letters, digits, underscores or hyphens",
+      "invalid_idempotency_key",
+    );
   return `host/operation/${args.idempotency_key}`;
 }
 export async function fingerprint(operation, args, identity) {
@@ -34,13 +39,14 @@ export function requireHeads(doc, heads) {
     !heads.length ||
     heads.some((head) => typeof head !== "string" || !/^[a-f0-9]{64}$/.test(head))
   )
-    reject(400, "base_heads from read_page are required");
+    // The same code target-scoped edits use for malformed base_heads.
+    reject(400, "base_heads from read_page are required", "invalid_edit_selector");
   const current = A.getHeads(doc).sort();
   if (
     heads.length !== current.length ||
     [...heads].sort().some((head, index) => head !== current[index])
   )
-    reject(409, "Page changed; read_page again before editing");
+    reject(409, "Page changed; read_page again before editing", "stale_heads");
 }
 
 /** Journal the exact CRDT edit under shared native history admission. Retrying
