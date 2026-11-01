@@ -1004,6 +1004,36 @@ batches to cross the configured durability barrier before acknowledging heads.
 The browser retains pending state through bounded receipt retries; sign-in failure
 pauses them until renewal. A client timeout does not cancel or reorder persistence.
 
+### Request limits
+
+celld admits at most `CELLD_MAX_CELL_REQUESTS` requests (64 in 0.6.3) to one
+Durable Object at a time. A request counts from admission until its context is
+quiet: the response has been sent, every `waitUntil` promise has settled, and
+every timer the request or a callback of one of its timers created has fired or
+been cleared. A timer that reschedules itself from its own callback keeps the
+request that started the chain counted for the chain's whole life. At the limit
+celld answers the stub fetch itself, before any Pages code runs for that
+request, with a plain-text `503 cell request limit reached`, and logs
+`cell_overload_refused` with `in_flight` and `limit` (about one line per
+second; the count understates). The gateway turns that body into the JSON
+refusal `503 page_busy` with `retryable: true`, `retry_after_ms` and a
+`Retry-After` header ([host-busy.mjs](worker/host-busy.mjs)); a refused request
+did no work, so the same request, key and token can be sent again.
+
+The host keeps its own holds short. Record persistence waits one second after a
+write before flushing, so a tool write stays counted for about a second. Agent
+presence sets no timer: its entries carry `idle_at` and `expires_at`, the host
+prunes when it next reads or publishes the roster, and viewers apply the times
+on their own clocks (see Agent carets). Before this, every `patch_page` and
+`edit_page` stayed counted for 60 s, the caret's fade and expiry, so a Page that
+was already near the limit refused every request for a minute after one edit
+([#4654](https://github.com/nteract/nteract/issues/4654)).
+[comments-scale.test.mjs](worker/comments-scale.test.mjs) builds a Page with
+200 threads and 1,000 messages over a buffered record store and checks that a
+`patch_page` holds only the one-second flush timer, leaves no timer behind
+(tracking through the background work, so a timer a callback sets is seen),
+that the work settles within budget, and that reads during that window succeed.
+
 ### Outbound edits
 
 Every editor transaction is one Automerge change, and the browser stores it in
@@ -1465,6 +1495,8 @@ action on a missing thread, message or block is `400 invalid_comment_selector`
 (a `thread_ids` batch adds `not_found_thread_ids`). A full account is
 `409 page_quota_exceeded` and a full Trash `409 trash_capacity`; both carry
 `limit` and `count` (see Page quotas).
+A Page at celld's per-cell request limit is `503 page_busy` with `retryable: true`
+and `retry_after_ms` (see Request limits).
 An MCP result has no HTTP status, so [mcp.mjs](mcp.mjs) names any refusal the
 Worker left uncoded by its status (`access_denied`, `not_found`, `conflict` and
 so on). It adds `retryable: true` to `stale_heads`, whose retry is a new request
@@ -1501,7 +1533,12 @@ Targets are Automerge cursors captured inside the change, so they follow
 concurrent typing. They travel in the `page-activity` snapshot and are never
 written to the document, a receipt or the journal; a replayed receipt publishes
 nothing. A caret is active for 15 s after a write, then fades, and disappears 60 s
-after the agent's last call; a reading marker lasts 10 s. Only API credentials
+after the agent's last call; a reading marker lasts 10 s. Each published entry
+carries those times as `idle_at` and `expires_at`, and the browser applies them
+on its own clock. The host prunes when it next reads or publishes the roster and
+sets no timer for it: under celld a timer belongs to the request that set it and
+keeps that request counted against the Page's per-cell request limit until it
+fires (see [Request limits](#request-limits)). Only API credentials
 (an API key or MCP OAuth) get presence: a browser sign-in session publishes
 nothing, since that person's editor shows their own caret. A caret reads
 "Kyle's Kilo · release agent": the account, the `x-pages-driver` harness and an

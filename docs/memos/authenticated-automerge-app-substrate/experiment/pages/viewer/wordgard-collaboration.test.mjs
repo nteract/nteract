@@ -419,6 +419,7 @@ const agent = (doc, targets, extra = {}) => ({
   seq: 1,
   targets,
   until: 1_000_000,
+  fadesAt: null,
   ...extra,
 });
 const textAt = (doc, kind, from, to) => ({ kind, ...presence(doc, from, to) });
@@ -453,7 +454,14 @@ test("an agent write fills the changed text, then collapses to a labeled caret",
   [caret] = h.collaboration.carets();
   assert.equal(caret.type, "caret");
 
-  // Idle: still placed, faded, no fill.
+  // The host publishes when the caret fades; this clock applies it.
+  h.replica.agentPresence.get("agent-1").fadesAt = 2000;
+  [caret] = h.collaboration.carets();
+  assert.equal(caret.idle, false);
+  h.setTime(2000);
+  [caret] = h.collaboration.carets();
+  assert.equal(caret.idle, true, "faded on the viewer's clock");
+  // Idle from the host: still placed, faded, no fill.
   h.replica.agentPresence.get("agent-1").state = "idle";
   [caret] = h.collaboration.carets();
   assert.equal(caret.idle, true);
@@ -461,6 +469,45 @@ test("an agent write fills the changed text, then collapses to a labeled caret",
   // A new write (next seq) gets its own beat.
   h.replica.agentPresence.set("agent-1", agent(doc, [textAt(doc, "text", 0, 4)], { seq: 2 }));
   assert.equal(h.collaboration.nextRepaint(), 600);
+});
+
+test("a target that attaches after the caret has faded gets no select beat", () => {
+  // A caret whose cursors name a change this replica hasn't received yet,
+  // fading at 16 s on the harness clock.
+  const late = () => {
+    const doc = fixture("Ship on Tuesday morning.");
+    const h = harness(doc);
+    const ahead = A.change(A.clone(doc), (d) => A.splice(d, textPath("first"), 0, 0, "Please "));
+    const at = "Please Ship on ".length;
+    h.replica.agentPresence = new Map([
+      [
+        "agent-1",
+        agent(ahead, [textAt(ahead, "text", at, at + "Tuesday".length)], { fadesAt: 16_000 }),
+      ],
+    ]);
+    assert.deepEqual(h.collaboration.carets(), [], "pending until the change arrives");
+    return { h, ahead };
+  };
+  const fills = (h) =>
+    entries(h.collaboration.ranges()).filter((e) =>
+      (e.value.elt.attrs[e.value.elt.attrs.indexOf("class") + 1] ?? "").includes("agent-selection"),
+    );
+  // The change arrives after the caret faded, with no new roster to say so.
+  const faded = late();
+  faded.h.setTime(20_000);
+  faded.h.replica.doc = A.merge(faded.h.replica.doc, faded.ahead);
+  const [caret] = faded.h.collaboration.carets();
+  assert.equal(caret.type, "caret");
+  assert.equal(caret.idle, true);
+  assert.equal(fills(faded.h).length, 0, "no beat for an idle caret");
+  assert.equal(faded.h.collaboration.nextRepaint(), null);
+  // The same late attachment before the fade still gets its beat.
+  const fresh = late();
+  fresh.h.setTime(5000);
+  fresh.h.replica.doc = A.merge(fresh.h.replica.doc, fresh.ahead);
+  assert.equal(fresh.h.collaboration.carets()[0].idle, false);
+  assert.equal(fills(fresh.h).length, 1);
+  assert.equal(fresh.h.collaboration.nextRepaint(), 600);
 });
 
 test("an agent caret's anchor survives text shifts and idle, and changes with the next write", () => {
