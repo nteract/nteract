@@ -469,16 +469,20 @@ test("replacement at either link boundary stays linked without absorbing adjacen
   }
 });
 
-test("mixed formatting retains only common marks, leaves neighboring marks unchanged, and reports what it dropped", () => {
-  for (const [source, expected, dropped] of [
-    ["Before **old** *words* after.", "Before new phrase after.", ["strong", "em"]],
-    ["Before **keep old** words after.", "Before **keep** new phrase after.", ["strong"]],
+test("a marked word replaced whole keeps its mark, as retyping it would; neighbors are untouched", () => {
+  // Each word is replaced within its own run, so each run continues through
+  // the new word and nothing is reported.
+  for (const [source, expected] of [
+    ["Before **old** *words* after.", "Before **new** *phrase* after."],
+    ["Before **keep old** words after.", "Before **keep new** phrase after."],
     [
       'Before [old **words**](https://example.com "Title") after.',
-      'Before [new phrase](https://example.com "Title") after.',
-      ["strong"],
+      'Before [new **phrase**](https://example.com "Title") after.',
     ],
-    ["Before [old](https://example.com) words after.", "Before new phrase after.", ["link"]],
+    [
+      "Before [old](https://example.com) words after.",
+      "Before [new](https://example.com) phrase after.",
+    ],
   ]) {
     const { doc, id } = fixture(source);
     const { after, result } = replace(doc, id, {
@@ -486,53 +490,111 @@ test("mixed formatting retains only common marks, leaves neighboring marks uncha
       replacement: "new phrase",
     });
     assert.equal(projectPage(after).blocks[0].markdown, expected, source);
+    assert.deepEqual(result.edits, [{ op: "replace_match", block_id: id, matched: 1 }], source);
+    richDoc(after.blocks[id]).check();
+  }
+  // Rewritten as one run, the marks are crossed: the new text is plain and
+  // every partial mark is reported.
+  for (const [source, expected, dropped] of [
+    ["Before **old** *words* after.", "Before brand-new after.", ["strong", "em"]],
+    ["Before **keep old** words after.", "Before **keep** brand-new after.", ["strong"]],
+    ["Before [old](https://example.com) words after.", "Before brand-new after.", ["link"]],
+  ]) {
+    const { doc, id } = fixture(source);
+    const { after, result } = replace(doc, id, {
+      match_text: "old words",
+      replacement: "brand-new",
+    });
+    assert.equal(projectPage(after).blocks[0].markdown, expected, source);
     const [edit] = result.edits;
-    assert.equal(edit.matched, 1);
     assert.equal(edit.warnings.length, 1, source);
     assert.equal(edit.warnings[0].code, "marks_dropped");
     assert.deepEqual(edit.warnings[0].marks, dropped, source);
   }
 });
 
-test("replace_match reports partial marks it dropped, with their ranges in the match", () => {
-  // The audit's repro: both code spans sit inside the match, neither covers it.
-  // Each insertion lands inside a code span, so the inserted letters are
-  // plain there and both spans are reported; the untouched letters keep code.
+test("text inserted inside a mark run continues it; the audit repro stays code with no warning", () => {
+  // Both code spans sit inside the match, neither covers it; each insertion
+  // lands strictly inside one, so the run continues through the new letters.
   const { doc, id } = fixture("The `rotate()` helper is in `worker/keys.mjs`.");
   const match_text = "The rotate() helper is in worker/keys.mjs.";
   const replacement = "The rotateKey() helper is in worker/signing-keys.mjs.";
   const { after, result } = replace(doc, id, { match_text, replacement });
-  assert.equal(richDoc(after.blocks[id]).textContent, replacement);
   assert.equal(
     projectPage(after).blocks[0].markdown,
-    "The `rotate`Key`()` helper is in `worker/`signing-`keys.mjs`.",
+    "The `rotateKey()` helper is in `worker/signing-keys.mjs`.",
   );
-  assert.deepEqual(result.edits, [
+  assert.deepEqual(result.edits, [{ op: "replace_match", block_id: id, matched: 1 }]);
+  richDoc(after.blocks[id]).check();
+
+  // A word changed inside a link keeps the href; the link is partial to the match.
+  const linked = fixture('See [the old words here](https://example.com "Title") now.');
+  const relinked = replace(linked.doc, linked.id, {
+    match_text: "See the old words here now.",
+    replacement: "See the new words here now.",
+  });
+  assert.equal(
+    projectPage(relinked.after).blocks[0].markdown,
+    'See [the new words here](https://example.com "Title") now.',
+  );
+  assert.equal(relinked.result.edits[0].warnings, undefined);
+
+  // A whole word replaced inside a bold run stays bold; two words, too.
+  const bold = fixture("Say **one two three** now.");
+  const rebold = replace(bold.doc, bold.id, {
+    match_text: "Say one two three now.",
+    replacement: "Say one 2 3 now.",
+  });
+  assert.equal(projectPage(rebold.after).blocks[0].markdown, "Say **one 2 3** now.");
+  assert.equal(rebold.result.edits[0].warnings, undefined);
+});
+
+test("replace_match reports partial marks that inserted text started at, ended at or crossed", () => {
+  // An insertion at the end of a bold run stays plain, and the run is reported.
+  const edge = fixture("Some **bold** rest.");
+  const extended = replace(edge.doc, edge.id, {
+    match_text: "bold rest",
+    replacement: "bolder rest",
+  });
+  assert.equal(projectPage(extended.after).blocks[0].markdown, "Some **bold**er rest.");
+  assert.deepEqual(extended.result.edits[0].warnings, [
     {
-      op: "replace_match",
-      block_id: id,
-      matched: 1,
-      warnings: [
-        {
-          code: "marks_dropped",
-          marks: ["code"],
-          ranges: [
-            { mark: "code", start: 4, end: 12 },
-            { mark: "code", start: 26, end: 41 },
-          ],
-          suggested_action:
-            "The replacement is plain where these marks covered only part of the match. If it should keep them, apply format_match over the right ranges of the new text.",
-        },
-      ],
+      code: "marks_dropped",
+      marks: ["strong"],
+      ranges: [{ mark: "strong", start: 0, end: 4 }],
+      suggested_action:
+        "The replacement is plain where these marks covered only part of the match. If it should keep them, apply format_match over the right ranges of the new text.",
     },
   ]);
-  for (const range of result.edits[0].warnings[0].ranges)
+  // A replacement that crosses a mark's edge is plain there, and the run is
+  // reported with the range it covered in match_text.
+  const crossing = fixture("Call `rotate()` now.");
+  const crossed = replace(crossing.doc, crossing.id, {
+    match_text: "rotate() now",
+    replacement: "rotateNow",
+  });
+  assert.equal(projectPage(crossed.after).blocks[0].markdown, "Call `rotate`Now.");
+  const [warning] = crossed.result.edits[0].warnings;
+  assert.deepEqual(warning.marks, ["code"]);
+  assert.deepEqual(warning.ranges, [{ mark: "code", start: 0, end: 8 }]);
+  // Two code spans rewritten away together are both reported.
+  const match_text = "The rotate() helper is in worker/keys.mjs.";
+  const both = fixture("The `rotate()` helper is in `worker/keys.mjs`.");
+  const rewritten = replace(both.doc, both.id, { match_text, replacement: "Rewritten entirely" });
+  assert.equal(projectPage(rewritten.after).blocks[0].markdown, "Rewritten entirely");
+  assert.deepEqual(rewritten.result.edits[0].warnings[0].ranges, [
+    { mark: "code", start: 4, end: 12 },
+    { mark: "code", start: 26, end: 41 },
+  ]);
+  for (const range of rewritten.result.edits[0].warnings[0].ranges)
     assert.ok(["rotate()", "worker/keys.mjs"].includes(match_text.slice(range.start, range.end)));
 
   // A mark reaching past the match is clamped to the part it covered.
   const partial = fixture("Before **keep old** words after.");
-  const edge = replace(partial.doc, partial.id, { match_text: "old words", replacement: "x" });
-  assert.deepEqual(edge.result.edits[0].warnings[0].ranges, [{ mark: "strong", start: 0, end: 3 }]);
+  const clamped = replace(partial.doc, partial.id, { match_text: "old words", replacement: "x" });
+  assert.deepEqual(clamped.result.edits[0].warnings[0].ranges, [
+    { mark: "strong", start: 0, end: 3 },
+  ]);
 
   // Marks shared by the whole match are kept, so nothing is reported; nor is
   // anything reported when the match is deleted, or when the partial mark's
@@ -574,20 +636,6 @@ test("replace_match reports partial marks it dropped, with their ranges in the m
     assert.equal(projectPage(quietAfter).blocks[0].markdown, expected, source);
     assert.equal(quiet.edits[0].warnings, undefined, source);
   }
-  // A partial mark inside a changed word is reported, with the range it covered.
-  const inside = fixture("The `rotate()` helper is in `worker/keys.mjs`.");
-  const changedWord = replace(inside.doc, inside.id, {
-    match_text: "rotate() helper",
-    replacement: "rotateKey() helper",
-  });
-  assert.equal(
-    projectPage(changedWord.after).blocks[0].markdown,
-    "The `rotate`Key`()` helper is in `worker/keys.mjs`.",
-  );
-  assert.deepEqual(changedWord.result.edits[0].warnings[0].marks, ["code"]);
-  assert.deepEqual(changedWord.result.edits[0].warnings[0].ranges, [
-    { mark: "code", start: 0, end: 8 },
-  ]);
 });
 
 test("mark reconciliation merges with a peer edit to untouched neighboring text", () => {
@@ -604,7 +652,7 @@ test("mark reconciliation merges with a peer edit to untouched neighboring text"
   const merged = A.merge(tool, human);
   assert.equal(
     projectPage(merged).blocks[0].markdown,
-    'Before [new phrase](https://example.com "Title") still after.',
+    'Before [new **phrase**](https://example.com "Title") still after.',
   );
   assert.equal(
     A.getCursorPosition(merged, textPath(id), cursor),

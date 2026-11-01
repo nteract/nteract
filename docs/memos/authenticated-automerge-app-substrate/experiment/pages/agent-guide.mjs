@@ -777,14 +777,17 @@ in a word you changed detaches. A replacement that rewrites too much at once to
 diff is refused with replace_match_too_large rather than applied coarsely.
 
 Inserted text keeps formatting shared by the entire matched range, including link
-destinations and titles. Formatting present on only part of the match does not
-spread across the insertion, and untouched characters keep their own marks and
-CRDT identities. When a partial mark (a code span, a link, bold...) met inserted
-text, the edit's entry carries a warning with code marks_dropped, the mark names
-and their ranges as offsets into match_text; the receipt's top-level warnings
-repeat it with edit_index and block_id. The write succeeded. If the new text should
-keep those marks, follow with format_match over the right ranges. A partial mark
-none of whose words changed still covers them and is not reported.
+destinations and titles, and a mark run that encloses the change: a word replaced
+inside a code span, a link or a bold run keeps that mark, as retyping it would, and
+text inserted strictly inside a run continues it. Untouched characters keep their
+own marks and CRDT identities. Formatting does not spread from a run's boundary
+or across its edge: when a replacement crosses a partial mark (a code span, a link,
+bold...) or an insertion lands at its boundary, the new text is plain there and the
+edit's entry carries a warning with code marks_dropped, the mark names and their
+ranges as offsets into match_text; the receipt's top-level warnings repeat it with
+edit_index and block_id. The write succeeded. If the new text should keep those
+marks, follow with format_match over the right ranges. A partial mark none of whose
+words changed still covers them and is not reported.
 
 By default conflict_scope:"page" requires the exact current Page revision. For a
 batch of only replace_match and format_match, opt into conflict_scope:"target" to

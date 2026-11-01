@@ -1413,14 +1413,17 @@ split at words unique to both sides and each piece is diffed alone, and a
 piece that is still over budget refuses the edit with
 `400 replace_match_too_large` instead of a coarse splice that would detach
 anchors on words it kept. Inserted text carries the marks shared by the whole
-match; untouched characters keep their own. When a mark that covered only part
-of the match met inserted text (its characters were replaced, or new text
-landed strictly inside it), the edit's entry and the receipt's top-level
-`warnings` carry `marks_dropped` with the mark names and their ranges as
-offsets into `match_text`, capped at 32 ranges (`ranges_truncated`), so the
-caller can reapply them with `format_match`; a partial mark none of whose words
-changed still covers them and is not reported. The agent caret covers the
-changed words.
+match, plus any mark run that encloses its splice: a word replaced wholly
+inside a code span, a link or a bold run keeps that mark, as retyping the
+word would, and text inserted strictly inside a run continues it. Untouched
+characters keep their own marks. A pure insertion at a run's boundary, or a
+replacement that crosses a run's edge, does not spread the mark; when such a
+mark covered only part of the match, the edit's entry and the receipt's
+top-level `warnings` carry `marks_dropped` with the mark names and their
+ranges as offsets into `match_text`, capped at 32 ranges (`ranges_truncated`),
+so the caller can reapply them with `format_match`. A partial mark none of
+whose words changed still covers them and is not reported. The agent caret
+covers the changed words.
 
 ### Refusal codes and tool hints
 

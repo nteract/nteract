@@ -280,23 +280,32 @@ test("a patch_page receipt names the marks a replace_match dropped, per edit and
         replacement: "Quiet sentence",
       },
       {
+        // A word retyped inside a code span keeps it: nothing to report.
         op: "replace_match",
         block_id: f.blockId,
         match_text: "The rotate() helper is in worker/keys.mjs.",
         replacement: "The rotateKey() helper is in worker/signing-keys.mjs.",
       },
+      {
+        // Rewriting the sentence crosses both code spans: plain, and reported.
+        op: "replace_match",
+        block_id: f.blockId,
+        match_text: "The rotateKey() helper is in worker/signing-keys.mjs.",
+        replacement: "Rewritten entirely.",
+      },
     ],
   };
   const receipt = await documentMutation(f.context(args, "patch_page"));
-  assert.match(f.handle.doc().blocks[f.blockId].richText, /rotateKey\(\) helper/);
-  // The quiet edit carries no warning; the second names what it dropped.
+  assert.match(f.handle.doc().blocks[f.blockId].richText, /Rewritten entirely\./);
+  // The quiet edits carry no warning; the third names what it dropped.
   assert.equal(receipt.result.edits[0].warnings, undefined);
-  const [dropped] = receipt.result.edits[1].warnings;
+  assert.equal(receipt.result.edits[1].warnings, undefined);
+  const [dropped] = receipt.result.edits[2].warnings;
   assert.equal(dropped.code, "marks_dropped");
   assert.deepEqual(dropped.marks, ["code"]);
   assert.deepEqual(dropped.ranges, [
-    { mark: "code", start: 4, end: 12 },
-    { mark: "code", start: 26, end: 41 },
+    { mark: "code", start: 4, end: 15 },
+    { mark: "code", start: 29, end: 52 },
   ]);
   // The receipt's own list repeats it with the edit it came from, beside the
   // opening-title warning this document also raises.
@@ -304,7 +313,7 @@ test("a patch_page receipt names the marks a replace_match dropped, per edit and
     receipt.warnings.map(({ code, edit_index, block_id }) => ({ code, edit_index, block_id })),
     [
       { code: "opening_heading_repeats_title", edit_index: undefined, block_id: f.blockId },
-      { code: "marks_dropped", edit_index: 1, block_id: f.blockId },
+      { code: "marks_dropped", edit_index: 2, block_id: f.blockId },
     ],
   );
   assert.deepEqual(receipt.warnings[1].ranges, dropped.ranges);

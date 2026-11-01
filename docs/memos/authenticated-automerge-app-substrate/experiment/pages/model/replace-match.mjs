@@ -321,9 +321,12 @@ function marksDroppedWarning(partial, start, end) {
  * only the words that differ between the match and the replacement are
  * spliced, so comment anchors on the rest of the match survive. The result
  * reports `matched: 1`, and a `marks_dropped` warning when a mark that
- * covered part of the match without covering all of it met inserted text:
- * the inserted characters are plain there. A partial mark none of whose words
- * changed still covers every character it did, so it is not reported. */
+ * covered part of the match without covering all of it was crossed by a
+ * replacement or touched by an insertion at its boundary: the inserted
+ * characters are plain there. A replaced word inside a mark run, or text
+ * inserted strictly inside one, continues the run; a partial mark none of
+ * whose words changed still covers every character it did; neither is
+ * reported. */
 export function replaceMatch(doc, id, input, trace) {
   const replacement = replacementLiteral(input.replacement, "replacement");
   const { path, start, end } = findUniqueVisibleRange(doc, id, input);
@@ -331,17 +334,28 @@ export function replaceMatch(doc, id, input, trace) {
   const covers = (mark) => mark.start <= start && mark.end >= end;
   const commonMarks = overlapping.filter(covers);
   const { splices, changed } = textSplices(doc.blocks[id].richText.slice(start, end), replacement);
-  // A partial mark is dropped where it met an insertion: its characters were
-  // replaced, or new text landed strictly inside it. Judged before splicing,
-  // in the match's own offsets, so `ranges` index match_text.
+  const same = (mark) => (other) => other.name === mark.name && other.value === mark.value;
+  // Judged before splicing, in the document's offsets at that time. A splice
+  // meets a mark when the characters it replaces overlap the mark, or its
+  // insertion point touches it. A mark run that encloses the splice (the
+  // replaced characters all inside it, or a pure insertion strictly inside
+  // it) continues through the inserted text, as under a keystroke that
+  // retypes a marked word. A pure insertion at a run's boundary, or a
+  // replacement crossing its edge, does not spread the mark, and a partial
+  // mark met that way is reported as dropped.
+  const meets = (mark, { at, remove }) =>
+    remove
+      ? mark.start < start + at + remove && mark.end > start + at
+      : mark.start <= start + at && start + at <= mark.end;
+  const encloses = (mark, { at, remove }) =>
+    remove
+      ? mark.start <= start + at && start + at + remove <= mark.end
+      : mark.start < start + at && start + at < mark.end;
   const partialMarks = overlapping.filter(
     (mark) =>
       !covers(mark) &&
       splices.some(
-        (splice) =>
-          splice.insert.length &&
-          mark.start < start + splice.at + splice.remove &&
-          mark.end > start + splice.at,
+        (splice) => splice.insert.length && meets(mark, splice) && !encloses(mark, splice),
       ),
   );
   const inserted = [];
@@ -349,38 +363,39 @@ export function replaceMatch(doc, id, input, trace) {
   for (const splice of splices) {
     const at = start + splice.at + shift;
     A.splice(doc, path, at, splice.remove, splice.insert);
-    if (splice.insert.length) inserted.push({ start: at, end: at + splice.insert.length });
+    if (splice.insert.length)
+      inserted.push({
+        start: at,
+        end: at + splice.insert.length,
+        keep: [
+          ...commonMarks,
+          ...overlapping.filter((mark) => !covers(mark) && encloses(mark, splice)),
+        ],
+      });
     shift += splice.insert.length - splice.remove;
   }
-  for (const range of inserted) {
+  for (const { keep, ...range } of inserted) {
     const actual = A.marks(doc, path).filter(
       (mark) => mark.start < range.end && mark.end > range.start,
     );
     // A splice inherits marks at its insertion boundary. That can drop a
     // non-expanding link or spread a partial bold run across the insertion.
-    // Reconcile only inserted characters against marks shared by the full
-    // match; untouched characters keep their own marks.
+    // Reconcile only inserted characters against the marks they keep: those
+    // shared by the full match, and the runs that enclose this insertion.
+    // Untouched characters keep their own marks.
     for (const mark of actual)
-      if (!commonMarks.some((common) => common.name === mark.name && common.value === mark.value))
-        A.unmark(doc, path, { ...range, expand: "none" }, mark.name);
-    for (const mark of commonMarks)
+      if (!keep.some(same(mark))) A.unmark(doc, path, { ...range, expand: "none" }, mark.name);
+    for (const mark of keep)
       if (
         !actual.some(
           (current) =>
-            current.name === mark.name &&
-            current.value === mark.value &&
-            current.start <= range.start &&
-            current.end >= range.end,
+            same(mark)(current) && current.start <= range.start && current.end >= range.end,
         )
       )
         A.mark(doc, path, { ...range, expand: markExpand(mark.name) }, mark.name, mark.value);
   }
-  // Inserted text carries the marks shared by the whole match.
   if (inserted.length)
-    stampMarks(
-      doc,
-      commonMarks.map((mark) => mark.name),
-    );
+    stampMarks(doc, [...new Set(inserted.flatMap(({ keep }) => keep.map((mark) => mark.name)))]);
   // The caret covers the words that changed; a replacement that changed
   // nothing shows the match it addressed.
   trace?.push({
