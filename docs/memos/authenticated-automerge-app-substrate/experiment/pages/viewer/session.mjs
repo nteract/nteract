@@ -44,6 +44,7 @@ import { activitySnapshot, presenceLabel } from "./activity.mjs";
 import { checkpointRecords } from "./checkpoint-records.mjs";
 import { preservedBlockEdits } from "../model/raw-migration.mjs";
 import { Store } from "./store.mjs";
+import { OutboundSync } from "./outbound-sync.mjs";
 import { REJECT, isLive, pauseOf, viewerSessionMachine } from "./session-machine.mjs";
 import {
   OUTAGE_ATTEMPTS,
@@ -325,6 +326,16 @@ export class PageSession {
     // receipt outages, reconnect stability, and presence and agent-progress
     // lifetimes. Readers of `peers` and `agentProgress` use it too.
     this.now = now;
+    // When local edits and the caret go out (outbound-sync-machine.mjs): a
+    // run of keystrokes shares one native sync round instead of one each.
+    // Every backend this session opens schedules its local rounds here.
+    this.outbound = new OutboundSync({
+      scheduler,
+      onError: (error) => {
+        this.problem = error instanceof Error ? error.message : String(error);
+        this.emit();
+      },
+    });
   }
   get doc() {
     return this.handle?.doc();
@@ -516,6 +527,10 @@ export class PageSession {
     ).then(() => this.#released);
   }
   #stop() {
+    // Anything still waiting goes out before the backend is released; a
+    // store after this point starts its round at once.
+    this.outbound.close();
+    this.unwatchPageLifecycle();
     this.clearPresence();
     this.cancelReceiptRetry();
     clearTimeout(this.savedTimer);
@@ -581,6 +596,7 @@ export class PageSession {
     };
     try {
       await this.repo.flush();
+      this.outbound.flush();
       await this.persistLocal({ pending: this.recoveryPending });
       await prepareLocalPageReload(
         this.identity,
@@ -1180,6 +1196,7 @@ export class PageSession {
       if (this.presenceValue) this.publishPresence(this.presenceValue);
     }, 10000);
     this.watchOnline();
+    this.watchPageLifecycle();
     if (this.connection) this.queueSaved();
     else {
       // Reopening a denied local copy must check the host once: the owner may
@@ -1194,6 +1211,35 @@ export class PageSession {
     globalThis.removeEventListener?.("online", this.onlineListener);
     this.onlineListener = () => void this.retryConnection();
     globalThis.addEventListener?.("online", this.onlineListener);
+  }
+  /** Send waiting edits and the caret at once when the person may be about
+   * to stop looking. Blur and `beforeunload` flush; a hidden tab or
+   * `pagehide` also stops batching until the tab shows again, because a
+   * hidden tab's timers may be throttled or frozen while saves still finish.
+   * Delivery before an unload is best effort: the round starts, and the
+   * browser decides whether it completes. Closing the session removes the
+   * listeners. Tests pass their own window and document. */
+  watchPageLifecycle({ page = globalThis, document = globalThis.document } = {}) {
+    this.unwatchPageLifecycle();
+    const flush = () => this.outbound.flush();
+    const hide = () => this.outbound.hide();
+    const show = () => this.outbound.show();
+    const visibility = () => (document?.visibilityState === "hidden" ? hide() : show());
+    const listeners = [
+      [page, "blur", flush],
+      [page, "beforeunload", flush],
+      [page, "pagehide", hide],
+      [page, "pageshow", visibility],
+      [document, "visibilitychange", visibility],
+    ];
+    for (const [target, type, listener] of listeners) target?.addEventListener?.(type, listener);
+    this.lifecycleListeners = listeners;
+    if (document?.visibilityState === "hidden") hide();
+  }
+  unwatchPageLifecycle() {
+    for (const [target, type, listener] of this.lifecycleListeners ?? [])
+      target?.removeEventListener?.(type, listener);
+    this.lifecycleListeners = undefined;
   }
   /**
    * Set aside unconfirmed history that rewrote a preserved Markdown block,
@@ -1288,6 +1334,7 @@ export class PageSession {
       storage: this.storage,
       syncTimeoutMilliseconds: 1000,
       ...BACKEND_LIMITS,
+      scheduleLocalSync: this.outbound.scheduleLocalSync,
     });
     this.repo = new Repo({ backend: this.backend });
   }
@@ -1851,8 +1898,14 @@ export class PageSession {
     this.presenceObservers.add(fn);
     return () => this.presenceObservers.delete(fn);
   }
+  /** Share this tab's caret. It goes out with the next outbound send, after
+   * the edits waiting with it, and only the newest value goes. */
   publishPresence(value) {
     this.presenceValue = value;
+    this.outbound.publish(() => this.broadcastPresence());
+  }
+  broadcastPresence() {
+    const value = this.presenceValue;
     if (
       this.handle &&
       this.alive &&
@@ -2227,6 +2280,9 @@ export class PageSession {
     };
     try {
       await this.repo.flush();
+      // Every store the flush waited for has asked to be sent. The host can
+      // only acknowledge heads it has, so start their rounds now.
+      this.outbound.flush();
       await this.persistLocal({ pending: true });
       if (!isCurrent()) return;
       if (this.problem === this.localProblem) this.problem = "";
@@ -2403,6 +2459,7 @@ export class PageSession {
    * receipt or CLOSE_DRAIN_MS; otherwise it writes its final checkpoint at
    * once. Either way it then releases the backend. Returns closeSettled(). */
   leave({ drain = true } = {}) {
+    this.outbound.flush();
     const phase = this.phase$.snapshot();
     // An access reload owns this close: it ends after archiving and the
     // replacement open. If archiving fails, the replica is live again, so
@@ -2435,6 +2492,7 @@ export class PageSession {
   restore() {
     const phase = this.phase$.snapshot().name;
     if (phase !== "open" && phase !== "paused") return undefined;
+    this.outbound.flush();
     const { rejected, done } = this.dispatch({ type: "restore" });
     if (rejected) return undefined;
     this.#closing = done;

@@ -239,6 +239,23 @@ exactly the records a whole-document rescan before each edit would select.
 frames, signatures and wire messages are unchanged. The upstream fix belongs in
 `StorageBridge.saveBatchAll` and the delegate's `records` handling.
 
+The outbound sync patch in `patch-outbound-sync.mjs` adds an optional
+`scheduleLocalSync(id, start)` option to `SubductionBackend`. Every successful
+local store started a native sync round with each peer: a request, the peer's
+reply, then the commits it asked for. Pages makes one Automerge change per
+editor transaction, so that was a round per keystroke. With the hook, the
+application decides when a local store's round starts and can give a run of
+stores one round. `start` is the existing coalescing `scheduleSync`: a round in
+flight still absorbs it, and it does nothing after close, during deletion, or
+once the connection generation stopped. A hook that throws starts the round at
+once. Durability is unchanged: the store has persisted before the hook runs.
+Reconnect replay and session opens still start their rounds immediately, and
+without the hook the backend behaves as before. `outbound-sync.test.mjs` shows
+three stores reaching a peer only when `start` runs, in one round. Native still
+sends one frame per commit. Stored keys, frames, signatures and wire messages
+are unchanged. Upstream, this belongs in the backend options next to the
+existing sync timeout.
+
 ## Runtime evidence
 
 `upstream.test.mjs` runs real upstream Repo handles, Automerge WASM, Subduction
