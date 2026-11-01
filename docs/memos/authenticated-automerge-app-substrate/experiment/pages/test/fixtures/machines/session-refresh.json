@@ -1,0 +1,954 @@
+{
+  "machine": "session-refresh",
+  "description": "The browser's session refreshes: one request in flight, renewals join it, and a refresh that can change the answer (visible, retry) supersedes it with one fresh request. A run of unreachable answers (a restart, a gateway error, a lost connection) is tracked from its first answer and reports an outage once it has lasted 20 s. Runs against viewer/session-refresh-machine.mjs and through maintainBrowserSession in viewer/browser-session.test.mjs.",
+  "states": [
+    "idle",
+    "scheduled",
+    "requesting",
+    "superseded",
+    "stopped"
+  ],
+  "events": [
+    "refresh",
+    "settled",
+    "stop"
+  ],
+  "unreachable": [
+    [
+      "idle",
+      "settled",
+      "idle has no request in flight"
+    ],
+    [
+      "scheduled",
+      "settled",
+      "scheduled has no request in flight"
+    ]
+  ],
+  "cases": {
+    "idle/refresh": [
+      "renew",
+      "visible",
+      "retry"
+    ],
+    "requesting/refresh": [
+      "renew",
+      "visible",
+      "retry"
+    ],
+    "requesting/settled": [
+      "signedIn",
+      "signedOut",
+      "refused",
+      "failed-keep-alive",
+      "failed-idle",
+      "unreachable-first",
+      "unreachable-brief",
+      "unreachable-outage",
+      "unreachable-idle"
+    ]
+  },
+  "rows": [
+    {
+      "label": "the first refresh starts a request",
+      "case": "retry",
+      "state": {
+        "name": "idle",
+        "keepAlive": true,
+        "failingSince": null
+      },
+      "event": {
+        "type": "refresh",
+        "reason": "retry"
+      },
+      "expect": {
+        "state": {
+          "name": "requesting",
+          "keepAlive": true,
+          "failingSince": null
+        },
+        "effects": [
+          {
+            "type": "request"
+          }
+        ]
+      }
+    },
+    {
+      "label": "becoming visible while signed out asks again",
+      "case": "visible",
+      "note": "Another tab may have signed in. This is the only automatic way back from signed out.",
+      "state": {
+        "name": "idle",
+        "keepAlive": false,
+        "failingSince": null
+      },
+      "event": {
+        "type": "refresh",
+        "reason": "visible"
+      },
+      "expect": {
+        "state": {
+          "name": "requesting",
+          "keepAlive": false,
+          "failingSince": null
+        },
+        "effects": [
+          {
+            "type": "request"
+          }
+        ]
+      }
+    },
+    {
+      "label": "a stray renewal while idle does nothing",
+      "case": "renew",
+      "note": "Leaving scheduled clears the timer, so only a timer that fired as it was cleared lands here.",
+      "state": {
+        "name": "idle",
+        "keepAlive": false,
+        "failingSince": null
+      },
+      "event": {
+        "type": "refresh",
+        "reason": "renew"
+      },
+      "expect": {
+        "state": {
+          "name": "idle",
+          "keepAlive": false,
+          "failingSince": null
+        },
+        "effects": [],
+        "rejected": "No renewal is scheduled"
+      }
+    },
+    {
+      "label": "stopping while idle",
+      "state": {
+        "name": "idle",
+        "keepAlive": true,
+        "failingSince": null
+      },
+      "event": {
+        "type": "stop"
+      },
+      "expect": {
+        "state": {
+          "name": "stopped"
+        },
+        "effects": []
+      }
+    },
+    {
+      "label": "a refresh while a run is failing carries it into the request",
+      "state": {
+        "name": "scheduled",
+        "failingSince": 5000
+      },
+      "event": {
+        "type": "refresh",
+        "reason": "retry"
+      },
+      "expect": {
+        "state": {
+          "name": "requesting",
+          "keepAlive": true,
+          "failingSince": 5000
+        },
+        "effects": [
+          {
+            "type": "cancelTimer"
+          },
+          {
+            "type": "request"
+          }
+        ]
+      }
+    },
+    {
+      "label": "the renewal timer fires",
+      "state": {
+        "name": "scheduled",
+        "failingSince": null
+      },
+      "event": {
+        "type": "refresh",
+        "reason": "renew"
+      },
+      "expect": {
+        "state": {
+          "name": "requesting",
+          "keepAlive": true,
+          "failingSince": null
+        },
+        "effects": [
+          {
+            "type": "cancelTimer"
+          },
+          {
+            "type": "request"
+          }
+        ]
+      }
+    },
+    {
+      "label": "becoming visible while signed in renews early",
+      "state": {
+        "name": "scheduled",
+        "failingSince": null
+      },
+      "event": {
+        "type": "refresh",
+        "reason": "visible"
+      },
+      "expect": {
+        "state": {
+          "name": "requesting",
+          "keepAlive": true,
+          "failingSince": null
+        },
+        "effects": [
+          {
+            "type": "cancelTimer"
+          },
+          {
+            "type": "request"
+          }
+        ]
+      }
+    },
+    {
+      "label": "a caller asks while signed in",
+      "state": {
+        "name": "scheduled",
+        "failingSince": null
+      },
+      "event": {
+        "type": "refresh",
+        "reason": "retry"
+      },
+      "expect": {
+        "state": {
+          "name": "requesting",
+          "keepAlive": true,
+          "failingSince": null
+        },
+        "effects": [
+          {
+            "type": "cancelTimer"
+          },
+          {
+            "type": "request"
+          }
+        ]
+      }
+    },
+    {
+      "label": "stopping clears the renewal timer",
+      "state": {
+        "name": "scheduled",
+        "failingSince": null
+      },
+      "event": {
+        "type": "stop"
+      },
+      "expect": {
+        "state": {
+          "name": "stopped"
+        },
+        "effects": [
+          {
+            "type": "cancelTimer"
+          }
+        ]
+      }
+    },
+    {
+      "label": "a renewal joins the request in flight",
+      "case": "renew",
+      "state": {
+        "name": "requesting",
+        "keepAlive": true,
+        "failingSince": null
+      },
+      "event": {
+        "type": "refresh",
+        "reason": "renew"
+      },
+      "expect": {
+        "state": {
+          "name": "requesting",
+          "keepAlive": true,
+          "failingSince": null
+        },
+        "effects": [],
+        "rejected": "Joined the request in flight"
+      }
+    },
+    {
+      "label": "becoming visible mid-request queues a fresh request",
+      "case": "visible",
+      "note": "The request in flight may predate a sign-in in another tab.",
+      "state": {
+        "name": "requesting",
+        "keepAlive": false,
+        "failingSince": null
+      },
+      "event": {
+        "type": "refresh",
+        "reason": "visible"
+      },
+      "expect": {
+        "state": {
+          "name": "superseded",
+          "keepAlive": false,
+          "failingSince": null
+        },
+        "effects": []
+      }
+    },
+    {
+      "label": "a caller asking mid-request queues a fresh request",
+      "case": "retry",
+      "state": {
+        "name": "requesting",
+        "keepAlive": true,
+        "failingSince": null
+      },
+      "event": {
+        "type": "refresh",
+        "reason": "retry"
+      },
+      "expect": {
+        "state": {
+          "name": "superseded",
+          "keepAlive": true,
+          "failingSince": null
+        },
+        "effects": []
+      }
+    },
+    {
+      "label": "signed in: schedule the renewal, answer and apply",
+      "case": "signedIn",
+      "state": {
+        "name": "requesting",
+        "keepAlive": false,
+        "failingSince": null
+      },
+      "event": {
+        "type": "settled",
+        "outcome": "signedIn"
+      },
+      "expect": {
+        "state": {
+          "name": "scheduled",
+          "failingSince": null
+        },
+        "effects": [
+          {
+            "type": "schedule",
+            "delayMs": 60000
+          },
+          {
+            "type": "answer"
+          },
+          {
+            "type": "apply",
+            "outcome": "signedIn"
+          }
+        ]
+      }
+    },
+    {
+      "label": "signed out: answer and apply, no renewal",
+      "case": "signedOut",
+      "state": {
+        "name": "requesting",
+        "keepAlive": true,
+        "failingSince": null
+      },
+      "event": {
+        "type": "settled",
+        "outcome": "signedOut"
+      },
+      "expect": {
+        "state": {
+          "name": "idle",
+          "keepAlive": false,
+          "failingSince": null
+        },
+        "effects": [
+          {
+            "type": "answer"
+          },
+          {
+            "type": "apply",
+            "outcome": "signedOut"
+          }
+        ]
+      }
+    },
+    {
+      "label": "refused: answer and apply as signed out, no renewal",
+      "case": "refused",
+      "state": {
+        "name": "requesting",
+        "keepAlive": true,
+        "failingSince": null
+      },
+      "event": {
+        "type": "settled",
+        "outcome": "refused"
+      },
+      "expect": {
+        "state": {
+          "name": "idle",
+          "keepAlive": false,
+          "failingSince": null
+        },
+        "effects": [
+          {
+            "type": "answer"
+          },
+          {
+            "type": "apply",
+            "outcome": "refused"
+          }
+        ]
+      }
+    },
+    {
+      "label": "a transient failure while signed in retries on the next renewal",
+      "case": "failed-keep-alive",
+      "state": {
+        "name": "requesting",
+        "keepAlive": true,
+        "failingSince": null
+      },
+      "event": {
+        "type": "settled",
+        "outcome": "failed"
+      },
+      "expect": {
+        "state": {
+          "name": "scheduled",
+          "failingSince": null
+        },
+        "effects": [
+          {
+            "type": "schedule",
+            "delayMs": 60000
+          },
+          {
+            "type": "answer"
+          },
+          {
+            "type": "apply",
+            "outcome": "failed"
+          }
+        ]
+      }
+    },
+    {
+      "label": "a transient failure while signed out waits for a retry",
+      "case": "failed-idle",
+      "state": {
+        "name": "requesting",
+        "keepAlive": false,
+        "failingSince": null
+      },
+      "event": {
+        "type": "settled",
+        "outcome": "failed"
+      },
+      "expect": {
+        "state": {
+          "name": "idle",
+          "keepAlive": false,
+          "failingSince": null
+        },
+        "effects": [
+          {
+            "type": "answer"
+          },
+          {
+            "type": "apply",
+            "outcome": "failed"
+          }
+        ]
+      }
+    },
+    {
+      "label": "the first unreachable answer starts the run and renews quietly",
+      "case": "unreachable-first",
+      "state": {
+        "name": "requesting",
+        "keepAlive": true,
+        "failingSince": null
+      },
+      "event": {
+        "type": "settled",
+        "outcome": "unreachable",
+        "at": 5000
+      },
+      "expect": {
+        "state": {
+          "name": "scheduled",
+          "failingSince": 5000
+        },
+        "effects": [
+          {
+            "type": "schedule",
+            "delayMs": 60000
+          },
+          {
+            "type": "answer"
+          },
+          {
+            "type": "apply",
+            "outcome": "unreachable",
+            "outage": false
+          }
+        ]
+      }
+    },
+    {
+      "label": "a run shorter than 20 s is not an outage",
+      "case": "unreachable-brief",
+      "state": {
+        "name": "requesting",
+        "keepAlive": true,
+        "failingSince": 5000
+      },
+      "event": {
+        "type": "settled",
+        "outcome": "unreachable",
+        "at": 24999
+      },
+      "expect": {
+        "state": {
+          "name": "scheduled",
+          "failingSince": 5000
+        },
+        "effects": [
+          {
+            "type": "schedule",
+            "delayMs": 60000
+          },
+          {
+            "type": "answer"
+          },
+          {
+            "type": "apply",
+            "outcome": "unreachable",
+            "outage": false
+          }
+        ]
+      }
+    },
+    {
+      "label": "a run that has lasted 20 s reports an outage",
+      "case": "unreachable-outage",
+      "state": {
+        "name": "requesting",
+        "keepAlive": true,
+        "failingSince": 5000
+      },
+      "event": {
+        "type": "settled",
+        "outcome": "unreachable",
+        "at": 25000
+      },
+      "expect": {
+        "state": {
+          "name": "scheduled",
+          "failingSince": 5000
+        },
+        "effects": [
+          {
+            "type": "schedule",
+            "delayMs": 60000
+          },
+          {
+            "type": "answer"
+          },
+          {
+            "type": "apply",
+            "outcome": "unreachable",
+            "outage": true
+          }
+        ]
+      }
+    },
+    {
+      "label": "signed out, an unreachable answer waits for a retry and keeps its run",
+      "case": "unreachable-idle",
+      "state": {
+        "name": "requesting",
+        "keepAlive": false,
+        "failingSince": 1000
+      },
+      "event": {
+        "type": "settled",
+        "outcome": "unreachable",
+        "at": 2000
+      },
+      "expect": {
+        "state": {
+          "name": "idle",
+          "keepAlive": false,
+          "failingSince": 1000
+        },
+        "effects": [
+          {
+            "type": "answer"
+          },
+          {
+            "type": "apply",
+            "outcome": "unreachable",
+            "outage": false
+          }
+        ]
+      }
+    },
+    {
+      "label": "any other answer ends the run",
+      "case": "signedIn",
+      "state": {
+        "name": "requesting",
+        "keepAlive": true,
+        "failingSince": 5000
+      },
+      "event": {
+        "type": "settled",
+        "outcome": "signedIn",
+        "at": 90000
+      },
+      "expect": {
+        "state": {
+          "name": "scheduled",
+          "failingSince": null
+        },
+        "effects": [
+          {
+            "type": "schedule",
+            "delayMs": 60000
+          },
+          {
+            "type": "answer"
+          },
+          {
+            "type": "apply",
+            "outcome": "signedIn"
+          }
+        ]
+      }
+    },
+    {
+      "label": "a failure the server answered ends the run too",
+      "case": "failed-keep-alive",
+      "state": {
+        "name": "requesting",
+        "keepAlive": true,
+        "failingSince": 5000
+      },
+      "event": {
+        "type": "settled",
+        "outcome": "failed"
+      },
+      "expect": {
+        "state": {
+          "name": "scheduled",
+          "failingSince": null
+        },
+        "effects": [
+          {
+            "type": "schedule",
+            "delayMs": 60000
+          },
+          {
+            "type": "answer"
+          },
+          {
+            "type": "apply",
+            "outcome": "failed"
+          }
+        ]
+      }
+    },
+    {
+      "label": "stopping mid-request",
+      "state": {
+        "name": "requesting",
+        "keepAlive": true,
+        "failingSince": null
+      },
+      "event": {
+        "type": "stop"
+      },
+      "expect": {
+        "state": {
+          "name": "stopped"
+        },
+        "effects": []
+      }
+    },
+    {
+      "label": "a renewal waits for the queued request",
+      "state": {
+        "name": "superseded",
+        "keepAlive": true,
+        "failingSince": null
+      },
+      "event": {
+        "type": "refresh",
+        "reason": "renew"
+      },
+      "expect": {
+        "state": {
+          "name": "superseded",
+          "keepAlive": true,
+          "failingSince": null
+        },
+        "effects": [],
+        "rejected": "A fresh request is already queued"
+      }
+    },
+    {
+      "label": "becoming visible again queues nothing more",
+      "state": {
+        "name": "superseded",
+        "keepAlive": true,
+        "failingSince": null
+      },
+      "event": {
+        "type": "refresh",
+        "reason": "visible"
+      },
+      "expect": {
+        "state": {
+          "name": "superseded",
+          "keepAlive": true,
+          "failingSince": null
+        },
+        "effects": [],
+        "rejected": "A fresh request is already queued"
+      }
+    },
+    {
+      "label": "asking again queues nothing more",
+      "state": {
+        "name": "superseded",
+        "keepAlive": true,
+        "failingSince": null
+      },
+      "event": {
+        "type": "refresh",
+        "reason": "retry"
+      },
+      "expect": {
+        "state": {
+          "name": "superseded",
+          "keepAlive": true,
+          "failingSince": null
+        },
+        "effects": [],
+        "rejected": "A fresh request is already queued"
+      }
+    },
+    {
+      "label": "a stale signed-out answer is dropped for the fresh request",
+      "note": "No apply and no answer: the stale answer can't turn keep-alive off or sign the tab out.",
+      "state": {
+        "name": "superseded",
+        "keepAlive": false,
+        "failingSince": null
+      },
+      "event": {
+        "type": "settled",
+        "outcome": "signedOut"
+      },
+      "expect": {
+        "state": {
+          "name": "requesting",
+          "keepAlive": false,
+          "failingSince": null
+        },
+        "effects": [
+          {
+            "type": "request"
+          }
+        ]
+      }
+    },
+    {
+      "label": "a stale signed-in answer is dropped too",
+      "state": {
+        "name": "superseded",
+        "keepAlive": true,
+        "failingSince": null
+      },
+      "event": {
+        "type": "settled",
+        "outcome": "signedIn"
+      },
+      "expect": {
+        "state": {
+          "name": "requesting",
+          "keepAlive": true,
+          "failingSince": null
+        },
+        "effects": [
+          {
+            "type": "request"
+          }
+        ]
+      }
+    },
+    {
+      "label": "a stale refusal is dropped",
+      "state": {
+        "name": "superseded",
+        "keepAlive": true,
+        "failingSince": null
+      },
+      "event": {
+        "type": "settled",
+        "outcome": "refused"
+      },
+      "expect": {
+        "state": {
+          "name": "requesting",
+          "keepAlive": true,
+          "failingSince": null
+        },
+        "effects": [
+          {
+            "type": "request"
+          }
+        ]
+      }
+    },
+    {
+      "label": "a stale failure is dropped",
+      "state": {
+        "name": "superseded",
+        "keepAlive": true,
+        "failingSince": null
+      },
+      "event": {
+        "type": "settled",
+        "outcome": "failed"
+      },
+      "expect": {
+        "state": {
+          "name": "requesting",
+          "keepAlive": true,
+          "failingSince": null
+        },
+        "effects": [
+          {
+            "type": "request"
+          }
+        ]
+      }
+    },
+    {
+      "label": "a superseded unreachable answer is dropped and the run carries over",
+      "state": {
+        "name": "superseded",
+        "keepAlive": true,
+        "failingSince": 5000
+      },
+      "event": {
+        "type": "settled",
+        "outcome": "unreachable",
+        "at": 30000
+      },
+      "expect": {
+        "state": {
+          "name": "requesting",
+          "keepAlive": true,
+          "failingSince": 5000
+        },
+        "effects": [
+          {
+            "type": "request"
+          }
+        ]
+      }
+    },
+    {
+      "label": "stopping drops the queued request",
+      "state": {
+        "name": "superseded",
+        "keepAlive": true,
+        "failingSince": null
+      },
+      "event": {
+        "type": "stop"
+      },
+      "expect": {
+        "state": {
+          "name": "stopped"
+        },
+        "effects": []
+      }
+    },
+    {
+      "label": "refreshing after stop does nothing",
+      "state": {
+        "name": "stopped"
+      },
+      "event": {
+        "type": "refresh",
+        "reason": "retry"
+      },
+      "expect": {
+        "state": {
+          "name": "stopped"
+        },
+        "effects": [],
+        "rejected": "Session maintenance stopped"
+      }
+    },
+    {
+      "label": "a request in flight at stop answers only its waiters",
+      "state": {
+        "name": "stopped"
+      },
+      "event": {
+        "type": "settled",
+        "outcome": "signedIn"
+      },
+      "expect": {
+        "state": {
+          "name": "stopped"
+        },
+        "effects": [
+          {
+            "type": "answer"
+          }
+        ]
+      }
+    },
+    {
+      "label": "stopping twice",
+      "state": {
+        "name": "stopped"
+      },
+      "event": {
+        "type": "stop"
+      },
+      "expect": {
+        "state": {
+          "name": "stopped"
+        },
+        "effects": [],
+        "rejected": "Session maintenance stopped"
+      }
+    }
+  ]
+}

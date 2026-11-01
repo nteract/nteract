@@ -8,7 +8,7 @@ import {
   orderedBlockIds,
 } from "../model/page.mjs";
 import { applyComment, projectComments } from "../model/comments.mjs";
-import { captureCommentDraft, resolveCommentDraft } from "./comment-draft.mjs";
+import { captureCommentDraft, resolveCommentDraft, sendCommentDraft } from "./comment-draft.mjs";
 
 function page(markdown = "echo first / echo last") {
   const doc = A.from(createPageData({ pageId: "draft_fixture", title: "Draft fixture" }));
@@ -166,4 +166,80 @@ test("capture rejects a stale passage rather than creating a block-only comment"
     /Selected passage was removed or replaced/,
   );
   assert.throws(() => captureCommentDraft(doc, "missing", null), /Comment block was removed/);
+});
+
+function fakeSession(doc) {
+  const calls = [];
+  return {
+    doc,
+    calls,
+    comment(input, spans) {
+      calls.push({ input, spans });
+      this.doc = A.change(this.doc, (d) => applyComment(d, input, identity, spans));
+      return Promise.resolve();
+    },
+  };
+}
+
+test("sending a draft adds one thread anchored to the captured characters", async () => {
+  const doc = page("echo first / echo last"),
+    id = orderedBlockIds(doc)[0],
+    draft = captureCommentDraft(doc, id, { text: "echo", occurrence: 2 });
+  const session = fakeSession(doc);
+  // A peer inserts another copy ahead of the passage before the send.
+  const start = doc.blocks[id].richText.indexOf("echo");
+  session.doc = A.change(session.doc, (d) => A.splice(d, path(id), start, 0, "echo zero / "));
+  const threadId = await sendCommentDraft(session, draft, "Look at this one");
+  assert.deepEqual(session.calls, [
+    {
+      input: {
+        block_id: id,
+        selected_text: "echo",
+        occurrence: 3,
+        action: "add",
+        body: "Look at this one",
+        body_format: "markdown",
+      },
+      spans: undefined,
+    },
+  ]);
+  const [thread] = projectComments(session.doc);
+  assert.equal(thread.id, threadId);
+  assert.deepEqual(thread.target, draft.target);
+  assert.equal(thread.selectionContext.text, "echo");
+  assert.equal(
+    thread.selectionContext.start.offsetUtf16,
+    session.doc.blocks[id].richText.lastIndexOf("echo"),
+  );
+});
+
+test("sending a rich draft passes its native spans and Markdown together", async () => {
+  const doc = page("rich passage"),
+    id = orderedBlockIds(doc)[0],
+    draft = captureCommentDraft(doc, id, { text: "passage", occurrence: 1 });
+  // This session records the call without writing, so no thread id appears.
+  const session = {
+    doc,
+    calls: [],
+    comment(input, spans) {
+      this.calls.push({ input, spans });
+      return Promise.resolve();
+    },
+  };
+  const spans = [{ type: "text", value: "Bold" }];
+  assert.equal(await sendCommentDraft(session, draft, { markdown: "**Bold**", spans }), null);
+  assert.equal(session.calls[0].input.body, "**Bold**");
+  assert.equal(session.calls[0].spans, spans);
+});
+
+test("a draft whose passage was removed is not sent", async () => {
+  let doc = page("going away");
+  const id = orderedBlockIds(doc)[0],
+    draft = captureCommentDraft(doc, id, { text: "away", occurrence: 1 });
+  const start = doc.blocks[id].richText.indexOf("away");
+  doc = A.change(doc, (d) => A.splice(d, path(id), start, 4));
+  const session = fakeSession(doc);
+  await assert.rejects(sendCommentDraft(session, draft, "Too late"), /select it again/);
+  await assert.rejects(sendCommentDraft(session, draft, "  "), /Write a comment first/);
+  assert.deepEqual(session.calls, []);
 });

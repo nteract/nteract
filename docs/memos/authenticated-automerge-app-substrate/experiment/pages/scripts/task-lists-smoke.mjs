@@ -262,6 +262,76 @@ try {
     });
   assert.ok(geometry.width >= 44 && geometry.height >= 44, JSON.stringify(geometry));
   assert.equal(geometry.overflow, false);
+
+  // The compact mobile bar: shown while the editor has focus, pinned to the
+  // bottom of the visual viewport, formatting without losing editor focus,
+  // and no floating selection toolbar alongside it.
+  const bar = mobile.locator(".mobile-bar");
+  await expect(bar).toHaveCount(0);
+  const prose = mobile.locator(".page-block wg-content").first();
+  await prose
+    .locator("p")
+    .first()
+    .click({ position: { x: 24, y: 10 } });
+  await expect(bar).toBeVisible();
+  const placement = await bar.evaluate((element) => {
+    const r = element.getBoundingClientRect();
+    return { bottom: Math.round(r.bottom), height: innerHeight, width: Math.round(r.width) };
+  });
+  assert.equal(placement.bottom, placement.height, JSON.stringify(placement));
+  assert.equal(placement.width, 390, JSON.stringify(placement));
+  await prose
+    .locator("p")
+    .first()
+    .evaluate((paragraph) => {
+      const walker = document.createTreeWalker(paragraph, NodeFilter.SHOW_TEXT);
+      const node = walker.nextNode();
+      const range = document.createRange();
+      range.setStart(node, 0);
+      range.setEnd(node, Math.min(4, node.textContent.length));
+      getSelection().removeAllRanges();
+      getSelection().addRange(range);
+    });
+  await expect(mobile.locator(".rich-toolbar.is-contextual:not([hidden])")).toHaveCount(0);
+  const bold = bar.getByRole("button", { name: "Bold", exact: true });
+  await bold.tap();
+  await expect(bold).toHaveAttribute("aria-pressed", "true");
+  assert.ok(
+    await prose.evaluate((element) => element.contains(document.activeElement)),
+    "the editor keeps focus, so the keyboard stays up",
+  );
+  await bold.tap();
+  await bar.getByRole("button", { name: "More formatting" }).tap();
+  await expect(mobile.getByRole("menuitem", { name: "Highlight" })).toBeVisible();
+  await mobile.getByRole("menuitem", { name: "Highlight" }).tap();
+  await expect(prose.locator('mark[data-highlight="yellow"]')).toHaveCount(1);
+  await mobile.screenshot({ path: output + "/mobile-bar.png" });
+
+  // With a tall keyboard the ⋯ menu stays below the header and scrolls.
+  // Emulation has no software keyboard, so set the visible height the
+  // viewport tracker would publish for one.
+  await mobile.evaluate(() => document.documentElement.style.setProperty("--vv-height", "360px"));
+  await bar.getByRole("button", { name: "More formatting" }).tap();
+  const menu = mobile.getByRole("menu", { name: "More formatting" });
+  await expect(menu).toBeVisible();
+  const fit = await menu.evaluate((element) => {
+    const header = document.querySelector(".app-header").getBoundingClientRect();
+    return {
+      top: Math.round(element.getBoundingClientRect().top),
+      headerBottom: Math.round(header.bottom),
+      scrolls: element.scrollHeight > element.clientHeight,
+    };
+  });
+  assert.ok(fit.top >= fit.headerBottom, JSON.stringify(fit));
+  assert.ok(fit.scrolls, JSON.stringify(fit));
+
+  // Focus leaving the editor and the bar without a pointer (here, code moving
+  // it to the title) closes the menu and drops the bar.
+  await mobile.getByRole("textbox", { name: "Page title" }).evaluate((title) => title.focus());
+  await expect(menu).toHaveCount(0);
+  await expect(bar).toHaveCount(0);
+  await mobile.evaluate(() => document.documentElement.style.removeProperty("--vv-height"));
+  // A full-page screenshot resets Chromium's touch emulation, so it comes last.
   await mobile.screenshot({ path: output + "/task-lists-mobile.png", fullPage: true });
   await mobileContext.close();
   checkpoint(stage);

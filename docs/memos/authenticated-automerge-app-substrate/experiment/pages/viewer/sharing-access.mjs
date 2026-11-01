@@ -1,4 +1,5 @@
 import { request } from "./request.mjs";
+import { monotonicNow } from "./monotonic.mjs";
 
 export const SHARING_FRESH_MS = 30_000;
 // A missing company-email proof refuses one sharing change; it is not a loss of
@@ -23,7 +24,7 @@ export function sharingAvailable(session) {
 // Closing its popover does not discard verified access or interrupt a mutation.
 export function createSharingAccess(
   session,
-  { request: send = request, now = Date.now, freshMs = SHARING_FRESH_MS } = {},
+  { request: send = request, now = monotonicNow, freshMs = SHARING_FRESH_MS } = {},
 ) {
   const { pageId } = session,
     principal = session.identity?.principal,

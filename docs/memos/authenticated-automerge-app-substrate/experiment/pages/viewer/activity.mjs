@@ -1,4 +1,15 @@
-import { resolveProgressTargets, resolvePeerSelection } from "../model/presence.mjs";
+import {
+  resolveProgressTargets,
+  resolvePeerSelection,
+  validatePeerSelection,
+} from "../model/presence.mjs";
+import { AGENT_PRESENCE, STATES } from "../model/agent-presence.mjs";
+import { monotonicNow } from "./monotonic.mjs";
+
+// Activity lifetimes are elapsed time on the session's monotonic clock
+// (PageSession.now, monotonic.mjs): `until` and a peer's `at` are readings of
+// it, so `now` must be too.
+const sessionNow = (session) => session.now?.() ?? monotonicNow();
 
 const bounded = (value, max) =>
   typeof value === "string" && value.length > 0 && value.length <= max;
@@ -10,7 +21,7 @@ const endpoint = (value, blockId) =>
 
 // Keep only the presentation fields from the authenticated host. In particular,
 // a lease token or arbitrary caller-supplied identity never reaches UI state.
-export function activitySnapshot(message, now = Date.now()) {
+export function activitySnapshot(message, now = monotonicNow()) {
   if (
     !message ||
     message.kind !== "page-activity" ||
@@ -39,6 +50,9 @@ export function activitySnapshot(message, now = Date.now()) {
       return null;
     const remaining = Date.parse(item.expires_at) - observedAt;
     if (!Number.isFinite(remaining) || remaining > 60000) return null;
+    // When the host accepted this update, as a duration before the snapshot,
+    // so ordering uses the host's clock carried onto this session's clock.
+    const age = observedAt - Date.parse(item.updated_at);
     const targets = [];
     for (const anchor of item.targets) {
       if (
@@ -71,12 +85,73 @@ export function activitySnapshot(message, now = Date.now()) {
         principal: item.principal,
         displayName: item.displayName,
         driver: item.driver,
+        agent: bounded(item.agent, 128) ? item.agent : null,
         message: item.message,
         targets,
         until: now + remaining,
+        updated: now - (Number.isFinite(age) && age >= 0 ? age : 0),
       });
   }
-  return { epoch: message.epoch, revision: message.revision, progress };
+  return {
+    epoch: message.epoch,
+    revision: message.revision,
+    progress,
+    agents: agentSnapshot(message.agents, observedAt, now),
+  };
+}
+
+const TEXT_KINDS = ["text", "hit", "passage"];
+
+// Agent entries are validated one at a time: a bad entry drops only itself, so
+// a newer host's agent fields never hide progress or other agents.
+function agentSnapshot(agents, observedAt, now) {
+  const result = new Map();
+  if (!Array.isArray(agents)) return result;
+  for (const item of agents.slice(0, AGENT_PRESENCE.agents)) {
+    if (
+      !item ||
+      !bounded(item.agent_id, 128) ||
+      result.has(item.agent_id) ||
+      !bounded(item.principal, 512) ||
+      !bounded(item.displayName, 256) ||
+      !bounded(item.driver, 128) ||
+      !STATES.includes(item.state) ||
+      !Number.isSafeInteger(item.seq) ||
+      item.seq < 1 ||
+      !Array.isArray(item.targets) ||
+      item.targets.length > AGENT_PRESENCE.maxTargets
+    )
+      continue;
+    const remaining = Date.parse(item.expires_at) - observedAt;
+    if (!Number.isFinite(remaining) || remaining > AGENT_PRESENCE.idleMs || remaining <= 0)
+      continue;
+    const targets = [];
+    for (const target of item.targets) {
+      if (target?.kind === "block" && bounded(target.block_id, 128))
+        targets.push({ kind: "block", block_id: target.block_id });
+      else if (TEXT_KINDS.includes(target?.kind)) {
+        const value = validatePeerSelection(target);
+        if (value) targets.push({ kind: target.kind, ...value });
+      }
+    }
+    result.set(item.agent_id, {
+      agent_id: item.agent_id,
+      principal: item.principal,
+      displayName: item.displayName,
+      driver: item.driver,
+      agent:
+        item.agent === null || item.agent === undefined
+          ? null
+          : bounded(item.agent, 128)
+            ? item.agent
+            : null,
+      state: item.state,
+      seq: item.seq,
+      targets,
+      until: now + remaining,
+    });
+  }
+  return result;
 }
 
 export function activityIdentity(identity) {
@@ -86,7 +161,7 @@ export function activityIdentity(identity) {
   return { name, driver, delegated, label: delegated ? `${driver} on behalf of ${name}` : name };
 }
 
-export function progressPassages(session, now = Date.now()) {
+export function progressPassages(session, now = sessionNow(session)) {
   const result = [];
   for (const progress of session.agentProgress?.values() ?? []) {
     if (progress.until <= now) continue;
@@ -98,8 +173,50 @@ export function progressPassages(session, now = Date.now()) {
   return result;
 }
 
-export function pageActivity(session, now = Date.now(), { resolveSelections = true } = {}) {
+/** Newest accepted update first. Expiry can't order updates: the host caps a
+ * lease at its credential's expiry, so two late reports can share one. */
+export const newestProgressFirst = (a, b) =>
+  b.updated - a.updated ||
+  (a.progress_id < b.progress_id ? 1 : a.progress_id > b.progress_id ? -1 : 0);
+
+/** One key per agent session: account, harness and optional session label.
+ * A caret and a progress lease with the same key are one participant. */
+export const agentKey = (item) =>
+  [item.principal ?? "", item.driver ?? "", item.agent ?? ""].join("\u0000");
+
+/** Agents in this Page, merged: each has its caret or reading marker (if any)
+ * and its live progress leases, newest first. */
+export function agentParticipants(session, now = sessionNow(session)) {
+  const participants = new Map();
+  const entry = (item) => {
+    const key = agentKey(item);
+    if (!participants.has(key))
+      participants.set(key, {
+        key,
+        principal: item.principal,
+        displayName: item.displayName,
+        driver: item.driver,
+        agent: item.agent ?? null,
+        presence: null,
+        progress: [],
+      });
+    return participants.get(key);
+  };
+  for (const item of session.agentPresence?.values() ?? [])
+    if (item.until > now) entry(item).presence = item;
+  for (const item of session.agentProgress?.values() ?? [])
+    if (item.until > now) entry(item).progress.push(item);
+  for (const participant of participants.values()) participant.progress.sort(newestProgressFirst);
+  return [...participants.values()];
+}
+
+export function pageActivity(
+  session,
+  now = sessionNow(session),
+  { resolveSelections = true } = {},
+) {
   const progress = [...(session.agentProgress?.values() ?? [])].filter((item) => item.until > now);
+  const agents = agentParticipants(session, now);
   const peers = [...(session.peers ?? [])]
     .filter(([, item]) => now - item.at <= 30000)
     .map(([id, item]) => ({
@@ -107,5 +224,5 @@ export function pageActivity(session, now = Date.now(), { resolveSelections = tr
       ...item,
       ...(resolveSelections ? { selection: resolvePeerSelection(session.doc, item.value) } : {}),
     }));
-  return { progress, peers };
+  return { progress, agents, peers };
 }

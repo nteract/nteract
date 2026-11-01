@@ -1,10 +1,29 @@
 import * as A from "@automerge/automerge/slim";
 import {
   findUniqueVisibleRange,
+  formatMarks,
+  formatMatch,
   replacementLiteral,
   replaceMatch,
   visibleRangeAddress,
 } from "./replace-match.mjs";
+
+// Operations a target-scoped batch may contain. Both find one literal range
+// the same way; replace_match changes its text, format_match its marks.
+const PASSAGE_OPS = new Set(["replace_match", "format_match"]);
+const applyPassage = (doc, input) =>
+  input.op === "format_match"
+    ? formatMatch(doc, input.block_id, input)
+    : replaceMatch(doc, input.block_id, input);
+// The same input checks format_match makes, raised before any guard work.
+function validateFormat(input) {
+  formatMarks(input.add);
+  const remove = input.remove ?? [];
+  if (!Array.isArray(remove) || remove.some((name) => typeof name !== "string"))
+    throw Error("remove must be a list of mark names");
+  if (!Object.keys(input.add ?? {}).length && !remove.length)
+    throw Error("format_match requires add or remove");
+}
 
 const invalid = (message) => {
   throw Object.assign(Error(message), { status: 400, code: "invalid_edit_selector" });
@@ -90,7 +109,8 @@ function remapTarget(target, patches, conflict) {
   return { start, end };
 }
 
-/** Prepare an explicitly target-scoped, literal-text-only batch against a
+/** Prepare an explicitly target-scoped batch of replace_match and format_match
+ * operations against a
  * captured current snapshot. Text identity, current formatting and structure
  * must still match the historical target. Toggled-back identical formatting is
  * accepted: this is a net-state check, not an audit of every intermediate edit.
@@ -117,13 +137,15 @@ export function guardPassageEdits(current, baseHeads, operations) {
     operations.some(
       (op) =>
         !op ||
-        op.op !== "replace_match" ||
+        !PASSAGE_OPS.has(op.op) ||
         typeof op.block_id !== "string" ||
         !op.block_id ||
         op.block_id.length > 128,
     )
   )
-    invalid("Target-scoped edits require 1 to 100 replace_match operations with block_id");
+    invalid(
+      "Target-scoped edits require 1 to 100 replace_match or format_match operations with block_id",
+    );
   if (!A.hasHeads(current, baseHeads))
     throw Object.assign(Error("The base revision is unavailable; read the Page again"), {
       status: 409,
@@ -156,7 +178,8 @@ export function guardPassageEdits(current, baseHeads, operations) {
       let range;
       let address;
       try {
-        replacementLiteral(input.replacement, "replacement");
+        if (input.op === "format_match") validateFormat(input);
+        else replacementLiteral(input.replacement, "replacement");
         range = findUniqueVisibleRange(base, id, input);
         address = visibleRangeAddress(base, id, range.start, range.end);
       } catch (error) {
@@ -239,7 +262,14 @@ export function guardPassageEdits(current, baseHeads, operations) {
               target.last
           )
             conflict(target, "batch_changes_target_resolution");
-          replaceMatch(draft, target.input.block_id, target.effective);
+          try {
+            applyPassage(draft, target.effective);
+          } catch (error) {
+            // A rule the operation enforces on the text it found, such as
+            // format_match refusing code text: the caller's request, not a race.
+            if (error.status) throw error;
+            invalid(error.message);
+          }
         }
       });
     } finally {

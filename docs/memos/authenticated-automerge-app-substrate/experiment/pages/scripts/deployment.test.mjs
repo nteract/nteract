@@ -191,8 +191,26 @@ test("release staging copies only built artifacts, never development credentials
         : [prefix + entry.name],
     );
   }
+  const { createHash } = await import("node:crypto");
+  const { VIEWER_ASSETS, hashedAssetPath } = await import("./viewer-chunks.mjs");
+  const sha256 = (value) => createHash("sha256").update(value).digest("hex");
+  const chunks = ["public/chunks/ABCDEFGH.js", "public/chunks/IJKLMN23.js"];
+  const certified = Object.fromEntries(chunks.map((file) => [file, sha256("artifact:" + file)]));
+  // Each shell asset's name carries the hash of its bytes.
+  const assetBytes = Object.fromEntries(
+    VIEWER_ASSETS.map((name) => [hashedAssetPath(name, "asset:" + name), "asset:" + name]),
+  );
+  const assets = Object.keys(assetBytes);
+  const certifiedAssets = Object.fromEntries(
+    Object.entries(assetBytes).map(([file, bytes]) => [file, sha256(bytes)]),
+  );
+  const receipt = JSON.stringify({ viewer_chunks: certified, viewer_assets: certifiedAssets });
+  const contents = (artifact) =>
+    artifact === "build-receipt.json" ? receipt : (assetBytes[artifact] ?? "artifact:" + artifact);
+  const hashed = [...chunks, ...assets];
+  const theme = assets.find((file) => file.startsWith("public/theme-"));
   try {
-    for (const artifact of releaseArtifacts) write(artifact, "artifact:" + artifact);
+    for (const artifact of [...releaseArtifacts, ...hashed]) write(artifact, contents(artifact));
     for (const secret of [
       ".dev.vars",
       ".env",
@@ -203,17 +221,101 @@ test("release staging copies only built artifacts, never development credentials
     ])
       write(secret, "DO NOT SHIP");
     stageArtifacts(dist, destination);
-    assert.deepEqual(files(destination).sort(), [...releaseArtifacts].sort());
-    for (const artifact of releaseArtifacts)
-      assert.equal(readFileSync(path.join(destination, artifact), "utf8"), "artifact:" + artifact);
-    assert.equal(
-      readFileSync(path.join(destination, "public/theme.js"), "utf8"),
-      "artifact:public/theme.js",
+    assert.deepEqual(files(destination).sort(), [...releaseArtifacts, ...hashed].sort());
+    for (const artifact of [...releaseArtifacts, ...hashed])
+      assert.equal(readFileSync(path.join(destination, artifact), "utf8"), contents(artifact));
+    // public/chunks must match the receipt exactly: a stale chunk from an
+    // earlier build, a missing chunk, or a receipt without the list all fail.
+    write("public/chunks/STALE234.js", "artifact:stale");
+    assert.throws(
+      () => stageArtifacts(dist, path.join(root, "stale-chunk")),
+      /differs from the viewer chunks/,
     );
-    rmSync(path.join(dist, "public/theme.js"));
-    assert.throws(() => stageArtifacts(dist, path.join(root, "missing-theme")), /theme[.]js/);
+    rmSync(path.join(dist, "public/chunks/STALE234.js"));
+    rmSync(path.join(dist, chunks[1]));
+    assert.throws(
+      () => stageArtifacts(dist, path.join(root, "missing-chunk")),
+      /differs from the viewer chunks/,
+    );
+    write(chunks[1], contents(chunks[1]));
+    // A listed chunk whose bytes changed after the build keeps its name, so
+    // only its digest gives it away. Nothing is staged.
+    write(chunks[0], "artifact:tampered");
+    assert.throws(
+      () => stageArtifacts(dist, path.join(root, "tampered-chunk")),
+      /Viewer chunk changed since the build: public[/]chunks[/]ABCDEFGH[.]js/,
+    );
+    assert.throws(() => readdirSync(path.join(root, "tampered-chunk")));
+    write(chunks[0], contents(chunks[0]));
+    for (const listed of [
+      undefined,
+      {},
+      chunks,
+      { "public/chunks/../index.js": certified[chunks[0]] },
+      { "public/app.js": certified[chunks[0]] },
+      { ...certified, [chunks[1]]: "not-a-digest" },
+      { ...certified, [chunks[1]]: certified[chunks[1]].toUpperCase() },
+    ]) {
+      write(
+        "build-receipt.json",
+        JSON.stringify({ viewer_chunks: listed, viewer_assets: certifiedAssets }),
+      );
+      assert.throws(
+        () => stageArtifacts(dist, path.join(root, "unlisted-chunks")),
+        /must list the viewer chunks with their sha256/,
+      );
+    }
+    assert.throws(() => readdirSync(path.join(root, "stale-chunk")));
+    assert.throws(() => readdirSync(path.join(root, "unlisted-chunks")));
+    // The shell assets follow the same rules, and each name must carry the
+    // hash of the digest it is listed with.
+    const { [theme]: themeDigest, ...withoutTheme } = certifiedAssets;
+    const otherTheme = hashedAssetPath("theme.js", "other theme");
+    for (const listed of [
+      undefined,
+      {},
+      assets,
+      withoutTheme,
+      { ...withoutTheme, [otherTheme]: themeDigest },
+      { ...certifiedAssets, "public/app-ABCDEFGH.js": certifiedAssets[assets[0]] },
+      { ...certifiedAssets, "public/theme.js": themeDigest },
+      { ...certifiedAssets, [theme]: themeDigest.toUpperCase() },
+    ]) {
+      write(
+        "build-receipt.json",
+        JSON.stringify({ viewer_chunks: certified, viewer_assets: listed }),
+      );
+      assert.throws(
+        () => stageArtifacts(dist, path.join(root, "unlisted-assets")),
+        /must list the viewer assets with their sha256/,
+        JSON.stringify(listed),
+      );
+    }
+    assert.throws(() => readdirSync(path.join(root, "unlisted-assets")));
+    write("build-receipt.json", receipt);
+    write(otherTheme, "other theme");
+    assert.throws(
+      () => stageArtifacts(dist, path.join(root, "stale-asset")),
+      /public differs from the viewer assets/,
+    );
+    rmSync(path.join(dist, otherTheme));
+    rmSync(path.join(dist, theme));
+    assert.throws(
+      () => stageArtifacts(dist, path.join(root, "missing-theme")),
+      /public differs from the viewer assets/,
+    );
     assert.throws(() => readdirSync(path.join(root, "missing-theme")));
-    write("public/theme.js", "artifact:public/theme.js");
+    write(theme, "asset:tampered");
+    assert.throws(
+      () => stageArtifacts(dist, path.join(root, "tampered-theme")),
+      /Viewer asset changed since the build: public[/]theme-[A-Z2-7]{8}[.]js/,
+    );
+    assert.throws(() => readdirSync(path.join(root, "tampered-theme")));
+    write(theme, contents(theme));
+    rmSync(path.join(dist, "public/connect.js"));
+    assert.throws(() => stageArtifacts(dist, path.join(root, "missing-connect")), /connect[.]js/);
+    assert.throws(() => readdirSync(path.join(root, "missing-connect")));
+    write("public/connect.js", contents("public/connect.js"));
     rmSync(path.join(dist, "index.js"));
     symlinkSync(path.join(dist, ".dev.vars"), path.join(dist, "index.js"));
     assert.throws(() => stageArtifacts(dist, path.join(root, "rejected")), /regular file/);
@@ -396,14 +498,14 @@ function installFixture(
 function historicalInstallFixture(t, options = {}) {
   return installFixture(t, {
     ...options,
-    ...(options.target !== "page8" && { qualify: profiles.deploymentProfile }),
+    ...(options.target !== "page10" && { qualify: profiles.deploymentProfile }),
   });
 }
 
-for (const target of ["pages-next", "page3", "page4", "page5", "page6", "page7"])
+for (const target of ["pages-next", "page3", "page4", "page5", "page6", "page7", "page8", "page9"])
   test(`current installer refuses frozen ${target} before host commands or release writes`, (t) => {
     const fixture = installFixture(t, { target });
-    assert.throws(fixture.execute, /qualified only for page8/);
+    assert.throws(fixture.execute, /qualified only for page10/);
     assert.deepEqual(fixture.calls, []);
     assert.equal(fs.existsSync(fixture.local(fixture.release)), false);
     assert.equal(fs.existsSync(fixture.local(fixture.audit)), false);
@@ -1133,17 +1235,49 @@ test("new page6 setup tolerates frozen resources but rejects its own ports and f
   }
 });
 
-for (const target of ["page7", "page8"])
+const frozenBy = {
+  page7: ["pages-next", "page3", "page4", "page5", "page6"],
+  page8: ["pages-next", "page3", "page4", "page5", "page6", "page7"],
+  page9: ["page7", "page8"],
+  page10: ["page7", "page8", "page9"],
+};
+test("every deploy profile owns distinct hosts, ports, prefixes and firewall resources", () => {
+  const targets = [
+    "pages-next",
+    "page3",
+    "page4",
+    "page5",
+    "page6",
+    "page7",
+    "page8",
+    "page9",
+    "page10",
+  ];
+  const seen = new Map();
+  const claim = (kind, value, target) => {
+    if (value === undefined) return;
+    const key = `${kind}:${value}`;
+    assert.equal(seen.get(key), undefined, `${target} reuses ${key} from ${seen.get(key)}`);
+    seen.set(key, target);
+  };
+  for (const target of targets) {
+    const profile = profiles.deploymentProfile(target);
+    claim("hostname", profile.deployment.hostname, target);
+    claim("service", profile.deployment.service, target);
+    claim("prefix", profile.deployment.prefix, target);
+    // Both listeners share one port namespace on the host.
+    claim("port", profile.deployment.listen?.split(":").at(-1), target);
+    claim("port", profile.deployment.internalListen?.split(":").at(-1), target);
+    claim("firewallTable", profile.firewallTable, target);
+    claim("firewallMark", profile.firewallMark, target);
+    claim("tunnelService", profile.tunnelService, target);
+  }
+});
+
+for (const target of ["page7", "page8", "page9", "page10"])
   test(`${target} rejects frozen manifests, DNS ownership and occupied resources`, async (t) => {
     const profile = profiles.deploymentProfile(target);
-    assert.deepEqual(profile.frozenTargets, [
-      "pages-next",
-      "page3",
-      "page4",
-      "page5",
-      "page6",
-      ...(target === "page8" ? ["page7"] : []),
-    ]);
+    assert.deepEqual(profile.frozenTargets, frozenBy[target]);
     const stage = `/tmp/nteract-${target}-stage-abcd1234`;
     assert.equal(profiles.stageTarget(stage), target);
     for (const other of profile.frozenTargets) {
@@ -1204,8 +1338,8 @@ for (const target of ["page7", "page8"])
     }
   });
 
-test("compaction maintenance and company viewing are enabled for Page7 and Page8", (t) => {
-  for (const target of ["page6", "page7", "page8"]) {
+test("compaction maintenance and company viewing are enabled for Page7 through Page10", (t) => {
+  for (const target of ["page6", "page7", "page8", "page9", "page10"]) {
     const f = historicalInstallFixture(t, { target });
     f.execute();
     const config = JSON.parse(f.read(f.release + "/wrangler.json"));
@@ -1215,39 +1349,49 @@ test("compaction maintenance and company viewing are enabled for Page7 and Page8
       config.vars.PAGES_COMPANY_VIEW_DOMAINS,
       target !== "page6" ? "anaconda.com" : undefined,
     );
-    assert.equal(config.vars.PAGES_CATALOG_INDEX, target === "page8" ? "1" : undefined);
+    assert.equal(
+      config.vars.PAGES_CATALOG_INDEX,
+      ["page8", "page9", "page10"].includes(target) ? "1" : undefined,
+    );
   }
 });
 
-test("fresh Page8 installation owns its origin, storage, runtime and service", (t) => {
-  const target = "page8";
+test("fresh Page10 installation owns its origin, storage, runtime and service", (t) => {
+  const target = "page10";
   const profile = profiles.deploymentProfile(target);
   assert.deepEqual(profiles.selectTarget(["--target", target, "plan"]), { target, args: ["plan"] });
   assert.doesNotThrow(() => profiles.assertQualifiedDeploymentTarget(target));
   const f = installFixture(t, { target, fresh: true });
   f.execute();
   const config = JSON.parse(f.read(f.release + "/wrangler.json"));
-  assert.equal(config.vars.NOTEBOOK_CLOUD_PUBLIC_ORIGIN, "https://page8.runtimed.run");
-  assert.equal(config.vars.NOTEBOOK_CLOUD_OIDC_REDIRECT_URI, "https://page8.runtimed.run/oidc");
+  assert.equal(config.vars.NOTEBOOK_CLOUD_PUBLIC_ORIGIN, "https://page10.runtimed.run");
+  assert.equal(config.vars.NOTEBOOK_CLOUD_OIDC_REDIRECT_URI, "https://page10.runtimed.run/oidc");
   assert.equal(config.vars.PAGES_EDITOR, "wordgard");
   assert.equal(config.vars.PAGES_ASYNC_PERSISTENCE, "true");
   assert.equal(config.vars.PAGES_COMPACT_RECORDS, "true");
   assert.equal(config.vars.PAGES_COMPANY_VIEW_DOMAINS, "anaconda.com");
   assert.equal(config.vars.PAGES_CATALOG_INDEX, "1");
-  const unit = f.read("/etc/systemd/system/nteract-page8.service");
+  const unit = f.read("/etc/systemd/system/nteract-page10.service");
   assert.match(unit, /Environment=OTEL_TRACES_SAMPLER=always_on\n/);
-  assert.match(unit, /User=nteract-page8\n/);
-  assert.match(unit, /WorkingDirectory=\/var\/lib\/nteract-page8\n/);
+  assert.match(unit, /User=nteract-page10\n/);
+  assert.match(unit, /WorkingDirectory=\/var\/lib\/nteract-page10\n/);
   assert.match(
     unit,
-    /ExecStart=\/opt\/nteract-page8\/celld --bucket s3:\/\/[^ ]+\/standalone\/page8 /,
+    /ExecStart=\/opt\/nteract-page10\/celld --bucket s3:\/\/[^ ]+\/standalone\/page10 /,
   );
-  assert.match(unit, /--listen 127[.]0[.]0[.]1:9478 --internal-listen 127[.]0[.]0[.]1:19478/);
-  assert.match(unit, /firewall[.]mjs --target page8/);
+  assert.match(unit, /--listen 127[.]0[.]0[.]1:9480 --internal-listen 127[.]0[.]0[.]1:19480/);
+  // Each service starts from its own installed copy of the firewall helper and
+  // profiles, so frozen Page9 keeps the copy that qualified it.
+  assert.match(
+    unit,
+    /ExecStartPre=\+\/usr\/bin\/node \/opt\/nteract-page10\/firewall[.]mjs --target page10\n/,
+  );
+  assert.equal(f.read("/opt/nteract-page10/firewall.mjs"), "fixture firewall");
+  assert.equal(f.read("/opt/nteract-page10/profiles.mjs"), "fixture profiles");
   const prefixCheck = f.calls.find(
     ({ command, args }) => command === "/usr/local/bin/aws" && args.includes("--prefix"),
   );
-  assert.equal(prefixCheck.args[prefixCheck.args.indexOf("--prefix") + 1], "standalone/page8/");
+  assert.equal(prefixCheck.args[prefixCheck.args.indexOf("--prefix") + 1], "standalone/page10/");
   assert.ok(
     f.calls
       .filter(

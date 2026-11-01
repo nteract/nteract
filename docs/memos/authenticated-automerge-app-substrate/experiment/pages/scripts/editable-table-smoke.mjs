@@ -156,19 +156,20 @@ try {
   stage = "comment on selected cell text retains the correct passage";
   await selectCell(a, 1, 0);
   await a.getByRole("button", { name: "Comment on selection", exact: true }).click();
-  await expect(a.locator(".composer-context")).toHaveText("Pages A");
-  await a
+  const popover = a.getByRole("dialog", { name: "Comment on selection", exact: true });
+  await expect(a.locator(".comment-draft-passage")).toHaveText("Pages A");
+  await popover
     .getByRole("textbox", { name: "Comment on selection", exact: true })
-    .fill("Discuss this cell together.");
-  await a.getByRole("button", { name: "Send", exact: true }).first().click();
+    .pressSequentially("Discuss this cell together.");
+  await popover.getByRole("button", { name: "Comment", exact: true }).click();
+  await expect(popover).toHaveCount(0);
   await expect(b.locator(".comment-passage")).toHaveText("Pages A");
   await b.getByRole("button", { name: "Comments", exact: true }).click();
   await expect(b.locator(".thread .message")).toContainText("Discuss this cell together.");
   await expect(b.locator(".thread .quote")).toHaveText("Pages A");
   await b.locator(".thread .quote").click();
   await expect(b.locator(".comment-passage-active")).toHaveText("Pages A");
-  for (const page of [a, b])
-    await page.getByRole("button", { name: "Close comments", exact: true }).click();
+  await b.getByRole("button", { name: "Close comments", exact: true }).click();
   checkpoint();
 
   stage = "insert a column, edit it, and delete it across peers";
@@ -245,9 +246,10 @@ try {
     idempotency_key: crypto.randomUUID(),
     operations: [
       {
-        op: "patch_block_markdown",
+        op: "replace_match",
         block_id: tableBlock.id,
-        replacements: [{ old: "Reviewed B", new: "Agent reviewed" }],
+        match_text: "Reviewed B",
+        replacement: "Agent reviewed",
       },
     ],
   });

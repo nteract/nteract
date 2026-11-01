@@ -4,6 +4,13 @@ import {
   pagePath,
   readPageRoute,
   writePageRoute,
+  writeRoute,
+  pagesPath,
+  isIndexRoute,
+  clampPagesQuery,
+  normalizePagesQuery,
+  PAGES_QUERY_MAX,
+  PROJECTS_PATH,
   isPlainNavigation,
   mergePageListings,
   pageListing,
@@ -41,6 +48,101 @@ test("page and home navigation push history; canonicalization replaces without d
     { method: "pushState", path: `/p/${id}` },
     { method: "pushState", path: "/" },
     { method: "replaceState", path: `/p/${id}` },
+  ]);
+});
+test("/projects and /pages are exact index routes with an optional trailing slash", () => {
+  for (const path of ["/projects", "/projects/", "/projects?from=home"])
+    assert.deepEqual(readPageRoute(path), { kind: "projects", path: PROJECTS_PATH });
+  for (const path of ["/pages", "/pages/", "/pages?q=", "/pages?q=%20%20"])
+    assert.deepEqual(readPageRoute(path), { kind: "pages", query: "", path: "/pages" });
+  assert.deepEqual(readPageRoute("/pages?q=%20road%20map%20"), {
+    kind: "pages",
+    query: "road map",
+    path: "/pages?q=road+map",
+  });
+  assert.equal(readPageRoute(`/pages?q=${"x".repeat(300)}`).query.length, 200);
+  for (const path of [
+    "/projects/x",
+    "/projects//",
+    "/pages/x",
+    "/pages//",
+    "/page",
+    "/project",
+    "/projectsx",
+    "/Pages",
+    `/projects/prj_${id}`,
+    `/pages/${id}`,
+  ])
+    assert.equal(readPageRoute(path).kind, "missing", path);
+  assert.equal(isIndexRoute(readPageRoute("/projects")), true);
+  assert.equal(isIndexRoute(readPageRoute("/pages?q=a")), true);
+  for (const path of ["/", `/p/${id}`, `/project/prj_${id}`, "/missing"])
+    assert.equal(isIndexRoute(readPageRoute(path)), false, path);
+  assert.equal(pagesPath(), "/pages");
+  assert.equal(pagesPath("  "), "/pages");
+  assert.equal(pagesPath("a&b"), "/pages?q=a%26b");
+  assert.equal(readPageRoute(pagesPath("a&b=c")).query, "a&b=c");
+});
+test("a /pages query has one rule for the box, the request and the address", () => {
+  assert.equal(PAGES_QUERY_MAX, 200);
+  assert.equal(normalizePagesQuery(undefined), "");
+  assert.equal(normalizePagesQuery(null), "");
+  assert.equal(normalizePagesQuery("  road  "), "road");
+  assert.equal(normalizePagesQuery("x".repeat(250)), "x".repeat(200));
+  // A cut that would end inside a word with spaces before it drops the spaces.
+  assert.equal(normalizePagesQuery("x".repeat(199) + " yz"), "x".repeat(199));
+  // A cut never leaves half a surrogate pair, which list_pages would count
+  // and the address would mangle.
+  const emoji = "x".repeat(199) + "😀";
+  assert.equal(normalizePagesQuery(emoji), "x".repeat(199));
+  for (const raw of ["  road map ", "x".repeat(300), emoji, "a&b=c"]) {
+    const query = normalizePagesQuery(raw);
+    assert.ok(query.length <= PAGES_QUERY_MAX);
+    assert.equal(normalizePagesQuery(query), query, "normalizing twice changes nothing");
+    assert.equal(readPageRoute(pagesPath(raw)).query, query, "a reload lists the same search");
+    assert.equal(pagesPath(query), pagesPath(raw));
+  }
+});
+test("the search box clamps by code point, so it holds exactly what a search sends", () => {
+  const ascii = "x".repeat(199);
+  // 199 ASCII units and one emoji is 201 units: the emoji doesn't fit.
+  assert.equal(clampPagesQuery(ascii + "😀"), ascii);
+  assert.equal(clampPagesQuery(ascii + "😀 more"), ascii);
+  // A maxLength-style cut that already split the pair loses the stray half.
+  assert.equal(clampPagesQuery(ascii + "\uD83D"), ascii);
+  // An emoji that fits stays whole; spaces are the caller's to trim.
+  assert.equal(clampPagesQuery("x".repeat(198) + "😀"), "x".repeat(198) + "😀");
+  assert.equal(clampPagesQuery("  road  "), "  road  ");
+  assert.equal(clampPagesQuery(undefined), "");
+  for (const raw of [ascii + "😀", ascii + "\uD83D", "x".repeat(198) + "😀", " " + ascii + "😀"]) {
+    const stored = clampPagesQuery(raw);
+    const query = normalizePagesQuery(stored);
+    assert.equal(normalizePagesQuery(raw), query, "the box and a direct request agree");
+    assert.equal(readPageRoute(pagesPath(stored)).query, query, "and so does the address");
+    assert.equal(query.isWellFormed(), true);
+  }
+});
+test("index routes push once and search edits replace the entry", () => {
+  const calls = [];
+  const location = { pathname: "/", search: "", hash: "" };
+  const history = Object.fromEntries(
+    ["pushState", "replaceState"].map((method) => [
+      method,
+      (state, _, path) => {
+        calls.push({ method, path, state });
+        const url = new URL(path, "https://pages.invalid");
+        Object.assign(location, { pathname: url.pathname, search: url.search, hash: url.hash });
+      },
+    ]),
+  );
+  writeRoute("/pages", { history, location });
+  writeRoute("/pages", { history, location });
+  writeRoute(pagesPath("road"), { history, location, replace: true });
+  writeRoute(PROJECTS_PATH, { history, location, state: { index: "projects" } });
+  assert.deepEqual(calls, [
+    { method: "pushState", path: "/pages", state: null },
+    { method: "replaceState", path: "/pages?q=road", state: null },
+    { method: "pushState", path: "/projects", state: { index: "projects" } },
   ]);
 });
 test("modified clicks preserve open-in-new-tab behavior", () => {

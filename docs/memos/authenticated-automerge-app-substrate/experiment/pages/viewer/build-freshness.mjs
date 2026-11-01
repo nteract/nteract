@@ -16,6 +16,7 @@ import {
 import { reloadGateMachine } from "./reload-gate-machine.mjs";
 import { pauseReason } from "./session-machine.mjs";
 import { Store } from "./store.mjs";
+import { monotonicNow } from "./monotonic.mjs";
 export {
   SAVE_BEFORE_RELOAD_MS,
   UNSENT_COMMENT,
@@ -38,7 +39,7 @@ export class BuildMonitor {
     document: page = globalThis.document,
     setInterval: every = globalThis.setInterval?.bind(globalThis),
     clearInterval: cancel = globalThis.clearInterval?.bind(globalThis),
-    now = Date.now,
+    now = monotonicNow,
   } = {}) {
     Object.assign(this, { build, protocol, fetchAdvertisement, page, every, cancel, now });
   }

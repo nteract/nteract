@@ -1,11 +1,8 @@
 import * as A from "@automerge/automerge";
-import { IndexedDBByteStore } from "@automerge/automerge-repo-subduction";
+import { mergeLocalEdits } from "./local-edits.mjs";
+import { decoder, encoder, key, store } from "./local-catalog.mjs";
+export { forgetLocalPage, listLocalPages } from "./local-catalog.mjs";
 
-const store = new IndexedDBByteStore({ database: "pages-local-catalog-v1" });
-const encoder = new TextEncoder();
-const decoder = new TextDecoder();
-const prefix = (identity) => `account/${encodeURIComponent(identity.principal)}/`;
-const key = (identity, pageId) => `${prefix(identity)}${pageId}`;
 const recoveryKey = (identity, page) =>
   `recovery/${encodeURIComponent(identity.principal)}/${page.page_id}/${crypto.randomUUID()}`;
 function archiveSnapshot(records, identity, page, sequence) {
@@ -96,7 +93,10 @@ export async function readLocalPage(identity, pageId) {
     throw Error("Local Page account does not match");
   return page.deleted ? null : page;
 }
-export async function writeLocalPage(identity, page) {
+/** Write a checkpoint, merging it into the stored one. `replica` is the
+ * writing session's native replica; it decides that replica's localEdits
+ * entries (local-edits.mjs). */
+export async function writeLocalPage(identity, page, { replica } = {}) {
   if (!identity?.principal || page.principal !== identity.principal)
     throw Error("Local Page account does not match");
   // Cache checkpoints are shared by independent tab replicas. Merge inside one
@@ -150,10 +150,12 @@ export async function writeLocalPage(identity, page) {
               previous.access?.role === "none")
           )
             next = { ...next, access: previous.access, canWrite: false };
+          let diverged = false;
           if (!previous.resetReplica && previous.snapshot !== page.snapshot) {
             const incoming = A.load(decodeSnapshot(page.snapshot));
             const existing = A.load(decodeSnapshot(previous.snapshot));
             if (!A.hasHeads(incoming, A.getHeads(existing))) {
+              diverged = true;
               const merged = A.merge(incoming, existing);
               next = {
                 ...next,
@@ -163,6 +165,13 @@ export async function writeLocalPage(identity, page) {
               };
             }
           }
+          // Which edits are this browser's own survives every checkpoint
+          // write, including a slower tab's (local-edits.mjs).
+          const localEdits = mergeLocalEdits(previous.localEdits, page.localEdits, {
+            diverged,
+            replica,
+          });
+          if (localEdits) next = { ...next, localEdits };
         }
         // The compare-and-swap authority is only for this checkpoint write;
         // stale tabs must explicitly reconcile before replacing another token.
@@ -177,45 +186,4 @@ export async function writeLocalPage(identity, page) {
   });
   if (result?.accessChanged) throw accessChanged();
   return result;
-}
-export async function listLocalPages(identity, { pendingOnly = false } = {}) {
-  if (!identity?.principal) return [];
-  const keys = await store.list(prefix(identity));
-  const pages = await Promise.all(
-    keys.map(async (key) => {
-      const value = await store.load(key);
-      return value ? JSON.parse(decoder.decode(value)) : null;
-    }),
-  );
-  return pages
-    .filter(
-      (page) =>
-        page?.principal === identity.principal &&
-        !page.deleted &&
-        // A local replica of a trashed Page is kept for restore; Trash lists it.
-        !page.access?.trashed &&
-        (!pendingOnly || page.pending),
-    )
-    .map(({ page_id, title, created_at, updated_at, pending, registered }) => ({
-      page_id,
-      title,
-      created_at,
-      updated_at,
-      pending,
-      registered,
-    }))
-    .sort((a, b) => b.updated_at.localeCompare(a.updated_at));
-}
-export async function forgetLocalPage(identity, pageId) {
-  if (identity?.principal)
-    await store.save(
-      key(identity, pageId),
-      encoder.encode(
-        JSON.stringify({
-          principal: identity.principal,
-          page_id: pageId,
-          deleted: true,
-        }),
-      ),
-    );
 }

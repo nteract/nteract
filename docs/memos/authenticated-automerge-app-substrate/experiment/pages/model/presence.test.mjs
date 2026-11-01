@@ -56,7 +56,59 @@ test("progress captures visible text across marks without changing document stat
   assert.equal(JSON.stringify(doc), content);
 });
 
-test("targets require current exact heads and bounded distinct passages", () => {
+test("targets from an older known read attach after concurrent edits elsewhere", () => {
+  let doc = fixture();
+  const read = A.getHeads(doc);
+  for (const char of "typed ")
+    doc = A.change(doc, (draft) => A.splice(draft, textPath("one"), 0, 0, char));
+  doc = A.change(doc, (draft) => A.splice(draft, textPath("two"), 0, 0, "Edited "));
+  const anchors = createProgressTargets(doc, [{ block_id: "one", match_text: "🌊 passage" }], read);
+  const text = doc.blocks.one.richText;
+  assert.deepEqual(resolveProgressTargets(doc, anchors), [
+    {
+      block_id: "one",
+      status: "attached",
+      start_utf16: text.indexOf("🌊"),
+      end_utf16: text.indexOf("🌊") + "🌊 passage".length,
+      quote: "🌊 passage",
+    },
+  ]);
+});
+
+test("targets resolve uniqueness at the read revision and reject passages gone since", () => {
+  let doc = fixture("One apple here.");
+  const read = A.getHeads(doc);
+  // A second copy now would make the match ambiguous at the current revision.
+  doc = A.change(doc, (draft) => A.splice(draft, textPath("one"), 0, 0, "Another apple. "));
+  const [anchor] = createProgressTargets(doc, [{ block_id: "one", match_text: "apple" }], read);
+  assert.equal(
+    resolveProgressTargets(doc, [anchor])[0].start_utf16,
+    doc.blocks.one.richText.indexOf("apple here"),
+  );
+  doc = A.change(doc, (draft) => {
+    const at = draft.blocks.one.richText.indexOf("apple here");
+    A.splice(draft, textPath("one"), at, "apple".length, "pear");
+  });
+  assert.throws(
+    () => createProgressTargets(doc, [{ block_id: "one", match_text: "apple" }], read),
+    expectedError(409, "presence_revision_changed"),
+  );
+  const base = fixture(),
+    deleted = A.change(base, (draft) => {
+      delete draft.blocks.one;
+    });
+  assert.throws(
+    () =>
+      createProgressTargets(
+        deleted,
+        [{ block_id: "one", match_text: "🌊 passage" }],
+        A.getHeads(base),
+      ),
+    expectedError(409, "presence_revision_changed"),
+  );
+});
+
+test("targets require known heads and bounded distinct passages", () => {
   const doc = fixture();
   assert.deepEqual(createProgressTargets(doc, undefined), []);
   assert.deepEqual(createProgressTargets(doc, []), []);

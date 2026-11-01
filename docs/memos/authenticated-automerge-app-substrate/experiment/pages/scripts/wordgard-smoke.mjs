@@ -623,28 +623,43 @@ try {
   }
   checkpoint(stage);
 
-  stage = "selection draft survives thread-list toggles and explicit retargeting";
+  stage = "inline selection draft survives closing, the thread list, and retargeting";
+  const popover = a.getByRole("dialog", { name: "Comment on selection", exact: true });
+  const draft = popover.getByRole("textbox", { name: "Comment on selection", exact: true });
   await selectText(a, "fox");
   await a.getByRole("button", { name: "Comment on selection", exact: true }).click();
-  const draft = a.getByRole("textbox", { name: "Comment on selection", exact: true });
-  await draft.fill("Keep this unsent passage draft.");
+  await expect(draft).toBeFocused();
+  await expect(a.locator("#page-comments")).toBeHidden();
+  await expect(a.locator(".comment-draft-passage")).toHaveText("fox");
+  await draft.pressSequentially("Keep this unsent passage draft.");
+  await a.keyboard.press("Escape");
+  await expect(popover).toHaveCount(0);
+  await expect(content(a)).toBeFocused();
   await commentsToggle.click();
-  await commentsToggle.click();
+  const kept = a.locator(".comment-kept-draft");
+  await expect(kept.locator(".comment-kept-draft-text")).toHaveText(
+    "Keep this unsent passage draft.",
+  );
+  await expect(kept.locator(".composer-context")).toHaveText("fox");
+  await kept.getByRole("button", { name: "Continue", exact: true }).click();
+  await expect(draft).toBeFocused();
   await expect(draft).toHaveText("Keep this unsent passage draft.");
-  await expect(a.locator(".composer-context")).toHaveText("fox");
-  await commentsToggle.click();
-  // Let the panel's scheduled focus restoration finish before selecting elsewhere.
+  await expect(a.locator(".comment-draft-passage")).toHaveText("fox");
+  // Closing the panel is a pointer outside the popover: it closes and keeps
+  // the draft. Let the panel's focus restoration finish before selecting.
+  await a.getByRole("button", { name: "Close comments", exact: true }).click();
+  await expect(popover).toHaveCount(0);
   await a.evaluate(() => new Promise(requestAnimationFrame));
   await expect(commentsToggle).toBeFocused();
   await selectText(a, "Second writer");
   await expect(content(a)).toBeFocused();
   await a.getByRole("button", { name: "Comment on selection", exact: true }).click();
   await expect(draft).toHaveText("Keep this unsent passage draft.");
-  await expect(a.locator(".composer-context")).toHaveText("Second writer");
-  await a.locator(".comment-composer").getByRole("button", { name: "Cancel", exact: true }).click();
-  await a.getByRole("button", { name: "Close comments", exact: true }).click();
+  await expect(a.locator(".comment-draft-passage")).toHaveText("Second writer");
+  await popover.getByRole("button", { name: "Cancel", exact: true }).click();
+  await expect(popover).toHaveCount(0);
   await commentsToggle.click();
-  await expect(a.locator(".comment-composer")).toHaveCount(0);
+  await expect(a.locator(".comment-kept-draft")).toHaveCount(0);
   await a.getByRole("button", { name: "Close comments", exact: true }).click();
   await a.evaluate(() => new Promise(requestAnimationFrame));
   await expect(commentsToggle).toBeFocused();
@@ -653,10 +668,10 @@ try {
   stage = "selection comment and passage navigation";
   await selectText(a, "fox");
   await a.getByRole("button", { name: "Comment on selection", exact: true }).click();
-  await a
-    .getByRole("textbox", { name: "Comment on selection", exact: true })
-    .fill("Discuss this shared passage.");
-  await a.getByRole("button", { name: "Send", exact: true }).first().click();
+  await draft.pressSequentially("Discuss this shared passage.");
+  await popover.getByRole("button", { name: "Comment", exact: true }).click();
+  await expect(popover).toHaveCount(0);
+  await expect(a.locator("#page-comments")).toBeHidden();
   await expect(b.locator(".comment-passage")).toHaveText("fox");
   await b.getByRole("button", { name: "Comments", exact: true }).click();
   await expect(b.locator(".comment-composer")).toHaveCount(0);
@@ -671,7 +686,6 @@ try {
   await expect(b.locator(".comment-passage-active")).toHaveText("fox");
   await b.screenshot({ path: output + "/comment-mobile.png", fullPage: true });
   await b.setViewportSize({ width: 1280, height: 900 });
-  await a.getByRole("button", { name: "Close comments", exact: true }).click();
   checkpoint(stage);
 
   stage = "actual link click, popup navigation, synchronized edit";
@@ -828,6 +842,50 @@ try {
   }
   checkpoint(stage);
 
+  stage = "Enter splits paragraphs; block shortcuts and commands work on hard-break lines";
+  const shortcuts = await create("", "Wordgard shortcuts fixture " + Date.now());
+  await content(a).click();
+  await a.keyboard.type("Intro");
+  await a.keyboard.press("Enter");
+  await a.keyboard.type("## Heading");
+  await expect(content(a).locator("h2")).toHaveText("Heading");
+  await a.keyboard.press("Enter");
+  await a.keyboard.type("first");
+  await a.keyboard.press("Shift+Enter");
+  await a.keyboard.type("## Line heading");
+  await expect(content(a).locator("h2")).toHaveCount(2);
+  await a.keyboard.press("Enter");
+  await a.keyboard.type("Run `npm test` now");
+  await expect(content(a).locator("code")).toHaveText("npm test");
+  await a.keyboard.press("Enter");
+  await a.keyboard.type("one");
+  await a.keyboard.press("Shift+Enter");
+  await a.keyboard.type("two");
+  await a.keyboard.press("Shift+Enter");
+  await a.keyboard.type("three");
+  await selectText(a, "two");
+  await a.getByRole("combobox", { name: "Text style" }).selectOption("h1");
+  await expect(content(a).locator("h1")).toHaveText("two");
+  const shortcutMarkdown = [
+    "Intro",
+    "## Heading",
+    "first",
+    "## Line heading",
+    "Run `npm test` now",
+    "one",
+    "# two",
+    "three",
+  ].join("\n\n");
+  await expect
+    .poll(
+      async () => (await call(a, "read_page", { page_id: shortcuts.page_id })).blocks[0].markdown,
+    )
+    .toBe(shortcutMarkdown);
+  await expect(content(b).locator("h1")).toHaveText("two");
+  await expect(content(b).locator("code")).toHaveText("npm test");
+  await saved(a);
+  checkpoint(stage);
+
   stage = "code fence, remote language change preserves active source, Mermaid rendering";
   const code = await create("", "Wordgard rich fixture " + Date.now());
   await content(a).click();
@@ -858,8 +916,12 @@ try {
   await expect.poll(() => textOf(a)).toBe(diagram);
   await expect.poll(() => textOf(b)).toBe(diagram);
   await previewDiagram(a);
-  for (const page of [a, b])
+  for (const page of [a, b]) {
     await expect(page.locator(".wordgard-diagram")).toContainText("Warehouse");
+    // The rendered view has no header label; the source view names the language.
+    await expect(page.locator(".wordgard-diagram-header")).toHaveText("");
+    await expect(page.locator(".wordgard-diagram")).toHaveAttribute("aria-label", "Diagram");
+  }
   await saved(a);
   checkpoint(stage);
 

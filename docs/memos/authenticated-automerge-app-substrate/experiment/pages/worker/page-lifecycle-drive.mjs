@@ -25,8 +25,6 @@ import { catalogIndexDatabase } from "./catalog-index.mjs";
 import { fixture, memberKey, ownerKey, pageId, readerKey, serverKey } from "./trash-fixture.mjs";
 
 export const TABLE = new URL("../test/fixtures/machines/page-lifecycle.json", import.meta.url);
-const SPACE_ID = "sp_44444444-4444-4444-8444-444444444444";
-const PARENT_ID = "55555555-5555-4555-8555-555555555555";
 const CHILD_ID = "66666666-6666-4666-8666-666666666666";
 const PREVIEW_SECRET = new Uint8Array(32).fill(7);
 /** A writer key whose grant was revoked before its retirement was written. */
@@ -53,9 +51,6 @@ const ROUTES = {
 const REASONS = {
   "Page not found": "page_not_found",
   "Document access denied": "not_owner",
-  "idempotency_key was used for a different request": "idempotency_conflict",
-  "Page changed; read_page again before editing": "heads_mismatch",
-  "base_heads from read_page are required": "heads_invalid",
   "This credential is read-only": "read_only",
 };
 
@@ -347,8 +342,9 @@ export async function host(s, { prune = false, staleBinding = false } = {}) {
   };
   watchStorage(f.storage, h.trace, h.cuts);
   watchDatabase(db, h.cuts);
-  // Migrate now, so no migration write lands inside a row's cuts.
-  await catalogIndexDatabase(f.env);
+  // Migrate now, so no migration write lands inside a row's cuts. The harness
+  // awaits it outright, so no request needs to hold it.
+  await catalogIndexDatabase(f.env, {});
   // Previews sign with a per-Page secret created on first use.
   f.storage.values.set("host/purge-preview-secret", PREVIEW_SECRET);
   if (prune)
@@ -393,17 +389,6 @@ async function step(h, crash, run) {
 
 const after = (type) => (effect) => effect.type === type;
 
-function placementRecord(placement) {
-  if (!placement) return undefined;
-  return {
-    space_id: SPACE_ID,
-    parent_id: placement.nested ? PARENT_ID : null,
-    position: placement.home ? "a0" : "a1",
-    placement_epoch: placement.epoch,
-    ...(placement.home && { home: true }),
-  };
-}
-
 /** A creation intent as `/internal/create` records it before importing. */
 export function creationIntent(h) {
   const metadata = structuredClone(h.f.initial);
@@ -445,11 +430,8 @@ async function setupRequest(h, route, body) {
 
 /** Walk a fresh Page through trash and restore requests to `revision`. Even
  * revisions are active, odd ones trashed. */
-export async function walk(h, revision, placement) {
-  const metadata = {
-    ...structuredClone(h.f.initial),
-    ...(placement && { placement: placementRecord(placement) }),
-  };
+export async function walk(h, revision) {
+  const metadata = structuredClone(h.f.initial);
   await h.f.storage.put("host/document", metadata);
   await h.f.storage.sync();
   const page = h.install(metadata);
@@ -485,10 +467,10 @@ export async function reach(h, state, event) {
       break;
     case "active":
     case "trashed":
-      await walk(h, state.revision, state.placement);
+      await walk(h, state.revision);
       break;
     case "trashing":
-      await walk(h, state.revision - 1, state.placement);
+      await walk(h, state.revision - 1);
       await step(h, after(written(state, event) ? "putRecord" : "restrictIndex"), () =>
         setupRequest(
           h,
@@ -498,7 +480,7 @@ export async function reach(h, state, event) {
       );
       break;
     case "restoring":
-      await walk(h, state.revision - 1, state.placement);
+      await walk(h, state.revision - 1);
       await step(h, after(written(state, event) ? "putRecord" : "begin"), () =>
         setupRequest(h, "/internal/restore", restoreBody(state.revision - 1, state.revision / 2)),
       );
@@ -533,18 +515,6 @@ export async function reach(h, state, event) {
   assert.deepEqual(readState(h), state, "setup reached the row's state");
 }
 
-function placementSummary(metadata) {
-  const placement = metadata?.placement;
-  if (!placement) return {};
-  return {
-    placement: {
-      nested: placement.parent_id !== null,
-      epoch: placement.placement_epoch,
-      ...(placement.home && { home: true }),
-    },
-  };
-}
-
 /** The lifecycle state as the host holds it: the installed record, the
  * memory-only commit phase, the deletion barrier flag and any creation intent. */
 export function readState(h) {
@@ -556,12 +526,7 @@ export function readState(h) {
   const pending = page.pendingLifecycle;
   if (pending) {
     const name = PHASES[pending.operation];
-    return {
-      name,
-      revision: pending.record.revision,
-      ...(name !== "purging" && placementSummary(pending.metadata ?? metadata)),
-      ...intent,
-    };
+    return { name, revision: pending.record.revision, ...intent };
   }
   const state = pageState(metadata);
   const revision = metadata.lifecycleRevision ?? 0;
@@ -571,7 +536,7 @@ export function readState(h) {
       revision,
       ...intent,
     };
-  return { name: state, revision, ...placementSummary(metadata), ...intent };
+  return { name: state, revision, ...intent };
 }
 
 function recordSummary(record) {
@@ -579,7 +544,6 @@ function recordSummary(record) {
   return {
     state: pageState(record),
     revision: record.lifecycleRevision ?? 0,
-    ...placementSummary(record),
     ...(pageState(record) === "deleted" && record.deletion && { deletion: true }),
   };
 }
@@ -626,7 +590,6 @@ async function requestBody(h, state, event) {
         ...expected,
         ...replay,
         ...conflict,
-        ...(event.position === "top-level" && { restore_position: "a2" }),
       };
     case "purgePreview":
       return { page_id: pageId, action: "preview" };
@@ -883,10 +846,8 @@ async function leafCheck(h) {
     title: "Child",
     created_at: "2026-10-01T00:00:00.000Z",
     updated_at: "2026-10-01T00:00:00.000Z",
-    space_id: null,
     parent_id: pageId,
     position: "a0",
-    placement_epoch: 0,
   });
   try {
     await f.catalogOf(f.owner).catalog.requireLeafPage(pageId);

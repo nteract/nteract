@@ -1,6 +1,6 @@
 {
   "machine": "viewer-reconnect",
-  "description": "Automatic reconnects for one viewer PageSession: exponential backoff with a 60 s cap for transient failures, a stop on a refused signing key, and a pause after six admission refusals in a row. Runs against viewer/reconnect-machine.mjs in viewer/reconnect-machine.test.mjs.",
+  "description": "Automatic reconnects for one viewer PageSession: exponential backoff with a 60 s cap for transient failures, a stop on a refused signing key, a pause after six admission refusals in a row, and an outage report from the seventh transient failure in a row while retries continue. Runs against viewer/reconnect-machine.mjs in viewer/reconnect-machine.test.mjs.",
   "states": [
     "ready",
     "waiting",
@@ -19,6 +19,7 @@
   "cases": {
     "ready/failed": [
       "transient",
+      "outage",
       "refusal",
       "last-refusal"
     ]
@@ -103,7 +104,8 @@
       }
     },
     {
-      "case": "transient",
+      "label": "the seventh failure in a row reports an outage and keeps retrying",
+      "case": "outage",
       "state": {
         "name": "ready",
         "attempts": 6,
@@ -123,13 +125,16 @@
           {
             "type": "schedule",
             "step": 32000
+          },
+          {
+            "type": "reportOutage"
           }
         ]
       }
     },
     {
       "label": "the step reaches its 60 s cap",
-      "case": "transient",
+      "case": "outage",
       "state": {
         "name": "ready",
         "attempts": 7,
@@ -149,13 +154,16 @@
           {
             "type": "schedule",
             "step": 60000
+          },
+          {
+            "type": "reportOutage"
           }
         ]
       }
     },
     {
       "label": "the step stays at its cap",
-      "case": "transient",
+      "case": "outage",
       "state": {
         "name": "ready",
         "attempts": 40,
@@ -175,6 +183,9 @@
           {
             "type": "schedule",
             "step": 60000
+          },
+          {
+            "type": "reportOutage"
           }
         ]
       }
@@ -201,6 +212,32 @@
           {
             "type": "schedule",
             "step": 2000
+          }
+        ]
+      }
+    },
+    {
+      "label": "a refusal past the outage threshold backs off without reporting an outage",
+      "case": "refusal",
+      "state": {
+        "name": "ready",
+        "attempts": 8,
+        "refusals": 1
+      },
+      "event": {
+        "type": "failed",
+        "refused": true
+      },
+      "expect": {
+        "state": {
+          "name": "waiting",
+          "attempts": 9,
+          "refusals": 2
+        },
+        "effects": [
+          {
+            "type": "schedule",
+            "step": 60000
           }
         ]
       }

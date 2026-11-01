@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { registerHooks } from "node:module";
+import { JSDOM } from "jsdom";
 import { Leaf } from "wordgard/doc";
 import { GardState, GardSelection, Transaction } from "wordgard/state";
 import { history, undo } from "wordgard/history";
@@ -16,8 +17,48 @@ const css = registerHooks({
       : next(url, context);
   },
 });
-const { wordgardWidgets, selectCodeLanguage } = await import("./wordgard-widgets.mjs");
+const { wordgardWidgets, selectCodeLanguage, diagramFrame } =
+  await import("./wordgard-widgets.mjs");
 css.deregister();
+
+function withDocument(run) {
+  const { window } = new JSDOM("<!doctype html><body></body>");
+  const previous = globalThis.document;
+  globalThis.document = window.document;
+  try {
+    return run();
+  } finally {
+    globalThis.document = previous;
+    window.close();
+  }
+}
+
+// The renderer draws a diagram's title inside its SVG; the header must not
+// repeat it or label the block as Mermaid.
+test("a titled diagram has no visible header label and is named by its title", () =>
+  withDocument(() => {
+    const { dom, header } = diagramFrame("---\ntitle: Checkout flow\n---\nflowchart LR\nA --> B");
+    assert.equal(dom.getAttribute("aria-label"), "Checkout flow");
+    assert.equal(header.childElementCount, 0);
+    assert.equal(dom.textContent, "");
+  }));
+
+test("an untitled diagram has no visible header label and a generic name", () =>
+  withDocument(() => {
+    const { dom, header } = diagramFrame("flowchart LR\nA --> B");
+    assert.equal(dom.getAttribute("aria-label"), "Diagram");
+    assert.equal(header.childElementCount, 0);
+    assert.equal(dom.textContent, "");
+  }));
+
+test("an HTML-looking title stays an attribute value, never markup", () =>
+  withDocument(() => {
+    const title = "<img src=x onerror=alert(1)><b>bold</b>";
+    const { dom } = diagramFrame(`---\ntitle: ${title}\n---\ngraph TD`);
+    assert.equal(dom.getAttribute("aria-label"), title);
+    assert.equal(dom.querySelector("img, b"), null);
+    assert.equal(dom.textContent, "");
+  }));
 
 function editorFixture(source = "graph TD; A --> B", language) {
   const widgets = wordgardWidgets();

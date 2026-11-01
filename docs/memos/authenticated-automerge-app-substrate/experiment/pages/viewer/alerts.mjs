@@ -1,0 +1,93 @@
+// What the viewer's red banners say, and which of them a screen shows.
+//
+// A banner is for a failure the person can act on, or one that has lasted
+// long enough to matter. A transient failure (isTransientFailure: a restart,
+// a gateway error, a lost connection) only changes the Page's save status
+// while the session retries. When one outlasts the retries, the banner says
+// so in a plain sentence, never with a status code.
+import { isTransientFailure } from "./request.mjs";
+
+/** An open Page could not reach the server for longer than its retries. */
+export const SERVER_UNREACHABLE =
+  "Pages can't reach the server. Your changes are saved on this device.";
+/** An action the person asked for failed because the server was unreachable. */
+export const SERVER_UNREACHABLE_ACTION = "Pages can't reach the server. Try again in a moment.";
+/** The server refused this tab's session (401) while it was signed in. */
+export const SESSION_ENDED = "Your session ended. Sign in again.";
+
+/** The banner sentence for a failed action the person asked for. */
+export function failureMessage(error) {
+  if (isTransientFailure(error)) return SERVER_UNREACHABLE_ACTION;
+  if (error instanceof Error) return error.message;
+  return typeof error?.message === "string" ? error.message : String(error);
+}
+
+/**
+ * What the session-check banner should say after a failed session request,
+ * or undefined to leave it as it is. `outage` comes from
+ * maintainBrowserSession; `signedIn` says this tab knows its account. A
+ * transient failure with a known account stays quiet until it is an outage:
+ * an open Page shows Offline meanwhile, and the next answer may succeed. A
+ * first check with no account has nothing else on screen, so it reports at
+ * once. A successful session answer clears the banner.
+ */
+export function sessionCheckBanner(error, { outage = false, signedIn = false } = {}) {
+  if (outage) return SERVER_UNREACHABLE;
+  if (isTransientFailure(error) && signedIn) return undefined;
+  return failureMessage(error);
+}
+
+/**
+ * The session-check notice after a session answer, or null to clear it. A
+ * refusal (401 or 403, from maintainBrowserSession) of a tab that was signed
+ * in says why the account left: the server's message for a 403, which names
+ * the rule, or SESSION_ENDED. `signIn` marks it as a sign-in notice. A first
+ * check that finds no session is not news.
+ */
+export function sessionAnswerNotice(refusal, { signedIn = false } = {}) {
+  if (!refusal || !signedIn) return null;
+  const message =
+    refusal.status === 403 && typeof refusal.message === "string" && refusal.message.trim()
+      ? refusal.message
+      : SESSION_ENDED;
+  return { message, signIn: true };
+}
+
+/**
+ * The banners for one screen. `error` is the last failed action,
+ * `sessionNotice` the session check's `{ message, signIn }` or null, and
+ * `page` the open Page's `{ problem, authRequired, authProblem,
+ * accessProblem }` or null. A Page that asks for sign-in shows its own prompt
+ * with its actions, so a sign-in notice and the prompt's message don't
+ * repeat it, and a sync problem from before sign-in isn't shown beside it.
+ */
+export function screenBanners({ error = "", sessionNotice = null, page = null } = {}) {
+  const signInPrompt = !!page?.authRequired;
+  return bannerMessages(
+    [
+      error,
+      sessionNotice && !(sessionNotice.signIn && signInPrompt) ? sessionNotice.message : "",
+      page && !signInPrompt ? page.problem : "",
+    ],
+    { shown: page ? [signInPrompt ? page.authProblem : "", page.accessProblem] : [] },
+  );
+}
+
+/**
+ * The banners one screen shows, in order: each message once, without empty
+ * ones or those another notice on the screen already shows (`shown`).
+ */
+export function bannerMessages(messages, { shown = [] } = {}) {
+  const seen = new Set(
+    shown.filter((message) => typeof message === "string").map((message) => message.trim()),
+  );
+  const banners = [];
+  for (const message of messages) {
+    if (typeof message !== "string") continue;
+    const text = message.trim();
+    if (!text || seen.has(text)) continue;
+    seen.add(text);
+    banners.push(text);
+  }
+  return banners;
+}

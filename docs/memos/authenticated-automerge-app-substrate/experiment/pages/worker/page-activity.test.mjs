@@ -226,3 +226,121 @@ test("reverse selections trust live native peers and expire on server time or di
   assert.deepEqual(f.activity.read(f.doc).participants, []);
   assert.equal(f.activity.selections.size, 0);
 });
+
+const blockTarget = (f) => [{ kind: "block", block_id: f.blockId }];
+// An API-key agent session.
+const agentIdentity = (extra = {}) => identity({ credentialKind: "api-key", ...extra });
+
+test("agent presence follows its lifetime on the host's timer", (t) => {
+  const f = fixture(t);
+  assert.equal(f.activity.agentEvent(agentIdentity(), "write", blockTarget(f)), true);
+  let [agent] = f.broadcasts.at(-1).agents;
+  assert.equal(agent.state, "active");
+  assert.equal(agent.driver, "ChatGPT");
+  assert.equal(agent.expires_at, new Date(1000 + 15_000).toISOString());
+  t.mock.timers.tick(15_000);
+  [agent] = f.broadcasts.at(-1).agents;
+  assert.equal(agent.state, "idle");
+  t.mock.timers.tick(45_000);
+  assert.deepEqual(f.broadcasts.at(-1).agents, []);
+
+  f.activity.agentEvent(agentIdentity(), "read", blockTarget(f));
+  assert.equal(f.broadcasts.at(-1).agents[0].state, "reading");
+  t.mock.timers.tick(10_000);
+  assert.deepEqual(f.broadcasts.at(-1).agents, []);
+});
+
+test("agent presence needs an agent driver, current read access and a live credential", (t) => {
+  const f = fixture(t);
+  const count = () => f.broadcasts.length;
+  assert.equal(
+    f.activity.agentEvent(identity({ driver: "Browser" }), "write", blockTarget(f)),
+    false,
+  );
+  assert.equal(
+    f.activity.agentEvent(identity({ principal: "user:stranger" }), "write", blockTarget(f)),
+    false,
+  );
+  assert.equal(count(), 0);
+  // A viewer can show where it is reading.
+  f.metadata.acl.members["user:viewer"] = { role: "viewer", generation: 1 };
+  const viewer = agentIdentity({ principal: "user:viewer", canWrite: false });
+  assert.equal(f.activity.agentEvent(viewer, "read", blockTarget(f)), true);
+  // A generation change hides it at the next prune.
+  f.metadata.acl.members["user:viewer"] = { role: "viewer", generation: 2 };
+  f.activity.prune();
+  assert.deepEqual(f.broadcasts.at(-1).agents, []);
+  // An expiring credential hides its caret when it expires.
+  f.activity.agentEvent(agentIdentity({ expiresAt: 3000 }), "write", blockTarget(f));
+  t.mock.timers.tick(2000);
+  f.activity.prune();
+  assert.deepEqual(f.broadcasts.at(-1).agents, []);
+});
+
+test("records key by account, harness and session label; the roster keeps eight", (t) => {
+  const f = fixture(t);
+  f.activity.agentEvent(
+    agentIdentity({ driver: "Kilo", agent: "release agent" }),
+    "write",
+    blockTarget(f),
+  );
+  f.activity.agentEvent(
+    agentIdentity({ driver: "Kilo", agent: "rich text" }),
+    "write",
+    blockTarget(f),
+  );
+  f.activity.agentEvent(agentIdentity({ driver: "Codex" }), "write", blockTarget(f));
+  assert.deepEqual(
+    f.broadcasts.at(-1).agents.map((a) => [a.driver, a.agent]),
+    [
+      ["Kilo", "release agent"],
+      ["Kilo", "rich text"],
+      ["Codex", null],
+    ],
+  );
+  // The same session writing again updates its own record.
+  f.activity.agentEvent(
+    agentIdentity({ driver: "Kilo", agent: "rich text" }),
+    "read",
+    blockTarget(f),
+  );
+  assert.equal(f.broadcasts.at(-1).agents.length, 3);
+  for (let i = 0; i < 9; i++) {
+    t.mock.timers.tick(10);
+    f.activity.agentEvent(
+      agentIdentity({ driver: "Kilo", agent: `session ${i}` }),
+      "write",
+      blockTarget(f),
+    );
+  }
+  const agents = f.broadcasts.at(-1).agents.map((a) => a.agent);
+  assert.equal(agents.length, 8);
+  assert.ok(!agents.includes("release agent"));
+  assert.ok(agents.includes("session 8"));
+});
+
+test("an oversized presence update is dropped without failing the call", (t) => {
+  const f = fixture(t);
+  const huge = Array.from({ length: 3 }, () => ({ kind: "block", block_id: "x".repeat(30_000) }));
+  assert.equal(f.activity.agentEvent(agentIdentity(), "write", huge), false);
+  assert.equal(f.broadcasts.length, 0);
+});
+
+test("progress carries the agent's session label so it merges with its caret", (t) => {
+  const f = fixture(t);
+  f.activity.report(f.doc, agentIdentity({ driver: "Kilo", agent: "release agent" }), {
+    page_id: pageId,
+    message: "Reviewing",
+  });
+  f.activity.report(f.doc, agentIdentity({ driver: "Kilo" }), {
+    page_id: pageId,
+    message: "Plain",
+  });
+  assert.deepEqual(
+    f.broadcasts.at(-1).progress.map((p) => [p.message, p.agent]),
+    [
+      ["Reviewing", "release agent"],
+      ["Plain", null],
+    ],
+  );
+});

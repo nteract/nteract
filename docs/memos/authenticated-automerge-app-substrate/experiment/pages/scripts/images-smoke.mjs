@@ -348,6 +348,28 @@ try {
   await uploadStarted;
   try {
     await expect(owner.getByText("Uploading image…", { exact: true })).toBeVisible();
+    // The pending image is drawn inside the editor at the insertion point (the
+    // end of the block), not as a status row above the block.
+    const pending = content(owner).locator(".wordgard-upload-preview");
+    await expect(pending).toBeVisible();
+    await expect(owner.locator(".image-upload-status")).toHaveCount(0);
+    // The widget can re-render between locating and reading it; poll on a
+    // fresh lookup so a detached copy never answers.
+    await expect
+      .poll(
+        () =>
+          content(owner).evaluate((root) => {
+            const preview = root.querySelector(".wordgard-upload-preview");
+            if (!preview) return null;
+            const blocks = [...root.querySelectorAll(":scope > *")];
+            const last = blocks.filter((b) => !b.contains(preview) && b.textContent.trim()).at(-1);
+            return (
+              !!last && preview.getBoundingClientRect().top >= last.getBoundingClientRect().top
+            );
+          }),
+        { message: "the pending image sits at the insertion point, after the text before it" },
+      )
+      .toBe(true);
     await atEnd(editor);
     await editor.keyboard.insertText(" A collaborator writes during the upload.");
     await expect(content(owner)).toContainText("collaborator writes during the upload");
@@ -389,6 +411,54 @@ try {
   await imageEvent(owner, "drop", fixtures[2], "dropped-screenshot.png");
   for (const page of [owner, editor, viewer]) await expectImages(page, 3);
   complete("Screenshot paste and file drop upload through the shared insertion path");
+
+  // A peer deletes the text around a pending upload's insertion point. The
+  // inline preview clears with its anchor, and the status row with Cancel
+  // takes its place so the running upload stays visible and cancellable.
+  let resumeOrphan;
+  const holdOrphan = new Promise((resolve) => {
+    resumeOrphan = resolve;
+  });
+  let sawOrphan;
+  const orphanStarted = new Promise((resolve) => {
+    sawOrphan = resolve;
+  });
+  await owner.route(
+    origin + uploadPath,
+    async (route) => {
+      sawOrphan();
+      await holdOrphan;
+      await route.continue();
+    },
+    { times: 1 },
+  );
+  await content(owner)
+    .locator("p")
+    .first()
+    .click({ position: { x: 20, y: 12 } });
+  await owner.keyboard.press("End");
+  await imageEvent(owner, "paste", fixtures[1], "orphaned-screenshot.png");
+  await orphanStarted;
+  try {
+    await expect(content(owner).locator(".wordgard-upload-preview")).toBeVisible();
+    await content(editor)
+      .locator("p")
+      .first()
+      .click({ position: { x: 20, y: 12 } });
+    await editor.keyboard.press("Home");
+    await editor.keyboard.press("Shift+End");
+    await editor.keyboard.press("Backspace");
+    await expect(content(owner).locator(".wordgard-upload-preview")).toHaveCount(0);
+    const status = owner.locator(".image-upload-status");
+    await expect(status).toBeVisible();
+    await expect(status.getByRole("button", { name: "Cancel", exact: true })).toBeVisible();
+    await status.getByRole("button", { name: "Cancel", exact: true }).click();
+    await expect(status).toHaveCount(0);
+  } finally {
+    resumeOrphan();
+  }
+  for (const page of [owner, editor, viewer]) await expectImages(page, 3);
+  complete("A pending upload whose insertion point is deleted shows its status and Cancel");
 
   const beforeContinuation = await owner.locator(".page-block").count();
   await owner.getByRole("button", { name: "Write something…", exact: true }).click();

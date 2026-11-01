@@ -109,3 +109,168 @@ test("progress ranges follow edits, detach on deletion, and never mutate the doc
   );
   assert.equal(progressPassages(session, 1000).length, 0);
 });
+
+test("agent presence entries are validated one at a time", async () => {
+  const { activitySnapshot } = await import("./activity.mjs");
+  const observed = "2026-10-31T00:00:00.000Z";
+  const good = {
+    agent_id: "a1",
+    principal: "user:kyle",
+    displayName: "Kyle",
+    driver: "Kilo",
+    state: "active",
+    seq: 1,
+    targets: [{ kind: "block", block_id: "b1" }, { kind: "mystery" }],
+    updated_at: observed,
+    expires_at: "2026-10-31T00:00:15.000Z",
+  };
+  const snapshot = activitySnapshot(
+    {
+      kind: "page-activity",
+      epoch: "e",
+      revision: 1,
+      observed_at: observed,
+      progress: [],
+      agents: [
+        good,
+        { ...good, agent_id: "bad", state: "typing" },
+        { ...good, agent_id: "late", expires_at: "2026-10-31T00:05:00.000Z" },
+      ],
+    },
+    5000,
+  );
+  assert.deepEqual([...snapshot.agents.keys()], ["a1"]);
+  assert.deepEqual(snapshot.agents.get("a1").targets, [{ kind: "block", block_id: "b1" }]);
+  assert.equal(snapshot.agents.get("a1").until, 5000 + 15_000);
+  // An older host sends no agents at all.
+  const older = activitySnapshot({
+    kind: "page-activity",
+    epoch: "e",
+    revision: 1,
+    observed_at: observed,
+    progress: [],
+  });
+  assert.equal(older.agents.size, 0);
+});
+
+test("a caret and a progress lease from one agent session are one participant", async () => {
+  const { agentParticipants } = await import("./activity.mjs");
+  const who = { principal: "user:kyle", displayName: "Kyle", driver: "Kilo" };
+  const caret = (id, extra) => [
+    id,
+    { ...who, agent_id: id, state: "active", until: 5000, ...extra },
+  ];
+  const lease = (id, extra) => [
+    id,
+    { ...who, progress_id: id, message: id, until: 4000, updated: 100, ...extra },
+  ];
+  const cases = [
+    {
+      name: "labeled caret joins its labeled leases, newest update first",
+      presence: [caret("c1", { agent: "release agent" })],
+      progress: [
+        lease("old", { agent: "release agent", updated: 100 }),
+        lease("new", { agent: "release agent", updated: 200 }),
+      ],
+      expect: [["release agent", "c1", ["new", "old"]]],
+    },
+    {
+      name: "unlabeled lease joins an unlabeled caret",
+      presence: [caret("c1", { agent: null })],
+      progress: [lease("p", { agent: null })],
+      expect: [[null, "c1", ["p"]]],
+    },
+    {
+      name: "a label mismatch keeps them apart",
+      presence: [caret("c1", { agent: "rich text" })],
+      progress: [lease("p", { agent: null })],
+      expect: [
+        ["rich text", "c1", []],
+        [null, null, ["p"]],
+      ],
+    },
+    {
+      name: "two accounts with the same harness and label stay separate",
+      presence: [
+        caret("c1", { agent: "bot" }),
+        caret("c2", { agent: "bot", principal: "user:ana" }),
+      ],
+      progress: [lease("p", { agent: "bot", principal: "user:ana" })],
+      expect: [
+        ["bot", "c1", []],
+        ["bot", "c2", ["p"]],
+      ],
+    },
+    {
+      name: "expired leases drop out",
+      presence: [caret("c1", { agent: "bot" })],
+      progress: [lease("gone", { agent: "bot", until: 500 })],
+      expect: [["bot", "c1", []]],
+    },
+  ];
+  for (const item of cases) {
+    const participants = agentParticipants(
+      { agentPresence: new Map(item.presence), agentProgress: new Map(item.progress) },
+      1000,
+    );
+    assert.deepEqual(
+      participants.map((p) => [
+        p.agent,
+        p.presence?.agent_id ?? null,
+        p.progress.map((x) => x.message),
+      ]),
+      item.expect,
+      item.name,
+    );
+  }
+  // A participant stays until both its caret and its last lease expire.
+  for (const [caretUntil, leaseUntil] of [
+    [2000, 3000],
+    [3000, 2000],
+  ]) {
+    const session = {
+      agentPresence: new Map([caret("c1", { agent: "bot", until: caretUntil })]),
+      agentProgress: new Map([lease("p", { agent: "bot", until: leaseUntil })]),
+    };
+    assert.equal(agentParticipants(session, 1999).length, 1);
+    assert.equal(agentParticipants(session, Math.min(caretUntil, leaseUntil)).length, 1);
+    assert.equal(agentParticipants(session, Math.max(caretUntil, leaseUntil)).length, 0);
+  }
+  const counted = pageActivity(
+    {
+      agentPresence: new Map(cases[0].presence),
+      agentProgress: new Map(cases[0].progress),
+      peers: new Map(),
+    },
+    1000,
+    { resolveSelections: false },
+  );
+  assert.equal(counted.agents.length, 1);
+});
+
+test("the newest progress is the latest accepted update, even with equal expiries", () => {
+  const raw = message();
+  const base = raw.progress[0];
+  // Both reports landed in the credential's last minute, so they share an expiry.
+  raw.progress = [
+    { ...base, progress_id: "earlier", message: "Earlier", updated_at: "2026-10-28T00:00:01.000Z" },
+    { ...base, progress_id: "later", message: "Later", updated_at: "2026-10-28T00:00:09.000Z" },
+  ];
+  raw.observed_at = "2026-10-28T00:00:10.000Z";
+  raw.progress.forEach((item) => (item.expires_at = "2026-10-28T00:00:40.000Z"));
+  const snapshot = activitySnapshot(raw, 50_000);
+  const earlier = snapshot.progress.get("earlier"),
+    later = snapshot.progress.get("later");
+  assert.equal(earlier.until, later.until);
+  assert.equal(later.updated - earlier.updated, 8000);
+  assert.equal(later.updated, 50_000 - 1000);
+});
+
+test("progress snapshots keep the session label", () => {
+  const raw = message();
+  raw.progress[0].agent = "release agent";
+  const snapshot = activitySnapshot(raw, 1000);
+  assert.equal([...snapshot.progress.values()][0].agent, "release agent");
+  const unlabeled = activitySnapshot(message(), 1000);
+  assert.equal([...unlabeled.progress.values()][0].agent, null);
+});

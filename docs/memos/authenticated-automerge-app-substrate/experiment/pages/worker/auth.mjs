@@ -4,6 +4,11 @@ import { pagesPublicOrigin } from "../agent-guide.mjs";
 import { readAccessToken } from "./oauth-store.mjs";
 import { domainAccessForIdentity } from "./domain-access.mjs";
 import { withAdmissionReason } from "./admission-reasons.mjs";
+import { isolateSingleFlight } from "./isolate-setup.mjs";
+
+// The API-key verifier caches one pending provider lookup per token for 60 s
+// (ANACONDA_API_KEY_CACHE_TTL_MS in @cloud/identity.ts); see isolate-setup.mjs.
+const apiKeyLookup = isolateSingleFlight({ holdMs: 65_000 });
 
 export class HttpError extends Error {
   constructor(status, message, code) {
@@ -22,6 +27,19 @@ export function driverLabel(request) {
   // eslint-disable-next-line no-control-regex
   if (!value.trim() || value.length > 80 || /[\x00-\x1f\x7f]/.test(value))
     throw new HttpError(400, "Invalid driver label");
+  return value.trim();
+}
+
+/** An agent's optional session label, such as "release agent", so two
+ * sessions of one account and harness show and key as separate agents. It is
+ * trusted like the driver: it always sits under the authenticated account. */
+export function agentLabel(request) {
+  const value =
+    request.headers.get("x-pages-agent") ?? new URL(request.url).searchParams.get("agent");
+  if (value === null) return undefined;
+  // eslint-disable-next-line no-control-regex
+  if (!value.trim() || value.length > 80 || /[\x00-\x1f\x7f]/.test(value))
+    throw new HttpError(400, "Invalid agent label");
   return value.trim();
 }
 
@@ -56,6 +74,7 @@ async function withDomainAccess(identity, env) {
 export async function authenticate(request, env) {
   requireSameOrigin(request, env);
   const driver = driverLabel(request);
+  const agent = agentLabel(request);
   const authorization = request.headers.get("authorization");
   if (authorization) {
     if (!/^Bearer \S+$/i.test(authorization)) throw new HttpError(401, "Use a bearer credential");
@@ -101,6 +120,7 @@ export async function authenticate(request, env) {
                 : grant.clientId === "pages-kilo"
                   ? "Kilo"
                   : "MCP",
+          ...(agent && { agent }),
           canWrite: scopes.has("pages:write"),
           credentialKind: "oauth",
           namespace: grant.identity.namespace,
@@ -112,16 +132,19 @@ export async function authenticate(request, env) {
     }
     // Caller identity/scope/operator headers are never forwarded to the verifier.
     const verify = (scope) =>
-      authenticateAnacondaApiKeyRequest(
-        new Request(request.url, {
-          headers: {
-            Authorization: authorization,
-            "X-Notebook-Cloud-Auth-Provider": "anaconda-api-key",
-            "x-scope": scope,
-            "x-operator": "pages-api",
-          },
-        }),
-        env,
+      // The provider cache keys on the token, whatever the scheme's case.
+      apiKeyLookup(token, () =>
+        authenticateAnacondaApiKeyRequest(
+          new Request(request.url, {
+            headers: {
+              Authorization: authorization,
+              "X-Notebook-Cloud-Auth-Provider": "anaconda-api-key",
+              "x-scope": scope,
+              "x-operator": "pages-api",
+            },
+          }),
+          env,
+        ),
       );
     let identity;
     try {
@@ -143,6 +166,7 @@ export async function authenticate(request, env) {
         principal: identity.principal,
         displayName: identity.metadata.displayName || identity.principal,
         driver,
+        ...(agent && { agent }),
         canWrite: identity.scope === "editor",
         credentialKind: "api-key",
         namespace: identity.metadata.principalNamespace,
@@ -287,9 +311,13 @@ export function errorResponse(error, stage = "request") {
         "trash_capacity",
         "purge_preview_required",
         "purge_preview_invalid",
+        "invalid_idempotency_key",
         "invalid_edit_selector",
+        "invalid_comment_selector",
+        "stale_heads",
         "edit_conflict",
         "resync_required",
+        "image_not_found",
         "invalid_presence_target",
         "presence_revision_changed",
         "presence_target_not_found",
@@ -299,12 +327,14 @@ export function errorResponse(error, stage = "request") {
         "invalid_cursor",
         "invalid_list_arguments",
         "company_email_proof_required",
-        "space_id_as_page_id",
-        "page_id_as_space_id",
-        "space_not_found",
-        "space_pending",
-        "space_capacity",
-        "space_revision_conflict",
+        "project_id_as_page_id",
+        "page_id_as_project_id",
+        "project_not_found",
+        "project_pending",
+        "project_capacity",
+        "project_revision_conflict",
+        "tool_renamed",
+        "argument_renamed",
         "placement_mismatch",
         "parent_unavailable",
         "nesting_depth_exceeded",

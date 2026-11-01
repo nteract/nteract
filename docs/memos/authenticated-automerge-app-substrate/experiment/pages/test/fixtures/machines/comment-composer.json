@@ -1,0 +1,698 @@
+{
+  "machine": "comment-composer",
+  "description": "The inline comment composer's popover lifecycle. The draft body and captured passage live beside it in viewer/comment-composer.mjs. viewer/comment-composer.test.mjs runs each row through the pure machine and drives it through CommentComposer.",
+  "states": [
+    "idle",
+    "open",
+    "dismissed",
+    "sending"
+  ],
+  "events": [
+    "start",
+    "dismiss",
+    "cancel",
+    "submit",
+    "sent",
+    "failed",
+    "reset"
+  ],
+  "unreachable": [],
+  "cases": {
+    "open/start": [
+      "retarget",
+      "same"
+    ],
+    "open/dismiss": [
+      "keep",
+      "empty"
+    ],
+    "sending/sent": [
+      "current",
+      "stale"
+    ],
+    "sending/failed": [
+      "current",
+      "stale"
+    ]
+  },
+  "rows": [
+    {
+      "label": "Comment on a selection opens the popover and focuses it",
+      "state": {
+        "name": "idle"
+      },
+      "event": {
+        "type": "start",
+        "key": "k2"
+      },
+      "expect": {
+        "state": {
+          "name": "open",
+          "key": "k2"
+        },
+        "effects": [
+          {
+            "type": "focusComposer"
+          }
+        ]
+      }
+    },
+    {
+      "label": "Escape with nothing open does nothing",
+      "state": {
+        "name": "idle"
+      },
+      "event": {
+        "type": "dismiss",
+        "empty": false,
+        "returnFocus": true
+      },
+      "expect": {
+        "state": {
+          "name": "idle"
+        },
+        "effects": [],
+        "rejected": "The composer is not open"
+      }
+    },
+    {
+      "label": "Cancel with nothing open does nothing",
+      "state": {
+        "name": "idle"
+      },
+      "event": {
+        "type": "cancel"
+      },
+      "expect": {
+        "state": {
+          "name": "idle"
+        },
+        "effects": [],
+        "rejected": "No comment is being written"
+      }
+    },
+    {
+      "label": "submit with nothing open does nothing",
+      "state": {
+        "name": "idle"
+      },
+      "event": {
+        "type": "submit"
+      },
+      "expect": {
+        "state": {
+          "name": "idle"
+        },
+        "effects": [],
+        "rejected": "The composer is not open"
+      }
+    },
+    {
+      "label": "a send that settles after a reset is ignored",
+      "note": "The Page changed while the comment was being written; the thread exists, but nothing here should move focus or flash.",
+      "state": {
+        "name": "idle"
+      },
+      "event": {
+        "type": "sent",
+        "key": "k1",
+        "threadId": "thread-1"
+      },
+      "expect": {
+        "state": {
+          "name": "idle"
+        },
+        "effects": [],
+        "rejected": "No comment is being sent"
+      }
+    },
+    {
+      "label": "a failure that settles after a reset is ignored",
+      "state": {
+        "name": "idle"
+      },
+      "event": {
+        "type": "failed",
+        "key": "k1",
+        "message": "This Page is read only"
+      },
+      "expect": {
+        "state": {
+          "name": "idle"
+        },
+        "effects": [],
+        "rejected": "No comment is being sent"
+      }
+    },
+    {
+      "label": "reset with nothing open does nothing",
+      "state": {
+        "name": "idle"
+      },
+      "event": {
+        "type": "reset"
+      },
+      "expect": {
+        "state": {
+          "name": "idle"
+        },
+        "effects": [],
+        "rejected": "No comment is being written"
+      }
+    },
+    {
+      "label": "Comment on another selection retargets and keeps the text",
+      "note": "CommentComposer keeps the body; only the key and captured passage change, so an older send can't clear the new draft.",
+      "case": "retarget",
+      "state": {
+        "name": "open",
+        "key": "k1"
+      },
+      "event": {
+        "type": "start",
+        "key": "k2"
+      },
+      "expect": {
+        "state": {
+          "name": "open",
+          "key": "k2"
+        },
+        "effects": [
+          {
+            "type": "focusComposer"
+          }
+        ]
+      }
+    },
+    {
+      "label": "Comment again on the same draft keeps it open",
+      "case": "same",
+      "state": {
+        "name": "open",
+        "key": "k1"
+      },
+      "event": {
+        "type": "start",
+        "key": "k1"
+      },
+      "expect": {
+        "state": {
+          "name": "open",
+          "key": "k1"
+        },
+        "effects": [
+          {
+            "type": "focusComposer"
+          }
+        ]
+      }
+    },
+    {
+      "label": "Escape with text closes the popover, keeps the draft, and returns focus",
+      "case": "keep",
+      "state": {
+        "name": "open",
+        "key": "k1"
+      },
+      "event": {
+        "type": "dismiss",
+        "empty": false,
+        "returnFocus": true
+      },
+      "expect": {
+        "state": {
+          "name": "dismissed",
+          "key": "k1"
+        },
+        "effects": [
+          {
+            "type": "returnFocus"
+          }
+        ]
+      }
+    },
+    {
+      "label": "a pointer outside an empty popover closes it without moving focus",
+      "case": "empty",
+      "state": {
+        "name": "open",
+        "key": "k1"
+      },
+      "event": {
+        "type": "dismiss",
+        "empty": true,
+        "returnFocus": false
+      },
+      "expect": {
+        "state": {
+          "name": "idle"
+        },
+        "effects": [
+          {
+            "type": "discardDraft"
+          }
+        ]
+      }
+    },
+    {
+      "label": "Cancel discards the draft and returns focus to the Page",
+      "state": {
+        "name": "open",
+        "key": "k1"
+      },
+      "event": {
+        "type": "cancel"
+      },
+      "expect": {
+        "state": {
+          "name": "idle"
+        },
+        "effects": [
+          {
+            "type": "discardDraft"
+          },
+          {
+            "type": "returnFocus"
+          }
+        ]
+      }
+    },
+    {
+      "label": "Comment or Mod+Enter sends the draft",
+      "note": "A retry clears the previous error.",
+      "state": {
+        "name": "open",
+        "key": "k1",
+        "error": "Selected passage was removed or replaced; select it again"
+      },
+      "event": {
+        "type": "submit"
+      },
+      "expect": {
+        "state": {
+          "name": "sending",
+          "key": "k1"
+        },
+        "effects": [
+          {
+            "type": "send",
+            "key": "k1"
+          }
+        ]
+      }
+    },
+    {
+      "label": "a result while nothing is sending is ignored",
+      "state": {
+        "name": "open",
+        "key": "k1"
+      },
+      "event": {
+        "type": "sent",
+        "key": "k1",
+        "threadId": "thread-1"
+      },
+      "expect": {
+        "state": {
+          "name": "open",
+          "key": "k1"
+        },
+        "effects": [],
+        "rejected": "No comment is being sent"
+      }
+    },
+    {
+      "label": "a failure while nothing is sending is ignored",
+      "state": {
+        "name": "open",
+        "key": "k1"
+      },
+      "event": {
+        "type": "failed",
+        "key": "k1",
+        "message": "This Page is read only"
+      },
+      "expect": {
+        "state": {
+          "name": "open",
+          "key": "k1"
+        },
+        "effects": [],
+        "rejected": "No comment is being sent"
+      }
+    },
+    {
+      "label": "leaving the Page drops an open draft",
+      "state": {
+        "name": "open",
+        "key": "k1"
+      },
+      "event": {
+        "type": "reset"
+      },
+      "expect": {
+        "state": {
+          "name": "idle"
+        },
+        "effects": [
+          {
+            "type": "discardDraft"
+          }
+        ]
+      }
+    },
+    {
+      "label": "Continue reopens the dismissed draft where it was",
+      "state": {
+        "name": "dismissed",
+        "key": "k1"
+      },
+      "event": {
+        "type": "start",
+        "key": "k1"
+      },
+      "expect": {
+        "state": {
+          "name": "open",
+          "key": "k1"
+        },
+        "effects": [
+          {
+            "type": "focusComposer"
+          }
+        ]
+      }
+    },
+    {
+      "label": "Escape after the popover closed does nothing",
+      "state": {
+        "name": "dismissed",
+        "key": "k1"
+      },
+      "event": {
+        "type": "dismiss",
+        "empty": false,
+        "returnFocus": true
+      },
+      "expect": {
+        "state": {
+          "name": "dismissed",
+          "key": "k1"
+        },
+        "effects": [],
+        "rejected": "The composer is not open"
+      }
+    },
+    {
+      "label": "Discard in the panel throws the kept draft away",
+      "state": {
+        "name": "dismissed",
+        "key": "k1"
+      },
+      "event": {
+        "type": "cancel"
+      },
+      "expect": {
+        "state": {
+          "name": "idle"
+        },
+        "effects": [
+          {
+            "type": "discardDraft"
+          }
+        ]
+      }
+    },
+    {
+      "label": "a dismissed draft cannot be sent without reopening it",
+      "state": {
+        "name": "dismissed",
+        "key": "k1"
+      },
+      "event": {
+        "type": "submit"
+      },
+      "expect": {
+        "state": {
+          "name": "dismissed",
+          "key": "k1"
+        },
+        "effects": [],
+        "rejected": "The composer is not open"
+      }
+    },
+    {
+      "label": "a result for a dismissed draft is ignored",
+      "state": {
+        "name": "dismissed",
+        "key": "k1"
+      },
+      "event": {
+        "type": "sent",
+        "key": "k1",
+        "threadId": "thread-1"
+      },
+      "expect": {
+        "state": {
+          "name": "dismissed",
+          "key": "k1"
+        },
+        "effects": [],
+        "rejected": "No comment is being sent"
+      }
+    },
+    {
+      "label": "a failure for a dismissed draft is ignored",
+      "state": {
+        "name": "dismissed",
+        "key": "k1"
+      },
+      "event": {
+        "type": "failed",
+        "key": "k1",
+        "message": "This Page is read only"
+      },
+      "expect": {
+        "state": {
+          "name": "dismissed",
+          "key": "k1"
+        },
+        "effects": [],
+        "rejected": "No comment is being sent"
+      }
+    },
+    {
+      "label": "leaving the Page drops a kept draft",
+      "state": {
+        "name": "dismissed",
+        "key": "k1"
+      },
+      "event": {
+        "type": "reset"
+      },
+      "expect": {
+        "state": {
+          "name": "idle"
+        },
+        "effects": [
+          {
+            "type": "discardDraft"
+          }
+        ]
+      }
+    },
+    {
+      "label": "Comment on a selection waits for the send in flight",
+      "state": {
+        "name": "sending",
+        "key": "k1"
+      },
+      "event": {
+        "type": "start",
+        "key": "k2"
+      },
+      "expect": {
+        "state": {
+          "name": "sending",
+          "key": "k1"
+        },
+        "effects": [],
+        "rejected": "A comment is being sent"
+      }
+    },
+    {
+      "label": "Escape waits for the send in flight",
+      "state": {
+        "name": "sending",
+        "key": "k1"
+      },
+      "event": {
+        "type": "dismiss",
+        "empty": false,
+        "returnFocus": true
+      },
+      "expect": {
+        "state": {
+          "name": "sending",
+          "key": "k1"
+        },
+        "effects": [],
+        "rejected": "A comment is being sent"
+      }
+    },
+    {
+      "label": "Cancel waits for the send in flight",
+      "state": {
+        "name": "sending",
+        "key": "k1"
+      },
+      "event": {
+        "type": "cancel"
+      },
+      "expect": {
+        "state": {
+          "name": "sending",
+          "key": "k1"
+        },
+        "effects": [],
+        "rejected": "A comment is being sent"
+      }
+    },
+    {
+      "label": "a second submit while sending is ignored",
+      "state": {
+        "name": "sending",
+        "key": "k1"
+      },
+      "event": {
+        "type": "submit"
+      },
+      "expect": {
+        "state": {
+          "name": "sending",
+          "key": "k1"
+        },
+        "effects": [],
+        "rejected": "A comment is being sent"
+      }
+    },
+    {
+      "label": "the send lands: close, discard, flash the new thread, return focus",
+      "case": "current",
+      "state": {
+        "name": "sending",
+        "key": "k1"
+      },
+      "event": {
+        "type": "sent",
+        "key": "k1",
+        "threadId": "thread-1"
+      },
+      "expect": {
+        "state": {
+          "name": "idle"
+        },
+        "effects": [
+          {
+            "type": "discardDraft"
+          },
+          {
+            "type": "flash",
+            "threadId": "thread-1"
+          },
+          {
+            "type": "returnFocus"
+          }
+        ]
+      }
+    },
+    {
+      "label": "a result for an earlier composer is ignored",
+      "case": "stale",
+      "state": {
+        "name": "sending",
+        "key": "k1"
+      },
+      "event": {
+        "type": "sent",
+        "key": "k0",
+        "threadId": "thread-0"
+      },
+      "expect": {
+        "state": {
+          "name": "sending",
+          "key": "k1"
+        },
+        "effects": [],
+        "rejected": "The result belongs to an earlier composer"
+      }
+    },
+    {
+      "label": "the send fails: reopen the draft with the reason",
+      "case": "current",
+      "state": {
+        "name": "sending",
+        "key": "k1"
+      },
+      "event": {
+        "type": "failed",
+        "key": "k1",
+        "message": "This Page is read only"
+      },
+      "expect": {
+        "state": {
+          "name": "open",
+          "key": "k1",
+          "error": "This Page is read only"
+        },
+        "effects": [
+          {
+            "type": "focusComposer"
+          }
+        ]
+      }
+    },
+    {
+      "label": "a failure for an earlier composer is ignored",
+      "case": "stale",
+      "state": {
+        "name": "sending",
+        "key": "k1"
+      },
+      "event": {
+        "type": "failed",
+        "key": "k0",
+        "message": "late"
+      },
+      "expect": {
+        "state": {
+          "name": "sending",
+          "key": "k1"
+        },
+        "effects": [],
+        "rejected": "The result belongs to an earlier composer"
+      }
+    },
+    {
+      "label": "leaving the Page while sending drops the composer",
+      "note": "The write may still land; its result arrives in idle and is ignored.",
+      "state": {
+        "name": "sending",
+        "key": "k1"
+      },
+      "event": {
+        "type": "reset"
+      },
+      "expect": {
+        "state": {
+          "name": "idle"
+        },
+        "effects": [
+          {
+            "type": "discardDraft"
+          }
+        ]
+      }
+    }
+  ]
+}

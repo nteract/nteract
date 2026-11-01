@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { setImmediate } from "node:timers/promises";
-import { browserWasmPlugin } from "./browser-wasm.mjs";
+import { BROWSER_WASM_URLS, browserWasmPlugin } from "./browser-wasm.mjs";
 
 const app = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const require = createRequire(import.meta.url);
@@ -100,4 +100,68 @@ test("the startup shell keeps agent guidance out of the JavaScript loading surfa
   assert.match(visible, /role="status">Connecting…/);
   assert.match(visible, /rel="describedby" type="text\/plain" href="\/llms.txt"/);
   assert.doesNotMatch(visible, /Connecting an agent|API-key clients|Opening the editor/);
+});
+
+test("the startup shell preloads each runtime as the request the bundle reuses", async () => {
+  const html = await readFile(path.join(app, "viewer/index.html"), "utf8");
+  const head = html.slice(0, html.indexOf("</head>"));
+  const preloads = [...head.matchAll(/<link rel="preload"([^>]*)>/g)].map(([, attributes]) => {
+    const crossorigin = attributes.match(/\scrossorigin(?:="([^"]*)")?/);
+    return {
+      href: attributes.match(/href="([^"]*)"/)?.[1],
+      as: attributes.match(/as="([^"]*)"/)?.[1],
+      // fetch(url) is a CORS request with same-origin credentials. A preload
+      // matches it only as crossorigin="anonymous" (or a bare crossorigin).
+      // Without the attribute the preload is a no-cors request, and the
+      // bundle's fetch downloads the file a second time.
+      crossorigin: crossorigin ? crossorigin[1] || "anonymous" : null,
+    };
+  });
+  assert.deepEqual(
+    preloads,
+    Object.values(BROWSER_WASM_URLS).map((href) => ({
+      href,
+      as: "fetch",
+      crossorigin: "anonymous",
+    })),
+  );
+});
+
+test("the built shell preloads the hashed runtimes the editor chunk fetches", async () => {
+  const { VIEWER_ASSETS, hashedAssetPath, publicUrl, withHashedAssets } =
+    await import("./viewer-chunks.mjs");
+  const assets = Object.fromEntries(
+    VIEWER_ASSETS.map((name) => [name, hashedAssetPath(name, `bytes of ${name}`)]),
+  );
+  const urls = {
+    automerge: publicUrl(assets["automerge.wasm"]),
+    subduction: publicUrl(assets["subduction.wasm"]),
+  };
+  const html = withHashedAssets(
+    await readFile(path.join(app, "viewer/index.html"), "utf8"),
+    assets,
+  );
+  const head = html.slice(0, html.indexOf("</head>"));
+  const preloads = [...head.matchAll(/<link rel="preload" href="([^"]*)" as="fetch" crossorigin/g)];
+  assert.deepEqual(
+    preloads.map(([, href]) => href),
+    Object.values(urls),
+  );
+  const output = await build({
+    stdin: {
+      contents: 'import "@automerge/automerge"; import "@automerge/subduction";',
+      resolveDir: app,
+    },
+    bundle: true,
+    write: false,
+    format: "esm",
+    platform: "browser",
+    target: "es2022",
+    logLevel: "silent",
+    plugins: [browserWasmPlugin(app, urls)],
+  });
+  const fetched = [...output.outputFiles[0].text.matchAll(/fetch\("([^"]*)"\)/g)].map(
+    ([, url]) => url,
+  );
+  assert.deepEqual(fetched.sort(), Object.values(urls).sort());
 });

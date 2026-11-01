@@ -31,13 +31,31 @@ import { BACKEND_LIMITS } from "../model/limits.mjs";
 import { retryKey } from "../model/retry-key.mjs";
 import { MISSING_EDITS_MESSAGE } from "../shared/receipts.mjs";
 import { ADMISSION_CAPABILITY, admissionCloseOutcome } from "../shared/admission.mjs";
-import { request } from "./request.mjs";
+import { isTransientFailure, request } from "./request.mjs";
+import { SERVER_UNREACHABLE } from "./alerts.mjs";
+import { monotonicNow } from "./monotonic.mjs";
 import { activitySnapshot } from "./activity.mjs";
 import { checkpointRecords } from "./checkpoint-records.mjs";
 import { Store } from "./store.mjs";
 import { REJECT, isLive, pauseOf, viewerSessionMachine } from "./session-machine.mjs";
-import { reconnectDelay, viewerReconnectMachine } from "./reconnect-machine.mjs";
-export { request } from "./request.mjs";
+import {
+  OUTAGE_ATTEMPTS,
+  OUTAGE_MS,
+  backoffStep,
+  reconnectDelay,
+  viewerReconnectMachine,
+} from "./reconnect-machine.mjs";
+import { statusLabel, viewerSyncStatusMachine } from "./sync-status-machine.mjs";
+import {
+  acknowledgedHeads,
+  afterAcknowledgement,
+  emptyLocalEdits,
+  hasUnconfirmedLocalEdits,
+  readLocalEdits,
+  retireReplica,
+  withActor,
+} from "./local-edits.mjs";
+export { request, tool } from "./request.mjs";
 const hex = (bytes) => Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
 const ownerAccess = () => ({
   role: "owner",
@@ -67,7 +85,7 @@ export const STABLE_CONNECTION_MS = 15_000;
 // A Page being left keeps syncing this long for its receipt before closing.
 export const CLOSE_DRAIN_MS = 10_000;
 // Receipt states in which a Page being left may still save.
-const DRAINING_STATES = new Set(["Connecting", "Reconnecting", "Saving"]);
+const DRAINING_STATES = new Set(["Connecting", "Reconnecting", "Syncing", "Saving"]);
 const STALLED_STATES = new Set(["Unsaved", "Offline", "Saved locally"]);
 /** A receipt status as the reload gate reads it. */
 export const saveStateOf = (status) =>
@@ -86,19 +104,23 @@ const SIGNING_KEY_REFUSED =
 const SYNC_PAUSED =
   "Sync paused: the host kept refusing this connection. Your edits stay on this device. Retry to reconnect.";
 const admissionHeaders = { [ADMISSION_CAPABILITY.header]: ADMISSION_CAPABILITY.value };
+// Receipt retries after a failure the host may fix (409 missing edits, 500).
+const RECEIPT_RETRY_DELAYS = [500, 1000, 2000];
+/** The wait before receipt retry `attempt`, or undefined once the retries are
+ * spent. A transient failure retries on the reconnect backoff until the
+ * failure that reports an outage, so a host restart never spends them. */
+const receiptRetryDelay = (attempt, transient) =>
+  transient
+    ? attempt < OUTAGE_ATTEMPTS - 1
+      ? backoffStep(attempt)
+      : undefined
+    : RECEIPT_RETRY_DELAYS[attempt];
 // Not retryable by openPageWithRetry: the same tab key cannot succeed.
 export const signingKeyRefused = (admission, cause) =>
   Object.assign(Error(SIGNING_KEY_REFUSED, cause === undefined ? undefined : { cause }), {
     code: "SIGNING_KEY_REFUSED",
     admission,
   });
-export function tool(operation, args = {}) {
-  return request("/api/tools", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ operation, arguments: args }),
-  });
-}
 export function pageSyncAddress(pageId, href, activityEpoch) {
   const address = new URL(`/api/sync?page=${encodeURIComponent(pageId)}`, href);
   address.protocol = address.protocol === "https:" ? "wss:" : "ws:";
@@ -132,16 +154,32 @@ export class PageSession {
   presenceObservers = new Set();
   peers = new Map();
   agentProgress = new Map();
+  agentPresence = new Map();
   activityEpoch = null;
   activityRevision = -1;
   presencePaused = false;
   profiles = {};
   actorNames = new Map();
+  // Who made a change, by hash, from the host's tool-edit hints. The host
+  // writes every API agent's edits, so a change hash, not an actor, names the
+  // author. Browser edits have no host-attested author yet and stay neutral.
+  changeIdentities = new Map();
   toolHints = [];
   composing = 0;
   localDepth = 0;
   status = "Connecting";
   problem = "";
+  // Why the last connection attempt failed, when the person should see it.
+  // It shows as `problem` unless a local save failure is in front of it.
+  connectionProblem = "";
+  // The last connection attempt failed transiently (isTransientFailure). The
+  // status says Offline while retries continue; no banner until the reconnect
+  // machine reports an outage. A connection admitted later clears it.
+  unreachable = false;
+  // When the current run of transient receipt failures began, on this.now's
+  // monotonic clock, or null. It spans receipt revisions, so edits made during an outage don't
+  // restart the quiet window; only a successful receipt ends the run.
+  receiptOutageSince = null;
   savedHeads = [];
   authProblem = "";
   accessProblem = "";
@@ -158,6 +196,9 @@ export class PageSession {
    * signing key, or a pause after repeated admission refusals. `retryTimer`
    * is pending exactly while it is `waiting`. */
   reconnect$ = new Store(viewerReconnectMachine.initial);
+  /** What the status line says about receipts and the connection (see
+   * sync-status-machine.mjs). `status` renders it with the phase's pauses. */
+  sync$ = new Store(viewerSyncStatusMachine.initial);
   // The close's work: checkpoint, release, and a late deletion's forget. It
   // can grow while it runs, so only closeSettled() waits on it.
   #closing;
@@ -197,6 +238,7 @@ export class PageSession {
       authentication,
       scheduler = asyncScheduler,
       random = Math.random,
+      now = monotonicNow,
     } = {},
   ) {
     this.pageId = pageId;
@@ -204,6 +246,10 @@ export class PageSession {
     this.authentication = authentication;
     this.scheduler = scheduler;
     this.random = random;
+    // The monotonic clock (monotonic.mjs) every elapsed-time rule here reads:
+    // receipt outages, reconnect stability, and presence and agent-progress
+    // lifetimes. Readers of `peers` and `agentProgress` use it too.
+    this.now = now;
   }
   get doc() {
     return this.handle?.doc();
@@ -304,6 +350,7 @@ export class PageSession {
             refreshSession: this.refreshSession,
             scheduler: this.scheduler,
             random: this.random,
+            now: this.now,
           }),
         );
       case "forget": {
@@ -393,7 +440,26 @@ export class PageSession {
       if (this.skipCloseCheckpoint) written = true;
       else {
         await this.repo?.flush();
-        await this.persistLocal({ pending: this.status !== "Saved" }, { allowClosed: true });
+        // With no unconfirmed edit, nothing this replica's actors authored
+        // can be unacknowledged, and they can't author again. Decide from
+        // the document and the recorded acknowledgements, never from the
+        // sync machine: a close can run before start() classified the
+        // replica, for example when an open fails partway.
+        let edits,
+          retire = false;
+        try {
+          edits = this.handle ? this.localEditsWithActor() : undefined;
+          retire = !!edits && !hasUnconfirmedLocalEdits(this.doc, edits);
+        } catch {
+          // Keeping every actor is always safe.
+        }
+        await this.persistLocal(
+          {
+            pending: this.status !== "Saved",
+            ...(retire && { localEdits: retireReplica(edits, this.replicaId) }),
+          },
+          { allowClosed: true },
+        );
         written = !!this.localPage && !!this.handle;
       }
     } catch (error) {
@@ -492,6 +558,10 @@ export class PageSession {
   requireSignIn(message = "Sign in again to sync this Page. Keep it open while you sign in.") {
     const { rejected } = this.dispatch({ type: "signIn", ok: false }, () => {
       this.cancelReceiptRetry();
+      // Sync waits for sign-in now; a sync problem from before it is stale.
+      // The next attempt after sign-in shows it again if it still applies.
+      if (this.problem === this.connectionProblem || this.problem === this.receiptState?.problem)
+        this.problem = this.localProblem;
       this.receiptRevision = (this.receiptRevision ?? 0) + 1;
       this.authProblem = message;
       this.status = "Sign in to sync";
@@ -511,9 +581,10 @@ export class PageSession {
       );
       return false;
     }
-    if (this.authRequired && !this.accessDenied && !this.accessReloadRequired)
-      this.status = "Reconnecting";
+    const resuming = this.authRequired && !this.accessDenied && !this.accessReloadRequired;
+    if (resuming) this.syncStatus({ type: "retrying" });
     this.dispatch({ type: "signIn", ok: true });
+    if (resuming) this.renderStatus();
     this.authProblem = "";
     this.identity = result.identity;
     this.credentialCanWrite = !!result.canWrite;
@@ -561,7 +632,7 @@ export class PageSession {
     if (!this.sockets.delete(socket)) return;
     this.clearPresence();
     const admittedAt = this.socketAdmittedAt.get(socket);
-    const stable = admittedAt !== undefined && Date.now() - admittedAt >= STABLE_CONNECTION_MS;
+    const stable = admittedAt !== undefined && this.now() - admittedAt >= STABLE_CONNECTION_MS;
     if (stable) this.reconnect({ type: "stable" });
     if (!this.alive || this.authRequired || this.accessDenied || this.accessReloadRequired) return;
     const outcome = this.socketOutcomes.get(socket);
@@ -572,7 +643,8 @@ export class PageSession {
     // The host's admission closes a socket that never proved stable: count it,
     // so a host that keeps refusing pauses instead of retrying forever.
     if (this.scheduleReconnect({ refused: !!outcome && !stable }) === "paused") return;
-    this.status = "Reconnecting";
+    this.syncStatus({ type: "retrying" });
+    this.renderStatus();
     this.emit();
   }
   /** Step the reconnect machine and run its effects. A rejected event
@@ -599,6 +671,10 @@ export class PageSession {
         case "pauseSync":
           this.showConnectionProblem(SYNC_PAUSED);
           break;
+        case "reportOutage":
+          // A specific failure the person can act on stays in front.
+          if (!this.connectionProblem) this.showConnectionProblem(SERVER_UNREACHABLE);
+          break;
       }
     }
     return result;
@@ -608,9 +684,19 @@ export class PageSession {
   showConnectionProblem(message) {
     this.connectionProblem = message;
     if (!this.localProblem) this.problem = message;
+    this.showConnectionStatus();
+  }
+  /** A connection attempt failed transiently: show Offline without a banner
+   * while the reconnect backoff retries. */
+  showUnreachable() {
+    this.unreachable = true;
+    this.showConnectionStatus();
+  }
+  showConnectionStatus() {
+    this.syncStatus({ type: "unreachable" });
     if (this.receiptState) this.showReceiptState();
     else {
-      this.status = this.localPage ? "Saved locally" : "Offline";
+      this.renderStatus();
       this.emit();
     }
   }
@@ -771,6 +857,10 @@ export class PageSession {
     await this.initializeLocal(
       this.localPage?.replicaKey ?? replicaKey(this.access, this.canWrite),
     );
+    // Whether this replica opens with edits of its own the host hasn't
+    // confirmed (local-edits.mjs). Only that, never a receipt that was merely
+    // outstanding, makes the status say Saving.
+    let unconfirmed;
     if (creation) {
       const doc = A.change(
         A.from(createPageData({ pageId: this.pageId, title: creation.title })),
@@ -794,6 +884,12 @@ export class PageSession {
         pending: true,
         snapshot,
         registrationProtocol: 1,
+        // The bootstrap and everything after it are this browser's own edits.
+        localEdits: withActor(
+          withActor(emptyLocalEdits(), A.getActorId(doc), this.replicaId),
+          this.actor(),
+          this.replicaId,
+        ),
         registration: {
           expected_principal: this.identity.principal,
           page_id: this.pageId,
@@ -803,7 +899,8 @@ export class PageSession {
           idempotency_key: `v1_${crypto.randomUUID()}`,
         },
       };
-      await writeLocalPage(this.identity, this.localPage);
+      await writeLocalPage(this.identity, this.localPage, { replica: this.replicaId });
+      unconfirmed = true;
     } else if (this.localPage && !this.localPage.resetReplica) {
       // A checkpoint can contain more history than an ordinary edit batch.
       // Merge its bounded complete record set before exposing a handle; this
@@ -817,7 +914,16 @@ export class PageSession {
       }
       this.handle = await this.repo.find(this.localPage.document_id);
       this.canWrite = !!this.canWrite && !!this.localPage.canWrite;
-      if (!this.localPage.pending) this.savedHeads = A.getHeads(this.doc);
+      // Native storage can hold an edit the checkpoint never saw, so decide
+      // from the restored document. A record without localEdits predates
+      // them; its receipt flag is all there is.
+      const edits = readLocalEdits(this.localPage.localEdits);
+      unconfirmed = edits ? hasUnconfirmedLocalEdits(this.doc, edits) : !!this.localPage.pending;
+      // Without unconfirmed local edits, every change here is acknowledged or
+      // came from the host.
+      if (!unconfirmed) this.savedHeads = A.getHeads(this.doc);
+      else if (edits) this.savedHeads = acknowledgedHeads(this.doc, edits);
+      await this.recordActor(edits ?? { ...emptyLocalEdits(), unattributed: unconfirmed });
     } else {
       await this.connect(false);
       if (this.nativeRefused) throw signingKeyRefused(this.refusal);
@@ -870,19 +976,18 @@ export class PageSession {
         registered: true,
         pending: false,
         snapshot: encodeSnapshot(A.save(this.doc)),
+        localEdits: withActor(emptyLocalEdits(), this.actor(), this.replicaId),
       };
-      await writeLocalPage(this.identity, this.localPage);
+      await writeLocalPage(this.identity, this.localPage, { replica: this.replicaId });
+      unconfirmed = false;
     }
     this.handle.on("change", (event) => this.receiveChange(event));
     this.handle.on("ephemeral-message", (event) => this.ephemeral(event));
     if (this.accessDenied)
       this.accessProblem =
         "You no longer have access to this Page. Your local copy is kept on this device.";
-    this.status = this.accessDenied
-      ? "Access removed"
-      : this.connection
-        ? "Connected"
-        : "Saved locally";
+    this.syncStatus({ type: "opened", pending: unconfirmed });
+    this.renderStatus();
     // A pause while opening has already failed start().
     if (this.phase$.snapshot().name === "opening")
       this.dispatch({ type: "opened", denied: this.access?.role === "none" });
@@ -918,6 +1023,15 @@ export class PageSession {
       ),
     );
     this.local = await exclusiveIdentity(scope);
+    // Names this native replica in localEdits without exposing its seed.
+    this.replicaId = hex(
+      new Uint8Array(
+        await crypto.subtle.digest(
+          "SHA-256",
+          new TextEncoder().encode(`pages-native-replica\0${this.local.seed}`),
+        ),
+      ),
+    ).slice(0, 32);
     this.signer = N.MemorySigner.fromBytes(bytes(this.local.seed));
     const peer = this.signer.peerId();
     this.senderId = peer.toString();
@@ -932,6 +1046,34 @@ export class PageSession {
       ...BACKEND_LIMITS,
     });
     this.repo = new Repo({ backend: this.backend });
+  }
+  /** This session's Automerge actor: every local edit it makes carries it. */
+  actor() {
+    return A.getActorId(this.doc);
+  }
+  /** The checkpoint's localEdits with this session's actor recorded. A
+   * checkpoint without valid localEdits predates them: its receipt flag
+   * stands for edits that can't be attributed. */
+  localEditsWithActor() {
+    return withActor(
+      readLocalEdits(this.localPage?.localEdits) ?? {
+        ...emptyLocalEdits(),
+        unattributed: !!this.localPage?.pending,
+      },
+      this.actor(),
+      this.replicaId,
+    );
+  }
+  /** Record this session's actor in the checkpoint before it can edit, so a
+   * crash before the debounced checkpoint still reads its edits as local. */
+  async recordActor(edits) {
+    const recorded = withActor(edits, this.actor(), this.replicaId);
+    if (recorded === edits && this.localPage.localEdits) return;
+    this.localPage = await writeLocalPage(
+      this.identity,
+      { ...this.localPage, localEdits: recorded },
+      { replica: this.replicaId },
+    );
   }
   persistLocal(patch = {}, { allowClosed = false } = {}) {
     if (this.deleted || (!this.alive && !allowClosed) || !this.localPage || !this.handle)
@@ -953,7 +1095,9 @@ export class PageSession {
       .catch(() => {})
       .then(async () => {
         this.localPage = { ...this.localPage, ...value };
-        this.localPage = await writeLocalPage(this.identity, this.localPage);
+        this.localPage = await writeLocalPage(this.identity, this.localPage, {
+          replica: this.replicaId,
+        });
       });
     this.cacheTail = work;
     return work;
@@ -1087,6 +1231,7 @@ export class PageSession {
   clearConnectionProblem() {
     if (this.problem === this.connectionProblem) this.problem = "";
     this.connectionProblem = "";
+    this.unreachable = false;
   }
   connect(refresh = true, recheckDeniedAccess = false) {
     if (!this.alive || this.accessReloadRequired) return Promise.resolve();
@@ -1195,11 +1340,14 @@ export class PageSession {
         !this.sockets.has(socket)
       )
         return;
-      this.socketAdmittedAt.set(socket, Date.now());
+      this.socketAdmittedAt.set(socket, this.now());
       this.clearConnectionProblem();
-      if (this.handle) this.queueSaved();
+      this.syncStatus({ type: "admitted" });
+      // A receipt that outlasted its transient retries starts over now that
+      // the host answers; any other receipt keeps its own retry budget.
+      if (this.handle) this.queueSaved({ restart: !!this.receiptState?.outage });
       else {
-        this.status = "Connected";
+        this.renderStatus();
         this.emit();
       }
     } catch (error) {
@@ -1249,7 +1397,12 @@ export class PageSession {
           "You no longer have access to this Page. Your local copy is kept on this device.",
           { denied: true },
         );
-      else {
+      else if (isTransientFailure(error)) {
+        // The host may be restarting. Retry quietly; the reconnect machine
+        // reports an outage if this lasts.
+        this.showUnreachable();
+        this.scheduleReconnect({ refused: !!error.admission });
+      } else {
         this.showConnectionProblem(error.message);
         // An admission close during the handshake is a refusal; the next
         // attempt's discovery still stops on 401, 403 or 404.
@@ -1311,7 +1464,7 @@ export class PageSession {
     this.localDepth++;
     try {
       const stored = this.handle.change(fn);
-      this.queueSaved();
+      this.queueSaved({ edit: true });
       const receipt = this.receiptState;
       Promise.resolve(stored).catch((error) => {
         if (
@@ -1335,6 +1488,9 @@ export class PageSession {
   }
   actorDisplayName(actor) {
     return this.actorNames.get(actor) ?? "Collaborator";
+  }
+  changeIdentity(hash) {
+    return this.changeIdentities.get(hash) ?? null;
   }
   watchPresence(fn) {
     this.presenceObservers.add(fn);
@@ -1362,6 +1518,7 @@ export class PageSession {
     this.peers.clear();
     this.profiles = {};
     this.agentProgress.clear();
+    this.agentPresence.clear();
     this.activityEpoch = null;
     this.activityRevision = -1;
     clearTimeout(this.activityTimer);
@@ -1377,7 +1534,7 @@ export class PageSession {
       this.accessReloadRequired
     )
       return false;
-    const snapshot = activitySnapshot(message);
+    const snapshot = activitySnapshot(message, this.now());
     if (
       !snapshot ||
       (!initial &&
@@ -1387,6 +1544,7 @@ export class PageSession {
     this.activityEpoch = snapshot.epoch;
     this.activityRevision = snapshot.revision;
     this.agentProgress = snapshot.progress;
+    this.agentPresence = snapshot.agents;
     this.expireActivity();
     this.notify(this.presenceObservers);
     return true;
@@ -1394,17 +1552,19 @@ export class PageSession {
   expireActivity() {
     clearTimeout(this.activityTimer);
     this.activityTimer = undefined;
-    const now = Date.now();
+    const now = this.now();
     let removed = false;
-    for (const [id, progress] of this.agentProgress) {
-      if (progress.until <= now) {
-        this.agentProgress.delete(id);
-        removed = true;
+    for (const items of [this.agentProgress, this.agentPresence])
+      for (const [id, item] of items) {
+        if (item.until <= now) {
+          items.delete(id);
+          removed = true;
+        }
       }
-    }
     if (removed) this.notify(this.presenceObservers);
-    if (this.agentProgress.size) {
-      const next = Math.min(...[...this.agentProgress.values()].map((item) => item.until));
+    const pending = [...this.agentProgress.values(), ...this.agentPresence.values()];
+    if (pending.length) {
+      const next = Math.min(...pending.map((item) => item.until));
       this.activityTimer = setTimeout(() => this.expireActivity(), Math.max(1, next - now));
       this.activityTimer.unref?.();
     }
@@ -1464,9 +1624,13 @@ export class PageSession {
     ) {
       this.peers.set(senderId, {
         value,
-        at: Date.now(),
+        at: this.now(),
         displayName: [profile.displayName, profile.driver].filter(Boolean).join(" · "),
-        profile: { displayName: profile.displayName, driver: profile.driver },
+        profile: {
+          principal: profile.principal,
+          displayName: profile.displayName,
+          driver: profile.driver,
+        },
       });
     } else if (value === null) this.peers.delete(senderId);
     this.notify(this.presenceObservers);
@@ -1480,8 +1644,18 @@ export class PageSession {
       for (const head of message.heads) {
         try {
           const meta = A.inspectChange(this.doc, head);
-          if (meta && display) this.actorNames.set(meta.actor, display);
-          else pending = true;
+          if (meta && display) {
+            this.actorNames.set(meta.actor, display);
+            const who = {
+              principal: message.identity?.principal,
+              displayName: message.identity?.displayName,
+              driver: message.identity?.driver,
+              agent: typeof message.identity?.agent === "string" ? message.identity.agent : null,
+            };
+            this.changeIdentities.set(head, who);
+            if (this.changeIdentities.size > 512)
+              this.changeIdentities.delete(this.changeIdentities.keys().next().value);
+          } else pending = true;
         } catch {
           pending = true;
         }
@@ -1489,7 +1663,9 @@ export class PageSession {
       return pending;
     });
   }
-  queueSaved({ restart = false } = {}) {
+  /** Start a receipt for the current heads. `edit` when a local edit moved
+   * them; remote changes, reconnects and retries only sync. */
+  queueSaved({ restart = false, edit = false } = {}) {
     if (!this.alive || this.deleted) return;
     const heads = this.handle ? A.getHeads(this.doc) : [];
     const blocked = !!(this.authRequired || this.accessDenied || this.accessReloadRequired);
@@ -1510,15 +1686,19 @@ export class PageSession {
     this.receiptRetryAttempts = 0;
     this.receiptRevision = (this.receiptRevision ?? 0) + 1;
     clearTimeout(this.savedTimer);
-    if (!blocked && !this.localProblem && this.problem === this.receiptState?.problem)
+    // A reported outage stays on screen through new edits until a receipt
+    // succeeds; any other receipt problem belongs to the frontier it was for.
+    const outage = !!this.receiptState?.outage;
+    if (!outage && !blocked && !this.localProblem && this.problem === this.receiptState?.problem)
       this.problem = "";
     this.receiptState = {
       revision: this.receiptRevision,
       heads,
       blocked,
-      status: "Saving",
-      problem: "",
+      problem: outage ? SERVER_UNREACHABLE : "",
+      outage,
     };
+    this.syncStatus({ type: "queued", revision: this.receiptRevision, edit });
     this.showReceiptState();
     this.savedTimer = setTimeout(() => {
       this.savedTimer = undefined;
@@ -1528,18 +1708,25 @@ export class PageSession {
   sameReceiptHeads(left, right) {
     return left.length === right.length && left.every((head) => right.includes(head));
   }
+  /** Step the sync-status machine. A rejected event changes nothing. */
+  syncStatus(event) {
+    const result = viewerSyncStatusMachine.step(this.sync$.snapshot(), event);
+    if (!result.rejected) this.sync$.update(() => result.state);
+    return result;
+  }
+  /** Render `status` from the sync-status machine and the phase's pauses. */
+  renderStatus() {
+    this.status = statusLabel(this.sync$.snapshot(), {
+      deleted: this.deleted,
+      accessDenied: this.accessDenied,
+      accessReloadRequired: this.accessReloadRequired,
+      authRequired: this.authRequired,
+      localFailed: !!this.localProblem,
+      localCopy: !!this.localPage,
+    });
+  }
   showReceiptState() {
-    this.status = this.accessDenied
-      ? "Access removed"
-      : this.accessReloadRequired
-        ? "Access changed"
-        : this.authRequired
-          ? "Sign in to sync"
-          : this.localProblem
-            ? "Local save failed"
-            : this.connectionProblem && this.receiptState.status !== "Saved locally"
-              ? "Offline"
-              : this.receiptState.status;
+    this.renderStatus();
     if (
       !this.authRequired &&
       !this.accessDenied &&
@@ -1553,9 +1740,11 @@ export class PageSession {
     clearTimeout(this.receiptRetryTimer);
     this.receiptRetryTimer = undefined;
   }
-  scheduleReceiptRetry(revision, synchronize = false) {
-    const delays = [500, 1000, 2000];
+  /** Retry the receipt for `revision` after its bounded wait. `transient`
+   * failures wait on the reconnect backoff (receiptRetryDelay). */
+  scheduleReceiptRetry(revision, synchronize = false, transient = false) {
     const attempt = this.receiptRetryAttempts ?? 0;
+    const delay = receiptRetryDelay(attempt, transient);
     if (
       !this.alive ||
       this.authRequired ||
@@ -1564,7 +1753,7 @@ export class PageSession {
       this.deleted ||
       revision !== this.receiptRevision ||
       this.receiptRetryTimer ||
-      attempt >= delays.length
+      delay === undefined
     )
       return;
     this.receiptRetryAttempts = attempt + 1;
@@ -1579,7 +1768,7 @@ export class PageSession {
         revision === this.receiptRevision
       )
         void this.saveReceipt({ synchronize });
-    }, delays[attempt]);
+    }, delay);
   }
   async requestWithRenewal(url, options) {
     try {
@@ -1604,9 +1793,9 @@ export class PageSession {
         revision: this.receiptRevision,
         heads,
         blocked: !!(this.authRequired || this.accessDenied || this.accessReloadRequired),
-        status: "Saving",
         problem: "",
       };
+      this.syncStatus({ type: "queued", revision: this.receiptRevision ?? 0, edit: false });
     } else if (!this.sameReceiptHeads(this.receiptState.heads, heads)) {
       this.queueSaved();
       return Promise.resolve();
@@ -1622,6 +1811,7 @@ export class PageSession {
   }
   async performSaveReceipt(state, { synchronize = false } = {}) {
     const revision = this.receiptRevision;
+    const receipt = revision ?? 0;
     const isCurrent = () => {
       if (
         !this.alive ||
@@ -1658,7 +1848,7 @@ export class PageSession {
       if (!isCurrent()) return;
       this.localProblem = this.problem = error.message;
       state.problem = error.message;
-      state.status = this.status = "Local save failed";
+      this.renderStatus();
       this.emit();
       return;
     }
@@ -1666,7 +1856,8 @@ export class PageSession {
       if (!isCurrent()) return;
       if (this.localPage && !this.connection) {
         state.localOnly = true;
-        state.status = this.status = "Saved locally";
+        this.syncStatus({ type: "stalled", revision: receipt, localCopy: true });
+        this.renderStatus();
         this.emit();
         return;
       }
@@ -1712,10 +1903,18 @@ export class PageSession {
       this.savedHeads = heads;
       if (this.problem === state.problem) this.problem = "";
       state.problem = "";
-      state.status = "Saved";
+      state.outage = false;
+      this.receiptOutageSince = null;
+      this.syncStatus({ type: "acknowledged", revision: receipt });
       this.cancelReceiptRetry();
       this.receiptRetryAttempts = 0;
-      await this.persistLocal({ pending: false });
+      await this.persistLocal({
+        pending: false,
+        localEdits: afterAcknowledgement(this.doc, this.localEditsWithActor(), heads, {
+          replica: this.replicaId,
+          actor: this.actor(),
+        }),
+      });
       if (!isCurrent()) return;
       this.showReceiptState();
     } catch (error) {
@@ -1731,14 +1930,32 @@ export class PageSession {
             { denied: true },
           );
         if (!this.authRequired && !this.accessDenied && !this.accessReloadRequired) {
-          state.problem = error.message;
-          if (!this.localProblem) this.problem = error.message;
-          state.status = this.status = this.localPage ? "Saved locally" : "Unsaved";
-          if (!error.status || error.status === 409 || error.status >= 500)
-            this.scheduleReceiptRetry(
-              revision,
-              synchronize || (error.status === 409 && error.message === MISSING_EDITS_MESSAGE),
-            );
+          this.syncStatus({ type: "stalled", revision: receipt, localCopy: !!this.localPage });
+          this.renderStatus();
+          if (isTransientFailure(error)) {
+            // The host may be restarting: retry without a banner. It is an
+            // outage once the run of transient failures has lasted
+            // OUTAGE_MS, or this receipt's retries are spent; the next
+            // admitted connection then restarts the receipt.
+            const now = this.now();
+            this.receiptOutageSince ??= now;
+            state.outage =
+              now - this.receiptOutageSince >= OUTAGE_MS ||
+              receiptRetryDelay(this.receiptRetryAttempts ?? 0, true) === undefined;
+            if (this.problem === state.problem) this.problem = "";
+            state.problem = state.outage ? SERVER_UNREACHABLE : "";
+            if (state.outage && !this.localProblem) this.problem = state.problem;
+            this.scheduleReceiptRetry(revision, synchronize, true);
+          } else {
+            state.outage = false;
+            state.problem = error.message;
+            if (!this.localProblem) this.problem = error.message;
+            if (!error.status || error.status === 409 || error.status >= 500)
+              this.scheduleReceiptRetry(
+                revision,
+                synchronize || (error.status === 409 && error.message === MISSING_EDITS_MESSAGE),
+              );
+          }
         }
         this.showReceiptState();
       }

@@ -154,10 +154,10 @@ this draft ADR.
 |------------|-----|-----------|----------|--------|
 | `preview.runt.run` | `apps/notebook-cloud` | Cloudflare Workers, Durable Objects, D1, R2 | Anaconda stage OIDC | `apps/notebook-cloud/wrangler.toml`, `apps/notebook-cloud/DEPLOY.md` |
 | `main.runtimed.run` and `<id>.runtimed.run` PR previews | `apps/notebook-cloud` | celld on EC2, run by the private `nteract/preview-infra` controller | Controller-owned | `.github/preview/README.md`, `celld-local.mjs export` in `.github/workflows/build.yml` and `preview-reusable.yml` |
-| `page8.runtimed.run` | Pages experiment | celld 0.6.3 on the `lab1` host, `CELLD_DURABILITY=bucket`, S3 fleet bucket, Cloudflare Tunnel ingress | Anaconda production OIDC | `../memos/authenticated-automerge-app-substrate/experiment/pages/DEPLOYMENT.md`, `scripts/deployment/profiles.mjs` and `install.mjs` |
+| `page10.runtimed.run` | Pages experiment | celld 0.6.3 on the `lab1` host, `CELLD_DURABILITY=bucket`, S3 fleet bucket, Cloudflare Tunnel ingress | Anaconda production OIDC | `../memos/authenticated-automerge-app-substrate/experiment/pages/DEPLOYMENT.md`, `scripts/deployment/profiles.mjs` and `install.mjs` |
 
-Pages is a separate application, not a notebook room host. Page8 is an
-isolated QA target; Page7 and earlier Pages services are frozen. The celld
+Pages is a separate application, not a notebook room host. Page10 is an
+isolated QA target; Page9 and earlier Pages services are frozen. The celld
 memo's promotion gates are unmet for every celld deployment above. See its
 "Promotion gates" section for the per-gate status.
 

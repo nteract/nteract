@@ -1,9 +1,19 @@
 // One bounded, headless local OIDC + celld + browser + MCP sharing qualification.
 // No pre-existing server, provider account, credentials, or persistent dev state.
 import { execFileSync, spawn } from "node:child_process";
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { createWriteStream } from "node:fs";
-import { copyFile, cp, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import {
+  copyFile,
+  cp,
+  mkdir,
+  mkdtemp,
+  readFile,
+  readdir,
+  rename,
+  rm,
+  writeFile,
+} from "node:fs/promises";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -12,6 +22,7 @@ import { build } from "esbuild";
 import { celldCborPlugin } from "./celld-cbor.mjs";
 import { CELLD_RELEASE, parseRuntimeVersion } from "./deployment/profiles.mjs";
 import { fixtureWhoamiUrl, generateFixtureKeys } from "./fixtures/local-api-keys.mjs";
+import { digestHash, publicShellAssetDefine, viewerAsset } from "./viewer-chunks.mjs";
 
 const app = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const output = path.resolve(
@@ -24,13 +35,14 @@ const taskLists = process.argv.includes("--task-lists");
 const admission = process.argv.includes("--admission");
 const buildUpdate = process.argv.includes("--build-update");
 const trash = process.argv.includes("--trash");
-const spaces = process.argv.includes("--spaces");
+const projects = process.argv.includes("--projects");
 if (
-  [domainView, images, mcpImages, taskLists, admission, buildUpdate, trash, spaces].filter(Boolean)
-    .length > 1
+  [domainView, images, mcpImages, taskLists, admission, buildUpdate, trash, projects].filter(
+    Boolean,
+  ).length > 1
 )
   throw new Error(
-    "Choose one qualification: --domain-view, --images, --mcp-images, --task-lists, --admission, --build-update, --trash or --spaces",
+    "Choose one qualification: --domain-view, --images, --mcp-images, --task-lists, --admission, --build-update, --trash or --projects",
   );
 const children = new Set();
 let canceled = false;
@@ -157,6 +169,7 @@ try {
         PAGES_E2E_FIXTURE_ID: JSON.stringify(imageSource.identity),
       }),
       ...(buildId ? { __PAGES_BUILD__: JSON.stringify(buildId) } : {}),
+      ...publicShellAssetDefine(path.join(runtime, "public")),
     },
     plugins: [
       celldCborPlugin(),
@@ -249,16 +262,57 @@ try {
   await boot();
   // Simulates a deploy for the build-update smoke: the Worker and the viewer
   // assets both move to another build id while the browser tab stays open.
+  // Hashed files are served immutable, so a file whose bytes change must
+  // change its name, as a rebuild would. Every hashed file moves to a new
+  // name and every reference follows it; the old names stop resolving, as
+  // they do when a release replaces the one before it.
   async function deploy(next) {
     if (!/^[0-9a-f]{12}$/.test(next) || next === buildId) throw new Error("Invalid next build");
-    const viewer = path.join(runtime, "public/app.js");
-    const source = await readFile(viewer, "utf8");
-    if (!source.includes(JSON.stringify(buildId)))
-      throw new Error("Viewer bundle does not embed the build id");
-    await writeFile(viewer, source.replaceAll(JSON.stringify(buildId), JSON.stringify(next)));
+    const shell = path.join(runtime, "public");
+    const hashed = [
+      ...(await readdir(shell)).filter((name) => viewerAsset(`public/${name}`)),
+      ...(await readdir(path.join(shell, "chunks"))).map((name) => `chunks/${name}`),
+    ];
+    const hashOf = (file) => /([A-Z2-7]{8})\.[a-z]+$/.exec(file)[1];
+    const moved = new Map(
+      hashed.map((file) => [
+        hashOf(file),
+        digestHash(
+          createHash("sha256")
+            .update(`${hashOf(file)}:${next}`)
+            .digest("hex"),
+        ),
+      ]),
+    );
+    const retarget = (text) => {
+      for (const [from, to] of moved) text = text.replaceAll(from, to);
+      return text;
+    };
+    let embedded = false;
+    for (const file of [...hashed, "index.html", "_headers"]) {
+      const from = path.join(shell, file);
+      const to = path.join(shell, retarget(file));
+      if (file.endsWith(".wasm")) {
+        await rename(from, to);
+        continue;
+      }
+      // The build id sits in whichever viewer script holds build-identity.mjs.
+      const source = await readFile(from, "utf8");
+      if (source.includes(JSON.stringify(buildId))) embedded = true;
+      await writeFile(
+        to,
+        retarget(source.replaceAll(JSON.stringify(buildId), JSON.stringify(next))),
+      );
+      if (to !== from) await rm(from);
+    }
+    if (!embedded) throw new Error("Viewer bundle does not embed the build id");
     await build({
       ...workerBuild,
-      define: { ...workerBuild.define, __PAGES_BUILD__: JSON.stringify(next) },
+      define: {
+        ...workerBuild.define,
+        __PAGES_BUILD__: JSON.stringify(next),
+        ...publicShellAssetDefine(shell),
+      },
     });
     buildId = next;
   }
@@ -285,8 +339,8 @@ try {
   await run(
     process.execPath,
     [
-      spaces
-        ? "scripts/spaces-smoke.mjs"
+      projects
+        ? "scripts/projects-smoke.mjs"
         : trash
           ? "scripts/trash-smoke.mjs"
           : admission

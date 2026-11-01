@@ -29,8 +29,9 @@
  * Fences: every forward carries `expectedRevision`, the lifecycle revision the
  * request was reserved against, so the Page never applies it after a newer
  * transition. A projection never replaces an entry observed at a newer
- * lifecycle revision (`known`). Projections copy the Page's placement,
- * including the `placement_epoch` a restore to the top level advances.
+ * lifecycle revision (`known`). Projections keep the entry's location, which
+ * only the Catalog records; a restore whose parent is unavailable is
+ * projected at the top level.
  *
  * A forwarded intent's `retarget`, `replayOnly` and `target` live in memory
  * for one Catalog request. `retarget` says the Page had never seen this key

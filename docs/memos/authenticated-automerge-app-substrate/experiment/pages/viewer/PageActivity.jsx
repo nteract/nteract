@@ -6,11 +6,16 @@ function Identity({ identity }) {
   const { name, driver, delegated } = activityIdentity(identity);
   return (
     <div className="activity-identity">
-      <strong>{delegated ? driver : name}</strong>
+      <strong>
+        {delegated ? driver : name}
+        {identity.agent ? ` · ${identity.agent}` : ""}
+      </strong>
       {delegated && <span className="muted">on behalf of {name}</span>}
     </div>
   );
 }
+
+const PRESENCE_STATE = { reading: "Reading", active: "Editing", idle: "Idle" };
 
 export function PageActivity({ session, disclosure, onReveal }) {
   const [, update] = useState(0);
@@ -27,8 +32,8 @@ export function PageActivity({ session, disclosure, onReveal }) {
   useEffect(() => {
     if (open) return session.observeChange(() => update((value) => value + 1));
   }, [session, open]);
-  const { progress, peers } = pageActivity(session, Date.now(), { resolveSelections: open });
-  const count = progress.length + peers.length;
+  const { agents, peers } = pageActivity(session, session.now(), { resolveSelections: open });
+  const count = agents.length + peers.length;
   const passages = open ? progressPassages(session) : [];
   useEffect(() => {
     if (!count) setOpen(false);
@@ -51,22 +56,27 @@ export function PageActivity({ session, disclosure, onReveal }) {
       <div className="activity-popover">
         <strong className="activity-heading">Page activity</strong>
         <ul>
-          {progress.map((item) => (
-            <li key={`progress:${item.progress_id}`}>
-              <Identity identity={item} />
-              <p>{item.message}</p>
-              {passages
-                .filter((passage) => passage.progress.progress_id === item.progress_id)
-                .map((passage) => (
-                  <button
-                    key={passage.index}
-                    className="activity-passage"
-                    onClick={() => onReveal?.(passage)}
-                  >
-                    <span>Show passage</span>
-                    <q>{passage.quote}</q>
-                  </button>
-                ))}
+          {agents.map((agent) => (
+            <li key={`agent:${agent.key}`}>
+              <Identity identity={agent} />
+              {agent.presence && <p className="muted">{PRESENCE_STATE[agent.presence.state]}</p>}
+              {agent.progress.map((item) => (
+                <div key={item.progress_id}>
+                  <p>{item.message}</p>
+                  {passages
+                    .filter((passage) => passage.progress.progress_id === item.progress_id)
+                    .map((passage) => (
+                      <button
+                        key={passage.index}
+                        className="activity-passage"
+                        onClick={() => onReveal?.(passage)}
+                      >
+                        <span>Show passage</span>
+                        <q>{passage.quote}</q>
+                      </button>
+                    ))}
+                </div>
+              ))}
             </li>
           ))}
           {peers.map((peer) => (

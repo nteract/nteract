@@ -226,7 +226,7 @@ test("one compound record remains one atomic byte-store value across uncertain s
   for (const failure of ["before", "after"]) {
     const store = new Store(),
       saved = [];
-    const storage = new StorageBridge(store, limits, (_id, record) => saved.push(record));
+    const storage = new StorageBridge(store, limits, (_id, records) => saved.push(...records));
     const original = frames[0],
       id = nativeId(tree);
     const key = N.CommitId.fromHexString(original.frame.key);

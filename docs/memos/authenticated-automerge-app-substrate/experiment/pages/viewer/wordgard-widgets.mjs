@@ -4,9 +4,19 @@ import { Elt } from "wordgard/doc";
 import { OpaqueBlock, CodeBlock, CodeBlockLanguage, decode } from "./wordgard-model.mjs";
 import { nativeTableSpans } from "../model/richtext.mjs";
 import { tablePreviewFragment } from "./table-fragment.mjs";
+import { mermaidTitle } from "./mermaid-title.mjs";
 import "./table-fragment.css";
 
+// The renderer is a separate content-hashed file (scripts/browser-mermaid.mjs).
+// A deploy retires this tab's copy, so a failed import usually means the
+// server moved on; main.jsx points onRendererUnavailable at the build check,
+// which raises the reload banner when that's the cause.
 const loadMermaid = () => import("../../../../../../src/components/markdown/mermaid-renderer.ts");
+let rendererUnavailable = () => {};
+/** `listener` runs each time the Mermaid renderer fails to load. */
+export function onRendererUnavailable(listener) {
+  rendererUnavailable = listener;
+}
 const mounted = new WeakMap();
 let diagramId = 0;
 const table = Widget.define({
@@ -249,18 +259,27 @@ function diagramActions(editor, dom, toggle) {
   return actions;
 }
 
+/**
+ * The rendered diagram's container and header. The header holds only the
+ * diagram actions: the renderer draws the diagram's own title inside the SVG,
+ * and the source view's language menu is where a reader sees that the block is
+ * Mermaid. The title, when the source has one, names the region for assistive
+ * technology.
+ */
+export function diagramFrame(source) {
+  const dom = document.createElement("section");
+  dom.className = "wordgard-widget wordgard-diagram";
+  dom.tabIndex = -1;
+  dom.setAttribute("aria-label", mermaidTitle(source) ?? "Diagram");
+  const header = dom.appendChild(document.createElement("div"));
+  header.className = "wordgard-diagram-header";
+  return { dom, header };
+}
+
 const diagram = Widget.define({
   eq: (a, b) => a.source === b.source && a.editable === b.editable,
   render({ source, editable }, editor) {
-    const dom = document.createElement("section");
-    dom.className = "wordgard-widget wordgard-diagram";
-    dom.tabIndex = -1;
-    dom.setAttribute("aria-label", "Mermaid diagram");
-    const header = dom.appendChild(document.createElement("div"));
-    header.className = "wordgard-diagram-header";
-    const label = header.appendChild(document.createElement("span"));
-    label.className = "wordgard-diagram-language";
-    label.textContent = "Mermaid";
+    const { dom, header } = diagramFrame(source);
     let edit;
     if (editable) {
       edit = diagramButton("Edit diagram", "code", "wordgard-diagram-edit");
@@ -282,6 +301,12 @@ const diagram = Widget.define({
     state.timer = setTimeout(
       () =>
         loadMermaid()
+          .catch((error) => {
+            try {
+              rendererUnavailable();
+            } catch {}
+            throw error;
+          })
           .then(({ mountMermaid }) => {
             if (!state.alive) return;
             state.instance = mountMermaid(

@@ -332,6 +332,8 @@ function companyOption(container) {
 
 test("company proof that expires while the panel is open disables the option and offers sign-in, then recovers", async (t) => {
   t.mock.timers.enable({ apis: ["setInterval", "Date"], now: 1_800_000_000_000 });
+  // The freshness window runs on performance.now(); follow the mocked timers.
+  t.mock.method(globalThis.performance, "now", () => Date.now());
   let proof = "verified",
     gets = 0;
   const f = await fixture(t, async () => {

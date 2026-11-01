@@ -4,7 +4,14 @@ import * as fs from "node:fs";
 import path from "node:path";
 import { tmpdir } from "node:os";
 import { createHash } from "node:crypto";
-import { routesFor, imagePaths } from "./deployment/routes.mjs";
+import {
+  routesFor,
+  assetPaths,
+  imagePaths,
+  indexPaths,
+  projectPaths,
+} from "./deployment/routes.mjs";
+import { isIndexRoute, readPageRoute } from "../shared/routes.mjs";
 import { deploymentProfile } from "./deployment/profiles.mjs";
 import { isolatedPublicationPlan, publishIsolated } from "./deployment/isolated-publication.mjs";
 
@@ -264,7 +271,9 @@ function priorConfig(config, target) {
       ? config.replace(imagePaths, "")
       : target === "page8"
         ? config.replace("|theme[.]js|", "|")
-        : config.replace("|mermaid[.]js|", "|");
+        : target === "page9"
+          ? config.replace(indexPaths, "")
+          : config.replace("|mermaid[.]js|", "|");
 }
 function previousInstallation(f, { pending = false, newConfig = false } = {}) {
   const plan = isolatedPublicationPlan(inputFor(f.target));
@@ -330,8 +339,362 @@ test("Page8 admits only the exact theme asset while every older route receipt st
     assert.equal(route.test(pathname), false, pathname);
 });
 
-test("OAuth and private images publish only exact Page7 and Page8 routes while previous targets remain closed", () => {
-  for (const target of ["pages-next", "page3", "page4", "page5", "page6", "page7", "page8"]) {
+test("Page9 admits only hashed viewer files while every older route receipt stays frozen", () => {
+  const frozen = {
+    "pages-next": "2dbfabe3e649e0f79afc9df766e0a19c52177b76667d89ad8e45acaaf523e5f3",
+    page3: "db474e430d27227ee9bf407beee948ad6cf7f601fafd55c60bbf34effa38200a",
+    page4: "9c5872feed6898ee236a96dc70226c625d5c3a299c3c3866b351b0f4b41f47de",
+    page5: "4bda4497169b48213638b5085f4ce5e2b9c335cf483d501f965e1c7f8fd8321c",
+    page6: "5240e6014b88bddb73115809c273da72b7e15e5516b67f43db8ed66ad82a12ac",
+    page7: "ed30a9fe9aef61a9f8f42451d81bea1c7fb399181b529081d138a91d259730a8",
+    page8: "c5fb35e6dfc9e1483cf813ed4a3b4c3c84b9bb3d551244aa98f89c5d0e36836a",
+  };
+  for (const [target, expected] of Object.entries(frozen)) {
+    assert.equal(digest(routesFor(target)), expected, target);
+    const route = new RegExp(/^    path: (.+)$/m.exec(routesFor(target))[1]);
+    for (const pathname of ["/chunks/ABCDEFGH.js", "/app-ABCDEFGH.js", "/automerge-ABCDEFGH.wasm"])
+      assert.equal(route.test(pathname), false, `${target} ${pathname}`);
+  }
+  const current = routesFor("page9");
+  // The hashed-asset routes are part of the config Page9 serves (#4582), as
+  // are Project links (#4585). Removing the index routes, Project links and
+  // hashed assets gives back #4578's chunk-route config.
+  assert.equal(
+    digest(priorConfig(current, "page9").replace(projectPaths, "").replace(assetPaths, "")),
+    "f18afa2a0c82ddad000a3724e8c940d0208a46d6c3f50101bd337492e2d59cd7",
+  );
+  const route = new RegExp(/^    path: (.+)$/m.exec(current)[1]);
+  for (const pathname of [
+    "/chunks/ABCDEFGH.js",
+    "/chunks/C5DM4OBS.js",
+    "/chunks/ZZZZ2222.js",
+    "/app-ABCDEFGH.js",
+    "/app-ZONXTRV2.css",
+    "/theme-PYDRB3DW.js",
+    "/mermaid-ETH6F3P4.js",
+    "/automerge-FJQTWO5F.wasm",
+    "/subduction-Y5U24H5D.wasm",
+  ])
+    assert.equal(route.test(pathname), true, pathname);
+  for (const pathname of [
+    "/chunks/",
+    "/chunks/abcdefgh.js",
+    "/chunks/ABCDEFG1.js",
+    "/chunks/ABCDEFGHI.js",
+    "/chunks/ABCDEFG.js",
+    "/chunks/ABCDEFGH.css",
+    "/chunks/ABCDEFGH.js/",
+    "/chunks/ABCDEFGH.js/private",
+    "/chunks/nested/ABCDEFGH.js",
+    "/ABCDEFGH.js",
+    "/app-abcdefgh.js",
+    "/app-ABCDEFG.js",
+    "/app-ABCDEFGHI.js",
+    "/app-ABCDEFGH.wasm",
+    "/app-ABCDEFGH.js/",
+    "/app-ABCDEFGH.js/private",
+    "/theme-ABCDEFGH.css",
+    "/mermaid-ABCDEFGH.css",
+    "/automerge-ABCDEFGH.js",
+    "/subduction-ABCDEFGH.css",
+    "/connect-ABCDEFGH.js",
+    "/index-ABCDEFGH.html",
+    "/chunks/app-ABCDEFGH.js",
+  ])
+    assert.equal(route.test(pathname), false, pathname);
+});
+
+const projectUuid = "12345678-1234-4123-8123-123456789abc";
+test("Page9 admits exact Project links while every older route receipt stays frozen", () => {
+  const frozen = {
+    "pages-next": "2dbfabe3e649e0f79afc9df766e0a19c52177b76667d89ad8e45acaaf523e5f3",
+    page3: "db474e430d27227ee9bf407beee948ad6cf7f601fafd55c60bbf34effa38200a",
+    page4: "9c5872feed6898ee236a96dc70226c625d5c3a299c3c3866b351b0f4b41f47de",
+    page5: "4bda4497169b48213638b5085f4ce5e2b9c335cf483d501f965e1c7f8fd8321c",
+    page6: "5240e6014b88bddb73115809c273da72b7e15e5516b67f43db8ed66ad82a12ac",
+    page7: "ed30a9fe9aef61a9f8f42451d81bea1c7fb399181b529081d138a91d259730a8",
+    page8: "c5fb35e6dfc9e1483cf813ed4a3b4c3c84b9bb3d551244aa98f89c5d0e36836a",
+  };
+  for (const [target, expected] of Object.entries(frozen)) {
+    assert.equal(digest(routesFor(target)), expected, target);
+    const route = new RegExp(/^    path: (.+)$/m.exec(routesFor(target))[1]);
+    for (const pathname of [`/project/prj_${projectUuid}`, `/s/sp_${projectUuid}`])
+      assert.equal(route.test(pathname), false, `${target} ${pathname}`);
+  }
+  const current = routesFor("page9");
+  // #4585 added Project links to #4582's hashed-asset config.
+  assert.equal(
+    digest(priorConfig(current, "page9").replace(projectPaths, "")),
+    "f96c389fd51d3e1e3c1e76ab4c005e578cb2cc13123c256c4025c7237dc1d4b5",
+  );
+  const route = new RegExp(/^    path: (.+)$/m.exec(current)[1]);
+  const admitted = [
+    `/project/prj_${projectUuid}`,
+    `/project/prj_${projectUuid}/`,
+    `/project/sp_${projectUuid}`,
+    `/s/sp_${projectUuid}`,
+    `/s/sp_${projectUuid}/`,
+    `/s/prj_${projectUuid}`,
+  ];
+  const rejected = [
+    "/project",
+    "/project/",
+    "/s/",
+    `/project/${projectUuid}`,
+    `/s/${projectUuid}`,
+    "/project/prj_not-a-project",
+    `/project/prj_${projectUuid.toUpperCase()}`,
+    `/project/prj_${projectUuid.replace("-4123-", "-1123-")}`,
+    `/project/prj_${projectUuid.replace("-8123-", "-c123-")}`,
+    `/project/prj_${projectUuid}0`,
+    `/project/pg_${projectUuid}`,
+    `/project/sp${projectUuid}`,
+    `/project/prj_${projectUuid}//`,
+    `/project/prj_${projectUuid}/private`,
+    `/project/prj_${projectUuid}/p/${projectUuid}`,
+    `/projects/prj_${projectUuid}`,
+    `/x/project/prj_${projectUuid}`,
+    `/s/sp_${projectUuid}/private`,
+    `/space/sp_${projectUuid}`,
+    `/p/prj_${projectUuid}`,
+  ];
+  for (const pathname of admitted) assert.equal(route.test(pathname), true, pathname);
+  for (const pathname of rejected) assert.equal(route.test(pathname), false, pathname);
+  // Ingress admits exactly the Project paths the viewer opens.
+  for (const pathname of [...admitted, ...rejected].filter(
+    (pathname) => !pathname.startsWith("/p/"),
+  ))
+    assert.equal(
+      route.test(pathname),
+      readPageRoute(pathname).kind === "project",
+      `viewer and ingress disagree on ${pathname}`,
+    );
+});
+
+test("Page9 admits exactly /projects and /pages while every older route receipt stays frozen", () => {
+  const frozen = {
+    "pages-next": "2dbfabe3e649e0f79afc9df766e0a19c52177b76667d89ad8e45acaaf523e5f3",
+    page3: "db474e430d27227ee9bf407beee948ad6cf7f601fafd55c60bbf34effa38200a",
+    page4: "9c5872feed6898ee236a96dc70226c625d5c3a299c3c3866b351b0f4b41f47de",
+    page5: "4bda4497169b48213638b5085f4ce5e2b9c335cf483d501f965e1c7f8fd8321c",
+    page6: "5240e6014b88bddb73115809c273da72b7e15e5516b67f43db8ed66ad82a12ac",
+    page7: "ed30a9fe9aef61a9f8f42451d81bea1c7fb399181b529081d138a91d259730a8",
+    page8: "c5fb35e6dfc9e1483cf813ed4a3b4c3c84b9bb3d551244aa98f89c5d0e36836a",
+  };
+  for (const [target, expected] of Object.entries(frozen)) {
+    assert.equal(digest(routesFor(target)), expected, target);
+    const route = new RegExp(/^    path: (.+)$/m.exec(routesFor(target))[1]);
+    for (const pathname of ["/projects", "/projects/", "/pages", "/pages/"])
+      assert.equal(route.test(pathname), false, `${target} ${pathname}`);
+  }
+  const current = routesFor("page9");
+  // Page9 serves #4585's Project-link config; the migration adds only the
+  // index routes to those exact bytes.
+  assert.equal(
+    digest(priorConfig(current, "page9")),
+    "c4916695004a67dcba3919e95e7958dc3de2c33152ad10ed079a979fa4379b15",
+    "the permitted migration must start from Page9's exact deployed route bytes",
+  );
+  assert.equal(current.split(indexPaths).length, 2, "the index routes appear once");
+  const route = new RegExp(/^    path: (.+)$/m.exec(current)[1]);
+  const admitted = ["/projects", "/projects/", "/pages", "/pages/"];
+  const rejected = [
+    "/projects//",
+    "/pages//",
+    "/projects/private",
+    "/pages/private",
+    `/pages/${projectUuid}`,
+    `/projects/prj_${projectUuid}`,
+    "/projectsX",
+    "/pagesX",
+    "/project",
+    "/page",
+    "/Pages",
+    "/PROJECTS",
+    "/x/pages",
+    "/pages.json",
+    "/projects.txt",
+  ];
+  for (const pathname of admitted) assert.equal(route.test(pathname), true, pathname);
+  for (const pathname of rejected) assert.equal(route.test(pathname), false, pathname);
+  // Ingress admits exactly the index paths the viewer opens.
+  for (const pathname of [...admitted, ...rejected].filter(
+    (pathname) => !readPageRoute(pathname).kind.startsWith("project"),
+  ))
+    assert.equal(
+      route.test(pathname),
+      isIndexRoute(readPageRoute(pathname)),
+      `viewer and ingress disagree on ${pathname}`,
+    );
+});
+
+test("page9 publisher refuses to skip the Project-link config on its way to the index routes", (t) => {
+  const f = fixture(t, { target: "page9" });
+  const plan = isolatedPublicationPlan(inputFor("page9"));
+  const assetConfig = priorConfig(plan.config, "page9").replace(projectPaths, "");
+  f.write(plan.configPath, assetConfig);
+  f.write(plan.unitPath, plan.unit);
+  const installation =
+    JSON.stringify({
+      schema: 1,
+      tunnel_id: tunnelId,
+      config_sha256: digest(assetConfig),
+      unit_sha256: digest(plan.unit),
+    }) + "\n";
+  f.write("/etc/nteract-page9/tunnel-installation.json", installation);
+  assert.throws(f.execute, /Dedicated tunnel installation differs/);
+  assert.equal(fs.readFileSync(f.local(plan.configPath), "utf8"), assetConfig);
+  assert.equal(
+    fs.readFileSync(f.local("/etc/nteract-page9/tunnel-installation.json"), "utf8"),
+    installation,
+  );
+  assert.equal(f.writes.length, 0);
+});
+
+test("page9 publisher refuses to skip the hashed-asset config on its way to Project links", (t) => {
+  const f = fixture(t, { target: "page9" });
+  const plan = isolatedPublicationPlan(inputFor("page9"));
+  const chunkConfig = priorConfig(plan.config, "page9")
+    .replace(projectPaths, "")
+    .replace(assetPaths, "");
+  f.write(plan.configPath, chunkConfig);
+  f.write(plan.unitPath, plan.unit);
+  const installation =
+    JSON.stringify({
+      schema: 1,
+      tunnel_id: tunnelId,
+      config_sha256: digest(chunkConfig),
+      unit_sha256: digest(plan.unit),
+    }) + "\n";
+  f.write("/etc/nteract-page9/tunnel-installation.json", installation);
+  assert.throws(f.execute, /Dedicated tunnel installation differs/);
+  assert.equal(fs.readFileSync(f.local(plan.configPath), "utf8"), chunkConfig);
+  assert.equal(
+    fs.readFileSync(f.local("/etc/nteract-page9/tunnel-installation.json"), "utf8"),
+    installation,
+  );
+  assert.equal(f.writes.length, 0);
+});
+
+test("Page10 serves Page9's route set on its own origin while every older route receipt stays frozen", () => {
+  const frozen = {
+    "pages-next": "2dbfabe3e649e0f79afc9df766e0a19c52177b76667d89ad8e45acaaf523e5f3",
+    page3: "db474e430d27227ee9bf407beee948ad6cf7f601fafd55c60bbf34effa38200a",
+    page4: "9c5872feed6898ee236a96dc70226c625d5c3a299c3c3866b351b0f4b41f47de",
+    page5: "4bda4497169b48213638b5085f4ce5e2b9c335cf483d501f965e1c7f8fd8321c",
+    page6: "5240e6014b88bddb73115809c273da72b7e15e5516b67f43db8ed66ad82a12ac",
+    page7: "ed30a9fe9aef61a9f8f42451d81bea1c7fb399181b529081d138a91d259730a8",
+    page8: "c5fb35e6dfc9e1483cf813ed4a3b4c3c84b9bb3d551244aa98f89c5d0e36836a",
+    // routesFor("page9") with the index routes: the bytes Page9 serves.
+    page9: "6cde01edff05cbeeae4820869496dd46479558e57a64dc9851db6e8f1cb75a89",
+  };
+  for (const [target, expected] of Object.entries(frozen))
+    assert.equal(digest(routesFor(target)), expected, target);
+  const current = routesFor("page10");
+  const page9 = deploymentProfile("page9").deployment;
+  const page10 = deploymentProfile("page10").deployment;
+  // Page10 copies Page9's route flags. Only the hostname and listener differ.
+  assert.equal(
+    current.replaceAll(page10.hostname, page9.hostname).replaceAll(page10.listen, page9.listen),
+    routesFor("page9"),
+  );
+  assert.doesNotMatch(current, /page9[.]runtimed[.]run|127[.]0[.]0[.]1:9479/);
+});
+
+test("page10 has no route predecessor: it installs fresh and refuses older receipts", (t) => {
+  const f = fixture(t, { target: "page10" });
+  const plan = isolatedPublicationPlan(inputFor("page10"));
+  const installation = "/etc/nteract-page10/tunnel-installation.json";
+  const receipt = (config) =>
+    JSON.stringify({
+      schema: 1,
+      tunnel_id: tunnelId,
+      config_sha256: digest(config),
+      unit_sha256: digest(plan.unit),
+    }) + "\n";
+  const result = f.execute();
+  assert.equal(result.routesUpdated, false);
+  assert.deepEqual(result.frozenTargetsUnchanged, ["page7", "page8", "page9"]);
+  assert.equal(fs.readFileSync(f.local(plan.configPath), "utf8"), plan.config);
+  assert.equal(fs.readFileSync(f.local(installation), "utf8"), receipt(plan.config));
+  assert.deepEqual(
+    f.calls
+      .filter(
+        ({ command, args }) =>
+          command === "systemctl" && ["start", "restart", "stop", "enable"].includes(args[0]),
+      )
+      .map(({ args }) => args.join(" ")),
+    ["enable cloudflared-page10.service", "start cloudflared-page10.service"],
+  );
+  // Page9's migration predecessors are not Page10's. Each one is refused.
+  for (const prior of [
+    plan.config.replace(indexPaths, ""),
+    plan.config.replace(indexPaths, "").replace(projectPaths, ""),
+    plan.config.replace("|mermaid[.]js|", "|"),
+  ]) {
+    assert.notEqual(prior, plan.config);
+    const g = fixture(t, { target: "page10" });
+    g.write(plan.configPath, prior);
+    g.write(plan.unitPath, plan.unit);
+    g.write(installation, receipt(prior));
+    assert.throws(g.execute, /Dedicated tunnel installation differs/);
+    assert.equal(g.writes.length, 0);
+    assert.equal(fs.readFileSync(g.local(plan.configPath), "utf8"), prior);
+  }
+});
+
+test("Page10 refuses Page9 manifests, connector credentials and installation receipts", (t) => {
+  const value = inputFor("page10");
+  assert.throws(
+    () => isolatedPublicationPlan({ ...value, target: "page9" }),
+    /Unexpected deployment target/,
+  );
+  assert.throws(
+    () =>
+      isolatedPublicationPlan({ ...value, frozenTunnelConfigs: ["tunnel: " + tunnelId + "\n"] }),
+    /different tunnel/,
+  );
+  const f = fixture(t, { target: "page10" });
+  const foreign = isolatedPublicationPlan(inputFor("page9"));
+  f.write(
+    "/etc/nteract-page10/tunnel-installation.json",
+    JSON.stringify({
+      schema: 1,
+      tunnel_id: tunnelId,
+      config_sha256: digest(foreign.config),
+      unit_sha256: digest(foreign.unit),
+    }),
+  );
+  assert.throws(f.execute, /Dedicated tunnel installation differs/);
+  assert.equal(f.writes.length, 0);
+});
+
+for (const mutation of ["config", "pid"])
+  test(`Page10 publication detects changed frozen Page9 ${mutation}`, (t) => {
+    const f = fixture(t, { target: "page10" });
+    assert.throws(
+      () =>
+        f.executeWith(() =>
+          mutation === "config"
+            ? f.write("/etc/nteract-page9/tunnel.yml", "foreign change")
+            : f.changeFrozenPid("cloudflared-page9.service"),
+        ),
+      /Frozen Pages (configuration|service) changed/,
+    );
+  });
+
+test("OAuth and private images publish only exact Page7 through Page10 routes while previous targets remain closed", () => {
+  for (const target of [
+    "pages-next",
+    "page3",
+    "page4",
+    "page5",
+    "page6",
+    "page7",
+    "page8",
+    "page9",
+    "page10",
+  ]) {
     const route = new RegExp(/^    path: (.+)$/m.exec(routesFor(target))[1]);
     for (const pathname of [
       "/oauth/authorize",
@@ -345,7 +708,7 @@ test("OAuth and private images publish only exact Page7 and Page8 routes while p
     ])
       assert.equal(
         route.test(pathname),
-        ["page7", "page8"].includes(target),
+        ["page7", "page8", "page9", "page10"].includes(target),
         `${target}: ${pathname}`,
       );
     for (const pathname of [
@@ -361,7 +724,7 @@ test("OAuth and private images publish only exact Page7 and Page8 routes while p
   }
 });
 
-for (const target of ["page3", "page5", "page7", "page8"]) {
+for (const target of ["page3", "page5", "page7", "page8", "page9"]) {
   test(`${target} known route upgrade restarts only its dedicated connector then becomes a no-op`, (t) => {
     const f = fixture(t, { target });
     const expected = previousInstallation(f);
@@ -825,7 +1188,13 @@ test("page6 cannot adopt other targets' historical or pending route receipts", (
   }
 });
 
-for (const target of ["page7", "page8"])
+const frozenBy = {
+  page7: ["pages-next", "page3", "page4", "page5", "page6"],
+  page8: ["pages-next", "page3", "page4", "page5", "page6", "page7"],
+  page9: ["page7", "page8"],
+  page10: ["page7", "page8", "page9"],
+};
+for (const target of ["page7", "page8", "page9", "page10"])
   test(`${target} publication retries preserve every earlier deployment`, (t) => {
     const f = fixture(t, { target, failStart: true });
     assert.throws(f.execute, /injected connector startup failure/);
@@ -833,14 +1202,7 @@ for (const target of ["page7", "page8"])
     const receipt = fs.readFileSync(f.local(installation), "utf8");
     for (let i = 0; i < 2; i++) {
       const result = f.execute();
-      assert.deepEqual(result.frozenTargetsUnchanged, [
-        "pages-next",
-        "page3",
-        "page4",
-        "page5",
-        "page6",
-        ...(target === "page8" ? ["page7"] : []),
-      ]);
+      assert.deepEqual(result.frozenTargetsUnchanged, frozenBy[target]);
       assert.equal(result.sharedTunnelUnchanged, true);
       assert.equal(result.routesUpdated, false);
       assert.equal(fs.readFileSync(f.local(installation), "utf8"), receipt);
@@ -950,7 +1312,7 @@ for (const mutation of ["config", "pid"])
   });
 
 const imageAssetPath = "/api/pages/08c583e5-d29e-4f1e-b06b-333965254e94/assets";
-for (const target of ["page6", "page7", "page8"])
+for (const target of ["page6", "page7", "page8", "page9", "page10"])
   test(`${target} publisher verifies private image ingress before starting its connector`, (t) => {
     const f = fixture(t, { target });
     f.execute();
@@ -971,6 +1333,134 @@ for (const target of ["page6", "page7", "page8"])
     ])
       assert.ok(paths.includes(pathname), pathname);
   });
+
+for (const target of ["page9", "page10"])
+  test(`${target} publisher verifies hashed chunk and asset ingress before starting its connector`, (t) => {
+    const f = fixture(t, { target });
+    f.execute();
+    const start = f.calls.findIndex(
+      ({ command, args }) => command === "systemctl" && ["start", "restart"].includes(args[0]),
+    );
+    const paths = f.calls
+      .slice(0, start)
+      .filter(({ command, args }) => command === "/usr/bin/cloudflared" && args.includes("rule"))
+      .map(({ args }) => new URL(args.at(-1)).pathname);
+    for (const pathname of [
+      "/chunks/ABCDEFGH.js",
+      "/chunks/abcdefgh.js",
+      "/chunks/ABCDEFGH.js/private",
+      "/chunks/ABCDEFGH.css",
+      "/chunks/ABCDEFGHI.js",
+      "/chunks/",
+      "/app-ABCDEFGH.js",
+      "/app-ABCDEFGH.css",
+      "/theme-ABCDEFGH.js",
+      "/mermaid-ABCDEFGH.js",
+      "/automerge-ABCDEFGH.wasm",
+      "/subduction-ABCDEFGH.wasm",
+      "/app-abcdefgh.js",
+      "/app-ABCDEFGHI.js",
+      "/app-ABCDEFGH.wasm",
+      "/theme-ABCDEFGH.css",
+      "/automerge-ABCDEFGH.js",
+      "/connect-ABCDEFGH.js",
+      "/app-ABCDEFGH.js/private",
+    ])
+      assert.ok(paths.includes(pathname), pathname);
+  });
+
+for (const target of ["page9", "page10"])
+  test(`${target} publisher verifies Project link ingress before starting its connector`, (t) => {
+    const f = fixture(t, { target });
+    f.execute();
+    const start = f.calls.findIndex(
+      ({ command, args }) => command === "systemctl" && ["start", "restart"].includes(args[0]),
+    );
+    assert.ok(start >= 0);
+    const paths = f.calls
+      .slice(0, start)
+      .filter(({ command, args }) => command === "/usr/bin/cloudflared" && args.includes("rule"))
+      .map(({ args }) => new URL(args.at(-1)).pathname);
+    const id = "08c583e5-d29e-4f1e-b06b-333965254e94";
+    for (const pathname of [
+      `/project/prj_${id}`,
+      `/project/prj_${id}/`,
+      `/project/sp_${id}`,
+      `/s/sp_${id}`,
+      `/s/prj_${id}`,
+      `/project/${id}`,
+      "/project/prj_not-a-project",
+      `/project/prj_${id.toUpperCase()}`,
+      `/project/pg_${id}`,
+      `/project/prj_${id}/private`,
+      `/projects/prj_${id}`,
+      "/project/",
+      `/s/${id}`,
+    ])
+      assert.ok(paths.includes(pathname), pathname);
+  });
+
+for (const target of ["page9", "page10"])
+  test(`${target} publisher verifies /projects and /pages ingress before starting its connector`, (t) => {
+    const f = fixture(t, { target });
+    f.execute();
+    const start = f.calls.findIndex(
+      ({ command, args }) => command === "systemctl" && ["start", "restart"].includes(args[0]),
+    );
+    assert.ok(start >= 0);
+    const probes = f.calls
+      .slice(0, start)
+      .filter(({ command, args }) => command === "/usr/bin/cloudflared" && args.includes("rule"))
+      .map(({ args }) => new URL(args.at(-1)));
+    const paths = probes.map((url) => url.pathname + url.search);
+    for (const pathname of [
+      "/projects",
+      "/projects/",
+      "/pages",
+      "/pages/",
+      "/pages?q=roadmap",
+      "/projects//",
+      "/pages//",
+      "/projects/private",
+      "/pages/private",
+      "/pages/08c583e5-d29e-4f1e-b06b-333965254e94",
+      "/projectsX",
+      "/pagesX",
+      "/page",
+      "/Pages",
+    ])
+      assert.ok(paths.includes(pathname), pathname);
+  });
+
+for (const misroutePath of [
+  "/projects",
+  "/projects/",
+  "/pages",
+  "/pages/",
+  "/pages/private",
+  "/projectsX",
+  "/chunks/ABCDEFGH.js",
+  "/chunks/ABCDEFGH.js/private",
+  "/app-ABCDEFGH.js",
+  "/automerge-ABCDEFGH.wasm",
+  "/app-ABCDEFGH.js/private",
+  "/project/prj_08c583e5-d29e-4f1e-b06b-333965254e94",
+  "/s/sp_08c583e5-d29e-4f1e-b06b-333965254e94",
+  "/project/prj_08c583e5-d29e-4f1e-b06b-333965254e94/private",
+  "/project/08c583e5-d29e-4f1e-b06b-333965254e94",
+])
+  for (const target of ["page9", "page10"])
+    test(`${target} does not activate a connector with misrouted path ${misroutePath}`, (t) => {
+      const f = fixture(t, { target, misroutePath });
+      assert.throws(f.execute, /Dedicated tunnel route validation failed/);
+      assert.equal(
+        f.calls.some(
+          ({ command, args }) =>
+            command === "systemctl" && ["start", "restart", "enable"].includes(args[0]),
+        ),
+        false,
+      );
+    });
 
 for (const misroutePath of [
   imageAssetPath,

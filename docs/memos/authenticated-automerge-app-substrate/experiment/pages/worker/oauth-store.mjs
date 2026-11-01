@@ -1,11 +1,11 @@
 import { randomSecret, secretHash } from "@cloud/oidc-session-store.ts";
 import { pagesPublicOrigin } from "../agent-guide.mjs";
+import { isolateSetup } from "./isolate-setup.mjs";
 
 const CODE_SECONDS = 300;
 const CONSENT_SECONDS = 600;
 const ACCESS_SECONDS = 600;
 const REFRESH_SECONDS = 30 * 24 * 60 * 60;
-const schemas = new WeakMap();
 const tokenPattern = /^pages_(?:at|rt)_[A-Za-z0-9_-]{43}$/;
 const secretPattern = /^[A-Za-z0-9_-]{43}$/;
 const SCHEMA = [
@@ -131,38 +131,32 @@ function identitySnapshot(identity) {
   }
   return snapshot;
 }
+// Concurrent requests never await one another's schema setup; see isolate-setup.mjs.
+const schemaReady = isolateSetup(async (db) => {
+  await db.batch(SCHEMA.map((sql) => db.prepare(sql)));
+  const hasRefreshConsent = async () => {
+    const result = await db.prepare("PRAGMA table_info(pages_oauth_codes)").all();
+    return result.results?.some((column) => column.name === "allow_refresh") ?? false;
+  };
+  if (!(await hasRefreshConsent())) {
+    try {
+      // Old codes keep the permissions approved on their original screen.
+      await db
+        .prepare(
+          "ALTER TABLE pages_oauth_codes ADD COLUMN allow_refresh INTEGER NOT NULL DEFAULT 0",
+        )
+        .run();
+    } catch (error) {
+      // Another isolate may have completed the same additive migration.
+      if (!(await hasRefreshConsent())) throw error;
+    }
+  }
+});
 async function database(env) {
   const db = env.DB;
   if (!db?.prepare || !db.batch)
     throw new Error("Pages OAuth requires transactional database storage");
-  let ready = schemas.get(db);
-  if (!ready) {
-    ready = (async () => {
-      await db.batch(SCHEMA.map((sql) => db.prepare(sql)));
-      const hasRefreshConsent = async () => {
-        const result = await db.prepare("PRAGMA table_info(pages_oauth_codes)").all();
-        return result.results?.some((column) => column.name === "allow_refresh") ?? false;
-      };
-      if (!(await hasRefreshConsent())) {
-        try {
-          // Old codes keep the permissions approved on their original screen.
-          await db
-            .prepare(
-              "ALTER TABLE pages_oauth_codes ADD COLUMN allow_refresh INTEGER NOT NULL DEFAULT 0",
-            )
-            .run();
-        } catch (error) {
-          // Another isolate may have completed the same additive migration.
-          if (!(await hasRefreshConsent())) throw error;
-        }
-      }
-    })().catch((error) => {
-      schemas.delete(db);
-      throw error;
-    });
-    schemas.set(db, ready);
-  }
-  await ready;
+  await schemaReady(db);
   return db;
 }
 const statement = (db, sql, ...values) => db.prepare(sql).bind(...values);

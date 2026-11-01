@@ -22,10 +22,73 @@
   --error-soft: color-mix(in srgb, var(--destructive) 10%, var(--surface));
   --success: #22734a;
   --page-header-height: 64px;
+  /* Highlight palette (marks.json). In light mode a highlight is a tint over
+     the page and text keeps --foreground. Dark mode is below. */
+  --highlight-yellow: #f5c400;
+  --highlight-green: #34c26b;
+  --highlight-blue: #4b9cf5;
+  --highlight-pink: #f0609e;
+  --highlight-strength: 38%;
+  /* Comment anchors: an orange tint and underline. Their own hue, so they
+     read apart from yellow highlights, and never the olive of --warning. */
+  --comment-anchor: #ffa156;
+  --comment-anchor-line: #e16c10;
+  --comment-anchor-fill: 20%;
 }
 :root.dark {
   --warning: #dec179;
   --success: #8bcba9;
+  --comment-anchor: #fb9d59;
+  --comment-anchor-line: #f99549;
+  --comment-anchor-fill: 18%;
+}
+[data-highlight="yellow"] {
+  --pages-highlight: var(--highlight-yellow);
+}
+[data-highlight="green"] {
+  --pages-highlight: var(--highlight-green);
+}
+[data-highlight="blue"] {
+  --pages-highlight: var(--highlight-blue);
+}
+[data-highlight="pink"] {
+  --pages-highlight: var(--highlight-pink);
+}
+[data-highlight="custom"] {
+  --pages-highlight: var(--pages-highlight-custom);
+}
+/* Dark mode draws highlights like a real highlighter: a light, opaque fill
+   with dark text. Any translucent yellow over a dark page reads as olive.
+   A custom property never falls back: an unsupported color function inside
+   one makes `background` invalid, leaving dark text on a dark page. The
+   palette is plain hex (oklch 0.83-0.88 lightness, matched across hues), and
+   relative color syntax is used only where @supports says it parses. */
+:root.dark {
+  --highlight-yellow: #fbd452;
+  --highlight-green: #81e8a0;
+  --highlight-blue: #8fcfff;
+  --highlight-pink: #ffa9cb;
+}
+/* A custom color keeps its hue at the palette's lightness where relative
+   color syntax exists, and is the yellow fill elsewhere. */
+:root.dark [data-highlight="custom"] {
+  --pages-highlight: var(--highlight-yellow);
+}
+@supports (background: oklch(from red 0.85 min(c, 0.15) h)) {
+  :root.dark [data-highlight="custom"] {
+    --pages-highlight: oklch(from var(--pages-highlight-custom) 0.85 min(c, 0.15) h);
+  }
+}
+:root.dark mark[data-highlight] {
+  color: #1a1a1a;
+  background: var(--pages-highlight);
+}
+mark[data-highlight] {
+  color: inherit;
+  background: color-mix(in oklab, var(--pages-highlight) var(--highlight-strength), transparent);
+  border-radius: 2px;
+  box-decoration-break: clone;
+  -webkit-box-decoration-break: clone;
 }
 * {
   box-sizing: border-box;
@@ -373,11 +436,28 @@ details.document-actions > div button {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  flex-wrap: wrap;
   gap: 1rem;
   margin-bottom: 2rem;
 }
+/* The actions keep their width and one-line labels. A title that doesn't fit
+   beside them takes its own line and the actions wrap below it; a word wider
+   than the whole line breaks rather than overflowing. */
+.library-heading > * {
+  min-width: 0;
+}
 .library-heading h1 {
   margin: 0;
+  overflow-wrap: anywhere;
+}
+.library-heading > .library-actions,
+.library-heading > button {
+  flex-shrink: 0;
+}
+.library-actions button,
+.library-heading > button {
+  min-height: 44px;
+  white-space: nowrap;
 }
 .picker-search.library-search {
   margin: 0 0 1.5rem;
@@ -600,6 +680,16 @@ details.document-actions > div button {
   background: var(--accent);
   color: var(--foreground);
   box-shadow: inset 0 0 0 1px var(--border);
+}
+.highlight-button[data-highlight] {
+  box-shadow:
+    inset 0 -3px 0 color-mix(in oklab, var(--pages-highlight) 80%, transparent),
+    inset 0 0 0 1px var(--border);
+}
+:root.dark .highlight-button[data-highlight] {
+  box-shadow:
+    inset 0 -3px 0 var(--pages-highlight),
+    inset 0 0 0 1px var(--border);
 }
 .toolbar-button[aria-pressed="mixed"] {
   background: var(--accent);
@@ -891,15 +981,15 @@ dialog::backdrop {
 }
 .peer-caret {
   position: relative;
-  border-left: 2px solid #8161aa;
+  border-left: 2px solid var(--peer-color, #8161aa);
   pointer-events: none;
 }
 .peer-caret > span {
   position: absolute;
   bottom: 100%;
   left: -2px;
-  background: #8161aa;
-  color: white;
+  background: var(--peer-color, #8161aa);
+  color: var(--peer-foreground, white);
   font: 11px system-ui;
   padding: 2px 5px;
   white-space: nowrap;
@@ -909,36 +999,64 @@ dialog::backdrop {
   text-overflow: ellipsis;
 }
 .peer-selection {
-  background: #8263ac2b;
+  background: color-mix(in srgb, var(--peer-color, #8263ac) 17%, transparent);
+}
+/* An agent's selection: the passage a search read hit, or the text a write
+   just changed, before it collapses to a caret. */
+.agent-selection {
+  background: color-mix(in srgb, var(--peer-color) 22%, transparent);
+  border-radius: 2px;
 }
 .agent-progress-passage {
   background: color-mix(in srgb, var(--primary) 8%, transparent);
   border-bottom: 1px dotted color-mix(in srgb, var(--primary) 45%, transparent);
 }
 .remote-edit {
-  border-bottom: 2px solid var(--warning);
+  border-bottom: 2px solid var(--peer-color, var(--warning));
   animation: illumination 2s ease-out;
 }
+/* A comment anchor is a translucent orange fill with an underline. Over a
+   highlight, the underline marks the comment's extent in both themes. */
 .comment-passage {
-  background: color-mix(in srgb, var(--warning) 12%, transparent);
-  border-bottom: 1px solid var(--warning);
+  background: color-mix(in oklab, var(--comment-anchor) var(--comment-anchor-fill), transparent);
+  border-bottom: 2px solid var(--comment-anchor-line);
 }
 .comment-passage-active {
-  background: color-mix(in srgb, var(--warning) 24%, transparent);
+  background: color-mix(
+    in oklab,
+    var(--comment-anchor) calc(var(--comment-anchor-fill) * 2),
+    transparent
+  );
+}
+/* The passage an open inline composer is commenting on. Focus sits in the
+   popover, so this stands in for the selection it replaced. */
+.comment-draft-passage {
+  background: color-mix(in srgb, var(--warning) 28%, transparent);
+  border-bottom: 2px solid var(--warning);
+}
+/* A thread the inline composer just created pulses once, then rests. */
+.comment-passage-created {
+  animation: comment-created 1.6s ease-out;
+}
+@keyframes comment-created {
+  from {
+    background: color-mix(in srgb, var(--warning) 48%, transparent);
+  }
 }
 .opaque small {
   color: var(--muted-foreground);
 }
 @keyframes illumination {
   from {
-    background: color-mix(in srgb, var(--warning) 24%, transparent);
+    background: color-mix(in srgb, var(--peer-color, var(--warning)) 18%, transparent);
   }
   to {
     background: transparent;
   }
 }
 @media (prefers-reduced-motion: reduce) {
-  .remote-edit {
+  .remote-edit,
+  .comment-passage-created {
     animation: none;
   }
 }
@@ -1046,7 +1164,8 @@ dialog::backdrop {
   .document-title,
   .document-meta,
   .writing-continuation,
-  .comments {
+  .comments,
+  .comment-popover {
     display: none !important;
   }
   .document,
@@ -1071,9 +1190,14 @@ dialog::backdrop {
     overflow-wrap: anywhere;
   }
   .remote-edit,
-  .comment-passage {
+  .comment-passage,
+  .peer-selection,
+  .agent-selection {
     border: 0;
     background: none;
+  }
+  .wordgard-caret-layer {
+    display: none;
   }
 }
 
@@ -1555,7 +1679,7 @@ details.account-actions > div a:hover {
   }
 }
 
-/* Spaces: a section in the switcher, a Space view and Page breadcrumbs.
+/* Projects: a section in the switcher, a Project view and Page breadcrumbs.
    Minimal on purpose; they reuse library rows and switcher entries. */
 .picker-section {
   margin: 0.5rem 0.8rem 0.25rem;
@@ -1565,18 +1689,25 @@ details.account-actions > div a:hover {
   letter-spacing: 0.04em;
   text-transform: uppercase;
 }
-.picker-spaces {
+.picker-projects {
   max-height: 24dvh;
   border-top: 1px solid var(--border);
 }
-.space-back {
+.project-back {
+  min-height: 44px;
   margin: 0 0 0.5rem -0.5rem;
+  padding: 0.55rem 0.75rem;
+  border-radius: 0.5rem;
   color: var(--muted-foreground);
+  text-decoration: none;
 }
-.space-description {
+.project-back:hover {
+  background: var(--accent);
+}
+.project-description {
   margin: 0.5rem 0 0;
 }
-.space-empty {
+.project-empty {
   padding: 0.85rem 0.5rem;
 }
 .breadcrumbs ol {
@@ -1600,4 +1731,185 @@ details.account-actions > div a:hover {
 .breadcrumbs a:hover {
   color: var(--foreground);
   text-decoration: underline;
+}
+
+/* Index routes (/pages, /projects) and the Home · All Pages · Projects nav.
+   Narrow screens first: each row is one link the full width of the screen,
+   at least 56px tall, and a Project label stays a separate 32px target. */
+.index-nav {
+  display: flex;
+  gap: 0.25rem;
+  margin: 0 0 1.5rem;
+  padding: 0.25rem;
+  border-radius: 0.75rem;
+  background: var(--accent);
+}
+.index-nav a {
+  flex: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 44px;
+  padding: 0 0.75rem;
+  border-radius: 0.55rem;
+  color: var(--muted-foreground);
+  font-size: 0.9rem;
+  font-weight: 500;
+  text-decoration: none;
+  white-space: nowrap;
+}
+.index-nav a:hover {
+  color: var(--foreground);
+}
+.index-nav a[aria-current="page"] {
+  background: var(--surface);
+  color: var(--foreground);
+  box-shadow: 0 1px 2px #0000001f;
+}
+.index-nav a:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 1px;
+}
+.index-view .library-heading {
+  margin-bottom: 1rem;
+}
+.index-search {
+  margin: 0;
+}
+.index-searching,
+.index-status {
+  margin: 0 0 1rem;
+}
+.index-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.index-row {
+  position: relative;
+  display: flex;
+  align-items: flex-start;
+  gap: 0.75rem;
+  min-height: 56px;
+  padding: 0.9rem 0.6rem;
+  border-bottom: 1px solid var(--border);
+  border-radius: 0.5rem;
+}
+.index-row:hover,
+.index-row:focus-within {
+  background: var(--accent);
+}
+.index-row-icon {
+  flex-shrink: 0;
+  margin-top: 0.1rem;
+  color: var(--muted-foreground);
+}
+.index-row-body {
+  flex: 1;
+  min-width: 0;
+}
+.index-row-link {
+  display: block;
+  color: inherit;
+  font-size: 1rem;
+  font-weight: 500;
+  line-height: 1.35;
+  text-decoration: none;
+  overflow-wrap: anywhere;
+}
+/* The whole row is the Page or Project link. */
+.index-row-link::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+}
+.index-row-link:focus-visible {
+  outline: 0;
+}
+.index-row-link:focus-visible::after {
+  outline: 2px solid var(--focus);
+  outline-offset: -2px;
+}
+.index-row-detail {
+  margin: 0.25rem 0 0;
+  color: var(--muted-foreground);
+  font-size: 0.875rem;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+.index-row-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.25rem 0.75rem;
+  margin: 0.3rem 0 0;
+  color: var(--muted-foreground);
+  font-size: 0.8rem;
+}
+/* Above the row link, so a tap on the label opens the Project. */
+.index-row-project {
+  position: relative;
+  z-index: 1;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  max-width: 100%;
+  min-height: 32px;
+  margin: -0.35rem 0 -0.35rem -0.5rem;
+  padding: 0 0.5rem;
+  border-radius: 1rem;
+  color: inherit;
+  text-decoration: none;
+}
+.index-row-project span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.index-row-project:hover {
+  background: var(--surface);
+  color: var(--foreground);
+}
+.index-row-project:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 0;
+}
+.index-more {
+  width: 100%;
+  min-height: 48px;
+  margin-top: 1rem;
+}
+.picker-index {
+  display: flex;
+  gap: 0.5rem;
+  margin: 0 1.2rem 1rem;
+}
+.picker-index a {
+  flex: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.4rem;
+  min-height: 44px;
+  border: 1px solid var(--border);
+  border-radius: 0.55rem;
+  color: inherit;
+  font-size: 0.9rem;
+  text-decoration: none;
+}
+.picker-index a:hover {
+  background: var(--accent);
+}
+@media (min-width: 901px) {
+  .index-nav {
+    display: inline-flex;
+  }
+  .index-nav a {
+    flex: none;
+    min-height: 36px;
+  }
+  .index-row {
+    min-height: 64px;
+  }
 }

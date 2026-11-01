@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { request, REQUEST_TIMEOUT_MS } from "./request.mjs";
+import { isTransientFailure, request, REQUEST_TIMEOUT_MS } from "./request.mjs";
 
 function deferred() {
   let resolve, reject;
@@ -320,4 +320,78 @@ test("network failures are preserved and release the timer and abort listener", 
   assert.equal(failure.code, "NETWORK_ERROR");
   assert.equal(listeners.size, 0);
   assert.equal(timer.jobs.size, 0);
+});
+
+/** The error request() rejects with for one response or transport failure. */
+async function failureOf(fetch) {
+  try {
+    await request("/api/saved", {}, { fetch });
+  } catch (error) {
+    return error;
+  }
+  throw Error("the request succeeded");
+}
+const cloudflarePage = (status) =>
+  new Response(`<!DOCTYPE html><title>${status}: origin unreachable | Cloudflare</title>`, {
+    status,
+    headers: { "Content-Type": "text/html; charset=UTF-8" },
+  });
+
+test("a gateway answer, a retryable error or a lost connection is transient", async () => {
+  for (const status of [502, 503, 504]) {
+    for (const [label, fetch] of [
+      ["Cloudflare HTML", async () => cloudflarePage(status)],
+      ["an empty body", async () => new Response(null, { status })],
+      ["JSON", async () => Response.json({ error: "Pages request failed" }, { status })],
+    ]) {
+      const error = await failureOf(fetch);
+      assert.equal(error.status, status, `${status} ${label}`);
+      assert.equal(isTransientFailure(error), true, `${status} ${label}`);
+    }
+  }
+  const retryable = await failureOf(async () =>
+    Response.json(
+      { error: "The Page host is busy", code: "host_busy", retryable: true },
+      { status: 500 },
+    ),
+  );
+  assert.equal(retryable.retryable, true);
+  assert.equal(isTransientFailure(retryable), true);
+  const lost = await failureOf(async () => {
+    throw new TypeError("Failed to fetch");
+  });
+  assert.equal(isTransientFailure(lost), true);
+  // Failures from fetch calls that bypass request().
+  for (const message of [
+    "Failed to fetch",
+    "NetworkError when attempting to fetch resource.",
+    "Load failed",
+    "fetch failed",
+  ])
+    assert.equal(isTransientFailure(new TypeError(message)), true, message);
+});
+
+test("errors the person can act on, timeouts and other failures are not transient", async () => {
+  for (const status of [400, 401, 403, 404, 409, 500]) {
+    const json = await failureOf(async () =>
+      Response.json({ error: "Specific", code: "specific" }, { status }),
+    );
+    assert.equal(isTransientFailure(json), false, `JSON ${status}`);
+    const html = await failureOf(async () => cloudflarePage(status));
+    assert.equal(isTransientFailure(html), false, `HTML ${status}`);
+  }
+  const timer = clock();
+  const pending = request("/api/saved", {}, { ...timer, fetch: () => new Promise(() => {}) });
+  timer.expire();
+  await assert.rejects(pending, (error) => !isTransientFailure(error));
+  for (const error of [
+    undefined,
+    null,
+    "Failed to fetch",
+    Error("Failed to fetch"),
+    new TypeError("Cannot read properties of undefined"),
+    new TypeError("Failed to fetch dynamically imported module: /chunks/AAAAAAAA.js"),
+    Object.assign(Error("Specific"), { status: 500, retryable: false }),
+  ])
+    assert.equal(isTransientFailure(error), false, String(error));
 });

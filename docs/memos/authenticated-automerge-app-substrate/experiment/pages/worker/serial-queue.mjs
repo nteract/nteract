@@ -1,4 +1,5 @@
 import { logFailure } from "./auth.mjs";
+import { holdUntilSettled } from "./request-hold.mjs";
 
 /*
  * One request at a time for a Durable Object, with a stuck-head watchdog.
@@ -18,6 +19,10 @@ import { logFailure } from "./auth.mjs";
  * why Catalog and Space use this and Page does not: a Page holds live
  * document state and sockets. Catalog and Space operations already recover
  * from a restart through their stored operation intents.
+ *
+ * Each queued request also holds itself open with `holdUntilSettled`, so a
+ * caller that goes away cannot leave its work half-run at the head
+ * (request-hold.mjs).
  */
 
 /** Mutable so tests can shorten them. A request still running at `runMs` has
@@ -68,6 +73,7 @@ export function serialQueue(ctx, stage) {
       }
     });
     tail = next.catch(() => {});
+    holdUntilSettled(ctx, tail);
     return next;
   };
 }

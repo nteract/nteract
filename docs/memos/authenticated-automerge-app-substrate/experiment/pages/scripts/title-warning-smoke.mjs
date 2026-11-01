@@ -267,9 +267,10 @@ try {
     ...retry(withTitle),
     operations: [
       {
-        op: "patch_block_markdown",
+        op: "replace_match",
         block_id: initial.blocks[0].id,
-        replacements: [{ old: "Keep this text unchanged.", new: "Preserve this text unchanged." }],
+        match_text: "Keep this text unchanged.",
+        replacement: "Preserve this text unchanged.",
       },
     ],
   });

@@ -5,7 +5,8 @@ export const mermaidSource = (app) =>
 
 // Keep the source import intact for sourceFingerprint, but serve the existing
 // notebook renderer as a separate local module loaded only by Mermaid blocks.
-export function browserMermaidPlugin(app) {
+// scripts/build.mjs passes the renderer's content-hashed URL.
+export function browserMermaidPlugin(app, url = "/mermaid.js") {
   const source = mermaidSource(app);
   return {
     name: "lazy-local-mermaid",
@@ -14,7 +15,7 @@ export function browserMermaidPlugin(app) {
         if (path.resolve(args.resolveDir, args.path) !== source) return;
         if (args.kind !== "dynamic-import")
           throw new Error("The Mermaid renderer must remain a dynamic import");
-        return { path: "/mermaid.js", external: true };
+        return { path: url, external: true };
       });
     },
   };

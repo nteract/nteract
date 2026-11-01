@@ -8,11 +8,14 @@
  * and a Space's Pages are readable by its owner plus anyone holding a direct
  * grant on a Page.
  *
- * Pages carry their placement in the Page record (`metadata.placement`):
- * `space_id` (null for Your items), `parent_id` (null at the top level),
- * `position` among siblings, `placement_epoch` and `home`. The owner's Catalog
- * entries copy it at creation. Placement only changes when a restore returns
- * a Page whose parent is gone to the top level, which bumps the epoch.
+ * The owner's Catalog records where each Page is (catalog-location.mjs), with
+ * the nesting limit from model/location.mjs. Page records carry no location.
+ *
+ * Callers see Projects; project-api.mjs maps the API onto this module.
+ * Storage keeps the Space name so a rollback build reads the same records.
+ * That covers the `space/record` key, `space_id` fields, stored receipts and
+ * the `Space` class behind the `PROJECTS` binding. Messages and error codes
+ * are not stored, so they use the Project name.
  */
 import { HttpError, authenticate, json, readJson, requireWrite, errorResponse } from "./auth.mjs";
 import { fingerprint, mutationKey } from "./mutations.mjs";
@@ -21,17 +24,19 @@ import { NO_ACTOR_CHAIN, decide, heldRelation, principalOf, projectObject } from
 import { serialQueue } from "./serial-queue.mjs";
 
 export const SPACE_LIMIT = 50;
-/** Deepest allowed nesting; a top-level Page is at depth 1. */
-export const MAX_DEPTH = 8;
 export const SPACE_TITLE_LIMIT = 200;
 export const SPACE_DESCRIPTION_LIMIT = 2000;
 const RECEIPT_LIMIT = 64;
 const RECORD = "space/record";
 const receiptKey = (operationKey) => `host/receipt/${operationKey.slice("host/operation/".length)}`;
 
-const spaceIdPattern = /^sp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+/** New Projects get `prj_` IDs. `sp_` IDs were minted before Projects had
+ * their name and stay valid. IDs are not storage keys' names, so either shape
+ * is stored under `space/<id>`. */
+const spaceIdPattern =
+  /^(prj|sp)_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 export const validSpaceId = (id) => typeof id === "string" && spaceIdPattern.test(id);
-export const newSpaceId = () => `sp_${crypto.randomUUID()}`;
+export const newSpaceId = () => `prj_${crypto.randomUUID()}`;
 
 /** Space and Page IDs have different shapes, so a mix-up is a structural
  * error that reveals nothing about either resource. The message names the
@@ -43,23 +48,23 @@ export function requirePageIdArgument(value, argument = "page_id") {
     throw new HttpError(
       400,
       argument === "parent_id"
-        ? "parent_id expects a Page ID, but this is a Space ID. Pass it as space_id to create or list Pages at the Space's top level."
-        : `${argument} expects a Page ID, but this is a Space ID. Use get_space with space_id to read a Space; its home_page_id is a Page ID for read_page.`,
-      "space_id_as_page_id",
+        ? "parent_id expects a Page ID, but this is a Project ID. Pass it as project_id to create or list Pages at the Project's top level."
+        : `${argument} expects a Page ID, but this is a Project ID. Use get_project with project_id to read a Project; its home_page_id is a Page ID for read_page.`,
+      "project_id_as_page_id",
     );
   throw new HttpError(400, `Invalid ${argument}`);
 }
-export function requireSpaceIdArgument(value, argument = "space_id") {
+export function requireSpaceIdArgument(value, argument = "project_id") {
   if (validSpaceId(value)) return value;
   if (validPageId(value))
     throw new HttpError(
       400,
-      `${argument} expects a Space ID (sp_…), but this is a Page ID. Use read_page with page_id, or pass it as parent_id to nest a Page under it.`,
-      "page_id_as_space_id",
+      `${argument} expects a Project ID (prj_…), but this is a Page ID. Use read_page with page_id, or pass it as parent_id to nest a Page under it.`,
+      "page_id_as_project_id",
     );
   throw new HttpError(400, `Invalid ${argument}`);
 }
-export const spaceNotFound = () => new HttpError(404, "Space not found", "space_not_found");
+export const spaceNotFound = () => new HttpError(404, "Project not found", "project_not_found");
 
 function optionalText(value, name, limit, { required = false } = {}) {
   if (value === undefined && !required) return undefined;
@@ -72,7 +77,7 @@ function optionalText(value, name, limit, { required = false } = {}) {
 }
 export function validateSpaceInput(args, { creating }) {
   if (!args || typeof args !== "object" || Array.isArray(args))
-    throw new HttpError(400, "Invalid Space arguments");
+    throw new HttpError(400, "Invalid Project arguments");
   const title = optionalText(args.title, "title", SPACE_TITLE_LIMIT, { required: creating });
   if (title !== undefined && !title.trim()) throw new HttpError(400, "title is required");
   const description = optionalText(args.description, "description", SPACE_DESCRIPTION_LIMIT);
@@ -81,7 +86,7 @@ export function validateSpaceInput(args, { creating }) {
     if (title === undefined && description === undefined)
       throw new HttpError(400, "Provide title or description to update");
     if (!Number.isSafeInteger(args.expected_revision) || args.expected_revision < 0)
-      throw new HttpError(400, "expected_revision is required: pass revision from get_space");
+      throw new HttpError(400, "expected_revision is required: pass revision from get_project");
   }
   return { title: title?.trim(), description };
 }
@@ -89,58 +94,8 @@ export function validateSpaceInput(args, { creating }) {
 /** Body of a new home Page. It is ordinary Page content: guidance for people
  * and agents, never authority to widen a task. */
 export function homePageMarkdown(description) {
-  const lead = description?.trim() ? description.trim() : "Describe what this Space is for.";
-  return `${lead}\n\n## Guidance\n\nThis is the Space's home Page. Keep current priorities and notes for people and agents working in this Space here.`;
-}
-
-/** A Page record's placement, or Your items at the top level. */
-export function pagePlacement(metadata) {
-  const placement = metadata?.placement;
-  return {
-    space_id: placement?.space_id ?? null,
-    parent_id: placement?.parent_id ?? null,
-    position: placement?.position ?? null,
-    placement_epoch: placement?.placement_epoch ?? 0,
-    home: placement?.home === true,
-  };
-}
-/** Placement fields copied into the owner's Catalog entries. */
-export function placementEntry(placement) {
-  if (!placement) return {};
-  return {
-    space_id: placement.space_id ?? null,
-    parent_id: placement.parent_id ?? null,
-    position: placement.position ?? null,
-    placement_epoch: placement.placement_epoch ?? 0,
-    ...(placement.home && { home: true }),
-  };
-}
-/** The same view over a Catalog entry. Entries from before Spaces have none. */
-export const entryPlacement = (entry) => pagePlacement({ placement: entry });
-
-/** Shape check for a placement the host supplies on creation or restore. */
-export function validatePlacement(placement) {
-  if (
-    !placement ||
-    typeof placement !== "object" ||
-    Array.isArray(placement) ||
-    !(placement.space_id === null || validSpaceId(placement.space_id)) ||
-    !(placement.parent_id === null || validPageId(placement.parent_id)) ||
-    typeof placement.position !== "string" ||
-    !/^[0-9A-Za-z]{1,64}$/.test(placement.position) ||
-    !Number.isSafeInteger(placement.placement_epoch) ||
-    placement.placement_epoch < 0 ||
-    (placement.home !== undefined && placement.home !== true) ||
-    (placement.home && (placement.space_id === null || placement.parent_id !== null))
-  )
-    throw new HttpError(400, "Invalid placement");
-  return {
-    space_id: placement.space_id,
-    parent_id: placement.parent_id,
-    position: placement.position,
-    placement_epoch: placement.placement_epoch,
-    ...(placement.home && { home: true }),
-  };
+  const lead = description?.trim() ? description.trim() : "Describe what this Project is for.";
+  return `${lead}\n\n## Guidance\n\nThis is the Project's home Page. Keep current priorities and notes for people and agents working in this Project here.`;
 }
 
 export function publicSpace(record) {
@@ -167,10 +122,14 @@ function can(capability, record, identity) {
   ).capabilities.includes(capability);
 }
 
-/** Authority for one Space's record and ACL. Only the host reaches these
- * routes: the gateway forwards Space operations through the caller's Catalog,
- * which calls the Space with the caller's own credentials. A Space never
- * calls a Catalog or a Page. */
+/** Authority for one Project's record and ACL. Only the host reaches these
+ * routes: the gateway forwards Project operations through the caller's
+ * Catalog, which calls this object with the caller's own credentials. It never
+ * calls a Catalog or a Page.
+ *
+ * The class name is the storage identity for Projects: celld keys Durable
+ * Object storage by class name and refuses `renamed_classes` migrations, so
+ * the class stays `Space` behind the `PROJECTS` binding. */
 export class Space {
   constructor(ctx, env) {
     this.ctx = ctx;
@@ -209,7 +168,7 @@ export class Space {
       if (heldRelation(projectObject(record), identity.principal) !== "owner")
         throw spaceNotFound();
       if (record.home_page_id !== args.home_page_id)
-        throw new HttpError(409, "Space already exists");
+        throw new HttpError(409, "Project already exists");
       return json(publicSpace(record));
     }
     const now = new Date().toISOString();
@@ -243,15 +202,19 @@ export class Space {
     const recorded = await this.ctx.storage.get(receiptKey(key));
     if (recorded) {
       if (recorded.fingerprint !== digest)
-        throw new HttpError(409, "idempotency_key was used for a different request");
+        throw new HttpError(
+          409,
+          "idempotency_key was used for a different request",
+          "idempotency_conflict",
+        );
       return json(recorded.receipt);
     }
     // The fence: a request applies only at the revision its caller read.
     if (args.expected_revision !== record.revision)
       throw new HttpError(
         409,
-        "Space changed; get_space again and retry with its revision",
-        "space_revision_conflict",
+        "Project changed; get_project again and retry with its revision",
+        "project_revision_conflict",
       );
     const next = {
       ...record,

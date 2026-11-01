@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import * as A from "@automerge/automerge/slim";
-import { Wordgard, Decoration } from "wordgard/editor";
+import { Wordgard, Decoration, KeyBinding } from "wordgard/editor";
 import { GardState, Transaction } from "wordgard/state";
 import { Command, toggleMark, toggleList, listIsActive, canAddMarkInRange } from "wordgard/command";
 import { history } from "wordgard/history";
@@ -31,9 +31,15 @@ import {
   PagesLink,
 } from "./wordgard-model.mjs";
 import { taskLists } from "./wordgard-task-lists.mjs";
+import { markdownShortcuts } from "./wordgard-shortcuts.mjs";
 import { tablePresentation, tableKeys, selectedTable } from "./wordgard-tables.mjs";
 import { TableMenu } from "./TableMenu.jsx";
-import { wordgardCodeNewlines, wordgardListStarts } from "./wordgard-binding.mjs";
+import { codeHighlighting } from "./code-highlight.mjs";
+import {
+  insertPlainLineBreak,
+  wordgardCodeNewlines,
+  wordgardListStarts,
+} from "./wordgard-binding.mjs";
 import { projectChanges } from "./wordgard-projection.mjs";
 import { linkDestination } from "./link-destination.mjs";
 import {
@@ -74,12 +80,15 @@ function nativeConfig() {
     taskLists(),
     blockquote(),
     codeBlock(),
+    markdownShortcuts(),
     tables({ cellContent: "inline", cellSpanning: false }),
     tablePresentation,
     tableKeys,
     GardState.schemaElement.of(elements),
     wordgardCodeNewlines,
     wordgardListStarts,
+    codeHighlighting,
+    KeyBinding.of({ key: "Shift-Enter", run: insertPlainLineBreak }),
     Decoration.Mark.shape(PagesLink, {
       element: "a",
       attributes: (value) => {

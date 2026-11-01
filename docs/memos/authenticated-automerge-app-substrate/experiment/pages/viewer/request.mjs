@@ -10,6 +10,29 @@ export function observeResponses(fn) {
   return () => responseObservers.delete(fn);
 }
 
+// A gateway answers with these while the origin restarts or is unreachable,
+// for example Cloudflare's HTML error pages during a deploy.
+const GATEWAY_STATUSES = new Set([502, 503, 504]);
+// The messages fetch rejects with for a transport failure: Chromium, Firefox,
+// Safari and Node. Anchored so "Failed to fetch dynamically imported module"
+// (a retired chunk, which needs a reload) stays out.
+const FETCH_FAILURE =
+  /^(?:Failed to fetch|NetworkError when attempting to fetch resource\.|Load failed|fetch failed)$/;
+
+/**
+ * Whether a request failed in a way the server fixes by itself, such as a
+ * restart: a 502, 503 or 504 (JSON or a proxy's HTML), a JSON error marked
+ * `retryable`, or a transport failure. The person can't act on one, so the
+ * viewer shows Offline and retries instead of a banner. A 4xx, a 500 and a
+ * timeout are not transient.
+ */
+export function isTransientFailure(error) {
+  if (error === null || typeof error !== "object") return false;
+  if (error.retryable === true || error.code === "NETWORK_ERROR") return true;
+  if (GATEWAY_STATUSES.has(error.status) || GATEWAY_STATUSES.has(error.httpStatus)) return true;
+  return error instanceof TypeError && FETCH_FAILURE.test(error.message);
+}
+
 function invalidResponse(response) {
   return Object.assign(Error(`The server returned an unexpected response (${response.status})`), {
     code: "INVALID_RESPONSE",
@@ -98,7 +121,11 @@ export async function request(
               : body.error?.message
             : undefined;
         if (typeof message !== "string") throw invalidResponse(response);
-        throw Object.assign(Error(message), { status: response.status, code: body.code });
+        throw Object.assign(Error(message), {
+          status: response.status,
+          code: body.code,
+          ...(body.retryable === true && { retryable: true }),
+        });
       }
       return body;
     })();
@@ -107,4 +134,13 @@ export async function request(
     cancel(timer);
     callerSignal?.removeEventListener("abort", onAbort);
   }
+}
+
+/** Call one Pages tool through /api/tools. */
+export function tool(operation, args = {}) {
+  return request("/api/tools", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ operation, arguments: args }),
+  });
 }

@@ -57,8 +57,46 @@ const cases = [
   { id: "sibling-tables-in-quote", markdown: "> | A |\n> | --- |\n> | a |\n>\n> | B |\n> | --- |\n> | b |\n" },
   { id: "table-in-list", markdown: "- Introduction\n\n  | A | B |\n  | --- | --- |\n  | x | y |" },
   { id: "inline-html-literal", markdown: "Literal <b>text</b> stays visible." },
+  { id: "highlight-strong", markdown: 'Set the **<mark data-color="green">launch date</mark>** today.' },
+  { id: "highlight-custom", markdown: "A <mark data-color=\"#1a2b3c\">custom</mark> and <MARK DATA-COLOR=' #ABCDEF '>uppercase</MARK> color." },
+  { id: "highlight-bare-line-start", markdown: "<mark>Bare</mark> highlight starts the line." },
+  { id: "highlight-heading-quote", markdown: "# <mark data-color='pink'>Heading</mark>\n\n> - <mark>quoted\n> item</mark>" },
+  { id: "highlight-code-link", markdown: '<mark data-color="blue">see `code`</mark> and [<mark>linked</mark>](https://example.org)' },
+  { id: "highlight-across-strong", markdown: "<mark>a **b</mark> c**" },
+  { id: "highlight-table", markdown: '| A | B |\n| --- | --- |\n| <mark data-color="blue">x</mark> | y<br><mark>z</mark> |' },
+  { id: "highlight-nested-literal", markdown: '<mark>a <mark data-color="pink">b</mark> c</mark>' },
+  { id: "highlight-unbalanced-literal", markdown: "Close </mark> first, then <mark>never closed." },
+  { id: "highlight-invalid-color-literal", markdown: 'An <mark data-color="red">invalid</mark>, <mark data-color="">empty</mark> and <mark data-color=green>unquoted</mark> color.' },
+  { id: "highlight-escaped-literal", markdown: "Write \\<mark> tags as text." },
+  { id: "highlight-image-alt", markdown: "![<mark>x</mark> y](cat.png)" },
+  { id: "opaque-marker-html", markdown: "<marker>not a highlight</marker>", import_id: "marker-import" },
+  { id: "opaque-mark-autolink", markdown: "<mark:x>", import_id: "mark-autolink-import" },
+  { id: "opaque-mark-nbsp", markdown: "<mark\u00a0>x</mark>", import_id: "mark-nbsp-import" },
   { id: "opaque-html", markdown: "<section>Preserve this</section>", import_id: "html-import" },
   { id: "opaque-math", markdown: "The value is $x + 1$.", import_id: "math-import" },
+  { id: "opaque-display-math-spaced", markdown: "Before $$ \\{x\\} $$ after.", import_id: "display-spaced-import" },
+  { id: "opaque-display-math-inline", markdown: "Inline $$x$$ math.", import_id: "display-inline-import" },
+  { id: "opaque-display-math-block", markdown: "Before\n\n$$\n\\{x\\}\n$$\n\nAfter", import_id: "display-block-import" },
+  { id: "opaque-display-math-escapes", markdown: "Escapes $$\\frac{a}{b} \\_ \\{x\\}$$ stay.", import_id: "display-escapes-import" },
+  { id: "opaque-display-opener-lf", markdown: "Before\n$$\n\\{x\\}", import_id: "opener-lf-import" },
+  { id: "opaque-display-opener-cr", markdown: "Before\r$$\n\\{x\\}", import_id: "opener-cr-import" },
+  { id: "opaque-display-opener-crlf", markdown: "Before\r\n$$\r\n\\{x\\}", import_id: "opener-crlf-import" },
+  { id: "opaque-display-opener-cr-indented", markdown: "Before\r\r \t$$\r\\{x\\}", import_id: "opener-cr-indented-import" },
+  { id: "opaque-display-opener-feff", markdown: "Before\n\ufeff$$\n\\{x\\}", import_id: "opener-feff-import" },
+  { id: "opaque-display-opener-leading-bom", markdown: "\ufeff$$\n\\{x\\}", import_id: "opener-leading-bom-import" },
+  { id: "opaque-display-opener-nbsp", markdown: "Before\r\u00a0$$\n\\{x\\}", import_id: "opener-nbsp-import" },
+  { id: "opaque-display-opener-line-separator", markdown: "Before\u2028$$\n\\{x\\}", import_id: "opener-line-separator-import" },
+  { id: "opaque-display-opener-paragraph-separator", markdown: "Before\u2029$$\n\\{x\\}", import_id: "opener-paragraph-separator-import" },
+  { id: "opaque-display-opener-unicode-spaces", markdown: "Before\r\n \u0085\u1680\u2000\u200a\u2028\u2029\u202f\u205f\u3000$$\n\\{x\\}", import_id: "opener-unicode-spaces-import" },
+  { id: "display-opener-zero-width-space-is-content", markdown: "Before\n\u200b$$\n\\{x\\}" },
+  { id: "opaque-currency-beside-math", markdown: "$5 and $$x$$", import_id: "currency-math-import" },
+  { id: "opaque-math-nel", markdown: "$\u0085x$", import_id: "math-nel-import" },
+  { id: "opaque-math-bom", markdown: "$\ufeffx$", import_id: "math-bom-import" },
+  { id: "opaque-math-nbsp", markdown: "$\u00a0x$", import_id: "math-nbsp-import" },
+  { id: "opaque-math-line-separator", markdown: "$\u2028x$", import_id: "math-line-separator-import" },
+  { id: "prose-currency-ascii-spaces", markdown: "Pay $ 5,\t$\u000b6 or 7 $ each." },
+  { id: "prose-currency", markdown: 'No auto-math, so "$30 and $25" stays as text. Budget $5-$10, or 30 $ each.' },
+  { id: "code-span-literals", markdown: "Ends with `\\`, then `` `code` ``, ``x`y`` and `## `.\n\n- `- `, `1. `, `> `\n- `` ` ``" },
   { id: "opaque-reference", markdown: "[Guide][ref]\n\n[ref]: https://example.org", import_id: "reference-import" },
   { id: "opaque-strikethrough", markdown: "Keep ~~this~~ untouched.", import_id: "strike-import" },
   { id: "opaque-rule-gate", markdown: "Before\n\n---\n\nAfter", import_id: "rule-import" },
@@ -120,6 +158,7 @@ const divergences = [
     ["marked-table-image-preserved", "| A |\n| --- |\n| **![caption](image.png)** |"],
     ["linked-heading-image-preserved", "# [![caption](image.png)](https://example.org)"],
     ["marked-nested-list-image-preserved", "> - *![caption](image.png)*"],
+    ["highlighted-image-preserved", "<mark>![caption](image.png)</mark>"],
   ].map(([id, markdown]) => ({
     id,
     markdown,
@@ -155,14 +194,29 @@ const ragged = structuredClone(fixtures.find((item) => item.id === "table-empty"
 // Drop the last empty cell: exported Markdown has to pad that row, rather than
 // discarding the longer rows when imported again.
 ragged.pop();
-const export_cases = [
-  {
-    id: "ragged-native-table",
-    spans: ragged,
-    expected_spans: importLegacy(exportLegacy(ragged)),
-    canonical_markdown: exportLegacy(ragged),
-  },
+// Highlight states a native editor can produce: literal tag text, padded and
+// overlapping ranges, and adjacent colors.
+const text = (value, marks = {}) => ({ type: "text", value, marks });
+const nativeCases = [
+  ["ragged-native-table", ragged],
+  ["highlight-literal-tag-text", [text("use <mark> tags and </MARK> too")]],
+  ["highlight-padded", [text("Note:"), text(" padded ", { highlight: "pink" }), text("end")]],
+  [
+    "highlight-overlaps-strong",
+    [
+      text("bold ", { strong: true }),
+      text("both", { strong: true, highlight: "green" }),
+      text(" high", { highlight: "green" }),
+    ],
+  ],
+  ["highlight-adjacent-colors", [text("a", { highlight: "blue" }), text("b", { highlight: "#ff00aa" })]],
 ];
+const export_cases = nativeCases.map(([id, spans]) => ({
+  id,
+  spans,
+  expected_spans: importLegacy(exportLegacy(spans)),
+  canonical_markdown: exportLegacy(spans),
+}));
 
 const document = {
   profile: "pages-markdown-v1",

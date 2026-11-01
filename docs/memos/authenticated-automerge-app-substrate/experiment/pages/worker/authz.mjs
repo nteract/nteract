@@ -333,14 +333,14 @@ const companyOrganization = (namespace, domain) =>
 /**
  * decide()'s object for a Page record, scoped to one principal.
  *
- * The relations hold the owner (or the project), company view, and only the
- * principal's own member row, so building one costs a single member lookup
- * however many grants and tombstones the ACL has collected. A viewer or editor
- * row grants. Any other row (a removal tombstone or an unreadable row) becomes
- * `removed`, which blocks company view. A Page placed in a Space has the
- * `project` relation instead of `owner`. Spaces are owner-only in this build
- * and only a Space's owner places Pages in it, so the project copy is
- * synthesized from the Page record's owner.
+ * The relations hold the owner, company view, and only the principal's own
+ * member row, so building one costs a single member lookup however many
+ * grants and tombstones the ACL has collected. A viewer or editor row grants.
+ * Any other row (a removal tombstone or an unreadable row) becomes `removed`,
+ * which blocks company view. A Page record holds no location, so it never has
+ * the `project` relation: Projects are owner-only in this build and grant a
+ * Page's owner nothing the `owner` relation doesn't. A Project relation, when
+ * Projects grant access, comes from the owner's Catalog location.
  */
 export function pageObject(metadata, principal) {
   const lifecycle = pageState(metadata);
@@ -357,28 +357,19 @@ export function pageObject(metadata, principal) {
   const domainView = metadata?.acl?.domainView;
   const company = domainView && companyOrganization(domainView.namespace, domainView.domain);
   if (company) viewer.push({ type: "organization", id: company });
-  const spaceId = metadata?.placement?.space_id;
-  const placed = typeof spaceId === "string" && spaceId.length > 0;
   return {
     type: "page",
     id: metadata?.pageId ?? null,
     revision: metadata?.acl?.revision ?? 0,
     lifecycle,
     relations: {
-      owner: placed ? [] : [user(metadata?.owner)],
-      project: placed ? [{ type: "project", id: spaceId }] : [],
+      owner: [user(metadata?.owner)],
+      project: [],
       editor,
       viewer,
       removed,
     },
-    container: placed
-      ? {
-          type: "project",
-          id: spaceId,
-          revision: 0,
-          relations: { owner: [user(metadata.owner)], editor: [], viewer: [] },
-        }
-      : null,
+    container: null,
   };
 }
 

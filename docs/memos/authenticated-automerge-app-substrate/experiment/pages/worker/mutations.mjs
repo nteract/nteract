@@ -2,11 +2,15 @@ import * as A from "@automerge/automerge";
 import { assertDocumentLimits, assertIntentSize } from "../model/limits.mjs";
 import { openingTitleWarning } from "../model/title-warning.mjs";
 import { guardPassageEdits } from "../model/passage-edits.mjs";
+import { guardCommentIntent } from "../model/comment-guard.mjs";
 import { inspectOperation, reserveOperation, listOperationEntries } from "./operation-journal.mjs";
 
-function reject(status, message) {
+const COMMENT_OPERATIONS = ["manage_page_comment", "reply_page_comment"];
+
+function reject(status, message, code) {
   const error = new Error(message);
   error.status = status;
+  error.code = code;
   throw error;
 }
 export function mutationKey(args) {
@@ -14,7 +18,11 @@ export function mutationKey(args) {
     typeof args.idempotency_key !== "string" ||
     !/^[A-Za-z0-9_-]{8,128}$/.test(args.idempotency_key)
   )
-    reject(400, "idempotency_key must contain 8–128 letters, digits, underscores or hyphens");
+    reject(
+      400,
+      "idempotency_key must contain 8–128 letters, digits, underscores or hyphens",
+      "invalid_idempotency_key",
+    );
   return `host/operation/${args.idempotency_key}`;
 }
 export async function fingerprint(operation, args, identity) {
@@ -31,13 +39,14 @@ export function requireHeads(doc, heads) {
     !heads.length ||
     heads.some((head) => typeof head !== "string" || !/^[a-f0-9]{64}$/.test(head))
   )
-    reject(400, "base_heads from read_page are required");
+    // The same code target-scoped edits use for malformed base_heads.
+    reject(400, "base_heads from read_page are required", "invalid_edit_selector");
   const current = A.getHeads(doc).sort();
   if (
     heads.length !== current.length ||
     [...heads].sort().some((head, index) => head !== current[index])
   )
-    reject(409, "Page changed; read_page again before editing");
+    reject(409, "Page changed; read_page again before editing", "stale_heads");
 }
 
 /** Journal the exact CRDT edit under shared native history admission. Retrying
@@ -82,14 +91,20 @@ export async function documentMutation({
       });
     if (targetScope && operation !== "patch_page")
       throw Object.assign(
-        Error("Target conflict scope is available only for patch_page replace_match batches"),
+        Error(
+          "Target conflict scope is available only for patch_page replace_match and format_match batches",
+        ),
         {
           status: 400,
           code: "invalid_edit_selector",
         },
       );
+    // Comment intents carry their own guard: only a passage comment depends on
+    // text the caller read, and it resolves that text at base_heads.
+    const comment = COMMENT_OPERATIONS.includes(operation);
     if (prepare) {
       if (targetScope) guardPassageEdits(handle.doc(), args.base_heads, args.operations);
+      else if (comment) guardCommentIntent(handle.doc(), operation, args);
       else requireHeads(handle.doc(), args.base_heads);
       await prepare();
     }
@@ -97,8 +112,12 @@ export async function documentMutation({
     const guarded = targetScope
       ? guardPassageEdits(before, args.base_heads, args.operations)
       : null;
-    if (!targetScope) requireHeads(before, args.base_heads);
-    const effectiveArgs = guarded ? { ...args, operations: guarded.operations } : args;
+    const commentArgs =
+      !targetScope && comment ? guardCommentIntent(before, operation, args) : null;
+    if (!targetScope && !comment) requireHeads(before, args.base_heads);
+    const effectiveArgs = guarded
+      ? { ...args, operations: guarded.operations }
+      : (commentArgs ?? args);
     let result, after;
     const candidate = A.clone(before);
     // No await between the head guard and immutable edit construction.

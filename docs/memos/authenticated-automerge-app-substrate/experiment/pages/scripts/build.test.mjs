@@ -1,7 +1,15 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -10,6 +18,22 @@ import vm from "node:vm";
 import { build } from "esbuild";
 import { celldCborPlugin } from "./celld-cbor.mjs";
 import { browserMermaidPlugin, mermaidSource } from "./browser-mermaid.mjs";
+import {
+  IMMUTABLE,
+  VIEWER_ASSETS,
+  VIEWER_CHUNK,
+  digestHash,
+  hashedAssetPath,
+  headersFile,
+  shellAssetDefine,
+  stylesCovered,
+  viewerAsset,
+  viewerBuildOptions,
+  viewerSplit,
+  withHashedAssets,
+  withModulePreloads,
+} from "./viewer-chunks.mjs";
+import { createHash } from "node:crypto";
 
 const app = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const require = createRequire(import.meta.url);
@@ -94,10 +118,8 @@ test("failed rebuild removes the previous receipt before replacing any artifacts
       "scripts/browser-mermaid.mjs",
       readFileSync(new URL("./browser-mermaid.mjs", import.meta.url), "utf8"),
     );
-    write(
-      "scripts/browser-wasm.mjs",
-      readFileSync(new URL("./browser-wasm.mjs", import.meta.url), "utf8"),
-    );
+    for (const name of ["browser-wasm.mjs", "viewer-chunks.mjs"])
+      write(`scripts/${name}`, readFileSync(new URL(`./${name}`, import.meta.url), "utf8"));
     write(
       "scripts/source-fingerprint.mjs",
       "export const sourceFingerprint = () => ({sha256:'source-B'}); export const writeBuildReceipt = () => {throw new Error('failed build must not certify outputs');};",
@@ -133,8 +155,9 @@ test("failed rebuild removes the previous receipt before replacing any artifacts
     }
     assert.ok(failure);
     assert.match(failure.stderr.toString(), /injected bundler failure/);
+    // The first bundle (the theme script) wrote partial output and failed.
     assert.equal(
-      readFileSync(path.join(fixture, "dist/index.js"), "utf8"),
+      readFileSync(path.join(fixture, "dist/public/theme.js"), "utf8"),
       "partial source-B bundle",
     );
     assert.equal(existsSync(path.join(fixture, "dist/build-receipt.json")), false);
@@ -204,7 +227,7 @@ test("the blocking theme asset applies preferences without loading the editor", 
     Object.keys(result.metafile.inputs)
       .map((file) => path.basename(file))
       .sort(),
-    ["theme-bootstrap.mjs", "theme.mjs"],
+    ["early-session.mjs", "routes.mjs", "theme-bootstrap.mjs", "theme.mjs"],
   );
   const classes = new Set();
   const root = {
@@ -212,12 +235,22 @@ test("the blocking theme asset applies preferences without loading the editor", 
     dataset: {},
     style: {},
   };
-  vm.runInNewContext(output, {
-    window: {
-      document: { documentElement: root },
-      localStorage: { getItem: (key) => (key === "nteract.pages.theme" ? "dark" : null) },
+  const fetches = [];
+  const listen = () => {};
+  const window = {
+    document: { documentElement: root, addEventListener: listen },
+    addEventListener: listen,
+    localStorage: { getItem: (key) => (key === "nteract.pages.theme" ? "dark" : null) },
+    location: { href: "https://pages.example/" },
+    fetch: (url, init) => {
+      fetches.push([url, Object.keys(init)]);
+      return new Promise(() => {});
     },
-  });
+  };
+  vm.runInNewContext(output, { window, URL, AbortController, performance });
+  // The viewer's first session refresh takes this request (early-session.mjs).
+  assert.deepEqual(fetches, [["/api/auth/session", ["signal"]]]);
+  assert.ok(window.__pagesEarlySession);
   assert.equal(root.dataset.theme, "dark");
   assert.equal(root.dataset.colorTheme, undefined);
   assert.equal(root.style.colorScheme, "dark");
@@ -274,4 +307,249 @@ test("shared renderer resolves ESM imports through fixture paths without a root 
     files.some((file) => file.endsWith("experiment/node_modules/dompurify/dist/purify.es.mjs")),
   );
   assert.ok(files.some((file) => file.endsWith("experiment/node_modules/pele/dist/pele.js")));
+});
+
+test("app.js renders the shell without a static path to the WASM runtimes", async (t) => {
+  // Metafile paths are relative to the real dist path; tmpdir() can be a symlink.
+  const dist = realpathSync(mkdtempSync(path.join(tmpdir(), "pages-viewer-split-")));
+  t.after(() => rmSync(dist, { recursive: true, force: true }));
+  const result = await build({
+    ...viewerBuildOptions(app, dist),
+    write: false,
+    logLevel: "silent",
+  });
+  const { chunks, preloads, styles } = viewerSplit(result.metafile);
+  const { outputs } = result.metafile;
+  // Inputs relative to the app; plugin namespaces such as wasm-ready: stay as is.
+  const local = (input) =>
+    /^[\w-]+:/.test(input) ? input : path.relative(app, path.resolve(dist, input));
+  const inputsOf = (files) => files.flatMap((file) => Object.keys(outputs[file].inputs).map(local));
+  const shell = inputsOf(["public/app.js", ...preloads]);
+  for (const editorOnly of [
+    "wasm-ready:pages-wasm-ready",
+    "viewer/session.mjs",
+    "viewer/local-pages.mjs",
+    "viewer/WordgardEditor.jsx",
+  ])
+    assert.equal(shell.includes(editorOnly), false, editorOnly);
+  for (const shellInput of ["viewer/main.jsx", "viewer/local-catalog.mjs"])
+    assert.ok(shell.includes(shellInput), shellInput);
+  // The shell lists local Pages through the byte store's own file, not the
+  // package index that also loads the Subduction glue.
+  assert.equal(
+    shell.some((input) => /automerge-repo-subduction[/]dist[/]index[.]js$/.test(input)),
+    false,
+  );
+  const [editor] = chunks.filter(
+    (file) => local(outputs[file].entryPoint ?? "") === "viewer/page-editor.mjs",
+  );
+  assert.ok(editor, "page-editor.mjs is its own chunk");
+  assert.ok(inputsOf([editor]).includes("wasm-ready:pages-wasm-ready"));
+  assert.deepEqual(
+    outputs["public/app.js"].imports.filter((item) => item.kind === "dynamic-import"),
+    [{ path: editor, kind: "dynamic-import" }],
+  );
+  assert.ok(chunks.every((file) => VIEWER_CHUNK.test(file)));
+  // CSS from the editor chunk is already in app.css, in the shell's import order.
+  const css = (file) => result.outputFiles.find((output) => output.path === path.join(dist, file));
+  for (const file of styles) assert.ok(stylesCovered(css(file).text, css("public/app.css").text));
+});
+
+test("the viewer split check refuses a shell that waits for WASM or an unexpected output", () => {
+  const output = (inputs, imports = []) => ({ inputs, imports, bytes: 1 });
+  const split = (outputs) => viewerSplit({ inputs: {}, outputs });
+  const lazy = { path: "public/chunks/EDITOR23.js", kind: "dynamic-import" };
+  assert.deepEqual(
+    split({
+      "public/app.js": output({ "../viewer/main.jsx": {} }, [
+        { path: "public/chunks/SHARED23.js", kind: "import-statement" },
+        lazy,
+      ]),
+      "public/chunks/SHARED23.js": output({ "../viewer/store.mjs": {} }),
+      "public/chunks/EDITOR23.js": output({ "wasm-ready:pages-wasm-ready": {} }, [
+        { path: "public/chunks/SHARED23.js", kind: "import-statement" },
+      ]),
+      "public/chunks/EDITOR23.css": output({}),
+      "public/app.css": output({}),
+    }),
+    {
+      chunks: ["public/chunks/EDITOR23.js", "public/chunks/SHARED23.js"],
+      preloads: ["public/chunks/SHARED23.js"],
+      styles: ["public/chunks/EDITOR23.css"],
+    },
+  );
+  assert.throws(
+    () =>
+      split({
+        "public/app.js": output({}, [
+          { path: "public/chunks/SHARED23.js", kind: "import-statement" },
+        ]),
+        "public/chunks/SHARED23.js": output({ "wasm-entry:@automerge/automerge": {} }),
+      }),
+    /must not import the WASM runtimes statically/,
+  );
+  assert.throws(
+    () =>
+      split({
+        "public/app.js": output({}, [lazy]),
+        "public/chunks/EDITOR23.js": output({}),
+        "public/editor.js": output({}),
+      }),
+    /Unexpected viewer output public[/]editor[.]js/,
+  );
+  assert.throws(
+    () => split({ "public/app.js": output({}), "public/app.css": output({}) }),
+    /must split the editor/,
+  );
+});
+
+test("index.html preloads exactly the chunks app.js imports", () => {
+  const source = readFileSync(path.join(app, "viewer/index.html"), "utf8");
+  const html = withModulePreloads(source, ["public/chunks/SHARED23.js"]);
+  const stylesheet = '<link rel="stylesheet" href="/app.css" />';
+  const preload = '<link rel="modulepreload" href="/chunks/SHARED23.js" />';
+  assert.equal(html.split(preload).length, 2);
+  assert.ok(html.indexOf(stylesheet) < html.indexOf(preload));
+  assert.ok(html.indexOf(preload) < html.indexOf('<link rel="preload" href="/automerge.wasm"'));
+  assert.equal(withModulePreloads(source, []), source);
+  assert.throws(() => withModulePreloads(html, []), /must not list chunk preloads/);
+  assert.throws(() => withModulePreloads(source, ["public/app.js"]), /Unexpected viewer preload/);
+  assert.throws(() => withModulePreloads("<html></html>", []), /exactly once/);
+  assert.equal(stylesCovered(".a{color:red}", ".b{x:y}.a{color:red}"), true);
+  assert.equal(stylesCovered(".a{color:red}.c{x:z}", ".b{x:y}.a{color:red}"), false);
+});
+
+test("each shell asset ships under a name derived from its sha256", () => {
+  // RFC 4648 base32 of the digest's first five bytes.
+  assert.equal(digestHash("cb9b79c6ba" + "0".repeat(54)), "ZONXTRV2");
+  assert.equal(digestHash("00".repeat(32)), "AAAAAAAA");
+  assert.equal(digestHash("ff".repeat(32)), "77777777");
+  assert.throws(() => digestHash("ab"), /sha256/);
+  const bytes = Buffer.from("console.log('shell')");
+  const digest = createHash("sha256").update(bytes).digest("hex");
+  assert.equal(hashedAssetPath("app.js", bytes), `public/app-${digestHash(digest)}.js`);
+  assert.equal(
+    hashedAssetPath("automerge.wasm", bytes),
+    `public/automerge-${digestHash(digest)}.wasm`,
+  );
+  assert.notEqual(hashedAssetPath("app.js", bytes), hashedAssetPath("app.js", "changed"));
+  assert.throws(() => hashedAssetPath("connect.js", bytes), /Unknown viewer asset/);
+  for (const name of VIEWER_ASSETS)
+    assert.deepEqual(viewerAsset(hashedAssetPath(name, bytes)), { name, hash: digestHash(digest) });
+  for (const file of [
+    "public/app.js",
+    "public/app-abcdefgh.js",
+    "public/app-ABCDEFGH.wasm",
+    "public/theme-ABCDEFGH.css",
+    "public/connect-ABCDEFGH.js",
+    "public/chunks/app-ABCDEFGH.js",
+    "public/app-ABCDEFGHI.js",
+  ])
+    assert.equal(viewerAsset(file), null, file);
+});
+
+test("index.html names every shell asset by its hashed file", () => {
+  const source = readFileSync(path.join(app, "viewer/index.html"), "utf8");
+  const assets = Object.fromEntries(
+    VIEWER_ASSETS.map((name) => [name, hashedAssetPath(name, name)]),
+  );
+  const url = (name) => "/" + assets[name].slice("public/".length);
+  const html = withHashedAssets(withModulePreloads(source, ["public/chunks/SHARED23.js"]), assets);
+  for (const [name, attribute] of [
+    ["theme.js", "src"],
+    ["app.css", "href"],
+    ["automerge.wasm", "href"],
+    ["subduction.wasm", "href"],
+    ["app.js", "src"],
+  ]) {
+    assert.equal(html.split(`${attribute}="${url(name)}"`).length, 2, name);
+    assert.equal(html.includes(`"/${name}"`), false, name);
+  }
+  // Mermaid loads from the editor chunk, never from index.html.
+  assert.equal(html.includes("mermaid"), false);
+  assert.ok(html.includes('<link rel="modulepreload" href="/chunks/SHARED23.js" />'));
+  assert.ok(html.indexOf(url("theme.js")) < html.indexOf(url("app.css")));
+  assert.throws(
+    () => withHashedAssets(source, { ...assets, "app.js": "public/app.js" }),
+    /Expected a hashed app[.]js/,
+  );
+  assert.throws(
+    () => withHashedAssets(source, { ...assets, "app.css": assets["theme.js"] }),
+    /Expected a hashed app[.]css/,
+  );
+  assert.throws(() => withHashedAssets(html, assets), /reference [/]theme[.]js exactly once/);
+});
+
+test("_headers caches exactly the hashed files as immutable", () => {
+  assert.equal(IMMUTABLE, "public, max-age=31536000, immutable");
+  const assets = VIEWER_ASSETS.map((name) => hashedAssetPath(name, name));
+  const headers = headersFile(
+    ["X-Content-Type-Options: nosniff"],
+    ["public/chunks/ABCDEFGH.js", ...assets],
+  );
+  const [all, ...rules] = headers.split(/\n(?=\/)/);
+  assert.equal(all, "/*\n  X-Content-Type-Options: nosniff");
+  assert.deepEqual(
+    rules.map((rule) => rule.trim()),
+    ["/chunks/ABCDEFGH.js", ...assets.map((file) => file.slice("public".length))]
+      .sort()
+      .map((url) => `${url}\n  Cache-Control: ${IMMUTABLE}`),
+  );
+  // No wildcard: the single-page fallback for a retired name must stay
+  // revalidated, not cached for a year.
+  assert.equal(headers.includes("*\n  Cache-Control"), false);
+  for (const file of [
+    "public/index.html",
+    "public/connect.js",
+    "public/app.js",
+    "public/chunks/x.js",
+  ])
+    assert.throws(() => headersFile([], [file]), /Not a hashed viewer file/, file);
+});
+
+test("the Worker's own pages load the hashed theme and stylesheet", async () => {
+  const files = VIEWER_ASSETS.map((name) => hashedAssetPath(name, name));
+  const define = shellAssetDefine(["public/index.html", ...files]);
+  const theme = files.find((file) => file.startsWith("public/theme-"));
+  const styles = files.find((file) => file.startsWith("public/app-") && file.endsWith(".css"));
+  assert.deepEqual(define, {
+    __PAGES_THEME_SCRIPT__: JSON.stringify(theme.slice("public".length)),
+    __PAGES_STYLESHEET__: JSON.stringify(styles.slice("public".length)),
+  });
+  assert.throws(() => shellAssetDefine(files.filter((file) => file !== theme)), /one hashed theme/);
+  const result = await build({
+    entryPoints: [path.join(app, "shared/shell-assets.mjs")],
+    bundle: true,
+    write: false,
+    format: "esm",
+    platform: "browser",
+    target: "es2022",
+    define,
+  });
+  const bundled = await import(
+    "data:text/javascript;base64," + Buffer.from(result.outputFiles[0].contents).toString("base64")
+  );
+  assert.deepEqual(
+    [bundled.THEME_SCRIPT, bundled.STYLESHEET],
+    [theme.slice("public".length), styles.slice("public".length)],
+  );
+  // Unbundled code keeps the source names.
+  const shell = await import("../shared/shell-assets.mjs");
+  assert.deepEqual([shell.THEME_SCRIPT, shell.STYLESHEET], ["/theme.js", "/app.css"]);
+});
+
+test("the editor imports Mermaid from the URL the build passes", async () => {
+  const result = await build({
+    stdin: {
+      contents: `export const loadDiagram = () => import(${JSON.stringify(mermaidSource(app))});`,
+      resolveDir: app,
+    },
+    bundle: true,
+    write: false,
+    platform: "browser",
+    format: "esm",
+    target: "es2022",
+    plugins: [browserMermaidPlugin(app, "/mermaid-ABCDEFGH.js")],
+  });
+  assert.match(result.outputFiles[0].text, /import\("\/mermaid-ABCDEFGH\.js"\)/);
 });

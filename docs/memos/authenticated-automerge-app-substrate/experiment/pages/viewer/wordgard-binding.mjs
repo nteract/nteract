@@ -1,35 +1,87 @@
 // Adapted from rgbkrk/wordgard-automerge c9c6ea8 (BSD-3-Clause).
 import * as A from "@automerge/automerge/slim";
-import { Token } from "wordgard/doc";
-import { Correction, GardState, Transaction } from "wordgard/state";
+import { ChangeSet, Leaf, Token } from "wordgard/doc";
+import { Correction, GardSelection, GardState, Transaction } from "wordgard/state";
+import { insertLineBreak } from "wordgard/command";
 import { history } from "wordgard/history";
 import {
   decode,
   encode,
   expand,
   toMarks,
-  markName,
+  markNames,
   CodeBlock,
   LineBreak,
   OrderedList,
 } from "./wordgard-model.mjs";
 import { projectChanges } from "./wordgard-projection.mjs";
+import { MARK_NAMES, markExpand } from "../model/marks.mjs";
 
 // Enter inserts LineBreak leaves, while Wordgard's code clipboard parser can
 // insert text containing newlines. Keep one editor representation before local
 // transactions reach the native binding. Correction skips remote transactions;
 // decode already normalizes those and the native source remains ordinary text.
-export const wordgardCodeNewlines = Correction.onContent(CodeBlock, (position) => {
+// Code text also carries no marks: Markdown fences and the shared codec can't
+// express formatting inside code.
+// Mark changes only: replacing the text would create new Automerge characters
+// and detach comments and cursors anchored there. A newline becomes a
+// LineBreak leaf through its own one-character replacement, and mark removals
+// skip those characters so the two kinds of change never overlap.
+const unmark = (from, text, marks) =>
+  marks.length
+    ? text
+        .split("\n")
+        .flatMap((part, i, parts) => {
+          const start = from + parts.slice(0, i).reduce((n, p) => n + p.length + 1, 0);
+          return part ? [{ from: start, to: start + part.length }] : [];
+        })
+        .flatMap((range) => marks.map((mark) => ({ ...range, remove: mark })))
+    : [];
+const normalizeCode = (position) => {
   const changes = [];
   let from = position.start;
   for (const child of position.node.content) {
-    if (child.isText)
+    if (child.isText) {
       for (let i = child.param.indexOf("\n"); i >= 0; i = child.param.indexOf("\n", i + 1))
         changes.push({ from: from + i, to: from + i + 1, insert: [LineBreak] });
+      changes.push(...unmark(from, child.param, child.marks));
+    }
     from += child.length;
   }
   return changes.length ? changes : null;
-});
+};
+export const wordgardCodeNewlines = [
+  Correction.onContent(CodeBlock, normalizeCode),
+  // onContent sees inserted text; onMarks sees marks added to existing text.
+  Correction.onMarks(Leaf.Text, (position) =>
+    position.node.marks.length && position.parent?.node.type === CodeBlock.type
+      ? unmark(position.before, position.node.param, position.node.marks)
+      : null,
+  ),
+];
+
+// Shift+Enter. A hard break is a native block marker, which can't carry
+// marks, so insert an unmarked break and keep the active marks on the cursor
+// for the text typed after it. Wordgard's command copies them onto the break.
+export const insertPlainLineBreak = (target) => {
+  const { state } = target;
+  if (state.readOnly) return false;
+  const brk = state.doc.schema.lineBreak;
+  if (!brk || !state.doc.schema.canContain(state.sel.from.parent.node.type, brk.type))
+    return insertLineBreak(target);
+  const { from, to } = state.selection.replacementRange;
+  const changes = ChangeSet.create(state.doc, { from, to, insert: [brk], fit: true });
+  const pos = changes.findInserted((node) => node.type === brk.type);
+  return {
+    changes,
+    selection: GardSelection.Text.create({
+      anchor: pos == null ? from : pos + 1,
+      marks: state.sel.activeMarks,
+    }),
+    scrollIntoView: true,
+    userEvent: "insert.linebreak",
+  };
+};
 
 // Pages stores ordered items without a start-number attribute. Normalize the
 // editable list tag before encoding, including upstream input rules and paste.
@@ -107,15 +159,20 @@ export function createWordgardBinding(replica, id, { encodeSpans = encode } = {}
       after = decode(A.spans(nativeAfter, path));
     current = after;
     const changes = projectChanges(before.doc, after.doc);
-    const actors = event.remote
-      ? [
-          ...new Set(
-            A.getChangesMetaSince(nativeAfter, A.getHeads(nativeBefore)).map(
-              (change) => change.actor,
-            ),
-          ),
-        ]
+    const remoteChanges = event.remote
+      ? A.getChangesMetaSince(nativeAfter, A.getHeads(nativeBefore))
       : [];
+    const actors = [...new Set(remoteChanges.map((change) => change.actor))];
+    // Change hashes name an edit even when one actor writes for several
+    // people (the host writes every API agent's edit with its own actor).
+    const hashes = remoteChanges.map((change) => change.hash);
+    // Op ranges let a reader find which change wrote a given character.
+    const changeOps = remoteChanges.map(({ hash, actor, startOp, maxOp }) => ({
+      hash,
+      actor,
+      startOp,
+      maxOp,
+    }));
     for (const listener of listeners)
       listener({
         before,
@@ -125,6 +182,8 @@ export function createWordgardBinding(replica, id, { encodeSpans = encode } = {}
         changes,
         remote: !!event.remote,
         actors,
+        hashes,
+        changeOps,
       });
   });
   return {
@@ -161,7 +220,7 @@ export function createWordgardBinding(replica, id, { encodeSpans = encode } = {}
               formats.push(
                 "add" in mod
                   ? { from, to, add: toMarks([mod.add]) }
-                  : { from, to, remove: markName(mod.remove) },
+                  : { from, to, remove: markNames(mod.remove) },
               );
             } catch {
               structural = true;
@@ -190,19 +249,18 @@ export function createWordgardBinding(replica, id, { encodeSpans = encode } = {}
             for (const token of range.inserted) {
               const length = String(token.param).length,
                 desired = toMarks(token.marks);
-              for (const name of ["strong", "em", "code", "link"]) {
-                const range = {
-                  start: pos,
-                  end: pos + length,
-                  expand: name === "link" || name === "code" ? "none" : "both",
-                };
+              const present = A.marks(d, path).filter(
+                (mark) => mark.start < pos + length && mark.end > pos,
+              );
+              const names = new Set([
+                ...MARK_NAMES,
+                ...Object.keys(desired),
+                ...present.map((mark) => mark.name),
+              ]);
+              for (const name of names) {
+                const range = { start: pos, end: pos + length, expand: markExpand(name) };
                 if (desired[name] !== undefined) A.mark(d, path, range, name, desired[name]);
-                else if (
-                  A.marks(d, path).some(
-                    (mark) => mark.name === name && mark.start < pos + length && mark.end > pos,
-                  )
-                )
-                  A.unmark(d, path, range, name);
+                else if (present.some((mark) => mark.name === name)) A.unmark(d, path, range, name);
               }
               pos += length;
             }
@@ -211,15 +269,10 @@ export function createWordgardBinding(replica, id, { encodeSpans = encode } = {}
             const start = next.wgToAm[format.from],
               end = next.wgToAm[format.to];
             if (end <= start) continue;
-            if (format.remove) A.unmark(d, path, { start, end, expand: "both" }, format.remove);
+            for (const name of format.remove ?? [])
+              A.unmark(d, path, { start, end, expand: "both" }, name);
             for (const [name, value] of Object.entries(format.add ?? {}))
-              A.mark(
-                d,
-                path,
-                { start, end, expand: name === "link" || name === "code" ? "none" : "both" },
-                name,
-                value,
-              );
+              A.mark(d, path, { start, end, expand: markExpand(name) }, name, value);
           }
         }
         if (!decode(A.spans(d, path)).doc.eq(tr.newDoc))

@@ -12,17 +12,59 @@ import {
   defaultMarkdownParser,
   defaultMarkdownSerializer,
 } from "prosemirror-markdown";
+import {
+  DEFAULT_HIGHLIGHT,
+  MARK_REGISTRY,
+  markSpec,
+  normalizeHighlight,
+  safeUrl,
+  updateSpansConfig,
+  validateMarkValue,
+} from "./marks.mjs";
 
-// Shared rich-text schema used by the editor, tool exports, and ingress validation.
+export { safeUrl } from "./marks.mjs";
+
+// Shared rich-text schema used by tool exports and ingress validation. Mark
+// names, order and expand rules come from the registry in marks.json.
 const nodes = {},
-  marks = {};
+  baseMarks = {};
 basicSchemaAdapter.schema.spec.nodes.forEach((name, spec) => {
   if (name !== "unknownLeaf") nodes[name] = { ...spec };
 });
 basicSchemaAdapter.schema.spec.marks.forEach((name, spec) => {
-  if (name !== "unknownMark") marks[name] = { ...spec };
+  if (name !== "unknownMark") baseMarks[name] = { ...spec };
 });
-marks.code.automerge = { markName: "code" };
+baseMarks.code.automerge = { markName: "code" };
+baseMarks.highlight = {
+  attrs: { color: { default: DEFAULT_HIGHLIGHT } },
+  parseDOM: [
+    {
+      tag: "mark",
+      getAttrs: (dom) => {
+        try {
+          return {
+            color: normalizeHighlight(dom.getAttribute("data-highlight") ?? DEFAULT_HIGHLIGHT),
+          };
+        } catch {
+          return false;
+        }
+      },
+    },
+  ],
+  toDOM: (mark) => ["mark", { "data-highlight": mark.attrs.color }, 0],
+  automerge: {
+    markName: "highlight",
+    parsers: {
+      fromAutomerge: (value) => ({ color: String(value) }),
+      fromProsemirror: (mark) => mark.attrs.color,
+    },
+  },
+};
+const marks = {};
+for (const { name, expand } of MARK_REGISTRY.marks) {
+  if (!baseMarks[name]) throw Error(`The ProseMirror schema has no spec for mark ${name}`);
+  marks[name] = { ...baseMarks[name], inclusive: expand !== "none" };
+}
 nodes.task_list = {
   content: "list_item+",
   group: "block",
@@ -208,6 +250,7 @@ tokenizer.core.ruler.before("inline", "pages_tasks", (state) => {
           if (tokens[itemEnd].type === "list_item_open") itemDepth++;
           if (tokens[itemEnd].type === "list_item_close" && --itemDepth === 0) break;
         }
+        // Anchored at the start of the item text, with one run of spaces.
         const item = tokens.slice(j, itemEnd + 1),
           inline =
             item[1]?.type === "paragraph_open" && item[2]?.type === "inline" ? item[2] : null,
@@ -245,11 +288,69 @@ tokenizer.core.ruler.before("inline", "pages_tasks", (state) => {
 // is lost. General HTML stays literal, and code spans retain their own parser.
 tokenizer.inline.ruler.before("html_inline", "table_break", (state, silent) => {
   if (!state.env.pagesTableCell) return false;
-  const match = /^<br\s*\/?\s*>/i.exec(state.src.slice(state.pos));
+  // The second run of spaces follows a required `/`, so the two runs cannot
+  // trade characters while backtracking.
+  const match = /^<br\s*(?:\/\s*)?>/i.exec(state.src.slice(state.pos));
   if (!match) return false;
   if (!silent) state.push("hardbreak", "br", 0);
   state.pos += match[0].length;
   return true;
+});
+// Highlights have no Markdown syntax. Pages reads and writes exactly
+// `<mark data-color="…">` and `</mark>`; other HTML stays literal text. The
+// tokenizer emits every tag it recognizes, and the balance pass below turns
+// nested, unopened or unclosed tags back into their source text.
+// Tag whitespace is ASCII only, matching the Rust codec. Both patterns are
+// anchored at one `<`. Every run of spaces is followed by `data-color`, `=`, a
+// quote or `>`, none of which is a space, so giving back a space fails on the
+// next character. One attempt reads its run of spaces a bounded number of
+// times, and attempts at different `<` read different runs.
+const HIGHLIGHT_OPEN =
+  /^<mark(?:[ \t\r\n]+data-color[ \t\r\n]*=[ \t\r\n]*(?:"([^"<>]*)"|'([^'<>]*)'))?[ \t\r\n]*>/i;
+const HIGHLIGHT_CLOSE = /^<\/mark[ \t\r\n]*>/i;
+tokenizer.inline.ruler.before("html_inline", "pages_highlight", (state, silent) => {
+  if (state.src.charCodeAt(state.pos) !== 0x3c) return false;
+  const rest = state.src.slice(state.pos);
+  const close = HIGHLIGHT_CLOSE.exec(rest);
+  const open = close ? null : HIGHLIGHT_OPEN.exec(rest);
+  const match = close ?? open;
+  if (!match) return false;
+  let color;
+  if (open) {
+    try {
+      color = normalizeHighlight(open[1] ?? open[2] ?? DEFAULT_HIGHLIGHT);
+    } catch {
+      return false;
+    }
+  }
+  if (!silent) {
+    // Nesting 0: markdown-it's delimiter stack must not see these tags, since
+    // the balance pass may turn either one back into text.
+    const token = state.push(open ? "pages_highlight_open" : "pages_highlight_close", "mark", 0);
+    token.markup = match[0];
+    if (open) token.attrSet("color", color);
+  }
+  state.pos += match[0].length;
+  return true;
+});
+tokenizer.inline.ruler2.push("pages_highlight_balance", (state) => {
+  let open = null;
+  const literal = (token) => {
+    token.type = "text";
+    token.tag = "";
+    token.content = token.markup;
+    token.attrs = null;
+  };
+  for (const token of state.tokens) {
+    if (token.type === "pages_highlight_open") {
+      if (open) literal(token);
+      else open = token;
+    } else if (token.type === "pages_highlight_close") {
+      if (open) open = null;
+      else literal(token);
+    }
+  }
+  if (open) literal(open);
 });
 // Markdown-it's ordinary inline pass, with context scoped to the current cell.
 tokenizer.core.ruler.at("inline", (state) => {
@@ -304,12 +405,32 @@ const parser = new MarkdownParser(schema, tokenizer, {
   tr: { block: "table_row", attrs: { isAmgBlock: true } },
   th: { block: "table_header", getAttrs: cellAttrs },
   td: { block: "table_cell", getAttrs: cellAttrs },
+  pages_highlight: { mark: "highlight", getAttrs: (token) => ({ color: token.attrGet("color") }) },
 });
 const plainImportParser = new MarkdownParser(
   schema,
   new MarkdownIt("commonmark", { html: false, linkify: false }),
   { ...defaultMarkdownParser.tokens, image: imageToken },
 );
+// Marks with "markdown": "html" in the registry project as their one fixed tag.
+// A mark this build doesn't know projects as its plain text. Edit it through
+// replace_match and format_match, which work on native spans.
+const markSerializers = {
+  ...defaultMarkdownSerializer.marks,
+  highlight: {
+    open: (_state, mark) => `<mark data-color="${mark.attrs.color}">`,
+    close: "</mark>",
+    // Not mixable: strong and em always open outside a highlight. Reordering
+    // them inside it makes a strong run reopen after </mark> with a leading
+    // space, which Markdown reads as literal asterisks.
+  },
+  unknownMark: { open: "", close: "", mixable: true },
+};
+for (const { name } of MARK_REGISTRY.marks)
+  if (!markSerializers[name]) throw Error(`No Markdown projection for mark ${name}`);
+// Literal text that looks like a highlight tag is escaped so it reads back as text.
+// The lookahead reads at most six characters.
+const literalHighlightTag = /<(?=\/?mark\b)/gi;
 const serializer = new MarkdownSerializer(
   {
     ...defaultMarkdownSerializer.nodes,
@@ -366,7 +487,8 @@ const serializer = new MarkdownSerializer(
       state.closeBlock(node);
     },
   },
-  defaultMarkdownSerializer.marks,
+  markSerializers,
+  { escapeExtraCharacters: literalHighlightTag },
 );
 
 const tableCellSerializer = new MarkdownSerializer(
@@ -376,18 +498,137 @@ const tableCellSerializer = new MarkdownSerializer(
       state.write("<br>");
     },
   },
-  defaultMarkdownSerializer.marks,
+  markSerializers,
   { escapeExtraCharacters: /</g },
 );
+
+// Math is preserved, never parsed as prose:
+// - A `$$` at a line start, after optional spaces, opens display math.
+// - A `$$` pair on one line is display math, with or without spaces.
+// - A `$` pair follows Pandoc's dollar rule: the opening `$` is followed by a
+//   non-space, the closing `$` follows a non-space and is not followed by a
+//   digit. Prose such as "$30 and $25" stays native text.
+// When unsure, the source stays preserved. Each rule spells out its spaces,
+// because JS and Rust disagree on `\s` (U+0085, U+FEFF):
+// - The dollar rule's spaces are ASCII whitespace, [ \t\n\v\f\r]. Any other
+//   character is content, so the span counts as math.
+// - Before a line-start `$$`, a space is any character either codec's `\s`
+//   matched that does not start a line: ASCII space, tab, VT and FF, U+00A0,
+//   U+0085, U+1680, U+2000-U+200A, U+202F, U+205F, U+3000, U+FEFF.
+// A line starts at the start of input or after LF, CR, CRLF, U+2028 or
+// U+2029, the line terminators of JS multiline `^`. JS `m` and Rust `(?m)`
+// disagree on CR, U+2028 and U+2029, so the pattern has no multiline flag
+// and writes line starts as `(?:^|\r\n?|[\n\u2028\u2029])`. Line terminators
+// are not in the prefix class, so the alternatives never overlap and a run
+// of line breaks is scanned once. Each repetition has disjoint branches, so
+// matching is linear. Every `\uXXXX` escape is a BMP code point, which JS
+// reads without the `u` flag; Rust's regex reads the same escape as the same
+// code point. crates/nteract-rich-text/src/import.rs uses this pattern text,
+// and its `math_pattern_matches_pages` test reads this literal. Keep it a
+// flagless literal that starts on the line after `MATH_SYNTAX =`.
+export const MATH_SYNTAX =
+  /(?:^|\r\n?|[\n\u2028\u2029])[ \t\v\f\u00a0\u0085\u1680\u2000-\u200a\u202f\u205f\u3000\ufeff]*\$\$|\$\$(?:[^\n$]|\$[^\n$])*\$\$|\$[^ \t\n\v\f\r$](?:[^ \t\n\v\f\r$]|[ \t\v\f\r]+[^ \t\n\v\f\r$])*\$(?:[^0-9]|$)/;
+
+// The import gate scans Markdown line by line, once. Page Markdown can be
+// close to the record size limit, so no step may rescan a run of line breaks
+// or spaces. Lines follow JavaScript's multiline `^` and `$`: LF, CR, U+2028
+// and U+2029 each end a line, so CRLF is a line ending at CR followed by an
+// empty line. "Space" is JavaScript `\s`, Unicode spaces included.
+const SPACE = /\s/;
+const isLineBreak = (code) => code === 0x0a || code === 0x0d || code === 0x2028 || code === 0x2029;
+const lineEnd = (source, start) => {
+  let end = start;
+  while (end < source.length && !isLineBreak(source.charCodeAt(end))) end++;
+  return end;
+};
+// ASCII-only case-insensitive match, as a non-Unicode `i` regex reads ASCII.
+const asciiWordAt = (source, at, word) => {
+  for (let i = 0; i < word.length; i++)
+    if ((source.charCodeAt(at + i) | 0x20) !== word.charCodeAt(i)) return false;
+  return true;
+};
+
+// Remove `[ ]`, `[x]` or `[X]` after a bullet marker. The marker may follow
+// spaces and `>` quote markers, and the box must be followed by a space, a tab
+// or the end of its line.
+function omitTaskPrefixes(source) {
+  const parts = [];
+  let copied = 0;
+  for (let start = 0; start <= source.length; ) {
+    const end = lineEnd(source, start);
+    let i = start;
+    while (i < end && (source[i] === ">" || SPACE.test(source[i]))) i++;
+    if (i < end && "-+*".includes(source[i])) {
+      let box = i + 1;
+      while (box < end && (source[box] === " " || source[box] === "\t")) box++;
+      if (
+        box > i + 1 &&
+        box + 2 < end &&
+        source[box] === "[" &&
+        " xX".includes(source[box + 1]) &&
+        source[box + 2] === "]" &&
+        (box + 3 === end || source[box + 3] === " " || source[box + 3] === "\t")
+      ) {
+        parts.push(source.slice(copied, box));
+        copied = box + 3;
+      }
+    }
+    start = end + 1;
+  }
+  if (!copied) return source;
+  parts.push(source.slice(copied));
+  return parts.join("");
+}
+
+// Block syntax the gate preserves, decided by a line's first non-space
+// character: an HTML tag other than `<mark>` or `</mark>`, a `---` line, or a
+// `[label]:` reference definition. `MATH_SYNTAX` covers a line-start `$$`. A
+// label may span lines, so its closing bracket is searched in the whole
+// source. That search only moves forward, and each line is read once.
+function unsupportedLineStart(source) {
+  let close = -1;
+  for (let start = 0; start <= source.length; ) {
+    const end = lineEnd(source, start);
+    let i = start;
+    while (i < end && SPACE.test(source[i])) i++;
+    if (i < end) {
+      const char = source[i];
+      if (char === "<") {
+        // The character after `mark` may be the line break that ends the line.
+        const name = source[i + 1] === "/" ? i + 2 : i + 1;
+        if (!asciiWordAt(source, name, "mark") || !" \t\r\n>".includes(source[name + 4] || "x"))
+          return true;
+      } else if (char === "-") {
+        if (source.startsWith("---", i)) {
+          let rest = i + 3;
+          while (rest < end && SPACE.test(source[rest])) rest++;
+          if (rest === end) return true;
+        }
+      } else if (char === "[") {
+        if (close !== Infinity && close <= i) {
+          const found = source.indexOf("]", i + 1);
+          close = found === -1 ? Infinity : found;
+        }
+        if (close !== Infinity && close > i + 1 && source[close + 1] === ":") return true;
+      }
+    }
+    start = end + 1;
+  }
+  return false;
+}
 
 // Conservative import gate: unknown syntax is opaque rather than silently discarded.
 export function parseMarkdown(source, importId = "", kind = "markdown") {
   // A task followed by an ordinary inline link is not a reference-link pair.
   // Keep the conservative gate, but omit recognized task prefixes from its scan.
-  const syntax = source.replace(/^(\s*(?:>\s*)*[-+*][ \t]+)\[[ xX]\](?=[ \t]|$)/gm, "$1");
+  const syntax = omitTaskPrefixes(source);
+  // The last pattern has no overlapping repetition: a label `[...]` stops at
+  // the next bracket of either kind, so each start reads its own segment.
   const unsupported =
     kind !== "markdown" ||
-    /(^|\n)\s*(<|\$\$|---\s*$)|\$[^\n$]+\$|!?\[[^\]]*\]\s*\[|^\s*\[[^\]]+\]:|~~/m.test(syntax);
+    MATH_SYNTAX.test(syntax) ||
+    unsupportedLineStart(syntax) ||
+    /!?\[[^[\]]*\]\s*\[|~~/.test(syntax);
   return unsupported
     ? schema.node("doc", null, [schema.node("raw", { source, importId, kind })])
     : parser.parse(source);
@@ -406,7 +647,7 @@ export function nativeTableSpans(source) {
 }
 // Markdown has no empty paragraph. The serializer writes an empty leading
 // paragraph as a blank line, which parsers ignore, so drop it rather than
-// suggest the newline is content.
+// suggest the newline is content. The pattern is anchored at the start.
 export function exportMarkdown(doc) {
   return serializer.serialize(doc).replace(/^\n+/, "");
 }
@@ -414,7 +655,20 @@ export function exportMarkdown(doc) {
 export const RICH_FORMAT = "automerge-rich-text-v1";
 export const textPath = (id) => ["blocks", id, "richText"];
 export const isRich = (block) => block?.format === RICH_FORMAT;
-export const richDoc = (block) => pmDocFromSpans(adapter, A.spans(block, ["richText"]));
+// Code text is unformatted: ProseMirror's code_block allows no marks and a
+// Markdown fence can't express them. Marks a writer left on code text are not
+// read, so one stray mark can't make the whole Page unreadable.
+export function codeTextUnmarked(spans) {
+  let code = false;
+  return spans.map((span) => {
+    if (span.type === "block") code = String(span.value?.type) === "code-block";
+    return code && span.type === "text" && Object.keys(span.marks ?? {}).length
+      ? { ...span, marks: {} }
+      : span;
+  });
+}
+export const richDoc = (block) =>
+  pmDocFromSpans(adapter, codeTextUnmarked(A.spans(block, ["richText"])));
 export function blockMarkdown(block) {
   if (!isRich(block)) return block.markdown;
   const current = exportMarkdown(richDoc(block));
@@ -434,19 +688,6 @@ export function blockMarkdown(block) {
   )
     return block.markdown;
   return current;
-}
-// Whether parsing `source` reproduces the block's current native structure.
-// Markdown edits reparse the whole block, so they must not run when the export
-// is lossy (an empty paragraph, for example). `isAmgBlock` only records whether
-// a paragraph had its own marker; both encoders' spans decode the same way, so
-// it is not structure.
-const structure = (node) =>
-  JSON.stringify(node.toJSON(), (key, value) => (key === "isAmgBlock" ? undefined : value));
-export function markdownReproduces(block, source = blockMarkdown(block)) {
-  return (
-    structure(richDoc(block)) ===
-    structure(pmDocFromSpans(adapter, pmNodeToSpans(adapter, parseMarkdown(source))))
-  );
 }
 export function richSize(block) {
   return isRich(block)
@@ -469,7 +710,7 @@ export function setRichMarkdown(doc, id, source) {
     doc,
     textPath(id),
     pmNodeToSpans(adapter, parseMarkdown(source)),
-    adapter.updateSpansConfig(),
+    updateSpansConfig,
   );
 }
 export function setRichImage(doc, id, { src, alt }) {
@@ -477,7 +718,7 @@ export function setRichImage(doc, id, { src, alt }) {
   const tree = schema.node("doc", null, [
     schema.node("paragraph", null, [schema.node("image", { src, alt, title: null })]),
   ]);
-  A.updateSpans(doc, textPath(id), pmNodeToSpans(adapter, tree), adapter.updateSpansConfig());
+  A.updateSpans(doc, textPath(id), pmNodeToSpans(adapter, tree), updateSpansConfig);
 }
 export function projectedBlock(block) {
   const { richText: _rich, ...result } = block;
@@ -486,16 +727,23 @@ export function projectedBlock(block) {
 
 // Bound the actual spans: JSON.stringify(doc) alone misses block-marker data.
 export function validateRich(block) {
-  const spans = A.spans(block, ["richText"]);
-  if (richSize(block) > 262144) throw Error("Rich block exceeds content limit");
+  validateRichSpans(A.spans(block, ["richText"]));
+}
+
+/** Schema check for native rich-text spans read from any Automerge text
+ * object: a Page block's `richText` or a comments-doc message `body`. */
+export function validateRichSpans(spans, maxBytes = 262144) {
+  if (new TextEncoder().encode(JSON.stringify(spans)).length > maxBytes)
+    throw Error("Rich block exceeds content limit");
   for (const span of spans) {
     if (span.type === "text") {
       for (const [name, value] of Object.entries(span.marks ?? {})) {
-        if (!["strong", "em", "code", "link"].includes(name)) throw Error("Unsupported rich mark");
-        if (name === "link") {
-          const href = typeof value === "string" ? JSON.parse(value).href : null;
-          if (typeof href !== "string" || !safeUrl(href)) throw Error("Invalid rich link");
-        } else if (value !== true) throw Error("Invalid rich mark value");
+        markSpec(name);
+        try {
+          validateMarkValue(name, value);
+        } catch {
+          throw Error(name === "link" ? "Invalid rich link" : "Invalid rich mark value");
+        }
       }
     } else if (span.type === "block") {
       const value = span.value;
@@ -514,7 +762,7 @@ export function validateRich(block) {
         throw Error("Invalid task checked state");
     } else throw Error("Unsupported rich span");
   }
-  const tree = richDoc(block);
+  const tree = pmDocFromSpans(adapter, codeTextUnmarked(spans));
   tree.check();
   tree.descendants((node) => {
     if (
@@ -529,11 +777,4 @@ export function validateRich(block) {
       if (mark.type.name === "link" && !safeUrl(mark.attrs.href)) throw Error("Invalid rich link");
   });
   exportMarkdown(tree);
-}
-export function safeUrl(value) {
-  return (
-    typeof value === "string" &&
-    ![...value].some((c) => c.charCodeAt(0) <= 32 || c.charCodeAt(0) === 127) &&
-    !/^[a-z][a-z0-9+.-]*:/i.test(value.replace(/^(https?|mailto|tel):/i, ""))
-  );
 }

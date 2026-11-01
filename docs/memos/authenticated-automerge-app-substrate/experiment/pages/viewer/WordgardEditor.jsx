@@ -1,6 +1,6 @@
 // Native transaction/selection approach adapted from rgbkrk/wordgard-automerge
 // c9c6ea8 (BSD-3-Clause). See WORDGARD-NOTICE for attribution.
-import { useEffect, useRef, useState } from "react";
+import { Fragment, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import * as A from "@automerge/automerge/slim";
 import { Wordgard, Decoration, KeyBinding } from "wordgard/editor";
@@ -15,8 +15,20 @@ import {
 } from "wordgard/command";
 import { history, undo, redo, undoDepth, redoDepth } from "wordgard/history";
 import { tables } from "wordgard/table";
-import { tablePresentation, tableKeys, selectedTable } from "./wordgard-tables.mjs";
+import { insertTable, tablePresentation, tableKeys, selectedTable } from "./wordgard-tables.mjs";
 import { TableMenu } from "./TableMenu.jsx";
+import { CODE_LANGUAGES, codeHighlighting } from "./code-highlight.mjs";
+import { MobileBar } from "./MobileBar.jsx";
+import { MOBILE_EDITOR_QUERY } from "./visual-viewport.mjs";
+import {
+  resolveUploadPreview,
+  setUploadPreview,
+  uploadPreview,
+  uploadPreviews,
+} from "./upload-preview.mjs";
+import { HighlightMenu } from "./HighlightMenu.jsx";
+import { monotonicNow } from "./monotonic.mjs";
+import { selectionHighlight, toggleHighlight } from "./highlight.mjs";
 import {
   blockDoc,
   paragraph,
@@ -58,11 +70,13 @@ import {
   commitEditorTransactions,
   createWordgardBinding,
   wordgardCodeNewlines,
+  insertPlainLineBreak,
   wordgardHistory,
   wordgardListStarts,
 } from "./wordgard-binding.mjs";
 import { PagesLink, TaskList, elements } from "./wordgard-model.mjs";
 import { taskLists } from "./wordgard-task-lists.mjs";
+import { markdownShortcuts } from "./wordgard-shortcuts.mjs";
 import { projectChanges } from "./wordgard-projection.mjs";
 import {
   createWordgardCollaboration,
@@ -79,6 +93,7 @@ import {
   captureImageInsertion,
   createImageUploader,
   imageFiles,
+  resolveImageInsertion,
 } from "./image-upload.mjs";
 import "./wordgard.css";
 
@@ -103,30 +118,29 @@ const controls = [
 ];
 const marks = { bold: Strong, italic: Emphasis, code: Code };
 const remoteAnnotations = () => [Transaction.remote.of(true), Transaction.addToHistory.of(false)];
-const languages = [
-  "Mermaid",
-  "Bash",
-  "CSS",
-  "HTML",
-  "JavaScript",
-  "JSON",
-  "Markdown",
-  "Python",
-  "R",
-  "Rust",
-  "SQL",
-  "TypeScript",
-  "YAML",
-];
 const editConfig = (editable) => [
   GardState.readOnly.of(!editable),
   Wordgard.editable.of(editable),
   codeBlockLanguage(),
-  ...(editable ? wordgardCodeLanguages(languages) : []),
+  ...(editable ? wordgardCodeLanguages(CODE_LANGUAGES) : []),
 ];
 
+// A pending upload is on screen when the editor draws its inline preview.
+// The preview clears itself when its insertion point is deleted; the status
+// row, with Cancel, then shows again.
+const previewShown = (editor) => !!editor?.state.field(uploadPreview, false);
+
 export function WordgardEditor(props) {
-  const { replica, id, editable, toolbarHost, toolbarOpen = false, threads, commentTarget } = props;
+  const {
+    replica,
+    id,
+    editable,
+    toolbarHost,
+    toolbarOpen = false,
+    threads,
+    commentTarget,
+    commentDraft,
+  } = props;
   const latest = useRef(props);
   latest.current = props;
   const mount = useRef(null),
@@ -145,7 +159,10 @@ export function WordgardEditor(props) {
     [remoteCarets, setRemoteCarets] = useState([]),
     [link, setLink] = useState(null),
     [editingLink, setEditingLink] = useState(false),
-    [imageStatus, setImageStatus] = useState(null);
+    [imageStatus, setImageStatus] = useState(null),
+    [mobile, setMobile] = useState(() => matchMedia(MOBILE_EDITOR_QUERY).matches),
+    [barFocus, setBarFocus] = useState(false);
+  const mobileBar = useRef(null);
   const [generation, reset] = useState(0);
   const pendingLink = useRef(null),
     refresh = useRef(() => {}),
@@ -256,6 +273,7 @@ export function WordgardEditor(props) {
       getCurrent: () => bound.current,
       getThreads: () => latest.current.threads ?? [],
       getTarget: () => latest.current.commentTarget,
+      getDraft: () => latest.current.commentDraft,
     });
     collaboration.current = collab;
     const acceptImages = (files, position) => {
@@ -292,6 +310,7 @@ export function WordgardEditor(props) {
         taskLists(),
         blockquote(),
         codeBlock(),
+        markdownShortcuts(),
         tables({ cellContent: "inline", cellSpanning: false }),
         tablePresentation,
         tableKeys,
@@ -313,6 +332,8 @@ export function WordgardEditor(props) {
         wordgardWidgets(),
         wordgardCodeNewlines,
         wordgardListStarts,
+        codeHighlighting,
+        uploadPreviews,
         undoHistory.extension,
         permissions.current.of(editConfig(latest.current.editable)),
         Wordgard.domEventHandler("paste", (event) => acceptImages(imageFiles(event.clipboardData))),
@@ -332,7 +353,24 @@ export function WordgardEditor(props) {
           },
         }),
         KeyBinding.of({ key: "Mod-Alt-m", run: () => comment() }),
+        KeyBinding.of({ key: "Shift-Enter", run: insertPlainLineBreak }),
+        KeyBinding.of({
+          key: "Mod-Shift-h",
+          run: () => latest.current.editable && Command.dispatch(editor, toggleHighlight),
+        }),
         Wordgard.contentAttributes.of({ "aria-label": "Document text", spellcheck: "true" }),
+        // On phones the compact bar and the header cover the visual viewport's
+        // edges; keep the caret clear of both when scrolling it into view.
+        Wordgard.coveredMargins.of(() => {
+          const bar = mobileBar.current?.getBoundingClientRect();
+          const header = document.querySelector(".app-header")?.getBoundingClientRect();
+          const viewport = window.visualViewport;
+          const bottomEdge = viewport ? viewport.offsetTop + viewport.height : innerHeight;
+          return {
+            top: header ? Math.max(0, header.bottom - (viewport?.offsetTop ?? 0)) : 0,
+            bottom: bar ? Math.max(0, bottomEdge - bar.top) : 0,
+          };
+        }),
         Wordgard.exceptionSink.of(report),
         Wordgard.transactionListener.of((transactions) => {
           if (!alive) return;
@@ -347,6 +385,16 @@ export function WordgardEditor(props) {
           } finally {
             writing = false;
           }
+          // The local write is in Automerge now: put a pending upload preview
+          // back on its native cursor, exactly where the image will land.
+          if (transactions.some((tr) => tr.docChanged) && editor.state.field(uploadPreview))
+            queueMicrotask(() => {
+              if (alive && editor.state.field(uploadPreview))
+                editor.dispatch({
+                  effects: resolveUploadPreview.of(null),
+                  annotations: Transaction.addToHistory.of(false),
+                });
+            });
         }),
         Wordgard.updateListener.of(() => refresh.current()),
         Decoration.Range.source.of(() => collab.ranges()),
@@ -366,11 +414,38 @@ export function WordgardEditor(props) {
         latest.current.replica === replica &&
         latest.current.id === id &&
         latest.current.editable,
-      onState: setImageStatus,
+      onState: (state) => {
+        setImageStatus(state);
+        if (view.current !== editor) return;
+        // Draw the pending upload inline where the image will land. If the
+        // insertion point can't be resolved, the status row stays as the fallback.
+        let preview = null;
+        if (state?.pending && state.target) {
+          const target = state.target;
+          preview = {
+            // The binding updates its map before the editor sees a change.
+            resolve: () => resolveImageInsertion(replica, target, bound.current.map),
+            src: state.preview ?? "",
+            name: state.name ?? "",
+            onCancel: () => uploader.cancel(),
+          };
+          try {
+            preview.resolve();
+          } catch {
+            preview = null;
+          }
+        }
+        if (preview || editor.state.field(uploadPreview))
+          editor.dispatch({
+            effects: setUploadPreview.of(preview),
+            annotations: Transaction.addToHistory.of(false),
+          });
+      },
     });
     imageUploader.current = uploader;
     editor.dom.classList.add("wordgard-document");
-    let caretFrame = null;
+    let caretFrame = null,
+      beatTimer;
     const measureCarets = () => {
       if (!alive || caretFrame !== null) return;
       caretFrame = requestAnimationFrame(() => {
@@ -378,8 +453,25 @@ export function WordgardEditor(props) {
         if (!alive || !caretLayer.current) return;
         const origin = caretLayer.current.getBoundingClientRect();
         const bounds = editor.contentDOM.getBoundingClientRect();
+        const visibleTop = Math.max(0, bounds.top),
+          visibleBottom = Math.min(innerHeight, bounds.bottom);
         const next = collab.carets().flatMap((peer) => {
           try {
+            if (peer.type === "dot")
+              return [{ ...peer, left: bounds.right - origin.left, top: bounds.top - origin.top }];
+            if (peer.type === "bar") {
+              const first = editor.coordsAtPos(peer.from),
+                last = editor.coordsAtPos(peer.to);
+              if (last.bottom < visibleTop || first.top > visibleBottom) return [];
+              return [
+                {
+                  ...peer,
+                  left: bounds.left - origin.left,
+                  top: first.top - origin.top,
+                  height: Math.max(last.bottom - first.top, first.bottom - first.top),
+                },
+              ];
+            }
             const rect = editor.coordsAtPos(peer.position);
             const visibleLeft = Math.max(0, bounds.left),
               visibleRight = Math.min(innerWidth, bounds.right),
@@ -412,6 +504,10 @@ export function WordgardEditor(props) {
         setRemoteCarets((previous) =>
           JSON.stringify(previous) === JSON.stringify(next) ? previous : next,
         );
+        // An agent's select beat collapses to a caret on its own schedule.
+        clearTimeout(beatTimer);
+        const beat = collab.nextRepaint();
+        if (beat !== null) beatTimer = setTimeout(repaint, Math.max(16, beat + 16));
       });
     };
     const repaint = () => {
@@ -455,6 +551,9 @@ export function WordgardEditor(props) {
         editor.dispatch({
           changes: projectChanges(editor.state.doc, event.after.doc),
           selection,
+          // The native cursor can move even when the rendered text is equal
+          // (a peer deletes one "a" and adds another), so re-resolve always.
+          effects: editor.state.field(uploadPreview) ? resolveUploadPreview.of(null) : [],
           annotations: [...remoteAnnotations(), history.isolate.of(true)],
         });
       } catch (error) {
@@ -512,9 +611,9 @@ export function WordgardEditor(props) {
         latest.current.onActivate?.();
         latest.current.onSelection?.(selected);
         const presenceKey = `${selection.anchor}:${selection.head}:${A.getHeads(replica.doc).join()}`;
-        if (presenceKey !== lastPresence || Date.now() - lastPresenceAt > 10000) {
+        if (presenceKey !== lastPresence || monotonicNow() - lastPresenceAt > 10000) {
           lastPresence = presenceKey;
-          lastPresenceAt = Date.now();
+          lastPresenceAt = monotonicNow();
           publishWordgardSelection(replica, id, editor, bound.current.map);
         }
       }
@@ -536,6 +635,11 @@ export function WordgardEditor(props) {
         ordered: listIsActive(OrderedList.of(1))(state),
         task: listIsActive(TaskList)(state),
       };
+      const highlight = selectionHighlight(state);
+      snapshot.highlight = highlight.color;
+      snapshot.highlightPresent = highlight.colors.length > 0;
+      snapshot.uploadPreview = previewShown(editor);
+      snapshot.focused = editor.hasFocus;
       for (const [name, mark] of Object.entries(marks))
         snapshot[name] = selection.empty
           ? !!mark.isInSet(state.sel.activeMarks)
@@ -615,6 +719,7 @@ export function WordgardEditor(props) {
       imageTarget.current = null;
       clearInterval(timer);
       if (caretFrame !== null) cancelAnimationFrame(caretFrame);
+      clearTimeout(beatTimer);
       document.removeEventListener("scroll", measureCarets, true);
       window.removeEventListener("resize", measureCarets);
       resize.disconnect();
@@ -647,12 +752,19 @@ export function WordgardEditor(props) {
   useEffect(() => {
     if (view.current && !view.current.composing)
       view.current.dispatch({ annotations: remoteAnnotations() });
-  }, [threads, commentTarget, generation]);
+  }, [threads, commentTarget, commentDraft, generation]);
   useEffect(() => {
     if (commentTarget?.source !== "quote") return;
     const thread = threads?.find((thread) => thread.id === commentTarget.id);
     if (thread) collaboration.current?.revealThread(thread);
   }, [commentTarget, threads, generation]);
+  useEffect(() => {
+    const media = matchMedia(MOBILE_EDITOR_QUERY);
+    const change = () => setMobile(media.matches);
+    change();
+    media.addEventListener("change", change);
+    return () => media.removeEventListener("change", change);
+  }, []);
   useEffect(() => {
     const editor = view.current,
       element = toolbar.current;
@@ -671,6 +783,7 @@ export function WordgardEditor(props) {
       let next = null;
       const selection = editor.state.selection;
       const contextual =
+        !mobile &&
         !selection.empty &&
         !selectedImage(editor.state) &&
         !editor.composing &&
@@ -735,14 +848,16 @@ export function WordgardEditor(props) {
       listeners.forEach(([target, name, fn]) => target?.removeEventListener(name, fn, true));
       positionToolbar.current = () => {};
     };
-  }, [toolbarHost, toolbarOpen, editable, generation]);
+  }, [toolbarHost, toolbarOpen, editable, generation, mobile]);
   function run(name) {
     const editor = view.current;
     if (!editor || !editable) return;
     try {
       if (name === "comment") return comment();
       if (name === "link") return openLink();
-      if (marks[name]) Command.dispatch(editor, toggleMark, marks[name]);
+      if (name === "highlight") Command.dispatch(editor, toggleHighlight);
+      else if (name === "table") insertTable(editor);
+      else if (marks[name]) Command.dispatch(editor, toggleMark, marks[name]);
       else if (name === "undo" || name === "redo")
         Command.dispatch(editor, name === "undo" ? undo : redo);
       else if (["bullet", "ordered", "task"].includes(name))
@@ -765,6 +880,11 @@ export function WordgardEditor(props) {
     } catch (error) {
       report(error);
     }
+  }
+  // Mobile bar commands act only while this editor or its bar holds focus.
+  function ownsBar() {
+    const editor = view.current;
+    return !!editor && (editor.hasFocus || !!mobileBar.current?.contains(document.activeElement));
   }
   function chooseImage() {
     const editor = view.current;
@@ -873,22 +993,32 @@ export function WordgardEditor(props) {
                   .slice(2)
                   .filter(([name]) => toolbarOpen || !["bullet", "ordered", "task"].includes(name))
                   .map(([name, label, Icon]) => (
-                    <button
-                      key={name}
-                      className={`toolbar-button${format?.[name] && !["link", "comment"].includes(name) ? " is-active" : ""}`}
-                      aria-label={label}
-                      title={label}
-                      aria-pressed={
-                        !["link", "comment"].includes(name) ? !!format?.[name] : undefined
-                      }
-                      disabled={
-                        !editable || (["link", "comment"].includes(name) && !format?.[name])
-                      }
-                      onPointerDown={(event) => event.preventDefault()}
-                      onClick={() => run(name)}
-                    >
-                      <Icon size={18} aria-hidden="true" />
-                    </button>
+                    <Fragment key={name}>
+                      <button
+                        className={`toolbar-button${format?.[name] && !["link", "comment"].includes(name) ? " is-active" : ""}`}
+                        aria-label={label}
+                        title={label}
+                        aria-pressed={
+                          !["link", "comment"].includes(name) ? !!format?.[name] : undefined
+                        }
+                        disabled={
+                          !editable || (["link", "comment"].includes(name) && !format?.[name])
+                        }
+                        onPointerDown={(event) => event.preventDefault()}
+                        onClick={() => run(name)}
+                      >
+                        <Icon size={18} aria-hidden="true" />
+                      </button>
+                      {name === "code" && (
+                        <HighlightMenu
+                          editor={view.current}
+                          current={format?.highlight ?? null}
+                          present={!!format?.highlightPresent}
+                          editable={editable}
+                          onError={report}
+                        />
+                      )}
+                    </Fragment>
                   ))}
               </>
             )}
@@ -909,7 +1039,7 @@ export function WordgardEditor(props) {
           if (files.length && target) imageUploader.current?.start(files, target);
         }}
       />
-      {imageStatus && (
+      {imageStatus && !(imageStatus.pending && format?.uploadPreview) && (
         <div className="image-upload-status" role="status" aria-live="polite">
           <span>{imageStatus.message}</span>
           {imageStatus.retryable && editable && (
@@ -922,18 +1052,74 @@ export function WordgardEditor(props) {
           </button>
         </div>
       )}
+      {mobile && editable && (format?.focused || barFocus) && (
+        <MobileBar
+          barRef={mobileBar}
+          format={format}
+          editable={editable}
+          styles={styles}
+          openComments={props.openComments ?? 0}
+          editorDom={view.current?.dom}
+          onRun={(name) => ownsBar() && run(name)}
+          onStyle={(value) => ownsBar() && run(value === "code" ? "code-block" : value)}
+          onImage={() => ownsBar() && chooseImage()}
+          onComments={() => props.onOpenComments?.()}
+          onFocusChange={setBarFocus}
+        />
+      )}
       <div ref={mount} />
       <div ref={caretLayer} className="wordgard-caret-layer" aria-hidden="true">
-        {remoteCarets.map((peer) => (
-          <span
-            key={peer.session}
-            className="peer-caret"
-            data-label-side={peer.labelOnLeft ? "left" : "right"}
-            style={{ left: peer.left, top: peer.top, height: peer.height }}
-          >
-            <span style={{ maxWidth: peer.labelWidth }}>{peer.displayName}</span>
-          </span>
-        ))}
+        {remoteCarets.map((peer) => {
+          const color = peer.color && {
+            "--peer-color": peer.color.background,
+            "--peer-foreground": peer.color.foreground,
+          };
+          if (peer.type === "bar")
+            return (
+              <span
+                key={peer.session}
+                className="agent-reading"
+                title={peer.title}
+                style={{ ...color, left: peer.left, top: peer.top, height: peer.height }}
+              >
+                {peer.label && <span>{peer.label}</span>}
+              </span>
+            );
+          if (peer.type === "dot")
+            return (
+              <span
+                key={peer.session}
+                className={`agent-dot${peer.idle ? " is-idle" : ""}`}
+                title={peer.title}
+                style={{ ...color, left: peer.left, top: peer.top }}
+              >
+                {!peer.idle && (
+                  <span>
+                    {peer.displayName}
+                    {peer.tag && <em>{peer.tag}</em>}
+                    {peer.message && <small>{peer.message}</small>}
+                  </span>
+                )}
+              </span>
+            );
+          return (
+            <span
+              key={peer.session}
+              className={`peer-caret${peer.idle ? " is-idle" : ""}`}
+              data-label-side={peer.labelOnLeft ? "left" : "right"}
+              title={peer.title}
+              style={{ ...color, left: peer.left, top: peer.top, height: peer.height }}
+            >
+              {!peer.idle && (
+                <span style={{ maxWidth: peer.labelWidth }}>
+                  {peer.displayName}
+                  {peer.tag && <em>{peer.tag}</em>}
+                  {peer.message && <small>{peer.message}</small>}
+                </span>
+              )}
+            </span>
+          );
+        })}
       </div>
       {link && view.current && (
         <LinkPopover

@@ -29,13 +29,133 @@ test("MCP forwards authorized operations and preserves stale-write failure", asy
     }),
     async (op, args) => {
       calls.push({ op, args });
-      return Response.json({ error: "stale_heads" }, { status: 409 });
+      return Response.json(
+        { error: "Page changed; read_page again before editing", code: "stale_heads" },
+        { status: 409 },
+      );
     },
   );
-  const result = await response.json();
-  assert.equal(result.result.isError, true);
-  assert.match(result.result.content[0].text, /stale_heads/);
+  const result = (await response.json()).result;
+  assert.equal(result.isError, true);
+  const expected = {
+    error: "Page changed; read_page again before editing",
+    code: "stale_heads",
+    retryable: true,
+  };
+  assert.deepEqual(result.structuredContent, expected);
+  assert.deepEqual(JSON.parse(result.content[0].text), expected);
   assert.deepEqual(calls[0].args.base_heads, ["old"]);
+});
+
+test("MCP gives every refusal a stable code in text and structured content", async () => {
+  const call = async (name, reply) => {
+    const response = await handleMcp(request("tools/call", { name, arguments: {} }), reply);
+    const result = (await response.json()).result;
+    assert.equal(result.isError, true, name);
+    assert.deepEqual(JSON.parse(result.content[0].text), result.structuredContent, name);
+    return result.structuredContent;
+  };
+  // A code the service supplied is kept with every field beside it.
+  const conflict = {
+    error: "The selected passage changed; read changes before editing again",
+    code: "edit_conflict",
+    current_heads: ["c".repeat(64)],
+  };
+  assert.deepEqual(
+    await call("patch_page", async () => Response.json(conflict, { status: 409 })),
+    conflict,
+  );
+  const selector = {
+    error: "replace_match found 0 matches; exactly one is required.",
+    code: "invalid_edit_selector",
+  };
+  assert.deepEqual(
+    await call("patch_page", async () => Response.json(selector, { status: 400 })),
+    selector,
+  );
+  // An uncoded refusal is named by its status, which MCP results don't carry.
+  for (const [status, code] of [
+    [400, "invalid_request"],
+    [401, "unauthenticated"],
+    [403, "access_denied"],
+    [404, "not_found"],
+    [409, "conflict"],
+    [413, "request_too_large"],
+    [418, "request_refused"],
+    [500, "server_error"],
+  ])
+    assert.deepEqual(
+      await call("read_page", async () => Response.json({ error: "Refused" }, { status })),
+      { error: "Refused", code },
+      String(status),
+    );
+  assert.deepEqual(
+    await call("read_page", async () =>
+      Response.json(
+        { error: "Request timed out", code: "request_timeout", retryable: true },
+        { status: 504 },
+      ),
+    ),
+    { error: "Request timed out", code: "request_timeout", retryable: true },
+  );
+  assert.equal((await call("no_such_tool", async () => assert.fail())).code, "unknown_tool");
+  assert.equal((await call("create_space", async () => assert.fail())).code, "tool_renamed");
+  // No answer: reads and keyed writes can repeat; progress keeps its lease rule.
+  const thrown = async () => {
+    throw Error("Private internals");
+  };
+  for (const [name, code, retryable] of [
+    ["read_page", "read_failed", true],
+    ["edit_page", "outcome_unknown", true],
+    ["import_page_image", "outcome_unknown", true],
+    ["report_page_progress", "outcome_unknown", undefined],
+  ]) {
+    const body = await call(name, thrown);
+    assert.equal(body.code, code, name);
+    assert.equal(body.retryable, retryable, name);
+    assert.doesNotMatch(body.error, /Private internals/);
+  }
+});
+
+test("MCP tools declare every annotation hint, and each tool's hints are intended", async () => {
+  const read = {
+    readOnlyHint: true,
+    destructiveHint: false,
+    idempotentHint: true,
+    openWorldHint: false,
+  };
+  const write = {
+    readOnlyHint: false,
+    destructiveHint: false,
+    idempotentHint: true,
+    openWorldHint: false,
+  };
+  const destructive = { ...write, destructiveHint: true };
+  // A new tool fails here until its hints are chosen.
+  const intended = {
+    list_pages: read,
+    read_page: read,
+    read_page_changes: read,
+    list_page_comments: read,
+    read_page_presence: read,
+    list_projects: read,
+    get_project: read,
+    create_page: write,
+    edit_page: write,
+    patch_page: write,
+    manage_page_comment: write,
+    create_project: write,
+    update_project: write,
+    restore_page: write,
+    report_page_progress: { ...write, idempotentHint: false },
+    import_page_image: { ...write, openWorldHint: true },
+    delete_page: destructive,
+    purge_page: destructive,
+  };
+  const response = await handleMcp(request("tools/list"), async () => assert.fail());
+  const listed = (await response.json()).result.tools;
+  assert.deepEqual(listed.map((tool) => tool.name).sort(), Object.keys(intended).sort());
+  for (const tool of listed) assert.deepEqual(tool.annotations, intended[tool.name], tool.name);
 });
 
 test("MCP advertises typed image insertion and echoes its exact receipt as structured content", async () => {
@@ -117,7 +237,7 @@ test("MCP change budgets count both representations, escaping and the JSON-RPC I
       const failure = JSON.parse(result.content[0].text);
       assert.equal(failure.code, "changes_budget_exceeded");
       assert.equal(failure.changes, undefined);
-      assert.equal(result.structuredContent, undefined);
+      assert.deepEqual(result.structuredContent, failure);
       assert.equal(failure.retry_token, "authority");
     }
   }
@@ -381,12 +501,21 @@ test("MCP advertises visible-text replacement separately from Markdown replaceme
   const variants = patch.inputSchema.properties.operations.items.oneOf;
   assert.deepEqual(
     variants.map((operation) => operation.properties.op.const),
-    ["replace_match", "patch_block_markdown"],
+    ["replace_match", "format_match"],
   );
+  assert.deepEqual(variants[1].required, ["op", "block_id", "match_text"]);
+  assert.deepEqual(variants[1].properties.remove.items.enum, [
+    "link",
+    "em",
+    "strong",
+    "highlight",
+    "code",
+  ]);
+  assert.equal(variants[1].properties.add.properties.strong.const, true);
   assert.deepEqual(variants[0].required, ["op", "block_id", "match_text", "replacement"]);
   assert.equal(variants[0].properties.context_before.type, "string");
   assert.equal(variants[0].properties.context_after.type, "string");
-  assert.match(patch.description, /without a typing cursor/);
+  assert.match(patch.description, /without streamed keystrokes/);
   const args = {
     page_id: pageId,
     base_heads: ["a".repeat(64)],
@@ -456,8 +585,8 @@ test("MCP tool metadata declares the OAuth scopes needed by each operation", asy
             "read_page_changes",
             "list_page_comments",
             "read_page_presence",
-            "list_spaces",
-            "get_space",
+            "list_projects",
+            "get_project",
           ].includes(tool.name)
             ? ["pages:read"]
             : ["pages:read", "pages:write"],

@@ -1,4 +1,5 @@
 import { pagesPublicOrigin } from "../agent-guide.mjs";
+import { STYLESHEET, THEME_SCRIPT } from "../shared/shell-assets.mjs";
 import { serverOidcSessionStatus } from "@cloud/server-oidc.ts";
 import { loadServerSession, readServerAppSession } from "@cloud/oidc-session-store.ts";
 import {
@@ -67,7 +68,7 @@ function html(title, body, status = 200, consentRedirect) {
     "'self'" +
     ([CHATGPT_REDIRECT, KILO_REDIRECT].includes(consentRedirect) ? " " + consentRedirect : "");
   return response(
-    `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escape(title)} · Pages</title><script src="/theme.js"></script><link rel="stylesheet" href="/app.css"></head><body><header class="app-header"><a class="brand" href="/">Pages</a></header><main class="agent-setup"><h1>${escape(title)}</h1>${body}</main></body></html>`,
+    `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escape(title)} · Pages</title><script src="${THEME_SCRIPT}"></script><link rel="stylesheet" href="${STYLESHEET}"></head><body><header class="app-header"><a class="brand" href="/">Pages</a></header><main class="agent-setup"><h1>${escape(title)}</h1>${body}</main></body></html>`,
     {
       status,
       headers: {

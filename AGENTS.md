@@ -118,6 +118,28 @@ global tooling installations or configuration changes.
 
 ## Repository-wide rules
 
+### Model async state as explicit state machines
+
+This applies to frontends, Workers and Durable Objects, and the daemon alike.
+Give each lifecycle (session, connection, document, operation, reservation) a
+named set of states and events, and one pure transition function with guards.
+Run effects at the edge, after the transition. Ad-hoc flags, pending maps and
+epoch counters spread across methods are not a substitute.
+
+- Every async step that can be interrupted is its own state, such as
+  `persisting` before `installed`. A retry or restart resumes from the persisted
+  state; it never replays a reported success.
+- Writes that cross an owner boundary carry the owner's revision as a fence, so
+  a late write cannot undo a newer transition. Examples: another Durable Object,
+  D1, or the daemon.
+- In TypeScript and JavaScript, use RxJS for streams such as connections,
+  reconnects, backoff, timers and ordered writes. Follow the Reactive State
+  section of the `frontend-dev` skill.
+- Use Rust, compiled to WASM where it runs in the browser or a Worker, when it's
+  the better fit. Codecs, projections and shared invariants are typical cases.
+- Test the transition function over every state and event, and add virtual-time
+  tests for timers and interleavings.
+
 ### Do not hold Tokio locks across `await`
 
 Keep a `tokio::sync::Mutex` or `RwLock` guard inside a synchronous block so it

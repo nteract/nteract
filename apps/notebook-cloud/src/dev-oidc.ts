@@ -18,11 +18,16 @@
 // fixed mount, then mapped to the configured issuer URL path before they reach
 // the issuer. The var is preferred rather than the raw request origin because
 // wrangler dev serves the worker under its configured route host, so the request
-// origin is not the loopback origin the browser and verifier use. Its RS256 key
-// is ephemeral (see packages/local-oidc), so a worker restart rotates the key
-// and invalidates every previously issued token.
+// origin is not the loopback origin the browser and verifier use. By default its
+// codes and RS256 key are in memory (see packages/local-oidc), so a worker
+// restart rotates the key and invalidates every previously issued token. A host
+// that runs more than one isolate passes a shared `store` instead.
 
-import { createLocalOidcIssuer, type LocalOidcIssuer } from "@nteract/local-oidc";
+import {
+  createLocalOidcIssuer,
+  type LocalOidcIssuer,
+  type LocalOidcStore,
+} from "@nteract/local-oidc";
 import type { Env } from "./cloudflare-types.ts";
 
 export const NOTEBOOK_CLOUD_LOCAL_OIDC_MOUNT_PATH = "/dev/oidc";
@@ -40,9 +45,16 @@ const DEV_USERS = [
   { email: "bob@localhost", givenName: "Bob", familyName: "Example" },
 ] as const;
 
-// One issuer instance per resolved issuer URL, held for the worker's boot. Every
-// restart starts with an empty cache and a fresh signing key.
+// One issuer instance per store and resolved issuer URL, held for the worker's
+// boot. Every restart starts with an empty cache; with the default store that
+// also means a fresh signing key.
 const issuersByUrl = new Map<string, LocalOidcIssuer>();
+const issuersByStore = new WeakMap<LocalOidcStore, Map<string, LocalOidcIssuer>>();
+
+export interface LocalOidcRequestOptions {
+  /** Shared codes and signing key for every isolate serving this issuer. */
+  store?: LocalOidcStore;
+}
 
 export function localOidcEnabled(env: Env): boolean {
   return env.NOTEBOOK_CLOUD_LOCAL_OIDC === "true";
@@ -53,7 +65,11 @@ export function localOidcEnabled(env: Env): boolean {
  * flag is off or the path is outside the mount so the caller falls through to
  * its normal not-found handling.
  */
-export async function handleLocalOidcRequest(request: Request, env: Env): Promise<Response | null> {
+export async function handleLocalOidcRequest(
+  request: Request,
+  env: Env,
+  options: LocalOidcRequestOptions = {},
+): Promise<Response | null> {
   if (!localOidcEnabled(env)) {
     return null;
   }
@@ -69,7 +85,9 @@ export async function handleLocalOidcRequest(request: Request, env: Env): Promis
     await delayLocalOidcRequest(env);
   }
   const issuerUrl = localOidcIssuerUrl(env, request);
-  return localOidcIssuer(env, issuerUrl).handle(requestForIssuerPath(request, url, issuerUrl));
+  return localOidcIssuer(env, issuerUrl, options.store).handle(
+    requestForIssuerPath(request, url, issuerUrl),
+  );
 }
 
 function localOidcIssuerUrl(env: Env, request: Request): string {
@@ -79,8 +97,13 @@ function localOidcIssuerUrl(env: Env, request: Request): string {
   );
 }
 
-function localOidcIssuer(env: Env, issuerUrl: string): LocalOidcIssuer {
-  const cached = issuersByUrl.get(issuerUrl);
+function localOidcIssuer(env: Env, issuerUrl: string, store?: LocalOidcStore): LocalOidcIssuer {
+  let cache = issuersByUrl;
+  if (store) {
+    cache = issuersByStore.get(store) ?? new Map();
+    issuersByStore.set(store, cache);
+  }
+  const cached = cache.get(issuerUrl);
   if (cached) {
     return cached;
   }
@@ -89,8 +112,9 @@ function localOidcIssuer(env: Env, issuerUrl: string): LocalOidcIssuer {
     clientId: env.NOTEBOOK_CLOUD_OIDC_CLIENT_ID?.trim() || NOTEBOOK_CLOUD_LOCAL_OIDC_CLIENT_ID,
     defaultTokenTtlSeconds: localOidcTtlSeconds(env),
     users: [...DEV_USERS],
+    store,
   });
-  issuersByUrl.set(issuerUrl, issuer);
+  cache.set(issuerUrl, issuer);
   return issuer;
 }
 

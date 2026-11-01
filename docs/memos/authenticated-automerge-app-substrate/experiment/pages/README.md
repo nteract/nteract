@@ -106,7 +106,7 @@ was a caret race in the smoke; the editor side is
 | Admission codes, celld restart, and reconnect to Saved | `node scripts/local-sharing-e2e.mjs --admission` | Starts and restarts an isolated fixture |
 | Reload prompt after a deploy under an open tab | `node scripts/local-sharing-e2e.mjs --build-update` | Starts an isolated fixture and swaps its build |
 | Trash, restore, and permanent deletion | `node scripts/local-sharing-e2e.mjs --trash` | Starts an isolated fixture |
-| Spaces over MCP and in the browser, breadcrumbs, Trash and restore in a Space | `node scripts/local-sharing-e2e.mjs --spaces` | Starts an isolated fixture |
+| Projects over MCP and in the browser, `/projects` and `/pages` on a phone-sized screen, breadcrumbs, Trash and restore in a Project | `node scripts/local-sharing-e2e.mjs --projects` | Starts an isolated fixture |
 | Rollback to a previous build and forward again on one data directory | `node scripts/rollback-qualification.mjs --previous <previous pages dir>` | Starts an isolated fixture; build the previous commit first |
 | Rich comment tables and drafts | `PAGES_ORIGIN=http://localhost:9894 node scripts/rich-comments-smoke.mjs` | Uses the running Wordgard fixture |
 | Comments panel placement at 1920/1440/1100/800px | `PAGES_ORIGIN=http://localhost:9894 node scripts/comments-layout-smoke.mjs` | Uses the running Wordgard fixture |
@@ -115,6 +115,7 @@ was a caret race in the smoke; the editor side is
 | Local creation and navigation | `PAGES_ORIGIN=http://localhost:9894 node scripts/navigation-smoke.mjs` | Uses the running Wordgard fixture |
 | Editing, comments, links, diagrams, and recovery | `PAGES_ORIGIN=http://localhost:9894 npm run smoke:editor` | Uses the running Wordgard fixture |
 | History growth and typing latency | `PAGES_ORIGIN=http://localhost:9894 node scripts/latency-smoke.mjs` | Uses the running Wordgard fixture with buffered persistence |
+| Client catch-up after reopening a Page far behind the host | `node scripts/catch-up-benchmark.mjs --runs 5 2000+2000` | No server; in-process Repo peers over the authenticated wire, Node with MemoryByteStore (no IndexedDB or editor cost) |
 
 Use `PAGES_ASYNC_PERSISTENCE=true` for the latency check. The editor checks
 exercise the same Wordgard path used by deployed Pages.
@@ -165,6 +166,19 @@ references; it does not publish the Page or change asset access.
   cannot be decoded, reads return that original text with
   `content_error: "rich_text_unavailable"` rather than failing the entire Page. Source is limited to 16,000 characters and native structure
   to 64 KiB. Formatting-only changes appear in `read_page_changes`.
+- **Highlights:** the formatting toolbar's highlighter offers the four palette
+  colors and Remove; Cmd/Ctrl+Shift+H toggles yellow. A highlight is a text mark
+  (`highlight`), so it syncs, merges, and follows edit permission like bold.
+  Palette names resolve to theme tokens; agents can also set `#rrggbb`. Markdown
+  projects highlights as `<mark data-color="…">…</mark>`. Comment anchors keep
+  their own tint and underline; where they overlap a highlight, both tints show.
+- **Mark registry:** [`model/marks.json`](model/marks.json) lists every inline
+  mark with its value shape, expand rule, and Markdown projection. Validation,
+  the Wordgard binding, Markdown import/export, the MCP `format_match` schema,
+  and the Rust codec read it. Readers keep marks they don't know: they render as
+  plain text and survive edits. Agents edit existing text through
+  `replace_match` and `format_match`, which work on native spans; Markdown is
+  for reading and for writing whole blocks.
 - **Links:** click for Open, Edit, and Remove; Cmd/Ctrl-click opens directly and
   Cmd/Ctrl+K edits. Incoming edits update or dismiss the link control, and URL
   policy applies both to stored content and navigation.
@@ -328,7 +342,10 @@ re-signing rejected offline edits. Previously accepted history remains available
 revocation cannot retract downloaded documents or images. Historical signer
 provenance does not authenticate arbitrary actor strings inside imported history.
 
-Browser sessions renew while open and on return to the tab. Native sockets retain
+Browser sessions renew while open and on return to the tab. A return to the tab
+or an explicit check that lands while a session request is in flight queues one
+fresh request after it, and only the fresh answer applies (the
+[session-refresh machine](viewer/session-refresh-machine.mjs)). Native sockets retain
 the expiry observed on admission and reconnect with current credentials. API-key
 sockets renew bounded leases through provider verification; caching means provider
 revocation is not instantaneous. A pending or late check cannot revive an expired,
@@ -395,6 +412,51 @@ refusing. Retry, the `online` event and signing in again clear both counters and
 reconnect at once; a stable connection clears them too.
 [reconnect-machine.mjs](viewer/reconnect-machine.mjs) holds these transitions.
 
+A host restart is not an error the person can act on. A 502, 503 or 504 (JSON
+or a gateway's HTML page), a JSON error marked `retryable`, and a failed fetch
+are transient (`isTransientFailure` in [request.mjs](viewer/request.mjs)): the
+Page shows Offline or Saved locally and retries without a red banner. Receipts
+retry on the same backoff. From the seventh failure in a row, about 15 to 30
+seconds in, the Page shows one sentence, "Pages can't reach the server. Your
+changes are saved on this device.", and keeps retrying; the next admitted
+connection clears it and restarts the receipt. Receipts and session checks
+are timed instead of counted (`OUTAGE_MS`, 20 s), because edits and Page
+reconnects trigger them too: receipt failures count from the first one after
+the last successful receipt, across edits, and the session-refresh machine
+tracks a run of unreachable answers, so a library screen whose renewals keep
+failing shows the same sentence until a session request succeeds. Both read
+one monotonic clock ([monotonic.mjs](viewer/monotonic.mjs), `performance.now()`),
+so changing the system time can't hide or hasten the notice. A renewal the
+server refuses (401 or 403) still signs the tab out, and says why: "Your
+session ended. Sign in again." or the server's 403 message, or the open
+Page's own sign-in prompt. Each screen renders its banners
+from one deduplicated list ([alerts.mjs](viewer/alerts.mjs)).
+
+The status line separates syncing from saving. Every head change asks the host
+for a receipt, but only a local edit marks the replica as holding unacknowledged
+work. Catching up on other peers' changes after a reopen says "Syncing"; a
+local edit says "Saving" until a receipt for heads that include it lands, even
+if remote changes arrive in between.
+
+A reopen decides from the restored replica, not from the checkpoint's `pending`
+flag, which only says a receipt was outstanding. The checkpoint's `localEdits`
+records every Automerge actor this browser authored with (each session records
+its fresh actor before it accepts an edit) and the heads the host last
+acknowledged. The replica has unconfirmed work exactly when it holds a change by
+one of those actors outside the acknowledged history. Native storage persists
+an edit before the debounced checkpoint, so a tab that dies in between still
+reopens Saving, and its edit is not claimed as saved. Checkpoints from before
+`localEdits` keep their `pending` flag as unattributed local work until a receipt
+covers them. Each actor is recorded with the native replica it wrote into, and
+only that replica's session drops it: earlier actors once a receipt covers the
+whole replica, its own when it closes with nothing unconfirmed. Another tab's
+actor is never dropped, by count or otherwise, because that tab may be live or
+may be restored later with its native database.
+[local-edits.mjs](viewer/local-edits.mjs) holds these rules.
+[sync-status-machine.mjs](viewer/sync-status-machine.mjs) holds these
+transitions and the label each state renders; a phase pause (sign-in, access,
+deletion) or a failed local save outranks it.
+
 A binding write that never settles still blocks its own signing key until the
 host restarts; other keys are unaffected. A rejected write may have taken effect,
 so the host neither issues a competing write nor releases the reservation. If an
@@ -421,7 +483,7 @@ decide(principal, actor_chain, object, now)
 
 It is pure and synchronous, and the celld policy hooks call it on every frame.
 It reads what the Page host already holds: the Page record's ACL and lifecycle.
-`pageAccess`, the native lease bound and the Space read check are projections
+`pageAccess`, the native lease bound and the Project read check are projections
 of its result. `pageGrant` reports grant identity (role and signing-key
 generation), which Trash keeps. `pageRelation` answers deletion disclosure and
 the lifecycle owner check. It reads the same relations without the lifecycle
@@ -444,8 +506,8 @@ decide() runs three steps, in this order:
    tombstone becomes `removed`. Company view is the `organization#member`
    userset. Built-in mode has no tenants, so the verified email-domain lease
    stands in for organization membership. A tombstone subtracts from the
-   item's own viewer path, so it beats company view. A Page placed in a Space
-   has the `project` relation instead of `owner`.
+   item's own viewer path, so it beats company view. A Page placed in a
+   Project has the `project` relation instead of `owner`.
 2. **Lifecycle overlay.** A trashed item keeps `read`, `administer`, `restore`
    and `purge`, and only for principals who may restore it. A deleted or
    missing item grants nothing. The overlay runs after every relation, so no
@@ -461,8 +523,8 @@ overlay and the path that supplied it. It feeds the `role` label and
 `source: "domain"`. `authority_token` is always null in this build.
 
 Built-in project ownership is synthesized from the Page owner. External leases
-and token round-tripping are not wired. Spaces are owner-only, and only a
-Space's owner places Pages in it, so a Page's project copy names the Page
+and token round-tripping are not wired. Projects are owner-only, and only a
+Project's owner places Pages in it, so a Page's project copy names the Page
 record's owner. `decide()` already drops inherited paths when a project copy
 carries a `valid_until` in the past, but no built-in copy carries one.
 
@@ -471,11 +533,11 @@ delegation, and driver labels (`x-operator`, `x-pages-driver`) are attribution
 only. An agent's API key or OAuth token authenticates as the person, and its
 scope is the credential ceiling.
 
-One timing difference from the rules decide() replaced: the Space read check
+One timing difference from the rules decide() replaced: the Project read check
 now requires an unexpired credential, as Page checks always have.
-`authenticate()` returns an unexpired credential, but the Space then reads the
+`authenticate()` returns an unexpired credential, but the Project then reads the
 request body and its record before it checks access against a fresh clock. A
-credential that expires during those reads is refused as `space_not_found`.
+credential that expires during those reads is refused as `project_not_found`.
 Before, the owner was admitted.
 
 ### Schema invariants
@@ -605,6 +667,27 @@ within 60 seconds; a slower one returns a retryable `504 request_timeout` while
 the host finishes the work it accepted. Both responses tell the caller to retry
 with the same `idempotency_key` and `retry_token`.
 
+No gateway request awaits a promise that another request may still be settling.
+celld 0.6.3 resumes a promise continuation under the request whose I/O settled
+the promise. A request that awaits another request's pending promise runs inside
+it, including the Page fetch it forwards, and loses its timers and I/O when the
+other request responds. Continuations inside Durable Objects keep their own
+context. Without this rule, a tab's concurrent `/api/saved` and `/api/connect`
+after a restart can leave a stuck `/api/connect` holding the Page's serialized
+HTTP queue, and the tab stays at "Saved locally". Nothing in that queue bounds a
+request, so it stays held until the object is discarded.
+
+[isolate-setup.mjs](worker/isolate-setup.mjs) applies the rule. The gateway
+sets up each D1 schema (server sessions, MCP OAuth) once per isolate. Work in
+front of the API-key verifier's cache, which shares pending lookups, runs one
+lookup per token at a time. The request that starts the work awaits it; others
+wait on their own timers. Either side gives up with a retryable `503` after 10
+seconds. A key stays held until its lookup settles, or for 65 seconds, past the
+cache's 60-second lifetime for an entry. The OIDC libraries' discovery,
+signing-key and UserInfo caches, the ChatGPT client metadata check and the
+loopback issuer's key still share pending promises across requests (#4567). Remove it when celld keeps request context across shared
+promises; [celld-context-probe.mjs](scripts/celld-context-probe.mjs) then exits 0.
+
 The storage backend keeps one representation per record key, but a fragment's
 bundle orders concurrent changes in each peer's application order. Stored
 history is never re-encoded. An API edit reserves and stores only the records
@@ -660,6 +743,32 @@ visible. It never polls while hidden and never reloads by itself.
 | Same build | Nothing | Unchanged |
 | Different build (newer or a rollback), floor at or below this viewer | "Pages changed on the server. Reload to use the current version." | Unchanged |
 | Floor above this viewer's protocol | "Pages changed on the server. This tab can't edit until you reload." | Paused; accepted edits keep saving |
+| Editor chunk failed to load, server on another build | "Pages changed on the server. This tab can't edit until you reload." | No Page opens until reload |
+| Editor chunk failed to load, same build | "Pages couldn't load the editor. Reload to try again." | No Page opens until reload |
+
+The viewer is `app.js`, which renders the shell (header, account, sign-in and
+the Page list), plus content-hashed files under `/chunks/`. `app.js` imports the
+editor chunk at boot, and that chunk waits for the WASM runtimes; the
+[editor-load machine](viewer/editor-load-machine.mjs) tracks the import. The
+index routes, `/projects` and `/pages`, only list, so they render from the
+shell and its static chunks alone. They start the editor import when a Page
+opens or a new Page is created, or a little earlier when a pointer goes down on
+a Page row. A
+release serves only its own chunks, so a tab still running an earlier `app.js`
+can find its editor chunk gone: the path then answers with the app's HTML and
+the import fails. The tab asks `/health` for the build and the banner offers
+Reload. The Mermaid renderer loads only when a diagram shows; a failed import
+asks `/health` the same way.
+
+Every file `index.html` names carries a content hash too: `app-<hash>.js`,
+`app-<hash>.css`, `theme-<hash>.js`, `automerge-<hash>.wasm` and
+`subduction-<hash>.wasm`, plus `mermaid-<hash>.js` from the editor chunk. The
+hash is the first 40 bits of the file's sha256 in base32. `_headers` serves
+each hashed file `public, max-age=31536000, immutable` by its exact path, so
+a return visit revalidates only `index.html`, which stays
+`max-age=0, must-revalidate`. A retired name falls through to the app's HTML
+with the default revalidating header, never the immutable one. The reload
+fetches the current `index.html` and, through it, the current files.
 
 Reload covers everything the tab holds. It pauses edits and waits until every
 accepted edit on the open Page has a durable host receipt. If those edits can't
@@ -851,9 +960,11 @@ bodies. Unknown history returns `resync_required`; oversized deltas return
 `changes_budget_exceeded`, never partial success. Advance saved heads only after
 consuming a successful response or resynchronizing with focused reads.
 
-Mutations require observed `base_heads` and an idempotency key. The default
+Mutations require an idempotency key; content edits, comment adds and deletion
+also require observed `base_heads`. The default
 `conflict_scope:"page"` requires exact current heads. `patch_page` can use
-`conflict_scope:"target"` for `replace_match`-only batches: native identity maps
+`conflict_scope:"target"` for batches of only `replace_match` and `format_match`:
+native identity maps
 historical literal ranges into current text, checking text, marks, and structure.
 Optional `node_index` narrows the match at the base revision. Unrelated edits,
 even within the same block, survive. Deleted/reinserted text is a new target;
@@ -861,6 +972,68 @@ overlapping batch targets are rejected. Structural/Markdown changes retain the
 exact-head guard. Conflicts provide bounded addresses for focused rereading.
 Guards check the preparation snapshot; native changes can still merge during
 persistence. Tool mutations do not simulate typing or lock out peers.
+
+### Refusal codes and tool hints
+
+Every MCP refusal carries a stable `code`, in `structuredContent` and in the JSON
+text, so agents never branch on message text. The Worker codes specific refusals
+where they're raised: a stale exact-head guard is `409 stale_heads`, malformed
+`base_heads` and an edit batch that can't apply (zero or multiple matches, an
+unknown block, operation or mark) are `400 invalid_edit_selector`, and a comment
+action on a missing thread, message or block is `400 invalid_comment_selector`.
+An MCP result has no HTTP status, so [mcp.mjs](mcp.mjs) names any refusal the
+Worker left uncoded by its status (`access_denied`, `not_found`, `conflict` and
+so on). It adds `retryable: true` to `stale_heads`, whose retry is a new request
+built from a fresh read. The HTTP API keeps `retryable` for transient failures
+only, because the browser treats those as an outage. A tool call that gets no
+answer returns `read_failed` or `outcome_unknown`. The `/llms.txt` guide lists the
+codes agents act on.
+
+Every tool declares all four MCP annotation hints, and `tool()` refuses one that
+doesn't, because clients read an absent hint as destructive and open-world.
+Reads are read-only. Keyed writes are idempotent and not destructive: edits stay
+in Automerge history. `delete_page` and `purge_page` are destructive; Trash is
+reversible, but it revokes every collaborator's access until restored.
+`import_page_image` is open-world because it downloads the client's file, and
+`report_page_progress` is not idempotent because each call without a lease starts
+another session.
+
+### Agent carets
+
+API agents get presence derived from the calls the host already authorized
+([`model/agent-presence.mjs`](model/agent-presence.mjs)). A committed
+`patch_page` or `edit_page` publishes a caret where its last operation landed: a
+selection over the text a `replace_match` or `format_match` changed, which the
+browser fills for 600 ms before collapsing it to a caret, or a corner dot on a
+block an operation inserted, moved or replaced. A `read_page` by section, search,
+node range or block IDs shows a reading bar; a search with one to three hits also
+fills each hit. Whole-page and outline reads show nothing.
+
+Targets are Automerge cursors captured inside the change, so they follow
+concurrent typing. They travel in the `page-activity` snapshot and are never
+written to the document, a receipt or the journal; a replayed receipt publishes
+nothing. A caret is active for 15 s after a write, then fades, and disappears 60 s
+after the agent's last call; a reading marker lasts 10 s. Only API credentials
+(an API key or MCP OAuth) get presence: a browser sign-in session publishes
+nothing, since that person's editor shows their own caret. A caret reads
+"Kyle's Kilo · release agent": the account, the `x-pages-driver` harness and an
+optional `x-pages-agent` session label. Labels sit under the authenticated
+account and are trusted as such. Records key by account, harness and session
+label, so two sessions of one account keep separate carets. A reading marker's
+targets are captured on the revision the read returned.
+Each participant's color comes from nteract's cursor palette, keyed by
+principal and driver.
+
+Comment and progress anchors are native cursors, so they skip the exact-head
+guard. `manage_page_comment` `add` with `selected_text` requires known
+`base_heads`, finds the passage (and `occurrence`) at that revision, and anchors
+its cursors there. It returns `edit_conflict` only when the passage no longer
+resolves, and `resync_required` for unknown heads. A block comment needs only
+its block. Replies, status changes, message edits and deletions touch only the
+thread, so `base_heads` is optional and never compared. `report_page_progress`
+targets follow the same rule with `expected_heads`, failing with
+`presence_revision_changed` for unknown heads or a detached passage. Retries
+still replay the recorded receipt; these guards run only for new intents.
 
 `edit_page` supports structural operations including `insert_markdown`,
 `move_block`, and `insert_image`. Placement uses stable `after_block_id` values,
@@ -965,68 +1138,102 @@ Trash has no automatic expiry. Pages stay there until the owner restores or
 purges them, up to 100 per account. Each trash record identifies its root Page.
 This implementation trashes and restores individual Pages.
 
-### Spaces
+### Projects
 
-A Space is a container for Pages: its own ID (`sp_<uuid>`), title, description,
-owner, a members ACL with a revision, and a home Page created with it. The
-`Space` Durable Object ([spaces.mjs](worker/spaces.mjs)) is the authority for that
-record. In this build membership is owner-only: only the owner can open a Space,
-list its Pages or add to it, and nothing inherits access from a Space. A Page in
-a Space is readable by the owner and by anyone with a direct grant on that Page;
-sharing works as before and never reveals the Space. Inherited access, moves and
-a Space change feed come later.
+A Project is a container for Pages: its own ID (`prj_<uuid>`), title, description,
+owner, a members ACL with a revision, and a home Page created with it. Results
+carry `org`, always `null` until a host supplies tenancy. The name matches the
+organization → project hierarchy hosting platforms use for access, so a Project
+can map one-to-one onto a host's project. Its Durable Object
+([spaces.mjs](worker/spaces.mjs)) is the authority for that record.
+
+Projects were called Spaces, and storage keeps that name so a rollback build
+reads the same records: the `Space` class behind the `PROJECTS` binding,
+`space/<id>` Catalog entries, `space_id` on Catalog location entries, journal
+intents and receipts, and the D1 `pages_catalog_spaces` table and `space_id` column.
+[project-api.mjs](worker/project-api.mjs) is the one place callers' names meet
+storage's: it maps `project_id` and the Project tools in, and `space_id` out.
+`create_space`, `list_spaces`, `get_space` and `update_space` answer
+`tool_renamed`, and a `space_id` argument answers `argument_renamed`, before
+anything runs. Projects created before the rename keep their `sp_<uuid>` IDs,
+and `/s/<id>` links open `/project/<id>`. See
+[DEPLOYMENT.md](DEPLOYMENT.md#projects-and-their-storage-identity). In this build membership is owner-only: only the owner can open a Project,
+list its Pages or add to it, and nothing inherits access from a Project. A Page in
+a Project is readable by the owner and by anyone with a direct grant on that Page;
+sharing works as before and never reveals the Project. Inherited access, moves and
+a Project change feed come later.
+
+The viewer lists them at two index routes. `/projects` shows every Project
+`list_projects` returns, with its description. `/pages` shows every Page
+`list_pages` returns, newest first, including Pages in Projects; an owned
+Page's row links its Project. Search uses `list_pages`' `query`, trimmed and
+cut to its 200-unit limit, and stays in the address as `?q=`. Load more follows
+`next_cursor`; a cursor that has expired (`invalid_cursor`) starts the listing
+over from its first page. `list_pages` has no filter for Your items or for
+shared Pages, so `/pages` has no filter chips; shared rows say so instead.
 
 | Tool | Arguments | Result |
 | --- | --- | --- |
-| `create_space` | `title`, `description?`, `idempotency_key`, `retry_token?` | `space_id`, `home_page_id`, `revision` |
-| `list_spaces` | `cursor?`, `limit?` | owned Spaces, `next_cursor`, `retry_token` |
-| `get_space` | `space_id` | title, description, revision, `home_page_id` |
-| `update_space` | `space_id`, `title?`, `description?`, `expected_revision`, `idempotency_key` | the updated Space, or `superseded` |
-| `create_page` | adds `space_id?`, `parent_id?` | adds `space_id`, `parent_id` |
-| `list_pages` | adds `space_id?`, `parent_id?` (`null` = top level), `kind?` | owned rows add `space_id`, `parent_id`, `position`, `home` |
-| `read_page` | unchanged | adds `kind`, `space_id`, `parent_id`, `home`, `breadcrumbs` |
+| `create_project` | `title`, `description?`, `idempotency_key`, `retry_token?` | `project_id`, `home_page_id`, `revision` |
+| `list_projects` | `cursor?`, `limit?` | owned Projects, `next_cursor`, `retry_token` |
+| `get_project` | `project_id` | title, description, revision, `home_page_id` |
+| `update_project` | `project_id`, `title?`, `description?`, `expected_revision`, `idempotency_key` | the updated Project, or `superseded` |
+| `create_page` | adds `project_id?`, `parent_id?` | adds `project_id`, `parent_id` |
+| `list_pages` | adds `project_id?`, `parent_id?` (`null` = top level), `kind?` | owned rows add `project_id`, `parent_id`, `position`, `home` |
+| `read_page` | unchanged | adds `kind`, `project_id`, `parent_id`, `home`, `breadcrumbs` |
 
-Every Space and item operation goes through the caller's own Catalog, which
-calls the Space and Pages with the caller's credentials. A Space never calls a
-Catalog or a Page. `create_space` reserves a journal intent with the Space ID and
-home Page ID first, then creates the Space record and the home Page; both steps
+Every Project and item operation goes through the caller's own Catalog, which
+calls the Project and Pages with the caller's credentials. A Project never calls a
+Catalog or a Page. `create_project` reserves a journal intent with the Project ID and
+home Page ID first, then creates the Project record and the home Page; both steps
 are idempotent, so retrying the same key and payload after a crash or lost
-response finishes the same Space. Until then `get_space` answers `space_pending`
-and `list_spaces` omits it. The home Page holds orientation and guidance for
+response finishes the same Project. Until then `get_project` answers `project_pending`
+and `list_projects` omits it. The home Page holds orientation and guidance for
 people and agents. It is ordinary, untrusted Page content and cannot move to
 Trash on its own (`home_page_protected`).
 
-Placement lives in the Page record (`placement`: `space_id`, `parent_id`,
-`position`, `placement_epoch`, `home`) and is copied into the owner's Catalog
-entry at creation. A parent implies its Space; a different `space_id` is
-`placement_mismatch`. Pages nest at most 8 levels (`nesting_depth_exceeded`), and
-only Pages the caller owns can hold sub-pages in this build. Space and Page IDs
+The owner's Catalog is the only record of where a Page is
+([catalog-location.mjs](worker/catalog-location.mjs)); Page records carry no
+location. Each owned entry stores `parent_id` and `position`. A root in a
+Project stores the Project's `space_id`, and the home Page adds `home`; a
+sub-page's Project is derived by walking parents to its root with
+[model/location.mjs](model/location.mjs). `create_page` writes the location
+into the pending Catalog entry in the same put as its journal intent, so a
+retry finds its parent there, and the Page learns only its content. Results
+call `space_id` `project_id`. A parent implies its Project; a different
+`project_id` is `placement_mismatch`. Pages nest at most 9 levels (`nesting_depth_exceeded`), and
+only Pages the caller owns can hold sub-pages in this build. Project and Page IDs
 have different shapes, so a swapped ID is a structural error
-(`space_id_as_page_id`, `page_id_as_space_id`) that names the right tool and
+(`project_id_as_page_id`, `page_id_as_project_id`) that names the right tool and
 argument and reveals nothing about either resource.
 
-Listing by Space or parent reuses the catalog index: D1's placement columns
-choose candidates, owner rows must match the owner's Catalog entry, and shared
-rows are verified by their Page host, which also supplies their placement.
-`list_spaces` takes candidates from `pages_catalog_spaces` and confirms each
+Listing by Project or parent reads the Catalog's entries, not D1: a Project
+lists every descendant of its roots, and a parent lists its direct children.
+Children of a parent shared with the caller come from the parent owner's
+Catalog, and each is verified by its Page host with the caller's access.
+`list_projects` takes candidates from `pages_catalog_spaces` and confirms each
 against the owner's `space/<id>` Catalog entry; cursors are sealed to the
-listing's filters. `read_page` breadcrumbs are computed in the gateway: each
-ancestor and the Space answer with the caller's credentials, so the trail stops at
-the first Page the caller cannot open and `space_id` appears only when the Space
-is readable.
+listing's filters. `read_page` breadcrumbs are computed in the gateway with one
+call to the owner's Catalog, a host-only `/internal/location` route that answers
+ancestor IDs and the root's Project and nothing else. Each ancestor and the
+Project then answer with the caller's credentials, so the trail stops at the
+first Page the caller cannot open and `project_id` appears only when the
+Project is readable.
 
 Trash stays single-Page. `delete_page` on a Page with active sub-pages, or
 sub-pages still being created, returns `page_has_children`; trash the sub-pages
 first. Subtree Trash is not available yet: it will return on an explicit
 operation intent with per-item fences and capacity reservations. A restored Page
-whose parent is in Trash or gone returns to the top level of its Space (or Your
-items) and its `placement_epoch` advances. Creating a Page under a parent in
+whose parent is in Trash or gone returns to the top level of its Project (or Your
+items); a sub-page's Trash entry records its Project (`restore_space_id`) for
+when the parent is purged. The Catalog decides this when it projects the
+restore. Creating a Page under a parent in
 Trash returns `parent_unavailable`, including a resumed creation, which checks
 its parent again before it reaches the Page.
 
 Placement decisions never trust a Catalog entry with an unsettled Trash or
 restore reservation: a lost response or failed barrier can hide a transition the
-Page already applied. Restore reservations record the Space and parent the Page
+Page already applied. Restore reservations record the Project and parent the Page
 returns to. Before the leaf check or a restore placement reads such an entry,
 the Catalog asks the Page for its lifecycle (`/internal/lifecycle-state`) and
 projects an applied transition. A child whose restore applied counts as a child.
@@ -1064,11 +1271,30 @@ stored operation intents. The log line has stage `catalog-queue` or
 `space-queue`, status 503 and reason `request_timeout`. Pages don't use this
 queue: a Page holds live document state and sockets.
 
-`update_space` requires `expected_revision`. The Catalog records it in the
-journal intent before the Space sees the request, and every attempt carries it,
-so a retry can never apply once the Space has moved past that revision, even
-after the Space evicted the key's receipt (it keeps the latest 64). Such a retry
-returns `superseded: true, applied: false` with the current Space.
+celld 0.6.3 cancels a Durable Object request when its caller goes away: the
+client of the gateway request that forwarded it disconnects, such as a tab
+navigating away while its listing is in flight, or the calling object aborts
+its stub fetch. The object request's pending timers and I/O are dropped and its
+promise never settles. A request still waiting in a queue starts in that dead
+context when its turn comes. Either way it holds the queue: a Catalog or Space
+until the 120 s watchdog, a Page or `PageRecords` until the object is
+discarded. So each of those objects passes every request to `ctx.waitUntil`
+when it queues it, through [request-hold.mjs](worker/request-hold.mjs). A
+Page's `/api/saved` and `/api/sync` skip its queue but are held the same way: a
+save waits for heads and drains the record store's serialized flush, and a
+sync's resident socket already holds its own request. A Catalog also holds the
+lifecycle reads that later requests reuse. The catalog index migration is
+shared by every object in an isolate, and its callers stop waiting after 1.5
+or 2.5 s, so `catalogIndexDatabase(env, ctx)` requires the caller's `ctx` and
+holds the migration on it; no Catalog or Page call site can skip the hold. The
+work runs to completion after its caller leaves, and its response is
+discarded.
+
+`update_project` requires `expected_revision`. The Catalog records it in the
+journal intent before the Project sees the request, and every attempt carries it,
+so a retry can never apply once the Project has moved past that revision, even
+after the Project evicted the key's receipt (it keeps the latest 64). Such a retry
+returns `superseded: true, applied: false` with the current Project.
 
 ### Retry contract
 

@@ -1,4 +1,5 @@
 import { assertStoredSize } from "../model/limits.mjs";
+import { holdUntilSettled } from "./request-hold.mjs";
 
 // Kept below the deployment's 2 MiB request cap, including binary framing.
 const MAX_BATCH_BYTES = 2_000_000;
@@ -136,12 +137,16 @@ function logGroupSplit(records, bytes) {
  */
 export class PageRecords {
   constructor(ctx) {
+    this.ctx = ctx;
     this.storage = ctx.storage;
     this.tail = Promise.resolve();
   }
   fetch(request) {
     const work = this.tail.then(() => this.run(request));
     this.tail = work.catch(() => {});
+    // The Page aborts a write it stopped waiting for; that cancels this
+    // request in celld 0.6.3. Finish it so the queue moves on in order.
+    holdUntilSettled(this.ctx, work);
     return work;
   }
   async run(request) {

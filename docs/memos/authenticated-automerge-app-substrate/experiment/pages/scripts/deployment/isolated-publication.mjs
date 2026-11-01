@@ -3,7 +3,7 @@ import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import { deploymentProfile, stageTarget, verifyDeployment } from "./profiles.mjs";
-import { routesFor, imagePaths } from "./routes.mjs";
+import { routesFor, imagePaths, indexPaths } from "./routes.mjs";
 
 const accountId = "1cfb529b94b3d6cde3aaf49d1d6ed5e6";
 function publicationPaths(target) {
@@ -193,7 +193,9 @@ export function publishIsolated(stage, { filesystem = fs, run = runCommand } = {
           ? plan.config.replace(imagePaths, "")
           : target === "page8"
             ? plan.config.replace("|theme[.]js|", "|")
-            : null;
+            : target === "page9"
+              ? plan.config.replace(indexPaths, "")
+              : null;
   const previousReceipt = previousConfig === null ? null : receiptFor(previousConfig);
   const pendingReceipt =
     previousConfig === null
@@ -260,9 +262,14 @@ export function publishIsolated(stage, { filesystem = fs, run = runCommand } = {
     } else filesystem.writeFileSync(file, contents, { mode, flag: "wx" });
   }
   function validateRoutes(file) {
-    const sharing = ["page5", "page6", "page7", "page8"].includes(target);
-    const oauth = target === "page7" || target === "page8";
-    const assets = "/api/pages/08c583e5-d29e-4f1e-b06b-333965254e94/assets";
+    const sharing = profile.sharing === true;
+    const oauth = profile.oauth === true;
+    const chunks = profile.viewerChunks === true;
+    const shell = profile.viewerAssets === true;
+    const projects = profile.projectLinks === true;
+    const index = profile.indexRoutes === true;
+    const uuid = "08c583e5-d29e-4f1e-b06b-333965254e94";
+    const assets = "/api/pages/" + uuid + "/assets";
     run("/usr/bin/cloudflared", ["--config", file, "tunnel", "ingress", "validate"]);
     for (const [pathname, expected] of [
       ["/", plan.listen],
@@ -275,10 +282,56 @@ export function publishIsolated(stage, { filesystem = fs, run = runCommand } = {
       ["/mermaid.js", plan.listen],
       ["/mermaid.js/private", "http_status:404"],
       ["/mermaidXjs", "http_status:404"],
-      ["/theme.js", target === "page8" ? plan.listen : "http_status:404"],
+      ["/theme.js", profile.theme ? plan.listen : "http_status:404"],
       ["/theme.js/private", "http_status:404"],
       ["/themeXjs", "http_status:404"],
       ["/theme.js/", "http_status:404"],
+      ["/chunks/ABCDEFGH.js", chunks ? plan.listen : "http_status:404"],
+      ["/chunks/abcdefgh.js", "http_status:404"],
+      ["/chunks/ABCDEFGH.js/private", "http_status:404"],
+      ["/chunks/ABCDEFGH.css", "http_status:404"],
+      ["/chunks/ABCDEFGHI.js", "http_status:404"],
+      ["/chunks/", "http_status:404"],
+      ["/app-ABCDEFGH.js", shell ? plan.listen : "http_status:404"],
+      ["/app-ABCDEFGH.css", shell ? plan.listen : "http_status:404"],
+      ["/theme-ABCDEFGH.js", shell ? plan.listen : "http_status:404"],
+      ["/mermaid-ABCDEFGH.js", shell ? plan.listen : "http_status:404"],
+      ["/automerge-ABCDEFGH.wasm", shell ? plan.listen : "http_status:404"],
+      ["/subduction-ABCDEFGH.wasm", shell ? plan.listen : "http_status:404"],
+      ["/app-abcdefgh.js", "http_status:404"],
+      ["/app-ABCDEFGHI.js", "http_status:404"],
+      ["/app-ABCDEFGH.wasm", "http_status:404"],
+      ["/theme-ABCDEFGH.css", "http_status:404"],
+      ["/automerge-ABCDEFGH.js", "http_status:404"],
+      ["/connect-ABCDEFGH.js", "http_status:404"],
+      ["/app-ABCDEFGH.js/private", "http_status:404"],
+      ["/project/prj_" + uuid, projects ? plan.listen : "http_status:404"],
+      ["/project/prj_" + uuid + "/", projects ? plan.listen : "http_status:404"],
+      ["/project/sp_" + uuid, projects ? plan.listen : "http_status:404"],
+      ["/s/sp_" + uuid, projects ? plan.listen : "http_status:404"],
+      ["/s/prj_" + uuid, projects ? plan.listen : "http_status:404"],
+      ["/project/" + uuid, "http_status:404"],
+      ["/project/prj_not-a-project", "http_status:404"],
+      ["/project/prj_" + uuid.toUpperCase(), "http_status:404"],
+      ["/project/pg_" + uuid, "http_status:404"],
+      ["/project/prj_" + uuid + "/private", "http_status:404"],
+      ["/projects/prj_" + uuid, "http_status:404"],
+      ["/project/", "http_status:404"],
+      ["/s/" + uuid, "http_status:404"],
+      ["/projects", index ? plan.listen : "http_status:404"],
+      ["/projects/", index ? plan.listen : "http_status:404"],
+      ["/pages", index ? plan.listen : "http_status:404"],
+      ["/pages/", index ? plan.listen : "http_status:404"],
+      ["/pages?q=roadmap", index ? plan.listen : "http_status:404"],
+      ["/projects//", "http_status:404"],
+      ["/pages//", "http_status:404"],
+      ["/projects/private", "http_status:404"],
+      ["/pages/private", "http_status:404"],
+      ["/pages/" + uuid, "http_status:404"],
+      ["/projectsX", "http_status:404"],
+      ["/pagesX", "http_status:404"],
+      ["/page", "http_status:404"],
+      ["/Pages", "http_status:404"],
       ["/api/sync", plan.listen],
       ["/api/access", sharing ? plan.listen : "http_status:404"],
       ["/api/access/private", "http_status:404"],
