@@ -67,7 +67,7 @@ import { useStore } from "./store.mjs";
 import { CommentComposer } from "./comment-composer.mjs";
 import { focusReturnTarget } from "./focus-return.mjs";
 import { timer } from "rxjs";
-import { trackVisualViewport } from "./visual-viewport.mjs";
+import { MOBILE_EDITOR_QUERY, trackVisualViewport } from "./visual-viewport.mjs";
 
 // The editor, and the WASM runtimes it waits for, load beside the shell
 // from boot, except on the index routes (/projects, /pages), which only list;
@@ -466,6 +466,14 @@ function App() {
   }
   // Publish the visual viewport's edges for the mobile bar and header.
   useEffect(() => trackVisualViewport(), []);
+  // On phones the status is a dot; its label stays for screen readers.
+  const [compactStatus, setCompactStatus] = useState(() => matchMedia(MOBILE_EDITOR_QUERY).matches);
+  useEffect(() => {
+    const media = matchMedia(MOBILE_EDITOR_QUERY);
+    const change = () => setCompactStatus(media.matches);
+    media.addEventListener("change", change);
+    return () => media.removeEventListener("change", change);
+  }, []);
   useEffect(() => {
     let alive = true;
     const maintenance = maintainBrowserSession({
@@ -780,7 +788,7 @@ function App() {
           {page && (
             <div className="document-meta">
               <div className="document-status">
-                <SaveStatus status={session.status} />
+                <SaveStatus status={session.status} compact={compactStatus} />
                 {["Unsaved", "Offline", "Saved locally"].includes(session.status) && (
                   <button
                     className="subtle-button"

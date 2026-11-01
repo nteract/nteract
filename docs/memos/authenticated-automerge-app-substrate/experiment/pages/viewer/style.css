@@ -1379,6 +1379,9 @@ dialog::backdrop {
     font-size: 0.65rem;
     text-align: center;
   }
+  .document-status:has(.save-status--dot) {
+    max-width: none;
+  }
   .peer-avatars .avatar ~ .avatar {
     display: none;
   }

@@ -34,3 +34,38 @@
     animation: none;
   }
 }
+/* Compact status on phones (StatusDot in SaveStatus.jsx). */
+.save-status--dot {
+  width: 24px;
+  height: 24px;
+}
+.status-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--muted-foreground) 55%, transparent);
+}
+.save-status--working .status-dot {
+  background: var(--muted-foreground);
+}
+.save-status--working .status-dot.is-pulsing {
+  background: var(--primary);
+  animation: save-status-pulse 1.1s ease-in-out infinite;
+}
+.save-status--attention .status-dot {
+  background: var(--warning);
+}
+.save-status--error .status-dot {
+  background: var(--destructive);
+}
+@keyframes save-status-pulse {
+  50% {
+    opacity: 0.35;
+    transform: scale(0.8);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .status-dot.is-pulsing {
+    animation: none;
+  }
+}

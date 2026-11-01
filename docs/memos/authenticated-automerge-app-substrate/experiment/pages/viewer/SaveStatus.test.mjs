@@ -80,3 +80,33 @@ test("connection, local-only, permission, and failure states remain visible and 
   assert.ok(render("Syncing").classList.contains("save-status--working"));
   assert.equal(render("Connected").querySelector("svg"), null);
 });
+
+function renderCompact(status) {
+  const fragment = JSDOM.fragment(
+    renderToStaticMarkup(createElement(SaveStatus, { status, compact: true })),
+  );
+  return fragment.querySelector('[role="status"]');
+}
+
+test("the compact phone status is a dot that keeps its label for screen readers", () => {
+  const saved = renderCompact("Saved");
+  assert.ok(saved.classList.contains("save-status--dot"));
+  assert.equal(saved.querySelector(".status-dot"), null, "saved shows nothing");
+  // Same text and label as the desktop saved state.
+  assert.equal(saved.querySelector(".sr-only").textContent, "Saved");
+  assert.equal(saved.getAttribute("aria-label"), "All changes saved");
+  const saving = renderCompact("Saving");
+  assert.ok(saving.querySelector(".status-dot.is-pulsing"), "saving pulses");
+  assert.equal(saving.title, "Saving");
+  const syncing = renderCompact("Syncing");
+  assert.ok(syncing.querySelector(".status-dot:not(.is-pulsing)"), "syncing is quiet");
+  assert.ok(syncing.classList.contains("save-status--working"));
+  assert.ok(renderCompact("Offline").classList.contains("save-status--attention"));
+  assert.ok(renderCompact("Unsaved").classList.contains("save-status--error"));
+  for (const value of ["Saving", "Syncing", "Offline", "Unsaved", "Sign in to sync"]) {
+    const status = renderCompact(value);
+    assert.equal(status.querySelector(".sr-only").textContent, value);
+    assert.equal(status.getAttribute("aria-live"), "polite");
+    assert.equal(status.querySelector(".save-status-label"), null, "no visible label");
+  }
+});

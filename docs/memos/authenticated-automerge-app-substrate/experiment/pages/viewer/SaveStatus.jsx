@@ -12,7 +12,33 @@ const attentionStates = new Set([
 ]);
 const failureStates = new Set(["Unsaved", "Local save failed"]);
 
-export function SaveStatus({ status }) {
+// The compact form on phones: one dot whose color and motion carry the
+// state, with the label for screen readers and in the tooltip. Saving pulses,
+// syncing and connecting are a quiet dot, saved shows nothing, and anything
+// that needs attention or failed takes a warning color.
+function StatusDot({ status, kind }) {
+  return (
+    <span
+      className={`save-status save-status--dot save-status--${kind}`}
+      role="status"
+      aria-live="polite"
+      aria-atomic="true"
+      aria-label={kind === "saved" ? "All changes saved" : undefined}
+      title={kind === "saved" ? "All changes saved" : status}
+      data-status={status}
+    >
+      {kind !== "saved" && (
+        <span
+          className={`status-dot${status === "Saving" ? " is-pulsing" : ""}`}
+          aria-hidden="true"
+        />
+      )}
+      <span className="sr-only">{status}</span>
+    </span>
+  );
+}
+
+export function SaveStatus({ status, compact = false }) {
   // Only the session's exact-head durability receipt earns the saved indicator.
   // A connected socket or local checkpoint must retain its own visible status.
   const saved = status === "Saved";
@@ -28,6 +54,7 @@ export function SaveStatus({ status }) {
         : attention
           ? "attention"
           : "plain";
+  if (compact) return <StatusDot status={status} kind={kind} />;
   const Icon = saved ? Check : working ? LoaderCircle : attention ? CircleAlert : null;
   return (
     <span

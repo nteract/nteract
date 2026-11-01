@@ -331,6 +331,11 @@ try {
   await expect(menu).toHaveCount(0);
   await expect(bar).toHaveCount(0);
   await mobile.evaluate(() => document.documentElement.style.removeProperty("--vv-height"));
+  // On a phone the header status is a dot with its label for screen readers.
+  const phoneStatus = mobile.locator(".document-status [role=status]");
+  await expect(phoneStatus).toHaveClass(/save-status--dot/);
+  await expect(phoneStatus.locator(".save-status-label")).toHaveCount(0);
+  await expect(phoneStatus.locator(".sr-only")).not.toHaveText("");
   // A full-page screenshot resets Chromium's touch emulation, so it comes last.
   await mobile.screenshot({ path: output + "/task-lists-mobile.png", fullPage: true });
   await mobileContext.close();
