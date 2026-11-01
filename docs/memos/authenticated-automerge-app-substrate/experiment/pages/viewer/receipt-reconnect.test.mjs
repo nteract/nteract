@@ -213,6 +213,7 @@ test("duplicate events and a successful receipt cannot erase a failed native con
   };
   await f.session.retryConnection();
   assert.equal(f.session.status, "Offline");
+  assert.equal(f.session.statusRetry, true);
   assert.equal(f.session.problem, "Native handshake failed");
   f.session.queueSaved();
   assert.equal(f.session.status, "Offline");
@@ -242,6 +243,7 @@ test("same-head reconnect preserves an asynchronous local change error while flu
   await drain();
   assert.equal(f.session.status, "Local save failed");
   assert.equal(f.session.statusKey, "failed");
+  assert.equal(f.session.statusRetry, false, "a failed local save has nothing to retry");
   await f.session.openConnection(false);
   f.session.queueSaved();
   assert.equal(f.session.status, "Local save failed");
@@ -408,6 +410,7 @@ test("edits queued during expired sign-in resume after reauthentication at uncha
   assert.equal(f.requests.length, 0);
   assert.equal(f.session.status, "Sign in to sync");
   assert.equal(f.session.statusKey, "attention");
+  assert.equal(f.session.statusRetry, false, "signing in, not Retry, resumes sync");
   await f.session.openConnection(true);
   await f.advance(300);
   assert.equal(f.requests.length, 1);
