@@ -446,7 +446,12 @@ one of those actors outside the acknowledged history. Native storage persists
 an edit before the debounced checkpoint, so a tab that dies in between still
 reopens Saving, and its edit is not claimed as saved. Checkpoints from before
 `localEdits` keep their `pending` flag as unattributed local work until a receipt
-covers them. [local-edits.mjs](viewer/local-edits.mjs) holds these rules.
+covers them. Each actor is recorded with the native replica it wrote into, and
+only that replica's session drops it: earlier actors once a receipt covers the
+whole replica, its own when it closes with nothing unconfirmed. Another tab's
+actor is never dropped, by count or otherwise, because that tab may be live or
+may be restored later with its native database.
+[local-edits.mjs](viewer/local-edits.mjs) holds these rules.
 [sync-status-machine.mjs](viewer/sync-status-machine.mjs) holds these
 transitions and the label each state renders; a phase pause (sign-in, access,
 deletion) or a failed local save outranks it.

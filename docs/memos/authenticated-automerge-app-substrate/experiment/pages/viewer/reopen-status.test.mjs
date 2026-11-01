@@ -261,7 +261,10 @@ test("an acknowledged local edit followed by remote catch-up never reopens Savin
   await first.close();
   const closed = await readLocalPage(h.auth.identity, pageId);
   assert.equal(closed.pending, true);
-  assert.ok(closed.localEdits.actors.includes(actor));
+  assert.ok(
+    !closed.localEdits.actors.some((entry) => entry.actor === actor),
+    "a close with nothing unconfirmed retires its actor",
+  );
 
   const seen = [];
   const reopened = await open(h, pageId, seen);
@@ -291,4 +294,115 @@ test("a checkpoint from before local-edit tracking keeps its receipt flag until 
   await acknowledge(h, reopened);
   assert.equal(reopened.status, "Saved");
   assert.equal((await readLocalPage(h.auth.identity, pageId)).localEdits.unattributed, false);
+});
+
+/** A local edit that reaches native storage, then the tab dies before the
+ * debounced receipt and before close writes a checkpoint. */
+async function crashAfterEdit(session, title) {
+  await session.change((doc) => A.updateText(doc, ["title"], title));
+  clearTimeout(session.savedTimer);
+  await session.repo.flush();
+  session.skipCloseCheckpoint = true;
+  await session.close();
+}
+const ownEntries = (page, replica) =>
+  page.localEdits.actors.filter((entry) => entry.replica === replica);
+
+test("an unacknowledged edit stays attributed behind any number of other actors", async (t) => {
+  const h = host(t);
+  const pageId = await cachedPage(h);
+  const cached = await readLocalPage(h.auth.identity, pageId);
+  const others = Array.from({ length: 600 }, (_, i) => ({
+    actor: i.toString(16).padStart(32, "0"),
+    replica: (i + 1).toString(16).padStart(32, "f"),
+  }));
+  await writeLocalPage(h.auth.identity, {
+    ...cached,
+    localEdits: { actors: others, ackedHeads: [], unattributed: false },
+  });
+  const first = await open(h, pageId);
+  await acknowledge(h, first);
+  const actor = first.actor();
+  await crashAfterEdit(first, "Behind 600 actors");
+  // More opens elsewhere add more actors; none of them can push this one out.
+  const later = await readLocalPage(h.auth.identity, pageId);
+  await writeLocalPage(h.auth.identity, {
+    ...later,
+    localEdits: {
+      ...later.localEdits,
+      actors: [
+        ...later.localEdits.actors,
+        ...others.map(({ replica }, i) => ({
+          actor: `ee${i.toString(16).padStart(30, "0")}`,
+          replica,
+        })),
+      ],
+    },
+  });
+
+  const reopened = await open(h, pageId);
+  t.after(() => reopened.close());
+  assert.ok(reopened.localPage.localEdits.actors.some((entry) => entry.actor === actor));
+  assert.equal(reopened.snapshot().title, "Behind 600 actors");
+  assert.equal(reopened.status, "Saving");
+  assert.equal(reopened.recoveryPending, true);
+});
+
+test("another tab's live actor survives this tab's covering receipt and clean close", async (t) => {
+  const h = host(t);
+  const pageId = await cachedPage(h);
+  const left = await open(h, pageId);
+  const right = await open(h, pageId);
+  assert.notEqual(left.replicaId, right.replicaId, "each tab owns its native replica");
+  await acknowledge(h, left);
+  await acknowledge(h, right);
+  const actor = right.actor();
+  await right.change((doc) => A.updateText(doc, ["title"], "Typed in the right tab"));
+  clearTimeout(right.savedTimer);
+  await right.repo.flush();
+  // The left tab's receipt covers everything it holds, then it closes clean.
+  await remoteChange(left, "From an agent");
+  await acknowledge(h, left);
+  await left.close();
+  const afterLeft = await readLocalPage(h.auth.identity, pageId);
+  assert.deepEqual(ownEntries(afterLeft, left.replicaId), [], "the left tab retired its own");
+  assert.ok(afterLeft.localEdits.actors.some((entry) => entry.actor === actor));
+  // The right tab dies with its edit only in native storage.
+  right.skipCloseCheckpoint = true;
+  await right.close();
+
+  const reopened = await open(h, pageId);
+  t.after(() => reopened.close());
+  assert.equal(reopened.replicaId, right.replicaId, "the right tab's replica reopens");
+  assert.ok(
+    A.getChangesMetaSince(reopened.doc, []).some((change) => change.actor === actor),
+    "the right tab's edit is restored from its native replica",
+  );
+  assert.equal(reopened.status, "Saving");
+});
+
+test("a covering receipt frees its replica's earlier actors and a clean close frees its own", async (t) => {
+  const h = host(t);
+  const pageId = await cachedPage(h);
+  const first = await open(h, pageId);
+  await crashAfterEdit(first, "Unsaved in the first session");
+
+  const second = await open(h, pageId);
+  const replica = second.replicaId;
+  assert.equal(replica, first.replicaId);
+  assert.deepEqual(
+    ownEntries(second.localPage, replica).map((entry) => entry.actor),
+    [first.actor(), second.actor()],
+  );
+  assert.equal(second.status, "Saving");
+  await acknowledge(h, second);
+  assert.equal(second.status, "Saved");
+  const acknowledged = await readLocalPage(h.auth.identity, pageId);
+  assert.deepEqual(
+    ownEntries(acknowledged, replica).map((entry) => entry.actor),
+    [second.actor()],
+    "the receipt covers the first session's edit",
+  );
+  await second.close();
+  assert.deepEqual(ownEntries(await readLocalPage(h.auth.identity, pageId), replica), []);
 });

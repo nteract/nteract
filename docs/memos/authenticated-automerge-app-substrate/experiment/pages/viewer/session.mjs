@@ -52,6 +52,7 @@ import {
   emptyLocalEdits,
   hasUnconfirmedLocalEdits,
   readLocalEdits,
+  retireReplica,
   withActor,
 } from "./local-edits.mjs";
 export { request, tool } from "./request.mjs";
@@ -435,7 +436,18 @@ export class PageSession {
       if (this.skipCloseCheckpoint) written = true;
       else {
         await this.repo?.flush();
-        await this.persistLocal({ pending: this.status !== "Saved" }, { allowClosed: true });
+        // With no unconfirmed edit, nothing this replica's actors authored
+        // can be unacknowledged, and they can't author again.
+        const retire = !!this.handle && !this.sync$.snapshot().pending;
+        await this.persistLocal(
+          {
+            pending: this.status !== "Saved",
+            ...(retire && {
+              localEdits: retireReplica(this.localEditsWithActor(), this.replicaId),
+            }),
+          },
+          { allowClosed: true },
+        );
         written = !!this.localPage && !!this.handle;
       }
     } catch (error) {
@@ -861,7 +873,11 @@ export class PageSession {
         snapshot,
         registrationProtocol: 1,
         // The bootstrap and everything after it are this browser's own edits.
-        localEdits: withActor(withActor(emptyLocalEdits(), A.getActorId(doc)), this.actor()),
+        localEdits: withActor(
+          withActor(emptyLocalEdits(), A.getActorId(doc), this.replicaId),
+          this.actor(),
+          this.replicaId,
+        ),
         registration: {
           expected_principal: this.identity.principal,
           page_id: this.pageId,
@@ -871,7 +887,7 @@ export class PageSession {
           idempotency_key: `v1_${crypto.randomUUID()}`,
         },
       };
-      await writeLocalPage(this.identity, this.localPage);
+      await writeLocalPage(this.identity, this.localPage, { replica: this.replicaId });
       unconfirmed = true;
     } else if (this.localPage && !this.localPage.resetReplica) {
       // A checkpoint can contain more history than an ordinary edit batch.
@@ -948,9 +964,9 @@ export class PageSession {
         registered: true,
         pending: false,
         snapshot: encodeSnapshot(A.save(this.doc)),
-        localEdits: withActor(emptyLocalEdits(), this.actor()),
+        localEdits: withActor(emptyLocalEdits(), this.actor(), this.replicaId),
       };
-      await writeLocalPage(this.identity, this.localPage);
+      await writeLocalPage(this.identity, this.localPage, { replica: this.replicaId });
       unconfirmed = false;
     }
     this.handle.on("change", (event) => this.receiveChange(event));
@@ -995,6 +1011,15 @@ export class PageSession {
       ),
     );
     this.local = await exclusiveIdentity(scope);
+    // Names this native replica in localEdits without exposing its seed.
+    this.replicaId = hex(
+      new Uint8Array(
+        await crypto.subtle.digest(
+          "SHA-256",
+          new TextEncoder().encode(`pages-native-replica\0${this.local.seed}`),
+        ),
+      ),
+    ).slice(0, 32);
     this.signer = N.MemorySigner.fromBytes(bytes(this.local.seed));
     const peer = this.signer.peerId();
     this.senderId = peer.toString();
@@ -1014,15 +1039,24 @@ export class PageSession {
   actor() {
     return A.getActorId(this.doc);
   }
+  /** The checkpoint's localEdits with this session's actor recorded. */
+  localEditsWithActor() {
+    return withActor(
+      readLocalEdits(this.localPage?.localEdits) ?? emptyLocalEdits(),
+      this.actor(),
+      this.replicaId,
+    );
+  }
   /** Record this session's actor in the checkpoint before it can edit, so a
    * crash before the debounced checkpoint still reads its edits as local. */
   async recordActor(edits) {
-    const recorded = withActor(edits, this.actor());
+    const recorded = withActor(edits, this.actor(), this.replicaId);
     if (recorded === edits && this.localPage.localEdits) return;
-    this.localPage = await writeLocalPage(this.identity, {
-      ...this.localPage,
-      localEdits: recorded,
-    });
+    this.localPage = await writeLocalPage(
+      this.identity,
+      { ...this.localPage, localEdits: recorded },
+      { replica: this.replicaId },
+    );
   }
   persistLocal(patch = {}, { allowClosed = false } = {}) {
     if (this.deleted || (!this.alive && !allowClosed) || !this.localPage || !this.handle)
@@ -1044,7 +1078,9 @@ export class PageSession {
       .catch(() => {})
       .then(async () => {
         this.localPage = { ...this.localPage, ...value };
-        this.localPage = await writeLocalPage(this.identity, this.localPage);
+        this.localPage = await writeLocalPage(this.identity, this.localPage, {
+          replica: this.replicaId,
+        });
       });
     this.cacheTail = work;
     return work;
@@ -1844,11 +1880,10 @@ export class PageSession {
       this.receiptRetryAttempts = 0;
       await this.persistLocal({
         pending: false,
-        localEdits: afterAcknowledgement(
-          this.doc,
-          withActor(readLocalEdits(this.localPage?.localEdits) ?? emptyLocalEdits(), this.actor()),
-          heads,
-        ),
+        localEdits: afterAcknowledgement(this.doc, this.localEditsWithActor(), heads, {
+          replica: this.replicaId,
+          actor: this.actor(),
+        }),
       });
       if (!isCurrent()) return;
       this.showReceiptState();
