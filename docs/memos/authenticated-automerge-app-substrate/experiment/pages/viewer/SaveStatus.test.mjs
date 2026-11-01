@@ -155,3 +155,12 @@ test("a status without a known key is drawn plain and never as saved", () => {
     assert.equal(render(status).querySelector("svg"), null);
   }
 });
+
+test("the saving pulse changes size, never opacity", async () => {
+  const { readFile } = await import("node:fs/promises");
+  const css = await readFile(new URL("./save-status.css", import.meta.url), "utf8");
+  const pulse = css.match(/@keyframes save-status-pulse\s*\{([\s\S]*?)\n\}/);
+  assert.ok(pulse, "save-status.css defines the pulse");
+  assert.match(pulse[1], /transform:/);
+  assert.doesNotMatch(pulse[1], /opacity/);
+});
