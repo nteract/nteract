@@ -15,9 +15,11 @@ import {
 } from "wordgard/command";
 import { history, undo, redo, undoDepth, redoDepth } from "wordgard/history";
 import { tables } from "wordgard/table";
-import { tablePresentation, tableKeys, selectedTable } from "./wordgard-tables.mjs";
+import { insertTable, tablePresentation, tableKeys, selectedTable } from "./wordgard-tables.mjs";
 import { TableMenu } from "./TableMenu.jsx";
 import { CODE_LANGUAGES, codeHighlighting } from "./code-highlight.mjs";
+import { MobileBar } from "./MobileBar.jsx";
+import { MOBILE_EDITOR_QUERY } from "./visual-viewport.mjs";
 import {
   resolveUploadPreview,
   setUploadPreview,
@@ -157,7 +159,10 @@ export function WordgardEditor(props) {
     [remoteCarets, setRemoteCarets] = useState([]),
     [link, setLink] = useState(null),
     [editingLink, setEditingLink] = useState(false),
-    [imageStatus, setImageStatus] = useState(null);
+    [imageStatus, setImageStatus] = useState(null),
+    [mobile, setMobile] = useState(() => matchMedia(MOBILE_EDITOR_QUERY).matches),
+    [barFocus, setBarFocus] = useState(false);
+  const mobileBar = useRef(null);
   const [generation, reset] = useState(0);
   const pendingLink = useRef(null),
     refresh = useRef(() => {}),
@@ -354,6 +359,18 @@ export function WordgardEditor(props) {
           run: () => latest.current.editable && Command.dispatch(editor, toggleHighlight),
         }),
         Wordgard.contentAttributes.of({ "aria-label": "Document text", spellcheck: "true" }),
+        // On phones the compact bar and the header cover the visual viewport's
+        // edges; keep the caret clear of both when scrolling it into view.
+        Wordgard.coveredMargins.of(() => {
+          const bar = mobileBar.current?.getBoundingClientRect();
+          const header = document.querySelector(".app-header")?.getBoundingClientRect();
+          const viewport = window.visualViewport;
+          const bottomEdge = viewport ? viewport.offsetTop + viewport.height : innerHeight;
+          return {
+            top: header ? Math.max(0, header.bottom - (viewport?.offsetTop ?? 0)) : 0,
+            bottom: bar ? Math.max(0, bottomEdge - bar.top) : 0,
+          };
+        }),
         Wordgard.exceptionSink.of(report),
         Wordgard.transactionListener.of((transactions) => {
           if (!alive) return;
@@ -622,6 +639,7 @@ export function WordgardEditor(props) {
       snapshot.highlight = highlight.color;
       snapshot.highlightPresent = highlight.colors.length > 0;
       snapshot.uploadPreview = previewShown(editor);
+      snapshot.focused = editor.hasFocus;
       for (const [name, mark] of Object.entries(marks))
         snapshot[name] = selection.empty
           ? !!mark.isInSet(state.sel.activeMarks)
@@ -741,6 +759,13 @@ export function WordgardEditor(props) {
     if (thread) collaboration.current?.revealThread(thread);
   }, [commentTarget, threads, generation]);
   useEffect(() => {
+    const media = matchMedia(MOBILE_EDITOR_QUERY);
+    const change = () => setMobile(media.matches);
+    change();
+    media.addEventListener("change", change);
+    return () => media.removeEventListener("change", change);
+  }, []);
+  useEffect(() => {
     const editor = view.current,
       element = toolbar.current;
     if (!editor || !element || !toolbarHost || !editable) {
@@ -758,6 +783,7 @@ export function WordgardEditor(props) {
       let next = null;
       const selection = editor.state.selection;
       const contextual =
+        !mobile &&
         !selection.empty &&
         !selectedImage(editor.state) &&
         !editor.composing &&
@@ -822,14 +848,16 @@ export function WordgardEditor(props) {
       listeners.forEach(([target, name, fn]) => target?.removeEventListener(name, fn, true));
       positionToolbar.current = () => {};
     };
-  }, [toolbarHost, toolbarOpen, editable, generation]);
+  }, [toolbarHost, toolbarOpen, editable, generation, mobile]);
   function run(name) {
     const editor = view.current;
     if (!editor || !editable) return;
     try {
       if (name === "comment") return comment();
       if (name === "link") return openLink();
-      if (marks[name]) Command.dispatch(editor, toggleMark, marks[name]);
+      if (name === "highlight") Command.dispatch(editor, toggleHighlight);
+      else if (name === "table") insertTable(editor);
+      else if (marks[name]) Command.dispatch(editor, toggleMark, marks[name]);
       else if (name === "undo" || name === "redo")
         Command.dispatch(editor, name === "undo" ? undo : redo);
       else if (["bullet", "ordered", "task"].includes(name))
@@ -852,6 +880,14 @@ export function WordgardEditor(props) {
     } catch (error) {
       report(error);
     }
+  }
+  // Mobile bar commands act only while this editor or its bar holds focus.
+  function ownsBar() {
+    const editor = view.current;
+    return (
+      !!editor &&
+      (editor.hasFocus || !!mobileBar.current?.contains(document.activeElement))
+    );
   }
   function chooseImage() {
     const editor = view.current;
@@ -1018,6 +1054,21 @@ export function WordgardEditor(props) {
             {imageStatus.pending ? "Cancel" : "Dismiss"}
           </button>
         </div>
+      )}
+      {mobile && editable && (format?.focused || barFocus) && (
+        <MobileBar
+          barRef={mobileBar}
+          format={format}
+          editable={editable}
+          styles={styles}
+          openComments={props.openComments ?? 0}
+          editorDom={view.current?.dom}
+          onRun={(name) => ownsBar() && run(name)}
+          onStyle={(value) => ownsBar() && run(value === "code" ? "code-block" : value)}
+          onImage={() => ownsBar() && chooseImage()}
+          onComments={() => props.onOpenComments?.()}
+          onFocusChange={setBarFocus}
+        />
       )}
       <div ref={mount} />
       <div ref={caretLayer} className="wordgard-caret-layer" aria-hidden="true">

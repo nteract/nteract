@@ -32,9 +32,10 @@ export function selectionHighlight(state) {
 
 /** Wordgard command: highlight the selection in one color, replacing any
  * other highlight in it. A collapsed selection sets the color for typing. */
-export const setHighlight = ({ state }, color = DEFAULT_HIGHLIGHT) => {
+// Command.dispatch passes null when no value is given, so default explicitly.
+export const setHighlight = ({ state }, color) => {
   if (state.readOnly) return false;
-  const mark = PagesHighlight.of(normalizeHighlight(color));
+  const mark = PagesHighlight.of(normalizeHighlight(color ?? DEFAULT_HIGHLIGHT));
   const { selection } = state;
   if (selection instanceof GardSelection.Text && selection.empty) {
     const marks = mark.addToSet(selection.marks || state.sel.head.marks());
@@ -89,5 +90,7 @@ export const clearHighlight = ({ state }) => {
 
 /** Wordgard command for the keyboard shortcut: clear a uniform highlight,
  * otherwise apply the given color. */
-export const toggleHighlight = (target, color = DEFAULT_HIGHLIGHT) =>
-  selectionHighlight(target.state).color ? clearHighlight(target) : setHighlight(target, color);
+export const toggleHighlight = (target, color) =>
+  selectionHighlight(target.state).color
+    ? clearHighlight(target)
+    : setHighlight(target, color ?? DEFAULT_HIGHLIGHT);

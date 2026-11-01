@@ -353,12 +353,21 @@ try {
     const pending = content(owner).locator(".wordgard-upload-preview");
     await expect(pending).toBeVisible();
     await expect(owner.locator(".image-upload-status")).toHaveCount(0);
-    const below = await pending.evaluate((preview) => {
-      const blocks = [...preview.closest("wg-content").querySelectorAll(":scope > *")];
-      const last = blocks.filter((b) => !b.contains(preview) && b.textContent.trim()).at(-1);
-      return preview.getBoundingClientRect().top >= last.getBoundingClientRect().top;
-    });
-    assert.ok(below, "the pending image sits at the insertion point, after the text before it");
+    // The widget can re-render between locating and reading it; poll on a
+    // fresh lookup so a detached copy never answers.
+    await expect
+      .poll(
+        () =>
+          content(owner).evaluate((root) => {
+            const preview = root.querySelector(".wordgard-upload-preview");
+            if (!preview) return null;
+            const blocks = [...root.querySelectorAll(":scope > *")];
+            const last = blocks.filter((b) => !b.contains(preview) && b.textContent.trim()).at(-1);
+            return !!last && preview.getBoundingClientRect().top >= last.getBoundingClientRect().top;
+          }),
+        { message: "the pending image sits at the insertion point, after the text before it" },
+      )
+      .toBe(true);
     await atEnd(editor);
     await editor.keyboard.insertText(" A collaborator writes during the upload.");
     await expect(content(owner)).toContainText("collaborator writes during the upload");
