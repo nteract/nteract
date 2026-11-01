@@ -191,6 +191,20 @@ test("a tool request whose host never answers times out with advice that fits th
     assert.equal(read.retryable, true);
     const created = await call("create_page", { title: "T", idempotency_key: "timeout-create" });
     assert.equal(created.retryable, false, "a tokenless create_page could make a second Page");
+    // A progress creation mints ids, so a repeat would start a second session;
+    // a renewal or clear names its session and is safe.
+    const creating = await call("report_page_progress", { page_id: pageId, message: "Working" });
+    assert.equal(creating.code, "request_timeout");
+    assert.equal(creating.retryable, false);
+    assert.match(creating.error, /do not loop creating sessions/);
+    assert.match(creating.error, /progress_id and lease_token, retry that session/);
+    const renewing = await call("report_page_progress", {
+      page_id: pageId,
+      progress_id: "11111111-1111-4111-8111-111111111111",
+      lease_token: "lease",
+    });
+    assert.equal(renewing.retryable, true);
+    assert.match(renewing.error, /retry the same request/);
   }
 });
 

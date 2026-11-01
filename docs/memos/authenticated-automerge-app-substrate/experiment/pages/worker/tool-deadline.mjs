@@ -8,24 +8,35 @@ import { HttpError } from "./auth.mjs";
  * retained, so its timeout says to read back and reconcile instead. */
 export const TOOL_REQUEST_TIMEOUT_MS = 60_000;
 
+/** How a timed-out request may be followed up: `repeat` (a read, or a write
+ * whose receipt replays), `reconcile` (a tokenless write), or `lease` (a
+ * progress creation: a repeat would mint a second session). */
+const TIMEOUT_ADVICE = {
+  repeat:
+    "Pages did not answer this request in time. It may still complete: retry the same request, with the same idempotency_key and retry_token, to get its result.",
+  reconcile:
+    "Pages did not answer this request in time. It may still have completed. Read back and reconcile before retrying: a write without retry_token is deduplicated only while its receipt is retained.",
+  lease:
+    "Pages did not answer this request in time. The document was not edited. If you have its progress_id and lease_token, retry that session. A lost creation response may leave a temporary indicator that expires within 60 seconds; do not loop creating sessions.",
+};
+
 const requestTimeout = (safe) =>
   Object.assign(
     new HttpError(
       504,
-      safe
-        ? "Pages did not answer this request in time. It may still complete: retry the same request, with the same idempotency_key and retry_token, to get its result."
-        : "Pages did not answer this request in time. It may still have completed. Read back and reconcile before retrying: a write without retry_token is deduplicated only while its receipt is retained.",
+      TIMEOUT_ADVICE[safe === true ? "repeat" : safe || "reconcile"],
       "request_timeout",
     ),
-    { retryable: safe },
+    { retryable: safe === true },
   );
 
 /**
  * Run `work(signal)` under one deadline. At the deadline the signal aborts,
  * which cancels the stub fetches and body readers that `work` started with
- * it, and the call rejects with a 504 that is retryable only when `safe`
- * says the request may be repeated. Nothing `work` produces after that is
- * returned, so a partly processed result never escapes.
+ * it, and the call rejects with a 504 that is retryable only when `safe` is
+ * true; `false` says to reconcile, and `"lease"` gives a progress session's
+ * lease advice. Nothing `work` produces after that is returned, so a partly
+ * processed result never escapes.
  */
 export async function withinToolDeadline(work, { ms = TOOL_REQUEST_TIMEOUT_MS, safe = true } = {}) {
   const controller = new AbortController();

@@ -560,11 +560,16 @@ const READ_OPERATIONS = [
 ];
 
 /** Whether repeating `operation` after a lost answer is safe: a read, a
- * progress lease, or a write whose retry_token holds its receipt. */
-const safeToRepeat = (operation, args) =>
-  READ_OPERATIONS.includes(operation) ||
-  operation === "report_page_progress" ||
-  isTokenedRequest(args);
+ * progress renewal or clear (the lease names its session), or a write whose
+ * retry_token holds its receipt. A progress creation is not: a repeat mints a
+ * second session and the first one's lease is lost, so it gets lease advice. */
+const safeToRepeat = (operation, args) => {
+  if (operation === "report_page_progress")
+    return typeof args?.progress_id === "string" && typeof args?.lease_token === "string"
+      ? true
+      : "lease";
+  return READ_OPERATIONS.includes(operation) || isTokenedRequest(args);
+};
 
 async function invoke(request, env, operation, args = {}) {
   if (!operations.has(operation) || !args || typeof args !== "object" || Array.isArray(args))

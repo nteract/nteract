@@ -930,9 +930,11 @@ succeeds. Every error has a stable code. Branch on code, not on the error messag
   or its Trash has. Both carry limit and count. Retrying won't help; tell the
   person.
 - request_timeout: the host didn't answer in 60 s but keeps the work it
-  accepted. retryable:true (a read, or a write with retry_token): retry the same
-  request; the receipt replays. retryable:false (a tokenless write): it may have
-  completed; read back and reconcile before retrying.
+  accepted. retryable:true (a read, a progress renewal, or a write with
+  retry_token): retry the same request; the receipt replays. retryable:false (a
+  tokenless write): it may have completed; read back and reconcile before
+  retrying. A progress creation follows its lease rules: do not loop creating
+  sessions.
 - read_failed: no answer to a read (retryable:true). Retry it.
 - outcome_unknown: no answer to a write. With retryable:true (the request
   carried retry_token), retry the exact request with the same key, token and
