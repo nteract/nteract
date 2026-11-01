@@ -77,6 +77,7 @@ import {
 import { PagesLink, TaskList, elements } from "./wordgard-model.mjs";
 import { taskLists } from "./wordgard-task-lists.mjs";
 import { markdownShortcuts } from "./wordgard-shortcuts.mjs";
+import { clickBelowFinalBlock, exitBlock, leaveFinalBlock } from "./wordgard-leave-block.mjs";
 import { projectChanges } from "./wordgard-projection.mjs";
 import {
   createWordgardCollaboration,
@@ -104,18 +105,27 @@ const styles = [
   ["h3", "Heading 3"],
   ["code", "Code block"],
 ];
-const controls = [
+// Toolbar order, by how often each is reached for: history, the text style,
+// marks (the highlight menu follows inline code), lists, then the insert
+// actions (table, image) at the far end. Comment always ends the bar.
+const historyControls = [
   ["undo", "Undo", Undo2],
   ["redo", "Redo", Redo2],
+];
+const markControls = [
   ["bold", "Bold", Bold],
   ["italic", "Italic", Italic],
+  ["link", "Link", LinkIcon],
   ["code", "Inline code", CodeIcon],
+];
+const listControls = [
   ["bullet", "Bulleted list", List],
   ["ordered", "Numbered list", ListOrdered],
   ["task", "Task list", ListTodo],
-  ["link", "Link", LinkIcon],
-  ["comment", "Comment on selection", MessageSquare],
 ];
+const commentControl = ["comment", "Comment on selection", MessageSquare];
+// Link and Comment act on a selection; they aren't toggles.
+const actions = new Set(["link", "comment"]);
 const marks = { bold: Strong, italic: Emphasis, code: Code };
 const remoteAnnotations = () => [Transaction.remote.of(true), Transaction.addToHistory.of(false)];
 const editConfig = (editable) => [
@@ -354,6 +364,9 @@ export function WordgardEditor(props) {
         }),
         KeyBinding.of({ key: "Mod-Alt-m", run: () => comment() }),
         KeyBinding.of({ key: "Shift-Enter", run: insertPlainLineBreak }),
+        KeyBinding.of({ key: "Mod-Enter", run: exitBlock, allowDefault: true }),
+        KeyBinding.of({ key: "ArrowDown", run: leaveFinalBlock, allowDefault: true }),
+        Wordgard.domEventHandler("mousedown", (event) => clickBelowFinalBlock(editor, event)),
         KeyBinding.of({
           key: "Mod-Shift-h",
           run: () => latest.current.editable && Command.dispatch(editor, toggleHighlight),
@@ -363,11 +376,14 @@ export function WordgardEditor(props) {
         // edges; keep the caret clear of both when scrolling it into view.
         Wordgard.coveredMargins.of(() => {
           const bar = mobileBar.current?.getBoundingClientRect();
+          // The pinned toolbar and the reload banner stick below the header.
           const header = document.querySelector(".app-header")?.getBoundingClientRect();
+          const stack = document.querySelector(".status-stack")?.getBoundingClientRect();
+          const covered = Math.max(header?.bottom ?? 0, stack?.bottom ?? 0);
           const viewport = window.visualViewport;
           const bottomEdge = viewport ? viewport.offsetTop + viewport.height : innerHeight;
           return {
-            top: header ? Math.max(0, header.bottom - (viewport?.offsetTop ?? 0)) : 0,
+            top: Math.max(0, covered - (viewport?.offsetTop ?? 0)),
             bottom: bar ? Math.max(0, bottomEdge - bar.top) : 0,
           };
         }),
@@ -946,6 +962,23 @@ export function WordgardEditor(props) {
           : (index + (event.key === "ArrowRight" ? 1 : -1) + controls.length) % controls.length
     ].focus();
   }
+  function formatButton([name, label, Icon]) {
+    const action = actions.has(name);
+    return (
+      <button
+        key={name}
+        className={`toolbar-button${format?.[name] && !action ? " is-active" : ""}`}
+        aria-label={label}
+        title={label}
+        aria-pressed={action ? undefined : !!format?.[name]}
+        disabled={!editable || (action && !format?.[name])}
+        onPointerDown={(event) => event.preventDefault()}
+        onClick={() => run(name)}
+      >
+        <Icon size={18} aria-hidden="true" />
+      </button>
+    );
+  }
   return (
     <div className="rich-editor wordgard-editor">
       {toolbarHost &&
@@ -960,7 +993,7 @@ export function WordgardEditor(props) {
             onKeyDown={toolbarKeys}
           >
             {toolbarOpen &&
-              controls.slice(0, 2).map(([name, label, Icon]) => (
+              historyControls.map(([name, label, Icon]) => (
                 <button
                   key={name}
                   className="toolbar-button"
@@ -994,13 +1027,31 @@ export function WordgardEditor(props) {
                   ))}
                 </select>
                 <span className="toolbar-separator" role="separator" />
+                {markControls.map((control) => (
+                  <Fragment key={control[0]}>
+                    {formatButton(control)}
+                    {control[0] === "code" && (
+                      <HighlightMenu
+                        editor={view.current}
+                        current={format?.highlight ?? null}
+                        present={!!format?.highlightPresent}
+                        editable={editable}
+                        onError={report}
+                      />
+                    )}
+                  </Fragment>
+                ))}
+                {toolbarOpen && listControls.map(formatButton)}
                 {(toolbarOpen || format?.table) && (
-                  <TableMenu
-                    editor={view.current}
-                    inTable={!!format?.table}
-                    editable={editable}
-                    onError={report}
-                  />
+                  <>
+                    <span className="toolbar-separator" role="separator" />
+                    <TableMenu
+                      editor={view.current}
+                      inTable={!!format?.table}
+                      editable={editable}
+                      onError={report}
+                    />
+                  </>
                 )}
                 {toolbarOpen && (
                   <button
@@ -1014,37 +1065,7 @@ export function WordgardEditor(props) {
                     <ImagePlus size={18} aria-hidden="true" />
                   </button>
                 )}
-                {controls
-                  .slice(2)
-                  .filter(([name]) => toolbarOpen || !["bullet", "ordered", "task"].includes(name))
-                  .map(([name, label, Icon]) => (
-                    <Fragment key={name}>
-                      <button
-                        className={`toolbar-button${format?.[name] && !["link", "comment"].includes(name) ? " is-active" : ""}`}
-                        aria-label={label}
-                        title={label}
-                        aria-pressed={
-                          !["link", "comment"].includes(name) ? !!format?.[name] : undefined
-                        }
-                        disabled={
-                          !editable || (["link", "comment"].includes(name) && !format?.[name])
-                        }
-                        onPointerDown={(event) => event.preventDefault()}
-                        onClick={() => run(name)}
-                      >
-                        <Icon size={18} aria-hidden="true" />
-                      </button>
-                      {name === "code" && (
-                        <HighlightMenu
-                          editor={view.current}
-                          current={format?.highlight ?? null}
-                          present={!!format?.highlightPresent}
-                          editable={editable}
-                          onError={report}
-                        />
-                      )}
-                    </Fragment>
-                  ))}
+                {formatButton(commentControl)}
               </>
             )}
           </div>,

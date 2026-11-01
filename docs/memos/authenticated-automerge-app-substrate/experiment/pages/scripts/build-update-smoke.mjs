@@ -206,10 +206,9 @@ try {
   await owner.keyboard.insertText(" During deploy.");
   await paragraph(owner, "Deploy garden. Before deploy. During deploy.");
   await deployed;
-  await expect(banner(owner)).toContainText(
-    "Pages changed on the server. Reload to use the current version.",
-    { timeout: 60000 },
-  );
+  await expect(banner(owner)).toContainText("App updated. Reload to use the latest version.", {
+    timeout: 60000,
+  });
   await expect(banner(owner)).toHaveAttribute("role", "status");
   await owner.screenshot({ path: `${output}/update-banner.png` });
   // An optional update never pauses editing.
@@ -341,10 +340,9 @@ try {
     owner,
     "Deploy garden. Before deploy. During deploy. Checkpointed. After banner. Floor raised.",
   );
-  await expect(banner(owner)).toContainText(
-    "Pages changed on the server. This tab can't edit until you reload.",
-    { timeout: 30000 },
-  );
+  await expect(banner(owner)).toContainText("App updated. This tab can't edit until you reload.", {
+    timeout: 30000,
+  });
   await expect(banner(owner)).toHaveAttribute("role", "alert");
   await expect(content(owner)).toHaveAttribute("contenteditable", "false");
   await expect(owner.getByRole("textbox", { name: "Page title" })).toHaveAttribute("readonly", "");
@@ -441,12 +439,12 @@ try {
     {
       label: "same build",
       stale: false,
-      expected: "Pages couldn't load the editor. Reload to try again.",
+      expected: "The editor didn't load. Reload to try again.",
     },
     {
       label: "older build",
       stale: true,
-      expected: "Pages changed on the server. This tab can't edit until you reload.",
+      expected: "App updated. This tab can't edit until you reload.",
     },
   ]) {
     const older = "d".repeat(12);

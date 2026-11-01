@@ -1,5 +1,5 @@
 import React, { useEffect, useState, useSyncExternalStore } from "react";
-import { RefreshCw } from "lucide-react";
+import { AlertTriangle, Info, RefreshCw } from "lucide-react";
 import { observeResponses, request } from "./request.mjs";
 import { BuildMonitor, reloadGate } from "./build-freshness.mjs";
 import { EDITOR_UNAVAILABLE } from "./editor-loader.mjs";
@@ -20,6 +20,13 @@ function downloadMarkdown({ pageId, title, markdown }) {
   link.click();
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
+
+// "Pages" is also what people call their documents, so the banner names the
+// app as the app.
+export const BUILD_UPDATE_MESSAGES = Object.freeze({
+  available: "App updated. Reload to use the latest version.",
+  required: "App updated. This tab can't edit until you reload.",
+});
 
 /** principal: the signed-in account, so Open is offered only for its Pages.
  * onOpenPage(pageId) opens a Page in this tab. editorUnavailable: the editor
@@ -62,92 +69,99 @@ export function BuildUpdate({ session, principal, onOpenPage, editorUnavailable 
   const pages = outcome?.pages ?? [];
   const canDiscard =
     acknowledged || (pages.length > 0 && pages.every((page) => downloaded.has(page.key)));
+  // An optional update is information; a tab that can't edit is a warning.
+  const warning = blocking || editorUnavailable;
+  const message = blocking
+    ? BUILD_UPDATE_MESSAGES.required
+    : editorUnavailable
+      ? EDITOR_UNAVAILABLE
+      : BUILD_UPDATE_MESSAGES.available;
+  const Icon = warning ? AlertTriangle : Info;
   return (
     <div
-      className={
-        blocking || editorUnavailable ? "build-update build-update--required" : "build-update"
-      }
-      role={blocking || editorUnavailable ? "alert" : "status"}
+      className={warning ? "build-update build-update--required" : "build-update"}
+      data-tone={warning ? "warning" : "info"}
+      role={warning ? "alert" : "status"}
     >
-      <p>
-        {blocking
-          ? "Pages changed on the server. This tab can't edit until you reload."
-          : editorUnavailable
-            ? EDITOR_UNAVAILABLE
-            : "Pages changed on the server. Reload to use the current version."}
-      </p>
-      {!outcome?.reason && (
-        <button type="button" className="primary" onClick={() => reload()} disabled={reloading}>
-          <RefreshCw size={15} aria-hidden="true" />
-          {reloading ? "Saving edits…" : "Reload"}
-        </button>
-      )}
-      {outcome?.message && (
-        <p
-          className={
-            outcome.reason === "checkpointed" ? "build-update-note" : "build-update-problem"
-          }
-        >
-          {outcome.message}
-        </p>
-      )}
-      {outcome?.reason === "checkpointed" && (
-        <div className="build-update-actions">
-          <button
-            type="button"
-            className="primary"
-            disabled={reloading}
-            onClick={() => reload({ acceptCheckpoints: true })}
+      <span className="build-update-icon" aria-hidden="true">
+        <Icon size={16} />
+      </span>
+      <div className="build-update-body">
+        <div className="build-update-row">
+          <p className="build-update-message">{message}</p>
+          {!outcome?.reason && (
+            <button type="button" onClick={() => reload()} disabled={reloading}>
+              <RefreshCw size={14} aria-hidden="true" />
+              {reloading ? "Saving edits…" : "Reload"}
+            </button>
+          )}
+        </div>
+        {outcome?.message && (
+          <p
+            className={
+              outcome.reason === "checkpointed" ? "build-update-note" : "build-update-problem"
+            }
           >
-            Reload anyway
-          </button>
-          {pages
-            .filter((page) => page.account === principal)
-            .map((page) => (
+            {outcome.message}
+          </p>
+        )}
+        {outcome?.reason === "checkpointed" && (
+          <div className="build-update-actions">
+            <button
+              type="button"
+              disabled={reloading}
+              onClick={() => reload({ acceptCheckpoints: true })}
+            >
+              Reload anyway
+            </button>
+            {pages
+              .filter((page) => page.account === principal)
+              .map((page) => (
+                <button
+                  type="button"
+                  key={page.key}
+                  disabled={reloading}
+                  onClick={() => onOpenPage(page.pageId)}
+                >
+                  Open {page.title}
+                </button>
+              ))}
+          </div>
+        )}
+        {outcome?.reason === "unsaved" && (
+          <div className="build-update-actions">
+            {pages.map((page) => (
               <button
                 type="button"
                 key={page.key}
-                disabled={reloading}
-                onClick={() => onOpenPage(page.pageId)}
+                onClick={() => {
+                  downloadMarkdown(page);
+                  setDownloaded((previous) => new Set(previous).add(page.key));
+                }}
               >
-                Open {page.title}
+                Download edits and comments (Markdown)
+                {pages.length > 1 ? ` (${page.title})` : ""}
               </button>
             ))}
-        </div>
-      )}
-      {outcome?.reason === "unsaved" && (
-        <div className="build-update-actions">
-          {pages.map((page) => (
+            <label>
+              <input
+                type="checkbox"
+                checked={acknowledged}
+                onChange={(event) => setAcknowledged(event.target.checked)}
+              />{" "}
+              I don't need these edits
+            </label>
             <button
               type="button"
-              key={page.key}
-              onClick={() => {
-                downloadMarkdown(page);
-                setDownloaded((previous) => new Set(previous).add(page.key));
-              }}
+              className="danger"
+              disabled={reloading || !canDiscard}
+              onClick={discardAndReload}
             >
-              Download edits and comments (Markdown)
-              {pages.length > 1 ? ` (${page.title})` : ""}
+              Discard unsaved edits and reload
             </button>
-          ))}
-          <label>
-            <input
-              type="checkbox"
-              checked={acknowledged}
-              onChange={(event) => setAcknowledged(event.target.checked)}
-            />{" "}
-            I don't need these edits
-          </label>
-          <button
-            type="button"
-            className="danger"
-            disabled={reloading || !canDiscard}
-            onClick={discardAndReload}
-          >
-            Discard unsaved edits and reload
-          </button>
-        </div>
-      )}
+          </div>
+        )}
+      </div>
     </div>
   );
 }
