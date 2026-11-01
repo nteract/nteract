@@ -5,6 +5,7 @@ import assert from "node:assert/strict";
 import { loadTable, runTable } from "../shared/machine-test.mjs";
 import {
   LINKS,
+  STATUS_IDS,
   OVERLAY_FLAGS,
   STATUS_KEYS,
   fullStatus,
@@ -19,10 +20,10 @@ const TABLE = new URL("../test/fixtures/machines/viewer-sync-status.json", impor
 
 test("the viewer-sync-status table runs through the pure machine", async () => {
   assert.deepEqual(await runTable(viewerSyncStatusMachine, loadTable(TABLE)), {
-    rows: 68,
-    pairs: 37,
-    unreachable: 5,
-    cases: 41,
+    rows: 89,
+    pairs: 50,
+    unreachable: 6,
+    cases: 51,
   });
 });
 
@@ -32,6 +33,16 @@ test("opening after the receipt queue started is a bug, not a quiet no-op", () =
     () => viewerSyncStatusMachine.step(syncing, { type: "opened", pending: false }),
     /unreachable/,
   );
+});
+
+const DIRTY = new Set(["quiet", "saving"]);
+/** A valid state named `name`; a quiet save armed its timer at its revision. */
+const example = (name, link, pending = DIRTY.has(name)) => ({
+  name,
+  revision: 1,
+  pending,
+  link,
+  ...(name === "quiet" && { armed: 1 }),
 });
 
 // Every state × link × local copy, written out. Offline outranks all but a
@@ -49,10 +60,16 @@ const LABELS = {
     reconnecting: ["Reconnecting", "Reconnecting"],
     offline: ["Offline", "Offline"],
   },
+  quiet: {
+    connecting: ["Syncing", "Syncing"],
+    connected: ["Syncing", "Syncing"],
+    reconnecting: ["Syncing", "Syncing"],
+    offline: ["Offline", "Offline"],
+  },
   saving: {
-    connecting: ["Saving", "Saving"],
-    connected: ["Saving", "Saving"],
-    reconnecting: ["Saving", "Saving"],
+    connecting: ["Syncing", "Syncing"],
+    connected: ["Syncing", "Syncing"],
+    reconnecting: ["Syncing", "Syncing"],
     offline: ["Offline", "Offline"],
   },
   saved: {
@@ -68,8 +85,8 @@ const LABELS = {
     offline: ["Saved locally", "Saved locally"],
   },
   unsaved: {
-    connecting: ["Unsaved", "Unsaved"],
-    connected: ["Unsaved", "Unsaved"],
+    connecting: ["Not saved", "Not saved"],
+    connected: ["Not saved", "Not saved"],
     reconnecting: ["Reconnecting", "Reconnecting"],
     offline: ["Offline", "Offline"],
   },
@@ -80,8 +97,8 @@ test("every state, link and local copy renders one label", () => {
   for (const name of viewerSyncStatusMachine.states)
     for (const link of LINKS)
       for (const [index, localCopy] of [false, true].entries()) {
-        const pending = name === "saving" || (name !== "syncing" && name !== "saved" && localCopy);
-        const state = { name, revision: 1, pending, link };
+        const pending = DIRTY.has(name) || (name !== "syncing" && name !== "saved" && localCopy);
+        const state = example(name, link, pending);
         viewerSyncStatusMachine.assertState(state);
         assert.equal(
           syncStatusLabel(state, { localCopy }),
@@ -124,39 +141,40 @@ test("a phase pause or a failed local save outranks the receipt", () => {
     assert.equal(statusLabel(saving, set), labels[i], flags[i]);
   }
   assert.equal(statusLabel(saving), "Offline");
-  assert.equal(statusLabel({ ...saving, link: "connected" }), "Saving");
+  assert.equal(statusLabel({ ...saving, link: "connected" }), "Syncing");
 });
 
-// The presentation key for every label the machine renders. Presentation
+// The presentation keys for every label the machine renders. Presentation
 // branches on the key, so this table is what a reworded label must keep.
+// Syncing has three: remote catch-up, a quiet save drawn as nothing, and a
+// save still pending after SLOW_SAVE_MS.
 const KEYS = {
-  Connecting: "connecting",
-  Reconnecting: "connecting",
-  Connected: "connected",
-  Syncing: "syncing",
-  Saving: "saving",
-  Saved: "saved",
-  "Saved locally": "attention",
-  Offline: "attention",
-  Deleted: "attention",
-  "Access removed": "attention",
-  "Access changed": "attention",
-  "Sign in to sync": "attention",
-  Unsaved: "failed",
-  "Local save failed": "failed",
+  Connecting: ["connecting"],
+  Reconnecting: ["connecting"],
+  Connected: ["connected"],
+  Syncing: ["syncing", "quiet", "saving"],
+  Saved: ["saved"],
+  "Saved locally": ["attention"],
+  Offline: ["attention"],
+  Deleted: ["attention"],
+  "Access removed": ["attention"],
+  "Access changed": ["attention"],
+  "Sign in to sync": ["attention"],
+  "Not saved": ["failed"],
+  "Local save failed": ["failed"],
 };
 
 test("every rendered status carries its presentation key", () => {
   const seen = new Set();
   const check = (status, context) => {
     assert.ok(STATUS_KEYS.includes(status.key), context);
-    assert.equal(status.key, KEYS[status.label], `${context}: ${status.label}`);
-    seen.add(status.label);
+    assert.ok(KEYS[status.label]?.includes(status.key), `${context}: ${status.label}`);
+    seen.add(`${status.label}/${status.key}`);
   };
   for (const name of viewerSyncStatusMachine.states)
     for (const link of LINKS)
       for (const localCopy of [false, true]) {
-        const state = { name, revision: 1, pending: name === "saving", link };
+        const state = example(name, link);
         check(syncStatus(state, { localCopy }), `${name} / ${link} / ${localCopy}`);
         assert.deepEqual(fullStatus(state, { localCopy }), syncStatus(state, { localCopy }));
       }
@@ -167,32 +185,82 @@ test("every rendered status carries its presentation key", () => {
     assert.equal(statusLabel(saving, { [flag]: true }), overlayStatus(flag).label, flag);
   }
   // Every key in the table is reachable, so the table can't hold stale labels.
-  assert.deepEqual([...seen].sort(), Object.keys(KEYS).sort());
+  const all = Object.entries(KEYS).flatMap(([label, keys]) => keys.map((key) => `${label}/${key}`));
+  assert.deepEqual([...seen].sort(), all.sort());
+  assert.deepEqual(new Set(all.map((pair) => pair.split("/")[1])), new Set(STATUS_KEYS));
   assert.throws(() => overlayStatus("readOnly"), /unknown status overlay/);
+});
+
+// The id for every label: what the reload gate and close drain read. Labels
+// can be reworded; these ids can't, without changing the gate.
+const IDS = {
+  Connecting: ["connecting"],
+  Reconnecting: ["reconnecting"],
+  Connected: ["connected"],
+  Syncing: ["syncing", "saving"],
+  Saved: ["saved"],
+  "Saved locally": ["saved-locally"],
+  Offline: ["offline"],
+  "Not saved": ["unsaved"],
+  Deleted: ["deleted"],
+  "Access removed": ["access-removed"],
+  "Access changed": ["access-changed"],
+  "Sign in to sync": ["sign-in"],
+  "Local save failed": ["local-failed"],
+};
+
+test("every rendered status carries a stable id, and local edits keep the saving id", () => {
+  const seen = new Set();
+  const check = (value, context) => {
+    assert.ok(IDS[value.label]?.includes(value.id), `${context}: ${value.label} / ${value.id}`);
+    seen.add(value.id);
+  };
+  for (const name of viewerSyncStatusMachine.states)
+    for (const link of LINKS)
+      for (const localCopy of [false, true]) {
+        const value = syncStatus(example(name, link), { localCopy });
+        check(value, `${name} / ${link} / ${localCopy}`);
+        // Local edits, quiet or shown, are saving to the gate; remote catch-up
+        // is syncing. Both read Syncing.
+        if (DIRTY.has(name) && link !== "offline") assert.equal(value.id, "saving");
+        if (name === "syncing" && ["connecting", "connected"].includes(link))
+          assert.equal(value.id, "syncing");
+      }
+  for (const flag of OVERLAY_FLAGS) check(overlayStatus(flag), flag);
+  assert.deepEqual([...seen].sort(), [...STATUS_IDS].sort());
 });
 
 // Retry belongs to a stalled receipt only. Deletion and access changes share
 // the "attention" key, and a failed local save shares "failed", but a manual
 // reconnect fixes none of them, so they never offer Retry.
-const RETRY = new Set(["Offline", "Saved locally", "Unsaved"]);
+// Keyed by status id, never by label.
+const RETRY = new Set(["offline", "saved-locally", "unsaved"]);
 
 test("only a stalled receipt offers Retry, whatever the presentation key", () => {
   const offered = new Set();
   for (const name of viewerSyncStatusMachine.states)
     for (const link of LINKS)
       for (const localCopy of [false, true]) {
-        const state = { name, revision: 1, pending: name === "saving", link };
-        const status = syncStatus(state, { localCopy });
-        assert.equal(status.retry, RETRY.has(status.label), `${name} / ${link} / ${localCopy}`);
-        if (status.retry) offered.add(status.label);
+        const status = syncStatus(example(name, link), { localCopy });
+        assert.equal(status.retry, RETRY.has(status.id), `${name} / ${link} / ${localCopy}`);
+        if (status.retry) offered.add(status.id);
       }
   assert.deepEqual([...offered].sort(), [...RETRY].sort());
-  const saving = { name: "saving", revision: 1, pending: true, link: "connected" };
+  const saving = example("saving", "connected");
+  const quiet = example("quiet", "connected");
   for (const flag of OVERLAY_FLAGS) {
     assert.equal(overlayStatus(flag).retry, false, flag);
     // An overlay hides Retry even while the receipt underneath is stalled.
     const offline = { name: "unsaved", revision: 1, pending: false, link: "offline" };
     assert.equal(fullStatus(offline, { [flag]: true }).retry, false, `${flag} over offline`);
     assert.equal(fullStatus(saving, { [flag]: true }).retry, false, flag);
+    assert.equal(fullStatus(quiet, { [flag]: true }).retry, false, flag);
   }
+});
+
+test("the header's Retry reads the retry projection, never a label or id list", async () => {
+  const { readFile } = await import("node:fs/promises");
+  const main = await readFile(new URL("./main.jsx", import.meta.url), "utf8");
+  assert.match(main, /\{session\.statusRetry && \(/);
+  assert.doesNotMatch(main, /session\.status\)|includes\(session\.status(Id)?\)/);
 });
