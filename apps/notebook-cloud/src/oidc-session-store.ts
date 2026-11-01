@@ -30,7 +30,11 @@ export const OIDC_SESSION_SCHEMA = [
   `CREATE INDEX IF NOT EXISTS oidc_session_expiry ON oidc_server_sessions(idle_expires_at)`,
 ];
 
-const schemas = new WeakMap<D1Database, Promise<void>>();
+// Bindings whose schema is in place. Only settled readiness is cached: a
+// caller never awaits another caller's pending setup, so one that hangs can't
+// hold every later caller. Concurrent first callers each run the idempotent
+// schema; a host that wants one run at a time serializes them itself.
+const schemas = new WeakSet<D1Database>();
 
 export function serverOidcEnabled(env: ServerSessionEnvironment): boolean {
   return env.NOTEBOOK_CLOUD_OIDC_FLOW === "server";
@@ -39,17 +43,10 @@ export function serverOidcEnabled(env: ServerSessionEnvironment): boolean {
 export async function oidcDatabase(env: ServerSessionEnvironment): Promise<D1Database> {
   const db = env.DB;
   if (!db) throw new Error("Server sign-in requires database storage");
-  let ready = schemas.get(db);
-  if (!ready) {
-    ready = (async () => {
-      for (const sql of OIDC_SESSION_SCHEMA) await db.prepare(sql).run();
-    })().catch((error) => {
-      schemas.delete(db);
-      throw error;
-    });
-    schemas.set(db, ready);
+  if (!schemas.has(db)) {
+    for (const sql of OIDC_SESSION_SCHEMA) await db.prepare(sql).run();
+    schemas.add(db);
   }
-  await ready;
   return db;
 }
 

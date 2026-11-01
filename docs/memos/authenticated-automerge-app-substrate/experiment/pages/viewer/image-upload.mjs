@@ -27,7 +27,9 @@ export function imageFiles(transfer) {
   );
 }
 
-function validateFile(file) {
+/** The checks the asset endpoint applies, run before uploading: a PNG, JPEG
+ * or WebP under IMAGE_MAX_BYTES. Throws a message for people. */
+export function validateImageFile(file) {
   if (
     !file ||
     (!IMAGE_MEDIA_TYPES.includes(file.type) &&
@@ -69,6 +71,12 @@ function resolveAnchor(doc, path, anchor) {
   }
 }
 const textAt = (doc, path) => doc.blocks[path[1]].richText;
+
+/** Alt text for an uploaded file: its name without the extension. */
+export const imageAlt = (file) =>
+  String(file?.name ?? "Image")
+    .replace(/\.[^.]+$/, "")
+    .slice(0, 1024);
 
 // Capture a native cursor before opening a picker or starting a network request.
 // Screen coordinates and editor offsets are not stable while peers keep editing.
@@ -236,7 +244,7 @@ export function createImageUploader({
       name: String(attempt.file?.name ?? ""),
     });
     try {
-      validateFile(attempt.file);
+      validateImageFile(attempt.file);
       resolveImageInsertion(replica, attempt.target, getMap());
       const asset = await upload(attempt.target.pageId, attempt.file, controller.signal);
       if (controller.signal.aborted || !current() || job !== attempt) return;
@@ -244,9 +252,7 @@ export function createImageUploader({
       const editor = getEditor();
       if (!editor || editor.state.readOnly) throw unavailable();
       const position = resolveImageInsertion(replica, attempt.target, getMap());
-      const alt = String(attempt.file.name ?? "Image")
-        .replace(/\.[^.]+$/, "")
-        .slice(0, 1024);
+      const alt = imageAlt(attempt.file);
       const count = () =>
         A.spans(replica.doc, pathFor(attempt.target.id)).filter(
           (span) =>
@@ -281,7 +287,7 @@ export function createImageUploader({
       // a duplicate insertion after an ambiguous editor failure.
       let retryable = current() && !attempt.asset;
       try {
-        validateFile(attempt.file);
+        validateImageFile(attempt.file);
         resolveImageInsertion(replica, attempt.target, getMap());
       } catch {
         retryable = false;
@@ -307,7 +313,7 @@ export function createImageUploader({
       job = { file: files[0], target, preview: null };
       const running = run(job);
       try {
-        validateFile(files[0]);
+        validateImageFile(files[0]);
         readPreview(job);
       } catch {}
       return running;

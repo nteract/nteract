@@ -134,7 +134,7 @@ async function fixture({ opening = false, startable = false, role = "editor" } =
     session.access = access(role);
     session.replicaKey = "1:writer";
     session.repo = repo;
-    session.status = "Saving";
+    session.statusId = "saving";
     if (!opening) {
       session.handle = handle;
       session.localPage = { ...localPage };
@@ -163,8 +163,8 @@ function endDrain(ctx, saved) {
   if (saved) {
     session.savedHeads = A.getHeads(ctx.doc);
     session.localPage = { ...session.localPage, pending: false };
-    session.status = "Saved";
-  } else session.status = "Offline";
+    session.statusId = "saved";
+  } else session.statusId = "offline";
   session.emit();
 }
 

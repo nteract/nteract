@@ -34,6 +34,15 @@
   /* Wordgard's base theme adds its own whole-editor focus outline. */
   outline: none;
 }
+/* Wordgard's scroller is overflow: auto. Chromium adds the caret to an
+   editable block's scrollable overflow, so a caret after spaces that hang
+   past a full line made it a few pixels wider than the editor and flashed a
+   horizontal scrollbar until the next character wrapped. Its height is
+   auto, so it never scrolls vertically; tables and code blocks scroll in
+   their own boxes. Clip it sideways and let it size to its content. */
+.wordgard-document > wg-scroller {
+  overflow: clip visible;
+}
 .wordgard-document wg-content {
   display: block;
   outline: none;

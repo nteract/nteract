@@ -155,6 +155,11 @@
   max-width: 100%;
   overflow-x: auto;
 }
+:is(.comments, .comment-popover) .wordgard-document wg-content img {
+  /* Keep the aspect ratio while capping a tall image's height. */
+  width: auto;
+  max-height: 320px;
+}
 :is(.comments, .comment-popover) .wordgard-document wg-content td,
 :is(.comments, .comment-popover) .wordgard-document wg-content th {
   min-width: 100px;
@@ -207,16 +212,36 @@
   box-shadow: 0 8px 28px #0000001f;
   font-size: 0.875rem;
 }
+/* One scroller: the draft. The popover and its form are flex columns whose
+   only shrinkable item is the draft's scroll box, so a tall draft (a pasted
+   image) scrolls inside the editor while the toolbar and actions stay put.
+   The sheet's max-height can be smaller than 40vh plus the controls once a
+   phone keyboard is up; the box shrinks to fit instead of the sheet growing a
+   second scrollbar around it. */
+.comment-popover[open] {
+  display: flex;
+  flex-direction: column;
+}
 .comment-popover form {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
   margin: 0;
 }
 .comment-popover .comment-rich-editor {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
   margin: 0 0 0.5rem;
 }
-.comment-popover .comment-rich-editor .wordgard-document wg-content {
+.comment-popover .comment-rich-scroll {
   min-height: 56px;
   max-height: 40vh;
   overflow-y: auto;
+  overscroll-behavior: contain;
+}
+.comment-popover .comment-rich-editor .wordgard-document wg-content {
+  min-height: 56px;
 }
 .comment-popover .error {
   margin: 0 0 0.5rem;

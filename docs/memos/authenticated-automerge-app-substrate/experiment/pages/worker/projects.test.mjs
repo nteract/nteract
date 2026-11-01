@@ -3,7 +3,7 @@ import { test } from "node:test";
 import * as A from "@automerge/automerge";
 import { createAuthFixture } from "../../auth-fixtures.mjs";
 import { sqliteD1 } from "../test/sqlite-d1.mjs";
-import worker, { Catalog, Page, Space, lifecycleBounds } from "./index.mjs";
+import worker, { Catalog, Page, Space, lifecycleBounds, sharedChildBounds } from "./index.mjs";
 import { DocumentPolicy } from "./policy.mjs";
 import { pageState, proposeAccessUpdate } from "./access.mjs";
 import { CATALOG_MIGRATIONS, migrateCatalogIndex, reportPageIndex } from "./catalog-index.mjs";
@@ -826,6 +826,32 @@ for (const variant of ["lost", "barrier"])
     assert.equal((await w.call("owner", "restore_page", restore)).body.restored, true);
   });
 
+/** Real I/O turns. Tests that mock timers mock only setTimeout and Date, so
+ * these still advance. */
+async function turns(count = 20) {
+  for (let index = 0; index < count; index++) await new Promise((resolve) => setImmediate(resolve));
+}
+
+/** Await `promise` while advancing mocked time 5 ms per step, with real I/O
+ * turns between steps. `drain` keeps advancing that many ms after it settles. */
+async function advance(t, promise, { drain = 0, limit = 10_000 } = {}) {
+  let settled = false;
+  promise.then(
+    () => (settled = true),
+    () => (settled = true),
+  );
+  for (let elapsed = 0; !settled && elapsed <= limit; elapsed += 5) {
+    await turns();
+    if (!settled) t.mock.timers.tick(5);
+  }
+  for (let elapsed = 0; elapsed < drain; elapsed += 5) {
+    await turns();
+    t.mock.timers.tick(5);
+  }
+  await turns();
+  return promise;
+}
+
 /** Children of one parent, each trashed with a restore reserved but never
  * applied, so a leaf check has to read every child's lifecycle. */
 async function unsettledChildren(w, count) {
@@ -857,13 +883,14 @@ test("a stalled lifecycle read is bounded and refuses the request as retryable",
         signal.addEventListener("abort", () => reject(signal.reason), { once: true }),
       );
   };
+  t.mock.timers.enable({ apis: ["setTimeout", "Date"] });
   const started = Date.now();
-  const stalled = await trash(parent);
+  const stalled = await advance(t, trash(parent));
   assert.equal(stalled.status, 409);
   assert.equal(stalled.body.code, "lifecycle_unsettled");
   assert.ok(Date.now() - started < 400, "the read gave up after its own bound");
   assert.equal(pageState(w.page(parent).metadata), "active");
-  await new Promise((resolve) => setTimeout(resolve, 20));
+  await turns();
   assert.equal(w.catalog().lifecycleReads.size, 0, "the aborted read freed its slot");
   w.hooks.lifecycle = null;
   assert.equal((await trash(parent)).status, 200, "the retry settles and proceeds");
@@ -884,8 +911,9 @@ test("many slow children share one pass budget and at most four reads at a time"
   };
   // 12 reads of 40 ms at four at a time need about 120 ms.
   Object.assign(lifecycleBounds, { readMs: 200, passMs: 60 });
+  t.mock.timers.enable({ apis: ["setTimeout", "Date"] });
   const started = Date.now();
-  const exhausted = await trash(parent);
+  const exhausted = await advance(t, trash(parent));
   const elapsed = Date.now() - started;
   assert.equal(exhausted.status, 409);
   assert.equal(exhausted.body.code, "lifecycle_unsettled");
@@ -894,11 +922,11 @@ test("many slow children share one pass budget and at most four reads at a time"
   assert.ok(peak <= 4, `at most four reads at once (${peak})`);
 
   // Reads cut off at the deadline finish in the background; let them drain.
-  await new Promise((resolve) => setTimeout(resolve, 100));
+  await advance(t, Promise.resolve(), { drain: 100 });
   assert.equal(active, 0);
   peak = 0;
   Object.assign(lifecycleBounds, { passMs: 2000 });
-  const settled = await trash(parent);
+  const settled = await advance(t, trash(parent));
   assert.equal(settled.status, 200, JSON.stringify(settled.body));
   assert.equal(peak, 4);
 });
@@ -966,16 +994,19 @@ test("a resumed parent trash that lost its slot runs the leaf guard again", asyn
   assert.ok((await w.call("owner", "delete_page", args)).status >= 500);
   const intent = await storage.get("host/operation/resumed-trash");
   assert.equal(intent.forwarded, true);
-  // The slot expires; counting Trash capacity finds the Page unchanged and
-  // releases it.
+  // The slot expires. Another Trash leaves it alone: a capacity check below
+  // the limit reads the stored count, not the slots.
   const slot = await storage.get(`trash/${parent}`);
   await storage.put(`trash/${parent}`, { ...slot, expires_at: Date.now() - 1 });
   const other = (await w.createPage({ title: "Other", project_id: project.project_id })).body
     .page_id;
   assert.equal((await trash(other)).status, 200);
-  assert.equal(await storage.get(`trash/${parent}`), undefined, "the slot was released");
+  assert.equal((await storage.get(`trash/${parent}`)).intent, "host/operation/resumed-trash");
+  // A child under the parent counts the parent's slot, finds the Page
+  // unchanged and releases it.
   const late = await w.createPage({ title: "Late child", parent_id: parent });
   assert.equal(late.status, 200);
+  assert.equal(await storage.get(`trash/${parent}`), undefined, "the slot was released");
 
   const retried = await w.call("owner", "delete_page", args);
   assert.equal(retried.status, 409);
@@ -1759,7 +1790,13 @@ test("a shared parent's hidden children never show through pagination", async (t
 
   // Every child denied: the same answer as a parent with no children.
   const none = await list(empty);
-  assert.deepEqual(none, { pages: [], limit: 1, next_cursor: null });
+  // `quota` is the member's own account, which owns no Pages.
+  assert.deepEqual(none, {
+    pages: [],
+    limit: 1,
+    next_cursor: null,
+    quota: { limit: 250, count: 0, trash_count: 0 },
+  });
   assert.deepEqual(await list(parent), none);
 
   // Readable children past the bound: only they show, with a cursor exactly
@@ -1786,6 +1823,48 @@ test("a shared parent's hidden children never show through pagination", async (t
   // A query that matches only a hidden child answers like the empty parent.
   const hidden = children.findIndex((pageId, index) => index >= 10 && !readable.includes(pageId));
   assert.deepEqual(await list(parent, { query: `Hidden ${hidden}` }), none);
+});
+
+test("a shared parent's readable children past the first 100 are reached through cursors", async (t) => {
+  const w = await world(t);
+  const parent = (await w.createPage({ title: "Parent" })).body.page_id;
+  await grant(w, parent);
+  const children = [];
+  for (let index = 0; index < sharedChildBounds.scan + 5; index++)
+    children.push(
+      (await w.createPage({ title: `Child ${index}`, parent_id: parent })).body.page_id,
+    );
+  // Rows order by Page ID, descending, so the two smallest IDs sit past the
+  // first 100 children a request checks.
+  const readable = [...children].sort().slice(0, 2);
+  for (const pageId of readable) await grant(w, pageId);
+  const list = async (args = {}) => {
+    const listed = await w.call("member", "list_pages", { parent_id: parent, ...args });
+    assert.equal(listed.status, 200, JSON.stringify(listed.body));
+    return listed.body;
+  };
+  const follow = async (args) => {
+    const seen = [];
+    let cursor;
+    for (let request = 0; request < 10; request++) {
+      const page = await list({ ...args, ...(cursor && { cursor }) });
+      seen.push(...page.pages.map((entry) => entry.page_id));
+      cursor = page.next_cursor;
+      if (!cursor) return { seen, requests: request + 1 };
+    }
+    assert.fail("the cursor never ended");
+  };
+  // The first request checks 100 hidden children and continues past them.
+  const first = await list({ limit: 100 });
+  assert.deepEqual(first.pages, []);
+  assert.equal(typeof first.next_cursor, "string");
+  const all = await follow({ limit: 100 });
+  assert.deepEqual(all.seen.sort(), readable);
+  assert.equal(all.requests, 2);
+  // Title search reaches a readable child past the bound too.
+  const title = `Child ${children.indexOf(readable[0])}`;
+  const searched = await follow({ query: title });
+  assert.deepEqual(searched.seen, [readable[0]]);
 });
 
 test("MCP location refusals carry their stable codes in structuredContent", async (t) => {

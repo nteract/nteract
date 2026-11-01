@@ -323,17 +323,13 @@ export const operationIntentSpec = Object.freeze({
 
 export const operationIntentAlphabet = defineAlphabet(operationIntentSpec);
 
-/** Replies the Catalog gives without asking the Page. */
+/** Replies the Catalog gives without asking the Page. A full destination's
+ * reply carries its code only: the Catalog adds the message, limit and count
+ * from its capacity check (page-quota.mjs quotaRefusal). */
 export const replies = Object.freeze({
   notFound: { status: 404, body: { error: "Page not found" } },
-  trashFull: {
-    status: 409,
-    body: {
-      error: "Trash is full. Permanently delete Pages from Trash before moving more Pages there.",
-      code: "trash_capacity",
-    },
-  },
-  pageQuota: { status: 409, body: { error: "This prototype permits 100 pages per account" } },
+  trashFull: { status: 409, body: { code: "trash_capacity" } },
+  pageQuota: { status: 409, body: { code: "page_quota_exceeded" } },
   unsettled: {
     status: 409,
     body: {

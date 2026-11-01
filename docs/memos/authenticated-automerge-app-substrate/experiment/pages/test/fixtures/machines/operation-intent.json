@@ -302,7 +302,6 @@
         "response": {
           "status": 409,
           "body": {
-            "error": "Trash is full. Permanently delete Pages from Trash before moving more Pages there.",
             "code": "trash_capacity"
           }
         }
@@ -330,7 +329,7 @@
         "response": {
           "status": 409,
           "body": {
-            "error": "This prototype permits 100 pages per account"
+            "code": "page_quota_exceeded"
           }
         }
       }
