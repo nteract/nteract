@@ -170,7 +170,7 @@ test("warm edits and checkpoint reads do not reread growing history", async () =
 test("same-key conflicts, exact retries and commit/fragment namespaces remain distinct", async () => {
   const store = new Store(),
     seen = [],
-    bridge = new StorageBridge(store, limits, (_id, record) => seen.push(record));
+    bridge = new StorageBridge(store, limits, (_id, saved) => seen.push(...saved));
   const results = await Promise.allSettled([
     save(bridge, records[0]),
     save(bridge, records[0]),
@@ -211,7 +211,7 @@ for (const limit of ["count", "bytes"])
 test("ambiguous batch prefixes invalidate before recovery; retry notifies without rewriting", async () => {
   const store = new Store(),
     seen = [],
-    bridge = new StorageBridge(store, limits, (_id, record) => seen.push(record));
+    bridge = new StorageBridge(store, limits, (_id, saved) => seen.push(...saved));
   const failure = new Error("saved then rejected");
   store.afterSave = (key) => {
     if (key.endsWith(cid(2))) throw failure;
@@ -232,8 +232,8 @@ test("ambiguous batch prefixes invalidate before recovery; retry notifies withou
 
 test("readers and saved observers cannot mutate the cached record bytes", async () => {
   const store = new Store(),
-    bridge = new StorageBridge(store, limits, (_id, record) => {
-      record.blob.fill(0);
+    bridge = new StorageBridge(store, limits, (_id, saved) => {
+      for (const record of saved) record.blob.fill(0);
     });
   await save(bridge, records[0]);
   const first = await read(bridge);

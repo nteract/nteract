@@ -115,6 +115,7 @@ was a caret race in the smoke; the editor side is
 | Local creation and navigation | `PAGES_ORIGIN=http://localhost:9894 node scripts/navigation-smoke.mjs` | Uses the running Wordgard fixture |
 | Editing, comments, links, diagrams, and recovery | `PAGES_ORIGIN=http://localhost:9894 npm run smoke:editor` | Uses the running Wordgard fixture |
 | History growth and typing latency | `PAGES_ORIGIN=http://localhost:9894 node scripts/latency-smoke.mjs` | Uses the running Wordgard fixture with buffered persistence |
+| Client catch-up after reopening a Page far behind the host | `node scripts/catch-up-benchmark.mjs --runs 5 2000+2000` | No server; in-process Repo peers over the authenticated wire, Node with MemoryByteStore (no IndexedDB or editor cost) |
 
 Use `PAGES_ASYNC_PERSISTENCE=true` for the latency check. The editor checks
 exercise the same Wordgard path used by deployed Pages.
