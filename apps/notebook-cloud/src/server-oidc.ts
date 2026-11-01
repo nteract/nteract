@@ -122,6 +122,8 @@ const VALIDATION_FAILURE_REASONS = new Map<string, string>([
   ["OIDC discovery document is invalid", "discovery_document_invalid"],
   ["OIDC discovery issuer is invalid", "discovery_issuer_invalid"],
   ["OIDC discovery issuer mismatch", "discovery_issuer_invalid"],
+  ["OIDC discovery timed out", "discovery_timeout"],
+  ["OIDC JWKS fetch timed out", "jwks_timeout"],
   ["OIDC discovery JWKS URL is invalid", "jwks_url_invalid"],
   ["OIDC discovery JWKS URL must use https without credentials or fragments", "jwks_url_untrusted"],
   ["OIDC UserInfo endpoint or trusted origin is invalid", "userinfo_endpoint_invalid"],
