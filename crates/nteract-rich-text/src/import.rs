@@ -1111,7 +1111,8 @@ impl Builder<'_> {
                 Node::ImageReference(reference) => {
                     let (url, title) = self.definition(&reference.identifier)?;
                     self.carried
-                        .images.push((url.clone(), reference.alt.clone()));
+                        .images
+                        .push((url.clone(), reference.alt.clone()));
                     self.highlighted_image |= self.highlight.is_some();
                     self.marker(
                         "image",
@@ -1411,7 +1412,11 @@ mod tests {
             "| a |\n| - |\n| [<br>](https://example.org) |",
             "| a |\n| - |\n| [ok](https://example.org) [<br>](https://example.org) |",
         ] {
-            assert_eq!(import(source), literal_document(source).unwrap(), "{source}");
+            assert_eq!(
+                import(source),
+                literal_document(source).unwrap(),
+                "{source}"
+            );
         }
         assert_ne!(
             import("![p](i.png) and ![p](i.png)"),
