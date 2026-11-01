@@ -1075,9 +1075,17 @@ supplies the missing parents.
 Every `PageRecords` request settles within 20 seconds. An unanswered batch stays
 pending for the next flush, and a request waiting on it fails with a retryable
 `503 record_persistence_timeout`. Tool requests to a Catalog or Page answer
-within 60 seconds; a slower one returns a retryable `504 request_timeout` while
-the host finishes the work it accepted. Both responses tell the caller to retry
-with the same `idempotency_key` and `retry_token`.
+within 60 seconds; a slower one returns `504 request_timeout` while the host
+finishes the work it accepted. For a read, a progress renewal or clear
+(`progress_id` and `lease_token` name the session) or a write that carried a
+`retry_token` and its `v1_` key, the timeout is `retryable: true` and says to
+retry the same request; the receipt replays. For a tokenless write it is
+`retryable: false` and says to read back and reconcile, since the host may
+have completed the write and its tokenless receipt is kept only best-effort,
+so a blind retry could apply it twice. A progress creation is `retryable:
+false` with the lease advice: a repeat would mint a second session, and a
+lost creation leaves an indicator that expires within 60 seconds. The same
+split applies to MCP's `outcome_unknown` when no answer arrives at all.
 
 No gateway request awaits a promise that another request may still be settling.
 celld 0.6.3 resumes a promise continuation under the request whose I/O settled
@@ -1462,8 +1470,12 @@ Worker left uncoded by its status (`access_denied`, `not_found`, `conflict` and
 so on). It adds `retryable: true` to `stale_heads`, whose retry is a new request
 built from a fresh read. The HTTP API keeps `retryable` for transient failures
 only, because the browser treats those as an outage. A tool call that gets no
-answer returns `read_failed` or `outcome_unknown`. The `/llms.txt` guide lists the
-codes agents act on.
+answer returns `read_failed` or `outcome_unknown`. `outcome_unknown` is
+`retryable: true` only when the write carried a `retry_token` and the `v1_` key
+it scopes, whose receipt replays for the token's window; a tokenless write gets
+`retryable: false` and is told to read back and reconcile, since its receipt is
+kept best-effort and a repeat after eviction applies again. The `/llms.txt`
+guide lists the codes agents act on.
 
 Every tool declares all four MCP annotation hints, and `tool()` refuses one that
 doesn't, because clients read an absent hint as destructive and open-world.
@@ -1810,13 +1822,28 @@ their original replay authority. The journal first persists the causal base and
 encoded changes, then replays identical CRDT change IDs after interruption.
 Exact record reservations protect those changes from concurrent ingress and cleanup.
 
-The versioned journal bounds active receipts at 1,000 entries/8 MiB and pending
-work at 64 entries/4 MiB. Capacity causes explicit backpressure. Collection removes
-expired completed receipts with a durable monotonic clock floor, not arbitrary
-keys. Legacy receipts retain a separate 1,000-entry cap; browser edits do not
-consume this budget. Catalog deletion tombstones remain permanent; Trash writes
-none. See the
-[operation journal](worker/operation-journal.mjs) and its integration tests.
+The journal keeps receipts in two lanes of 1,000 entries/8 MiB each, with
+pending work bounded separately at 64 entries/4 MiB. The token lane holds the
+receipts of calls that carried a `retry_token`, for the token's seven-day
+window: an exact retry replays its receipt, a changed payload under the same
+key is an `idempotency_conflict`, and a full lane refuses new tokened work
+with `429 operation_receipt_capacity` until collection removes expired
+receipts behind a durable monotonic clock floor, never arbitrary keys. The
+tokenless lane holds the receipts of calls without a token. Those have no
+window and so never expire; a receipt there exists to replay an exact repeat
+of the same key, which in practice is a client retrying a lost response
+moments later. So that lane keeps its newest receipts: when it is full, a new
+tokenless call evicts the oldest completed tokenless receipts (by the
+`recordedAt` stamp each one gets at admission, oldest first, then by key;
+each receipt is sized once per pass) to make room, and a key whose receipt
+was evicted is a new request again, so a tokenless write is deduplicated only
+while its receipt is retained. A Page that takes
+thousands of tokenless comments stays writable, and comments and edits share
+one Page's lanes without one locking the other. Pending entries are never
+evicted. Browser edits consume neither lane. Catalog deletion tombstones
+remain permanent; Trash writes none. See the
+[operation journal](worker/operation-journal.mjs) and its tests
+([unit](worker/operation-journal.test.mjs), [capacity](worker/receipt-capacity.test.mjs)).
 
 ### Progress and presence
 

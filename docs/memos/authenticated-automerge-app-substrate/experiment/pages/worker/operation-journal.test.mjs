@@ -195,37 +195,92 @@ test("failure during GC leaves old requests expired and retained rows collectibl
   assert.equal(await f.storage.get(f.args.key), undefined);
 });
 
-test("legacy receipts retain exact retries and do not consume the renewable versioned lane", async () => {
+test("a full tokenless lane evicts its oldest completed receipts and never touches the versioned lane", async () => {
   const f = await fixture();
   for (let i = 0; i < JOURNAL_LIMITS.entries; i++)
     await f.storage.put(`host/operation/legacy-${String(i).padStart(5, "0")}`, {
       fingerprint: `legacy-${i}`,
       pending: false,
       receipt: { ok: true },
+      // Later keys are older by stamp: eviction follows age, not key order.
+      recordedAt: start - i,
     });
   const legacy = await inspectOperation(f.storage, {
     key: "host/operation/legacy-00000",
     digest: "legacy-0",
   });
   assert.equal(legacy.entry.receipt.ok, true);
-  await assert.rejects(
-    reserveOperation(f.storage, {
-      key: "host/operation/new-legacy",
-      entry: { fingerprint: "new", pending: true },
-      now: start,
-    }),
-    { status: 429, code: "operation_receipt_capacity" },
-  );
-  const { retry } = await inspectOperation(f.storage, f.args);
   const admitted = await reserveOperation(f.storage, {
+    key: "host/operation/new-legacy",
+    entry: { fingerprint: "new", pending: true },
+    now: start,
+  });
+  assert.deepEqual(admitted, { fingerprint: "new", pending: true, recordedAt: start });
+  const oldest = `host/operation/legacy-${String(JOURNAL_LIMITS.entries - 1).padStart(5, "0")}`;
+  assert.equal(await f.storage.get(oldest), undefined, "the oldest receipt made room");
+  assert.equal(
+    (await f.storage.list({ prefix: "host/operation/" })).size,
+    JOURNAL_LIMITS.entries - 1,
+    "exactly one receipt was evicted for one new entry",
+  );
+  // The newest tokenless receipt still replays and still guards its payload.
+  assert.equal(
+    (await inspectOperation(f.storage, { key: "host/operation/legacy-00000", digest: "legacy-0" }))
+      .entry.receipt.ok,
+    true,
+  );
+  await assert.rejects(
+    inspectOperation(f.storage, { key: "host/operation/legacy-00000", digest: "other" }),
+    { status: 409, code: "idempotency_conflict" },
+  );
+  // An evicted key is a new request again.
+  assert.equal(
+    (await inspectOperation(f.storage, { key: oldest, digest: "anything" })).entry,
+    undefined,
+  );
+  // The versioned lane's budget was never involved.
+  const { retry } = await inspectOperation(f.storage, f.args);
+  const versioned = await reserveOperation(f.storage, {
     key: f.args.key,
     entry: { fingerprint: "new", pending: true },
     retry,
     now: start,
   });
-  assert.equal(admitted.retry.version, 1);
-  await issueRetryToken(f.storage, { ...context, now: start + RETRY_LIFETIME_MS * 2 });
-  assert.equal((await f.storage.list({ prefix: "host/operation/" })).size, JOURNAL_LIMITS.entries);
+  assert.equal(versioned.retry.version, 1);
+  assert.equal(versioned.recordedAt, undefined, "a token's window orders its receipt");
+});
+
+test("tokenless eviction frees bytes as well as entries and never evicts pending work", async () => {
+  const f = await fixture();
+  const big = "x".repeat(64 * 1024);
+  // 130 receipts of 64 KiB overflow the 8 MiB lane by a few entries.
+  for (let i = 0; i < 130; i++)
+    await f.storage.put(`host/operation/legacy-${String(i).padStart(3, "0")}`, {
+      fingerprint: `legacy-${i}`,
+      pending: false,
+      receipt: { body: big },
+      recordedAt: start + i,
+    });
+  await f.storage.put("host/operation/legacy-pending", {
+    fingerprint: "pending",
+    pending: true,
+    receipt: { body: big },
+    recordedAt: 0,
+  });
+  await reserveOperation(f.storage, {
+    key: "host/operation/new-legacy",
+    entry: { fingerprint: "new", pending: true, receipt: { body: big } },
+    now: start,
+  });
+  const keys = [...(await f.storage.list({ prefix: "host/operation/" })).keys()];
+  assert.ok(keys.includes("host/operation/legacy-pending"), "pending entries are never evicted");
+  assert.ok(!keys.includes("host/operation/legacy-000"), "the oldest completed receipt went first");
+  assert.ok(keys.includes("host/operation/legacy-129"), "the newest completed receipt stays");
+  const retained = keys.filter((key) => /legacy-\d/.test(key)).length;
+  assert.ok(
+    retained < 130 && retained > 120,
+    `evicted only what the byte budget needed (${retained})`,
+  );
 });
 
 test("active versioned receipt count is bounded, then reclaimed after the promised deadline", async () => {
@@ -434,7 +489,7 @@ test("legacy-only admission adds no retry metadata writes or durability barrier"
     entry,
     now: start,
   });
-  assert.deepEqual(result, entry);
+  assert.deepEqual(result, { ...entry, recordedAt: start });
   assert.equal(storage.values.size, 0);
 });
 
