@@ -201,7 +201,11 @@ export const STATUS_KEYS = Object.freeze([
   "attention",
   "failed",
 ]);
-const status = (label, key) => ({ label, key });
+// `retry` marks a stalled receipt that a manual reconnect and receipt retry
+// can move: offline, saved only locally, or unsaved. The presentation key
+// can't say this, because "attention" also covers deletion and access
+// changes, which a retry doesn't fix.
+const status = (label, key, retry = false) => ({ label, key, retry });
 
 /**
  * The statuses that outrank the receipt, in rank order. Each flag is a fact
@@ -238,8 +242,8 @@ export function syncStatus(state, { localCopy = false } = {}) {
   const { name, link } = state;
   if (link === "offline")
     return name === "local" || (name === "idle" && localCopy)
-      ? status("Saved locally", "attention")
-      : status("Offline", "attention");
+      ? status("Saved locally", "attention", true)
+      : status("Offline", "attention", true);
   if (name === "saving") return status("Saving", "saving");
   if (link === "reconnecting") return status("Reconnecting", "connecting");
   switch (name) {
@@ -247,16 +251,16 @@ export function syncStatus(state, { localCopy = false } = {}) {
       return link === "connected"
         ? status("Connected", "connected")
         : localCopy
-          ? status("Saved locally", "attention")
+          ? status("Saved locally", "attention", true)
           : status("Connecting", "connecting");
     case "syncing":
       return status("Syncing", "syncing");
     case "saved":
       return status("Saved", "saved");
     case "local":
-      return status("Saved locally", "attention");
+      return status("Saved locally", "attention", true);
     case "unsaved":
-      return status("Unsaved", "failed");
+      return status("Unsaved", "failed", true);
   }
   throw new Error(`unknown state ${name}`);
 }

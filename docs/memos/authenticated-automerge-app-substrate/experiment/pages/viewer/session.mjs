@@ -181,6 +181,8 @@ export class PageSession {
   // How `status` is drawn (STATUS_KEYS in sync-status-machine.mjs). Set only
   // with `status`, through showStatus.
   statusKey = "connecting";
+  // The current status is a stalled receipt that Retry can move.
+  statusRetry = false;
   problem = "";
   // Why the last connection attempt failed, when the person should see it.
   // It shows as `problem` unless a local save failure is in front of it.
@@ -1800,9 +1802,10 @@ export class PageSession {
     return result;
   }
   /** Show a `{ label, key }` status from sync-status-machine.mjs. */
-  showStatus({ label, key }) {
+  showStatus({ label, key, retry = false }) {
     this.status = label;
     this.statusKey = key;
+    this.statusRetry = retry;
   }
   /** Render `status` from the sync-status machine and the phase's pauses. */
   renderStatus() {

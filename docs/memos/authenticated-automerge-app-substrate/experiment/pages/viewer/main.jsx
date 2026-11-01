@@ -794,7 +794,7 @@ function App() {
                   statusKey={session.statusKey}
                   compact={compactStatus}
                 />
-                {["Unsaved", "Offline", "Saved locally"].includes(session.status) && (
+                {session.statusRetry && (
                   <button
                     className="subtle-button"
                     onClick={() => session.retryConnection({ retryReceipt: true })}
