@@ -39,8 +39,10 @@
  * and closes its socket, with the `reason` the interpreter answers the
  * attempt with (`timeout`: a transient failure that takes the backoff;
  * `resume`: the new attempt replaces it; `halt`: the phase stopped sync, so
- * nothing follows). The attempt always settles, so a stalled setup can't
- * hold the session's one in-flight connect past the state that abandoned it,
+ * nothing follows; `failed`: the socket's own outcome already ended the
+ * attempt, so the retry or refusal it carries is all that follows). The
+ * attempt always settles, so a stalled setup can't hold the session's one
+ * in-flight connect past the state that abandoned it,
  * `schedule` starts the backoff timer for `step` ms (the interpreter applies
  * reconnectDelay's jitter), `cancel` clears it, `pauseSync` tells the person
  * sync stopped and Retry resumes it, and `reportOutage` tells the person the
@@ -74,7 +76,7 @@ export const OUTAGE_MS = 20_000;
 // host restart or a proxy that holds the socket without answering shows up
 // as a silent open socket; past this the attempt fails and backs off.
 export const HANDSHAKE_TIMEOUT_MS = 10_000;
-export const ABANDON_REASONS = Object.freeze(["timeout", "resume", "halt"]);
+export const ABANDON_REASONS = Object.freeze(["timeout", "resume", "halt", "failed"]);
 
 /** The backoff step before jitter for a retry after `attempts` earlier ones:
  * 0.5 s doubling to a 60 s cap. */
@@ -260,9 +262,18 @@ function transition(state, event) {
           // ends the attempt; its failure finds the retry already scheduled.
           return fail(state, false, [{ type: "abandonHandshake", reason: "timeout" }]);
         case "failed":
-          return fail(state, event.refused, [{ type: "disarmHandshake" }]);
+          // The socket closed under a pending setup (its disconnect callback,
+          // not a rejection). Settle the attempt too, or it holds connect().
+          return fail(state, event.refused, [
+            { type: "disarmHandshake" },
+            { type: "abandonHandshake", reason: "failed" },
+          ]);
         case "keyRefused":
-          return ok(keep("refused", state), { type: "disarmHandshake" });
+          return ok(
+            keep("refused", state),
+            { type: "disarmHandshake" },
+            { type: "abandonHandshake", reason: "failed" },
+          );
         case "stable":
           return reject(state, REJECT.unstable);
         case "timer":

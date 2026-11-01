@@ -554,10 +554,12 @@ handshake fails on its own; the deadline closes the socket and the attempt
 fails like one whose socket closed: Offline without a banner, the next backoff
 step, and an outage report from the seventh failure in a row. Retry during a
 stalled handshake abandons it and waits for that connect to settle before its
-own attempt, and a halt (sign-in, an access pause, a close) abandons it too,
-since closing the socket alone may leave `setup` pending; either way the
-attempt settles and installs nothing, and a handshake that answers after it
-was abandoned is freed, never used. A socket closed before its handshake
+own attempt, and a halt (sign-in, an access pause, a close) or the socket's
+own close under a pending `setup` abandons it too, since closing the socket
+alone may leave `setup` pending; either way the attempt settles and installs
+nothing, and a handshake that answers after it was abandoned is freed, never
+used. When the handshake and its deadline land in one tick, exactly one of
+them settles the attempt. A socket closed before its handshake
 rejects `setup` at once and takes the same backoff.
 
 Backoff steps double from 0.5 s to a 60 s cap, with equal jitter: each retry

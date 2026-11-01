@@ -919,6 +919,10 @@
             "type": "disarmHandshake"
           },
           {
+            "type": "abandonHandshake",
+            "reason": "failed"
+          },
+          {
             "type": "schedule",
             "step": 500
           }
@@ -945,6 +949,10 @@
         "effects": [
           {
             "type": "disarmHandshake"
+          },
+          {
+            "type": "abandonHandshake",
+            "reason": "failed"
           },
           {
             "type": "schedule",
@@ -979,6 +987,10 @@
             "type": "disarmHandshake"
           },
           {
+            "type": "abandonHandshake",
+            "reason": "failed"
+          },
+          {
             "type": "schedule",
             "step": 2000
           }
@@ -1007,6 +1019,10 @@
             "type": "disarmHandshake"
           },
           {
+            "type": "abandonHandshake",
+            "reason": "failed"
+          },
+          {
             "type": "pauseSync"
           }
         ]
@@ -1030,6 +1046,10 @@
         "effects": [
           {
             "type": "disarmHandshake"
+          },
+          {
+            "type": "abandonHandshake",
+            "reason": "failed"
           }
         ]
       }

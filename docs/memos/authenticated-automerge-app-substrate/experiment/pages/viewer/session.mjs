@@ -1762,8 +1762,8 @@ export class PageSession {
       this.handshake = {
         socket,
         // A timeout is a transient failure, so the attempt takes the backoff.
-        // Resume and halt already decided what follows, so the attempt only
-        // settles (HANDSHAKE_ABANDONED) and schedules nothing.
+        // Resume, halt and a socket outcome already decided what follows, so
+        // the attempt only settles (HANDSHAKE_ABANDONED) and schedules nothing.
         abandon: (reason) => {
           abandoned = true;
           reject(
