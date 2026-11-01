@@ -45,6 +45,7 @@ import {
   reconnectDelay,
   viewerReconnectMachine,
 } from "./reconnect-machine.mjs";
+import { statusLabel, viewerSyncStatusMachine } from "./sync-status-machine.mjs";
 export { request, tool } from "./request.mjs";
 const hex = (bytes) => Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
 const ownerAccess = () => ({
@@ -75,7 +76,7 @@ export const STABLE_CONNECTION_MS = 15_000;
 // A Page being left keeps syncing this long for its receipt before closing.
 export const CLOSE_DRAIN_MS = 10_000;
 // Receipt states in which a Page being left may still save.
-const DRAINING_STATES = new Set(["Connecting", "Reconnecting", "Saving"]);
+const DRAINING_STATES = new Set(["Connecting", "Reconnecting", "Syncing", "Saving"]);
 const STALLED_STATES = new Set(["Unsaved", "Offline", "Saved locally"]);
 /** A receipt status as the reload gate reads it. */
 export const saveStateOf = (status) =>
@@ -182,6 +183,9 @@ export class PageSession {
    * signing key, or a pause after repeated admission refusals. `retryTimer`
    * is pending exactly while it is `waiting`. */
   reconnect$ = new Store(viewerReconnectMachine.initial);
+  /** What the status line says about receipts and the connection (see
+   * sync-status-machine.mjs). `status` renders it with the phase's pauses. */
+  sync$ = new Store(viewerSyncStatusMachine.initial);
   // The close's work: checkpoint, release, and a late deletion's forget. It
   // can grow while it runs, so only closeSettled() waits on it.
   #closing;
@@ -545,9 +549,10 @@ export class PageSession {
       );
       return false;
     }
-    if (this.authRequired && !this.accessDenied && !this.accessReloadRequired)
-      this.status = "Reconnecting";
+    const resuming = this.authRequired && !this.accessDenied && !this.accessReloadRequired;
+    if (resuming) this.syncStatus({ type: "retrying" });
     this.dispatch({ type: "signIn", ok: true });
+    if (resuming) this.renderStatus();
     this.authProblem = "";
     this.identity = result.identity;
     this.credentialCanWrite = !!result.canWrite;
@@ -606,7 +611,8 @@ export class PageSession {
     // The host's admission closes a socket that never proved stable: count it,
     // so a host that keeps refusing pauses instead of retrying forever.
     if (this.scheduleReconnect({ refused: !!outcome && !stable }) === "paused") return;
-    this.status = "Reconnecting";
+    this.syncStatus({ type: "retrying" });
+    this.renderStatus();
     this.emit();
   }
   /** Step the reconnect machine and run its effects. A rejected event
@@ -655,9 +661,10 @@ export class PageSession {
     this.showConnectionStatus();
   }
   showConnectionStatus() {
+    this.syncStatus({ type: "unreachable" });
     if (this.receiptState) this.showReceiptState();
     else {
-      this.status = this.localPage ? "Saved locally" : "Offline";
+      this.renderStatus();
       this.emit();
     }
   }
@@ -925,11 +932,10 @@ export class PageSession {
     if (this.accessDenied)
       this.accessProblem =
         "You no longer have access to this Page. Your local copy is kept on this device.";
-    this.status = this.accessDenied
-      ? "Access removed"
-      : this.connection
-        ? "Connected"
-        : "Saved locally";
+    // A checkpoint written before its receipt may hold edits the host never
+    // acknowledged; until a receipt lands, its status says Saving.
+    this.syncStatus({ type: "opened", pending: !!this.localPage?.pending });
+    this.renderStatus();
     // A pause while opening has already failed start().
     if (this.phase$.snapshot().name === "opening")
       this.dispatch({ type: "opened", denied: this.access?.role === "none" });
@@ -1245,11 +1251,12 @@ export class PageSession {
         return;
       this.socketAdmittedAt.set(socket, this.now());
       this.clearConnectionProblem();
+      this.syncStatus({ type: "admitted" });
       // A receipt that outlasted its transient retries starts over now that
       // the host answers; any other receipt keeps its own retry budget.
       if (this.handle) this.queueSaved({ restart: !!this.receiptState?.outage });
       else {
-        this.status = "Connected";
+        this.renderStatus();
         this.emit();
       }
     } catch (error) {
@@ -1366,7 +1373,7 @@ export class PageSession {
     this.localDepth++;
     try {
       const stored = this.handle.change(fn);
-      this.queueSaved();
+      this.queueSaved({ edit: true });
       const receipt = this.receiptState;
       Promise.resolve(stored).catch((error) => {
         if (
@@ -1552,7 +1559,9 @@ export class PageSession {
       return pending;
     });
   }
-  queueSaved({ restart = false } = {}) {
+  /** Start a receipt for the current heads. `edit` when a local edit moved
+   * them; remote changes, reconnects and retries only sync. */
+  queueSaved({ restart = false, edit = false } = {}) {
     if (!this.alive || this.deleted) return;
     const heads = this.handle ? A.getHeads(this.doc) : [];
     const blocked = !!(this.authRequired || this.accessDenied || this.accessReloadRequired);
@@ -1582,10 +1591,10 @@ export class PageSession {
       revision: this.receiptRevision,
       heads,
       blocked,
-      status: "Saving",
       problem: outage ? SERVER_UNREACHABLE : "",
       outage,
     };
+    this.syncStatus({ type: "queued", revision: this.receiptRevision, edit });
     this.showReceiptState();
     this.savedTimer = setTimeout(() => {
       this.savedTimer = undefined;
@@ -1595,19 +1604,25 @@ export class PageSession {
   sameReceiptHeads(left, right) {
     return left.length === right.length && left.every((head) => right.includes(head));
   }
+  /** Step the sync-status machine. A rejected event changes nothing. */
+  syncStatus(event) {
+    const result = viewerSyncStatusMachine.step(this.sync$.snapshot(), event);
+    if (!result.rejected) this.sync$.update(() => result.state);
+    return result;
+  }
+  /** Render `status` from the sync-status machine and the phase's pauses. */
+  renderStatus() {
+    this.status = statusLabel(this.sync$.snapshot(), {
+      deleted: this.deleted,
+      accessDenied: this.accessDenied,
+      accessReloadRequired: this.accessReloadRequired,
+      authRequired: this.authRequired,
+      localFailed: !!this.localProblem,
+      localCopy: !!this.localPage,
+    });
+  }
   showReceiptState() {
-    this.status = this.accessDenied
-      ? "Access removed"
-      : this.accessReloadRequired
-        ? "Access changed"
-        : this.authRequired
-          ? "Sign in to sync"
-          : this.localProblem
-            ? "Local save failed"
-            : (this.connectionProblem || this.unreachable) &&
-                this.receiptState.status !== "Saved locally"
-              ? "Offline"
-              : this.receiptState.status;
+    this.renderStatus();
     if (
       !this.authRequired &&
       !this.accessDenied &&
@@ -1674,9 +1689,9 @@ export class PageSession {
         revision: this.receiptRevision,
         heads,
         blocked: !!(this.authRequired || this.accessDenied || this.accessReloadRequired),
-        status: "Saving",
         problem: "",
       };
+      this.syncStatus({ type: "queued", revision: this.receiptRevision ?? 0, edit: false });
     } else if (!this.sameReceiptHeads(this.receiptState.heads, heads)) {
       this.queueSaved();
       return Promise.resolve();
@@ -1692,6 +1707,7 @@ export class PageSession {
   }
   async performSaveReceipt(state, { synchronize = false } = {}) {
     const revision = this.receiptRevision;
+    const receipt = revision ?? 0;
     const isCurrent = () => {
       if (
         !this.alive ||
@@ -1728,7 +1744,7 @@ export class PageSession {
       if (!isCurrent()) return;
       this.localProblem = this.problem = error.message;
       state.problem = error.message;
-      state.status = this.status = "Local save failed";
+      this.renderStatus();
       this.emit();
       return;
     }
@@ -1736,7 +1752,8 @@ export class PageSession {
       if (!isCurrent()) return;
       if (this.localPage && !this.connection) {
         state.localOnly = true;
-        state.status = this.status = "Saved locally";
+        this.syncStatus({ type: "stalled", revision: receipt, localCopy: true });
+        this.renderStatus();
         this.emit();
         return;
       }
@@ -1784,7 +1801,7 @@ export class PageSession {
       state.problem = "";
       state.outage = false;
       this.receiptOutageSince = null;
-      state.status = "Saved";
+      this.syncStatus({ type: "acknowledged", revision: receipt });
       this.cancelReceiptRetry();
       this.receiptRetryAttempts = 0;
       await this.persistLocal({ pending: false });
@@ -1803,7 +1820,8 @@ export class PageSession {
             { denied: true },
           );
         if (!this.authRequired && !this.accessDenied && !this.accessReloadRequired) {
-          state.status = this.status = this.localPage ? "Saved locally" : "Unsaved";
+          this.syncStatus({ type: "stalled", revision: receipt, localCopy: !!this.localPage });
+          this.renderStatus();
           if (isTransientFailure(error)) {
             // The host may be restarting: retry without a banner. It is an
             // outage once the run of transient failures has lasted

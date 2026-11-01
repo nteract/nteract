@@ -287,7 +287,7 @@ test("observer failures cannot suppress other observers, subscribers or durable 
   assert.equal(observed, 1);
   assert.ok(emitted > 0);
   assert.equal(session.problem, "stale subscriber", "callback failures remain visible");
-  assert.equal(session.status, "Saving");
+  assert.equal(session.status, "Syncing", "a remote change syncs; it is not a local save");
   assert.ok(session.savedTimer);
   clearTimeout(session.savedTimer);
   await session.saveReceipt();
@@ -310,7 +310,7 @@ test("deferred observer failures do not interrupt composition release or later o
   session.receiveChange({ doc: after, patchInfo: { before, after } });
   t.after(() => clearTimeout(session.savedTimer));
   assert.equal(observed, 0);
-  assert.equal(session.status, "Saving");
+  assert.equal(session.status, "Syncing");
   assert.ok(session.savedTimer);
   assert.doesNotThrow(release);
   assert.equal(observed, 1);

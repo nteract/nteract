@@ -370,7 +370,8 @@ test("heads advancing before notification cannot let an older receipt claim the 
         f.requests[0].resolve(Response.json({ durableHeads: oldHeads }));
       }
       await drain();
-      assert.equal(f.session.status, "Saving");
+      // Heads that move without session.change() are a remote change.
+      assert.equal(f.session.status, "Syncing");
       assert.deepEqual(f.session.savedHeads, []);
       await f.advance(300);
       const latest = f.requests.at(-1);
@@ -432,7 +433,7 @@ test("pre-expiry replies stay stale after reauthentication starts a same-head re
         ),
       );
       await drain();
-      assert.equal(f.session.status, "Saving");
+      assert.equal(f.session.status, "Syncing", "no local edit is waiting on this receipt");
       assert.equal(f.session.problem, "");
       assert.deepEqual(f.session.savedHeads, []);
       assert.equal(f.session.receiptRetryTimer, undefined);
@@ -1057,4 +1058,53 @@ test("a wall-clock jump doesn't change whether a socket proved stable", async (t
       assert.equal(f.session.retryAttempts, open >= 15_000 ? 1 : 3);
     });
   }
+});
+
+test("catching up on remote changes after a reopen says Syncing; only a local edit says Saving", async (t) => {
+  const f = fixture(t);
+  f.session.syncStatus({ type: "opened", pending: false });
+  const seen = [];
+  f.session.subscribe(() => seen.push(f.session.status));
+  await f.session.openConnection(false);
+  assert.equal(f.session.status, "Syncing", "the connect receipt only syncs");
+  // Remote batches keep arriving while the host catches this replica up.
+  for (let i = 0; i < 5; i++) {
+    f.mutate(`Remote ${i}`);
+    f.session.receiveChange({});
+    await f.advance(100);
+  }
+  assert.ok(!seen.includes("Saving"), `catch-up never says Saving: ${seen.join(", ")}`);
+  await f.advance(300);
+  const caughtUp = f.requests.at(-1);
+  caughtUp.resolve(Response.json({ durableHeads: caughtUp.heads }));
+  await drain();
+  assert.equal(f.session.status, "Saved");
+
+  await f.session.change((doc) => A.updateText(doc, ["text"], "Typed here"));
+  assert.equal(f.session.status, "Saving");
+  // A remote change during the save keeps the edit pending.
+  f.mutate("Remote during save");
+  f.session.receiveChange({});
+  assert.equal(f.session.status, "Saving");
+  await f.advance(300);
+  const latest = f.requests.at(-1);
+  assert.deepEqual(latest.heads, A.getHeads(f.session.doc));
+  latest.resolve(Response.json({ durableHeads: latest.heads }));
+  await drain();
+  assert.equal(f.session.status, "Saved");
+  assert.equal(f.session.sync$.snapshot().pending, false);
+});
+
+test("a checkpoint left before its receipt reopens as Saving until the host acknowledges it", async (t) => {
+  const f = fixture(t);
+  f.session.syncStatus({ type: "opened", pending: true });
+  await f.session.openConnection(false);
+  assert.equal(f.session.status, "Saving");
+  await f.advance(300);
+  f.requests[0].resolve(Response.json({ durableHeads: f.requests[0].heads }));
+  await drain();
+  assert.equal(f.session.status, "Saved");
+  f.mutate("Remote after the save");
+  f.session.receiveChange({});
+  assert.equal(f.session.status, "Syncing");
 });

@@ -431,6 +431,16 @@ session ended. Sign in again." or the server's 403 message, or the open
 Page's own sign-in prompt. Each screen renders its banners
 from one deduplicated list ([alerts.mjs](viewer/alerts.mjs)).
 
+The status line separates syncing from saving. Every head change asks the host
+for a receipt, but only a local edit marks the replica as holding unacknowledged
+work. Catching up on other peers' changes after a reopen says "Syncing"; a
+local edit says "Saving" until a receipt for heads that include it lands, even
+if remote changes arrive in between. A checkpoint written before its receipt
+reopens as Saving, because it may hold such an edit.
+[sync-status-machine.mjs](viewer/sync-status-machine.mjs) holds these
+transitions and the label each state renders; a phase pause (sign-in, access,
+deletion) or a failed local save outranks it.
+
 A binding write that never settles still blocks its own signing key until the
 host restarts; other keys are unaffected. A rejected write may have taken effect,
 so the host neither issues a competing write nor releases the reservation. If an

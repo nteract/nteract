@@ -1,0 +1,1696 @@
+{
+  "machine": "viewer-sync-status",
+  "description": "What one viewer PageSession's status line says about receipts and the native connection. Remote changes sync; only local edits save. Runs against viewer/sync-status-machine.mjs in viewer/sync-status-machine.test.mjs.",
+  "states": [
+    "idle",
+    "syncing",
+    "saving",
+    "saved",
+    "local",
+    "unsaved"
+  ],
+  "events": [
+    "opened",
+    "queued",
+    "acknowledged",
+    "stalled",
+    "admitted",
+    "retrying",
+    "unreachable"
+  ],
+  "unreachable": [
+    [
+      "syncing",
+      "opened",
+      "start() installs the replica once, before it queues any receipt"
+    ],
+    [
+      "saving",
+      "opened",
+      "start() installs the replica once, before it queues any receipt"
+    ],
+    [
+      "saved",
+      "opened",
+      "start() installs the replica once, before it queues any receipt"
+    ],
+    [
+      "local",
+      "opened",
+      "start() installs the replica once, before it queues any receipt"
+    ],
+    [
+      "unsaved",
+      "opened",
+      "start() installs the replica once, before it queues any receipt"
+    ]
+  ],
+  "cases": {
+    "idle/queued": [
+      "remote",
+      "edit",
+      "stale"
+    ],
+    "local/acknowledged": [
+      "current",
+      "stale"
+    ],
+    "local/queued": [
+      "remote",
+      "edit",
+      "stale"
+    ],
+    "local/stalled": [
+      "local-copy",
+      "no-copy",
+      "stale"
+    ],
+    "saved/queued": [
+      "remote",
+      "edit",
+      "stale"
+    ],
+    "saved/stalled": [
+      "local-copy",
+      "no-copy",
+      "stale"
+    ],
+    "saving/acknowledged": [
+      "current",
+      "stale"
+    ],
+    "saving/queued": [
+      "remote",
+      "edit",
+      "stale"
+    ],
+    "saving/stalled": [
+      "local-copy",
+      "no-copy",
+      "stale"
+    ],
+    "syncing/acknowledged": [
+      "current",
+      "stale"
+    ],
+    "syncing/queued": [
+      "remote",
+      "edit",
+      "stale"
+    ],
+    "syncing/stalled": [
+      "local-copy",
+      "no-copy",
+      "stale"
+    ],
+    "unsaved/acknowledged": [
+      "current",
+      "stale"
+    ],
+    "unsaved/queued": [
+      "remote",
+      "edit",
+      "stale"
+    ],
+    "unsaved/stalled": [
+      "local-copy",
+      "no-copy",
+      "stale"
+    ]
+  },
+  "rows": [
+    {
+      "label": "a clean checkpoint opens with nothing pending",
+      "state": {
+        "name": "idle",
+        "revision": 0,
+        "pending": false,
+        "link": "connecting"
+      },
+      "event": {
+        "type": "opened",
+        "pending": false
+      },
+      "expect": {
+        "state": {
+          "name": "idle",
+          "revision": 0,
+          "pending": false,
+          "link": "connecting"
+        },
+        "effects": []
+      }
+    },
+    {
+      "label": "a checkpoint written before its receipt opens with an edit pending",
+      "state": {
+        "name": "idle",
+        "revision": 0,
+        "pending": false,
+        "link": "connected"
+      },
+      "event": {
+        "type": "opened",
+        "pending": true
+      },
+      "expect": {
+        "state": {
+          "name": "idle",
+          "revision": 0,
+          "pending": true,
+          "link": "connected"
+        },
+        "effects": []
+      }
+    },
+    {
+      "label": "the first receipt after a clean open is syncing",
+      "case": "remote",
+      "state": {
+        "name": "idle",
+        "revision": 0,
+        "pending": false,
+        "link": "connected"
+      },
+      "event": {
+        "type": "queued",
+        "revision": 1,
+        "edit": false
+      },
+      "expect": {
+        "state": {
+          "name": "syncing",
+          "revision": 1,
+          "pending": false,
+          "link": "connected"
+        },
+        "effects": []
+      }
+    },
+    {
+      "label": "the first receipt can start at the idle revision",
+      "case": "remote",
+      "state": {
+        "name": "idle",
+        "revision": 3,
+        "pending": false,
+        "link": "connected"
+      },
+      "event": {
+        "type": "queued",
+        "revision": 3,
+        "edit": false
+      },
+      "expect": {
+        "state": {
+          "name": "syncing",
+          "revision": 3,
+          "pending": false,
+          "link": "connected"
+        },
+        "effects": []
+      }
+    },
+    {
+      "label": "a pending checkpoint's first receipt is saving",
+      "case": "remote",
+      "state": {
+        "name": "idle",
+        "revision": 0,
+        "pending": true,
+        "link": "connected"
+      },
+      "event": {
+        "type": "queued",
+        "revision": 1,
+        "edit": false
+      },
+      "expect": {
+        "state": {
+          "name": "saving",
+          "revision": 1,
+          "pending": true,
+          "link": "connected"
+        },
+        "effects": []
+      }
+    },
+    {
+      "label": "an edit before any receipt is saving",
+      "case": "edit",
+      "state": {
+        "name": "idle",
+        "revision": 0,
+        "pending": false,
+        "link": "connecting"
+      },
+      "event": {
+        "type": "queued",
+        "revision": 1,
+        "edit": true
+      },
+      "expect": {
+        "state": {
+          "name": "saving",
+          "revision": 1,
+          "pending": true,
+          "link": "connecting"
+        },
+        "effects": []
+      }
+    },
+    {
+      "label": "idle rejects a revision older than its own",
+      "case": "stale",
+      "state": {
+        "name": "idle",
+        "revision": 4,
+        "pending": false,
+        "link": "connected"
+      },
+      "event": {
+        "type": "queued",
+        "revision": 3,
+        "edit": true
+      },
+      "expect": {
+        "state": {
+          "name": "idle",
+          "revision": 4,
+          "pending": false,
+          "link": "connected"
+        },
+        "effects": [],
+        "rejected": "The receipt revision is stale"
+      }
+    },
+    {
+      "label": "more remote changes while catching up keep syncing",
+      "case": "remote",
+      "state": {
+        "name": "syncing",
+        "revision": 1,
+        "pending": false,
+        "link": "connected"
+      },
+      "event": {
+        "type": "queued",
+        "revision": 2,
+        "edit": false
+      },
+      "expect": {
+        "state": {
+          "name": "syncing",
+          "revision": 2,
+          "pending": false,
+          "link": "connected"
+        },
+        "effects": []
+      }
+    },
+    {
+      "label": "an edit while catching up is saving",
+      "case": "edit",
+      "state": {
+        "name": "syncing",
+        "revision": 1,
+        "pending": false,
+        "link": "connected"
+      },
+      "event": {
+        "type": "queued",
+        "revision": 2,
+        "edit": true
+      },
+      "expect": {
+        "state": {
+          "name": "saving",
+          "revision": 2,
+          "pending": true,
+          "link": "connected"
+        },
+        "effects": []
+      }
+    },
+    {
+      "label": "syncing rejects its own revision again",
+      "case": "stale",
+      "state": {
+        "name": "syncing",
+        "revision": 2,
+        "pending": false,
+        "link": "connected"
+      },
+      "event": {
+        "type": "queued",
+        "revision": 2,
+        "edit": false
+      },
+      "expect": {
+        "state": {
+          "name": "syncing",
+          "revision": 2,
+          "pending": false,
+          "link": "connected"
+        },
+        "effects": [],
+        "rejected": "The receipt revision is stale"
+      }
+    },
+    {
+      "label": "a remote change during a save keeps the edit pending",
+      "case": "remote",
+      "state": {
+        "name": "saving",
+        "revision": 1,
+        "pending": true,
+        "link": "connected"
+      },
+      "event": {
+        "type": "queued",
+        "revision": 2,
+        "edit": false
+      },
+      "expect": {
+        "state": {
+          "name": "saving",
+          "revision": 2,
+          "pending": true,
+          "link": "connected"
+        },
+        "effects": []
+      }
+    },
+    {
+      "label": "another edit keeps saving",
+      "case": "edit",
+      "state": {
+        "name": "saving",
+        "revision": 1,
+        "pending": true,
+        "link": "connected"
+      },
+      "event": {
+        "type": "queued",
+        "revision": 2,
+        "edit": true
+      },
+      "expect": {
+        "state": {
+          "name": "saving",
+          "revision": 2,
+          "pending": true,
+          "link": "connected"
+        },
+        "effects": []
+      }
+    },
+    {
+      "label": "saving rejects an older revision",
+      "case": "stale",
+      "state": {
+        "name": "saving",
+        "revision": 3,
+        "pending": true,
+        "link": "connected"
+      },
+      "event": {
+        "type": "queued",
+        "revision": 2,
+        "edit": true
+      },
+      "expect": {
+        "state": {
+          "name": "saving",
+          "revision": 3,
+          "pending": true,
+          "link": "connected"
+        },
+        "effects": [],
+        "rejected": "The receipt revision is stale"
+      }
+    },
+    {
+      "label": "a remote change after a save is syncing, not saving",
+      "case": "remote",
+      "state": {
+        "name": "saved",
+        "revision": 1,
+        "pending": false,
+        "link": "connected"
+      },
+      "event": {
+        "type": "queued",
+        "revision": 2,
+        "edit": false
+      },
+      "expect": {
+        "state": {
+          "name": "syncing",
+          "revision": 2,
+          "pending": false,
+          "link": "connected"
+        },
+        "effects": []
+      }
+    },
+    {
+      "label": "an edit after a save is saving",
+      "case": "edit",
+      "state": {
+        "name": "saved",
+        "revision": 1,
+        "pending": false,
+        "link": "connected"
+      },
+      "event": {
+        "type": "queued",
+        "revision": 2,
+        "edit": true
+      },
+      "expect": {
+        "state": {
+          "name": "saving",
+          "revision": 2,
+          "pending": true,
+          "link": "connected"
+        },
+        "effects": []
+      }
+    },
+    {
+      "label": "saved rejects its own revision again",
+      "case": "stale",
+      "state": {
+        "name": "saved",
+        "revision": 2,
+        "pending": false,
+        "link": "connected"
+      },
+      "event": {
+        "type": "queued",
+        "revision": 2,
+        "edit": false
+      },
+      "expect": {
+        "state": {
+          "name": "saved",
+          "revision": 2,
+          "pending": false,
+          "link": "connected"
+        },
+        "effects": [],
+        "rejected": "The receipt revision is stale"
+      }
+    },
+    {
+      "label": "a reconnect after a local-only save keeps its edit pending",
+      "case": "remote",
+      "state": {
+        "name": "local",
+        "revision": 1,
+        "pending": true,
+        "link": "connecting"
+      },
+      "event": {
+        "type": "queued",
+        "revision": 2,
+        "edit": false
+      },
+      "expect": {
+        "state": {
+          "name": "saving",
+          "revision": 2,
+          "pending": true,
+          "link": "connecting"
+        },
+        "effects": []
+      }
+    },
+    {
+      "label": "an edit after a local-only save is saving",
+      "case": "edit",
+      "state": {
+        "name": "local",
+        "revision": 1,
+        "pending": false,
+        "link": "connected"
+      },
+      "event": {
+        "type": "queued",
+        "revision": 2,
+        "edit": true
+      },
+      "expect": {
+        "state": {
+          "name": "saving",
+          "revision": 2,
+          "pending": true,
+          "link": "connected"
+        },
+        "effects": []
+      }
+    },
+    {
+      "label": "local rejects an older revision",
+      "case": "stale",
+      "state": {
+        "name": "local",
+        "revision": 2,
+        "pending": true,
+        "link": "connected"
+      },
+      "event": {
+        "type": "queued",
+        "revision": 1,
+        "edit": false
+      },
+      "expect": {
+        "state": {
+          "name": "local",
+          "revision": 2,
+          "pending": true,
+          "link": "connected"
+        },
+        "effects": [],
+        "rejected": "The receipt revision is stale"
+      }
+    },
+    {
+      "label": "a failed catch-up retried at new heads is syncing",
+      "case": "remote",
+      "state": {
+        "name": "unsaved",
+        "revision": 1,
+        "pending": false,
+        "link": "connected"
+      },
+      "event": {
+        "type": "queued",
+        "revision": 2,
+        "edit": false
+      },
+      "expect": {
+        "state": {
+          "name": "syncing",
+          "revision": 2,
+          "pending": false,
+          "link": "connected"
+        },
+        "effects": []
+      }
+    },
+    {
+      "label": "an edit after a failed receipt is saving",
+      "case": "edit",
+      "state": {
+        "name": "unsaved",
+        "revision": 1,
+        "pending": false,
+        "link": "connected"
+      },
+      "event": {
+        "type": "queued",
+        "revision": 2,
+        "edit": true
+      },
+      "expect": {
+        "state": {
+          "name": "saving",
+          "revision": 2,
+          "pending": true,
+          "link": "connected"
+        },
+        "effects": []
+      }
+    },
+    {
+      "label": "unsaved rejects its own revision again",
+      "case": "stale",
+      "state": {
+        "name": "unsaved",
+        "revision": 2,
+        "pending": true,
+        "link": "connected"
+      },
+      "event": {
+        "type": "queued",
+        "revision": 2,
+        "edit": true
+      },
+      "expect": {
+        "state": {
+          "name": "unsaved",
+          "revision": 2,
+          "pending": true,
+          "link": "connected"
+        },
+        "effects": [],
+        "rejected": "The receipt revision is stale"
+      }
+    },
+    {
+      "label": "idle has no receipt to acknowledge",
+      "state": {
+        "name": "idle",
+        "revision": 0,
+        "pending": true,
+        "link": "connected"
+      },
+      "event": {
+        "type": "acknowledged",
+        "revision": 0
+      },
+      "expect": {
+        "state": {
+          "name": "idle",
+          "revision": 0,
+          "pending": true,
+          "link": "connected"
+        },
+        "effects": [],
+        "rejected": "No receipt is outstanding"
+      }
+    },
+    {
+      "label": "the host acknowledged the catch-up",
+      "case": "current",
+      "state": {
+        "name": "syncing",
+        "revision": 2,
+        "pending": false,
+        "link": "connected"
+      },
+      "event": {
+        "type": "acknowledged",
+        "revision": 2
+      },
+      "expect": {
+        "state": {
+          "name": "saved",
+          "revision": 2,
+          "pending": false,
+          "link": "connected"
+        },
+        "effects": []
+      }
+    },
+    {
+      "label": "an acknowledgement for older heads is stale",
+      "case": "stale",
+      "state": {
+        "name": "syncing",
+        "revision": 2,
+        "pending": false,
+        "link": "connected"
+      },
+      "event": {
+        "type": "acknowledged",
+        "revision": 1
+      },
+      "expect": {
+        "state": {
+          "name": "syncing",
+          "revision": 2,
+          "pending": false,
+          "link": "connected"
+        },
+        "effects": [],
+        "rejected": "The receipt revision is stale"
+      }
+    },
+    {
+      "label": "the host acknowledged the edit",
+      "case": "current",
+      "state": {
+        "name": "saving",
+        "revision": 2,
+        "pending": true,
+        "link": "connected"
+      },
+      "event": {
+        "type": "acknowledged",
+        "revision": 2
+      },
+      "expect": {
+        "state": {
+          "name": "saved",
+          "revision": 2,
+          "pending": false,
+          "link": "connected"
+        },
+        "effects": []
+      }
+    },
+    {
+      "label": "an acknowledgement from before the latest edit leaves it pending",
+      "case": "stale",
+      "state": {
+        "name": "saving",
+        "revision": 3,
+        "pending": true,
+        "link": "connected"
+      },
+      "event": {
+        "type": "acknowledged",
+        "revision": 2
+      },
+      "expect": {
+        "state": {
+          "name": "saving",
+          "revision": 3,
+          "pending": true,
+          "link": "connected"
+        },
+        "effects": [],
+        "rejected": "The receipt revision is stale"
+      }
+    },
+    {
+      "label": "a duplicate acknowledgement is ignored",
+      "state": {
+        "name": "saved",
+        "revision": 2,
+        "pending": false,
+        "link": "connected"
+      },
+      "event": {
+        "type": "acknowledged",
+        "revision": 2
+      },
+      "expect": {
+        "state": {
+          "name": "saved",
+          "revision": 2,
+          "pending": false,
+          "link": "connected"
+        },
+        "effects": [],
+        "rejected": "The receipt was already acknowledged"
+      }
+    },
+    {
+      "label": "a retry after a local-only stop can still land",
+      "case": "current",
+      "state": {
+        "name": "local",
+        "revision": 2,
+        "pending": true,
+        "link": "connected"
+      },
+      "event": {
+        "type": "acknowledged",
+        "revision": 2
+      },
+      "expect": {
+        "state": {
+          "name": "saved",
+          "revision": 2,
+          "pending": false,
+          "link": "connected"
+        },
+        "effects": []
+      }
+    },
+    {
+      "label": "local ignores a stale acknowledgement",
+      "case": "stale",
+      "state": {
+        "name": "local",
+        "revision": 2,
+        "pending": true,
+        "link": "connected"
+      },
+      "event": {
+        "type": "acknowledged",
+        "revision": 1
+      },
+      "expect": {
+        "state": {
+          "name": "local",
+          "revision": 2,
+          "pending": true,
+          "link": "connected"
+        },
+        "effects": [],
+        "rejected": "The receipt revision is stale"
+      }
+    },
+    {
+      "label": "a retry after a failed receipt lands",
+      "case": "current",
+      "state": {
+        "name": "unsaved",
+        "revision": 2,
+        "pending": true,
+        "link": "offline"
+      },
+      "event": {
+        "type": "acknowledged",
+        "revision": 2
+      },
+      "expect": {
+        "state": {
+          "name": "saved",
+          "revision": 2,
+          "pending": false,
+          "link": "offline"
+        },
+        "effects": []
+      }
+    },
+    {
+      "label": "unsaved ignores a stale acknowledgement",
+      "case": "stale",
+      "state": {
+        "name": "unsaved",
+        "revision": 2,
+        "pending": true,
+        "link": "connected"
+      },
+      "event": {
+        "type": "acknowledged",
+        "revision": 3
+      },
+      "expect": {
+        "state": {
+          "name": "unsaved",
+          "revision": 2,
+          "pending": true,
+          "link": "connected"
+        },
+        "effects": [],
+        "rejected": "The receipt revision is stale"
+      }
+    },
+    {
+      "label": "idle has no receipt to stall",
+      "state": {
+        "name": "idle",
+        "revision": 0,
+        "pending": false,
+        "link": "connected"
+      },
+      "event": {
+        "type": "stalled",
+        "revision": 0,
+        "localCopy": true
+      },
+      "expect": {
+        "state": {
+          "name": "idle",
+          "revision": 0,
+          "pending": false,
+          "link": "connected"
+        },
+        "effects": [],
+        "rejected": "No receipt is outstanding"
+      }
+    },
+    {
+      "label": "a syncing receipt that stops at IndexedDB is local",
+      "case": "local-copy",
+      "state": {
+        "name": "syncing",
+        "revision": 2,
+        "pending": false,
+        "link": "connected"
+      },
+      "event": {
+        "type": "stalled",
+        "revision": 2,
+        "localCopy": true
+      },
+      "expect": {
+        "state": {
+          "name": "local",
+          "revision": 2,
+          "pending": false,
+          "link": "connected"
+        },
+        "effects": []
+      }
+    },
+    {
+      "label": "a syncing receipt that fails without a local copy is unsaved",
+      "case": "no-copy",
+      "state": {
+        "name": "syncing",
+        "revision": 2,
+        "pending": false,
+        "link": "connected"
+      },
+      "event": {
+        "type": "stalled",
+        "revision": 2,
+        "localCopy": false
+      },
+      "expect": {
+        "state": {
+          "name": "unsaved",
+          "revision": 2,
+          "pending": false,
+          "link": "connected"
+        },
+        "effects": []
+      }
+    },
+    {
+      "label": "a stale failure leaves syncing alone",
+      "case": "stale",
+      "state": {
+        "name": "syncing",
+        "revision": 2,
+        "pending": false,
+        "link": "connected"
+      },
+      "event": {
+        "type": "stalled",
+        "revision": 1,
+        "localCopy": true
+      },
+      "expect": {
+        "state": {
+          "name": "syncing",
+          "revision": 2,
+          "pending": false,
+          "link": "connected"
+        },
+        "effects": [],
+        "rejected": "The receipt revision is stale"
+      }
+    },
+    {
+      "label": "a saving receipt that stops at IndexedDB is local",
+      "case": "local-copy",
+      "state": {
+        "name": "saving",
+        "revision": 2,
+        "pending": true,
+        "link": "connected"
+      },
+      "event": {
+        "type": "stalled",
+        "revision": 2,
+        "localCopy": true
+      },
+      "expect": {
+        "state": {
+          "name": "local",
+          "revision": 2,
+          "pending": true,
+          "link": "connected"
+        },
+        "effects": []
+      }
+    },
+    {
+      "label": "a saving receipt that fails without a local copy is unsaved",
+      "case": "no-copy",
+      "state": {
+        "name": "saving",
+        "revision": 2,
+        "pending": true,
+        "link": "connected"
+      },
+      "event": {
+        "type": "stalled",
+        "revision": 2,
+        "localCopy": false
+      },
+      "expect": {
+        "state": {
+          "name": "unsaved",
+          "revision": 2,
+          "pending": true,
+          "link": "connected"
+        },
+        "effects": []
+      }
+    },
+    {
+      "label": "a stale failure leaves saving alone",
+      "case": "stale",
+      "state": {
+        "name": "saving",
+        "revision": 2,
+        "pending": true,
+        "link": "connected"
+      },
+      "event": {
+        "type": "stalled",
+        "revision": 1,
+        "localCopy": true
+      },
+      "expect": {
+        "state": {
+          "name": "saving",
+          "revision": 2,
+          "pending": true,
+          "link": "connected"
+        },
+        "effects": [],
+        "rejected": "The receipt revision is stale"
+      }
+    },
+    {
+      "label": "a saved receipt that stops at IndexedDB is local",
+      "case": "local-copy",
+      "state": {
+        "name": "saved",
+        "revision": 2,
+        "pending": false,
+        "link": "connected"
+      },
+      "event": {
+        "type": "stalled",
+        "revision": 2,
+        "localCopy": true
+      },
+      "expect": {
+        "state": {
+          "name": "local",
+          "revision": 2,
+          "pending": false,
+          "link": "connected"
+        },
+        "effects": []
+      }
+    },
+    {
+      "label": "a saved receipt that fails without a local copy is unsaved",
+      "case": "no-copy",
+      "state": {
+        "name": "saved",
+        "revision": 2,
+        "pending": false,
+        "link": "connected"
+      },
+      "event": {
+        "type": "stalled",
+        "revision": 2,
+        "localCopy": false
+      },
+      "expect": {
+        "state": {
+          "name": "unsaved",
+          "revision": 2,
+          "pending": false,
+          "link": "connected"
+        },
+        "effects": []
+      }
+    },
+    {
+      "label": "a stale failure leaves saved alone",
+      "case": "stale",
+      "state": {
+        "name": "saved",
+        "revision": 2,
+        "pending": false,
+        "link": "connected"
+      },
+      "event": {
+        "type": "stalled",
+        "revision": 1,
+        "localCopy": true
+      },
+      "expect": {
+        "state": {
+          "name": "saved",
+          "revision": 2,
+          "pending": false,
+          "link": "connected"
+        },
+        "effects": [],
+        "rejected": "The receipt revision is stale"
+      }
+    },
+    {
+      "label": "a local receipt that stops at IndexedDB is local",
+      "case": "local-copy",
+      "state": {
+        "name": "local",
+        "revision": 2,
+        "pending": true,
+        "link": "connected"
+      },
+      "event": {
+        "type": "stalled",
+        "revision": 2,
+        "localCopy": true
+      },
+      "expect": {
+        "state": {
+          "name": "local",
+          "revision": 2,
+          "pending": true,
+          "link": "connected"
+        },
+        "effects": []
+      }
+    },
+    {
+      "label": "a local receipt that fails without a local copy is unsaved",
+      "case": "no-copy",
+      "state": {
+        "name": "local",
+        "revision": 2,
+        "pending": true,
+        "link": "connected"
+      },
+      "event": {
+        "type": "stalled",
+        "revision": 2,
+        "localCopy": false
+      },
+      "expect": {
+        "state": {
+          "name": "unsaved",
+          "revision": 2,
+          "pending": true,
+          "link": "connected"
+        },
+        "effects": []
+      }
+    },
+    {
+      "label": "a stale failure leaves local alone",
+      "case": "stale",
+      "state": {
+        "name": "local",
+        "revision": 2,
+        "pending": true,
+        "link": "connected"
+      },
+      "event": {
+        "type": "stalled",
+        "revision": 1,
+        "localCopy": true
+      },
+      "expect": {
+        "state": {
+          "name": "local",
+          "revision": 2,
+          "pending": true,
+          "link": "connected"
+        },
+        "effects": [],
+        "rejected": "The receipt revision is stale"
+      }
+    },
+    {
+      "label": "a unsaved receipt that stops at IndexedDB is local",
+      "case": "local-copy",
+      "state": {
+        "name": "unsaved",
+        "revision": 2,
+        "pending": true,
+        "link": "connected"
+      },
+      "event": {
+        "type": "stalled",
+        "revision": 2,
+        "localCopy": true
+      },
+      "expect": {
+        "state": {
+          "name": "local",
+          "revision": 2,
+          "pending": true,
+          "link": "connected"
+        },
+        "effects": []
+      }
+    },
+    {
+      "label": "a unsaved receipt that fails without a local copy is unsaved",
+      "case": "no-copy",
+      "state": {
+        "name": "unsaved",
+        "revision": 2,
+        "pending": true,
+        "link": "connected"
+      },
+      "event": {
+        "type": "stalled",
+        "revision": 2,
+        "localCopy": false
+      },
+      "expect": {
+        "state": {
+          "name": "unsaved",
+          "revision": 2,
+          "pending": true,
+          "link": "connected"
+        },
+        "effects": []
+      }
+    },
+    {
+      "label": "a stale failure leaves unsaved alone",
+      "case": "stale",
+      "state": {
+        "name": "unsaved",
+        "revision": 2,
+        "pending": true,
+        "link": "connected"
+      },
+      "event": {
+        "type": "stalled",
+        "revision": 1,
+        "localCopy": true
+      },
+      "expect": {
+        "state": {
+          "name": "unsaved",
+          "revision": 2,
+          "pending": true,
+          "link": "connected"
+        },
+        "effects": [],
+        "rejected": "The receipt revision is stale"
+      }
+    },
+    {
+      "label": "admitted moves idle's link to connected",
+      "state": {
+        "name": "idle",
+        "revision": 1,
+        "pending": false,
+        "link": "offline"
+      },
+      "event": {
+        "type": "admitted"
+      },
+      "expect": {
+        "state": {
+          "name": "idle",
+          "revision": 1,
+          "pending": false,
+          "link": "connected"
+        },
+        "effects": []
+      }
+    },
+    {
+      "label": "retrying moves idle's link to reconnecting",
+      "state": {
+        "name": "idle",
+        "revision": 1,
+        "pending": false,
+        "link": "connected"
+      },
+      "event": {
+        "type": "retrying"
+      },
+      "expect": {
+        "state": {
+          "name": "idle",
+          "revision": 1,
+          "pending": false,
+          "link": "reconnecting"
+        },
+        "effects": []
+      }
+    },
+    {
+      "label": "unreachable moves idle's link to offline",
+      "state": {
+        "name": "idle",
+        "revision": 1,
+        "pending": false,
+        "link": "reconnecting"
+      },
+      "event": {
+        "type": "unreachable"
+      },
+      "expect": {
+        "state": {
+          "name": "idle",
+          "revision": 1,
+          "pending": false,
+          "link": "offline"
+        },
+        "effects": []
+      }
+    },
+    {
+      "label": "admitted moves syncing's link to connected",
+      "state": {
+        "name": "syncing",
+        "revision": 1,
+        "pending": false,
+        "link": "offline"
+      },
+      "event": {
+        "type": "admitted"
+      },
+      "expect": {
+        "state": {
+          "name": "syncing",
+          "revision": 1,
+          "pending": false,
+          "link": "connected"
+        },
+        "effects": []
+      }
+    },
+    {
+      "label": "retrying moves syncing's link to reconnecting",
+      "state": {
+        "name": "syncing",
+        "revision": 1,
+        "pending": false,
+        "link": "connected"
+      },
+      "event": {
+        "type": "retrying"
+      },
+      "expect": {
+        "state": {
+          "name": "syncing",
+          "revision": 1,
+          "pending": false,
+          "link": "reconnecting"
+        },
+        "effects": []
+      }
+    },
+    {
+      "label": "unreachable moves syncing's link to offline",
+      "state": {
+        "name": "syncing",
+        "revision": 1,
+        "pending": false,
+        "link": "reconnecting"
+      },
+      "event": {
+        "type": "unreachable"
+      },
+      "expect": {
+        "state": {
+          "name": "syncing",
+          "revision": 1,
+          "pending": false,
+          "link": "offline"
+        },
+        "effects": []
+      }
+    },
+    {
+      "label": "admitted moves saving's link to connected",
+      "state": {
+        "name": "saving",
+        "revision": 1,
+        "pending": true,
+        "link": "offline"
+      },
+      "event": {
+        "type": "admitted"
+      },
+      "expect": {
+        "state": {
+          "name": "saving",
+          "revision": 1,
+          "pending": true,
+          "link": "connected"
+        },
+        "effects": []
+      }
+    },
+    {
+      "label": "retrying moves saving's link to reconnecting",
+      "state": {
+        "name": "saving",
+        "revision": 1,
+        "pending": true,
+        "link": "connected"
+      },
+      "event": {
+        "type": "retrying"
+      },
+      "expect": {
+        "state": {
+          "name": "saving",
+          "revision": 1,
+          "pending": true,
+          "link": "reconnecting"
+        },
+        "effects": []
+      }
+    },
+    {
+      "label": "unreachable moves saving's link to offline",
+      "state": {
+        "name": "saving",
+        "revision": 1,
+        "pending": true,
+        "link": "reconnecting"
+      },
+      "event": {
+        "type": "unreachable"
+      },
+      "expect": {
+        "state": {
+          "name": "saving",
+          "revision": 1,
+          "pending": true,
+          "link": "offline"
+        },
+        "effects": []
+      }
+    },
+    {
+      "label": "admitted moves saved's link to connected",
+      "state": {
+        "name": "saved",
+        "revision": 1,
+        "pending": false,
+        "link": "offline"
+      },
+      "event": {
+        "type": "admitted"
+      },
+      "expect": {
+        "state": {
+          "name": "saved",
+          "revision": 1,
+          "pending": false,
+          "link": "connected"
+        },
+        "effects": []
+      }
+    },
+    {
+      "label": "retrying moves saved's link to reconnecting",
+      "state": {
+        "name": "saved",
+        "revision": 1,
+        "pending": false,
+        "link": "connected"
+      },
+      "event": {
+        "type": "retrying"
+      },
+      "expect": {
+        "state": {
+          "name": "saved",
+          "revision": 1,
+          "pending": false,
+          "link": "reconnecting"
+        },
+        "effects": []
+      }
+    },
+    {
+      "label": "unreachable moves saved's link to offline",
+      "state": {
+        "name": "saved",
+        "revision": 1,
+        "pending": false,
+        "link": "reconnecting"
+      },
+      "event": {
+        "type": "unreachable"
+      },
+      "expect": {
+        "state": {
+          "name": "saved",
+          "revision": 1,
+          "pending": false,
+          "link": "offline"
+        },
+        "effects": []
+      }
+    },
+    {
+      "label": "admitted moves local's link to connected",
+      "state": {
+        "name": "local",
+        "revision": 1,
+        "pending": true,
+        "link": "offline"
+      },
+      "event": {
+        "type": "admitted"
+      },
+      "expect": {
+        "state": {
+          "name": "local",
+          "revision": 1,
+          "pending": true,
+          "link": "connected"
+        },
+        "effects": []
+      }
+    },
+    {
+      "label": "retrying moves local's link to reconnecting",
+      "state": {
+        "name": "local",
+        "revision": 1,
+        "pending": true,
+        "link": "connected"
+      },
+      "event": {
+        "type": "retrying"
+      },
+      "expect": {
+        "state": {
+          "name": "local",
+          "revision": 1,
+          "pending": true,
+          "link": "reconnecting"
+        },
+        "effects": []
+      }
+    },
+    {
+      "label": "unreachable moves local's link to offline",
+      "state": {
+        "name": "local",
+        "revision": 1,
+        "pending": true,
+        "link": "reconnecting"
+      },
+      "event": {
+        "type": "unreachable"
+      },
+      "expect": {
+        "state": {
+          "name": "local",
+          "revision": 1,
+          "pending": true,
+          "link": "offline"
+        },
+        "effects": []
+      }
+    },
+    {
+      "label": "admitted moves unsaved's link to connected",
+      "state": {
+        "name": "unsaved",
+        "revision": 1,
+        "pending": false,
+        "link": "offline"
+      },
+      "event": {
+        "type": "admitted"
+      },
+      "expect": {
+        "state": {
+          "name": "unsaved",
+          "revision": 1,
+          "pending": false,
+          "link": "connected"
+        },
+        "effects": []
+      }
+    },
+    {
+      "label": "retrying moves unsaved's link to reconnecting",
+      "state": {
+        "name": "unsaved",
+        "revision": 1,
+        "pending": false,
+        "link": "connected"
+      },
+      "event": {
+        "type": "retrying"
+      },
+      "expect": {
+        "state": {
+          "name": "unsaved",
+          "revision": 1,
+          "pending": false,
+          "link": "reconnecting"
+        },
+        "effects": []
+      }
+    },
+    {
+      "label": "unreachable moves unsaved's link to offline",
+      "state": {
+        "name": "unsaved",
+        "revision": 1,
+        "pending": false,
+        "link": "reconnecting"
+      },
+      "event": {
+        "type": "unreachable"
+      },
+      "expect": {
+        "state": {
+          "name": "unsaved",
+          "revision": 1,
+          "pending": false,
+          "link": "offline"
+        },
+        "effects": []
+      }
+    },
+    {
+      "label": "a repeated failure while offline changes nothing",
+      "state": {
+        "name": "saving",
+        "revision": 1,
+        "pending": true,
+        "link": "offline"
+      },
+      "event": {
+        "type": "unreachable"
+      },
+      "expect": {
+        "state": {
+          "name": "saving",
+          "revision": 1,
+          "pending": true,
+          "link": "offline"
+        },
+        "effects": []
+      }
+    },
+    {
+      "label": "the first admission leaves the receipt alone",
+      "state": {
+        "name": "idle",
+        "revision": 0,
+        "pending": false,
+        "link": "connecting"
+      },
+      "event": {
+        "type": "admitted"
+      },
+      "expect": {
+        "state": {
+          "name": "idle",
+          "revision": 0,
+          "pending": false,
+          "link": "connected"
+        },
+        "effects": []
+      }
+    }
+  ]
+}
