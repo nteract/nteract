@@ -211,8 +211,8 @@ references; it does not publish the Page or change asset access.
   paragraph inserts a horizontal rule. Cmd/Ctrl+Shift+X toggles strikethrough.
 - **Mark registry:** [`model/marks.json`](model/marks.json) lists every inline
   mark with its value shape, expand rule, and Markdown projection. Validation,
-  the Wordgard binding, Markdown import/export, the MCP `format_match` schema,
-  and the Rust codec read it. Readers keep marks they don't know: they render as
+  the Wordgard binding, Markdown import/export, and the MCP `format_match`
+  schema read it. Readers keep marks they don't know: they render as
   plain text and survive edits. Agents edit existing text through
   `replace_match` and `format_match`, which work on native spans; Markdown is
   for reading and for writing whole blocks.
