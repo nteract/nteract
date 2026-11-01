@@ -11,7 +11,10 @@ test("b and i from Word and web pages become strong and em", () => {
     normalize(`<p class=MsoNormal><b><span>Word bold</span></b> plain <i>it</i></p>`),
     `<p class="MsoNormal"><strong><span>Word bold</span></strong> plain <em>it</em></p>`,
   );
-  assert.equal(normalize(`<b class="x" data-y="1">a</b>`), `<strong class="x" data-y="1">a</strong>`);
+  assert.equal(
+    normalize(`<b class="x" data-y="1">a</b>`),
+    `<strong class="x" data-y="1">a</strong>`,
+  );
   // Nested renames keep their content and order.
   assert.equal(normalize(`<b>x <i>y</i> z</b>`), `<strong>x <em>y</em> z</strong>`);
 });
@@ -30,3 +33,17 @@ test("HTML without b or i is returned unchanged", () => {
   assert.equal(normalize(html), html);
   assert.equal(normalize("<body><big>not bold</big></body>"), "<body><big>not bold</big></body>");
 });
+
+test(
+  "Word list paragraphs become a bulleted list",
+  { todo: "QA overnight Nov 1: Word bulleted lists paste as literal bullet paragraphs" },
+  () => {
+    const html =
+      `<p class=MsoListParagraphCxSpFirst style='mso-list:l0 level1 lfo1'><![if !supportLists]>` +
+      `<span style='font-family:Symbol'>·<span>&nbsp;&nbsp; </span></span><![endif]>one</p>` +
+      `<p class=MsoListParagraphCxSpLast style='mso-list:l0 level1 lfo1'><![if !supportLists]>` +
+      `<span style='font-family:Symbol'>·</span><![endif]>two</p>`;
+    const out = normalize(html);
+    assert.match(out, /<ul>\s*<li>[^<]*one<\/li>\s*<li>[^<]*two<\/li>\s*<\/ul>/);
+  },
+);
