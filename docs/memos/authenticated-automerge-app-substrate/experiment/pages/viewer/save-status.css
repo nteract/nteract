@@ -68,10 +68,11 @@
 .save-status--error .status-dot {
   background: var(--destructive);
 }
+/* The pulse changes size only. The dot stays opaque --primary at every frame,
+   so its contrast never drops below the resting dot's. */
 @keyframes save-status-pulse {
   50% {
-    opacity: 0.35;
-    transform: scale(0.8);
+    transform: scale(0.6);
   }
 }
 @media (prefers-reduced-motion: reduce) {
