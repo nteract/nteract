@@ -1651,6 +1651,11 @@ export class PageSession {
               displayName: message.identity?.displayName,
               driver: message.identity?.driver,
               agent: typeof message.identity?.agent === "string" ? message.identity.agent : null,
+              session:
+                typeof message.identity?.session === "string" &&
+                /^[0-9a-f]{16}$/.test(message.identity.session)
+                  ? message.identity.session
+                  : null,
             };
             this.changeIdentities.set(head, who);
             if (this.changeIdentities.size > 512)

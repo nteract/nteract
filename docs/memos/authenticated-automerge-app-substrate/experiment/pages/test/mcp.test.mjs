@@ -685,3 +685,30 @@ test("only verified OAuth credential failures produce tool reauthorization chall
     assert.equal(challenge.includes("127.0.0.1"), false);
   }
 });
+test("initialize hands out a presence session id; other calls don't, and stay stateless", async () => {
+  const init = await handleMcp(
+    request("initialize", {
+      protocolVersion: "2025-03-26",
+      capabilities: {},
+      clientInfo: { name: "session-test", version: "1" },
+    }),
+    async () => {
+      throw Error("Initialization must not invoke a document tool");
+    },
+  );
+  const id = init.headers.get("mcp-session-id");
+  assert.match(id, /^[0-9a-f-]{36}$/);
+  const again = await handleMcp(
+    request("initialize", {
+      protocolVersion: "2025-03-26",
+      capabilities: {},
+      clientInfo: { name: "session-test", version: "1" },
+    }),
+    async () => {},
+  );
+  assert.notEqual(again.headers.get("mcp-session-id"), id);
+  // A tool call with or without the id works without server-side session state.
+  const list = await handleMcp(request("tools/list"), async () => {});
+  assert.equal(list.status, 200);
+  assert.equal(list.headers.get("mcp-session-id"), null);
+});

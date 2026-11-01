@@ -274,3 +274,37 @@ test("progress snapshots keep the session label", () => {
   const unlabeled = activitySnapshot(message(), 1000);
   assert.equal([...unlabeled.progress.values()][0].agent, null);
 });
+
+test("a caret and a lease merge only within one MCP session", async () => {
+  const { agentParticipants } = await import("./activity.mjs");
+  const who = { principal: "user:kyle", displayName: "Kyle", driver: "Kilo", agent: null };
+  const session = {
+    agentPresence: new Map([
+      ["c1", { ...who, session: "aaaaaaaaaaaaaaaa", agent_id: "c1", state: "active", until: 5000 }],
+      ["c2", { ...who, session: "bbbbbbbbbbbbbbbb", agent_id: "c2", state: "active", until: 5000 }],
+    ]),
+    agentProgress: new Map([
+      [
+        "p1",
+        {
+          ...who,
+          session: "bbbbbbbbbbbbbbbb",
+          progress_id: "p1",
+          message: "B",
+          until: 4000,
+          updated: 1,
+        },
+      ],
+    ]),
+  };
+  assert.deepEqual(
+    agentParticipants(session, 1000).map((p) => [
+      p.presence?.agent_id,
+      p.progress.map((x) => x.message),
+    ]),
+    [
+      ["c1", []],
+      ["c2", ["B"]],
+    ],
+  );
+});

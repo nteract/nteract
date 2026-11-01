@@ -344,3 +344,107 @@ test("progress carries the agent's session label so it merges with its caret", (
     ],
   );
 });
+
+test("two MCP sessions on one credential keep separate records", (t) => {
+  const f = fixture(t);
+  f.activity.agentEvent(
+    agentIdentity({ driver: "Kilo", session: "aaaaaaaaaaaaaaaa" }),
+    "write",
+    blockTarget(f),
+  );
+  f.activity.agentEvent(
+    agentIdentity({ driver: "Kilo", session: "bbbbbbbbbbbbbbbb" }),
+    "write",
+    blockTarget(f),
+  );
+  const agents = f.broadcasts.at(-1).agents;
+  assert.deepEqual(
+    agents.map((a) => a.session),
+    ["aaaaaaaaaaaaaaaa", "bbbbbbbbbbbbbbbb"],
+  );
+  // A malformed session tag is refused, not silently merged.
+  assert.equal(
+    f.activity.agentEvent(
+      agentIdentity({ driver: "Kilo", session: "NOT-HEX" }),
+      "write",
+      blockTarget(f),
+    ),
+    false,
+  );
+});
+
+test("one account varying its MCP session id can't flood presence", (t) => {
+  const f = fixture(t);
+  // Another account's agent is already here.
+  f.metadata.acl.members["user:other"] = { role: "editor", generation: 1 };
+  f.activity.agentEvent(
+    agentIdentity({ principal: "user:other", driver: "Codex" }),
+    "write",
+    blockTarget(f),
+  );
+  for (let i = 0; i < 12; i++) {
+    t.mock.timers.tick(10);
+    f.activity.agentEvent(
+      agentIdentity({ driver: "Kilo", session: i.toString(16).padStart(16, "0") }),
+      "write",
+      blockTarget(f),
+    );
+  }
+  const agents = f.broadcasts.at(-1).agents;
+  const mine = agents.filter((a) => a.driver === "Kilo");
+  // 8 agents per Page in total: the flooding account keeps its 7 newest.
+  assert.equal(agents.length, 8);
+  assert.deepEqual(
+    mine.map((a) => parseInt(a.session, 16)),
+    [5, 6, 7, 8, 9, 10, 11],
+    "the least recent sessions were evicted",
+  );
+  assert.ok(
+    agents.some((a) => a.driver === "Codex"),
+    "other accounts keep their agents",
+  );
+});
+
+test("an idle session drops out on the normal timeout", (t) => {
+  const f = fixture(t);
+  f.activity.agentEvent(
+    agentIdentity({ driver: "Kilo", session: "aaaaaaaaaaaaaaaa" }),
+    "write",
+    blockTarget(f),
+  );
+  t.mock.timers.tick(60_000);
+  assert.deepEqual(f.broadcasts.at(-1).agents, []);
+});
+
+test("with room on the Page, one account keeps at most eight sessions", (t) => {
+  const f = fixture(t);
+  for (let i = 0; i < 12; i++) {
+    t.mock.timers.tick(10);
+    f.activity.agentEvent(
+      agentIdentity({ driver: "Kilo", session: i.toString(16).padStart(16, "0") }),
+      "write",
+      blockTarget(f),
+    );
+  }
+  assert.deepEqual(
+    f.broadcasts.at(-1).agents.map((a) => parseInt(a.session, 16)),
+    [4, 5, 6, 7, 8, 9, 10, 11],
+  );
+});
+
+test("a ninth single-session account evicts the least recent agent: plain LRU", (t) => {
+  const f = fixture(t);
+  for (let i = 0; i < 9; i++) {
+    const principal = `user:account-${i}`;
+    f.metadata.acl.members[principal] = { role: "editor", generation: 1 };
+    t.mock.timers.tick(10);
+    assert.equal(
+      f.activity.agentEvent(agentIdentity({ principal }), "write", blockTarget(f)),
+      true,
+    );
+  }
+  const principals = f.broadcasts.at(-1).agents.map((a) => a.principal);
+  assert.equal(principals.length, 8);
+  assert.ok(!principals.includes("user:account-0"), "the oldest went");
+  assert.ok(principals.includes("user:account-8"), "the newest appears");
+});

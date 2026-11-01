@@ -344,6 +344,9 @@ function forwarded(request, path, body) {
     const value = request.headers.get(name);
     if (value) headers.set(name, value);
   }
+  // The MCP session travels only from /mcp; internal routes trust their forwards.
+  if (new URL(request.url).pathname === "/mcp" && request.headers.has("mcp-session-id"))
+    headers.set("mcp-session-id", request.headers.get("mcp-session-id"));
   if (request.headers.has("x-pages-driver") || new URL(request.url).searchParams.has("driver"))
     headers.set("x-pages-driver", driverLabel(request));
   const agent = agentLabel(request);
@@ -2980,6 +2983,7 @@ export class Page {
           identity: {
             ...publicIdentity(identity),
             ...(identity.agent && { agent: identity.agent }),
+            ...(identity.session && { session: identity.session }),
           },
           heads: receipt.heads,
         });

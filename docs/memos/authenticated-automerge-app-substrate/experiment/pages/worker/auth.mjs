@@ -43,6 +43,29 @@ export function agentLabel(request) {
   return value.trim();
 }
 
+/** A presence tag for the MCP session a request belongs to. Pages issues the
+ * `Mcp-Session-Id` on initialize and clients echo it, so two sessions on one
+ * credential show as two agents. The tag is a digest scoped to the account,
+ * so the raw session id never reaches other participants. */
+export async function sessionTag(request, principal) {
+  // Only the MCP endpoint, and the worker's own forwards from it to internal
+  // routes, carry a session. Elsewhere the header is ignored, never rejected.
+  const path = new URL(request.url).pathname;
+  if (path !== "/mcp" && !path.startsWith("/internal/")) return undefined;
+  const value = request.headers.get("mcp-session-id");
+  if (value === null) return undefined;
+  if (!/^[A-Za-z0-9._-]{8,128}$/.test(value)) throw new HttpError(400, "Invalid MCP session id");
+  const bytes = new Uint8Array(
+    await crypto.subtle.digest("SHA-256", new TextEncoder().encode(`${principal}\u0000${value}`)),
+  );
+  return Array.from(bytes.slice(0, 8), (byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+const mcpSession = async (request, principal) => {
+  const session = await sessionTag(request, principal);
+  return session ? { session } : {};
+};
+
 export function requireSameOrigin(request, env) {
   const origin = new URL(env.NOTEBOOK_CLOUD_PUBLIC_ORIGIN || request.url).origin;
   const supplied = request.headers.get("origin");
@@ -121,6 +144,7 @@ export async function authenticate(request, env) {
                   ? "Kilo"
                   : "MCP",
           ...(agent && { agent }),
+          ...(await mcpSession(request, grant.identity.principal)),
           canWrite: scopes.has("pages:write"),
           credentialKind: "oauth",
           namespace: grant.identity.namespace,
@@ -167,6 +191,7 @@ export async function authenticate(request, env) {
         displayName: identity.metadata.displayName || identity.principal,
         driver,
         ...(agent && { agent }),
+        ...(await mcpSession(request, identity.principal)),
         canWrite: identity.scope === "editor",
         credentialKind: "api-key",
         namespace: identity.metadata.principalNamespace,

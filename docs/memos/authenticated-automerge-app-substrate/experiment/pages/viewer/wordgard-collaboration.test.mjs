@@ -669,3 +669,15 @@ test("many changes from one actor in one batch each find their own author", asyn
     ),
   );
 });
+
+test("two unlabeled MCP sessions get different colors", async () => {
+  const { presenceColor } = await import("./presence-color.mjs");
+  const a = presenceColor("user:kyle", "Kilo", null, "aaaaaaaaaaaaaaaa").background;
+  const b = presenceColor("user:kyle", "Kilo", null, "bbbbbbbbbbbbbbbb").background;
+  assert.notEqual(a, b);
+  // Without a session the key is unchanged from before.
+  assert.equal(
+    presenceColor("user:kyle", "Kilo").background,
+    presenceColor("user:kyle", "Kilo", null, null).background,
+  );
+});

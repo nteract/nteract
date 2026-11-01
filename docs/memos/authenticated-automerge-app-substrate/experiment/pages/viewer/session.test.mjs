@@ -238,6 +238,7 @@ test("host tool-edit hints name each change by hash, with the session label", ()
     displayName: "Kyle Kelley",
     driver: "Kilo",
     agent: "rich text",
+    session: null,
   });
   // A browser can't attest an author: a selection's claimed actor is ignored,
   // and selections carry no actor at all.

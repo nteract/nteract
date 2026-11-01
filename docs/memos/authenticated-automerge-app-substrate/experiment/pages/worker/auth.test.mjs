@@ -133,6 +133,41 @@ test("API-key invitation identity comes from provider whoami and configured name
   assert.equal(JSON.stringify(projection).includes("attacker-proof"), false);
 });
 
+test("an MCP session id becomes an account-scoped presence tag, never the raw id", async (t) => {
+  const fixture = await createAuthFixture();
+  t.mock.method(globalThis, "fetch", fixture.fetch);
+  const request = (session, path = "/mcp") =>
+    new Request(`https://pages.invalid${path}`, {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${fixture.apiKey()}`,
+        ...(session !== undefined && { "mcp-session-id": session }),
+      },
+    });
+  const a = await authenticate(request("11111111-2222-4333-8444-555555555555"), fixture.env);
+  const b = await authenticate(request("66666666-7777-4888-9999-000000000000"), fixture.env);
+  const again = await authenticate(request("11111111-2222-4333-8444-555555555555"), fixture.env);
+  assert.match(a.session, /^[0-9a-f]{16}$/);
+  assert.equal(again.session, a.session, "stable per session");
+  assert.notEqual(b.session, a.session, "distinct per session");
+  assert.ok(!a.session.includes("1111"), "never the raw id");
+  const none = await authenticate(request(undefined), fixture.env);
+  assert.equal(none.session, undefined);
+  for (const bad of ["short", "has space here!", "x".repeat(200)])
+    await assert.rejects(authenticate(request(bad), fixture.env), /Invalid MCP session id/);
+  // Internal forwards from /mcp keep the session.
+  const forwarded = await authenticate(
+    request("11111111-2222-4333-8444-555555555555", "/internal/tool"),
+    fixture.env,
+  );
+  assert.equal(forwarded.session, a.session);
+  // Other public routes ignore the header, even a malformed one.
+  for (const path of ["/api/tools", "/api/connect?page=test"]) {
+    const ignored = await authenticate(request("not valid!", path), fixture.env);
+    assert.equal(ignored.session, undefined, path);
+  }
+});
+
 test("cookie writes and WebSocket upgrades require same-origin, API keys never permit foreign Origin", () => {
   const env = { NOTEBOOK_CLOUD_PUBLIC_ORIGIN: "https://pages.invalid" };
   assert.throws(
