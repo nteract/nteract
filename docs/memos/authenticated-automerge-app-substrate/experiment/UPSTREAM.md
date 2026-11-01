@@ -202,6 +202,37 @@ readiness for a lost merge branch, a lost middle and a lost root. The upstream
 fix belongs in `StorageBridge.saveBatchAll` and `DocumentDelegate`'s
 `local-load-complete` handling.
 
+The catch-up batching patch in `patch-catch-up-batching.mjs` changes three
+upstream files so a replica far behind its peers applies the missing history
+in a few loads. The bridge persisted a native batch one record at a time and
+notified after each save; each notification was its own live `records` event.
+The delegate applied every event with an incremental load, patch generation,
+a whole-document `getRecordMetadata` rescan and a change notification. The
+event consumer drained each event before the next save resolved, so no backlog
+formed that a consumer could merge, in Node or with IndexedDB.
+
+A native batch now notifies its resolved saves in chunks bounded by the
+backend's `batchRecords` and `batchBytes`, the same bounds as initial replay.
+The bridge queue runs one mutation at a time, so one pending notification
+suffices. Each resolved save notifies exactly once, in save order, before the
+batch's transaction ends. A failed batch notifies its resolved prefix before
+the owner sees the failure. Single commit and fragment saves notify alone, as
+before. The bridge callback takes an array of records. `DocumentDelegate`
+rescans record metadata only when an incoming event moves the document's heads:
+the covering representation is a function of the applied history, which the
+heads name. Records already held, or queued behind a missing dependency, leave
+it unchanged. Native also saves some catch-up records one call at a time; most
+of those hold history the replica already applied, and they now skip the rescan.
+
+`catch-up-batching.test.mjs` covers chunked notification in save order, the
+notified prefix of a failed batch, and a real catch-up with listener and timer
+edits interleaved: both peers converge, change events form one unbroken chain
+of heads from the cached copy to the final document, and local edits submit
+exactly the records a whole-document rescan before each edit would select.
+`pages/scripts/catch-up-benchmark.mjs` measures the client path. Stored keys,
+frames, signatures and wire messages are unchanged. The upstream fix belongs in
+`StorageBridge.saveBatchAll` and the delegate's `records` handling.
+
 ## Runtime evidence
 
 `upstream.test.mjs` runs real upstream Repo handles, Automerge WASM, Subduction

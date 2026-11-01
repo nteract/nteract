@@ -15,7 +15,7 @@
   "patch": {
     "path": "packages/automerge-repo-subduction/src/index.ts",
     "before": "1a870be50a4a447a91038034cb5ec227568b34afc844d4f5e19d787fd58a0bd3",
-    "after": "2797c8191d7b0bea2992f75e8da27b952591b38310b7f44f4dea69b2341dc107",
+    "after": "d23a227f6f4f8b36b29b6ea7ef117645f2338b3054edbd76ca76a192cbc73d56",
     "storageIndex": {
       "path": "packages/automerge-repo-subduction/src/storage.ts",
       "before": "00169b3a71473e01c00cd37298ffcf4bc2b7c8d6f8f7f8bcce90ada9c23d4029",
@@ -68,6 +68,23 @@
         "path": "packages/automerge-repo/src/DocumentDelegate.ts",
         "before": "9c529b2bd424837397ba735085a01992edf1ed46c2c61fca2d68bdc027159240",
         "after": "25bb4f4bb9471ecd22ed59784b9f7055bc87e3163ccc2271f6ff28e14c2247f0"
+      }
+    ],
+    "catchUpBatching": [
+      {
+        "path": "packages/automerge-repo-subduction/src/storage.ts",
+        "before": "3a335064a7741c16677f374b67957b5033479a7a6168631c54cbea2f1a9005ec",
+        "after": "8bc908e3ec93c4ff2df335e3a6c8de753144470aaf7479288b75e629202615de"
+      },
+      {
+        "path": "packages/automerge-repo-subduction/src/index.ts",
+        "before": "2797c8191d7b0bea2992f75e8da27b952591b38310b7f44f4dea69b2341dc107",
+        "after": "d23a227f6f4f8b36b29b6ea7ef117645f2338b3054edbd76ca76a192cbc73d56"
+      },
+      {
+        "path": "packages/automerge-repo/src/DocumentDelegate.ts",
+        "before": "25bb4f4bb9471ecd22ed59784b9f7055bc87e3163ccc2271f6ff28e14c2247f0",
+        "after": "88fc5e062021def09b19c4f5f109c3c925ec2a6ab379ce41cd1411922c73a107"
       }
     ]
   }
