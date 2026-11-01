@@ -1231,8 +1231,6 @@ function App() {
                         onError={setError}
                         onComment={(selected) => startComment(block.id, selected)}
                         onRevealComment={selectComment}
-                        openComments={openComments}
-                        onOpenComments={toggleComments}
                         toolbarHost={active === block.id ? toolbar : null}
                         toolbarOpen={toolbarOpen}
                         onActivate={() => activateBlock(block.id)}
