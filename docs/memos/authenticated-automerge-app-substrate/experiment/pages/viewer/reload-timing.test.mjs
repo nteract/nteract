@@ -17,7 +17,7 @@ import { FakeSession } from "./session-fixture.mjs";
 import { createPageData, initializePage } from "../model/page.mjs";
 
 const SAVE_TIMEOUT =
-  "Your latest edits haven't saved yet, so Pages won't reload. Check your connection and try again.";
+  "Your latest edits haven't saved yet, so this tab won't reload. Check your connection and try again.";
 const OUTCOMES = {
   o: { ok: true },
   x: { ok: false, cancelled: true },

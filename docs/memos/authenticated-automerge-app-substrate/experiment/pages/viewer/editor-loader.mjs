@@ -3,7 +3,7 @@ import { filter, firstValueFrom } from "rxjs";
 import { editorLoadMachine } from "./editor-load-machine.mjs";
 import { Store } from "./store.mjs";
 
-export const EDITOR_UNAVAILABLE = "Pages couldn't load the editor. Reload to try again.";
+export const EDITOR_UNAVAILABLE = "The editor didn't load. Reload to try again.";
 
 const unavailable = () => Object.assign(Error(EDITOR_UNAVAILABLE), { code: "EDITOR_UNAVAILABLE" });
 

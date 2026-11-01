@@ -333,16 +333,16 @@ export const reloadGateSpec = Object.freeze({
 export const SAVE_BEFORE_RELOAD_MS = 15_000;
 export const UNSENT_COMMENT = "You have an unsent comment. Send or discard it before reloading.";
 export const SAVE_TIMEOUT =
-  "Your latest edits haven't saved yet, so Pages won't reload. Check your connection and try again.";
+  "Your latest edits haven't saved yet, so this tab won't reload. Check your connection and try again.";
 export const BLOCKED = Object.freeze({
   auth: "Sign in again so your latest edits can save, then reload.",
   access:
     "Your latest edits can't be saved to this Page. Download the local draft before reloading.",
-  failed: "Your latest edits couldn't be saved on this device, so Pages won't reload.",
+  failed: "Your latest edits couldn't be saved on this device, so this tab won't reload.",
 });
 export const NOTHING_SAVING = "No held Page is still saving";
 export const SCHEMA_CHECKPOINT_FAILED =
-  "Your edits on this Page couldn't be saved in this browser, so Pages won't reload. Keep this tab open and try Reload again.";
+  "Your edits on this Page couldn't be saved in this browser, so this tab won't reload. Keep this tab open and try Reload again.";
 // A live result: the session's edits wait in a written local checkpoint.
 const KEPT = "checkpointed";
 

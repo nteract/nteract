@@ -903,13 +903,16 @@ function App() {
           )}
         </div>
       </header>
-      {page && <div id="page-formatting" className="toolbar-host" ref={setToolbar} />}
-      <BuildUpdate
-        session={session}
-        principal={authentication.current?.identity?.principal}
-        onOpenPage={(id) => void open(id)}
-        editorUnavailable={editorUnavailable && !!account}
-      />
+      {/* Sticks under the header: the pinned toolbar, then the reload banner. */}
+      <div className="status-stack">
+        {page && <div id="page-formatting" className="toolbar-host" ref={setToolbar} />}
+        <BuildUpdate
+          session={session}
+          principal={authentication.current?.identity?.principal}
+          onOpenPage={(id) => void open(id)}
+          editorUnavailable={editorUnavailable && !!account}
+        />
+      </div>
       {banners.map((message) => (
         <p key={message} role="alert" className="error app-error">
           {message}

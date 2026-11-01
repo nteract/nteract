@@ -275,6 +275,14 @@ test("presence rejects malformed causal heads and ignores claimed display identi
     },
   });
   assert.equal(session.peers.get("peer").displayName, "Kyle Kelley · Mobile");
+  // A person in the browser is shown by name alone; the profile keeps the driver.
+  session.profiles = { peer: { displayName: "Kyle Kelley", driver: "Browser" } };
+  session.ephemeral({
+    senderId: "peer",
+    message: { kind: "selection", value: { block_id: "b", start: "s", end: "e", heads: [] } },
+  });
+  assert.equal(session.peers.get("peer").displayName, "Kyle Kelley");
+  assert.equal(session.peers.get("peer").profile.driver, "Browser");
 });
 
 test("a local write requests durability even when its handle emits no visible patch", async (t) => {
