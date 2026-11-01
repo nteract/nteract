@@ -1,19 +1,10 @@
-import { selectionContext } from "./comments.mjs";
+import { selectionContext, validCommentId as validId } from "./comments.mjs";
 import { commentBodyProjection } from "./comment-content.mjs";
 
-const encoder = new TextEncoder();
 const fields = new Set(["state", "block_id", "thread_ids", "include_messages"]);
 const invalid = (message) => {
   throw Object.assign(Error(message), { status: 400, code: "invalid_comment_selector" });
 };
-function validId(value) {
-  if (typeof value !== "string" || !value.trim() || value.length > 256) return false;
-  for (const character of value) {
-    const code = character.codePointAt(0);
-    if (code < 32 || code === 127) return false;
-  }
-  return encoder.encode(value).byteLength <= 256;
-}
 function selectors(options) {
   if (
     !options ||

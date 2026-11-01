@@ -450,6 +450,66 @@ try {
   await page.getByRole("button", { name: /^Comments/ }).click();
   await expect(page.locator(".comment-kept-draft")).toHaveCount(0);
   checkpoint("narrow windows compose in a bottom sheet with only the composer; Cancel discards");
+  // Batch resolve: every open thread in one call, one key and one new heads.
+  const openIds = (
+    await call("list_page_comments", { page_id: pageId, state: "open" })
+  ).comments.map((thread) => thread.id);
+  assert.ok(openIds.length >= 3, `the fixture has several open threads (${openIds.length})`);
+  await mutate("manage_page_comment", {
+    page_id: pageId,
+    action: "resolve",
+    thread_id: openIds[0],
+  });
+  const authority = await call("list_page_comments", { page_id: pageId, state: "all" });
+  const batch = {
+    page_id: pageId,
+    action: "resolve",
+    thread_ids: openIds,
+    retry_token: authority.retry_token,
+    idempotency_key: authority.retry_key_prefix + crypto.randomUUID(),
+  };
+  const resolved = await call("manage_page_comment", batch);
+  assert.deepEqual(
+    resolved.result.threads,
+    openIds.map((thread_id, n) => ({
+      thread_id,
+      outcome: n === 0 ? "already_resolved" : "resolved",
+    })),
+  );
+  assert.equal(resolved.heads.length, 1);
+  assert.deepEqual(
+    (await call("read_page", { page_id: pageId, comments: "none" })).heads,
+    resolved.heads,
+  );
+  assert.deepEqual(await call("manage_page_comment", batch), resolved, "an exact retry replays");
+  assert.deepEqual(
+    (await call("list_page_comments", { page_id: pageId, state: "open" })).comments,
+    [],
+  );
+  await assert.rejects(
+    call("manage_page_comment", {
+      ...batch,
+      action: "reopen",
+      thread_ids: [openIds[1], "no-such-thread"],
+      idempotency_key: authority.retry_key_prefix + crypto.randomUUID(),
+    }),
+    /tool error invalid_comment_selector/,
+  );
+  assert.equal(
+    (await call("list_page_comments", { page_id: pageId, state: "open" })).comments.length,
+    0,
+    "an unknown ID reopens nothing",
+  );
+  const reopened = await mutate("manage_page_comment", {
+    page_id: pageId,
+    action: "reopen",
+    thread_ids: openIds.slice(0, 2),
+  });
+  assert.deepEqual(
+    reopened.result.threads.map((entry) => entry.outcome),
+    ["reopened", "reopened"],
+  );
+  checkpoint("batch resolve and reopen apply once, replay exactly and reject unknown IDs whole");
   assert.deepEqual(report.errors, []);
 } finally {
   if (pageId) {
