@@ -270,3 +270,61 @@ test("unknown revisions require resync and malformed selectors cannot invoke a b
       (error) => error.status === 400 && error.code === "invalid_edit_selector",
     );
 });
+
+const fmt = (id, extra = {}) => ({
+  op: "format_match",
+  block_id: id,
+  match_text: "target",
+  add: { highlight: "green" },
+  ...extra,
+});
+const spansOf = (doc, id) =>
+  A.spans(doc.blocks[id], ["richText"])
+    .filter((span) => span.type === "text")
+    .map((span) => [span.value, span.marks ?? {}]);
+
+test("format_match accepts an older read when its target is unchanged", () => {
+  const { doc, id, heads } = fixture();
+  // Someone types elsewhere in the same block after the agent read.
+  const moved = A.change(doc, (d) => A.splice(d, ["blocks", id, "richText"], 1, 0, "Edited: "));
+  const { after, plan } = edit(moved, heads, [
+    fmt(id),
+    op(id, { match_text: "Last", replacement: "Final" }),
+  ]);
+  assert.equal(plan.rebased, true);
+  const spans = spansOf(after, id);
+  assert.ok(
+    spans.some(([text, marks]) => text === "target" && marks.highlight === "green" && marks.strong),
+  );
+  assert.match(spans.map(([text]) => text).join(""), /^Edited: First passage\..*Final passage\.$/s);
+});
+
+test("format_match conflicts when its target text or formatting changed since the read", () => {
+  const { doc, id, heads } = fixture();
+  const path = ["blocks", id, "richText"];
+  const start = doc.blocks[id].richText.indexOf("target");
+  const retyped = A.change(doc, (d) => A.splice(d, path, start, 6, "target"));
+  rejects(retyped, heads, [fmt(id)], "target_text_changed");
+  const restyled = A.change(A.clone(doc), (d) =>
+    A.mark(d, path, { start, end: start + 6, expand: "both" }, "em", true),
+  );
+  rejects(restyled, heads, [fmt(id)], "target_formatting_changed");
+});
+
+test("invalid format_match input and code text are the caller's error, not a conflict", () => {
+  const { doc, id, heads } = fixture();
+  for (const bad of [
+    { add: { underline: true } },
+    { add: { highlight: "red" } },
+    { add: undefined },
+  ])
+    assert.throws(
+      () => guardPassageEdits(doc, heads, [fmt(id, bad)]),
+      (error) => error.status === 400 && error.code === "invalid_edit_selector",
+    );
+  const code = fixture("```python\ntarget = 1\n```");
+  assert.throws(
+    () => guardPassageEdits(code.doc, code.heads, [fmt(code.id)]),
+    (error) => error.status === 400 && /code block/.test(error.message),
+  );
+});
