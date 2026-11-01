@@ -371,12 +371,14 @@ export function WordgardEditor(props) {
             bottom: bar ? Math.max(0, bottomEdge - bar.top) : 0,
           };
         }),
-        // Wordgard 0.6.2 shrinks the caret's rect by the covered margins
-        // before scrolling; once both margins together exceed one line, as
-        // the header and compact bar do on phones, the rect flips and the
-        // caret can stop under the header. On phones, scroll the caret
-        // between the header and the bar here first; Wordgard's own pass then
-        // finds it in view and only handles horizontal scrolling.
+        // Wordgard 0.6.2's scrollTo shrinks the caret's rect by the covered
+        // margins where it should grow it, so with any covered margin the
+        // caret can stop under the header or the bar; margins taller than a
+        // line flip the rect and skip the scroll entirely. Desktop's header
+        // has the same bug. On phones, scroll the caret between the header
+        // and the bar here first; Wordgard's own pass then finds it in view
+        // and only handles horizontal scrolling. This handler can go once
+        // Wordgard grows the rect by the margins.
         Wordgard.scrollHandler.of((wg, target) => {
           if (target.spec.y !== "nearest" || !matchMedia(MOBILE_EDITOR_QUERY).matches) return false;
           const start = wg.coordsAtPos(target.from, target.from === target.to ? target.assoc : 1);
