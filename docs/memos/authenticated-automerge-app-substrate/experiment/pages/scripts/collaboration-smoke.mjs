@@ -144,6 +144,20 @@ async function selectText(page, text, collapse = false) {
   await expect
     .poll(() => page.evaluate(() => getSelection().toString()))
     .toBe(collapse ? "" : text);
+  // Wordgard reads the DOM selection on its own schedule. Keys typed before
+  // it has would land at the old caret, so wait until its state agrees.
+  await expect
+    .poll(() =>
+      content(page).evaluate((element) => {
+        const wg = element.closest(".wordgard-document")?.wg,
+          selection = getSelection();
+        if (!wg || !selection.rangeCount) return false;
+        const anchor = wg.posAtDOM(selection.anchorNode, selection.anchorOffset),
+          head = wg.posAtDOM(selection.focusNode, selection.focusOffset);
+        return wg.state.selection.anchor === anchor && wg.state.selection.head === head;
+      }),
+    )
+    .toBe(true);
 }
 // Two writers type one character at a time, in turn, at their own carets.
 // Each keystroke waits until the other writer shows the same text, so every
