@@ -276,6 +276,43 @@ There is no repair tool. To repair a Page:
    the receipts. Restore it from a backup, or ask the owner to grant access
    again.
 
+### Preserved Markdown conversion
+
+Older builds stored Markdown they couldn't import as one read-only preserved
+block. The Page host converts each one when it loads, creates, registers or
+restores a Page (README, "Preserved blocks"). While it converts, the Page is
+read-only: native connections get `temporarily_unavailable` and back off, and
+HTTP edits get `503 preserved_markdown_converting`.
+
+The conversion journals in its own key space (`host/operation/internal:`),
+outside the client receipt budgets, so a full legacy receipt store can't
+block it. A run that fails for a reason that passes (storage, a pending edit)
+retries with backoff, 5 seconds doubling to 5 minutes, and on every refused
+connection or edit. A run that applied but couldn't finish replays under the
+same key until its journal entry is terminal.
+
+A run that fails for a reason that won't pass (the change is too large, the
+conversion throws, or a request-shaped refusal) retries once converting each
+source as plain text. If that fails too, the host logs one line:
+
+```json
+{"service":"nteract-pages-native","event":"page.preserved_markdown_stuck","page_id":"…","reason":"history_capacity","timestamp":"…"}
+```
+
+`reason` is a bounded code (`history_capacity`, `conversion_error`, an error
+code, or `status_<n>`); the line carries no content. After a deploy, search the
+target's logs for `page.preserved_markdown_stuck`. A stuck Page is not fenced: it edits
+normally, and its preserved blocks stay read-only with a notice. The next
+load tries again. To recover a Page now, as its owner or with an agent:
+
+1. `read_page` the Page. A preserved block reads as the Markdown it would
+   convert to.
+2. `edit_page` with `replace_block_markdown` on that block, passing the
+   Markdown from step 1. If it's refused with `unsupported_markdown` or for
+   size, simplify or split the Markdown and retry.
+
+The replacement removes the preserved block, so nothing is left to convert.
+
 ## Page quotas
 
 Each account may hold a limited number of active Pages and, separately, the

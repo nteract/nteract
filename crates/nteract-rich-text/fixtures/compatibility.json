@@ -5784,6 +5784,106 @@
       "canonical_markdown": "<mark data-color=\"yellow\">x</mark> ![p](i.png)"
     },
     {
+      "id": "literal-bare-link-sharing-a-destination",
+      "markdown": "| a |\n| - |\n| [ok](https://example.org) [<br>](https://example.org) |",
+      "expected_spans": [
+        {
+          "type": "text",
+          "value": "| a |",
+          "marks": {}
+        },
+        {
+          "type": "block",
+          "value": {
+            "type": "hard-break",
+            "parents": [
+              "paragraph"
+            ],
+            "attrs": {},
+            "isEmbed": true
+          }
+        },
+        {
+          "type": "text",
+          "value": "| - |",
+          "marks": {}
+        },
+        {
+          "type": "block",
+          "value": {
+            "type": "hard-break",
+            "parents": [
+              "paragraph"
+            ],
+            "attrs": {},
+            "isEmbed": true
+          }
+        },
+        {
+          "type": "text",
+          "value": "| [ok](https://example.org) [<br>](https://example.org) |",
+          "marks": {}
+        }
+      ],
+      "canonical_markdown": "| a |\\\n| - |\\\n| \\[ok\\](https://example.org) \\[\\<br>\\](https://example.org) |"
+    },
+    {
+      "id": "repeated-image-is-native",
+      "markdown": "![p](i.png) and ![p](i.png)",
+      "expected_spans": [
+        {
+          "type": "block",
+          "value": {
+            "type": "image",
+            "parents": [
+              "paragraph"
+            ],
+            "attrs": {
+              "src": "i.png",
+              "alt": "p",
+              "title": null
+            },
+            "isEmbed": true
+          }
+        },
+        {
+          "type": "text",
+          "value": " and ",
+          "marks": {}
+        },
+        {
+          "type": "block",
+          "value": {
+            "type": "image",
+            "parents": [
+              "paragraph"
+            ],
+            "attrs": {
+              "src": "i.png",
+              "alt": "p",
+              "title": null
+            },
+            "isEmbed": true
+          }
+        }
+      ],
+      "canonical_markdown": "![p](i.png) and ![p](i.png)"
+    },
+    {
+      "id": "adjacent-links-sharing-a-destination",
+      "markdown": "[a](https://x.test)[b](https://x.test)",
+      "expected_spans": [
+        {
+          "type": "text",
+          "value": "ab",
+          "marks": {
+            "link": "{\"href\":\"https://x.test\",\"title\":null}"
+          }
+        }
+      ],
+      "canonical_markdown": "[ab](https://x.test)"
+    },
+    {
       "id": "image-after-closed-marks",
       "markdown": "**b** *e* ~~s~~ [l](u) ![p](i.png)",
       "expected_spans": [

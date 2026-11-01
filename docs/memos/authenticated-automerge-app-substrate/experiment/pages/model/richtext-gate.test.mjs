@@ -402,6 +402,20 @@ test("a link whose only content is a line break is unrepresentable", () => {
     },
   );
   assert.match(parseMarkdown(source).textContent, /\[<br>\]\(https:\/\/example\.org\)/);
+  // Another link to the same destination doesn't cover it: each link needs
+  // its own text.
+  const shared = "| a |\n| - |\n| [ok](https://example.org) [<br>](https://example.org) |";
+  assert.throws(
+    () => parseAgentMarkdown(shared),
+    (error) => {
+      assert.equal(error.details.unsupported.construct, "unrepresentable");
+      return true;
+    },
+  );
+  assert.match(parseMarkdown(shared).textContent, /\[ok\]\(https:\/\/example\.org\) \[<br>\]/);
+  // Repeated images and adjacent links sharing an href stay native.
+  for (const native of ["![p](i.png) and ![p](i.png)", "[a](https://x.test)[b](https://x.test)"])
+    assert.equal(unsupportedMarkdown(native) ?? nativeImportLoss(native), null, native);
 });
 
 // Never silent loss: over every compatibility fixture, and each one wrapped

@@ -237,7 +237,15 @@ references; it does not publish the Page or change asset access.
     `503 preserved_markdown_converting` after one more attempt. A trashed
     Page is `held`, so the fence is up before restore installs the active
     record. A failed run keeps the fence and retries with backoff, and on
-    every refused connection or edit. Runs are serialized, and each is a journaled host
+    every refused connection or edit. The conversion journals in its own
+    key space (`host/operation/internal:`), so full client receipt budgets
+    can't block it, and a run that applied but didn't finish replays under its
+    own key until the journal entry is terminal before the fence clears.
+  - Permanent failure: a run that fails for a reason that won't pass falls
+    back to converting each source as plain text. If that fails too, the Page
+    is `stuck`: logged (`page.preserved_markdown_stuck`), unfenced, and its
+    preserved blocks stay read-only until an edit replaces them
+    (DEPLOYMENT.md, "Preserved Markdown conversion"). Runs are serialized, and each is a journaled host
     intent keyed by the heads it converted, so a restart replays the recorded
     change instead of converting again. A Page with nothing to convert gets
     no change.

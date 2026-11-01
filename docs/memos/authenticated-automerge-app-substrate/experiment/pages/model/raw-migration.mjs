@@ -69,13 +69,13 @@ const plain = (value) => (A.isImmutableString(value) ? String(value) : value);
 /** The native spans that replace one preserved marker. Its source parses as
  * Markdown (math and HTML stay literal text), or as plain text when its kind
  * is not Markdown, and every block lands under the marker's parents. */
-export function convertedSpans(marker) {
+export function convertedSpans(marker, { literal = false } = {}) {
   const attrs = marker.value.attrs ?? {};
   const parents = (marker.value.parents ?? []).map(plain);
   const spans = pmNodeToSpans(
     adapter,
     parseMarkdown(String(plain(attrs.source) ?? ""), {
-      kind: String(plain(attrs.kind) ?? "markdown"),
+      kind: literal ? "text" : String(plain(attrs.kind) ?? "markdown"),
     }),
   );
   // The marker was a block boundary. An implicit first paragraph needs its
@@ -188,15 +188,16 @@ export function preservedBlockEdits(doc, since = []) {
  * Convert every preserved block in `doc` inside an Automerge change. Returns
  * the number of converted blocks; zero means the change wrote nothing. Stamps
  * the features the new spans need, and the conversion feature when it
- * converted anything.
+ * converted anything. `literal` converts each source as plain text, the
+ * host's fallback when the Markdown conversion fails for good.
  */
-export function convertPreservedBlocks(doc) {
+export function convertPreservedBlocks(doc, { literal = false } = {}) {
   let converted = 0;
   for (const path of preservedTextPaths(doc)) {
     const spans = spansAt(doc, path).flatMap((span) => {
       if (!isPreserved(span)) return [span];
       converted++;
-      return convertedSpans(span);
+      return convertedSpans(span, { literal });
     });
     A.updateSpans(doc, path, spans, updateSpansConfig);
     stampSpans(doc, spans);

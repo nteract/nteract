@@ -128,7 +128,7 @@ test("the host converts preserved blocks once, through the operation journal", a
   assert.equal(markdown.split("drop").length, 2, "converted once");
   assert.ok(documentFeatures(f.doc()).includes(CONVERSION_FEATURE));
   const journal = [
-    ...(await f.storage.list({ prefix: "host/operation/pages_preserved_markdown_" })),
+    ...(await f.storage.list({ prefix: "host/operation/internal:preserved_markdown_" })),
   ];
   assert.equal(journal.length, 1);
   assert.equal(journal[0][1].pending, false);
@@ -168,7 +168,7 @@ test("a crash after the conversion intent and before the document flush converts
   };
   await f.page.convertPreservedMarkdown();
   const journal = async () => [
-    ...(await f.storage.list({ prefix: "host/operation/pages_preserved_markdown_" })),
+    ...(await f.storage.list({ prefix: "host/operation/internal:preserved_markdown_" })),
   ];
   const [[, intent]] = await journal();
   assert.equal(intent.pending, true, "the intent is durable and unfinished");
@@ -390,4 +390,149 @@ test("a failed conversion keeps the fence after restore, and an edit retries it"
   assert.equal(hasPreservedBlocks(f.doc()), false);
   const markdown = exportMarkdown(richDoc(f.doc().blocks[orderedBlockIds(f.doc())[0]]));
   assert.equal(markdown.split("drop").length, 2, "converted once");
+});
+
+// A stand-in for DocumentAdmission's intent bookkeeping: one reservation per
+// key until release, replay applies the recorded changes.
+function fakeAdmission() {
+  const intents = new Map();
+  return {
+    intents,
+    get hasPending() {
+      return intents.size > 0;
+    },
+    pending: (key) => (intents.has(key) ? structuredClone(intents.get(key)) : undefined),
+    async reserve(key, entry, _candidate, _base, persist) {
+      intents.set(key, structuredClone(entry));
+      await persist();
+    },
+    async replay(_key, entry, handle) {
+      await handle.update((doc) => A.applyChanges(doc, entry.changes)[0]);
+    },
+    async apply(_keys, changes, handle) {
+      await handle.update((doc) => A.applyChanges(doc, changes)[0]);
+    },
+    async release(key) {
+      intents.delete(key);
+    },
+  };
+}
+async function preservedFixture(t) {
+  const plain = await fixture(t);
+  const stored = preservedPage();
+  const f = await fixture(t, { auth: plain.auth, docBytes: A.save(stored) });
+  A.free(stored);
+  return f;
+}
+const internalEntries = async (f) => [
+  ...(await f.storage.list({ prefix: "host/operation/internal:" })),
+];
+
+test("a full legacy receipt store doesn't block the conversion", async (t) => {
+  const f = await preservedFixture(t);
+  for (let n = 0; n < 1000; n++)
+    await f.storage.put(`host/operation/legacy-${String(n).padStart(4, "0")}`, {
+      fingerprint: `fixture-${n}`,
+      pending: false,
+      createdAt: "2000-01-01T00:00:00.000Z",
+      receipt: { page_id: pageId },
+    });
+  // The host's own conversion has its own key space and capacity.
+  await f.page.convertPreservedMarkdown();
+  assert.equal(f.page.conversion.name, "clear");
+  assert.equal(hasPreservedBlocks(f.doc()), false);
+  const [[key, entry]] = await internalEntries(f);
+  assert.match(key, /^host\/operation\/internal:preserved_markdown_/);
+  assert.equal(entry.pending, false);
+  const legacy = await f.tool("owner", "edit_page", {
+    base_heads: f.heads(),
+    idempotency_key: "legacy-overflow",
+    operations: [{ op: "insert_markdown", markdown: "More." }],
+  });
+  assert.equal(legacy.body.code, "operation_receipt_capacity", "client budgets are unchanged");
+});
+
+test("a conversion that applied but failed to finish replays until its journal entry is terminal", async (t) => {
+  const f = await preservedFixture(t);
+  const admission = fakeAdmission();
+  f.page.admission = admission;
+  let flushes = 0;
+  // documentMutation flushes the base, reserves, applies, then flushes the
+  // result: fail that second flush, after the change applied.
+  f.hooks.flush = () => {
+    if (++flushes === 2) throw Error("storage unavailable");
+  };
+  await f.page.convertPreservedMarkdown();
+  assert.equal(hasPreservedBlocks(f.doc()), false, "the change applied");
+  assert.equal(f.page.conversion.name, "failed", "the fence stays");
+  assert.ok(admission.hasPending, "the reservation is still held");
+  const [[, pending]] = await internalEntries(f);
+  assert.equal(pending.pending, true);
+  // No restart: the next observation replays the same intent.
+  f.hooks.flush = undefined;
+  const heads = f.heads();
+  await f.page.convertPreservedMarkdown();
+  assert.equal(f.page.conversion.name, "clear");
+  assert.equal(admission.hasPending, false, "the reservation is released");
+  const [[, finished]] = await internalEntries(f);
+  assert.equal(finished.pending, false);
+  assert.deepEqual(f.heads(), heads, "the replay added nothing");
+  // Later edits aren't blocked by pending_operation_capacity.
+  const edit = await f.tool("owner", "edit_page", {
+    base_heads: f.heads(),
+    idempotency_key: "after-replay",
+    operations: [{ op: "insert_markdown", markdown: "Next." }],
+  });
+  assert.equal(edit.status, 200, JSON.stringify(edit.body));
+  const markdown = exportMarkdown(richDoc(f.doc().blocks[orderedBlockIds(f.doc())[0]]));
+  assert.equal(markdown.split("drop").length, 2, "converted once");
+});
+
+test("a conversion that fails for good falls back to literal text", async (t) => {
+  const f = await preservedFixture(t);
+  let native = true;
+  f.hooks.flush = () => {
+    // The first (native) run is too large; the literal run fits.
+    if (native) {
+      native = false;
+      throw Object.assign(Error("too large"), { status: 413 });
+    }
+  };
+  await f.page.convertPreservedMarkdown();
+  assert.equal(f.page.conversion.name, "clear");
+  assert.equal(hasPreservedBlocks(f.doc()), false);
+  const tree = richDoc(f.doc().blocks[orderedBlockIds(f.doc())[0]]);
+  // Plain text: the source's Markdown syntax is kept as characters.
+  assert.match(tree.textContent, /Keep `~~x~~` and ~~drop~~\./);
+  tree.descendants((node) => assert.notEqual(node.type.name, "horizontal_rule"));
+});
+
+test("when both modes fail for good the Page is stuck, logged, and open", async (t) => {
+  const f = await preservedFixture(t);
+  const logged = [];
+  t.mock.method(console, "error", (line) => logged.push(String(line)));
+  f.hooks.flush = () => {
+    throw Object.assign(Error("too large"), { status: 413 });
+  };
+  await f.page.convertPreservedMarkdown();
+  assert.deepEqual(f.page.conversion, { name: "stuck", reason: "status_413" });
+  assert.ok(logged.some((line) => line.includes('"page.preserved_markdown_stuck"')));
+  // Never unrecoverable: the fence is down, and the preserved block stays
+  // read-only until an edit replaces it (DEPLOYMENT.md).
+  assert.equal(f.page.conversionWriteFence(), undefined);
+  assert.ok(hasPreservedBlocks(f.doc()));
+  f.hooks.flush = undefined;
+  // The recovery: replace the block with the Markdown read_page shows for it.
+  const read = await f.tool("owner", "read_page", { page_id: pageId, comments: "none" });
+  const [block] = read.body.blocks;
+  const blockId = orderedBlockIds(f.doc())[0];
+  const replaced = await f.tool("owner", "edit_page", {
+    base_heads: f.heads(),
+    idempotency_key: "operator-recovery",
+    operations: [{ op: "replace_block_markdown", block_id: blockId, markdown: block.markdown }],
+  });
+  assert.equal(replaced.status, 200, JSON.stringify(replaced.body));
+  assert.equal(hasPreservedBlocks(f.doc()), false);
+  await f.page.convertPreservedMarkdown();
+  assert.equal(f.page.conversion.name, "clear");
 });

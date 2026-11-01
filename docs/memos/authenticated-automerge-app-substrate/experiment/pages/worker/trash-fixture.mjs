@@ -30,11 +30,11 @@ export class Storage {
   async sync() {
     this.synced = structuredClone(this.values);
   }
-  async list({ prefix = "", limit = Infinity } = {}) {
+  async list({ prefix = "", limit = Infinity, startAfter } = {}) {
     return new Map(
       [...this.values]
         .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
-        .filter(([key]) => key.startsWith(prefix))
+        .filter(([key]) => key.startsWith(prefix) && (startAfter === undefined || key > startAfter))
         .slice(0, limit),
     );
   }

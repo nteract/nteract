@@ -4,7 +4,12 @@ import { openingTitleWarning } from "../model/title-warning.mjs";
 import { guardPassageEdits } from "../model/passage-edits.mjs";
 import { guardCommentIntent } from "../model/comment-guard.mjs";
 import { requireSupportedSchema } from "../model/schema-features.mjs";
-import { inspectOperation, reserveOperation, listOperationEntries } from "./operation-journal.mjs";
+import {
+  INTERNAL_PREFIX,
+  inspectOperation,
+  reserveOperation,
+  listOperationEntries,
+} from "./operation-journal.mjs";
 
 const COMMENT_OPERATIONS = ["manage_page_comment", "reply_page_comment"];
 
@@ -63,8 +68,13 @@ export async function documentMutation({
   apply,
   flush,
   admission,
+  // The host's own migration: its key is in the reserved internal key space,
+  // with its own journal capacity (operation-journal.mjs).
+  internal = false,
 }) {
-  const key = mutationKey(args);
+  const key = internal
+    ? `${INTERNAL_PREFIX}${mutationKey(args).slice("host/operation/".length)}`
+    : mutationKey(args);
   const digest = await fingerprint(operation, args, identity);
   const inspected = await inspectOperation(storage, {
     key,

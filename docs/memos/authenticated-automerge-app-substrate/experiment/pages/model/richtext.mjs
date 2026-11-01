@@ -1263,27 +1263,39 @@ export function nativeImportLoss(source) {
 
 /**
  * The general preservation check, behind the specific lossy rules: what the
- * parsed Markdown carried that the native spans don't. Compares every link
- * href, every image src and alt, and all visible text with whitespace
- * removed. Returns `{ kind, value }` for the first loss, or null.
+ * parsed Markdown carried that the native spans don't. Every link must hold
+ * visible text of its own, every link href must be in the spans, every image
+ * occurrence (src and alt) must have its own marker, and all visible text
+ * must match with whitespace removed. Returns `{ kind, value }` for the first loss, or null.
  *
  * The specific rules name a construct for the error; this catches whatever
  * they miss, such as a link whose only content is a line break.
  */
 export function lostContent(tokens, doc) {
-  const carried = { text: [], links: new Set(), images: new Set() };
+  const carried = { text: [], links: new Set(), images: [], bareLink: null };
+  // Each link must hold visible text of its own: links are marks on text, so
+  // one with only a line break or an image has nowhere to keep its href,
+  // whatever other links share it.
   const walk = (list) => {
+    let open = null;
     for (const token of list) {
       if (token.type === "inline") walk(token.children ?? []);
-      else if (["text", "code_inline", "fence", "code_block"].includes(token.type))
+      else if (["text", "code_inline", "fence", "code_block"].includes(token.type)) {
         carried.text.push(token.content);
-      else if (token.type === "link_open") carried.links.add(token.attrGet("href"));
-      else if (token.type === "image")
-        carried.images.add(JSON.stringify([token.attrGet("src"), imageAlt(token.children) ?? ""]));
+        if (open && token.content) open.text = true;
+      } else if (token.type === "link_open") {
+        open = { href: token.attrGet("href"), text: false };
+        carried.links.add(open.href);
+      } else if (token.type === "link_close" && open) {
+        if (!open.text) carried.bareLink ??= open.href;
+        open = null;
+      } else if (token.type === "image")
+        carried.images.push(JSON.stringify([token.attrGet("src"), imageAlt(token.children) ?? ""]));
     }
   };
   walk(tokens);
-  const produced = { text: [], links: new Set(), images: new Set() };
+  if (carried.bareLink !== null) return { kind: "link", value: carried.bareLink };
+  const produced = { text: [], links: new Set(), images: [] };
   for (const span of pmNodeToSpans(adapter, doc)) {
     if (span.type === "text") {
       produced.text.push(span.value);
@@ -1291,15 +1303,21 @@ export function lostContent(tokens, doc) {
       if (link) produced.links.add(JSON.parse(String(link)).href);
     } else if (String(span.value.type) === "image") {
       const attrs = span.value.attrs ?? {};
-      produced.images.add(JSON.stringify([String(attrs.src), String(attrs.alt ?? "")]));
+      produced.images.push(JSON.stringify([String(attrs.src), String(attrs.alt ?? "")]));
     }
   }
   const squash = (parts) => parts.join("").replace(/\s+/g, "");
   if (squash(carried.text) !== squash(produced.text)) return { kind: "text" };
   for (const href of carried.links)
     if (!produced.links.has(href)) return { kind: "link", value: href };
-  for (const image of carried.images)
-    if (!produced.images.has(image)) return { kind: "image", value: JSON.parse(image)[0] };
+  // Images are embeds, one marker each: compare every occurrence.
+  const remaining = new Map();
+  for (const image of produced.images) remaining.set(image, (remaining.get(image) ?? 0) + 1);
+  for (const image of carried.images) {
+    const left = remaining.get(image) ?? 0;
+    if (!left) return { kind: "image", value: JSON.parse(image)[0] };
+    remaining.set(image, left - 1);
+  }
   return null;
 }
 

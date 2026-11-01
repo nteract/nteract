@@ -33,6 +33,7 @@ import {
   conversionFenceError,
   conversionFenced,
   conversionRetryDelay,
+  permanentFailure,
   preservedConversionMachine,
 } from "./preserved-conversion.mjs";
 import { readTargets, writeTargets } from "../model/agent-presence.mjs";
@@ -66,7 +67,12 @@ import {
   isHistoryCapacityError,
   logIncompleteHistory,
 } from "./history-admission.mjs";
-import { issueRetryToken, inspectOperation, reserveOperation } from "./operation-journal.mjs";
+import {
+  INTERNAL_PREFIX,
+  issueRetryToken,
+  inspectOperation,
+  reserveOperation,
+} from "./operation-journal.mjs";
 import { BufferedRecordStore, RemoteRecordSink } from "./record-persistence.mjs";
 import { RecordMaintenance } from "./record-maintenance.mjs";
 export { PageRecords } from "./record-persistence.mjs";
@@ -257,6 +263,28 @@ const noop = async () => {};
 /** Complete the upgrade and close at once with the refusal's admission code.
  * A browser reads a refused HTTP upgrade only as close 1006, which its
  * reconnect treats as transient; the close code lets it count the refusal. */
+/** A bounded, content-free reason for a failed conversion run. */
+function failureReason(error) {
+  if (isHistoryCapacityError(error)) return "history_capacity";
+  if (error?.conversion) return "conversion_error";
+  if (typeof error?.code === "string") return error.code.slice(0, 64);
+  if (Number.isInteger(error?.status)) return `status_${error.status}`;
+  return "storage_or_runtime";
+}
+/** One structured line when a Page's preserved blocks can't be converted:
+ * its Page ID, like `page.creation_intent_conflict`, and a bounded reason,
+ * never content. DEPLOYMENT.md describes the recovery. */
+function logPreservedStuck(pageId, reason) {
+  console.error(
+    JSON.stringify({
+      service: "nteract-pages-native",
+      event: "page.preserved_markdown_stuck",
+      page_id: pageId,
+      reason,
+      timestamp: new Date().toISOString(),
+    }),
+  );
+}
 function refuseSocket(error, identity) {
   logAdmissionDenied(error, { stage: "page", identity });
   const pair = new WebSocketPair();
@@ -2396,11 +2424,13 @@ export class Page {
     const doc = typeof this.handle?.doc === "function" ? this.handle.doc() : undefined;
     if (!doc) return;
     const preserved = hasPreservedBlocks(doc);
+    const unfinished = !!this.conversionIntent;
     this.conversionEvent({
       type: "observe",
       preserved,
+      unfinished,
       eligible:
-        preserved &&
+        (preserved || unfinished) &&
         !this.recoveryBlocked &&
         pageState(this.metadata) === "active" &&
         !unsupportedFeatures(doc).length,
@@ -2420,17 +2450,23 @@ export class Page {
         );
         // Node keeps no process alive for it; a Durable Object stays resident.
         this.conversionRetry?.unref?.();
-      } else if (effect.type === "convert") {
-        const run = this.convertPreservedOnce().then(
-          () => "succeeded",
+      } else if (effect.type === "logStuck")
+        logPreservedStuck(this.metadata?.pageId ?? this.handle.doc().page_id, effect.reason);
+      else if (effect.type === "convert") {
+        const run = this.convertPreservedOnce(effect.mode).then(
+          () => ({ type: "succeeded" }),
           (error) => {
             logFailure(error, "preserved-markdown");
-            return "failed";
+            return {
+              type: "failed",
+              permanent: permanentFailure(error, { isHistoryCapacityError }),
+              reason: failureReason(error),
+            };
           },
         );
         this.conversionRun = run.then((outcome) => {
           this.conversionRun = undefined;
-          this.conversionEvent({ type: outcome });
+          this.conversionEvent(outcome);
         });
       }
     }
@@ -2444,30 +2480,58 @@ export class Page {
     if (this.conversionFenced()) throw conversionFenceError();
   }
 
-  /** One journaled conversion run. Each run is a host intent keyed by the
-   * heads it converted, so a restart replays the recorded change instead of
-   * converting again. Throws on failure. */
-  async convertPreservedOnce() {
-    const doc = this.handle.doc();
-    const heads = A.getHeads(doc).sort();
-    const digest = hex(
-      new Uint8Array(
-        await crypto.subtle.digest("SHA-256", new TextEncoder().encode(heads.join(","))),
-      ),
-    );
-    await documentMutation({
-      storage: this.ctx.storage,
-      admission: this.admission,
-      handle: this.handle,
-      operation: "convert_preserved_markdown",
-      args: {
-        idempotency_key: `pages_preserved_markdown_${digest.slice(0, 32)}`,
-        base_heads: heads,
-      },
-      identity: { principal: "service:pages", driver: "API" },
-      apply: (draft) => ({ converted: convertPreservedBlocks(draft) }),
-      flush: () => this.flush(),
-    });
+  /** One journaled conversion run. A run is a host intent in the journal's
+   * internal key space, keyed by the heads it converted, so a restart replays
+   * the recorded change instead of converting again. The intent is kept
+   * until its journal entry is terminal: a run that applied but failed to
+   * finish replays under the same key, so its reservation completes. Throws
+   * on failure; an error from the conversion itself carries `conversion`. */
+  async convertPreservedOnce(mode) {
+    if (!this.conversionIntent) {
+      const heads = A.getHeads(this.handle.doc()).sort();
+      const digest = hex(
+        new Uint8Array(
+          await crypto.subtle.digest("SHA-256", new TextEncoder().encode(heads.join(","))),
+        ),
+      );
+      const literal = mode === "literal";
+      this.conversionIntent = {
+        operation: literal ? "convert_preserved_markdown_literal" : "convert_preserved_markdown",
+        literal,
+        args: {
+          idempotency_key: `preserved_${literal ? "literal" : "markdown"}_${digest.slice(0, 32)}`,
+          base_heads: heads,
+        },
+      };
+    }
+    const intent = this.conversionIntent;
+    try {
+      await documentMutation({
+        storage: this.ctx.storage,
+        admission: this.admission,
+        handle: this.handle,
+        operation: intent.operation,
+        args: intent.args,
+        identity: { principal: "service:pages", driver: "API" },
+        internal: true,
+        apply: (draft) => {
+          try {
+            return { converted: convertPreservedBlocks(draft, { literal: intent.literal }) };
+          } catch (error) {
+            throw Object.assign(error, { conversion: true });
+          }
+        },
+        flush: () => this.flush(),
+      });
+      this.conversionIntent = undefined;
+    } catch (error) {
+      // Keep the intent while its journal entry is pending: the next run
+      // replays it. Without one, the next run starts over from current heads.
+      const key = `${INTERNAL_PREFIX}${intent.args.idempotency_key}`;
+      const entry = await this.ctx.storage.get(key).catch(() => ({ pending: true }));
+      if (!entry?.pending && !this.admission?.pending(key)) this.conversionIntent = undefined;
+      throw error;
+    }
   }
 
   initializeRepo(metadata = this.metadata) {

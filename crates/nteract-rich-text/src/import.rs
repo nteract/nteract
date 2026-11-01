@@ -691,7 +691,11 @@ struct Builder<'a> {
 struct Carried {
     text: String,
     links: std::collections::BTreeSet<String>,
-    images: std::collections::BTreeSet<(String, String)>,
+    /// Every image occurrence: images are embeds, one marker each.
+    images: Vec<(String, String)>,
+    /// A link that held no visible text of its own: links are marks on
+    /// text, so its href has nowhere to live, whatever other links share it.
+    bare_link: bool,
 }
 
 impl Carried {
@@ -721,7 +725,7 @@ impl Carried {
                             .unwrap_or("")
                             .to_owned()
                     };
-                    produced.images.insert((attr("src"), attr("alt")));
+                    produced.images.push((attr("src"), attr("alt")));
                 }
                 Span::Block { .. } => {}
             }
@@ -737,9 +741,18 @@ impl Carried {
                 .filter(|c| !c.is_whitespace())
                 .collect::<String>()
         };
-        squash(&self.text) == squash(&produced.text)
+        let mut remaining = produced.images.clone();
+        let images = self.images.iter().all(|image| {
+            remaining
+                .iter()
+                .position(|candidate| candidate == image)
+                .map(|at| remaining.swap_remove(at))
+                .is_some()
+        });
+        !self.bare_link
+            && squash(&self.text) == squash(&produced.text)
             && self.links.is_subset(&produced.links)
-            && self.images.is_subset(&produced.images)
+            && images
     }
 }
 
@@ -1098,8 +1111,7 @@ impl Builder<'_> {
                 Node::ImageReference(reference) => {
                     let (url, title) = self.definition(&reference.identifier)?;
                     self.carried
-                        .images
-                        .insert((url.clone(), reference.alt.clone()));
+                        .images.push((url.clone(), reference.alt.clone()));
                     self.highlighted_image |= self.highlight.is_some();
                     self.marker(
                         "image",
@@ -1115,7 +1127,7 @@ impl Builder<'_> {
                 Node::Image(image) => {
                     self.highlighted_image |= self.highlight.is_some();
                     let alt = self.image_alt(image)?;
-                    self.carried.images.insert((image.url.clone(), alt.clone()));
+                    self.carried.images.push((image.url.clone(), alt.clone()));
                     self.marker(
                         "image",
                         parents,
@@ -1176,7 +1188,10 @@ impl Builder<'_> {
         let mut nested = marks.clone();
         let value = format!("{{\"href\":{},\"title\":{}}}", json!(url), json!(title));
         nested.insert("link".into(), Value::String(value));
-        self.inlines(children, parents, &nested, in_table)
+        let before = self.carried.text.len();
+        self.inlines(children, parents, &nested, in_table)?;
+        self.carried.bare_link |= self.carried.text.len() == before;
+        Ok(())
     }
 }
 
@@ -1390,9 +1405,18 @@ mod tests {
             checked > 500 && literal > 0,
             "{checked} checked, {literal} literal"
         );
-        // The case the specific rules missed.
-        let source = "| a |\n| - |\n| [<br>](https://example.org) |";
-        assert_eq!(import(source), literal_document(source).unwrap());
+        // The cases the specific rules missed: a link with only a break,
+        // alone or beside another link to the same destination.
+        for source in [
+            "| a |\n| - |\n| [<br>](https://example.org) |",
+            "| a |\n| - |\n| [ok](https://example.org) [<br>](https://example.org) |",
+        ] {
+            assert_eq!(import(source), literal_document(source).unwrap(), "{source}");
+        }
+        assert_ne!(
+            import("![p](i.png) and ![p](i.png)"),
+            literal_document("![p](i.png) and ![p](i.png)").unwrap()
+        );
     }
 
     #[test]
