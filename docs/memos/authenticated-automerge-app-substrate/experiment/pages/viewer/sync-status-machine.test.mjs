@@ -5,7 +5,12 @@ import assert from "node:assert/strict";
 import { loadTable, runTable } from "../shared/machine-test.mjs";
 import {
   LINKS,
+  OVERLAY_FLAGS,
+  STATUS_KEYS,
+  fullStatus,
+  overlayStatus,
   statusLabel,
+  syncStatus,
   syncStatusLabel,
   viewerSyncStatusMachine,
 } from "./sync-status-machine.mjs";
@@ -120,4 +125,48 @@ test("a phase pause or a failed local save outranks the receipt", () => {
   }
   assert.equal(statusLabel(saving), "Offline");
   assert.equal(statusLabel({ ...saving, link: "connected" }), "Saving");
+});
+
+// The presentation key for every label the machine renders. Presentation
+// branches on the key, so this table is what a reworded label must keep.
+const KEYS = {
+  Connecting: "connecting",
+  Reconnecting: "connecting",
+  Connected: "connected",
+  Syncing: "syncing",
+  Saving: "saving",
+  Saved: "saved",
+  "Saved locally": "attention",
+  Offline: "attention",
+  Deleted: "attention",
+  "Access removed": "attention",
+  "Access changed": "attention",
+  "Sign in to sync": "attention",
+  Unsaved: "failed",
+  "Local save failed": "failed",
+};
+
+test("every rendered status carries its presentation key", () => {
+  const seen = new Set();
+  const check = (status, context) => {
+    assert.ok(STATUS_KEYS.includes(status.key), context);
+    assert.equal(status.key, KEYS[status.label], `${context}: ${status.label}`);
+    seen.add(status.label);
+  };
+  for (const name of viewerSyncStatusMachine.states)
+    for (const link of LINKS)
+      for (const localCopy of [false, true]) {
+        const state = { name, revision: 1, pending: name === "saving", link };
+        check(syncStatus(state, { localCopy }), `${name} / ${link} / ${localCopy}`);
+        assert.deepEqual(fullStatus(state, { localCopy }), syncStatus(state, { localCopy }));
+      }
+  const saving = { name: "saving", revision: 1, pending: true, link: "connected" };
+  for (const flag of OVERLAY_FLAGS) {
+    check(overlayStatus(flag), flag);
+    assert.deepEqual(fullStatus(saving, { [flag]: true }), overlayStatus(flag), flag);
+    assert.equal(statusLabel(saving, { [flag]: true }), overlayStatus(flag).label, flag);
+  }
+  // Every key in the table is reachable, so the table can't hold stale labels.
+  assert.deepEqual([...seen].sort(), Object.keys(KEYS).sort());
+  assert.throws(() => overlayStatus("readOnly"), /unknown status overlay/);
 });

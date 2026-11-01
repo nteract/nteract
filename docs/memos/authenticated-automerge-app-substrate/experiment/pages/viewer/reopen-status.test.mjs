@@ -168,10 +168,13 @@ test("a Page closed while syncing remote changes reopens Syncing, not Saving", a
   const pageId = await cachedPage(h);
   const first = await open(h, pageId);
   assert.equal(first.status, "Syncing");
+  assert.equal(first.statusKey, "syncing");
   await acknowledge(h, first);
   assert.equal(first.status, "Saved");
+  assert.equal(first.statusKey, "saved");
   await remoteChange(first, "From an agent");
   assert.equal(first.status, "Syncing");
+  assert.equal(first.statusKey, "syncing");
   await receipt(h, first); // Outstanding when the Page closes.
   await first.close();
   const closed = await readLocalPage(h.auth.identity, pageId);
@@ -236,6 +239,7 @@ test("a local edit that reached native storage but not the checkpoint reopens Sa
   assert.equal(reopened.recoveryPending, true, "the restored edit is not claimed as saved");
   assert.ok(!A.getHeads(reopened.doc).every((head) => reopened.savedHeads.includes(head)));
   assert.equal(reopened.status, "Saving");
+  assert.equal(reopened.statusKey, "saving");
   // Remote catch-up before the receipt lands keeps it Saving.
   await remoteChange(reopened, "From an agent");
   assert.equal(reopened.status, "Saving");

@@ -889,6 +889,7 @@ test("a deletion marker from another tab terminates stale local checkpoint write
   clearTimeout(session.savedTimer);
   await session.saveReceipt();
   assert.equal(session.status, "Deleted");
+  assert.equal(session.statusKey, "attention");
   assert.equal(session.canWrite, false);
   assert.equal(session.alive, false);
   assert.equal(session.receiptRetryTimer, undefined);

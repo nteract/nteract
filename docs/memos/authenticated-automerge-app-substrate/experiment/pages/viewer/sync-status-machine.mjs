@@ -35,8 +35,8 @@
  * Failed receipts retry at the same revision, so a later acknowledgement still
  * lands from `local` or `unsaved`.
  *
- * The machine has no effects. PageSession renders `statusLabel` after each
- * step; presentation (SaveStatus, a header icon) maps the label.
+ * The machine has no effects. PageSession renders `fullStatus` after each
+ * step; presentation (SaveStatus, the phone header dot) maps its key.
  */
 import { defineMachine, reject } from "../shared/machine.mjs";
 
@@ -181,6 +181,51 @@ export const viewerSyncStatusMachine = defineMachine({
 });
 
 /**
+ * Presentation keys. Each status is a `{ label, key }` pair: the label is
+ * the English text people read, and the key is what presentation branches
+ * on, so rewording a label never changes how it is drawn.
+ * - connecting: no admitted socket yet, or reconnecting after one closed.
+ * - connected: a socket is admitted and no receipt has started.
+ * - syncing: a receipt for remote changes is outstanding.
+ * - saving: a receipt for this person's own edits is outstanding.
+ * - saved: the host acknowledged the current receipt.
+ * - attention: sync is paused or local-only; the edits are not lost.
+ * - failed: edits may be lost.
+ */
+export const STATUS_KEYS = Object.freeze([
+  "connecting",
+  "connected",
+  "syncing",
+  "saving",
+  "saved",
+  "attention",
+  "failed",
+]);
+const status = (label, key) => ({ label, key });
+
+/**
+ * The statuses that outrank the receipt, in rank order. Each flag is a fact
+ * PageSession already holds; PageSession also shows these directly when the
+ * fact changes, through `overlayStatus`.
+ */
+const OVERLAYS = Object.freeze({
+  deleted: status("Deleted", "attention"),
+  accessDenied: status("Access removed", "attention"),
+  accessReloadRequired: status("Access changed", "attention"),
+  authRequired: status("Sign in to sync", "attention"),
+  localFailed: status("Local save failed", "failed"),
+});
+
+export const OVERLAY_FLAGS = Object.freeze(Object.keys(OVERLAYS));
+
+/** The status for one overlay flag (one of OVERLAY_FLAGS). */
+export function overlayStatus(flag) {
+  const value = OVERLAYS[flag];
+  if (!value) throw new Error(`unknown status overlay ${flag}`);
+  return value;
+}
+
+/**
  * The receipt and connection part of the status. `localCopy` says an
  * IndexedDB record holds this Page, so an idle or offline replica still has
  * its edits.
@@ -189,46 +234,42 @@ export const viewerSyncStatusMachine = defineMachine({
  * know sync is down. Pending local edits outrank reconnecting: they are what
  * the person is waiting on, and the HTTP receipt can still land.
  */
-export function syncStatusLabel(state, { localCopy = false } = {}) {
+export function syncStatus(state, { localCopy = false } = {}) {
   const { name, link } = state;
   if (link === "offline")
-    return name === "local" || (name === "idle" && localCopy) ? "Saved locally" : "Offline";
-  if (name === "saving") return "Saving";
-  if (link === "reconnecting") return "Reconnecting";
+    return name === "local" || (name === "idle" && localCopy)
+      ? status("Saved locally", "attention")
+      : status("Offline", "attention");
+  if (name === "saving") return status("Saving", "saving");
+  if (link === "reconnecting") return status("Reconnecting", "connecting");
   switch (name) {
     case "idle":
-      return link === "connected" ? "Connected" : localCopy ? "Saved locally" : "Connecting";
+      return link === "connected"
+        ? status("Connected", "connected")
+        : localCopy
+          ? status("Saved locally", "attention")
+          : status("Connecting", "connecting");
     case "syncing":
-      return "Syncing";
+      return status("Syncing", "syncing");
     case "saved":
-      return "Saved";
+      return status("Saved", "saved");
     case "local":
-      return "Saved locally";
+      return status("Saved locally", "attention");
     case "unsaved":
-      return "Unsaved";
+      return status("Unsaved", "failed");
   }
   throw new Error(`unknown state ${name}`);
 }
 
+export const syncStatusLabel = (state, options) => syncStatus(state, options).label;
+
 /**
  * The whole status line: a phase pause or a failed local save outranks the
- * receipt, in this order. Each flag is a fact PageSession already holds.
+ * receipt, in OVERLAYS order.
  */
-export function statusLabel(
-  state,
-  {
-    deleted = false,
-    accessDenied = false,
-    accessReloadRequired = false,
-    authRequired = false,
-    localFailed = false,
-    localCopy = false,
-  } = {},
-) {
-  if (deleted) return "Deleted";
-  if (accessDenied) return "Access removed";
-  if (accessReloadRequired) return "Access changed";
-  if (authRequired) return "Sign in to sync";
-  if (localFailed) return "Local save failed";
-  return syncStatusLabel(state, { localCopy });
+export function fullStatus(state, { localCopy = false, ...flags } = {}) {
+  for (const [flag, value] of Object.entries(OVERLAYS)) if (flags[flag]) return value;
+  return syncStatus(state, { localCopy });
 }
+
+export const statusLabel = (state, flags) => fullStatus(state, flags).label;

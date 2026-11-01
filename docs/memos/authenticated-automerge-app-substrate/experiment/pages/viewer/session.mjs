@@ -45,7 +45,7 @@ import {
   reconnectDelay,
   viewerReconnectMachine,
 } from "./reconnect-machine.mjs";
-import { statusLabel, viewerSyncStatusMachine } from "./sync-status-machine.mjs";
+import { fullStatus, overlayStatus, viewerSyncStatusMachine } from "./sync-status-machine.mjs";
 import {
   acknowledgedHeads,
   afterAcknowledgement,
@@ -168,6 +168,9 @@ export class PageSession {
   composing = 0;
   localDepth = 0;
   status = "Connecting";
+  // How `status` is drawn (STATUS_KEYS in sync-status-machine.mjs). Set only
+  // with `status`, through showStatus.
+  statusKey = "connecting";
   problem = "";
   // Why the last connection attempt failed, when the person should see it.
   // It shows as `problem` unless a local save failure is in front of it.
@@ -466,7 +469,7 @@ export class PageSession {
       if (error.code === "LOCAL_PAGE_DELETED") deleted = true;
       else if (error.code !== "LOCAL_PAGE_ACCESS_CHANGED") {
         this.problem = error.message;
-        this.status = "Local save failed";
+        this.showStatus(overlayStatus("localFailed"));
       }
     }
     if (this.phase$.snapshot().name !== "checkpointing") return this.#whenReleased();
@@ -474,7 +477,7 @@ export class PageSession {
     return this.dispatch(event, () => {
       if (!deleted) return;
       this.canWrite = false;
-      this.status = "Deleted";
+      this.showStatus(overlayStatus("deleted"));
       this.problem = "This Page was deleted.";
     }).done;
   }
@@ -564,7 +567,7 @@ export class PageSession {
         this.problem = this.localProblem;
       this.receiptRevision = (this.receiptRevision ?? 0) + 1;
       this.authProblem = message;
-      this.status = "Sign in to sync";
+      this.showStatus(overlayStatus("authRequired"));
       this.reconnect({ type: "halt" });
     });
     if (!rejected) this.emit();
@@ -739,7 +742,7 @@ export class PageSession {
       this.cancelReceiptRetry();
       this.receiptRevision = (this.receiptRevision ?? 0) + 1;
       this.reconnect({ type: "halt" });
-      this.status = denied || trashed ? "Access removed" : "Access changed";
+      this.showStatus(overlayStatus(denied || trashed ? "accessDenied" : "accessReloadRequired"));
     });
     if (!rejected) this.emit();
   }
@@ -1220,7 +1223,7 @@ export class PageSession {
   async markDeleted() {
     const { rejected, done } = this.dispatch({ type: "accessChanged", grant: "deleted" }, () => {
       this.canWrite = false;
-      this.status = "Deleted";
+      this.showStatus(overlayStatus("deleted"));
       this.problem = "This Page was deleted.";
       this.cancelReceiptRetry();
     });
@@ -1719,16 +1722,23 @@ export class PageSession {
     if (!result.rejected) this.sync$.update(() => result.state);
     return result;
   }
+  /** Show a `{ label, key }` status from sync-status-machine.mjs. */
+  showStatus({ label, key }) {
+    this.status = label;
+    this.statusKey = key;
+  }
   /** Render `status` from the sync-status machine and the phase's pauses. */
   renderStatus() {
-    this.status = statusLabel(this.sync$.snapshot(), {
-      deleted: this.deleted,
-      accessDenied: this.accessDenied,
-      accessReloadRequired: this.accessReloadRequired,
-      authRequired: this.authRequired,
-      localFailed: !!this.localProblem,
-      localCopy: !!this.localPage,
-    });
+    this.showStatus(
+      fullStatus(this.sync$.snapshot(), {
+        deleted: this.deleted,
+        accessDenied: this.accessDenied,
+        accessReloadRequired: this.accessReloadRequired,
+        authRequired: this.authRequired,
+        localFailed: !!this.localProblem,
+        localCopy: !!this.localPage,
+      }),
+    );
   }
   showReceiptState() {
     this.renderStatus();

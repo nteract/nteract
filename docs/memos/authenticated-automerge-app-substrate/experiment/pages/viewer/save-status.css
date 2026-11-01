@@ -34,3 +34,48 @@
     animation: none;
   }
 }
+/* Compact status on phones (StatusDot in SaveStatus.jsx). */
+.save-status--dot {
+  width: 24px;
+  height: 24px;
+}
+/* A plain status (Connected, or a key the table doesn't know) is an opaque
+   ring, so it clears 3:1 on the header and still reads apart from the filled
+   dot of a working state. --muted-foreground is about 4.7:1 on the light
+   background and 7.6:1 on the dark one. */
+.status-dot {
+  box-sizing: border-box;
+  width: 9px;
+  height: 9px;
+  border: 2px solid var(--muted-foreground);
+  border-radius: 50%;
+}
+.save-status--working .status-dot,
+.save-status--attention .status-dot,
+.save-status--error .status-dot {
+  border: 0;
+}
+.save-status--working .status-dot {
+  background: var(--muted-foreground);
+}
+.save-status--working .status-dot.is-pulsing {
+  background: var(--primary);
+  animation: save-status-pulse 1.1s ease-in-out infinite;
+}
+.save-status--attention .status-dot {
+  background: var(--warning);
+}
+.save-status--error .status-dot {
+  background: var(--destructive);
+}
+@keyframes save-status-pulse {
+  50% {
+    opacity: 0.35;
+    transform: scale(0.8);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .status-dot.is-pulsing {
+    animation: none;
+  }
+}

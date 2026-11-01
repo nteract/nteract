@@ -6,6 +6,13 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { build } from "esbuild";
 import { JSDOM } from "jsdom";
+import {
+  LINKS,
+  OVERLAY_FLAGS,
+  overlayStatus,
+  syncStatus,
+  viewerSyncStatusMachine,
+} from "./sync-status-machine.mjs";
 
 const require = createRequire(import.meta.url);
 const bundled = await build({
@@ -31,52 +38,120 @@ const bundled = await build({
 const { SaveStatus } = await import(
   `data:text/javascript;base64,${Buffer.from(bundled.outputFiles[0].contents).toString("base64")}`
 );
-function render(status) {
-  const fragment = JSDOM.fragment(renderToStaticMarkup(createElement(SaveStatus, { status })));
-  return fragment.querySelector('[role="status"]');
+function render({ label, key }, compact = false) {
+  const element = createElement(SaveStatus, { status: label, statusKey: key, compact });
+  return JSDOM.fragment(renderToStaticMarkup(element)).querySelector('[role="status"]');
 }
 
-test("the acknowledged Saved state is quiet and retains its accessible meaning", () => {
-  const status = render("Saved");
-  assert.equal(status.getAttribute("aria-label"), "All changes saved");
-  assert.equal(status.title, "All changes saved");
-  assert.equal(status.getAttribute("aria-live"), "polite");
-  assert.equal(status.getAttribute("aria-atomic"), "true");
-  assert.equal(status.querySelector(".sr-only").textContent, "Saved");
-  assert.equal(status.querySelector(".save-status-label"), null);
-  assert.equal(status.querySelector("svg").getAttribute("aria-hidden"), "true");
-  assert.ok(status.classList.contains("save-status--saved"));
+// Every status the machine and its overlays render, by label.
+const STATUSES = new Map();
+for (const name of viewerSyncStatusMachine.states)
+  for (const link of LINKS)
+    for (const localCopy of [false, true]) {
+      const status = syncStatus(
+        { name, revision: 1, pending: name === "saving", link },
+        { localCopy },
+      );
+      STATUSES.set(status.label, status);
+    }
+for (const flag of OVERLAY_FLAGS) STATUSES.set(overlayStatus(flag).label, overlayStatus(flag));
+
+// How each status is drawn: its class, its icon on desktop, and on phones
+// whether the dot is shown and whether it pulses.
+const DRAWN = {
+  Connecting: { kind: "working", icon: true, dot: true, pulse: false },
+  Reconnecting: { kind: "working", icon: true, dot: true, pulse: false },
+  Connected: { kind: "plain", icon: false, dot: true, pulse: false },
+  Syncing: { kind: "working", icon: true, dot: true, pulse: false },
+  Saving: { kind: "working", icon: true, dot: true, pulse: true },
+  Saved: { kind: "saved", icon: true, dot: false, pulse: false },
+  "Saved locally": { kind: "attention", icon: true, dot: true, pulse: false },
+  Offline: { kind: "attention", icon: true, dot: true, pulse: false },
+  Deleted: { kind: "attention", icon: true, dot: true, pulse: false },
+  "Access removed": { kind: "attention", icon: true, dot: true, pulse: false },
+  "Access changed": { kind: "attention", icon: true, dot: true, pulse: false },
+  "Sign in to sync": { kind: "attention", icon: true, dot: true, pulse: false },
+  Unsaved: { kind: "error", icon: true, dot: true, pulse: false },
+  "Local save failed": { kind: "error", icon: true, dot: true, pulse: false },
+};
+
+test("the table covers every status the machine renders", () => {
+  assert.deepEqual([...STATUSES.keys()].sort(), Object.keys(DRAWN).sort());
 });
 
-test("connection, local-only, permission, and failure states remain visible and never claim saved", () => {
-  for (const value of [
-    "Connecting",
-    "Connected",
-    "Reconnecting",
-    "Syncing",
-    "Saving",
-    "Saved locally",
-    "Offline",
-    "Unsaved",
-    "Local save failed",
-    "Sign in to sync",
-    "Access changed",
-    "Access removed",
-    "Deleted",
-    "Read only",
-    "A future status",
+for (const [label, status] of STATUSES) {
+  const drawn = DRAWN[label];
+  const saved = drawn.kind === "saved";
+
+  test(`desktop: ${label}`, () => {
+    const element = render(status);
+    assert.ok(element.classList.contains(`save-status--${drawn.kind}`));
+    assert.equal(element.getAttribute("aria-live"), "polite");
+    assert.equal(element.getAttribute("aria-atomic"), "true");
+    assert.equal(!!element.querySelector("svg"), drawn.icon);
+    if (drawn.icon) assert.equal(element.querySelector("svg").getAttribute("aria-hidden"), "true");
+    if (saved) {
+      // Quiet, with the same accessible meaning.
+      assert.equal(element.getAttribute("aria-label"), "All changes saved");
+      assert.equal(element.title, "All changes saved");
+      assert.equal(element.querySelector(".sr-only").textContent, "Saved");
+      assert.equal(element.querySelector(".save-status-label"), null);
+    } else {
+      // Visible, and never claiming saved.
+      assert.equal(element.querySelector(".save-status-label").textContent, label);
+      assert.equal(element.querySelector(".sr-only"), null);
+      assert.equal(element.getAttribute("aria-label"), null);
+      assert.equal(element.getAttribute("title"), null);
+    }
+  });
+
+  test(`phone: ${label}`, () => {
+    const element = render(status, true);
+    assert.ok(element.classList.contains("save-status--dot"));
+    assert.ok(element.classList.contains(`save-status--${drawn.kind}`));
+    assert.equal(element.getAttribute("aria-live"), "polite");
+    assert.equal(element.getAttribute("aria-atomic"), "true");
+    assert.equal(element.dataset.status, label);
+    // The label stays for screen readers, never as visible text.
+    assert.equal(element.querySelector(".sr-only").textContent, label);
+    assert.equal(element.querySelector(".save-status-label"), null);
+    assert.equal(element.getAttribute("aria-label"), saved ? "All changes saved" : null);
+    assert.equal(element.title, saved ? "All changes saved" : label);
+    const dot = element.querySelector(".status-dot");
+    assert.equal(!!dot, drawn.dot);
+    if (dot) {
+      assert.equal(dot.getAttribute("aria-hidden"), "true");
+      assert.equal(dot.classList.contains("is-pulsing"), drawn.pulse);
+    }
+  });
+}
+
+test("the key, not the label, decides how a status is drawn", () => {
+  // A reworded Saving label still pulses.
+  const reworded = render({ label: "Saving your edits", key: "saving" }, true);
+  assert.ok(reworded.querySelector(".status-dot.is-pulsing"));
+  // The Saving label with another key does not.
+  assert.equal(
+    render({ label: "Saving", key: "syncing" }, true).querySelector(".is-pulsing"),
+    null,
+  );
+  // A Saved label without the saved key is not quiet.
+  assert.ok(!render({ label: "Saved", key: "connected" }).classList.contains("save-status--saved"));
+});
+
+test("a status without a known key is drawn plain and never as saved", () => {
+  for (const status of [
+    { label: "Read only" },
+    { label: "A future status", key: "future" },
+    { label: "Saved", key: "toString" },
   ]) {
-    const status = render(value);
-    assert.equal(status.querySelector(".save-status-label").textContent, value);
-    assert.equal(status.querySelector(".sr-only"), null);
-    assert.equal(status.getAttribute("aria-label"), null);
-    assert.equal(status.getAttribute("title"), null);
-    assert.ok(!status.classList.contains("save-status--saved"), value);
+    for (const compact of [false, true]) {
+      const element = render(status, compact);
+      assert.ok(element.classList.contains("save-status--plain"), status.label);
+      assert.equal(element.getAttribute("aria-label"), null);
+      assert.equal(element.querySelector(".is-pulsing"), null);
+    }
+    assert.equal(render(status).querySelector(".save-status-label").textContent, status.label);
+    assert.equal(render(status).querySelector("svg"), null);
   }
-  assert.ok(render("Local save failed").classList.contains("save-status--error"));
-  assert.ok(render("Unsaved").classList.contains("save-status--error"));
-  assert.ok(render("Saved locally").classList.contains("save-status--attention"));
-  assert.ok(render("Saving").classList.contains("save-status--working"));
-  assert.ok(render("Syncing").classList.contains("save-status--working"));
-  assert.equal(render("Connected").querySelector("svg"), null);
 });
