@@ -959,7 +959,7 @@ An MCP result has no HTTP status, so [mcp.mjs](mcp.mjs) names any refusal the
 Worker left uncoded by its status (`access_denied`, `not_found`, `conflict` and
 so on). It adds `retryable: true` to `stale_heads`, whose retry is a new request
 built from a fresh read. The HTTP API keeps `retryable` for transient failures
-only, because the browser retries those automatically. A tool call that gets no
+only, because the browser treats those as an outage. A tool call that gets no
 answer returns `read_failed` or `outcome_unknown`. The `/llms.txt` guide lists the
 codes agents act on.
 
