@@ -12,6 +12,7 @@ import {
   SERVER_SESSION_COOKIE,
 } from "@cloud/oidc-session-store.ts";
 import { handleOAuth, mcpAuthChallenge } from "./oauth.mjs";
+import { FAVICON_LINK } from "../shared/favicon.mjs";
 import { readAccessToken } from "./oauth-store.mjs";
 
 class SqliteD1 {
@@ -125,6 +126,8 @@ async function consent(env, login, overrides = {}) {
   );
   assert.equal(result.status, 200, await result.clone().text());
   const text = await result.text();
+  assert.ok(text.includes(FAVICON_LINK), "the consent page carries the inlined tab icon");
+  assert.match(result.headers.get("content-security-policy"), / img-src data:; /);
   const fields = Object.fromEntries(
     ["consent_id", "csrf_token"].map((name) => [
       name,

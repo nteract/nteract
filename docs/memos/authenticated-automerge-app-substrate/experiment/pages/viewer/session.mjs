@@ -38,10 +38,12 @@ import { retryKey } from "../model/retry-key.mjs";
 import { MISSING_EDITS_MESSAGE } from "../shared/receipts.mjs";
 import { ADMISSION_CAPABILITY, admissionCloseOutcome } from "../shared/admission.mjs";
 import { isTransientFailure, request } from "./request.mjs";
+import { requestConnect } from "./early-session.mjs";
 import { SERVER_UNREACHABLE } from "./alerts.mjs";
 import { monotonicNow } from "./monotonic.mjs";
 import { activitySnapshot, presenceLabel } from "./activity.mjs";
 import { checkpointRecords } from "./checkpoint-records.mjs";
+import { guardSocketSend } from "./socket-send.mjs";
 import { preservedBlockEdits } from "../model/raw-migration.mjs";
 import { Store } from "./store.mjs";
 import { OutboundSync } from "./outbound-sync.mjs";
@@ -1587,9 +1589,9 @@ export class PageSession {
     )
       return;
     try {
-      const connection = await request(`/api/connect?page=${encodeURIComponent(this.pageId)}`, {
-        headers: admissionHeaders,
-      });
+      // The first discovery for this Page takes the head script's request
+      // (early-session.mjs), which started beside the session check.
+      const connection = await requestConnect(this.pageId, request);
       if (!this.alive) return;
       if (
         !this.acceptAuthentication({
@@ -1652,7 +1654,8 @@ export class PageSession {
     );
     // Keep the browser socket itself: toTransport consumes the native wrapper,
     // whereas the raw socket remains cancellable when account/page access changes.
-    const socket = new WebSocket(address);
+    // Subduction sends on this socket itself; no send leaves unless it is OPEN.
+    const socket = guardSocketSend(new WebSocket(address));
     socket.binaryType = "arraybuffer";
     // Registered before the native wrapper's own listener, so the host's
     // admission outcome is known when the disconnect callback runs.

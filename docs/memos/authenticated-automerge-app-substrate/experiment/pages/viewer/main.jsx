@@ -37,7 +37,9 @@ import {
   pageListing,
 } from "../shared/routes.mjs";
 import { maintainBrowserSession } from "./browser-session.mjs";
-import { requestSession } from "./early-session.mjs";
+import { earlyConnectAnswer, requestSession } from "./early-session.mjs";
+import { PagePreview } from "./PagePreview.jsx";
+import { BootPreview, visiblePreview } from "./boot-preview.mjs";
 import { openPageWithRetry } from "./page-open.mjs";
 // app.css carries the editor's styles too, ahead of style.css so the cascade
 // matches the editor modules' own import order.
@@ -90,6 +92,15 @@ const editor = new EditorLoader({
   checkBuild: () => buildMonitor.check(),
 });
 if (!isIndexRoute(readPageRoute(location.href))) editor.start();
+// The routed Page's read-only preview from the head script's discovery
+// (boot-preview.mjs). Read at boot, before a session can take that request.
+// The shell reports the session, navigation, failed opens and the live Page
+// to it; once retired it stays retired for this load.
+const bootPreview = new BootPreview();
+{
+  const route = readPageRoute(location.href);
+  if (route.kind === "page") bootPreview.start(route.pageId, earlyConnectAnswer(route.pageId));
+}
 // A pointer going down on a Page row is a strong hint a Page opens next.
 const warmEditor = () => editor.start();
 // How long a new thread's passage stays emphasized after the inline composer
@@ -138,6 +149,7 @@ function App() {
     [titleFocusRequest, setTitleFocusRequest] = useState(null),
     [localRecoveries, setLocalRecoveries] = useState([]);
   const session = useStore(host.store, installedSession);
+  const bootPreviewState = useStore(bootPreview.store);
   const editorUnavailable = useStore(editor.store, editorFailed);
   // Rendered only beside a session; handlers read editor.module when they run.
   const { WordgardEditor, CommentsPanel, CommentPopover, SaveStatus, PageControls } =
@@ -291,6 +303,7 @@ function App() {
       await next.close();
       return false;
     }
+    bootPreview.dispatch({ type: "installed" });
     setProjectOpen(null);
     setIndex(null);
     setCrumbs([]);
@@ -338,6 +351,7 @@ function App() {
   }
   async function open(id, { focus = false, historyMode = "push" } = {}) {
     if (historyMode !== "none") writePageRoute(id, { replace: historyMode === "replace" });
+    bootPreview.dispatch({ type: "navigated", pageId: id });
     setPickerOpen(false);
     setNotice("");
     if (host.current?.pageId === id) return;
@@ -365,6 +379,7 @@ function App() {
       );
       await install(next, revision, { focus });
     } catch (error) {
+      if (host.isCurrent(revision)) bootPreview.dispatch({ type: "refused" });
       if (host.isCurrent(revision) && !bannerShows(error)) showError(error);
     } finally {
       host.finishRequest(controller);
@@ -377,6 +392,7 @@ function App() {
       event.preventDefault();
     }
     host.navigate();
+    bootPreview.dispatch({ type: "navigated", pageId: null });
     releaseCurrent();
     setAccount(authentication.current?.identity ?? null);
     setError("");
@@ -496,6 +512,9 @@ function App() {
         setSessionNotice(
           sessionAnswerNotice(refusal, { signedIn: !!authentication.current?.identity }),
         );
+        // Before anything renders for the new answer: a different or no
+        // account retires the boot preview.
+        bootPreview.dispatch({ type: "session", principal: result.identity?.principal ?? null });
         const changed = authentication.current?.identity?.principal !== result.identity?.principal;
         if (changed) {
           host.navigate();
@@ -548,6 +567,12 @@ function App() {
   }, []);
   const page = session?.snapshot(),
     threads = page?.comments ?? [];
+  const shownPreview = page
+    ? null
+    : visiblePreview(bootPreviewState, {
+        pageId: readPageRoute(location.href).pageId,
+        principal: account?.principal,
+      });
   // The screen's one banner region (screenBanners). The sign-in prompt and
   // access notice beside the Page show their own messages with their actions.
   const banners = screenBanners({ error, sessionNotice, page: page ? session : null });
@@ -1210,9 +1235,13 @@ function App() {
               />
             </main>
           ) : opening ? (
-            <main className="welcome">
-              <p role="status">Opening…</p>
-            </main>
+            shownPreview ? (
+              <PagePreview preview={shownPreview} />
+            ) : (
+              <main className="welcome">
+                <p role="status">Opening…</p>
+              </main>
+            )
           ) : projectOpen ? (
             <ProjectView
               key={projectOpen}

@@ -11,6 +11,7 @@ import { createRequire } from "node:module";
 import path from "node:path";
 import { browserMermaidPlugin } from "./browser-mermaid.mjs";
 import { BROWSER_WASM_URLS, browserWasmPlugin } from "./browser-wasm.mjs";
+import { FAVICON_HREF } from "../shared/favicon.mjs";
 
 export const VIEWER_ENTRY = "public/app.js";
 // esbuild's [hash] is eight base32 characters. Staging and the page9 ingress
@@ -210,6 +211,18 @@ export function withHashedAssets(html, assets) {
     html = parts.join(attribute.replace(`/${name}`, publicUrl(file)));
   }
   return html;
+}
+
+const FAVICON_REFERENCE = 'href="/favicon.png"';
+
+/** index.html with its tab icon link pointing at the inlined app icon. The
+ * source must reference /favicon.png exactly once. No public route serves
+ * that name; this swap is what makes the link resolve. */
+export function withInlineFavicon(html, href = FAVICON_HREF) {
+  if (!href.startsWith("data:image/png;base64,")) throw new Error("Expected a PNG data URL");
+  const parts = html.split(FAVICON_REFERENCE);
+  if (parts.length !== 2) throw new Error("index.html must reference /favicon.png exactly once");
+  return parts.join(`href="${href}"`);
 }
 
 /** The _headers file: `security` headers on every response, and immutable

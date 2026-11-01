@@ -86,6 +86,61 @@ test("a rejected stale-epoch upgrade retires the discovered activity before retr
   assert.equal(session.activityTimer, undefined);
 });
 
+test("the socket handed to Subduction sends nothing once it starts closing", async (t) => {
+  const session = new PageSession("fixture");
+  session.credentialCanWrite = true;
+  session.replicaKey = "0:writer";
+  const locationBefore = Object.getOwnPropertyDescriptor(globalThis, "location");
+  Object.defineProperty(globalThis, "location", {
+    configurable: true,
+    value: { href: "https://page10.runtimed.run/" },
+  });
+  t.after(() => {
+    if (locationBefore) Object.defineProperty(globalThis, "location", locationBefore);
+    else delete globalThis.location;
+    session.clearPresence();
+  });
+  t.mock.method(session, "registerDraft", async () => {});
+  t.mock.method(globalThis, "fetch", async () =>
+    Response.json({
+      identity: { principal: "account", displayName: "Kyle Kelley" },
+      access: { role: "owner", generation: 0, revision: 0, canRead: true, canWrite: true },
+      serverPeerId: "00".repeat(32),
+      serverSenderId: "host",
+      peerProfiles: {},
+      activity: activityMessage(),
+    }),
+  );
+  const wire = [];
+  t.mock.method(globalThis, "WebSocket", function () {
+    Object.defineProperty(this, "binaryType", { value: "blob", writable: true });
+    Object.defineProperty(this, "readyState", { value: 0, writable: true });
+    this.addEventListener = () => {};
+    // close() moves to CLOSING at once; the close event comes later.
+    this.close = () => {
+      this.readyState = 2;
+    };
+    this.send = (bytes) => {
+      if (this.readyState !== 1)
+        throw new Error("WebSocket is already in CLOSING or CLOSED state.");
+      wire.push(bytes);
+    };
+  });
+  t.mock.method(N.SubductionWebSocket, "setup", async (socket) => {
+    socket.readyState = 1;
+    socket.send(Uint8Array.of(1));
+    // The viewer gives up on this socket while Subduction still has a reply
+    // in flight, as a reconnect or an access change does.
+    socket.close();
+    socket.send(Uint8Array.of(2));
+    socket.readyState = 3;
+    socket.send(Uint8Array.of(3));
+    throw Object.assign(Error("Subduction WebSocket closed"), { status: 503 });
+  });
+  await assert.rejects(session.openConnection(false), { status: 503 });
+  assert.deepEqual(wire, [Uint8Array.of(1)]);
+});
+
 test("activity trusts only the current host and ordered snapshots in its admitted epoch", (t) => {
   const session = new PageSession("fixture");
   session.connection = { serverSenderId: "host" };
