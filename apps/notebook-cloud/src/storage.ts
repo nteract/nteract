@@ -240,6 +240,15 @@ const WORKSTATION_ATTACH_JOBS_ACTIVE_UNIQUE_INDEX = `CREATE UNIQUE INDEX IF NOT 
     ON workstation_attach_jobs(notebook_id, owner_principal)
     WHERE status IN ('pending', 'accepted', 'running')`;
 
+// One row per one-time data backfill. `applied` ran the backfill; `skipped`
+// recorded it without inserting because the data already existed. `pending`
+// exists only inside the batch that decides, never after it commits.
+const CATALOG_BACKFILLS_TABLE = `CREATE TABLE IF NOT EXISTS catalog_backfills (
+    id TEXT PRIMARY KEY,
+    outcome TEXT NOT NULL CHECK (outcome IN ('pending', 'applied', 'skipped')),
+    recorded_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+  )`;
+
 const SCHEMA_STATEMENTS = [
   `CREATE TABLE IF NOT EXISTS notebooks (
     id TEXT PRIMARY KEY,
@@ -293,7 +302,8 @@ const SCHEMA_STATEMENTS = [
     CHECK (subject_kind != 'public' OR (subject = 'anonymous' AND scope = 'viewer'))
   )`,
   `CREATE INDEX IF NOT EXISTS notebook_acl_subject_idx
-    ON notebook_acl (subject_kind, subject, notebook_id)`,
+     ON notebook_acl (subject_kind, subject, notebook_id)`,
+  CATALOG_BACKFILLS_TABLE,
   `CREATE TABLE IF NOT EXISTS principal_profiles (
     principal TEXT PRIMARY KEY,
     provider TEXT NOT NULL,
@@ -597,10 +607,53 @@ async function tableHasColumn(
   return result.results?.some((row) => row.name === column) ?? false;
 }
 
+export const NOTEBOOK_ACL_OWNER_BACKFILL = "notebook-acl-owner-v1";
+export const NOTEBOOK_ACL_PUBLIC_BACKFILL = "notebook-acl-public-v1";
+
+/**
+ * Give notebooks from before `notebook_acl` their owner row, and published ones
+ * their public viewer row, exactly once per database.
+ *
+ * The backfill must never run again after that: an owner can revoke public
+ * access, and a re-run would grant it back. So the decision and the inserts
+ * share one D1 batch (a transaction), recorded in `catalog_backfills`:
+ *
+ * 1. Insert each marker if it is missing. Its outcome is `pending` when
+ *    `notebook_acl` is empty, and `skipped` otherwise. Both markers read the
+ *    table before any insert.
+ * 2. Insert rows only for markers that are `pending`.
+ * 3. Mark `pending` markers `applied`.
+ *
+ * A database with ACL rows but no markers already ran this backfill: every
+ * schema initialization ran it unconditionally, and migration 0003 ran it once.
+ * Create and publish write their own ACL rows. Re-running there could only
+ * re-grant revoked access, so it records `skipped`. An empty `notebook_acl` with
+ * notebooks in it means the backfill never ran, since each notebook keeps at
+ * least one owner row.
+ *
+ * Concurrent or abandoned schema attempts are safe: whichever batch commits
+ * first records the markers, and every later batch inserts nothing.
+ */
 async function backfillNotebookAcl(env: Pick<Env, "DB">): Promise<void> {
-  await env
-    .DB!.prepare(
-      `INSERT OR IGNORE INTO notebook_acl (
+  const db = env.DB!;
+  const decide = (id: string) =>
+    db
+      .prepare(
+        `INSERT OR IGNORE INTO catalog_backfills (id, outcome)
+         SELECT ?, CASE WHEN EXISTS (SELECT 1 FROM notebook_acl) THEN 'skipped' ELSE 'pending' END`,
+      )
+      .bind(id);
+  const pending = `EXISTS (
+         SELECT 1
+           FROM catalog_backfills AS backfill
+          WHERE backfill.id = ? AND backfill.outcome = 'pending'
+       )`;
+  await db.batch([
+    decide(NOTEBOOK_ACL_OWNER_BACKFILL),
+    decide(NOTEBOOK_ACL_PUBLIC_BACKFILL),
+    db
+      .prepare(
+        `INSERT OR IGNORE INTO notebook_acl (
        notebook_id,
        subject_kind,
        subject,
@@ -616,13 +669,13 @@ async function backfillNotebookAcl(env: Pick<Env, "DB">): Promise<void> {
             created_at,
             updated_at,
             'system/schema:notebook-cloud-owner-acl-backfill'
-       FROM notebooks`,
-    )
-    .run();
-
-  await env
-    .DB!.prepare(
-      `INSERT OR IGNORE INTO notebook_acl (
+       FROM notebooks
+      WHERE ${pending}`,
+      )
+      .bind(NOTEBOOK_ACL_OWNER_BACKFILL),
+    db
+      .prepare(
+        `INSERT OR IGNORE INTO notebook_acl (
        notebook_id,
        subject_kind,
        subject,
@@ -639,9 +692,18 @@ async function backfillNotebookAcl(env: Pick<Env, "DB">): Promise<void> {
             updated_at,
             'system/schema:notebook-cloud-public-acl-backfill'
        FROM notebooks
-       WHERE latest_revision_id IS NOT NULL`,
-    )
-    .run();
+      WHERE latest_revision_id IS NOT NULL
+        AND ${pending}`,
+      )
+      .bind(NOTEBOOK_ACL_PUBLIC_BACKFILL),
+    db
+      .prepare(
+        `UPDATE catalog_backfills
+            SET outcome = 'applied'
+          WHERE id IN (?, ?) AND outcome = 'pending'`,
+      )
+      .bind(NOTEBOOK_ACL_OWNER_BACKFILL, NOTEBOOK_ACL_PUBLIC_BACKFILL),
+  ]);
 }
 
 export async function getNotebookRow(env: Env, notebookId: string): Promise<NotebookRow | null> {

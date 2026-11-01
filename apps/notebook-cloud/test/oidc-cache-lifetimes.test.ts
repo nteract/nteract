@@ -23,6 +23,9 @@ import { tickUntilSettled, track, turns, virtualTime } from "./settled-lookup-he
 
 const POLL_MS = 5;
 const hang = () => new Promise<never>(() => {});
+/** A response that arrives after `ms` of virtual time. */
+const after = (ms: number, respond: () => Response) =>
+  new Promise<Response>((resolve) => setTimeout(() => resolve(respond()), ms));
 
 function unavailable(error: unknown): boolean {
   return error instanceof AuthError && error.status === 503;
@@ -165,6 +168,41 @@ describe("OIDC JWKS cache lifetime", () => {
     assert.equal((await oidc.authenticate()).metadata.provider, "oidc");
     assert.equal(keyCalls, 2);
   });
+
+  it("measures discovery and key-set expiry from the start of a slow lookup", async (t) => {
+    const issuer = `https://${crypto.randomUUID()}.jwks.test`;
+    const oidc = await remoteOidc(issuer);
+    virtualTime(t);
+    const startedAt = Date.now();
+    let discoveryCalls = 0;
+    let keyCalls = 0;
+    let slow = true;
+    t.mock.method(globalThis, "fetch", async (input: RequestInfo | URL) => {
+      if (String(input).endsWith("openid-configuration")) {
+        discoveryCalls++;
+        const respond = () => Response.json({ issuer, jwks_uri: `${issuer}/jwks` });
+        return slow ? after(4_000, respond) : respond();
+      }
+      keyCalls++;
+      const respond = () => new Response(oidc.jwks);
+      return slow ? after(4_000, respond) : respond();
+    });
+
+    const first = oidc.authenticate();
+    await tickUntilSettled(t, first, 60_000, 500);
+    assert.equal((await first).metadata.provider, "oidc");
+    slow = false;
+    assert.ok(Date.now() - startedAt >= 8_000, "discovery and keys each took 4 s");
+
+    // Both lookups started at `startedAt`, so both expire 5 minutes after it,
+    // not 5 minutes after their responses.
+    t.mock.timers.tick(5 * 60 * 1000 - (Date.now() - startedAt) - 1);
+    await oidc.authenticate();
+    assert.deepEqual([discoveryCalls, keyCalls], [1, 1]);
+    t.mock.timers.tick(1);
+    await oidc.authenticate();
+    assert.deepEqual([discoveryCalls, keyCalls], [2, 2]);
+  });
 });
 
 describe("OIDC UserInfo cache lifetime", () => {
@@ -217,6 +255,52 @@ describe("OIDC UserInfo cache lifetime", () => {
     await assert.rejects(loadOidcUserInfo(lookup), OidcUserInfoError);
     assert.equal((await loadOidcUserInfo(lookup)).name, "Recovered");
     assert.equal(calls, 2);
+  });
+
+  it("measures expiry from the start of a slow UserInfo request", async (t) => {
+    virtualTime(t);
+    const lookup = input();
+    let calls = 0;
+    t.mock.method(globalThis, "fetch", async () => {
+      calls++;
+      const respond = () => Response.json({ sub: "person" });
+      return calls === 1 ? after(4_000, respond) : respond();
+    });
+    const startedAt = Date.now();
+    const first = loadOidcUserInfo(lookup);
+    await tickUntilSettled(t, first, 60_000, 500);
+    await first;
+    assert.ok(Date.now() - startedAt >= 4_000);
+
+    t.mock.timers.tick(60_000 - (Date.now() - startedAt) - 1);
+    await loadOidcUserInfo(lookup);
+    assert.equal(calls, 1, "still fresh just before 60 s from the start");
+    t.mock.timers.tick(1);
+    await loadOidcUserInfo(lookup);
+    assert.equal(calls, 2, "expired 60 s from the start, not from the response");
+  });
+
+  it("still caps a slow UserInfo response at the access token's expiry", async (t) => {
+    virtualTime(t);
+    const lookup = { ...input(), expiresAt: Date.now() + 30_000 };
+    let calls = 0;
+    t.mock.method(globalThis, "fetch", async () => {
+      calls++;
+      const respond = () => Response.json({ sub: "person" });
+      return calls === 1 ? after(4_000, respond) : respond();
+    });
+    const startedAt = Date.now();
+    const first = loadOidcUserInfo(lookup);
+    await tickUntilSettled(t, first, 60_000, 500);
+    await first;
+    t.mock.timers.tick(30_000 - (Date.now() - startedAt) - 1);
+    await loadOidcUserInfo(lookup);
+    assert.equal(calls, 1);
+    t.mock.timers.tick(1);
+    await assert.rejects(
+      loadOidcUserInfo(lookup),
+      (error: unknown) => error instanceof OidcUserInfoError && error.status === 401,
+    );
   });
 });
 
@@ -287,6 +371,28 @@ describe("Anaconda API key cache lifetime", () => {
     assert.equal((await authenticate(token)).principal, "user:anaconda:api-key-user");
     assert.equal(calls, 2);
   });
+
+  it("measures expiry from the start of a slow whoami lookup", async (t) => {
+    virtualTime(t);
+    const token = apiKey();
+    let calls = 0;
+    t.mock.method(globalThis, "fetch", async () =>
+      ++calls === 1 ? after(9_000, whoami) : whoami(),
+    );
+    const startedAt = Date.now();
+    const first = authenticate(token);
+    await tickUntilSettled(t, first, 60_000, 500);
+    assert.equal((await first).principal, "user:anaconda:api-key-user");
+    assert.ok(Date.now() - startedAt >= 9_000);
+
+    // A 9 s lookup is reusable until 60 s after it started, not until 69 s.
+    t.mock.timers.tick(60_000 - (Date.now() - startedAt) - 1);
+    await authenticate(token);
+    assert.equal(calls, 1);
+    t.mock.timers.tick(1);
+    await authenticate(token);
+    assert.equal(calls, 2);
+  });
 });
 
 describe("catalog schema readiness lifetime", () => {
@@ -306,7 +412,10 @@ describe("catalog schema readiness lifetime", () => {
       all: result,
       first: async () => null,
     };
-    const db = { prepare: () => statement } as unknown as D1Database;
+    const db = {
+      prepare: () => statement,
+      batch: async (batch: (typeof statement)[]) => Promise.all(batch.map((entry) => entry.run())),
+    } as unknown as D1Database;
     return {
       db,
       setMode: (next: typeof mode) => (mode = next),

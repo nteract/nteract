@@ -175,6 +175,27 @@ describe("createSettledLookup", () => {
     assert.equal(loads, 2);
   });
 
+  it("hands the loader its start time so a slow attempt expires on schedule", async (t) => {
+    const cache = lookup(t);
+    const startedAt = Date.now();
+    let seen: number | undefined;
+    const pending = cache.get("key", async (_signal, attemptStart) => {
+      seen = attemptStart;
+      await new Promise((resolve) => setTimeout(resolve, 900));
+      return fresh("slow", attemptStart + 100);
+    });
+    await turns();
+    t.mock.timers.tick(900);
+    assert.equal(await pending, "slow");
+    assert.equal(seen, startedAt);
+    assert.equal(cache.state("key").name, "ready");
+    assert.equal(
+      await cache.get("key", async () => fresh("reloaded")),
+      "reloaded",
+      "expired 100 ms after the start, before the 900 ms response",
+    );
+  });
+
   it("does not cache a failure", async (t) => {
     const cache = lookup(t);
     await assert.rejects(

@@ -58,9 +58,9 @@ export async function loadOidcUserInfo(input: {
   const key = Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join(
     "",
   );
-  return cache.get(key, async () => ({
+  return cache.get(key, async (_signal, startedAt) => ({
     value: await fetchUserInfo(input),
-    expiresAt: Math.min(Date.now() + CACHE_TTL_MS, input.expiresAt),
+    expiresAt: Math.min(startedAt + CACHE_TTL_MS, input.expiresAt),
   }));
 }
 

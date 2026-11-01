@@ -116,7 +116,15 @@ export interface SettledLookupResult<V> {
   expiresAt: number;
 }
 
-export type SettledLookupLoader<V> = (signal: AbortSignal) => Promise<SettledLookupResult<V>>;
+/**
+ * Runs one attempt. `startedAt` is when the attempt began, before any provider
+ * I/O. Measure `expiresAt` from it, never from completion, so a slow response
+ * does not stretch how long a value stays reusable.
+ */
+export type SettledLookupLoader<V> = (
+  signal: AbortSignal,
+  startedAt: number,
+) => Promise<SettledLookupResult<V>>;
 
 export interface SettledLookup<K, V> {
   /**
@@ -220,7 +228,7 @@ export function createSettledLookup<K, V>(
       );
     });
     try {
-      const attempt = Promise.resolve().then(() => load(controller.signal));
+      const attempt = Promise.resolve().then(() => load(controller.signal, startedAt));
       const { value, expiresAt } = await Promise.race([attempt, expired]);
       step(key, { type: "succeed", generation, value, expiresAt });
       return value;

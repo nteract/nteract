@@ -485,9 +485,9 @@ async function loadAnacondaApiKeyUserInfo(
   token: string,
   config: AnacondaApiKeyConfig,
 ): Promise<AnacondaApiKeyUserInfo> {
-  return anacondaApiKeyLookup.get(`${config.userinfoUrl}:${token}`, async (signal) => ({
+  return anacondaApiKeyLookup.get(`${config.userinfoUrl}:${token}`, async (signal, startedAt) => ({
     value: await fetchAnacondaApiKeyUserInfo(token, config, signal),
-    expiresAt: Date.now() + ANACONDA_API_KEY_CACHE_TTL_MS,
+    expiresAt: startedAt + ANACONDA_API_KEY_CACHE_TTL_MS,
   }));
 }
 
@@ -1251,13 +1251,13 @@ async function loadOidcJwks(config: OidcConfig): Promise<JsonWebKeySet> {
   }
 
   // Both JWT verification and optional UserInfo enrichment share discovery.
-  return jwksLookup.get(config.issuer, async () => {
+  return jwksLookup.get(config.issuer, async (_signal, startedAt) => {
     const document = await loadOidcMetadata(config.issuer);
     try {
       const jwksUrl = oidcJwksUrl(document.jwks_uri, config.issuer);
       return {
         value: parseJwks(await fetchOidcDocument(jwksUrl, "JWKS"), "OIDC"),
-        expiresAt: Date.now() + JWKS_CACHE_TTL_MS,
+        expiresAt: startedAt + JWKS_CACHE_TTL_MS,
       };
     } catch (error) {
       // The key URL came from this document; rediscover on the next attempt.
@@ -1268,9 +1268,9 @@ async function loadOidcJwks(config: OidcConfig): Promise<JsonWebKeySet> {
 }
 
 function loadOidcMetadata(issuer: string): Promise<OidcMetadata> {
-  return discoveryLookup.get(issuer, async () => ({
+  return discoveryLookup.get(issuer, async (_signal, startedAt) => ({
     value: await discoverOidcMetadata(issuer),
-    expiresAt: Date.now() + JWKS_CACHE_TTL_MS,
+    expiresAt: startedAt + JWKS_CACHE_TTL_MS,
   }));
 }
 
