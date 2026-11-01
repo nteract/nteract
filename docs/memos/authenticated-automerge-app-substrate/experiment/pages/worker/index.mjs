@@ -61,6 +61,7 @@ import {
   observeRecordSaves,
   ActorPersistence,
   MAX_ATTESTED_CHANGES,
+  loadCommitAuthors,
 } from "./actor-authorship.mjs";
 export { PageRecords } from "./record-persistence.mjs";
 import {
@@ -2285,6 +2286,13 @@ export class Page {
           hold: (work) => holdUntilSettled(ctx, work),
           onError: (error) => logFailure(error, "actor-authorship"),
         });
+        // Before the backend can save or anything is published, rebuild
+        // bindings and conflicts the persisted entries may lack.
+        actorPersistence.enqueue(
+          actorAuthorship.replay(
+            await loadCommitAuthors(recordStore, (key, value) => commitAuthor(key, value)),
+          ),
+        );
         backend = new SubductionBackend({
           signer,
           // Only the backend's saves attest authors; maintenance and flushes
@@ -2320,7 +2328,12 @@ export class Page {
             return backend.compact(documentIdToBinary(this.metadata.documentId), {
               // Both compaction barriers drain the remote record sink. Calling
               // repo/backend.flush here would recurse into its held owner queue.
-              durable: () => recordStore.flush(),
+              // Removed commit records are replay's evidence: their actor
+              // effects must be stored first.
+              durable: async () => {
+                await recordStore.flush();
+                await actorPersistence.durable();
+              },
             });
           },
           waitUntil: (work) => ctx.waitUntil(work),

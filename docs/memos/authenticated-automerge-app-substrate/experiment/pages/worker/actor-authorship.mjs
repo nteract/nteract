@@ -302,6 +302,69 @@ export class ActorAuthorship {
     return result;
   }
 
+  /** Rebuild bindings and conflicts from the signers of stored commit
+   * records, before anything is published. Persisted entries can lag the
+   * records: a conflict whose write never landed lives only in the records.
+   * The rule is order-free: an actor whose records, together with its
+   * persisted entry, name more than one signer key is a conflict. An actor
+   * with one signer and no entry is bound to it: host-owned for the host's
+   * key, attested for an admitted binding, and a conflict for a key with no
+   * binding, so no later signer can claim it. Replayed entries are idle.
+   * Conflicts are placed first and may evict idle entries; new bindings take
+   * only free room. Returns the storage writes. */
+  replay(authors) {
+    const signers = new Map();
+    for (const { key, actor } of authors) {
+      if (typeof key !== "string" || typeof actor !== "string" || !ACTOR.test(actor)) continue;
+      if (!signers.has(actor)) signers.set(actor, new Set());
+      signers.get(actor).add(key);
+    }
+    const put = [];
+    const remove = [];
+    const conflicts = [];
+    const bindings = [];
+    for (const [actor, keys] of signers) {
+      const current = this.actors.get(actor);
+      if (current?.conflict) continue;
+      if (current) keys.add(current.host ? this.serverKey : current.key);
+      if (keys.size > 1) conflicts.push(actor);
+      else if (!current) bindings.push([actor, [...keys][0]]);
+    }
+    for (const actor of conflicts) {
+      if (!this.actors.has(actor) && this.actors.size >= this.max) {
+        const victim = [...this.actors].find(([, entry]) => !entry.conflict)?.[0];
+        if (victim === undefined) continue;
+        this.actors.delete(victim);
+        this.forgetChanges(victim);
+        remove.push(victim);
+      }
+      this.actors.delete(actor);
+      this.actors.set(actor, { conflict: true, lastSeen: 0 });
+      this.forgetChanges(actor);
+      put.push([actor, { conflict: true }]);
+    }
+    for (const [actor, key] of bindings) {
+      if (this.actors.size >= this.max) break;
+      const binding = key === this.serverKey ? undefined : this.binding(key);
+      const entry =
+        key === this.serverKey
+          ? { host: true, lastSeen: 0 }
+          : binding && typeof binding.principal === "string" && !binding.pending
+            ? {
+                key,
+                principal: binding.principal,
+                displayName: text(binding.displayName, 256),
+                driver: text(binding.driver, 64),
+                firstSeen: 0,
+                lastSeen: 0,
+              }
+            : { conflict: true, lastSeen: 0 };
+      this.actors.set(actor, entry);
+      put.push([actor, stored(entry)]);
+    }
+    return { put, remove };
+  }
+
   /** Attested change hashes seen within FRESH_MS whose actor is published. */
   attestedChanges(now, profiles = this.profiles(now)) {
     const result = {};
@@ -309,6 +372,20 @@ export class ActorAuthorship {
       if (now - seenAt <= FRESH_MS && Object.hasOwn(profiles, actor)) result[hash] = actor;
     return result;
   }
+}
+
+/** The signer and actor of every stored commit record in a byte store.
+ * `authorOf(key, value)` decodes one record (commitAuthor). The store holds
+ * at most the backend's record and byte limits per document, the same
+ * records the host already reads to load the document at startup. */
+export async function loadCommitAuthors(store, authorOf) {
+  const authors = [];
+  for (const key of await store.list("")) {
+    if (!COMMIT_PATH.test(key)) continue;
+    const author = authorOf(key, await store.load(key));
+    if (author) authors.push(author);
+  }
+  return authors;
 }
 
 /** Every persisted actor entry, in storage order. */
@@ -362,35 +439,49 @@ export const ACTOR_RETRY_MAX_MS = 30_000;
 export const actorRetryDelay = (attempt) =>
   Math.min(ACTOR_RETRY_MIN_MS * 2 ** Math.max(0, attempt - 1), ACTOR_RETRY_MAX_MS);
 
-/** Actor persistence lifecycle. States: `idle` (nothing being written),
- * `writing` (one batch in flight), `failed` (the last batch failed; a retry
- * is scheduled). Events: `enqueue` (new effects merged), `nudge` (a request,
- * connection or save asks for a retry), `succeeded` / `failed` (the batch
- * settled; `pending` says whether writes remain), and `retry` (a scheduled
- * retry is due, for `attempt`). Effects: `write` starts a batch; `schedule`
- * arms a retry after `delay` ms. Events that do not apply leave the state
- * unchanged with no effect. */
+/** Actor persistence lifecycle. State: `phase` (`idle`, nothing being
+ * written; `writing`, one batch in flight; `failed`, the last batch failed),
+ * `attempt` (consecutive failures), `cycle` (a counter that grows with every
+ * failure and fences retry timers) and `deadline` (when a failed batch may be
+ * written again). Events: `enqueue` (new effects merged), `nudge` (a request,
+ * connection or save offers a retry), `succeeded` / `failed` (the batch
+ * settled; `pending` says whether writes remain), and `retry` (the timer for
+ * `cycle` is due). `enqueue`, `nudge` and `failed` carry `now`. Effects:
+ * `write` starts a batch; `schedule` arms the one timer for `cycle` after
+ * `delay` ms. Before the deadline, `enqueue` and `nudge` only merge effects.
+ * A timer from an earlier cycle never matches. Events that do not apply
+ * leave the state unchanged with no effect. */
+export const initialPersistenceState = Object.freeze({
+  phase: "idle",
+  attempt: 0,
+  cycle: 0,
+  deadline: 0,
+});
 export function persistenceTransition(state, event) {
   const same = { state, effect: null };
-  const write = (attempt) => ({ state: { phase: "writing", attempt }, effect: { type: "write" } });
+  const write = (next) => ({ state: { ...next, phase: "writing" }, effect: { type: "write" } });
   switch (state.phase) {
     case "idle":
-      return event.type === "enqueue" ? write(0) : same;
+      return event.type === "enqueue" ? write({ ...state, attempt: 0 }) : same;
     case "writing":
       if (event.type === "succeeded")
-        return event.pending ? write(0) : { state: { phase: "idle", attempt: 0 }, effect: null };
+        return event.pending
+          ? write({ ...state, attempt: 0, deadline: 0 })
+          : { state: { ...state, phase: "idle", attempt: 0, deadline: 0 }, effect: null };
       if (event.type === "failed") {
         const attempt = state.attempt + 1;
+        const cycle = state.cycle + 1;
+        const delay = actorRetryDelay(attempt);
         return {
-          state: { phase: "failed", attempt },
-          effect: { type: "schedule", attempt, delay: actorRetryDelay(attempt) },
+          state: { phase: "failed", attempt, cycle, deadline: event.now + delay },
+          effect: { type: "schedule", cycle, delay },
         };
       }
       return same;
     case "failed":
-      if (event.type === "enqueue" || event.type === "nudge") return write(state.attempt);
-      // Only the newest scheduled retry is due; an older timer is stale.
-      if (event.type === "retry" && event.attempt === state.attempt) return write(state.attempt);
+      if ((event.type === "enqueue" || event.type === "nudge") && event.now >= state.deadline)
+        return write(state);
+      if (event.type === "retry" && event.cycle === state.cycle) return write(state);
       return same;
     default:
       return same;
@@ -399,39 +490,55 @@ export function persistenceTransition(state, event) {
 
 /** Serialized actor persistence with its own retries. `enqueue` merges
  * effects into the pending set; one batch of everything pending is written
- * at a time. A failed batch stays pending and is retried after a backoff, or
- * sooner on the next `enqueue` or `nudge`, until it lands. `hold` keeps each
- * write and retry wait alive past the request that started it. */
+ * at a time. A failed batch stays pending and is retried once its backoff
+ * deadline passes: by its timer, or by the first `enqueue` or `nudge` after
+ * the deadline. `hold` keeps each write and retry wait alive past the request
+ * that started it. A restart drops whatever is pending; `replay` rebuilds it
+ * from the stored records. */
 export class ActorPersistence {
   constructor(
     storage,
     {
       hold = () => {},
-      sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+      sleep = (ms) =>
+        new Promise((resolve) => {
+          // A retry wait never keeps a Node test process alive.
+          setTimeout(resolve, ms).unref?.();
+        }),
+      now = Date.now,
       onError = () => {},
     } = {},
   ) {
     this.storage = storage;
     this.hold = hold;
     this.sleep = sleep;
+    this.now = now;
     this.onError = onError;
     this.pending = new Map();
-    this.state = { phase: "idle", attempt: 0 };
+    this.state = initialPersistenceState;
     this.current = Promise.resolve();
   }
 
   enqueue(effects) {
     mergeActorEffects(this.pending, effects);
-    if (this.pending.size) this.dispatch({ type: "enqueue" });
+    if (this.pending.size) this.dispatch({ type: "enqueue", now: this.now() });
   }
 
   nudge() {
-    this.dispatch({ type: "nudge" });
+    this.dispatch({ type: "nudge", now: this.now() });
   }
 
   /** Settles once no batch is in flight. */
   async drain() {
     while (this.state.phase === "writing") await this.current;
+  }
+
+  /** Resolves once every accepted effect is stored; rejects while any is
+   * still pending. Compaction waits on it before it removes commit records,
+   * the evidence `replay` reads. */
+  async durable() {
+    await this.drain();
+    if (this.pending.size) throw Error("Actor attestations are not yet durable");
   }
 
   dispatch(event) {
@@ -440,7 +547,7 @@ export class ActorPersistence {
     if (effect?.type === "write") this.startWrite();
     if (effect?.type === "schedule") {
       const due = this.sleep(effect.delay).then(() =>
-        this.dispatch({ type: "retry", attempt: effect.attempt }),
+        this.dispatch({ type: "retry", cycle: effect.cycle }),
       );
       this.hold(due);
     }
@@ -459,7 +566,7 @@ export class ActorPersistence {
         },
         (error) => {
           this.onError(error);
-          this.dispatch({ type: "failed" });
+          this.dispatch({ type: "failed", now: this.now() });
         },
       );
     this.current = work;
