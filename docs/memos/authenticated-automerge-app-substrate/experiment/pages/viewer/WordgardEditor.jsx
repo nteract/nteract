@@ -18,6 +18,12 @@ import { tables } from "wordgard/table";
 import { tablePresentation, tableKeys, selectedTable } from "./wordgard-tables.mjs";
 import { TableMenu } from "./TableMenu.jsx";
 import { CODE_LANGUAGES, codeHighlighting } from "./code-highlight.mjs";
+import {
+  resolveUploadPreview,
+  setUploadPreview,
+  uploadPreview,
+  uploadPreviews,
+} from "./upload-preview.mjs";
 import { HighlightMenu } from "./HighlightMenu.jsx";
 import { monotonicNow } from "./monotonic.mjs";
 import { selectionHighlight, toggleHighlight } from "./highlight.mjs";
@@ -85,6 +91,7 @@ import {
   captureImageInsertion,
   createImageUploader,
   imageFiles,
+  resolveImageInsertion,
 } from "./image-upload.mjs";
 import "./wordgard.css";
 
@@ -115,6 +122,11 @@ const editConfig = (editable) => [
   codeBlockLanguage(),
   ...(editable ? wordgardCodeLanguages(CODE_LANGUAGES) : []),
 ];
+
+// A pending upload is on screen when the editor draws its inline preview.
+// The preview clears itself when its insertion point is deleted; the status
+// row, with Cancel, then shows again.
+const previewShown = (editor) => !!editor?.state.field(uploadPreview, false);
 
 export function WordgardEditor(props) {
   const {
@@ -316,6 +328,7 @@ export function WordgardEditor(props) {
         wordgardCodeNewlines,
         wordgardListStarts,
         codeHighlighting,
+        uploadPreviews,
         undoHistory.extension,
         permissions.current.of(editConfig(latest.current.editable)),
         Wordgard.domEventHandler("paste", (event) => acceptImages(imageFiles(event.clipboardData))),
@@ -355,6 +368,16 @@ export function WordgardEditor(props) {
           } finally {
             writing = false;
           }
+          // The local write is in Automerge now: put a pending upload preview
+          // back on its native cursor, exactly where the image will land.
+          if (transactions.some((tr) => tr.docChanged) && editor.state.field(uploadPreview))
+            queueMicrotask(() => {
+              if (alive && editor.state.field(uploadPreview))
+                editor.dispatch({
+                  effects: resolveUploadPreview.of(null),
+                  annotations: Transaction.addToHistory.of(false),
+                });
+            });
         }),
         Wordgard.updateListener.of(() => refresh.current()),
         Decoration.Range.source.of(() => collab.ranges()),
@@ -374,7 +397,33 @@ export function WordgardEditor(props) {
         latest.current.replica === replica &&
         latest.current.id === id &&
         latest.current.editable,
-      onState: setImageStatus,
+      onState: (state) => {
+        setImageStatus(state);
+        if (view.current !== editor) return;
+        // Draw the pending upload inline where the image will land. If the
+        // insertion point can't be resolved, the status row stays as the fallback.
+        let preview = null;
+        if (state?.pending && state.target) {
+          const target = state.target;
+          preview = {
+            // The binding updates its map before the editor sees a change.
+            resolve: () => resolveImageInsertion(replica, target, bound.current.map),
+            src: state.preview ?? "",
+            name: state.name ?? "",
+            onCancel: () => uploader.cancel(),
+          };
+          try {
+            preview.resolve();
+          } catch {
+            preview = null;
+          }
+        }
+        if (preview || editor.state.field(uploadPreview))
+          editor.dispatch({
+            effects: setUploadPreview.of(preview),
+            annotations: Transaction.addToHistory.of(false),
+          });
+      },
     });
     imageUploader.current = uploader;
     editor.dom.classList.add("wordgard-document");
@@ -485,6 +534,9 @@ export function WordgardEditor(props) {
         editor.dispatch({
           changes: projectChanges(editor.state.doc, event.after.doc),
           selection,
+          // The native cursor can move even when the rendered text is equal
+          // (a peer deletes one "a" and adds another), so re-resolve always.
+          effects: editor.state.field(uploadPreview) ? resolveUploadPreview.of(null) : [],
           annotations: [...remoteAnnotations(), history.isolate.of(true)],
         });
       } catch (error) {
@@ -569,6 +621,7 @@ export function WordgardEditor(props) {
       const highlight = selectionHighlight(state);
       snapshot.highlight = highlight.color;
       snapshot.highlightPresent = highlight.colors.length > 0;
+      snapshot.uploadPreview = previewShown(editor);
       for (const [name, mark] of Object.entries(marks))
         snapshot[name] = selection.empty
           ? !!mark.isInSet(state.sel.activeMarks)
@@ -953,7 +1006,7 @@ export function WordgardEditor(props) {
           if (files.length && target) imageUploader.current?.start(files, target);
         }}
       />
-      {imageStatus && (
+      {imageStatus && !(imageStatus.pending && format?.uploadPreview) && (
         <div className="image-upload-status" role="status" aria-live="polite">
           <span>{imageStatus.message}</span>
           {imageStatus.retryable && editable && (
