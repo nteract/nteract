@@ -10,6 +10,7 @@ import {
   saveKeyCommand,
 } from "../agent-client-setup.mjs";
 import { connectAgentResponse } from "../connect-agent.mjs";
+import { FAVICON_LINK } from "../shared/favicon.mjs";
 
 test("private key recipe keeps secrets out of output and rejects empty input without overwriting", () => {
   const code = saveKeyCommand.slice("python3 -c '\n".length, -2);
@@ -93,7 +94,9 @@ test("copy actions copy only public recipes and report the matching next step", 
   const response = connectAgentResponse(new Request("https://pages.example/connect"), {
     NOTEBOOK_CLOUD_PUBLIC_ORIGIN: "https://pages.example",
   });
-  const dom = new JSDOM(await response.text(), { runScripts: "outside-only" });
+  const page = await response.text();
+  assert.ok(page.includes(FAVICON_LINK), "the setup page carries the inlined tab icon");
+  const dom = new JSDOM(page, { runScripts: "outside-only" });
   const copied = [];
   Object.defineProperty(dom.window.navigator, "clipboard", {
     value: { writeText: async (text) => copied.push(text) },

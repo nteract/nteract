@@ -13,6 +13,7 @@ import {
   viewerBuildOptions,
   viewerSplit,
   withHashedAssets,
+  withInlineFavicon,
   withModulePreloads,
 } from "./viewer-chunks.mjs";
 import { build } from "esbuild";
@@ -145,9 +146,11 @@ await build({
 await copyFile(path.join(app, "viewer/connect-agent.js"), path.join(dist, "public/connect.js"));
 await writeFile(
   path.join(dist, "public/index.html"),
-  withHashedAssets(
-    withModulePreloads(await readFile(path.join(app, "viewer/index.html"), "utf8"), preloads),
-    assets,
+  withInlineFavicon(
+    withHashedAssets(
+      withModulePreloads(await readFile(path.join(app, "viewer/index.html"), "utf8"), preloads),
+      assets,
+    ),
   ),
 );
 await writeFile(

@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import * as A from "@automerge/automerge";
 import MarkdownIt from "markdown-it";
+import markdownCorpus from "./markdown-corpus.json" with { type: "json" };
 import {
   enableRich,
   exportMarkdown,
@@ -452,6 +453,37 @@ test("a link whose only content is a line break is unrepresentable", () => {
     assert.equal(unsupportedMarkdown(native) ?? nativeImportLoss(native), null, native);
 });
 
-// The same property over the Rust crate's compatibility corpus runs in
-// crates/nteract-rich-text/scripts/check-parity.mjs: the crate reads Pages,
-// never the reverse, and Pages CI checks out only the experiment.
+// Never silent loss: every corpus source, and each one wrapped in a link, a
+// table cell, bold and a highlight, imports with every link destination, image
+// and visible character natively, or as the whole source in literal text. An
+// agent write is refused exactly when the native parse would lose something or
+// names math or HTML.
+test("corpus Markdown imports natively or literally, never losing content", () => {
+  const squash = (text) => text.replace(/\s+/g, "");
+  const wrappings = [
+    (source) => source,
+    (source) => `[${source.replace(/\n/g, " ")}](https://example.org/w)`,
+    (source) => `| h |\n| - |\n| ${source.replace(/\n/g, "<br>").replace(/\|/g, "\\|")} |`,
+    (source) => `**${source.replace(/\n/g, " ")}**`,
+    (source) => `<mark>${source.replace(/\n/g, " ")}</mark> ![after](a.png)`,
+  ];
+  let preserved = 0;
+  let literalized = 0;
+  for (const { id, markdown } of markdownCorpus.cases) {
+    for (const wrap of wrappings) {
+      const source = wrap(markdown);
+      const label = `${id}: ${JSON.stringify(source).slice(0, 80)}`;
+      const doc = parseMarkdown(source);
+      doc.descendants((node) => assert.notEqual(node.type.name, "raw", label));
+      if (nativeImportLoss(source)) {
+        literalized++;
+        assert.equal(squash(doc.textContent), squash(source.replace(/\r/g, "")), label);
+        assert.throws(() => parseAgentMarkdown(source), { code: "unsupported_markdown" }, label);
+      } else {
+        preserved++;
+        if (!unsupportedMarkdown(source)) assert.ok(parseAgentMarkdown(source).eq(doc), label);
+      }
+    }
+  }
+  assert.ok(preserved > 500 && literalized > 0, `${preserved} preserved, ${literalized} literal`);
+});

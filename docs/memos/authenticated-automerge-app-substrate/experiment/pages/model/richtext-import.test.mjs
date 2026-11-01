@@ -215,9 +215,8 @@ test("other characters before $$ do not open display math", () => {
     assert.equal(parseMarkdown(source).firstChild.type.name, "paragraph", JSON.stringify(source));
 });
 
-// The pattern has no flags: multiline anchors differ between JS and Rust, and
-// its BMP `\uXXXX` escapes need no `u` flag. The crate's
-// `math_pattern_matches_pages` test checks that Rust uses the same text.
+// The pattern has no flags: it writes its own line starts, so a multiline `^`
+// would overlap them, and its BMP `\uXXXX` escapes need no `u` flag.
 test("the math pattern has no JS flags", () => {
   assert.equal(MATH_SYNTAX.flags, "");
 });

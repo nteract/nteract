@@ -345,7 +345,7 @@ tokenizer.inline.ruler.before("html_inline", "table_break", (state, silent) => {
 // `<mark data-color="…">` and `</mark>`; other HTML stays literal text. The
 // tokenizer emits every tag it recognizes, and the balance pass below turns
 // nested, unopened or unclosed tags back into their source text.
-// Tag whitespace is ASCII only, matching the Rust codec. Both patterns are
+// Tag whitespace is ASCII only, as in CommonMark. Both patterns are
 // anchored at one `<`. Every run of spaces is followed by `data-color`, `=`, a
 // quote or `>`, none of which is a space, so giving back a space fails on the
 // next character. One attempt reads its run of spaces a bounded number of
@@ -728,24 +728,19 @@ const tableCellSerializer = new MarkdownSerializer(
 // - A `$` pair follows Pandoc's dollar rule: the opening `$` is followed by a
 //   non-space, the closing `$` follows a non-space and is not followed by a
 //   digit. Prose such as "$30 and $25" stays native text.
-// When unsure, the text counts as math. Each rule spells out its spaces,
-// because JS and Rust disagree on `\s` (U+0085, U+FEFF):
+// When unsure, the text counts as math. Each rule spells out its spaces
+// instead of using `\s`:
 // - The dollar rule's spaces are ASCII whitespace, [ \t\n\v\f\r]. Any other
 //   character is content, so the span counts as math.
-// - Before a line-start `$$`, a space is any character either codec's `\s`
-//   matched that does not start a line: ASCII space, tab, VT and FF, U+00A0,
-//   U+0085, U+1680, U+2000-U+200A, U+202F, U+205F, U+3000, U+FEFF.
+// - Before a line-start `$$`, a space is a character that does not start a
+//   line: ASCII space, tab, VT and FF, U+00A0, U+0085, U+1680,
+//   U+2000-U+200A, U+202F, U+205F, U+3000, U+FEFF.
 // A line starts at the start of input or after LF, CR, CRLF, U+2028 or
-// U+2029, the line terminators of JS multiline `^`. JS `m` and Rust `(?m)`
-// disagree on CR, U+2028 and U+2029, so the pattern has no multiline flag
-// and writes line starts as `(?:^|\r\n?|[\n\u2028\u2029])`. Line terminators
-// are not in the prefix class, so the alternatives never overlap and a run
-// of line breaks is scanned once. Each repetition has disjoint branches, so
-// matching is linear. Every `\uXXXX` escape is a BMP code point, which JS
-// reads without the `u` flag; Rust's regex reads the same escape as the same
-// code point. crates/nteract-rich-text/src/import.rs uses this pattern text,
-// and its `math_pattern_matches_pages` test reads this literal. Keep it a
-// flagless literal that starts on the line after `MATH_SYNTAX =`.
+// U+2029. The pattern has no multiline flag and writes line starts as
+// `(?:^|\r\n?|[\n\u2028\u2029])`. Line terminators are not in the prefix
+// class, so the alternatives never overlap and a run of line breaks is
+// scanned once. Each repetition has disjoint branches, so matching is linear.
+// Every `\uXXXX` escape is a BMP code point, so the pattern needs no `u` flag.
 export const MATH_SYNTAX =
   /(?:^|\r\n?|[\n\u2028\u2029])[ \t\v\f\u00a0\u0085\u1680\u2000-\u200a\u202f\u205f\u3000\ufeff]*\$\$|\$\$(?:[^\n$]|\$[^\n$])*\$\$|\$[^ \t\n\v\f\r$](?:[^ \t\n\v\f\r$]|[ \t\v\f\r]+[^ \t\n\v\f\r$])*\$(?:[^0-9]|$)/;
 
@@ -985,7 +980,7 @@ function scanMarkdown(source, tokens = blockTokenizer.parse(source, {})) {
 // CommonMark raw HTML, recognized at a `<` within an inline range: an open or
 // closing tag, a comment, a processing instruction, a declaration or CDATA.
 // `match(at, end)` returns the tag's end, or -1. Whitespace is ASCII, as in
-// CommonMark and the Rust codec.
+// CommonMark.
 //
 // The work is linear in the text. A quoted attribute value jumps to its
 // closing quote through a precomputed next-quote table. Comment, instruction,

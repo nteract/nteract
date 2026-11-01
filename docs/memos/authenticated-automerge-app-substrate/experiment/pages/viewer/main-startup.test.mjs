@@ -78,7 +78,9 @@ const bundle = await build({
           contents:
             "globalThis.__editorImports = (globalThis.__editorImports ?? 0) + 1;\n" +
             'if (globalThis.__editorFails) throw new TypeError("Failed to fetch dynamically imported module");\n' +
-            "export function onRendererUnavailable() {}",
+            "export function onRendererUnavailable() {}\n" +
+            // A test that opens a Page supplies __openPage; others fail the open.
+            "export const PageSession = { open: (id) => globalThis.__openPage ? globalThis.__openPage(id) : Promise.reject(new Error('No Page in this fixture')) };",
           loader: "js",
         }));
         build.onResolve({ filter: /^[^./]/ }, ({ path }) => ({
@@ -94,14 +96,16 @@ const source = Buffer.from(bundle.outputFiles[0].contents).toString("base64");
 const { act } = await import("react");
 
 /** Mount main.jsx once, with `session` answering /api/auth/session and
- * `tools` answering /api/tools operations. */
-async function boot(session, tools = {}) {
+ * `tools` answering /api/tools operations. `connect` answers /api/connect,
+ * and `head` runs where theme.js would, before the app script. */
+async function boot(session, tools = {}, { connect, head } = {}) {
   document.body.innerHTML = '<div id="root"></div>';
   const requests = [];
   globalThis.fetch = async (url, init) => {
     const path = new URL(url, "http://localhost/").pathname;
     requests.push(path);
     if (path === "/api/auth/session") return session();
+    if (path === "/api/connect" && connect) return connect();
     if (path === "/api/tools") {
       const { operation } = JSON.parse(init.body);
       requests.push(operation);
@@ -109,6 +113,7 @@ async function boot(session, tools = {}) {
     }
     return Response.json({ error: "Not in this fixture" }, { status: 404 });
   };
+  head?.();
   // A fresh module instance per boot: main.jsx renders at import.
   await act(
     () => import(`data:text/javascript;base64,${source}#${requests.length}${Math.random()}`),
@@ -232,4 +237,113 @@ test("a Page opened from a /pages search keeps its address when the editor fails
   } finally {
     globalThis.__editorFails = false;
   }
+});
+
+// The boot preview in the real shell: the head script's discovery, the
+// session check, and an editor whose Page open never finishes, so the shell
+// stays in "Opening" where the preview may show.
+const { startEarlyConnect } = await import("./early-session.mjs");
+const PREVIEW_PAGE = "5f0c4a5e-6c1e-4b0e-9a8f-0d0d4c5e6f70";
+const SECRET = "Only Alice can read this.";
+const accountSession = (who) => () =>
+  Response.json({ identity: { principal: who.current, displayName: who.current }, canWrite: true });
+const previewAnswer = (principal) =>
+  Response.json({
+    page_id: PREVIEW_PAGE,
+    identity: { principal, displayName: principal },
+    access: { canRead: true },
+    preview: {
+      title: "Private plan",
+      blocks: [{ id: "b1", content: [["p", {}, SECRET]] }],
+      truncated: false,
+    },
+  });
+const showing = () =>
+  !!document.querySelector(".page-preview") || document.body.textContent.includes(SECRET);
+/** Boot on the Page route with the head script's discovery waiting on `answer`. */
+async function bootPreview(who, answer) {
+  history.replaceState(null, "", `/p/${PREVIEW_PAGE}`);
+  // The open takes the early request, as openConnection does, and then waits.
+  globalThis.__openPage = () => {
+    delete globalThis.__pagesEarlyConnect;
+    return new Promise(() => {});
+  };
+  await boot(accountSession(who), catalog, {
+    connect: () => answer.promise,
+    head: () => startEarlyConnect(globalThis),
+  });
+}
+const sessionCheck = async () => {
+  // A visible tab rechecks the session (browser-session.mjs).
+  await act(() => document.dispatchEvent(new window.Event("visibilitychange")));
+  await settle();
+};
+function deferredAnswer() {
+  let resolve;
+  const promise = new Promise((yes) => (resolve = yes));
+  return { promise, resolve };
+}
+
+test("the shell shows the boot preview to the account the host answered for", async (t) => {
+  t.after(() => delete globalThis.__openPage);
+  const who = { current: "alice" };
+  const answer = deferredAnswer();
+  await bootPreview(who, answer);
+  await settle();
+  assert.equal(showing(), false, "nothing before the host answers");
+  assert.equal(document.querySelector('[role="status"]')?.textContent, "Opening…");
+  answer.resolve(previewAnswer("alice"));
+  await settle();
+  assert.ok(document.querySelector(".page-preview"), "the preview shows");
+  assert.ok(document.body.textContent.includes(SECRET));
+});
+
+test("an account change after the preview showed hides it for the rest of the load", async (t) => {
+  t.after(() => delete globalThis.__openPage);
+  const who = { current: "alice" };
+  const answer = deferredAnswer();
+  await bootPreview(who, answer);
+  answer.resolve(previewAnswer("alice"));
+  await settle();
+  assert.equal(showing(), true);
+  // Another tab signs in as Bob; this tab's next session check sees it.
+  who.current = "bob";
+  await sessionCheck();
+  assert.equal(showing(), false, "Bob never sees Alice's preview");
+  // Switching back in this load doesn't bring it back.
+  who.current = "alice";
+  await sessionCheck();
+  assert.equal(showing(), false);
+});
+
+test("an account change before the preview resolves ignores the late answer", async (t) => {
+  t.after(() => delete globalThis.__openPage);
+  const who = { current: "alice" };
+  const answer = deferredAnswer();
+  await bootPreview(who, answer);
+  await settle();
+  who.current = "bob";
+  await sessionCheck();
+  answer.resolve(previewAnswer("alice"));
+  await settle();
+  assert.equal(showing(), false);
+});
+
+test("navigating away and back to the Page doesn't bring the boot preview back", async (t) => {
+  t.after(() => delete globalThis.__openPage);
+  const who = { current: "alice" };
+  const answer = deferredAnswer();
+  await bootPreview(who, answer);
+  answer.resolve(previewAnswer("alice"));
+  await settle();
+  assert.equal(showing(), true);
+  history.pushState(null, "", "/");
+  await act(() => window.dispatchEvent(new window.PopStateEvent("popstate")));
+  await settle();
+  assert.equal(showing(), false);
+  history.back();
+  await settle();
+  assert.equal(location.pathname, `/p/${PREVIEW_PAGE}`);
+  assert.equal(document.querySelector('[role="status"]')?.textContent, "Opening…");
+  assert.equal(showing(), false);
 });
