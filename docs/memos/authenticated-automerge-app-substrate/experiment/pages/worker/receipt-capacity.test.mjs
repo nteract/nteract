@@ -335,3 +335,126 @@ test("1,500 tokenless comment writes leave the Page writable; the token lane kee
   });
   assert.equal(beside.status, 200, JSON.stringify(beside.body));
 });
+
+/** `count` tokenless receipts, as the host holds them once its lane is full,
+ * stamped from `since` upward. */
+async function fillTokenless(storage, count, since = 1_700_000_000_000) {
+  for (let n = 0; n < count; n++)
+    await storage.put(`host/operation/filler-${String(n).padStart(5, "0")}`, {
+      fingerprint: `filler-${n}`,
+      pending: false,
+      doc: "comments",
+      receipt: { page_id: pageId, result: { thread_id: `thread-${n}` } },
+      recordedAt: since + n,
+    });
+}
+
+test("after a lost response, a tokened retry replays through eviction; a tokenless one is a new write", async (t) => {
+  const f = await fixture(t);
+  const threads = () => Object.keys(f.commentsDoc().threads).length;
+  const read = await f.tool("owner", "read_page", { include_content: false });
+  const tokened = {
+    idempotency_key: `${read.body.retry_key_prefix}lost-response`,
+    retry_token: read.body.retry_token,
+    action: "add",
+    block_id: f.blockId,
+    body: "Tokened comment",
+  };
+  const plain = {
+    idempotency_key: "tokenless-lost-response",
+    action: "add",
+    block_id: f.blockId,
+    body: "Tokenless comment",
+  };
+  const first = await f.tool("owner", "manage_page_comment", tokened);
+  const second = await f.tool("owner", "manage_page_comment", plain);
+  assert.equal(first.status, 200, JSON.stringify(first.body));
+  assert.equal(second.status, 200, JSON.stringify(second.body));
+  assert.equal(threads(), 3);
+  // The client never saw either response. Meanwhile the Page takes 1,000 more
+  // tokenless writes, enough to evict every earlier tokenless receipt.
+  await fillTokenless(f.storage, 999, Date.now() + 60_000);
+  const push = await f.tool("owner", "manage_page_comment", {
+    idempotency_key: "the-one-that-evicts",
+    action: "add",
+    block_id: f.blockId,
+    body: "Pushes the oldest out",
+  });
+  assert.equal(push.status, 200, JSON.stringify(push.body));
+  assert.equal(await f.storage.get("host/operation/tokenless-lost-response"), undefined);
+  assert.ok(
+    await f.storage.get(`host/operation/${tokened.idempotency_key}`),
+    "the token lane kept its receipt",
+  );
+  assert.equal(threads(), 4);
+  // The tokened retry replays: same receipt, no second comment.
+  const replay = await f.tool("owner", "manage_page_comment", tokened);
+  assert.deepEqual(replay.body, first.body);
+  assert.equal(threads(), 4);
+  // The tokenless retry is a new request: it applies again. That is why the
+  // MCP layer tells a tokenless caller to read back and reconcile instead.
+  const again = await f.tool("owner", "manage_page_comment", plain);
+  assert.equal(again.status, 200);
+  assert.notEqual(again.body.result.thread_id, second.body.result.thread_id);
+  assert.equal(threads(), 5);
+});
+
+test("eviction order comes from the stored stamp, so it survives a restart", async (t) => {
+  const f = await fixture(t);
+  await fillTokenless(f.storage, 1000);
+  // Give two receipts stamps out of key order, as writes at different times do.
+  const early = await f.storage.get("host/operation/filler-00500");
+  await f.storage.put("host/operation/filler-00500", { ...early, recordedAt: 1 });
+  const late = await f.storage.get("host/operation/filler-00000");
+  await f.storage.put("host/operation/filler-00000", { ...late, recordedAt: 2_000_000_000_000 });
+  await f.restart();
+  const write = await f.tool("owner", "manage_page_comment", {
+    idempotency_key: "after-restart",
+    action: "add",
+    block_id: f.blockId,
+    body: "After a restart",
+  });
+  assert.equal(write.status, 200, JSON.stringify(write.body));
+  const keys = await f.storage.list({ prefix: "host/operation/" });
+  assert.equal(keys.has("host/operation/filler-00500"), false, "the smallest stamp went first");
+  assert.ok(keys.has("host/operation/filler-00000"), "a newer stamp stays whatever its key");
+  assert.ok(keys.has("host/operation/filler-00001"));
+  assert.equal(keys.size, 1000);
+});
+
+test("two admissions at capacity in one tick each evict one receipt; equal stamps break by key", async () => {
+  const storage = new Storage();
+  for (let n = 0; n < 1000; n++)
+    storage.values.set(`host/operation/same-${String(n).padStart(4, "0")}`, {
+      fingerprint: `same-${n}`,
+      pending: false,
+      receipt: {},
+      recordedAt: 5,
+    });
+  const now = 9;
+  for (const key of ["host/operation/first-new", "host/operation/second-new"]) {
+    const admitted = await reserveOperation(storage, {
+      key,
+      entry: { fingerprint: key, pending: true },
+      now,
+    });
+    assert.equal(admitted.recordedAt, now);
+    await storage.put(key, { ...admitted, pending: false });
+  }
+  const keys = await storage.list({ prefix: "host/operation/" });
+  assert.equal(keys.size, 1000);
+  assert.equal(keys.has("host/operation/same-0000"), false);
+  assert.equal(keys.has("host/operation/same-0001"), false, "the tie broke by key, oldest first");
+  assert.ok(keys.has("host/operation/same-0002"));
+  assert.ok(keys.has("host/operation/first-new") && keys.has("host/operation/second-new"));
+  // A third write with the same stamp as the two new ones evicts an older
+  // receipt, never one of them.
+  await reserveOperation(storage, {
+    key: "host/operation/third-new",
+    entry: { fingerprint: "third", pending: true },
+    now,
+  });
+  const after = await storage.list({ prefix: "host/operation/" });
+  assert.equal(after.has("host/operation/same-0002"), false);
+  assert.ok(after.has("host/operation/first-new") && after.has("host/operation/second-new"));
+});

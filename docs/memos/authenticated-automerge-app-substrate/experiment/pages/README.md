@@ -1334,8 +1334,12 @@ Worker left uncoded by its status (`access_denied`, `not_found`, `conflict` and
 so on). It adds `retryable: true` to `stale_heads`, whose retry is a new request
 built from a fresh read. The HTTP API keeps `retryable` for transient failures
 only, because the browser treats those as an outage. A tool call that gets no
-answer returns `read_failed` or `outcome_unknown`. The `/llms.txt` guide lists the
-codes agents act on.
+answer returns `read_failed` or `outcome_unknown`. `outcome_unknown` is
+`retryable: true` only when the write carried a `retry_token` and the `v1_` key
+it scopes, whose receipt replays for the token's window; a tokenless write gets
+`retryable: false` and is told to read back and reconcile, since its receipt is
+kept best-effort and a repeat after eviction applies again. The `/llms.txt`
+guide lists the codes agents act on.
 
 Every tool declares all four MCP annotation hints, and `tool()` refuses one that
 doesn't, because clients read an absent hint as destructive and open-world.
@@ -1689,8 +1693,10 @@ window and so never expire; a receipt there exists to replay an exact repeat
 of the same key, which in practice is a client retrying a lost response
 moments later. So that lane keeps its newest receipts: when it is full, a new
 tokenless call evicts the oldest completed tokenless receipts (by the
-`recordedAt` stamp each one gets at admission, oldest first) to make room,
-and a key whose receipt was evicted is a new request again. A Page that takes
+`recordedAt` stamp each one gets at admission, oldest first, then by key;
+each receipt is sized once per pass) to make room, and a key whose receipt
+was evicted is a new request again, so a tokenless write is deduplicated only
+while its receipt is retained. A Page that takes
 thousands of tokenless comments stays writable, and comments and edits share
 one Page's lanes without one locking the other. Pending entries are never
 evicted. Browser edits consume neither lane. Catalog deletion tombstones

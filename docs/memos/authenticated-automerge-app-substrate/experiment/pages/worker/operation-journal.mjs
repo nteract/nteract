@@ -348,9 +348,12 @@ export async function reserveOperation(storage, { key, entry, retry, now = Date.
       "pending_operation_capacity",
       "Pending operations need recovery before accepting more edits",
     );
-  const laneBytes = () =>
-    lane.reduce((sum, [name, value]) => sum + operationEntryBytes(name, value), bytes);
-  const full = () => lane.length >= JOURNAL_LIMITS.entries || laneBytes() > JOURNAL_LIMITS.bytes;
+  // Each receipt is sized once; eviction keeps the running totals.
+  const sizes = new Map(lane.map(([name, value]) => [name, operationEntryBytes(name, value)]));
+  let laneEntries = lane.length,
+    laneBytes = bytes;
+  for (const size of sizes.values()) laneBytes += size;
+  const full = () => laneEntries >= JOURNAL_LIMITS.entries || laneBytes > JOURNAL_LIMITS.bytes;
   if (!retry && full()) {
     const evictable = lane
       .filter(([, value]) => value.pending === false)
@@ -359,13 +362,11 @@ export async function reserveOperation(storage, { key, entry, retry, now = Date.
           (left.recordedAt ?? -1) - (right.recordedAt ?? -1) ||
           (leftKey < rightKey ? -1 : leftKey > rightKey ? 1 : 0),
       );
-    while (full() && evictable.length) {
-      const [name] = evictable.shift();
+    for (let next = 0; full() && next < evictable.length; next++) {
+      const [name] = evictable[next];
       await storage.delete(name);
-      lane.splice(
-        lane.findIndex(([laneKey]) => laneKey === name),
-        1,
-      );
+      laneEntries--;
+      laneBytes -= sizes.get(name);
     }
   }
   if (full())
