@@ -242,7 +242,7 @@ async function drive(state, event) {
 }
 
 const table = loadTable(TABLE);
-const COUNTS = { rows: 70, pairs: 19, unreachable: 6, cases: 56 };
+const COUNTS = { rows: 72, pairs: 19, unreachable: 6, cases: 58 };
 
 test("the reload-gate table runs through the pure machine", async () => {
   assert.deepEqual(await runTable(reloadGateMachine, table), COUNTS);

@@ -31,7 +31,8 @@
  * the host won't accept carries `schema` and its `title`. The host refuses
  * those edits until a build with the feature opens the Page, so a receipt can
  * never settle them. Instead the attempt asks for a local checkpoint
- * (`checkpoint`): `refused` (none written for the reload yet), then
+ * (`checkpoint`), when it starts or when a waiting session first reports the
+ * hold: `refused` (none written for the reload yet), then
  * `writing`, then `written` or `failed`. Read-only means the replica takes no
  * new local edits, so one written checkpoint covers them all. A written one
  * settles like a closed Page's checkpoint: it reloads when the attempt
@@ -270,6 +271,8 @@ export const reloadGateSpec = Object.freeze({
       "schema-writing",
       "schema-written-reloads",
       "schema-failed-blocks",
+      "schema-refused-mid-attempt",
+      "schema-refused-again",
     ],
     "waiting/timeout": ["live-waiting", "closing-still", "none-waiting", "schema-checkpoint-slow"],
   },
@@ -544,6 +547,19 @@ function transition(state, event) {
       const { sessions, records, moved } = bookkeep(state, event);
       if (state.name !== "waiting") return { state: { ...state, sessions, records }, effects: [] };
       const entry = sessions.find((s) => s.id === event.id);
+      const previous = state.sessions.find((s) => s.id === event.id);
+      const item = state.attempt.live.find((candidate) => candidate.id === event.id);
+      // A refusal that arrives mid-attempt starts its checkpoint here: a
+      // receipt can no longer settle this session.
+      const effects =
+        item?.result === null &&
+        entry?.phase === "held" &&
+        entry.alive &&
+        entry.pending &&
+        entry.schema === "refused" &&
+        previous?.schema !== "refused"
+          ? [{ type: "checkpoint", id: event.id }]
+          : [];
       const live = state.attempt.live.map((item) => {
         if (item.id !== event.id) return item;
         const savedHeads = event.savedHeads;
@@ -554,17 +570,20 @@ function transition(state, event) {
         entry?.phase === "closing"
           ? state.attempt.closing
           : state.attempt.closing.filter((id) => id !== event.id);
-      return settleAttempt({
-        ...state,
-        sessions,
-        records,
-        attempt: {
-          ...state.attempt,
-          navigated: state.attempt.navigated || moved,
-          live,
-          closing,
+      return settleAttempt(
+        {
+          ...state,
+          sessions,
+          records,
+          attempt: {
+            ...state.attempt,
+            navigated: state.attempt.navigated || moved,
+            live,
+            closing,
+          },
         },
-      });
+        effects,
+      );
     }
     case "timeout": {
       if (!state.attempt.live.some((entry) => entry.result === null))

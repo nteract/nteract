@@ -71,7 +71,9 @@
       "late-deletion",
       "schema-writing",
       "schema-written-reloads",
-      "schema-failed-blocks"
+      "schema-failed-blocks",
+      "schema-refused-mid-attempt",
+      "schema-refused-again"
     ],
     "waiting/timeout": ["live-waiting", "closing-still", "none-waiting", "schema-checkpoint-slow"]
   },
@@ -3466,6 +3468,138 @@
           }
         },
         "effects": [{ "type": "resumeEdits", "ids": ["a"] }]
+      }
+    },
+    {
+      "note": "the banner's Reload was waiting on a receipt; the host's refusal starts the checkpoint",
+      "case": "schema-refused-mid-attempt",
+      "state": {
+        "name": "waiting",
+        "sessions": [
+          {
+            "id": "a",
+            "key": "dev:page-a",
+            "phase": "held",
+            "alive": true,
+            "pending": true,
+            "save": "saving",
+            "savedHeads": []
+          }
+        ],
+        "records": [],
+        "drafts": false,
+        "attempt": {
+          "acceptCheckpoints": false,
+          "navigated": false,
+          "live": [{ "id": "a", "key": "dev:page-a", "result": null, "savedHeads": [] }],
+          "closing": []
+        }
+      },
+      "event": {
+        "type": "sessionPhase",
+        "id": "a",
+        "key": "dev:page-a",
+        "phase": "held",
+        "alive": true,
+        "pending": true,
+        "save": "stalled",
+        "savedHeads": [],
+        "schema": "refused",
+        "title": "Plan"
+      },
+      "expect": {
+        "state": {
+          "name": "waiting",
+          "sessions": [
+            {
+              "id": "a",
+              "key": "dev:page-a",
+              "phase": "held",
+              "alive": true,
+              "pending": true,
+              "save": "stalled",
+              "savedHeads": [],
+              "schema": "refused",
+              "title": "Plan"
+            }
+          ],
+          "records": [],
+          "drafts": false,
+          "attempt": {
+            "acceptCheckpoints": false,
+            "navigated": false,
+            "live": [{ "id": "a", "key": "dev:page-a", "result": null, "savedHeads": [] }],
+            "closing": []
+          }
+        },
+        "effects": [{ "type": "checkpoint", "id": "a" }]
+      }
+    },
+    {
+      "note": "only the first report of the hold asks for a checkpoint",
+      "case": "schema-refused-again",
+      "state": {
+        "name": "waiting",
+        "sessions": [
+          {
+            "id": "a",
+            "key": "dev:page-a",
+            "phase": "held",
+            "alive": true,
+            "pending": true,
+            "save": "stalled",
+            "savedHeads": [],
+            "schema": "refused",
+            "title": "Plan"
+          }
+        ],
+        "records": [],
+        "drafts": false,
+        "attempt": {
+          "acceptCheckpoints": false,
+          "navigated": false,
+          "live": [{ "id": "a", "key": "dev:page-a", "result": null, "savedHeads": [] }],
+          "closing": []
+        }
+      },
+      "event": {
+        "type": "sessionPhase",
+        "id": "a",
+        "key": "dev:page-a",
+        "phase": "held",
+        "alive": true,
+        "pending": true,
+        "save": "saving",
+        "savedHeads": [],
+        "schema": "refused",
+        "title": "Plan"
+      },
+      "expect": {
+        "state": {
+          "name": "waiting",
+          "sessions": [
+            {
+              "id": "a",
+              "key": "dev:page-a",
+              "phase": "held",
+              "alive": true,
+              "pending": true,
+              "save": "saving",
+              "savedHeads": [],
+              "schema": "refused",
+              "title": "Plan"
+            }
+          ],
+          "records": [],
+          "drafts": false,
+          "attempt": {
+            "acceptCheckpoints": false,
+            "navigated": false,
+            "live": [{ "id": "a", "key": "dev:page-a", "result": null, "savedHeads": [] }],
+            "closing": []
+          }
+        },
+        "effects": []
       }
     }
   ]

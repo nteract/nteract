@@ -8,11 +8,13 @@ import { build } from "esbuild";
 import { JSDOM } from "jsdom";
 import * as A from "@automerge/automerge";
 import { createPageData, initializePage } from "../model/page.mjs";
+import "fake-indexeddb/auto";
 import { VirtualTimeScheduler } from "rxjs";
 import { PageSession, pageSyncAddress } from "./session.mjs";
 import { SessionHost } from "./session-host.mjs";
 import { ReloadGate } from "./build-freshness.mjs";
-import { SCHEMA_CHECKPOINT_FAILED } from "./reload-gate-machine.mjs";
+import { SAVE_TIMEOUT, SCHEMA_CHECKPOINT_FAILED } from "./reload-gate-machine.mjs";
+import { decodeSnapshot, readLocalPage } from "./local-pages.mjs";
 
 const owner = {
   role: "owner",
@@ -261,4 +263,158 @@ test("a failed schema checkpoint blocks the reload and keeps the edits", async (
     { ok: true },
   );
   assert.equal(reloaded, true);
+});
+
+const deferred = () => {
+  let resolve, reject;
+  const promise = new Promise((yes, no) => {
+    resolve = yes;
+    reject = no;
+  });
+  return { promise, resolve, reject };
+};
+
+/** The build banner's Reload starts while a receipt is in flight; the host
+ * then refuses it for an unsupported feature. `checkpoint` is the local
+ * write the reload asks for afterwards. Time is virtual: the reload timeout
+ * fires only when the test flushes the scheduler. */
+async function refusedDuringReload(t, checkpoint, { acceptCheckpoints = false } = {}) {
+  const { session: s } = session(t, unstamped(), { buildFeatures: [] });
+  s.identity = { principal: "dev" };
+  s.repo = { flush: async () => {} };
+  s.connection = { documentId: "doc" };
+  s.localPage = { pending: true };
+  let writes = 0;
+  // The receipt's own pending write succeeds; later writes are the checkpoint.
+  s.persistLocal = (patch) => (writes++ === 0 ? Promise.resolve() : checkpoint(patch));
+  const receipt = deferred();
+  s.requestWithRenewal = () => receipt.promise;
+  s.queueSaved = () => {};
+  s.scheduleReceiptRetry = () => assert.fail("a schema refusal never retries");
+  const saving = s.saveReceipt();
+  await new Promise((resolve) => setImmediate(resolve));
+  const host = new SessionHost();
+  const scheduler = new VirtualTimeScheduler();
+  const gate = new ReloadGate({ scheduler });
+  gate.watch(host);
+  host.install(s, host.generation, "dev");
+  const reloads = [];
+  const outcome = gate.reload({ reload: () => reloads.push("reload"), acceptCheckpoints });
+  assert.equal(gate.store.snapshot().name, "waiting");
+  assert.equal(s.schemaHold, undefined, "still waiting on the receipt");
+  receipt.reject(Object.assign(Error("refused"), { status: 409, code: "schema_unsupported" }));
+  await saving;
+  return { session: s, gate, scheduler, outcome, reloads };
+}
+
+test("reload, then refusal, then checkpoint written: the attempt settles without its timeout", async (t) => {
+  const {
+    session: s,
+    gate,
+    scheduler,
+    outcome,
+    reloads,
+  } = await refusedDuringReload(t, async () => {});
+  const result = await outcome;
+  assert.equal(s.schemaHold, "written");
+  // The banner's Reload didn't accept checkpoints: it lists the Page.
+  assert.equal(result.ok, false);
+  assert.equal(result.reason, "checkpointed");
+  assert.deepEqual(
+    result.pages.map((page) => page.key),
+    ["dev:page_fixture"],
+  );
+  assert.equal(scheduler.actions.length, 0, "the timeout was cancelled, never fired");
+  assert.deepEqual(reloads, []);
+  // Reload anyway, or the schema notice's Reload, goes ahead.
+  assert.deepEqual(
+    await gate.reload({ reload: () => reloads.push("reload"), acceptCheckpoints: true }),
+    {
+      ok: true,
+    },
+  );
+  assert.deepEqual(reloads, ["reload"]);
+});
+
+test("reload accepting checkpoints, then refusal, then checkpoint written: reloads", async (t) => {
+  const { outcome, reloads } = await refusedDuringReload(t, async () => {}, {
+    acceptCheckpoints: true,
+  });
+  assert.deepEqual(await outcome, { ok: true });
+  assert.deepEqual(reloads, ["reload"]);
+});
+
+test("reload, then refusal, then checkpoint failed: blocked, edits kept", async (t) => {
+  const {
+    session: s,
+    outcome,
+    reloads,
+  } = await refusedDuringReload(t, async () => {
+    throw Error("QuotaExceededError");
+  });
+  assert.deepEqual(await outcome, { ok: false, message: SCHEMA_CHECKPOINT_FAILED });
+  assert.equal(s.schemaHold, "failed");
+  assert.equal(s.recoveryPending, true);
+  assert.equal(s.canWrite, false);
+  assert.deepEqual(reloads, []);
+});
+
+test("reload, then refusal, then a checkpoint slower than the timeout: blocked; the next Reload succeeds", async (t) => {
+  const slow = deferred();
+  const {
+    session: s,
+    gate,
+    scheduler,
+    outcome,
+    reloads,
+  } = await refusedDuringReload(t, () => slow.promise);
+  assert.equal(s.schemaHold, "writing");
+  scheduler.flush();
+  assert.deepEqual(await outcome, { ok: false, message: SAVE_TIMEOUT });
+  assert.deepEqual(reloads, []);
+  slow.resolve();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(s.schemaHold, "written");
+  assert.deepEqual(
+    await gate.reload({ reload: () => reloads.push("reload"), acceptCheckpoints: true }),
+    {
+      ok: true,
+    },
+  );
+  assert.deepEqual(reloads, ["reload"]);
+});
+
+test("the schema checkpoint's IndexedDB transaction commits before the session reports written", async (t) => {
+  const { session: s, doc } = session(t, unstamped(), { buildFeatures: [] });
+  const identity = { principal: "account:schema-idb" };
+  s.identity = identity;
+  s.repo = { flush: async () => {} };
+  s.localPage = {
+    principal: identity.principal,
+    page_id: "page_fixture",
+    document_id: "doc-schema-idb",
+    pending: true,
+  };
+  s.stepSchema({ type: "refused" });
+  const order = [];
+  const transaction = IDBDatabase.prototype.transaction;
+  IDBDatabase.prototype.transaction = function (...args) {
+    const opened = transaction.apply(this, args);
+    if (args[1] === "readwrite") opened.addEventListener("complete", () => order.push("committed"));
+    return opened;
+  };
+  t.after(() => {
+    IDBDatabase.prototype.transaction = transaction;
+  });
+  s.subscribe(() => {
+    if (s.schemaHold === "written") order.push("written");
+  });
+  await s.checkpointForSchema();
+  assert.equal(s.schemaHold, "written");
+  assert.deepEqual(order.slice(-2), ["committed", "written"]);
+  assert.equal(order.indexOf("written"), order.length - 1);
+  const stored = await readLocalPage(identity, "page_fixture");
+  assert.equal(stored.pending, true);
+  const restored = A.load(decodeSnapshot(stored.snapshot));
+  assert.deepEqual(A.getHeads(restored), A.getHeads(doc()));
 });
