@@ -177,9 +177,24 @@ export class PageActivity {
       generation,
       record,
     });
+    const oldest = (entries) =>
+      entries.reduce((a, b) => (b[1].record.lastCall < a[1].record.lastCall ? b : a));
+    // Per account first, so one account varying its session id evicts only
+    // its own least recent sessions, never other accounts' agents.
+    for (;;) {
+      const mine = [...candidate].filter(
+        ([, entry]) => entry.identity.principal === identity.principal,
+      );
+      if (mine.length <= AGENT_PRESENCE.sessionsPerPrincipal) break;
+      candidate.delete(oldest(mine)[0]);
+    }
+    // Over the Page-wide cap, the account that just grew gives up its own
+    // least recent session when it has more than one; otherwise the oldest goes.
     while (candidate.size > AGENT_PRESENCE.agents) {
-      const oldest = [...candidate].sort((a, b) => a[1].record.lastCall - b[1].record.lastCall)[0];
-      candidate.delete(oldest[0]);
+      const mine = [...candidate].filter(
+        ([, entry]) => entry.identity.principal === identity.principal,
+      );
+      candidate.delete(oldest(mine.length > 1 ? mine : [...candidate])[0]);
     }
     const next = this.snapshotOf(this.progress, this.revision + 1, now, candidate);
     if (byteSize(next) > ACTIVITY_LIMITS.snapshotBytes) return false;

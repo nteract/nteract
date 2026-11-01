@@ -16,6 +16,9 @@ export const AGENT_PRESENCE = Object.freeze({
   maxHits: 3,
   maxTargets: 3,
   agents: 8,
+  // The client chooses its MCP session id, so one account could mint caret
+  // identities by varying it. Each account keeps at most this many per Page.
+  sessionsPerPrincipal: 8,
 });
 
 /** Lifetime states. Hidden is the absence of a record. */

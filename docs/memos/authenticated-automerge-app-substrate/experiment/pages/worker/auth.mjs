@@ -54,7 +54,7 @@ export async function sessionTag(request, principal) {
   const bytes = new Uint8Array(
     await crypto.subtle.digest("SHA-256", new TextEncoder().encode(`${principal}\u0000${value}`)),
   );
-  return [...bytes.slice(0, 8)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+  return Array.from(bytes.slice(0, 8), (byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
 const mcpSession = async (request, principal) => {
