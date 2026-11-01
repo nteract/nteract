@@ -256,7 +256,7 @@ test("an image pasted at the start or the end of a block puts the caret after it
 test("an image pasted right after an astral character keeps the character whole", async () => {
   // 🌊 is a surrogate pair: two UTF-16 units in the native text.
   for (const delayed of [false, true]) {
-    const f = fixture("wave 🌊 here", { anchor: ({ doc }) => 1 + "wave 🌊".length }),
+    const f = fixture("wave 🌊 here", { anchor: 1 + "wave 🌊".length }),
       pending = deferred(),
       uploader = uploaderFor(f, delayed ? () => pending.promise : async () => asset);
     const completion = uploader.start([file], f.target());
