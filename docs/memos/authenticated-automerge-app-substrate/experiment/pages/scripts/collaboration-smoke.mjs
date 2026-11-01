@@ -242,7 +242,40 @@ try {
   assert.equal(await title(a).inputValue(), await title(b).inputValue());
   complete(stage);
 
+  stage = "a peer's title edit during an IME composition merges when it ends";
+  {
+    // Chromium's IME through CDP: compositionstart, composing input events,
+    // then compositionend on commit.
+    const ime = await b.context().newCDPSession(b);
+    await title(b).click();
+    await title(b).press("End");
+    const before = await title(b).inputValue();
+    await ime.send("Input.imeSetComposition", { text: " k", selectionStart: 2, selectionEnd: 2 });
+    await ime.send("Input.imeSetComposition", { text: " か", selectionStart: 2, selectionEnd: 2 });
+    await expect(title(b)).toHaveValue(before + " か");
+    // A's edit reaches B's document (its switcher label) but not the input
+    // the IME owns.
+    await title(a).click();
+    await title(a).press("Home");
+    await a.keyboard.type("IME ");
+    await expect(
+      b.getByRole("button", { name: "IME " + before + ", switch page", exact: true }),
+    ).toBeVisible();
+    await expect(title(b)).toHaveValue(before + " か");
+    await ime.send("Input.imeSetComposition", { text: " 漢", selectionStart: 2, selectionEnd: 2 });
+    await ime.send("Input.insertText", { text: " 漢" });
+    const merged = "IME " + before + " 漢";
+    for (const page of [a, b]) await expect(title(page)).toHaveValue(merged);
+    // B's caret sits after the composed text, so typing continues there.
+    expect(await title(b).evaluate((input) => input.selectionStart)).toBe(merged.length);
+    await b.keyboard.type("!");
+    await expect(title(a)).toHaveValue(merged + "!");
+    await ime.detach();
+  }
+  complete(stage);
+
   stage = "Tab leaves the Page body outside a table";
+
   await selectText(a, "lazy dog.", true);
   await a.keyboard.press("Tab");
   await expect
@@ -367,36 +400,40 @@ try {
       try {
         await a.goto(`${origin}/p/${page}`);
         await selectText(a, "Tail.", true);
-        const typing = a.keyboard.type(" person keeps typing", { delay: 60 });
-        let shown = (await textOf(a)).length;
-        for (const [from, to] of [
-          ["aaaa", "bbbb"],
-          ["bbbb", "cccc"],
-          ["cccc", "dddd"],
-        ]) {
-          // Each agent edit lands while the typist is mid-word: after a few
-          // more of their characters reach the screen.
-          await expect.poll(async () => (await textOf(a)).length).toBeGreaterThanOrEqual(shown + 3);
-          shown = (await textOf(a)).length;
+        // Each round types one chunk while one agent patch is in flight,
+        // then waits for both to show: the chunk at the typist's caret and
+        // the patch's replacement. The overlap inside a round is the race
+        // this records; nothing else depends on timing.
+        const rounds = [
+          [" person", "aaaa", "bbbb"],
+          [" keeps", "bbbb", "cccc"],
+          [" typing", "cccc", "dddd"],
+        ];
+        let typed = "Status: aaaa. Tail.";
+        for (const [chunk, from, to] of rounds) {
           const current = await tool(a, "read_page", { page_id: page });
-          const authority = current;
-          await tool(a, "patch_page", {
-            page_id: page,
-            base_heads: current.heads,
-            conflict_scope: "target",
-            retry_token: authority.retry_token,
-            idempotency_key: authority.retry_key_prefix + crypto.randomUUID(),
-            operations: [
-              {
-                op: "replace_match",
-                block_id: current.blocks[0].id,
-                match_text: from,
-                replacement: to,
-              },
-            ],
-          });
+          await Promise.all([
+            a.keyboard.type(chunk, { delay: 40 }),
+            tool(a, "patch_page", {
+              page_id: page,
+              base_heads: current.heads,
+              conflict_scope: "target",
+              retry_token: current.retry_token,
+              idempotency_key: current.retry_key_prefix + crypto.randomUUID(),
+              operations: [
+                {
+                  op: "replace_match",
+                  block_id: current.blocks[0].id,
+                  match_text: from,
+                  replacement: to,
+                },
+              ],
+            }),
+          ]);
+          typed = typed.replace(from, to) + chunk;
+          await expect.poll(() => textOf(a)).toContain(to);
+          await expect.poll(async () => (await textOf(a)).length).toBe(typed.length);
         }
-        await typing;
         await expect.poll(() => textOf(a)).toBe("Status: dddd. Tail. person keeps typing");
       } finally {
         const current = await tool(a, "read_page", { page_id: page });
