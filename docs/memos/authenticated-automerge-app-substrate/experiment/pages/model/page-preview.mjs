@@ -8,7 +8,7 @@
 import { isRich, richDoc } from "./richtext.mjs";
 import { orderedBlockIds } from "./order.mjs";
 
-/** The preview stops adding blocks once its JSON passes this size. */
+/** The most UTF-8 bytes the serialized preview may take. */
 export const PREVIEW_MAX_BYTES = 256 * 1024;
 
 /** A DOMOutputSpec with its content hole filled, as [tag, attrs, ...children]. */
@@ -60,18 +60,53 @@ export function blockPreview(block) {
   }
 }
 
-/** The Page's title and as many blocks as fit in `maxBytes` of JSON, in order. */
+const encoder = new TextEncoder();
+/** UTF-8 bytes of a string, as a response body carries it. */
+const utf8 = (text) => encoder.encode(text).length;
+/** The serialized preview. Its fields and their order are the response shape. */
+const serialize = (title, blocks, truncated) => JSON.stringify({ title, blocks, truncated });
+
+/** The longest prefix of `title`, by code point, whose envelope fits `budget`. */
+function fittingTitle(title, budget) {
+  const points = Array.from(title);
+  let low = 0;
+  let high = points.length;
+  while (low < high) {
+    const mid = Math.ceil((low + high) / 2);
+    if (utf8(serialize(points.slice(0, mid).join(""), [], true)) <= budget) low = mid;
+    else high = mid - 1;
+  }
+  return points.slice(0, low).join("");
+}
+
+/**
+ * The Page's title and as many blocks as fit, in order. The UTF-8 length of
+ * JSON.stringify(result) is at most `maxBytes`, counting the title, block ids
+ * and JSON punctuation. Blocks stop at the first one that doesn't fit or can't
+ * be rendered; a title too long for the budget is cut at a code point.
+ * `truncated` says whether anything was left out.
+ */
 export function pagePreview(doc, { maxBytes = PREVIEW_MAX_BYTES } = {}) {
+  let title = String(doc.title ?? "");
+  // The envelope with `truncated: false`, the longer of the two literals.
+  const floor = utf8(serialize("", [], false));
+  if (maxBytes < floor) throw new RangeError(`A preview needs at least ${floor} bytes`);
+  let titleCut = false;
+  if (utf8(serialize(title, [], false)) > maxBytes) {
+    title = fittingTitle(title, maxBytes);
+    titleCut = true;
+  }
   const blocks = [];
-  let bytes = 0;
-  let truncated = false;
+  let bytes = utf8(serialize(title, [], false));
+  let truncated = titleCut;
   for (const id of orderedBlockIds(doc)) {
     const content = blockPreview(doc.blocks[id]);
     if (!content) {
       truncated = true;
       break;
     }
-    const size = JSON.stringify(content).length;
+    // One array element, plus the comma before it after the first.
+    const size = utf8(JSON.stringify({ id, content })) + (blocks.length ? 1 : 0);
     if (bytes + size > maxBytes) {
       truncated = true;
       break;
@@ -79,5 +114,5 @@ export function pagePreview(doc, { maxBytes = PREVIEW_MAX_BYTES } = {}) {
     bytes += size;
     blocks.push({ id, content });
   }
-  return { title: String(doc.title ?? ""), blocks, truncated };
+  return { title, blocks, truncated };
 }
