@@ -347,11 +347,13 @@ try {
   ).setFiles({ name: "shared-screenshot.png", mimeType: "image/png", buffer: fixture });
   await uploadStarted;
   try {
-    await expect(owner.getByText("Uploading image…", { exact: true })).toBeVisible();
     // The pending image is drawn inside the editor at the insertion point (the
-    // end of the block), not as a status row above the block.
+    // end of the block), not as a status row above the block. The status row
+    // and the widget read different snapshots, so both can show this text for
+    // a moment; read it from the widget, then wait for the row to go.
     const pending = content(owner).locator(".wordgard-upload-preview");
     await expect(pending).toBeVisible();
+    await expect(pending.getByText("Uploading image…", { exact: true })).toBeVisible();
     await expect(owner.locator(".image-upload-status")).toHaveCount(0);
     // The widget can re-render between locating and reading it; poll on a
     // fresh lookup so a detached copy never answers.
