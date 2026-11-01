@@ -31,8 +31,10 @@ import {
   viewerBuildOptions,
   viewerSplit,
   withHashedAssets,
+  withInlineFavicon,
   withModulePreloads,
 } from "./viewer-chunks.mjs";
+import { FAVICON_HREF } from "../shared/favicon.mjs";
 import { createHash } from "node:crypto";
 
 const app = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -120,6 +122,10 @@ test("failed rebuild removes the previous receipt before replacing any artifacts
     );
     for (const name of ["browser-wasm.mjs", "viewer-chunks.mjs", "deployment/profiles.mjs"])
       write(`scripts/${name}`, readFileSync(new URL(`./${name}`, import.meta.url), "utf8"));
+    write(
+      "shared/favicon.mjs",
+      readFileSync(new URL("../shared/favicon.mjs", import.meta.url), "utf8"),
+    );
     write(
       "scripts/source-fingerprint.mjs",
       "export const sourceFingerprint = () => ({sha256:'source-B'}); export const writeBuildReceipt = () => {throw new Error('failed build must not certify outputs');};",
@@ -478,6 +484,20 @@ test("index.html names every shell asset by its hashed file", () => {
     /Expected a hashed app[.]css/,
   );
   assert.throws(() => withHashedAssets(html, assets), /reference [/]theme[.]js exactly once/);
+});
+
+test("index.html inlines the nteract app icon as its tab icon", () => {
+  const icon = readFileSync(path.join(app, "../../../../../crates/notebook/icons/32x32.png"));
+  assert.equal(FAVICON_HREF, "data:image/png;base64," + icon.toString("base64"));
+  const source = readFileSync(path.join(app, "viewer/index.html"), "utf8");
+  const html = withInlineFavicon(source);
+  assert.equal(
+    html.split(`<link rel="icon" type="image/png" sizes="32x32" href="${FAVICON_HREF}" />`).length,
+    2,
+  );
+  assert.equal(html.includes("/favicon.png"), false);
+  assert.throws(() => withInlineFavicon(html), /reference [/]favicon[.]png exactly once/);
+  assert.throws(() => withInlineFavicon(source, "/favicon.ico"), /PNG data URL/);
 });
 
 test("_headers caches exactly the hashed files as immutable", () => {
