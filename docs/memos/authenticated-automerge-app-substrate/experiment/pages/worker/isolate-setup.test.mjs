@@ -27,6 +27,26 @@ function deferred() {
   return { promise, resolve, reject };
 }
 
+/**
+ * Resolves when code under test schedules a mocked timer of `ms`, such as a
+ * waiter's poll. Tests that go through real async work (WebCrypto, request
+ * parsing) await this instead of counting turns: a request has reached its
+ * wait exactly when it schedules the timer. Call after enabling mock timers;
+ * resetting them restores the original setTimeout.
+ */
+function timerScheduled(ms) {
+  const mocked = globalThis.setTimeout;
+  return new Promise((resolve) => {
+    globalThis.setTimeout = function (callback, delay, ...rest) {
+      if (delay === ms) {
+        globalThis.setTimeout = mocked;
+        resolve();
+      }
+      return mocked.call(this, callback, delay, ...rest);
+    };
+  });
+}
+
 function track(promise) {
   const state = { settled: false };
   promise.then(
@@ -225,12 +245,15 @@ test("concurrent requests with one API key do not share a pending provider looku
   const fixture = await createAuthFixture();
   const lookup = deferred();
   let lookups = 0;
+  const looked = deferred();
   t.mock.method(globalThis, "fetch", async (url, options) => {
     lookups++;
+    looked.resolve();
     await lookup.promise;
     return fixture.fetch(url, options);
   });
   t.mock.timers.enable({ apis: ["setTimeout"] });
+  const secondWaits = timerScheduled(isolateSetupTimeouts.poll);
   const token = fixture.apiKey();
   const request = () =>
     new Request("https://pages.invalid/api/connect?page=test", {
@@ -239,7 +262,9 @@ test("concurrent requests with one API key do not share a pending provider looku
   const first = authenticate(request(), fixture.env);
   const second = authenticate(request(), fixture.env);
   const waiting = track(second);
-  await turns();
+  // The first request is looking up and the second waits on its own timer.
+  await looked.promise;
+  await secondWaits;
   assert.equal(lookups, 1);
   lookup.resolve();
   await first;
@@ -299,9 +324,10 @@ test("concurrent first gateway requests do not await one another's session schem
   t.mock.timers.enable({ apis: ["setTimeout"] });
   const first = worker.fetch(withSessionCookie("/api/auth/session"), env);
   await held;
+  const secondWaits = timerScheduled(isolateSetupTimeouts.poll);
   const second = worker.fetch(withSessionCookie("/api/auth/session"), env);
   const waiting = track(second);
-  await turns();
+  await secondWaits;
   release();
   assert.equal((await first).status, 200);
   await turns();
@@ -315,11 +341,12 @@ test("concurrent first gateway requests do not await one another's session schem
   assert.equal(schema.length, 1, "the session schema is set up once");
 });
 
-test("a session schema setup that hangs is abandoned, and sign-in recovers without a restart", async (t) => {
+test("a session schema setup that hangs is abandoned, and sign-in recovers without a restart", { timeout: 20_000 }, async (t) => {
   // The first session-schema statement never answers; later ones do.
   const sqlite = new DatabaseSync(":memory:");
   t.after(() => sqlite.close());
   let hung = 0;
+  const holding = deferred();
   const DB = {
     prepare(sql) {
       const statement = sqlite.prepare(sql);
@@ -333,8 +360,10 @@ test("a session schema setup that hangs is abandoned, and sign-in recovers witho
           return statement.get(...bindings) ?? null;
         },
         async run() {
-          if (sql.startsWith("CREATE TABLE IF NOT EXISTS oidc_login_transactions") && !hung++)
+          if (sql.startsWith("CREATE TABLE IF NOT EXISTS oidc_login_transactions") && !hung++) {
+            holding.resolve();
             return new Promise(() => {});
+          }
           statement.run(...bindings);
           return { success: true };
         },
@@ -347,7 +376,8 @@ test("a session schema setup that hangs is abandoned, and sign-in recovers witho
   t.mock.timers.enable({ apis: ["setTimeout", "Date"] });
   const first = worker.fetch(withSessionCookie("/api/auth/login"), env);
   const starting = track(first);
-  await turns();
+  // The attempt and its deadline timer exist once the statement hangs.
+  await holding.promise;
   assert.equal(hung, 1);
   t.mock.timers.tick(isolateSetupTimeouts.attempt - 1);
   await turns();
@@ -361,12 +391,14 @@ test("a session schema setup that hangs is abandoned, and sign-in recovers witho
     code: "request_timeout",
     retryable: true,
   });
-  // The next request starts a new attempt. It runs the schema again rather
-  // than awaiting the hung statement.
+  // The next request starts a new attempt and runs the schema again. No
+  // mocked time passes, so it settles only if it never waits: a waiter would
+  // schedule a poll timer, and a retry that awaited the hung statement would
+  // never settle (the test's timeout reports that).
+  const waits = timerScheduled(isolateSetupTimeouts.poll).then(() => "waited");
   const next = worker.fetch(withSessionCookie("/api/auth/session"), env);
-  const recovered = track(next);
-  await turns();
-  assert.equal(recovered.settled, true, "the new attempt did not wait on the hung one");
+  const outcome = await Promise.race([next.then(() => "settled"), waits]);
+  assert.equal(outcome, "settled", "the new attempt did not wait on the hung one");
   assert.equal((await next).status, 200);
   assert.equal(hung, 2);
 });
@@ -379,16 +411,15 @@ test("an admission request waiting on a stalled session schema gets a retryable 
   void worker.fetch(withSessionCookie("/api/auth/session"), env);
   await held;
   const pageId = "33333333-3333-4333-8333-333333333333";
+  const connectWaits = timerScheduled(isolateSetupTimeouts.poll);
   const connect = worker.fetch(withSessionCookie(`/api/connect?page=${pageId}`), env);
   const waiting = track(connect);
-  for (
-    let elapsed = 0;
-    elapsed <= isolateSetupTimeouts.wait;
-    elapsed += isolateSetupTimeouts.poll
-  ) {
+  // Its 10-second wait starts once it reaches the setup.
+  await connectWaits;
+  t.mock.timers.tick(isolateSetupTimeouts.wait);
+  for (let step = 0; !waiting.settled && step < 1000; step++) {
     t.mock.timers.tick(isolateSetupTimeouts.poll);
     await turns(2);
-    if (waiting.settled) break;
   }
   const response = await connect;
   assert.equal(response.status, 503);
@@ -399,12 +430,15 @@ test("an API key's lookups share one flight whatever the scheme's case", async (
   const fixture = await createAuthFixture();
   const lookup = deferred();
   let lookups = 0;
+  const looked = deferred();
   t.mock.method(globalThis, "fetch", async (url, options) => {
     lookups++;
+    looked.resolve();
     await lookup.promise;
     return fixture.fetch(url, options);
   });
   t.mock.timers.enable({ apis: ["setTimeout"] });
+  const secondWaits = timerScheduled(isolateSetupTimeouts.poll);
   const token = fixture.apiKey();
   const request = (scheme) =>
     new Request("https://pages.invalid/api/connect?page=test", {
@@ -413,7 +447,9 @@ test("an API key's lookups share one flight whatever the scheme's case", async (
   const first = authenticate(request("Bearer"), fixture.env);
   const second = authenticate(request("bearer"), fixture.env);
   const waiting = track(second);
-  await turns();
+  // The first request is looking up and the second waits on its own timer.
+  await looked.promise;
+  await secondWaits;
   assert.equal(lookups, 1);
   lookup.resolve();
   await first;
