@@ -334,11 +334,14 @@ export function logFailure(error, stage) {
 export function errorResponse(error, stage = "request") {
   const status = error?.status ?? (error?.name === "AuthError" ? 401 : 500);
   if (status >= 500) logFailure(error, stage);
-  const retryable = status >= 500 && RETRYABLE_SERVER_CODES.includes(error?.code);
+  // A coded server failure keeps its message and code. It is retryable unless
+  // the error says otherwise (a tokenless write's timeout: reconcile first).
+  const coded = status >= 500 && RETRYABLE_SERVER_CODES.includes(error?.code);
+  const retryable = coded && error.retryable !== false;
   return Response.json(
     {
-      error: status < 500 || retryable ? error.message : "Pages request failed",
-      ...(retryable && { code: error.code, retryable: true }),
+      error: status < 500 || coded ? error.message : "Pages request failed",
+      ...(coded && { code: error.code, retryable }),
       ...([
         "oauth_invalid_token",
         "oauth_insufficient_scope",

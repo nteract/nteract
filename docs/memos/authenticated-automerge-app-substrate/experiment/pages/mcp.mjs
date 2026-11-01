@@ -1,4 +1,5 @@
 import { pagePath, readPageRoute, projectPath } from "./shared/routes.mjs";
+import { isTokenedRequest } from "./model/retry-key.mjs";
 import { pagesPublicOrigin } from "./agent-guide.mjs";
 import { HIGHLIGHT_COLORS, MARK_NAMES, formatAddSchema } from "./model/marks.mjs";
 import { RENAMED_TOOLS, renamedTool } from "./worker/project-api.mjs";
@@ -144,7 +145,7 @@ const guard = {
     minLength: 8,
     maxLength: 128,
     description:
-      "Append a new UUID to retry_key_prefix returned with retry_token. Reuse the same key, token and payload after an uncertain result.",
+      "Append a new UUID to retry_key_prefix returned with retry_token. Reuse the same key, token and payload after an uncertain result; the receipt replays for the token's seven-day window. Without retry_token, a key deduplicates only an exact immediate repeat: its receipt is kept best-effort (the newest 1,000 tokenless receipts per Page or catalog) and a repeat after eviction is a new request. Use retry_token for anything you may need to retry later.",
   },
 };
 const matchProperties = {
@@ -864,11 +865,22 @@ export async function handleMcp(request, invoke, env) {
                   error: "Read failed; no document edit was requested. Retry the read.",
                   retryable: true,
                 }
-              : {
-                  code: "outcome_unknown",
-                  error: "Request failed; outcome may be unknown. Retry the same key and payload.",
-                  retryable: true,
-                },
+              : isTokenedRequest(params.arguments)
+                ? {
+                    code: "outcome_unknown",
+                    error:
+                      "Request failed; outcome may be unknown. Retry the same key, token and payload.",
+                    retryable: true,
+                  }
+                : {
+                    // A tokenless receipt is kept best-effort; by the time a
+                    // client retries, a busy Page may have evicted it and the
+                    // repeat would apply again.
+                    code: "outcome_unknown",
+                    error:
+                      "Request failed; outcome may be unknown. Read back and reconcile before retrying: a key without retry_token is deduplicated only while its receipt is retained. Use retry_token for retryable writes.",
+                    retryable: false,
+                  },
       );
     }
   });

@@ -56,8 +56,8 @@ test("MCP forwards authorized operations and preserves stale-write failure", asy
 });
 
 test("MCP gives every refusal a stable code in text and structured content", async () => {
-  const call = async (name, reply) => {
-    const response = await handleMcp(request("tools/call", { name, arguments: {} }), reply);
+  const call = async (name, reply, args = {}) => {
+    const response = await handleMcp(request("tools/call", { name, arguments: args }), reply);
     const result = (await response.json()).result;
     assert.equal(result.isError, true, name);
     assert.deepEqual(JSON.parse(result.content[0].text), result.structuredContent, name);
@@ -112,16 +112,45 @@ test("MCP gives every refusal a stable code in text and structured content", asy
   const thrown = async () => {
     throw Error("Private internals");
   };
-  for (const [name, code, retryable] of [
+  const tokened = {
+    retry_token: "token",
+    idempotency_key: `v1_${"a".repeat(64)}_request-one`,
+  };
+  for (const [name, code, retryable, args] of [
     ["read_page", "read_failed", true],
-    ["edit_page", "outcome_unknown", true],
+    ["edit_page", "outcome_unknown", true, tokened],
+    ["manage_page_comment", "outcome_unknown", true, tokened],
+    // A tokenless receipt is kept best-effort, so a blind retry can apply twice.
+    ["edit_page", "outcome_unknown", false, { idempotency_key: "plain-key-1" }],
+    ["manage_page_comment", "outcome_unknown", false, { idempotency_key: "plain-key-2" }],
+    ["create_page", "outcome_unknown", false],
+    // Mismatched combos are tokenless: a v1_ key without its token, or a token
+    // beside a plain key, can't replay through the token lane.
+    [
+      "edit_page",
+      "outcome_unknown",
+      false,
+      { idempotency_key: `v1_${"a".repeat(64)}_request-two` },
+    ],
+    [
+      "edit_page",
+      "outcome_unknown",
+      false,
+      { retry_token: "token", idempotency_key: "plain-key-3" },
+    ],
     ["import_page_image", "outcome_unknown", true],
     ["report_page_progress", "outcome_unknown", undefined],
   ]) {
-    const body = await call(name, thrown);
+    const body = await call(name, thrown, args);
     assert.equal(body.code, code, name);
     assert.equal(body.retryable, retryable, name);
     assert.doesNotMatch(body.error, /Private internals/);
+    if (code === "outcome_unknown" && args !== undefined)
+      assert.match(
+        body.error,
+        retryable ? /same key, token and payload/ : /reconcile before retrying/,
+        name,
+      );
   }
 });
 

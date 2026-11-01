@@ -856,9 +856,12 @@ execute again. The server returns retry_until when issuing a token. An expired
 request returns HTTP 410 with code retry_expired and does not execute. Read the
 current Page/catalog to reconcile its outcome; never automatically replace an
 expired token or key and resend an uncertain operation. Pending admitted edits
-remain recoverable with their original request. Keys bind to their exact token: replacing or stripping that token cannot reuse an expired key. Legacy
-requests without a token retain their receipts, with a separate lifetime cap of 1,000 operations. Use the
-token protocol for ongoing work.
+remain recoverable with their original request. Keys bind to their exact token: replacing or stripping that token cannot reuse an expired key. Requests
+without a token deduplicate only an exact immediate repeat: their receipts are kept
+best-effort, the newest 1,000 per Page or catalog, and once newer tokenless requests
+have pushed a key's receipt out the key is a new request again. After a lost response
+to a tokenless write, read back and reconcile rather than resend. Use the token
+protocol for anything you may need to retry later.
 
 For insert_markdown, insert_image, and move_block, after_block_id is the preceding block's ID;
 null places the block first, and omission appends it. For a comment, use action
@@ -960,9 +963,19 @@ succeeds. Every error has a stable code. Branch on code, not on the error messag
 - page_quota_exceeded, trash_capacity: the account has reached its Page limit,
   or its Trash has. Both carry limit and count. Retrying won't help; tell the
   person.
+- request_timeout: the host didn't answer in 60 s but keeps the work it
+  accepted. retryable:true (a read, a progress renewal, or a write with
+  retry_token): retry the same request; the receipt replays. retryable:false (a
+  tokenless write): it may have completed; read back and reconcile before
+  retrying. A progress creation follows its lease rules: do not loop creating
+  sessions.
 - read_failed: no answer to a read (retryable:true). Retry it.
-- outcome_unknown: no answer to a write. With retryable:true, retry the exact
-  request with the same key; the receipt replays without a second edit.
+- outcome_unknown: no answer to a write. With retryable:true (the request
+  carried retry_token), retry the exact request with the same key, token and
+  payload; the receipt replays without a second edit. With retryable:false (no
+  retry_token), read back and reconcile before retrying: a tokenless key is
+  deduplicated only while its receipt is retained, and a repeat after eviction
+  is a new request, so a blind retry can add a second comment or Page.
   report_page_progress follows its lease rules instead.
 - Errors without a more specific code use access_denied, not_found, conflict,
   invalid_request, request_too_large, rate_limited, unauthenticated or
