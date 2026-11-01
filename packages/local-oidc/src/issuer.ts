@@ -1,9 +1,12 @@
 // Dev-only OIDC issuer exposed as a web-standard fetch handler.
 //
-// Mints RS256 JSON Web Tokens for a configured dev user against an ephemeral
-// signing key generated per issuer instance (per boot). No key material is
-// persisted or hardcoded, so every process restart rotates the keys and every
-// old token stops verifying.
+// Mints RS256 JSON Web Tokens for a configured dev user. Authorization codes and
+// the signing key live in a `LocalOidcStore`. The default store is in memory
+// and owned by one issuer instance (one boot): no key material is persisted or
+// hardcoded, so every process restart rotates the keys and every old token
+// stops verifying. A host that runs several isolates behind one issuer URL
+// passes a shared store so a code issued in one isolate redeems in another and
+// every isolate signs with the same key.
 //
 // This is a development identity source. The authorize endpoint auto-grants the
 // configured dev user with no login challenge, so any caller that reaches it
@@ -48,10 +51,16 @@ export interface LocalOidcOptions {
   /** Refresh token lifetime in seconds. */
   refreshTokenTtlSeconds?: number;
   /**
-   * Authorization code lifetime in seconds. Codes are one-time, in-memory
-   * grants. Defaults to 60 seconds.
+   * Authorization code lifetime in seconds. Codes are one-time grants.
+   * Defaults to 60 seconds.
    */
   authorizationCodeTtlSeconds?: number;
+  /**
+   * Where authorization codes and the signing key live. Defaults to a store in
+   * this instance's memory. Pass a shared store when more than one issuer
+   * instance (for example several Worker isolates) serves the same issuer URL.
+   */
+  store?: LocalOidcStore;
   /** Dev users the authorize endpoint may grant. The first entry is default. */
   users?: LocalOidcUser | LocalOidcUser[];
   /**
@@ -60,6 +69,37 @@ export interface LocalOidcOptions {
    * dev issuer cannot redirect a code off the local machine.
    */
   allowRedirectUri?: (redirectUri: string) => boolean;
+}
+
+/** What an authorization code grants, as stored until it is redeemed. */
+export interface LocalOidcAuthorizationCode {
+  user: LocalOidcUser;
+  redirectUri: string;
+  codeChallenge: string | null;
+  nonce: string | null;
+  /** Expiry as epoch milliseconds. The issuer rejects a code at or past it. */
+  expiresAt: number;
+}
+
+/**
+ * Shared state for issuer instances that serve one issuer URL. Every value is
+ * JSON-serializable, so a store can keep it in a database row.
+ */
+export interface LocalOidcStore {
+  /** Save a newly issued code. The store may drop expired codes here. */
+  putAuthorizationCode(code: string, entry: LocalOidcAuthorizationCode): Promise<void>;
+  /**
+   * Remove a code and return what it granted, or undefined when it is unknown.
+   * Remove and read must be one atomic step: of any number of concurrent calls
+   * for one code, at most one returns the entry.
+   */
+  takeAuthorizationCode(code: string): Promise<LocalOidcAuthorizationCode | undefined>;
+  /**
+   * Return the private signing JWK every instance on this store uses. When the
+   * store has none yet, call `generate` and keep the first key saved, so
+   * instances that race here all receive the same key.
+   */
+  signingKey(generate: () => Promise<JWK>): Promise<JWK>;
 }
 
 /** OAuth token response returned by the token endpoint. */
@@ -108,12 +148,33 @@ interface SigningKey {
   verify: ReturnType<typeof jose.createLocalJWKSet>;
 }
 
-interface AuthorizationCodeEntry {
-  user: LocalOidcUser;
-  redirectUri: string;
-  codeChallenge: string | null;
-  nonce: string | null;
-  expiresAt: number;
+/**
+ * A store in this process's memory. Codes and the key are visible only to
+ * issuer instances that share this object, and vanish with the process.
+ */
+export function createMemoryLocalOidcStore(): LocalOidcStore {
+  const codes = new Map<string, LocalOidcAuthorizationCode>();
+  let key: Promise<JWK> | undefined;
+  return {
+    async putAuthorizationCode(code, entry) {
+      const now = Date.now();
+      for (const [existing, stored] of codes) {
+        if (now >= stored.expiresAt) {
+          codes.delete(existing);
+        }
+      }
+      codes.set(code, entry);
+    },
+    async takeAuthorizationCode(code) {
+      const entry = codes.get(code);
+      codes.delete(code);
+      return entry;
+    },
+    signingKey(generate) {
+      key ??= generate();
+      return key;
+    },
+  };
 }
 
 export function createLocalOidcIssuer(options: LocalOidcOptions): LocalOidcIssuer {
@@ -128,13 +189,20 @@ export function createLocalOidcIssuer(options: LocalOidcOptions): LocalOidcIssue
   const users = resolveUsers(options.users);
   const allowRedirectUri = options.allowRedirectUri ?? isLoopbackRedirectUri;
 
-  // Authorization codes live in per-isolate memory; this is valid for single-
-  // isolate wrangler dev, and this issuer is dev-only and never deployed.
-  const authorizationCodes = new Map<string, AuthorizationCodeEntry>();
+  const store = options.store ?? createMemoryLocalOidcStore();
 
-  // Key generation starts at construction; every method awaits this promise. One
-  // issuer instance carries exactly one keypair for its whole lifetime.
-  const keyPromise = generateSigningKey();
+  // The store decides which key this instance signs with. Only a settled key is
+  // cached here, never a pending load: concurrent first requests each run their
+  // own load, and a store hands every caller the same key.
+  let settledKey: SigningKey | undefined;
+  async function signingKey(): Promise<SigningKey> {
+    if (settledKey) {
+      return settledKey;
+    }
+    const loaded = await signingKeyFromJwk(await store.signingKey(generatePrivateJwk));
+    settledKey ??= loaded;
+    return settledKey;
+  }
 
   async function sign(payload: JWTPayload, ttlSeconds: number, key: SigningKey): Promise<string> {
     const now = nowSeconds();
@@ -180,7 +248,7 @@ export function createLocalOidcIssuer(options: LocalOidcOptions): LocalOidcIssue
     };
   }
 
-  function handleAuthorize(url: URL): Response {
+  async function handleAuthorize(url: URL): Promise<Response> {
     const params = url.searchParams;
     if (params.get("response_type") !== "code") {
       return errorResponse(
@@ -216,7 +284,7 @@ export function createLocalOidcIssuer(options: LocalOidcOptions): LocalOidcIssue
     const location = new URL(redirectUri);
     location.searchParams.set(
       "code",
-      issueAuthorizationCode(user, redirectUri, codeChallenge, params.get("nonce")),
+      await issueAuthorizationCode(user, redirectUri, codeChallenge, params.get("nonce")),
     );
     const state = params.get("state");
     if (state !== null) {
@@ -241,7 +309,7 @@ export function createLocalOidcIssuer(options: LocalOidcOptions): LocalOidcIssue
       return errorResponse("invalid_client", "unknown client_id", 400);
     }
 
-    const key = await keyPromise;
+    const key = await signingKey();
     const grantType = stringField(form, "grant_type");
 
     if (grantType === "authorization_code") {
@@ -253,7 +321,7 @@ export function createLocalOidcIssuer(options: LocalOidcOptions): LocalOidcIssue
         return errorResponse("invalid_request", "missing code", 400);
       }
       const redirectUri = stringField(form, "redirect_uri");
-      const entry = takeAuthorizationCode(code);
+      const entry = await takeAuthorizationCode(code);
       if (!entry) {
         return errorResponse("invalid_grant", "authorization code is invalid", 400);
       }
@@ -304,7 +372,7 @@ export function createLocalOidcIssuer(options: LocalOidcOptions): LocalOidcIssue
     if (!token) {
       return unauthorized("missing bearer token");
     }
-    const key = await keyPromise;
+    const key = await signingKey();
     let payload: JWTPayload;
     try {
       ({ payload } = await jose.jwtVerify(token, key.verify, { issuer, audience }));
@@ -365,12 +433,12 @@ export function createLocalOidcIssuer(options: LocalOidcOptions): LocalOidcIssue
   }
 
   async function jwks(): Promise<JSONWebKeySet> {
-    const key = await keyPromise;
+    const key = await signingKey();
     return { keys: [key.publicJwk] };
   }
 
   async function mintToken(claims: JWTPayload, opts?: { ttlSeconds?: number }): Promise<string> {
-    const key = await keyPromise;
+    const key = await signingKey();
     return sign(claims, opts?.ttlSeconds ?? accessTtl, key);
   }
 
@@ -401,56 +469,50 @@ export function createLocalOidcIssuer(options: LocalOidcOptions): LocalOidcIssue
     }
   }
 
-  function issueAuthorizationCode(
+  async function issueAuthorizationCode(
     user: LocalOidcUser,
     redirectUri: string,
     codeChallenge: string | null,
     nonce: string | null,
-  ): string {
-    const now = Date.now();
-    pruneExpiredAuthorizationCodes(now);
-    let code: string;
-    do {
-      code = randomAuthorizationCode();
-    } while (authorizationCodes.has(code));
-    authorizationCodes.set(code, {
+  ): Promise<string> {
+    // 256 random bits: a collision with a live code is not a practical concern.
+    const code = randomAuthorizationCode();
+    await store.putAuthorizationCode(code, {
       user,
       redirectUri,
       codeChallenge,
       nonce,
-      expiresAt: now + authorizationCodeTtl * 1000,
+      expiresAt: Date.now() + authorizationCodeTtl * 1000,
     });
     return code;
   }
 
-  function takeAuthorizationCode(code: string): AuthorizationCodeEntry | undefined {
-    const entry = authorizationCodes.get(code);
-    if (!entry) {
-      return undefined;
-    }
-    authorizationCodes.delete(code);
-    if (Date.now() >= entry.expiresAt) {
+  async function takeAuthorizationCode(
+    code: string,
+  ): Promise<LocalOidcAuthorizationCode | undefined> {
+    const entry = await store.takeAuthorizationCode(code);
+    if (!entry || Date.now() >= entry.expiresAt) {
       return undefined;
     }
     return entry;
   }
 
-  function pruneExpiredAuthorizationCodes(now: number): void {
-    for (const [code, entry] of authorizationCodes) {
-      if (now >= entry.expiresAt) {
-        authorizationCodes.delete(code);
-      }
-    }
-  }
-
   return { handle, mintToken, jwks };
 }
 
-async function generateSigningKey(): Promise<SigningKey> {
-  const { publicKey, privateKey } = await jose.generateKeyPair(SIGNING_ALG, {
-    extractable: true,
-  });
-  const exported = await jose.exportJWK(publicKey);
+async function generatePrivateJwk(): Promise<JWK> {
+  const { privateKey } = await jose.generateKeyPair(SIGNING_ALG, { extractable: true });
+  return jose.exportJWK(privateKey);
+}
+
+async function signingKeyFromJwk(privateJwk: JWK): Promise<SigningKey> {
+  const privateKey = await jose.importJWK(privateJwk, SIGNING_ALG);
+  if (privateKey instanceof Uint8Array || privateKey.type !== "private") {
+    throw new Error("local OIDC signing key must be a private RSA JWK");
+  }
+  // The public JWK keeps only the RSA public members, never d/p/q/dp/dq/qi.
+  const { kty, n, e } = privateJwk;
+  const exported: JWK = { kty, n, e };
   const kid = await jose.calculateJwkThumbprint(exported);
   const publicJwk: JWK = { ...exported, kid, use: "sig", alg: SIGNING_ALG };
   return {

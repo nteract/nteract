@@ -2,6 +2,7 @@
 import worker from "../../worker/index.mjs";
 import { createLocalOidcIssuer } from "@nteract/local-oidc";
 import { fixtureFetch } from "./local-api-keys.mjs";
+import { localOidcStore } from "../../worker/local-oidc-store.mjs";
 export { Page, Catalog, PageRecords, Space } from "../../worker/index.mjs";
 
 const origin = PAGES_E2E_ORIGIN;
@@ -22,6 +23,7 @@ export default {
         clientId: env.NOTEBOOK_CLOUD_OIDC_CLIENT_ID,
         audience: env.NOTEBOOK_CLOUD_OIDC_AUDIENCE,
         defaultTokenTtlSeconds: 300,
+        store: localOidcStore(env.DB),
         users: [
           { email: "dev@localhost", name: "Local Owner" },
           { email: "lead@anaconda.com", name: "Company Owner" },

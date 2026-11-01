@@ -28,6 +28,7 @@ import { agentGuideResponse } from "../agent-guide.mjs";
 import { connectAgentResponse } from "../connect-agent.mjs";
 import { handleOAuth, mcpAuthChallenge } from "./oauth.mjs";
 import { sessionStoreReady } from "./isolate-setup.mjs";
+import { localOidcStore } from "./local-oidc-store.mjs";
 import { WebSocketByteTransport } from "../shared/byte-transport.mjs";
 import { MISSING_EDITS_MESSAGE } from "../shared/receipts.mjs";
 import { openingTitleWarning } from "../model/title-warning.mjs";
@@ -560,7 +561,9 @@ const gateway = {
         env.NOTEBOOK_CLOUD_LOCAL_OIDC === "true" &&
         ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname)
       ) {
-        const local = await handleLocalOidcRequest(request, env);
+        const local = await handleLocalOidcRequest(request, env, {
+          store: localOidcStore(env.DB),
+        });
         if (local) return local;
       }
       if (url.pathname === "/connect") return connectAgentResponse(request, env);
