@@ -367,9 +367,9 @@ export class PageSession {
     const doc = this.doc;
     return doc && commentsMigrated(doc) ? this.commentsDoc : undefined;
   }
-  /** Every thread as stored, by id. */
+  /** Every thread as stored, by id. A hidden Page shows none. */
   get commentThreads() {
-    return threadsOf(this.doc, this.commentsView);
+    return this.hidden ? {} : threadsOf(this.doc, this.commentsView);
   }
   /** One stored message, for rich rendering, or undefined. */
   commentMessage(threadId, messageId) {
@@ -714,6 +714,10 @@ export class PageSession {
           };
         if (live) this.closedRecovery = live;
       } catch {}
+    // Both documents are captured. A comments lookup still running would
+    // only reopen what is being archived, so it stops here and its late
+    // result never installs (comments-open-machine.mjs).
+    this.commentsOpen({ type: "close" });
     let archived = false;
     try {
       await this.retireLocal(reason, live);
@@ -739,7 +743,8 @@ export class PageSession {
    * the marker for `reason` (retireLocalPage). The grant is the replica key
    * this session opened under and the access revision it last held, or the
    * refusal's own revision when the host sent one: a checkpoint from a newer
-   * grant stays. */
+   * grant stays. The live copy carries both documents: the Page and its
+   * comments, unsent comments included. */
   retireLocal(reason, live) {
     return retireLocalPage(this.identity, this.pageId, {
       reason,
@@ -748,6 +753,8 @@ export class PageSession {
       snapshot: live?.snapshot,
       title: live?.title,
       drafts: live?.comment_drafts,
+      comments_snapshot: live?.comments_snapshot,
+      comments_document_id: live?.comments_document_id,
     });
   }
   async #rekey({ access, key }) {
@@ -1125,27 +1132,34 @@ export class PageSession {
       };
     const doc = record ? A.load(decodeSnapshot(record.snapshot)) : this.doc;
     if (!doc) throw Error("No local Page to export");
-    // An archived record carries its own comments checkpoint.
-    const recordComments =
-      record?.comments_snapshot && A.load(decodeSnapshot(record.comments_snapshot));
+    // An archived record carries its own comments checkpoint. A live replica
+    // whose comments document isn't open yet exports the stored one.
+    const storedComments = record
+      ? record.comments_snapshot
+      : !this.commentsDoc
+        ? this.localPage?.comments_snapshot
+        : undefined;
+    const loadedComments = storedComments && A.load(decodeSnapshot(storedComments));
+    const commentsSource = this.commentsDoc && !record ? this.commentsDoc : loadedComments;
+    const commentsId = record
+      ? record.comments_document_id
+      : (this.commentsHandle?.documentId ?? this.localPage?.comments_document_id);
     try {
-      const comments = record
-        ? recordComments && commentsMigrated(doc)
-          ? recordComments
-          : undefined
-        : this.commentsView;
+      // Comments render once the Page says they moved to their own document.
+      const comments = commentsSource && commentsMigrated(doc) ? commentsSource : undefined;
       const page = projectPage(doc, comments);
       // Comments are part of the draft: list the ones the host never
       // acknowledged. An archived record has no receipt, so it lists them all.
+      const savedCommentHeads = loadedComments
+        ? (this.localPage?.comment_saved_heads ?? [])
+        : this.savedCommentHeads;
       let saved = null;
-      if (!record && !allComments && (this.savedHeads.length || this.savedCommentHeads.length))
+      if (!record && !allComments && (this.savedHeads.length || savedCommentHeads.length))
         try {
           saved = projectPage(
             this.savedHeads.length ? A.view(doc, this.savedHeads) : doc,
             comments &&
-              (this.savedCommentHeads.length
-                ? A.view(comments, this.savedCommentHeads)
-                : { threads: {} }),
+              (savedCommentHeads.length ? A.view(comments, savedCommentHeads) : { threads: {} }),
           );
         } catch {}
       return {
@@ -1153,23 +1167,44 @@ export class PageSession {
         markdown: `# ${page.title}\n\n${page.blocks.map((block) => block.markdown).join("\n\n")}\n${unsentCommentsMarkdown(page, saved)}${commentDraftsMarkdown(commentDrafts)}`,
         snapshot: record?.snapshot ?? encodeSnapshot(A.save(doc)),
         heads: A.getHeads(doc),
-        ...(comments && {
-          comments_snapshot: record?.comments_snapshot ?? encodeSnapshot(A.save(comments)),
-          comment_heads: A.getHeads(comments),
+        // The comments document's bytes travel even before the Page's stamp
+        // says comments moved, as the checkpoint stores them.
+        ...(commentsSource && {
+          comments_snapshot: storedComments ?? encodeSnapshot(A.save(commentsSource)),
+          comment_heads: A.getHeads(commentsSource),
+          ...(commentsId && { comments_document_id: commentsId }),
         }),
         page_id: this.pageId,
         ...(commentDrafts?.length && { comment_drafts: commentDrafts }),
       };
     } finally {
       if (record) A.free(doc);
-      if (recordComments) A.free(recordComments);
+      if (loadedComments) A.free(loadedComments);
     }
   }
   /** Store a record's comments checkpoint in this replica's native storage,
    * before the comments document is looked up, so an offline reopen still
-   * holds comments the host never acknowledged. */
+   * holds comments the host never acknowledged.
+   *
+   * A retired copy's comments stay in the recovery archive. The stored entry
+   * is read again first: a marker (retireLocalPage), or an entry from another
+   * grant, written since `record` was read means another tab retired or
+   * replaced this copy, and nothing is restored. */
   async restoreCommentsCheckpoint(record) {
     if (!record?.comments_snapshot || !record.comments_document_id || !this.backend) return;
+    if (this.hidden) return;
+    const latest = await readLocalPage(this.identity, this.pageId, { markers: true }).catch(
+      () => undefined,
+    );
+    if (
+      !latest ||
+      latest.deleted ||
+      latest.revoked ||
+      (latest.replicaKey && record.replicaKey && latest.replicaKey !== record.replicaKey) ||
+      this.hidden ||
+      !this.backend
+    )
+      return;
     const checkpoint = A.load(decodeSnapshot(record.comments_snapshot));
     try {
       const id = documentIdToBinary(record.comments_document_id);
@@ -2058,7 +2093,8 @@ export class PageSession {
   openComments(
     documentId = this.connection?.commentsDocumentId ?? this.localPage?.comments_document_id,
   ) {
-    if (!documentId || !this.repo) return;
+    // A hidden Page's comments document stays closed.
+    if (!documentId || !this.repo || this.hidden) return;
     this.commentsOpen({ type: "open", id: documentId });
   }
   /** How long one comments lookup may take before it counts as failed. */
@@ -2129,14 +2165,24 @@ export class PageSession {
   /** Adopt the comments document a lookup found. */
   async installComments(handle) {
     this.commentsFound = undefined;
-    if (!handle || !this.alive) return;
+    if (!handle || !this.alive || this.hidden) return;
     this.commentsHandle = handle;
     this.savedCommentHeads = this.localPage?.comment_saved_heads ?? [];
     handle.on("change", () => {
       if (this.commentsHandle === handle) this.receiveCommentsChange();
     });
     if (this.localPage && this.localPage.comments_document_id !== handle.documentId)
-      await this.persistLocal({ comments_document_id: handle.documentId });
+      try {
+        await this.persistLocal({ comments_document_id: handle.documentId });
+      } catch (error) {
+        // Another tab retired the copy since this one opened: the write
+        // archived this replica's copy, and this tab retires too.
+        if (error.code === "LOCAL_PAGE_REVOKED") return void (await this.revoke());
+        if (error.code === "LOCAL_PAGE_DELETED") return void (await this.markDeleted());
+        if (error.code === "LOCAL_PAGE_ACCESS_CHANGED")
+          return void (await this.localAccessChanged());
+        this.localProblem = this.problem = error.message;
+      }
     if (!this.alive || this.commentsHandle !== handle) return;
     this.observeSchema();
     this.updateCapabilities();

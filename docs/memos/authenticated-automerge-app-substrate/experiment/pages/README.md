@@ -345,16 +345,19 @@ When the host refuses this account, the browser stops rendering its copy. A
 `page_access_denied` answer (access removed, or a Page missing to this account,
 purged included) or an access fact with a role of none retires the session for
 access; a 404 (`page_deleted`, the legacy missing-Page answer, or the 4404
-admission close) retires it as deleted. Sync stops first. Then one IndexedDB
-transaction moves the checkpoint and the live replica's snapshot to the
-recovery archive, with any unsent comment or reply drafts from the UI, and
-leaves a marker in the checkpoint's place. Only then is the backend released;
-a leave waits for the archive. A reload shows the same "You no longer have
-access" or "This Page was deleted" notice instead of the Page. The notice
-downloads every copy the archive holds for the Page as one JSON bundle, each
-with its Markdown (comments, unsent comments and drafts included) and its
-Automerge snapshot. A permanent deletion from Trash archives the owner's copy
-the same way.
+admission close) retires it as deleted. Sync stops first, and any comments
+document lookup is cancelled. Then one IndexedDB transaction moves the
+checkpoint and the live replica's copy to the recovery archive, with any
+unsent comment or reply drafts from the UI, and leaves a marker in the
+checkpoint's place. Each archived copy holds both documents: the Page snapshot
+and `comments_snapshot` with `comments_document_id`, so comments the host
+never acknowledged survive like unsent Page edits. Only then is the backend
+released; a leave waits for the archive. A reload shows the same "You no
+longer have access" or "This Page was deleted" notice instead of the Page.
+The notice downloads every copy the archive holds for the Page as one JSON
+bundle, each with its Markdown (comments, unsent comments and drafts included)
+and its Automerge snapshots. A permanent deletion from Trash archives the
+owner's copy the same way.
 
 The client hides the copy for good only once the archive and marker are
 committed in IndexedDB. If that write fails (quota, storage error), the session
@@ -381,9 +384,12 @@ and retires under it.
 
 An access marker only blocks: a tab that hasn't seen the refusal archives its
 own copy when it next writes, and the next open the host grants writes over the
-marker on the new grant's replica, never the archived one. A deletion marker is
-permanent. Trash, a refusal without a code, sign-in and transient failures keep
-the copy.
+marker on the new grant's replica, never the archived one. Neither document
+restores from a marker: a reopen asks the host first, a hidden session never
+opens its comments document, and a comments restore that finds a marker (or
+another grant's entry) written since its open read the record stores nothing.
+A deletion marker is permanent. Trash, a refusal without a code, sign-in and
+transient failures keep the copy.
 
 ```text
 Browser Repo + Wordgard                 Authorized HTTP / MCP operations

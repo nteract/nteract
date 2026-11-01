@@ -6,9 +6,15 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import "fake-indexeddb/auto";
 import * as A from "@automerge/automerge";
-import { generateAutomergeUrl, interpretAsDocumentId } from "@automerge/automerge-repo";
+import {
+  documentIdToBinary,
+  generateAutomergeUrl,
+  interpretAsDocumentId,
+} from "@automerge/automerge-repo";
+import { SubductionBackend } from "@automerge/automerge-repo-subduction";
 import { PageSession, refusalOf, listLocalPages, signingKeyRefused } from "./session.mjs";
 import { createPageData, initializePage } from "../model/page.mjs";
+import { applyComment } from "../model/comments.mjs";
 import { COMMENTS_FEATURE } from "../model/comments-doc.mjs";
 import { comment, newCommentsDoc } from "../model/comments-test-support.mjs";
 import { stampFeatures } from "../model/schema-features.mjs";
@@ -141,6 +147,7 @@ async function openCopy(auth = authentication(), { grant = access(), key = "1:wr
   };
 }
 
+const hexOf = (bytes) => Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
 const respond = (status, body) => async () => Response.json(body, { status });
 const textOf = (record) => {
   const doc = A.load(decodeSnapshot(record.snapshot));
@@ -959,4 +966,239 @@ test("superseded retirements advance the entry's sequence, so the newest sorts l
   assert.equal(records.at(-1).title, "Newer stale archive");
   assert.equal(records.at(-2).title, "Older stale archive");
   assert.equal(records.at(-1).archived_at, records.at(-2).archived_at, "same millisecond");
+});
+
+// The comments document retires with the Page: the archive holds both, a
+// hidden Page shows neither, and no late lookup or restore brings them back.
+
+const UNSENT = "Typed after the last receipt; the host never saw it.";
+const tick = () => new Promise((resolve) => setImmediate(resolve));
+const commentsText = (record) => {
+  const comments = A.load(decodeSnapshot(record.comments_snapshot));
+  try {
+    return JSON.stringify(comments);
+  } finally {
+    A.free(comments);
+  }
+};
+/** Write one comment to the open session's comments document, with no
+ * checkpoint or receipt after it. */
+function typeUnsentComment(copy, body = UNSENT) {
+  copy.session.commentsHandle.change((draft) => {
+    applyComment(draft, { block_id: copy.blockId, body }, copy.auth.identity, undefined, {
+      page: copy.doc,
+      role: "editor",
+      literal: true,
+    });
+  });
+}
+
+test("retiring a Page with an unsent comment archives it, and Download lists it", async (t) => {
+  browser(t);
+  const copy = await openCopy();
+  const { session, auth, pageId, commentsDocumentId } = copy;
+  typeUnsentComment(copy);
+  assert.equal(session.recoveryPending, true, "the comment is unsent");
+  t.mock.method(
+    globalThis,
+    "fetch",
+    respond(403, { error: "Document access denied", code: "page_access_denied" }),
+  );
+  await session.retryConnection();
+  await session.closeSettled();
+  assert.equal(session.recoveryArchived, true);
+  assert.deepEqual(session.commentThreads, {}, "a hidden Page shows no comments");
+  assert.equal(session.snapshot(), null);
+  const records = await listLocalRecoveries(auth.identity, pageId);
+  // The stored checkpoint, and the live copy: same Page, newer comments.
+  assert.equal(records.length, 2);
+  const [stored, live] = records;
+  assert.equal(live.snapshot, stored.snapshot);
+  for (const record of records) assert.equal(record.comments_document_id, commentsDocumentId);
+  assert.doesNotMatch(commentsText(stored), new RegExp(UNSENT));
+  assert.match(commentsText(live), new RegExp(UNSENT));
+  assert.match(commentsText(live), new RegExp(COMMENT));
+  const download = session.exportRecoveries(records);
+  assert.ok(download.copies.some((c) => c.markdown.includes(UNSENT)));
+  assert.match(session.exportRecovery(live).markdown, new RegExp(UNSENT));
+  // After a reload, the archive alone still lists it.
+  const reopened = await PageSession.open(pageId, {
+    authentication: auth,
+    refreshSession: async () => auth,
+  });
+  t.after(() => reopened.close());
+  assert.equal(reopened.revoked, true);
+  const after = reopened.exportRecoveries(await reopened.listRecoveries());
+  assert.equal(after.copies.length, 2, "nothing in memory joins the archive");
+  assert.match(after.copies.at(-1).markdown, new RegExp(UNSENT));
+  assert.equal(after.copies.at(-1).comments_document_id, commentsDocumentId);
+});
+
+test("a revoked Page doesn't restore or open its comments document on reopen", async (t) => {
+  browser(t);
+  const first = await openCopy();
+  typeUnsentComment(first);
+  await first.session.persistLocal({ pending: true });
+  t.mock.method(
+    globalThis,
+    "fetch",
+    respond(403, { error: "Document access denied", code: "page_access_denied" }),
+  );
+  await first.session.retryConnection();
+  await first.session.closeSettled();
+  const stored = [];
+  t.mock.method(SubductionBackend.prototype, "storeSnapshot", async function (id, ...rest) {
+    stored.push(hexOf(id));
+    return SubductionBackend.prototype.storeSnapshot.mock.original.call(this, id, ...rest);
+  });
+  const opened = [];
+  t.mock.method(PageSession.prototype, "openComments", function (...args) {
+    opened.push(args);
+    return PageSession.prototype.openComments.mock.original.apply(this, args);
+  });
+  const session = await PageSession.open(first.pageId, {
+    authentication: first.auth,
+    refreshSession: async () => first.auth,
+  });
+  t.after(() => session.close());
+  assert.equal(session.revoked, true);
+  assert.ok(
+    !stored.includes(hexOf(documentIdToBinary(first.commentsDocumentId))),
+    "the comments checkpoint never reaches native storage",
+  );
+  assert.deepEqual(opened, []);
+  assert.equal(session.commentsOpen$.snapshot().name, "closed");
+  assert.equal(session.commentsDoc, undefined);
+  assert.deepEqual(session.commentThreads, {});
+  assert.equal(session.snapshot(), null);
+  // The archive still holds the unsent comment.
+  const records = await session.listRecoveries();
+  assert.match(commentsText(records.at(-1)), new RegExp(UNSENT));
+});
+
+test("a comments lookup running at retirement is cancelled and never installs", async () => {
+  const copy = await openCopy();
+  const { session, auth, pageId, commentsDocumentId } = copy;
+  const handle = session.commentsHandle;
+  session.commentsHandle = undefined;
+  const calls = [];
+  session.repo = {
+    flush: async () => {},
+    find(id, { signal } = {}) {
+      return new Promise((resolve, reject) => {
+        calls.push({ id, signal, resolve });
+        signal?.addEventListener("abort", () => reject(signal.reason ?? Error("aborted")));
+      });
+    },
+  };
+  session.openComments(commentsDocumentId);
+  await tick();
+  assert.equal(calls.length, 1);
+  await session.revoke();
+  assert.equal(calls[0].signal.aborted, true, "retirement cancels the lookup");
+  calls[0].resolve(handle);
+  await tick();
+  await tick();
+  assert.equal(session.commentsHandle, undefined, "the late result never installs");
+  assert.equal(session.commentsOpen$.snapshot().name, "closed");
+  assert.deepEqual(session.commentThreads, {});
+  // Nothing reopens it: the Page is hidden.
+  session.openComments(commentsDocumentId);
+  assert.equal(session.commentsOpen$.snapshot().name, "closed");
+  assert.equal((await readLocalPage(auth.identity, pageId, { markers: true })).revoked, true);
+  // The stored checkpoint's comments went to the archive.
+  const [record] = await listLocalRecoveries(auth.identity, pageId);
+  assert.equal(record.comments_document_id, commentsDocumentId);
+  assert.match(commentsText(record), new RegExp(COMMENT));
+});
+
+test("a comments restore that starts after another tab retired the copy writes nothing", async (t) => {
+  const { session, auth, pageId } = await openCopy();
+  t.after(() => session.close());
+  const record = session.localPage;
+  const stores = [];
+  session.backend = { storeSnapshot: async (...args) => stores.push(args) };
+  // Another tab sees the refusal first.
+  await retireLocalPage(auth.identity, pageId, {
+    reason: "access",
+    grant: "1:writer",
+    revision: 1,
+  });
+  await session.restoreCommentsCheckpoint(record);
+  assert.deepEqual(stores, []);
+  // A deletion marker fences it the same way.
+  await retireLocalPage(auth.identity, pageId, { reason: "deleted" });
+  await session.restoreCommentsCheckpoint(record);
+  assert.deepEqual(stores, []);
+});
+
+test("a tab installing its comments document after another tab retired the copy retires too", async (t) => {
+  const copy = await openCopy();
+  const { session, auth, pageId } = copy;
+  t.after(() => session.close());
+  const handle = session.commentsHandle;
+  session.commentsHandle = undefined;
+  session.localPage = { ...session.localPage, comments_document_id: undefined };
+  const sequence = (await readLocalPage(auth.identity, pageId)).recovery_sequence ?? 0;
+  await retireLocalPage(auth.identity, pageId, {
+    reason: "access",
+    grant: "1:writer",
+    revision: 1,
+  });
+  typeUnsentComment({ ...copy, session: { commentsHandle: handle } });
+  await session.installComments(handle);
+  await session.closeSettled();
+  assert.equal(session.revoked, true);
+  assert.deepEqual(session.commentThreads, {});
+  const stored = await readLocalPage(auth.identity, pageId, { markers: true });
+  assert.equal(stored.revoked, true, "the marker stays");
+  assert.equal(stored.snapshot, undefined);
+  const records = await listLocalRecoveries(auth.identity, pageId);
+  assert.ok(records.length > sequence);
+  assert.match(commentsText(records.at(-1)), new RegExp(UNSENT));
+});
+
+test("a superseded retirement archives its own comments, never the newer grant's", async () => {
+  const first = await openCopy();
+  await first.session.close();
+  const tabB = await regrantedTab(first);
+  // Tab B comments under the newer grant.
+  const tabBPage = A.load(decodeSnapshot(tabB.snapshot));
+  const newerComments = comment(
+    tabBPage,
+    A.load(decodeSnapshot(tabB.comments_snapshot)),
+    { block_id: Object.keys(tabBPage.blocks)[0], body: "Tab B" },
+    first.auth.identity,
+  ).comments;
+  await writeLocalPage(first.auth.identity, {
+    ...tabB,
+    comments_snapshot: encodeSnapshot(A.save(newerComments)),
+  });
+  const retire = (extra) =>
+    retireLocalPage(first.auth.identity, first.pageId, {
+      reason: "access",
+      grant: "1:writer",
+      revision: 1,
+      snapshot: first.session.localPage.snapshot,
+      title: "Tab A",
+      ...extra,
+    });
+  // Without comments of its own, the stale copy carries none.
+  assert.deepEqual(await retire(), { superseded: true });
+  let records = await listLocalRecoveries(first.auth.identity, first.pageId);
+  assert.equal(records.at(-1).comments_snapshot, undefined);
+  assert.equal(records.at(-1).comments_document_id, undefined);
+  // With them, its own comments go with it.
+  assert.deepEqual(
+    await retire({
+      comments_snapshot: first.session.localPage.comments_snapshot,
+      comments_document_id: first.commentsDocumentId,
+    }),
+    { superseded: true },
+  );
+  records = await listLocalRecoveries(first.auth.identity, first.pageId);
+  assert.match(commentsText(records.at(-1)), new RegExp(COMMENT));
+  assert.equal(records.at(-1).comments_document_id, first.commentsDocumentId);
+  const stored = await readLocalPage(first.auth.identity, first.pageId);
+  assert.match(commentsText(stored), /Tab B/, "the newer grant's comments stay");
 });

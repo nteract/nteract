@@ -91,9 +91,13 @@ export function archiveSnapshot(records, identity, page, sequence) {
  * a marker in its place, so nothing renders the copy again. `reason` is
  * `access` (the host refused this account) or `deleted` (the Page is gone,
  * including a permanent deletion from Trash). `snapshot` is the live
- * replica's, which can hold edits the stored checkpoint lacks; both are
- * archived when they differ. `drafts` are unsent comment drafts from the UI:
- * they ride on the last record archived here, or on a record of their own.
+ * replica's, which can hold edits the stored checkpoint lacks.
+ * `comments_snapshot` is the live replica's comments document, which holds
+ * its comments, unsent ones included, and `comments_document_id` names it.
+ * The stored checkpoint carries its own pair, so every record holds both
+ * documents. The live copy is archived when either document differs from the
+ * stored one. `drafts` are unsent comment drafts from the UI: they ride on
+ * the last record archived here, or on a record of their own.
  *
  * A deletion marker is permanent. An access marker records only identity: the
  * next checkpoint written with `regrant` (a host-verified open) replaces it,
@@ -118,7 +122,16 @@ export function archiveSnapshot(records, identity, page, sequence) {
 export async function retireLocalPage(
   identity,
   pageId,
-  { reason, snapshot, title, drafts, grant, revision } = {},
+  {
+    reason,
+    snapshot,
+    title,
+    drafts,
+    grant,
+    revision,
+    comments_snapshot: commentsSnapshot,
+    comments_document_id: commentsDocumentId,
+  } = {},
 ) {
   if (!identity?.principal) throw Error("Local Page account does not match");
   if (reason !== "access" && reason !== "deleted") throw Error("Unknown retirement reason");
@@ -143,11 +156,32 @@ export async function retireLocalPage(
               previous.grant_revision > revision));
         const copies = [];
         if (previous?.snapshot && !superseded) copies.push({ ...previous, retired: reason });
-        if (snapshot && snapshot !== previous?.snapshot)
+        // The live copy's comments are its own. Without them, it keeps the
+        // stored checkpoint's, unless that belongs to a newer grant.
+        const {
+          comments_snapshot: storedComments,
+          comments_document_id: storedCommentsId,
+          comment_saved_heads: _,
+          ...liveBase
+        } = base;
+        const liveComments = commentsSnapshot
+          ? {
+              comments_snapshot: commentsSnapshot,
+              comments_document_id: commentsDocumentId ?? storedCommentsId,
+            }
+          : !superseded && storedComments
+            ? { comments_snapshot: storedComments, comments_document_id: storedCommentsId }
+            : {};
+        if (
+          snapshot &&
+          (snapshot !== previous?.snapshot ||
+            (commentsSnapshot !== undefined && commentsSnapshot !== storedComments))
+        )
           copies.push({
-            ...base,
+            ...liveBase,
             ...(title !== undefined && { title }),
             snapshot,
+            ...liveComments,
             retired: reason,
           });
         if (drafts?.length) {
