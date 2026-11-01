@@ -1,6 +1,6 @@
 // Host refusals that retire this browser's copy of a Page. A removed account
 // or a deleted Page stops rendering at once and after a reload; the copy moves
-// to the recovery archive, comments included. A transient failure, Trash and a
+// to the recovery archive, its comments document included. A transient failure, Trash and a
 // refusal without a code keep the copy. A re-grant opens the server's version.
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -9,7 +9,9 @@ import * as A from "@automerge/automerge";
 import { generateAutomergeUrl, interpretAsDocumentId } from "@automerge/automerge-repo";
 import { PageSession, refusalOf, listLocalPages, signingKeyRefused } from "./session.mjs";
 import { createPageData, initializePage } from "../model/page.mjs";
-import { applyComment } from "../model/comments.mjs";
+import { COMMENTS_FEATURE } from "../model/comments-doc.mjs";
+import { comment, newCommentsDoc } from "../model/comments-test-support.mjs";
+import { stampFeatures } from "../model/schema-features.mjs";
 import { admissionCloseOutcome } from "../shared/admission.mjs";
 import { retiredCopies } from "./retired-copies.mjs";
 import { decoder, encoder, key, store } from "./local-catalog.mjs";
@@ -72,18 +74,24 @@ function browser(t) {
   });
 }
 
-/** A Page with one paragraph and one comment, as a collaborator's browser
- * holds it: an open session and a written checkpoint. */
+/** A Page with one paragraph and one comment in its comments document, as a
+ * collaborator's browser holds it: an open session with both documents and a
+ * written checkpoint of both. */
 async function openCopy(auth = authentication(), { grant = access(), key = "1:writer" } = {}) {
   const pageId = crypto.randomUUID();
   const documentId = interpretAsDocumentId(generateAutomergeUrl());
-  let doc = A.change(A.from(createPageData({ pageId, title: "Shared garden" })), (d) =>
-    initializePage(d, BODY),
-  );
-  const blockId = Object.keys(doc.blocks)[0];
-  doc = A.change(doc, (d) => {
-    applyComment(d, { block_id: blockId, body: COMMENT }, auth.identity);
+  const commentsDocumentId = interpretAsDocumentId(generateAutomergeUrl());
+  const doc = A.change(A.from(createPageData({ pageId, title: "Shared garden" })), (d) => {
+    initializePage(d, BODY);
+    stampFeatures(d, [COMMENTS_FEATURE]);
   });
+  const blockId = Object.keys(doc.blocks)[0];
+  let comments = comment(
+    doc,
+    newCommentsDoc(),
+    { block_id: blockId, body: COMMENT },
+    auth.identity,
+  ).comments;
   const session = new PageSession(pageId, {
     authentication: auth,
     refreshSession: async () => auth,
@@ -92,12 +100,22 @@ async function openCopy(auth = authentication(), { grant = access(), key = "1:wr
   session.access = grant;
   session.replicaKey = key;
   session.handle = { doc: () => doc, documentId };
+  session.commentsHandle = {
+    doc: () => comments,
+    documentId: commentsDocumentId,
+    on() {},
+    change(fn) {
+      comments = A.change(comments, fn);
+    },
+  };
   session.repo = { flush: async () => {} };
   session.localPage = {
     principal: auth.identity.principal,
     page_id: pageId,
     document_id: documentId,
     snapshot: encodeSnapshot(A.save(doc)),
+    comments_snapshot: encodeSnapshot(A.save(comments)),
+    comments_document_id: commentsDocumentId,
     title: doc.title,
     registered: true,
     pending: false,
@@ -106,10 +124,21 @@ async function openCopy(auth = authentication(), { grant = access(), key = "1:wr
     replicaKey: session.replicaKey,
   };
   session.savedHeads = A.getHeads(doc);
+  session.savedCommentHeads = A.getHeads(comments);
+  session.localPage.comment_saved_heads = session.savedCommentHeads;
   session.dispatch({ type: "opened", denied: false });
   session.updateCapabilities();
   await writeLocalPage(auth.identity, session.localPage);
-  return { session, auth, doc, pageId, documentId };
+  return {
+    session,
+    auth,
+    doc,
+    pageId,
+    documentId,
+    commentsDocumentId,
+    blockId,
+    comments: () => comments,
+  };
 }
 
 const respond = (status, body) => async () => Response.json(body, { status });

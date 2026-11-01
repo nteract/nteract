@@ -4,8 +4,9 @@
 // a newer build would. The host then refuses that peer's next native edit
 // (its build declared no features) and accepts one from a peer that declares
 // the feature. Tool writes get unsupported_schema_feature, read_page reports
-// the stamp, and the browser opens it read-only with the reload notice. An
-// unstamped Page stays editable.
+// the stamp, and the browser opens it read-only with the reload notice. A
+// current Page carries only the comments-doc stamp and stays editable; a build
+// from before the comments document is refused on it.
 //
 // Then the Markdown cutover: a strikethrough or horizontal rule write stamps
 // its feature, so a baseline build's native edits are refused; agent writes
@@ -30,6 +31,8 @@ assert.equal(new URL(origin).hostname, "localhost", "Generated fixture requires 
 const output = process.env.PAGES_SCREENSHOTS || "/tmp/pages-schema-features-browser";
 await mkdir(output, { recursive: true });
 const FUTURE = "e2e-future-feature";
+// What every current Page carries: its comments live in their own document.
+const CURRENT = ["comments-doc"];
 // viewer/SchemaNotice.jsx SCHEMA_UNSUPPORTED.
 const SCHEMA_UNSUPPORTED =
   "This Page uses features this version doesn't support. Reload to update.";
@@ -143,28 +146,39 @@ try {
   const cookie = (await context.cookies(origin)).map((c) => `${c.name}=${c.value}`).join("; ");
   checkpoint("local OIDC sign-in");
 
-  stage = "an unstamped Page is editable";
+  stage = "a current Page is editable";
   const baseline = await create("Baseline " + Date.now(), "Plain words.");
   const baselineRead = await tool("read_page", { page_id: baseline, comments: "none" });
-  assert.deepEqual(baselineRead.body.schema_features, []);
+  // A new Page's comments live in their own document.
+  assert.deepEqual(baselineRead.body.schema_features, CURRENT);
   await page.goto(origin + "/p/" + baseline);
   await expect(content().first()).toBeVisible();
   await expect(title()).toBeEditable();
   await expect(content().first()).toHaveAttribute("contenteditable", "true");
   await expect(notice()).toHaveCount(0);
-  checkpoint("an unstamped Page opens editable with no notice");
+  checkpoint("a current Page opens editable with no notice");
+
+  stage = "a build from before the comments document is refused";
+  const older = await nativePeer(cookie, baseline, []);
+  const olderEdit = await older.change((doc) => {
+    doc.comments = { stray: { messages: {} } };
+  });
+  assert.equal(olderEdit.status, 409, JSON.stringify(olderEdit.body));
+  assert.equal(olderEdit.body.code, "schema_unsupported");
+  await older.close();
+  checkpoint("an old tab can't write comments into the Page document");
 
   stage = "a native peer stamps an unknown feature";
   const future = await create("Future " + Date.now(), "Words from a newer build.");
-  // A peer admitted with the baseline may stamp an unstamped Page.
-  const stale = await nativePeer(cookie, future, []);
+  // A peer with this build's baseline may stamp a Page it can write.
+  const stale = await nativePeer(cookie, future, CURRENT);
   const stamping = await stale.change((doc) => {
-    doc.schema = { features: [FUTURE] };
+    doc.schema = { features: [...CURRENT, FUTURE] };
   });
   assert.equal(stamping.status, 200, JSON.stringify(stamping.body));
   const stampedRead = await tool("read_page", { page_id: future, comments: "none" });
   assert.equal(stampedRead.status, 200);
-  assert.deepEqual(stampedRead.body.schema_features, [FUTURE]);
+  assert.deepEqual(stampedRead.body.schema_features, [...CURRENT, FUTURE]);
   checkpoint("read_page reports the stamp");
 
   stage = "the host refuses native edits from a build without the feature";
@@ -182,7 +196,7 @@ try {
   checkpoint("a stale build's native edit is refused and the Page is unchanged");
 
   stage = "the host accepts native edits from a build with the feature";
-  const fresh = await nativePeer(cookie, future, [FUTURE]);
+  const fresh = await nativePeer(cookie, future, [...CURRENT, FUTURE]);
   const freshEdit = await fresh.change((doc) => {
     doc.freshEdit = "lands";
   });
@@ -246,9 +260,9 @@ try {
   stage = "strikethrough and rules stamp their features";
   const struck = await create("Struck " + Date.now(), "Old ~~plan~~.\n\n---\n\nNew plan.");
   const struckRead = await tool("read_page", { page_id: struck, comments: "none" });
-  assert.deepEqual(struckRead.body.schema_features, ["horizontal-rule", "strike"]);
+  assert.deepEqual(struckRead.body.schema_features, [...CURRENT, "horizontal-rule", "strike"]);
   assert.equal(struckRead.body.blocks[0].markdown, "Old ~~plan~~.\n\n---\n\nNew plan.");
-  const baselinePeer = await nativePeer(cookie, struck, []);
+  const baselinePeer = await nativePeer(cookie, struck, CURRENT);
   const baselineEdit = await baselinePeer.change((doc) => {
     doc.staleEdit = "should not land";
   });
@@ -337,7 +351,7 @@ try {
   await expect(content().first()).toHaveAttribute("contenteditable", "true");
   checkpoint("registration converts a preserved block to native, editable text");
 
-  stage = "navigating back to the unstamped Page";
+  stage = "navigating back to the current Page";
   await page.goto(origin + "/p/" + baseline);
   await expect(content().first()).toBeVisible();
   await expect(notice()).toHaveCount(0);

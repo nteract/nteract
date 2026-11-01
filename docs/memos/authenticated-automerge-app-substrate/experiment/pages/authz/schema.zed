@@ -114,6 +114,9 @@ definition page {
 	/** editor is a direct grant to write and comment. */
 	relation editor: user | group#member | organization#member
 
+	/** commenter is a direct grant to read and comment, never to write the Page. */
+	relation commenter: user | group#member
+
 	/** viewer is a direct grant to read. organization#member is company view. */
 	relation viewer: user | group#member | organization#member
 
@@ -131,11 +134,14 @@ definition page {
 	/** edit is the proposal's item.edit: administer + editor + project.contribute. */
 	permission edit = administer + editor + project->contribute
 
-	/** comment goes with edit. */
-	permission comment = edit
+	/**
+	 * comment writes the item's comments document: every editor, and
+	 * commenters. Editing the item itself stays with edit.
+	 */
+	permission comment = edit + commenter
 
 	/** read is the proposal's item.read, with removed subtracted from the direct viewer path. */
-	permission read = edit + (viewer - removed) + project->read_items
+	permission read = comment + (viewer - removed) + project->read_items
 
 	/** share is the proposal's item.share: grant direct roles on this item. */
 	permission share = administer

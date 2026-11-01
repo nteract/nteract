@@ -1,3 +1,4 @@
+import { createSettledLookup } from "./settled-lookup.ts";
 import { normalizeInviteEmail } from "./sharing.ts";
 
 export interface OidcUserInfo {
@@ -23,9 +24,19 @@ export class OidcUserInfoError extends Error {
 
 const CACHE_TTL_MS = 60_000;
 const CACHE_MAX_ENTRIES = 256;
-const FETCH_TIMEOUT_MS = 5_000;
+/** Deadline for one UserInfo request, enforced by its own timer. */
+export const OIDC_USERINFO_FETCH_TIMEOUT_MS = 5_000;
+/** One lookup attempt: the request deadline plus slack, a backstop if that timer is lost. */
+export const OIDC_USERINFO_ATTEMPT_MS = OIDC_USERINFO_FETCH_TIMEOUT_MS + 1_000;
 const RESPONSE_MAX_BYTES = 16 * 1024;
-const cache = new Map<string, { expiresAt: number; ready: Promise<OidcUserInfo> }>();
+// Shared by every gateway request in the isolate. Holds settled profiles only;
+// see settled-lookup.ts.
+const cache = createSettledLookup<string, OidcUserInfo>({
+  attemptMs: OIDC_USERINFO_ATTEMPT_MS,
+  waitMs: OIDC_USERINFO_ATTEMPT_MS,
+  maxEntries: CACHE_MAX_ENTRIES,
+  timeoutError: () => new OidcUserInfoError("OIDC UserInfo request timed out"),
+});
 
 /** Called only after JWT signature, issuer, audience, client, and lifetime verification. */
 export async function loadOidcUserInfo(input: {
@@ -47,23 +58,10 @@ export async function loadOidcUserInfo(input: {
   const key = Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join(
     "",
   );
-  const cached = cache.get(key);
-  if (cached && cached.expiresAt > Date.now()) return cached.ready;
-
-  for (const [entryKey, entry] of cache) {
-    if (entry.expiresAt <= Date.now()) cache.delete(entryKey);
-  }
-  while (cache.size >= CACHE_MAX_ENTRIES) {
-    const oldest = cache.keys().next().value;
-    if (oldest === undefined) break;
-    cache.delete(oldest);
-  }
-  const ready = fetchUserInfo(input).catch((error: unknown) => {
-    if (cache.get(key)?.ready === ready) cache.delete(key);
-    throw error;
-  });
-  cache.set(key, { expiresAt: Math.min(Date.now() + CACHE_TTL_MS, input.expiresAt), ready });
-  return ready;
+  return cache.get(key, async (_signal, startedAt) => ({
+    value: await fetchUserInfo(input),
+    expiresAt: Math.min(startedAt + CACHE_TTL_MS, input.expiresAt),
+  }));
 }
 
 async function fetchUserInfo(input: {
@@ -78,7 +76,7 @@ async function fetchUserInfo(input: {
     timer = setTimeout(() => {
       controller.abort();
       reject(new OidcUserInfoError("OIDC UserInfo request timed out"));
-    }, FETCH_TIMEOUT_MS);
+    }, OIDC_USERINFO_FETCH_TIMEOUT_MS);
   });
   const request = async () => {
     const fetchProfile = (method: "GET" | "POST") =>

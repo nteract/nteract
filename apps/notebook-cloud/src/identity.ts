@@ -12,6 +12,7 @@ import {
   trustsLoopbackRequestHeaders,
 } from "./loopback.ts";
 import { loadOidcUserInfo, OidcUserInfoError } from "./oidc-userinfo.ts";
+import { createSettledLookup } from "./settled-lookup.ts";
 
 export {
   BEARER_AUTH_TOKEN_PROTOCOL_PREFIX,
@@ -209,29 +210,37 @@ export interface OidcIdTokenVerificationOptions {
 const JWT_CLOCK_TOLERANCE_SECONDS = 60;
 const JWKS_CACHE_TTL_MS = 5 * 60 * 1000;
 const OIDC_DOCUMENT_FETCH_TIMEOUT_MS = 10_000;
+/** One discovery attempt: its fetch deadline plus slack for parsing. */
+export const OIDC_DISCOVERY_ATTEMPT_MS = OIDC_DOCUMENT_FETCH_TIMEOUT_MS + 1_000;
+/** One key-set attempt may also run discovery, so it covers both fetches. */
+export const OIDC_JWKS_ATTEMPT_MS = 2 * OIDC_DOCUMENT_FETCH_TIMEOUT_MS + 1_000;
 const ANACONDA_API_KEY_CACHE_MAX_ENTRIES = 256;
 const ANACONDA_API_KEY_CACHE_TTL_MS = 60 * 1000;
+export const ANACONDA_API_KEY_ATTEMPT_MS = 10_000;
 export const IDENTITY_SUBJECT_MAX_LENGTH = 256;
-const jwksCache = new Map<
-  string,
-  {
-    expiresAt: number;
-    ready: Promise<JsonWebKeySet>;
-  }
->();
 interface OidcMetadata {
   issuer: string;
   jwks_uri?: unknown;
   userinfo_endpoint?: unknown;
 }
-const discoveryCache = new Map<string, { expiresAt: number; ready: Promise<OidcMetadata> }>();
-const anacondaApiKeyUserInfoCache = new Map<
-  string,
-  {
-    expiresAt: number;
-    ready: Promise<AnacondaApiKeyUserInfo>;
-  }
->();
+// Isolate-wide caches shared by every gateway request. They hold settled
+// values only; see settled-lookup.ts for why and how requests wait.
+const discoveryLookup = createSettledLookup<string, OidcMetadata>({
+  attemptMs: OIDC_DISCOVERY_ATTEMPT_MS,
+  waitMs: OIDC_DISCOVERY_ATTEMPT_MS,
+  timeoutError: () => new AuthError("OIDC discovery timed out", 503),
+});
+const jwksLookup = createSettledLookup<string, JsonWebKeySet>({
+  attemptMs: OIDC_JWKS_ATTEMPT_MS,
+  waitMs: OIDC_JWKS_ATTEMPT_MS,
+  timeoutError: () => new AuthError("OIDC JWKS fetch timed out", 503),
+});
+const anacondaApiKeyLookup = createSettledLookup<string, AnacondaApiKeyUserInfo>({
+  attemptMs: ANACONDA_API_KEY_ATTEMPT_MS,
+  waitMs: ANACONDA_API_KEY_ATTEMPT_MS,
+  maxEntries: ANACONDA_API_KEY_CACHE_MAX_ENTRIES,
+  timeoutError: () => new AuthError("Anaconda API key validation timed out", 503),
+});
 
 export class AuthError extends Error {
   constructor(
@@ -349,14 +358,13 @@ export async function authenticateOidcRequest(
     throw new AuthError("OIDC token sub is too long", 401);
   }
   if (config.userInfoEnabled) {
-    const metadata = loadOidcMetadata(config.issuer);
+    const metadata = await loadOidcMetadata(config.issuer);
     let endpoint: string;
     try {
-      endpoint = oidcUserInfoUrl((await metadata).userinfo_endpoint, config);
+      endpoint = oidcUserInfoUrl(metadata.userinfo_endpoint, config);
     } catch (error) {
       // A repaired discovery document should be usable on the next login.
-      if (discoveryCache.get(config.issuer)?.ready === metadata)
-        discoveryCache.delete(config.issuer);
+      discoveryLookup.evict(config.issuer, metadata);
       throw error;
     }
     try {
@@ -477,63 +485,23 @@ async function loadAnacondaApiKeyUserInfo(
   token: string,
   config: AnacondaApiKeyConfig,
 ): Promise<AnacondaApiKeyUserInfo> {
-  const now = Date.now();
-  const cacheKey = `${config.userinfoUrl}:${token}`;
-  const cached = anacondaApiKeyUserInfoCache.get(cacheKey);
-  if (cached && cached.expiresAt > now) {
-    anacondaApiKeyUserInfoCache.delete(cacheKey);
-    anacondaApiKeyUserInfoCache.set(cacheKey, cached);
-    return cached.ready;
-  }
-  if (cached) {
-    anacondaApiKeyUserInfoCache.delete(cacheKey);
-  }
-
-  const ready = fetchAnacondaApiKeyUserInfo(token, config).catch((error: unknown) => {
-    anacondaApiKeyUserInfoCache.delete(cacheKey);
-    throw error;
-  });
-  cacheAnacondaApiKeyUserInfo(cacheKey, {
-    expiresAt: now + ANACONDA_API_KEY_CACHE_TTL_MS,
-    ready,
-  });
-  return ready;
-}
-
-function cacheAnacondaApiKeyUserInfo(
-  cacheKey: string,
-  entry: {
-    expiresAt: number;
-    ready: Promise<AnacondaApiKeyUserInfo>;
-  },
-): void {
-  const now = Date.now();
-  for (const [key, cached] of anacondaApiKeyUserInfoCache) {
-    if (cached.expiresAt <= now) {
-      anacondaApiKeyUserInfoCache.delete(key);
-    }
-  }
-
-  while (anacondaApiKeyUserInfoCache.size >= ANACONDA_API_KEY_CACHE_MAX_ENTRIES) {
-    const oldestKey = anacondaApiKeyUserInfoCache.keys().next().value;
-    if (!oldestKey) {
-      break;
-    }
-    anacondaApiKeyUserInfoCache.delete(oldestKey);
-  }
-
-  anacondaApiKeyUserInfoCache.set(cacheKey, entry);
+  return anacondaApiKeyLookup.get(`${config.userinfoUrl}:${token}`, async (signal, startedAt) => ({
+    value: await fetchAnacondaApiKeyUserInfo(token, config, signal),
+    expiresAt: startedAt + ANACONDA_API_KEY_CACHE_TTL_MS,
+  }));
 }
 
 async function fetchAnacondaApiKeyUserInfo(
   token: string,
   config: AnacondaApiKeyConfig,
+  signal: AbortSignal,
 ): Promise<AnacondaApiKeyUserInfo> {
   const response = await fetch(config.userinfoUrl, {
     headers: {
       Authorization: `Bearer ${token}`,
       "User-Agent": "nteract-notebook-cloud/1.0",
     },
+    signal,
   });
   if (!response.ok) {
     throw new AuthError("Anaconda API key validation failed", response.status === 403 ? 403 : 401);
@@ -1283,41 +1251,27 @@ async function loadOidcJwks(config: OidcConfig): Promise<JsonWebKeySet> {
   }
 
   // Both JWT verification and optional UserInfo enrichment share discovery.
-  const cached = jwksCache.get(config.issuer);
-  if (cached && cached.expiresAt > Date.now()) {
-    return cached.ready;
-  }
-
-  const metadata = loadOidcMetadata(config.issuer);
-  const ready = metadata
-    .then(async (document) => {
+  return jwksLookup.get(config.issuer, async (_signal, startedAt) => {
+    const document = await loadOidcMetadata(config.issuer);
+    try {
       const jwksUrl = oidcJwksUrl(document.jwks_uri, config.issuer);
-      return parseJwks(await fetchOidcDocument(jwksUrl, "JWKS"), "OIDC");
-    })
-    .catch((error: unknown) => {
-      if (jwksCache.get(config.issuer)?.ready === ready) {
-        jwksCache.delete(config.issuer);
-      }
-      if (discoveryCache.get(config.issuer)?.ready === metadata)
-        discoveryCache.delete(config.issuer);
+      return {
+        value: parseJwks(await fetchOidcDocument(jwksUrl, "JWKS"), "OIDC"),
+        expiresAt: startedAt + JWKS_CACHE_TTL_MS,
+      };
+    } catch (error) {
+      // The key URL came from this document; rediscover on the next attempt.
+      discoveryLookup.evict(config.issuer, document);
       throw error;
-    });
-  jwksCache.set(config.issuer, {
-    expiresAt: Date.now() + JWKS_CACHE_TTL_MS,
-    ready,
+    }
   });
-  return ready;
 }
 
 function loadOidcMetadata(issuer: string): Promise<OidcMetadata> {
-  const cached = discoveryCache.get(issuer);
-  if (cached && cached.expiresAt > Date.now()) return cached.ready;
-  const ready = discoverOidcMetadata(issuer).catch((error: unknown) => {
-    if (discoveryCache.get(issuer)?.ready === ready) discoveryCache.delete(issuer);
-    throw error;
-  });
-  discoveryCache.set(issuer, { expiresAt: Date.now() + JWKS_CACHE_TTL_MS, ready });
-  return ready;
+  return discoveryLookup.get(issuer, async (_signal, startedAt) => ({
+    value: await discoverOidcMetadata(issuer),
+    expiresAt: startedAt + JWKS_CACHE_TTL_MS,
+  }));
 }
 
 async function discoverOidcMetadata(issuer: string): Promise<OidcMetadata> {

@@ -823,11 +823,11 @@ function App() {
     }
   }
   // Comment on a selection opens the inline composer beside it. Readers
-  // without write access get the thread list instead.
+  // without comment access get the thread list instead.
   function startComment(id, selected) {
     if (!session || !id || !selected) return;
     activateBlock(id);
-    if (!session.canWrite) {
+    if (!session.canComment) {
       setCommentsOpen(true);
       return;
     }
@@ -1202,6 +1202,7 @@ function App() {
                         replica={session}
                         id={block.id}
                         editable={session.canWrite}
+                        commentable={session.canComment}
                         onError={setError}
                         onComment={(selected) => startComment(block.id, selected)}
                         onRevealComment={selectComment}

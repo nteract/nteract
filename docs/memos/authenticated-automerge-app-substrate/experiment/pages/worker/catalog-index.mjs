@@ -264,8 +264,15 @@ export function accessRows(metadata, env, reader) {
   const rows = [{ principal: metadata.owner, role: "owner", source: "owner", domain: null }];
   for (const principal of Object.keys(members)) {
     const { role } = pageGrant(metadata, principal);
-    if (role === "viewer" || role === "editor")
-      rows.push({ principal, role, source: "member", domain: null });
+    // The index lists; it never grants. Its role column predates commenters
+    // and accepts owner, editor and viewer, so a commenter lists as a viewer.
+    if (role === "viewer" || role === "editor" || role === "commenter")
+      rows.push({
+        principal,
+        role: role === "commenter" ? "viewer" : role,
+        source: "member",
+        domain: null,
+      });
   }
   const domain = configuredDomainView(metadata, env)?.domain ?? null;
   if (

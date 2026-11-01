@@ -107,6 +107,7 @@ was a caret race in the smoke; the editor side is
 | Reload prompt after a deploy under an open tab | `node scripts/local-sharing-e2e.mjs --build-update` | Starts an isolated fixture and swaps its build |
 | Trash, restore, and permanent deletion | `node scripts/local-sharing-e2e.mjs --trash` | Starts an isolated fixture |
 | Removed access hides the local copy across a reload, with its download | `node scripts/local-sharing-e2e.mjs --revocation` | Starts an isolated fixture |
+| A commenter comments but can't edit; a forged native edit of another author's message is refused | `node scripts/local-sharing-e2e.mjs --commenter` | Starts an isolated fixture |
 | Projects over MCP and in the browser, `/projects` and `/pages` on a phone-sized screen, breadcrumbs, Trash and restore in a Project | `node scripts/local-sharing-e2e.mjs --projects` | Starts an isolated fixture |
 | Rollback to a previous build and forward again on one data directory | `node scripts/rollback-qualification.mjs --previous <previous pages dir>` | Starts an isolated fixture; build the previous commit first |
 | Rich comment tables and drafts | `PAGES_ORIGIN=http://localhost:9894 node scripts/rich-comments-smoke.mjs` | Uses the running Wordgard fixture |
@@ -130,8 +131,10 @@ mobile-keyboard, object-store failover, or deployment reliability.
 
 ## Document and editor
 
-A Page contains its title, stable ordered block IDs, rich text, and comments in
-Automerge. Markdown is the import/export and tool projection. A dedicated title
+A Page contains its title, stable ordered block IDs and rich text in Automerge.
+Its comments live in a second Automerge document beside it (see [Comments
+document](#comments-document)). Markdown is the import/export and tool
+projection. A dedicated title
 is displayed above the body; agents should not repeat it as an opening heading.
 Authoring receipts warn about likely duplicates without removing or hiding text.
 
@@ -502,11 +505,11 @@ browser session by the person's name alone, so on a request with an API key or
 OAuth token the server reads `X-Pages-Driver: Browser` (any case) as `API`.
 
 A Page starts private. Its immutable owner manages access, Trash, and permanent
-deletion, editors write/comment, and viewers read. Each operation intersects the Page role with
-credential scopes. Email invitations expire after seven days, become stable
+deletion, editors write/comment, commenters read and comment, and viewers read.
+Each operation intersects the Page role with credential scopes. Email invitations expire after seven days, become stable
 principal grants only after verified provider email admission, and do not send
 email. Pending invitations cannot authorize sockets or override a newer role.
-There is no public/anonymous access, commenter-only role, or ownership transfer.
+There is no public/anonymous access, guest commenting, or ownership transfer.
 
 Company-domain viewing is an optional, read-only fallback. Deployment configuration
 and the owner's Page setting must both allow it; only `anaconda.com` is currently
@@ -649,8 +652,128 @@ Membership, invitation, connection, and lifetime signing-key counts are bounded;
 retired keys remain recorded to prevent regained authority. See [access.mjs](worker/access.mjs) and the Worker tests for membership admission
 and the associated resource limits. Sharing
 receipts retain the latest 256 results; older retries must still pass the revision
-guard, and receipt capacity never prevents revocation. Comment author labels are
-editable document data, not an audit log; author-only comment editing is not implemented.
+guard, and receipt capacity never prevents revocation. Comment `displayName` and
+`driver` labels are editable data, not an audit log; `author.principal` is
+checked against the signer (see [Comments document](#comments-document)).
+
+## Comments document
+
+A Page's comments live in their own Automerge document, owned by the same Page
+Durable Object. The Page record names it by a deployment-relative id,
+`comments_doc: "<uuid>"`, derived from the Page ID. There is no hostname and no
+origin: comments are platform data, not part of the Page. The browser syncs it
+on the same socket as the Page; `/api/connect` returns `commentsDocumentId`.
+Trash, restore, permanent deletion and the purge preview cover both documents.
+
+Shape ([model/comments-doc.mjs](model/comments-doc.mjs)):
+`{ threads: { [id]: { target, author, createdAt, status, messages } } }`.
+`target` is a cursor anchor into the Page document, `{ kind: "block", blockId }`
+or `{ kind: "selection", anchor, head }`, resolved against the Page on read.
+The Page's rich text carries no comment marks and no hint. Its first change is
+a pure function of the id, so a host that creates it twice stores one document.
+Reactions aren't implemented; the shape leaves room for a per-thread
+`reactions` map, which the authority check refuses until a build adds it.
+
+One ACL governs both documents. `read` reads both, `comment` writes the
+comments document, and `edit` writes the Page. Owners and editors hold
+`comment`; the `commenter` relation grants `read` and `comment` only. Per
+author ([model/comment-rules.mjs](model/comment-rules.mjs)):
+
+| Action | Who |
+| --- | --- |
+| add, reply, resolve, reopen | anyone with `comment` |
+| edit, delete a message | the message's author |
+| delete a thread | owners and editors, or the thread's author |
+| move an anchor | the thread's author |
+
+The rules hold at three layers: the viewer only offers what they allow, the
+tools check them in `applyComment`, and the host checks every native change
+from a peer. The native check runs in the record byte store
+([worker/comment-admission.mjs](worker/comment-admission.mjs)): each saved
+comments-document record carries its signer's key and its Automerge change, so
+[model/comment-authority.mjs](model/comment-authority.mjs) decides the change
+for that signer's principal and role before the record is written. Content is
+checked by the same rule the tools and the browser apply
+(`validateCommentSpans` in [model/comment-content.mjs](model/comment-content.mjs)):
+non-whitespace text or a valid embed, so an image-only comment is content.
+
+A refused record is never stored or delivered. The store throws a refusal
+(`recordRefused: true`), and the bridge answers that one save without treating
+it as a storage failure ([../patch-record-refusal.mjs](../patch-record-refusal.mjs)):
+the native engine keeps running and every other connection stays up. When the
+signer broke a rule, its key is blocked from authoring comments, durably, and
+only its connection closes. A missing dependency, an unreadable frame or a
+checker error refuses the record without blocking anyone. So a refusal is not a
+lever over other peers, whatever a principal does with fresh keys. An honest
+client never writes a refused change. A flush already waiting on a refused save
+filters the refusal out of its results, so a Page mutation's flush doesn't fail
+on it either.
+
+Refusals have a work budget. An identical refused record (same path and signed
+envelope) is refused again without decoding for 30 s, until something new is
+admitted. Each refusal of a peer's record charges its principal; 8 in a minute
+throttle that principal for a minute: its records are refused unread, and every
+submission while throttled closes the submitting connection with
+`temporarily_unavailable` (close 4503). That covers a reconnect and the
+principal's other keys, so each client backs off and reconnects. The key isn't blocked, so a record refused for
+a missing dependency is admitted once the dependency arrives.
+
+Admission costs one Automerge clone per checked batch, plus the per-op check.
+Measured on a laptop, one reply against a comments document of 200, 2,000 and
+6,000 messages: 1.5, 3.2 and 12.3 ms per record. The clone is most of it at
+the top end (12 ms at 6,000 messages, 762 KiB saved). Reproduce with
+`npx tsx scripts/comment-admission-bench.mjs`.
+
+Uploads need edit access. Asset storage has no per-Page aggregate byte or
+object quota yet, so comment access alone doesn't open it: commenters comment
+in text and can't attach images until that quota exists.
+
+Comment receipts carry the Page revision their write read as `heads`, journaled
+with the receipt, and the comments document's revision as `comment_heads`. An
+agent polling `read_page_changes` from a comment receipt still sees a browser
+edit that landed meanwhile, and an exact retry returns the same heads. A
+receipt a build before the comments document journaled on the Page replays
+with its Page heads, `legacy_receipt: true` and no comment heads.
+
+`read_page_changes` takes `since_comment_heads` for comment changes. Without
+it, `comments` lists every current thread (`change: "snapshot"`) and
+`comments_snapshot: true` says to replace what the caller holds, so a client
+from before the comments document keeps seeing comments.
+
+The browser opens the comments document with its own lifecycle
+([viewer/comments-open-machine.mjs](viewer/comments-open-machine.mjs)): a
+lookup with a 15 s timeout, retries after 1, 2, 4 and 8 s, then a visible
+"Comments couldn't load" with Try again. A reconnect starts over, and a
+replaced replica cancels its lookup. Offline, the local record's comments
+checkpoint restores the document before lookup; checkpoints, recovery
+archives and Download draft carry both documents with separate heads.
+
+### Moving existing comments
+
+Pages created before the comments document kept threads at `page.comments`.
+The host moves them the first time the Page loads, under the same fence and
+journal as the preserved-block conversion
+([model/comments-migration.mjs](model/comments-migration.mjs)):
+
+1. Copy: every legacy thread into the comments document under its original
+   ID, as one journaled host change keyed by the Page heads it read. Threads
+   already there are skipped, so a rerun copies nothing twice.
+2. Detach: remove the Page's `comments` map and stamp the `comments-doc` schema
+   feature, in one journaled host change at those heads.
+
+Page text is never touched. Peer writes wait while it runs. A restart replays
+whichever step's journal entry is pending, then finishes the other. The stamp
+makes an older build open the Page read-only, and the host refuses its native
+writes with `schema_unsupported`, so it can't write comments back into the
+Page document. Until the move finishes, reads come from the Page's legacy map
+and comment writes wait for it.
+
+What the move drops: a thread or message whose ID isn't 1–128 letters, digits,
+`-` or `_` (Pages always wrote UUIDs); a thread whose content can't be read or
+written, such as unreadable rich text, which is skipped whole; every thread if
+the copy keeps failing for good and the host falls back to `drop` mode; and a
+comment an older tab wrote locally that the host hadn't accepted before the
+move. That last one lands in the detached map on sync, where nothing reads it.
 
 ## Authorization
 
@@ -676,6 +799,10 @@ project), company view, and only that principal's member row. A decision
 therefore costs one member lookup, however many grants and removal tombstones
 the ACL has collected.
 
+A commenter holds `read` and `comment`: it writes the comments document, never
+the Page. In `schema.zed`, `comment = edit + commenter` and `read` builds on
+`comment`.
+
 Capabilities are named: `read`, `comment`, `edit`, `share`, `administer`,
 `trash`, `restore`, `purge`, `create_items`, `manage_members`, `move_within`,
 `move_out`. A Page never gets `manage_members`, and a project never gets
@@ -684,7 +811,7 @@ yet. Execute is out of scope for Pages.
 
 decide() runs three steps, in this order:
 
-1. **Relations.** A viewer or editor member row grants, and a removal
+1. **Relations.** A viewer, commenter or editor member row grants, and a removal
    tombstone becomes `removed`. Company view is the `organization#member`
    userset. Built-in mode has no tenants, so the verified email-domain lease
    stands in for organization membership. A tombstone subtracts from the
@@ -1294,7 +1421,10 @@ Each participant's color comes from nteract's cursor palette, keyed by
 principal and driver.
 
 Comment and progress anchors are native cursors, so they skip the exact-head
-guard. `manage_page_comment` `add` with `selected_text` requires known
+guard. Comments are written to the comments document, so a comment never
+changes the Page's heads: the receipt's `heads` are the Page's, unchanged, and
+`comment_heads` name the comments document's new revision.
+`manage_page_comment` `add` with `selected_text` requires known
 `base_heads`, finds the passage (and `occurrence`) at that revision, and anchors
 its cursors there. It returns `edit_conflict` only when the passage no longer
 resolves, and `resync_required` for unknown heads. A block comment needs only
@@ -1306,8 +1436,8 @@ each thread's outcome: `resolved`, `already_resolved`, `reopened` or
 `already_open`. A thread already in the target state is a no-op success and
 keeps its status time. The batch is all-or-nothing. An unknown ID rejects it
 with `invalid_comment_selector` and `not_found_thread_ids`, before anything is
-written. Permission is the Page's edit access, the same check a single resolve
-makes, so a denial also rejects the whole batch. `report_page_progress`
+written. Permission is the Page's comment access, the same check a single
+resolve makes, so a denial also rejects the whole batch. `report_page_progress`
 targets follow the same rule with `expected_heads`, failing with
 `presence_revision_changed` for unknown heads or a detached passage. Retries
 still replay the recorded receipt; these guards run only for new intents.

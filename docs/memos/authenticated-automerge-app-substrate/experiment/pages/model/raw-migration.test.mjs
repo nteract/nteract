@@ -2,7 +2,8 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import * as A from "@automerge/automerge";
 import { pmNodeToSpans } from "@automerge/prosemirror";
-import { applyComment, projectComments } from "./comments.mjs";
+import { projectComments } from "./comments.mjs";
+import { comment, legacyComment, newCommentsDoc } from "./comments-test-support.mjs";
 import { createPageData, initializePage, orderedBlockIds, projectPage } from "./page.mjs";
 import { projectReadContent } from "./read-content.mjs";
 import {
@@ -39,14 +40,16 @@ function stored(nodes) {
     initializePage(draft, ""),
   );
   const id = orderedBlockIds(doc)[0];
-  doc = A.change(doc, (draft) =>
+  doc = A.change(doc, (draft) => {
+    // An older build stamped nothing and kept its comments in the Page.
+    delete draft.schema;
     A.updateSpans(
       draft,
       textPath(id),
       pmNodeToSpans(adapter, schema.node("doc", null, nodes)),
       adapter.updateSpansConfig(),
-    ),
-  );
+    );
+  });
   return { doc, id };
 }
 function convert(doc) {
@@ -175,14 +178,14 @@ test("conversion stamps the features of the content it writes, in the same chang
 });
 
 test("preserved blocks in comment messages convert too", () => {
+  // An older build kept comments in the Page; the conversion runs before
+  // they move to the comments document, so it converts them in place.
   let { doc, id } = stored([p("We ship on Friday.")]);
-  doc = A.change(doc, (draft) =>
-    applyComment(
-      draft,
-      { action: "add", block_id: id, body: "placeholder", body_format: "markdown" },
-      identity,
-    ),
-  );
+  ({ page: doc } = legacyComment(
+    doc,
+    { action: "add", block_id: id, body: "placeholder", body_format: "markdown" },
+    identity,
+  ));
   const [threadId] = Object.keys(doc.comments);
   const [messageId] = Object.keys(doc.comments[threadId].messages);
   const path = ["comments", threadId, "messages", messageId, "richText"];
@@ -202,18 +205,17 @@ test("preserved blocks in comment messages convert too", () => {
 
 test("text around a converted block keeps its identity: comment anchors and cursors survive", () => {
   let { doc, id } = stored([p("Anchor here."), raw("~~old~~ text"), p("Tail words.")]);
-  doc = A.change(doc, (draft) =>
-    applyComment(
-      draft,
-      { action: "add", block_id: id, selected_text: "Tail words", body: "About the tail" },
-      identity,
-    ),
+  const { comments } = comment(
+    doc,
+    newCommentsDoc(),
+    { action: "add", block_id: id, selected_text: "Tail words", body: "About the tail" },
+    identity,
   );
   const cursor = A.getCursor(doc, textPath(id), doc.blocks[id].richText.indexOf("Anchor"));
   const after = convert(doc).doc;
   const text = after.blocks[id].richText;
   assert.equal(text.slice(A.getCursorPosition(after, textPath(id), cursor)).slice(0, 6), "Anchor");
-  const [thread] = projectComments(after);
+  const [thread] = projectComments(after, comments);
   assert.equal(thread.selectionContext.status, "attached");
   assert.equal(thread.selectionContext.text, "Tail words");
 });

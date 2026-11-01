@@ -37,6 +37,7 @@ const buildUpdate = process.argv.includes("--build-update");
 const trash = process.argv.includes("--trash");
 const projects = process.argv.includes("--projects");
 const revocation = process.argv.includes("--revocation");
+const commenter = process.argv.includes("--commenter");
 if (
   [
     domainView,
@@ -48,10 +49,11 @@ if (
     trash,
     projects,
     revocation,
+    commenter,
   ].filter(Boolean).length > 1
 )
   throw new Error(
-    "Choose one qualification: --domain-view, --images, --mcp-images, --task-lists, --admission, --build-update, --trash, --projects or --revocation",
+    "Choose one qualification: --domain-view, --images, --mcp-images, --task-lists, --admission, --build-update, --trash, --projects, --revocation or --commenter",
   );
 const children = new Set();
 let canceled = false;
@@ -350,23 +352,25 @@ try {
     [
       revocation
         ? "scripts/revocation-smoke.mjs"
-        : projects
-          ? "scripts/projects-smoke.mjs"
-          : trash
-            ? "scripts/trash-smoke.mjs"
-            : admission
-              ? "scripts/admission-smoke.mjs"
-              : taskLists
-                ? "scripts/task-lists-smoke.mjs"
-                : mcpImages
-                  ? "scripts/mcp-image-import-smoke.mjs"
-                  : images
-                    ? "scripts/images-smoke.mjs"
-                    : domainView
-                      ? "scripts/domain-sharing-smoke.mjs"
-                      : buildUpdate
-                        ? "scripts/build-update-smoke.mjs"
-                        : "scripts/sharing-smoke.mjs",
+        : commenter
+          ? "scripts/commenter-smoke.mjs"
+          : projects
+            ? "scripts/projects-smoke.mjs"
+            : trash
+              ? "scripts/trash-smoke.mjs"
+              : admission
+                ? "scripts/admission-smoke.mjs"
+                : taskLists
+                  ? "scripts/task-lists-smoke.mjs"
+                  : mcpImages
+                    ? "scripts/mcp-image-import-smoke.mjs"
+                    : images
+                      ? "scripts/images-smoke.mjs"
+                      : domainView
+                        ? "scripts/domain-sharing-smoke.mjs"
+                        : buildUpdate
+                          ? "scripts/build-update-smoke.mjs"
+                          : "scripts/sharing-smoke.mjs",
     ],
     {
       env: {

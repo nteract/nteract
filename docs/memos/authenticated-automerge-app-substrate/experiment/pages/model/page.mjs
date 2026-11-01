@@ -1,7 +1,8 @@
 import * as A from "@automerge/automerge/slim";
 import { RICH_FORMAT, setRichMarkdown, setRichImage, projectedBlock } from "./richtext.mjs";
 import { imageAssetUrl, validAssetId } from "../shared/image-assets.mjs";
-import { applyComment, projectComments } from "./comments.mjs";
+import { projectComments } from "./comments.mjs";
+import { COMMENTS_FEATURE } from "./comments-doc.mjs";
 import { orderedBlockIds, positionForInsertion } from "./order.mjs";
 import { formatMatch, replaceMatch } from "./replace-match.mjs";
 import { stampFeatures } from "./schema-features.mjs";
@@ -21,18 +22,21 @@ export function createPageData({ pageId, title = "Untitled" }) {
     page_id: pageId,
     title: String(title).slice(0, 1024),
     blocks: { [first.id]: first },
-    comments: {},
   };
 }
+/** A new Page's first change: its first block's Markdown, and the stamp that
+ * says its comments live in their own document (model/comments-doc.mjs). */
 export function initializePage(doc, markdown = "") {
   setRichMarkdown(doc, orderedBlockIds(doc)[0], String(markdown));
+  stampFeatures(doc, [COMMENTS_FEATURE]);
 }
-export function projectPage(doc) {
+/** `commentsDoc` is the Page's comments document, when it's available. */
+export function projectPage(doc, commentsDoc) {
   return {
     page_id: doc.page_id,
     title: doc.title,
     blocks: orderedBlockIds(doc).map((id) => projectedBlock(doc.blocks[id])),
-    comments: projectComments(doc),
+    comments: projectComments(doc, commentsDoc),
   };
 }
 export function validateImageInsertion(op) {
@@ -103,13 +107,8 @@ export function applyPageOperation(doc, options) {
   stampFeatures(doc);
   return result;
 }
-function applyOperation(doc, { operation, arguments: args = {}, identity, trace }) {
-  if (operation === "manage_page_comment" || operation === "reply_page_comment")
-    return applyComment(
-      doc,
-      operation === "reply_page_comment" ? { ...args, action: "reply" } : args,
-      identity,
-    );
+function applyOperation(doc, { operation, arguments: args = {}, trace }) {
+  // Comments are written to the comments document, never the Page.
   if (operation !== "edit_page" && operation !== "patch_page")
     throw Error("Unsupported Page operation");
   if (!Array.isArray(args.operations) || args.operations.length > 100)

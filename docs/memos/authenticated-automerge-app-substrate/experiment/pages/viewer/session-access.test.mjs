@@ -6,6 +6,7 @@ import { PageSession } from "./session.mjs";
 import { SessionHost } from "./session-host.mjs";
 import { createPageData, initializePage } from "../model/page.mjs";
 import { applyComment } from "../model/comments.mjs";
+import { newCommentsDoc } from "../model/comments-test-support.mjs";
 import {
   decodeSnapshot,
   encodeSnapshot,
@@ -104,19 +105,22 @@ test("a forbidden connection keeps the draft and closes its transport without si
 
 test("the recovery Markdown lists comments and replies the host never acknowledged", () => {
   const { session } = fixture();
-  let doc = session.doc;
+  const doc = session.doc;
+  let comments = newCommentsDoc();
   const blockId = Object.keys(doc.blocks)[0];
   const author = { principal: session.identity.principal, displayName: "Writer" };
+  // Comments live in the comments document, acknowledged by their own heads.
+  session.commentsHandle = { doc: () => comments };
   const comment = (input) => {
     let result;
-    doc = A.change(doc, (d) => {
-      result = applyComment(d, input, author);
+    comments = A.change(comments, (d) => {
+      result = applyComment(d, input, author, undefined, { page: doc, role: "owner" });
     });
-    session.handle = { doc: () => doc };
     return result;
   };
   const sent = comment({ block_id: blockId, body: "Already on the server" });
   session.savedHeads = A.getHeads(doc);
+  session.savedCommentHeads = A.getHeads(comments);
   comment({ action: "reply", thread_id: sent.thread_id, body: "Reply typed offline" });
   comment({ block_id: blockId, body: "New thread typed offline" });
   const { markdown, heads } = session.exportRecovery();
@@ -128,7 +132,7 @@ test("the recovery Markdown lists comments and replies the host never acknowledg
   assert.match(unsent, /\*\*Writer\*\* · comment · .*\n\n> New thread typed offline/);
   assert.doesNotMatch(unsent, /Already on the server/, "acknowledged comments are not repeated");
   // Once the host acknowledges everything, the section disappears.
-  session.savedHeads = A.getHeads(doc);
+  session.savedCommentHeads = A.getHeads(comments);
   assert.doesNotMatch(session.exportRecovery().markdown, /Unsent comments/);
 });
 
@@ -525,4 +529,51 @@ test("restored access with a new generation cannot publish the denied copy's uns
   assert.equal(session.retryTimer, undefined);
   assert.equal(session.connection, undefined);
   assert.equal(session.exportRecovery().title, doc.title);
+});
+
+test("an offline comment is checkpointed beside the Page, archived, and exported from the archive", async (t) => {
+  const { session } = fixture();
+  t.after(() => session.close());
+  const doc = A.change(session.doc, (draft) => {
+    draft.schema = { features: ["comments-doc"] };
+  });
+  session.handle = { doc: () => doc };
+  // Every tab's copy starts from the same deterministic genesis.
+  const genesis = newCommentsDoc("c0000000-0000-4000-8000-0000000000bb");
+  let comments = A.clone(genesis);
+  const commentsId = crypto.randomUUID();
+  session.commentsHandle = { doc: () => comments, documentId: commentsId };
+  const blockId = Object.keys(doc.blocks)[0];
+  comments = A.change(comments, (d) =>
+    applyComment(
+      d,
+      { block_id: blockId, body: "Typed offline, never sent" },
+      { principal: session.identity.principal, displayName: "Writer" },
+      undefined,
+      { page: doc, role: "owner" },
+    ),
+  );
+  // The checkpoint carries both documents, each with its own heads.
+  await session.persistLocal({ pending: true });
+  await session.cacheTail;
+  const stored = await readLocalPage(session.identity, session.pageId);
+  assert.equal(stored.comments_document_id, commentsId);
+  const checkpoint = A.load(decodeSnapshot(stored.comments_snapshot));
+  assert.deepEqual(A.getHeads(checkpoint), A.getHeads(comments));
+  // A slower tab's checkpoint without the comment never drops it.
+  await writeLocalPage(session.identity, {
+    ...stored,
+    comments_snapshot: encodeSnapshot(A.save(genesis)),
+  });
+  const merged = await readLocalPage(session.identity, session.pageId);
+  const mergedComments = A.load(decodeSnapshot(merged.comments_snapshot));
+  assert.equal(Object.keys(mergedComments.threads).length, 1);
+  // A reload archives both; the archive exports the unsent comment.
+  await prepareLocalPageReload(session.identity, merged, access("editor", 1, 2), "1:writer");
+  const [archived] = await listLocalRecoveries(session.identity, session.pageId);
+  assert.ok(archived.comments_snapshot);
+  const exported = session.exportRecovery(archived);
+  assert.match(exported.markdown, /## Unsent comments/);
+  assert.match(exported.markdown, /Typed offline, never sent/);
+  assert.ok(exported.comments_snapshot);
 });

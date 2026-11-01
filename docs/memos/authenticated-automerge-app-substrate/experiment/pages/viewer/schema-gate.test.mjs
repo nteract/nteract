@@ -8,6 +8,7 @@ import { build } from "esbuild";
 import { JSDOM } from "jsdom";
 import * as A from "@automerge/automerge";
 import { createPageData, initializePage } from "../model/page.mjs";
+import { newCommentsDoc } from "../model/comments-test-support.mjs";
 import "fake-indexeddb/auto";
 import { VirtualTimeScheduler } from "rxjs";
 import { PageSession, pageSyncAddress } from "./session.mjs";
@@ -26,10 +27,13 @@ const owner = {
   canManageAccess: true,
   canDelete: true,
 };
+/** A Page as a build before any stamp wrote it. Its comments haven't moved
+ * to their own document yet. */
 const unstamped = () =>
-  A.change(A.from(createPageData({ pageId: "page_fixture", title: "Plan" })), (draft) =>
-    initializePage(draft, "We ship on Friday."),
-  );
+  A.change(A.from(createPageData({ pageId: "page_fixture", title: "Plan" })), (draft) => {
+    initializePage(draft, "We ship on Friday.");
+    delete draft.schema;
+  });
 const stamp = (doc, features) =>
   A.change(doc, (draft) => {
     draft.schema = { features };
@@ -45,6 +49,14 @@ function session(t, doc, options) {
     doc: () => current,
     change(fn) {
       current = A.change(current, fn);
+      return Promise.resolve();
+    },
+  };
+  let comments = newCommentsDoc();
+  value.commentsHandle = {
+    doc: () => comments,
+    change(fn) {
+      comments = A.change(comments, fn);
       return Promise.resolve();
     },
   };
@@ -68,8 +80,29 @@ test("an unstamped Page is editable", (t) => {
   const { session: s } = session(t, unstamped(), { buildFeatures: [] });
   assert.deepEqual(s.schemaGate, { editable: true, unsupported: [], refused: false });
   assert.equal(s.canWrite, true);
-  assert.equal(s.canComment, true);
+  // Its comments haven't moved to their own document: they wait for the host.
+  assert.equal(s.canComment, false);
   assert.doesNotThrow(() => s.change((draft) => A.updateText(draft, ["title"], "Renamed")));
+});
+
+test("a Page whose comments moved takes comments in its comments document only", (t) => {
+  const { session: s, doc } = session(t, stamp(unstamped(), ["comments-doc"]), {
+    buildFeatures: ["comments-doc"],
+  });
+  assert.equal(s.canComment, true);
+  const heads = A.getHeads(doc());
+  s.comment({ action: "add", block_id: Object.keys(s.doc.blocks)[0], body: "Hi" });
+  assert.deepEqual(A.getHeads(doc()), heads, "the Page document is untouched");
+  assert.equal(Object.keys(s.commentThreads).length, 1);
+  assert.equal(s.snapshot().comments.length, 1);
+});
+
+test("an old build opening a migrated Page holds its comments read-only", (t) => {
+  // A build from before the comments document lacks the comments-doc feature.
+  const { session: s } = session(t, stamp(unstamped(), ["comments-doc"]), { buildFeatures: [] });
+  assert.equal(s.schemaGate.editable, false);
+  assert.equal(s.canComment, false);
+  assert.equal(s.canWrite, false);
 });
 
 test("a Page stamped with a feature this build has stays editable", (t) => {
@@ -91,7 +124,7 @@ test("a Page opened with an unknown feature is read-only", (t) => {
   assert.throws(() => s.change(() => {}), /read only/);
   assert.throws(
     () => s.comment({ action: "add", block_id: Object.keys(s.doc.blocks)[0], body: "Hi" }),
-    /read only/,
+    /not available/,
   );
 });
 
