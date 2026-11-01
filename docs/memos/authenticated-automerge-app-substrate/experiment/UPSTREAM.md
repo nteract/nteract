@@ -94,6 +94,9 @@ its generated hash. Existing admission limits and atomic single-value writes
 are unchanged. This changes stored framing, not native signatures, history,
 wire messages, or authentication. Stored-envelope checks detect corruption;
 native authenticated ingress remains responsible for signer verification.
+The package entry re-exports `decodeRecordFrame` and `RECORD_HEADER_BYTES`, so
+Pages reads saved commit records for authorship with this codec rather than a
+copy of the layout; provenance records that `index.ts` change with the codec.
 `record-codec.test.mjs` covers native commit/fragment round trips, legacy reads,
 malformed lengths, binding/digest failures, ownership, and uncertain atomic saves.
 

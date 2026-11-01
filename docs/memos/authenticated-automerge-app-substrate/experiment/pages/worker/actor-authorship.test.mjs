@@ -1,8 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import * as A from "@automerge/automerge";
-import * as N from "@automerge/subduction";
-import { MemoryByteStore } from "@automerge/automerge-repo-subduction";
+import { MemoryByteStore, decodeRecordFrame } from "@automerge/automerge-repo-subduction";
 import { closePeers, connectPeers, createPeer, eventually } from "../../backend.mjs";
 import { createAuthFixture } from "../../auth-fixtures.mjs";
 import {
@@ -15,7 +14,6 @@ import {
   FRESH_MS,
   actorTransition,
   commitAuthor,
-  commitFrame,
   loadActorEntries,
   loadCommitAuthors,
   mergeActorEffects,
@@ -24,6 +22,9 @@ import {
   signedIssuer,
 } from "./actor-authorship.mjs";
 import { Page } from "./index.mjs";
+import { BACKEND_LIMITS } from "../model/limits.mjs";
+
+const MAX_RECORD = BACKEND_LIMITS.maxRecordBytes;
 
 const SERVER = "5e".repeat(32);
 const ANA_KEY = "a1".repeat(32);
@@ -767,7 +768,7 @@ test("a conflict whose write failed is rebuilt from stored commits after a resta
   const persistence = new ActorPersistence(storage, { sleep: () => new Promise(() => {}) });
   const { state } = authorship(bindings);
   const observe = (target, record, now) =>
-    target.observe({ ...commitAuthor(record.path, record.value), now });
+    target.observe({ ...commitAuthor(record.path, record.value, MAX_RECORD), now });
   persistence.enqueue(observe(state, ana, 0));
   await persistence.drain();
   // Ben's commit conflicts the actor; the conflict write fails and the host
@@ -784,7 +785,7 @@ test("a conflict whose write failed is rebuilt from stored commits after a resta
 
   const { state: restarted } = authorship(bindings, { entries });
   const replayed = restarted.replay(
-    await loadCommitAuthors(records, (key, value) => commitAuthor(key, value)),
+    await loadCommitAuthors(records, (key, value) => commitAuthor(key, value, MAX_RECORD)),
   );
   assert.deepEqual(replayed, { put: [[ACTOR, { conflict: true }]], remove: [] });
   // Ana's next commit stays unattested: nothing published, no hash.
@@ -869,8 +870,8 @@ test("replay reads the same signer and actor as a full decode, and fails closed"
     await signedCommit(71, second, undefined, { history: [first] }),
   ];
   for (const record of records) {
-    const full = commitAuthor(record.path, record.value);
-    assert.deepEqual(await replayAuthor(record.path, record.value), {
+    const full = commitAuthor(record.path, record.value, MAX_RECORD);
+    assert.deepEqual(await replayAuthor(record.path, record.value, MAX_RECORD), {
       key: full.key,
       actor: full.actor,
     });
@@ -884,19 +885,24 @@ test("replay reads the same signer and actor as a full decode, and fails closed"
   };
   // A changed blob byte, a path naming another commit, or a fragment path
   // attest nothing.
-  assert.equal(await replayAuthor(record.path, tampered(1)), null);
+  assert.equal(await replayAuthor(record.path, tampered(1), MAX_RECORD), null);
   assert.equal(
-    await replayAuthor(record.path.replace(/[0-9a-f]{64}$/, "0".repeat(64)), frame),
+    await replayAuthor(record.path.replace(/[0-9a-f]{64}$/, "0".repeat(64)), frame, MAX_RECORD),
     null,
   );
-  assert.equal(await replayAuthor(record.path.replace("/commits/", "/fragments/"), frame), null);
-  assert.equal(await replayAuthor(record.path, frame.subarray(0, 120)), null);
+  assert.equal(
+    await replayAuthor(record.path.replace("/commits/", "/fragments/"), frame, MAX_RECORD),
+    null,
+  );
+  assert.equal(await replayAuthor(record.path, frame.subarray(0, 120), MAX_RECORD), null);
   // A blob whose header doesn't parse falls back to the full decode, which
   // also refuses it.
   const badHeader = frame.slice();
   const blobStart = frame.length - first.length;
   badHeader[blobStart + 8] = 9;
-  assert.equal(await replayAuthor(record.path, badHeader), null);
+  assert.equal(await replayAuthor(record.path, badHeader, MAX_RECORD), null);
+  // Without the backend's record limit the codec refuses every frame.
+  assert.equal(await replayAuthor(record.path, frame), null);
 });
 
 test("consecutive restarts on a full map keep a conflict replay rebuilt", async () => {
@@ -983,14 +989,26 @@ test("compaction waits until pending actor writes are stored", async () => {
 test("a stored commit record names its signer key and Automerge actor", async () => {
   const record = await signedCommit(41, rootChange(ACTOR));
   assert.match(record.path, /\/commits\/[0-9a-f]{64}$/);
-  assert.deepEqual(commitAuthor(record.path, record.value), {
-    key: record.key,
-    actor: ACTOR,
-    hash: A.decodeChange(rootChange(ACTOR)).hash,
-  });
-  const frame = commitFrame(record.value);
-  assert.equal(frame.key, A.decodeChange(rootChange(ACTOR)).hash);
+  const hash = A.decodeChange(rootChange(ACTOR)).hash;
+  const author = { key: record.key, actor: ACTOR, hash };
+  assert.deepEqual(commitAuthor(record.path, record.value, MAX_RECORD), author);
+  const frame = decodeRecordFrame(record.value, MAX_RECORD);
+  assert.equal(frame.kind, "commit");
+  assert.equal(frame.key, hash);
   assert.equal(signedIssuer(frame.signed), record.key);
+  // A legacy v1 JSON frame of the same record names the same author.
+  const legacy = (fields) =>
+    new TextEncoder().encode(
+      JSON.stringify({
+        v: 1,
+        tree: frame.tree,
+        ...fields,
+        signed: Buffer.from(frame.signed).toString("hex"),
+        signedDigest: frame.signedDigest,
+        blob: Buffer.from(frame.blob).toString("hex"),
+      }),
+    );
+  assert.deepEqual(commitAuthor(record.path, legacy({ commit: hash }), MAX_RECORD), author);
   // Fail closed: a wrong magic, a short envelope, a fragment path or a path
   // naming another commit attest nothing.
   const forged = frame.signed.slice();
@@ -999,13 +1017,27 @@ test("a stored commit record names its signer key and Automerge actor", async ()
   assert.equal(signedIssuer(frame.signed.subarray(0, 99)), null);
   assert.equal(signedIssuer(new Uint8Array(100)), null);
   assert.equal(signedIssuer("STC"), null);
-  assert.equal(commitAuthor(record.path.replace("/commits/", "/fragments/"), record.value), null);
   assert.equal(
-    commitAuthor(record.path.replace(/[0-9a-f]{64}$/, "0".repeat(64)), record.value),
+    commitAuthor(record.path.replace("/commits/", "/fragments/"), record.value, MAX_RECORD),
     null,
   );
-  assert.equal(commitAuthor(record.path, record.value.subarray(0, 50)), null);
-  assert.equal(commitAuthor(record.path, new TextEncoder().encode("{}")), null);
+  assert.equal(
+    commitAuthor(record.path.replace(/[0-9a-f]{64}$/, "0".repeat(64)), record.value, MAX_RECORD),
+    null,
+  );
+  // So does a fragment frame stored under the commit's path, in either format.
+  const fragment = record.value.slice();
+  fragment[4] = 1;
+  assert.equal(decodeRecordFrame(fragment, MAX_RECORD).kind, "fragment");
+  assert.equal(commitAuthor(record.path, fragment, MAX_RECORD), null);
+  const legacyFragment = legacy({ kind: "fragment", head: hash });
+  assert.equal(decodeRecordFrame(legacyFragment, MAX_RECORD).kind, "fragment");
+  assert.equal(commitAuthor(record.path, legacyFragment, MAX_RECORD), null);
+  // Malformed frames, a frame over the record limit, and a missing limit.
+  assert.equal(commitAuthor(record.path, record.value.subarray(0, 50), MAX_RECORD), null);
+  assert.equal(commitAuthor(record.path, new TextEncoder().encode("{}"), MAX_RECORD), null);
+  assert.equal(commitAuthor(record.path, record.value, frame.signed.length), null);
+  assert.equal(commitAuthor(record.path, record.value), null);
 });
 
 test("an observed store reports saves after they resolve and never fails them", async () => {
@@ -1044,7 +1076,7 @@ test("an observed store reports saves after they resolve and never fails them", 
     43,
     rootChange(ACTOR),
     observeRecordSaves(new MemoryByteStore(), (key, value) => {
-      const author = commitAuthor(key, value);
+      const author = commitAuthor(key, value, MAX_RECORD);
       if (author) authors.push(author);
     }),
   );
@@ -1062,7 +1094,7 @@ test("a browser writer's synced commits are attested by hash; fragments and host
   const server = createPeer({
     seed: new Uint8Array(32).fill(51),
     storage: observeRecordSaves(serverStore, (key, value) => {
-      const author = commitAuthor(key, value);
+      const author = commitAuthor(key, value, MAX_RECORD);
       const effects = author && state.observe({ ...author, now: Date.now() });
       if (effects?.delta) deltas.push(effects.delta);
       Object.assign(announced, effects?.attested);
