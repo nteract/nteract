@@ -54,9 +54,12 @@ async function pause(deadline) {
  * - `ready`: an attempt succeeded.
  *
  * Events: `start` (a request starts attempt `generation`, held until
- * `deadline`, at `now`), and `succeed` or `fail` for attempt `generation`.
- * A running attempt past its deadline is abandoned: `start` replaces it, and
- * its late `succeed` or `fail` names an old generation, so it changes nothing. Returns `{ state }`, or `{ state, rejected }` unchanged.
+ * `deadline`, at `now`); `succeed` or `fail` for attempt `generation`; and
+ * `expire` for attempt `generation` at `now`, which its starter sends when the
+ * deadline passes. A running attempt past its deadline is abandoned: `expire`
+ * or another request's `start` replaces it, and its late `succeed` or `fail`
+ * names an old generation, so it changes nothing. Returns `{ state }`, or
+ * `{ state, rejected }` unchanged.
  */
 export function setupTransition(state, event) {
   const reject = (rejected) => ({ state, rejected });
@@ -73,6 +76,10 @@ export function setupTransition(state, event) {
       return current ? { state: { name: "ready" } } : reject("not the running attempt");
     case "fail":
       return current ? { state: { name: "idle" } } : reject("not the running attempt");
+    case "expire":
+      if (!current) return reject("not the running attempt");
+      if (event.now < state.deadline) return reject("the attempt has time left");
+      return { state: { name: "idle" } };
     default:
       return reject("unknown event");
   }
@@ -86,11 +93,13 @@ export function setupAction(state, now) {
 
 /**
  * One-time setup per key for this isolate, such as a D1 schema per binding.
- * The request that starts an attempt awaits it for as long as it takes, under
- * its caller's own deadline. Other requests wait on their own timers for at
- * most `isolateSetupTimeouts.wait` and give up with a retryable 503. A failed
- * attempt frees the key at once; one that never settles frees it after
- * `isolateSetupTimeouts.attempt`, so a hang never outlives the isolate.
+ * The request that starts an attempt awaits it until the attempt's deadline,
+ * `isolateSetupTimeouts.attempt`, so slow setup that finishes in time still
+ * succeeds. At the deadline the attempt expires: the starter gets a retryable
+ * 503, the key is free for the next request, and the abandoned `run` keeps
+ * going with no effect. Other requests wait on their own timers for at most
+ * `isolateSetupTimeouts.wait` and give up with the same 503. A failed attempt
+ * frees the key at once.
  *
  * Abandoning an attempt helps only if `run` holds no shared pending promise of
  * its own: a retry must start fresh work, not await the hung one.
@@ -113,18 +122,29 @@ export function isolateSetup(run) {
     }
     // Claimed in the same synchronous step as the check above.
     const generation = ++generations;
-    step(key, {
-      type: "start",
-      generation,
-      now: Date.now(),
-      deadline: Date.now() + isolateSetupTimeouts.attempt,
+    const expiresAt = Date.now() + isolateSetupTimeouts.attempt;
+    step(key, { type: "start", generation, now: Date.now(), deadline: expiresAt });
+    const attempt = Promise.resolve().then(() => run(key, ...args));
+    // Settles on this request's own timer; the attempt's late result is
+    // fenced by its generation.
+    attempt.then(
+      () => step(key, { type: "succeed", generation }),
+      () => step(key, { type: "fail", generation }),
+    );
+    let timer;
+    const expired = new Promise((_, reject) => {
+      timer = setTimeout(
+        () => {
+          step(key, { type: "expire", generation, now: Date.now() });
+          reject(waitTimeout());
+        },
+        Math.max(0, expiresAt - Date.now()),
+      );
     });
     try {
-      await run(key, ...args);
-      step(key, { type: "succeed", generation });
-    } catch (error) {
-      step(key, { type: "fail", generation });
-      throw error;
+      await Promise.race([attempt, expired]);
+    } finally {
+      clearTimeout(timer);
     }
   };
 }

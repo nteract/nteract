@@ -694,10 +694,11 @@ sets up each D1 schema (server sessions, MCP OAuth) once per isolate. Work in
 front of the API-key verifier's cache, which shares pending lookups, runs one
 lookup per token at a time. The request that starts the work awaits it; others
 wait on their own timers and give up with a retryable `503` after 10 seconds. A
-lookup's starter gives up at 10 seconds too; a setup's starter waits under its
-caller's deadline. A setup attempt holds its key until it settles or for 30
-seconds; the next request after that starts a new attempt, and a late result
-from the abandoned one changes nothing. That retry runs fresh work because
+lookup's starter gives up at 10 seconds too. A setup's starter waits up to 30
+seconds, the attempt's deadline, so slow setup that finishes in time still
+succeeds. At that deadline the attempt expires: the starter gets the same
+retryable `503`, the next request starts a new attempt, and a late result from
+the abandoned one changes nothing. That retry runs fresh work because
 setup callbacks hold no pending promise of their own: the shared session store
 (`oidcDatabase`) caches only settled schema readiness. A lookup key stays held
 until its lookup settles, or for 65 seconds, past the cache's 60-second
