@@ -436,11 +436,28 @@ details.document-actions > div button {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  flex-wrap: wrap;
   gap: 1rem;
   margin-bottom: 2rem;
 }
+/* The actions keep their width and one-line labels. A title that doesn't fit
+   beside them takes its own line and the actions wrap below it; a word wider
+   than the whole line breaks rather than overflowing. */
+.library-heading > * {
+  min-width: 0;
+}
 .library-heading h1 {
   margin: 0;
+  overflow-wrap: anywhere;
+}
+.library-heading > .library-actions,
+.library-heading > button {
+  flex-shrink: 0;
+}
+.library-actions button,
+.library-heading > button {
+  min-height: 44px;
+  white-space: nowrap;
 }
 .picker-search.library-search {
   margin: 0 0 1.5rem;

@@ -45,6 +45,21 @@ const ok = async (name, operation, args) => {
   assert.equal(result.isError, false, `${operation}: ${JSON.stringify(result.body)}`);
   return result.body;
 };
+// A heading's action button keeps its label on one line and a 44px touch
+// target, however long the title beside it.
+async function oneLineButton(tab, name, label) {
+  const button = tab.getByRole("button", { name, exact: true });
+  await expect(button).toBeVisible();
+  const { lines, height } = await button.evaluate((element) => {
+    const range = document.createRange();
+    const text = [...element.childNodes].find((node) => node.nodeType === Node.TEXT_NODE);
+    range.selectNodeContents(text);
+    const tops = [...range.getClientRects()].map((rect) => Math.round(rect.top));
+    return { lines: new Set(tops).size, height: element.getBoundingClientRect().height };
+  });
+  assert.equal(lines, 1, `${label}: "${name}" wraps onto ${lines} lines`);
+  assert.ok(height >= 44, `${label}: "${name}" is ${height}px tall`);
+}
 let owner;
 // Phone-sized tabs, captured too when a step fails.
 const phones = new Map();
@@ -147,6 +162,7 @@ try {
   await switcher.getByRole("button", { name: "Close Pages" }).click();
   complete("Breadcrumbs led back to the Project, and the switcher lists it");
 
+  await oneLineButton(owner, "New Page", "the Project at 1280px");
   await owner.getByRole("button", { name: "New Page" }).click();
   await expect(owner.getByLabel("Page title")).toBeVisible({ timeout: 30000 });
   await expect(owner.getByRole("navigation", { name: "Breadcrumbs" })).toContainText(title);
@@ -309,10 +325,15 @@ try {
   await projectRow.getByRole("link", { name: title, exact: true }).tap();
   await expect(phone).toHaveURL(`${origin}/project/${project.project_id}`);
   await expect(phone.getByRole("list", { name: `Pages in ${title}` })).toBeVisible();
+  await fitsScreen("the Project");
+  await oneLineButton(phone, "New Page", "the Project");
+  await phone.screenshot({ path: `${output}/project-mobile.png` });
   await phone.goBack();
   await expect(phone).toHaveURL(`${origin}/projects`);
   await expect(projectRow).toBeVisible();
-  complete("/projects lists the Project with its description, opens it, and Back returns");
+  complete(
+    "/projects lists the Project with its description, opens it with New Page on one line, and Back returns",
+  );
 
   const fresh = await phoneContext.newPage();
   phones.set("fresh", fresh);
@@ -355,6 +376,8 @@ try {
     "href",
     "/projects",
   );
+  await oneLineButton(fresh, "New Page", "Home");
+  await oneLineButton(fresh, "Trash", "Home");
   await fresh.screenshot({ path: `${output}/home-mobile.png` });
   await phoneContext.close();
   complete(
