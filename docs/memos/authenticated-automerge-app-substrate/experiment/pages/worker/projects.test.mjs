@@ -10,6 +10,7 @@ import { CATALOG_MIGRATIONS, migrateCatalogIndex, reportPageIndex } from "./cata
 import { validSpaceId } from "./spaces.mjs";
 import { MAX_DEPTH, deriveLocation } from "../model/location.mjs";
 import { locationEntries } from "./catalog-location.mjs";
+import { inspectOperation } from "./operation-journal.mjs";
 import { tools } from "../mcp.mjs";
 
 /** Object state for direct index calls; the test awaits each one. */
@@ -344,6 +345,45 @@ test("a Project is created with its home Page, then read, listed and updated", a
     (await w.call("reader", "create_project", { title: "No", idempotency_key: w.key() })).status,
     403,
   );
+});
+
+test("create_page returns the new Page's edit authority, so the first edit needs no read", async (t) => {
+  const w = await world(t);
+  const createKey = w.key();
+  const created = await w.call("owner", "create_page", {
+    title: "Fresh",
+    markdown: "Draft body.",
+    idempotency_key: createKey,
+  });
+  assert.equal(created.status, 200, JSON.stringify(created.body));
+  const { page_id, retry_token, retry_key_prefix, retry_until } = created.body;
+  assert.equal(typeof retry_token, "string");
+  assert.match(retry_key_prefix, /^v1_[a-f0-9]{64}_$/);
+  assert.ok(Number.isFinite(Date.parse(retry_until)));
+  // The token is the Page's own, as read_page issues it: the Page's journal
+  // accepts it for an edit under page:<id>, and refuses the catalog's.
+  const pageStorage = w.page(page_id).ctx.storage;
+  const inspect = (token, prefix) =>
+    inspectOperation(pageStorage, {
+      key: `host/operation/${prefix}${crypto.randomUUID()}`,
+      digest: "d".repeat(64),
+      retryToken: token,
+      scope: `page:${page_id}`,
+      principal: w.owner,
+    });
+  assert.deepEqual((await inspect(retry_token, retry_key_prefix)).entry, undefined);
+  const listed = await w.call("owner", "list_pages");
+  assert.notEqual(listed.body.retry_token, retry_token);
+  await assert.rejects(inspect(listed.body.retry_token, listed.body.retry_key_prefix), {
+    code: "invalid_retry_token",
+  });
+  // An exact retry replays the recorded receipt, token included.
+  const replay = await w.call("owner", "create_page", {
+    title: "Fresh",
+    markdown: "Draft body.",
+    idempotency_key: createKey,
+  });
+  assert.deepEqual(replay.body, created.body);
 });
 
 test("tools name the right argument when a Project ID and a Page ID are swapped", async (t) => {

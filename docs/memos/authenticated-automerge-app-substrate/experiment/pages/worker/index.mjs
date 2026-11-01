@@ -3365,11 +3365,14 @@ export class Page {
           if (creation) await this.finishCreation(creation);
           else await this.flush();
           return json(
-            this.metadata.createdReceipt ?? {
-              page_id: this.metadata.pageId,
-              title: this.handle.doc().title,
-              heads: A.getHeads(this.handle.doc()),
-            },
+            await this.createdReply(
+              this.metadata.createdReceipt ?? {
+                page_id: this.metadata.pageId,
+                title: this.handle.doc().title,
+                heads: A.getHeads(this.handle.doc()),
+              },
+              identity,
+            ),
           );
         }
         const args = await readJson(request);
@@ -3425,7 +3428,7 @@ export class Page {
         }
         await this.initializeRepo(intent.metadata);
         await this.finishCreation(intent);
-        return json(intent.metadata.createdReceipt, 201);
+        return json(await this.createdReply(intent.metadata.createdReceipt, identity), 201);
       }
       // Anyone without a current grant cannot tell a trashed Page from a
       // missing one. Only the owner and current members learn it exists.
@@ -3734,6 +3737,21 @@ export class Page {
       if ((error.status ?? 500) >= 500) logFailure(error, "page");
       return admissionErrorResponse(error, { stage: "page", identity });
     }
+  }
+
+  /** The create_page receipt with this Page's edit authority: the Page-scoped
+   * retry_token, retry_key_prefix and retry_until that read_page would issue,
+   * so the first edit needs no read. The stored receipt stays as recorded;
+   * the token is minted per reply and journaled by the owner's Catalog with
+   * the rest of the receipt, so an exact retry returns the same one. */
+  async createdReply(receipt, identity) {
+    return {
+      ...receipt,
+      ...(await issueRetryToken(this.ctx.storage, {
+        scope: `page:${this.metadata.pageId}`,
+        principal: identity.principal,
+      })),
+    };
   }
 
   /** A revision refusal (stale_heads, edit_conflict, resync_required) names

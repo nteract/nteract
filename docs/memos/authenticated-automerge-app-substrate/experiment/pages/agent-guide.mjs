@@ -477,6 +477,8 @@ limit: {limit, count, trash_count}. At the limit, create_page and restore_page r
 page_quota_exceeded with limit and count; tell the person rather than retrying.
 
 - create_page: title, optional markdown, optional project_id or parent_id, and idempotency_key.
+  Returns page_id, heads and the Page's own retry_token, retry_key_prefix and retry_until,
+  so the first edit needs no read_page. The list_pages token creates; it never edits.
 - read_page: page_id, optional block_ids, section/section_occurrence, search/context_nodes,
   node_range, include_content, include_presence, comments, outline_offset/outline_limit and max_bytes.
 - list_page_comments: page_id, optional state (open by default), block_id, thread_ids,
