@@ -98,7 +98,11 @@ export async function proposeSharingMutation(metadata, identity, args, now = Dat
   const previous = metadata.acl?.receipts?.[key];
   if (previous) {
     if (previous.fingerprint !== digest)
-      throw new HttpError(409, "idempotency_key was used for a different request");
+      throw new HttpError(
+        409,
+        "idempotency_key was used for a different request",
+        "idempotency_conflict",
+      );
     return { metadata, receipt: previous.receipt, replay: true };
   }
   if (

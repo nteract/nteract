@@ -2834,12 +2834,13 @@ export class Page {
           identity,
           prepare: images.length
             ? async () => {
-                if (images.length > 100) throw new HttpError(400, "Provide up to 100 operations");
+                if (images.length > 100)
+                  throw new HttpError(400, "Provide up to 100 operations", "invalid_edit_selector");
                 for (const image of images) {
                   try {
                     validateImageInsertion(image);
                   } catch (error) {
-                    throw new HttpError(400, error.message);
+                    throw new HttpError(400, error.message, "invalid_edit_selector");
                   }
                 }
                 for (const assetId of new Set(images.map((image) => image.asset_id))) {
@@ -2871,7 +2872,16 @@ export class Page {
               }
               return result;
             } catch (error) {
-              throw new HttpError(400, error.message);
+              // The batch cannot apply as written: zero or multiple matches, an
+              // unknown block, operation or mark, or an invalid comment target.
+              throw new HttpError(
+                400,
+                error.message,
+                error.code ??
+                  (body.operation === "edit_page" || body.operation === "patch_page"
+                    ? "invalid_edit_selector"
+                    : "invalid_comment_selector"),
+              );
             }
           },
           flush: () => this.flush(),

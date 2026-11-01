@@ -947,6 +947,31 @@ exact-head guard. Conflicts provide bounded addresses for focused rereading.
 Guards check the preparation snapshot; native changes can still merge during
 persistence. Tool mutations do not simulate typing or lock out peers.
 
+### Refusal codes and tool hints
+
+Every MCP refusal carries a stable `code`, in `structuredContent` and in the JSON
+text, so agents never branch on message text. The Worker codes specific refusals
+where they're raised: a stale exact-head guard is `409 stale_heads`, malformed
+`base_heads` and an edit batch that can't apply (zero or multiple matches, an
+unknown block, operation or mark) are `400 invalid_edit_selector`, and a comment
+action on a missing thread, message or block is `400 invalid_comment_selector`.
+An MCP result has no HTTP status, so [mcp.mjs](mcp.mjs) names any refusal the
+Worker left uncoded by its status (`access_denied`, `not_found`, `conflict` and
+so on). It adds `retryable: true` to `stale_heads`, whose retry is a new request
+built from a fresh read. The HTTP API keeps `retryable` for transient failures
+only, because the browser treats those as an outage. A tool call that gets no
+answer returns `read_failed` or `outcome_unknown`. The `/llms.txt` guide lists the
+codes agents act on.
+
+Every tool declares all four MCP annotation hints, and `tool()` refuses one that
+doesn't, because clients read an absent hint as destructive and open-world.
+Reads are read-only. Keyed writes are idempotent and not destructive: edits stay
+in Automerge history. `delete_page` and `purge_page` are destructive; Trash is
+reversible, but it revokes every collaborator's access until restored.
+`import_page_image` is open-world because it downloads the client's file, and
+`report_page_progress` is not idempotent because each call without a lease starts
+another session.
+
 ### Agent carets
 
 API agents get presence derived from the calls the host already authorized

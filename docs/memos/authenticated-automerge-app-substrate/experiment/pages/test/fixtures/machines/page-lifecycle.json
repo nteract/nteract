@@ -615,9 +615,10 @@
         "response": {
           "status": 409,
           "error": "Page changed; read_page again before editing",
+          "code": "stale_heads",
           "beforeChange": true
         },
-        "rejected": "heads_mismatch"
+        "rejected": "stale_heads"
       }
     },
     {
@@ -778,6 +779,7 @@
         "response": {
           "status": 409,
           "error": "idempotency_key was used for a different request",
+          "code": "idempotency_conflict",
           "beforeChange": true
         },
         "rejected": "idempotency_conflict"

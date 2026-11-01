@@ -281,14 +281,22 @@ const refused = (status, error, code) => ({
   beforeChange: true,
 });
 const NOT_OWNER = refused(403, "Document access denied");
-const KEY_CONFLICT = refused(409, "idempotency_key was used for a different request");
+const KEY_CONFLICT = refused(
+  409,
+  "idempotency_key was used for a different request",
+  "idempotency_conflict",
+);
 const HOME_PAGE = refused(
   409,
   "A Project's home Page stays with its Project; it can't move to Trash on its own",
   "home_page_protected",
 );
-const HEADS_INVALID = refused(400, "base_heads from read_page are required");
-const HEADS_CHANGED = refused(409, "Page changed; read_page again before editing");
+const HEADS_INVALID = refused(
+  400,
+  "base_heads from read_page are required",
+  "invalid_edit_selector",
+);
+const HEADS_CHANGED = refused(409, "Page changed; read_page again before editing", "stale_heads");
 const NOT_IN_TRASH = refused(
   409,
   "Move this Page to Trash with delete_page before deleting it permanently",
@@ -454,9 +462,9 @@ function trash(state, event) {
       response: receiptReply("receipt", trashed, state),
     };
   if (state.placement?.home) return reject(state, "home_page_protected", { response: HOME_PAGE });
-  if (event.heads === "mismatch")
-    return reject(state, "heads_mismatch", { response: HEADS_CHANGED });
-  if (event.heads !== "match") return reject(state, "heads_invalid", { response: HEADS_INVALID });
+  if (event.heads === "mismatch") return reject(state, "stale_heads", { response: HEADS_CHANGED });
+  if (event.heads !== "match")
+    return reject(state, "invalid_edit_selector", { response: HEADS_INVALID });
   const next = keep(state, {
     name: "trashed",
     revision: state.revision + 1,

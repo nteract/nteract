@@ -735,8 +735,8 @@ create_page accept that tag. Other HTML stays literal text.
 
 To restructure a block (headings, lists, tables), replace it with
 edit_page replace_block_markdown, or insert, move and delete whole blocks.
-Copy the whole heads array, even when it has more than one entry. On a stale-revision error,
-read again, reconsider the edit, and use a new key. After a timeout or unknown
+Copy the whole heads array, even when it has more than one entry. On a stale-revision error
+(code stale_heads), read again, reconsider the edit, and use a new key. After a timeout or unknown
 outcome, retry the exact request body, key, token, account, and driver label.
 
 Retry tokens keep completed-operation receipts bounded without making old retries
@@ -789,8 +789,31 @@ For example, tools/call uses this JSON-RPC shape:
 {"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"list_pages","arguments":{}}}
 \`\`\`
 
-The same operations and guards apply. Results contain JSON in content[].text;
-check result.isError even when HTTP succeeds. resources/list returns document
+The same operations and guards apply. Results contain JSON in content[].text
+and the same object in structuredContent; check result.isError even when HTTP
+succeeds. Every error has a stable code. Branch on code, not on the error message:
+
+- stale_heads: the Page changed since your read (retryable:true). Read again,
+  reconsider, and send a new request with fresh base_heads, token and key.
+- invalid_edit_selector: the request can't apply as written: missing or
+  malformed base_heads, zero or multiple matches, an unknown block, operation or
+  mark. Fix the request; repeating it unchanged fails again.
+- invalid_comment_selector: the comment's thread, message, block or selected_text
+  wasn't found.
+- edit_conflict, resync_required: see Guarded edits above.
+- idempotency_conflict: the key was used for a different request. Use a new key.
+- invalid_idempotency_key: the key doesn't match the format above.
+- read_failed: no answer to a read (retryable:true). Retry it.
+- outcome_unknown: no answer to a write. With retryable:true, retry the exact
+  request with the same key; the receipt replays without a second edit.
+  report_page_progress follows its lease rules instead.
+- Errors without a more specific code use access_denied, not_found, conflict,
+  invalid_request, request_too_large, rate_limited, unauthenticated or
+  server_error.
+
+retryable:true means a retry can succeed; the code says whether to read first.
+Tool annotations mark reads readOnlyHint, keyed writes idempotentHint, and
+delete_page and purge_page destructiveHint. resources/list returns document
 links and resources/read reads those URLs. Supported OAuth clients use a Pages
 access token; other clients use an Anaconda API key. Both authenticate with
 Authorization: Bearer, using the connection instructions above.
