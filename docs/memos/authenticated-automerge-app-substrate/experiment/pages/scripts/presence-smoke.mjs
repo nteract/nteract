@@ -335,6 +335,11 @@ try {
   await selectText(a, "opening caret", true);
   await a.keyboard.insertText(insertion);
   await expect(content(b)).toContainText("opening caret" + insertion);
+  // The host attests writer a's actor from its signed commit, so b underlines
+  // the received text in a's color and names them.
+  const underline = b.locator(".remote-edit", { hasText: "still here" }).first();
+  await expect(underline).toHaveAttribute("title", /^Edited by (?!a collaborator)/);
+  await expect(underline).toHaveAttribute("style", /--peer-color:/);
   await expect
     .poll(
       async () => {

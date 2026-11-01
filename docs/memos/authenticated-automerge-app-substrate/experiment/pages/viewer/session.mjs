@@ -169,6 +169,27 @@ async function exclusiveIdentity(scope, { fresh = false } = {}) {
   sessionStorage.setItem(key, seed);
   return { seed, release, reloadRecovery: !!navigator.locks };
 }
+const ACTOR_ID = /^[0-9a-f]{1,128}$/;
+const MAX_ACTOR_PROFILES = 1024;
+const CHANGE_HASH = /^[0-9a-f]{64}$/;
+const MAX_ATTESTED_CHANGES = 4096;
+const plainObject = (value) => !!value && typeof value === "object" && !Array.isArray(value);
+/** A host actor profile, null for a removal, or undefined when malformed. */
+function actorProfile(value) {
+  if (value === null) return null;
+  if (!value || typeof value !== "object") return undefined;
+  const { principal, displayName, driver } = value;
+  if (
+    typeof principal !== "string" ||
+    principal.length > 256 ||
+    typeof displayName !== "string" ||
+    displayName.length > 256 ||
+    typeof driver !== "string" ||
+    driver.length > 64
+  )
+    return undefined;
+  return { principal, displayName, driver };
+}
 export class PageSession {
   listeners = new Set();
   observers = new Set();
@@ -183,8 +204,14 @@ export class PageSession {
   actorNames = new Map();
   // Who made a change, by hash, from the host's tool-edit hints. The host
   // writes every API agent's edits, so a change hash, not an actor, names the
-  // author. Browser edits have no host-attested author yet and stay neutral.
+  // author.
   changeIdentities = new Map();
+  // Who wrote a browser's changes, by Automerge actor, and which change
+  // hashes the host read from their own signed commit records. A person is
+  // named only for an attested hash whose actor has a profile. Only the
+  // host's connect response and its actor-profiles messages fill these maps.
+  actorProfiles = new Map();
+  attestedChanges = new Map();
   toolHints = [];
   composing = 0;
   localDepth = 0;
@@ -1453,6 +1480,7 @@ export class PageSession {
     }
     if (!this.alive) return;
     this.replacePeerProfiles(this.connection.peerProfiles);
+    this.receiveActorProfiles(this.connection, { replace: true });
     this.presencePaused = false;
     this.receiveActivity(this.connection.activity, { initial: true });
     const expected = new N.PeerId(bytes(this.connection.serverPeerId));
@@ -1666,6 +1694,60 @@ export class PageSession {
   changeIdentity(hash) {
     return this.changeIdentities.get(hash) ?? null;
   }
+  actorIdentity(actor) {
+    return this.actorProfiles.get(actor) ?? null;
+  }
+  /** The actor the host attested for this change hash, or null. */
+  attestedActor(hash) {
+    return this.attestedChanges.get(hash) ?? null;
+  }
+  /** Apply host-attested `actorProfiles` and `attestedChanges`. A snapshot
+   * (the connect response, or a host message with `snapshot: true`) replaces
+   * both maps; a delta adds entries, and a null profile retracts its actor and
+   * every hash attested to it. A hash names only the profile it was attested
+   * under: a profile that changes, or leaves the capped map, drops its actor's
+   * earlier hashes. Malformed entries are dropped one by one. */
+  receiveActorProfiles({ actorProfiles, attestedChanges } = {}, { replace = false } = {}) {
+    const profiles = replace ? new Map() : this.actorProfiles;
+    const changes = replace ? new Map() : this.attestedChanges;
+    const retracted = new Set();
+    const dropped = new Set();
+    if (plainObject(actorProfiles))
+      for (const [actor, value] of Object.entries(actorProfiles)) {
+        const profile = actorProfile(value);
+        if (!ACTOR_ID.test(actor) || profile === undefined) continue;
+        const previous = profiles.get(actor);
+        profiles.delete(actor);
+        if (profile) profiles.set(actor, profile);
+        else retracted.add(actor);
+        if (
+          !profile ||
+          (previous &&
+            (previous.principal !== profile.principal ||
+              previous.displayName !== profile.displayName ||
+              previous.driver !== profile.driver))
+        )
+          dropped.add(actor);
+        if (profiles.size > MAX_ACTOR_PROFILES) {
+          const oldest = profiles.keys().next().value;
+          profiles.delete(oldest);
+          dropped.add(oldest);
+        }
+      }
+    if (dropped.size)
+      for (const [hash, actor] of changes) if (dropped.has(actor)) changes.delete(hash);
+    if (plainObject(attestedChanges))
+      for (const [hash, actor] of Object.entries(attestedChanges)) {
+        if (!CHANGE_HASH.test(hash) || typeof actor !== "string" || !ACTOR_ID.test(actor)) continue;
+        if (retracted.has(actor)) continue;
+        changes.delete(hash);
+        changes.set(hash, actor);
+        if (changes.size > MAX_ATTESTED_CHANGES) changes.delete(changes.keys().next().value);
+      }
+    this.actorProfiles = profiles;
+    this.attestedChanges = changes;
+    this.notify(this.presenceObservers);
+  }
   watchPresence(fn) {
     this.presenceObservers.add(fn);
     return () => this.presenceObservers.delete(fn);
@@ -1764,6 +1846,14 @@ export class PageSession {
       typeof message !== "object"
     )
       return;
+    // The sender id is the peer id the native backend reports for the
+    // message. The host's id names the signing key this session's transport
+    // handshake verified against the connect response's serverPeerId, and a
+    // message sent directly over that transport carries it. Relayed messages
+    // keep the publishing peer's id, but whether native authenticates the
+    // origin of each relayed message is not shown here; it rests on the
+    // native ephemeral guarantee, which the memo still lists as untested for
+    // multi-hop presence.
     if (senderId === this.connection?.serverSenderId) {
       if (message.kind === "page-activity") {
         this.receiveActivity(message);
@@ -1771,6 +1861,10 @@ export class PageSession {
       }
       if (message.kind === "identity-profiles") {
         this.replacePeerProfiles(message.peerProfiles);
+        return;
+      }
+      if (message.kind === "actor-profiles") {
+        this.receiveActorProfiles(message, { replace: message.snapshot === true });
         return;
       }
       if (message.kind === "tool-edit" && Array.isArray(message.heads)) {
