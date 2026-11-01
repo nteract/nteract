@@ -251,11 +251,15 @@ export class ActorAuthorship {
     const unchanged = { delta: null, put: [], remove: [] };
     if (!entry) return unchanged;
     const remove = [];
+    const changed = {};
     if (!current && this.actors.size >= this.max) {
       const idle = this.idleActor(now);
       // Every stored actor wrote recently: refuse the new one rather than
       // unbind a live actor.
       if (idle === undefined) return unchanged;
+      // Viewers may still hold an evicted attested actor and its hashes.
+      // Retract it, so a later signer binding it never inherits them.
+      if (this.actors.get(idle).key) changed[idle] = null;
       this.actors.delete(idle);
       this.forgetChanges(idle);
       remove.push(idle);
@@ -277,13 +281,10 @@ export class ActorAuthorship {
     // A hash is announced once while fresh. A revoked signer's changes stay
     // recorded but are not announced.
     const attested = recorded && !repeated && publishable(this.binding(key));
+    if (delta === "publish") changed[actor] = profileOf(entry);
+    if (delta === "retract") changed[actor] = null;
     return {
-      delta:
-        delta === "publish"
-          ? { [actor]: profileOf(entry) }
-          : delta === "retract"
-            ? { [actor]: null }
-            : null,
+      delta: Object.keys(changed).length ? changed : null,
       put: persist ? [[actor, stored(entry)]] : [],
       remove,
       ...(attested && { attested: { [hash]: actor } }),
@@ -356,29 +357,112 @@ export function writeActorBatch(storage, batch) {
   return apply(storage);
 }
 
-/** Serialized actor persistence. Each `enqueue` merges its effects into the
- * pending set and queues one write of everything pending. A failed write
- * leaves its entries pending, so the next write retries them. */
+export const ACTOR_RETRY_MIN_MS = 1000;
+export const ACTOR_RETRY_MAX_MS = 30_000;
+export const actorRetryDelay = (attempt) =>
+  Math.min(ACTOR_RETRY_MIN_MS * 2 ** Math.max(0, attempt - 1), ACTOR_RETRY_MAX_MS);
+
+/** Actor persistence lifecycle. States: `idle` (nothing being written),
+ * `writing` (one batch in flight), `failed` (the last batch failed; a retry
+ * is scheduled). Events: `enqueue` (new effects merged), `nudge` (a request,
+ * connection or save asks for a retry), `succeeded` / `failed` (the batch
+ * settled; `pending` says whether writes remain), and `retry` (a scheduled
+ * retry is due, for `attempt`). Effects: `write` starts a batch; `schedule`
+ * arms a retry after `delay` ms. Events that do not apply leave the state
+ * unchanged with no effect. */
+export function persistenceTransition(state, event) {
+  const same = { state, effect: null };
+  const write = (attempt) => ({ state: { phase: "writing", attempt }, effect: { type: "write" } });
+  switch (state.phase) {
+    case "idle":
+      return event.type === "enqueue" ? write(0) : same;
+    case "writing":
+      if (event.type === "succeeded")
+        return event.pending ? write(0) : { state: { phase: "idle", attempt: 0 }, effect: null };
+      if (event.type === "failed") {
+        const attempt = state.attempt + 1;
+        return {
+          state: { phase: "failed", attempt },
+          effect: { type: "schedule", attempt, delay: actorRetryDelay(attempt) },
+        };
+      }
+      return same;
+    case "failed":
+      if (event.type === "enqueue" || event.type === "nudge") return write(state.attempt);
+      // Only the newest scheduled retry is due; an older timer is stale.
+      if (event.type === "retry" && event.attempt === state.attempt) return write(state.attempt);
+      return same;
+    default:
+      return same;
+  }
+}
+
+/** Serialized actor persistence with its own retries. `enqueue` merges
+ * effects into the pending set; one batch of everything pending is written
+ * at a time. A failed batch stays pending and is retried after a backoff, or
+ * sooner on the next `enqueue` or `nudge`, until it lands. `hold` keeps each
+ * write and retry wait alive past the request that started it. */
 export class ActorPersistence {
-  constructor(storage) {
+  constructor(
+    storage,
+    {
+      hold = () => {},
+      sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+      onError = () => {},
+    } = {},
+  ) {
     this.storage = storage;
+    this.hold = hold;
+    this.sleep = sleep;
+    this.onError = onError;
     this.pending = new Map();
-    this.tail = Promise.resolve();
+    this.state = { phase: "idle", attempt: 0 };
+    this.current = Promise.resolve();
   }
 
   enqueue(effects) {
     mergeActorEffects(this.pending, effects);
-    const run = this.tail.then(() => this.write());
-    this.tail = run.catch(() => {});
-    return run;
+    if (this.pending.size) this.dispatch({ type: "enqueue" });
   }
 
-  async write() {
-    if (!this.pending.size) return;
+  nudge() {
+    this.dispatch({ type: "nudge" });
+  }
+
+  /** Settles once no batch is in flight. */
+  async drain() {
+    while (this.state.phase === "writing") await this.current;
+  }
+
+  dispatch(event) {
+    const { state, effect } = persistenceTransition(this.state, event);
+    this.state = state;
+    if (effect?.type === "write") this.startWrite();
+    if (effect?.type === "schedule") {
+      const due = this.sleep(effect.delay).then(() =>
+        this.dispatch({ type: "retry", attempt: effect.attempt }),
+      );
+      this.hold(due);
+    }
+  }
+
+  startWrite() {
     const batch = new Map(this.pending);
-    await writeActorBatch(this.storage, batch);
-    // Entries merged while this write ran stay pending for the next one.
-    for (const [actor, value] of batch)
-      if (this.pending.get(actor) === value) this.pending.delete(actor);
+    const work = Promise.resolve()
+      .then(() => writeActorBatch(this.storage, batch))
+      .then(
+        () => {
+          // Entries merged while this batch ran stay pending for the next one.
+          for (const [actor, value] of batch)
+            if (this.pending.get(actor) === value) this.pending.delete(actor);
+          this.dispatch({ type: "succeeded", pending: this.pending.size > 0 });
+        },
+        (error) => {
+          this.onError(error);
+          this.dispatch({ type: "failed" });
+        },
+      );
+    this.current = work;
+    this.hold(work);
   }
 }

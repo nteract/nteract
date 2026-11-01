@@ -415,6 +415,38 @@ test("attested changes come only from the host; snapshots replace and retraction
   assert.deepEqual([...session.attestedChanges], [[later, actor]]);
 });
 
+test("a replaced actor profile drops the hashes attested under the old one", () => {
+  const session = new PageSession("fixture");
+  const actor = "ab".repeat(16);
+  const old = "a1".repeat(32),
+    fresh = "a2".repeat(32);
+  session.receiveActorProfiles({
+    actorProfiles: { [actor]: ANA },
+    attestedChanges: { [old]: actor },
+  });
+  // The same profile again keeps its hashes.
+  session.receiveActorProfiles({ actorProfiles: { [actor]: { ...ANA } } });
+  assert.equal(session.attestedActor(old), actor);
+  // Another signer's profile for this actor: a delayed old change must not
+  // take the new name.
+  const BEN = { principal: "user:ben", displayName: "Ben", driver: "Browser" };
+  session.receiveActorProfiles({
+    actorProfiles: { [actor]: BEN },
+    attestedChanges: { [fresh]: actor },
+  });
+  assert.deepEqual(session.actorIdentity(actor), BEN);
+  assert.equal(session.attestedActor(old), null);
+  assert.equal(session.attestedActor(fresh), actor);
+  // A profile pushed out of the capped map takes its hashes with it.
+  session.receiveActorProfiles({
+    actorProfiles: Object.fromEntries(
+      Array.from({ length: 1024 }, (_, i) => [i.toString(16).padStart(8, "0"), ANA]),
+    ),
+  });
+  assert.equal(session.actorIdentity(actor), null);
+  assert.equal(session.attestedActor(fresh), null);
+});
+
 test("attested changes keep the newest 4096 hashes", () => {
   const session = new PageSession("fixture");
   const attestedChanges = Object.fromEntries(

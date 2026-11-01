@@ -9,6 +9,8 @@ import {
   ACTOR_PREFIX,
   ActorAuthorship,
   ActorPersistence,
+  actorRetryDelay,
+  persistenceTransition,
   FRESH_MS,
   actorTransition,
   commitAuthor,
@@ -266,7 +268,8 @@ test("persisted entries restore bindings and conflicts as stale until seen again
     [ANA_KEY, conflicted],
     [BEN_KEY, conflicted],
   ])
-    await persistence.enqueue(state.observe({ key, actor, now: 5 }));
+    persistence.enqueue(state.observe({ key, actor, now: 5 }));
+  await persistence.drain();
   await storage.put(`${ACTOR_PREFIX}${"33".repeat(16)}`, { key: "not a key" });
   await storage.put(`${ACTOR_PREFIX}NOT-HEX`, { host: true });
   const entries = await loadActorEntries(storage);
@@ -286,7 +289,8 @@ test("persisted entries restore bindings and conflicts as stale until seen again
   ]);
   assert.equal(restored.observe({ key: ANA_KEY, actor: conflicted, now: 1 }).delta, null);
   // Eviction deletes the persisted entry.
-  await persistence.enqueue({ put: [], remove: [ACTOR] });
+  persistence.enqueue({ put: [], remove: [ACTOR] });
+  await persistence.drain();
   assert.equal(await storage.get(`${ACTOR_PREFIX}${ACTOR}`), undefined);
 });
 
@@ -384,9 +388,11 @@ test("attested hashes keep the newest maxChanges and leave with an evicted actor
   for (let n = 1; n <= 4; n++) state.observe({ key: ANA_KEY, actor: nth(1), hash: H(n), now: n });
   assert.deepEqual([...state.changes.keys()], [H(2), H(3), H(4)]);
   state.observe({ key: ANA_KEY, actor: nth(2), hash: H(9), now: 5 });
-  // nth(1) goes idle and gives way to nth(3); its hashes go with it.
+  // nth(1) goes idle and gives way to nth(3); its hashes go with it, and
+  // viewers are told to drop it.
   const effects = state.observe({ key: ANA_KEY, actor: nth(3), now: FRESH_MS + 5 });
   assert.deepEqual(effects.remove, [nth(1)]);
+  assert.deepEqual(effects.delta, { [nth(1)]: null, [nth(3)]: ANA });
   assert.deepEqual([...state.changes.keys()], [H(9)]);
 });
 
@@ -423,53 +429,192 @@ class FlakyStorage extends Storage {
   }
 }
 
-test("a failed actor write stays pending, retries with the next one, and commits atomically", async () => {
-  const storage = new FlakyStorage();
-  const persistence = new ActorPersistence(storage);
-  const { state } = authorship({ [ANA_KEY]: writer(ANA), [BEN_KEY]: writer(BEN) }, { max: 1 });
-  storage.failures = 1;
-  state.observe({ key: ANA_KEY, actor: nth(1), now: 0 });
-  // The conflict write fails: it must not be lost.
-  const conflict = state.observe({ key: BEN_KEY, actor: nth(1), now: 1 });
-  await assert.rejects(persistence.enqueue(conflict), /storage unavailable/);
-  assert.deepEqual(persistence.pending.get(nth(1)), { conflict: true });
-  assert.deepEqual(await loadActorEntries(storage), []);
-  // An eviction's put and remove land in one transaction with the retry.
-  const eviction = state.observe({ key: ANA_KEY, actor: nth(2), now: FRESH_MS + 2 });
-  assert.deepEqual(eviction.remove, [nth(1)]);
-  await persistence.enqueue(eviction);
-  assert.deepEqual(storage.transactions, [
-    [
-      ["put", [`${ACTOR_PREFIX}${nth(2)}`]],
-      ["delete", `${ACTOR_PREFIX}${nth(1)}`],
-    ],
-  ]);
-  assert.equal(persistence.pending.size, 0);
-  assert.deepEqual(
-    (await loadActorEntries(storage)).map(([actor]) => actor),
-    [nth(2)],
-  );
+test("the persistence lifecycle answers every event in every state", () => {
+  const states = {
+    idle: { phase: "idle", attempt: 0 },
+    writing: { phase: "writing", attempt: 0 },
+    retrying: { phase: "writing", attempt: 2 },
+    failed: { phase: "failed", attempt: 2 },
+  };
+  const events = {
+    enqueue: { type: "enqueue" },
+    nudge: { type: "nudge" },
+    done: { type: "succeeded", pending: false },
+    more: { type: "succeeded", pending: true },
+    failed: { type: "failed" },
+    due: { type: "retry", attempt: 2 },
+    stale: { type: "retry", attempt: 1 },
+  };
+  const write = (attempt) => [`writing:${attempt}`, "write"];
+  const same = (state) => [`${state.phase}:${state.attempt}`, null];
+  const expected = {
+    idle: {
+      enqueue: write(0),
+      nudge: same(states.idle),
+      done: same(states.idle),
+      more: same(states.idle),
+      failed: same(states.idle),
+      due: same(states.idle),
+      stale: same(states.idle),
+    },
+    writing: {
+      enqueue: same(states.writing),
+      nudge: same(states.writing),
+      done: ["idle:0", null],
+      more: write(0),
+      failed: ["failed:1", "schedule"],
+      due: same(states.writing),
+      stale: same(states.writing),
+    },
+    retrying: {
+      enqueue: same(states.retrying),
+      nudge: same(states.retrying),
+      done: ["idle:0", null],
+      more: write(0),
+      failed: ["failed:3", "schedule"],
+      due: same(states.retrying),
+      stale: same(states.retrying),
+    },
+    failed: {
+      enqueue: write(2),
+      nudge: write(2),
+      done: same(states.failed),
+      more: same(states.failed),
+      failed: same(states.failed),
+      due: write(2),
+      stale: same(states.failed),
+    },
+  };
+  for (const [from, state] of Object.entries(states))
+    for (const [name, event] of Object.entries(events)) {
+      const result = persistenceTransition(state, event);
+      assert.deepEqual(
+        [`${result.state.phase}:${result.state.attempt}`, result.effect?.type ?? null],
+        expected[from][name],
+        `${from} + ${name}`,
+      );
+      if (result.effect?.type === "schedule") {
+        assert.equal(result.effect.attempt, result.state.attempt);
+        assert.equal(result.effect.delay, actorRetryDelay(result.state.attempt));
+      }
+    }
+  assert.deepEqual([1, 2, 3, 6, 9].map(actorRetryDelay), [1000, 2000, 4000, 30_000, 30_000]);
 });
 
-test("a restart after a conflict whose first write failed restores the conflict", async () => {
+/** A sleep the test releases by hand, recording each requested delay. */
+function manualSleep() {
+  const waits = [];
+  return {
+    waits,
+    sleep: (ms) =>
+      new Promise((resolve) => {
+        waits.push({ ms, resolve });
+      }),
+    async release() {
+      waits.shift().resolve();
+      // Let the retry dispatch start its write.
+      await new Promise(setImmediate);
+    },
+  };
+}
+
+test("a failed conflict write retries on its own and survives a restart", async () => {
   const storage = new FlakyStorage();
-  const persistence = new ActorPersistence(storage);
+  const timer = manualSleep();
+  const held = [];
+  const errors = [];
+  const persistence = new ActorPersistence(storage, {
+    sleep: timer.sleep,
+    hold: (work) => held.push(work),
+    onError: (error) => errors.push(error.message),
+  });
   const { state } = authorship({ [ANA_KEY]: writer(ANA), [BEN_KEY]: writer(BEN) });
-  await persistence.enqueue(state.observe({ key: ANA_KEY, actor: ACTOR, now: 0 }));
-  storage.failures = 1;
-  await assert.rejects(
-    persistence.enqueue(state.observe({ key: BEN_KEY, actor: ACTOR, now: 1 })),
-    /storage unavailable/,
+  persistence.enqueue(state.observe({ key: ANA_KEY, actor: ACTOR, now: 0 }));
+  await persistence.drain();
+  // The conflict write fails twice. A conflicted actor yields no further
+  // effects, so only the scheduled retries can land it.
+  storage.failures = 2;
+  persistence.enqueue(state.observe({ key: BEN_KEY, actor: ACTOR, now: 1 }));
+  await persistence.drain();
+  assert.equal(state.observe({ key: ANA_KEY, actor: ACTOR, now: 2 }).put.length, 0);
+  assert.deepEqual(persistence.state, { phase: "failed", attempt: 1 });
+  assert.deepEqual(persistence.pending.get(ACTOR), { conflict: true });
+  assert.deepEqual(
+    timer.waits.map(({ ms }) => ms),
+    [1000],
   );
-  // Any later write carries the pending conflict.
-  await persistence.enqueue(state.observe({ key: ANA_KEY, actor: nth(9), now: 2 }));
+  await timer.release();
+  await persistence.drain();
+  assert.deepEqual(persistence.state, { phase: "failed", attempt: 2 });
+  assert.deepEqual(
+    timer.waits.map(({ ms }) => ms),
+    [2000],
+  );
+  await timer.release();
+  await persistence.drain();
+  assert.deepEqual(persistence.state, { phase: "idle", attempt: 0 });
+  assert.equal(persistence.pending.size, 0);
+  assert.deepEqual(errors, ["storage unavailable", "storage unavailable"]);
+  assert.ok(held.length >= 5, "every write and retry wait is held");
   const { state: restored } = authorship(
     { [ANA_KEY]: writer(ANA), [BEN_KEY]: writer(BEN) },
     { entries: await loadActorEntries(storage) },
   );
+  assert.deepEqual(
+    (await loadActorEntries(storage)).map(([actor]) => actor),
+    [ACTOR],
+  );
   assert.equal(restored.actors.get(ACTOR).conflict, true);
   assert.equal(restored.observe({ key: ANA_KEY, actor: ACTOR, now: FRESH_MS + 3 }).delta, null);
   assert.deepEqual(restored.profiles(FRESH_MS + 3), {});
+});
+
+test("a nudge retries a failed write before its timer, and a stale timer is ignored", async () => {
+  const storage = new FlakyStorage();
+  const timer = manualSleep();
+  const persistence = new ActorPersistence(storage, { sleep: timer.sleep });
+  storage.failures = 1;
+  persistence.enqueue({ put: [[ACTOR, { conflict: true }]] });
+  await persistence.drain();
+  assert.equal(persistence.state.phase, "failed");
+  persistence.nudge();
+  await persistence.drain();
+  assert.deepEqual(persistence.state, { phase: "idle", attempt: 0 });
+  assert.deepEqual(await storage.get(`${ACTOR_PREFIX}${ACTOR}`), { conflict: true });
+  // The earlier timer fires late and starts nothing.
+  const writes = storage.transactions.length;
+  await timer.release();
+  assert.equal(persistence.state.phase, "idle");
+  assert.equal(storage.transactions.length, writes);
+});
+
+test("an eviction's put and remove are one transaction, retried together", async () => {
+  const storage = new FlakyStorage();
+  const timer = manualSleep();
+  const persistence = new ActorPersistence(storage, { sleep: timer.sleep });
+  const { state } = authorship({ [ANA_KEY]: writer(ANA) }, { max: 1 });
+  persistence.enqueue(state.observe({ key: ANA_KEY, actor: nth(1), now: 0 }));
+  await persistence.drain();
+  storage.failures = 1;
+  const eviction = state.observe({ key: ANA_KEY, actor: nth(2), now: FRESH_MS + 2 });
+  assert.deepEqual(eviction.remove, [nth(1)]);
+  persistence.enqueue(eviction);
+  await persistence.drain();
+  assert.deepEqual(
+    (await loadActorEntries(storage)).map(([actor]) => actor),
+    [nth(1)],
+    "a failed transaction applies neither",
+  );
+  await timer.release();
+  await persistence.drain();
+  assert.deepEqual(storage.transactions.at(-1), [
+    ["put", [`${ACTOR_PREFIX}${nth(2)}`]],
+    ["delete", `${ACTOR_PREFIX}${nth(1)}`],
+  ]);
+  assert.deepEqual(
+    (await loadActorEntries(storage)).map(([actor]) => actor),
+    [nth(2)],
+  );
 });
 
 /** A real native commit record for one Automerge change, signed by `seed`:
@@ -697,6 +842,29 @@ test("a browser writer's synced commits are attested by hash; fragments and host
   } finally {
     assert.deepEqual(await closePeers(peers, wires), []);
   }
+});
+
+test("a burst of attested hashes broadcasts at most the newest 4096", async () => {
+  const sent = [];
+  const page = Object.assign(Object.create(Page.prototype), {
+    handle: { broadcast: (message) => sent.push(message) },
+  });
+  const hash = (n) => n.toString(16).padStart(64, "0");
+  page.queueActorDelta(
+    { [ACTOR]: ANA },
+    Object.fromEntries(Array.from({ length: 4000 }, (_, n) => [hash(n), ACTOR])),
+  );
+  page.queueActorDelta(
+    {},
+    Object.fromEntries(Array.from({ length: 200 }, (_, n) => [hash(4000 + n), ACTOR])),
+  );
+  await Promise.resolve();
+  assert.equal(sent.length, 1);
+  const hashes = Object.keys(sent[0].attestedChanges);
+  assert.equal(hashes.length, 4096);
+  assert.equal(hashes[0], hash(104));
+  assert.equal(hashes.at(-1), hash(4199));
+  assert.deepEqual(sent[0].actorProfiles, { [ACTOR]: ANA });
 });
 
 const pageId = "33333333-3333-4333-8333-333333333333";

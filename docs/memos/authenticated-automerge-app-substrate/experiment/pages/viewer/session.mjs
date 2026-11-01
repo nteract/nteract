@@ -1533,22 +1533,38 @@ export class PageSession {
   /** Apply host-attested `actorProfiles` and `attestedChanges`. A snapshot
    * (the connect response, or a host message with `snapshot: true`) replaces
    * both maps; a delta adds entries, and a null profile retracts its actor and
-   * every hash attested to it. Malformed entries are dropped one by one. */
+   * every hash attested to it. A hash names only the profile it was attested
+   * under: a profile that changes, or leaves the capped map, drops its actor's
+   * earlier hashes. Malformed entries are dropped one by one. */
   receiveActorProfiles({ actorProfiles, attestedChanges } = {}, { replace = false } = {}) {
     const profiles = replace ? new Map() : this.actorProfiles;
     const changes = replace ? new Map() : this.attestedChanges;
     const retracted = new Set();
+    const dropped = new Set();
     if (plainObject(actorProfiles))
       for (const [actor, value] of Object.entries(actorProfiles)) {
         const profile = actorProfile(value);
         if (!ACTOR_ID.test(actor) || profile === undefined) continue;
+        const previous = profiles.get(actor);
         profiles.delete(actor);
         if (profile) profiles.set(actor, profile);
         else retracted.add(actor);
-        if (profiles.size > MAX_ACTOR_PROFILES) profiles.delete(profiles.keys().next().value);
+        if (
+          !profile ||
+          (previous &&
+            (previous.principal !== profile.principal ||
+              previous.displayName !== profile.displayName ||
+              previous.driver !== profile.driver))
+        )
+          dropped.add(actor);
+        if (profiles.size > MAX_ACTOR_PROFILES) {
+          const oldest = profiles.keys().next().value;
+          profiles.delete(oldest);
+          dropped.add(oldest);
+        }
       }
-    if (retracted.size)
-      for (const [hash, actor] of changes) if (retracted.has(actor)) changes.delete(hash);
+    if (dropped.size)
+      for (const [hash, actor] of changes) if (dropped.has(actor)) changes.delete(hash);
     if (plainObject(attestedChanges))
       for (const [hash, actor] of Object.entries(attestedChanges)) {
         if (!CHANGE_HASH.test(hash) || typeof actor !== "string" || !ACTOR_ID.test(actor)) continue;
@@ -1659,11 +1675,14 @@ export class PageSession {
       typeof message !== "object"
     )
       return;
-    // The sender id is the native peer id Subduction reports for the message:
-    // the peer that published it, also across the host's relay. The host's id
-    // belongs to the signing key this session's transport handshake verified
-    // against the connect response's serverPeerId. A browser's id comes from
-    // its own verified signing key, so it can't send as the host.
+    // The sender id is the peer id the native backend reports for the
+    // message. The host's id names the signing key this session's transport
+    // handshake verified against the connect response's serverPeerId, and a
+    // message sent directly over that transport carries it. Relayed messages
+    // keep the publishing peer's id, but whether native authenticates the
+    // origin of each relayed message is not shown here; it rests on the
+    // native ephemeral guarantee, which the memo still lists as untested for
+    // multi-hop presence.
     if (senderId === this.connection?.serverSenderId) {
       if (message.kind === "page-activity") {
         this.receiveActivity(message);

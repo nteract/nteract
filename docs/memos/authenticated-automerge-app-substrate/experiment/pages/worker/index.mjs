@@ -60,6 +60,7 @@ import {
   loadActorEntries,
   observeRecordSaves,
   ActorPersistence,
+  MAX_ATTESTED_CHANGES,
 } from "./actor-authorship.mjs";
 export { PageRecords } from "./record-persistence.mjs";
 import {
@@ -2278,7 +2279,12 @@ export class Page {
           binding: (key) => policy.bindings.get(key),
           entries: await loadActorEntries(ctx.storage),
         });
-        const actorPersistence = new ActorPersistence(ctx.storage);
+        // Retries wait on a held timer, as schedulePersistence does from the
+        // same save callback; saves and connects also retry sooner.
+        const actorPersistence = new ActorPersistence(ctx.storage, {
+          hold: (work) => holdUntilSettled(ctx, work),
+          onError: (error) => logFailure(error, "actor-authorship"),
+        });
         backend = new SubductionBackend({
           signer,
           // Only the backend's saves attest authors; maintenance and flushes
@@ -2417,24 +2423,22 @@ export class Page {
 
   /** Attest the author of a commit record the backend just stored. Storage
    * and broadcast run after the save and never fail it. Actor writes go
-   * through one serialized queue, held past the request that triggered them. */
+   * through ActorPersistence, which retries a failed write until it lands. */
   recordSaved(actorAuthorship, key, value, persistence = this.actorPersistence) {
+    persistence?.nudge();
     const author = commitAuthor(key, value);
     if (!author) return;
     const effects = actorAuthorship.observe({ ...author, now: Date.now() });
-    if (persistence && (effects.put.length || effects.remove.length)) {
-      const work = persistence.enqueue(effects);
-      holdUntilSettled(this.ctx, work);
-      work.catch((error) => logFailure(error, "actor-authorship"));
-    }
+    if (effects.put.length || effects.remove.length) persistence?.enqueue(effects);
     if (effects.delta || effects.attested)
       this.queueActorDelta(effects.delta ?? {}, effects.attested ?? {});
   }
 
   /** Coalesce actor deltas into one broadcast per microtask, so a batch of
-   * saves reported together goes out once. It uses no timer: under celld a
-   * timer set from a native save callback did not fire. A retraction drops
-   * that actor's pending hashes, so no hash outlives its actor's retraction. */
+   * saves reported together goes out once. It uses no timer: under celld an
+   * unheld timer set from a native save callback did not deliver. A
+   * retraction drops that actor's pending hashes, so no hash outlives its
+   * actor's retraction. Pending hashes keep the newest MAX_ATTESTED_CHANGES. */
   queueActorDelta(actorProfiles, attestedChanges) {
     const pending = (this.actorDelta ??= { actorProfiles: {}, attestedChanges: {} });
     for (const [actor, profile] of Object.entries(actorProfiles)) {
@@ -2443,7 +2447,13 @@ export class Page {
         for (const [hash, owner] of Object.entries(pending.attestedChanges))
           if (owner === actor) delete pending.attestedChanges[hash];
     }
-    Object.assign(pending.attestedChanges, attestedChanges);
+    for (const [hash, actor] of Object.entries(attestedChanges)) {
+      delete pending.attestedChanges[hash];
+      pending.attestedChanges[hash] = actor;
+    }
+    const hashes = Object.keys(pending.attestedChanges);
+    for (const hash of hashes.slice(0, Math.max(0, hashes.length - MAX_ATTESTED_CHANGES)))
+      delete pending.attestedChanges[hash];
     if (this.actorDeltaQueued) return;
     this.actorDeltaQueued = true;
     queueMicrotask(() => this.flushActorDelta());
@@ -2899,6 +2909,7 @@ export class Page {
         });
       }
       if (url.pathname === "/api/connect" && request.method === "GET") {
+        this.actorPersistence?.nudge();
         this.cacheTitle(identity);
         return json({
           page_id: this.metadata.pageId,
