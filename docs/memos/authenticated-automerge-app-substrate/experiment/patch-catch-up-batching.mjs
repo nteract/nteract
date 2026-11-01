@@ -128,7 +128,7 @@ type PendingNotification = {
   );
   patch(
     "packages/automerge-repo-subduction/src/index.ts",
-    "2797c8191d7b0bea2992f75e8da27b952591b38310b7f44f4dea69b2341dc107",
+    "5df508f9ecbe6d788b4c8422590be7be11b2c4610700ca3f7b48ff1806e49780",
     [
       [
         `      (id, record) => this.persisted(id, record),`,

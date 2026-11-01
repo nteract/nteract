@@ -85,6 +85,7 @@ import {
   ActorPersistence,
   MAX_ATTESTED_CHANGES,
   loadCommitAuthors,
+  replayAuthor,
 } from "./actor-authorship.mjs";
 export { PageRecords } from "./record-persistence.mjs";
 import {
@@ -2649,7 +2650,13 @@ export class Page {
         });
         // Before the backend can save or anything is published, rebuild
         // bindings and conflicts the persisted entries may lack.
-        actorPersistence.enqueue(actorAuthorship.replay(await loadCommitAuthors(recordStore)));
+        actorPersistence.enqueue(
+          actorAuthorship.replay(
+            await loadCommitAuthors(recordStore, (key, value) =>
+              replayAuthor(key, value, BACKEND_LIMITS.maxRecordBytes),
+            ),
+          ),
+        );
         backend = new SubductionBackend({
           signer,
           // Only the backend's saves attest authors; maintenance and flushes
@@ -2798,7 +2805,7 @@ export class Page {
    * through ActorPersistence, which retries a failed write until it lands. */
   recordSaved(actorAuthorship, key, value, persistence = this.actorPersistence) {
     persistence?.nudge();
-    const author = commitAuthor(key, value);
+    const author = commitAuthor(key, value, BACKEND_LIMITS.maxRecordBytes);
     if (!author) return;
     const effects = actorAuthorship.observe({ ...author, now: Date.now() });
     if (effects.put.length || effects.remove.length) persistence?.enqueue(effects);
