@@ -43,16 +43,23 @@ function render({ label, key }, compact = false) {
   return JSDOM.fragment(renderToStaticMarkup(element)).querySelector('[role="status"]');
 }
 
-// Every status the machine and its overlays render, by label.
+// Every status the machine and its overlays render, by label. A quiet save
+// shares the Saving label, so it is listed as "Saving (quiet)".
 const STATUSES = new Map();
+const named = (status) => (status.key === "quiet" ? `${status.label} (quiet)` : status.label);
 for (const name of viewerSyncStatusMachine.states)
   for (const link of LINKS)
     for (const localCopy of [false, true]) {
-      const status = syncStatus(
-        { name, revision: 1, pending: name === "saving", link },
-        { localCopy },
-      );
-      STATUSES.set(status.label, status);
+      const dirty = name === "quiet" || name === "saving";
+      const state = {
+        name,
+        revision: 1,
+        pending: dirty,
+        link,
+        ...(name === "quiet" && { armed: 1 }),
+      };
+      const status = syncStatus(state, { localCopy });
+      STATUSES.set(named(status), status);
     }
 for (const flag of OVERLAY_FLAGS) STATUSES.set(overlayStatus(flag).label, overlayStatus(flag));
 
@@ -63,6 +70,7 @@ const DRAWN = {
   Reconnecting: { kind: "working", icon: true, dot: true, pulse: false },
   Connected: { kind: "plain", icon: false, dot: true, pulse: false },
   Syncing: { kind: "working", icon: true, dot: true, pulse: false },
+  "Saving (quiet)": { kind: "quiet" },
   Saving: { kind: "working", icon: true, dot: true, pulse: true },
   Saved: { kind: "saved", icon: true, dot: false, pulse: false },
   "Saved locally": { kind: "attention", icon: true, dot: true, pulse: false },
@@ -82,6 +90,22 @@ test("the table covers every status the machine renders", () => {
 for (const [label, status] of STATUSES) {
   const drawn = DRAWN[label];
   const saved = drawn.kind === "saved";
+  if (drawn.kind === "quiet") {
+    // Nothing to see or hear, in the same live region the next status uses.
+    for (const compact of [false, true])
+      test(`${compact ? "phone" : "desktop"}: ${label}`, () => {
+        const element = render(status, compact);
+        assert.ok(element.classList.contains("save-status--quiet"));
+        assert.equal(element.classList.contains("save-status--dot"), compact);
+        assert.equal(element.getAttribute("aria-live"), "polite");
+        assert.equal(element.getAttribute("aria-atomic"), "true");
+        assert.equal(element.textContent, "");
+        assert.equal(element.children.length, 0);
+        assert.equal(element.getAttribute("aria-label"), null);
+        assert.equal(element.getAttribute("title"), null);
+      });
+    continue;
+  }
 
   test(`desktop: ${label}`, () => {
     const element = render(status);

@@ -6,6 +6,7 @@ import { generateAutomergeUrl, interpretAsDocumentId } from "@automerge/automerg
 import { PageSession } from "./session.mjs";
 import { OUTAGE_ATTEMPTS, OUTAGE_MS, REFUSAL_LIMIT, backoffStep } from "./reconnect-machine.mjs";
 import { SERVER_UNREACHABLE } from "./alerts.mjs";
+import { SLOW_SAVE_MS } from "./sync-status-machine.mjs";
 
 const drain = () => new Promise((resolve) => setImmediate(resolve));
 function deferred() {
@@ -1109,4 +1110,124 @@ test("a checkpoint left before its receipt reopens as Saving until the host ackn
   f.mutate("Remote after the save");
   f.session.receiveChange({});
   assert.equal(f.session.status, "Syncing");
+});
+
+// The slow-save threshold in virtual time. A save shows nothing for its first
+// SLOW_SAVE_MS, measured from the latest local edit; after that it shows
+// Saving until the receipt is acknowledged or fails.
+async function savedFixture(t) {
+  const f = fixture(t);
+  await f.start();
+  f.requests[0].resolve(Response.json({ durableHeads: f.requests[0].heads }));
+  await drain();
+  assert.equal(f.session.status, "Saved");
+  const keys = [];
+  const unsubscribe = f.session.subscribe(() => keys.push(f.session.statusKey));
+  t.after(unsubscribe);
+  const edit = (text) => f.session.change((doc) => A.updateText(doc, ["text"], text));
+  return { ...f, keys, edit };
+}
+
+test("a fast save never shows Saving", async (t) => {
+  const f = await savedFixture(t);
+  await f.edit("Typed here");
+  assert.equal(f.session.status, "Saving", "the reload gate still reads it as saving");
+  assert.equal(f.session.statusKey, "quiet");
+  await f.advance(300);
+  assert.equal(f.requests.length, 2, "the debounced receipt is out");
+  await f.advance(500);
+  f.requests[1].resolve(Response.json({ durableHeads: f.requests[1].heads }));
+  await drain();
+  assert.equal(f.session.status, "Saved");
+  assert.equal(f.session.slowSaveTimer, undefined, "the acknowledgement disarms the timer");
+  await f.advance(SLOW_SAVE_MS * 2);
+  assert.ok(!f.keys.includes("saving"), f.keys.join(", "));
+});
+
+test("typing longer than the threshold stays quiet until typing stops", async (t) => {
+  const f = await savedFixture(t);
+  // Ten seconds of typing, a keystroke every 250 ms: the receipt debounce
+  // never fires, and every edit re-arms the threshold.
+  for (let i = 0; i < 40; i++) {
+    await f.edit(`Typing ${i}`);
+    await f.advance(250);
+  }
+  assert.equal(f.requests.length, 1, "no receipt went out while typing");
+  assert.ok(!f.keys.includes("saving"), f.keys.join(", "));
+  // Typing stopped 250 ms ago. The receipt goes out at 300 ms and is still
+  // pending SLOW_SAVE_MS after the last keystroke.
+  await f.advance(SLOW_SAVE_MS - 251);
+  assert.equal(f.requests.length, 2);
+  assert.equal(f.session.statusKey, "quiet");
+  await f.advance(1);
+  assert.equal(f.session.statusKey, "saving");
+  f.requests[1].resolve(Response.json({ durableHeads: f.requests[1].heads }));
+  await drain();
+  assert.equal(f.session.status, "Saved");
+});
+
+test("a slow save shows Saving at the threshold", async (t) => {
+  const f = await savedFixture(t);
+  await f.edit("Typed here");
+  await f.advance(SLOW_SAVE_MS - 1);
+  assert.equal(f.requests.length, 2);
+  assert.equal(f.session.statusKey, "quiet");
+  assert.ok(!f.keys.includes("saving"));
+  await f.advance(1);
+  assert.equal(f.session.status, "Saving");
+  assert.equal(f.session.statusKey, "saving");
+  // A remote change while Saving shows keeps it showing.
+  f.mutate("Remote during save");
+  f.session.receiveChange({});
+  assert.equal(f.session.statusKey, "saving");
+  await f.advance(300);
+  const latest = f.requests.at(-1);
+  latest.resolve(Response.json({ durableHeads: latest.heads }));
+  await drain();
+  assert.equal(f.session.status, "Saved");
+  assert.equal(f.session.statusKey, "saved");
+});
+
+test("a save that fails after showing stays Unsaved, and the next save shows at once", async (t) => {
+  const f = await savedFixture(t);
+  await f.edit("Typed here");
+  await f.advance(SLOW_SAVE_MS);
+  assert.equal(f.session.statusKey, "saving");
+  f.requests[1].resolve(
+    Response.json({ error: "Requested edits have not arrived" }, { status: 409 }),
+  );
+  await drain();
+  assert.equal(f.session.status, "Unsaved");
+  assert.equal(f.session.statusKey, "failed");
+  assert.equal(f.session.saveState, "stalled", "the reload gate retries it like Retry");
+  // Unsaved stays visible while nothing new happens.
+  await f.advance(SLOW_SAVE_MS * 2 - 600);
+  assert.equal(f.session.status, "Unsaved");
+  // An edit after a failure never goes quiet: that would read as the failure
+  // clearing.
+  await f.edit("Typed after the failure");
+  assert.equal(f.session.status, "Saving");
+  assert.equal(f.session.statusKey, "saving");
+  await f.advance(300);
+  const latest = f.requests.at(-1);
+  latest.resolve(Response.json({ durableHeads: latest.heads }));
+  await drain();
+  assert.equal(f.session.status, "Saved");
+});
+
+test("a quiet save that goes offline shows Offline, then stays quiet when it lands", async (t) => {
+  const f = await savedFixture(t);
+  await f.edit("Typed here");
+  f.session.syncStatus({ type: "unreachable" });
+  f.session.renderStatus();
+  assert.equal(f.session.status, "Offline");
+  assert.equal(f.session.statusKey, "attention");
+  f.session.syncStatus({ type: "admitted" });
+  f.session.renderStatus();
+  assert.equal(f.session.statusKey, "quiet");
+  await f.advance(300);
+  f.requests[1].resolve(Response.json({ durableHeads: f.requests[1].heads }));
+  await drain();
+  assert.equal(f.session.status, "Saved");
+  assert.ok(!f.keys.includes("saving"), f.keys.join(", "));
 });

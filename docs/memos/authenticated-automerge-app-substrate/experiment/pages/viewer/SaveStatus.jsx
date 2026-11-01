@@ -7,11 +7,26 @@ const KINDS = {
   connecting: "working",
   connected: "plain",
   syncing: "working",
+  quiet: "quiet",
   saving: "working",
   saved: "saved",
   attention: "attention",
   failed: "error",
 };
+
+// A save inside its first SLOW_SAVE_MS draws nothing and says nothing, on
+// desktop and phone alike. The live region stays mounted, empty, so the
+// status that follows is still announced.
+function QuietStatus({ compact }) {
+  return (
+    <span
+      className={`save-status${compact ? " save-status--dot" : ""} save-status--quiet`}
+      role="status"
+      aria-live="polite"
+      aria-atomic="true"
+    />
+  );
+}
 
 // The compact form on phones: one dot whose color and motion carry the
 // state, with the label for screen readers and in the tooltip. Saving pulses,
@@ -47,6 +62,7 @@ export function SaveStatus({ status, statusKey, compact = false }) {
   // Only the session's exact-head durability receipt earns the saved indicator.
   // A connected socket or local checkpoint must retain its own visible status.
   const kind = Object.hasOwn(KINDS, statusKey) ? KINDS[statusKey] : "plain";
+  if (kind === "quiet") return <QuietStatus compact={compact} />;
   if (compact) return <StatusDot status={status} statusKey={statusKey} kind={kind} />;
   const saved = kind === "saved";
   const Icon = saved

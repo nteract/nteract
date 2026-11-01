@@ -238,13 +238,15 @@ test("a local edit that reached native storage but not the checkpoint reopens Sa
   assert.equal(reopened.sync$.snapshot().pending, true);
   assert.equal(reopened.recoveryPending, true, "the restored edit is not claimed as saved");
   assert.ok(!A.getHeads(reopened.doc).every((head) => reopened.savedHeads.includes(head)));
+  // Saving, drawn quiet until the receipt has been pending SLOW_SAVE_MS.
   assert.equal(reopened.status, "Saving");
-  assert.equal(reopened.statusKey, "saving");
+  assert.equal(reopened.statusKey, "quiet");
   // Remote catch-up before the receipt lands keeps it Saving.
   await remoteChange(reopened, "From an agent");
   assert.equal(reopened.status, "Saving");
   await acknowledge(h, reopened);
   assert.equal(reopened.status, "Saved");
+  assert.equal(reopened.slowSaveTimer, undefined, "the acknowledgement disarms the timer");
   const saved = await readLocalPage(h.auth.identity, pageId);
   assert.deepEqual(saved.localEdits.ackedHeads, A.getHeads(reopened.doc));
 });

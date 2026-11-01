@@ -449,6 +449,7 @@ export class PageSession {
     this.clearPresence();
     this.cancelReceiptRetry();
     clearTimeout(this.savedTimer);
+    clearTimeout(this.slowSaveTimer);
     this.reconnect({ type: "halt" });
     clearInterval(this.presenceTimer);
     globalThis.removeEventListener?.("online", this.onlineListener);
@@ -1793,10 +1794,24 @@ export class PageSession {
   sameReceiptHeads(left, right) {
     return left.length === right.length && left.every((head) => right.includes(head));
   }
-  /** Step the sync-status machine. A rejected event changes nothing. */
+  /** Step the sync-status machine and run its slow-save timer effects. A
+   * rejected event changes nothing. */
   syncStatus(event) {
     const result = viewerSyncStatusMachine.step(this.sync$.snapshot(), event);
-    if (!result.rejected) this.sync$.update(() => result.state);
+    if (result.rejected) return result;
+    this.sync$.update(() => result.state);
+    for (const effect of result.effects) {
+      clearTimeout(this.slowSaveTimer);
+      this.slowSaveTimer = undefined;
+      if (effect.type === "startTimer")
+        this.slowSaveTimer = setTimeout(() => {
+          this.slowSaveTimer = undefined;
+          if (!this.alive) return;
+          if (this.syncStatus({ type: "elapsed", revision: effect.revision }).rejected) return;
+          this.renderStatus();
+          this.emit();
+        }, effect.ms);
+    }
     return result;
   }
   /** Show a `{ label, key }` status from sync-status-machine.mjs. */

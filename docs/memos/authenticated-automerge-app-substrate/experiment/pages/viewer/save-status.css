@@ -80,3 +80,9 @@
     animation: none;
   }
 }
+/* A quiet save keeps the saved indicator's footprint, so the header doesn't
+   shift when Saved or Saving replaces it. */
+.save-status--quiet {
+  width: 24px;
+  min-height: 24px;
+}
