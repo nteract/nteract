@@ -314,10 +314,22 @@ family. Provider tokens stay on the server. Refresh does not refresh verified
 email evidence, and MCP tokens cannot authorize raw HTTP assets, sharing, or sync.
 
 `/connect` and the public `/llms.txt` are the maintained client setup guides.
-They cover OAuth, API-key alternatives, and driver attribution. Agents can prepare
-non-secret configuration while a person authorizes the connection; a successful
-`list_pages` call verifies access. A driver label is a description, not verified
-vendor identity or a permission grant.
+They lead with API keys, the method for coding agents, scripts, and anything
+long-running or headless (Kilo, Claude Code, Codex). OAuth is for interactive
+cloud clients such as ChatGPT: the client refreshes on next use, so nothing runs
+in the background, and the person authorizes again after thirty days. One OAuth
+token set must not be shared between processes. Two processes refreshing it
+concurrently trip replay detection and revoke the grant, so concurrent agents
+use an API key. Agents can prepare non-secret configuration while a person
+creates a key or authorizes the connection; a successful `list_pages` call
+verifies access.
+
+API-key recipes send `X-Pages-Driver` (the harness, such as Kilo) and an
+optional `X-Pages-Agent` session label of at most 80 characters; blank means no
+label. The Kilo recipe uses one shared entry with
+`"X-Pages-Agent": "{env:PAGES_AGENT}"`, and each worktree sets `PAGES_AGENT` in
+its `.envrc`. Both labels are self-declared descriptions shown under the
+authenticated account, not verified vendor identity or a permission grant.
 
 A Page starts private. Its immutable owner manages access, Trash, and permanent
 deletion, editors write/comment, and viewers read. Each operation intersects the Page role with
@@ -928,8 +940,9 @@ as [store.test.mjs](viewer/store.test.mjs) does for a backoff interpreter.
 `POST /api/tools` accepts `{operation, arguments}`; `POST /mcp` exposes the same
 Page operations through Streamable HTTP MCP. MCP accepts a Pages OAuth access
 token or Anaconda API key in `Authorization: Bearer ...`; `X-Pages-Driver` is an
-optional client label. OAuth scopes and current Page permissions apply on every
-call. The public `/llms.txt` is the tool usage and authentication reference.
+optional client label and `X-Pages-Agent` an optional session label. OAuth
+scopes and current Page permissions apply on every call. The public `/llms.txt`
+is the tool usage and authentication reference.
 
 A single `tools/list` or `ping` message needs no credential: tool definitions are
 static and carry no account data. `initialize`, `tools/call` and every other method

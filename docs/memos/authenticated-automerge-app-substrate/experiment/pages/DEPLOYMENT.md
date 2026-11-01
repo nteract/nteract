@@ -447,7 +447,8 @@ page: User Resources read-only for export, read and write for import, Platform
 Channels no access. Save it with the `/connect` instructions, which write
 `~/.config/pages/anaconda-api-key`, and point `*_FILE` at that file so the key
 stays out of shell history. A Pages OAuth access token (`pages_…`) also works on
-`/mcp`, but it expires after ten minutes. Only the source Project's owner can
+`/mcp`, but it expires after ten minutes and the script does not refresh it, so
+use an API key for anything that runs unattended. Only the source Project's owner can
 list it. The target Project belongs to the account that imports it.
 
 ### Export

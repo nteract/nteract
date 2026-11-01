@@ -78,10 +78,15 @@ test("Kilo OAuth recipe binds the supported public client without a static crede
   assert.deepEqual(pages.headers, { "X-Pages-Driver": "Kilo" });
 });
 
-test("Kilo API-key fallback uses static bearer auth and a file reference rather than an empty credential", () => {
+test("Kilo API-key recipe uses static bearer auth and a file reference rather than an empty credential", () => {
   const { pages } = JSON.parse(kiloApiKeyConfig("https://page7.runtimed.run")).mcp;
   assert.equal(pages.oauth, false);
-  assert.equal(pages.headers.Authorization, "Bearer {file:~/.config/pages/anaconda-api-key}");
+  assert.deepEqual(pages.headers, {
+    Authorization: "Bearer {file:~/.config/pages/anaconda-api-key}",
+    "X-Pages-Driver": "Kilo",
+    // One shared entry; each worktree names its session through PAGES_AGENT.
+    "X-Pages-Agent": "{env:PAGES_AGENT}",
+  });
 });
 
 test("copy actions copy only public recipes and report the matching next step", async () => {
