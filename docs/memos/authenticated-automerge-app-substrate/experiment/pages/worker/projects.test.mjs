@@ -1573,7 +1573,11 @@ test("list_pages by Project lists every descendant; by parent, direct children, 
   assert.equal(shared.body.pages[0].parent_id, b);
   assert.equal(shared.body.pages[0].shared, true);
   assert.equal(shared.body.pages[0].project_id, undefined);
-  assert.equal(JSON.stringify(shared.body).includes("C2"), false);
+  // The denied child's ID and title appear nowhere in the response. Match the
+  // quoted title, because retry tokens are random base64 that can contain "C2".
+  const body = JSON.stringify(shared.body);
+  assert.equal(body.includes(c2), false);
+  assert.equal(body.includes('"C2"'), false);
   assert.deepEqual(
     calls
       .filter((call) => call.path === "/internal/location")
