@@ -12,7 +12,7 @@ import {
   take,
   timer,
 } from "rxjs";
-import { Repo, documentIdToBinary } from "@automerge/automerge-repo";
+import { Repo, decodeHeads, documentIdToBinary, encodeHeads } from "@automerge/automerge-repo";
 import { SubductionBackend, IndexedDBByteStore } from "@automerge/automerge-repo-subduction";
 import { applyComment } from "../model/comments.mjs";
 import { createPageData, initializePage, projectPage } from "../model/page.mjs";
@@ -1564,6 +1564,24 @@ export class PageSession {
         this.showReceiptState();
       });
       return stored;
+    } finally {
+      this.localDepth--;
+    }
+  }
+  /** A change made as if the Page were at `heads`. Automerge merges it with
+   * every change since, so it can't remove text written after `heads`.
+   * Returns the heads of the new change. */
+  changeAt(heads, fn) {
+    if (!this.alive) throw Error("Page closed");
+    if (!this.canWrite) throw Error("This Page is read only");
+    this.localDepth++;
+    try {
+      const made = this.handle.changeAt(encodeHeads(heads), (doc) => {
+        fn(doc);
+        stampFeatures(doc);
+      });
+      this.queueSaved({ edit: true });
+      return made ? decodeHeads(made) : null;
     } finally {
       this.localDepth--;
     }

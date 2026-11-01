@@ -4,17 +4,36 @@ import * as A from "@automerge/automerge";
 import {
   TITLE_IDLE,
   captureTitleSelection,
+  caretAfterTitleChange,
   composingTitle,
-  mergedTitle,
   resolveTitleSelection,
-  titleComposition,
-  titleEdit,
+  spliceTitle,
+  titleChange,
+  titleInput,
   titleSnapshot,
   titleSplice,
 } from "./title-selection.mjs";
 
 const type = (doc, at, text) => A.change(doc, (d) => A.splice(d, ["title"], at, 0, text));
 const remove = (doc, at, count) => A.change(doc, (d) => A.splice(d, ["title"], at, count));
+
+// What main.jsx's commitTitle does: the splice at the input's revision, then
+// the caret after it in the merged document.
+function commit(doc, base, value, caret) {
+  const plan = titleChange(doc, base, value, caret);
+  assert.ok(plan, "the value fits one splice");
+  let made, next;
+  if (plan.heads) {
+    const result = A.changeAt(doc, plan.heads, (d) => spliceTitle(d, plan.edit));
+    next = result.newDoc;
+    made = result.newHeads;
+  } else {
+    next = A.change(doc, (d) => spliceTitle(d, plan.edit));
+    made = A.getHeads(next);
+  }
+  return { doc: next, caret: caretAfterTitleChange(next, made, plan.edit), plan };
+}
+const snapshot = (doc, caret) => titleSnapshot(doc, null, doc.title, caret);
 
 test("a title caret keeps its side of a peer typing at the same spot", () => {
   for (const actor of ["00".repeat(16), "ff".repeat(16)]) {
@@ -85,36 +104,6 @@ test("the spliced title keeps the typed character on its writer's side", () => {
   assert.equal(peerSpace, 7, "the peer's space stays after the new one");
 });
 
-const apply = (doc, edit) =>
-  A.change(doc, (d) => A.splice(d, ["title"], edit.index, edit.remove, edit.insert));
-
-test("a keystroke typed before React shows a peer's title change keeps both", () => {
-  const shown = A.from({ title: "Notes: Bet" });
-  const base = { value: shown.title, heads: A.getHeads(shown) };
-  // The peer's text reached the document; the input still shows `shown`.
-  const doc = type(A.clone(shown), 10, " Alpha");
-  const edit = titleEdit(doc, base, "Notes: Beta", 11);
-  assert.equal(apply(doc, edit).title, "Notes: Beta Alpha");
-  // A peer's text before the caret moves the edit with it.
-  const before = type(A.clone(shown), 0, "My ");
-  assert.equal(apply(before, titleEdit(before, base, "Notes: Beta", 11)).title, "My Notes: Beta");
-  // A peer deleting the word this writer extends leaves the new character.
-  const removed = remove(A.clone(shown), 7, 3);
-  assert.equal(apply(removed, titleEdit(removed, base, "Notes: Beta", 11)).title, "Notes: a");
-});
-
-test("without a usable base the edit reads against the current title", () => {
-  const doc = A.from({ title: "Plan" });
-  assert.deepEqual(titleEdit(doc, null, "Plans", 5), { index: 4, remove: 0, insert: "s" });
-  const stale = { value: "Other", heads: A.getHeads(doc) };
-  assert.deepEqual(titleEdit(doc, stale, "Plans", 5), { index: 4, remove: 0, insert: "s" });
-  assert.deepEqual(titleEdit(doc, { value: "Plan", heads: ["0".repeat(64)] }, "Plans", 5), {
-    index: 4,
-    remove: 0,
-    insert: "s",
-  });
-});
-
 test("a title caret next to an emoji stays on a code point boundary", () => {
   const doc = A.from({ title: "Wave 🌊" });
   // Caret after the emoji (UTF-16 offset 7) sticks to the whole emoji.
@@ -125,106 +114,180 @@ test("a title caret next to an emoji stays on a code point boundary", () => {
   assert.deepEqual(resolveTitleSelection(remove(A.clone(doc), 5, 2), caret), { start: 5, end: 5 });
 });
 
+test("a keystroke typed before React shows a peer's title change keeps both", () => {
+  const shown = A.from({ title: "Notes: Bet" });
+  const base = snapshot(shown, 10);
+  // The peer's text reached the document; the input still shows `shown`.
+  const after = commit(type(A.clone(shown), 10, " Alpha"), base, "Notes: Beta", 11);
+  assert.equal(after.doc.title, "Notes: Beta Alpha");
+  assert.equal(after.caret, 11);
+  const before = commit(type(A.clone(shown), 0, "My "), base, "Notes: Beta", 11);
+  assert.equal(before.doc.title, "My Notes: Beta");
+  assert.equal(before.caret, 14);
+  // A peer deleting the word this writer extends leaves the new character.
+  const removed = commit(remove(A.clone(shown), 7, 3), base, "Notes: Beta", 11);
+  assert.equal(removed.doc.title, "Notes: a");
+  assert.equal(removed.caret, 8);
+});
+
+test("without a usable base the edit reads against the current title", () => {
+  const doc = A.from({ title: "Plan" });
+  const expected = { heads: null, edit: { index: 4, remove: 0, insert: "s" } };
+  assert.deepEqual(titleChange(doc, null, "Plans", 5), expected);
+  assert.deepEqual(
+    titleChange(doc, { value: "Other", heads: A.getHeads(doc) }, "Plans", 5),
+    expected,
+  );
+  assert.deepEqual(
+    titleChange(doc, { value: "Plan", heads: ["0".repeat(64)] }, "Plans", 5),
+    expected,
+  );
+  assert.equal(titleChange(doc, null, "xyz", 1), null);
+});
+
+test("a replacement never deletes a peer's unseen text", () => {
+  // "AB": the writer replaces "A" with "日" (input "日B", caret 1).
+  const shown = A.from({ title: "AB" });
+  const base = snapshot(shown, 1);
+  // A peer prepends.
+  const prepend = commit(type(A.clone(shown), 0, "X"), base, "日B", 1);
+  assert.ok(prepend.doc.title === "X日B" || prepend.doc.title === "日XB", prepend.doc.title);
+  assert.equal(prepend.doc.title[prepend.caret - 1], "日");
+  // A peer inserts inside the replaced range.
+  const wide = A.from({ title: "ABC" });
+  const inside = commit(type(A.clone(wide), 1, "x"), snapshot(wide, 2), "日C", 1);
+  assert.ok(inside.doc.title.includes("x") && inside.doc.title.endsWith("C"), inside.doc.title);
+  assert.ok(!/[AB]/.test(inside.doc.title), inside.doc.title);
+  assert.equal(inside.doc.title[inside.caret - 1], "日");
+  // A peer appends.
+  const append = commit(type(A.clone(shown), 2, "!"), base, "日B", 1);
+  assert.equal(append.doc.title, "日B!");
+  assert.equal(append.caret, 1);
+});
+
 test("a stale title splice next to an emoji keeps the peer's emoji whole", () => {
   const shown = A.from({ title: "Go 🌊" });
-  const base = { value: shown.title, heads: A.getHeads(shown) };
-  // A peer appended another emoji that the input hasn't shown yet.
-  const doc = type(A.clone(shown), 5, "🌍");
-  const edit = titleEdit(doc, base, "Go 🌊!", 6);
-  const next = apply(doc, edit);
-  assert.equal(next.title, "Go 🌊!🌍");
-  assert.equal(next.title.length, [..."Go 🌊!🌍"].join("").length);
+  const after = commit(type(A.clone(shown), 5, "🌍"), snapshot(shown, 5), "Go 🌊!", 6);
+  assert.equal(after.doc.title, "Go 🌊!🌍");
+  assert.equal(after.caret, 6);
   // Replacing one emoji with another that shares its high surrogate.
   assert.deepEqual(titleSplice("a🌊", "a🌍", 3), { index: 1, remove: 2, insert: "🌍" });
 });
 
 test("the caret follows the applied splice when a stale edit kept a peer's text", () => {
   const shown = A.from({ title: "Plan" });
-  const base = titleSnapshot(shown, null, "Plan", 4);
-  // The peer's "My " reached the document; the input still shows "Plan".
+  const base = snapshot(shown, 4);
   const doc = type(A.clone(shown), 0, "My ");
   // The input lags, so a selection change captures against what it shows.
   const lagging = titleSnapshot(doc, base, "Plan", 4);
   assert.deepEqual(lagging.heads, base.heads);
   assert.deepEqual(resolveTitleSelection(doc, lagging.cursors), { start: 7, end: 7 });
-  // The keystroke: the input reads "Plans" with its caret at 5.
-  const edit = titleEdit(doc, lagging, "Plans", 5);
-  const next = apply(doc, edit);
-  assert.equal(next.title, "My Plans");
-  // main.jsx shows the merged title with the caret after the applied splice.
-  const at = edit.index + edit.insert.length;
-  assert.equal(at, 8);
-  const after = titleSnapshot(next, lagging, next.title, at);
-  assert.deepEqual(resolveTitleSelection(type(A.clone(next), 8, "!"), after.cursors), {
-    start: 8,
-    end: 8,
-  });
+  const after = commit(doc, lagging, "Plans", 5);
+  assert.equal(after.doc.title, "My Plans");
+  assert.equal(after.caret, 8);
   // An input value that matches no known revision keeps the last snapshot.
-  assert.equal(titleSnapshot(next, after, "unrelated", 2), after);
+  const shownNow = titleSnapshot(after.doc, lagging, after.doc.title, after.caret);
+  assert.equal(titleSnapshot(after.doc, shownNow, "unrelated", 2), shownNow);
 });
 
-test("the composition machine holds its base and ignores events from other Pages", () => {
-  const base = { value: "x", heads: [] };
-  let state = titleComposition(TITLE_IDLE, { type: "start", session: "one", base, value: "x" });
+// The input lifecycle: events in, state and effect out.
+const run = (events, state = TITLE_IDLE) => {
+  const effects = [];
+  for (const event of events) {
+    const step = titleInput(state, event);
+    state = step.state;
+    effects.push(step.effect);
+  }
+  return { state, effects };
+};
+const base = { value: "Notes", heads: [] };
+
+test("a composition commits once, on compositionend, against its first base", () => {
+  const { state, effects } = run([
+    { type: "compositionstart", session: "s", base, value: "Notes" },
+    { type: "input", session: "s", composing: true, base: { value: "other" }, value: "Notes か" },
+    { type: "compositionstart", session: "s", base: { value: "later" }, value: "Notes か" },
+    { type: "input", session: "s", composing: true, base: null, value: "Notes 漢" },
+    { type: "compositionend", session: "s" },
+  ]);
+  assert.equal(state, TITLE_IDLE);
+  assert.deepEqual(effects, [null, null, null, null, { type: "commit", base }]);
+});
+
+test("a composition with no compositionend ends on the next plain input", () => {
+  const { state, effects } = run([
+    { type: "input", session: "s", composing: true, base, value: "Notes か" },
+    { type: "input", session: "s", composing: true, base: null, value: "Notes 漢" },
+    // No compositionend: the browser sends a plain input event instead.
+    { type: "input", session: "s", composing: false, base: { value: "x" }, value: "Notes 漢" },
+    // The next keystroke is an ordinary splice with its own base.
+    {
+      type: "input",
+      session: "s",
+      composing: false,
+      base: { value: "Notes 漢" },
+      value: "Notes 漢!",
+    },
+  ]);
+  assert.equal(state, TITLE_IDLE);
+  assert.deepEqual(effects, [
+    null,
+    null,
+    { type: "commit", base },
+    { type: "commit", base: { value: "Notes 漢" } },
+  ]);
+});
+
+test("a composition with no compositionend ends on blur", () => {
+  const start = { type: "compositionstart", session: "s", base, value: "Notes" };
+  const composed = run([
+    start,
+    { type: "input", session: "s", composing: true, value: "Notes 漢" },
+    { type: "blur", session: "s", value: "Notes 漢" },
+  ]);
+  assert.equal(composed.state, TITLE_IDLE);
+  assert.deepEqual(composed.effects.at(-1), { type: "commit", base });
+  // Nothing composed: blur only clears the state; React shows the doc again.
+  const empty = run([start, { type: "blur", session: "s", value: "Notes" }]);
+  assert.equal(empty.state, TITLE_IDLE);
+  assert.equal(empty.effects.at(-1), null);
+  // Blur and compositionend while idle do nothing.
+  assert.deepEqual(
+    run([{ type: "blur", session: "s", value: "x" }, { type: "compositionend" }]).effects,
+    [null, null],
+  );
+});
+
+test("composition events from another Page and resets leave the right state", () => {
+  let { state } = run([{ type: "compositionstart", session: "one", base, value: "Notes" }]);
   assert.equal(composingTitle(state, "one"), true);
   assert.equal(composingTitle(state, "two"), false);
-  // A second start keeps the first base; input from another Page is ignored.
-  assert.equal(
-    titleComposition(state, { type: "start", session: "one", base: {}, value: "y" }),
-    state,
-  );
-  assert.equal(titleComposition(state, { type: "input", session: "two", value: "z" }), state);
-  state = titleComposition(state, { type: "input", session: "one", value: "xか" });
-  assert.deepEqual(state, { phase: "composing", session: "one", base, value: "xか" });
-  assert.equal(titleComposition(state, { type: "end" }), TITLE_IDLE);
-  assert.equal(
-    titleComposition(TITLE_IDLE, { type: "input", session: "one", value: "q" }),
-    TITLE_IDLE,
-  );
+  // Another Page's input starts its own composition only if it composes.
+  const other = titleInput(state, {
+    type: "input",
+    session: "two",
+    composing: false,
+    base: null,
+    value: "q",
+  });
+  assert.deepEqual(other.effect, { type: "commit", base: null });
+  assert.equal(titleInput(state, { type: "reset" }).state, TITLE_IDLE);
 });
 
 test("a peer's title edit during a composition merges when the composition ends", () => {
-  // The input shows "Notes" with the caret at the end, and an IME starts.
   let doc = A.from({ title: "Notes" });
-  const shown = titleSnapshot(doc, null, "Notes", 5);
-  let state = titleComposition(TITLE_IDLE, {
-    type: "start",
-    session: "s",
-    base: shown,
-    value: "Notes",
-  });
-  // Composing updates only what the input shows; the document is untouched.
-  for (const value of ["Notes k", "Notes か", "Notes かん", "Notes 漢"])
-    state = titleComposition(state, { type: "input", session: "s", value });
-  // Meanwhile a peer's edit reaches the document.
+  const shown = snapshot(doc, 5);
+  let { state } = run([{ type: "compositionstart", session: "s", base: shown, value: "Notes" }]);
+  for (const value of ["Notes k", "Notes か", "Notes 漢"])
+    state = titleInput(state, { type: "input", session: "s", composing: true, value }).state;
   doc = type(doc, 0, "My ");
-  assert.equal(doc.title, "My Notes");
-  // A selection change mid-composition keeps the base revision.
-  assert.equal(state.base, shown);
-  // The composition ends: the composed text commits as one splice against
-  // the revision the input showed when it began.
-  const value = state.value,
-    caret = value.length;
-  const base = state.base;
-  state = titleComposition(state, { type: "end" });
-  assert.equal(state, TITLE_IDLE);
-  const edit = titleEdit(doc, base, value, caret);
-  doc = apply(doc, edit);
-  assert.equal(doc.title, "My Notes 漢");
-  // The input then shows the merged title, caret after the composed text.
-  assert.deepEqual(mergedTitle(doc, edit, value), { value: "My Notes 漢", caret: 10 });
-  // Without a peer edit there is nothing to show.
-  assert.equal(mergedTitle(doc, edit, doc.title), null);
-  assert.equal(mergedTitle(doc, null, "other"), null);
-});
-
-test("a composition in the middle of the title commits at its own place", () => {
-  let doc = A.from({ title: "AB" });
-  const base = titleSnapshot(doc, null, "AB", 1);
-  // The peer types at the end while the IME composes after "A".
-  doc = type(doc, 2, "!");
-  const edit = titleEdit(doc, base, "A日B", 2);
-  doc = apply(doc, edit);
-  assert.equal(doc.title, "A日B!");
-  assert.deepEqual(mergedTitle(doc, edit, "A日B"), { value: "A日B!", caret: 2 });
+  const ended = titleInput(state, { type: "compositionend" });
+  const after = commit(doc, ended.effect.base, "Notes 漢", 7);
+  assert.equal(after.doc.title, "My Notes 漢");
+  assert.equal(after.caret, 10);
+  // A composed replacement mid-title with a peer appending.
+  const ab = A.from({ title: "AB" });
+  const mid = commit(type(A.clone(ab), 2, "!"), snapshot(ab, 1), "A日B", 2);
+  assert.equal(mid.doc.title, "A日B!");
+  assert.equal(mid.caret, 2);
 });

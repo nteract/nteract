@@ -1,3 +1,4 @@
+import { decodeHeads, encodeHeads } from "@automerge/automerge-repo";
 import test from "node:test";
 import assert from "node:assert/strict";
 import * as A from "@automerge/automerge";
@@ -294,6 +295,37 @@ test("a local write requests durability even when its handle emits no visible pa
   assert.equal(session.statusId, "saving");
   assert.ok(session.savedTimer);
   t.after(() => clearTimeout(session.savedTimer));
+});
+
+test("changeAt writes at older heads, merges, and requests durability", async (t) => {
+  const session = new PageSession("fixture");
+  session.canWrite = true;
+  session.status = "Saved";
+  session.statusId = "saved";
+  let doc = A.from({ title: "AB" });
+  const heads = A.getHeads(doc);
+  doc = A.change(doc, (d) => A.splice(d, ["title"], 0, 0, "X"));
+  session.handle = {
+    doc: () => doc,
+    changeAt(urlHeads, fn) {
+      const result = A.changeAt(doc, decodeHeads(urlHeads), fn);
+      doc = result.newDoc;
+      return result.newHeads && encodeHeads(result.newHeads);
+    },
+  };
+  const made = session.changeAt(heads, (d) => A.splice(d, ["title"], 0, 1, "日"));
+  t.after(() => clearTimeout(session.savedTimer));
+  assert.ok(
+    doc.title.includes("X") && doc.title.endsWith("B") && !doc.title.includes("A"),
+    doc.title,
+  );
+  // The new change's heads, concurrent with X: both are document heads now.
+  assert.equal(made.length, 1);
+  assert.ok(A.getHeads(doc).includes(made[0]));
+  assert.equal(A.getHeads(doc).length, 2);
+  assert.equal(session.statusId, "saving");
+  session.canWrite = false;
+  assert.throws(() => session.changeAt(heads, () => {}), /read only/);
 });
 
 test("observer failures cannot suppress other observers, subscribers or durable receipts", async (t) => {

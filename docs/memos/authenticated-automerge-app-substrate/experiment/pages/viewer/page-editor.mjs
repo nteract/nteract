@@ -17,22 +17,17 @@ export { SaveStatus } from "./SaveStatus.jsx";
 export { PageControls } from "./PageControls.jsx";
 export {
   TITLE_IDLE,
+  caretAfterTitleChange,
   composingTitle,
-  mergedTitle,
   resolveTitleSelection,
-  titleComposition,
-  titleEdit,
+  spliceTitle,
+  titleChange,
+  titleInput,
   titleSnapshot,
 } from "./title-selection.mjs";
 
 /** The heads a Trash move compares with the host's copy. */
 export const pageHeads = (doc) => A.getHeads(doc);
 
-/** Replace a Page title inside `session.change`. `edit` comes from
- * titleEdit against the document before the change; without one the title
- * is diffed as a whole. */
-export function setPageTitle(doc, title, edit = null) {
-  if (edit) {
-    if (edit.remove || edit.insert) A.splice(doc, ["title"], edit.index, edit.remove, edit.insert);
-  } else A.updateText(doc, ["title"], title);
-}
+/** Replace a Page title inside `session.change`. */
+export const setPageTitle = (doc, title) => A.updateText(doc, ["title"], title);

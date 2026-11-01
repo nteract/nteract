@@ -559,14 +559,6 @@ function App() {
   // caret to the end. Resolve the selection's cursors in the new document.
   const shownTitle = page?.title;
   const [titleComposing, setTitleComposing] = useState(null);
-  function composeTitle(event) {
-    const module = editor.module;
-    if (!module) return null;
-    const next = module.titleComposition(titleCompositionRef.current ?? module.TITLE_IDLE, event);
-    titleCompositionRef.current = next;
-    setTitleComposing(module.composingTitle(next, session) ? next.value : null);
-    return next;
-  }
   // A composition belongs to the Page it began on.
   useEffect(() => {
     titleCompositionRef.current = null;
@@ -576,19 +568,48 @@ function App() {
     const state = titleCompositionRef.current;
     return !!state && !!editor.module?.composingTitle(state, session);
   }
-  // One title keystroke, or a finished composition, as one splice against the
-  // revision the input showed. A peer's change React hadn't shown yet is
-  // kept, and the input then shows the merged title with the caret after the
-  // applied splice, so it matches a revision again.
+  function titleBase() {
+    const seen = titleSelection.current;
+    return seen?.session === session ? seen : null;
+  }
+  // Every title input event goes through one transition (titleInput in
+  // title-selection.mjs); its effect runs here.
+  function titleEvent(event, input) {
+    const module = editor.module;
+    if (!module || !session) return;
+    const { state, effect } = module.titleInput(titleCompositionRef.current ?? module.TITLE_IDLE, {
+      ...event,
+      session,
+    });
+    titleCompositionRef.current = state;
+    setTitleComposing(module.composingTitle(state, session) ? state.value : null);
+    if (effect?.type !== "commit") return;
+    try {
+      commitTitle(input, effect.base);
+    } catch (error) {
+      showError(error);
+    }
+  }
+  // One title keystroke, or a finished composition, as one splice at the
+  // revision the input showed. When a peer's change React hadn't shown yet
+  // was merged, the input shows the merged title with the caret after the
+  // splice, so it matches a revision again.
   function commitTitle(input, base) {
     const module = editor.module;
-    const edit = module.titleEdit(session.doc, base, input.value, input.selectionStart);
     const value = input.value;
-    session.change((doc) => module.setPageTitle(doc, value, edit));
-    const merged = module.mergedTitle(session.doc, edit, value);
-    if (merged) {
-      input.value = merged.value;
-      input.setSelectionRange(merged.caret, merged.caret);
+    const plan = module.titleChange(session.doc, base, value, input.selectionStart);
+    if (!plan) {
+      session.change((doc) => module.setPageTitle(doc, value));
+    } else {
+      const made = plan.heads
+        ? session.changeAt(plan.heads, (doc) => module.spliceTitle(doc, plan.edit))
+        : (session.change((doc) => module.spliceTitle(doc, plan.edit)),
+          module.pageHeads(session.doc));
+      if (made && session.doc.title !== value) {
+        const at = module.caretAfterTitleChange(session.doc, made, plan.edit);
+        input.value = session.doc.title;
+        input.setSelectionRange(at, at);
+      }
     }
     rememberTitleSelection(input);
   }
@@ -1082,48 +1103,36 @@ function App() {
                   value={titleComposing ?? page.title}
                   readOnly={!session.canWrite}
                   onSelect={(event) => rememberTitleSelection(event.currentTarget)}
-                  onCompositionStart={(event) => {
-                    const seen = titleSelection.current;
-                    composeTitle({
-                      type: "start",
-                      session,
-                      base: seen?.session === session ? seen : null,
-                      value: event.currentTarget.value,
-                    });
-                  }}
-                  onCompositionEnd={(event) => {
-                    const state = titleCompositionRef.current;
-                    if (!composing()) return;
-                    composeTitle({ type: "end" });
-                    try {
-                      commitTitle(event.currentTarget, state.base);
-                    } catch (error) {
-                      showError(error);
-                    }
-                  }}
-                  onChange={(event) => {
-                    const input = event.currentTarget;
-                    // An IME's input events only update what it shows.
-                    if (composing() || event.nativeEvent.isComposing) {
-                      if (!composing()) {
-                        const seen = titleSelection.current;
-                        composeTitle({
-                          type: "start",
-                          session,
-                          base: seen?.session === session ? seen : null,
-                          value: input.value,
-                        });
-                      }
-                      composeTitle({ type: "input", session, value: input.value });
-                      return;
-                    }
-                    try {
-                      const seen = titleSelection.current;
-                      commitTitle(input, seen?.session === session ? seen : null);
-                    } catch (error) {
-                      showError(error);
-                    }
-                  }}
+                  onCompositionStart={(event) =>
+                    titleEvent(
+                      {
+                        type: "compositionstart",
+                        base: titleBase(),
+                        value: event.currentTarget.value,
+                      },
+                      event.currentTarget,
+                    )
+                  }
+                  onCompositionEnd={(event) =>
+                    titleEvent({ type: "compositionend" }, event.currentTarget)
+                  }
+                  onBlur={(event) =>
+                    titleEvent(
+                      { type: "blur", value: event.currentTarget.value },
+                      event.currentTarget,
+                    )
+                  }
+                  onChange={(event) =>
+                    titleEvent(
+                      {
+                        type: "input",
+                        composing: !!event.nativeEvent.isComposing,
+                        base: titleBase(),
+                        value: event.currentTarget.value,
+                      },
+                      event.currentTarget,
+                    )
+                  }
                   onKeyDown={(event) => {
                     if (!titleHandsOffToBody(event, session.canWrite)) return;
                     event.preventDefault();

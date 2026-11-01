@@ -89,76 +89,112 @@ export function titleSplice(previous, next, caret) {
   return { index, remove: end - index, insert: next.slice(index, caret) };
 }
 
-/** The splice for a title input's edit, in the current document. `base` is
- * the snapshot of what the input showed before the keystroke. A peer's change
- * can reach the document before React shows it, so the input can be behind:
- * diffing against the current title would undo the peer's text. The edit is
- * read against `base`, and its ends are carried to the current document as
- * sticky carets. */
-export function titleEdit(doc, base, next, caret) {
-  const current = doc.title;
-  if (typeof current !== "string") return null;
+/** A title input's edit as a splice at the revision the input showed.
+ * `base` is the snapshot of what the input showed before the keystroke. A
+ * peer's change can reach the document before React shows it, so the input
+ * can be behind. The splice is read against the input's revision and applied
+ * there (`changeAt` with `heads`), and Automerge merges it with everything
+ * since: it can only delete characters the input showed, never a peer's
+ * unseen text. `heads` is null when the input shows the current title.
+ * Returns null when the input's value doesn't fit a single splice. */
+export function titleChange(doc, base, next, caret) {
+  if (typeof doc?.title !== "string") return null;
   let shown = null;
   if (base && typeof base.value === "string" && Array.isArray(base.heads)) {
     try {
       const view = A.view(doc, base.heads);
-      if (view.title === base.value) shown = view;
+      if (view.title === base.value && view.title !== doc.title) shown = view;
     } catch {
       /* Unknown heads: read against the current title. */
     }
   }
-  if (!shown || shown.title === current) return titleSplice(current, next, caret);
-  const edit = titleSplice(shown.title, next, caret);
-  if (!edit) return null;
-  const carry = (offset) =>
-    offset > 0
-      ? stickyCaretPosition(doc, path, current, stickyCaret(shown, path, shown.title, offset))
-      : 0;
-  const from = carry(edit.index);
-  const to = edit.remove ? carry(edit.index + edit.remove) : from;
-  return { index: from, remove: Math.max(0, to - from), insert: edit.insert };
+  const edit = titleSplice((shown ?? doc).title, next, caret);
+  return edit && { heads: shown ? base.heads : null, edit };
 }
 
-/** What the input should show after this tab's splice: the merged title and
- * the caret after the applied splice, when a peer's change React hadn't shown
- * yet was kept. Null when the input already shows the document's title. */
-export function mergedTitle(doc, edit, value) {
-  if (!edit || typeof doc?.title !== "string" || doc.title === value) return null;
-  return { value: doc.title, caret: edit.index + edit.insert.length };
+/** Apply a titleChange splice inside a change callback. */
+export function spliceTitle(doc, edit) {
+  if (edit.remove || edit.insert) A.splice(doc, path, edit.index, edit.remove, edit.insert);
 }
 
-// The title input's composition lifecycle. An IME owns the input's value and
-// its replacement range while it composes, so nothing may rewrite either:
+/** The caret after a title splice, in `doc`, which contains the change that
+ * produced `changeHeads`. The caret sticks to the last inserted code point,
+ * or for a deletion to the code point before it, wherever peers' merged text
+ * put it. */
+export function caretAfterTitleChange(doc, changeHeads, edit) {
+  const end = edit.index + edit.insert.length;
+  if (end === 0) return 0;
+  const view = A.view(doc, changeHeads);
+  return stickyCaretPosition(doc, path, doc.title, stickyCaret(view, path, view.title, end));
+}
+
+// The title input's event lifecycle, as one transition function. An IME owns
+// the input's value and its replacement range while it composes, so nothing
+// may write the document, the value or the selection then.
 //
-// - idle: each input event is one splice into the document.
-// - composing: input events only update the text the input shows; the
-//   document is untouched, and `base` keeps the snapshot of the revision the
-//   input showed when composition began. Peer edits reach the document but
-//   not the input.
-// - end: back to idle. The caller commits the composed text against `base`
-//   as one splice and shows the merged title.
+// States:
+// - idle: an input event is one splice into the document.
+// - composing: input events only update the value React shows. `base` is the
+//   snapshot of the revision the input showed when composition began. Peer
+//   edits reach the document but not the input.
 //
-// `session` scopes a composition to the Page it began on.
+// Events: compositionstart, input ({ composing }), compositionend, blur, and
+// reset (the Page changed). A composition ends on compositionend, on an input
+// event that is no longer composing (some browsers never send
+// compositionend), or on blur. Ending commits the input's value against
+// `base` as one splice; a blur with nothing composed only clears the state,
+// and React then shows the document's title again.
+//
+// Effects for the caller: null, or { type: "commit", base }.
 export const TITLE_IDLE = Object.freeze({ phase: "idle" });
 
-export function titleComposition(state, event) {
+const composingIn = (state, session) => state.phase === "composing" && state.session === session;
+
+export function titleInput(state, event) {
+  const commit = (base) => ({ state: TITLE_IDLE, effect: { type: "commit", base } });
+  const stay = { state, effect: null };
   switch (event.type) {
-    case "start":
-      return state.phase === "composing" && state.session === event.session
-        ? state
-        : { phase: "composing", session: event.session, base: event.base, value: event.value };
+    case "compositionstart":
+      return composingIn(state, event.session)
+        ? stay
+        : {
+            state: {
+              phase: "composing",
+              session: event.session,
+              base: event.base,
+              value: event.value,
+            },
+            effect: null,
+          };
     case "input":
-      return state.phase === "composing" && state.session === event.session
-        ? { ...state, value: event.value }
-        : state;
-    case "end":
+      if (composingIn(state, event.session))
+        return event.composing
+          ? { state: { ...state, value: event.value }, effect: null }
+          : commit(state.base);
+      if (event.composing)
+        return {
+          state: {
+            phase: "composing",
+            session: event.session,
+            base: event.base,
+            value: event.value,
+          },
+          effect: null,
+        };
+      return commit(event.base);
+    case "compositionend":
+      return state.phase === "composing" ? commit(state.base) : stay;
+    case "blur":
+      if (state.phase !== "composing") return stay;
+      return event.value === state.base?.value
+        ? { state: TITLE_IDLE, effect: null }
+        : commit(state.base);
     case "reset":
-      return TITLE_IDLE;
+      return { state: TITLE_IDLE, effect: null };
     default:
-      return state;
+      return stay;
   }
 }
 
-/** Whether a title input event belongs to a composition in `state`. */
-export const composingTitle = (state, session) =>
-  state.phase === "composing" && state.session === session;
+/** Whether `state` is composing in this Page. */
+export const composingTitle = composingIn;
