@@ -860,6 +860,21 @@ export function WordgardEditor(props) {
     if (view.current && !view.current.composing)
       view.current.dispatch({ annotations: remoteAnnotations() });
   }, [threads, commentTarget, commentDraft, generation]);
+  // CommentPopover anchors to the draft passage's mark in its own layout
+  // pass, which runs after this one in the same commit. Wordgard writes a
+  // dispatch to the DOM on its next animation frame, so the mark is flushed
+  // here: the composer's first frame is then beside the passage, not at the
+  // block's corner. The passive effect above still dispatches if this can't.
+  useLayoutEffect(() => {
+    const editor = view.current;
+    if (!editor || editor.composing) return;
+    try {
+      editor.dispatch({ annotations: remoteAnnotations() });
+      editor.flush();
+    } catch {
+      // Inside Wordgard's own flush phase; the next frame writes the mark.
+    }
+  }, [commentDraft]);
   useEffect(() => {
     if (commentTarget?.source !== "quote") return;
     const thread = threads?.find((thread) => thread.id === commentTarget.id);
