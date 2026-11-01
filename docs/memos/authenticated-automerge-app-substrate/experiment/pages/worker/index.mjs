@@ -56,6 +56,7 @@ import { agentGuideResponse } from "../agent-guide.mjs";
 import { connectAgentResponse } from "../connect-agent.mjs";
 import { handleOAuth, mcpAuthChallenge } from "./oauth.mjs";
 import { sessionStoreReady } from "./isolate-setup.mjs";
+import { signInCallbackOptions } from "./sign-in-failure.mjs";
 import { localOidcStore } from "./local-oidc-store.mjs";
 import { WebSocketByteTransport } from "../shared/byte-transport.mjs";
 import { MISSING_EDITS_MESSAGE } from "../shared/receipts.mjs";
@@ -739,7 +740,8 @@ const gateway = {
       if (oauth) return oauth;
       if (url.pathname === "/api/auth/login" && request.method === "GET")
         return beginServerOidcLogin(request, env);
-      if (url.pathname === "/oidc") return completeServerOidcLogin(request, env, noop);
+      if (url.pathname === "/oidc")
+        return completeServerOidcLogin(request, env, noop, signInCallbackOptions);
       if (url.pathname === "/api/auth/logout" && request.method === "POST") {
         requireSameOrigin(request, env);
         return deleteServerOidcSession(request, env);
