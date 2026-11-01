@@ -95,7 +95,7 @@ import {
   imageFiles,
   resolveImageInsertion,
 } from "./image-upload.mjs";
-import { caretGlideFor, runGlideEffects } from "./caret-glide.mjs";
+import { caretGlideFor, createGlideRunner, mediaMatches$ } from "./caret-glide.mjs";
 import { glideSettings } from "./feature-flags.mjs";
 import "./wordgard.css";
 
@@ -452,30 +452,32 @@ export function WordgardEditor(props) {
     editor.dom.classList.add("wordgard-document");
     let caretFrame = null,
       beatTimer;
+    const reducedMotion = glide.enabled && matchMedia("(prefers-reduced-motion: reduce)");
     const motion = glide.enabled
       ? caretGlideFor(replica, {
           settings: glide,
           now: monotonicNow,
-          reducedMotion: () => matchMedia("(prefers-reduced-motion: reduce)").matches,
+          reducedMotion$: mediaMatches$(reducedMotion),
         })
       : null;
+    const glideRunner =
+      motion &&
+      createGlideRunner({
+        layer: caretLayer.current,
+        ghostLayer: ghostLayer.current,
+        settings: glide,
+        onSettled: (session, anchor) => motion.settle(session, anchor),
+      });
+    // Turning on reduced motion snaps every caret to its anchor.
+    const glideCancels = motion?.cancels$.subscribe((effects) => glideRunner.run(effects));
     // Glide effects wait for React to draw each caret at its new position.
     let measuredCarets = null,
       pendingGlide = null;
-    const glideRunning = new Map();
     flushGlide.current = () => {
       if (!pendingGlide || !alive) return;
       const { effects, offset } = pendingGlide;
       pendingGlide = null;
-      runGlideEffects({
-        effects,
-        offset,
-        layer: caretLayer.current,
-        ghostLayer: ghostLayer.current,
-        settings: glide,
-        running: glideRunning,
-        onSettled: (session, anchor) => motion.settle(session, anchor),
-      });
+      glideRunner.run(effects, offset);
     };
     const measureCarets = () => {
       if (!alive || caretFrame !== null) return;
@@ -775,8 +777,9 @@ export function WordgardEditor(props) {
       imageTarget.current = null;
       clearInterval(timer);
       if (caretFrame !== null) cancelAnimationFrame(caretFrame);
+      glideCancels?.unsubscribe();
       motion?.release(id);
-      for (const animation of glideRunning.values()) animation.cancel();
+      glideRunner?.dispose();
       flushGlide.current = () => {};
       clearTimeout(beatTimer);
       document.removeEventListener("scroll", measureCarets, true);

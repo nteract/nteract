@@ -1,12 +1,13 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { JSDOM } from "jsdom";
+import { BehaviorSubject } from "rxjs";
 import {
   GLIDE_HANDOFF_MS,
   HIDDEN,
   createCaretGlide,
   glideTransition,
-  runGlideEffects,
+  createGlideRunner,
 } from "./caret-glide.mjs";
 
 const on = { enabled: true, reducedMotion: false, maxJumpPx: 900 };
@@ -41,6 +42,7 @@ const cases = [
     "hidden",
     null,
   ],
+  ["motion reduced while hidden", HIDDEN, { type: "motion-reduced" }, on, "hidden", null],
   ["settle while hidden", HIDDEN, { type: "settled", anchor: "a1" }, on, "hidden", null],
   // hidden, a caret just left a block
   ["handoff to a new anchor", recent, at("a2", 10, 220, { block: "two" }), on, "gliding", "glide"],
@@ -79,7 +81,8 @@ const cases = [
   ],
   ["reduced motion", resting, at("a2", 300, 200), { ...on, reducedMotion: true }, "resting", null],
   ["flag off", resting, at("a2", 300, 200), { ...on, enabled: false }, "resting", null],
-  ["removal", resting, { type: "departed", block: "one", at: 1000 }, on, "hidden", null],
+  // A removal also clears any ghost still fading.
+  ["removal", resting, { type: "departed", block: "one", at: 1000 }, on, "hidden", "cancel"],
   [
     "stale departure after a block move",
     resting,
@@ -89,6 +92,7 @@ const cases = [
     null,
   ],
   ["settle while resting", resting, { type: "settled", anchor: "a1" }, on, "resting", null],
+  ["motion reduced while resting", resting, { type: "motion-reduced" }, on, "resting", "cancel"],
   // gliding
   ["text shift mid-glide", gliding, at("a1", 12, 24), on, "gliding", null],
   ["new anchor mid-glide", gliding, at("a2", 300, 200), on, "gliding", "glide"],
@@ -109,6 +113,7 @@ const cases = [
     "hidden",
     "cancel",
   ],
+  ["motion reduced mid-glide", gliding, { type: "motion-reduced" }, on, "resting", "cancel"],
   ["glide finishes", gliding, { type: "settled", anchor: "a1" }, on, "resting", null],
   [
     "an interrupted glide's finish",
@@ -134,7 +139,10 @@ test("a glide starts at the previous position and ends at the new one", () => {
     anchor: "a2",
     from: { x: 10, y: 20, height: 20 },
     to: { x: 300, y: 200, height: 24 },
+    interrupts: false,
   });
+  // A move during a glide says so; only the edge knows where it has drawn the caret.
+  assert.equal(glideTransition(gliding, at("a2", 300, 200), on).effect.interrupts, true);
   assert.deepEqual(state, {
     name: "gliding",
     anchor: "a2",
@@ -180,8 +188,9 @@ test("one Page's glide follows a caret between blocks in either measuring order"
   assert.equal(glide.state("agent:a").name, "gliding");
   glide.settle("agent:a", "a2");
   assert.equal(glide.state("agent:a").name, "resting");
-  // The old block departs first; the new block lands within the handoff.
-  assert.deepEqual(glide.observe("two", []), []);
+  // The old block departs first, clearing its ghosts; the new block lands
+  // within the handoff.
+  assert.deepEqual(glide.observe("two", []), [{ session: "agent:a", type: "cancel" }]);
   time += 100;
   assert.equal(glide.observe("one", [caret("a3", 150)])[0]?.type, "glide");
   // Past the handoff, a reappearance is a first appearance.
@@ -191,7 +200,8 @@ test("one Page's glide follows a caret between blocks in either measuring order"
 });
 
 // A caret layer the way WordgardEditor draws it with the flag on, and a Web
-// Animations stub: jsdom has no Element.animate.
+// Animations stub: jsdom has no Element.animate. `progress` is the eased
+// progress a browser reports through effect.getComputedTiming().
 function layer() {
   const { window } = new JSDOM("<!doctype html><body></body>");
   const { document } = window;
@@ -210,12 +220,21 @@ function layer() {
       target: this,
       keyframes,
       options,
+      progress: 0,
+      playState: "running",
+      effect: { getComputedTiming: () => ({ progress: animation.progress }) },
       finished: new Promise((resolve, reject) => {
         finish = resolve;
         cancel = reject;
       }),
-      finish: () => finish(),
-      cancel: () => cancel(Error("AbortError")),
+      finish() {
+        animation.playState = "finished";
+        finish();
+      },
+      cancel() {
+        animation.playState = "idle";
+        cancel(Error("AbortError"));
+      },
     };
     animations.push(animation);
     return animation;
@@ -232,32 +251,33 @@ const settings = (extra = {}) => ({
   ...extra,
 });
 
-function drive(config, observations, reducedMotion = false) {
+// One block's editor: the Page's glide state, a runner on its caret layer,
+// and the reduced-motion subscription WordgardEditor makes.
+function block(config, reducedMotion$) {
   const dom = layer();
-  const glide = createCaretGlide({
+  const glide = createCaretGlide({ settings: config, now: () => 0, reducedMotion$ });
+  const runner = createGlideRunner({
+    layer: dom.root,
+    ghostLayer: dom.ghosts,
     settings: config,
-    now: () => 0,
-    reducedMotion: () => reducedMotion,
+    onSettled: (session, anchor) => glide.settle(session, anchor),
   });
-  const running = new Map();
-  for (const carets of observations)
-    runGlideEffects({
-      effects: glide.observe("one", carets),
-      layer: dom.root,
-      ghostLayer: dom.ghosts,
-      offset: { x: 5, y: 10 },
-      settings: config,
-      running,
-      onSettled: (session, anchor) => glide.settle(session, anchor),
-    });
-  return { ...dom, glide, running };
+  const subscription = glide.cancels$.subscribe((effects) => runner.run(effects));
+  const observe = (carets) => runner.run(glide.observe("one", carets), { x: 5, y: 10 });
+  const glides = () => dom.animations.filter((animation) => animation.target === dom.caret);
+  return { ...dom, glide, runner, subscription, observe, glides };
+}
+function drive(config, observations, reducedMotion = false) {
+  const h = block(config, new BehaviorSubject(reducedMotion));
+  for (const carets of observations) h.observe(carets);
+  return h;
 }
 const caret = (anchor, x, y) => ({ session: "agent:a", anchor, x, y, height: 20 });
 const flush = () => new Promise((resolve) => setImmediate(resolve));
 
 test("with the flag on, a new anchor glides the caret and leaves a fading ghost", async () => {
   const h = drive(settings(), [[caret("a1", 15, 30)], [caret("a2", 215, 130)]]);
-  const glides = h.animations.filter((animation) => animation.target === h.caret);
+  const glides = h.glides();
   assert.equal(glides.length, 1);
   assert.deepEqual(glides[0].keyframes, [
     { transform: "translate(-200px, -100px)" },
@@ -280,7 +300,8 @@ test("with the flag on, a new anchor glides the caret and leaves a fading ghost"
   await flush();
   assert.equal(h.ghosts.querySelectorAll(".agent-caret-ghost").length, 0, "the ghost fades away");
   assert.equal(h.glide.state("agent:a").name, "resting");
-  assert.equal(h.running.size, 0);
+  assert.equal(h.runner.running, 0);
+  assert.equal(h.runner.ghosts, 0);
 });
 
 test("with the flag off, a new anchor neither glides nor leaves a ghost", () => {
@@ -308,13 +329,64 @@ test("reduced motion and long jumps neither glide nor leave a ghost", () => {
   assert.equal(far.ghosts.children.length, 0);
 });
 
-test("a newer glide cancels the running one, and its late finish does not settle the newer", async () => {
+test("turning on reduced motion mid-glide snaps the caret to its anchor and removes the ghost", async () => {
+  const preference = new BehaviorSubject(false);
+  const h = block(settings(), preference);
+  h.observe([caret("a1", 15, 30)]);
+  h.observe([caret("a2", 215, 130)]);
+  const [glide] = h.glides();
+  const fade = h.animations.find((animation) => animation.target !== h.caret);
+  assert.equal(h.ghosts.children.length, 1);
+  // No new write: only the preference changes.
+  preference.next(true);
+  assert.equal(glide.playState, "idle", "the glide is cancelled");
+  assert.equal(fade.playState, "idle", "the ghost's fade is cancelled");
+  assert.equal(h.ghosts.children.length, 0, "the ghost is gone");
+  assert.equal(h.runner.running, 0);
+  assert.deepEqual(h.glide.state("agent:a"), {
+    name: "resting",
+    anchor: "a2",
+    block: "one",
+    x: 215,
+    y: 130,
+    height: 20,
+  });
+  await flush();
+  assert.equal(h.glide.state("agent:a").name, "resting");
+  // While reduced, the next write does not glide either.
+  h.observe([caret("a3", 15, 330)]);
+  assert.equal(h.glides().length, 1);
+  assert.equal(h.ghosts.children.length, 0);
+  // One media-query subscription per Page, shared by its blocks; it ends with them.
+  h.subscription.unsubscribe();
+  assert.equal(preference.observed, false);
+});
+
+test("an interrupted glide starts the next one from where the caret is drawn", () => {
+  const h = block(settings(), new BehaviorSubject(false));
+  h.observe([caret("a1", 15, 30)]);
+  h.observe([caret("a2", 215, 130)]);
+  // Halfway: layer (10, 20) -> (210, 120) has drawn the caret at (110, 70).
+  h.glides()[0].progress = 0.5;
+  h.observe([caret("a3", 15, 330)]);
+  const glides = h.glides();
+  assert.equal(glides.length, 2);
+  assert.equal(glides[0].playState, "idle");
+  // To layer (10, 320) from the drawn (110, 70), not from the old target (210, 120).
+  assert.deepEqual(glides[1].keyframes[0], { transform: "translate(100px, -250px)" });
+  const ghosts = [...h.ghosts.querySelectorAll(".agent-caret-ghost")];
+  assert.equal(ghosts.length, 2);
+  assert.equal(ghosts[1].style.left, "110px");
+  assert.equal(ghosts[1].style.top, "70px");
+});
+
+test("a newer glide's caret owns the settle; a cancelled glide's late finish does not", async () => {
   const h = drive(settings(), [
     [caret("a1", 15, 30)],
     [caret("a2", 215, 130)],
     [caret("a3", 15, 330)],
   ]);
-  const glides = h.animations.filter((animation) => animation.target === h.caret);
+  const glides = h.glides();
   assert.equal(glides.length, 2);
   await flush();
   assert.equal(h.glide.state("agent:a").name, "gliding");
@@ -324,15 +396,33 @@ test("a newer glide cancels the running one, and its late finish does not settle
   assert.equal(h.glide.state("agent:a").name, "resting");
 });
 
+test("ghosts are removed when their caret goes away and when the editor unmounts", () => {
+  const removed = drive(settings(), [[caret("a1", 15, 30)], [caret("a2", 215, 130)]]);
+  const fades = removed.animations.filter((animation) => animation.target !== removed.caret);
+  assert.equal(removed.ghosts.children.length, 1);
+  removed.observe([]);
+  assert.equal(removed.ghosts.children.length, 0, "the caret left, so its ghost goes too");
+  assert.equal(fades[0].playState, "idle");
+  assert.equal(removed.runner.ghosts, 0);
+  assert.equal(removed.glides()[0].playState, "idle");
+
+  const unmounted = drive(settings(), [[caret("a1", 15, 30)], [caret("a2", 215, 130)]]);
+  unmounted.runner.dispose();
+  assert.equal(unmounted.ghosts.children.length, 0);
+  assert.equal(unmounted.runner.ghosts, 0);
+  assert.equal(unmounted.runner.running, 0);
+  assert.ok(unmounted.animations.every((animation) => animation.playState === "idle"));
+});
+
 test("zero duration jumps with a ghost; zero ghost glides without one", async () => {
   const jump = drive(settings({ durationMs: 0 }), [[caret("a1", 15, 30)], [caret("a2", 215, 130)]]);
-  assert.equal(jump.animations.filter((a) => a.target === jump.caret).length, 0);
+  assert.equal(jump.glides().length, 0);
   assert.equal(jump.ghosts.children.length, 1);
   assert.equal(jump.glide.state("agent:a").name, "resting");
   const plain = drive(settings({ ghostFadeMs: 0 }), [
     [caret("a1", 15, 30)],
     [caret("a2", 215, 130)],
   ]);
-  assert.equal(plain.animations.filter((a) => a.target === plain.caret).length, 1);
+  assert.equal(plain.glides().length, 1);
   assert.equal(plain.ghosts.children.length, 0);
 });

@@ -10,6 +10,7 @@
 // Positions are relative to the Page's article, so a caret that leaves one
 // block's editor and lands in another is still one move, and scrolling does
 // not change them.
+import { distinctUntilChanged, filter, fromEvent, map, of, share, startWith } from "rxjs";
 
 /** A caret that leaves one block and lands in another within this window is
  * one move. Blocks measure on their own frames, so the old block can report
@@ -19,6 +20,7 @@ export const GLIDE_HANDOFF_MS = 1000;
 export const HIDDEN = Object.freeze({ name: "hidden", last: null });
 
 const point = ({ x, y, height }) => ({ x, y, height });
+const CANCEL = Object.freeze({ type: "cancel" });
 
 /**
  * The one transition function for one agent's caret.
@@ -34,10 +36,17 @@ const point = ({ x, y, height }) => ({ x, y, height });
  *   the caret.
  * - `{ type: "departed", block, at }` a block stopped showing the caret.
  * - `{ type: "settled", anchor }` the glide for `anchor` finished.
+ * - `{ type: "motion-reduced" }` the browser now prefers reduced motion.
  *
  * `config` is `{ enabled, reducedMotion, maxJumpPx, handoffMs? }`.
  * Returns `{ state, effect }`. Effects are data, run by the caller after the
- * transition: `{ type: "glide", anchor, from, to }` or `{ type: "cancel" }`.
+ * transition:
+ * - `{ type: "glide", anchor, from, to, interrupts }` move the caret from
+ *   `from` to `to` and leave a ghost at `from`. `interrupts` says a glide is
+ *   still running; the caller starts from where that glide has drawn the
+ *   caret, which only it knows.
+ * - `{ type: "cancel" }` stop the caret's motion so it sits at its anchor,
+ *   and remove its ghosts.
  */
 export function glideTransition(state, event, config) {
   const s = state ?? HIDDEN;
@@ -68,20 +77,29 @@ export function glideTransition(state, event, config) {
         name: "hidden",
         last: { anchor: s.anchor, block: s.block, ...point(s), at: event.at },
       },
-      effect: s.name === "gliding" ? { type: "cancel" } : null,
+      effect: CANCEL,
     };
   }
   if (event.type === "settled") {
     if (s.name !== "gliding" || s.anchor !== event.anchor) return { state: s, effect: null };
-    const { from: _from, ...rest } = s;
-    return { state: { ...rest, name: "resting" }, effect: null };
+    return { state: resting(s), effect: null };
+  }
+  if (event.type === "motion-reduced") {
+    // Snap to the anchor and drop any ghost still fading.
+    if (s.name === "hidden") return { state: s, effect: null };
+    return { state: resting(s), effect: CANCEL };
   }
   throw Error(`Unknown caret glide event: ${event.type}`);
 }
 
+function resting(s) {
+  const { from: _from, ...rest } = s;
+  return { ...rest, name: "resting" };
+}
+
 // A new anchor. Guards: the experiment is on, motion is allowed, the caret
 // actually moved, and the move is within the long-jump limit.
-function move(previous, next, config, wasGliding) {
+function move(previous, next, config, interrupts) {
   const distance = Math.hypot(next.x - previous.x, next.y - previous.y);
   if (
     !config.enabled ||
@@ -89,14 +107,11 @@ function move(previous, next, config, wasGliding) {
     distance < 1 ||
     (config.maxJumpPx > 0 && distance > config.maxJumpPx)
   )
-    return {
-      state: { name: "resting", ...next },
-      effect: wasGliding ? { type: "cancel" } : null,
-    };
+    return { state: { name: "resting", ...next }, effect: interrupts ? CANCEL : null };
   const from = point(previous);
   return {
     state: { name: "gliding", ...next, from },
-    effect: { type: "glide", anchor: next.anchor, from, to: point(next) },
+    effect: { type: "glide", anchor: next.anchor, from, to: point(next), interrupts },
   };
 }
 
@@ -104,13 +119,19 @@ function move(previous, next, config, wasGliding) {
  * One Page's caret motion: a state per agent caret, shared by every block's
  * editor so a move between blocks is one glide. Each block reports the agent
  * carets it measured; effects come back for that block to run.
+ *
+ * `reducedMotion$` emits the browser's reduced-motion preference, current
+ * value first. While any block subscribes to `cancels$`, the preference is
+ * followed; turning it on emits cancel effects for every caret, which each
+ * block runs against its own animations.
  */
-export function createCaretGlide({ settings, now, reducedMotion = () => false }) {
+export function createCaretGlide({ settings, now, reducedMotion$ = of(false) }) {
   const states = new Map();
   const shown = new Map();
+  let reduced = false;
   const config = () => ({
     enabled: settings.enabled,
-    reducedMotion: reducedMotion(),
+    reducedMotion: reduced,
     maxJumpPx: settings.maxJumpPx,
   });
   const step = (session, event) => {
@@ -119,8 +140,21 @@ export function createCaretGlide({ settings, now, reducedMotion = () => false })
     else states.set(session, state);
     return effect ? { session, ...effect } : null;
   };
+  const cancels$ = reducedMotion$.pipe(
+    distinctUntilChanged(),
+    map((value) => {
+      reduced = value;
+      if (!value) return [];
+      return [...states.keys()]
+        .map((session) => step(session, { type: "motion-reduced" }))
+        .filter(Boolean);
+    }),
+    filter((effects) => effects.length > 0),
+    share(),
+  );
   return {
     settings,
+    cancels$,
     /** `carets`: `[{ session, anchor, x, y, height }]`, article-relative. */
     observe(block, carets) {
       const at = now();
@@ -154,6 +188,13 @@ export function createCaretGlide({ settings, now, reducedMotion = () => false })
   };
 }
 
+/** A media query's matches, current value first, then each change. */
+export const mediaMatches$ = (query) =>
+  fromEvent(query, "change").pipe(
+    map((event) => event.matches),
+    startWith(query.matches),
+  );
+
 const glides = new WeakMap();
 /** The caret motion for one Page session, shared by its block editors. */
 export function caretGlideFor(replica, options) {
@@ -162,78 +203,127 @@ export function caretGlideFor(replica, options) {
 }
 
 /**
- * Run glide effects against one block's caret layer. `offset` is the layer's
- * position within the article, so article-relative points become layer
- * positions. Agent carets carry `data-glide="<session>"`; ghosts go in
- * `ghostLayer`. The Web Animations API moves the caret with a transform, so
- * layout never reflows. Returns nothing; finished glides call `onSettled`.
+ * Runs glide effects against one block's caret layer and owns every
+ * animation and ghost it starts, so cancel and dispose leave nothing behind.
+ * Agent carets carry `data-glide="<session>"`; ghosts go in `ghostLayer`. The
+ * Web Animations API moves the caret with a transform, so layout never
+ * reflows. Finished glides call `onSettled`.
  */
-export function runGlideEffects({
-  effects,
-  layer,
-  ghostLayer,
-  offset,
-  settings,
-  running,
-  onSettled,
-}) {
-  for (const effect of effects) {
-    const caret = [...(layer?.querySelectorAll("[data-glide]") ?? [])].find(
-      (element) => element.dataset.glide === effect.session,
+export function createGlideRunner({ layer, ghostLayer, settings, onSettled }) {
+  // session -> { animation, from, to }, in layer coordinates.
+  const running = new Map();
+  // session -> Set of { element, animation }.
+  const ghosts = new Map();
+  const caretFor = (session) =>
+    [...(layer?.querySelectorAll("[data-glide]") ?? [])].find(
+      (element) => element.dataset.glide === session,
     );
-    running.get(effect.session)?.cancel();
-    running.delete(effect.session);
-    if (effect.type !== "glide") continue;
-    const from = { x: effect.from.x - offset.x, y: effect.from.y - offset.y };
-    if (caret && settings.ghostFadeMs > 0 && ghostLayer) {
-      const ghost = ghostLayer.ownerDocument.createElement("span");
-      ghost.className = "agent-caret-ghost";
-      ghost.dataset.glideGhost = effect.session;
-      ghost.style.left = `${from.x}px`;
-      ghost.style.top = `${from.y}px`;
-      ghost.style.height = `${effect.from.height}px`;
-      const color = caret.style.getPropertyValue("--peer-color");
-      if (color) ghost.style.setProperty("--peer-color", color);
-      ghostLayer.append(ghost);
-      const fade = ghost.animate?.([{ opacity: 0.3 }, { opacity: 0 }], {
-        duration: settings.ghostFadeMs,
-        easing: "ease-out",
-        fill: "forwards",
-      });
-      if (fade)
-        fade.finished.then(
-          () => ghost.remove(),
-          () => ghost.remove(),
-        );
-      else ghost.remove();
+  const stop = (session) => {
+    const record = running.get(session);
+    running.delete(session);
+    record?.animation.cancel();
+  };
+  const removeGhosts = (session) => {
+    for (const ghost of ghosts.get(session) ?? []) {
+      ghost.animation?.cancel();
+      ghost.element.remove();
     }
-    if (!caret?.animate || settings.durationMs <= 0) {
-      onSettled(effect.session, effect.anchor);
-      continue;
-    }
-    const to = { x: effect.to.x - offset.x, y: effect.to.y - offset.y };
-    let animation;
-    try {
-      animation = caret.animate(
-        [
-          { transform: `translate(${from.x - to.x}px, ${from.y - to.y}px)` },
-          { transform: "translate(0px, 0px)" },
-        ],
-        { duration: settings.durationMs, easing: settings.easing },
-      );
-    } catch {
-      onSettled(effect.session, effect.anchor);
-      continue;
-    }
-    running.set(effect.session, animation);
-    animation.finished.then(
-      () => {
-        if (running.get(effect.session) === animation) running.delete(effect.session);
-        onSettled(effect.session, effect.anchor);
-      },
-      () => {
-        // Cancelled by a newer effect, which owns the caret now.
-      },
-    );
+    ghosts.delete(session);
+  };
+  // Where a running glide has drawn the caret: its eased progress between
+  // the points it started with. Read once, when a newer glide interrupts it.
+  const drawn = ({ animation, from, to }) => {
+    const progress = animation.effect?.getComputedTiming?.().progress;
+    if (typeof progress !== "number") return to;
+    return { x: from.x + (to.x - from.x) * progress, y: from.y + (to.y - from.y) * progress };
+  };
+  function addGhost(session, caret, at, height) {
+    const element = ghostLayer.ownerDocument.createElement("span");
+    element.className = "agent-caret-ghost";
+    element.dataset.glideGhost = session;
+    element.style.left = `${at.x}px`;
+    element.style.top = `${at.y}px`;
+    element.style.height = `${height}px`;
+    const color = caret.style.getPropertyValue("--peer-color");
+    if (color) element.style.setProperty("--peer-color", color);
+    ghostLayer.append(element);
+    const animation = element.animate?.([{ opacity: 0.3 }, { opacity: 0 }], {
+      duration: settings.ghostFadeMs,
+      easing: "ease-out",
+      fill: "forwards",
+    });
+    if (!animation) return element.remove();
+    const ghost = { element, animation };
+    if (!ghosts.has(session)) ghosts.set(session, new Set());
+    ghosts.get(session).add(ghost);
+    const done = () => {
+      element.remove();
+      ghosts.get(session)?.delete(ghost);
+      if (ghosts.get(session)?.size === 0) ghosts.delete(session);
+    };
+    animation.finished.then(done, done);
   }
+  return {
+    /** `offset` is the layer's position within the article. */
+    run(effects, offset = { x: 0, y: 0 }) {
+      for (const effect of effects) {
+        const { session } = effect;
+        if (effect.type !== "glide") {
+          stop(session);
+          removeGhosts(session);
+          continue;
+        }
+        const previous = running.get(session);
+        const from =
+          effect.interrupts && previous
+            ? drawn(previous)
+            : { x: effect.from.x - offset.x, y: effect.from.y - offset.y };
+        stop(session);
+        const caret = caretFor(session);
+        if (caret && settings.ghostFadeMs > 0 && ghostLayer)
+          addGhost(session, caret, from, effect.from.height);
+        if (!caret?.animate || settings.durationMs <= 0) {
+          onSettled(session, effect.anchor);
+          continue;
+        }
+        const to = { x: effect.to.x - offset.x, y: effect.to.y - offset.y };
+        let animation;
+        try {
+          animation = caret.animate(
+            [
+              { transform: `translate(${from.x - to.x}px, ${from.y - to.y}px)` },
+              { transform: "translate(0px, 0px)" },
+            ],
+            { duration: settings.durationMs, easing: settings.easing },
+          );
+        } catch {
+          onSettled(session, effect.anchor);
+          continue;
+        }
+        const record = { animation, from, to };
+        running.set(session, record);
+        animation.finished.then(
+          () => {
+            if (running.get(session) !== record) return;
+            running.delete(session);
+            onSettled(session, effect.anchor);
+          },
+          () => {
+            // Cancelled: whoever cancelled it owns the caret now.
+          },
+        );
+      }
+    },
+    /** The editor is gone: stop every glide and remove every ghost. */
+    dispose() {
+      for (const session of running.keys()) stop(session);
+      for (const session of ghosts.keys()) removeGhosts(session);
+    },
+    get running() {
+      return running.size;
+    },
+    get ghosts() {
+      return [...ghosts.values()].reduce((total, set) => total + set.size, 0);
+    },
+  };
 }
