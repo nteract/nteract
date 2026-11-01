@@ -641,3 +641,28 @@ test("formatting-only changes and unknown changes stay neutral", () => {
     assert.equal(mark.title, "Edited by a collaborator");
   }
 });
+
+test("many changes from one actor in one batch each find their own author", async () => {
+  const { presenceColor } = await import("./presence-color.mjs");
+  const h = harness(fixture("x"));
+  const host = "c5".repeat(16);
+  const agents = Array.from({ length: 24 }, (_, i) => ({
+    principal: "user:kyle",
+    driver: "Kilo",
+    agent: `session ${i}`,
+  }));
+  // One actor writes 24 changes, each appending its own word at the end.
+  const hashes = batch(
+    h,
+    agents.map((_, i) => [
+      host,
+      (d, path) => A.splice(d, path, d.blocks.first.richText.length, 0, ` w${String(i).padStart(2, "0")}`),
+    ]),
+  );
+  hashes.forEach((hash, i) => h.changeIdentities.set(hash, agents[i]));
+  const styles = marks(h).map((m) => m.style);
+  assert.deepEqual(
+    styles,
+    agents.map((who) => `--peer-color: ${presenceColor(who.principal, who.driver, who.agent).background}`),
+  );
+});

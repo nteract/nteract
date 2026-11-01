@@ -213,17 +213,26 @@ export function createWordgardCollaboration({
 
   // The change that wrote the character a cursor names: cursors read
   // "counter@actor", and each change covers ops startOp..maxOp of its actor.
-  // `byActor` indexes the batch's changes by actor, so each lookup scans only
-  // that actor's changes.
+  // `byActor` holds each actor's changes sorted by startOp. One actor's
+  // changes never overlap in op counters, so a binary search finds the change
+  // covering a counter in O(log changes), even for a large batch from the
+  // single actor the host uses for API agents.
   function writtenBy(cursor, byActor) {
     const at = typeof cursor === "string" ? cursor.indexOf("@") : -1;
     if (at < 1) return null;
     const counter = Number(cursor.slice(0, at));
-    return (
-      byActor
-        .get(cursor.slice(at + 1))
-        ?.find((change) => change.startOp <= counter && counter <= change.maxOp)?.hash ?? null
-    );
+    const changes = byActor.get(cursor.slice(at + 1));
+    if (!changes || !Number.isSafeInteger(counter)) return null;
+    let low = 0,
+      high = changes.length - 1;
+    while (low <= high) {
+      const middle = (low + high) >> 1;
+      const change = changes[middle];
+      if (counter < change.startOp) high = middle - 1;
+      else if (counter > change.maxOp) low = middle + 1;
+      else return change.hash;
+    }
+    return null;
   }
 
   function observeChange(event) {
@@ -238,6 +247,7 @@ export function createWordgardCollaboration({
       if (!byActor.has(change.actor)) byActor.set(change.actor, []);
       byActor.get(change.actor).push(change);
     }
+    for (const changes of byActor.values()) changes.sort((a, b) => a.startOp - b.startOp);
     event.changes.iterChangedRanges((_oldFrom, _oldTo, newFrom, newTo) => {
       const from = mapped(map.wgToAm, newFrom);
       const to = mapped(map.wgToAm, newTo);
