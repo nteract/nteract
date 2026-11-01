@@ -25,11 +25,11 @@ const CREATED = "2026-10-01T00:00:00.000Z";
 const KEY = "sweep-key-0001";
 const LIMIT = 100;
 // The cuts after the forwarded mark and before the retarget's write.
-const RETARGET_LOST = [2, 3, 4, 5, 6];
+const RETARGET_LOST = [2, 3, 4, 5, 6, 7];
 // The cuts after the forwarded mark and before the guarded release's sync.
-const GUARD_LOST = [2, 3, 4, 5];
+const GUARD_LOST = [2, 3, 4, 5, 6];
 let swept = 0;
-const SWEPT = 70;
+const SWEPT = 86;
 // Counting keeps a fenced reservation and counts it.
 const RETAINED_COUNTED = true;
 // The projection's transaction rolls back: nothing it wrote stays.
@@ -128,7 +128,7 @@ async function world({ location } = {}) {
       new Request("https://pages.invalid/internal/catalog", {
         method: "POST",
         headers: { authorization: `Bearer ${token}`, "x-pages-driver": "ChatGPT" },
-        body: JSON.stringify({ operation, arguments: args }),
+        body: JSON.stringify({ operation, arguments: args, page_limit: LIMIT }),
       }),
     );
     return { status: response.status, body: await response.json() };
@@ -279,7 +279,9 @@ test("a Trash request resumes from every cut", async (t) => {
     },
   });
   assert.deepEqual(result.unrepaired, [], result.differences);
-  assert.equal(result.writes.length, 7);
+  // The first capacity check stores the key counts, and the delete that
+  // moves the Page writes them again.
+  assert.equal(result.writes.length, 9);
 });
 
 test("a restore to the top level resumes from every cut with its location", async (t) => {
@@ -322,7 +324,7 @@ test("a restore to the top level resumes from every cut with its location", asyn
     },
   });
   assert.deepEqual(result.unrepaired, [], result.differences);
-  assert.equal(result.writes.length, 7);
+  assert.equal(result.writes.length, 8);
 });
 
 test("a purge confirmation resumes from every cut", async (t) => {
@@ -373,16 +375,18 @@ test("a Trash request against a stale index retargets once from every cut", asyn
     },
   });
   assert.deepEqual(result.writes, [
-    "put host/operation/sweep-key-0001+trash/<id>",
+    "put host/count/active+host/count/trash+host/operation/sweep-key-0001+trash/<id>",
     "put host/operation/sweep-key-0001",
     "put host/index/dirty",
     "put page/<id>",
     "delete trash/<id>",
-    "put trash/<id>",
+    "put host/count/active+host/count/trash",
+    "put host/count/active+host/count/trash+trash/<id>",
     "put host/operation/sweep-key-0001",
     "put host/index/dirty",
     "put trash/<id>",
     "delete page/<id>",
+    "put host/count/active+host/count/trash",
     "put host/operation/sweep-key-0001",
     "sync",
   ]);
@@ -419,10 +423,11 @@ test("a resumed Trash reruns the leaf guard before it retargets, from every cut"
       heads = w.heads();
       // The parent's Trash is reserved at revision 0, and the Catalog
       // crashes at the forwarded mark.
-      w.arm(1);
+      // Write 0 stores the key counts and write 1 reserves the request.
+      w.arm(2);
       assert.equal((await trash(w, w.catalog(), KEY)).status, 500);
       w.disarm();
-      assert.equal(w.writes[1].label, `put host/operation/${KEY}`);
+      assert.equal(w.writes[2].label, `put host/operation/${KEY}`);
       // The never-forwarded reservation expires, and counting releases it.
       expire(w, `trash/${pageId}`);
       assert.equal(await w.catalog().countEntries("trash/"), 0);
@@ -454,11 +459,12 @@ test("a resumed Trash reruns the leaf guard before it retargets, from every cut"
     },
   });
   assert.deepEqual(result.writes, [
-    "put trash/<id>",
+    "put host/count/active+host/count/trash+trash/<id>",
     "put host/operation/sweep-key-0001",
     "put host/index/dirty",
     "put page/<id>",
     "delete trash/<id>",
+    "put host/count/active+host/count/trash",
     "delete host/operation/sweep-key-0001",
     "sync",
   ]);
@@ -513,6 +519,8 @@ test("a replay-only retry the Page never applied completes superseded from every
         const id = `fill-${String(index).padStart(3, "0")}`;
         w.storage.values.set(`trash/${id}`, { page_id: id, title: id });
       }
+      // The counts a Catalog would have written beside those entries.
+      w.storage.values.set("host/count/trash", LIMIT);
     },
     act: (w, catalog) => trash(w, catalog, KEY),
     check({ outcome, page, capacity }) {

@@ -22,11 +22,11 @@ const TABLE = new URL("../test/fixtures/machines/reload-gate.json", import.meta.
 
 const settle = () => new Promise((resolve) => setImmediate(resolve));
 
-/** The receipt status a session would show for an entry's facts. */
+/** The status id a session would show for an entry's facts. */
 function statusOf({ save, pending }) {
-  if (save === "failed") return "Local save failed";
-  if (save === "stalled") return "Offline";
-  return pending ? "Saving" : "Saved";
+  if (save === "failed") return "local-failed";
+  if (save === "stalled") return "offline";
+  return pending ? "saving" : "saved";
 }
 
 function harness() {
@@ -48,7 +48,7 @@ function harness() {
 function apply(session, entry) {
   Object.assign(session, {
     pending: entry.pending,
-    status: statusOf(entry),
+    statusId: statusOf(entry),
     savedHeads: [...entry.savedHeads],
     schemaHold: entry.schema,
   });
@@ -82,7 +82,7 @@ function own(ctx, entry, event, { install = true } = {}) {
   ctx.sessions.set(entry.id, session);
   Object.assign(session, {
     pending: entry.pending,
-    status: statusOf(entry),
+    statusId: statusOf(entry),
     savedHeads: [...entry.savedHeads],
     schemaHold: entry.schema,
   });
@@ -186,7 +186,7 @@ async function deliver(ctx, event) {
       }
       if (phase.name === "draining") {
         if (event.phase === "closed" && event.saved) session.pending = false;
-        session.status = event.phase === "closed" && event.saved ? "Saved" : "Offline";
+        session.statusId = event.phase === "closed" && event.saved ? "saved" : "offline";
         session.emit();
         await settle();
       }

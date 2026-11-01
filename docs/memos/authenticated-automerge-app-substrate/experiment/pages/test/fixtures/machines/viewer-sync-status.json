@@ -1,9 +1,10 @@
 {
   "machine": "viewer-sync-status",
-  "description": "What one viewer PageSession's status line says about receipts and the native connection. Remote changes sync; only local edits save. Runs against viewer/sync-status-machine.mjs in viewer/sync-status-machine.test.mjs.",
+  "description": "What one viewer PageSession's status line says about receipts and the native connection. Remote changes sync; only local edits save. A save stays quiet for its first 2 s and shows Saving only after that, or at once after a failed receipt. Runs against viewer/sync-status-machine.mjs in viewer/sync-status-machine.test.mjs.",
   "states": [
     "idle",
     "syncing",
+    "quiet",
     "saving",
     "saved",
     "local",
@@ -14,6 +15,7 @@
     "queued",
     "acknowledged",
     "stalled",
+    "elapsed",
     "admitted",
     "retrying",
     "unreachable"
@@ -21,6 +23,11 @@
   "unreachable": [
     [
       "syncing",
+      "opened",
+      "start() installs the replica once, before it queues any receipt"
+    ],
+    [
+      "quiet",
       "opened",
       "start() installs the replica once, before it queues any receipt"
     ],
@@ -61,6 +68,24 @@
       "stale"
     ],
     "local/stalled": [
+      "local-copy",
+      "no-copy",
+      "stale"
+    ],
+    "quiet/acknowledged": [
+      "current",
+      "stale"
+    ],
+    "quiet/elapsed": [
+      "current",
+      "stale"
+    ],
+    "quiet/queued": [
+      "remote",
+      "edit",
+      "stale"
+    ],
+    "quiet/stalled": [
       "local-copy",
       "no-copy",
       "stale"
@@ -212,7 +237,7 @@
       }
     },
     {
-      "label": "a pending checkpoint's first receipt is saving",
+      "label": "a pending checkpoint's first receipt starts a quiet save",
       "case": "remote",
       "state": {
         "name": "idle",
@@ -227,16 +252,23 @@
       },
       "expect": {
         "state": {
-          "name": "saving",
+          "name": "quiet",
           "revision": 1,
           "pending": true,
-          "link": "connected"
+          "link": "connected",
+          "armed": 1
         },
-        "effects": []
+        "effects": [
+          {
+            "type": "startTimer",
+            "revision": 1,
+            "ms": 2000
+          }
+        ]
       }
     },
     {
-      "label": "an edit before any receipt is saving",
+      "label": "an edit before any receipt starts a quiet save",
       "case": "edit",
       "state": {
         "name": "idle",
@@ -251,12 +283,19 @@
       },
       "expect": {
         "state": {
-          "name": "saving",
+          "name": "quiet",
           "revision": 1,
           "pending": true,
-          "link": "connecting"
+          "link": "connecting",
+          "armed": 1
         },
-        "effects": []
+        "effects": [
+          {
+            "type": "startTimer",
+            "revision": 1,
+            "ms": 2000
+          }
+        ]
       }
     },
     {
@@ -309,7 +348,7 @@
       }
     },
     {
-      "label": "an edit while catching up is saving",
+      "label": "an edit while catching up starts a quiet save",
       "case": "edit",
       "state": {
         "name": "syncing",
@@ -324,12 +363,19 @@
       },
       "expect": {
         "state": {
-          "name": "saving",
+          "name": "quiet",
           "revision": 2,
           "pending": true,
-          "link": "connected"
+          "link": "connected",
+          "armed": 2
         },
-        "effects": []
+        "effects": [
+          {
+            "type": "startTimer",
+            "revision": 2,
+            "ms": 2000
+          }
+        ]
       }
     },
     {
@@ -455,7 +501,7 @@
       }
     },
     {
-      "label": "an edit after a save is saving",
+      "label": "an edit after a save starts a quiet save",
       "case": "edit",
       "state": {
         "name": "saved",
@@ -470,12 +516,19 @@
       },
       "expect": {
         "state": {
-          "name": "saving",
+          "name": "quiet",
           "revision": 2,
           "pending": true,
-          "link": "connected"
+          "link": "connected",
+          "armed": 2
         },
-        "effects": []
+        "effects": [
+          {
+            "type": "startTimer",
+            "revision": 2,
+            "ms": 2000
+          }
+        ]
       }
     },
     {
@@ -504,7 +557,7 @@
       }
     },
     {
-      "label": "a reconnect after a local-only save keeps its edit pending",
+      "label": "a reconnect after a local-only save keeps its edit pending, quietly",
       "case": "remote",
       "state": {
         "name": "local",
@@ -519,16 +572,23 @@
       },
       "expect": {
         "state": {
-          "name": "saving",
+          "name": "quiet",
           "revision": 2,
           "pending": true,
-          "link": "connecting"
+          "link": "connecting",
+          "armed": 2
         },
-        "effects": []
+        "effects": [
+          {
+            "type": "startTimer",
+            "revision": 2,
+            "ms": 2000
+          }
+        ]
       }
     },
     {
-      "label": "an edit after a local-only save is saving",
+      "label": "an edit after a local-only save starts a quiet save",
       "case": "edit",
       "state": {
         "name": "local",
@@ -543,12 +603,19 @@
       },
       "expect": {
         "state": {
-          "name": "saving",
+          "name": "quiet",
           "revision": 2,
           "pending": true,
-          "link": "connected"
+          "link": "connected",
+          "armed": 2
         },
-        "effects": []
+        "effects": [
+          {
+            "type": "startTimer",
+            "revision": 2,
+            "ms": 2000
+          }
+        ]
       }
     },
     {
@@ -601,7 +668,7 @@
       }
     },
     {
-      "label": "an edit after a failed receipt is saving",
+      "label": "an edit after a failed receipt shows Saving at once",
       "case": "edit",
       "state": {
         "name": "unsaved",
@@ -1687,6 +1754,535 @@
           "name": "idle",
           "revision": 0,
           "pending": false,
+          "link": "connected"
+        },
+        "effects": []
+      }
+    },
+    {
+      "label": "a remote change during a quiet save keeps its timer",
+      "case": "remote",
+      "state": {
+        "name": "quiet",
+        "revision": 2,
+        "pending": true,
+        "link": "connected",
+        "armed": 2
+      },
+      "event": {
+        "type": "queued",
+        "revision": 3,
+        "edit": false
+      },
+      "expect": {
+        "state": {
+          "name": "quiet",
+          "revision": 3,
+          "pending": true,
+          "link": "connected",
+          "armed": 2
+        },
+        "effects": []
+      }
+    },
+    {
+      "label": "another edit restarts the quiet save's timer",
+      "case": "edit",
+      "state": {
+        "name": "quiet",
+        "revision": 2,
+        "pending": true,
+        "link": "connected",
+        "armed": 2
+      },
+      "event": {
+        "type": "queued",
+        "revision": 3,
+        "edit": true
+      },
+      "expect": {
+        "state": {
+          "name": "quiet",
+          "revision": 3,
+          "pending": true,
+          "link": "connected",
+          "armed": 3
+        },
+        "effects": [
+          {
+            "type": "startTimer",
+            "revision": 3,
+            "ms": 2000
+          }
+        ]
+      }
+    },
+    {
+      "label": "a quiet save rejects its own revision again",
+      "case": "stale",
+      "state": {
+        "name": "quiet",
+        "revision": 2,
+        "pending": true,
+        "link": "connected",
+        "armed": 2
+      },
+      "event": {
+        "type": "queued",
+        "revision": 2,
+        "edit": true
+      },
+      "expect": {
+        "state": {
+          "name": "quiet",
+          "revision": 2,
+          "pending": true,
+          "link": "connected",
+          "armed": 2
+        },
+        "effects": [],
+        "rejected": "The receipt revision is stale"
+      }
+    },
+    {
+      "label": "a fast save is acknowledged before it ever shows",
+      "case": "current",
+      "state": {
+        "name": "quiet",
+        "revision": 2,
+        "pending": true,
+        "link": "connected",
+        "armed": 2
+      },
+      "event": {
+        "type": "acknowledged",
+        "revision": 2
+      },
+      "expect": {
+        "state": {
+          "name": "saved",
+          "revision": 2,
+          "pending": false,
+          "link": "connected"
+        },
+        "effects": [
+          {
+            "type": "cancelTimer"
+          }
+        ]
+      }
+    },
+    {
+      "label": "an acknowledgement from before the latest edit leaves the save quiet",
+      "case": "stale",
+      "state": {
+        "name": "quiet",
+        "revision": 3,
+        "pending": true,
+        "link": "connected",
+        "armed": 3
+      },
+      "event": {
+        "type": "acknowledged",
+        "revision": 2
+      },
+      "expect": {
+        "state": {
+          "name": "quiet",
+          "revision": 3,
+          "pending": true,
+          "link": "connected",
+          "armed": 3
+        },
+        "effects": [],
+        "rejected": "The receipt revision is stale"
+      }
+    },
+    {
+      "label": "a quiet save that stops at IndexedDB is local",
+      "case": "local-copy",
+      "state": {
+        "name": "quiet",
+        "revision": 2,
+        "pending": true,
+        "link": "connected",
+        "armed": 2
+      },
+      "event": {
+        "type": "stalled",
+        "revision": 2,
+        "localCopy": true
+      },
+      "expect": {
+        "state": {
+          "name": "local",
+          "revision": 2,
+          "pending": true,
+          "link": "connected"
+        },
+        "effects": [
+          {
+            "type": "cancelTimer"
+          }
+        ]
+      }
+    },
+    {
+      "label": "a quiet save that fails without a local copy is unsaved",
+      "case": "no-copy",
+      "state": {
+        "name": "quiet",
+        "revision": 2,
+        "pending": true,
+        "link": "connected",
+        "armed": 2
+      },
+      "event": {
+        "type": "stalled",
+        "revision": 2,
+        "localCopy": false
+      },
+      "expect": {
+        "state": {
+          "name": "unsaved",
+          "revision": 2,
+          "pending": true,
+          "link": "connected"
+        },
+        "effects": [
+          {
+            "type": "cancelTimer"
+          }
+        ]
+      }
+    },
+    {
+      "label": "a stale failure leaves the quiet save alone",
+      "case": "stale",
+      "state": {
+        "name": "quiet",
+        "revision": 2,
+        "pending": true,
+        "link": "connected",
+        "armed": 2
+      },
+      "event": {
+        "type": "stalled",
+        "revision": 1,
+        "localCopy": false
+      },
+      "expect": {
+        "state": {
+          "name": "quiet",
+          "revision": 2,
+          "pending": true,
+          "link": "connected",
+          "armed": 2
+        },
+        "effects": [],
+        "rejected": "The receipt revision is stale"
+      }
+    },
+    {
+      "label": "a save still pending at the threshold shows Saving",
+      "case": "current",
+      "state": {
+        "name": "quiet",
+        "revision": 2,
+        "pending": true,
+        "link": "connected",
+        "armed": 2
+      },
+      "event": {
+        "type": "elapsed",
+        "revision": 2
+      },
+      "expect": {
+        "state": {
+          "name": "saving",
+          "revision": 2,
+          "pending": true,
+          "link": "connected"
+        },
+        "effects": []
+      }
+    },
+    {
+      "label": "the threshold measures from the edit, not a later remote change",
+      "case": "current",
+      "state": {
+        "name": "quiet",
+        "revision": 4,
+        "pending": true,
+        "link": "connected",
+        "armed": 2
+      },
+      "event": {
+        "type": "elapsed",
+        "revision": 2
+      },
+      "expect": {
+        "state": {
+          "name": "saving",
+          "revision": 4,
+          "pending": true,
+          "link": "connected"
+        },
+        "effects": []
+      }
+    },
+    {
+      "label": "a timer from before the latest edit is stale",
+      "case": "stale",
+      "state": {
+        "name": "quiet",
+        "revision": 3,
+        "pending": true,
+        "link": "connected",
+        "armed": 3
+      },
+      "event": {
+        "type": "elapsed",
+        "revision": 2
+      },
+      "expect": {
+        "state": {
+          "name": "quiet",
+          "revision": 3,
+          "pending": true,
+          "link": "connected",
+          "armed": 3
+        },
+        "effects": [],
+        "rejected": "The receipt revision is stale"
+      }
+    },
+    {
+      "label": "idle has no quiet save for the timer",
+      "state": {
+        "name": "idle",
+        "revision": 0,
+        "pending": false,
+        "link": "connected"
+      },
+      "event": {
+        "type": "elapsed",
+        "revision": 0
+      },
+      "expect": {
+        "state": {
+          "name": "idle",
+          "revision": 0,
+          "pending": false,
+          "link": "connected"
+        },
+        "effects": [],
+        "rejected": "No quiet save is waiting on the slow-save timer"
+      }
+    },
+    {
+      "label": "syncing has no quiet save for the timer",
+      "state": {
+        "name": "syncing",
+        "revision": 2,
+        "pending": false,
+        "link": "connected"
+      },
+      "event": {
+        "type": "elapsed",
+        "revision": 2
+      },
+      "expect": {
+        "state": {
+          "name": "syncing",
+          "revision": 2,
+          "pending": false,
+          "link": "connected"
+        },
+        "effects": [],
+        "rejected": "No quiet save is waiting on the slow-save timer"
+      }
+    },
+    {
+      "label": "saving has no quiet save for the timer",
+      "state": {
+        "name": "saving",
+        "revision": 2,
+        "pending": true,
+        "link": "connected"
+      },
+      "event": {
+        "type": "elapsed",
+        "revision": 2
+      },
+      "expect": {
+        "state": {
+          "name": "saving",
+          "revision": 2,
+          "pending": true,
+          "link": "connected"
+        },
+        "effects": [],
+        "rejected": "No quiet save is waiting on the slow-save timer"
+      }
+    },
+    {
+      "label": "saved has no quiet save for the timer",
+      "state": {
+        "name": "saved",
+        "revision": 2,
+        "pending": false,
+        "link": "connected"
+      },
+      "event": {
+        "type": "elapsed",
+        "revision": 2
+      },
+      "expect": {
+        "state": {
+          "name": "saved",
+          "revision": 2,
+          "pending": false,
+          "link": "connected"
+        },
+        "effects": [],
+        "rejected": "No quiet save is waiting on the slow-save timer"
+      }
+    },
+    {
+      "label": "local has no quiet save for the timer",
+      "state": {
+        "name": "local",
+        "revision": 2,
+        "pending": true,
+        "link": "connected"
+      },
+      "event": {
+        "type": "elapsed",
+        "revision": 2
+      },
+      "expect": {
+        "state": {
+          "name": "local",
+          "revision": 2,
+          "pending": true,
+          "link": "connected"
+        },
+        "effects": [],
+        "rejected": "No quiet save is waiting on the slow-save timer"
+      }
+    },
+    {
+      "label": "unsaved has no quiet save for the timer",
+      "state": {
+        "name": "unsaved",
+        "revision": 2,
+        "pending": true,
+        "link": "connected"
+      },
+      "event": {
+        "type": "elapsed",
+        "revision": 2
+      },
+      "expect": {
+        "state": {
+          "name": "unsaved",
+          "revision": 2,
+          "pending": true,
+          "link": "connected"
+        },
+        "effects": [],
+        "rejected": "No quiet save is waiting on the slow-save timer"
+      }
+    },
+    {
+      "label": "admitted moves a quiet save's link to connected and keeps its timer",
+      "state": {
+        "name": "quiet",
+        "revision": 2,
+        "pending": true,
+        "link": "connecting",
+        "armed": 2
+      },
+      "event": {
+        "type": "admitted"
+      },
+      "expect": {
+        "state": {
+          "name": "quiet",
+          "revision": 2,
+          "pending": true,
+          "link": "connected",
+          "armed": 2
+        },
+        "effects": []
+      }
+    },
+    {
+      "label": "retrying moves a quiet save's link to reconnecting and keeps its timer",
+      "state": {
+        "name": "quiet",
+        "revision": 2,
+        "pending": true,
+        "link": "connected",
+        "armed": 2
+      },
+      "event": {
+        "type": "retrying"
+      },
+      "expect": {
+        "state": {
+          "name": "quiet",
+          "revision": 2,
+          "pending": true,
+          "link": "reconnecting",
+          "armed": 2
+        },
+        "effects": []
+      }
+    },
+    {
+      "label": "unreachable moves a quiet save's link to offline and keeps its timer",
+      "state": {
+        "name": "quiet",
+        "revision": 2,
+        "pending": true,
+        "link": "connected",
+        "armed": 2
+      },
+      "event": {
+        "type": "unreachable"
+      },
+      "expect": {
+        "state": {
+          "name": "quiet",
+          "revision": 2,
+          "pending": true,
+          "link": "offline",
+          "armed": 2
+        },
+        "effects": []
+      }
+    },
+    {
+      "label": "a remote change after a failed edit shows Saving at once",
+      "case": "remote",
+      "state": {
+        "name": "unsaved",
+        "revision": 2,
+        "pending": true,
+        "link": "connected"
+      },
+      "event": {
+        "type": "queued",
+        "revision": 3,
+        "edit": false
+      },
+      "expect": {
+        "state": {
+          "name": "saving",
+          "revision": 3,
+          "pending": true,
           "link": "connected"
         },
         "effects": []

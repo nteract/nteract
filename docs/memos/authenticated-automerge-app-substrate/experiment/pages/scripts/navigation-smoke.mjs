@@ -140,7 +140,12 @@ try {
     route.fulfill({
       status: 409,
       contentType: "application/json",
-      body: JSON.stringify({ error: "This prototype permits 100 pages per account" }),
+      body: JSON.stringify({
+        error: "This alpha release allows 250 Pages per account.",
+        code: "page_quota_exceeded",
+        limit: 250,
+        count: 250,
+      }),
     }),
   );
   await page.getByRole("button", { name: "New Page", exact: true }).click();

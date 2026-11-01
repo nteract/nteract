@@ -716,9 +716,16 @@ request, so it stays held until the object is discarded.
 sets up each D1 schema (server sessions, MCP OAuth) once per isolate. Work in
 front of the API-key verifier's cache, which shares pending lookups, runs one
 lookup per token at a time. The request that starts the work awaits it; others
-wait on their own timers. Either side gives up with a retryable `503` after 10
-seconds. A key stays held until its lookup settles, or for 65 seconds, past the
-cache's 60-second lifetime for an entry. The OIDC libraries' discovery,
+wait on their own timers and give up with a retryable `503` after 10 seconds. A
+lookup's starter gives up at 10 seconds too. A setup's starter waits up to 30
+seconds, the attempt's deadline, so slow setup that finishes in time still
+succeeds. At that deadline the attempt expires: the starter gets the same
+retryable `503`, the next request starts a new attempt, and a late result from
+the abandoned one changes nothing. That retry runs fresh work because
+setup callbacks hold no pending promise of their own: the shared session store
+(`oidcDatabase`) caches only settled schema readiness. A lookup key stays held
+until its lookup settles, or for 65 seconds, past the cache's 60-second
+lifetime for an entry. The OIDC libraries' discovery,
 signing-key and UserInfo caches, the ChatGPT client metadata check and the
 loopback issuer's key still share pending promises across requests (#4567). Remove it when celld keeps request context across shared
 promises; [celld-context-probe.mjs](scripts/celld-context-probe.mjs) then exits 0.
@@ -759,6 +766,49 @@ qualification. Runtime adaptations such as the Worker-only CBOR Uint8Array path
 are source-checked and regression-tested; a passing storage probe alone does not
 qualify ephemeral presence. Diagnostics exclude provider messages, credentials,
 request bodies, and document content.
+
+### Page quotas
+
+Each account has one Page limit. It bounds the account's active Pages and,
+separately, its Pages in Trash. [page-quota.mjs](worker/page-quota.mjs) resolves
+it from the first match of:
+
+| Rule | Matches |
+| --- | --- |
+| `email` | the account's server-verified email, normalized as invites normalize it |
+| `domain` | that email's domain, lowercased; subdomains don't match |
+| default | `PAGES_DEFAULT_PAGE_QUOTA` for the deploy target, 250 when unset |
+
+A matching rule replaces the default, so it can lower it. `0` pauses the
+account: it can't create or restore Pages, but it can still move them to Trash. A quota never deletes or hides existing Pages. Only server-verified email
+counts: an API key's whoami email, or the HMAC bindings a browser session or
+OAuth grant carries. An identity without one gets the default without reading
+D1. Rules live in D1's `pages_quota_rules` table, which the gateway reads whole
+(at most 1,000 rows) once per isolate every five minutes. A failed or slow read
+gives every account the default for 30 seconds and logs the failure; it never
+lifts a limit.
+
+The gateway forwards the resolved limit as `page_limit`, beside the caller's
+arguments, on Catalog calls that can add a Page to either listing
+(`create_page`, `register_page`, `create_space`, `delete_page`, `restore_page`)
+and on `list_pages`. The Catalog stays the authority for the count. It keeps
+`host/count/active` and `host/count/trash` equal to the number of `page/` and
+`trash/` keys, reservations and pending creations included
+([catalog-counts.mjs](worker/catalog-counts.mjs)). Each counted write runs in
+one storage transaction that reads the key's existence and the stored counts
+and writes both, and counted writes run one at a time, so concurrent writes in
+a settle pass never derive counts from the same value. Memory caches the counts
+only after a transaction commits; a failed write invalidates the cache. Below the limit
+a check reads only the stored count. At the limit, or before the counts exist,
+it counts every entry, releasing stale reservations, and rebuilds them. Every
+`list_pages` reads every owned entry for location anyway and rewrites counts
+that disagree, logging `catalog.count_repaired`; a rollback build that writes
+entries without counts leaves that to repair.
+
+At the limit, creating or restoring returns `409 page_quota_exceeded` and moving
+to Trash returns `409 trash_capacity`, each with `limit` and `count`.
+`list_pages` returns `quota: {limit, count, trash_count}` for the caller's own
+account, whatever the listing's filters. Home shows usage from 90% of the limit.
 
 ## Build updates
 
@@ -1017,7 +1067,9 @@ where they're raised: a stale exact-head guard is `409 stale_heads`, malformed
 `base_heads` and an edit batch that can't apply (zero or multiple matches, an
 unknown block, operation or mark) are `400 invalid_edit_selector`, and a comment
 action on a missing thread, message or block is `400 invalid_comment_selector`
-(a `thread_ids` batch adds `not_found_thread_ids`).
+(a `thread_ids` batch adds `not_found_thread_ids`). A full account is
+`409 page_quota_exceeded` and a full Trash `409 trash_capacity`; both carry
+`limit` and `count` (see Page quotas).
 An MCP result has no HTTP status, so [mcp.mjs](mcp.mjs) names any refusal the
 Worker left uncoded by its status (`access_denied`, `not_found`, `conflict` and
 so on). It adds `retryable: true` to `stale_heads`, whose retry is a new request
@@ -1110,7 +1162,8 @@ reader key, so restore reloads onto the writer replica. An upload authorized
 before trashing can still store its bytes before the final authorization check
 rejects it; those bytes are unreferenced and are not cleaned up. Reads of a trashed Page carry a `trash` object
 and no edit retry authority. The owner's catalog moves the entry from `page/` to
-`trash/`, so trashed Pages leave default listings and the 100-Page quota.
+`trash/`, so trashed Pages leave default listings and the account's active Page
+quota (see Page quotas).
 `list_pages({in_trash:true})` lists them.
 
 Each transition increments the record's `lifecycleRevision`. The Catalog
@@ -1259,7 +1312,10 @@ argument and reveals nothing about either resource.
 Listing by Project or parent reads the Catalog's entries, not D1: a Project
 lists every descendant of its roots, and a parent lists its direct children.
 Children of a parent shared with the caller come from the parent owner's
-Catalog, and each is verified by its Page host with the caller's access.
+Catalog, and each is verified by its Page host with the caller's access. One
+request checks at most 100 of them. Past that, a sealed cursor continues from
+the last child checked, even on a short page, so the caller can learn only that
+the parent has more than 100 children.
 `list_projects` takes candidates from `pages_catalog_spaces` and confirms each
 against the owner's `space/<id>` Catalog entry; cursors are sealed to the
 listing's filters. `read_page` breadcrumbs are computed in the gateway with one

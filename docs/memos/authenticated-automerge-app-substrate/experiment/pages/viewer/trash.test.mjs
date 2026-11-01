@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { MAX_PAGE_QUOTA as WORKER_MAX_PAGE_QUOTA } from "../worker/page-quota.mjs";
 import {
+  MAX_PAGE_QUOTA,
+  TRASH_REQUESTS,
   confirmPurge,
   listTrash,
   moveToTrashError,
@@ -77,6 +80,49 @@ test("a superseded restore or purge is reported as not applied", async () => {
     confirmPurge(tool, { page_id: pageId, preview_token: "pp1.token" }, "user:owner"),
     /changed/,
   );
+});
+
+/** A list_pages stub over `total` trashed Pages, `perPage` at a time. */
+function trashOf(total, perPage = 100) {
+  const requests = [];
+  const tool = async (operation, args = {}) => {
+    assert.equal(operation, "list_pages");
+    assert.equal(args.in_trash, true);
+    requests.push(args.cursor ?? null);
+    const start = args.cursor ? Number(args.cursor.slice("cursor-".length)) : 0;
+    const end = Math.min(total, start + perPage);
+    return {
+      pages: Array.from({ length: end - start }, (_, index) => ({
+        page_id: `page-${start + index}`,
+        state: "trashed",
+      })),
+      next_cursor: end < total ? `cursor-${end}` : null,
+    };
+  };
+  return { tool, requests };
+}
+
+test("Trash lists every Page past 10,000, following cursors to the end", async () => {
+  // A paused account at the largest limit can hold twice that in Trash.
+  const total = 2 * MAX_PAGE_QUOTA;
+  const { tool, requests } = trashOf(total);
+  const pages = await listTrash(tool);
+  assert.equal(pages.length, total);
+  assert.equal(new Set(pages.map((page) => page.page_id)).size, total);
+  assert.equal(requests.length, total / 100);
+  // Short pages, as a scan stopped by its bound returns, still reach the end.
+  const short = trashOf(12_345, 37);
+  assert.equal((await listTrash(short.tool)).length, 12_345);
+});
+
+test("a Trash listing that never ends throws instead of showing part of it", async () => {
+  const tool = async () => ({ pages: [{ page_id: "again" }], next_cursor: "more" });
+  await assert.rejects(listTrash(tool), /more Pages than this view can list/);
+});
+
+test("the viewer's largest limit matches the Worker's", () => {
+  assert.equal(MAX_PAGE_QUOTA, WORKER_MAX_PAGE_QUOTA);
+  assert.ok(TRASH_REQUESTS * 100 >= 4 * MAX_PAGE_QUOTA);
 });
 
 test("a peer's edit that beats Move to Trash gets a message a person can act on", () => {

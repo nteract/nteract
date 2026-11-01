@@ -1,4 +1,4 @@
-import { Check, CircleAlert, LoaderCircle } from "lucide-react";
+import { Check, CircleAlert } from "lucide-react";
 import "./save-status.css";
 
 // How each presentation key (STATUS_KEYS in sync-status-machine.mjs) is
@@ -7,16 +7,36 @@ const KINDS = {
   connecting: "working",
   connected: "plain",
   syncing: "working",
+  quiet: "quiet",
   saving: "working",
   saved: "saved",
   attention: "attention",
   failed: "error",
 };
+// Sync in progress is drawn as the dot alone, on desktop too: no spinner and
+// no text. Its label stays for screen readers and in the tooltip. Only this
+// person's own edits, still pending after SLOW_SAVE_MS, pulse.
+const IN_PROGRESS = new Set(["connecting", "connected", "syncing", "saving"]);
 
-// The compact form on phones: one dot whose color and motion carry the
-// state, with the label for screen readers and in the tooltip. Saving pulses,
-// syncing and connecting are a quiet dot, saved shows nothing, and anything
-// that needs attention or failed takes a warning color.
+// A save inside its first SLOW_SAVE_MS draws nothing and says nothing, on
+// desktop and phone alike. The live region stays mounted, empty, so the
+// status that follows is still announced.
+function QuietStatus({ compact }) {
+  return (
+    <span
+      className={`save-status${compact ? " save-status--dot" : ""} save-status--quiet`}
+      role="status"
+      aria-live="polite"
+      aria-atomic="true"
+    />
+  );
+}
+
+// One dot whose color and motion carry the state, with the label for screen
+// readers and in the tooltip. On phones it draws every status; on desktop,
+// sync in progress. Saving pulses (a still dot with reduced motion), syncing
+// and connecting are a still dot, saved shows nothing, and anything that
+// needs attention or failed takes a warning color.
 function StatusDot({ status, statusKey, kind }) {
   return (
     <span
@@ -47,15 +67,13 @@ export function SaveStatus({ status, statusKey, compact = false }) {
   // Only the session's exact-head durability receipt earns the saved indicator.
   // A connected socket or local checkpoint must retain its own visible status.
   const kind = Object.hasOwn(KINDS, statusKey) ? KINDS[statusKey] : "plain";
-  if (compact) return <StatusDot status={status} statusKey={statusKey} kind={kind} />;
+  if (kind === "quiet") return <QuietStatus compact={compact} />;
+  if (compact || IN_PROGRESS.has(statusKey))
+    return <StatusDot status={status} statusKey={statusKey} kind={kind} />;
+  // Text stays for what needs a decision: Not saved, Offline and the other
+  // attention and failure statuses, and a status this table doesn't know.
   const saved = kind === "saved";
-  const Icon = saved
-    ? Check
-    : kind === "working"
-      ? LoaderCircle
-      : kind === "attention" || kind === "error"
-        ? CircleAlert
-        : null;
+  const Icon = saved ? Check : kind === "attention" || kind === "error" ? CircleAlert : null;
   return (
     <span
       className={`save-status save-status--${kind}`}
