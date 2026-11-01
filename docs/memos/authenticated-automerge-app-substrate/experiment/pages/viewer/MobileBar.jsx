@@ -48,6 +48,7 @@ export function MobileBar({
   onComments,
   onFocusChange,
   barRef,
+  editorDom,
 }) {
   const [more, setMore] = useState(false);
   const moreButton = useRef(null),
@@ -62,6 +63,19 @@ export function MobileBar({
     return () => document.removeEventListener("pointerdown", outside, true);
   }, [more]);
   useEffect(() => onFocusChange?.(more), [more, onFocusChange]);
+  // The bar belongs to one editor. When focus moves anywhere else, by pointer,
+  // keyboard or code (into a Reply composer, the title), close the menu and
+  // let the bar go, so no command can reach this editor from there.
+  useEffect(() => {
+    const away = (event) => {
+      const target = event.target;
+      if (barRef.current?.contains(target) || editorDom?.contains(target)) return;
+      setMore(false);
+      onFocusChange?.(false);
+    };
+    document.addEventListener("focusin", away, true);
+    return () => document.removeEventListener("focusin", away, true);
+  }, [barRef, editorDom, onFocusChange]);
   const keep = (event) => event.preventDefault();
   const enabled = (name) =>
     editable &&
@@ -80,7 +94,11 @@ export function MobileBar({
       aria-label="Text formatting"
       onFocus={() => onFocusChange?.(true)}
       onBlur={(event) => {
-        if (!event.currentTarget.contains(event.relatedTarget)) onFocusChange?.(more);
+        const next = event.relatedTarget;
+        if (event.currentTarget.contains(next)) return;
+        // Back to the editor keeps the bar; the editor's own focus shows it.
+        if (!editorDom?.contains(next)) setMore(false);
+        onFocusChange?.(false);
       }}
     >
       <select

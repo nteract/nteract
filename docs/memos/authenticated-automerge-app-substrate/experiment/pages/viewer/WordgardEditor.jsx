@@ -881,6 +881,14 @@ export function WordgardEditor(props) {
       report(error);
     }
   }
+  // Mobile bar commands act only while this editor or its bar holds focus.
+  function ownsBar() {
+    const editor = view.current;
+    return (
+      !!editor &&
+      (editor.hasFocus || !!mobileBar.current?.contains(document.activeElement))
+    );
+  }
   function chooseImage() {
     const editor = view.current;
     if (!editor || !editable || imageStatus?.pending) return;
@@ -1054,9 +1062,10 @@ export function WordgardEditor(props) {
           editable={editable}
           styles={styles}
           openComments={props.openComments ?? 0}
-          onRun={run}
-          onStyle={(value) => run(value === "code" ? "code-block" : value)}
-          onImage={chooseImage}
+          editorDom={view.current?.dom}
+          onRun={(name) => ownsBar() && run(name)}
+          onStyle={(value) => ownsBar() && run(value === "code" ? "code-block" : value)}
+          onImage={() => ownsBar() && chooseImage()}
           onComments={() => props.onOpenComments?.()}
           onFocusChange={setBarFocus}
         />
