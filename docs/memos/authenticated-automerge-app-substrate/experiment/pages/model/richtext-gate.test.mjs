@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import * as A from "@automerge/automerge";
+import MarkdownIt from "markdown-it";
 import {
   enableRich,
   exportMarkdown,
@@ -83,13 +84,47 @@ const runs = {
 // The scan is ours and must stay well under the parser. The parse includes
 // Markdown-it's own work, whose floor on these inputs is tens of milliseconds;
 // a quadratic step still costs seconds.
+// Budgets scale with the machine, so a slow CI runner doesn't fail linear
+// code and a fast laptop doesn't hide a quadratic one. Two measurements, in
+// the same process and moment as the input's own:
+// - `calibration`: Markdown-it parsing a fixed 200 KB document of lists,
+//   emphasis, code and links, the machine's speed on linear parsing work.
+// - `baseline`: Markdown-it, configured as Pages' tokenizer (no HTML, tables
+//   and strikethrough), parsing this input. That work is irreducible: the
+//   scan and the import both run it.
+// The scan may cost a few baselines, and import and export several, plus a
+// few calibrations for our own linear passes. Nothing is a fixed number of
+// milliseconds. A quadratic step on 200 KB costs dozens of calibrations.
+const markdownIt = new MarkdownIt("commonmark", { html: false, linkify: false }).enable([
+  "table",
+  "strikethrough",
+]);
+const calibrationSource =
+  "- An item with *emphasis*, **strong**, `code` and [a link](https://example.org).\n".repeat(2500);
+let calibration;
+const budget = (source) => {
+  calibration ??= elapsed(() => markdownIt.parse(calibrationSource, {}));
+  const baseline = elapsed(() => markdownIt.parse(source, {}));
+  return {
+    scan: 3 * baseline + 2 * calibration,
+    importExport: 8 * baseline + 6 * calibration,
+    baseline,
+  };
+};
 for (const [name, source] of Object.entries(runs)) {
   test(`Markdown import is linear on input: ${name}`, () => {
     parseMarkdown(source.slice(0, 1000));
+    const limit = budget(source);
     const scan = elapsed(() => unsupportedMarkdown(source));
-    assert.ok(scan < 150, `${name}: scan ${scan.toFixed(1)} ms`);
+    assert.ok(
+      scan < limit.scan,
+      `${name}: scan ${scan.toFixed(1)} ms, budget ${limit.scan.toFixed(1)} ms (Markdown-it ${limit.baseline.toFixed(1)} ms, calibration ${calibration.toFixed(1)} ms)`,
+    );
     const parse = elapsed(() => exportMarkdown(parseMarkdown(source)));
-    assert.ok(parse < 1500, `${name}: import and export ${parse.toFixed(1)} ms`);
+    assert.ok(
+      parse < limit.importExport,
+      `${name}: import and export ${parse.toFixed(1)} ms, budget ${limit.importExport.toFixed(1)} ms (Markdown-it ${limit.baseline.toFixed(1)} ms, calibration ${calibration.toFixed(1)} ms)`,
+    );
   });
 }
 

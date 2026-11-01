@@ -354,14 +354,19 @@ fn scan(source: &str, tree: &Node) -> Result<Scan> {
     let blank = expression(&BLANK, r"\n[ \t]*\n")?;
     let mut found = Vec::new();
     let mut at = 0;
+    // The end of the paragraph the last display math opened in. Reused until
+    // a match passes it, so a run of `$$` lines searches for it once.
+    let mut paragraph_end = 0;
     while let Some(matched) = math.find_at(&text, at) {
         let first = matched.start() + matched.as_str().find('$').unwrap_or(0);
         let end = if matched.end() - first == 2 {
             // A line-start `$$` opens display math. It runs to the next `$$`
             // before a blank line, or to that blank line.
-            let paragraph_end = blank
-                .find_at(&text, matched.end())
-                .map_or(text.len(), |blank| blank.start());
+            if paragraph_end < matched.end() {
+                paragraph_end = blank
+                    .find_at(&text, matched.end())
+                    .map_or(text.len(), |blank| blank.start());
+            }
             match text[matched.end()..].find("$$") {
                 Some(close) if matched.end() + close < paragraph_end => matched.end() + close + 2,
                 _ => paragraph_end,

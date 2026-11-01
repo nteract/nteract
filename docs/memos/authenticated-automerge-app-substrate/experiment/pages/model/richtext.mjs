@@ -639,9 +639,10 @@ const serializer = new MarkdownSerializer(
     },
     // Text after a hard break starts a source line, where block syntax such
     // as `>`, `#` or a setext `=` would start a new block. Escape it as at a
-    // block start.
-    text(state, node) {
-      if (!state.inAutolink && state.out.endsWith("\\\n")) {
+    // block start. The previous sibling says so in constant time; reading
+    // `state.out` would flatten the whole output string on every text node.
+    text(state, node, parent, index) {
+      if (!state.inAutolink && index > 0 && parent.child(index - 1).type.name === "hard_break") {
         state.atBlockStart = true;
         if (node.text.startsWith("=")) {
           state.text(`\\=`, false);
