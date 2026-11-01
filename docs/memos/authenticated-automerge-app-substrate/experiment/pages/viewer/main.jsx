@@ -590,24 +590,19 @@ function App() {
       showError(error);
     }
   }
-  // One title keystroke, or a finished composition, as one splice at the
-  // revision the input showed. When a peer's change React hadn't shown yet
-  // was merged, the input shows the merged title with the caret after the
-  // splice, so it matches a revision again.
+  // One title keystroke, or a finished composition, read against the
+  // revision the input showed and written to the current document. When a
+  // peer's change React hadn't shown yet was kept, the input shows the merged
+  // title with the caret carried across, so it matches a revision again.
   function commitTitle(input, base) {
     const module = editor.module;
-    const value = input.value,
-      caret = input.selectionStart;
-    const plan = module.titleChange(session.doc, base, value, caret);
+    const value = input.value;
+    const plan = module.titleChange(session.doc, base, value, input.selectionStart);
     if (!plan) return;
-    const write = (doc) => module.writeTitle(doc, plan.edit, value);
-    const made = plan.heads
-      ? session.changeAt(plan.heads, write)
-      : (session.change(write), module.pageHeads(session.doc));
-    if (made && session.doc.title !== value) {
-      const at = module.caretAfterTitleChange(session.doc, made, caret);
+    session.change((doc) => module.writeTitle(doc, plan.edits));
+    if (session.doc.title !== value) {
       input.value = session.doc.title;
-      input.setSelectionRange(at, at);
+      input.setSelectionRange(plan.caret, plan.caret);
     }
     rememberTitleSelection(input);
   }

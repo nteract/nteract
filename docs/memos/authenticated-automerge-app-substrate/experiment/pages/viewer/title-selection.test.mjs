@@ -4,7 +4,6 @@ import * as A from "@automerge/automerge";
 import {
   TITLE_IDLE,
   captureTitleSelection,
-  caretAfterTitleChange,
   composingTitle,
   resolveTitleSelection,
   titleChange,
@@ -17,21 +16,30 @@ import {
 const type = (doc, at, text) => A.change(doc, (d) => A.splice(d, ["title"], at, 0, text));
 const remove = (doc, at, count) => A.change(doc, (d) => A.splice(d, ["title"], at, count));
 
-// What main.jsx's commitTitle does: the splice at the input's revision, then
-// the caret after it in the merged document.
+// Fixed actors: the writer's tab, and peers that sort before and after it,
+// so concurrent inserts at one spot are covered in both orders.
+const WRITER = "88".repeat(16);
+const PEERS = ["00".repeat(16), "ff".repeat(16)];
+const writer = (title) => A.from({ title }, { actor: WRITER });
+// A peer's edit made in its own replica (its own actor) and merged into the
+// writer's. Reusing the writer's actor would make two concurrent changes
+// from one actor, which Automerge can't represent.
+const peerEdit = (doc, actor, fn) =>
+  A.merge(A.clone(doc, { actor: WRITER }), A.change(A.clone(doc, { actor }), fn));
+const peerType = (doc, actor, at, text) =>
+  peerEdit(doc, actor, (d) => A.splice(d, ["title"], at, 0, text));
+const peerRemove = (doc, actor, at, count) =>
+  peerEdit(doc, actor, (d) => A.splice(d, ["title"], at, count));
+
+// What main.jsx's commitTitle does: the edit read at the input's revision
+// and written to the current document. The result must read the same after
+// a save and load.
 function commit(doc, base, value, caret) {
   const plan = titleChange(doc, base, value, caret);
   assert.ok(plan);
-  let made, next;
-  if (plan.heads) {
-    const result = A.changeAt(doc, plan.heads, (d) => writeTitle(d, plan.edit, value));
-    next = result.newDoc;
-    made = result.newHeads;
-  } else {
-    next = A.change(doc, (d) => writeTitle(d, plan.edit, value));
-    made = A.getHeads(next);
-  }
-  return { doc: next, caret: caretAfterTitleChange(next, made, caret), plan };
+  const next = A.change(A.clone(doc, { actor: WRITER }), (d) => writeTitle(d, plan.edits));
+  assert.equal(A.load(A.save(next)).title, next.title, "the result survives save and load");
+  return { doc: next, caret: plan.caret, plan };
 }
 const snapshot = (doc, caret) => titleSnapshot(doc, null, doc.title, caret);
 
@@ -115,24 +123,25 @@ test("a title caret next to an emoji stays on a code point boundary", () => {
 });
 
 test("a keystroke typed before React shows a peer's title change keeps both", () => {
-  const shown = A.from({ title: "Notes: Bet" });
-  const base = snapshot(shown, 10);
-  // The peer's text reached the document; the input still shows `shown`.
-  const after = commit(type(A.clone(shown), 10, " Alpha"), base, "Notes: Beta", 11);
-  assert.equal(after.doc.title, "Notes: Beta Alpha");
-  assert.equal(after.caret, 11);
-  const before = commit(type(A.clone(shown), 0, "My "), base, "Notes: Beta", 11);
-  assert.equal(before.doc.title, "My Notes: Beta");
-  assert.equal(before.caret, 14);
-  // A peer deleting the word this writer extends leaves the new character.
-  const removed = commit(remove(A.clone(shown), 7, 3), base, "Notes: Beta", 11);
-  assert.equal(removed.doc.title, "Notes: a");
-  assert.equal(removed.caret, 8);
+  for (const peer of PEERS) {
+    const shown = writer("Notes: Bet");
+    const base = snapshot(shown, 10);
+    const after = commit(peerType(shown, peer, 10, " Alpha"), base, "Notes: Beta", 11);
+    assert.equal(after.doc.title, "Notes: Beta Alpha");
+    assert.equal(after.caret, 11);
+    const before = commit(peerType(shown, peer, 0, "My "), base, "Notes: Beta", 11);
+    assert.equal(before.doc.title, "My Notes: Beta");
+    assert.equal(before.caret, 14);
+    // A peer deleting the word this writer extends leaves the new character.
+    const removed = commit(peerRemove(shown, peer, 7, 3), base, "Notes: Beta", 11);
+    assert.equal(removed.doc.title, "Notes: a");
+    assert.equal(removed.caret, 8);
+  }
 });
 
 test("without a usable base the edit reads against the current title", () => {
-  const doc = A.from({ title: "Plan" });
-  const expected = { heads: null, edit: { index: 4, remove: 0, insert: "s" } };
+  const doc = writer("Plan");
+  const expected = { edits: [{ index: 4, remove: 0, insert: "s" }], caret: 5 };
   assert.deepEqual(titleChange(doc, null, "Plans", 5), expected);
   assert.deepEqual(
     titleChange(doc, { value: "Other", heads: A.getHeads(doc) }, "Plans", 5),
@@ -142,29 +151,36 @@ test("without a usable base the edit reads against the current title", () => {
     titleChange(doc, { value: "Plan", heads: ["0".repeat(64)] }, "Plans", 5),
     expected,
   );
-  // A value that doesn't fit one splice is a whole-title diff.
-  assert.deepEqual(titleChange(doc, null, "xyz", 1), { heads: null, edit: null });
+  // A value the caret can't place is read as a diff that keeps shared text.
+  const rewritten = commit(doc, null, "xyz", 1);
+  assert.equal(rewritten.doc.title, "xyz");
+  assert.equal(rewritten.caret, 1);
+  const kept = commit(doc, null, "aPlanb", 1);
+  assert.equal(kept.doc.title, "aPlanb");
+  assert.deepEqual(titleChange(doc, null, "aPlanb", 1).edits, [
+    { index: 4, remove: 0, insert: "b" },
+    { index: 0, remove: 0, insert: "a" },
+  ]);
   assert.equal(titleChange({}, null, "xyz", 1), null);
 });
 
 test("a replacement never deletes a peer's unseen text", () => {
-  // "AB": the writer replaces "A" with "日" (input "日B", caret 1).
-  const shown = A.from({ title: "AB" });
-  const base = snapshot(shown, 1);
-  // A peer prepends.
-  const prepend = commit(type(A.clone(shown), 0, "X"), base, "日B", 1);
-  assert.ok(prepend.doc.title === "X日B" || prepend.doc.title === "日XB", prepend.doc.title);
-  assert.equal(prepend.doc.title[prepend.caret - 1], "日");
-  // A peer inserts inside the replaced range.
-  const wide = A.from({ title: "ABC" });
-  const inside = commit(type(A.clone(wide), 1, "x"), snapshot(wide, 2), "日C", 1);
-  assert.ok(inside.doc.title.includes("x") && inside.doc.title.endsWith("C"), inside.doc.title);
-  assert.ok(!/[AB]/.test(inside.doc.title), inside.doc.title);
-  assert.equal(inside.doc.title[inside.caret - 1], "日");
-  // A peer appends.
-  const append = commit(type(A.clone(shown), 2, "!"), base, "日B", 1);
-  assert.equal(append.doc.title, "日B!");
-  assert.equal(append.caret, 1);
+  for (const peer of PEERS) {
+    // "AB": the writer replaces "A" with "日" (input "日B", caret 1).
+    const shown = writer("AB");
+    const base = snapshot(shown, 1);
+    const prepend = commit(peerType(shown, peer, 0, "X"), base, "日B", 1);
+    assert.ok(["X日B", "日XB"].includes(prepend.doc.title), prepend.doc.title);
+    assert.equal(prepend.doc.title[prepend.caret - 1], "日");
+    // A peer inserts inside the replaced range.
+    const wide = writer("ABC");
+    const inside = commit(peerType(wide, peer, 1, "x"), snapshot(wide, 2), "日C", 1);
+    assert.ok(["x日C", "日xC"].includes(inside.doc.title), inside.doc.title);
+    assert.equal(inside.doc.title[inside.caret - 1], "日");
+    const append = commit(peerType(shown, peer, 2, "!"), base, "日B", 1);
+    assert.equal(append.doc.title, "日B!");
+    assert.equal(append.caret, 1);
+  }
 });
 
 test("an edit that fits no splice still never deletes a peer's unseen text", () => {
@@ -172,43 +188,84 @@ test("an edit that fits no splice still never deletes a peer's unseen text", () 
   // "A日B"; a peer prepends "X"; the writer presses Home and types "Q". The
   // next plain input commits "QA日B" with the caret at 1, which no single
   // splice from "AB" produces.
-  const shown = A.from({ title: "AB" });
-  const base = snapshot(shown, 1);
-  const doc = type(A.clone(shown), 0, "X");
-  const plan = titleChange(doc, base, "QA日B", 1);
-  assert.equal(plan.edit, null);
-  assert.deepEqual(plan.heads, base.heads);
-  const after = commit(A.clone(doc), base, "QA日B", 1);
-  assert.ok(after.doc.title === "XQA日B" || after.doc.title === "QXA日B", after.doc.title);
-  assert.equal(after.doc.title[after.caret - 1], "Q");
-  // With unknown heads the diff runs against the current title.
-  const unknown = commit(A.clone(doc), { value: "AB", heads: ["0".repeat(64)] }, "QA日B", 1);
-  assert.equal(unknown.doc.title, "QA日B");
+  for (const peer of PEERS) {
+    const shown = writer("AB");
+    const base = snapshot(shown, 1);
+    const doc = peerType(shown, peer, 0, "X");
+    const after = commit(doc, base, "QA日B", 1);
+    assert.ok(["XQA日B", "QXA日B"].includes(after.doc.title), after.doc.title);
+    assert.equal(after.doc.title[after.caret - 1], "Q");
+    // With unknown heads the diff runs against the current title.
+    const unknown = commit(doc, { value: "AB", heads: ["0".repeat(64)] }, "QA日B", 1);
+    assert.equal(unknown.doc.title, "QA日B");
+  }
+});
+
+test("a stale edit around this tab's own later changes merges cleanly", () => {
+  for (const peer of PEERS) {
+    const shown = writer("AB");
+    const base = snapshot(shown, 1);
+    // After the snapshot this tab wrote elsewhere in the Page, then a peer
+    // prepended to the title.
+    const own = A.change(A.clone(shown, { actor: WRITER }), (d) => {
+      d.body = "typed in the body";
+    });
+    const doc = peerType(own, peer, 0, "X");
+    for (const [value, expected] of [
+      ["日B", "X日B"],
+      ["QA日B", "XQA日B"],
+    ]) {
+      const after = commit(doc, base, value, 1);
+      assert.equal(after.doc.title, expected);
+      assert.equal(after.doc.body, "typed in the body");
+    }
+  }
+});
+
+test("a stale edit maps the caret before, inside and after its inserted text", () => {
+  for (const peer of PEERS) {
+    const shown = writer("one two");
+    const base = snapshot(shown, 7);
+    const doc = peerType(shown, peer, 0, ">> ");
+    // A plain diff "one two" -> "one 2 two" inserts "2 " at 4.
+    for (const [caret, landed] of [
+      [2, 5],
+      [5, 8],
+      [6, 9],
+      [9, 12],
+    ])
+      assert.equal(commit(doc, base, "one 2 two", caret).caret, landed, `caret ${caret}`);
+    assert.equal(commit(doc, base, "one 2 two", 6).doc.title, ">> one 2 two");
+  }
 });
 
 test("a stale title splice next to an emoji keeps the peer's emoji whole", () => {
-  const shown = A.from({ title: "Go 🌊" });
-  const after = commit(type(A.clone(shown), 5, "🌍"), snapshot(shown, 5), "Go 🌊!", 6);
-  assert.equal(after.doc.title, "Go 🌊!🌍");
-  assert.equal(after.caret, 6);
+  for (const peer of PEERS) {
+    const shown = writer("Go 🌊");
+    const after = commit(peerType(shown, peer, 5, "🌍"), snapshot(shown, 5), "Go 🌊!", 6);
+    assert.equal(after.doc.title, "Go 🌊!🌍");
+    assert.equal(after.caret, 6);
+  }
   // Replacing one emoji with another that shares its high surrogate.
   assert.deepEqual(titleSplice("a🌊", "a🌍", 3), { index: 1, remove: 2, insert: "🌍" });
 });
 
 test("the caret follows the applied splice when a stale edit kept a peer's text", () => {
-  const shown = A.from({ title: "Plan" });
-  const base = snapshot(shown, 4);
-  const doc = type(A.clone(shown), 0, "My ");
-  // The input lags, so a selection change captures against what it shows.
-  const lagging = titleSnapshot(doc, base, "Plan", 4);
-  assert.deepEqual(lagging.heads, base.heads);
-  assert.deepEqual(resolveTitleSelection(doc, lagging.cursors), { start: 7, end: 7 });
-  const after = commit(doc, lagging, "Plans", 5);
-  assert.equal(after.doc.title, "My Plans");
-  assert.equal(after.caret, 8);
-  // An input value that matches no known revision keeps the last snapshot.
-  const shownNow = titleSnapshot(after.doc, lagging, after.doc.title, after.caret);
-  assert.equal(titleSnapshot(after.doc, shownNow, "unrelated", 2), shownNow);
+  for (const peer of PEERS) {
+    const shown = writer("Plan");
+    const base = snapshot(shown, 4);
+    const doc = peerType(shown, peer, 0, "My ");
+    // The input lags, so a selection change captures against what it shows.
+    const lagging = titleSnapshot(doc, base, "Plan", 4);
+    assert.deepEqual(lagging.heads, base.heads);
+    assert.deepEqual(resolveTitleSelection(doc, lagging.cursors), { start: 7, end: 7 });
+    const after = commit(doc, lagging, "Plans", 5);
+    assert.equal(after.doc.title, "My Plans");
+    assert.equal(after.caret, 8);
+    // An input value that matches no known revision keeps the last snapshot.
+    const shownNow = titleSnapshot(after.doc, lagging, after.doc.title, after.caret);
+    assert.equal(titleSnapshot(after.doc, shownNow, "unrelated", 2), shownNow);
+  }
 });
 
 // The input lifecycle: events in, state and effect out.
@@ -296,19 +353,79 @@ test("composition events from another Page and resets leave the right state", ()
 });
 
 test("a peer's title edit during a composition merges when the composition ends", () => {
-  let doc = A.from({ title: "Notes" });
+  let doc = writer("Notes");
   const shown = snapshot(doc, 5);
   let { state } = run([{ type: "compositionstart", session: "s", base: shown, value: "Notes" }]);
   for (const value of ["Notes k", "Notes か", "Notes 漢"])
     state = titleInput(state, { type: "input", session: "s", composing: true, value }).state;
-  doc = type(doc, 0, "My ");
+  doc = peerType(doc, PEERS[0], 0, "My ");
   const ended = titleInput(state, { type: "compositionend" });
   const after = commit(doc, ended.effect.base, "Notes 漢", 7);
   assert.equal(after.doc.title, "My Notes 漢");
   assert.equal(after.caret, 10);
   // A composed replacement mid-title with a peer appending.
-  const ab = A.from({ title: "AB" });
-  const mid = commit(type(A.clone(ab), 2, "!"), snapshot(ab, 1), "A日B", 2);
+  const ab = writer("AB");
+  const mid = commit(peerType(ab, PEERS[1], 2, "!"), snapshot(ab, 1), "A日B", 2);
   assert.equal(mid.doc.title, "A日B!");
   assert.equal(mid.caret, 2);
+});
+
+test("random stale edits keep every peer insertion and every typed character", () => {
+  // A small seeded generator, so a failure names its case.
+  let seed = 7;
+  const random = (n) => {
+    seed = (seed * 1103515245 + 12345) % 2147483648;
+    return seed % n;
+  };
+  const pick = (text) => text[random(text.length)];
+  for (let round = 0; round < 300; round++) {
+    const peer = PEERS[round % 2];
+    const shownText = Array.from({ length: 1 + random(6) }, () => pick(["a", "b", "🌊"])).join("");
+    const shown = writer(shownText);
+    const units = Array.from(shownText);
+    // The writer deletes some characters and types lowercase "q" and "日".
+    const kept = units.filter(() => random(4) !== 0);
+    const typed = [];
+    const value = [];
+    for (let k = 0; k <= kept.length; k++) {
+      if (random(3) === 0) {
+        const c = pick(["q", "日"]);
+        typed.push(c);
+        value.push(c);
+      }
+      if (k < kept.length) value.push(kept[k]);
+    }
+    const valueText = value.join("");
+    // The peer inserts distinct capitals the writer never types.
+    let doc = shown;
+    const inserted = [];
+    for (let k = 0; k < 1 + random(3); k++) {
+      const c = "XYZ"[k];
+      inserted.push(c);
+      doc = peerType(doc, peer, random(doc.title.length + 1), c);
+    }
+    const caret = random(valueText.length + 1);
+    const label = `round ${round}: "${shownText}" -> "${valueText}" with peer "${doc.title}"`;
+    const after = commit(doc, snapshot(shown, 0), valueText, caret);
+    for (const c of inserted)
+      assert.equal(
+        after.doc.title.split(c).length - 1,
+        1,
+        `${label}: peer ${c} -> "${after.doc.title}"`,
+      );
+    const count = (text, c) => Array.from(text).filter((x) => x === c).length;
+    for (const c of ["q", "日"])
+      assert.equal(count(after.doc.title, c), count(valueText, c), `${label}: typed ${c}`);
+    for (const c of ["a", "b", "🌊"])
+      assert.equal(count(after.doc.title, c), count(valueText, c), `${label}: kept ${c}`);
+    assert.ok(after.caret >= 0 && after.caret <= after.doc.title.length, label);
+    // The caret follows the code point before it in the input.
+    const before = (text, at) => (at > 0 ? Array.from(text.slice(0, at)).at(-1) : null);
+    if (caret > 0)
+      assert.equal(
+        before(after.doc.title, after.caret),
+        before(valueText, caret),
+        `${label}: caret ${caret} -> ${after.caret} in "${after.doc.title}"`,
+      );
+  }
 });

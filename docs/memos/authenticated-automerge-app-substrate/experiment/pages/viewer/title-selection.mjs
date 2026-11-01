@@ -89,45 +89,186 @@ export function titleSplice(previous, next, caret) {
   return { index, remove: end - index, insert: next.slice(index, caret) };
 }
 
-/** A title input's edit, written at the revision the input showed. `base`
- * is the snapshot of what the input showed before the keystroke. A peer's
- * change can reach the document before React shows it, so the input can be
- * behind. The edit is read against the input's revision and applied there
- * (`changeAt` with `heads`), and Automerge merges it with everything since:
- * it can only delete characters the input showed, never a peer's unseen
- * text. `heads` is null when the input shows the current title or its
- * revision is unknown. `edit` is one splice placed by the caret, or null
- * when the value doesn't fit one splice; the caller then diffs the shown
- * title into the value with updateText, still at `heads`. */
+// The longest the LCS diff below compares, in code points multiplied. Titles
+// are short; past this the diff keeps only the common prefix and suffix.
+const LCS_LIMIT = 4_000_000;
+
+/** `from` turned into `next` as deletions of `from`'s code points and
+ * insertion runs at gaps between them (UTF-16 offsets into `from`). The
+ * caret's single splice is preferred: it places an edit inside repeated
+ * characters where a diff can't. Otherwise a longest-common-subsequence diff
+ * over code points keeps every character the two share, as updateText does.
+ * `at` describes the caret: inside an insertion run (`run`, `into`), or at a
+ * gap between kept characters (`gap`). */
+function titleOps(from, next, caret) {
+  const splice = titleSplice(from, next, caret);
+  if (splice) {
+    const deleted = [];
+    for (let offset = splice.index; offset < splice.index + splice.remove; ) {
+      const width = from.codePointAt(offset) > 0xffff ? 2 : 1;
+      deleted.push({ offset, width });
+      offset += width;
+    }
+    const runs = splice.insert ? [{ gap: splice.index, text: splice.insert }] : [];
+    return {
+      deleted,
+      runs,
+      at: runs.length ? { run: runs[0], into: splice.insert.length } : { gap: splice.index },
+    };
+  }
+  const a = Array.from(from),
+    b = Array.from(next),
+    width = (value) => value.length;
+  let keepStart = 0,
+    keepEnd = 0;
+  if (a.length * b.length > LCS_LIMIT) {
+    while (keepStart < a.length && keepStart < b.length && a[keepStart] === b[keepStart])
+      keepStart++;
+    while (
+      keepEnd < a.length - keepStart &&
+      keepEnd < b.length - keepStart &&
+      a[a.length - 1 - keepEnd] === b[b.length - 1 - keepEnd]
+    )
+      keepEnd++;
+  }
+  const n = a.length - keepEnd,
+    m = b.length - keepEnd;
+  // Suffix LCS lengths for a[i..n) and b[j..m), past the shared prefix.
+  const rows = n - keepStart + 1,
+    cols = m - keepStart + 1,
+    table = new Uint32Array(rows * cols);
+  for (let i = n - 1; i >= keepStart; i--)
+    for (let j = m - 1; j >= keepStart; j--) {
+      const at = (i - keepStart) * cols + (j - keepStart);
+      table[at] =
+        a[i] === b[j] ? table[at + cols + 1] + 1 : Math.max(table[at + cols], table[at + 1]);
+    }
+  const lcs = (i, j) => table[(i - keepStart) * cols + (j - keepStart)];
+  const deleted = [],
+    runs = [];
+  let offset = a.slice(0, keepStart).reduce((sum, c) => sum + width(c), 0),
+    valueAt = offset,
+    // A caret inside a shared prefix the diff skipped sits at that gap.
+    at = keepStart && caret < offset ? { gap: caret } : null,
+    i = keepStart,
+    j = keepStart;
+  const insert = (text) => {
+    const last = runs.at(-1);
+    let run = last;
+    if (last?.gap === offset && last.end === runs.length) last.text += text;
+    else runs.push((run = { gap: offset, text, end: runs.length + 1 }));
+    if (!at && caret >= valueAt && caret <= valueAt + width(text))
+      at = { run, into: run.text.length - width(text) + caret - valueAt };
+    valueAt += width(text);
+  };
+  while (i < n || j < m) {
+    if (i < n && j < m && a[i] === b[j]) {
+      if (!at && caret === valueAt) at = { gap: offset };
+      offset += width(a[i]);
+      valueAt += width(a[i]);
+      i++;
+      j++;
+    } else if (j >= m || (i < n && lcs(i + 1, j) >= lcs(i, j + 1))) {
+      deleted.push({ offset, width: width(a[i]) });
+      offset += width(a[i]);
+      i++;
+    } else insert(b[j++]);
+  }
+  if (!at) at = { gap: caret - valueAt + offset };
+  for (const run of runs) delete run.end;
+  return { deleted, runs, at };
+}
+
+/** A title input's edit, as splices on the current document, and where the
+ * input's caret lands. `base` is the snapshot of what the input showed
+ * before the keystroke. A peer's change can reach the document before React
+ * shows it, so the input can be behind. The edit is read against the input's
+ * revision and carried to the current document by native cursors: it deletes
+ * only characters the input showed that still exist, and each inserted run
+ * goes after the code point that preceded it in the input (a run at the start
+ * goes before the first one). A peer's unseen text is never deleted, and
+ * every step is an ordinary change on the current document. Returns null when
+ * the document has no title. */
 export function titleChange(doc, base, next, caret) {
-  if (typeof doc?.title !== "string") return null;
-  let shown = null;
+  const current = doc?.title;
+  if (typeof current !== "string") return null;
+  let shown = doc;
   if (base && typeof base.value === "string" && Array.isArray(base.heads)) {
     try {
       const view = A.view(doc, base.heads);
-      if (view.title === base.value && view.title !== doc.title) shown = view;
+      if (view.title === base.value) shown = view;
     } catch {
       /* Unknown heads: read against the current title. */
     }
   }
-  return { heads: shown ? base.heads : null, edit: titleSplice((shown ?? doc).title, next, caret) };
+  const from = shown.title;
+  const { deleted, runs, at } = titleOps(from, next, caret);
+  // Where a shown character is now, and whether it is still there.
+  const locate = (offset) => {
+    const cursor = A.getCursor(shown, path, offset);
+    const position = A.getCursorPosition(doc, path, cursor);
+    let alive = false;
+    try {
+      alive = position < current.length && A.getCursor(doc, path, position) === cursor;
+    } catch {
+      /* past the end */
+    }
+    return { position, alive };
+  };
+  // Where a gap between shown characters is now.
+  const place = (gap) => {
+    if (gap > 0)
+      return stickyCaretPosition(doc, path, current, stickyCaret(shown, path, from, gap));
+    return from.length ? locate(0).position : 0;
+  };
+  const removals = deleted
+    .map(({ offset, width }) => ({ ...locate(offset), width }))
+    .filter(({ alive }) => alive);
+  const inserts = runs.map((run) => ({ run, position: place(run.gap) }));
+  const removedBefore = (position) =>
+    removals.reduce((sum, r) => (r.position < position ? sum + r.width : sum), 0);
+  const insertedBefore = (position, gap) =>
+    inserts.reduce(
+      (sum, r) =>
+        r.position < position || (r.position === position && r.run.gap < gap)
+          ? sum + r.run.text.length
+          : sum,
+      0,
+    );
+  // From the end of the document backwards, so earlier indexes stay valid. At
+  // one position a deletion comes before an insertion there, and a later
+  // run before an earlier one, so runs keep their order.
+  const edits = [
+    ...removals.map((r) => ({
+      position: r.position,
+      rank: 2,
+      gap: 0,
+      edit: { index: r.position, remove: r.width, insert: "" },
+    })),
+    ...inserts.map((r) => ({
+      position: r.position,
+      rank: 1,
+      gap: r.run.gap,
+      edit: { index: r.position, remove: 0, insert: r.run.text },
+    })),
+  ]
+    .toSorted((x, y) => y.position - x.position || y.rank - x.rank || y.gap - x.gap)
+    .map(({ edit }) => edit);
+  let landed;
+  if (at.run) {
+    const position = inserts.find((r) => r.run === at.run).position;
+    landed = position - removedBefore(position) + insertedBefore(position, at.run.gap) + at.into;
+  } else {
+    const position = place(at.gap);
+    landed = position - removedBefore(position) + insertedBefore(position, at.gap);
+  }
+  return { edits, caret: landed };
 }
 
-/** Apply a titleChange inside a change callback: its splice, or a diff of
- * the title into `value`. */
-export function writeTitle(doc, edit, value) {
-  if (!edit) A.updateText(doc, path, value);
-  else if (edit.remove || edit.insert) A.splice(doc, path, edit.index, edit.remove, edit.insert);
-}
-
-/** The input's caret after a title change, in `doc`, which contains the
- * change that produced `changeHeads`. In that change's own revision the
- * title is exactly what the input shows, so `caret` sticks to the code point
- * before it there, and lands after it wherever peers' merged text put it. */
-export function caretAfterTitleChange(doc, changeHeads, caret) {
-  if (caret <= 0) return 0;
-  const view = A.view(doc, changeHeads);
-  return stickyCaretPosition(doc, path, doc.title, stickyCaret(view, path, view.title, caret));
+/** Apply titleChange's splices inside a change callback. */
+export function writeTitle(doc, edits) {
+  for (const { index, remove, insert } of edits)
+    if (remove || insert) A.splice(doc, path, index, remove, insert);
 }
 
 // The title input's event lifecycle, as one transition function. An IME owns
