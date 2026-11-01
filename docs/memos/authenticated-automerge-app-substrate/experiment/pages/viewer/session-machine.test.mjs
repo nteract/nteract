@@ -103,6 +103,7 @@ async function fixture({ opening = false, startable = false, role = "editor" } =
   };
   session.drainBeforeClose = record("drain", session.drainBeforeClose);
   session.forgetLocal = record("forget", session.forgetLocal);
+  session.revokeLocal = record("revoke", session.revokeLocal);
   session.disconnectSockets = () => {
     ctx.raw.push("disconnect");
     return Promise.resolve();
@@ -218,6 +219,10 @@ async function prepare(state, event) {
       if (state.closing) await session.markDeleted();
       else void session.markDeleted();
       break;
+    case "revoked":
+      if (state.closing) await session.revoke();
+      else void session.revoke();
+      break;
   }
   return () => {
     finish();
@@ -246,6 +251,17 @@ function deliver(ctx, event) {
     case "accessChanged": {
       if (event.grant === "deleted") {
         void session.markDeleted().catch(() => {});
+        return undefined;
+      }
+      // The host's page_access_denied, through the handler openConnection,
+      // receipts and acceptPageAccess share.
+      if (event.grant === "revoked") {
+        void session.revoke().catch(() => {});
+        return undefined;
+      }
+      // A refusal without a code keeps the copy (pauseForAccess).
+      if (event.grant === "denied" && !event.tab) {
+        session.pauseForAccess(DENIED, { denied: true });
         return undefined;
       }
       if (event.tab) {
@@ -304,6 +320,8 @@ function assertFlags(session, phase) {
   const pause = pauseOf(phase);
   assert.equal(session.alive, isLive(phase));
   assert.equal(session.deleted, phase.name === "deleted");
+  assert.equal(session.revoked, phase.name === "revoked");
+  assert.equal(session.hidden, phase.name === "deleted" || phase.name === "revoked");
   assert.equal(session.authRequired, pause.auth);
   // An archived replica still needs its replacement: Reload stays offered.
   assert.equal(
@@ -311,7 +329,10 @@ function assertFlags(session, phase) {
     pause.access === "reload" || (phase.name === "closed" && !!phase.archived),
   );
   if (phase.name !== "opening")
-    assert.equal(session.accessDenied, pause.access === "access" || pause.access === "trash");
+    assert.equal(
+      session.accessDenied,
+      pause.access === "access" || pause.access === "trash" || phase.name === "revoked",
+    );
   assert.equal(session.checkpointWritten, phase.name === "closed" && phase.checkpointWritten);
 }
 
@@ -335,6 +356,8 @@ function guardFor(state, event) {
   switch (state.name) {
     case "deleted":
       return event.type === "leave" ? REJECT.alreadyClosing : REJECT.deleted;
+    case "revoked":
+      return event.type === "leave" ? REJECT.alreadyClosing : REJECT.revoked;
     case "closed":
       return event.type === "leave" ? REJECT.alreadyClosed : REJECT.closed;
     case "checkpointing":
@@ -362,7 +385,7 @@ async function drive(state, event) {
 }
 
 const table = loadTable(TABLE);
-const COUNTS = { rows: 78, pairs: 38, unreachable: 32, cases: 61 };
+const COUNTS = { rows: 90, pairs: 43, unreachable: 37, cases: 69 };
 
 test("the viewer-session table runs through the pure machine", async () => {
   assert.deepEqual(await runTable(viewerSessionMachine, table), COUNTS);

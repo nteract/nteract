@@ -108,7 +108,7 @@ export class BuildMonitor {
 const keyOf = (session) => `${session.identity?.principal}:${session.pageId}`;
 
 function pendingOf(session) {
-  if (session.deleted) return false;
+  if (session.hidden) return false;
   try {
     return !!session.recoveryPending;
   } catch {
@@ -117,10 +117,11 @@ function pendingOf(session) {
 }
 
 const HELD = new Set(["opening", "open", "paused"]);
-// The release has started: the checkpoint settled, or a deleted Page's local
-// copy is forgotten.
+// The release has started: the checkpoint settled, or a deleted or revoked
+// Page's local copy is archived.
 const releasing = (phase) =>
-  phase.name === "closed" || (phase.name === "deleted" && phase.closing === true);
+  phase.name === "closed" ||
+  ((phase.name === "deleted" || phase.name === "revoked") && phase.closing === true);
 
 /** What the gate keeps about an owned session, from its phase and receipt.
  * Membership follows the lifecycle, not who started the close: a session
@@ -149,7 +150,8 @@ function summarize(id, session) {
  * its own recovery record. */
 function released(id, session) {
   const savedHeads = [...(session.savedHeads ?? [])];
-  if (session.deleted) return { id, key: keyOf(session), phase: "deleted", savedHeads };
+  // A revoked copy is archived like a deleted one: the gate keeps no record.
+  if (session.hidden) return { id, key: keyOf(session), phase: "deleted", savedHeads };
   const left = (!session.phase$.snapshot().archived && session.leaveRecord) || { saved: true };
   const event = {
     id,

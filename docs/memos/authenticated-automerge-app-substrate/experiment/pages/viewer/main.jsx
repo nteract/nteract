@@ -61,6 +61,7 @@ import "./formatting-toolbar.css";
 import { focusCreatedPageTitle, titleHandsOffToBody } from "./title-navigation.mjs";
 import { BuildUpdate, buildMonitor } from "./BuildUpdate.jsx";
 import { SchemaNotice } from "./SchemaNotice.jsx";
+import { RetiredPage } from "./RetiredPage.jsx";
 import { reloadGate } from "./build-freshness.mjs";
 import { EditorLoader } from "./editor-loader.mjs";
 import { SessionHost } from "./session-host.mjs";
@@ -301,20 +302,34 @@ function App() {
       },
       () => {},
     );
+    const listRecoveries = () =>
+      void next
+        .listRecoveries()
+        .then((records) => {
+          if (host.current === next) setLocalRecoveries(records);
+        })
+        .catch(() => {});
+    // A refusal hides the Page at once and archives its copy afterwards:
+    // list the archive again once it's written.
+    let hiding = next.hidden,
+      archived = next.recoveryArchived;
     next.subscribe(() => {
       if (host.current === next) {
         paint((n) => n + 1);
         if (next.accessReloadRequired && !next.recoveryPending) void reloadAccess(next);
+        if (next.hidden && !hiding) {
+          hiding = true;
+          resetDocumentUI();
+        }
+        if (next.recoveryArchived && !archived) {
+          archived = true;
+          listRecoveries();
+        }
       }
     });
-    void next
-      .listRecoveries()
-      .then((records) => {
-        if (host.current === next) setLocalRecoveries(records);
-      })
-      .catch(() => {});
+    listRecoveries();
     if (next.accessReloadRequired && !next.recoveryPending) void reloadAccess(next);
-    const first = editor.module.orderedBlockIds(next.doc)[0] ?? null;
+    const first = next.doc ? (editor.module.orderedBlockIds(next.doc)[0] ?? null) : null;
     activateBlock(first);
     if (focus) setFocusBlock(first);
     return true;
@@ -325,7 +340,13 @@ function App() {
     return host.reloadAccess(previous, { install, onError: showError });
   }
   function downloadDraft(record) {
-    const draft = host.current?.exportRecovery(record);
+    let draft;
+    try {
+      draft = host.current?.exportRecovery(record);
+    } catch (error) {
+      showError(error);
+      return;
+    }
     if (!draft) return;
     const url = URL.createObjectURL(
       new Blob([JSON.stringify(draft, null, 2)], { type: "application/json" }),
@@ -1208,6 +1229,13 @@ function App() {
                 containerRef={article}
               />
             </main>
+          ) : session?.hidden ? (
+            <RetiredPage
+              session={session}
+              recoveries={localRecoveries}
+              onDownload={downloadDraft}
+              onHome={() => home(null)}
+            />
           ) : opening ? (
             <main className="welcome">
               <p role="status">Opening…</p>

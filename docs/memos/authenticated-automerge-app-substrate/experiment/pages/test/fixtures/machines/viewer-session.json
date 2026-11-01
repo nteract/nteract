@@ -1,7 +1,16 @@
 {
   "machine": "viewer-session",
   "description": "A viewer's Page session in this tab. viewer/session-machine.test.mjs drives each row through PageSession and its drain.",
-  "states": ["opening", "open", "paused", "draining", "checkpointing", "closed", "deleted"],
+  "states": [
+    "opening",
+    "open",
+    "paused",
+    "draining",
+    "checkpointing",
+    "closed",
+    "deleted",
+    "revoked"
+  ],
   "events": [
     "opened",
     "accessChanged",
@@ -102,13 +111,26 @@
       "deleted",
       "checkpointFail",
       "the interpreter delivers a checkpoint result only while checkpointing"
+    ],
+    ["revoked", "opened", "start() reports opened once, before the session is installed"],
+    ["revoked", "restore", "a revoked account can't restore the Page"],
+    ["revoked", "drained", "the interpreter delivers drained only while draining"],
+    [
+      "revoked",
+      "checkpointOk",
+      "the interpreter delivers a checkpoint result only while checkpointing"
+    ],
+    [
+      "revoked",
+      "checkpointFail",
+      "the interpreter delivers a checkpoint result only while checkpointing"
     ]
   ],
   "cases": {
     "opening/opened": ["readable", "denied"],
-    "opening/accessChanged": ["same", "changed", "denied", "deleted"],
+    "opening/accessChanged": ["same", "changed", "denied", "revoked", "deleted"],
     "opening/signIn": ["ok", "failed"],
-    "open/accessChanged": ["same", "changed", "denied", "deleted", "tab"],
+    "open/accessChanged": ["same", "changed", "denied", "revoked", "deleted", "tab"],
     "open/signIn": ["ok", "failed"],
     "open/leave": ["drain", "close"],
     "paused/accessChanged": [
@@ -117,6 +139,7 @@
       "same-clears-reload",
       "changed",
       "denied-keeps-sign-in",
+      "revoked",
       "deleted",
       "tab"
     ],
@@ -124,16 +147,17 @@
     "paused/restore": ["sign-in", "access-paused"],
     "paused/reloadAccess": ["reload", "reload-with-sign-in", "not-reload"],
     "paused/leave": ["drain", "close"],
-    "draining/accessChanged": ["same", "changed", "denied", "deleted"],
+    "draining/accessChanged": ["same", "changed", "denied", "revoked", "deleted"],
     "draining/signIn": ["ok", "failed"],
     "draining/drained": ["saved", "unsaved", "paused"],
-    "checkpointing/accessChanged": ["closing", "archiving", "deleted"],
+    "checkpointing/accessChanged": ["closing", "archiving", "revoked", "deleted"],
     "checkpointing/signIn": ["closing", "archiving"],
     "checkpointing/checkpointOk": ["close", "drained", "archive"],
     "checkpointing/checkpointFail": ["error", "deleted", "archive"],
-    "closed/accessChanged": ["late-answer", "deleted"],
+    "closed/accessChanged": ["late-answer", "revoked", "deleted"],
     "closed/reloadAccess": ["archived", "not-archived"],
-    "deleted/leave": ["release", "already-closing"]
+    "deleted/leave": ["release", "already-closing"],
+    "revoked/leave": ["release", "already-closing"]
   },
   "rows": [
     {
@@ -177,6 +201,16 @@
       "state": { "name": "opening" },
       "event": { "type": "accessChanged", "grant": "deleted" },
       "expect": { "state": { "name": "deleted" }, "effects": [{ "type": "forget" }] }
+    },
+    {
+      "note": "the first /api/connect answers page_access_denied",
+      "case": "revoked",
+      "state": { "name": "opening" },
+      "event": { "type": "accessChanged", "grant": "revoked" },
+      "expect": {
+        "state": { "name": "revoked" },
+        "effects": [{ "type": "disconnect" }, { "type": "revoke" }]
+      }
     },
     {
       "case": "ok",
@@ -243,6 +277,17 @@
       "state": { "name": "open" },
       "event": { "type": "accessChanged", "grant": "deleted" },
       "expect": { "state": { "name": "deleted" }, "effects": [{ "type": "forget" }] }
+    },
+    {
+      "label": "open × accessChanged revokes while open",
+      "note": "sync stops at once; the copy moves to the recovery archive before the close starts",
+      "case": "revoked",
+      "state": { "name": "open" },
+      "event": { "type": "accessChanged", "grant": "revoked" },
+      "expect": {
+        "state": { "name": "revoked" },
+        "effects": [{ "type": "disconnect" }, { "type": "revoke" }]
+      }
     },
     {
       "note": "another tab wrote the denial; it already persisted the fact",
@@ -352,6 +397,16 @@
       "state": { "name": "paused", "reason": "access" },
       "event": { "type": "accessChanged", "grant": "deleted" },
       "expect": { "state": { "name": "deleted" }, "effects": [{ "type": "forget" }] }
+    },
+    {
+      "note": "a copy kept by an earlier refusal without a code retires on page_access_denied",
+      "case": "revoked",
+      "state": { "name": "paused", "reason": "access" },
+      "event": { "type": "accessChanged", "grant": "revoked" },
+      "expect": {
+        "state": { "name": "revoked" },
+        "effects": [{ "type": "disconnect" }, { "type": "revoke" }]
+      }
     },
     {
       "case": "tab",
@@ -505,6 +560,15 @@
       "expect": { "state": { "name": "deleted" }, "effects": [{ "type": "forget" }] }
     },
     {
+      "case": "revoked",
+      "state": { "name": "draining" },
+      "event": { "type": "accessChanged", "grant": "revoked" },
+      "expect": {
+        "state": { "name": "revoked" },
+        "effects": [{ "type": "disconnect" }, { "type": "revoke" }]
+      }
+    },
+    {
       "case": "ok",
       "state": { "name": "draining" },
       "event": { "type": "signIn", "ok": true },
@@ -572,6 +636,16 @@
       "state": { "name": "checkpointing", "drained": false },
       "event": { "type": "accessChanged", "grant": "deleted" },
       "expect": { "state": { "name": "deleted" }, "effects": [{ "type": "forget" }] }
+    },
+    {
+      "note": "a late refusal archives the local copy; the release follows the archive",
+      "case": "revoked",
+      "state": { "name": "checkpointing", "drained": false },
+      "event": { "type": "accessChanged", "grant": "revoked" },
+      "expect": {
+        "state": { "name": "revoked" },
+        "effects": [{ "type": "disconnect" }, { "type": "revoke" }]
+      }
     },
     {
       "note": "an archiving replica is still live; a failed archive returns to the new pause",
@@ -719,6 +793,16 @@
       }
     },
     {
+      "note": "a late refusal still archives the local copy; the release already ran",
+      "case": "revoked",
+      "state": { "name": "closed", "checkpointWritten": true, "drained": true, "saved": false },
+      "event": { "type": "accessChanged", "grant": "revoked" },
+      "expect": {
+        "state": { "name": "revoked", "closing": true },
+        "effects": [{ "type": "revoke" }]
+      }
+    },
+    {
       "state": { "name": "closed", "checkpointWritten": true, "drained": false },
       "event": { "type": "signIn", "ok": false },
       "expect": {
@@ -821,6 +905,62 @@
       "event": { "type": "leave", "drain": false },
       "expect": {
         "state": { "name": "deleted", "closing": true },
+        "effects": [],
+        "rejected": "The session is already closing"
+      }
+    },
+    {
+      "note": "a re-grant opens a new session; this one stays retired",
+      "state": { "name": "revoked" },
+      "event": { "type": "accessChanged", "grant": "same" },
+      "expect": {
+        "state": { "name": "revoked" },
+        "effects": [],
+        "rejected": "Access to the Page was removed"
+      }
+    },
+    {
+      "state": { "name": "revoked" },
+      "event": { "type": "signIn", "ok": true },
+      "expect": {
+        "state": { "name": "revoked" },
+        "effects": [],
+        "rejected": "Access to the Page was removed"
+      }
+    },
+    {
+      "state": { "name": "revoked" },
+      "event": { "type": "trash" },
+      "expect": {
+        "state": { "name": "revoked" },
+        "effects": [],
+        "rejected": "Access to the Page was removed"
+      }
+    },
+    {
+      "state": { "name": "revoked" },
+      "event": { "type": "reloadAccess" },
+      "expect": {
+        "state": { "name": "revoked" },
+        "effects": [],
+        "rejected": "Access to the Page was removed"
+      }
+    },
+    {
+      "case": "release",
+      "state": { "name": "revoked" },
+      "event": { "type": "leave", "drain": false },
+      "expect": {
+        "state": { "name": "revoked", "closing": true },
+        "effects": [{ "type": "release" }]
+      }
+    },
+    {
+      "case": "already-closing",
+      "state": { "name": "revoked", "closing": true },
+      "event": { "type": "leave", "drain": false },
+      "expect": {
+        "state": { "name": "revoked", "closing": true },
         "effects": [],
         "rejected": "The session is already closing"
       }

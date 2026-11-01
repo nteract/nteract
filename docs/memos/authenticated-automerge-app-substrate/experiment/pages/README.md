@@ -106,6 +106,7 @@ was a caret race in the smoke; the editor side is
 | Admission codes, celld restart, and reconnect to Saved | `node scripts/local-sharing-e2e.mjs --admission` | Starts and restarts an isolated fixture |
 | Reload prompt after a deploy under an open tab | `node scripts/local-sharing-e2e.mjs --build-update` | Starts an isolated fixture and swaps its build |
 | Trash, restore, and permanent deletion | `node scripts/local-sharing-e2e.mjs --trash` | Starts an isolated fixture |
+| Removed access hides the local copy across a reload, with its download | `node scripts/local-sharing-e2e.mjs --revocation` | Starts an isolated fixture |
 | Projects over MCP and in the browser, `/projects` and `/pages` on a phone-sized screen, breadcrumbs, Trash and restore in a Project | `node scripts/local-sharing-e2e.mjs --projects` | Starts an isolated fixture |
 | Rollback to a previous build and forward again on one data directory | `node scripts/rollback-qualification.mjs --previous <previous pages dir>` | Starts an isolated fixture; build the previous commit first |
 | Rich comment tables and drafts | `PAGES_ORIGIN=http://localhost:9894 node scripts/rich-comments-smoke.mjs` | Uses the running Wordgard fixture |
@@ -336,6 +337,20 @@ Automerge history, and local deletion tombstones prevent stale tabs from revivin
 removed entries. Browser storage eviction is outside the recovery guarantee.
 An existing local replica can open before network sync; this does not guarantee
 an offline cold start of application assets or authentication.
+
+When the host refuses this account, the browser stops rendering its copy. A
+`page_access_denied` answer (access removed, or a Page missing to this account,
+purged included) or an access fact with a role of none revokes the session; a
+404 (`page_deleted`, or the legacy missing-Page answer) deletes it. Either way
+the checkpoint and the live replica's snapshot move to the recovery archive, and
+a marker takes the checkpoint's place, so a reload shows the same "You no longer
+have access" or "This Page was deleted" notice instead of the Page. The notice
+downloads the archived copy: a JSON file with its Markdown, comments included,
+and its Automerge snapshot. An access
+marker only blocks: a tab that hasn't seen the refusal archives its own copy
+when it next writes, and the next open the host grants writes over the marker on
+the new grant's replica, never the archived one. A deletion marker is permanent.
+Trash, a refusal without a code, sign-in and transient failures keep the copy.
 
 ```text
 Browser Repo + Wordgard                 Authorized HTTP / MCP operations
@@ -992,9 +1007,9 @@ person confirms Discard unsaved edits. Records are keyed by account and Page id.
 Each Page session moves through the
 [viewer-session machine](viewer/session-machine.mjs): opening, open, paused
 (sign-in, access, Trash or access reload), draining while it is left, then
-checkpointing, closed or deleted. `PageSession.phase$` is that state in a
+checkpointing, closed, deleted or revoked. `PageSession.phase$` is that state in a
 [Store](viewer/store.mjs), and every lifecycle flag derives from it. A close
-can grow while it runs (a late deletion adds its forget), so the close itself
+can grow while it runs (a late refusal adds its archive), so the close itself
 is private and `closeSettled()` is the only way to wait for it. The
 [SessionHost](viewer/session-host.mjs) owns the installed session and every
 session still closing. The [reload gate](viewer/reload-gate-machine.mjs) follows
@@ -1012,8 +1027,9 @@ Deliberate differences from the earlier flag-based sessions:
   release settles, like a Page left through the drain, and keeps the same
   record if its edits never reached the server. Closing a held Page cancels a
   waiting Reload.
-- A deleted Page forgets its local copy before it starts closing. It counts as
-  closing, and Reload waits for it, until that close releases its backend.
+- A deleted or revoked Page archives its local copy before it starts closing.
+  It counts as closing, and Reload waits for it, until that close releases its
+  backend.
 - Leaving during access reload waits for archiving and the replacement-open
   attempt.
 - If the replacement fails to open, the archived Page stays installed with

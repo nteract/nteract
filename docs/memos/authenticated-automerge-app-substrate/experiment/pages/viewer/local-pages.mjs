@@ -22,6 +22,73 @@ const accessChanged = () =>
     code: "LOCAL_PAGE_ACCESS_CHANGED",
     status: 409,
   });
+const pageDeleted = () =>
+  Object.assign(Error("Page was deleted"), { code: "LOCAL_PAGE_DELETED", status: 410 });
+const accessRevoked = () =>
+  Object.assign(
+    Error("You no longer have access to this Page; its local copy is in the recovery archive"),
+    { code: "LOCAL_PAGE_REVOKED", status: 403 },
+  );
+
+/**
+ * Move this account's local copy of a Page into the recovery archive and leave
+ * a marker in its place, so nothing renders the copy again. `reason` is
+ * `access` (the host refused this account) or `deleted` (the Page is gone).
+ * `snapshot` is the live replica's, which can hold edits the stored checkpoint
+ * lacks; both are archived when they differ.
+ *
+ * A deletion marker is permanent. An access marker records only identity: the
+ * next checkpoint written with `regrant` (a host-verified open) replaces it,
+ * and every other write archives its snapshot and fails with
+ * LOCAL_PAGE_REVOKED. With no stored copy and no snapshot an access refusal
+ * writes nothing. Resolves with the marker, or null.
+ */
+export async function retireLocalPage(identity, pageId, { reason, snapshot, title } = {}) {
+  if (!identity?.principal) throw Error("Local Page account does not match");
+  if (reason !== "access" && reason !== "deleted") throw Error("Unknown retirement reason");
+  return store.run("readwrite", (records, done, fail) => {
+    const request = records.get(key(identity, pageId));
+    request.onsuccess = () => {
+      try {
+        const previous = request.result ? JSON.parse(decoder.decode(request.result)) : null;
+        if (previous && (previous.principal !== identity.principal || previous.page_id !== pageId))
+          throw Error("Local Page account does not match");
+        let sequence = previous?.recovery_sequence ?? 0;
+        const base = previous ?? { principal: identity.principal, page_id: pageId };
+        if (previous?.snapshot)
+          archiveSnapshot(records, identity, { ...previous, retired: reason }, ++sequence);
+        if (snapshot && snapshot !== previous?.snapshot)
+          archiveSnapshot(
+            records,
+            identity,
+            { ...base, ...(title !== undefined && { title }), snapshot, retired: reason },
+            ++sequence,
+          );
+        let marker;
+        if (previous?.deleted || reason === "deleted")
+          marker = {
+            principal: identity.principal,
+            page_id: pageId,
+            deleted: true,
+            recovery_sequence: sequence,
+          };
+        else if (previous || snapshot)
+          marker = {
+            principal: identity.principal,
+            page_id: pageId,
+            ...(base.document_id && { document_id: base.document_id }),
+            revoked: true,
+            recovery_sequence: sequence,
+          };
+        if (marker) records.put(encoder.encode(JSON.stringify(marker)), key(identity, pageId));
+        done(marker ?? null);
+      } catch (error) {
+        fail(error);
+      }
+    };
+    return request;
+  });
+}
 
 // Retire the previous key's cache without importing its potentially unaccepted
 // edits into a new signer. Retired snapshots remain separate recovery records.
@@ -33,11 +100,8 @@ export async function prepareLocalPageReload(identity, page, access, replicaKey)
     request.onsuccess = () => {
       try {
         const previous = request.result ? JSON.parse(decoder.decode(request.result)) : page;
-        if (previous.deleted)
-          throw Object.assign(Error("Page was deleted"), {
-            code: "LOCAL_PAGE_DELETED",
-            status: 410,
-          });
+        if (previous.deleted) throw pageDeleted();
+        if (previous.revoked) throw accessRevoked();
         if ((previous.access?.revision ?? 0) > access.revision) throw accessChanged();
         let sequence = previous.recovery_sequence ?? 0;
         if (previous.snapshot) archiveSnapshot(records, identity, previous, ++sequence);
@@ -84,19 +148,22 @@ export function encodeSnapshot(value) {
 export function decodeSnapshot(value) {
   return Uint8Array.from(atob(value), (byte) => byte.charCodeAt(0));
 }
-export async function readLocalPage(identity, pageId) {
+/** The stored checkpoint, or null. A deletion or access marker
+ * (retireLocalPage) reads as null unless `markers` asks for it. */
+export async function readLocalPage(identity, pageId, { markers = false } = {}) {
   if (!identity?.principal) return null;
   const value = await store.load(key(identity, pageId));
   if (!value) return null;
   const page = JSON.parse(decoder.decode(value));
   if (page.principal !== identity.principal || page.page_id !== pageId)
     throw Error("Local Page account does not match");
-  return page.deleted ? null : page;
+  return (page.deleted || page.revoked) && !markers ? null : page;
 }
 /** Write a checkpoint, merging it into the stored one. `replica` is the
  * writing session's native replica; it decides that replica's localEdits
- * entries (local-edits.mjs). */
-export async function writeLocalPage(identity, page, { replica } = {}) {
+ * entries (local-edits.mjs). `regrant` says the host has just verified this
+ * account's access, so the checkpoint may replace an access marker. */
+export async function writeLocalPage(identity, page, { replica, regrant = false } = {}) {
   if (!identity?.principal || page.principal !== identity.principal)
     throw Error("Local Page account does not match");
   // Cache checkpoints are shared by independent tab replicas. Merge inside one
@@ -112,11 +179,29 @@ export async function writeLocalPage(identity, page, { replica } = {}) {
           // A deletion occupies this same key permanently. IndexedDB serializes
           // these read/write transactions across tabs, so an older checkpoint
           // can neither replace the marker nor recreate a forgotten Page.
-          if (previous.deleted)
-            throw Object.assign(Error("Page was deleted"), {
-              code: "LOCAL_PAGE_DELETED",
-              status: 410,
-            });
+          if (previous.deleted) throw pageDeleted();
+          if (previous.revoked) {
+            // Only a host-verified open replaces an access marker. Any other
+            // writer is a tab that hasn't seen the refusal yet: keep its
+            // copy beside the others, then report the refusal.
+            if (regrant) {
+              const next = { ...page, recovery_sequence: previous.recovery_sequence ?? 0 };
+              delete next.registrationSupersedes;
+              records.put(encoder.encode(JSON.stringify(next)), key(identity, page.page_id));
+              done(next);
+              return;
+            }
+            const sequence = (previous.recovery_sequence ?? 0) + 1;
+            if (page.snapshot) {
+              archiveSnapshot(records, identity, { ...page, retired: "access" }, sequence);
+              records.put(
+                encoder.encode(JSON.stringify({ ...previous, recovery_sequence: sequence })),
+                key(identity, page.page_id),
+              );
+            }
+            done({ revoked: true });
+            return;
+          }
           if (previous.document_id !== page.document_id)
             throw Error("Local Page document identity does not match");
           // A delayed writer from a retired grant must not merge its old history
@@ -185,5 +270,6 @@ export async function writeLocalPage(identity, page, { replica } = {}) {
     return request;
   });
   if (result?.accessChanged) throw accessChanged();
+  if (result?.revoked) throw accessRevoked();
   return result;
 }

@@ -25,6 +25,8 @@ export async function listLocalPages(identity, { pendingOnly = false } = {}) {
       (page) =>
         page?.principal === identity.principal &&
         !page.deleted &&
+        // An access marker holds no copy; its recovery records stay unlisted.
+        !page.revoked &&
         // A local replica of a trashed Page is kept for restore; Trash lists it.
         !page.access?.trashed &&
         (!pendingOnly || page.pending),

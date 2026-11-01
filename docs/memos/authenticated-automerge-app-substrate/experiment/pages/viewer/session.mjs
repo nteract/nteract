@@ -26,11 +26,11 @@ import {
 import {
   decodeSnapshot,
   encodeSnapshot,
-  forgetLocalPage,
   readLocalPage,
   writeLocalPage,
   prepareLocalPageReload,
   listLocalRecoveries,
+  retireLocalPage,
 } from "./local-pages.mjs";
 export { listLocalPages, forgetLocalPage } from "./local-pages.mjs";
 import { BACKEND_LIMITS } from "../model/limits.mjs";
@@ -85,6 +85,18 @@ const accessFailure = () =>
     status: 409,
   });
 const bytes = (value) => Uint8Array.from(value.match(/../g), (v) => parseInt(v, 16));
+/** Which host refusal retires this account's local copy: `access` for
+ * `page_access_denied` (access removed, or a Page missing to this account,
+ * purged included), `deleted` for a 404 (`page_deleted`, or the legacy
+ * missing-Page answer). Anything else, a transient failure included, leaves
+ * the copy where it is. */
+export function refusalOf(error) {
+  if (error?.status === 404) return "deleted";
+  if (error?.status === 403 && error.code === "page_access_denied") return "access";
+  return undefined;
+}
+export const ACCESS_REVOKED = "You no longer have access to this Page.";
+export const PAGE_DELETED = "This Page was deleted.";
 // Longer than the host's 10-second native admission deadline. A socket that
 // closes sooner never proved admission, so it must not reset reconnect backoff,
 // and an admission close code on it counts as a refusal.
@@ -323,6 +335,15 @@ export class PageSession {
   get deleted() {
     return this.phase$.snapshot().name === "deleted";
   }
+  get revoked() {
+    return this.phase$.snapshot().name === "revoked";
+  }
+  /** The host refused this account or the Page is gone: the local copy is in
+   * the recovery archive and nothing renders it. */
+  get hidden() {
+    const name = this.phase$.snapshot().name;
+    return name === "deleted" || name === "revoked";
+  }
   get authRequired() {
     return pauseOf(this.phase$.snapshot()).auth;
   }
@@ -330,6 +351,7 @@ export class PageSession {
     const phase = this.phase$.snapshot();
     // While opening, the cached access fact decides; a host answer pauses.
     if (phase.name === "opening") return this.access?.role === "none";
+    if (phase.name === "revoked") return true;
     const { access } = pauseOf(phase);
     return access === "access" || access === "trash";
   }
@@ -386,6 +408,8 @@ export class PageSession {
         // Recovery stays local, even when the host no longer permits publication.
         void this.persistLocal({ access: this.access, pending: this.recoveryPending }).catch(
           (error) => {
+            // Another tab saw the host's refusal; this copy is archived too.
+            if (error.code === "LOCAL_PAGE_REVOKED") return void this.revoke();
             this.localProblem = this.problem = error.message;
             this.emit();
           },
@@ -416,10 +440,11 @@ export class PageSession {
             now: this.now,
           }),
         );
+      case "revoke":
       case "forget": {
-        const forgetting = this.forgetLocal();
-        // Deleted after its release started: the close settles only once both
-        // the forget and the release have, whichever fails.
+        const forgetting = effect.type === "revoke" ? this.revokeLocal() : this.forgetLocal();
+        // Retired after its release started: the close settles only once both
+        // the archive and the release have, whichever fails.
         if (!this.phase$.snapshot().closing) return forgetting;
         this.#closing = allSettledThen(forgetting, this.#closing);
         return this.#closing;
@@ -482,7 +507,11 @@ export class PageSession {
   #whenReleased() {
     return firstValueFrom(
       this.phase$.state$.pipe(
-        filter((phase) => phase.name === "closed" || (phase.name === "deleted" && phase.closing)),
+        filter(
+          (phase) =>
+            phase.name === "closed" ||
+            ((phase.name === "deleted" || phase.name === "revoked") && phase.closing),
+        ),
       ),
     ).then(() => this.#released);
   }
@@ -528,7 +557,8 @@ export class PageSession {
       }
     } catch (error) {
       if (error.code === "LOCAL_PAGE_DELETED") deleted = true;
-      else if (error.code !== "LOCAL_PAGE_ACCESS_CHANGED") {
+      // Both archived this replica's snapshot before refusing it.
+      else if (error.code !== "LOCAL_PAGE_ACCESS_CHANGED" && error.code !== "LOCAL_PAGE_REVOKED") {
         this.problem = error.message;
         this.showStatus(overlayStatus("localFailed"));
       }
@@ -561,6 +591,7 @@ export class PageSession {
       this.closedRecovery = this.exportRecovery();
     } catch (error) {
       if (archiving()) this.dispatch({ type: "checkpointFail", deleted: false });
+      if (error.code === "LOCAL_PAGE_REVOKED") void this.revoke();
       throw error;
     }
     if (!archiving()) throw Error("Page closed");
@@ -571,11 +602,32 @@ export class PageSession {
     this.checkpointSnapshot = this.checkpointHeads = undefined;
     return this.releaseLocal();
   }
-  /** The forget effect: drop the local copy of a deleted Page, then close. */
-  async forgetLocal() {
+  /** The forget effect: archive the local copy of a deleted Page, mark it
+   * deleted, then close. */
+  forgetLocal() {
+    return this.#retireLocal("deleted");
+  }
+  /** The revoke effect: archive the local copy, mark this account's access
+   * removed, then close. */
+  revokeLocal() {
+    return this.#retireLocal("access");
+  }
+  async #retireLocal(reason) {
     const releasing = this.phase$.snapshot().closing === true;
+    // Read the live replica before anything releases it: it can hold edits
+    // the stored checkpoint lacks. The notice downloads this export.
+    let live;
     try {
-      await forgetLocalPage(this.identity, this.pageId);
+      if (this.handle && this.doc) live = this.closedRecovery ??= this.exportRecovery();
+    } catch {}
+    try {
+      await retireLocalPage(this.identity, this.pageId, {
+        reason,
+        snapshot: live?.snapshot,
+        title: live?.title,
+      });
+      this.recoveryArchived = true;
+      this.emit();
     } finally {
       if (!releasing) await this.close();
     }
@@ -662,7 +714,7 @@ export class PageSession {
     this.emit();
   }
   snapshot() {
-    return this.doc ? projectPage(this.doc) : null;
+    return this.doc && !this.hidden ? projectPage(this.doc) : null;
   }
   requireSignIn(message = "Sign in again to sync this Page. Keep it open while you sign in.") {
     const { rejected } = this.dispatch({ type: "signIn", ok: false }, () => {
@@ -747,6 +799,10 @@ export class PageSession {
     if (stable) this.reconnect({ type: "stable" });
     if (!this.alive || this.authRequired || this.accessDenied || this.accessReloadRequired) return;
     const outcome = this.socketOutcomes.get(socket);
+    if (outcome?.code === "page_deleted") {
+      void this.markDeleted();
+      return;
+    }
     if (outcome?.retry === "stop") {
       this.refuseNative(outcome);
       return;
@@ -855,7 +911,8 @@ export class PageSession {
     if (!rejected) this.emit();
   }
   async localAccessChanged() {
-    const latest = await readLocalPage(this.identity, this.pageId);
+    const latest = await readLocalPage(this.identity, this.pageId, { markers: true });
+    if (latest?.revoked) return this.revoke();
     if (latest?.access) this.access = latest.access;
     this.pauseForAccess(
       "Your permissions changed in another tab. Your local draft is kept on this device.",
@@ -878,11 +935,8 @@ export class PageSession {
     this.access = { ...access };
     const nextKey = replicaKey(access, this.credentialCanWrite && access.canWrite);
     if (!access.canRead) {
-      this.pauseForAccess(
-        "You no longer have access to this Page. Your local copy is kept on this device.",
-        { denied: true },
-      );
-      throw Object.assign(Error(this.accessProblem), { status: 403 });
+      await this.revoke();
+      throw Object.assign(Error(ACCESS_REVOKED), { status: 403 });
     }
     if (this.replicaKey !== nextKey) {
       if (this.handle) {
@@ -960,7 +1014,12 @@ export class PageSession {
     if (this.authentication) {
       if (!this.acceptAuthentication(this.authentication)) throw Error(this.authProblem);
     } else await this.refreshAuthentication();
-    this.localPage = await readLocalPage(this.identity, this.pageId);
+    const stored = await readLocalPage(this.identity, this.pageId, { markers: true });
+    // A marker (retireLocalPage) means this browser's copy is in the recovery
+    // archive. Nothing local renders: the host decides, and a host-verified
+    // open replaces an access marker.
+    const retired = !!stored && (!!stored.deleted || !!stored.revoked);
+    this.localPage = retired ? null : stored;
     if (creation && !this.credentialCanWrite) throw Error("This account cannot create Pages");
     this.access =
       this.localPage?.access ?? (creation || this.localPage ? ownerAccess() : undefined);
@@ -1040,7 +1099,14 @@ export class PageSession {
       else if (edits) this.savedHeads = acknowledgedHeads(this.doc, edits);
       await this.recordActor(edits ?? { ...emptyLocalEdits(), unattributed: unconfirmed });
     } else {
-      await this.connect(false);
+      try {
+        await this.connect(false);
+      } catch (error) {
+        // A browser that held a copy shows why it's gone, with its recovery
+        // archive. One that never held the Page reports the error.
+        if (stored && this.hidden) return;
+        throw error;
+      }
       if (this.nativeRefused) throw signingKeyRefused(this.refusal);
       const lookupDeadline = AbortSignal.timeout(15000);
       // The document arrives over the native socket. If the host refuses this
@@ -1093,7 +1159,10 @@ export class PageSession {
         snapshot: encodeSnapshot(A.save(this.doc)),
         localEdits: withActor(emptyLocalEdits(), this.actor(), this.replicaId),
       };
-      await writeLocalPage(this.identity, this.localPage, { replica: this.replicaId });
+      await writeLocalPage(this.identity, this.localPage, {
+        replica: this.replicaId,
+        regrant: retired,
+      });
       unconfirmed = false;
     }
     this.observeSchema();
@@ -1396,8 +1465,32 @@ export class PageSession {
     const { rejected, done } = this.dispatch({ type: "accessChanged", grant: "deleted" }, () => {
       this.canWrite = false;
       this.showStatus(overlayStatus("deleted"));
-      this.problem = "This Page was deleted.";
+      this.problem = PAGE_DELETED;
       this.cancelReceiptRetry();
+    });
+    if (rejected) return;
+    this.emit();
+    await done;
+  }
+  /** The host refused this account: archive the local copy, stop rendering
+   * it, then close. */
+  async revoke() {
+    const { rejected, done } = this.dispatch({ type: "accessChanged", grant: "revoked" }, () => {
+      this.accessProblem = ACCESS_REVOKED;
+      this.access = {
+        ...this.access,
+        role: "none",
+        canRead: false,
+        canWrite: false,
+        canComment: false,
+        canManageAccess: false,
+        canDelete: false,
+      };
+      this.updateCapabilities();
+      this.cancelReceiptRetry();
+      this.receiptRevision = (this.receiptRevision ?? 0) + 1;
+      this.reconnect({ type: "halt" });
+      this.showStatus(overlayStatus("accessDenied"));
     });
     if (rejected) return;
     this.emit();
@@ -1466,7 +1559,9 @@ export class PageSession {
         await this.persistLocal({ canWrite: this.canWrite });
       if (this.accessDenied || this.accessReloadRequired) return;
     } catch (error) {
-      if (error.status === 404) await this.markDeleted();
+      const refusal = refusalOf(error);
+      if (refusal === "deleted") await this.markDeleted();
+      else if (refusal === "access") await this.revoke();
       else if (this.alive && error.status === 401 && !this.authRequired) this.requireSignIn();
       else if (this.alive && error.status === 403)
         // A trashed Page can be restored, so keep the local copy either way.
@@ -1581,6 +1676,10 @@ export class PageSession {
     } catch (error) {
       if (!this.alive || this.accessReloadRequired || this.accessDenied) return;
       if (error.code === "PAGE_ACCESS_CHANGED") return;
+      if (error.admission?.code === "page_deleted") {
+        await this.markDeleted();
+        return;
+      }
       if (error.admission?.retry === "stop") {
         this.refuseNative(error.admission);
         return;
@@ -2137,6 +2236,10 @@ export class PageSession {
         await this.markDeleted();
         return;
       }
+      if (error.code === "LOCAL_PAGE_REVOKED") {
+        await this.revoke();
+        return;
+      }
       if (error.code === "LOCAL_PAGE_ACCESS_CHANGED") {
         await this.localAccessChanged();
         return;
@@ -2218,6 +2321,20 @@ export class PageSession {
     } catch (error) {
       if (isCurrent()) {
         if (error.code === "LOCAL_PAGE_DELETED") {
+          await this.markDeleted();
+          return;
+        }
+        if (error.code === "LOCAL_PAGE_REVOKED") {
+          await this.revoke();
+          return;
+        }
+        // The receipt route answers a missing Page as page_access_denied;
+        // page_deleted reaches only the owner and current members.
+        if (refusalOf(error) === "access") {
+          await this.revoke();
+          return;
+        }
+        if (error.status === 404 && error.code === "page_deleted") {
           await this.markDeleted();
           return;
         }

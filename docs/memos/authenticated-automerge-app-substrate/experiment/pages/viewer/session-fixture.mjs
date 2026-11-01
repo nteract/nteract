@@ -69,6 +69,10 @@ export class FakeSession {
   get deleted() {
     return this.phase$.snapshot().name === "deleted";
   }
+  get hidden() {
+    const name = this.phase$.snapshot().name;
+    return name === "deleted" || name === "revoked";
+  }
   get recoveryPending() {
     return this.pending;
   }
