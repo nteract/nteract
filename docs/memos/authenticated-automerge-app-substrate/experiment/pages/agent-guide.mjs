@@ -488,7 +488,8 @@ page_quota_exceeded with limit and count; tell the person rather than retrying.
 - patch_page: replace_match for literal visible-text edits, optionally scoped by node_index; format_match to add or remove formatting over a literal range.
 - edit_page: set_title, replace_block_markdown, insert_markdown, insert_image,
   move_block, or delete_block operations.
-- manage_page_comment: add, reply, resolve, reopen, edit, or delete_message.
+- manage_page_comment: add, reply, resolve, reopen, edit, or delete_message. resolve and
+  reopen also take thread_ids to change up to 100 threads in one call. See Comments below.
 - import_page_image: page_id and a ChatGPT-supplied file descriptor; returns a
   private asset_id and asset_url for a subsequent insert_image edit. See Images above.
 - delete_page: move a Page you own to Trash. See Trash below.
@@ -832,6 +833,22 @@ comment needs only its block to exist. reply, resolve, reopen, edit and
 delete_message do not read Page text: base_heads is optional and never compared.
 If you send it, keep it unchanged on retries, because it is part of the payload.
 
+To resolve or reopen many threads, send thread_ids instead of thread_id: 1–100
+unique IDs, never both fields. The batch is one Page change under one
+idempotency_key, and the receipt has one heads. result.threads lists each
+thread_id with its outcome: resolved, already_resolved, reopened or already_open.
+A thread already in the target state is a no-op success; if every thread is,
+the receipt's heads are unchanged because nothing was written. The batch is
+all-or-nothing: an unknown ID rejects it with invalid_comment_selector, and
+not_found_thread_ids names every unknown ID. Nothing changes, so drop those IDs
+and send a new request with a new key. Resolving needs edit access to the Page,
+as a single resolve does; without it the whole batch is refused. An exact retry
+replays the original receipt, even if a thread was reopened since.
+
+\`\`\`json
+{"page_id":"<page_id>","action":"resolve","thread_ids":["<thread_id>","<thread_id>"],"retry_token":"<retry_token>","idempotency_key":"<retry_key_prefix><uuid>"}
+\`\`\`
+
 For formatted comments, set body_format to "markdown". Bold, italic, links,
 code, lists, checklists, and pipe tables become native rich-text content that
 people can read in the discussion. Rich message reads return body as Markdown
@@ -868,7 +885,8 @@ succeeds. Every error has a stable code. Branch on code, not on the error messag
   malformed base_heads, zero or multiple matches, an unknown block, operation or
   mark. Fix the request; repeating it unchanged fails again.
 - invalid_comment_selector: the comment's thread, message, block or selected_text
-  wasn't found.
+  wasn't found, or thread_id/thread_ids is malformed. A thread_ids batch with
+  unknown IDs lists them in not_found_thread_ids.
 - edit_conflict, resync_required: see Guarded edits above.
 - unsupported_schema_feature: the Page uses features this version of Pages
   can't edit (listed in unsupported_features). Read it; don't retry the edit.

@@ -1,5 +1,10 @@
 import * as A from "@automerge/automerge/slim";
-import { captureSelectionTarget, resolvedCommentTarget, selectionContext } from "./comments.mjs";
+import {
+  captureSelectionTarget,
+  resolvedCommentTarget,
+  selectionContext,
+  threadBatch,
+} from "./comments.mjs";
 
 const fail = (status, message, code, details) => {
   throw Object.assign(Error(message), {
@@ -28,6 +33,8 @@ const sameHeads = (a, b) => a.length === b.length && [...a].sort().join() === [.
  */
 export function guardCommentIntent(current, operation, args) {
   const action = operation === "reply_page_comment" ? "reply" : (args.action ?? "add");
+  // A malformed thread_ids batch fails before prepare or any thread lookup.
+  threadBatch(args, action);
   if (action !== "add") {
     if (args.base_heads !== undefined && !headsShape(args.base_heads))
       fail(

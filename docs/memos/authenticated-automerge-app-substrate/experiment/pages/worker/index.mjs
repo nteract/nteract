@@ -3089,13 +3089,17 @@ export class Page {
             } catch (error) {
               // The batch cannot apply as written: zero or multiple matches, an
               // unknown block, operation or mark, or an invalid comment target.
-              throw new HttpError(
-                400,
-                error.message,
-                error.code ??
-                  (body.operation === "edit_page" || body.operation === "patch_page"
-                    ? "invalid_edit_selector"
-                    : "invalid_comment_selector"),
+              // details carries what the refusal names, such as unknown thread IDs.
+              throw Object.assign(
+                new HttpError(
+                  400,
+                  error.message,
+                  error.code ??
+                    (body.operation === "edit_page" || body.operation === "patch_page"
+                      ? "invalid_edit_selector"
+                      : "invalid_comment_selector"),
+                ),
+                error.details && { details: error.details },
               );
             }
           },
