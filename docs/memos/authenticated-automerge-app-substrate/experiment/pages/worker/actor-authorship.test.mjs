@@ -176,16 +176,81 @@ test("every state reacts to every signer class as the transition table says", ()
     }
 });
 
-test("the actor map keeps the most recently seen actors and deletes evicted entries", () => {
-  const { state } = authorship({ [ANA_KEY]: writer(ANA) }, { max: 2 });
-  const actor = (n) => n.toString(16).padStart(2, "0").repeat(16);
-  state.observe({ key: ANA_KEY, actor: actor(1), now: 1 });
-  state.observe({ key: SERVER, actor: actor(2), now: 2 });
-  state.observe({ key: ANA_KEY, actor: actor(1), now: 3 });
-  const effects = state.observe({ key: ANA_KEY, actor: actor(3), now: 4 });
-  assert.deepEqual(effects.remove, [actor(2)]);
-  assert.deepEqual([...state.actors.keys()], [actor(1), actor(3)]);
-  assert.deepEqual(Object.keys(state.profiles(4)), [actor(1), actor(3)]);
+const nth = (n) => n.toString(16).padStart(2, "0").repeat(16);
+const NONE = { delta: null, put: [], remove: [] };
+function fullMap() {
+  const { state } = authorship({ [ANA_KEY]: writer(ANA), [BEN_KEY]: writer(BEN) }, { max: 2 });
+  state.observe({ key: SERVER, actor: nth(1), now: 0 });
+  state.observe({ key: ANA_KEY, actor: nth(2), now: 1 });
+  return state;
+}
+
+test("a full map of fresh actors refuses a new actor and keeps every binding", () => {
+  const state = fullMap();
+  const before = structuredClone([...state.actors]);
+  assert.deepEqual(state.observe({ key: BEN_KEY, actor: nth(3), now: 2 }), NONE);
+  assert.deepEqual(state.observe({ key: SERVER, actor: nth(4), now: 2 }), NONE);
+  assert.equal(state.actors.has(nth(3)), false);
+  assert.deepEqual(state.profiles(2), { [nth(2)]: ANA });
+  assert.deepEqual([...state.actors], before);
+  // Updates to stored actors still apply while full.
+  assert.deepEqual(state.observe({ key: ANA_KEY, actor: nth(2), now: 3 }), NONE);
+  assert.equal(state.actors.get(nth(2)).lastSeen, 3);
+});
+
+test("a new actor replaces the least recently seen idle actor, host-owned included", () => {
+  const state = fullMap();
+  // nth(1) (host-owned, seen at 0) is idle; nth(2) (seen at 1) is still fresh.
+  const now = FRESH_MS + 1;
+  const effects = state.observe({ key: BEN_KEY, actor: nth(3), now });
+  assert.deepEqual(effects, {
+    delta: { [nth(3)]: BEN },
+    put: [[nth(3), { key: BEN_KEY, ...BEN, firstSeen: now }]],
+    remove: [nth(1)],
+  });
+  assert.deepEqual([...state.actors.keys()], [nth(2), nth(3)]);
+  assert.deepEqual(state.profiles(now), { [nth(2)]: ANA, [nth(3)]: BEN });
+  // Restored entries load idle and give way first.
+  const restored = new ActorAuthorship({
+    serverKey: SERVER,
+    binding: () => writer(ANA),
+    max: 2,
+    entries: [
+      [nth(5), { conflict: true }],
+      [nth(6), { key: ANA_KEY, ...ANA, firstSeen: 0 }],
+    ],
+  });
+  assert.deepEqual(
+    restored.observe({ key: ANA_KEY, actor: nth(7), now: 1_790_000_000_000 }).remove,
+    [nth(5)],
+  );
+});
+
+test("a second key signing a fresh actor in a full map conflicts it, never rebinds it", () => {
+  const state = fullMap();
+  const effects = state.observe({ key: BEN_KEY, actor: nth(2), now: 2 });
+  assert.deepEqual(effects, {
+    delta: { [nth(2)]: null },
+    put: [[nth(2), { conflict: true }]],
+    remove: [],
+  });
+  assert.equal(state.actors.size, 2);
+  assert.equal(state.actors.get(nth(1)).host, true);
+  assert.deepEqual(state.profiles(2), {});
+  // Neither key can claim it afterwards.
+  assert.deepEqual(state.observe({ key: ANA_KEY, actor: nth(2), now: 3 }), NONE);
+  assert.equal(state.actors.get(nth(2)).conflict, true);
+});
+
+// observe takes no profile argument: the profile is always read from the
+// policy binding for the record's issuer key.
+test("observe ignores any profile the caller supplies and reads only the issuer's binding", () => {
+  const { state } = authorship({ [ANA_KEY]: writer(ANA) });
+  const forged = { ...BEN, profile: BEN, binding: writer(BEN), identity: BEN };
+  const effects = state.observe({ key: ANA_KEY, actor: ACTOR, now: 0, ...forged });
+  assert.deepEqual(effects.delta, { [ACTOR]: ANA });
+  assert.deepEqual(effects.put, [[ACTOR, { key: ANA_KEY, ...ANA, firstSeen: 0 }]]);
+  assert.deepEqual(state.profiles(0), { [ACTOR]: ANA });
 });
 
 test("persisted entries restore bindings and conflicts as stale until seen again", async () => {
@@ -395,6 +460,31 @@ test("a browser writer's synced change is attested; the host's own edit is not",
     await eventually(() => state.actors.has(browserActor));
     assert.deepEqual(deltas[0], { [browserActor]: ANA });
     assert.deepEqual(state.profiles(Date.now()), { [browserActor]: ANA });
+    // The browser claims to be Ben over the ephemeral channel. The host
+    // receives the claims, but attestation reads only the policy binding of
+    // the key that signed each commit record: ANA's admission.
+    const received = [];
+    hosted.on("ephemeral-message", (event) => received.push(event));
+    local.broadcast({ kind: "actor-profiles", actorProfiles: { [browserActor]: BEN } });
+    local.broadcast({
+      kind: "selection",
+      value: { block_id: "b", start: "s", end: "e", heads: [] },
+      actor: browserActor,
+      identity: BEN,
+      profile: BEN,
+    });
+    local.change((doc) => {
+      doc.text = "browser after claims";
+    });
+    await eventually(() => received.length === 2);
+    assert.deepEqual(
+      received.map((event) => event.message.kind),
+      ["actor-profiles", "selection"],
+    );
+    await eventually(() => A.getHeads(hosted.doc()).join() === A.getHeads(local.doc()).join());
+    assert.deepEqual(state.profiles(Date.now()), { [browserActor]: ANA });
+    assert.equal(state.actors.get(browserActor).key, browser.keyId);
+    assert.equal(JSON.stringify(deltas).includes(BEN.principal), false);
     for (let n = 0; n < 3; n++)
       hosted.change((doc) => {
         doc.host = `tool ${n}`;
@@ -485,6 +575,29 @@ test("a Page host persists, broadcasts and serves attested actors but never its 
   // The same record again, while fresh, publishes nothing new.
   page.recordSaved(page.actorAuthorship, record.path, record.value);
   assert.equal(broadcasts.length, 1);
+  // Ephemeral claims from her browser naming Ben reach the Page's handle but
+  // never change the attested profile, which comes from her key's binding.
+  const delivered = [];
+  page.handle.on("ephemeral-message", (event) => delivered.push(event.message.kind));
+  for (const message of [
+    { kind: "actor-profiles", actorProfiles: { [anaActor]: BEN } },
+    {
+      kind: "selection",
+      value: { block_id: "b", start: "s", end: "e", heads: [] },
+      actor: anaActor,
+      identity: BEN,
+      profile: BEN,
+    },
+  ])
+    page.handle.emit("ephemeral-message", { senderId: "sender", message });
+  assert.deepEqual(delivered, ["actor-profiles", "selection"]);
+  page.recordSaved(page.actorAuthorship, record.path, record.value);
+  assert.deepEqual((await connect(page)).actorProfiles, { [anaActor]: ANA });
+  assert.equal(JSON.stringify(broadcasts).includes(BEN.principal), false);
+  assert.deepEqual(
+    broadcasts.filter((message) => message.kind === "actor-profiles"),
+    [{ kind: "actor-profiles", actorProfiles: { [anaActor]: ANA } }],
+  );
 
   // After a restart, both bindings are restored but nothing is fresh.
   const restarted = await open();

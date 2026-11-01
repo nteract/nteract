@@ -183,9 +183,17 @@ function restored(value) {
 
 /** Actor attestations for one Page host. It performs no I/O: `observe`
  * returns the broadcast delta and the storage writes for the caller to apply.
- * The map holds at most `max` actors and evicts the least recently seen. An
- * evicted actor, conflicted or not, is unbound again, and its next signer
- * binds it afresh. */
+ *
+ * The map holds at most `max` actors. An entry is evictable only once it is
+ * idle: its last observed record is older than FRESH_MS. Restored entries
+ * load with lastSeen 0, so they start idle. A new actor takes the least
+ * recently seen idle entry's place; with no idle entry it is not stored and
+ * stays unattested. Host-owned, attested and conflicted entries follow the
+ * same rule, so an actor that wrote within FRESH_MS keeps its first signer,
+ * and any other signer conflicts it. An actor idle past FRESH_MS that was
+ * evicted is unbound again, and its next signer can bind it. Even then the
+ * published profile comes from that signer's own admitted binding in
+ * DocumentPolicy, never from the record or the browser. */
 export class ActorAuthorship {
   constructor({ serverKey, binding, entries = [], max = MAX_ACTORS }) {
     this.serverKey = serverKey;
@@ -193,10 +201,17 @@ export class ActorAuthorship {
     this.max = max;
     this.actors = new Map();
     for (const [actor, value] of entries) {
+      if (this.actors.size >= this.max) break;
       const entry = ACTOR.test(actor) ? restored(value) : null;
       if (entry) this.actors.set(actor, entry);
     }
-    while (this.actors.size > this.max) this.actors.delete(this.actors.keys().next().value);
+  }
+
+  /** The least recently seen idle actor, or undefined. Map order is least
+   * recently seen first. */
+  idleActor(now) {
+    for (const [actor, entry] of this.actors) if (now - entry.lastSeen > FRESH_MS) return actor;
+    return undefined;
   }
 
   observe({ key, actor, now }) {
@@ -207,16 +222,20 @@ export class ActorAuthorship {
       serverKey: this.serverKey,
       binding: key === this.serverKey ? undefined : this.binding(key),
     });
-    if (!entry) return { delta: null, put: [], remove: [] };
+    const unchanged = { delta: null, put: [], remove: [] };
+    if (!entry) return unchanged;
+    const remove = [];
+    if (!current && this.actors.size >= this.max) {
+      const idle = this.idleActor(now);
+      // Every stored actor wrote recently: refuse the new one rather than
+      // unbind a live actor.
+      if (idle === undefined) return unchanged;
+      this.actors.delete(idle);
+      remove.push(idle);
+    }
     // Reinsertion keeps Map order least-recently-seen first.
     this.actors.delete(actor);
     this.actors.set(actor, entry);
-    const remove = [];
-    while (this.actors.size > this.max) {
-      const oldest = this.actors.keys().next().value;
-      this.actors.delete(oldest);
-      remove.push(oldest);
-    }
     return {
       delta:
         delta === "publish"
