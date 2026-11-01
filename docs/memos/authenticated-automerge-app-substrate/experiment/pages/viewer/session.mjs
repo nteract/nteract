@@ -43,6 +43,7 @@ import { monotonicNow } from "./monotonic.mjs";
 import { activitySnapshot, presenceLabel } from "./activity.mjs";
 import { checkpointRecords } from "./checkpoint-records.mjs";
 import { preservedBlockEdits } from "../model/raw-migration.mjs";
+import { guardSocketSend } from "./socket-send.mjs";
 import { Store } from "./store.mjs";
 import { OutboundSync } from "./outbound-sync.mjs";
 import { REJECT, isLive, pauseOf, viewerSessionMachine } from "./session-machine.mjs";
@@ -1542,7 +1543,8 @@ export class PageSession {
     );
     // Keep the browser socket itself: toTransport consumes the native wrapper,
     // whereas the raw socket remains cancellable when account/page access changes.
-    const socket = new WebSocket(address);
+    // Subduction sends on this socket itself; no send leaves unless it is OPEN.
+    const socket = guardSocketSend(new WebSocket(address));
     socket.binaryType = "arraybuffer";
     // Registered before the native wrapper's own listener, so the host's
     // admission outcome is known when the disconnect callback runs.
