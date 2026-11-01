@@ -67,6 +67,7 @@ import { useStore } from "./store.mjs";
 import { CommentComposer } from "./comment-composer.mjs";
 import { focusReturnTarget } from "./focus-return.mjs";
 import { timer } from "rxjs";
+import { trackVisualViewport } from "./visual-viewport.mjs";
 
 // The editor, and the WASM runtimes it waits for, load beside the shell
 // from boot, except on the index routes (/projects, /pages), which only list;
@@ -463,6 +464,8 @@ function App() {
       if (!host.current) showError(error);
     });
   }
+  // Publish the visual viewport's edges for the mobile bar and header.
+  useEffect(() => trackVisualViewport(), []);
   useEffect(() => {
     let alive = true;
     const maintenance = maintainBrowserSession({
@@ -1013,6 +1016,8 @@ function App() {
                         onError={setError}
                         onComment={(selected) => startComment(block.id, selected)}
                         onRevealComment={selectComment}
+                        openComments={openComments}
+                        onOpenComments={toggleComments}
                         toolbarHost={active === block.id ? toolbar : null}
                         toolbarOpen={toolbarOpen}
                         onActivate={() => activateBlock(block.id)}

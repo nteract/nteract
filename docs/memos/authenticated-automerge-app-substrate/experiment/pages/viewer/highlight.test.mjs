@@ -366,3 +366,14 @@ test("every formatting-only command keeps every Automerge cursor in prose and co
       binding.destroy();
     }
 });
+
+test("the shortcut and overflow toggle highlight yellow when dispatched with no color", () => {
+  const { binding, editor, spans } = setup("note this");
+  editor.select(1, 5);
+  // Command.dispatch passes null as the value when none is given.
+  assert.equal(Command.dispatch(editor, toggleHighlight), true);
+  assert.deepEqual(spans()[0], ["note", { highlight: "yellow" }]);
+  assert.equal(Command.dispatch(editor, toggleHighlight), true);
+  assert.deepEqual(spans()[0], ["note this", {}]);
+  binding.destroy();
+});

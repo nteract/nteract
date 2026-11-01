@@ -82,3 +82,104 @@
     display: none;
   }
 }
+
+/* The compact bar for narrow touch screens (MobileBar.jsx). It sits on the
+   bottom edge of the visual viewport, so it rides above the iOS keyboard. */
+.mobile-bar {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: var(--vv-bottom, 0px);
+  z-index: 7;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 4px 6px;
+  /* Only the home indicator needs room when no keyboard is up. */
+  padding-bottom: max(4px, calc(env(safe-area-inset-bottom) - var(--vv-bottom, 0px)));
+  border-top: 1px solid var(--line);
+  background: var(--surface);
+  box-shadow: 0 -6px 16px #0000000f;
+}
+.mobile-bar-button {
+  position: relative;
+  display: inline-grid;
+  place-items: center;
+  flex: 0 0 44px;
+  height: 44px;
+  padding: 0;
+  border: 0;
+  border-radius: 10px;
+  background: transparent;
+  color: var(--foreground);
+}
+.mobile-bar-button.is-active {
+  background: var(--accent);
+}
+.mobile-bar-button:disabled {
+  opacity: 0.4;
+}
+.mobile-bar-style {
+  height: 40px;
+  max-width: 108px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 10px;
+  background: var(--muted);
+  color: var(--foreground);
+  font: 600 15px system-ui;
+}
+.mobile-bar-spacer {
+  flex: 1;
+}
+.mobile-bar-count {
+  position: absolute;
+  top: 4px;
+  right: 2px;
+  min-width: 16px;
+  padding: 1px 4px;
+  border-radius: 8px;
+  background: var(--comment-anchor-line, #e16c10);
+  color: #fff;
+  font: 700 10px/14px system-ui;
+}
+.mobile-bar-menu {
+  position: absolute;
+  right: 6px;
+  bottom: calc(100% + 6px);
+  display: grid;
+  min-width: 220px;
+  padding: 6px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: var(--popover, var(--surface));
+  box-shadow: 0 10px 30px #00000026;
+}
+.mobile-bar-menu button {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 44px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--foreground);
+  font: 15px system-ui;
+  text-align: left;
+}
+.mobile-bar-menu button:disabled {
+  opacity: 0.4;
+}
+@media (max-width: 600px) and (pointer: coarse) {
+  /* iOS scrolls the visual viewport under a sticky header while the keyboard
+     is up; follow its top edge so the header stays visible. */
+  .app-header {
+    transform: translateY(var(--vv-top, 0px));
+  }
+  /* Room to scroll the last line above the bar. */
+  .page-blocks,
+  main {
+    padding-bottom: calc(64px + var(--vv-bottom, 0px));
+  }
+}

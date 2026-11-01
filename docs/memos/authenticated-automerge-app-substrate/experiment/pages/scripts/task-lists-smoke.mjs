@@ -262,6 +262,45 @@ try {
     });
   assert.ok(geometry.width >= 44 && geometry.height >= 44, JSON.stringify(geometry));
   assert.equal(geometry.overflow, false);
+
+  // The compact mobile bar: shown while the editor has focus, pinned to the
+  // bottom of the visual viewport, formatting without losing editor focus,
+  // and no floating selection toolbar alongside it.
+  const bar = mobile.locator(".mobile-bar");
+  await expect(bar).toHaveCount(0);
+  const prose = mobile.locator(".page-block wg-content").first();
+  await prose.locator("p").first().click({ position: { x: 24, y: 10 } });
+  await expect(bar).toBeVisible();
+  const placement = await bar.evaluate((element) => {
+    const r = element.getBoundingClientRect();
+    return { bottom: Math.round(r.bottom), height: innerHeight, width: Math.round(r.width) };
+  });
+  assert.equal(placement.bottom, placement.height, JSON.stringify(placement));
+  assert.equal(placement.width, 390, JSON.stringify(placement));
+  await prose.locator("p").first().evaluate((paragraph) => {
+    const walker = document.createTreeWalker(paragraph, NodeFilter.SHOW_TEXT);
+    const node = walker.nextNode();
+    const range = document.createRange();
+    range.setStart(node, 0);
+    range.setEnd(node, Math.min(4, node.textContent.length));
+    getSelection().removeAllRanges();
+    getSelection().addRange(range);
+  });
+  await expect(mobile.locator(".rich-toolbar.is-contextual:not([hidden])")).toHaveCount(0);
+  const bold = bar.getByRole("button", { name: "Bold", exact: true });
+  await bold.tap();
+  await expect(bold).toHaveAttribute("aria-pressed", "true");
+  assert.ok(
+    await prose.evaluate((element) => element.contains(document.activeElement)),
+    "the editor keeps focus, so the keyboard stays up",
+  );
+  await bold.tap();
+  await bar.getByRole("button", { name: "More formatting" }).tap();
+  await expect(mobile.getByRole("menuitem", { name: "Highlight" })).toBeVisible();
+  await mobile.getByRole("menuitem", { name: "Highlight" }).tap();
+  await expect(prose.locator('mark[data-highlight="yellow"]')).toHaveCount(1);
+  await mobile.screenshot({ path: output + "/mobile-bar.png" });
+  // A full-page screenshot resets Chromium's touch emulation, so it comes last.
   await mobile.screenshot({ path: output + "/task-lists-mobile.png", fullPage: true });
   await mobileContext.close();
   checkpoint(stage);
