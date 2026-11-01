@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
+  ABANDON_AFTER,
   PRESERVED_CONVERSION_STATES,
   conversionFenced,
   conversionRetryDelay,
@@ -13,6 +14,7 @@ const STATES = {
   clear: { name: "clear" },
   held: { name: "held" },
   converting: { name: "converting", mode: "native", attempt: 2 },
+  convertingLast: { name: "converting", mode: "native", attempt: ABANDON_AFTER },
   convertingLiteral: { name: "converting", mode: "literal", attempt: 1 },
   failed: { name: "failed", mode: "native", attempt: 2 },
   failedLiteral: { name: "failed", mode: "literal", attempt: 1 },
@@ -30,8 +32,16 @@ const EVENTS = {
   convert: observe(true, false, true),
   unfinished: observe(false, true, true),
   succeeded: { type: "succeeded" },
-  transient: { type: "failed", permanent: false, reason: "storage_or_runtime" },
-  permanent: { type: "failed", permanent: true, reason: "history_capacity" },
+  transient: { type: "failed", permanent: false, unfinished: false, reason: "storage_or_runtime" },
+  permanent: { type: "failed", permanent: true, unfinished: false, reason: "history_capacity" },
+  // Failures after the run's journal entry was reserved.
+  reservedTransient: {
+    type: "failed",
+    permanent: false,
+    unfinished: true,
+    reason: "storage_or_runtime",
+  },
+  reservedPermanent: { type: "failed", permanent: true, unfinished: true, reason: "status_413" },
 };
 const converting = (mode, attempt) => [
   { name: "converting", mode, attempt },
@@ -51,6 +61,12 @@ const running = (mode, attempt) => ({
   unfinished: "rejected",
   succeeded: [{ name: "unchecked" }, [{ type: "observe" }]],
   transient: [{ name: "failed", mode, attempt }, [{ type: "scheduleRetry", attempt }]],
+  // A reserved run retries its own intent; no fallback while it's reserved.
+  reservedTransient: [{ name: "failed", mode, attempt }, [{ type: "scheduleRetry", attempt }]],
+  reservedPermanent:
+    attempt >= ABANDON_AFTER
+      ? [{ name: "converting", mode, attempt }, [{ type: "abandon", reason: "status_413" }]]
+      : [{ name: "failed", mode, attempt }, [{ type: "scheduleRetry", attempt }]],
   permanent:
     mode === "native"
       ? converting("literal", 1)
@@ -66,6 +82,7 @@ const TABLE = {
   clear: idle,
   held: idle,
   converting: running("native", 2),
+  convertingLast: running("native", ABANDON_AFTER),
   convertingLiteral: running("literal", 1),
   failed: { ...idle, convert: converting("native", 3), unfinished: converting("native", 3) },
   failedLiteral: {
@@ -109,7 +126,7 @@ test("the fence is up while work waits, runs or failed transiently; stuck is ope
     Object.entries(STATES)
       .filter(([, state]) => conversionFenced(state))
       .map(([label]) => label),
-    ["held", "converting", "convertingLiteral", "failed", "failedLiteral"],
+    ["held", "converting", "convertingLast", "convertingLiteral", "failed", "failedLiteral"],
   );
   assert.deepEqual([1, 2, 3, 10].map(conversionRetryDelay), [5_000, 10_000, 20_000, 300_000]);
 });

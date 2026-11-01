@@ -2452,14 +2452,23 @@ export class Page {
         this.conversionRetry?.unref?.();
       } else if (effect.type === "logStuck")
         logPreservedStuck(this.metadata?.pageId ?? this.handle.doc().page_id, effect.reason);
-      else if (effect.type === "convert") {
-        const run = this.convertPreservedOnce(effect.mode).then(
-          () => ({ type: "succeeded" }),
+      else if (effect.type === "convert" || effect.type === "abandon") {
+        const run = (
+          effect.type === "convert"
+            ? this.convertPreservedOnce(effect.mode)
+            : this.abandonConversionIntent()
+        ).then(
+          () =>
+            effect.type === "convert"
+              ? { type: "succeeded" }
+              : { type: "failed", permanent: true, unfinished: false, reason: effect.reason },
           (error) => {
             logFailure(error, "preserved-markdown");
             return {
               type: "failed",
               permanent: permanentFailure(error, { isHistoryCapacityError }),
+              // Whether the run's journal entry is still reserved.
+              unfinished: !!this.conversionIntent,
               reason: failureReason(error),
             };
           },
@@ -2470,6 +2479,27 @@ export class Page {
         });
       }
     }
+  }
+
+  /** Give up on a reserved conversion run that keeps failing for good:
+   * finish its journal entry as abandoned, so recovery never replays it, and
+   * release its reservation. Its change may already be in the serving
+   * document but not in storage; the next load starts from storage, sees the
+   * preserved blocks, and converts again. Throws on failure, leaving the
+   * intent in place. */
+  async abandonConversionIntent() {
+    const intent = this.conversionIntent;
+    if (!intent) return;
+    const key = `${INTERNAL_PREFIX}${intent.args.idempotency_key}`;
+    const entry = await this.ctx.storage.get(key);
+    if (entry?.pending) {
+      const abandoned = { ...entry, pending: false, abandoned: true };
+      delete abandoned.changes;
+      await this.ctx.storage.put(key, abandoned);
+      await this.ctx.storage.sync();
+    }
+    await this.admission?.release(key);
+    this.conversionIntent = undefined;
   }
 
   /** Before an HTTP edit: while fenced, try the conversion once more, then

@@ -536,3 +536,52 @@ test("when both modes fail for good the Page is stuck, logged, and open", async 
   await f.page.convertPreservedMarkdown();
   assert.equal(f.page.conversion.name, "clear");
 });
+
+// A 413 after the journal entry is reserved, such as the record store
+// refusing the conversion's records on install: the run is reserved and
+// can't finish. It must keep the fence and retry its own intent, never fall
+// back over it, then be abandoned explicitly so nothing stays reserved.
+test("a permanent failure after the reservation retries its intent, then is abandoned", async (t) => {
+  const { ABANDON_AFTER } = await import("./preserved-conversion.mjs");
+  const f = await preservedFixture(t);
+  const admission = fakeAdmission();
+  f.page.admission = admission;
+  t.mock.method(console, "error", () => {});
+  // Every flush after the change applied is refused for capacity.
+  f.hooks.flush = () => {
+    if (!hasPreservedBlocks(f.doc()))
+      throw Object.assign(Error("record capacity"), { status: 413 });
+  };
+  await f.page.convertPreservedMarkdown();
+  const [[key, first]] = await internalEntries(f);
+  assert.equal(first.pending, true);
+  for (let attempt = 1; attempt < ABANDON_AFTER; attempt++) {
+    // Fenced, retrying the same reserved native intent.
+    assert.deepEqual(f.page.conversion, { name: "failed", mode: "native", attempt });
+    assert.ok(f.page.conversionWriteFence(), "the fence stays");
+    assert.ok(admission.pending(key), "still reserved");
+    await f.page.convertPreservedMarkdown();
+    assert.deepEqual(
+      (await internalEntries(f)).map(([name]) => name),
+      [key],
+      "no literal run while the intent is reserved",
+    );
+  }
+  // The last permanent failure abandons it, then falls back. The literal run
+  // fails for capacity too, before reserving, so the Page is stuck: open,
+  // with nothing reserved.
+  assert.equal(f.page.conversion.name, "stuck");
+  assert.equal(f.page.conversionWriteFence(), undefined);
+  assert.equal(admission.hasPending, false, "the reservation is released");
+  const abandoned = await f.storage.get(key);
+  assert.equal(abandoned.pending, false);
+  assert.equal(abandoned.abandoned, true);
+  assert.equal(abandoned.changes, undefined, "recovery never replays it");
+  f.hooks.flush = undefined;
+  const edit = await f.tool("owner", "edit_page", {
+    base_heads: f.heads(),
+    idempotency_key: "after-abandon",
+    operations: [{ op: "insert_markdown", markdown: "Next." }],
+  });
+  assert.equal(edit.status, 200, JSON.stringify(edit.body));
+});

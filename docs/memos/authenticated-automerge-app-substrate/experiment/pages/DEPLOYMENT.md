@@ -289,7 +289,11 @@ outside the client receipt budgets, so a full legacy receipt store can't
 block it. A run that fails for a reason that passes (storage, a pending edit)
 retries with backoff, 5 seconds doubling to 5 minutes, and on every refused
 connection or edit. A run that applied but couldn't finish replays under the
-same key until its journal entry is terminal.
+same key until its journal entry is terminal, whatever the failure: the
+fallback below waits until no reservation remains. After five permanent
+failures of a reserved run, the host abandons it (its journal entry is marked
+`abandoned` and recovery never replays it, and the reservation is released),
+then falls back.
 
 A run that fails for a reason that won't pass (the change is too large, the
 conversion throws, or a request-shaped refusal) retries once converting each

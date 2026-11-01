@@ -29,8 +29,12 @@ import { defineMachine, reject } from "../shared/machine.mjs";
  *   (each source as Markdown) or `literal` (each source as plain text), the
  *   fallback when a native run fails for a reason that won't pass.
  * - failed { mode, attempt }: the last run failed transiently (storage, a
- *   pending edit). Fenced; a retry is scheduled, and every refused
- *   connection or edit observes again.
+ *   pending edit), or failed after its journal entry was reserved. Fenced; a
+ *   retry is scheduled, and every refused connection or edit observes again.
+ *   A reserved run retries its exact intent: the fallback and `stuck` wait
+ *   until no reservation remains. After ABANDON_AFTER permanent failures of
+ *   a reserved run, the host abandons it (finishes its journal entry as
+ *   abandoned and releases the reservation), then falls back.
  * - stuck { reason }: both modes failed for reasons that won't pass. Open:
  *   with no host conversion coming, a peer's edit can't compete with one, so
  *   the Page edits normally and its preserved blocks stay read-only. The
@@ -40,14 +44,20 @@ import { defineMachine, reject } from "../shared/machine.mjs";
  * - observe { preserved, unfinished, eligible }: what the host sees now.
  *   `preserved`: the document holds a preserved block. `unfinished`: a
  *   journaled conversion hasn't finished. `eligible`: the host may convert.
- * - succeeded; failed { permanent, reason }: the run's outcome.
+ * - succeeded; failed { permanent, unfinished, reason }: the run's outcome.
+ *   `unfinished`: its journal entry is still reserved after the failure.
  *
  * Effects:
  * - convert { mode }: run the journaled conversion; report its outcome.
  * - observe: observe the document again.
  * - scheduleRetry { attempt }: observe again after a backoff.
  * - logStuck { reason }: record that the Page is stuck.
+ * - abandon { reason }: finish the reserved journal entry as abandoned and
+ *   release its reservation, then report `failed` with `unfinished: false`
+ *   (or `failed` transiently, still unfinished, if that fails).
  */
+/** Permanent failures of one reserved run before the host abandons it. */
+export const ABANDON_AFTER = 5;
 export const PRESERVED_CONVERSION_STATES = Object.freeze([
   "unchecked",
   "clear",
@@ -104,8 +114,9 @@ export const preservedConversionMachine = defineMachine({
       },
       succeeded: (event) => only(event, ["type"]),
       failed: (event) => {
-        only(event, ["type", "permanent", "reason"]);
+        only(event, ["type", "permanent", "unfinished", "reason"]);
         check(typeof event.permanent === "boolean", "permanent is a boolean");
+        check(typeof event.unfinished === "boolean", "unfinished is a boolean");
         reason(event);
       },
     },
@@ -120,6 +131,10 @@ export const preservedConversionMachine = defineMachine({
         check(Number.isSafeInteger(effect.attempt) && effect.attempt > 0, "attempt counts runs");
       },
       logStuck: (effect) => {
+        only(effect, ["type", "reason"]);
+        reason(effect);
+      },
+      abandon: (effect) => {
         only(effect, ["type", "reason"]);
         reason(effect);
       },
@@ -146,6 +161,16 @@ export const preservedConversionMachine = defineMachine({
       case "succeeded":
         return { state: { name: "unchecked" }, effects: [{ type: "observe" }] };
       case "failed":
+        // A reserved run keeps the fence and retries its exact intent, or is
+        // abandoned once it has failed for good often enough.
+        if (event.unfinished) {
+          if (event.permanent && state.attempt >= ABANDON_AFTER)
+            return { state, effects: [{ type: "abandon", reason: event.reason }] };
+          return {
+            state: { name: "failed", mode: state.mode, attempt: state.attempt },
+            effects: [{ type: "scheduleRetry", attempt: state.attempt }],
+          };
+        }
         if (!event.permanent)
           return {
             state: { name: "failed", mode: state.mode, attempt: state.attempt },

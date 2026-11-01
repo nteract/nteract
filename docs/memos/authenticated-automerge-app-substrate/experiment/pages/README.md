@@ -242,7 +242,10 @@ references; it does not publish the Page or change asset access.
     can't block it, and a run that applied but didn't finish replays under its
     own key until the journal entry is terminal before the fence clears.
   - Permanent failure: a run that fails for a reason that won't pass falls
-    back to converting each source as plain text. If that fails too, the Page
+    back to converting each source as plain text, but only once no journal
+    reservation remains. A reserved run keeps the fence and retries its own
+    intent; after five permanent failures the host abandons it explicitly
+    (journal entry `abandoned`, reservation released), then falls back. If that fails too, the Page
     is `stuck`: logged (`page.preserved_markdown_stuck`), unfenced, and its
     preserved blocks stay read-only until an edit replaces them
     (DEPLOYMENT.md, "Preserved Markdown conversion"). Runs are serialized, and each is a journaled host
