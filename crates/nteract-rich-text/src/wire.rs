@@ -104,7 +104,12 @@ mod tests {
                 .iter()
                 .map(|feature| feature["id"].as_str().unwrap())
                 .collect::<Vec<_>>(),
-            vec!["strike", "horizontal-rule", "preserved-markdown-converted"]
+            vec![
+                "strike",
+                "horizontal-rule",
+                "preserved-markdown-converted",
+                "comments-doc"
+            ]
         );
         assert_eq!(registry["marks"], json!({"strike":"strike"}));
         assert_eq!(

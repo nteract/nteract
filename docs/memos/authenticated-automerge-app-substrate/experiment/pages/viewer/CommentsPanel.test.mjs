@@ -105,7 +105,8 @@ async function fixture(t, options = {}) {
     open: true,
     session: {
       doc: { blocks: { block: {} } },
-      canWrite: true,
+      canComment: true,
+      commentMessage: () => undefined,
       comment: async (action) => {
         calls.push(action);
       },
@@ -362,7 +363,9 @@ test("resolve/reopen restore focus and selected resolved threads remain discover
 });
 
 test("viewers retain discussion and passage access without reply or state-changing controls", async (t) => {
-  const f = await fixture(t, { session: { doc: { blocks: { block: {} } }, canWrite: false } });
+  const f = await fixture(t, {
+    session: { doc: { blocks: { block: {} } }, canComment: false, commentMessage: () => undefined },
+  });
   assert.equal(f.container.querySelectorAll("textarea").length, 0);
   assert.equal(
     f.container.querySelectorAll(".thread-state-action, .thread-reply-button").length,
@@ -418,7 +421,7 @@ test("a reply draft kept after write access ends can still be copied or discarde
   const f = await fixture(t);
   await f.click(f.element("next").querySelector(".thread-reply-button"));
   await f.type(f.element("next").querySelector("textarea"), "Draft before downgrade");
-  f.props.session = { ...f.props.session, canWrite: false };
+  f.props.session = { ...f.props.session, canComment: false };
   await f.render();
   const next = f.element("next");
   assert.equal(next.querySelector(".thread-reply-button"), null);

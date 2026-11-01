@@ -213,7 +213,12 @@ mod tests {
         let registry = registry().unwrap();
         assert_eq!(
             registry.ids(),
-            vec!["horizontal-rule", "preserved-markdown-converted", "strike"]
+            vec![
+                "comments-doc",
+                "horizontal-rule",
+                "preserved-markdown-converted",
+                "strike"
+            ]
         );
         assert_eq!(
             registry.mark_features().iter().collect::<Vec<_>>(),

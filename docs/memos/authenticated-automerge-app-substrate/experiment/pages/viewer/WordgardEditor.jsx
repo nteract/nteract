@@ -152,12 +152,16 @@ export function WordgardEditor(props) {
     replica,
     id,
     editable,
+    // A commenter's read-only block still offers Comment on a selection.
+    commentable = editable,
     toolbarHost,
     toolbarOpen = false,
     threads,
     commentTarget,
     commentDraft,
   } = props;
+  // The toolbar shows for an editor, or with only Comment for a commenter.
+  const toolbarUsable = editable || commentable;
   const latest = useRef(props);
   latest.current = props;
   const mount = useRef(null),
@@ -192,7 +196,8 @@ export function WordgardEditor(props) {
     latest.current.onError(error instanceof Error ? error.message : String(error));
   function comment() {
     const editor = view.current;
-    if (!editor || !latest.current.editable) return false;
+    const { editable: canEdit, commentable: canComment = canEdit } = latest.current;
+    if (!editor || !(canEdit || canComment)) return false;
     const selected = wordgardCommentSelection(replica, id, editor, binding.current.current.map);
     if (!selected) return false;
     latest.current.onComment?.(selected);
@@ -700,6 +705,10 @@ export function WordgardEditor(props) {
         }
       }
       const selected = wordgardCommentSelection(replica, id, editor, bound.current.map);
+      // A commenter's read-only block activates on a selection, so its
+      // Comment button has somewhere to show.
+      if (!editor.hasFocus && selected && !latest.current.editable && latest.current.commentable)
+        latest.current.onActivate?.();
       if (editor.hasFocus) {
         latest.current.onActivate?.();
         latest.current.onSelection?.(selected);
@@ -851,6 +860,21 @@ export function WordgardEditor(props) {
     if (view.current && !view.current.composing)
       view.current.dispatch({ annotations: remoteAnnotations() });
   }, [threads, commentTarget, commentDraft, generation]);
+  // CommentPopover anchors to the draft passage's mark in its own layout
+  // pass, which runs after this one in the same commit. Wordgard writes a
+  // dispatch to the DOM on its next animation frame, so the mark is flushed
+  // here: the composer's first frame is then beside the passage, not at the
+  // block's corner. The passive effect above still dispatches if this can't.
+  useLayoutEffect(() => {
+    const editor = view.current;
+    if (!editor || editor.composing) return;
+    try {
+      editor.dispatch({ annotations: remoteAnnotations() });
+      editor.flush();
+    } catch {
+      // Inside Wordgard's own flush phase; the next frame writes the mark.
+    }
+  }, [commentDraft]);
   useEffect(() => {
     if (commentTarget?.source !== "quote") return;
     const thread = threads?.find((thread) => thread.id === commentTarget.id);
@@ -866,7 +890,7 @@ export function WordgardEditor(props) {
   useEffect(() => {
     const editor = view.current,
       element = toolbar.current;
-    if (!editor || !element || !toolbarHost || !editable) {
+    if (!editor || !element || !toolbarHost || !toolbarUsable) {
       setFloating(null);
       setContextualToolbar(false);
       return;
@@ -880,12 +904,20 @@ export function WordgardEditor(props) {
       if (dragging) return;
       let next = null;
       const selection = editor.state.selection;
+      // A read-only editor may not take focus; its selection lives in the DOM.
+      const domSelection = document.getSelection();
+      const selectedHere =
+        !editable &&
+        !!domSelection &&
+        !domSelection.isCollapsed &&
+        editor.dom.contains(domSelection.anchorNode);
       const contextual =
         !mobile &&
         !selection.empty &&
         !selectedImage(editor.state) &&
         !editor.composing &&
         (editor.hasFocus ||
+          selectedHere ||
           element.contains(document.activeElement) ||
           !!element.querySelector('[aria-expanded="true"]'));
       setContextualToolbar(contextual);
@@ -946,12 +978,12 @@ export function WordgardEditor(props) {
       listeners.forEach(([target, name, fn]) => target?.removeEventListener(name, fn, true));
       positionToolbar.current = () => {};
     };
-  }, [toolbarHost, toolbarOpen, editable, generation, mobile]);
+  }, [toolbarHost, toolbarOpen, toolbarUsable, editable, generation, mobile]);
   function run(name) {
     const editor = view.current;
+    if (editor && name === "comment" && commentable) return comment();
     if (!editor || !editable) return;
     try {
-      if (name === "comment") return comment();
       if (name === "link") return openLink();
       if (name === "highlight") Command.dispatch(editor, toggleHighlight);
       else if (name === "table") insertTable(editor);
@@ -1028,7 +1060,7 @@ export function WordgardEditor(props) {
         aria-label={label}
         title={label}
         aria-pressed={action ? undefined : !!format?.[name]}
-        disabled={!editable || (action && !format?.[name])}
+        disabled={!(editable || (name === "comment" && commentable)) || (action && !format?.[name])}
         onPointerDown={(event) => event.preventDefault()}
         onClick={() => run(name)}
       >
@@ -1043,7 +1075,7 @@ export function WordgardEditor(props) {
           <div
             ref={toolbar}
             className={`rich-toolbar ${toolbarOpen ? "is-pinned" : "is-contextual"}${floating ? " is-floating" : ""}`}
-            hidden={!editable || (!toolbarOpen && !contextualToolbar)}
+            hidden={!toolbarUsable || (!toolbarOpen && !contextualToolbar)}
             style={floating || undefined}
             role="toolbar"
             aria-label={format?.image ? "Image actions" : "Text formatting"}
@@ -1064,7 +1096,9 @@ export function WordgardEditor(props) {
                 </button>
               ))}
             {toolbarOpen && <span className="toolbar-separator" role="separator" />}
-            {format?.image ? (
+            {!editable ? (
+              formatButton(commentControl)
+            ) : format?.image ? (
               <span className="image-selection-label">Image</span>
             ) : (
               <>

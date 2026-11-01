@@ -1,10 +1,15 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import * as A from "@automerge/automerge";
-import { applyPageOperation, createPageData, initializePage } from "../model/page.mjs";
-import { projectComments } from "../model/comments.mjs";
+import { createPageData, initializePage } from "../model/page.mjs";
+import { applyComment, projectComments } from "../model/comments.mjs";
+import { commentsGenesis } from "../model/comments-doc.mjs";
+import { guardCommentIntent } from "../model/comment-guard.mjs";
 import { textPath } from "../model/richtext.mjs";
-import { documentMutation } from "./mutations.mjs";
+import { COMMENTS_DOC, documentMutation } from "./mutations.mjs";
+
+// Comment intents as the Page host runs them: journaled on the comments
+// document, anchored in the Page document, and never writing the Page.
 
 class Storage {
   values = new Map();
@@ -34,32 +39,51 @@ function fixture(t, markdown = "Alpha first.\n\nBeta second.\n\nKeep the tail.")
     A.from(createPageData({ pageId: "comment-fixture", title: "Comment fixture" })),
     (draft) => initializePage(draft, markdown),
   );
+  let comments = A.clone(commentsGenesis(crypto.randomUUID()));
   const id = Object.keys(doc.blocks)[0];
   const identity = { principal: "user:comment-fixture", displayName: "Agent", driver: "Codex" };
   const handle = {
-    doc: () => doc,
+    doc: () => comments,
     async update(fn) {
-      doc = fn(doc);
+      comments = fn(comments);
     },
   };
   let applications = 0;
-  const context = (args, operation = "manage_page_comment") => ({
-    storage,
-    handle,
-    operation,
-    args,
-    identity,
-    apply(draft, effectiveArgs) {
-      applications++;
-      // The Page host reports model validation failures as 400s.
-      try {
-        return applyPageOperation(draft, { operation, arguments: effectiveArgs, identity });
-      } catch (error) {
-        throw Object.assign(error, { status: 400 });
-      }
-    },
-    flush: async () => {},
-  });
+  const context = (args, operation = "manage_page_comment") => {
+    let page;
+    return {
+      storage,
+      handle,
+      doc: COMMENTS_DOC,
+      pageId: "comment-fixture",
+      operation,
+      args,
+      identity,
+      guard: (input) => {
+        page = doc;
+        return guardCommentIntent(page, operation, input);
+      },
+      apply(draft, effectiveArgs) {
+        applications++;
+        // The Page host reports model validation failures as 400s.
+        try {
+          return applyComment(
+            draft,
+            operation === "reply_page_comment"
+              ? { ...effectiveArgs, action: "reply" }
+              : effectiveArgs,
+            identity,
+            undefined,
+            { page, role: "editor" },
+          );
+        } catch (error) {
+          throw Object.assign(error, { status: error.status ?? 400 });
+        }
+      },
+      flush: async () => {},
+    };
+  };
+  /** A native change to the Page document, as a browser peer makes. */
   const native = (fn) => {
     doc = A.change(doc, fn);
   };
@@ -81,13 +105,17 @@ function fixture(t, markdown = "Alpha first.\n\nBeta second.\n\nKeep the tail.")
   return {
     storage,
     handle,
+    page: () => doc,
     id,
     context,
     native,
+    nativeComments: (fn) => {
+      comments = A.change(comments, fn);
+    },
     type,
     args,
     applications: () => applications,
-    comments: () => projectComments(doc),
+    comments: () => projectComments(doc, comments),
     text: () => doc.blocks[id].richText,
   };
 }
@@ -103,9 +131,10 @@ test("thread actions succeed after browser typing in the same block", async (t) 
     f.context(f.args({ action: "add", block_id: f.id, selected_text: "Beta", body: "Why?" })),
   );
   const { thread_id, message_id } = added.result;
-  const stale = A.getHeads(f.handle.doc());
+  const stale = A.getHeads(f.page());
+  const pageAfterAdd = A.getHeads(f.page());
   f.type("Beta", " typed by a human");
-  assert.notDeepEqual(A.getHeads(f.handle.doc()), stale);
+  assert.notDeepEqual(A.getHeads(f.page()), stale);
 
   const reply = await documentMutation(
     f.context(f.args({ action: "reply", thread_id, body: "Because.", base_heads: stale })),
@@ -145,6 +174,8 @@ test("thread actions succeed after browser typing in the same block", async (t) 
   // Typing after the final selected character extends the block, not the anchor.
   assert.equal(thread.selectionContext.text, "Beta");
   assert.match(f.text(), /Beta typed by a human/);
+  // Only the typing moved the Page; the comment intents wrote none of it.
+  assert.ok(A.getChanges(A.view(f.page(), pageAfterAdd), f.page()).length > 0);
 });
 
 test("thread actions still validate threads, messages and supplied heads", async (t) => {
@@ -208,7 +239,7 @@ test("a passage deleted after the read returns edit_conflict without recording",
     assert.equal(error.status, 409);
     assert.equal(error.code, "edit_conflict");
     assert.deepEqual(error.details.conflicts, [{ block_id: f.id, reason: "target_detached" }]);
-    assert.deepEqual(error.details.current_heads, A.getHeads(f.handle.doc()));
+    assert.deepEqual(error.details.current_heads, A.getHeads(f.page()));
     return true;
   });
   assert.deepEqual(A.save(f.handle.doc()), before);
@@ -238,10 +269,14 @@ test("a passage comment rejects unknown, missing or malformed base heads", async
 
 test("a block comment needs only its block to exist now", async (t) => {
   const f = fixture(t);
-  const stale = A.getHeads(f.handle.doc());
+  const stale = A.getHeads(f.page());
   f.type("Alpha", " typed");
   await documentMutation(
     f.context(f.args({ action: "add", block_id: f.id, body: "Block note", base_heads: stale })),
+  );
+  // A block comment takes no base_heads at all.
+  await documentMutation(
+    f.context({ idempotency_key: `bare-${crypto.randomUUID()}`, block_id: f.id, body: "Bare" }),
   );
   assert.deepEqual(f.comments()[0].target, { kind: "block", blockId: f.id });
   f.native((draft) => {
@@ -282,13 +317,15 @@ test("an exact retry replays its receipt after the passage is later deleted", as
 function openThreads(f, count) {
   const ids = [];
   for (let n = 0; n < count; n++)
-    f.native((draft) => {
+    f.nativeComments((draft) => {
       ids.push(
-        applyPageOperation(draft, {
-          operation: "manage_page_comment",
-          arguments: { action: "add", block_id: f.id, body: `Note ${n}` },
-          identity: { principal: "user:reviewer", displayName: "Reviewer", driver: "Browser" },
-        }).thread_id,
+        applyComment(
+          draft,
+          { action: "add", block_id: f.id, body: `Note ${n}` },
+          { principal: "user:reviewer", displayName: "Reviewer", driver: "Browser" },
+          undefined,
+          { page: f.page(), role: "commenter" },
+        ).thread_id,
       );
     });
   return ids;
@@ -317,7 +354,7 @@ test("a batch skips threads already resolved and changes the rest", async (t) =>
   const f = fixture(t);
   const [open, done, other] = openThreads(f, 3);
   await documentMutation(f.context(f.args({ action: "resolve", thread_id: done })));
-  const resolvedAt = f.handle.doc().comments[done].status.at;
+  const resolvedAt = f.handle.doc().threads[done].status.at;
   const before = changeCount(f);
   const receipt = await documentMutation(
     f.context(f.args({ action: "resolve", thread_ids: [open, done, other] })),
@@ -328,7 +365,7 @@ test("a batch skips threads already resolved and changes the rest", async (t) =>
     { thread_id: done, outcome: "already_resolved" },
     { thread_id: other, outcome: "resolved" },
   ]);
-  assert.equal(f.handle.doc().comments[done].status.at, resolvedAt, "a no-op keeps its time");
+  assert.equal(f.handle.doc().threads[done].status.at, resolvedAt, "a no-op keeps its time");
   assert.deepEqual(states(f), { [open]: "resolved", [done]: "resolved", [other]: "resolved" });
 });
 

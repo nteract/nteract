@@ -52,6 +52,7 @@ const SUITES = Object.freeze([
   { name: "images", harness: sharing("--images"), timeout: 4 * minute },
   { name: "mcp-images", harness: sharing("--mcp-images"), timeout: 4 * minute },
   { name: "sharing", harness: sharing(), timeout: 4 * minute },
+  { name: "commenter", harness: sharing("--commenter"), timeout: 4 * minute },
   { name: "admission", harness: sharing("--admission"), timeout: 4 * minute },
   { name: "domain-view", harness: sharing("--domain-view"), timeout: 4 * minute },
   // Opt-in until a Page reopened after a celld restart reliably reaches Saved;

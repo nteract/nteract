@@ -89,19 +89,20 @@ test("an edit batch that cannot apply names the selector, and nothing is written
 
 test("the host refuses every write to a Page stamped with a feature it lacks, and reads report the stamp", async (t) => {
   const plain = await fixture(t);
-  const unstamped = await plain.tool("owner", "read_page", { comments: "none" });
-  assert.deepEqual(unstamped.body.schema_features, []);
+  // A new Page carries only the comments-doc stamp.
+  const current = await plain.tool("owner", "read_page", { comments: "none" });
+  assert.deepEqual(current.body.schema_features, ["comments-doc"]);
   const legacy = await plain.tool("owner", "read_page");
-  assert.deepEqual(legacy.body.schema_features, []);
+  assert.deepEqual(legacy.body.schema_features, ["comments-doc"]);
 
   const doc = A.change(A.load(A.save(plain.doc())), (draft) => {
-    draft.schema = { features: ["future-feature"] };
+    draft.schema = { features: ["comments-doc", "future-feature"] };
   });
   const f = await fixture(t, { auth: plain.auth, docBytes: A.save(doc) });
   A.free(doc);
   const read = await f.tool("owner", "read_page", { comments: "none" });
   assert.equal(read.status, 200);
-  assert.deepEqual(read.body.schema_features, ["future-feature"]);
+  assert.deepEqual(read.body.schema_features, ["comments-doc", "future-feature"]);
   const heads = f.heads();
   for (const [operation, args] of [
     ["edit_page", { operations: [{ op: "set_title", title: "Changed" }] }],
@@ -162,7 +163,7 @@ test("a receipt for edits the native gate refused answers schema_unsupported at 
 
 test("a thread batch names unknown threads, refuses readers, and applies for editors", async (t) => {
   const f = await fixture(t);
-  const [threadId] = Object.keys(f.doc().comments);
+  const [threadId] = Object.keys(f.commentsDoc().threads);
   const heads = f.heads();
   const unknown = await f.tool("owner", "manage_page_comment", {
     idempotency_key: "batch-unknown-thread",
@@ -217,6 +218,10 @@ test("a thread batch names unknown threads, refuses readers, and applies for edi
   assert.deepEqual(resolved.body.result, {
     threads: [{ thread_id: threadId, outcome: "resolved" }],
   });
-  assert.deepEqual(resolved.body.heads, f.heads());
-  assert.equal(f.doc().comments[threadId].status.value, "resolved");
+  // The Page is untouched: its heads hold, and the receipt names the
+  // comments document's new revision.
+  assert.deepEqual(resolved.body.heads, heads);
+  assert.deepEqual(f.heads(), heads);
+  assert.deepEqual(resolved.body.comment_heads, f.commentHeads());
+  assert.equal(f.commentsDoc().threads[threadId].status.value, "resolved");
 });

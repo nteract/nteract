@@ -20,13 +20,17 @@ const headsShape = (heads) =>
   heads.every((head) => typeof head === "string" && /^[a-f0-9]{64}$/.test(head));
 const sameHeads = (a, b) => a.length === b.length && [...a].sort().join() === [...b].sort().join();
 
-/** Revision guard for a new comment intent against one captured snapshot.
+/** Revision guard for a new comment intent against one captured snapshot of
+ * the Page document. Comments live in their own document, so only a passage
+ * comment depends on the Page text the caller read.
  *
- * Replies, status changes, edits and deletions touch only the comment thread,
- * never block text, so they ignore base_heads; applyComment still requires the
- * thread and message to exist. A block comment needs only its block to exist.
- * A passage comment is located at base_heads, the revision the caller read,
- * and its cursors must still resolve in the current snapshot.
+ * Replies, status changes, edits and deletions touch only the comments
+ * document and ignore base_heads; applyComment still requires the thread and
+ * message to exist. A block comment needs only its block to exist, and takes
+ * no base_heads either. A passage comment (`add` with `selected_text`) is
+ * located at base_heads, the revision the caller read, and its cursors must
+ * still resolve in the current snapshot. Any base_heads supplied must be well
+ * formed.
  *
  * The caller must build its edit from this same snapshot without awaiting.
  * Receipt replay never calls this: an exact retry returns its recorded result.
@@ -35,7 +39,8 @@ export function guardCommentIntent(current, operation, args) {
   const action = operation === "reply_page_comment" ? "reply" : (args.action ?? "add");
   // A malformed thread_ids batch fails before prepare or any thread lookup.
   threadBatch(args, action);
-  if (action !== "add") {
+  const passage = action === "add" && !!args.selected_text;
+  if (!passage) {
     if (args.base_heads !== undefined && !headsShape(args.base_heads))
       fail(
         400,
@@ -45,8 +50,11 @@ export function guardCommentIntent(current, operation, args) {
     return args;
   }
   if (!headsShape(args.base_heads))
-    fail(400, "base_heads from read_page are required", "invalid_edit_selector");
-  if (!args.selected_text) return args;
+    fail(
+      400,
+      "base_heads from read_page are required for a passage comment",
+      "invalid_edit_selector",
+    );
   const currentHeads = A.getHeads(current);
   if (!A.hasHeads(current, args.base_heads))
     fail(409, "The base revision is unavailable; read the Page again", "resync_required", {

@@ -193,7 +193,7 @@ function PopoverSurface({ composer, session, containerRef, state, current, body 
   } catch (error) {
     draftProblem = error.message;
   }
-  const disabled = sending || !session.canWrite;
+  const disabled = sending || !session.canComment;
   const canSend = !disabled && !uploading && !draftProblem && !draftError && hasDraftText(body);
   const markdown = body?.markdown ?? body;
   // A draft whose passage went away can't be sent: comment-draft.mjs asks the
@@ -264,7 +264,7 @@ function PopoverSurface({ composer, session, containerRef, state, current, body 
           onChange={(text, spans) => composer.change(spans ? { markdown: text, spans } : text)}
           onError={setDraftError}
           disabled={disabled}
-          images={{ pageId: session.pageId, canUpload: session.canWrite }}
+          images={{ pageId: session.pageId, canUpload: session.canComment && session.canWrite }}
           onUploadingChange={setUploading}
         />
         {error && (

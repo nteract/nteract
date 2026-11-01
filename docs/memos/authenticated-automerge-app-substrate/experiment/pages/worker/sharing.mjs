@@ -1,12 +1,13 @@
 import { normalizeInviteEmail } from "@cloud/sharing.ts";
 import { appSessionHasFreshVerifiedEmail } from "@cloud/app-session.ts";
-import { pageAccess, proposeAccessUpdate } from "./access.mjs";
+import { MEMBER_ROLES, pageAccess, proposeAccessUpdate } from "./access.mjs";
 import { HttpError } from "./auth.mjs";
 import { fingerprint, mutationKey } from "./mutations.mjs";
 import { companyDomainProof, companyViewDomains, configuredDomainView } from "./domain-access.mjs";
 
 const lifetime = 7 * 24 * 60 * 60 * 1000;
-const roleValid = (role) => ["viewer", "editor"].includes(role);
+const roleValid = (role) => MEMBER_ROLES.includes(role);
+const stronger = (a, b) => (MEMBER_ROLES.indexOf(a) >= MEMBER_ROLES.indexOf(b) ? a : b);
 /**
  * domainOptions are the host-allowed company domains the requesting owner
  * proves right now; domainProof gives each host-allowed domain's bounded proof
@@ -67,7 +68,8 @@ export async function claimInvitation(metadata, identity, env, now = Date.now())
     // A stale invite must not downgrade a grant made explicitly in the meantime.
     const previous = metadata.acl?.members?.[identity.principal];
     if (previous?.changedAtRevision > (invite.issuedRevision ?? 0)) continue;
-    const role = previous?.role === "editor" ? "editor" : invite.role;
+    // An invitation never lowers a grant the member already holds.
+    const role = roleValid(previous?.role) ? stronger(previous.role, invite.role) : invite.role;
     const result = proposeAccessUpdate(
       metadata,
       { principal: metadata.owner, canWrite: true, expiresAt: now + 1000 },
@@ -159,7 +161,7 @@ export async function proposeSharingMutation(metadata, identity, args, now = Dat
     }
   } else if (args.action === "invite") {
     const email = checkedEmail(args.email);
-    if (!roleValid(args.role)) throw new HttpError(400, "Choose Can view or Can edit");
+    if (!roleValid(args.role)) throw new HttpError(400, "Choose Can view, Can comment or Can edit");
     if (!identity.namespace) throw new HttpError(400, "Sign in again before inviting people");
     const member = Object.entries(acl.members).find(
       ([, value]) => value.email === email && value.role !== "none",

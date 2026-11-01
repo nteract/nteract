@@ -262,7 +262,8 @@ test("malformed and mismatched snapshots reserve no capacity and leave the key r
       initial_snapshot_base64: Buffer.from(
         A.save(
           A.change(A.clone(doc), (draft) => {
-            draft.comments.fake = { author: "someone else" };
+            // Comments never arrive in a bootstrap snapshot.
+            draft.comments = { fake: { author: "someone else" } };
           }),
         ),
       ).toString("base64"),
