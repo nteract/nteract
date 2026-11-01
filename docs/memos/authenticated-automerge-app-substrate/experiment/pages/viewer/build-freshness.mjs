@@ -117,11 +117,10 @@ function pendingOf(session) {
 }
 
 const HELD = new Set(["opening", "open", "paused"]);
-// The release has started: the checkpoint settled, or a deleted or revoked
-// Page's local copy is archived.
+// The release has started: the checkpoint settled, or a retired copy's
+// archive write settled, whatever its result.
 const releasing = (phase) =>
-  phase.name === "closed" ||
-  ((phase.name === "deleted" || phase.name === "revoked") && phase.closing === true);
+  phase.name === "closed" || phase.name === "retired" || phase.name === "retireFailed";
 
 /** What the gate keeps about an owned session, from its phase and receipt.
  * Membership follows the lifecycle, not who started the close: a session
@@ -150,8 +149,25 @@ function summarize(id, session) {
  * its own recovery record. */
 function released(id, session) {
   const savedHeads = [...(session.savedHeads ?? [])];
-  // A revoked copy is archived like a deleted one: the gate keeps no record.
-  if (session.hidden) return { id, key: keyOf(session), phase: "deleted", savedHeads };
+  if (session.hidden) {
+    // An archived copy is in IndexedDB like a deleted one: the gate keeps no
+    // record. A failed archive leaves only the tab's export, so it keeps that
+    // as an unsaved record and blocks Reload until it is downloaded.
+    const kept = session.retireFailed ? session.closedRecovery : undefined;
+    if (!kept) return { id, key: keyOf(session), phase: "deleted", savedHeads };
+    return {
+      id,
+      key: keyOf(session),
+      phase: "closed",
+      saved: false,
+      checkpointWritten: false,
+      savedHeads,
+      account: session.identity?.principal,
+      pageId: session.pageId,
+      title: kept.title ?? "",
+      recovery: { markdown: kept.markdown, heads: [...(kept.heads ?? [])] },
+    };
+  }
   const left = (!session.phase$.snapshot().archived && session.leaveRecord) || { saved: true };
   const event = {
     id,

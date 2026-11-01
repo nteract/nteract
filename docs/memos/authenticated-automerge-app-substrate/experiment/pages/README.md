@@ -340,17 +340,29 @@ an offline cold start of application assets or authentication.
 
 When the host refuses this account, the browser stops rendering its copy. A
 `page_access_denied` answer (access removed, or a Page missing to this account,
-purged included) or an access fact with a role of none revokes the session; a
-404 (`page_deleted`, or the legacy missing-Page answer) deletes it. Either way
-the checkpoint and the live replica's snapshot move to the recovery archive, and
-a marker takes the checkpoint's place, so a reload shows the same "You no longer
-have access" or "This Page was deleted" notice instead of the Page. The notice
-downloads the archived copy: a JSON file with its Markdown, comments included,
-and its Automerge snapshot. An access
-marker only blocks: a tab that hasn't seen the refusal archives its own copy
-when it next writes, and the next open the host grants writes over the marker on
-the new grant's replica, never the archived one. A deletion marker is permanent.
-Trash, a refusal without a code, sign-in and transient failures keep the copy.
+purged included) or an access fact with a role of none retires the session for
+access; a 404 (`page_deleted`, the legacy missing-Page answer, or the 4404
+admission close) retires it as deleted. Sync stops first. Then one IndexedDB
+transaction moves the checkpoint and the live replica's snapshot to the
+recovery archive, with any unsent comment or reply drafts from the UI, and
+leaves a marker in the checkpoint's place. Only then is the backend released;
+a leave waits for the archive. A reload shows the same "You no longer have
+access" or "This Page was deleted" notice instead of the Page. The notice
+downloads every copy the archive holds for the Page as one JSON bundle, each
+with its Markdown (comments, unsent comments and drafts included) and its
+Automerge snapshot. A permanent deletion from Trash archives the owner's copy
+the same way.
+
+If the archive write fails (quota, storage error), the session says so and
+never reports the copy archived. The notice offers the tab's in-memory export
+instead, and the reload gate keeps it as an unsaved Page that blocks Reload
+until it is downloaded or discarded.
+
+An access marker only blocks: a tab that hasn't seen the refusal archives its
+own copy when it next writes, and the next open the host grants writes over the
+marker on the new grant's replica, never the archived one. A deletion marker is
+permanent. Trash, a refusal without a code, sign-in and transient failures keep
+the copy.
 
 ```text
 Browser Repo + Wordgard                 Authorized HTTP / MCP operations
@@ -1025,7 +1037,8 @@ person confirms Discard unsaved edits. Records are keyed by account and Page id.
 Each Page session moves through the
 [viewer-session machine](viewer/session-machine.mjs): opening, open, paused
 (sign-in, access, Trash or access reload), draining while it is left, then
-checkpointing, closed, deleted or revoked. `PageSession.phase$` is that state in a
+checkpointing or closed. A refusal retires it instead: retiring while the
+archive writes, then retired or retireFailed. `PageSession.phase$` is that state in a
 [Store](viewer/store.mjs), and every lifecycle flag derives from it. A close
 can grow while it runs (a late refusal adds its archive), so the close itself
 is private and `closeSettled()` is the only way to wait for it. The
@@ -1045,9 +1058,9 @@ Deliberate differences from the earlier flag-based sessions:
   release settles, like a Page left through the drain, and keeps the same
   record if its edits never reached the server. Closing a held Page cancels a
   waiting Reload.
-- A deleted or revoked Page archives its local copy before it starts closing.
-  It counts as closing, and Reload waits for it, until that close releases its
-  backend.
+- A deleted or revoked Page archives its local copy before it releases its
+  backend. It counts as closing, and Reload waits for it, until both settle.
+  A failed archive keeps the tab's export as an unsaved record.
 - Leaving during access reload waits for archiving and the replacement-open
   attempt.
 - If the replacement fails to open, the archived Page stays installed with

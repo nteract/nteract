@@ -462,7 +462,7 @@ test("late receipt success cannot overwrite sign-in, access, deletion or closed-
       else {
         f.session.skipCloseCheckpoint = true;
         if (stop === "deleted") {
-          f.session.phase$.update(() => ({ name: "deleted" }));
+          f.session.phase$.update(() => ({ name: "retired", reason: "deleted" }));
           f.session.status = "Deleted";
           f.session.statusId = "deleted";
         }

@@ -24,7 +24,7 @@ import {
   sessionAnswerNotice,
   sessionCheckBanner,
 } from "./alerts.mjs";
-import { listLocalPages, forgetLocalPage } from "./local-catalog.mjs";
+import { listLocalPages, retireLocalPage } from "./local-catalog.mjs";
 import {
   PROJECTS_PATH,
   isIndexRoute,
@@ -66,7 +66,7 @@ import { reloadGate } from "./build-freshness.mjs";
 import { EditorLoader } from "./editor-loader.mjs";
 import { SessionHost } from "./session-host.mjs";
 import { useStore } from "./store.mjs";
-import { CommentComposer } from "./comment-composer.mjs";
+import { CommentComposer, hasDraftText } from "./comment-composer.mjs";
 import { focusReturnTarget } from "./focus-return.mjs";
 import { timer } from "rxjs";
 import { MOBILE_EDITOR_QUERY, trackVisualViewport } from "./visual-viewport.mjs";
@@ -309,6 +309,20 @@ function App() {
           if (host.current === next) setLocalRecoveries(records);
         })
         .catch(() => {});
+    // The inline composer's draft lives only here. A refusal reads it into
+    // the recovery archive before the UI resets.
+    next.watchCommentDrafts(() => {
+      if (host.current !== next) return [];
+      const { composer: current, body } = composer.snapshot();
+      if (!current || !hasDraftText(body)) return [];
+      return [
+        {
+          kind: "comment",
+          body: body?.markdown ?? body,
+          quote: current.quote,
+        },
+      ];
+    });
     // A refusal hides the Page at once and archives its copy afterwards:
     // list the archive again once it's written.
     let hiding = next.hidden,
@@ -321,7 +335,7 @@ function App() {
           hiding = true;
           resetDocumentUI();
         }
-        if (next.recoveryArchived && !archived) {
+        if ((next.recoveryArchived || next.retireFailed) && !archived) {
           archived = true;
           listRecoveries();
         }
@@ -339,10 +353,12 @@ function App() {
     // restored Page moves from its reader replica to the writer replica.
     return host.reloadAccess(previous, { install, onError: showError });
   }
-  function downloadDraft(record) {
+  function downloadDraft(record, { bundle = false } = {}) {
     let draft;
     try {
-      draft = host.current?.exportRecovery(record);
+      draft = bundle
+        ? host.current?.exportRecoveries(localRecoveries)
+        : host.current?.exportRecovery(record);
     } catch (error) {
       showError(error);
       return;
@@ -353,7 +369,7 @@ function App() {
     );
     const link = document.createElement("a");
     link.href = url;
-    link.download = `${draft.page_id}-local-draft.json`;
+    link.download = `${draft.page_id}-local-${bundle ? "copies" : "draft"}.json`;
     link.click();
     setTimeout(() => URL.revokeObjectURL(url), 1000);
   }
@@ -779,11 +795,11 @@ function App() {
         onError: showError,
       });
       // Keep the local replica: the Page can be restored from Trash. A draft
-      // the host never registered has no Trash entry, so discard it instead of
-      // leaving it listed as saved locally.
+      // the host never registered has no Trash entry, so move it to the
+      // recovery archive instead of leaving it listed as saved locally.
       if (!deleting.localPage?.registered) {
         await closing;
-        await forgetLocalPage(deleting.identity, deleting.pageId);
+        await retireLocalPage(deleting.identity, deleting.pageId, { reason: "deleted" });
       }
       setNotice("Moved to Trash");
       await refresh();
@@ -1276,14 +1292,14 @@ function App() {
             <TrashView
               tool={tool}
               principal={account.principal}
+              identity={authentication.current?.identity}
               onBack={() => home(null)}
               onOpen={(id) => open(id)}
               onRestored={async () => {
                 setNotice("Page restored");
                 await refresh().catch(() => {});
               }}
-              onPurged={async (id) => {
-                await forgetLocalPage(authentication.current?.identity, id);
+              onPurged={async () => {
                 setNotice("Page deleted permanently");
                 await refresh().catch(() => {});
               }}

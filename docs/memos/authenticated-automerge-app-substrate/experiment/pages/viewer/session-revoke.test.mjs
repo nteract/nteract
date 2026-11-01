@@ -7,9 +7,11 @@ import assert from "node:assert/strict";
 import "fake-indexeddb/auto";
 import * as A from "@automerge/automerge";
 import { generateAutomergeUrl, interpretAsDocumentId } from "@automerge/automerge-repo";
-import { PageSession, refusalOf, listLocalPages } from "./session.mjs";
+import { PageSession, refusalOf, listLocalPages, signingKeyRefused } from "./session.mjs";
 import { createPageData, initializePage } from "../model/page.mjs";
 import { applyComment } from "../model/comments.mjs";
+import { admissionCloseOutcome } from "../shared/admission.mjs";
+import { retiredCopies } from "./retired-copies.mjs";
 import {
   decodeSnapshot,
   encodeSnapshot,
@@ -433,4 +435,173 @@ test("an access marker refuses ordinary writes and yields only to a re-grant", a
   const stranger = crypto.randomUUID();
   assert.equal(await retireLocalPage(auth.identity, stranger, { reason: "access" }), null);
   assert.equal(await readLocalPage(auth.identity, stranger, { markers: true }), null);
+});
+
+test("the host's 4404 page_deleted socket close retires the copy as deleted", async (t) => {
+  const { session, auth, pageId } = await openCopy();
+  t.after(() => session.close());
+  let reconnects = 0;
+  t.mock.method(session, "scheduleReconnect", () => reconnects++);
+  const socket = { close() {} };
+  session.sockets.add(socket);
+  session.socketOutcomes.set(socket, admissionCloseOutcome({ code: 4404, reason: "page_deleted" }));
+  session.socketDisconnected(socket);
+  assert.equal(session.deleted, true, "not the signing-key refusal");
+  assert.equal(session.snapshot(), null);
+  await session.closeSettled();
+  assert.equal(session.phase$.snapshot().name, "retired");
+  assert.equal(reconnects, 0);
+  assert.notEqual(session.problem, signingKeyRefused({ code: "page_deleted" }).message);
+  assert.equal((await readLocalPage(auth.identity, pageId, { markers: true })).deleted, true);
+  assert.equal((await listLocalRecoveries(auth.identity, pageId)).length, 1);
+});
+
+test("a failed archive keeps the tab's copy downloadable and never claims it was written", async (t) => {
+  const { session, auth, pageId } = await openCopy();
+  const quota = Object.assign(Error("The quota has been exceeded."), {
+    name: "QuotaExceededError",
+  });
+  session.retireLocal = async () => {
+    throw quota;
+  };
+  await session.revoke();
+  t.after(() => session.close());
+  assert.deepEqual(session.phase$.snapshot(), { name: "retireFailed", reason: "access" });
+  assert.equal(session.hidden, true);
+  assert.equal(session.snapshot(), null, "the Page still doesn't render");
+  assert.equal(session.recoveryArchived, false);
+  assert.equal(session.retireFailed, true);
+  assert.equal(session.retireProblem, quota.message);
+  // Nothing reached IndexedDB: the stored checkpoint is untouched, no marker.
+  const stored = await readLocalPage(auth.identity, pageId, { markers: true });
+  assert.equal(stored.revoked, undefined);
+  assert.ok(stored.snapshot);
+  assert.deepEqual(await listLocalRecoveries(auth.identity, pageId), []);
+  // The notice still offers the tab's export, alone in the bundle.
+  assert.equal(retiredCopies(session, []), 1);
+  const bundle = session.exportRecoveries([]);
+  assert.equal(bundle.copies.length, 1);
+  assert.match(bundle.copies[0].markdown, new RegExp(BODY));
+  assert.match(bundle.copies[0].markdown, new RegExp(COMMENT));
+});
+
+test("a leave during a pending archive waits for it, then for the release", async (t) => {
+  const { session, auth, pageId } = await openCopy();
+  const archive = Promise.withResolvers();
+  const released = [];
+  session.releaseLocal = async () => released.push("release");
+  session.retireLocal = (...args) =>
+    archive.promise.then(() => PageSession.prototype.retireLocal.apply(session, args));
+  void session.revoke();
+  assert.equal(session.phase$.snapshot().name, "retiring");
+  let left = false;
+  const leaving = session.leave({ drain: false }).then(() => (left = true));
+  const closing = session.closeSettled();
+  for (let i = 0; i < 5; i++) await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(left, false, "the leave waits for the archive");
+  assert.deepEqual(released, [], "nothing released the backend under the archive");
+  assert.equal((await readLocalPage(auth.identity, pageId)).snapshot !== undefined, true);
+  archive.resolve();
+  await Promise.all([leaving, closing]);
+  t.after(() => session.close());
+  assert.equal(left, true);
+  assert.deepEqual(released, ["release"]);
+  assert.equal(session.phase$.snapshot().name, "retired");
+  assert.equal((await listLocalRecoveries(auth.identity, pageId)).length, 1);
+});
+
+test("retirement disconnects before the outbound flush, so queued sends reach no host", async (t) => {
+  const { session } = await openCopy();
+  t.after(() => session.close());
+  const order = [];
+  session.disconnectSockets = async () => {
+    order.push("disconnect");
+  };
+  session.releaseLocal = async () => order.push("release");
+  // A keystroke's round waits in the batch when the refusal lands.
+  session.outbound.scheduleLocalSync("tree", () => order.push("send"));
+  await session.revoke();
+  assert.equal(order[0], "disconnect");
+  assert.deepEqual(order, ["disconnect", "send", "release"]);
+  // A leave on the retired session sends nothing more.
+  session.outbound.scheduleLocalSync("tree", () => order.push("late send"));
+  await session.leave();
+  assert.equal(order.filter((entry) => entry === "late send").length, 1, "close() sends at once");
+});
+
+test("unsent comment drafts go into the recovery record and the download", async (t) => {
+  const { session, auth, pageId } = await openCopy();
+  t.after(() => session.close());
+  session.watchCommentDrafts(() => [
+    { kind: "comment", body: "A draft never sent.", quote: "Only the collaborator's" },
+    { kind: "comment", body: "   " },
+  ]);
+  session.watchCommentDrafts(() => [
+    { kind: "reply", thread_id: "thread-1", body: { markdown: "ignored" }.markdown },
+  ]);
+  await session.revoke();
+  const [record] = await listLocalRecoveries(auth.identity, pageId);
+  assert.deepEqual(record.comment_drafts, [
+    { kind: "comment", body: "A draft never sent.", quote: "Only the collaborator's" },
+    { kind: "reply", body: "ignored", thread_id: "thread-1" },
+  ]);
+  const exported = session.exportRecovery(record);
+  assert.match(exported.markdown, /## Unsent comment drafts/);
+  assert.match(exported.markdown, /On “Only the collaborator's”/);
+  assert.match(exported.markdown, /> A draft never sent\./);
+  assert.match(exported.markdown, /Reply to thread thread-1/);
+  assert.deepEqual(exported.comment_drafts, record.comment_drafts);
+});
+
+test("drafts survive a retirement with no replica to export", async () => {
+  const auth = authentication();
+  const pageId = crypto.randomUUID();
+  const session = new PageSession(pageId, { authentication: auth });
+  session.acceptAuthentication(auth);
+  session.dispatch({ type: "opened", denied: false });
+  session.watchCommentDrafts(() => [{ kind: "comment", body: "Typed before the refusal." }]);
+  session.releaseLocal = async () => {};
+  await session.revoke();
+  const [record] = await listLocalRecoveries(auth.identity, pageId);
+  assert.equal(record.snapshot, undefined);
+  assert.match(session.exportRecovery(record).markdown, /Typed before the refusal\./);
+  assert.equal((await readLocalPage(auth.identity, pageId, { markers: true })).revoked, true);
+});
+
+test("divergent stored and live copies are both offered, before and after a reload", async (t) => {
+  browser(t);
+  const first = await openCopy();
+  // The live replica moved on after the checkpoint was written.
+  const live = A.change(first.doc, (d) => {
+    d.title = "Live edit after the checkpoint";
+  });
+  first.session.handle = { doc: () => live, documentId: first.documentId };
+  t.mock.method(
+    globalThis,
+    "fetch",
+    respond(403, { error: "Document access denied", code: "page_access_denied" }),
+  );
+  await first.session.retryConnection();
+  await first.session.closeSettled();
+  const records = await first.session.listRecoveries();
+  assert.equal(records.length, 2);
+  const before = first.session.exportRecoveries(records);
+  assert.equal(before.copies.length, 2, "the archived live copy isn't offered twice");
+  assert.deepEqual(before.copies.map((copy) => copy.title).sort(), [
+    "Live edit after the checkpoint",
+    "Shared garden",
+  ]);
+  assert.equal(retiredCopies(first.session, records), 2);
+  const session = await PageSession.open(first.pageId, {
+    authentication: first.auth,
+    refreshSession: async () => first.auth,
+  });
+  t.after(() => session.close());
+  assert.equal(session.revoked, true);
+  const after = session.exportRecoveries(await session.listRecoveries());
+  assert.deepEqual(after.copies.map((copy) => copy.title).sort(), [
+    "Live edit after the checkpoint",
+    "Shared garden",
+  ]);
+  for (const copy of after.copies) assert.match(copy.markdown, new RegExp(COMMENT));
 });

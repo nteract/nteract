@@ -1,22 +1,7 @@
 import * as A from "@automerge/automerge";
 import { mergeLocalEdits } from "./local-edits.mjs";
-import { decoder, encoder, key, store } from "./local-catalog.mjs";
-export { forgetLocalPage, listLocalPages } from "./local-catalog.mjs";
-
-const recoveryKey = (identity, page) =>
-  `recovery/${encodeURIComponent(identity.principal)}/${page.page_id}/${crypto.randomUUID()}`;
-function archiveSnapshot(records, identity, page, sequence) {
-  records.put(
-    encoder.encode(
-      JSON.stringify({
-        ...page,
-        recovery_sequence: sequence,
-        archived_at: new Date().toISOString(),
-      }),
-    ),
-    recoveryKey(identity, page),
-  );
-}
+import { archiveSnapshot, decoder, encoder, key, store } from "./local-catalog.mjs";
+export { listLocalPages, retireLocalPage } from "./local-catalog.mjs";
 const accessChanged = () =>
   Object.assign(Error("Page access changed in another tab; your draft is kept locally"), {
     code: "LOCAL_PAGE_ACCESS_CHANGED",
@@ -29,66 +14,6 @@ const accessRevoked = () =>
     Error("You no longer have access to this Page; its local copy is in the recovery archive"),
     { code: "LOCAL_PAGE_REVOKED", status: 403 },
   );
-
-/**
- * Move this account's local copy of a Page into the recovery archive and leave
- * a marker in its place, so nothing renders the copy again. `reason` is
- * `access` (the host refused this account) or `deleted` (the Page is gone).
- * `snapshot` is the live replica's, which can hold edits the stored checkpoint
- * lacks; both are archived when they differ.
- *
- * A deletion marker is permanent. An access marker records only identity: the
- * next checkpoint written with `regrant` (a host-verified open) replaces it,
- * and every other write archives its snapshot and fails with
- * LOCAL_PAGE_REVOKED. With no stored copy and no snapshot an access refusal
- * writes nothing. Resolves with the marker, or null.
- */
-export async function retireLocalPage(identity, pageId, { reason, snapshot, title } = {}) {
-  if (!identity?.principal) throw Error("Local Page account does not match");
-  if (reason !== "access" && reason !== "deleted") throw Error("Unknown retirement reason");
-  return store.run("readwrite", (records, done, fail) => {
-    const request = records.get(key(identity, pageId));
-    request.onsuccess = () => {
-      try {
-        const previous = request.result ? JSON.parse(decoder.decode(request.result)) : null;
-        if (previous && (previous.principal !== identity.principal || previous.page_id !== pageId))
-          throw Error("Local Page account does not match");
-        let sequence = previous?.recovery_sequence ?? 0;
-        const base = previous ?? { principal: identity.principal, page_id: pageId };
-        if (previous?.snapshot)
-          archiveSnapshot(records, identity, { ...previous, retired: reason }, ++sequence);
-        if (snapshot && snapshot !== previous?.snapshot)
-          archiveSnapshot(
-            records,
-            identity,
-            { ...base, ...(title !== undefined && { title }), snapshot, retired: reason },
-            ++sequence,
-          );
-        let marker;
-        if (previous?.deleted || reason === "deleted")
-          marker = {
-            principal: identity.principal,
-            page_id: pageId,
-            deleted: true,
-            recovery_sequence: sequence,
-          };
-        else if (previous || snapshot)
-          marker = {
-            principal: identity.principal,
-            page_id: pageId,
-            ...(base.document_id && { document_id: base.document_id }),
-            revoked: true,
-            recovery_sequence: sequence,
-          };
-        if (marker) records.put(encoder.encode(JSON.stringify(marker)), key(identity, pageId));
-        done(marker ?? null);
-      } catch (error) {
-        fail(error);
-      }
-    };
-    return request;
-  });
-}
 
 // Retire the previous key's cache without importing its potentially unaccepted
 // edits into a new signer. Retired snapshots remain separate recovery records.

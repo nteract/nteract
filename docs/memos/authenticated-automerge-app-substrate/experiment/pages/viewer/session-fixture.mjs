@@ -7,7 +7,7 @@
 // state) or when the test fires `timers` at CLOSE_DRAIN_MS.
 import { Store } from "./store.mjs";
 import { CLOSE_DRAIN_MS, drainingStatus, saveStateOf } from "./session.mjs";
-import { isLive, viewerSessionMachine } from "./session-machine.mjs";
+import { isLive, retirementOf, viewerSessionMachine } from "./session-machine.mjs";
 
 export function deferred() {
   let resolve, reject;
@@ -67,11 +67,13 @@ export class FakeSession {
     return isLive(this.phase$.snapshot());
   }
   get deleted() {
-    return this.phase$.snapshot().name === "deleted";
+    return retirementOf(this.phase$.snapshot()) === "deleted";
   }
   get hidden() {
-    const name = this.phase$.snapshot().name;
-    return name === "deleted" || name === "revoked";
+    return retirementOf(this.phase$.snapshot()) !== undefined;
+  }
+  get retireFailed() {
+    return this.phase$.snapshot().name === "retireFailed";
   }
   get recoveryPending() {
     return this.pending;
@@ -156,10 +158,17 @@ export class FakeSession {
     this.#closing = this.#drain();
     return this.closeSettled();
   }
+  /** As PageSession: the archive is part of the close from the start; the
+   * release follows its result. `retireFails` makes the archive fail. */
   markDeleted() {
     if (this.step({ type: "accessChanged", grant: "deleted" }).rejected) return undefined;
     this.emit();
-    return this.close();
+    const previous = this.#closing;
+    this.#closing = Promise.allSettled([previous, this.retireGate?.promise]).then(() => {
+      this.step({ type: this.retireFails ? "retireFail" : "retireOk" });
+      this.emit();
+    });
+    return this.closeSettled();
   }
   /** Start an access reload; settle it with finishArchive. */
   reloadForAccess() {

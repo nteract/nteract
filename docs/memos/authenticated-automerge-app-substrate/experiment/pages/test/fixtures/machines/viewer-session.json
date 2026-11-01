@@ -8,8 +8,9 @@
     "draining",
     "checkpointing",
     "closed",
-    "deleted",
-    "revoked"
+    "retiring",
+    "retired",
+    "retireFailed"
   ],
   "events": [
     "opened",
@@ -21,7 +22,9 @@
     "leave",
     "drained",
     "checkpointOk",
-    "checkpointFail"
+    "checkpointFail",
+    "retireOk",
+    "retireFail"
   ],
   "unreachable": [
     ["opening", "restore", "Restore is offered only on an installed session"],
@@ -99,31 +102,76 @@
       "checkpointFail",
       "the interpreter delivers a checkpoint result only while checkpointing"
     ],
-    ["deleted", "opened", "start() reports opened once, before the session is installed"],
-    ["deleted", "restore", "the host can't restore a deleted Page"],
-    ["deleted", "drained", "the interpreter delivers drained only while draining"],
+    ["opening", "retireOk", "the interpreter delivers a retirement result only while retiring"],
+    ["opening", "retireFail", "the interpreter delivers a retirement result only while retiring"],
+    ["open", "retireOk", "the interpreter delivers a retirement result only while retiring"],
+    ["open", "retireFail", "the interpreter delivers a retirement result only while retiring"],
+    ["paused", "retireOk", "the interpreter delivers a retirement result only while retiring"],
+    ["paused", "retireFail", "the interpreter delivers a retirement result only while retiring"],
+    ["draining", "retireOk", "the interpreter delivers a retirement result only while retiring"],
+    ["draining", "retireFail", "the interpreter delivers a retirement result only while retiring"],
     [
-      "deleted",
+      "checkpointing",
+      "retireOk",
+      "the interpreter delivers a retirement result only while retiring"
+    ],
+    [
+      "checkpointing",
+      "retireFail",
+      "the interpreter delivers a retirement result only while retiring"
+    ],
+    ["closed", "retireOk", "the interpreter delivers a retirement result only while retiring"],
+    ["closed", "retireFail", "the interpreter delivers a retirement result only while retiring"],
+    ["retiring", "opened", "start() reports opened once, before the session is installed"],
+    ["retiring", "restore", "a retired copy can't be restored"],
+    ["retiring", "drained", "the interpreter delivers drained only while draining"],
+    [
+      "retiring",
       "checkpointOk",
       "the interpreter delivers a checkpoint result only while checkpointing"
     ],
     [
-      "deleted",
+      "retiring",
       "checkpointFail",
       "the interpreter delivers a checkpoint result only while checkpointing"
     ],
-    ["revoked", "opened", "start() reports opened once, before the session is installed"],
-    ["revoked", "restore", "a revoked account can't restore the Page"],
-    ["revoked", "drained", "the interpreter delivers drained only while draining"],
+    ["retired", "opened", "start() reports opened once, before the session is installed"],
+    ["retired", "restore", "a retired copy can't be restored"],
+    ["retired", "drained", "the interpreter delivers drained only while draining"],
     [
-      "revoked",
+      "retired",
       "checkpointOk",
       "the interpreter delivers a checkpoint result only while checkpointing"
     ],
     [
-      "revoked",
+      "retired",
       "checkpointFail",
       "the interpreter delivers a checkpoint result only while checkpointing"
+    ],
+    ["retireFailed", "opened", "start() reports opened once, before the session is installed"],
+    ["retireFailed", "restore", "a retired copy can't be restored"],
+    ["retireFailed", "drained", "the interpreter delivers drained only while draining"],
+    [
+      "retireFailed",
+      "checkpointOk",
+      "the interpreter delivers a checkpoint result only while checkpointing"
+    ],
+    [
+      "retireFailed",
+      "checkpointFail",
+      "the interpreter delivers a checkpoint result only while checkpointing"
+    ],
+    ["retired", "retireOk", "the interpreter delivers a retirement result only while retiring"],
+    ["retired", "retireFail", "the interpreter delivers a retirement result only while retiring"],
+    [
+      "retireFailed",
+      "retireOk",
+      "the interpreter delivers a retirement result only while retiring"
+    ],
+    [
+      "retireFailed",
+      "retireFail",
+      "the interpreter delivers a retirement result only while retiring"
     ]
   ],
   "cases": {
@@ -156,8 +204,8 @@
     "checkpointing/checkpointFail": ["error", "deleted", "archive"],
     "closed/accessChanged": ["late-answer", "revoked", "deleted"],
     "closed/reloadAccess": ["archived", "not-archived"],
-    "deleted/leave": ["release", "already-closing"],
-    "revoked/leave": ["release", "already-closing"]
+    "retiring/retireOk": ["release", "released"],
+    "retiring/retireFail": ["release", "released"]
   },
   "rows": [
     {
@@ -200,7 +248,10 @@
       "case": "deleted",
       "state": { "name": "opening" },
       "event": { "type": "accessChanged", "grant": "deleted" },
-      "expect": { "state": { "name": "deleted" }, "effects": [{ "type": "forget" }] }
+      "expect": {
+        "state": { "name": "retiring", "reason": "deleted" },
+        "effects": [{ "type": "disconnect" }, { "type": "retire" }]
+      }
     },
     {
       "note": "the first /api/connect answers page_access_denied",
@@ -208,8 +259,8 @@
       "state": { "name": "opening" },
       "event": { "type": "accessChanged", "grant": "revoked" },
       "expect": {
-        "state": { "name": "revoked" },
-        "effects": [{ "type": "disconnect" }, { "type": "revoke" }]
+        "state": { "name": "retiring", "reason": "access" },
+        "effects": [{ "type": "disconnect" }, { "type": "retire" }]
       }
     },
     {
@@ -271,22 +322,25 @@
       }
     },
     {
-      "label": "open × accessChanged deletes while open",
-      "note": "the local copy is forgotten before the close starts, so the session is not released yet",
+      "label": "open × accessChanged retires a deleted Page while open",
+      "note": "the local copy is archived before the close starts, so the session is not released yet",
       "case": "deleted",
       "state": { "name": "open" },
       "event": { "type": "accessChanged", "grant": "deleted" },
-      "expect": { "state": { "name": "deleted" }, "effects": [{ "type": "forget" }] }
+      "expect": {
+        "state": { "name": "retiring", "reason": "deleted" },
+        "effects": [{ "type": "disconnect" }, { "type": "retire" }]
+      }
     },
     {
-      "label": "open × accessChanged revokes while open",
+      "label": "open × accessChanged retires a revoked copy while open",
       "note": "sync stops at once; the copy moves to the recovery archive before the close starts",
       "case": "revoked",
       "state": { "name": "open" },
       "event": { "type": "accessChanged", "grant": "revoked" },
       "expect": {
-        "state": { "name": "revoked" },
-        "effects": [{ "type": "disconnect" }, { "type": "revoke" }]
+        "state": { "name": "retiring", "reason": "access" },
+        "effects": [{ "type": "disconnect" }, { "type": "retire" }]
       }
     },
     {
@@ -396,7 +450,10 @@
       "case": "deleted",
       "state": { "name": "paused", "reason": "access" },
       "event": { "type": "accessChanged", "grant": "deleted" },
-      "expect": { "state": { "name": "deleted" }, "effects": [{ "type": "forget" }] }
+      "expect": {
+        "state": { "name": "retiring", "reason": "deleted" },
+        "effects": [{ "type": "disconnect" }, { "type": "retire" }]
+      }
     },
     {
       "note": "a copy kept by an earlier refusal without a code retires on page_access_denied",
@@ -404,8 +461,8 @@
       "state": { "name": "paused", "reason": "access" },
       "event": { "type": "accessChanged", "grant": "revoked" },
       "expect": {
-        "state": { "name": "revoked" },
-        "effects": [{ "type": "disconnect" }, { "type": "revoke" }]
+        "state": { "name": "retiring", "reason": "access" },
+        "effects": [{ "type": "disconnect" }, { "type": "retire" }]
       }
     },
     {
@@ -557,15 +614,18 @@
       "case": "deleted",
       "state": { "name": "draining" },
       "event": { "type": "accessChanged", "grant": "deleted" },
-      "expect": { "state": { "name": "deleted" }, "effects": [{ "type": "forget" }] }
+      "expect": {
+        "state": { "name": "retiring", "reason": "deleted" },
+        "effects": [{ "type": "disconnect" }, { "type": "retire" }]
+      }
     },
     {
       "case": "revoked",
       "state": { "name": "draining" },
       "event": { "type": "accessChanged", "grant": "revoked" },
       "expect": {
-        "state": { "name": "revoked" },
-        "effects": [{ "type": "disconnect" }, { "type": "revoke" }]
+        "state": { "name": "retiring", "reason": "access" },
+        "effects": [{ "type": "disconnect" }, { "type": "retire" }]
       }
     },
     {
@@ -631,11 +691,14 @@
       }
     },
     {
-      "note": "a late 404 forgets the local copy; the release follows the forget",
+      "note": "a late 404 archives the local copy; the release follows the archive",
       "case": "deleted",
       "state": { "name": "checkpointing", "drained": false },
       "event": { "type": "accessChanged", "grant": "deleted" },
-      "expect": { "state": { "name": "deleted" }, "effects": [{ "type": "forget" }] }
+      "expect": {
+        "state": { "name": "retiring", "reason": "deleted" },
+        "effects": [{ "type": "disconnect" }, { "type": "retire" }]
+      }
     },
     {
       "note": "a late refusal archives the local copy; the release follows the archive",
@@ -643,8 +706,8 @@
       "state": { "name": "checkpointing", "drained": false },
       "event": { "type": "accessChanged", "grant": "revoked" },
       "expect": {
-        "state": { "name": "revoked" },
-        "effects": [{ "type": "disconnect" }, { "type": "revoke" }]
+        "state": { "name": "retiring", "reason": "access" },
+        "effects": [{ "type": "disconnect" }, { "type": "retire" }]
       }
     },
     {
@@ -760,8 +823,8 @@
       "state": { "name": "checkpointing", "drained": false },
       "event": { "type": "checkpointFail", "deleted": true },
       "expect": {
-        "state": { "name": "deleted", "closing": true },
-        "effects": [{ "type": "release" }]
+        "state": { "name": "retiring", "reason": "deleted" },
+        "effects": [{ "type": "disconnect" }, { "type": "retire" }]
       }
     },
     {
@@ -783,13 +846,13 @@
       }
     },
     {
-      "note": "a late 404 still forgets the local copy; the release already ran",
+      "note": "a late 404 still archives the local copy; the release already ran",
       "case": "deleted",
       "state": { "name": "closed", "checkpointWritten": true, "drained": true, "saved": false },
       "event": { "type": "accessChanged", "grant": "deleted" },
       "expect": {
-        "state": { "name": "deleted", "closing": true },
-        "effects": [{ "type": "forget" }]
+        "state": { "name": "retiring", "reason": "deleted", "released": true },
+        "effects": [{ "type": "retire" }]
       }
     },
     {
@@ -798,8 +861,8 @@
       "state": { "name": "closed", "checkpointWritten": true, "drained": true, "saved": false },
       "event": { "type": "accessChanged", "grant": "revoked" },
       "expect": {
-        "state": { "name": "revoked", "closing": true },
-        "effects": [{ "type": "revoke" }]
+        "state": { "name": "retiring", "reason": "access", "released": true },
+        "effects": [{ "type": "retire" }]
       }
     },
     {
@@ -855,112 +918,172 @@
       }
     },
     {
-      "state": { "name": "deleted" },
-      "event": { "type": "accessChanged", "grant": "deleted" },
-      "expect": {
-        "state": { "name": "deleted" },
-        "effects": [],
-        "rejected": "The Page is deleted"
-      }
-    },
-    {
-      "state": { "name": "deleted" },
-      "event": { "type": "signIn", "ok": false },
-      "expect": {
-        "state": { "name": "deleted" },
-        "effects": [],
-        "rejected": "The Page is deleted"
-      }
-    },
-    {
-      "state": { "name": "deleted" },
-      "event": { "type": "trash" },
-      "expect": {
-        "state": { "name": "deleted" },
-        "effects": [],
-        "rejected": "The Page is deleted"
-      }
-    },
-    {
-      "state": { "name": "deleted" },
-      "event": { "type": "reloadAccess" },
-      "expect": {
-        "state": { "name": "deleted" },
-        "effects": [],
-        "rejected": "The Page is deleted"
-      }
-    },
-    {
+      "label": "retiring × retireOk releases the backend once the archive is written",
       "case": "release",
-      "state": { "name": "deleted" },
-      "event": { "type": "leave", "drain": false },
+      "state": { "name": "retiring", "reason": "access" },
+      "event": { "type": "retireOk" },
       "expect": {
-        "state": { "name": "deleted", "closing": true },
+        "state": { "name": "retired", "reason": "access" },
         "effects": [{ "type": "release" }]
       }
     },
     {
-      "case": "already-closing",
-      "state": { "name": "deleted", "closing": true },
+      "note": "a close already released the backend; the archive was the last step",
+      "case": "released",
+      "state": { "name": "retiring", "reason": "deleted", "released": true },
+      "event": { "type": "retireOk" },
+      "expect": { "state": { "name": "retired", "reason": "deleted" }, "effects": [] }
+    },
+    {
+      "label": "retiring × retireFail never reports the copy archived",
+      "note": "the tab's export is the only copy; the notice offers it and the reload gate keeps it",
+      "case": "release",
+      "state": { "name": "retiring", "reason": "access" },
+      "event": { "type": "retireFail" },
+      "expect": {
+        "state": { "name": "retireFailed", "reason": "access" },
+        "effects": [{ "type": "release" }]
+      }
+    },
+    {
+      "case": "released",
+      "state": { "name": "retiring", "reason": "deleted", "released": true },
+      "event": { "type": "retireFail" },
+      "expect": { "state": { "name": "retireFailed", "reason": "deleted" }, "effects": [] }
+    },
+    {
+      "note": "the close already covers the archive, so a leave waits for it",
+      "state": { "name": "retiring", "reason": "access" },
       "event": { "type": "leave", "drain": false },
       "expect": {
-        "state": { "name": "deleted", "closing": true },
+        "state": { "name": "retiring", "reason": "access" },
         "effects": [],
         "rejected": "The session is already closing"
       }
     },
     {
-      "note": "a re-grant opens a new session; this one stays retired",
-      "state": { "name": "revoked" },
+      "state": { "name": "retiring", "reason": "access" },
       "event": { "type": "accessChanged", "grant": "same" },
       "expect": {
-        "state": { "name": "revoked" },
+        "state": { "name": "retiring", "reason": "access" },
         "effects": [],
         "rejected": "Access to the Page was removed"
       }
     },
     {
-      "state": { "name": "revoked" },
+      "state": { "name": "retiring", "reason": "deleted" },
       "event": { "type": "signIn", "ok": true },
       "expect": {
-        "state": { "name": "revoked" },
+        "state": { "name": "retiring", "reason": "deleted" },
         "effects": [],
-        "rejected": "Access to the Page was removed"
+        "rejected": "The Page is deleted"
       }
     },
     {
-      "state": { "name": "revoked" },
+      "state": { "name": "retiring", "reason": "access" },
       "event": { "type": "trash" },
       "expect": {
-        "state": { "name": "revoked" },
+        "state": { "name": "retiring", "reason": "access" },
         "effects": [],
         "rejected": "Access to the Page was removed"
       }
     },
     {
-      "state": { "name": "revoked" },
+      "state": { "name": "retiring", "reason": "deleted" },
       "event": { "type": "reloadAccess" },
       "expect": {
-        "state": { "name": "revoked" },
+        "state": { "name": "retiring", "reason": "deleted" },
+        "effects": [],
+        "rejected": "The Page is deleted"
+      }
+    },
+    {
+      "note": "a re-grant opens a new session; this one stays retired",
+      "state": { "name": "retired", "reason": "access" },
+      "event": { "type": "accessChanged", "grant": "same" },
+      "expect": {
+        "state": { "name": "retired", "reason": "access" },
         "effects": [],
         "rejected": "Access to the Page was removed"
       }
     },
     {
-      "case": "release",
-      "state": { "name": "revoked" },
-      "event": { "type": "leave", "drain": false },
+      "state": { "name": "retired", "reason": "deleted" },
+      "event": { "type": "signIn", "ok": false },
       "expect": {
-        "state": { "name": "revoked", "closing": true },
-        "effects": [{ "type": "release" }]
+        "state": { "name": "retired", "reason": "deleted" },
+        "effects": [],
+        "rejected": "The Page is deleted"
       }
     },
     {
-      "case": "already-closing",
-      "state": { "name": "revoked", "closing": true },
+      "state": { "name": "retired", "reason": "access" },
+      "event": { "type": "trash" },
+      "expect": {
+        "state": { "name": "retired", "reason": "access" },
+        "effects": [],
+        "rejected": "Access to the Page was removed"
+      }
+    },
+    {
+      "state": { "name": "retired", "reason": "deleted" },
+      "event": { "type": "reloadAccess" },
+      "expect": {
+        "state": { "name": "retired", "reason": "deleted" },
+        "effects": [],
+        "rejected": "The Page is deleted"
+      }
+    },
+    {
+      "state": { "name": "retired", "reason": "access" },
+      "event": { "type": "leave", "drain": true },
+      "expect": {
+        "state": { "name": "retired", "reason": "access" },
+        "effects": [],
+        "rejected": "The session is already closing"
+      }
+    },
+    {
+      "state": { "name": "retireFailed", "reason": "deleted" },
+      "event": { "type": "accessChanged", "grant": "revoked" },
+      "expect": {
+        "state": { "name": "retireFailed", "reason": "deleted" },
+        "effects": [],
+        "rejected": "The Page is deleted"
+      }
+    },
+    {
+      "state": { "name": "retireFailed", "reason": "access" },
+      "event": { "type": "signIn", "ok": true },
+      "expect": {
+        "state": { "name": "retireFailed", "reason": "access" },
+        "effects": [],
+        "rejected": "Access to the Page was removed"
+      }
+    },
+    {
+      "state": { "name": "retireFailed", "reason": "deleted" },
+      "event": { "type": "trash" },
+      "expect": {
+        "state": { "name": "retireFailed", "reason": "deleted" },
+        "effects": [],
+        "rejected": "The Page is deleted"
+      }
+    },
+    {
+      "state": { "name": "retireFailed", "reason": "access" },
+      "event": { "type": "reloadAccess" },
+      "expect": {
+        "state": { "name": "retireFailed", "reason": "access" },
+        "effects": [],
+        "rejected": "Access to the Page was removed"
+      }
+    },
+    {
+      "state": { "name": "retireFailed", "reason": "access" },
       "event": { "type": "leave", "drain": false },
       "expect": {
-        "state": { "name": "revoked", "closing": true },
+        "state": { "name": "retireFailed", "reason": "access" },
         "effects": [],
         "rejected": "The session is already closing"
       }

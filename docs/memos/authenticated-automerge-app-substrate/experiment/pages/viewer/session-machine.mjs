@@ -25,15 +25,20 @@
  *   this replica accepted. `archived` says an access reload archived it and
  *   its replacement still has to install: Reload current Page stays offered
  *   and retries the open without archiving again.
- * - deleted: the Page is gone. The local copy moves to the recovery archive
- *   and a deletion marker takes its place; `closing` says the backend release
- *   has started. Nothing treats a deleted session as released before then.
- * - revoked: the host refused this account: its access was removed, or the
- *   Page is missing to it (purged, or deleted where the host won't say). The
- *   local copy moves to the recovery archive and an access marker takes its
- *   place, so the Page stops rendering here and after a reload. `closing` says
- *   the backend release has started. A re-grant opens a new session; a
- *   transient failure never reaches this state.
+ * - retiring: the host refused this account (`reason: "access"`: its access
+ *   was removed, or the Page is missing to it, purged included) or the Page
+ *   is gone (`reason: "deleted"`). The Page stops rendering at once. The
+ *   stored checkpoint and the live replica's snapshot are being written to the
+ *   recovery archive, with a marker in the checkpoint's place. The backend is
+ *   not released yet, unless `released` says a close already released it. A
+ *   leave waits for the archive; the session's close covers both.
+ * - retired: the archive and marker are written; the backend release has
+ *   started or finished. Reopening shows the refusal, never the copy. A
+ *   re-grant opens a new session.
+ * - retireFailed: the archive write failed, so the copy exists only in this
+ *   tab's memory export. The backend release has started or finished. The
+ *   notice offers that export; the reload gate keeps it as an unsaved record.
+ *   A transient host failure never reaches a retirement state.
  *
  * `drained` and `saved` record how a session was left: through the drain, and
  * whether the host had every edit when the drain ended. The reload gate keeps
@@ -44,26 +49,32 @@
  * `grant` same, changed, denied, revoked or deleted; `tab` when another tab
  * already wrote it). `denied` keeps the copy, as for a refusal without a
  * code; `revoked` is the host's `page_access_denied` or a role of none;
- * `deleted` is its `page_deleted`. `signIn` (an authentication result), `trash` (the host answered
- * that the Page is in its owner's Trash), `restore` (the owner restored the
- * previewed Page, so the read-only preview leaves), `reloadAccess` (Reload
- * current Page), `leave` (the host releases the session, through the drain or
- * by closing at once), `drained`, `checkpointOk` and `checkpointFail`.
+ * `deleted` is a 404. `signIn` (an authentication result), `trash` (the host
+ * answered that the Page is in its owner's Trash), `restore` (the owner
+ * restored the previewed Page, so the read-only preview leaves),
+ * `reloadAccess` (Reload current Page), `leave` (the host releases the
+ * session, through the drain or by closing at once), `drained`,
+ * `checkpointOk`, `checkpointFail` (`deleted` when another tab marked the
+ * Page deleted), `retireOk` and `retireFail`.
  *
  * Effects: `disconnect` closes sockets and stops reconnecting; `persistLocal`
  * writes the access fact and a checkpoint to IndexedDB; `drain` waits for the
  * receipt; `checkpoint` flushes and writes the final checkpoint; `archive`
  * keeps a recovery record and a reset marker before a key is retired;
  * `release` shuts the backend down and frees the identity lock; `reopen` opens
- * the replacement session; `forget` archives the local copy and marks the
- * Page deleted; `revoke` archives it and marks this account's access removed;
- * `rekey` moves an opening session to the replica key the host's grant names.
+ * the replacement session; `retire` writes the local copy to the recovery
+ * archive and leaves the state's marker; `rekey` moves an opening session to
+ * the replica key the host's grant names.
  */
 import { defineMachine, reject } from "../shared/machine.mjs";
 
 export const PAUSE_REASONS = Object.freeze(["auth", "access", "trash", "reload"]);
 const ACCESS_PAUSES = new Set(["access", "trash", "reload"]);
 const GRANTS = new Set(["same", "changed", "denied", "revoked", "deleted"]);
+export const RETIRE_REASONS = Object.freeze(["access", "deleted"]);
+const RETIRED = ["retiring", "retired", "retireFailed"];
+const RETIRE_RESULT = "the interpreter delivers a retirement result only while retiring";
+const CHECKPOINT_RESULT = "the interpreter delivers a checkpoint result only while checkpointing";
 
 const check = (condition, message) => {
   if (!condition) throw new Error(message);
@@ -91,6 +102,10 @@ function leaving(state) {
 }
 
 const fieldless = (value) => only(value, ["name"]);
+function retiredState(state) {
+  only(state, ["name", "reason"]);
+  check(RETIRE_REASONS.includes(state.reason), "reason must be access or deleted");
+}
 const typed = (keys) => (value) => only(value, ["type", ...keys]);
 
 export const viewerSessionSpec = Object.freeze({
@@ -102,8 +117,9 @@ export const viewerSessionSpec = Object.freeze({
     "draining",
     "checkpointing",
     "closed",
-    "deleted",
-    "revoked",
+    "retiring",
+    "retired",
+    "retireFailed",
   ],
   events: [
     "opened",
@@ -116,6 +132,8 @@ export const viewerSessionSpec = Object.freeze({
     "drained",
     "checkpointOk",
     "checkpointFail",
+    "retireOk",
+    "retireFail",
   ],
   unreachable: [
     ["opening", "restore", "Restore is offered only on an installed session"],
@@ -193,32 +211,21 @@ export const viewerSessionSpec = Object.freeze({
       "checkpointFail",
       "the interpreter delivers a checkpoint result only while checkpointing",
     ],
-    ["deleted", "opened", "start() reports opened once, before the session is installed"],
-    ["deleted", "restore", "the host can't restore a deleted Page"],
-    ["deleted", "drained", "the interpreter delivers drained only while draining"],
-    [
-      "deleted",
-      "checkpointOk",
-      "the interpreter delivers a checkpoint result only while checkpointing",
-    ],
-    [
-      "deleted",
-      "checkpointFail",
-      "the interpreter delivers a checkpoint result only while checkpointing",
-    ],
-    ["revoked", "opened", "start() reports opened once, before the session is installed"],
-    ["revoked", "restore", "a revoked account can't restore the Page"],
-    ["revoked", "drained", "the interpreter delivers drained only while draining"],
-    [
-      "revoked",
-      "checkpointOk",
-      "the interpreter delivers a checkpoint result only while checkpointing",
-    ],
-    [
-      "revoked",
-      "checkpointFail",
-      "the interpreter delivers a checkpoint result only while checkpointing",
-    ],
+    ...["opening", "open", "paused", "draining", "checkpointing", "closed"].flatMap((state) => [
+      [state, "retireOk", RETIRE_RESULT],
+      [state, "retireFail", RETIRE_RESULT],
+    ]),
+    ...RETIRED.flatMap((state) => [
+      [state, "opened", "start() reports opened once, before the session is installed"],
+      [state, "restore", "a retired copy can't be restored"],
+      [state, "drained", "the interpreter delivers drained only while draining"],
+      [state, "checkpointOk", CHECKPOINT_RESULT],
+      [state, "checkpointFail", CHECKPOINT_RESULT],
+    ]),
+    ...["retired", "retireFailed"].flatMap((state) => [
+      [state, "retireOk", RETIRE_RESULT],
+      [state, "retireFail", RETIRE_RESULT],
+    ]),
   ],
   cases: {
     "opening/opened": ["readable", "denied"],
@@ -250,8 +257,8 @@ export const viewerSessionSpec = Object.freeze({
     "checkpointing/checkpointFail": ["error", "deleted", "archive"],
     "closed/accessChanged": ["late-answer", "revoked", "deleted"],
     "closed/reloadAccess": ["archived", "not-archived"],
-    "deleted/leave": ["release", "already-closing"],
-    "revoked/leave": ["release", "already-closing"],
+    "retiring/retireOk": ["release", "released"],
+    "retiring/retireFail": ["release", "released"],
   },
   validate: {
     states: {
@@ -285,14 +292,13 @@ export const viewerSessionSpec = Object.freeze({
           "an archive wrote its record",
         );
       },
-      deleted(state) {
-        only(state, ["name", "closing"]);
-        flag(state.closing, "closing");
+      retiring(state) {
+        only(state, ["name", "reason", "released"]);
+        check(RETIRE_REASONS.includes(state.reason), "reason must be access or deleted");
+        flag(state.released, "released");
       },
-      revoked(state) {
-        only(state, ["name", "closing"]);
-        flag(state.closing, "closing");
-      },
+      retired: retiredState,
+      retireFailed: retiredState,
     },
     events: {
       opened(event) {
@@ -325,6 +331,8 @@ export const viewerSessionSpec = Object.freeze({
         only(event, ["type", "deleted"]);
         check(isBoolean(event.deleted), "deleted must be a boolean");
       },
+      retireOk: typed([]),
+      retireFail: typed([]),
     },
     effects: {
       disconnect: typed([]),
@@ -334,8 +342,7 @@ export const viewerSessionSpec = Object.freeze({
       archive: typed([]),
       release: typed([]),
       reopen: typed([]),
-      forget: typed([]),
-      revoke: typed([]),
+      retire: typed([]),
       rekey: typed([]),
     },
   },
@@ -373,6 +380,9 @@ export const pauseReason = (state) => {
   return auth ? "auth" : undefined;
 };
 
+/** The retirement a state carries, `access` or `deleted`, or undefined. */
+export const retirementOf = (state) => (RETIRED.includes(state.name) ? state.reason : undefined);
+
 /** Whether the session still owns a live replica: it can receive changes,
  * write checkpoints and be paused. */
 export const isLive = (state) =>
@@ -394,14 +404,22 @@ function liveState(name, pause) {
   return { name, ...f };
 }
 const ok = (state, ...effects) => ({ state, effects: effects.map((type) => ({ type })) });
+/** Start retiring the local copy. Sync stops at once; a backend a close
+ * already released isn't released again. */
+function retire(event, { released = false } = {}) {
+  const reason = event.grant === "revoked" ? "access" : "deleted";
+  return released
+    ? ok({ name: "retiring", reason, released: true }, "retire")
+    : ok({ name: "retiring", reason }, "disconnect", "retire");
+}
+const refused = (event) =>
+  event.type === "accessChanged" && (event.grant === "deleted" || event.grant === "revoked");
 
 /** Access and sign-in answers on a live session, shaped as `name`. */
 function pauseStep(event, name, pause) {
   switch (event.type) {
     case "accessChanged": {
-      if (event.grant === "deleted") return ok({ name: "deleted" }, "forget");
-      // Stop syncing at once; the copy moves to the recovery archive.
-      if (event.grant === "revoked") return ok({ name: "revoked" }, "disconnect", "revoke");
+      if (event.grant === "deleted" || event.grant === "revoked") return retire(event);
       if (event.grant === "same") return ok(liveState(name, { ...pause, access: "none" }));
       const access = event.grant === "denied" ? "access" : "reload";
       // Another tab already wrote the fact; recovery stays in its checkpoint.
@@ -473,7 +491,8 @@ function transition(state, event) {
       if (event.type === "checkpointFail") {
         // A failed archive leaves the replica live, still blocking Reload.
         if (state.archive) return ok(liveState("open", pauseOf(state)));
-        if (event.deleted) return ok({ name: "deleted", closing: true }, "release");
+        // Another tab marked the Page deleted: keep this replica's copy too.
+        if (event.deleted) return retire({ grant: "deleted" });
         return ok(closedState(state, false), "release");
       }
       if (state.archive) {
@@ -482,30 +501,29 @@ function transition(state, event) {
         return reject(state, event.type === "reloadAccess" ? REJECT.archiving : REJECT.closing);
       }
       // A late refusal still archives the local copy; the release follows.
-      if (event.type === "accessChanged" && event.grant === "deleted")
-        return ok({ name: "deleted" }, "forget");
-      if (event.type === "accessChanged" && event.grant === "revoked")
-        return ok({ name: "revoked" }, "disconnect", "revoke");
+      if (refused(event)) return retire(event);
       return reject(state, event.type === "leave" ? REJECT.alreadyClosing : REJECT.closing);
     }
     case "closed":
-      if (event.type === "accessChanged" && event.grant === "deleted")
-        return ok({ name: "deleted", closing: true }, "forget");
-      if (event.type === "accessChanged" && event.grant === "revoked")
-        return ok({ name: "revoked", closing: true }, "revoke");
+      if (refused(event)) return retire(event, { released: true });
       if (event.type === "reloadAccess")
         return state.archived ? ok(state, "reopen") : reject(state, REJECT.closed);
       return reject(state, event.type === "leave" ? REJECT.alreadyClosed : REJECT.closed);
-    case "deleted":
-      if (event.type !== "leave") return reject(state, REJECT.deleted);
-      return state.closing
-        ? reject(state, REJECT.alreadyClosing)
-        : ok({ name: "deleted", closing: true }, "release");
-    case "revoked":
-      if (event.type !== "leave") return reject(state, REJECT.revoked);
-      return state.closing
-        ? reject(state, REJECT.alreadyClosing)
-        : ok({ name: "revoked", closing: true }, "release");
+    case "retiring": {
+      const reason = state.reason;
+      // The archive settled; release the backend unless a close already did.
+      if (event.type === "retireOk" || event.type === "retireFail") {
+        const name = event.type === "retireOk" ? "retired" : "retireFailed";
+        return state.released ? ok({ name, reason }) : ok({ name, reason }, "release");
+      }
+      // The session's close already covers the archive and the release.
+      if (event.type === "leave") return reject(state, REJECT.alreadyClosing);
+      return reject(state, reason === "deleted" ? REJECT.deleted : REJECT.revoked);
+    }
+    case "retired":
+    case "retireFailed":
+      if (event.type === "leave") return reject(state, REJECT.alreadyClosing);
+      return reject(state, state.reason === "deleted" ? REJECT.deleted : REJECT.revoked);
   }
   throw new Error(`unknown state ${state.name}`);
 }

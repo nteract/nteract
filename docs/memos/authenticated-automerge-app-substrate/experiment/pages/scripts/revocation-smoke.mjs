@@ -46,6 +46,30 @@ async function access(action) {
   return result;
 }
 const content = (page) => page.locator("wg-content");
+const DRAFT = "A comment draft typed before the removal.";
+async function select(page, text) {
+  const editor = page.locator("article wg-content").first();
+  await editor.focus();
+  // Wait for Wordgard's next frame so its caret write can't replace the range.
+  await page.evaluate(
+    () => new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done))),
+  );
+  await editor.evaluate((element, text) => {
+    const walk = document.createTreeWalker(element, NodeFilter.SHOW_TEXT);
+    while (walk.nextNode()) {
+      const at = walk.currentNode.textContent.indexOf(text);
+      if (at < 0) continue;
+      const range = document.createRange();
+      range.setStart(walk.currentNode, at);
+      range.setEnd(walk.currentNode, at + text.length);
+      getSelection().removeAllRanges();
+      getSelection().addRange(range);
+      return;
+    }
+    throw Error("Text not found");
+  }, text);
+  await page.waitForTimeout(60);
+}
 async function signIn(email) {
   const context = await browser.newContext({
     viewport: { width: 1280, height: 900 },
@@ -98,6 +122,15 @@ try {
   });
   complete("The owner shared a commented Page and the collaborator edited it");
 
+  await select(collaborator, "collaborators");
+  await collaborator.getByRole("button", { name: "Comment on selection", exact: true }).click();
+  const composer = collaborator
+    .getByRole("dialog", { name: "Comment on selection", exact: true })
+    .getByRole("textbox", { name: "Comment on selection", exact: true });
+  await expect(composer).toBeFocused();
+  await composer.pressSequentially(DRAFT);
+  complete("The collaborator left an unsent comment draft open");
+
   await access({ action: "set_role", principal, role: null });
   const notice = collaborator.getByRole("heading", { name: "You no longer have access" });
   await expect(notice).toBeVisible({ timeout: 30000 });
@@ -129,15 +162,21 @@ try {
 
   const [download] = await Promise.all([
     collaborator.waitForEvent("download"),
-    collaborator.getByRole("button", { name: "Download local copy" }).click(),
+    collaborator.getByRole("button", { name: /^Download (local copy|\d+ local copies)$/ }).click(),
   ]);
-  const draft = JSON.parse(await readFile(await download.path(), "utf8"));
-  assert.equal(draft.page_id, pageId);
-  assert.match(draft.markdown, new RegExp(BODY));
-  assert.match(draft.markdown, new RegExp(TYPED.trim()));
-  assert.match(draft.markdown, new RegExp(COMMENT));
-  assert.equal(typeof draft.snapshot, "string");
-  complete("The notice downloaded the archived copy with the edit and the comment");
+  const bundle = JSON.parse(await readFile(await download.path(), "utf8"));
+  assert.equal(bundle.page_id, pageId);
+  assert.ok(bundle.copies.length >= 1);
+  const markdown = bundle.copies.map((copy) => copy.markdown).join("\n");
+  assert.match(markdown, new RegExp(BODY));
+  assert.match(markdown, new RegExp(TYPED.trim()));
+  assert.match(markdown, new RegExp(COMMENT));
+  assert.match(markdown, /## Unsent comment drafts/);
+  assert.match(markdown, new RegExp(DRAFT));
+  assert.match(markdown, /On “collaborators”/);
+  for (const copy of bundle.copies)
+    if (copy.snapshot !== undefined) assert.equal(typeof copy.snapshot, "string");
+  complete("The notice downloaded every archived copy with the edit, the comment and the draft");
 
   await access({ action: "invite", email: "alice@localhost", role: "editor" });
   await collaborator.reload();

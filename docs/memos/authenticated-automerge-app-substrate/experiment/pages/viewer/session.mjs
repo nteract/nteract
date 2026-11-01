@@ -16,7 +16,7 @@ import { Repo, documentIdToBinary } from "@automerge/automerge-repo";
 import { SubductionBackend, IndexedDBByteStore } from "@automerge/automerge-repo-subduction";
 import { applyComment } from "../model/comments.mjs";
 import { createPageData, initializePage, projectPage } from "../model/page.mjs";
-import { unsentCommentsMarkdown } from "../model/markdown-export.mjs";
+import { commentDraftsMarkdown, unsentCommentsMarkdown } from "../model/markdown-export.mjs";
 import {
   BUILD_FEATURES,
   SCHEMA_GATE_INITIAL,
@@ -32,7 +32,7 @@ import {
   listLocalRecoveries,
   retireLocalPage,
 } from "./local-pages.mjs";
-export { listLocalPages, forgetLocalPage } from "./local-pages.mjs";
+export { listLocalPages, retireLocalPage } from "./local-pages.mjs";
 import { BACKEND_LIMITS } from "../model/limits.mjs";
 import { retryKey } from "../model/retry-key.mjs";
 import { MISSING_EDITS_MESSAGE } from "../shared/receipts.mjs";
@@ -45,7 +45,7 @@ import { checkpointRecords } from "./checkpoint-records.mjs";
 import { preservedBlockEdits } from "../model/raw-migration.mjs";
 import { Store } from "./store.mjs";
 import { OutboundSync } from "./outbound-sync.mjs";
-import { REJECT, isLive, pauseOf, viewerSessionMachine } from "./session-machine.mjs";
+import { REJECT, isLive, pauseOf, retirementOf, viewerSessionMachine } from "./session-machine.mjs";
 import {
   OUTAGE_ATTEMPTS,
   OUTAGE_MS,
@@ -205,6 +205,7 @@ function actorProfile(value) {
 }
 export class PageSession {
   listeners = new Set();
+  draftSources = new Set();
   observers = new Set();
   presenceObservers = new Set();
   peers = new Map();
@@ -343,17 +344,25 @@ export class PageSession {
   get alive() {
     return isLive(this.phase$.snapshot());
   }
+  /** The Page is gone; its local copy is retiring or retired. */
   get deleted() {
-    return this.phase$.snapshot().name === "deleted";
+    return retirementOf(this.phase$.snapshot()) === "deleted";
   }
+  /** The host refused this account; its local copy is retiring or retired. */
   get revoked() {
-    return this.phase$.snapshot().name === "revoked";
+    return retirementOf(this.phase$.snapshot()) === "access";
   }
-  /** The host refused this account or the Page is gone: the local copy is in
-   * the recovery archive and nothing renders it. */
+  /** Deleted or revoked: nothing renders the local copy. */
   get hidden() {
-    const name = this.phase$.snapshot().name;
-    return name === "deleted" || name === "revoked";
+    return retirementOf(this.phase$.snapshot()) !== undefined;
+  }
+  /** The recovery archive holds this tab's copy. */
+  get recoveryArchived() {
+    return this.phase$.snapshot().name === "retired";
+  }
+  /** The archive write failed: the copy is only in `closedRecovery`. */
+  get retireFailed() {
+    return this.phase$.snapshot().name === "retireFailed";
   }
   get authRequired() {
     return pauseOf(this.phase$.snapshot()).auth;
@@ -362,7 +371,7 @@ export class PageSession {
     const phase = this.phase$.snapshot();
     // While opening, the cached access fact decides; a host answer pauses.
     if (phase.name === "opening") return this.access?.role === "none";
-    if (phase.name === "revoked") return true;
+    if (retirementOf(phase) === "access") return true;
     const { access } = pauseOf(phase);
     return access === "access" || access === "trash";
   }
@@ -451,14 +460,12 @@ export class PageSession {
             now: this.now,
           }),
         );
-      case "revoke":
-      case "forget": {
-        const forgetting = effect.type === "revoke" ? this.revokeLocal() : this.forgetLocal();
-        // Retired after its release started: the close settles only once both
-        // the archive and the release have, whichever fails.
-        if (!this.phase$.snapshot().closing) return forgetting;
-        this.#closing = allSettledThen(forgetting, this.#closing);
-        return this.#closing;
+      case "retire": {
+        const retiring = this.#retire();
+        // The close covers the archive from the start, so a leave or a reload
+        // waits for it. One already under way settles only once both have.
+        this.#closing = this.#closing ? allSettledThen(this.#closing, retiring) : retiring;
+        return retiring;
       }
       case "rekey":
         return this.#rekey(context);
@@ -466,7 +473,7 @@ export class PageSession {
     throw new Error(`unknown effect ${effect.type}`);
   }
   #saved() {
-    if (this.deleted) return true;
+    if (this.hidden) return true;
     try {
       return !this.recoveryPending;
     } catch {
@@ -520,15 +527,15 @@ export class PageSession {
       this.phase$.state$.pipe(
         filter(
           (phase) =>
-            phase.name === "closed" ||
-            ((phase.name === "deleted" || phase.name === "revoked") && phase.closing),
+            phase.name === "closed" || phase.name === "retired" || phase.name === "retireFailed",
         ),
       ),
     ).then(() => this.#released);
   }
   #stop() {
     // Anything still waiting goes out before the backend is released; a
-    // store after this point starts its round at once.
+    // store after this point starts its round at once. A retiring session
+    // disconnected before its archive, so its rounds reach no host.
     this.outbound.close();
     this.unwatchPageLifecycle();
     this.clearPresence();
@@ -618,35 +625,72 @@ export class PageSession {
     this.checkpointSnapshot = this.checkpointHeads = undefined;
     return this.releaseLocal();
   }
-  /** The forget effect: archive the local copy of a deleted Page, mark it
-   * deleted, then close. */
-  forgetLocal() {
-    return this.#retireLocal("deleted");
+  /** Register a source of unsent comment drafts, which live only in the UI.
+   * `read()` returns `{ kind, body, quote?, thread_id? }` entries; a
+   * retirement reads every source before the UI resets. Returns a function
+   * that removes the source. */
+  watchCommentDrafts(read) {
+    this.draftSources.add(read);
+    return () => this.draftSources.delete(read);
   }
-  /** The revoke effect: archive the local copy, mark this account's access
-   * removed, then close. */
-  revokeLocal() {
-    return this.#retireLocal("access");
+  #commentDrafts() {
+    const drafts = [];
+    for (const read of this.draftSources)
+      try {
+        for (const draft of read() ?? [])
+          if (typeof draft?.body === "string" && draft.body.trim())
+            drafts.push({
+              kind: draft.kind === "reply" ? "reply" : "comment",
+              body: draft.body,
+              ...(draft.quote && { quote: String(draft.quote) }),
+              ...(draft.thread_id && { thread_id: String(draft.thread_id) }),
+            });
+      } catch {}
+    return drafts;
   }
-  async #retireLocal(reason) {
-    const releasing = this.phase$.snapshot().closing === true;
-    // Read the live replica before anything releases it: it can hold edits
-    // the stored checkpoint lacks. The notice downloads this export.
+  /** The retire effect. Read the live replica and the UI's comment drafts
+   * before anything releases or resets them, write them to the recovery
+   * archive, then report the result. The release follows unless a close
+   * already ran it. A failed archive keeps `closedRecovery` for the notice
+   * and the reload gate. Resolves once the release settles. */
+  async #retire() {
+    const { reason } = this.phase$.snapshot();
     let live;
     try {
-      if (this.handle && this.doc) live = this.closedRecovery ??= this.exportRecovery();
+      const drafts = this.#commentDrafts();
+      if (this.handle && this.doc)
+        live = this.exportRecovery(undefined, { drafts, allComments: true });
+      else if (drafts.length)
+        live = {
+          page_id: this.pageId,
+          title: "",
+          heads: [],
+          comment_drafts: drafts,
+          markdown: commentDraftsMarkdown(drafts),
+        };
+      if (live) this.closedRecovery = live;
     } catch {}
+    let archived = false;
     try {
-      await retireLocalPage(this.identity, this.pageId, {
-        reason,
-        snapshot: live?.snapshot,
-        title: live?.title,
-      });
-      this.recoveryArchived = true;
-      this.emit();
-    } finally {
-      if (!releasing) await this.close();
+      await this.retireLocal(reason, live);
+      archived = true;
+    } catch (error) {
+      this.retireProblem = error instanceof Error ? error.message : String(error);
     }
+    if (this.phase$.snapshot().name !== "retiring") return this.#whenReleased();
+    const { done } = this.dispatch({ type: archived ? "retireOk" : "retireFail" });
+    this.emit();
+    return done;
+  }
+  /** Write `live` and the stored checkpoint to the recovery archive and leave
+   * the marker for `reason` (retireLocalPage). */
+  retireLocal(reason, live) {
+    return retireLocalPage(this.identity, this.pageId, {
+      reason,
+      snapshot: live?.snapshot,
+      title: live?.title,
+      drafts: live?.comment_drafts,
+    });
   }
   async #rekey({ access, key }) {
     if (this.localPage?.resetReplica) {
@@ -977,8 +1021,34 @@ export class PageSession {
   listRecoveries() {
     return listLocalRecoveries(this.identity, this.pageId);
   }
-  exportRecovery(record) {
+  /** Every copy of this Page the person can download, as one bundle: each
+   * recovery record, plus this tab's own export while the archive doesn't
+   * hold it (it is still writing, or failed). */
+  exportRecoveries(records = []) {
+    const copies = [];
+    if (this.closedRecovery && !this.recoveryArchived) copies.push(this.exportRecovery());
+    for (const record of records) {
+      const copy = this.exportRecovery(record);
+      if (!copies.some((other) => other.snapshot && other.snapshot === copy.snapshot))
+        copies.push({ ...copy, archived_at: record.archived_at });
+    }
+    return { page_id: this.pageId, copies };
+  }
+  /** One copy as `{ title, markdown, snapshot, heads, page_id }`: a recovery
+   * record, or this tab's replica. `drafts` adds the UI's unsent comment
+   * drafts to a live export. `allComments` lists every comment, as for a
+   * retired copy whose host this account can no longer read. */
+  exportRecovery(record, { drafts, allComments = false } = {}) {
     if (!record && this.closedRecovery) return { ...this.closedRecovery };
+    const commentDrafts = record ? record.comment_drafts : drafts;
+    if (record && !record.snapshot)
+      return {
+        title: record.title ?? "",
+        markdown: commentDraftsMarkdown(commentDrafts),
+        heads: [],
+        page_id: this.pageId,
+        ...(commentDrafts?.length && { comment_drafts: commentDrafts }),
+      };
     const doc = record ? A.load(decodeSnapshot(record.snapshot)) : this.doc;
     if (!doc) throw Error("No local Page to export");
     try {
@@ -986,16 +1056,17 @@ export class PageSession {
       // Comments are part of the draft: list the ones the host never
       // acknowledged. An archived record has no receipt, so it lists them all.
       let saved = null;
-      if (!record && this.savedHeads.length)
+      if (!record && !allComments && this.savedHeads.length)
         try {
           saved = projectPage(A.view(doc, this.savedHeads));
         } catch {}
       return {
         title: page.title,
-        markdown: `# ${page.title}\n\n${page.blocks.map((block) => block.markdown).join("\n\n")}\n${unsentCommentsMarkdown(page, saved)}`,
+        markdown: `# ${page.title}\n\n${page.blocks.map((block) => block.markdown).join("\n\n")}\n${unsentCommentsMarkdown(page, saved)}${commentDraftsMarkdown(commentDrafts)}`,
         snapshot: record?.snapshot ?? encodeSnapshot(A.save(doc)),
         heads: A.getHeads(doc),
         page_id: this.pageId,
+        ...(commentDrafts?.length && { comment_drafts: commentDrafts }),
       };
     } finally {
       if (record) A.free(doc);
@@ -1367,7 +1438,7 @@ export class PageSession {
     );
   }
   persistLocal(patch = {}, { allowClosed = false } = {}) {
-    if (this.deleted || (!this.alive && !allowClosed) || !this.localPage || !this.handle)
+    if (this.hidden || (!this.alive && !allowClosed) || !this.localPage || !this.handle)
       return Promise.resolve();
     const heads = A.getHeads(this.doc).join(",");
     if (this.checkpointHeads !== heads) {
@@ -2459,7 +2530,8 @@ export class PageSession {
    * receipt or CLOSE_DRAIN_MS; otherwise it writes its final checkpoint at
    * once. Either way it then releases the backend. Returns closeSettled(). */
   leave({ drain = true } = {}) {
-    this.outbound.flush();
+    // A retired copy's sockets are closed: nothing it queued may go out.
+    if (this.alive) this.outbound.flush();
     const phase = this.phase$.snapshot();
     // An access reload owns this close: it ends after archiving and the
     // replacement open. If archiving fails, the replica is live again, so

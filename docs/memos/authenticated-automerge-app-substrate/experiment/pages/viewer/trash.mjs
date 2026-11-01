@@ -1,4 +1,5 @@
 import { retryKey } from "../model/retry-key.mjs";
+import { retireLocalPage } from "./local-catalog.mjs";
 
 /** Browser Trash operations. Each mutation prepares fresh catalog retry
  * authority from list_pages, like Page deletion and creation.
@@ -77,6 +78,14 @@ export async function restorePage(tool, pageId, principal) {
       ...(await catalogAuthority(tool)),
     }),
   );
+}
+
+/** After a permanent deletion, move this browser's copy of the Page to the
+ * recovery archive and mark it deleted, in one transaction. Nothing renders
+ * it again; Download previous local draft still can. */
+export function retirePurgedPage(identity, pageId) {
+  if (!identity?.principal) return Promise.resolve(null);
+  return retireLocalPage(identity, pageId, { reason: "deleted" });
 }
 
 export function previewPurge(tool, pageId, principal) {

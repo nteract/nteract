@@ -702,16 +702,16 @@ test("a direct close whose checkpoint fails keeps its recovery export", async ()
   assert.equal(g.reloaded(), 0);
 });
 
-test("Reload waits for a deleted Page to forget its copy and release its backend", async () => {
+test("Reload waits for a deleted Page to archive its copy and release its backend", async () => {
   const g = gate();
   const { session, holdRelease } = closingSession();
   const finishRelease = holdRelease();
   g.hold(session);
-  // The open Page is deleted: it forgets its local copy, then closes.
+  // The open Page is deleted: it archives its local copy, then closes.
   const deleting = session.markDeleted();
-  assert.deepEqual(session.phase$.snapshot(), { name: "deleted" });
+  assert.deepEqual(session.phase$.snapshot(), { name: "retiring", reason: "deleted" });
   const result = g.reload();
-  await firstValueFrom(session.phase$.state$.pipe(filter((phase) => phase.closing)));
+  await firstValueFrom(session.phase$.state$.pipe(filter((phase) => phase.name === "retired")));
   await settle();
   assert.equal(g.reloaded(), 0, "Reload waits for the backend release");
   assert.equal(g.host.store.snapshot().owned.length, 1, "the host still owns the session");
@@ -742,7 +742,7 @@ test("a failed checkpoint's record waits for the backend release too", async () 
   assert.match(outcome.pages[0].markdown, /Garden notes/);
 });
 
-test("a late deletion whose forget fails still holds Reload until the release settles", async () => {
+test("a late deletion whose archive fails holds Reload, then keeps the copy as unsaved", async () => {
   const g = gate();
   const { session, flush, persist, holdRelease } = closingSession();
   const finishRelease = holdRelease();
@@ -752,32 +752,37 @@ test("a late deletion whose forget fails still holds Reload until the release se
   session.phase$.state$.subscribe((phase) => {
     if (phase.name === "closed" && !deleting) deleting = session.markDeleted();
   });
-  session.forgetLocal = async () => {
+  session.retireLocal = async () => {
     throw new Error("IndexedDB unavailable");
   };
   g.hold(session);
   const closed = g.host.close(session);
   flush.resolve();
   persist.resolve();
-  await firstValueFrom(session.phase$.state$.pipe(filter((phase) => phase.name === "deleted")));
+  await firstValueFrom(session.phase$.state$.pipe(filter((phase) => phase.name === "retiring")));
   const result = g.reload();
   await settle();
-  assert.deepEqual(session.phase$.snapshot(), { name: "deleted", closing: true });
-  assert.equal(g.reloaded(), 0, "a failed forget doesn't end the wait for the release");
+  assert.deepEqual(session.phase$.snapshot(), { name: "retireFailed", reason: "deleted" });
+  assert.equal(session.recoveryArchived, false, "a failed archive is never reported as written");
+  assert.equal(session.retireProblem, "IndexedDB unavailable");
+  assert.equal(g.reloaded(), 0, "a failed archive doesn't end the wait for the release");
   assert.equal(g.host.store.snapshot().owned.length, 1, "the host still owns the session");
   finishRelease();
-  await assert.rejects(deleting, /IndexedDB unavailable/);
+  await deleting;
   await closed;
-  assert.deepEqual(await result, { ok: true });
-  assert.equal(g.reloaded(), 1);
+  const outcome = await result;
+  assert.equal(outcome.reason, "unsaved", "the tab's copy blocks Reload until downloaded");
+  assert.equal(outcome.pages[0].pageId, session.pageId);
+  assert.match(outcome.pages[0].markdown, /Garden notes/);
+  assert.equal(g.reloaded(), 0);
 });
 
-test("leave() bookkeeping holds until a late deletion's forget settles after the release", async () => {
+test("leave() bookkeeping holds until a late deletion's archive settles after the release", async () => {
   const g = gate();
   const { session, flush, persist, holdRelease } = closingSession();
   const finishRelease = holdRelease();
   const forget = deferred();
-  session.forgetLocal = () => forget.promise;
+  session.retireLocal = () => forget.promise;
   g.hold(session);
   const closed = g.host.close(session);
   flush.resolve();
@@ -812,7 +817,7 @@ test("a close's ownership ends only after its last step, in every settling order
       const { session, flush, persist, holdRelease } = closingSession();
       const finishRelease = holdRelease();
       const forget = deferred();
-      session.forgetLocal = () => forget.promise;
+      session.retireLocal = () => forget.promise;
       // A late deletion lands as the checkpoint settles.
       let deleting;
       session.phase$.state$.subscribe((phase) => {

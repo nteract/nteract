@@ -7,11 +7,13 @@ import {
   previewPurge,
   purgeSummary,
   restorePage,
+  retirePurgedPage,
   trashedDate,
 } from "./trash.mjs";
 
-/** Owner-only Trash. Opening a trashed Page shows a read-only preview. */
-export function TrashView({ tool, principal, onOpen, onRestored, onPurged, onBack }) {
+/** Owner-only Trash. Opening a trashed Page shows a read-only preview.
+ * `identity` is the signed-in account whose local copies a purge archives. */
+export function TrashView({ tool, principal, identity, onOpen, onRestored, onPurged, onBack }) {
   const [pages, setPages] = useState(null);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(null);
@@ -59,8 +61,20 @@ export function TrashView({ tool, principal, onOpen, onRestored, onPurged, onBac
       await confirmPurge(tool, preview, principal);
       const pageId = preview.page_id;
       setPreview(null);
+      // The host's copy is gone; this browser's copy moves to the recovery
+      // archive. A failed archive is reported after the listing refreshes.
+      let kept;
+      try {
+        await retirePurgedPage(identity, pageId);
+      } catch (cause) {
+        kept = cause;
+      }
       await onPurged(pageId);
       await load();
+      if (kept)
+        throw Error(
+          `The Page was deleted, but this browser couldn't move its copy to the recovery archive: ${kept.message}`,
+        );
     });
   return (
     <main className="page-library trash-view">
