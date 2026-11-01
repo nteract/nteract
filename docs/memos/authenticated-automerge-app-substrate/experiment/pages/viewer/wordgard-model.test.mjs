@@ -1,7 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import * as A from "@automerge/automerge";
-import { Leaf } from "wordgard/doc";
+import { Leaf, parse } from "wordgard/doc";
+import { JSDOM } from "jsdom";
 import { enableRich, textPath, validateRich, blockMarkdown } from "../model/richtext.mjs";
 import {
   decode,
@@ -180,4 +181,27 @@ test("highlights decode to palette or custom colors and round trip", () => {
   }
   for (const color of ["red", "#ABCDEF", "#abc", true])
     assert.throws(() => decode([{ type: "text", value: "x", marks: { highlight: color } }]));
+});
+
+test("pasted HTML links keep their destination and title; unsafe ones keep only text", () => {
+  const { document } = new JSDOM("").window;
+  const host = document.createElement("div");
+  host.innerHTML =
+    '<p>see <a href="https://example.com/x" title="T">abs</a> <a href="/p/abc">rel</a> ' +
+    '<a href="javascript:alert(1)">js</a> <a>bare</a></p>';
+  const texts = parse.slice(schema, host, {}).content.filter((token) => token.isText);
+  const link = (text) => {
+    const token = texts.find((entry) => entry.param.includes(text));
+    return PagesLink.isInSet(token.marks)?.value ?? null;
+  };
+  assert.deepEqual(link("abs"), { href: "https://example.com/x", title: "T" });
+  assert.deepEqual(link("rel"), { href: "/p/abc", title: null });
+  assert.equal(link("js"), null);
+  assert.equal(link("bare"), null);
+  assert.ok(
+    texts
+      .map((token) => token.param)
+      .join("")
+      .includes("js bare"),
+  );
 });
