@@ -826,6 +826,32 @@ for (const variant of ["lost", "barrier"])
     assert.equal((await w.call("owner", "restore_page", restore)).body.restored, true);
   });
 
+/** Real I/O turns. Tests that mock timers mock only setTimeout and Date, so
+ * these still advance. */
+async function turns(count = 20) {
+  for (let index = 0; index < count; index++) await new Promise((resolve) => setImmediate(resolve));
+}
+
+/** Await `promise` while advancing mocked time 5 ms per step, with real I/O
+ * turns between steps. `drain` keeps advancing that many ms after it settles. */
+async function advance(t, promise, { drain = 0, limit = 10_000 } = {}) {
+  let settled = false;
+  promise.then(
+    () => (settled = true),
+    () => (settled = true),
+  );
+  for (let elapsed = 0; !settled && elapsed <= limit; elapsed += 5) {
+    await turns();
+    if (!settled) t.mock.timers.tick(5);
+  }
+  for (let elapsed = 0; elapsed < drain; elapsed += 5) {
+    await turns();
+    t.mock.timers.tick(5);
+  }
+  await turns();
+  return promise;
+}
+
 /** Children of one parent, each trashed with a restore reserved but never
  * applied, so a leaf check has to read every child's lifecycle. */
 async function unsettledChildren(w, count) {
@@ -857,13 +883,14 @@ test("a stalled lifecycle read is bounded and refuses the request as retryable",
         signal.addEventListener("abort", () => reject(signal.reason), { once: true }),
       );
   };
+  t.mock.timers.enable({ apis: ["setTimeout", "Date"] });
   const started = Date.now();
-  const stalled = await trash(parent);
+  const stalled = await advance(t, trash(parent));
   assert.equal(stalled.status, 409);
   assert.equal(stalled.body.code, "lifecycle_unsettled");
   assert.ok(Date.now() - started < 400, "the read gave up after its own bound");
   assert.equal(pageState(w.page(parent).metadata), "active");
-  await new Promise((resolve) => setTimeout(resolve, 20));
+  await turns();
   assert.equal(w.catalog().lifecycleReads.size, 0, "the aborted read freed its slot");
   w.hooks.lifecycle = null;
   assert.equal((await trash(parent)).status, 200, "the retry settles and proceeds");
@@ -884,8 +911,9 @@ test("many slow children share one pass budget and at most four reads at a time"
   };
   // 12 reads of 40 ms at four at a time need about 120 ms.
   Object.assign(lifecycleBounds, { readMs: 200, passMs: 60 });
+  t.mock.timers.enable({ apis: ["setTimeout", "Date"] });
   const started = Date.now();
-  const exhausted = await trash(parent);
+  const exhausted = await advance(t, trash(parent));
   const elapsed = Date.now() - started;
   assert.equal(exhausted.status, 409);
   assert.equal(exhausted.body.code, "lifecycle_unsettled");
@@ -894,11 +922,11 @@ test("many slow children share one pass budget and at most four reads at a time"
   assert.ok(peak <= 4, `at most four reads at once (${peak})`);
 
   // Reads cut off at the deadline finish in the background; let them drain.
-  await new Promise((resolve) => setTimeout(resolve, 100));
+  await advance(t, Promise.resolve(), { drain: 100 });
   assert.equal(active, 0);
   peak = 0;
   Object.assign(lifecycleBounds, { passMs: 2000 });
-  const settled = await trash(parent);
+  const settled = await advance(t, trash(parent));
   assert.equal(settled.status, 200, JSON.stringify(settled.body));
   assert.equal(peak, 4);
 });

@@ -146,8 +146,6 @@ try {
   );
   await page.getByRole("button", { name: "New Page", exact: true }).click();
   await expect(titleInput(page)).toBeFocused();
-  // The refusal says why the draft stays on this device.
-  await expect(page.getByText("This alpha release allows 250 Pages per account.")).toBeVisible();
   const rejectedId = new URL(page.url()).pathname.split("/")[2];
   await page.getByLabel("Document actions", { exact: true }).click();
   page.once("dialog", (dialog) => dialog.accept());

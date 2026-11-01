@@ -73,11 +73,12 @@ test("a failed setup lets the next request start it again", async (t) => {
   assert.equal(calls.length, 0, "the waiter ran the setup itself");
 });
 
-test("the starter and a waiter give up with a retryable 503 when the setup never settles", async (t) => {
+test("a waiter gives up with a retryable 503 when the setup never settles", async (t) => {
   t.mock.timers.enable({ apis: ["setTimeout", "Date"] });
   const ready = isolateSetup(() => new Promise(() => {}));
   const key = {};
-  const owner = ready(key).catch((error) => error);
+  // The starter awaits its own attempt, under its caller's deadline.
+  const owning = track(ready(key));
   const waiter = ready(key);
   const waiting = track(waiter);
   for (
@@ -95,7 +96,20 @@ test("the starter and a waiter give up with a retryable 503 when the setup never
     assert.equal(error.reason, "credential_unverified");
     return true;
   });
-  assert.equal((await owner).code, "request_timeout");
+  assert.equal(owning.settled, false);
+});
+
+test("a starter waits out a slow setup instead of timing out", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout", "Date"] });
+  const slow = deferred();
+  const ready = isolateSetup(() => slow.promise);
+  const owner = ready({});
+  const owning = track(owner);
+  t.mock.timers.tick(isolateSetupTimeouts.wait * 2);
+  await turns();
+  assert.equal(owning.settled, false);
+  slow.resolve();
+  await owner;
 });
 
 test("an abandoned attempt frees its key, and its late result changes nothing", async (t) => {
@@ -104,12 +118,10 @@ test("an abandoned attempt frees its key, and its late result changes nothing", 
   let runs = 0;
   const ready = isolateSetup(() => attempts[runs++].promise);
   const key = {};
-  const first = ready(key).catch((error) => error);
+  const first = ready(key).catch((error) => error.message);
   await turns();
-  t.mock.timers.tick(isolateSetupTimeouts.wait);
-  assert.equal((await first).code, "request_timeout");
   // Inside the attempt's lifetime the key is still held.
-  t.mock.timers.tick(isolateSetupTimeouts.attempt - isolateSetupTimeouts.wait - 1);
+  t.mock.timers.tick(isolateSetupTimeouts.attempt - 1);
   const blocked = ready(key).catch((error) => error);
   await turns();
   assert.equal(runs, 1, "the waiter waits on the abandoned attempt");
@@ -120,6 +132,7 @@ test("an abandoned attempt frees its key, and its late result changes nothing", 
   // The abandoned attempt fails late. It names an old generation, so the
   // second attempt keeps the key.
   attempts[0].reject(new Error("late failure"));
+  assert.equal(await first, "late failure");
   await turns();
   const third = ready(key);
   await turns();
@@ -285,6 +298,49 @@ test("concurrent first gateway requests do not await one another's session schem
   t.mock.timers.tick(isolateSetupTimeouts.poll);
   assert.equal((await second).status, 200);
   assert.equal(schema.length, 1, "the session schema is set up once");
+});
+
+test("a session schema setup that hangs is abandoned, and sign-in recovers without a restart", async (t) => {
+  // The first session-schema statement never answers; later ones do.
+  const sqlite = new DatabaseSync(":memory:");
+  t.after(() => sqlite.close());
+  let hung = 0;
+  const DB = {
+    prepare(sql) {
+      const statement = sqlite.prepare(sql);
+      let bindings = [];
+      return {
+        bind(...values) {
+          bindings = values;
+          return this;
+        },
+        async first() {
+          return statement.get(...bindings) ?? null;
+        },
+        async run() {
+          if (sql.startsWith("CREATE TABLE IF NOT EXISTS oidc_login_transactions") && !hung++)
+            return new Promise(() => {});
+          statement.run(...bindings);
+          return { success: true };
+        },
+      };
+    },
+  };
+  const env = { DB, NOTEBOOK_CLOUD_APP_SESSION_SECRET: "fixture-only-session-secret-".repeat(2) };
+  t.mock.timers.enable({ apis: ["setTimeout", "Date"] });
+  const first = track(worker.fetch(withSessionCookie("/api/auth/session"), env));
+  await turns();
+  assert.equal(hung, 1);
+  // Once the attempt has outlived its lifetime, the next request starts a new
+  // one. It runs the schema again rather than awaiting the hung statement.
+  t.mock.timers.tick(isolateSetupTimeouts.attempt);
+  const next = worker.fetch(withSessionCookie("/api/auth/session"), env);
+  const recovered = track(next);
+  await turns();
+  assert.equal(recovered.settled, true, "the new attempt did not wait on the hung one");
+  assert.equal((await next).status, 200);
+  assert.equal(hung, 2);
+  assert.equal(first.settled, false, "the hung request stays under its caller's deadline");
 });
 
 test("an admission request waiting on a stalled session schema gets a retryable refusal", async (t) => {

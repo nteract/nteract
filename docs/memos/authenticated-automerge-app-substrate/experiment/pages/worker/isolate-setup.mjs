@@ -22,10 +22,9 @@ import { withAdmissionReason } from "./admission-reasons.mjs";
  */
 
 /** Mutable so tests can shorten them. `wait` bounds how long a request waits
- * for setup, its own or another request's; `poll` is the interval of its own
- * timer. `attempt` is how long one setup attempt holds its key: after that the
- * attempt is abandoned and the next request starts another. It exceeds `wait`,
- * so a request that gave up never meets an attempt it could take over. */
+ * for another request's work; `poll` is the interval of its own timer.
+ * `attempt` is how long one setup attempt holds its key: after that the
+ * attempt is abandoned and the next request starts another. */
 export const isolateSetupTimeouts = { wait: 10_000, poll: 5, attempt: 30_000 };
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -55,9 +54,9 @@ async function pause(deadline) {
  * - `ready`: an attempt succeeded.
  *
  * Events: `start` (a request starts attempt `generation`, held until
- * `deadline`, at `now`), and `succeed` or `fail` for attempt `generation`. A running attempt past its deadline is abandoned: `start`
- * replaces it, and its late `succeed` or `fail` names an old generation, so it
- * changes nothing. Returns `{ state }`, or `{ state, rejected }` unchanged.
+ * `deadline`, at `now`), and `succeed` or `fail` for attempt `generation`.
+ * A running attempt past its deadline is abandoned: `start` replaces it, and
+ * its late `succeed` or `fail` names an old generation, so it changes nothing. Returns `{ state }`, or `{ state, rejected }` unchanged.
  */
 export function setupTransition(state, event) {
   const reject = (rejected) => ({ state, rejected });
@@ -87,11 +86,14 @@ export function setupAction(state, now) {
 
 /**
  * One-time setup per key for this isolate, such as a D1 schema per binding.
- * A request starts an attempt when none holds the key, awaits it on its own
- * timer for at most `isolateSetupTimeouts.wait`, and gives up with a
- * retryable 503. A failed attempt frees the key at once; one that never
- * settles frees it after `isolateSetupTimeouts.attempt`, so a hang never
- * outlives the isolate.
+ * The request that starts an attempt awaits it for as long as it takes, under
+ * its caller's own deadline. Other requests wait on their own timers for at
+ * most `isolateSetupTimeouts.wait` and give up with a retryable 503. A failed
+ * attempt frees the key at once; one that never settles frees it after
+ * `isolateSetupTimeouts.attempt`, so a hang never outlives the isolate.
+ *
+ * Abandoning an attempt helps only if `run` holds no shared pending promise of
+ * its own: a retry must start fresh work, not await the hung one.
  */
 export function isolateSetup(run) {
   const states = new WeakMap();
@@ -117,21 +119,12 @@ export function isolateSetup(run) {
       now: Date.now(),
       deadline: Date.now() + isolateSetupTimeouts.attempt,
     });
-    const attempt = Promise.resolve().then(() => run(key, ...args));
-    attempt.then(
-      () => step(key, { type: "succeed", generation }),
-      () => step(key, { type: "fail", generation }),
-    );
-    let timer;
     try {
-      await Promise.race([
-        attempt,
-        new Promise((_, reject) => {
-          timer = setTimeout(() => reject(waitTimeout()), Math.max(0, deadline - Date.now()));
-        }),
-      ]);
-    } finally {
-      clearTimeout(timer);
+      await run(key, ...args);
+      step(key, { type: "succeed", generation });
+    } catch (error) {
+      step(key, { type: "fail", generation });
+      throw error;
     }
   };
 }

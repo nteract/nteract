@@ -29,10 +29,18 @@ function applied(result) {
   return result;
 }
 
-/** list_pages requests that cover the largest Trash an account can have
- * (10,000 Pages, page-quota.mjs MAX_PAGE_QUOTA), at 100 per request. */
-const TRASH_REQUESTS = 100;
+/** The largest Page limit any account can have (worker/page-quota.mjs
+ * MAX_PAGE_QUOTA). A paused account can move every active Page to Trash, so
+ * its Trash can hold twice that. */
+export const MAX_PAGE_QUOTA = 10_000;
+/** A safety bound on list_pages requests for one Trash listing: four times
+ * what the largest possible Trash needs at 100 Pages per request, so short
+ * pages never reach it. */
+export const TRASH_REQUESTS = ((2 * MAX_PAGE_QUOTA) / 100) * 4;
 
+/** Every Page in the caller's Trash, following cursors until there are none.
+ * A listing that would need more than TRASH_REQUESTS requests throws rather
+ * than show part of Trash as all of it. */
 export async function listTrash(tool) {
   const pages = [];
   let cursor;
@@ -44,9 +52,9 @@ export async function listTrash(tool) {
     });
     if (Array.isArray(result?.pages)) pages.push(...result.pages);
     cursor = result?.next_cursor;
-    if (typeof cursor !== "string") break;
+    if (typeof cursor !== "string") return pages;
   }
-  return pages;
+  throw Error("Trash has more Pages than this view can list.");
 }
 
 export async function restorePage(tool, pageId, principal) {
