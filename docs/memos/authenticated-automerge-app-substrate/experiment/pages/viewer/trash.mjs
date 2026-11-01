@@ -80,17 +80,18 @@ export async function restorePage(tool, pageId, principal) {
   );
 }
 
-/** The grant of this browser's copy of a Page, read before a permanent
- * deletion so retirePurgedPage leaves a checkpoint a newer grant wrote. */
+/** The grant of this browser's copy of a Page (`{ grant, revision }`), read
+ * before a permanent deletion so retirePurgedPage leaves a checkpoint a newer
+ * grant wrote. */
 export function purgeGrant(identity, pageId) {
   return readLocalGrant(identity, pageId).catch(() => undefined);
 }
 /** After a permanent deletion, move this browser's copy of the Page to the
  * recovery archive and mark it deleted, in one transaction. Nothing renders
  * it again; Download previous local draft still can. */
-export function retirePurgedPage(identity, pageId, grant) {
+export function retirePurgedPage(identity, pageId, { grant, revision } = {}) {
   if (!identity?.principal) return Promise.resolve(null);
-  return retireLocalPage(identity, pageId, { reason: "deleted", grant });
+  return retireLocalPage(identity, pageId, { reason: "deleted", grant, revision });
 }
 
 export function previewPurge(tool, pageId, principal) {

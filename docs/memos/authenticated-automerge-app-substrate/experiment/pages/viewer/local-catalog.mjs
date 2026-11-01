@@ -47,13 +47,27 @@ export function grantGeneration(replicaKey) {
   const match = /^(\d+):/.exec(typeof replicaKey === "string" ? replicaKey : "");
   return match ? Number(match[1]) : NaN;
 }
-/** The replica key of this account's stored checkpoint, or undefined. */
+/** The grant of this account's stored checkpoint, `{ grant, revision }`
+ * (its replica key and grant revision), or undefined. */
 export async function readLocalGrant(identity, pageId) {
   if (!identity?.principal) return undefined;
   const value = await store.load(key(identity, pageId));
   if (!value) return undefined;
   const page = JSON.parse(decoder.decode(value));
-  return page.principal === identity.principal ? page.replicaKey : undefined;
+  if (page.principal !== identity.principal) return undefined;
+  return { grant: page.replicaKey, revision: page.grant_revision };
+}
+/** The host access revision a readable grant carries, or undefined. */
+export const grantRevisionOf = (access) =>
+  access?.canRead && Number.isSafeInteger(access.revision) ? access.revision : undefined;
+/** `next` with `grant_revision`: the highest readable grant revision any
+ * writer of this entry held, or none when no writer reported one. */
+export function withGrantRevision(next, ...sources) {
+  const revisions = sources
+    .flatMap((source) => [source?.grant_revision, grantRevisionOf(source?.access)])
+    .filter(Number.isSafeInteger);
+  const { grant_revision: _, ...rest } = next;
+  return revisions.length ? { ...rest, grant_revision: Math.max(...revisions) } : rest;
 }
 const recoveryKey = (identity, pageId) =>
   `recovery/${encodeURIComponent(identity.principal)}/${pageId}/${crypto.randomUUID()}`;
@@ -87,19 +101,24 @@ export function archiveSnapshot(records, identity, page, sequence) {
  * LOCAL_PAGE_REVOKED. With nothing stored and nothing to archive, an access
  * refusal writes nothing.
  *
- * `grant` is the replica key the refused session opened under. When the
- * stored checkpoint belongs to a newer grant (another tab opened the Page
- * after a re-grant), the refusal is stale for it: only the caller's own copy
- * and drafts are archived, and the checkpoint stays, with no marker. Without
- * a `grant` the stored checkpoint is retired whatever its grant.
+ * `grant` is the replica key the refused session opened under and
+ * `revision` the host access revision it last held. The stored entry belongs
+ * to a newer grant when its replica key names a later member generation, or
+ * its `grant_revision` (writeLocalPage) is greater: company sharing and owner
+ * access stay at generation 0 and change only the revision. Then the refusal
+ * is stale for it: only the caller's own copy and drafts are archived, the
+ * entry keeps its content and grant fields, and no marker is written. A field
+ * either side lacks, such as a legacy entry's `grant_revision`, never makes
+ * the entry newer.
  *
- * Everything lands in one transaction. Resolves with the marker,
- * `{ superseded: true }` for a newer grant's checkpoint, or null.
+ * Everything lands in one transaction, the entry's advanced
+ * `recovery_sequence` included, so later archives sort after these. Resolves
+ * with the marker, `{ superseded: true }` for a newer grant's entry, or null.
  */
 export async function retireLocalPage(
   identity,
   pageId,
-  { reason, snapshot, title, drafts, grant } = {},
+  { reason, snapshot, title, drafts, grant, revision } = {},
 ) {
   if (!identity?.principal) throw Error("Local Page account does not match");
   if (reason !== "access" && reason !== "deleted") throw Error("Unknown retirement reason");
@@ -118,7 +137,10 @@ export async function retireLocalPage(
           !!previous &&
           !previous.deleted &&
           !previous.revoked &&
-          grantGeneration(previous.replicaKey) > grantGeneration(grant);
+          (grantGeneration(previous.replicaKey) > grantGeneration(grant) ||
+            (Number.isSafeInteger(previous.grant_revision) &&
+              Number.isSafeInteger(revision) &&
+              previous.grant_revision > revision));
         const copies = [];
         if (previous?.snapshot && !superseded) copies.push({ ...previous, retired: reason });
         if (snapshot && snapshot !== previous?.snapshot)
@@ -141,6 +163,11 @@ export async function retireLocalPage(
         }
         for (const copy of copies) archiveSnapshot(records, identity, copy, ++sequence);
         if (superseded) {
+          if (copies.length)
+            records.put(
+              encoder.encode(JSON.stringify({ ...previous, recovery_sequence: sequence })),
+              key(identity, pageId),
+            );
           done({ superseded: true });
           return;
         }

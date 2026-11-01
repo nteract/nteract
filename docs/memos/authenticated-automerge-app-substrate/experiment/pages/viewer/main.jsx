@@ -802,6 +802,7 @@ function App() {
         await retireLocalPage(deleting.identity, deleting.pageId, {
           reason: "deleted",
           grant: deleting.replicaKey,
+          revision: deleting.access?.revision,
         });
       }
       setNotice("Moved to Trash");

@@ -696,12 +696,15 @@ export class PageSession {
     await this.closeSettled().catch(() => {});
   }
   /** Write `live` and the stored checkpoint to the recovery archive and leave
-   * the marker for `reason` (retireLocalPage). The replica key this session
-   * opened under is its grant: a checkpoint from a newer grant stays. */
+   * the marker for `reason` (retireLocalPage). The grant is the replica key
+   * this session opened under and the access revision it last held, or the
+   * refusal's own revision when the host sent one: a checkpoint from a newer
+   * grant stays. */
   retireLocal(reason, live) {
     return retireLocalPage(this.identity, this.pageId, {
       reason,
       grant: this.replicaKey,
+      revision: Number.isSafeInteger(this.access?.revision) ? this.access.revision : undefined,
       snapshot: live?.snapshot,
       title: live?.title,
       drafts: live?.comment_drafts,

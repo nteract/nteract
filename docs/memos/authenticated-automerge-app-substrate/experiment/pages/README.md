@@ -363,9 +363,16 @@ the host, is refused again, and retires again; that is the retry. The host is
 the access boundary, and hiding a refused copy is a courtesy on top of it.
 
 Retirement carries the grant it was refused under: the replica key the session
-opened with. When the stored checkpoint belongs to a newer grant (another tab
-opened the Page after the owner shared it again), the same transaction archives
-only the refused tab's own copy and drafts and leaves that checkpoint, with no
+opened with, and the host access revision it last held (the refusal's own,
+when the host sent one). Every checkpoint records `grant_revision`, the highest
+readable access revision its writers held. The stored entry belongs to a newer
+grant when its replica key names a later member generation or its
+`grant_revision` is greater; owner and company access stay at generation 0, so
+the revision is what tells those grants apart. A legacy entry without
+`grant_revision` is judged by generation alone. For a newer grant's entry (another tab
+opened the Page after access came back), the same transaction archives only the
+refused tab's own copy and drafts, advances the entry's `recovery_sequence` so
+later archives sort after them, and leaves the content and grant fields with no
 marker. A permanent deletion from Trash reads the copy's grant before the purge
 and retires under it.
 

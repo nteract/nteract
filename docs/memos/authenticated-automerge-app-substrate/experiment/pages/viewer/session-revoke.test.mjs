@@ -12,6 +12,7 @@ import { createPageData, initializePage } from "../model/page.mjs";
 import { applyComment } from "../model/comments.mjs";
 import { admissionCloseOutcome } from "../shared/admission.mjs";
 import { retiredCopies } from "./retired-copies.mjs";
+import { decoder, encoder, key, store } from "./local-catalog.mjs";
 import {
   decodeSnapshot,
   encodeSnapshot,
@@ -73,7 +74,7 @@ function browser(t) {
 
 /** A Page with one paragraph and one comment, as a collaborator's browser
  * holds it: an open session and a written checkpoint. */
-async function openCopy(auth = authentication()) {
+async function openCopy(auth = authentication(), { grant = access(), key = "1:writer" } = {}) {
   const pageId = crypto.randomUUID();
   const documentId = interpretAsDocumentId(generateAutomergeUrl());
   let doc = A.change(A.from(createPageData({ pageId, title: "Shared garden" })), (d) =>
@@ -88,8 +89,8 @@ async function openCopy(auth = authentication()) {
     refreshSession: async () => auth,
   });
   session.acceptAuthentication(auth);
-  session.access = access();
-  session.replicaKey = "1:writer";
+  session.access = grant;
+  session.replicaKey = key;
   session.handle = { doc: () => doc, documentId };
   session.repo = { flush: async () => {} };
   session.localPage = {
@@ -794,4 +795,139 @@ test("every recovery record is offered, equal snapshots with different drafts in
     copies.map((copy) => copy.archived_at),
     records.map((entry) => entry.archived_at),
   );
+});
+
+/** A company reader's copy: owner and company access stay at member
+ * generation 0, so only the host access revision tells grants apart. */
+function companyCopy(revision) {
+  const reader = { ...access("viewer", 0, revision), canWrite: false, canComment: false };
+  return openCopy(authentication(), { grant: reader, key: "0:reader" });
+}
+
+test("a company grant's newer checkpoint survives a stale Try again at the same generation", async (t) => {
+  const first = await companyCopy(3);
+  assert.equal(
+    (await readLocalPage(first.auth.identity, first.pageId)).grant_revision,
+    3,
+    "each checkpoint records the readable grant revision it was written under",
+  );
+  let fail = true;
+  first.session.retireLocal = (...args) =>
+    fail ? Promise.reject(quota()) : PageSession.prototype.retireLocal.apply(first.session, args);
+  // Company sharing goes off (revision 4); tab A is refused and its archive fails.
+  await first.session.revoke();
+  t.after(() => first.session.close());
+  assert.equal(first.session.retireFailed, true);
+  // Sharing comes back on (revision 5) and tab B checkpoints under "0:reader".
+  const reader = { ...access("viewer", 0, 5), canWrite: false, canComment: false };
+  const edited = A.change(first.doc, (d) => {
+    d.title = "Tab B under the restored company grant";
+  });
+  const tabB = {
+    ...first.session.localPage,
+    access: reader,
+    replicaKey: "0:reader",
+    snapshot: encodeSnapshot(A.save(edited)),
+    title: edited.title,
+  };
+  await writeLocalPage(first.auth.identity, tabB);
+  assert.equal((await readLocalPage(first.auth.identity, first.pageId)).grant_revision, 5);
+  fail = false;
+  await first.session.retryRetirement();
+  assert.equal(first.session.recoveryArchived, true, "tab A's own copy is archived");
+  const stored = await readLocalPage(first.auth.identity, first.pageId, { markers: true });
+  assert.equal(stored.revoked, undefined, "no marker over the restored grant");
+  assert.equal(stored.snapshot, tabB.snapshot, "tab B's checkpoint survives");
+  assert.equal(stored.replicaKey, "0:reader");
+  assert.equal(stored.grant_revision, 5);
+  await writeLocalPage(first.auth.identity, { ...tabB, pending: true });
+});
+
+test("the revision guard writes the marker for the same revision and for legacy entries", async () => {
+  // Same revision: the refused grant is the stored one.
+  {
+    const { session, auth, pageId } = await companyCopy(4);
+    await session.close();
+    const marker = await retireLocalPage(auth.identity, pageId, {
+      reason: "access",
+      grant: "0:reader",
+      revision: 4,
+    });
+    assert.equal(marker.revoked, true);
+  }
+  // A refused fact never raises the stored revision.
+  {
+    const { session, auth, pageId } = await companyCopy(4);
+    await session.close();
+    await writeLocalPage(auth.identity, {
+      ...session.localPage,
+      access: { ...access("none", 0, 6), canRead: false },
+    });
+    assert.equal((await readLocalPage(auth.identity, pageId)).grant_revision, 4);
+  }
+  // Legacy entry without grant_revision: only the generation decides.
+  {
+    const { session, auth, pageId } = await companyCopy(4);
+    await session.close();
+    await store.run("readwrite", (records, done) => {
+      const entryKey = key(auth.identity, pageId);
+      const request = records.get(entryKey);
+      request.onsuccess = () => {
+        const legacy = JSON.parse(decoder.decode(request.result));
+        delete legacy.grant_revision;
+        delete legacy.access;
+        records.put(encoder.encode(JSON.stringify(legacy)), entryKey);
+        done();
+      };
+      return request;
+    });
+    assert.equal((await readLocalPage(auth.identity, pageId)).grant_revision, undefined);
+    const marker = await retireLocalPage(auth.identity, pageId, {
+      reason: "access",
+      grant: "0:reader",
+      revision: 1,
+    });
+    assert.equal(marker.revoked, true);
+  }
+});
+
+test("superseded retirements advance the entry's sequence, so the newest sorts last", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: Date.parse("2026-11-01T12:00:00.000Z") });
+  // Each archive key sorts before the one written earlier.
+  let uuid = 0xffff;
+  t.mock.method(
+    crypto,
+    "randomUUID",
+    () => `00000000-0000-4000-8000-${(uuid--).toString(16).padStart(12, "0")}`,
+  );
+  const first = await openCopy();
+  await first.session.close();
+  const tabB = await regrantedTab(first);
+  const before = (await readLocalPage(first.auth.identity, first.pageId)).recovery_sequence;
+  const snapshotOf = (title) => {
+    const doc = A.change(A.clone(first.doc), (d) => {
+      d.title = title;
+    });
+    return encodeSnapshot(A.save(doc));
+  };
+  for (const title of ["Older stale archive", "Newer stale archive"])
+    assert.deepEqual(
+      await retireLocalPage(first.auth.identity, first.pageId, {
+        reason: "access",
+        grant: "1:writer",
+        revision: 1,
+        snapshot: snapshotOf(title),
+        title,
+      }),
+      { superseded: true },
+    );
+  const stored = await readLocalPage(first.auth.identity, first.pageId);
+  assert.equal(stored.recovery_sequence, before + 2, "only the sequence advanced");
+  assert.equal(stored.snapshot, tabB.snapshot);
+  assert.equal(stored.replicaKey, "2:writer");
+  assert.equal(stored.grant_revision, 3);
+  const records = await listLocalRecoveries(first.auth.identity, first.pageId);
+  assert.equal(records.at(-1).title, "Newer stale archive");
+  assert.equal(records.at(-2).title, "Older stale archive");
+  assert.equal(records.at(-1).archived_at, records.at(-2).archived_at, "same millisecond");
 });

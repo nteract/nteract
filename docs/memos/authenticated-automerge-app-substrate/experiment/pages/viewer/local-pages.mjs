@@ -1,6 +1,13 @@
 import * as A from "@automerge/automerge";
 import { mergeLocalEdits } from "./local-edits.mjs";
-import { archiveSnapshot, decoder, encoder, key, store } from "./local-catalog.mjs";
+import {
+  archiveSnapshot,
+  decoder,
+  encoder,
+  key,
+  store,
+  withGrantRevision,
+} from "./local-catalog.mjs";
 export { listLocalPages, retireLocalPage } from "./local-catalog.mjs";
 const accessChanged = () =>
   Object.assign(Error("Page access changed in another tab; your draft is kept locally"), {
@@ -32,16 +39,20 @@ export async function prepareLocalPageReload(identity, page, access, replicaKey)
         if (previous.snapshot) archiveSnapshot(records, identity, previous, ++sequence);
         if (page.snapshot && page.snapshot !== previous.snapshot)
           archiveSnapshot(records, identity, page, ++sequence);
-        const next = {
-          ...previous,
-          recovery_sequence: sequence,
-          access,
-          replicaKey,
-          resetReplica: true,
-          pending: false,
-          canWrite: false,
-          snapshot: undefined,
-        };
+        const next = withGrantRevision(
+          {
+            ...previous,
+            recovery_sequence: sequence,
+            access,
+            replicaKey,
+            resetReplica: true,
+            pending: false,
+            canWrite: false,
+            snapshot: undefined,
+          },
+          previous,
+          { access },
+        );
         records.put(encoder.encode(JSON.stringify(next)), key(identity, page.page_id));
         done(next);
       } catch (error) {
@@ -99,8 +110,9 @@ export async function writeLocalPage(identity, page, { replica, regrant = false 
     request.onsuccess = () => {
       try {
         let next = { ...page };
-        if (request.result) {
-          const previous = JSON.parse(decoder.decode(request.result));
+        const stored = request.result ? JSON.parse(decoder.decode(request.result)) : undefined;
+        if (stored) {
+          const previous = stored;
           // A deletion occupies this same key permanently. IndexedDB serializes
           // these read/write transactions across tabs, so an older checkpoint
           // can neither replace the marker nor recreate a forgotten Page.
@@ -110,7 +122,10 @@ export async function writeLocalPage(identity, page, { replica, regrant = false 
             // writer is a tab that hasn't seen the refusal yet: keep its
             // copy beside the others, then report the refusal.
             if (regrant) {
-              const next = { ...page, recovery_sequence: previous.recovery_sequence ?? 0 };
+              const next = withGrantRevision(
+                { ...page, recovery_sequence: previous.recovery_sequence ?? 0 },
+                page,
+              );
               delete next.registrationSupersedes;
               records.put(encoder.encode(JSON.stringify(next)), key(identity, page.page_id));
               done(next);
@@ -183,6 +198,9 @@ export async function writeLocalPage(identity, page, { replica, regrant = false 
           });
           if (localEdits) next = { ...next, localEdits };
         }
+        // Which host grant the checkpoint belongs to: the highest readable
+        // access revision its writers held. A refused writer never raises it.
+        next = withGrantRevision(next, stored, page);
         // The compare-and-swap authority is only for this checkpoint write;
         // stale tabs must explicitly reconcile before replacing another token.
         delete next.registrationSupersedes;
