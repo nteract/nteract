@@ -143,10 +143,11 @@ browser editor is simplified; replacing it requires a separate compatibility
 pass. Each Pages block has its own continuous editor. Moves update fractional positions without recreating the block or its
 text object, preserving comment and selection anchors. Concurrent positions use
 block IDs as deterministic ties. Cross-Pages-block selections remain unsupported.
-A block that ends in a code block, table or preserved block shows an empty line
-after it, so the caret always has somewhere to go; ArrowDown reaches it and
-Mod-Enter jumps there from inside a code block. The line exists only in the
-editor until someone types in it, so opening a Page never writes to it.
+When a block ends in a code block, table, preserved block or an image, ArrowDown
+on its last line, Mod-Enter, or a click below it adds an empty paragraph and puts
+the caret there. Mod-Enter also leaves a code block anywhere else. The paragraph
+is an ordinary edit, written only when someone asks for it, so opening a Page
+writes nothing.
 The binding's upstream attribution is in [WORDGARD-NOTICE](viewer/WORDGARD-NOTICE).
 
 The interface keeps navigation and account actions outside the document, with

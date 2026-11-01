@@ -92,30 +92,20 @@ export function captureImageInsertion(
     { anchor, head } = editor.state.selection,
     native = (pos) => {
       const at = map.wgToAm[pos];
-      return Number.isSafeInteger(at)
-        ? { at: anchorBefore(doc, path, at), line: trailing(map, pos) }
-        : null;
+      return Number.isSafeInteger(at) ? anchorBefore(doc, path, at) : undefined;
     };
   return {
     pageId,
     id,
     object,
     anchor: anchorBefore(doc, path, offset),
-    // The editor's trailing line has no native offset of its own (see
-    // wordgard-model.mjs decode); an image chosen there goes on that line.
-    line: trailing(map, position),
     selection: { anchor: native(anchor), head: native(head) },
   };
 }
-const trailing = (map, pos) => map?.trailing != null && pos > map.trailing;
 
-function resolvePosition(doc, target, point, map) {
-  const offset = resolveAnchor(doc, pathFor(target.id), point.at);
+function resolvePosition(doc, target, anchor, map) {
+  const offset = resolveAnchor(doc, pathFor(target.id), anchor);
   if (offset === null) return null;
-  // The trailing line maps to the native end. While the line is still there
-  // and still empty, keep the point on it.
-  if (point.line && map?.trailing != null && offset === doc.blocks[target.id].richText.length)
-    return map.trailing + 1;
   const position = map?.amToWg[offset];
   return Number.isSafeInteger(position) ? position : null;
 }
@@ -132,7 +122,7 @@ export function resolveImageInsertion(replica, target, map) {
     A.getObjectId(block, "richText") !== target.object
   )
     throw unavailable();
-  const position = resolvePosition(doc, target, { at: target.anchor, line: target.line }, map);
+  const position = resolvePosition(doc, target, target.anchor, map);
   if (position === null) throw unavailable();
   return position;
 }
@@ -146,7 +136,7 @@ export function resolveImageInsertion(replica, target, map) {
  * insertion. */
 export function caretAfterImage(replica, target, map, selection, position) {
   const captured = target.selection;
-  if (!captured?.anchor || !captured?.head) return null;
+  if (captured?.anchor === undefined || captured?.head === undefined) return null;
   const doc = replica.doc,
     anchor = resolvePosition(doc, target, captured.anchor, map),
     head = resolvePosition(doc, target, captured.head, map);

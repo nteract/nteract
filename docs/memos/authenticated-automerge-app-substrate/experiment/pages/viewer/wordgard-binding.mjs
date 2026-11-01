@@ -135,21 +135,10 @@ export function commitEditorTransactions(
 
 // `encodeSpans` exists for mixed-version tests that stand in for an older
 // build's encoder. The editor always uses the current `encode`.
-//
-// `trailingLine` projects an editor-only empty paragraph after a final code
-// block, table or preserved block (wordgard-model.mjs decode). An editor that
-// sets it must install the matching correction (wordgard-trailing-line.mjs),
-// so its local transactions keep the same shape.
-export function createWordgardBinding(
-  replica,
-  id,
-  { encodeSpans = encode, trailingLine = false } = {},
-) {
+export function createWordgardBinding(replica, id, { encodeSpans = encode } = {}) {
   const path = ["blocks", id, "richText"],
-    listeners = new Set(),
-    options = { trailingLine };
-  const project = (doc) => decode(A.spans(doc, path), options);
-  let current = project(replica.doc);
+    listeners = new Set();
+  let current = decode(A.spans(replica.doc, path));
   const stop = replica.observeChange((event) => {
     // A Pages session publishes the whole document stream. Only this canonical
     // text path (or an ancestor replacement) can change this editor projection.
@@ -168,7 +157,7 @@ export function createWordgardBinding(
     const nativeAfter = event.patchInfo?.after ?? event.after;
     if (!nativeAfter.blocks?.[id]) return;
     const before = current,
-      after = project(nativeAfter);
+      after = decode(A.spans(nativeAfter, path));
     current = after;
     const changes = projectChanges(before.doc, after.doc);
     const remoteChanges = event.remote
@@ -208,9 +197,7 @@ export function createWordgardBinding(
     },
     applyEditorTransaction(tr) {
       if (!tr.docChanged || tr.annotation(Transaction.remote)) return;
-      const original = project(replica.doc);
-      // The trailing line has no native span: typing there writes a paragraph.
-      const trailing = original.map.trailing ?? Infinity;
+      const original = decode(A.spans(replica.doc, path));
       if (!original.doc.eq(tr.startState.doc))
         throw Error("Wordgard editor is behind its Pages document");
       const replacements = [],
@@ -226,7 +213,6 @@ export function createWordgardBinding(
           )
             structural = true;
           if (to - from !== original.map.wgToAm[to] - original.map.wgToAm[from]) structural = true;
-          if (to > trailing) structural = true;
           replacements.push({ from, to, fromB, toB, inserted });
         },
         (_a, _b, from, to, modifications) => {
@@ -247,7 +233,7 @@ export function createWordgardBinding(
         // Schema features this transaction's content needs join the Page's
         // stamp in the same change.
         if (structural) {
-          const spans = encodeSpans(tr.newDoc, options);
+          const spans = encodeSpans(tr.newDoc);
           A.updateSpans(d, path, spans, expand);
           stampSpans(d, spans);
         } else {
@@ -264,7 +250,7 @@ export function createWordgardBinding(
             );
           }
           // Positions come from the actual native text, not a canonical re-encode.
-          const next = project(d).map;
+          const next = decode(A.spans(d, path)).map;
           for (const range of replacements) {
             let pos = next.wgToAm[range.fromB];
             for (const token of range.inserted) {
@@ -302,7 +288,7 @@ export function createWordgardBinding(
           }
           stampMarks(d, written);
         }
-        if (!project(d).doc.eq(tr.newDoc))
+        if (!decode(A.spans(d, path)).doc.eq(tr.newDoc))
           throw Error("Wordgard operation did not reproduce its native Pages projection");
       });
     },

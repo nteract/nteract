@@ -23,7 +23,7 @@ const assetId = "a".repeat(64),
   pageId = "page-a",
   asset = { asset_id: assetId, url: imageAssetUrl(pageId, assetId), mime_type: "image/png" },
   file = { name: "Screenshot.png", type: "image/png", size: 100 };
-function fixture(markdown = "hello world", { trailingLine = false, anchor = 7 } = {}) {
+function fixture(markdown = "hello world", { anchor = 7 } = {}) {
   let doc = A.change(
     A.from({
       page_id: pageId,
@@ -54,7 +54,7 @@ function fixture(markdown = "hello world", { trailingLine = false, anchor = 7 } 
         return () => observers.delete(fn);
       },
     },
-    binding = createWordgardBinding(replica, "one", { trailingLine });
+    binding = createWordgardBinding(replica, "one");
   let state = GardState.create({
     doc: binding.current.doc,
     config: [history(), ...schema.elements.map((element) => GardState.schemaElement.of(element))],
@@ -233,7 +233,7 @@ test("typing during a slow upload stays after the image and keeps the caret", as
   f.binding.destroy();
 });
 
-test("an image pasted at the start of a block or on the trailing line lands there", async () => {
+test("an image pasted at the start or the end of a block puts the caret after it", async () => {
   const start = fixture("hello world", { anchor: 1 }),
     first = uploaderFor(start, async () => asset);
   await first.start([file], start.target());
@@ -242,18 +242,15 @@ test("an image pasted at the start of a block or on the trailing line lands ther
   first.destroy();
   start.binding.destroy();
 
-  const code = fixture("```js\nlet x = 1\n```", {
-      trailingLine: true,
-      anchor: ({ map }) => map.trailing + 1,
-    }),
-    second = uploaderFor(code, async () => asset);
-  await second.start([file], code.target());
-  assert.equal(
-    blockMarkdown(code.replica.doc.blocks.one),
-    `\`\`\`js\nlet x = 1\n\`\`\`\n\n${image}`,
-  );
+  const end = fixture("hello world", { anchor: ({ doc }) => doc.length - 1 }),
+    second = uploaderFor(end, async () => asset);
+  await second.start([file], end.target());
+  assert.equal(blockMarkdown(end.replica.doc.blocks.one), `hello world${image}`);
+  assert.equal(end.editor.state.selection.head, end.editor.state.doc.length - 1);
+  type(end, "!");
+  assert.equal(blockMarkdown(end.replica.doc.blocks.one), `hello world${image}!`);
   second.destroy();
-  code.binding.destroy();
+  end.binding.destroy();
 });
 
 test("pending images never insert into a revoked, disposed, replaced, deleted or different Page", async () => {

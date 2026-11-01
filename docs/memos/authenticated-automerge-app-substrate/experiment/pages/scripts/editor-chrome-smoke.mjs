@@ -91,6 +91,15 @@ async function caretAt(page, pick) {
     () => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))),
   );
 }
+/** Put the caret at the last text position of the last node. */
+async function caretAtFinalEnd(page) {
+  const root = content(page).first();
+  await root.focus();
+  await root.evaluate((element) => {
+    const editor = element.closest(".wordgard-document").wg;
+    editor.dispatch({ selection: { anchor: editor.state.doc.length - 2 } });
+  });
+}
 const blockTypes = (page) =>
   content(page)
     .first()
@@ -201,31 +210,80 @@ try {
   b = null;
   complete(`Browser presence shows "${name}" without a driver label`);
 
-  stage = "leaving a final code block";
-  const codeId = await create(a, "Code exit", "Intro\n\n```js\nlet x = 1\n```");
-  const before = await read(a, codeId);
-  await openPage(a, codeId, "let x = 1");
-  assert.deepEqual(await blockTypes(a), ["Paragraph", "CodeBlock", "Paragraph"]);
-  await expect(a.locator(".page-block wg-content > p").last()).toBeVisible();
-  // Opening the Page wrote nothing: the trailing line is the editor's.
-  assert.deepEqual((await read(a, codeId)).heads, before.heads);
-  await caretAt(a, { type: "CodeBlock", side: "end" });
-  await a.keyboard.press("ArrowDown");
-  await a.keyboard.insertText("After the code.");
-  await expect
-    .poll(async () => markdownOf(await read(a, codeId)), { timeout: 20000 })
-    .toBe("Intro\n\n```js\nlet x = 1\n```\n\nAfter the code.");
-  assert.deepEqual(await blockTypes(a), ["Paragraph", "CodeBlock", "Paragraph"]);
-  await shot(a, "code-exit-arrow-down");
-  // Mod-Enter from the middle of a final code block.
-  const shortcutId = await create(a, "Code exit shortcut", "```py\nprint(1)\nprint(2)\n```");
-  await openPage(a, shortcutId, "print(2)");
+  stage = "leaving a final code block, table or image";
+  const finals = [
+    ["code block", "```js\nlet x = 1\n```", "CodeBlock"],
+    ["table", "| a | b |\n| --- | --- |\n| 1 | 2 |", "Table"],
+    ["image", "Caption ![Diagram](https://example.invalid/diagram.png)", "Paragraph"],
+  ];
+  const ways = {
+    ArrowDown: async () => {
+      await caretAtFinalEnd(a);
+      await a.keyboard.press("ArrowDown");
+    },
+    "Mod-Enter": async () => {
+      await caretAtFinalEnd(a);
+      await a.keyboard.press("ControlOrMeta+Enter");
+    },
+    "click below": async () => {
+      const box = await content(a)
+        .first()
+        .evaluate((root) => {
+          const last = root.lastElementChild.getBoundingClientRect();
+          return { x: last.left + 40, y: last.bottom + 8 };
+        });
+      await a.mouse.click(box.x, box.y);
+    },
+  };
+  let shotTaken = false;
+  for (const [kind, markdown, finalType] of finals)
+    for (const [way, act] of Object.entries(ways)) {
+      const pageId = await create(a, `Leave ${kind} ${way}`, `Intro\n\n${markdown}`);
+      const before = await read(a, pageId);
+      await openPage(a, pageId, "Intro");
+      assert.deepEqual(await blockTypes(a), ["Paragraph", finalType], `${kind}: no extra line`);
+      // Opening the Page writes nothing.
+      await a.waitForTimeout(300);
+      assert.deepEqual((await read(a, pageId)).heads, before.heads, `${kind}: open wrote`);
+      await act();
+      await expect.poll(() => blockTypes(a)).toEqual(["Paragraph", finalType, "Paragraph"]);
+      await a.keyboard.insertText("After.");
+      await expect
+        .poll(async () => markdownOf(await read(a, pageId)), {
+          timeout: 20000,
+          message: `${way} at the end of a final ${kind}`,
+        })
+        .toBe(`Intro\n\n${markdown}\n\nAfter.`);
+      if (!shotTaken && kind === "code block") {
+        await shot(a, "code-exit-arrow-down");
+        shotTaken = true;
+      }
+    }
+  // ArrowDown elsewhere in a code block moves as usual.
+  const linesId = await create(a, "Code lines", "```py\nprint(1)\nprint(2)\n```");
+  await openPage(a, linesId, "print(2)");
   await caretAt(a, { type: "CodeBlock", offset: 3 });
+  await a.keyboard.press("ArrowDown");
+  assert.deepEqual(await blockTypes(a), ["CodeBlock"]);
+  // Mod-Enter from the middle of a code block leaves it.
   await a.keyboard.press("ControlOrMeta+Enter");
   await a.keyboard.insertText("Left with Mod-Enter.");
   await expect
-    .poll(async () => markdownOf(await read(a, shortcutId)), { timeout: 20000 })
+    .poll(async () => markdownOf(await read(a, linesId)), { timeout: 20000 })
     .toBe("```py\nprint(1)\nprint(2)\n```\n\nLeft with Mod-Enter.");
+  // A real empty paragraph after a final code block survives a language change.
+  const languageId = await create(a, "Code language", "Intro\n\n```js\nlet x = 1\n```");
+  await openPage(a, languageId, "let x = 1");
+  await caretAtFinalEnd(a);
+  await a.keyboard.press("ArrowDown");
+  await expect.poll(() => blockTypes(a)).toEqual(["Paragraph", "CodeBlock", "Paragraph"]);
+  await a.locator("select.wg-code-language").selectOption("python");
+  await expect.poll(() => blockTypes(a)).toEqual(["Paragraph", "CodeBlock", "Paragraph"]);
+  await caretAtFinalEnd(a);
+  await a.keyboard.insertText("Still here.");
+  await expect
+    .poll(async () => markdownOf(await read(a, languageId)), { timeout: 20000 })
+    .toBe("Intro\n\n```python\nlet x = 1\n```\n\nStill here.");
   // The block-type menu offers code blocks.
   await caretAt(a, { type: "Paragraph", offset: 2 });
   await a.keyboard.press("Alt+F10");
@@ -265,7 +323,7 @@ try {
   report.screenshots.push(`${output}/toolbar-order.png`);
   await a.keyboard.press("Alt+F10");
   complete(
-    "ArrowDown and Mod-Enter leave a final code block; opening writes nothing; toolbar order",
+    "ArrowDown, Mod-Enter and a click below leave a final code block, table or image; toolbar order",
   );
 
   stage = "task-list checkbox indent";

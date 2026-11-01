@@ -77,7 +77,7 @@ import {
 import { PagesLink, TaskList, elements } from "./wordgard-model.mjs";
 import { taskLists } from "./wordgard-task-lists.mjs";
 import { markdownShortcuts } from "./wordgard-shortcuts.mjs";
-import { exitCodeBlock, onTrailingLine, trailingLine } from "./wordgard-trailing-line.mjs";
+import { clickBelowFinalBlock, exitBlock, leaveFinalBlock } from "./wordgard-leave-block.mjs";
 import { projectChanges } from "./wordgard-projection.mjs";
 import {
   createWordgardCollaboration,
@@ -273,8 +273,7 @@ export function WordgardEditor(props) {
       writing = false,
       lastPresence = "",
       lastPresenceAt = 0;
-    // Pairs with the `trailingLine` correction below.
-    const bound = createWordgardBinding(replica, id, { trailingLine: true });
+    const bound = createWordgardBinding(replica, id);
     binding.current = bound;
     const undoHistory = wordgardHistory();
     const collab = createWordgardCollaboration({
@@ -343,7 +342,6 @@ export function WordgardEditor(props) {
         wordgardWidgets(),
         wordgardCodeNewlines,
         wordgardListStarts,
-        trailingLine,
         codeHighlighting,
         uploadPreviews,
         undoHistory.extension,
@@ -366,7 +364,9 @@ export function WordgardEditor(props) {
         }),
         KeyBinding.of({ key: "Mod-Alt-m", run: () => comment() }),
         KeyBinding.of({ key: "Shift-Enter", run: insertPlainLineBreak }),
-        KeyBinding.of({ key: "Mod-Enter", run: exitCodeBlock, allowDefault: true }),
+        KeyBinding.of({ key: "Mod-Enter", run: exitBlock, allowDefault: true }),
+        KeyBinding.of({ key: "ArrowDown", run: leaveFinalBlock, allowDefault: true }),
+        Wordgard.domEventHandler("mousedown", (event) => clickBelowFinalBlock(editor, event)),
         KeyBinding.of({
           key: "Mod-Shift-h",
           run: () => latest.current.editable && Command.dispatch(editor, toggleHighlight),
@@ -547,8 +547,6 @@ export function WordgardEditor(props) {
           const path = ["blocks", id, "richText"];
           try {
             const translate = (pos) => {
-              if (onTrailingLine(event.before.map, pos) && event.after.map.trailing != null)
-                return event.after.map.trailing + 1;
               const cursor = A.getCursor(
                 event.nativeBefore,
                 path,
