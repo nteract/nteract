@@ -1,4 +1,5 @@
 import { pagePath, readPageRoute, projectPath } from "./shared/routes.mjs";
+import { isTokenedRequest } from "./model/retry-key.mjs";
 import { pagesPublicOrigin } from "./agent-guide.mjs";
 import { HIGHLIGHT_COLORS, MARK_NAMES, formatAddSchema } from "./model/marks.mjs";
 import { RENAMED_TOOLS, renamedTool } from "./worker/project-api.mjs";
@@ -718,12 +719,6 @@ function refusal(status, body) {
   return { ...fields, code, ...(code === "stale_heads" && { retryable: true }) };
 }
 
-/** Whether a write carries a retry_token and the v1_ key it scopes, so its
- * receipt is held for the token's window and an exact retry replays. */
-const tokenedKey = (args) =>
-  typeof args?.retry_token === "string" &&
-  /^v1_[a-f0-9]{64}_[A-Za-z0-9_-]{8,60}$/.test(String(args?.idempotency_key ?? ""));
-
 const failed = (body) => ({
   isError: true,
   structuredContent: body,
@@ -863,7 +858,7 @@ export async function handleMcp(request, invoke, env) {
                   error: "Read failed; no document edit was requested. Retry the read.",
                   retryable: true,
                 }
-              : tokenedKey(params.arguments)
+              : isTokenedRequest(params.arguments)
                 ? {
                     code: "outcome_unknown",
                     error:

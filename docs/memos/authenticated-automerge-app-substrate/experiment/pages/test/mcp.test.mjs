@@ -116,6 +116,20 @@ test("MCP gives every refusal a stable code in text and structured content", asy
     ["edit_page", "outcome_unknown", false, { idempotency_key: "plain-key-1" }],
     ["manage_page_comment", "outcome_unknown", false, { idempotency_key: "plain-key-2" }],
     ["create_page", "outcome_unknown", false],
+    // Mismatched combos are tokenless: a v1_ key without its token, or a token
+    // beside a plain key, can't replay through the token lane.
+    [
+      "edit_page",
+      "outcome_unknown",
+      false,
+      { idempotency_key: `v1_${"a".repeat(64)}_request-two` },
+    ],
+    [
+      "edit_page",
+      "outcome_unknown",
+      false,
+      { retry_token: "token", idempotency_key: "plain-key-3" },
+    ],
     ["import_page_image", "outcome_unknown", true],
     ["report_page_progress", "outcome_unknown", undefined],
   ]) {

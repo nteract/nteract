@@ -953,9 +953,14 @@ supplies the missing parents.
 Every `PageRecords` request settles within 20 seconds. An unanswered batch stays
 pending for the next flush, and a request waiting on it fails with a retryable
 `503 record_persistence_timeout`. Tool requests to a Catalog or Page answer
-within 60 seconds; a slower one returns a retryable `504 request_timeout` while
-the host finishes the work it accepted. Both responses tell the caller to retry
-with the same `idempotency_key` and `retry_token`.
+within 60 seconds; a slower one returns `504 request_timeout` while the host
+finishes the work it accepted. For a read, a progress lease or a write that
+carried a `retry_token` and its `v1_` key, the timeout is `retryable: true`
+and says to retry the same request; the receipt replays. For a tokenless
+write it is `retryable: false` and says to read back and reconcile, since the
+host may have completed the write and its tokenless receipt is kept only
+best-effort, so a blind retry could apply it twice. The same split applies to
+MCP's `outcome_unknown` when no answer arrives at all.
 
 No gateway request awaits a promise that another request may still be settling.
 celld 0.6.3 resumes a promise continuation under the request whose I/O settled

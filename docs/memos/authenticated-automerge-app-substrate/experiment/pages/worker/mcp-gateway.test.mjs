@@ -91,13 +91,10 @@ test("MCP gateway passes the configured public origin through a private HTTP tun
   );
 });
 
-test("a tool request whose host never answers returns a retryable timeout", async (t) => {
+test("a tool request whose host never answers times out with advice that fits the request", async (t) => {
   const auth = await createAuthFixture();
   t.mock.method(globalThis, "fetch", auth.fetch);
   let reached;
-  const called = new Promise((resolve) => {
-    reached = resolve;
-  });
   const silent = {
     getByName: () => ({
       fetch() {
@@ -106,26 +103,95 @@ test("a tool request whose host never answers returns a retryable timeout", asyn
       },
     }),
   };
-  const env = { ...auth.env, CATALOGS: silent, PAGES: silent };
+  const env = {
+    ...auth.env,
+    NOTEBOOK_CLOUD_PUBLIC_ORIGIN: publicOrigin,
+    CATALOGS: silent,
+    PAGES: silent,
+  };
   t.mock.timers.enable({ apis: ["setTimeout"] });
-  const call = (operation, args) =>
-    worker.fetch(
+  const headers = {
+    Authorization: `Bearer ${auth.apiKey()}`,
+    "Content-Type": "application/json",
+    Accept: "application/json, text/event-stream",
+  };
+  const http = async (operation, args) => {
+    const called = new Promise((resolve) => {
+      reached = resolve;
+    });
+    const pending = worker.fetch(
       new Request("http://127.0.0.1:9477/api/tools", {
         method: "POST",
-        headers: { Authorization: `Bearer ${auth.apiKey()}`, "Content-Type": "application/json" },
+        headers,
         body: JSON.stringify({ operation, arguments: args }),
       }),
       env,
     );
-  const pending = call("patch_page", { page_id: pageId, idempotency_key: "timeout-fixture" });
-  await called;
-  t.mock.timers.tick(TOOL_REQUEST_TIMEOUT_MS);
-  const response = await pending;
-  assert.equal(response.status, 504);
-  const body = await response.json();
-  assert.equal(body.code, "request_timeout");
-  assert.equal(body.retryable, true);
-  assert.match(body.error, /same idempotency_key/);
+    await called;
+    t.mock.timers.tick(TOOL_REQUEST_TIMEOUT_MS);
+    const response = await pending;
+    assert.equal(response.status, 504, operation);
+    return response.json();
+  };
+  const mcp = async (name, args) => {
+    const called = new Promise((resolve) => {
+      reached = resolve;
+    });
+    const pending = worker.fetch(
+      new Request("http://127.0.0.1:9477/mcp", {
+        method: "POST",
+        headers,
+        body: JSON.stringify({
+          jsonrpc: "2.0",
+          id: 1,
+          method: "tools/call",
+          params: { name, arguments: args },
+        }),
+      }),
+      env,
+    );
+    await called;
+    t.mock.timers.tick(TOOL_REQUEST_TIMEOUT_MS);
+    const result = (await (await pending).json()).result;
+    assert.equal(result.isError, true, name);
+    assert.deepEqual(JSON.parse(result.content[0].text), result.structuredContent, name);
+    return result.structuredContent;
+  };
+  const tokened = {
+    page_id: pageId,
+    retry_token: "token",
+    idempotency_key: `v1_${"a".repeat(64)}_timeout-fixture`,
+    base_heads: ["b".repeat(64)],
+    operations: [],
+  };
+  const tokenless = { ...tokened, retry_token: undefined, idempotency_key: "timeout-fixture" };
+  for (const call of [http, mcp]) {
+    // A tokenless write's receipt is kept best-effort, so a blind retry after
+    // the host finished the work could apply it twice.
+    const plain = await call("patch_page", tokenless);
+    assert.equal(plain.code, "request_timeout");
+    assert.equal(plain.retryable, false);
+    assert.match(plain.error, /may still have completed. Read back and reconcile before retrying/);
+    assert.doesNotMatch(plain.error, /retry the same request/);
+    const comment = await call("manage_page_comment", {
+      page_id: pageId,
+      idempotency_key: "timeout-comment",
+      action: "add",
+      block_id: "b1",
+      body: "Hi",
+    });
+    assert.equal(comment.retryable, false);
+    // A tokened write replays its receipt; a read has nothing to repeat.
+    const keyed = await call("patch_page", tokened);
+    assert.equal(keyed.code, "request_timeout");
+    assert.equal(keyed.retryable, true);
+    assert.match(keyed.error, /same idempotency_key and retry_token/);
+    const read = await call("read_page", { page_id: pageId });
+    assert.equal(read.code, "request_timeout");
+    assert.equal(read.retryable, true);
+    const created = await call("create_page", { title: "T", idempotency_key: "timeout-create" });
+    assert.equal(created.retryable, false, "a tokenless create_page could make a second Page");
+  }
 });
 
 test("a registration whose Catalog never answers returns a retryable timeout", async (t) => {
