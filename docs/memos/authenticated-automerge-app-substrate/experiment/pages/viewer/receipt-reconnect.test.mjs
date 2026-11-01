@@ -4,7 +4,13 @@ import * as A from "@automerge/automerge";
 import * as N from "@automerge/subduction";
 import { generateAutomergeUrl, interpretAsDocumentId } from "@automerge/automerge-repo";
 import { PageSession } from "./session.mjs";
-import { OUTAGE_ATTEMPTS, OUTAGE_MS, REFUSAL_LIMIT, backoffStep } from "./reconnect-machine.mjs";
+import {
+  HANDSHAKE_TIMEOUT_MS,
+  OUTAGE_ATTEMPTS,
+  OUTAGE_MS,
+  REFUSAL_LIMIT,
+  backoffStep,
+} from "./reconnect-machine.mjs";
 import { SERVER_UNREACHABLE } from "./alerts.mjs";
 import { SLOW_SAVE_MS } from "./sync-status-machine.mjs";
 
@@ -82,7 +88,10 @@ function fixture(t, { random, date = false } = {}) {
     Object.defineProperty(this, "binaryType", { value: "blob", writable: true });
     this.addEventListener = events.addEventListener.bind(events);
     this.dispatchEvent = events.dispatchEvent.bind(events);
-    this.close = () => {};
+    this.closed = 0;
+    this.close = () => {
+      this.closed++;
+    };
     sockets.push(this);
   });
   t.mock.method(N.SubductionWebSocket, "setup", async () => {
@@ -571,6 +580,109 @@ test("transient and mismatched close outcomes keep normal backoff", async (t) =>
     assert.equal(f.session.nativeRefused, false);
     await f.advance(10_000);
   }
+});
+
+test("a handshake that never answers times out, backs off and reconnects", async (t) => {
+  const f = fixture(t, { random: () => 0 });
+  await f.start();
+  assert.equal(f.session.reconnect$.snapshot().name, "ready");
+  // The host accepts the socket and then says nothing.
+  f.hooks.setup = () => new Promise(() => {});
+  const stalled = f.sockets.length;
+  const attempt = f.session.retryConnection();
+  await f.advance(0);
+  assert.equal(f.sockets.length, stalled + 1);
+  assert.deepEqual(f.session.reconnect$.snapshot(), {
+    name: "handshaking",
+    attempts: 0,
+    refusals: 0,
+  });
+  assert.ok(f.session.handshakeTimer, "the handshake deadline is armed");
+  await f.advance(HANDSHAKE_TIMEOUT_MS - 1);
+  assert.equal(f.session.reconnect$.snapshot().name, "handshaking", "still within the deadline");
+  assert.equal(f.sockets.at(-1).closed, 0);
+  await f.advance(1);
+  await attempt;
+  // The stalled socket is closed and the attempt fails like any closed socket:
+  // Offline without a banner, the first backoff step pending.
+  assert.ok(f.sockets.at(-1).closed > 0);
+  assert.deepEqual(f.session.reconnect$.snapshot(), { name: "waiting", attempts: 1, refusals: 0 });
+  assert.equal(f.session.handshakeTimer, undefined);
+  assert.ok(f.session.retryTimer);
+  assert.equal(f.session.status, "Offline");
+  assert.equal(f.session.connectionProblem, "");
+  assert.equal(f.counts().added, 1, "the stalled socket never joined the backend");
+  // The host answers on the retry.
+  f.hooks.setup = undefined;
+  await f.advance(backoffStep(0) / 2);
+  assert.equal(f.sockets.length, stalled + 2);
+  assert.deepEqual(f.session.reconnect$.snapshot(), { name: "ready", attempts: 1, refusals: 0 });
+  assert.equal(f.session.handshakeTimer, undefined);
+  assert.equal(f.counts().added, 2);
+  assert.notEqual(f.session.status, "Offline");
+  await f.advance(HANDSHAKE_TIMEOUT_MS);
+  assert.equal(f.sockets.length, stalled + 2, "an admitted socket has no deadline left to fire");
+});
+
+test("a slow handshake that answers within the deadline connects without a retry", async (t) => {
+  const f = fixture(t);
+  await f.start();
+  f.hooks.setup = () => new Promise((resolve) => setTimeout(resolve, HANDSHAKE_TIMEOUT_MS - 1));
+  const attempt = f.session.retryConnection();
+  await f.advance(0);
+  assert.equal(f.session.reconnect$.snapshot().name, "handshaking");
+  const sockets = f.sockets.length;
+  await f.advance(HANDSHAKE_TIMEOUT_MS - 1);
+  await attempt;
+  assert.deepEqual(f.session.reconnect$.snapshot(), { name: "ready", attempts: 0, refusals: 0 });
+  assert.equal(f.session.handshakeTimer, undefined);
+  assert.equal(f.session.retryTimer, undefined);
+  assert.equal(f.counts().added, 2);
+  assert.equal(f.sockets.at(-1).closed, 0);
+  await f.advance(HANDSHAKE_TIMEOUT_MS * 2);
+  assert.equal(f.sockets.length, sockets, "no retry follows a handshake that finished in time");
+  assert.equal(f.session.reconnect$.snapshot().name, "ready");
+});
+
+test("Retry during a stalled handshake abandons it and the next attempt connects", async (t) => {
+  const f = fixture(t, { random: () => 0 });
+  await f.start();
+  f.hooks.setup = () => new Promise(() => {});
+  const stalled = f.session.retryConnection();
+  await f.advance(1000);
+  assert.equal(f.session.reconnect$.snapshot().name, "handshaking");
+  const socket = f.sockets.at(-1);
+  f.hooks.setup = undefined;
+  const retried = f.session.retryConnection();
+  await f.advance(0);
+  assert.ok(socket.closed > 0, "Retry gives up on the silent socket");
+  await Promise.all([stalled, retried]);
+  assert.equal(f.session.handshakeTimer, undefined);
+  // The abandoned attempt's failure schedules the first backoff step.
+  assert.deepEqual(f.session.reconnect$.snapshot(), { name: "waiting", attempts: 1, refusals: 0 });
+  await f.advance(backoffStep(0) / 2);
+  assert.equal(f.session.reconnect$.snapshot().name, "ready");
+  assert.equal(f.counts().added, 2);
+});
+
+test("a socket closed before its handshake retries on the first backoff step", async (t) => {
+  const f = fixture(t, { random: () => 0 });
+  await f.start();
+  // What Subduction rejects with when the socket closes mid-handshake: no
+  // status, no admission code.
+  f.hooks.setup = () => {
+    throw Error("handshake failed: transport error: inbound channel closed");
+  };
+  const sockets = f.sockets.length;
+  await f.session.retryConnection();
+  assert.deepEqual(f.session.reconnect$.snapshot(), { name: "waiting", attempts: 1, refusals: 0 });
+  assert.equal(f.session.handshakeTimer, undefined, "the deadline ends with the handshake");
+  assert.ok(f.session.retryTimer);
+  f.hooks.setup = undefined;
+  await f.advance(backoffStep(0) / 2);
+  assert.equal(f.sockets.length, sockets + 2);
+  assert.equal(f.session.reconnect$.snapshot().name, "ready");
+  assert.equal(f.counts().added, 2);
 });
 
 test("jittered reconnect delays stay within [step / 2, step] up to a 60 s ceiling", async (t) => {

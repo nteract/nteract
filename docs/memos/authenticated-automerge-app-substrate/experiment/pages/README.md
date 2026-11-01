@@ -543,6 +543,19 @@ instead of a lookup timeout, and the open retry loop does not reopen. A socket
 counts as admitted only after it stays open 15 seconds, so quick refusals keep
 growing the backoff instead of resetting it.
 
+Each socket's authenticated handshake has 10 seconds
+(`HANDSHAKE_TIMEOUT_MS`). A host or proxy that accepts the socket and then says
+nothing would otherwise leave `SubductionWebSocket.setup` pending forever, and
+with it the session's one in-flight connect, so neither the backoff nor a
+later `online` event could start another attempt and unsent edits and comments
+stayed local. The reconnect machine's `handshaking` state arms the deadline
+when the socket opens and disarms it when the host admits the socket or the
+handshake fails on its own; the deadline closes the socket and the attempt
+fails like one whose socket closed: Offline without a banner, the next backoff
+step, and an outage report from the seventh failure in a row. Retry during a
+stalled handshake abandons it. A socket closed before its handshake rejects
+`setup` at once and takes the same backoff.
+
 Backoff steps double from 0.5 s to a 60 s cap, with equal jitter: each retry
 waits between half the step and the full step, so tabs dropped by one host
 restart spread out. Transient failures (no status, 5xx, a close without an
