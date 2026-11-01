@@ -449,6 +449,30 @@ test("an agent write fills the changed text, then collapses to a labeled caret",
   assert.equal(h.collaboration.nextRepaint(), 600);
 });
 
+test("an agent caret's anchor survives text shifts and idle, and changes with the next write", () => {
+  const doc = fixture("Ship on Tuesday morning.");
+  const h = harness(doc);
+  const at = "Ship on ".length;
+  h.replica.agentPresence = new Map([
+    ["agent-1", agent(doc, [textAt(doc, "text", at, at + "Tuesday".length)])],
+  ]);
+  const [first] = h.collaboration.carets();
+  assert.equal(typeof first.anchor, "string");
+  // A person types before the caret: it moves, its anchor does not.
+  h.replica.doc = A.change(h.replica.doc, (d) => A.splice(d, textPath("first"), 0, 0, "Please "));
+  const [shifted] = h.collaboration.carets();
+  assert.equal(shifted.position, first.position + "Please ".length);
+  assert.equal(shifted.anchor, first.anchor);
+  h.replica.agentPresence.get("agent-1").state = "idle";
+  assert.equal(h.collaboration.carets()[0].anchor, first.anchor);
+  // The next write batch is a new record, even at the same characters.
+  h.replica.agentPresence.set(
+    "agent-1",
+    agent(doc, [textAt(doc, "text", at, at + "Tuesday".length)], { seq: 2 }),
+  );
+  assert.notEqual(h.collaboration.carets()[0].anchor, first.anchor);
+});
+
 test("reading shows a margin bar per passage, fills search hits, and labels once", () => {
   const doc = fixture("fade here and fade there");
   const h = harness(doc);
