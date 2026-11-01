@@ -3,7 +3,16 @@ import { test } from "node:test";
 import * as A from "@automerge/automerge";
 import { applyComment } from "../model/comments.mjs";
 import { commentsGenesis } from "../model/comments-doc.mjs";
-import { CommentAdmission, recordFrame } from "./comment-admission.mjs";
+import { createHash } from "node:crypto";
+import {
+  CommentAdmission,
+  REFUSAL_BUDGET,
+  REFUSAL_CACHE_TTL_MS,
+  REFUSAL_WINDOW_MS,
+  chargeRefusal,
+  recordFrame,
+  throttled,
+} from "./comment-admission.mjs";
 
 // The native per-author gate at the byte store. Frames here use the stored
 // record layout (patch-record-codec.mjs, binary v2) with a signed envelope
@@ -37,6 +46,8 @@ function frame(change, issuer, tree = TREE) {
   view.setUint32(12, change.length);
   value.set(unhex(tree.padEnd(64, "0")), 16);
   value.set(unhex(hash), 48);
+  // The header's signed-envelope digest, as the bridge writes it.
+  value.set(createHash("sha256").update(signed).digest(), 80);
   value.set(signed, 112);
   value.set(change, 112 + signed.length);
   return [`subduction-v1/${tree.padEnd(64, "0")}/commits/${hash}`, value];
@@ -46,12 +57,16 @@ function harness() {
   let comments = A.clone(commentsGenesis("c0000000-0000-4000-8000-000000000003"));
   const saved = [];
   const refused = [];
+  const throttledKeys = [];
+  const clock = { now: 1_000_000 };
   const admission = new CommentAdmission({
     tree: () => TREE,
     serverKey: SERVER,
     signer: (key) => SIGNERS[key],
     seed: () => comments,
     onRefused: (key, reason) => refused.push({ key, code: reason.code }),
+    onThrottled: (key) => throttledKeys.push(key),
+    now: () => clock.now,
   });
   let fail = false;
   const store = admission.guard({
@@ -85,6 +100,8 @@ function harness() {
     store,
     saved,
     refused,
+    throttledKeys,
+    clock,
     admission,
     write,
     raw: (actor, fn) => {
@@ -335,4 +352,88 @@ test("a failed save rebuilds the admission document from storage", async () => {
   h.failNext(false);
   await h.store.save(...frame(add, BOB_KEY));
   assert.equal(h.saved.length, 1);
+});
+
+test("the refusal budget is a pure step: a window, a throttle, then it starts over", () => {
+  let entry;
+  let exceeded = 0;
+  for (let i = 0; i < REFUSAL_BUDGET + 3; i++) {
+    const step = chargeRefusal(entry, 1000);
+    entry = step.entry;
+    if (step.exceeded) exceeded++;
+  }
+  assert.equal(exceeded, 1, "the budget is spent once per window");
+  assert.equal(throttled(entry, 1000), true);
+  assert.equal(throttled(entry, 1000 + REFUSAL_WINDOW_MS), false);
+  const next = chargeRefusal(entry, 1000 + REFUSAL_WINDOW_MS);
+  assert.deepEqual(next.entry.count, 1, "a new window starts over");
+  assert.equal(next.exceeded, false);
+});
+
+test("an identical resend is refused without decoding while nothing new is admitted", async () => {
+  const h = harness();
+  const add = h.write(alice, { block_id: "b1", body: "Alice's" });
+  await h.store.save(...frame(add, ALICE_KEY));
+  h.admission.adopt(A.clone(h.comments()));
+  const [threadId] = Object.keys(h.comments().threads);
+  const [messageId] = Object.keys(h.comments().threads[threadId].messages);
+  const forged = h.raw(bob.actor, (d) =>
+    A.updateText(d, ["threads", threadId, "messages", messageId, "body"], "Forged"),
+  );
+  const record = frame(forged, BOB_KEY);
+  const checked = h.admission.stats.checked;
+  await assert.rejects(h.store.save(...record), { recordRefused: true });
+  assert.equal(h.admission.stats.checked, checked + 1);
+  await assert.rejects(h.store.save(...record), (e) => e.reason.code === "comment_refusal_cached");
+  assert.equal(h.admission.stats.checked, checked + 1, "the resend was not decoded");
+  // After the TTL it's checked again.
+  h.clock.now += REFUSAL_CACHE_TTL_MS;
+  await assert.rejects(h.store.save(...record), (e) => e.reason.code === "not_message_author");
+  assert.equal(h.admission.stats.checked, checked + 2);
+});
+
+test("a burst of bad records: bounded work, then the connection closes, then a valid record lands", async () => {
+  const h = harness();
+  // Bob's later changes depend on one the host never received.
+  const first = h.write(bob, { block_id: "b1", body: "First" });
+  const threadId = Object.keys(h.comments().threads)[0];
+  const orphans = [];
+  for (let i = 0; i < 40; i++)
+    orphans.push(h.write(bob, { action: "reply", thread_id: threadId, body: `Reply ${i}` }));
+  const fresh = harness();
+  fresh.clock.now = h.clock.now;
+  // Twenty distinct orphans, each resent three times.
+  for (const orphan of orphans.slice(0, 20))
+    for (let resend = 0; resend < 3; resend++)
+      await assert.rejects(fresh.store.save(...frame(orphan, BOB_KEY)), { recordRefused: true });
+  const { checked, cached, throttled: refusedUnread } = fresh.admission.stats;
+  assert.ok(checked <= REFUSAL_BUDGET, `decoded ${checked} records, budget ${REFUSAL_BUDGET}`);
+  assert.ok(cached + refusedUnread >= 60 - REFUSAL_BUDGET);
+  assert.deepEqual(fresh.throttledKeys, [BOB_KEY], "one retryable close, for the submitter");
+  assert.deepEqual(fresh.refused, [], "a missing dependency never blocks the key");
+  // Still throttled within the window, even for a valid record.
+  await assert.rejects(
+    fresh.store.save(...frame(first, BOB_KEY)),
+    (e) => e.reason.code === "comment_admission_throttled",
+  );
+  // After backing off, the missing dependency arrives and both are admitted.
+  fresh.clock.now += REFUSAL_WINDOW_MS;
+  await fresh.store.save(...frame(first, BOB_KEY));
+  await fresh.store.save(...frame(orphans[0], BOB_KEY));
+  assert.equal(fresh.saved.length, 2);
+});
+
+test("other principals keep their budget while one is throttled", async () => {
+  const h = harness();
+  h.write(bob, { block_id: "b1", body: "First" });
+  const threadId = Object.keys(h.comments().threads)[0];
+  const fresh = harness();
+  for (let i = 0; i < REFUSAL_BUDGET; i++) {
+    const orphan = h.write(bob, { action: "reply", thread_id: threadId, body: `R${i}` });
+    await assert.rejects(fresh.store.save(...frame(orphan, BOB_KEY)));
+  }
+  assert.deepEqual(fresh.throttledKeys, [BOB_KEY]);
+  const add = fresh.write(alice, { block_id: "b1", body: "Alice is fine" }, false);
+  await fresh.store.save(...frame(add, ALICE_KEY));
+  assert.equal(fresh.saved.length, 1);
 });

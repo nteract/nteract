@@ -169,7 +169,9 @@ one record. A store that throws, before writing anything, an error whose
 `recordRefused` is true rejects that save to native ingress and nothing else:
 the record index stays valid, the owner's storage-failure callback isn't
 called (so the native engine isn't reset and other connections stay up), and
-the attempt leaves the mutation ledger (so a later flush doesn't report it).
+the attempt leaves the mutation ledger (so a later flush doesn't report it), and
+a flush that captured the attempt before the refusal filters it out of its
+results.
 Any other error keeps the failure path. Pages uses it for per-author admission
 of comment records. `record-refusal.test.mjs` runs real peers: a refused
 signer's record stays out while another peer keeps syncing both ways on its

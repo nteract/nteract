@@ -7,7 +7,8 @@ import { readFileSync, writeFileSync } from "node:fs";
 // written), the owner's storage-failure callback isn't called (so the native
 // engine isn't reset and other connections stay up), and the attempt leaves
 // the mutation ledger (so a later flush doesn't report it as a failed
-// persistence). Any other error keeps today's failure path. Pages uses this
+// persistence). A flush already waiting on the attempt filters the refusal
+// out of its results too. Any other error keeps today's failure path. Pages uses this
 // for per-author admission of comment records.
 export function patchRecordRefusal(root) {
   const path = "packages/automerge-repo-subduction/src/storage.ts";
@@ -55,6 +56,20 @@ export class HistoryCapacityError extends BackendError {`,
         else attempt.settled = true
       }
     )`,
+    ],
+    [
+      `    const errors = results.flatMap(r =>
+      r.status === "rejected" ? [r.reason] : []
+    )
+    if (errors.length)
+      throw new AggregateError(errors, "Accepted bridge mutations failed")`,
+      `    // A flush that captured an attempt before its record was refused still
+    // sees the refusal here: it isn't a failed mutation either.
+    const errors = results.flatMap(r =>
+      r.status === "rejected" && !isRecordRefusal(r.reason) ? [r.reason] : []
+    )
+    if (errors.length)
+      throw new AggregateError(errors, "Accepted bridge mutations failed")`,
     ],
   ];
   for (const [needle, replacement] of replacements) {

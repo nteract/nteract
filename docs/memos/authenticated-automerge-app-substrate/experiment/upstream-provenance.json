@@ -96,7 +96,7 @@
       {
         "path": "packages/automerge-repo-subduction/src/storage.ts",
         "before": "c13da8f677672ba78161336729e5f9f092559d8dcfc60dacb17aa53651115e27",
-        "after": "9a046cb2487e78d730c0c78315d6cf715b27b109cdcaffebbf95800e66861d89"
+        "after": "48c6771e1c8edc7983c7fb80a84859c328e5ac01ac017f7effb20608437c71e3"
       }
     ]
   }

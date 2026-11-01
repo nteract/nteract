@@ -2818,6 +2818,8 @@ export class Page {
             logCommentRefused(metadata?.pageId, reason);
             policy.refuseComments(key).catch((error) => logFailure(error, "comment-refusal"));
           },
+          // Retryable: close the submitter's connection, keep its key.
+          onThrottled: (key) => policy.throttleComments(key),
           maxRecordBytes: BACKEND_LIMITS.maxRecordBytes,
         });
         const recordStore =

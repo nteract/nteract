@@ -653,6 +653,30 @@ export class DocumentPolicy {
     return persisted;
   }
 
+  /**
+   * The signer behind `key` spent its principal's refusal budget
+   * (comment-admission.mjs). Its connection closes with a retryable code; the
+   * key keeps its authority, so a record refused only for a missing
+   * dependency is admitted after the client reconnects and backs off.
+   */
+  throttleComments(key) {
+    const session = this.sessions.get(key);
+    if (!session) return;
+    this.sessions.delete(key);
+    setTimeout(() => {
+      void Promise.resolve()
+        .then(() =>
+          session.disconnect(
+            withAdmissionReason(
+              Object.assign(new Error("Too many refused comment changes"), { status: 503 }),
+              "comment_admission_budget",
+            ),
+          ),
+        )
+        .catch(() => {});
+    }, 0);
+  }
+
   profiles() {
     return Object.fromEntries(
       [...this.bindings.entries()]

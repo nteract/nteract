@@ -254,13 +254,15 @@ export async function fixture(
     expiresAt: Date.now() + 60_000,
   });
   const disconnected = [];
+  const disconnectErrors = [];
   /** Admit native key `key` for `principal`. `features` are the schema
    * features its build declares; this build's by default. */
   const bind = (key, principal, features = BUILD_FEATURES) =>
     page.policy.bind(key, key, identity(principal), {
       reauthenticate: async () => identity(principal),
-      disconnect: async () => {
+      disconnect: async (error) => {
         disconnected.push(key);
+        disconnectErrors.push(error);
       },
       features,
     });
@@ -311,6 +313,7 @@ export async function fixture(
     tool,
     bind,
     disconnected,
+    disconnectErrors,
     removed: () => removed,
     doc: () => doc,
     commentsDoc: () => commentsDoc,

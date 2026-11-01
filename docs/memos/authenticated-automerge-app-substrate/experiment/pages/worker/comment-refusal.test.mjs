@@ -6,7 +6,7 @@ import { documentIdToBinary } from "@automerge/automerge-repo";
 import { closePeers, connectPeers, createPeer, eventually } from "../../backend.mjs";
 import { applyComment } from "../model/comments.mjs";
 import { commentsGenesis } from "../model/comments-doc.mjs";
-import { CommentAdmission } from "./comment-admission.mjs";
+import { CommentAdmission, REFUSAL_BUDGET } from "./comment-admission.mjs";
 import { commentsDocumentId } from "./comments-store.mjs";
 import { logicalId } from "./policy.mjs";
 
@@ -24,6 +24,7 @@ const page = A.from({ blocks: { b1: { id: "b1", markdown: "One" } } });
 async function scene() {
   const id = commentsDocumentId(UUID);
   const refused = [];
+  const throttledKeys = [];
   let host;
   const signers = {};
   const admission = new CommentAdmission({
@@ -32,6 +33,7 @@ async function scene() {
     signer: (key) => signers[key],
     seed: () => undefined,
     onRefused: (key, reason) => refused.push({ key, code: reason.code }),
+    onThrottled: (key) => throttledKeys.push(key),
   });
   host = createPeer({ storage: admission.guard(new MemoryByteStore()) });
   admission.serverKey = host.keyId;
@@ -48,7 +50,19 @@ async function scene() {
     handle.change((draft) => {
       applyComment(draft, input, who, undefined, { page, role: who.role });
     });
-  return { host, owner, attacker, wires, hostDoc, ownerDoc, attackerDoc, refused, comment };
+  return {
+    host,
+    owner,
+    attacker,
+    wires,
+    hostDoc,
+    ownerDoc,
+    attackerDoc,
+    refused,
+    throttledKeys,
+    admission,
+    comment,
+  };
 }
 
 test("a forged edit is refused, and the owner keeps syncing both ways on the same engine", async () => {
@@ -98,5 +112,39 @@ test("a forged edit is refused, and the owner keeps syncing both ways on the sam
   } finally {
     const errors = await closePeers([s.host, s.owner, s.attacker], s.wires);
     assert.deepEqual(errors, [], "no failed persistence was left behind");
+  }
+});
+
+test("a burst of forged changes costs a bounded number of checks, and the owner keeps syncing", async () => {
+  const s = await scene();
+  const owner = {
+    principal: "account:owner",
+    displayName: "Owner",
+    driver: "Browser",
+    role: "owner",
+  };
+  try {
+    s.comment(s.ownerDoc, owner, { block_id: "b1", body: "Owner's note" });
+    await settled(() => Object.keys(s.attackerDoc.doc().threads ?? {}).length === 1);
+    const [threadId] = Object.keys(s.hostDoc.doc().threads);
+    const [messageId] = Object.keys(s.hostDoc.doc().threads[threadId].messages);
+    const before = s.admission.stats.checked;
+    for (let i = 0; i < 30; i++)
+      s.attackerDoc.change((draft) =>
+        A.updateText(draft, ["threads", threadId, "messages", messageId, "body"], `Forged ${i}`),
+      );
+    await settled(() => s.throttledKeys.length === 1);
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    const checks = s.admission.stats.checked - before;
+    assert.ok(checks <= REFUSAL_BUDGET, `${checks} checks for 30 forged changes`);
+    assert.deepEqual(s.throttledKeys, [s.attacker.keyId]);
+    s.comment(s.ownerDoc, owner, { action: "reply", thread_id: threadId, body: "Still here" });
+    await settled(() => Object.keys(s.hostDoc.doc().threads[threadId].messages).length === 2);
+    assert.equal(
+      String(s.hostDoc.doc().threads[threadId].messages[messageId].body),
+      "Owner's note",
+    );
+  } finally {
+    await closePeers([s.host, s.owner, s.attacker], s.wires);
   }
 });
