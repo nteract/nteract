@@ -26,6 +26,9 @@ export const NOTE_LIMIT = 200;
 /** pageQuotaBounds.rulesMs in worker/page-quota.mjs. */
 export const RULE_CACHE_MINUTES = 5;
 export const SSH_TIMEOUT_MS = 120_000;
+/** The most rows of one kind a scan reads. The Worker reads at most
+ * QUOTA_RULE_LIMIT in all, so a larger table is already broken. */
+export const SCAN_LIMIT = 10_000;
 /** Exit codes of the remote guard, which run before any SQL is sent. */
 export const EXIT_CELL_MISSING = 3;
 export const EXIT_RUNTIME_MISMATCH = 4;
@@ -40,7 +43,8 @@ export const USAGE = `Usage:
 Options:
   --target NAME     Deployment profile (default ${DEFAULT_TARGET})
   --ssh-host HOST   SSH destination (default: the profile's host)
-  --dry-run         Print the remote command and the SQL; run nothing
+  --dry-run         Print the remote script and the SQL; write nothing. delete
+                    runs its read-only preflight to show the rows it would remove
   --note TEXT       set: a note stored with the rule (at most ${NOTE_LIMIT} characters)
   --create-only     set: refuse if the rule already exists
 
@@ -269,22 +273,25 @@ function kindLiteral(kind) {
 const whereRule = ({ kind, value }) =>
   `match_kind = ${kindLiteral(kind)} AND match_value = ${hexText(value)}`;
 
-const selectRule = (rule) =>
-  `SELECT 'rule' AS r, ${COLUMNS} FROM pages_quota_rules WHERE ${whereRule(rule)};`;
+/** Every stored row of one kind, in the order the Worker reads them. The
+ * Worker normalizes stored values again, so a row stored as `Example.COM`
+ * still matches `example.com`; only a scan finds every row that matches. */
+const selectKind = (kind) =>
+  `SELECT 'rule' AS r, ${COLUMNS} FROM pages_quota_rules WHERE match_kind = ${kindLiteral(kind)} ORDER BY match_value LIMIT ${SCAN_LIMIT + 1};`;
 
 // celld --json prints every statement's rows as one stream, so each SELECT
 // tags its rows with `r`. Every statement ends in ";": celld reports any
 // error in an unterminated last statement as an incomplete statement.
 const statements = (...lines) => lines.join("\n") + "\n";
 
-/** Both tables, the schema version and the rule count; with `rule`, its row.
- * A missing table fails the run with "no such table". */
+/** Both tables, the schema version and the rule count; with `rule`, every
+ * stored row of its kind. A missing table fails the run with "no such table". */
 export function checkSql(rule) {
   return statements(
     "SELECT 'table' AS r, name FROM sqlite_master WHERE type = 'table' AND name IN ('pages_quota_rules', 'pages_quota_schema') ORDER BY name;",
     "SELECT 'count' AS r, count(*) AS n FROM pages_quota_rules;",
     "SELECT 'schema' AS r, max(version) AS version FROM pages_quota_schema;",
-    ...(rule ? [selectRule(rule)] : []),
+    ...(rule ? [selectKind(rule.kind)] : []),
   );
 }
 
@@ -294,7 +301,7 @@ export function listSql() {
   );
 }
 
-export const getSql = (rule) => statements(selectRule(rule));
+export const getSql = (rule) => statements(selectKind(rule.kind));
 
 /** Upsert one rule and read it back in the same transaction. A new rule is
  * added only while the table holds fewer than QUOTA_RULE_LIMIT rows, because
@@ -310,15 +317,47 @@ export function setSql({ rule, limit, note = null, now, createOnly = false }) {
     `SELECT ${kindLiteral(rule.kind)}, ${hexText(rule.value)}, ${limit}, ${note === null ? "NULL" : hexText(note)}, ${now}`,
     `WHERE (SELECT count(*) FROM pages_quota_rules) < ${QUOTA_RULE_LIMIT} OR EXISTS (SELECT 1 FROM pages_quota_rules WHERE ${whereRule(rule)})`,
     conflict,
-    selectRule(rule),
+    selectKind(rule.kind),
   );
 }
 
-export function deleteSql(rule) {
+/** Delete exactly the stored `rows` (from matchingRows), each fenced by the
+ * `updated_at` the preflight read, so a row changed since then survives and
+ * shows up in the read-back. */
+export function deleteSql(rule, rows) {
+  if (!rows?.length) throw new TypeError("deleteSql needs the stored rows to delete");
+  const fences = rows.map((row) => {
+    if (row.match_kind !== rule.kind || typeof row.match_value !== "string")
+      throw new TypeError("deleteSql takes rows of the rule's kind");
+    if (!Number.isSafeInteger(row.updated_at))
+      throw new QuotaRulesError(
+        `The row stored as ${JSON.stringify(row.match_value)} has no integer updated_at, so it can't be deleted safely; fix it by hand`,
+      );
+    return `(match_value = ${hexText(row.match_value)} AND updated_at = ${row.updated_at})`;
+  });
   return statements(
-    `DELETE FROM pages_quota_rules WHERE ${whereRule(rule)};`,
+    `DELETE FROM pages_quota_rules WHERE match_kind = ${kindLiteral(rule.kind)} AND (${fences.join(" OR ")});`,
     "SELECT 'deleted' AS r, changes() AS n;",
-    selectRule(rule),
+    selectKind(rule.kind),
+  );
+}
+
+/** The stored rows the Worker resolves as `rule`, in the order it applies
+ * them (worker/page-quota.mjs ruleSet): by updated_at, the last one winning. */
+export function matchingRows(rows, rule) {
+  return rows
+    .filter(
+      (row) =>
+        row.match_kind === rule.kind &&
+        normalizeRuleMatch(row.match_kind, row.match_value) === rule.value,
+    )
+    .sort((a, b) => (a.updated_at ?? 0) - (b.updated_at ?? 0));
+}
+
+/** The row whose limit the Worker uses, or null. */
+export function effectiveRow(matches) {
+  return (
+    matches.findLast((row) => Number.isSafeInteger(row.page_limit) && row.page_limit >= 0) ?? null
   );
 }
 
@@ -416,20 +455,58 @@ const missingTable = (error) =>
 
 const describe = ({ kind, value }) => `${kind} rule for ${value}`;
 
-function formatRule(row) {
+/** One stored row, flagged when the Worker reads it differently. */
+export function formatRule(row, { shadowed = false } = {}) {
   const note = row.note === null || row.note === undefined ? "" : `  note: ${row.note}`;
   const at = Number.isSafeInteger(row.updated_at) ? new Date(row.updated_at).toISOString() : "?";
   const normalized = normalizeRuleMatch(row.match_kind, row.match_value);
-  const caveat =
-    normalized === null
-      ? "  (never matches)"
-      : normalized === row.match_value
-        ? ""
-        : `  (matches as ${normalized})`;
-  return `${row.match_kind}\t${row.match_value}\t${row.page_limit}\t${at}${note}${caveat}`;
+  const flags = [];
+  if (normalized === null) flags.push("never matches");
+  else if (normalized !== row.match_value)
+    flags.push(`not canonical: the Worker reads it as ${normalized}`);
+  if (shadowed) flags.push("shadowed by a newer row");
+  const caveat = flags.length ? `  (${flags.join("; ")})` : "";
+  return `${row.match_kind}\t${JSON.stringify(row.match_value)}\t${row.page_limit}\t${at}${note}${caveat}`;
 }
 
-/** Tables, schema and rule count, and the rule's current row when given.
+/** Rows that share a normalized match with a newer row the Worker prefers. */
+function shadowedRows(rows) {
+  const groups = new Map();
+  for (const row of rows) {
+    const value = normalizeRuleMatch(row.match_kind, row.match_value);
+    if (value === null) continue;
+    const key = `${row.match_kind}\u0000${value}`;
+    groups.set(key, [...(groups.get(key) ?? []), row]);
+  }
+  const shadowed = new Set();
+  for (const group of groups.values()) {
+    if (group.length < 2) continue;
+    const winner = effectiveRow(
+      matchingRows(group, {
+        kind: group[0].match_kind,
+        value: normalizeRuleMatch(group[0].match_kind, group[0].match_value),
+      }),
+    );
+    for (const row of group) if (row !== winner) shadowed.add(row);
+  }
+  return shadowed;
+}
+
+function formatMatches(matches) {
+  const winner = effectiveRow(matches);
+  return matches.map((row) => formatRule(row, { shadowed: matches.length > 1 && row !== winner }));
+}
+
+function kindRows(groups) {
+  const rows = groups.rule ?? [];
+  if (rows.length > SCAN_LIMIT)
+    throw new QuotaRulesError(
+      `More than ${SCAN_LIMIT} stored rules of one kind: too many to search safely. Trim the table by hand.`,
+    );
+  return rows;
+}
+
+/** Tables, schema and rule count, and every stored row matching `rule`.
  * Runs before every write; it never creates anything. */
 async function preflight(transport, config, rule) {
   let groups;
@@ -452,7 +529,12 @@ async function preflight(transport, config, rule) {
     throw new QuotaRulesError(
       `pages_quota_schema is at version ${version}, newer than this script knows (${QUOTA_SCHEMA_VERSION}). Update the script first.`,
     );
-  return { tables, version, count: groups.count?.[0]?.n ?? 0, rule: groups.rule?.[0] ?? null };
+  return {
+    tables,
+    version,
+    count: groups.count?.[0]?.n ?? 0,
+    matches: rule ? matchingRows(kindRows(groups), rule) : [],
+  };
 }
 
 async function check({ transport, config, out }) {
@@ -477,14 +559,15 @@ async function list({ transport, config, out }) {
       throw new QuotaRulesError(`${missingTable(error)} is missing. Run check.`);
     throw error;
   }
-  const rows = groups.rule ?? [];
+  const rows = (groups.rule ?? []).slice(0, QUOTA_RULE_LIMIT);
   if (!rows.length) {
     out(`No rules. Every account gets the default, ${config.defaultLimit}.`);
     return 0;
   }
-  out("kind\tvalue\tlimit\tupdated");
-  for (const row of rows.slice(0, QUOTA_RULE_LIMIT)) out(formatRule(row));
-  if (rows.length > QUOTA_RULE_LIMIT) {
+  const shadowed = shadowedRows(rows);
+  out("kind\tstored value\tlimit\tupdated");
+  for (const row of rows) out(formatRule(row, { shadowed: shadowed.has(row) }));
+  if ((groups.rule ?? []).length > QUOTA_RULE_LIMIT) {
     out(
       `More than ${QUOTA_RULE_LIMIT} rules: the Worker ignores all of them until the table is trimmed.`,
     );
@@ -493,9 +576,10 @@ async function list({ transport, config, out }) {
   return 0;
 }
 
-async function readRule(transport, config, rule) {
+/** Every stored row the Worker resolves as `rule`. */
+async function readMatches(transport, config, rule) {
   try {
-    return (await execute(transport, config, getSql(rule))).rule?.[0] ?? null;
+    return matchingRows(kindRows(await execute(transport, config, getSql(rule))), rule);
   } catch (error) {
     if (missingTable(error))
       throw new QuotaRulesError(`${missingTable(error)} is missing. Run check.`);
@@ -504,70 +588,99 @@ async function readRule(transport, config, rule) {
 }
 
 async function get({ transport, config, args, out }) {
-  const row = await readRule(transport, config, args.rule);
-  out(row ? formatRule(row) : `No ${describe(args.rule)}.`);
+  const matches = await readMatches(transport, config, args.rule);
+  if (!matches.length) out(`No ${describe(args.rule)}.`);
+  for (const line of formatMatches(matches)) out(line);
   return 0;
 }
 
-/** After a failed write: read the rule back once and report what landed. An
- * error is not proof that nothing committed, so never re-send blindly. */
+/** After a failed write: read the rule back once and report what is there.
+ * An error is not proof that nothing committed, and a state that differs from
+ * the request is not proof that the write failed: it may have committed and
+ * been replaced since. Only the requested state, observed, ends the run
+ * cleanly. Nothing is ever re-sent. */
 async function afterWriteError({ transport, config, args, err, error, landed, command }) {
   err(`The ${command} failed: ${error.message}`);
   if (!error.notRun) err("An error does not prove nothing was written. Reading the rule back.");
-  let row;
+  let matches;
   try {
-    row = await readRule(transport, config, args.rule);
+    matches = await readMatches(transport, config, args.rule);
   } catch (readError) {
     err(`The read-back failed too: ${readError.message}`);
     err(
-      `The rule's state is unknown. Run \`get ${args.rule.kind} ${args.rule.value}\` and see what landed before running ${command} again.`,
+      `The rule's state is unknown. Run \`get ${args.rule.kind} ${args.rule.value}\` and reconcile before running anything again.`,
     );
     return 1;
   }
-  err(`Now: ${row ? formatRule(row) : `no ${describe(args.rule)}`}`);
-  if (landed(row)) {
-    err(`The ${command} landed. Don't run it again.`);
+  if (landed(matches)) {
+    err(`Requested state observed: the ${command} landed. Don't run it again.`);
+    for (const line of formatMatches(matches)) err(line);
     return 0;
   }
-  err(`The ${command} did not land. Running the same command again is safe.`);
+  return notObserved(err, args.rule, matches, command);
+}
+
+function notObserved(
+  err,
+  rule,
+  matches,
+  command,
+  reason = `The ${command} may not have committed, or it committed and a newer change replaced it.`,
+) {
+  err("Requested state not observed. Current state:");
+  if (!matches.length) err(`  no ${describe(rule)}`);
+  for (const line of formatMatches(matches)) err(`  ${line}`);
+  err(
+    `${reason} Reconcile before running anything again: find out who else changed this rule, and decide from the current state. Running the ${command} again could overwrite their change.`,
+  );
   return 1;
 }
 
 async function set({ transport, config, args, now, out, err }) {
   const { rule, limit, note, createOnly } = args;
   const before = await preflight(transport, config, rule);
-  if (createOnly && before.rule)
+  const current = effectiveRow(before.matches);
+  if (createOnly && before.matches.length)
     throw new QuotaRulesError(
-      `An ${describe(rule)} already exists (limit ${before.rule.page_limit}). --create-only left it unchanged.`,
+      `An ${describe(rule)} already exists. --create-only left it unchanged:\n${formatMatches(before.matches).join("\n")}`,
     );
-  if (!before.rule && before.count >= QUOTA_RULE_LIMIT)
+  const canonical = before.matches.some((row) => row.match_value === rule.value);
+  if (!canonical && before.count >= QUOTA_RULE_LIMIT)
     throw new QuotaRulesError(
       `The table already holds ${before.count} rules, the most the Worker reads. Delete one first.`,
     );
   const at = now();
   const ours = (row) =>
-    row?.page_limit === limit && (row?.note ?? null) === note && row?.updated_at === at;
+    row?.match_value === rule.value &&
+    row.page_limit === limit &&
+    (row.note ?? null) === note &&
+    row.updated_at === at;
+  const landed = (matches) => ours(effectiveRow(matches));
   let groups;
   try {
     groups = await execute(transport, config, setSql({ rule, limit, note, now: at, createOnly }));
   } catch (error) {
-    return afterWriteError({ transport, config, args, err, error, landed: ours, command: "set" });
+    return afterWriteError({ transport, config, args, err, error, landed, command: "set" });
   }
-  const row = groups.rule?.[0] ?? null;
-  if (!row)
+  const matches = matchingRows(kindRows(groups), rule);
+  if (!matches.some((row) => row.match_value === rule.value))
     throw new QuotaRulesError(
       `The rule was not added: the table reached ${QUOTA_RULE_LIMIT} rules during the write.`,
     );
-  if (!ours(row)) {
+  if (!landed(matches)) {
     if (createOnly)
       throw new QuotaRulesError(
-        `An ${describe(rule)} was added by someone else first and was left unchanged: ${formatRule(row)}`,
+        `An ${describe(rule)} was added by someone else first and was left unchanged:\n${formatMatches(matches).join("\n")}`,
       );
-    throw new QuotaRulesError(`Read back a different row than was written: ${formatRule(row)}`);
+    return notObserved(err, rule, matches, "set");
   }
-  const was = before.rule ? `limit ${before.rule.page_limit}` : "no rule";
+  const was = current ? `limit ${current.page_limit}` : "no rule";
   out(`Set ${describe(rule)}: limit ${limit} (was ${was}).`);
-  out(formatRule(row));
+  for (const line of formatMatches(matches)) out(line);
+  if (matches.length > 1)
+    out(
+      `Older rows that match the same ${rule.kind} stay stored but no longer apply. \`delete ${rule.kind} ${rule.value}\` removes all of them.`,
+    );
   out(
     `Takes effect within ${RULE_CACHE_MINUTES} minutes: each Worker isolate caches the rules.${limit === 0 ? " Limit 0 pauses Page creation for this match." : ""}`,
   );
@@ -577,27 +690,33 @@ async function set({ transport, config, args, now, out, err }) {
 async function remove({ transport, config, args, out, err }) {
   const { rule } = args;
   const before = await preflight(transport, config, rule);
-  if (!before.rule) {
+  if (!before.matches.length) {
     out(`No ${describe(rule)}. Nothing to delete.`);
     return 0;
   }
+  const landed = (matches) => matches.length === 0;
   let groups;
   try {
-    groups = await execute(transport, config, deleteSql(rule));
+    groups = await execute(transport, config, deleteSql(rule, before.matches));
   } catch (error) {
-    return afterWriteError({
-      transport,
-      config,
-      args,
-      err,
-      error,
-      landed: (row) => row === null,
-      command: "delete",
-    });
+    return afterWriteError({ transport, config, args, err, error, landed, command: "delete" });
   }
-  if (groups.rule?.length)
-    throw new QuotaRulesError(`The rule is still there: ${formatRule(groups.rule[0])}`);
-  out(`Deleted ${describe(rule)} (was limit ${before.rule.page_limit}).`);
+  const remaining = matchingRows(kindRows(groups), rule);
+  if (!landed(remaining))
+    return notObserved(
+      err,
+      rule,
+      remaining,
+      "delete",
+      "A stored row changed after the preflight read it, so the delete left that row in place.",
+    );
+  const count = before.matches.length;
+  out(
+    count === 1
+      ? `Deleted the ${describe(rule)}:`
+      : `Deleted ${count} stored rows for the ${describe(rule)}:`,
+  );
+  for (const line of formatMatches(before.matches)) out(`  ${line}`);
   const fallback =
     rule.kind === "email" ? "its domain's rule or the default" : "email rules or the default";
   out(
@@ -606,8 +725,12 @@ async function remove({ transport, config, args, out, err }) {
   return 0;
 }
 
-/** What a run would send, without sending it. */
-export function dryRun(args, config, at) {
+/**
+ * What a run would send, without writing. A delete removes exactly the stored
+ * rows its preflight finds, so its plan takes those `matches`; main reads them
+ * with the read-only preflight. Every other plan is built offline.
+ */
+export function dryRun(args, config, at, matches) {
   const plan = [];
   if (args.command === "check") plan.push(["check", checkSql()]);
   if (args.command === "list") plan.push(["list", listSql()]);
@@ -626,18 +749,29 @@ export function dryRun(args, config, at) {
         }),
       ],
     );
-  if (args.command === "delete")
-    plan.push(["preflight", checkSql(args.rule)], ["write", deleteSql(args.rule)]);
   const lines = [
-    "Dry run: nothing was sent.",
+    args.command === "delete"
+      ? "Dry run: only the read-only preflight was sent. Nothing was written."
+      : "Dry run: nothing was sent.",
     "",
     `Each step runs \`${["ssh", ...sshArgs(config).slice(0, -1)].join(" ")} "bash -c <script>"\``,
     "with the step's SQL on stdin. The remote script:",
     "",
     remoteScript(config),
   ];
+  if (args.command === "delete") {
+    lines.push("", "-- preflight", checkSql(args.rule).trimEnd(), "");
+    if (!matches?.length) {
+      lines.push(`No ${describe(args.rule)} is stored. The delete would send nothing.`);
+      return lines.join("\n");
+    }
+    lines.push(`The delete would remove these stored rows:`);
+    for (const line of formatMatches(matches)) lines.push(`  ${line}`);
+    plan.push(["write", deleteSql(args.rule, matches)]);
+  }
   for (const [name, sql] of plan) lines.push("", `-- ${name}`, sql.trimEnd());
-  if (plan.length > 1) lines.push("", "The write runs only if the preflight passes.");
+  if (plan.some(([name]) => name === "write"))
+    lines.push("", "The write runs only if the preflight passes.");
   return lines.join("\n");
 }
 
@@ -662,19 +796,17 @@ export async function main(
     if (error instanceof UsageError) err(`\n${USAGE}`);
     return 2;
   }
-  if (args.dryRun) {
-    out(dryRun(args, config, now()));
-    return 0;
-  }
+  const send = () => transport ?? sshTransport(config);
   try {
-    return await HANDLERS[args.command]({
-      transport: transport ?? sshTransport(config),
-      config,
-      args,
-      now,
-      out,
-      err,
-    });
+    if (args.dryRun) {
+      const matches =
+        args.command === "delete"
+          ? (await preflight(send(), config, args.rule)).matches
+          : undefined;
+      out(dryRun(args, config, now(), matches));
+      return 0;
+    }
+    return await HANDLERS[args.command]({ transport: send(), config, args, now, out, err });
   } catch (error) {
     if (!(error instanceof QuotaRulesError || error instanceof ExecError)) throw error;
     err(error.message);

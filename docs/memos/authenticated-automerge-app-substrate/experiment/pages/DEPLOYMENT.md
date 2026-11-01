@@ -339,7 +339,7 @@ node scripts/quota-rules.mjs delete domain anaconda.com
 | --- | --- |
 | `--target NAME` | Deployment profile, `page10` by default. Only a profile with `pageQuota` and `d1` is accepted. |
 | `--ssh-host HOST` | SSH destination, the profile's host (`lab1`) by default, for example `root@lab1`. |
-| `--dry-run` | Print the remote script and every SQL step, and send nothing. |
+| `--dry-run` | Print the remote script and every SQL step, and write nothing. `delete` runs its read-only preflight to show the stored rows it would remove; every other command sends nothing. |
 | `--create-only` | `set` only: refuse when the rule already exists. |
 | `--note TEXT` | `set` only: a note of at most 200 characters. |
 
@@ -359,6 +359,12 @@ loopback firewall resets connections from any other uid.
   script reads the row back in the same transaction and prints it. It refuses a
   new rule when the table already holds 1,000, because past that the Worker
   ignores every rule.
+- **Stored spellings.** The Worker normalizes stored values again, so a row
+  written by hand as `Example.COM` still matches `example.com`. `get` and `list`
+  print stored values quoted, and flag a row that isn't canonical or that a
+  newer row for the same match shadows. `delete` removes every stored row the
+  Worker reads as the named rule, however it is spelled. `set` writes the
+  canonical form; an older spelling stays stored but no longer applies.
 - **Guards.** Before it reads any SQL, the remote command checks that the binary
   is celld 0.6.3 and that the cell `__D1Database:c131e246…` is already in the
   target's bucket. celld creates an empty database for a `database_id` it
@@ -379,14 +385,24 @@ the auth and OIDC tables, and celld reports some errors misleadingly.
 
 An error doesn't prove that nothing was written. In qualification, a write
 that returned an error during an owner restart had committed. After any failed
-`set` or `delete`, the script reads the rule back once and reports whether the
-change landed. It exits 0 when the read-back shows the change, and it never
-re-sends on its own.
+`set` or `delete`, the script reads the rule back once and never re-sends on
+its own.
 
-If the read-back fails too, run `get` yourself and look before running the
-write again. Never retry a write without reading first. Running `set` or
-`delete` again once a read shows the change missing is safe: both end in the
-same state however many times they run.
+- **Requested state observed.** The read-back shows exactly the change asked
+  for: for `set`, the row carrying this run's `updated_at`; for `delete`, no
+  stored row for the rule. The script says the write landed and exits 0.
+- **Requested state not observed.** The script prints the current state and
+  exits 1. That state doesn't show the write failed. The write may have
+  committed, lost its response, and been replaced by a newer change before the
+  read-back; running it again would overwrite that change. Reconcile first:
+  find out who else changed the rule, and decide from the current state.
+- **Read-back failed.** The state is unknown. Run `get` and reconcile before
+  running anything again.
+
+A `delete` also reports "requested state not observed" without any error when
+a row changed between its preflight read and its write. Each row is deleted
+only if its `updated_at` still matches the preflight, so the changed row
+survives and is shown.
 
 A listing that finds a Catalog's stored Page counts wrong rewrites them and logs
 one line without the account:
