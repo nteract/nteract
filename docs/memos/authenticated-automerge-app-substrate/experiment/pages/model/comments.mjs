@@ -80,9 +80,81 @@ export function captureSelectionTarget(doc, id, selected, occurrence = 1) {
   };
 }
 
+const encoder = new TextEncoder();
+/** A caller-supplied thread or block ID: nonempty, at most 256 UTF-8 bytes,
+ * no control characters. */
+export function validCommentId(value) {
+  if (typeof value !== "string" || !value.trim() || value.length > 256) return false;
+  for (const character of value) {
+    const code = character.codePointAt(0);
+    if (code < 32 || code === 127) return false;
+  }
+  return encoder.encode(value).byteLength <= 256;
+}
+export const MAX_THREAD_BATCH = 100;
+const STATUS_ACTIONS = ["resolve", "reopen"];
+const selectorError = (message, details) =>
+  Object.assign(Error(message), {
+    status: 400,
+    code: "invalid_comment_selector",
+    ...(details && { details }),
+  });
+
+/** The thread IDs a status batch names, or null for the single-thread form.
+ * resolve and reopen take exactly one of thread_id or thread_ids; every other
+ * action takes thread_id only. Shape errors are 400 invalid_comment_selector,
+ * raised before any thread is read. */
+export function threadBatch(input, action) {
+  if (input.thread_ids === undefined) {
+    if (STATUS_ACTIONS.includes(action) && input.thread_id === undefined)
+      throw selectorError("Provide thread_id or thread_ids");
+    return null;
+  }
+  if (!STATUS_ACTIONS.includes(action))
+    throw selectorError("thread_ids is accepted only for resolve and reopen");
+  if (input.thread_id !== undefined)
+    throw selectorError("Provide thread_id or thread_ids, not both");
+  const ids = input.thread_ids;
+  if (
+    !Array.isArray(ids) ||
+    ids.length < 1 ||
+    ids.length > MAX_THREAD_BATCH ||
+    Array.from(ids).some((id) => !validCommentId(id)) ||
+    new Set(ids).size !== ids.length
+  )
+    throw selectorError(
+      `thread_ids must contain 1–${MAX_THREAD_BATCH} unique IDs of at most 256 UTF-8 bytes each`,
+    );
+  return ids;
+}
+
+/** One status for every named thread, in the caller's change. The batch is
+ * all-or-nothing: an unknown ID rejects it before any thread is touched, and
+ * the error names every unknown ID. A thread already in the target state is
+ * left as it is, so its `at` keeps the time it got there. */
+function applyThreadStatuses(doc, action, ids, now) {
+  const missing = ids.filter((id) => !(Object.hasOwn(doc.comments, id) && doc.comments[id]));
+  if (missing.length)
+    throw selectorError(
+      `${missing.length} of ${ids.length} comment threads not found; nothing was changed. not_found_thread_ids names them.`,
+      { not_found_thread_ids: missing },
+    );
+  const value = action === "resolve" ? "resolved" : "open";
+  const threads = ids.map((id) => {
+    const thread = doc.comments[id];
+    if (String(thread.status?.value) === value)
+      return { thread_id: id, outcome: action === "resolve" ? "already_resolved" : "already_open" };
+    thread.status = { value, at: now };
+    return { thread_id: id, outcome: action === "resolve" ? "resolved" : "reopened" };
+  });
+  return { threads };
+}
+
 export function applyComment(doc, input, identity, nativeSpans) {
   const action = input.action ?? "add",
     now = new Date().toISOString();
+  const batch = threadBatch(input, action);
+  if (batch) return applyThreadStatuses(doc, action, batch, now);
   const author = {
     principal: identity?.principal ?? "",
     displayName: identity?.displayName ?? "Collaborator",
