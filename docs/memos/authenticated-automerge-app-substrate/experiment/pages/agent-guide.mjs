@@ -446,7 +446,7 @@ project_id_as_page_id or page_id_as_project_id, naming the right tool and argume
   applied:false with the current Project; read it before deciding what to do.
 - create_page with project_id puts the Page at the Project's top level. parent_id
   makes it a sub-page; the parent's Project is implied, and a different project_id
-  returns placement_mismatch. Pages nest at most 8 levels (nesting_depth_exceeded).
+  returns placement_mismatch. Pages nest at most 9 levels (nesting_depth_exceeded).
 - list_pages with project_id lists the Project's Pages at any depth; add
   "parent_id": null for the top level. parent_id alone lists a Page's children.
 - read_page returns kind, project_id, parent_id and breadcrumbs (Project, then

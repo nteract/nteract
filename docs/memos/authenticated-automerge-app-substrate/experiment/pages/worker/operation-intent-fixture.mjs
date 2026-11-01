@@ -107,7 +107,8 @@ export function describe(mutation, pageId) {
  * The Catalog's entries for `pageId` after projecting `current` over
  * `before` (that Page's `page/` and `trash/` entries just before). The
  * destination holds the Page's real entry at its lifecycle revision, with
- * its title, Trash fields and placement; the other prefix is empty. An entry
+ * its title, Trash fields and this Catalog's location; the other prefix is
+ * empty. An entry
  * already observed at a newer revision is never replaced.
  */
 export function assertProjected(values, pageId, current, before) {
@@ -131,9 +132,16 @@ export function assertProjected(values, pageId, current, before) {
   assert.equal(entry.page_id, pageId);
   assert.equal(entry.lifecycle_revision, current.revision ?? 0);
   assert.equal(entry.title, catalogTitle(current.title ?? known[0]?.title));
-  if (Number.isSafeInteger(current.placement_epoch))
-    for (const field of ["space_id", "parent_id", "position", "placement_epoch"])
-      assert.equal(entry[field], current[field], `projected ${field}`);
+  // Location is the Catalog's: a projection keeps the entry's parent, except
+  // that a restore whose parent is unavailable returns to the top level.
+  const parent = known[0]?.parent_id ?? null;
+  if (current.state === "trashed")
+    assert.equal(entry.parent_id ?? null, parent, "a Trash keeps the entry's parent");
+  else
+    assert.ok(
+      [parent, null].includes(entry.parent_id ?? null),
+      "a restore keeps the entry's parent or returns to the top level",
+    );
   if (current.state === "trashed") {
     assert.equal(entry.state, "trashed");
     assert.equal(entry.trashed_by, current.trashed_by);

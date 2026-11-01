@@ -292,7 +292,7 @@ export const tools = [
   ),
   tool(
     "create_page",
-    "Create an editable rich-text Page and return its browser URL. title is displayed above the body: supply body-only markdown, without repeating or paraphrasing the title as an opening heading. Start with introductory prose or a section heading. Check returned advisory warnings and read back the opening; intentional headings remain unchanged. Human and API edits sync into the same document. Omit project_id and parent_id for Your items. project_id creates it at a Project's top level; parent_id makes it a sub-page and implies the parent's Project (at most 8 levels deep).",
+    "Create an editable rich-text Page and return its browser URL. title is displayed above the body: supply body-only markdown, without repeating or paraphrasing the title as an opening heading. Start with introductory prose or a section heading. Check returned advisory warnings and read back the opening; intentional headings remain unchanged. Human and API edits sync into the same document. Omit project_id and parent_id for Your items. project_id creates it at a Project's top level; parent_id makes it a sub-page and implies the parent's Project (at most 9 levels deep).",
     {
       title,
       markdown: markdownBody,

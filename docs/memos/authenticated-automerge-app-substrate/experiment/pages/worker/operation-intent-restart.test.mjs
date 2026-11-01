@@ -53,7 +53,7 @@ async function createdChild(request) {
 
 /** One owner's Catalog and one real Page, connected by a network that can
  * drop a request before the Page sees it or lose the Page's reply. */
-async function world({ placement } = {}) {
+async function world({ location } = {}) {
   let doc = A.load(DOCUMENT);
   const base = { pageId, owner, documentId: "fixture-document", tree: "a".repeat(32) };
   const acl = proposeAccessUpdate(
@@ -100,7 +100,7 @@ async function world({ placement } = {}) {
     tail: Promise.resolve(),
     env,
     ctx: { storage: pageStorage, waitUntil: () => {} },
-    metadata: { ...base, ownerName: "Owner", deleted: false, acl, ...(placement && { placement }) },
+    metadata: { ...base, ownerName: "Owner", deleted: false, acl },
     handle: { doc: () => doc, broadcast() {}, on() {}, off() {} },
     wires: new Set(),
     serverKey,
@@ -119,7 +119,8 @@ async function world({ placement } = {}) {
     created_at: CREATED,
     updated_at: CREATED,
     lifecycle_revision: 0,
-    ...placement,
+    // Only the owner's Catalog records location.
+    ...location,
   });
   const catalog = () => new Catalog({ id: { name: owner }, storage }, env);
   const call = async (target, operation, args) => {
@@ -281,11 +282,11 @@ test("a Trash request resumes from every cut", async (t) => {
   assert.equal(result.writes.length, 7);
 });
 
-test("a restore to the top level resumes from every cut with its placement", async (t) => {
-  const nested = { space_id: null, parent_id: parentId, position: "a1", placement_epoch: 0 };
+test("a restore to the top level resumes from every cut with its location", async (t) => {
+  const nested = { parent_id: parentId, position: "a1" };
   const result = await sweep(t, {
     name: "restore",
-    world: { placement: nested },
+    world: { location: nested },
     async setup(w) {
       // The parent is in Trash, so the restored Page returns to the top level.
       w.storage.values.set(`trash/${parentId}`, {
@@ -304,22 +305,18 @@ test("a restore to the top level resumes from every cut with its placement", asy
     check({ outcome, page, storage }) {
       assert.equal(outcome.body.restored, true);
       assert.equal(page.revision, 2);
-      assert.equal(page.placement.parent_id, null);
-      assert.equal(page.placement.placement_epoch, 1);
+      assert.equal(page.placement, undefined, "the Page learns no location");
+      // The parent is in Trash: the Catalog's projection puts the Page at the
+      // top level of Your items, and the receipt says so.
+      assert.equal(outcome.body.parent_id, undefined);
       const entry = storage[`page/${pageId}`];
       assert.deepEqual(
         {
           parent_id: entry.parent_id,
           position: entry.position,
-          placement_epoch: entry.placement_epoch,
           lifecycle_revision: entry.lifecycle_revision,
         },
-        {
-          parent_id: null,
-          position: page.placement.position,
-          placement_epoch: 1,
-          lifecycle_revision: 2,
-        },
+        { parent_id: null, position: "a0", lifecycle_revision: 2 },
       );
       assert.equal(storage[`trash/${pageId}`], undefined);
     },

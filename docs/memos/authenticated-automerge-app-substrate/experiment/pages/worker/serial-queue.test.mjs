@@ -130,7 +130,10 @@ test("a Catalog stuck on a Page fetch resets, and listings queued behind it do n
   const values = new Map();
   const storage = {
     get: async (key) => structuredClone(values.get(key)),
-    put: async (key, value) => void values.set(key, structuredClone(value)),
+    put: async (key, value) => {
+      const entries = typeof key === "object" ? key : { [key]: value };
+      for (const [name, entry] of Object.entries(entries)) values.set(name, structuredClone(entry));
+    },
     delete: async (key) => void values.delete(key),
     list: async ({ prefix = "" } = {}) =>
       new Map([...values].filter(([key]) => key.startsWith(prefix))),

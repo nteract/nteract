@@ -166,7 +166,6 @@
       "heads-mismatch",
       "stale-revision",
       "has-children",
-      "home",
       "recorded",
       "key-conflict"
     ],
@@ -192,8 +191,7 @@
       "stale-revision"
     ],
     "trashed/restore": [
-      "keep-place",
-      "top-level",
+      "owner",
       "non-owner",
       "stale-revision",
       "replay-only",
@@ -681,44 +679,6 @@
           "code": "page_has_children"
         },
         "rejected": "page_has_children"
-      }
-    },
-    {
-      "case": "home",
-      "state": {
-        "name": "active",
-        "revision": 0,
-        "placement": {
-          "nested": false,
-          "epoch": 0,
-          "home": true
-        }
-      },
-      "event": {
-        "type": "trash",
-        "actor": "owner",
-        "key": "fresh",
-        "heads": "match",
-        "expected": 0
-      },
-      "expect": {
-        "state": {
-          "name": "active",
-          "revision": 0,
-          "placement": {
-            "nested": false,
-            "epoch": 0,
-            "home": true
-          }
-        },
-        "effects": [],
-        "response": {
-          "status": 409,
-          "error": "A Project's home Page stays with its Project; it can't move to Trash on its own",
-          "code": "home_page_protected",
-          "beforeChange": true
-        },
-        "rejected": "home_page_protected"
       }
     },
     {
@@ -1261,14 +1221,10 @@
       }
     },
     {
-      "case": "keep-place",
+      "case": "owner",
       "state": {
         "name": "trashed",
-        "revision": 1,
-        "placement": {
-          "nested": true,
-          "epoch": 0
-        }
+        "revision": 1
       },
       "event": {
         "type": "restore",
@@ -1279,78 +1235,7 @@
       "expect": {
         "state": {
           "name": "active",
-          "revision": 2,
-          "placement": {
-            "nested": true,
-            "epoch": 0
-          }
-        },
-        "effects": [
-          {
-            "type": "begin",
-            "phase": "restoring",
-            "revision": 2
-          },
-          {
-            "type": "putRecord",
-            "receipt": true,
-            "record": true
-          },
-          {
-            "type": "sync"
-          },
-          {
-            "type": "install"
-          },
-          {
-            "type": "refreshAccess"
-          },
-          {
-            "type": "projectTitle"
-          },
-          {
-            "type": "end"
-          }
-        ],
-        "response": {
-          "status": 200,
-          "reply": "receipt",
-          "receipt": {
-            "state": "active",
-            "restored": true
-          },
-          "current": {
-            "state": "active",
-            "revision": 2
-          }
-        }
-      }
-    },
-    {
-      "case": "top-level",
-      "state": {
-        "name": "trashed",
-        "revision": 1,
-        "placement": {
-          "nested": true,
-          "epoch": 0
-        }
-      },
-      "event": {
-        "type": "restore",
-        "actor": "owner",
-        "key": "fresh",
-        "expected": 1,
-        "position": "top-level"
-      },
-      "expect": {
-        "state": {
-          "name": "active",
-          "revision": 2,
-          "placement": {
-            "nested": false,
-            "epoch": 1
-          }
+          "revision": 2
         },
         "effects": [
           {

@@ -118,19 +118,17 @@ a document or its assets between targets is separate from deployment; publishing
 does not migrate another environment's data.
 
 Projects add a Durable Object class (`Space`, binding `PROJECTS`, migration
-tag `v3`), `space/<id>` Catalog entries, a `placement` field on Page records and
-matching fields on owned Catalog entries, and catalog-index migration 4
-(placement columns on `pages_catalog_pages` and a `pages_catalog_spaces`
-table). Storage additions are additive. A build from before Spaces ignores the
+tag `v3`), `space/<id>` Catalog entries, location fields on owned Catalog
+entries (Page records carry none), and catalog-index migration 4 (placement
+columns on `pages_catalog_pages`, which nothing writes or reads now, and a
+`pages_catalog_spaces` table). Storage additions are additive. A build from before Spaces ignores the
 new fields, keys and tables: the owner lists and opens every Page in a Project
 as an ordinary Page, collaborators keep their direct grants, and Project
 records wait for a roll forward. Such a build does not refuse to trash a Page
 with sub-pages and does not protect home Pages. After rolling forward, a Page
 whose parent is in Trash shows at the top level of the Project view, a resumed
 creation under such a parent answers `parent_unavailable`, and a trashed home
-Page can be restored normally. Index rows an older build inserts have no
-placement until the Page reports again or its owner's account reconciles;
-changing `PAGES_CATALOG_INDEX` after rolling forward repairs them at once. At
+Page can be restored normally. At
 startup a build without the `Space` class logs `celld runtime start failed for
 Space:<id>: no Worker exports Durable Object class Space` once per Project cell
 celld resumes, then serves normally. On Cloudflare, removing a Durable Object
@@ -146,7 +144,7 @@ Storage keeps every Space name exactly as 3548b9750 writes it:
 - the `Space` Durable Object class, now behind the `PROJECTS` binding;
 - `space/record` with `space_id` inside each Project's object;
 - `space/<id>` Catalog entries with `space_id`;
-- `space_id` in Page placement and owned Catalog entries;
+- `space_id` on owned Catalog entries (Page records carry no location);
 - journal intents (`spaceId`, `space_recorded`), receipts and fingerprints
   (`create_space`, `update_space`);
 - the D1 `pages_catalog_spaces` table, the `space_id` column and the
@@ -179,9 +177,9 @@ New Projects get `prj_` IDs; `sp_` IDs stay valid. IDs aren't key names, so a
 Because stored intents are unchanged, work 3548b9750 left pending resumes here.
 A `create_space` interrupted before its home Page finishes when retried as
 `create_project` with the same key and payload: the fingerprint still uses the
-stored operation name. A `create_page` whose intent holds placement
-`{space_id}` finishes when retried with `project_id`, the same key and the
-arguments in the same order. Fingerprints have always covered argument order.
+stored operation name. A `create_page` interrupted before its Page finishes
+when retried with `project_id`, the same key and the arguments in the same
+order: its pending Catalog entry holds the location. Fingerprints have always covered argument order.
 Both cases are tested by writing the intent through the Catalog exactly as the
 3548b9750 gateway does, then retrying through the Project API. So Page8 needs no
 cleanup of pending intents before this build deploys.

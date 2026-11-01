@@ -183,12 +183,27 @@ function stalledBody(prefix, state) {
   });
 }
 
-/** A read_page result with a private placement the gateway must replace. */
-const placedPage = () =>
-  JSON.stringify({
-    page_id: pageId,
-    title: "Placed",
-    _placement: { space_id: spaceId, parent_id: parentId, home: false },
+const owner = "user:anaconda-fixture:owner-user";
+/** A read_page result naming the owner whose Catalog records its location. */
+const placedPage = () => JSON.stringify({ page_id: pageId, title: "Placed", _owner: owner });
+/** The owner's Catalog: the Page sits under `parentId` in Project `spaceId`. */
+const ownerCatalog = (seen = []) =>
+  answer(async (name, request) => {
+    seen.push({
+      name,
+      path: new URL(request.url).pathname,
+      credential: request.headers.has("authorization") || request.headers.has("cookie"),
+      body: await request.json(),
+    });
+    return Response.json({
+      page_id: pageId,
+      state: "active",
+      parent_id: parentId,
+      ancestors: [parentId],
+      complete: true,
+      space_id: spaceId,
+      home: false,
+    });
   });
 
 function readPage(auth, env) {
@@ -229,7 +244,7 @@ test("a stalled read_page body times out and cancels its reader", async (t) => {
   assert.equal(stalled.cancelled, true, "the Page body reader is cancelled");
 });
 
-test("stalled breadcrumb and Space bodies end their reads and keep the placement private", async (t) => {
+test("stalled breadcrumb and Project bodies end their reads and keep the location private", async (t) => {
   const auth = await createAuthFixture();
   t.mock.method(globalThis, "fetch", auth.fetch);
   t.mock.method(console, "error", () => {});
@@ -240,17 +255,23 @@ test("stalled breadcrumb and Space bodies end their reads and keep the placement
   });
   const parent = {};
   const space = {};
+  const seen = [];
   const env = {
     ...auth.env,
     PAGES: answer((name) =>
       name === pageId ? new Response(placedPage()) : new Response(stalledBody('{"title":', parent)),
     ),
     PROJECTS: answer(() => new Response(stalledBody('{"space_id":', space))),
+    CATALOGS: ownerCatalog(seen),
   };
   const response = await readPage(auth, env);
   assert.equal(response.status, 200);
   const body = await response.json();
-  assert.equal(body._placement, undefined);
+  assert.equal(body._owner, undefined);
+  // One host request to the owner's Catalog, without the caller's credential.
+  assert.deepEqual(seen, [
+    { name: owner, path: "/internal/location", credential: false, body: { page_id: pageId } },
+  ]);
   assert.deepEqual(body.breadcrumbs, []);
   assert.equal(body.space_id, undefined, "an unreadable Space stays hidden");
   assert.equal(body.parent_id, undefined, "an unreadable parent stays hidden");
@@ -260,7 +281,7 @@ test("stalled breadcrumb and Space bodies end their reads and keep the placement
   assert.equal(space.cancelled, true);
 });
 
-test("a placement walk that outlasts the tool deadline returns 504, not the raw placement", async (t) => {
+test("a location view that outlasts the tool deadline returns 504, not the raw location", async (t) => {
   const auth = await createAuthFixture();
   t.mock.method(globalThis, "fetch", auth.fetch);
   const verify = catalogIndexTimeouts.verify;
@@ -280,6 +301,7 @@ test("a placement walk that outlasts the tool deadline returns 504, not the raw 
       reached();
       return new Promise(() => {});
     }),
+    CATALOGS: ownerCatalog(),
   };
   t.mock.timers.enable({ apis: ["setTimeout"] });
   const pending = readPage(auth, env);

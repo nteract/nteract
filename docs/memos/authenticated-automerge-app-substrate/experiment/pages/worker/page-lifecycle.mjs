@@ -18,9 +18,9 @@ import { pageState } from "./access.mjs";
  * - deleted: the barriers finished in this process, or the record predates
  *   deletion receipts.
  *
- * `placement` summarizes a placed record: `nested` when it has a parent, its
- * `placement_epoch`, and `home` for a Project's home Page. `intent` marks a
- * creation intent left beside an installed record.
+ * `intent` marks a creation intent left beside an installed record. Page
+ * records hold no location: the owner's Catalog records it and guards the
+ * home Page.
  *
  * Events are requests (trash, restore, purgePreview, purgeConfirm), the
  * owner Catalog's tombstone, and `boot` (a cold start over durable storage).
@@ -28,9 +28,8 @@ import { pageState } from "./access.mjs";
  * failure. Request events carry what the host observed: who asked
  * (`actor`), whether the idempotency key has a receipt (`key`, with its
  * summary in `recorded`), whether `base_heads` match, the Catalog's
- * `expected` revision and `replayOnly` flag, the preview token's check, the
- * restore position the Catalog chose, and a deleted record's `deletion`
- * receipt. `children` is the owner Catalog's leaf check, which runs before it
+ * `expected` revision and `replayOnly` flag, the preview token's check, and a
+ * deleted record's `deletion` receipt. `children` is the owner Catalog's leaf check, which runs before it
  * forwards a trash.
  *
  * The transition decides; the Page host interprets. Each effect names one
@@ -88,7 +87,6 @@ const cases = {
     "heads-mismatch",
     "stale-revision",
     "has-children",
-    "home",
     "recorded",
     "key-conflict",
   ],
@@ -96,14 +94,7 @@ const cases = {
   "active/purgePreview": ["owner", "non-owner"],
   "active/boot": ["record", "leftover-intent"],
   "trashed/trash": ["owner", "non-owner", "stranger", "recorded", "stale-revision"],
-  "trashed/restore": [
-    "keep-place",
-    "top-level",
-    "non-owner",
-    "stale-revision",
-    "replay-only",
-    "recorded",
-  ],
+  "trashed/restore": ["owner", "non-owner", "stale-revision", "replay-only", "recorded"],
   "trashed/purgePreview": ["owner", "non-owner"],
   "trashed/purgeConfirm": [
     "preview-valid",
@@ -133,22 +124,8 @@ const flag = (value, label) => {
   if (value !== undefined && value !== true) throw new Error(`${label} is true or absent`);
 };
 
-function placement(value) {
-  if (value === undefined) return;
-  fields(value, ["nested", "epoch", "home"], "placement");
-  if (typeof value.nested !== "boolean") throw new Error("placement.nested must be a boolean");
-  count(value.epoch, "placement.epoch");
-  flag(value.home, "placement.home");
-}
-
 const bare = (state) => fields(state, ["name"], state.name);
-const placed = (state) => {
-  fields(state, ["name", "revision", "placement", "intent"], state.name);
-  count(state.revision, "revision");
-  placement(state.placement);
-  flag(state.intent, "intent");
-};
-const unplaced = (state) => {
+const recorded = (state) => {
   fields(state, ["name", "revision", "intent"], state.name);
   count(state.revision, "revision");
   flag(state.intent, "intent");
@@ -158,10 +135,9 @@ const unplaced = (state) => {
 function recordSummary(value, label) {
   if (value === null) return;
   if (!value || typeof value !== "object") throw new Error(`${label} must be an object or null`);
-  fields(value, ["state", "revision", "placement", "deletion"], label);
+  fields(value, ["state", "revision", "deletion"], label);
   oneOf(value.state, ["active", "trashed", "deleted"], `${label}.state`);
   count(value.revision, `${label}.revision`);
-  placement(value.placement);
   flag(value.deletion, `${label}.deletion`);
 }
 
@@ -185,7 +161,6 @@ function request(allowed) {
     flag(event.replayOnly, "replayOnly");
     if ("heads" in event) oneOf(event.heads, ["match", "mismatch", "invalid"], "heads");
     flag(event.children, "children");
-    if ("position" in event) oneOf(event.position, ["top-level"], "position");
     // The host checks a preview token only where the transition reads it.
     if ("preview" in event)
       oneOf(event.preview, ["valid", "changed", "expired", "invalid"], "preview");
@@ -208,17 +183,17 @@ export const pageLifecycleSpec = {
     states: {
       missing: bare,
       creating: bare,
-      active: placed,
-      trashed: placed,
-      trashing: placed,
-      restoring: placed,
-      purging: unplaced,
-      deleting: unplaced,
-      deleted: unplaced,
+      active: recorded,
+      trashed: recorded,
+      trashing: recorded,
+      restoring: recorded,
+      purging: recorded,
+      deleting: recorded,
+      deleted: recorded,
     },
     events: {
       trash: request(["key", "recorded", "heads", "expected", "replayOnly", "children"]),
-      restore: request(["key", "recorded", "expected", "replayOnly", "position"]),
+      restore: request(["key", "recorded", "expected", "replayOnly"]),
       purgePreview: request([]),
       purgeConfirm: request(["key", "recorded", "expected", "replayOnly", "preview", "deletion"]),
       commitOk: nothing,
@@ -285,11 +260,6 @@ const KEY_CONFLICT = refused(
   409,
   "idempotency_key was used for a different request",
   "idempotency_conflict",
-);
-const HOME_PAGE = refused(
-  409,
-  "A Project's home Page stays with its Project; it can't move to Trash on its own",
-  "home_page_protected",
 );
 const HEADS_INVALID = refused(
   400,
@@ -407,7 +377,6 @@ const PUBLIC_STATE = {
 };
 /** Carry the creation-intent marker; only boot clears it. */
 const keep = (state, next) => (state.intent ? { ...next, intent: true } : next);
-const withPlacement = (placement) => (placement ? { placement } : {});
 const current = (state) => ({ state: PUBLIC_STATE[state.name], revision: state.revision });
 const receiptReply = (reply, receipt, state) => ({
   status: 200,
@@ -461,15 +430,10 @@ function trash(state, event) {
       effects: [put(true, false), effectOf("sync")],
       response: receiptReply("receipt", trashed, state),
     };
-  if (state.placement?.home) return reject(state, "home_page_protected", { response: HOME_PAGE });
   if (event.heads === "mismatch") return reject(state, "stale_heads", { response: HEADS_CHANGED });
   if (event.heads !== "match")
     return reject(state, "invalid_edit_selector", { response: HEADS_INVALID });
-  const next = keep(state, {
-    name: "trashed",
-    revision: state.revision + 1,
-    ...withPlacement(state.placement),
-  });
+  const next = keep(state, { name: "trashed", revision: state.revision + 1 });
   return {
     state: next,
     effects: [
@@ -490,17 +454,7 @@ function restore(state, event) {
       effects: [put(true, false), effectOf("sync")],
       response: receiptReply("receipt", { state: "active", restored: false }, state),
     };
-  // The Catalog supplies a position when the parent is gone: the Page returns
-  // to the top level of its Project under a new placement epoch.
-  const placement =
-    state.placement && event.position === "top-level"
-      ? { ...state.placement, nested: false, epoch: state.placement.epoch + 1 }
-      : state.placement;
-  const next = keep(state, {
-    name: "active",
-    revision: state.revision + 1,
-    ...withPlacement(placement),
-  });
+  const next = keep(state, { name: "active", revision: state.revision + 1 });
   return {
     state: next,
     effects: [
@@ -595,12 +549,12 @@ function boot(_state, event) {
   const { record, creation } = event;
   if (creation && !record)
     return {
-      state: { name: "active", revision: creation.revision, ...withPlacement(creation.placement) },
+      state: { name: "active", revision: creation.revision },
       effects: [...CREATION_COMMIT],
     };
   if (creation && record.state === "active")
     return {
-      state: { name: "active", revision: record.revision, ...withPlacement(record.placement) },
+      state: { name: "active", revision: record.revision },
       effects: [...CREATION_REPLAY, effectOf("loadDocument")],
     };
   if (!record) return { state: { name: "missing" }, effects: [] };
@@ -618,26 +572,21 @@ function boot(_state, event) {
     };
   // Trashed Pages keep their document for owner preview and restore.
   return {
-    state: {
-      name: record.state,
-      revision: record.revision,
-      ...withPlacement(record.placement),
-      ...intent,
-    },
+    state: { name: record.state, revision: record.revision, ...intent },
     effects: [effectOf("loadDocument")],
   };
 }
 
 const SETTLES_TO = {
-  trashing: (state) => ({ name: "trashed", effects: TRASH_COMMIT, placement: state.placement }),
-  restoring: (state) => ({ name: "active", effects: RESTORE_COMMIT, placement: state.placement }),
+  trashing: () => ({ name: "trashed", effects: TRASH_COMMIT }),
+  restoring: () => ({ name: "active", effects: RESTORE_COMMIT }),
   purging: () => ({ name: "deleted", effects: PURGE_COMMIT }),
 };
 
 /** Repeat the pending commit sequence from its first step. */
 function commitOk(state) {
-  const { name, effects, placement } = SETTLES_TO[state.name](state);
-  const next = keep(state, { name, revision: state.revision, ...withPlacement(placement) });
+  const { name, effects } = SETTLES_TO[state.name](state);
+  const next = keep(state, { name, revision: state.revision });
   return {
     state: next,
     effects,
@@ -675,19 +624,6 @@ export const LIFECYCLE_PHASES = Object.freeze({
   purge_page: "purging",
 });
 
-/** A record's placement as lifecycle states summarize it. */
-export function placementOf(metadata) {
-  const placement = metadata?.placement;
-  if (!placement) return {};
-  return {
-    placement: {
-      nested: placement.parent_id !== null && placement.parent_id !== undefined,
-      epoch: placement.placement_epoch ?? 0,
-      ...(placement.home && { home: true }),
-    },
-  };
-}
-
 /** A durable record as `boot` reads it. */
 export function recordOf(metadata) {
   if (!metadata) return null;
@@ -695,7 +631,6 @@ export function recordOf(metadata) {
   return {
     state,
     revision: metadata.lifecycleRevision ?? 0,
-    ...placementOf(metadata),
     ...(state === "deleted" && metadata.deletion && { deletion: true }),
   };
 }
@@ -708,28 +643,16 @@ export function hostState({ metadata, pending, deletionFinished }) {
   if (!metadata) return { name: "missing" };
   if (pending) {
     const name = LIFECYCLE_PHASES[pending.operation];
-    return {
-      name,
-      revision: pending.record.revision,
-      ...(name !== "purging" && placementOf(pending.metadata ?? metadata)),
-    };
+    return { name, revision: pending.record.revision };
   }
   const state = pageState(metadata);
   const revision = metadata.lifecycleRevision ?? 0;
   if (state === "deleted")
     return { name: deletionFinished || !metadata.deletion ? "deleted" : "deleting", revision };
-  return { name: state, revision, ...placementOf(metadata) };
+  return { name: state, revision };
 }
 
-const INTENT_FIELDS = [
-  "lifecycleRevision",
-  "acl",
-  "deleted",
-  "trash",
-  "purged",
-  "deletion",
-  "placement",
-];
+const INTENT_FIELDS = ["lifecycleRevision", "acl", "deleted", "trash", "purged", "deletion"];
 const canonical = (value) => {
   if (value === null || typeof value !== "object") return JSON.stringify(value ?? null);
   if (Array.isArray(value)) return `[${value.map(canonical).join(",")}]`;
