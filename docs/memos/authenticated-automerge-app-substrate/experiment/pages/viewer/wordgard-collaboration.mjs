@@ -213,15 +213,16 @@ export function createWordgardCollaboration({
 
   // The change that wrote the character a cursor names: cursors read
   // "counter@actor", and each change covers ops startOp..maxOp of its actor.
-  function writtenBy(cursor, changeOps) {
+  // `byActor` indexes the batch's changes by actor, so each lookup scans only
+  // that actor's changes.
+  function writtenBy(cursor, byActor) {
     const at = typeof cursor === "string" ? cursor.indexOf("@") : -1;
-    if (at < 1 || !changeOps?.length) return null;
+    if (at < 1) return null;
     const counter = Number(cursor.slice(0, at));
-    const actor = cursor.slice(at + 1);
     return (
-      changeOps.find(
-        (change) => change.actor === actor && change.startOp <= counter && counter <= change.maxOp,
-      )?.hash ?? null
+      byActor
+        .get(cursor.slice(at + 1))
+        ?.find((change) => change.startOp <= counter && counter <= change.maxOp)?.hash ?? null
     );
   }
 
@@ -232,6 +233,11 @@ export function createWordgardCollaboration({
     const object = textObject(doc, id);
     const map = event.after?.map ?? getCurrent()?.map;
     if (typeof source !== "string" || !object || !map) return;
+    const byActor = new Map();
+    for (const change of event.changeOps ?? []) {
+      if (!byActor.has(change.actor)) byActor.set(change.actor, []);
+      byActor.get(change.actor).push(change);
+    }
     event.changes.iterChangedRanges((_oldFrom, _oldTo, newFrom, newTo) => {
       const from = mapped(map.wgToAm, newFrom);
       const to = mapped(map.wgToAm, newTo);
@@ -248,8 +254,7 @@ export function createWordgardCollaboration({
       for (let at = from; at <= to; ) {
         const point = at < to ? source.codePointAt(at) : undefined;
         const width = point > 0xffff ? 2 : 1;
-        const next =
-          at < to ? writtenBy(A.getCursor(doc, path, at, "after"), event.changeOps) : Symbol();
+        const next = at < to ? writtenBy(A.getCursor(doc, path, at, "after"), byActor) : Symbol();
         if (at === from) owner = next;
         else if (next !== owner) {
           const run = source.slice(start, at);
@@ -352,11 +357,11 @@ export function createWordgardCollaboration({
         const who = mark.hash ? replica.changeIdentity?.(mark.hash) : null;
         add(from, to, {
           class: "remote-edit",
-          title: `Edited by ${
-            who
-              ? [who.displayName, who.driver, who.agent].filter(Boolean).join(" · ")
-              : [...new Set(mark.actors.map((actor) => replica.actorDisplayName(actor)))].join(", ")
-          }`,
+          // An unattested range never borrows a name: the host's actor would
+          // name whichever agent edited last.
+          title: who
+            ? `Edited by ${[who.displayName, who.driver, who.agent].filter(Boolean).join(" · ")}`
+            : "Edited by a collaborator",
           ...(who?.principal && {
             style: `--peer-color: ${presenceColor(who.principal, who.driver, who.agent).background}`,
           }),

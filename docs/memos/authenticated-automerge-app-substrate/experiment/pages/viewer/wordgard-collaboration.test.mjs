@@ -311,12 +311,13 @@ test("remote illumination follows native cursors, refreshes trusted names, and e
     remote: true,
   });
   assert.ok(entries(h.collaboration.ranges()).length > 0);
+  // No host-attested change: never borrow the actor's name.
   h.names.set(A.getActorId(after), "Kyle Kelley · Codex");
   const mark = entries(h.collaboration.ranges())[0];
   assert.ok(
     mark.value.eq(
       Decoration.Range.wrapper("span", {
-        attributes: { class: "remote-edit", title: "Edited by Kyle Kelley · Codex" },
+        attributes: { class: "remote-edit", title: "Edited by a collaborator" },
       }),
     ),
   );
@@ -631,7 +632,12 @@ test("formatting-only changes and unknown changes stay neutral", () => {
     ],
   ]);
   h.changeIdentities.set(hash, { principal: "user:kyle", driver: "Kilo", agent: "rich text" });
+  // The host actor names whichever agent edited last; it must not leak.
+  h.names.set("a4".repeat(16), "Kyle Kelley · Kilo · release agent");
   const found = marks(h);
   assert.ok(found.length > 0, "the formatting change is illuminated");
-  for (const mark of found) assert.equal(mark.style, null);
+  for (const mark of found) {
+    assert.equal(mark.style, null);
+    assert.equal(mark.title, "Edited by a collaborator");
+  }
 });
