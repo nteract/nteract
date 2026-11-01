@@ -1,13 +1,18 @@
 {
   "machine": "viewer-reconnect",
-  "description": "Automatic reconnects for one viewer PageSession: exponential backoff with a 60 s cap for transient failures, a stop on a refused signing key, a pause after six admission refusals in a row, and an outage report from the seventh transient failure in a row while retries continue. Runs against viewer/reconnect-machine.mjs in viewer/reconnect-machine.test.mjs.",
+  "description": "Automatic reconnects for one viewer PageSession: a 10 s deadline on each socket's authenticated handshake, exponential backoff with a 60 s cap for transient failures, a stop on a refused signing key, a pause after six admission refusals in a row, and an outage report from the seventh transient failure in a row while retries continue. Runs against viewer/reconnect-machine.mjs in viewer/reconnect-machine.test.mjs.",
   "states": [
     "ready",
+    "handshaking",
     "waiting",
     "refused",
     "paused"
   ],
   "events": [
+    "handshake",
+    "admitted",
+    "handshakeEnded",
+    "handshakeTimeout",
     "failed",
     "keyRefused",
     "stable",
@@ -22,6 +27,16 @@
       "outage",
       "refusal",
       "last-refusal"
+    ],
+    "handshaking/failed": [
+      "transient",
+      "outage",
+      "refusal",
+      "last-refusal"
+    ],
+    "handshaking/handshakeTimeout": [
+      "transient",
+      "outage"
     ]
   },
   "rows": [
@@ -713,6 +728,692 @@
         },
         "effects": [],
         "rejected": "No reconnect is scheduled"
+      }
+    },
+    {
+      "label": "a socket opened; its handshake has 10 s",
+      "state": {
+        "name": "ready",
+        "attempts": 2,
+        "refusals": 1
+      },
+      "event": {
+        "type": "handshake"
+      },
+      "expect": {
+        "state": {
+          "name": "handshaking",
+          "attempts": 2,
+          "refusals": 1
+        },
+        "effects": [
+          {
+            "type": "armHandshake",
+            "ms": 10000
+          }
+        ]
+      }
+    },
+    {
+      "state": {
+        "name": "ready",
+        "attempts": 2,
+        "refusals": 1
+      },
+      "event": {
+        "type": "admitted"
+      },
+      "expect": {
+        "state": {
+          "name": "ready",
+          "attempts": 2,
+          "refusals": 1
+        },
+        "effects": [],
+        "rejected": "No handshake is in progress"
+      }
+    },
+    {
+      "label": "a timer cleared by disarm can still fire late",
+      "state": {
+        "name": "ready",
+        "attempts": 2,
+        "refusals": 1
+      },
+      "event": {
+        "type": "handshakeTimeout"
+      },
+      "expect": {
+        "state": {
+          "name": "ready",
+          "attempts": 2,
+          "refusals": 1
+        },
+        "effects": [],
+        "rejected": "No handshake is in progress"
+      }
+    },
+    {
+      "state": {
+        "name": "handshaking",
+        "attempts": 2,
+        "refusals": 1
+      },
+      "event": {
+        "type": "handshake"
+      },
+      "expect": {
+        "state": {
+          "name": "handshaking",
+          "attempts": 2,
+          "refusals": 1
+        },
+        "effects": [],
+        "rejected": "A handshake is in progress"
+      }
+    },
+    {
+      "label": "the handshake finished in time; attempts clear once the socket proves stable",
+      "state": {
+        "name": "handshaking",
+        "attempts": 2,
+        "refusals": 1
+      },
+      "event": {
+        "type": "admitted"
+      },
+      "expect": {
+        "state": {
+          "name": "ready",
+          "attempts": 2,
+          "refusals": 1
+        },
+        "effects": [
+          {
+            "type": "disarmHandshake"
+          }
+        ]
+      }
+    },
+    {
+      "label": "a silent socket is a failed attempt: close it and back off",
+      "case": "transient",
+      "state": {
+        "name": "handshaking",
+        "attempts": 0,
+        "refusals": 0
+      },
+      "event": {
+        "type": "handshakeTimeout"
+      },
+      "expect": {
+        "state": {
+          "name": "waiting",
+          "attempts": 1,
+          "refusals": 0
+        },
+        "effects": [
+          {
+            "type": "abandonHandshake",
+            "reason": "timeout"
+          },
+          {
+            "type": "schedule",
+            "step": 500
+          }
+        ]
+      }
+    },
+    {
+      "label": "the seventh silent handshake in a row reports an outage; refusals stay",
+      "case": "outage",
+      "state": {
+        "name": "handshaking",
+        "attempts": 6,
+        "refusals": 2
+      },
+      "event": {
+        "type": "handshakeTimeout"
+      },
+      "expect": {
+        "state": {
+          "name": "waiting",
+          "attempts": 7,
+          "refusals": 2
+        },
+        "effects": [
+          {
+            "type": "abandonHandshake",
+            "reason": "timeout"
+          },
+          {
+            "type": "schedule",
+            "step": 32000
+          },
+          {
+            "type": "reportOutage"
+          }
+        ]
+      }
+    },
+    {
+      "label": "a socket closed before its handshake backs off at once",
+      "case": "transient",
+      "state": {
+        "name": "handshaking",
+        "attempts": 0,
+        "refusals": 0
+      },
+      "event": {
+        "type": "failed",
+        "refused": false
+      },
+      "expect": {
+        "state": {
+          "name": "waiting",
+          "attempts": 1,
+          "refusals": 0
+        },
+        "effects": [
+          {
+            "type": "disarmHandshake"
+          },
+          {
+            "type": "abandonHandshake",
+            "reason": "failed"
+          },
+          {
+            "type": "schedule",
+            "step": 500
+          }
+        ]
+      }
+    },
+    {
+      "case": "outage",
+      "state": {
+        "name": "handshaking",
+        "attempts": 6,
+        "refusals": 0
+      },
+      "event": {
+        "type": "failed",
+        "refused": false
+      },
+      "expect": {
+        "state": {
+          "name": "waiting",
+          "attempts": 7,
+          "refusals": 0
+        },
+        "effects": [
+          {
+            "type": "disarmHandshake"
+          },
+          {
+            "type": "abandonHandshake",
+            "reason": "failed"
+          },
+          {
+            "type": "schedule",
+            "step": 32000
+          },
+          {
+            "type": "reportOutage"
+          }
+        ]
+      }
+    },
+    {
+      "label": "an admission close during the handshake is a refusal",
+      "case": "refusal",
+      "state": {
+        "name": "handshaking",
+        "attempts": 2,
+        "refusals": 1
+      },
+      "event": {
+        "type": "failed",
+        "refused": true
+      },
+      "expect": {
+        "state": {
+          "name": "waiting",
+          "attempts": 3,
+          "refusals": 2
+        },
+        "effects": [
+          {
+            "type": "disarmHandshake"
+          },
+          {
+            "type": "abandonHandshake",
+            "reason": "failed"
+          },
+          {
+            "type": "schedule",
+            "step": 2000
+          }
+        ]
+      }
+    },
+    {
+      "case": "last-refusal",
+      "state": {
+        "name": "handshaking",
+        "attempts": 5,
+        "refusals": 5
+      },
+      "event": {
+        "type": "failed",
+        "refused": true
+      },
+      "expect": {
+        "state": {
+          "name": "paused",
+          "attempts": 5,
+          "refusals": 6
+        },
+        "effects": [
+          {
+            "type": "disarmHandshake"
+          },
+          {
+            "type": "abandonHandshake",
+            "reason": "failed"
+          },
+          {
+            "type": "pauseSync"
+          }
+        ]
+      }
+    },
+    {
+      "state": {
+        "name": "handshaking",
+        "attempts": 3,
+        "refusals": 2
+      },
+      "event": {
+        "type": "keyRefused"
+      },
+      "expect": {
+        "state": {
+          "name": "refused",
+          "attempts": 3,
+          "refusals": 2
+        },
+        "effects": [
+          {
+            "type": "disarmHandshake"
+          },
+          {
+            "type": "abandonHandshake",
+            "reason": "failed"
+          }
+        ]
+      }
+    },
+    {
+      "state": {
+        "name": "handshaking",
+        "attempts": 2,
+        "refusals": 1
+      },
+      "event": {
+        "type": "stable"
+      },
+      "expect": {
+        "state": {
+          "name": "handshaking",
+          "attempts": 2,
+          "refusals": 1
+        },
+        "effects": [],
+        "rejected": "No socket stayed admitted"
+      }
+    },
+    {
+      "state": {
+        "name": "handshaking",
+        "attempts": 2,
+        "refusals": 1
+      },
+      "event": {
+        "type": "timer"
+      },
+      "expect": {
+        "state": {
+          "name": "handshaking",
+          "attempts": 2,
+          "refusals": 1
+        },
+        "effects": [],
+        "rejected": "No reconnect is scheduled"
+      }
+    },
+    {
+      "label": "Retry during a stalled handshake abandons it; the new attempt replaces it",
+      "state": {
+        "name": "handshaking",
+        "attempts": 3,
+        "refusals": 2
+      },
+      "event": {
+        "type": "resume"
+      },
+      "expect": {
+        "state": {
+          "name": "ready",
+          "attempts": 0,
+          "refusals": 0
+        },
+        "effects": [
+          {
+            "type": "disarmHandshake"
+          },
+          {
+            "type": "abandonHandshake",
+            "reason": "resume"
+          }
+        ]
+      }
+    },
+    {
+      "label": "sign-in, an access pause or a close drops the deadline and settles the attempt",
+      "state": {
+        "name": "handshaking",
+        "attempts": 3,
+        "refusals": 2
+      },
+      "event": {
+        "type": "halt"
+      },
+      "expect": {
+        "state": {
+          "name": "ready",
+          "attempts": 3,
+          "refusals": 2
+        },
+        "effects": [
+          {
+            "type": "disarmHandshake"
+          },
+          {
+            "type": "abandonHandshake",
+            "reason": "halt"
+          }
+        ]
+      }
+    },
+    {
+      "state": {
+        "name": "waiting",
+        "attempts": 2,
+        "refusals": 1
+      },
+      "event": {
+        "type": "handshake"
+      },
+      "expect": {
+        "state": {
+          "name": "waiting",
+          "attempts": 2,
+          "refusals": 1
+        },
+        "effects": [],
+        "rejected": "A reconnect is already scheduled"
+      }
+    },
+    {
+      "state": {
+        "name": "waiting",
+        "attempts": 2,
+        "refusals": 1
+      },
+      "event": {
+        "type": "admitted"
+      },
+      "expect": {
+        "state": {
+          "name": "waiting",
+          "attempts": 2,
+          "refusals": 1
+        },
+        "effects": [],
+        "rejected": "No handshake is in progress"
+      }
+    },
+    {
+      "state": {
+        "name": "waiting",
+        "attempts": 2,
+        "refusals": 1
+      },
+      "event": {
+        "type": "handshakeTimeout"
+      },
+      "expect": {
+        "state": {
+          "name": "waiting",
+          "attempts": 2,
+          "refusals": 1
+        },
+        "effects": [],
+        "rejected": "No handshake is in progress"
+      }
+    },
+    {
+      "state": {
+        "name": "refused",
+        "attempts": 3,
+        "refusals": 2
+      },
+      "event": {
+        "type": "handshake"
+      },
+      "expect": {
+        "state": {
+          "name": "refused",
+          "attempts": 3,
+          "refusals": 2
+        },
+        "effects": [],
+        "rejected": "The host refused this tab's signing key"
+      }
+    },
+    {
+      "state": {
+        "name": "refused",
+        "attempts": 3,
+        "refusals": 2
+      },
+      "event": {
+        "type": "admitted"
+      },
+      "expect": {
+        "state": {
+          "name": "refused",
+          "attempts": 3,
+          "refusals": 2
+        },
+        "effects": [],
+        "rejected": "No handshake is in progress"
+      }
+    },
+    {
+      "state": {
+        "name": "refused",
+        "attempts": 3,
+        "refusals": 2
+      },
+      "event": {
+        "type": "handshakeTimeout"
+      },
+      "expect": {
+        "state": {
+          "name": "refused",
+          "attempts": 3,
+          "refusals": 2
+        },
+        "effects": [],
+        "rejected": "No handshake is in progress"
+      }
+    },
+    {
+      "state": {
+        "name": "paused",
+        "attempts": 5,
+        "refusals": 6
+      },
+      "event": {
+        "type": "handshake"
+      },
+      "expect": {
+        "state": {
+          "name": "paused",
+          "attempts": 5,
+          "refusals": 6
+        },
+        "effects": [],
+        "rejected": "Sync is paused until Retry"
+      }
+    },
+    {
+      "state": {
+        "name": "paused",
+        "attempts": 5,
+        "refusals": 6
+      },
+      "event": {
+        "type": "admitted"
+      },
+      "expect": {
+        "state": {
+          "name": "paused",
+          "attempts": 5,
+          "refusals": 6
+        },
+        "effects": [],
+        "rejected": "No handshake is in progress"
+      }
+    },
+    {
+      "state": {
+        "name": "paused",
+        "attempts": 5,
+        "refusals": 6
+      },
+      "event": {
+        "type": "handshakeTimeout"
+      },
+      "expect": {
+        "state": {
+          "name": "paused",
+          "attempts": 5,
+          "refusals": 6
+        },
+        "effects": [],
+        "rejected": "No handshake is in progress"
+      }
+    },
+    {
+      "state": {
+        "name": "ready",
+        "attempts": 2,
+        "refusals": 1
+      },
+      "event": {
+        "type": "handshakeEnded"
+      },
+      "expect": {
+        "state": {
+          "name": "ready",
+          "attempts": 2,
+          "refusals": 1
+        },
+        "effects": [],
+        "rejected": "No handshake is in progress"
+      }
+    },
+    {
+      "label": "the handshake failed or the attempt dropped its socket; the caller classifies the failure next",
+      "state": {
+        "name": "handshaking",
+        "attempts": 2,
+        "refusals": 1
+      },
+      "event": {
+        "type": "handshakeEnded"
+      },
+      "expect": {
+        "state": {
+          "name": "ready",
+          "attempts": 2,
+          "refusals": 1
+        },
+        "effects": [
+          {
+            "type": "disarmHandshake"
+          }
+        ]
+      }
+    },
+    {
+      "state": {
+        "name": "waiting",
+        "attempts": 2,
+        "refusals": 1
+      },
+      "event": {
+        "type": "handshakeEnded"
+      },
+      "expect": {
+        "state": {
+          "name": "waiting",
+          "attempts": 2,
+          "refusals": 1
+        },
+        "effects": [],
+        "rejected": "No handshake is in progress"
+      }
+    },
+    {
+      "state": {
+        "name": "refused",
+        "attempts": 3,
+        "refusals": 2
+      },
+      "event": {
+        "type": "handshakeEnded"
+      },
+      "expect": {
+        "state": {
+          "name": "refused",
+          "attempts": 3,
+          "refusals": 2
+        },
+        "effects": [],
+        "rejected": "No handshake is in progress"
+      }
+    },
+    {
+      "state": {
+        "name": "paused",
+        "attempts": 5,
+        "refusals": 6
+      },
+      "event": {
+        "type": "handshakeEnded"
+      },
+      "expect": {
+        "state": {
+          "name": "paused",
+          "attempts": 5,
+          "refusals": 6
+        },
+        "effects": [],
+        "rejected": "No handshake is in progress"
       }
     }
   ]
