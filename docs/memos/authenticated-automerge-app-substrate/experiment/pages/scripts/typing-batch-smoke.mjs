@@ -5,12 +5,16 @@
 // and at 20 ms per key, then counts what that cost: Automerge changes the
 // writer created, WebSocket frames and bytes it sent, and the main-thread time
 // the other writer spent applying and drawing them. The other writer must end
-// with the exact text. PAGES_TYPING_MEASURE_ONLY=1 skips the batching
-// assertions so the same run can measure a build without batching.
+// with the exact text. Each run prints a GATE line with the 20 ms phase's
+// rounds and caret frames against their budget. PAGES_TYPING_MEASURE_ONLY=1
+// skips the batching assertions so the same run can measure a build without
+// batching. PAGES_TYPING_CPU_THROTTLE=<rate> slows both browsers' CPUs through
+// CDP, to reproduce a slow runner where saves trail the keys.
 import assert from "node:assert/strict";
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { chromium, expect } from "@playwright/test";
+import { OUTBOUND_DEBOUNCE_MS, OUTBOUND_MAX_WAIT_MS } from "../viewer/outbound-sync-machine.mjs";
 
 const origin = process.env.PAGES_ORIGIN || "http://localhost:9896";
 const url = new URL(origin);
@@ -19,6 +23,8 @@ assert.equal(url.hostname, "localhost");
 const output = process.env.PAGES_SCREENSHOTS || "/tmp/pages-typing-batch";
 await mkdir(output, { recursive: true });
 const measureOnly = process.env.PAGES_TYPING_MEASURE_ONLY === "1";
+const cpuThrottle = Number(process.env.PAGES_TYPING_CPU_THROTTLE || 1);
+assert.ok(cpuThrottle >= 1, "PAGES_TYPING_CPU_THROTTLE must be 1 or more");
 const CHARACTERS = 200;
 const BASE = "Typing fixture.";
 const epoch = () => performance.timeOrigin + performance.now();
@@ -31,7 +37,7 @@ const browser = await chromium.launch({
     "--host-resolver-rules=MAP * ~NOTFOUND, EXCLUDE localhost, EXCLUDE 127.0.0.1",
   ],
 });
-const report = { origin, measureOnly, phases: [], errors: [] };
+const report = { origin, measureOnly, cpuThrottle, phases: [], errors: [] };
 const frames = [];
 // Subduction 0.26 frames, as observed on the wire: "SUM", a zero byte, a u32
 // length, then a message type byte for sync messages, "SUE" for ephemeral (presence)
@@ -80,6 +86,7 @@ async function signIn(label) {
   });
   const cdp = await context.newCDPSession(page);
   await cdp.send("Performance.enable", { timeDomain: "threadTicks" });
+  if (cpuThrottle > 1) await cdp.send("Emulation.setCPUThrottlingRate", { rate: cpuThrottle });
   return { page, cdp, label };
 }
 
@@ -179,6 +186,8 @@ function gaps(kind) {
     return 60 + (seed % 41);
   });
 }
+/** Planned time from the first key to the last. */
+const scheduled = (schedule) => schedule.slice(0, -1).reduce((n, gap) => n + gap, 0);
 const SENTENCE = "The quick brown fox jumps over the lazy dog while the band plays on. ";
 const typedText = (n) => SENTENCE.repeat(Math.ceil(n / SENTENCE.length)).slice(0, n);
 
@@ -231,17 +240,29 @@ async function phase(name, kind, writer, reader, pageId) {
   const sum = (list) => list.reduce((n, f) => n + f.bytes, 0);
   const sent = window.filter((f) => f.label === writer.label && f.event === "framesent");
   const received = window.filter((f) => f.label === reader.label && f.event === "framereceived");
+  const rounds = sent.filter((f) => f.kind === "round");
+  // Sends that leave later than one debounce after the last key are catch-up:
+  // edits still reaching native storage when typing stopped. How long that
+  // takes depends on the runner's store latency, not on batching.
+  const typingEnd = typed + OUTBOUND_DEBOUNCE_MS;
+  const late = sent.filter((f) => f.at > typingEnd && f.kind !== "commit");
   const result = {
     name,
     kind,
     characters: text.length,
     typing_ms: Math.round(typed - start),
+    // How much longer the keys took to type than their schedule.
+    typing_overrun_ms: Math.max(0, Math.round(typed - start - scheduled(schedule))),
     last_key_to_reader_ms: Math.round(converged - typed),
+    writer_catchup_ms: late.length ? Math.round(late.at(-1).at - typingEnd) : 0,
+    writer_typing_rounds: rounds.filter((f) => f.at <= typingEnd).length,
+    writer_catchup_rounds: late.filter((f) => f.kind === "round").length,
+    writer_catchup_presence_frames: late.filter((f) => f.kind === "presence").length,
     writer_changes: (await commitRecords(writer.page, pageId)) - changesBefore,
     reader_changes: (await commitRecords(reader.page, pageId)) - readerChangesBefore,
     writer_frames_sent: sent.length,
     writer_bytes_sent: sum(sent),
-    writer_sync_rounds: sent.filter((f) => f.kind === "round").length,
+    writer_sync_rounds: rounds.length,
     writer_commit_frames: sent.filter((f) => f.kind === "commit").length,
     writer_presence_frames: sent.filter((f) => f.kind === "presence").length,
     reader_frames_received: received.length,
@@ -250,7 +271,8 @@ async function phase(name, kind, writer, reader, pageId) {
     reader_main_thread_ms: delta(readerAfter, readerBefore),
     writer_main_thread_ms: delta(writerAfter, writerBefore),
   };
-  report.phases.push(result);
+  // When each round left, relative to the last keystroke, for the report only.
+  report.phases.push({ ...result, writer_round_ms: rounds.map((f) => Math.round(f.at - typed)) });
   assert.ok(
     window.every((f) => f.kind !== "unrecognized"),
     "an unrecognized native frame; requalify frameKind",
@@ -280,15 +302,31 @@ try {
   }
   const person = await phase("60–100 ms per key", "person", writer, reader, pageId);
   const fast = await phase("20 ms per key", "fast", writer, reader, pageId);
+  // Each keystroke used to open its own sync round and send its own caret.
+  // At 20 ms per key a round and a caret now go out about every 100 ms, so 200
+  // keys on schedule take about 40 of each; the budget allows four keys per
+  // send. While requests keep arriving the writer sends at most once per
+  // maximum wait, so time it spent past the schedule (keys typed late, then
+  // catch-up) adds one send per maximum wait. Unbatched typing sends one per
+  // key and stays far over budget unless catch-up runs past 15 seconds.
+  // Commits still travel one frame each: that is native framing, one per
+  // Automerge change.
+  const lateMs = fast.typing_overrun_ms + fast.writer_catchup_ms;
+  const budget = CHARACTERS / 4 + Math.ceil(lateMs / OUTBOUND_MAX_WAIT_MS);
+  const gate = Object.fromEntries(
+    ["writer_sync_rounds", "writer_presence_frames"].map((key) => [
+      key,
+      { measured: fast[key], budget, margin: budget - fast[key] },
+    ]),
+  );
+  console.log("GATE " + JSON.stringify({ late_ms: lateMs, ...gate }));
+  report.gate = gate;
   if (!measureOnly) {
-    // Each keystroke used to open its own sync round and send its own caret.
-    // At 20 ms per key a round and a caret now go out about every 100 ms.
-    // Commits still travel one frame each: that is native framing, one per
-    // Automerge change.
-    for (const key of ["writer_sync_rounds", "writer_presence_frames"])
+    for (const [key, { measured }] of Object.entries(gate))
       assert.ok(
-        fast[key] <= CHARACTERS / 4,
-        `20 ms typing: ${key} was ${fast[key]} for ${CHARACTERS} characters`,
+        measured <= budget,
+        `20 ms typing: ${key} was ${measured} for ${CHARACTERS} characters; ` +
+          `budget ${budget} with ${lateMs} ms typing overrun and catch-up`,
       );
     assert.ok(
       fast.writer_frames_sent < 2 * CHARACTERS,
