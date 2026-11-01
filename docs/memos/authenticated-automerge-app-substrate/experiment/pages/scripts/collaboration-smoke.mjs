@@ -284,7 +284,61 @@ try {
     expect(await title(b).evaluate((input) => input.selectionStart)).toBe(merged.length);
     await b.keyboard.type("!");
     await expect(title(a)).toHaveValue(merged + "!");
+
+    // A composed replacement of the first character while A prepends: the
+    // replacement applies at B's revision, so A's text survives.
+    await title(b).evaluate((input) => input.setSelectionRange(0, 1));
+    await ime.send("Input.imeSetComposition", { text: "に", selectionStart: 1, selectionEnd: 1 });
+    await title(a).click();
+    await title(a).press("Home");
+    await a.keyboard.type("Q");
+    await expect(
+      b.getByRole("button", { name: "Q" + merged + "!, switch page", exact: true }),
+    ).toBeVisible();
+    await ime.send("Input.insertText", { text: "日" });
+    await expect.poll(() => title(a).inputValue()).toContain("日");
+    const replaced = await title(a).inputValue();
+    // "I" is gone, A's "Q" stays, and the rest is untouched.
+    expect(replaced).toMatch(/^(Q日|日Q)ME /);
+    for (const page of [a, b]) await expect(title(page)).toHaveValue(replaced);
+    expect(replaced.slice(0, await title(b).evaluate((input) => input.selectionStart))).toMatch(
+      /日$/,
+    );
     await ime.detach();
+  }
+  complete(stage);
+
+  stage = "a title composition with no compositionend commits on blur";
+  {
+    // Chromium always ends a composition on blur, so this drives the DOM
+    // events an IME that never sends compositionend would leave behind.
+    await title(b).click();
+    await title(b).press("End");
+    const before = await title(b).inputValue();
+    await title(b).evaluate((input, before) => {
+      const setValue = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set;
+      input.dispatchEvent(new CompositionEvent("compositionstart", { bubbles: true, data: "" }));
+      setValue.call(input, before + " 字");
+      input.setSelectionRange(input.value.length, input.value.length);
+      input.dispatchEvent(
+        new InputEvent("input", { bubbles: true, isComposing: true, data: " 字" }),
+      );
+    }, before);
+    // Composing text stays out of the document while A edits.
+    await title(a).click();
+    await title(a).press("Home");
+    await a.keyboard.type("Z");
+    await expect(
+      b.getByRole("button", { name: "Z" + before + ", switch page", exact: true }),
+    ).toBeVisible();
+    await expect(title(b)).toHaveValue(before + " 字");
+    await title(b).evaluate((input) => input.blur());
+    for (const page of [a, b]) await expect(title(page)).toHaveValue("Z" + before + " 字");
+    // The input is idle again: an ordinary keystroke saves.
+    await title(b).click();
+    await title(b).press("End");
+    await b.keyboard.type("?");
+    await expect(title(a)).toHaveValue("Z" + before + " 字?");
   }
   complete(stage);
 
