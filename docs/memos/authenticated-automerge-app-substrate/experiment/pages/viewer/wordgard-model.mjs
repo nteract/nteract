@@ -356,7 +356,26 @@ function descriptor(type, attrs = {}) {
   }
 }
 
-export function decode(spans) {
+// A caret can't leave these by typing: Enter adds a line inside a code block,
+// moves between table cells, or selects a preserved block. When one ends a
+// Pages block, the editor shows an empty paragraph after it to write in.
+export function needsTrailingLine(node) {
+  return (
+    !!node &&
+    (node.type === CodeBlock.type || node.type === Table.type || node.type === OpaqueBlock)
+  );
+}
+
+/**
+ * Native Pages spans to a Wordgard document and position maps.
+ *
+ * With `trailingLine`, a final code block, table or preserved block is
+ * followed by an empty paragraph that has no native span: `map.trailing` is
+ * its position, and native offsets map to positions before it. The line is
+ * written only when someone types into it (see `encode`), so opening a Page
+ * never changes its document.
+ */
+export function decode(spans, { trailingLine = false } = {}) {
   const blocks = [],
     stack = [],
     wgToAm = [],
@@ -460,11 +479,24 @@ export function decode(spans) {
   if (stack.length && !stack.at(-1).tag.type.spec.inlineContent && !stack.at(-1).children.length)
     open(Paragraph);
   while (stack.length) close();
+  let trailing = null;
+  if (trailingLine && needsTrailingLine(blocks.at(-1))) {
+    // The line has no native offset. The native end keeps its position inside
+    // the last block, so a remote caret there is not drawn on the empty line.
+    const end = amToWg[am];
+    trailing = wg;
+    open(Paragraph);
+    close();
+    amToWg[am] = end;
+  }
   boundary();
-  return { doc: schema.doc(blocks), map: { wgToAm, amToWg } };
+  return { doc: schema.doc(blocks), map: { wgToAm, amToWg, trailing } };
 }
 
-export function encode(doc) {
+/** A Wordgard document to native Pages spans. With `trailingLine`, an empty
+ * final paragraph after a block `needsTrailingLine` names is the editor's
+ * trailing line and is not written; `decode` puts it back. */
+export function encode(doc, { trailingLine = false } = {}) {
   const spans = [];
   const marker = (type, parents, attrs = {}, isEmbed = false) =>
     spans.push({
@@ -551,6 +583,16 @@ export function encode(doc) {
         block(child, [...parents, type], implicitAt(siblings, i)),
       );
   };
-  doc.content.forEach((node, i, siblings) => block(node, [], implicitAt(siblings, i)));
+  const top = doc.content;
+  const last = top.at(-1);
+  const written =
+    trailingLine &&
+    top.length > 1 &&
+    last.type === Paragraph.type &&
+    !last.content.length &&
+    needsTrailingLine(top.at(-2))
+      ? top.slice(0, -1)
+      : top;
+  written.forEach((node, i, siblings) => block(node, [], implicitAt(siblings, i)));
   return spans;
 }

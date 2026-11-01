@@ -1,7 +1,13 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import * as A from "@automerge/automerge";
-import { activitySnapshot, activityIdentity, progressPassages, pageActivity } from "./activity.mjs";
+import {
+  activitySnapshot,
+  activityIdentity,
+  presenceLabel,
+  progressPassages,
+  pageActivity,
+} from "./activity.mjs";
 import { createProgressTargets } from "../model/presence.mjs";
 import { enableRich, textPath } from "../model/richtext.mjs";
 
@@ -64,6 +70,17 @@ test("activity keeps account attribution explicit without calling browser select
     "Kyle Kelley",
   );
   assert.equal(activityIdentity({}).label, "Collaborator");
+});
+
+test("a person in the browser is presented by name; other clients keep their label", () => {
+  assert.equal(presenceLabel({ displayName: "Kyle Kelley", driver: "Browser" }), "Kyle Kelley");
+  assert.equal(presenceLabel({ displayName: "Kyle Kelley", driver: " browser " }), "Kyle Kelley");
+  assert.equal(presenceLabel({ displayName: "Kyle Kelley" }), "Kyle Kelley");
+  assert.equal(
+    presenceLabel({ displayName: "Kyle Kelley", driver: "Mobile" }),
+    "Kyle Kelley · Mobile",
+  );
+  assert.equal(presenceLabel({ driver: "Browser" }), "Collaborator");
 });
 
 test("a closed activity count does not read or project the document", () => {

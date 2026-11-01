@@ -113,6 +113,7 @@ was a caret race in the smoke; the editor side is
 | Schema-feature gate: a Page stamped with an unknown feature opens read-only and refuses tool writes | `PAGES_ORIGIN=http://localhost:9894 node scripts/schema-features-smoke.mjs` | Uses the running Wordgard fixture |
 | Native table editing | `PAGES_ORIGIN=http://localhost:9894 npm run smoke:tables` | Uses the running Wordgard fixture |
 | Passage edits and revision deltas | `PAGES_ORIGIN=http://localhost:9894 node scripts/passages-changes-smoke.mjs` | Uses the running Wordgard fixture |
+| Reload banner placement, browser presence labels, leaving a final code block, checkbox indent | `PAGES_ORIGIN=http://localhost:9894 node scripts/editor-chrome-smoke.mjs` | Uses the running Wordgard fixture |
 | Local creation and navigation | `PAGES_ORIGIN=http://localhost:9894 node scripts/navigation-smoke.mjs` | Uses the running Wordgard fixture |
 | Editing, comments, links, diagrams, and recovery | `PAGES_ORIGIN=http://localhost:9894 npm run smoke:editor` | Uses the running Wordgard fixture |
 | History growth and typing latency | `PAGES_ORIGIN=http://localhost:9894 node scripts/latency-smoke.mjs` | Uses the running Wordgard fixture with buffered persistence |
@@ -142,6 +143,10 @@ browser editor is simplified; replacing it requires a separate compatibility
 pass. Each Pages block has its own continuous editor. Moves update fractional positions without recreating the block or its
 text object, preserving comment and selection anchors. Concurrent positions use
 block IDs as deterministic ties. Cross-Pages-block selections remain unsupported.
+A block that ends in a code block, table or preserved block shows an empty line
+after it, so the caret always has somewhere to go; ArrowDown reaches it and
+Mod-Enter jumps there from inside a code block. The line exists only in the
+editor until someone types in it, so opening a Page never writes to it.
 The binding's upstream attribution is in [WORDGARD-NOTICE](viewer/WORDGARD-NOTICE).
 
 The interface keeps navigation and account actions outside the document, with
@@ -776,10 +781,14 @@ visible. It never polls while hidden and never reloads by itself.
 | Server advertises | Viewer shows | Editing |
 | --- | --- | --- |
 | Same build | Nothing | Unchanged |
-| Different build (newer or a rollback), floor at or below this viewer | "Pages changed on the server. Reload to use the current version." | Unchanged |
-| Floor above this viewer's protocol | "Pages changed on the server. This tab can't edit until you reload." | Paused; accepted edits keep saving |
-| Editor chunk failed to load, server on another build | "Pages changed on the server. This tab can't edit until you reload." | No Page opens until reload |
-| Editor chunk failed to load, same build | "Pages couldn't load the editor. Reload to try again." | No Page opens until reload |
+| Different build (newer or a rollback), floor at or below this viewer | "App updated. Reload to use the latest version." | Unchanged |
+| Floor above this viewer's protocol | "App updated. This tab can't edit until you reload." | Paused; accepted edits keep saving |
+| Editor chunk failed to load, server on another build | "App updated. This tab can't edit until you reload." | No Page opens until reload |
+| Editor chunk failed to load, same build | "The editor didn't load. Reload to try again." | No Page opens until reload |
+
+The banner sticks below the header, and below the formatting toolbar when it's
+pinned, so it stays in view while the Page scrolls. It names the app, not
+"Pages", which is also what people call their documents.
 
 The viewer is `app.js`, which renders the shell (header, account, sign-in and
 the Page list), plus content-hashed files under `/chunks/`. `app.js` imports the

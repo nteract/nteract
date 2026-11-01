@@ -77,6 +77,7 @@ import {
 import { PagesLink, TaskList, elements } from "./wordgard-model.mjs";
 import { taskLists } from "./wordgard-task-lists.mjs";
 import { markdownShortcuts } from "./wordgard-shortcuts.mjs";
+import { exitCodeBlock, onTrailingLine, trailingLine } from "./wordgard-trailing-line.mjs";
 import { projectChanges } from "./wordgard-projection.mjs";
 import {
   createWordgardCollaboration,
@@ -263,7 +264,8 @@ export function WordgardEditor(props) {
       writing = false,
       lastPresence = "",
       lastPresenceAt = 0;
-    const bound = createWordgardBinding(replica, id);
+    // Pairs with the `trailingLine` correction below.
+    const bound = createWordgardBinding(replica, id, { trailingLine: true });
     binding.current = bound;
     const undoHistory = wordgardHistory();
     const collab = createWordgardCollaboration({
@@ -332,6 +334,7 @@ export function WordgardEditor(props) {
         wordgardWidgets(),
         wordgardCodeNewlines,
         wordgardListStarts,
+        trailingLine,
         codeHighlighting,
         uploadPreviews,
         undoHistory.extension,
@@ -354,6 +357,7 @@ export function WordgardEditor(props) {
         }),
         KeyBinding.of({ key: "Mod-Alt-m", run: () => comment() }),
         KeyBinding.of({ key: "Shift-Enter", run: insertPlainLineBreak }),
+        KeyBinding.of({ key: "Mod-Enter", run: exitCodeBlock, allowDefault: true }),
         KeyBinding.of({
           key: "Mod-Shift-h",
           run: () => latest.current.editable && Command.dispatch(editor, toggleHighlight),
@@ -363,11 +367,14 @@ export function WordgardEditor(props) {
         // edges; keep the caret clear of both when scrolling it into view.
         Wordgard.coveredMargins.of(() => {
           const bar = mobileBar.current?.getBoundingClientRect();
+          // The pinned toolbar and the reload banner stick below the header.
           const header = document.querySelector(".app-header")?.getBoundingClientRect();
+          const stack = document.querySelector(".status-stack")?.getBoundingClientRect();
+          const covered = Math.max(header?.bottom ?? 0, stack?.bottom ?? 0);
           const viewport = window.visualViewport;
           const bottomEdge = viewport ? viewport.offsetTop + viewport.height : innerHeight;
           return {
-            top: header ? Math.max(0, header.bottom - (viewport?.offsetTop ?? 0)) : 0,
+            top: Math.max(0, covered - (viewport?.offsetTop ?? 0)),
             bottom: bar ? Math.max(0, bottomEdge - bar.top) : 0,
           };
         }),
@@ -531,6 +538,8 @@ export function WordgardEditor(props) {
           const path = ["blocks", id, "richText"];
           try {
             const translate = (pos) => {
+              if (onTrailingLine(event.before.map, pos) && event.after.map.trailing != null)
+                return event.after.map.trailing + 1;
               const cursor = A.getCursor(
                 event.nativeBefore,
                 path,

@@ -453,6 +453,9 @@ async function textOf(page, block) {
         clone
           .querySelectorAll(".peer-caret,.wordgard-widget,.wordgard-diagram-actions,select,button")
           .forEach((n) => n.remove());
+        // The empty line the editor keeps after a final code block holds no text.
+        const last = clone.lastElementChild;
+        if (last?.tagName === "P" && !last.textContent) last.remove();
         clone.querySelectorAll("br").forEach((node) => node.replaceWith("\n"));
         return clone.textContent;
       })
