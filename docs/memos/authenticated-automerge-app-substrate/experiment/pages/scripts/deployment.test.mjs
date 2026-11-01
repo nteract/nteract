@@ -1241,6 +1241,39 @@ const frozenBy = {
   page9: ["page7", "page8"],
   page10: ["page7", "page8", "page9"],
 };
+test("every deploy profile owns distinct hosts, ports, prefixes and firewall resources", () => {
+  const targets = [
+    "pages-next",
+    "page3",
+    "page4",
+    "page5",
+    "page6",
+    "page7",
+    "page8",
+    "page9",
+    "page10",
+  ];
+  const seen = new Map();
+  const claim = (kind, value, target) => {
+    if (value === undefined) return;
+    const key = `${kind}:${value}`;
+    assert.equal(seen.get(key), undefined, `${target} reuses ${key} from ${seen.get(key)}`);
+    seen.set(key, target);
+  };
+  for (const target of targets) {
+    const profile = profiles.deploymentProfile(target);
+    claim("hostname", profile.deployment.hostname, target);
+    claim("service", profile.deployment.service, target);
+    claim("prefix", profile.deployment.prefix, target);
+    // Both listeners share one port namespace on the host.
+    claim("port", profile.deployment.listen?.split(":").at(-1), target);
+    claim("port", profile.deployment.internalListen?.split(":").at(-1), target);
+    claim("firewallTable", profile.firewallTable, target);
+    claim("firewallMark", profile.firewallMark, target);
+    claim("tunnelService", profile.tunnelService, target);
+  }
+});
+
 for (const target of ["page7", "page8", "page9", "page10"])
   test(`${target} rejects frozen manifests, DNS ownership and occupied resources`, async (t) => {
     const profile = profiles.deploymentProfile(target);

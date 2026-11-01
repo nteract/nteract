@@ -339,6 +339,64 @@ const page10Record = {
   comment: "nteract/pages:experiment:page10",
 };
 
+for (const target of ["pages-next", "page3", "page4", "page5", "page6", "page7", "page8", "page9"])
+  for (const apply of [false, true])
+    test(`provisionTarget refuses frozen ${target} (apply: ${apply}) before any call`, async () => {
+      const cf = edge();
+      const h = host(etcFor(target));
+      await assert.rejects(
+        provisionTarget({ token, target, apply, fetchImpl: cf.fetchImpl, run: h.run }),
+        /qualified only for page10/,
+      );
+      assert.equal(cf.calls.length, 0);
+      assert.equal(h.runs.length, 0);
+    });
+
+test("provision retry after a DNS failure creates only DNS and keeps the tunnel", async () => {
+  const root = etcFor("page10");
+  const cf = edge();
+  const failing = async (url, init) => {
+    const { pathname } = new URL(url);
+    if (pathname.endsWith("/dns_records") && init.method === "POST")
+      return Response.json(
+        { success: false, errors: [{ code: 1000, message: "boom" }] },
+        { status: 500 },
+      );
+    return cf.fetchImpl(url, init);
+  };
+  await assert.rejects(
+    provisionTarget({
+      token,
+      target: "page10",
+      apply: true,
+      fetchImpl: failing,
+      run: host(root).run,
+    }),
+  );
+  const credentials = readFileSync(path.join(root, "nteract-page10", "tunnel.json"), "utf8");
+  assert.deepEqual(cf.records(), []);
+
+  const retry = edge([{ id: tunnelId, name: "nteract-page10" }]);
+  const result = await provisionTarget({
+    token,
+    target: "page10",
+    apply: true,
+    fetchImpl: retry.fetchImpl,
+    run: host(root).run,
+  });
+  assert.equal(result.tunnel.created, false);
+  assert.equal(result.tunnel.installed, true);
+  assert.equal(result.dns.changed, true);
+  assert.deepEqual(retry.records(), [page10Record]);
+  assert.equal(
+    retry.calls.filter(
+      ({ method, pathname }) => method === "POST" && pathname.endsWith("/cfd_tunnel"),
+    ).length,
+    0,
+  );
+  assert.equal(readFileSync(path.join(root, "nteract-page10", "tunnel.json"), "utf8"), credentials);
+});
+
 test("provision inspection before anything exists makes only tunnel reads", async () => {
   const cf = edge();
   const h = host(etcFor("page10"));
