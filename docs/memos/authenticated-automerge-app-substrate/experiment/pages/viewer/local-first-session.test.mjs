@@ -1247,10 +1247,11 @@ test("an offline comment survives a reload: both documents restore from the chec
   });
   t.after(() => restored.close());
   assert.equal(restored.localPage.comments_document_id, commentsId);
-  // Offline, the stored ID opens the restored copy.
+  // Offline, the stored ID opens the restored copy. "ready" is the machine's
+  // state; the install that adopts the handle still reads the stored entry
+  // first (installComments), so wait for the document itself.
   await new Promise((resolve) => {
-    const check = () =>
-      restored.commentsOpen$.snapshot().name === "ready" ? resolve() : setTimeout(check, 5);
+    const check = () => (restored.commentsDoc ? resolve() : setTimeout(check, 5));
     check();
   });
   const threads = Object.values(restored.commentsDoc.threads);
