@@ -247,6 +247,23 @@
 .wordgard-caret-layer .peer-caret.is-idle {
   opacity: 0.4;
 }
+/* Agent caret glide (experiment, feature-flags.mjs): a faint caret where an
+   agent's caret was before its last move. The fade runs as an animation. */
+.wordgard-caret-layer .agent-caret-ghosts {
+  position: absolute;
+  inset: 0;
+}
+.wordgard-caret-layer .agent-caret-ghost {
+  position: absolute;
+  width: 0;
+  border-left: 2px solid var(--peer-color, #8b5fbf);
+  opacity: 0.3;
+}
+@media (prefers-reduced-motion: reduce) {
+  .wordgard-caret-layer .agent-caret-ghosts {
+    display: none;
+  }
+}
 .wordgard-caret-layer .peer-caret > span em,
 .wordgard-caret-layer .agent-dot > span em {
   margin-left: 5px;

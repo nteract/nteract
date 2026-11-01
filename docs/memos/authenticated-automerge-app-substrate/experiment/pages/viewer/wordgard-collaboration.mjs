@@ -203,7 +203,10 @@ export function createWordgardCollaboration({
           live.add(key);
           if (!beats.has(key)) beats.set(key, at);
           const beat = agent.state === "active" && from < to ? beats.get(key) + SELECT_BEAT_MS : 0;
-          marks.push({ ...base, type: "caret", from, to, position: to, fillUntil: beat });
+          // The write this caret marks. Idle fades and text shifting the caret
+          // keep it; only the agent's next record changes it.
+          const anchor = `${key}:${target.end}`;
+          marks.push({ ...base, type: "caret", from, to, position: to, fillUntil: beat, anchor });
         } else marks.push({ ...base, type: target.kind, from, to });
       }
     }
@@ -409,6 +412,7 @@ export function createWordgardCollaboration({
           idle,
           message,
           position: mark.position,
+          anchor: mark.anchor,
         });
       else if (mark.type === "dot")
         entries.push({ type: "dot", session, displayName, tag, title, color, idle, message });

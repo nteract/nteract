@@ -69,6 +69,11 @@ import { CommentComposer } from "./comment-composer.mjs";
 import { focusReturnTarget } from "./focus-return.mjs";
 import { timer } from "rxjs";
 import { MOBILE_EDITOR_QUERY, trackVisualViewport } from "./visual-viewport.mjs";
+import { glideSettings } from "./feature-flags.mjs";
+
+// Opening a Page rewrites the address to its canonical path, which drops the
+// query, so read the experiment flags before anything routes.
+glideSettings();
 
 // The editor, and the WASM runtimes it waits for, load beside the shell
 // from boot, except on the index routes (/projects, /pages), which only list;

@@ -1,6 +1,6 @@
 // Native transaction/selection approach adapted from rgbkrk/wordgard-automerge
 // c9c6ea8 (BSD-3-Clause). See WORDGARD-NOTICE for attribution.
-import { Fragment, useEffect, useRef, useState } from "react";
+import { Fragment, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import * as A from "@automerge/automerge/slim";
 import { Wordgard, Decoration, KeyBinding } from "wordgard/editor";
@@ -95,6 +95,8 @@ import {
   imageFiles,
   resolveImageInsertion,
 } from "./image-upload.mjs";
+import { caretGlideFor, runGlideEffects } from "./caret-glide.mjs";
+import { glideSettings } from "./feature-flags.mjs";
 import "./wordgard.css";
 
 const styles = [
@@ -145,6 +147,7 @@ export function WordgardEditor(props) {
   latest.current = props;
   const mount = useRef(null),
     caretLayer = useRef(null),
+    ghostLayer = useRef(null),
     view = useRef(null),
     binding = useRef(null),
     collaboration = useRef(null),
@@ -163,6 +166,9 @@ export function WordgardEditor(props) {
     [mobile, setMobile] = useState(() => matchMedia(MOBILE_EDITOR_QUERY).matches),
     [barFocus, setBarFocus] = useState(false);
   const mobileBar = useRef(null);
+  // Agent caret glide is an experiment; with it off the caret layer is unchanged.
+  const glide = glideSettings();
+  const flushGlide = useRef(() => {});
   const [generation, reset] = useState(0);
   const pendingLink = useRef(null),
     refresh = useRef(() => {}),
@@ -446,6 +452,31 @@ export function WordgardEditor(props) {
     editor.dom.classList.add("wordgard-document");
     let caretFrame = null,
       beatTimer;
+    const motion = glide.enabled
+      ? caretGlideFor(replica, {
+          settings: glide,
+          now: monotonicNow,
+          reducedMotion: () => matchMedia("(prefers-reduced-motion: reduce)").matches,
+        })
+      : null;
+    // Glide effects wait for React to draw each caret at its new position.
+    let measuredCarets = null,
+      pendingGlide = null;
+    const glideRunning = new Map();
+    flushGlide.current = () => {
+      if (!pendingGlide || !alive) return;
+      const { effects, offset } = pendingGlide;
+      pendingGlide = null;
+      runGlideEffects({
+        effects,
+        offset,
+        layer: caretLayer.current,
+        ghostLayer: ghostLayer.current,
+        settings: glide,
+        running: glideRunning,
+        onSettled: (session, anchor) => motion.settle(session, anchor),
+      });
+    };
     const measureCarets = () => {
       if (!alive || caretFrame !== null) return;
       caretFrame = requestAnimationFrame(() => {
@@ -455,6 +486,11 @@ export function WordgardEditor(props) {
         const bounds = editor.contentDOM.getBoundingClientRect();
         const visibleTop = Math.max(0, bounds.top),
           visibleBottom = Math.min(innerHeight, bounds.bottom);
+        // Glide positions are article-relative, so they hold across blocks and scrolling.
+        const article =
+          motion &&
+          (mount.current?.closest("article")?.getBoundingClientRect() ?? { left: 0, top: 0 });
+        const agentCarets = [];
         const next = collab.carets().flatMap((peer) => {
           try {
             if (peer.type === "dot")
@@ -473,6 +509,14 @@ export function WordgardEditor(props) {
               ];
             }
             const rect = editor.coordsAtPos(peer.position);
+            if (motion && peer.tag === "agent" && peer.anchor && rect && rect.bottom > rect.top)
+              agentCarets.push({
+                session: peer.session,
+                anchor: peer.anchor,
+                x: rect.left - article.left,
+                y: rect.top - article.top,
+                height: rect.height,
+              });
             const visibleLeft = Math.max(0, bounds.left),
               visibleRight = Math.min(innerWidth, bounds.right),
               labelOnLeft = rect.left - visibleLeft > visibleRight - rect.left;
@@ -504,6 +548,18 @@ export function WordgardEditor(props) {
         setRemoteCarets((previous) =>
           JSON.stringify(previous) === JSON.stringify(next) ? previous : next,
         );
+        if (motion) {
+          const effects = motion.observe(id, agentCarets);
+          if (effects.length)
+            pendingGlide = {
+              effects: [...(pendingGlide?.effects ?? []), ...effects],
+              offset: { x: origin.left - article.left, y: origin.top - article.top },
+            };
+          // Unchanged carets mean no render, so run the effects now.
+          const changed = JSON.stringify(measuredCarets) !== JSON.stringify(next);
+          measuredCarets = next;
+          if (!changed) flushGlide.current();
+        }
         // An agent's select beat collapses to a caret on its own schedule.
         clearTimeout(beatTimer);
         const beat = collab.nextRepaint();
@@ -719,6 +775,9 @@ export function WordgardEditor(props) {
       imageTarget.current = null;
       clearInterval(timer);
       if (caretFrame !== null) cancelAnimationFrame(caretFrame);
+      motion?.release(id);
+      for (const animation of glideRunning.values()) animation.cancel();
+      flushGlide.current = () => {};
       clearTimeout(beatTimer);
       document.removeEventListener("scroll", measureCarets, true);
       window.removeEventListener("resize", measureCarets);
@@ -740,6 +799,7 @@ export function WordgardEditor(props) {
       refresh.current = () => {};
     };
   }, [replica, id]);
+  useLayoutEffect(() => flushGlide.current(), [remoteCarets]);
   useEffect(() => {
     const editor = view.current;
     if (!editor) return;
@@ -1069,6 +1129,7 @@ export function WordgardEditor(props) {
       )}
       <div ref={mount} />
       <div ref={caretLayer} className="wordgard-caret-layer" aria-hidden="true">
+        {glide.enabled && <div ref={ghostLayer} className="agent-caret-ghosts" />}
         {remoteCarets.map((peer) => {
           const color = peer.color && {
             "--peer-color": peer.color.background,
@@ -1107,6 +1168,7 @@ export function WordgardEditor(props) {
               key={peer.session}
               className={`peer-caret${peer.idle ? " is-idle" : ""}`}
               data-label-side={peer.labelOnLeft ? "left" : "right"}
+              {...(glide.enabled && peer.tag === "agent" && { "data-glide": peer.session })}
               title={peer.title}
               style={{ ...color, left: peer.left, top: peer.top, height: peer.height }}
             >

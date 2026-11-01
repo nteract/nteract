@@ -60,6 +60,54 @@ async function oneLineButton(tab, name, label) {
   assert.equal(lines, 1, `${label}: "${name}" wraps onto ${lines} lines`);
   assert.ok(height >= 44, `${label}: "${name}" is ${height}px tall`);
 }
+// A glide ghost lives for a few hundred milliseconds, so count ghosts and
+// caret animations as they start rather than polling for them. With `pause`
+// set, each new glide and ghost is paused for a test to step.
+async function watchGlide(tab) {
+  await tab.evaluate(() => {
+    const log = { ghosts: 0, glides: 0, pause: false, paused: [] };
+    window.__glide = log;
+    new MutationObserver((records) => {
+      for (const record of records)
+        for (const node of record.addedNodes)
+          if (node.classList?.contains("agent-caret-ghost")) log.ghosts++;
+    }).observe(document.body, { subtree: true, childList: true });
+    const animate = Element.prototype.animate;
+    Element.prototype.animate = function (...args) {
+      const animation = animate.apply(this, args);
+      if (this.matches(".peer-caret")) log.glides++;
+      if (log.pause && this.matches(".peer-caret,.agent-caret-ghost")) {
+        animation.pause();
+        log.paused.push(animation);
+      }
+      return animation;
+    };
+  });
+}
+const glideLog = (tab) =>
+  tab.evaluate(() => ({ ghosts: window.__glide.ghosts, glides: window.__glide.glides }));
+/** The agent caret is still and sits at the end of `text`. */
+function caretAtEnd(tab, text) {
+  return tab.evaluate((text) => {
+    const caret = [...document.querySelectorAll(".wordgard-caret-layer .peer-caret")].find(
+      (element) => element.textContent.includes("Projects E2E agent"),
+    );
+    if (!caret || caret.getAnimations().some((animation) => animation.playState !== "finished"))
+      return false;
+    const walker = document.createTreeWalker(document.querySelector("wg-content"), 4);
+    for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+      const at = node.textContent.indexOf(text);
+      if (at < 0) continue;
+      const range = document.createRange();
+      range.setStart(node, at + text.length - 1);
+      range.setEnd(node, at + text.length);
+      const end = range.getBoundingClientRect();
+      const box = caret.getBoundingClientRect();
+      return Math.abs(box.left - end.right) <= 4 && box.top >= end.top - 6 && box.top <= end.bottom;
+    }
+    return false;
+  }, text);
+}
 let owner;
 // Phone-sized tabs, captured too when a step fails.
 const phones = new Map();
@@ -383,6 +431,92 @@ try {
   complete(
     "A fresh /projects load lists without the editor, a Page in its Project shows an agent's caret, and Home links both index routes",
   );
+
+  // Agent caret glide (viewer/caret-glide.mjs), an experiment behind ?glide=1.
+  // The owner tab keeps the default and must not change; a second tab opts in.
+  const glidePage = await ok("owner", "create_page", {
+    title: "Glide",
+    markdown: Array.from(
+      { length: 9 },
+      (_, index) => `Paragraph ${index + 1}. Room for an agent caret to travel between writes.`,
+    ).join("\n\n"),
+    idempotency_key: crypto.randomUUID(),
+  });
+  const glider = await context.newPage();
+  glider.on("pageerror", (error) => report.errors.push(error.message));
+  await owner.goto(`${origin}/p/${glidePage.page_id}`);
+  await glider.goto(`${origin}/p/${glidePage.page_id}?glide=1`);
+  for (const tab of [owner, glider]) {
+    await expect(tab.locator("wg-content").first()).toContainText("Paragraph 9.", {
+      timeout: 30000,
+    });
+    await watchGlide(tab);
+  }
+  const glideWrite = async (matchText, replacement) => {
+    const read = await ok("owner", "read_page", { page_id: glidePage.page_id });
+    await ok("owner", "patch_page", {
+      page_id: glidePage.page_id,
+      base_heads: read.heads,
+      idempotency_key: crypto.randomUUID(),
+      operations: [
+        { op: "replace_match", block_id: read.blocks[0].id, match_text: matchText, replacement },
+      ],
+    });
+    for (const tab of [owner, glider])
+      await expect(tab.locator("wg-content").first()).toContainText(replacement, {
+        timeout: 30000,
+      });
+  };
+  await glideWrite("Paragraph 2.", "Paragraph 2 holds the first agent write!");
+  await expect
+    .poll(() => caretAtEnd(glider, "the first agent write!"), { timeout: 30000 })
+    .toBe(true);
+  assert.deepEqual(
+    await glideLog(glider),
+    { ghosts: 0, glides: 0 },
+    "a first caret does not glide",
+  );
+  await glideWrite("Paragraph 8.", "Paragraph 8 was rewritten by the agent!");
+  await expect.poll(() => glideLog(glider), { timeout: 30000 }).toEqual({ ghosts: 1, glides: 1 });
+  await expect
+    .poll(() => caretAtEnd(glider, "rewritten by the agent!"), { timeout: 30000 })
+    .toBe(true);
+  await expect(glider.locator(".agent-caret-ghost")).toHaveCount(0, { timeout: 5000 });
+  await expect(glider.locator(".wordgard-caret-layer [data-glide]")).toHaveCount(1);
+  complete("With ?glide=1 an agent caret glides to its next write and leaves a fading ghost");
+
+  await expect
+    .poll(() => caretAtEnd(owner, "rewritten by the agent!"), { timeout: 30000 })
+    .toBe(true);
+  assert.deepEqual(await glideLog(owner), { ghosts: 0, glides: 0 });
+  await expect(owner.locator(".agent-caret-ghosts")).toHaveCount(0);
+  await expect(owner.locator("[data-glide]")).toHaveCount(0);
+  complete("Without the flag the same writes move the caret with no glide and no ghost");
+
+  // Pause the next glide as it starts, then step it at fixed times for review.
+  await glider.evaluate(() => {
+    window.__glide.pause = true;
+  });
+  await glideWrite("Paragraph 4.", "Paragraph 4 takes the third write!");
+  await expect.poll(() => glideLog(glider), { timeout: 30000 }).toEqual({ ghosts: 2, glides: 2 });
+  for (const [index, ms] of [0, 70, 140, 210, 280, 600].entries()) {
+    await glider.evaluate((ms) => {
+      for (const animation of window.__glide.paused)
+        animation.currentTime = Math.min(ms, animation.effect.getTiming().duration);
+    }, ms);
+    await glider
+      .locator(".wordgard-editor")
+      .first()
+      .screenshot({ path: `${output}/glide-${index + 1}-${ms}ms.png` });
+  }
+  await glider.evaluate(() => {
+    for (const animation of window.__glide.paused) animation.finish();
+  });
+  await expect
+    .poll(() => caretAtEnd(glider, "takes the third write!"), { timeout: 30000 })
+    .toBe(true);
+  await glider.close();
+  complete("A paused glide steps from the old position to the new one for screenshots");
 
   const authority = await ok("owner", "list_pages");
   const trashPage = (pageId) =>
