@@ -19,7 +19,10 @@
 //   { type: "tab", shift }                   Tab or Shift+Tab inside the menu
 //   { type: "activityExpired" }              the last active session left
 //   { type: "share", open }                  Share opened or dismissed itself
-//   { type: "breakpoint", phone }            the phone query changed
+//   { type: "breakpoint", phone, shareFocused }
+//                                            the phone query changed;
+//                                            `shareFocused` says whether the
+//                                            Share button held focus then
 //
 // Share dismisses itself (SharingControls: Escape and taps outside) and
 // reports that as `share` with `open: false`, so `outside` and `focusAway`
@@ -73,6 +76,8 @@ export function transition(state, event) {
  *   focusButton     focus returns to ⋯
  *   preventDefault  the key's own action is cancelled (Shift+Tab stays on ⋯)
  *   runAction       the chosen page action runs
+ *   reclaimShare    focus moves into the Share panel; the phone layout has
+ *                   no Share button, so focus it held leaves with the switch
  * Plain Tab focuses ⋯ and keeps its default, so focus moves on to the next
  * control after ⋯ (the menu items are not Tab stops).
  */
@@ -85,6 +90,8 @@ export function pageMenuEffects(previous, next, event) {
       return event.shift ? ["focusButton", "preventDefault"] : ["focusButton"];
     case "choose":
       return event.item === "action" ? ["focusButton", "runAction"] : [];
+    case "breakpoint":
+      return next.phone && next.view === "share" && event.shareFocused ? ["reclaimShare"] : [];
     default:
       return [];
   }

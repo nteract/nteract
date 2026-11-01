@@ -1,14 +1,14 @@
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import { test } from "node:test";
-import {
-  decodeRecordFrame,
-  RECORD_HEADER_BYTES,
-} from "../../upstream/packages/automerge-repo-subduction/src/record-codec.ts";
 import * as A from "@automerge/automerge";
 import * as N from "@automerge/subduction";
 import { Repo } from "@automerge/automerge-repo";
-import { SubductionBackend } from "@automerge/automerge-repo-subduction";
+import {
+  RECORD_HEADER_BYTES,
+  SubductionBackend,
+  decodeRecordFrame,
+} from "@automerge/automerge-repo-subduction";
 import {
   BACKEND_LIMITS,
   MAX_STORED_BYTES,

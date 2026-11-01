@@ -159,7 +159,7 @@ test("initial state is closed in either layout", () => {
   assert.deepEqual(initialPageMenu(false), { view: "closed", phone: false });
 });
 
-test("effects: focus returns to ⋯ on Escape and Tab, Shift+Tab stays, actions run", () => {
+test("effects: focus returns to ⋯ on Escape and Tab, Shift+Tab stays, actions run, Share reclaims focus", () => {
   const at = (view) => ({ view, phone: true });
   const effects = (view, event) => {
     const state = at(view);
@@ -173,6 +173,19 @@ test("effects: focus returns to ⋯ on Escape and Tab, Shift+Tab stays, actions 
   assert.deepEqual(effects("menu", EVENTS.chooseAction), ["focusButton", "runAction"]);
   assert.deepEqual(effects("menu", EVENTS.chooseShare), []);
   assert.deepEqual(effects("menu", EVENTS.outside), []);
+  // Desktop to phone with Share open reclaims focus only if the removed Share
+  // button held it.
+  const desktop = (view) => ({ view, phone: false });
+  const toPhoneFromShare = { ...EVENTS.toPhone, shareFocused: true };
+  assert.deepEqual(transition(desktop("share"), toPhoneFromShare), at("share"));
+  const switched = (state, event) => pageMenuEffects(state, transition(state, event), event);
+  assert.deepEqual(switched(desktop("share"), toPhoneFromShare), ["reclaimShare"]);
+  assert.deepEqual(switched(desktop("share"), EVENTS.toPhone), []);
+  for (const view of ["closed", "menu", "activity"])
+    for (const event of [EVENTS.toPhone, toPhoneFromShare])
+      assert.deepEqual(switched(desktop(view), event), [], `desktop ${view} to phone`);
+  for (const view of VIEWS)
+    assert.deepEqual(switched(at(view), EVENTS.toDesktop), [], `phone ${view} to desktop`);
   // Nothing runs when the event changed nothing.
   assert.deepEqual(effects("closed", EVENTS.tab), []);
   assert.deepEqual(effects("closed", EVENTS.chooseAction), []);

@@ -1,4 +1,5 @@
 import * as A from "@automerge/automerge";
+import { decodeRecordFrame } from "@automerge/automerge-repo-subduction";
 
 /** Host-attested authorship: which authenticated profile wrote an Automerge
  * actor's changes. A browser never names its own actor. The host reads the
@@ -23,31 +24,6 @@ const KEY = /^[0-9a-f]{64}$/;
 
 const hex = (value) => Array.from(value, (b) => b.toString(16).padStart(2, "0")).join("");
 const text = (value, max) => (typeof value === "string" ? value.slice(0, max) : "");
-
-// Stored compound record, binary v2 (patch-record-codec.mjs): "SDR", version
-// 2, kind (0 = commit), 3 reserved zero bytes, big-endian u32 signed and blob
-// lengths, tree, key, signed-envelope checksum, signed envelope, blob. Every
-// save writes v2; legacy v1 JSON records are only ever read, never saved.
-const FRAME_MAGIC = [0x53, 0x44, 0x52, 0x02];
-const FRAME_HEADER_BYTES = 112;
-
-/** The key, signed envelope and blob of a saved v2 commit frame, or null.
- * Reads only; the record codec in the storage bridge stays the authority. */
-export function commitFrame(value) {
-  if (!(value instanceof Uint8Array) || value.length < FRAME_HEADER_BYTES) return null;
-  if (!FRAME_MAGIC.every((byte, i) => value[i] === byte)) return null;
-  if (value[4] !== 0 || value[5] !== 0 || value[6] !== 0 || value[7] !== 0) return null;
-  const view = new DataView(value.buffer, value.byteOffset, value.byteLength);
-  const signedLength = view.getUint32(8),
-    blobLength = view.getUint32(12);
-  if (FRAME_HEADER_BYTES + signedLength + blobLength !== value.length) return null;
-  const blobStart = FRAME_HEADER_BYTES + signedLength;
-  return {
-    key: hex(value.subarray(48, 80)),
-    signed: value.subarray(FRAME_HEADER_BYTES, blobStart),
-    blob: value.subarray(blobStart),
-  };
-}
 
 // An uncompressed Automerge change chunk: magic, the first 4 bytes of the
 // change hash, chunk type 1, a LEB128 body length, then the body, which opens
@@ -89,15 +65,17 @@ export function signedIssuer(signed) {
   return hex(signed.subarray(ISSUER_START, ISSUER_END));
 }
 
-/** The signer, Automerge actor and change hash of a stored commit record, or null. Every
- * part must agree: the storage path's commit id, the frame's key, and the
- * change's own hash. Anything undecodable yields no attestation. */
-export function commitAuthor(path, value) {
+/** The signer, Automerge actor and change hash of a stored commit record, or
+ * null. The bridge's own record codec decodes the frame, within the backend's
+ * `maxRecordBytes`. Every part must agree: the storage path's commit id, the
+ * frame's commit kind and key, and the change's own hash. Anything
+ * undecodable yields no attestation. */
+export function commitAuthor(path, value, maxRecordBytes) {
   const match = typeof path === "string" ? COMMIT_PATH.exec(path) : null;
-  if (!match) return null;
+  if (!match || !(value instanceof Uint8Array)) return null;
   try {
-    const frame = commitFrame(value);
-    if (!frame || frame.key !== match[1]) return null;
+    const frame = decodeRecordFrame(value, maxRecordBytes);
+    if (frame.kind !== "commit" || frame.key !== match[1]) return null;
     const key = signedIssuer(frame.signed);
     if (!key) return null;
     const change = A.decodeChange(frame.blob);
@@ -417,21 +395,27 @@ export class ActorAuthorship {
 }
 
 /** The signer and actor of a stored commit record, for replay, or null.
- * It agrees with commitAuthor on every record: the change hash (SHA-256 of
- * the chunk after its checksum) must equal the storage path's commit id and
- * the frame's key, and the actor is read from that verified chunk's header.
- * A full decode of a large change costs tens of milliseconds, so this reads
- * only the header; a compressed or unusual chunk falls back to commitAuthor. */
-export async function replayAuthor(path, value) {
+ * It agrees with commitAuthor on every record: the bridge's codec decodes the
+ * frame within `maxRecordBytes`, and the change hash (SHA-256 of the chunk
+ * after its checksum) must equal the storage path's commit id and the frame's
+ * key. The actor is read from that verified chunk's header. A full decode of
+ * a large change costs tens of milliseconds, so this reads only the header; a
+ * compressed or unusual chunk falls back to commitAuthor. */
+export async function replayAuthor(path, value, maxRecordBytes) {
   const match = typeof path === "string" ? COMMIT_PATH.exec(path) : null;
-  if (!match) return null;
-  const frame = commitFrame(value);
-  if (!frame || frame.key !== match[1]) return null;
+  if (!match || !(value instanceof Uint8Array)) return null;
+  let frame;
+  try {
+    frame = decodeRecordFrame(value, maxRecordBytes);
+  } catch {
+    return null;
+  }
+  if (frame.kind !== "commit" || frame.key !== match[1]) return null;
   const key = signedIssuer(frame.signed);
   if (!key) return null;
   const actor = changeHeaderActor(frame.blob);
   if (!actor || !ACTOR.test(actor)) {
-    const author = commitAuthor(path, value);
+    const author = commitAuthor(path, value, maxRecordBytes);
     return author && { key: author.key, actor: author.actor };
   }
   const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", frame.blob.subarray(8)));
@@ -439,10 +423,11 @@ export async function replayAuthor(path, value) {
 }
 
 /** The signer and actor of every stored commit record in a byte store.
- * `authorOf(key, value)` reads one record (replayAuthor). The store holds at
- * most the backend's record and byte limits per document, the same records
- * the host already reads to load the document at startup. */
-export async function loadCommitAuthors(store, authorOf = replayAuthor) {
+ * `authorOf(key, value)` reads one record (replayAuthor with the backend's
+ * record limit). The store holds at most the backend's record and byte limits
+ * per document, the same records the host already reads to load the document
+ * at startup. */
+export async function loadCommitAuthors(store, authorOf) {
   const authors = [];
   for (const key of await store.list("")) {
     if (!COMMIT_PATH.test(key)) continue;
