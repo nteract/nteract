@@ -409,7 +409,10 @@ comments restore checks the stored entry against the record's grant, and the
 session's own lifecycle fence, at its start and again right before the native
 write; a retirement, release or replacement in between stores nothing.
 A deletion marker is permanent. Trash, a refusal without a code, sign-in and
-transient failures keep the copy.
+transient failures keep the copy. Discovery, reconnects, the open and save
+receipts classify a refusal in one place (`classifyRefusal` in
+[viewer/session.mjs](viewer/session.mjs)), so `page_trashed` shows the Trash
+notice whichever request sees it first.
 
 ```text
 Browser Repo + Wordgard                 Authorized HTTP / MCP operations

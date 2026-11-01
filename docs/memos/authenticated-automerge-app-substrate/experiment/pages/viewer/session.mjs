@@ -106,11 +106,33 @@ const bytes = (value) => Uint8Array.from(value.match(/../g), (v) => parseInt(v, 
  * missing-Page answer). Anything else, a transient failure included, leaves
  * the copy where it is. */
 export function refusalOf(error) {
-  if (error?.status === 404) return "deleted";
-  if (error?.status === 403 && error.code === "page_access_denied") return "access";
-  return undefined;
+  const refusal = classifyRefusal(error);
+  return refusal === "deleted" || refusal === "access" ? refusal : undefined;
+}
+/** One host refusal, classified once for every path that can see it:
+ * discovery, reconnect, open and receipts.
+ * - `deleted`: the Page is gone (404). markDeleted retires the copy.
+ * - `access`: page_access_denied (access removed, or a Page missing to this
+ *   account, purged included). revoke retires and hides the copy.
+ * - `trash`: page_trashed. The Trash notice; the copy stays for restore.
+ * - `denied`: any other 403. Paused; the copy stays, since the host didn't
+ *   say why. A refused signing key is a native refusal, handled apart.
+ * Anything else is not a refusal. `legacyMissing: false` reads only
+ * `page_deleted` as a deletion, for routes where a bare 404 isn't one. */
+export function classifyRefusal(error, { legacyMissing = true } = {}) {
+  if (error?.status === 404)
+    return legacyMissing || error.code === "page_deleted" ? "deleted" : undefined;
+  if (error?.status !== 403) return undefined;
+  if (error.code === "page_access_denied") return "access";
+  if (error.code === "page_trashed") return "trash";
+  if (error.code === "signing_key_rejected") return undefined;
+  return "denied";
 }
 export const ACCESS_REVOKED = "You no longer have access to this Page.";
+export const TRASHED_COPY =
+  "This Page is in its owner's Trash. Your local copy is kept on this device.";
+export const DENIED_COPY =
+  "You no longer have access to this Page. Your local copy is kept on this device.";
 export const PAGE_DELETED = "This Page was deleted.";
 /** Stands in for the Markdown of a copy that couldn't be projected. */
 export const MARKDOWN_UNAVAILABLE =
@@ -1143,6 +1165,26 @@ export class PageSession {
    * `trashed` says the Page is in its owner's Trash, and otherwise the
    * replica must be archived and reloaded. `checkpoint: false` when another
    * tab already wrote the access fact. */
+  /** Apply one classified host refusal (classifyRefusal). Returns whether
+   * it was one. */
+  async applyRefusal(refusal) {
+    switch (refusal) {
+      case "deleted":
+        await this.markDeleted();
+        return true;
+      case "access":
+        await this.revoke();
+        return true;
+      case "trash":
+        // A trashed Page can be restored, so the copy stays.
+        if (this.alive) this.pauseForAccess(TRASHED_COPY, { trashed: true });
+        return true;
+      case "denied":
+        if (this.alive) this.pauseForAccess(DENIED_COPY, { denied: true });
+        return true;
+    }
+    return false;
+  }
   pauseForAccess(message, { denied = false, checkpoint = true, trashed = false } = {}) {
     // An opening replica has no checkpoint yet, so a changed grant only pauses.
     const local = !checkpoint || (!denied && this.phase$.snapshot().name === "opening");
@@ -1231,16 +1273,19 @@ export class PageSession {
   exportRecoveries(records = []) {
     const copies = [];
     if (this.closedRecovery && !this.recoveryArchived) copies.push(this.exportRecovery());
-    else if (this.unarchivedCopy && !this.recoveryArchived)
-      // A failed capture holds the replica: try its snapshots again, or fall
-      // back to the Markdown it still projects.
+    else if (this.unarchivedCopy && !this.recoveryArchived) {
+      // A failed capture holds the replica. Drafts the UI changed since then
+      // join the retained copy the reload gate keeps, whatever happens next.
+      this.unarchivedCopy = this.#unarchivedCopy();
+      // Try its snapshots again, or fall back to the Markdown it projects.
       try {
         copies.push(
-          this.exportRecovery(undefined, { drafts: this.#retirementDrafts(), allComments: true }),
+          this.exportRecovery(undefined, { drafts: this.retiredDrafts, allComments: true }),
         );
       } catch {
         copies.push({ ...this.unarchivedCopy });
       }
+    }
     for (const record of records)
       copies.push({ ...this.exportRecovery(record), archived_at: record.archived_at });
     return { page_id: this.pageId, copies };
@@ -1576,9 +1621,9 @@ export class PageSession {
     this.handle.on("change", (event) => this.receiveChange(event));
     this.handle.on("ephemeral-message", (event) => this.ephemeral(event));
     this.openComments();
-    if (this.accessDenied)
-      this.accessProblem =
-        "You no longer have access to this Page. Your local copy is kept on this device.";
+    // A Trash pause keeps its own notice.
+    if (this.accessDenied && pauseOf(this.phase$.snapshot()).access !== "trash")
+      this.accessProblem = DENIED_COPY;
     this.syncStatus({ type: "opened", pending: unconfirmed });
     this.renderStatus();
     // A pause while opening has already failed start().
@@ -2016,18 +2061,8 @@ export class PageSession {
         await this.persistLocal({ canWrite: this.canWrite });
       if (this.accessDenied || this.accessReloadRequired) return;
     } catch (error) {
-      const refusal = refusalOf(error);
-      if (refusal === "deleted") await this.markDeleted();
-      else if (refusal === "access") await this.revoke();
-      else if (this.alive && error.status === 401 && !this.authRequired) this.requireSignIn();
-      else if (this.alive && error.status === 403)
-        // A trashed Page can be restored, so keep the local copy either way.
-        this.pauseForAccess(
-          error.code === "page_trashed"
-            ? "This Page is in its owner's Trash. Your local copy is kept on this device."
-            : "You no longer have access to this Page. Your local copy is kept on this device.",
-          error.code === "page_trashed" ? { trashed: true } : { denied: true },
-        );
+      if (!(await this.applyRefusal(classifyRefusal(error))))
+        if (this.alive && error.status === 401 && !this.authRequired) this.requireSignIn();
       throw error;
     }
     if (!this.alive) return;
@@ -2146,12 +2181,11 @@ export class PageSession {
         this.refuseNative(error.admission);
         return;
       }
-      if (error.status === 401) this.requireSignIn(this.authProblem || undefined);
-      else if (error.status === 403)
-        this.pauseForAccess(
-          "You no longer have access to this Page. Your local copy is kept on this device.",
-          { denied: true },
-        );
+      // Discovery classified its own answer; a bare 404 from another request
+      // here (registration, tools) isn't a deletion.
+      const refusal = classifyRefusal(error, { legacyMissing: false });
+      if (refusal) await this.applyRefusal(refusal);
+      else if (error.status === 401) this.requireSignIn(this.authProblem || undefined);
       else if (isTransientFailure(error)) {
         // The host may be restarting. Retry quietly; the reconnect machine
         // reports an outage if this lasts.
@@ -2985,14 +3019,12 @@ export class PageSession {
         }
         // The receipt route answers a missing Page as page_access_denied;
         // page_deleted reaches only the owner and current members.
-        if (refusalOf(error) === "access") {
-          await this.revoke();
+        const refusal = classifyRefusal(error, { legacyMissing: false });
+        if (refusal === "access" || refusal === "deleted") {
+          await this.applyRefusal(refusal);
           return;
         }
-        if (error.status === 404 && error.code === "page_deleted") {
-          await this.markDeleted();
-          return;
-        }
+        if (refusal) await this.applyRefusal(refusal);
         if (error.code === "schema_unsupported") {
           // Retrying can't help: these edits need a build with the feature.
           // The schema notice explains it; no second banner.
@@ -3003,11 +3035,6 @@ export class PageSession {
           return;
         }
         if (error.status === 401) this.requireSignIn();
-        if (error.status === 403)
-          this.pauseForAccess(
-            "You no longer have access to this Page. Your local copy is kept on this device.",
-            { denied: true },
-          );
         if (!this.authRequired && !this.accessDenied && !this.accessReloadRequired) {
           this.syncStatus({ type: "stalled", revision: receipt, localCopy: !!this.localPage });
           this.renderStatus();

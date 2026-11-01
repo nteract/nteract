@@ -12,7 +12,15 @@ import {
   interpretAsDocumentId,
 } from "@automerge/automerge-repo";
 import { SubductionBackend } from "@automerge/automerge-repo-subduction";
-import { PageSession, refusalOf, listLocalPages, signingKeyRefused } from "./session.mjs";
+import {
+  DENIED_COPY,
+  PageSession,
+  TRASHED_COPY,
+  classifyRefusal,
+  refusalOf,
+  listLocalPages,
+  signingKeyRefused,
+} from "./session.mjs";
 import { createPageData, initializePage } from "../model/page.mjs";
 import { applyComment } from "../model/comments.mjs";
 import { COMMENTS_FEATURE } from "../model/comments-doc.mjs";
@@ -300,6 +308,78 @@ test("a refused receipt retires the open copy", async (t) => {
   assert.equal(session.receiptRetryTimer, undefined);
   assert.equal((await readLocalPage(auth.identity, pageId, { markers: true })).revoked, true);
   assert.equal((await listLocalRecoveries(auth.identity, pageId)).length, 1);
+});
+
+test("classifyRefusal names each refusal once for every path", () => {
+  const cases = [
+    [{ status: 404, code: "page_deleted" }, "deleted", "deleted"],
+    [{ status: 404 }, "deleted", undefined],
+    [{ status: 403, code: "page_access_denied" }, "access", "access"],
+    [{ status: 403, code: "page_trashed" }, "trash", "trash"],
+    [{ status: 403 }, "denied", "denied"],
+    [{ status: 403, code: "signing_key_rejected" }, undefined, undefined],
+    [{ status: 401, code: "sign_in_required" }, undefined, undefined],
+    [{ status: 503, code: "temporarily_unavailable" }, undefined, undefined],
+    [undefined, undefined, undefined],
+  ];
+  for (const [error, any, strict] of cases) {
+    assert.equal(classifyRefusal(error), any, JSON.stringify(error));
+    assert.equal(classifyRefusal(error, { legacyMissing: false }), strict, JSON.stringify(error));
+  }
+});
+
+/** The Trash notice, the copy kept and rendered, read-only. */
+async function assertTrashed(session, auth, pageId) {
+  assert.equal(session.hidden, false, "a trashed copy is not retired");
+  assert.equal(session.phase$.snapshot().reason, "trash");
+  assert.equal(session.accessProblem, TRASHED_COPY);
+  assert.equal(session.canWrite, false);
+  assert.ok(session.snapshot(), "the copy stays for restore");
+  const stored = await readLocalPage(auth.identity, pageId, { markers: true });
+  assert.equal(stored.revoked, undefined);
+  assert.ok(stored.snapshot);
+  assert.deepEqual(await listLocalRecoveries(auth.identity, pageId), []);
+}
+
+const TRASHED_ANSWER = { error: "This Page is in its owner's Trash", code: "page_trashed" };
+
+test("a 403 page_trashed on the reconnect path shows the Trash notice", async (t) => {
+  const { session, auth, pageId } = await openCopy();
+  t.after(() => session.close());
+  // A refusal from a request discovery didn't classify, as registration's.
+  session.connect = async () => {
+    throw Object.assign(Error(TRASHED_ANSWER.error), { status: 403, code: "page_trashed" });
+  };
+  await session.retryConnection();
+  await assertTrashed(session, auth, pageId);
+});
+
+test("a 403 page_trashed on a receipt shows the Trash notice, and discovery agrees", async (t) => {
+  const { session, auth, pageId } = await openCopy();
+  t.mock.method(globalThis, "fetch", respond(403, TRASHED_ANSWER));
+  t.after(() => session.close());
+  session.connection = { documentId: session.localPage.document_id };
+  // The receipt sees the 403 first, as when the owner's trash change
+  // arrives before the socket closes.
+  await session.saveReceipt();
+  await assertTrashed(session, auth, pageId);
+  // A recheck through discovery gets the same answer and keeps the notice.
+  await session.retryConnection({ recheckDeniedAccess: true });
+  clearTimeout(session.retryTimer);
+  await assertTrashed(session, auth, pageId);
+});
+
+test("a 403 without a code pauses and keeps the copy on every path", async (t) => {
+  const { session, auth, pageId } = await openCopy();
+  t.after(() => session.close());
+  session.connect = async () => {
+    throw Object.assign(Error("Page is private"), { status: 403 });
+  };
+  await session.retryConnection();
+  assert.equal(session.hidden, false);
+  assert.equal(session.phase$.snapshot().reason, "access");
+  assert.equal(session.accessProblem, DENIED_COPY);
+  assert.equal((await readLocalPage(auth.identity, pageId, { markers: true })).revoked, undefined);
 });
 
 test("a tab that hasn't seen the refusal archives its own copy and retires too", async (t) => {
@@ -1312,6 +1392,35 @@ test("Try again keeps the drafts the first capture read after the UI resets", as
   const markdown = download.copies.at(-1).markdown;
   assert.match(markdown, /Composer draft\./);
   assert.equal(markdown.split("Panel reply.").length - 1, 1, "a draft read twice is listed once");
+});
+
+test("a Download that fails to serialize again retains the drafts changed since the capture", async (t) => {
+  const copy = await openCopy();
+  const { session } = copy;
+  t.after(() => session.close());
+  let reply = { kind: "reply", thread_id: "thread-1", body: "Reply A." };
+  const unwatch = session.watchCommentDrafts(() => [reply]);
+  const handle = session.commentsHandle;
+  const real = handle.doc;
+  handle.doc = () => JSON.parse(JSON.stringify(real()));
+  t.mock.method(session, "releaseLocal", async () => {});
+  await session.revoke();
+  assert.equal(session.phase$.snapshot().held, true);
+  assert.match(session.retainedCopy.markdown, /Reply A\./);
+  // The panel remounts and the person edits the reply before downloading.
+  unwatch();
+  reply = { ...reply, body: "Reply B." };
+  session.watchCommentDrafts(() => [reply]);
+  const download = session.exportRecoveries([]);
+  assert.equal(download.copies.length, 1);
+  assert.match(download.copies[0].markdown, /Reply A\./);
+  assert.match(download.copies[0].markdown, /Reply B\./);
+  // The reload gate's copy follows the download.
+  assert.match(session.retainedCopy.markdown, /Reply B\./);
+  assert.deepEqual(
+    session.retainedCopy.comment_drafts.map((draft) => draft.body),
+    ["Reply A.", "Reply B."],
+  );
 });
 
 test("a same-tab retirement during a comments install archives the found document", async (t) => {
