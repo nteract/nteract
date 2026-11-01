@@ -437,14 +437,22 @@ export class PageSession {
       else {
         await this.repo?.flush();
         // With no unconfirmed edit, nothing this replica's actors authored
-        // can be unacknowledged, and they can't author again.
-        const retire = !!this.handle && !this.sync$.snapshot().pending;
+        // can be unacknowledged, and they can't author again. Decide from
+        // the document and the recorded acknowledgements, never from the
+        // sync machine: a close can run before start() classified the
+        // replica, for example when an open fails partway.
+        let edits,
+          retire = false;
+        try {
+          edits = this.handle ? this.localEditsWithActor() : undefined;
+          retire = !!edits && !hasUnconfirmedLocalEdits(this.doc, edits);
+        } catch {
+          // Keeping every actor is always safe.
+        }
         await this.persistLocal(
           {
             pending: this.status !== "Saved",
-            ...(retire && {
-              localEdits: retireReplica(this.localEditsWithActor(), this.replicaId),
-            }),
+            ...(retire && { localEdits: retireReplica(edits, this.replicaId) }),
           },
           { allowClosed: true },
         );
@@ -1039,10 +1047,15 @@ export class PageSession {
   actor() {
     return A.getActorId(this.doc);
   }
-  /** The checkpoint's localEdits with this session's actor recorded. */
+  /** The checkpoint's localEdits with this session's actor recorded. A
+   * checkpoint without valid localEdits predates them: its receipt flag
+   * stands for edits that can't be attributed. */
   localEditsWithActor() {
     return withActor(
-      readLocalEdits(this.localPage?.localEdits) ?? emptyLocalEdits(),
+      readLocalEdits(this.localPage?.localEdits) ?? {
+        ...emptyLocalEdits(),
+        unattributed: !!this.localPage?.pending,
+      },
       this.actor(),
       this.replicaId,
     );

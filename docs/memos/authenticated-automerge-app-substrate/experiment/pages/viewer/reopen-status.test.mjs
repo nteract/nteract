@@ -406,3 +406,73 @@ test("a covering receipt frees its replica's earlier actors and a clean close fr
   await second.close();
   assert.deepEqual(ownEntries(await readLocalPage(h.auth.identity, pageId), replica), []);
 });
+
+test("an open that fails before classifying keeps the replica's unconfirmed actors", async (t) => {
+  const h = host(t);
+  const pageId = await cachedPage(h);
+  const first = await open(h, pageId);
+  await acknowledge(h, first);
+  const actor = first.actor();
+  await crashAfterEdit(first, "Unsaved before a failed open");
+
+  // Recording the next session's actor fails once, as a transient IndexedDB
+  // error would. open() then closes the half-open session, and that close's
+  // checkpoint write succeeds.
+  t.mock.method(
+    PageSession.prototype,
+    "recordActor",
+    async () => {
+      throw Object.assign(Error("IndexedDB is briefly unavailable"), { name: "UnknownError" });
+    },
+    { times: 1 },
+  );
+  const failed = await PageSession.open(pageId, {
+    authentication: h.auth,
+    refreshSession: async () => h.auth,
+  }).then(
+    () => assert.fail("the open should fail"),
+    (error) => error,
+  );
+  assert.equal(failed.message, "IndexedDB is briefly unavailable");
+  await failed.cleanupPromise;
+  const cleaned = await readLocalPage(h.auth.identity, pageId);
+  assert.ok(
+    cleaned.localEdits.actors.some((entry) => entry.actor === actor),
+    "the cleanup close keeps the actor with the unconfirmed edit",
+  );
+
+  const reopened = await open(h, pageId);
+  t.after(() => reopened.close());
+  assert.equal(reopened.snapshot().title, "Unsaved before a failed open");
+  assert.equal(reopened.recoveryPending, true);
+  assert.equal(reopened.status, "Saving");
+});
+
+test("closing a legacy pending checkpoint early keeps its receipt flag as unattributed", async (t) => {
+  const h = host(t);
+  const pageId = await cachedPage(h);
+  const legacy = await readLocalPage(h.auth.identity, pageId);
+  await writeLocalPage(h.auth.identity, { ...legacy, pending: true });
+  t.mock.method(
+    PageSession.prototype,
+    "recordActor",
+    async () => {
+      throw Error("IndexedDB is briefly unavailable");
+    },
+    { times: 1 },
+  );
+  const failed = await PageSession.open(pageId, {
+    authentication: h.auth,
+    refreshSession: async () => h.auth,
+  }).catch((error) => error);
+  await failed.cleanupPromise;
+  const cleaned = await readLocalPage(h.auth.identity, pageId);
+  assert.ok(
+    !cleaned.localEdits || cleaned.localEdits.unattributed,
+    "a cleanup close never turns a legacy pending checkpoint into a clean one",
+  );
+  h.state.offline = true;
+  const reopened = await open(h, pageId);
+  t.after(() => reopened.close());
+  assert.equal(reopened.sync$.snapshot().pending, true);
+});
