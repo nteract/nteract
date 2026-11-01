@@ -149,6 +149,9 @@ function App() {
     // The title value this tab last showed and its selection as native
     // cursors, so a peer's edit can put the caret back on its side.
     titleSelection = useRef(null),
+    // The title input's composition state (title-selection.mjs). The ref is
+    // read by event handlers; the state re-renders the value an IME shows.
+    titleCompositionRef = useRef(null),
     activeBlock = useRef(null),
     commentsButton = useRef(null);
   // The inline comment composer. It outlives Pages; resetDocumentUI resets it,
@@ -555,9 +558,44 @@ function App() {
   // React writes a peer's title into the focused input, which moves the
   // caret to the end. Resolve the selection's cursors in the new document.
   const shownTitle = page?.title;
+  const [titleComposing, setTitleComposing] = useState(null);
+  function composeTitle(event) {
+    const module = editor.module;
+    if (!module) return null;
+    const next = module.titleComposition(titleCompositionRef.current ?? module.TITLE_IDLE, event);
+    titleCompositionRef.current = next;
+    setTitleComposing(module.composingTitle(next, session) ? next.value : null);
+    return next;
+  }
+  // A composition belongs to the Page it began on.
+  useEffect(() => {
+    titleCompositionRef.current = null;
+    setTitleComposing(null);
+  }, [session]);
+  function composing() {
+    const state = titleCompositionRef.current;
+    return !!state && !!editor.module?.composingTitle(state, session);
+  }
+  // One title keystroke, or a finished composition, as one splice against the
+  // revision the input showed. A peer's change React hadn't shown yet is
+  // kept, and the input then shows the merged title with the caret after the
+  // applied splice, so it matches a revision again.
+  function commitTitle(input, base) {
+    const module = editor.module;
+    const edit = module.titleEdit(session.doc, base, input.value, input.selectionStart);
+    const value = input.value;
+    session.change((doc) => module.setPageTitle(doc, value, edit));
+    const merged = module.mergedTitle(session.doc, edit, value);
+    if (merged) {
+      input.value = merged.value;
+      input.setSelectionRange(merged.caret, merged.caret);
+    }
+    rememberTitleSelection(input);
+  }
   function rememberTitleSelection(input = titleInput.current) {
     const module = editor.module;
-    if (!input || !session || !module) return;
+    // While an IME composes, the snapshot stays on the revision it began on.
+    if (!input || !session || !module || composing()) return;
     const previous = titleSelection.current;
     const snapshot = module.titleSnapshot(
       session.doc,
@@ -578,6 +616,7 @@ function App() {
       seen.session === session &&
       seen.value !== shownTitle &&
       session.doc.title === shownTitle &&
+      !composing() &&
       document.activeElement === input
     ) {
       const next = editor.module?.resolveTitleSelection(session.doc, seen.cursors);
@@ -1040,31 +1079,47 @@ function App() {
                   aria-label="Page title"
                   title={page.title || "Untitled"}
                   placeholder="Untitled"
-                  value={page.title}
+                  value={titleComposing ?? page.title}
                   readOnly={!session.canWrite}
                   onSelect={(event) => rememberTitleSelection(event.currentTarget)}
+                  onCompositionStart={(event) => {
+                    const seen = titleSelection.current;
+                    composeTitle({
+                      type: "start",
+                      session,
+                      base: seen?.session === session ? seen : null,
+                      value: event.currentTarget.value,
+                    });
+                  }}
+                  onCompositionEnd={(event) => {
+                    const state = titleCompositionRef.current;
+                    if (!composing()) return;
+                    composeTitle({ type: "end" });
+                    try {
+                      commitTitle(event.currentTarget, state.base);
+                    } catch (error) {
+                      showError(error);
+                    }
+                  }}
                   onChange={(event) => {
+                    const input = event.currentTarget;
+                    // An IME's input events only update what it shows.
+                    if (composing() || event.nativeEvent.isComposing) {
+                      if (!composing()) {
+                        const seen = titleSelection.current;
+                        composeTitle({
+                          type: "start",
+                          session,
+                          base: seen?.session === session ? seen : null,
+                          value: input.value,
+                        });
+                      }
+                      composeTitle({ type: "input", session, value: input.value });
+                      return;
+                    }
                     try {
                       const seen = titleSelection.current;
-                      const edit = editor.module.titleEdit(
-                        session.doc,
-                        seen?.session === session ? seen : null,
-                        event.target.value,
-                        event.target.selectionStart,
-                      );
-                      session.change((doc) =>
-                        editor.module.setPageTitle(doc, event.target.value, edit),
-                      );
-                      // A peer's change React hadn't shown yet was kept. Show
-                      // the merged title now, with the caret after the
-                      // applied splice, so the input matches a revision again.
-                      const input = event.currentTarget;
-                      if (edit && input.value !== session.doc.title) {
-                        const at = edit.index + edit.insert.length;
-                        input.value = session.doc.title;
-                        input.setSelectionRange(at, at);
-                      }
-                      rememberTitleSelection(input);
+                      commitTitle(input, seen?.session === session ? seen : null);
                     } catch (error) {
                       showError(error);
                     }

@@ -2,8 +2,12 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import * as A from "@automerge/automerge";
 import {
+  TITLE_IDLE,
   captureTitleSelection,
+  composingTitle,
+  mergedTitle,
   resolveTitleSelection,
+  titleComposition,
   titleEdit,
   titleSnapshot,
   titleSplice,
@@ -157,4 +161,70 @@ test("the caret follows the applied splice when a stale edit kept a peer's text"
   });
   // An input value that matches no known revision keeps the last snapshot.
   assert.equal(titleSnapshot(next, after, "unrelated", 2), after);
+});
+
+test("the composition machine holds its base and ignores events from other Pages", () => {
+  const base = { value: "x", heads: [] };
+  let state = titleComposition(TITLE_IDLE, { type: "start", session: "one", base, value: "x" });
+  assert.equal(composingTitle(state, "one"), true);
+  assert.equal(composingTitle(state, "two"), false);
+  // A second start keeps the first base; input from another Page is ignored.
+  assert.equal(
+    titleComposition(state, { type: "start", session: "one", base: {}, value: "y" }),
+    state,
+  );
+  assert.equal(titleComposition(state, { type: "input", session: "two", value: "z" }), state);
+  state = titleComposition(state, { type: "input", session: "one", value: "xか" });
+  assert.deepEqual(state, { phase: "composing", session: "one", base, value: "xか" });
+  assert.equal(titleComposition(state, { type: "end" }), TITLE_IDLE);
+  assert.equal(
+    titleComposition(TITLE_IDLE, { type: "input", session: "one", value: "q" }),
+    TITLE_IDLE,
+  );
+});
+
+test("a peer's title edit during a composition merges when the composition ends", () => {
+  // The input shows "Notes" with the caret at the end, and an IME starts.
+  let doc = A.from({ title: "Notes" });
+  const shown = titleSnapshot(doc, null, "Notes", 5);
+  let state = titleComposition(TITLE_IDLE, {
+    type: "start",
+    session: "s",
+    base: shown,
+    value: "Notes",
+  });
+  // Composing updates only what the input shows; the document is untouched.
+  for (const value of ["Notes k", "Notes か", "Notes かん", "Notes 漢"])
+    state = titleComposition(state, { type: "input", session: "s", value });
+  // Meanwhile a peer's edit reaches the document.
+  doc = type(doc, 0, "My ");
+  assert.equal(doc.title, "My Notes");
+  // A selection change mid-composition keeps the base revision.
+  assert.equal(state.base, shown);
+  // The composition ends: the composed text commits as one splice against
+  // the revision the input showed when it began.
+  const value = state.value,
+    caret = value.length;
+  const base = state.base;
+  state = titleComposition(state, { type: "end" });
+  assert.equal(state, TITLE_IDLE);
+  const edit = titleEdit(doc, base, value, caret);
+  doc = apply(doc, edit);
+  assert.equal(doc.title, "My Notes 漢");
+  // The input then shows the merged title, caret after the composed text.
+  assert.deepEqual(mergedTitle(doc, edit, value), { value: "My Notes 漢", caret: 10 });
+  // Without a peer edit there is nothing to show.
+  assert.equal(mergedTitle(doc, edit, doc.title), null);
+  assert.equal(mergedTitle(doc, null, "other"), null);
+});
+
+test("a composition in the middle of the title commits at its own place", () => {
+  let doc = A.from({ title: "AB" });
+  const base = titleSnapshot(doc, null, "AB", 1);
+  // The peer types at the end while the IME composes after "A".
+  doc = type(doc, 2, "!");
+  const edit = titleEdit(doc, base, "A日B", 2);
+  doc = apply(doc, edit);
+  assert.equal(doc.title, "A日B!");
+  assert.deepEqual(mergedTitle(doc, edit, "A日B"), { value: "A日B!", caret: 2 });
 });

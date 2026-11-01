@@ -15,7 +15,15 @@ export { CommentsPanel } from "./CommentsPanel.jsx";
 export { CommentPopover } from "./CommentPopover.jsx";
 export { SaveStatus } from "./SaveStatus.jsx";
 export { PageControls } from "./PageControls.jsx";
-export { resolveTitleSelection, titleEdit, titleSnapshot } from "./title-selection.mjs";
+export {
+  TITLE_IDLE,
+  composingTitle,
+  mergedTitle,
+  resolveTitleSelection,
+  titleComposition,
+  titleEdit,
+  titleSnapshot,
+} from "./title-selection.mjs";
 
 /** The heads a Trash move compares with the host's copy. */
 export const pageHeads = (doc) => A.getHeads(doc);

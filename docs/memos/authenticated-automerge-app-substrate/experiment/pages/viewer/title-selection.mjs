@@ -118,3 +118,47 @@ export function titleEdit(doc, base, next, caret) {
   const to = edit.remove ? carry(edit.index + edit.remove) : from;
   return { index: from, remove: Math.max(0, to - from), insert: edit.insert };
 }
+
+/** What the input should show after this tab's splice: the merged title and
+ * the caret after the applied splice, when a peer's change React hadn't shown
+ * yet was kept. Null when the input already shows the document's title. */
+export function mergedTitle(doc, edit, value) {
+  if (!edit || typeof doc?.title !== "string" || doc.title === value) return null;
+  return { value: doc.title, caret: edit.index + edit.insert.length };
+}
+
+// The title input's composition lifecycle. An IME owns the input's value and
+// its replacement range while it composes, so nothing may rewrite either:
+//
+// - idle: each input event is one splice into the document.
+// - composing: input events only update the text the input shows; the
+//   document is untouched, and `base` keeps the snapshot of the revision the
+//   input showed when composition began. Peer edits reach the document but
+//   not the input.
+// - end: back to idle. The caller commits the composed text against `base`
+//   as one splice and shows the merged title.
+//
+// `session` scopes a composition to the Page it began on.
+export const TITLE_IDLE = Object.freeze({ phase: "idle" });
+
+export function titleComposition(state, event) {
+  switch (event.type) {
+    case "start":
+      return state.phase === "composing" && state.session === event.session
+        ? state
+        : { phase: "composing", session: event.session, base: event.base, value: event.value };
+    case "input":
+      return state.phase === "composing" && state.session === event.session
+        ? { ...state, value: event.value }
+        : state;
+    case "end":
+    case "reset":
+      return TITLE_IDLE;
+    default:
+      return state;
+  }
+}
+
+/** Whether a title input event belongs to a composition in `state`. */
+export const composingTitle = (state, session) =>
+  state.phase === "composing" && state.session === session;
