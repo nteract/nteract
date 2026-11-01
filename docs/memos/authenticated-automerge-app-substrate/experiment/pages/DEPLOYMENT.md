@@ -302,14 +302,17 @@ CREATE TABLE pages_quota_rules (
 | 2 | `domain` equal to that email's domain, lowercased | `('domain', 'anaconda.com', 500)` |
 | 3 | the target default | `PAGES_DEFAULT_PAGE_QUOTA` |
 
-A rule replaces the default: it can be lower, and `0` pauses creation for the
-account without hiding or deleting its Pages. Store emails lowercased and
+A rule replaces the default: it can be lower. `0` pauses the account: it can't
+create, restore or add sub-pages or Projects, but it can still move Pages to
+Trash, and its Pages stay readable. Store emails lowercased and
 trimmed, and domains lowercased with no `@`; the resolver normalizes them the
 same way, and a value that can't match is ignored. An account with no verified
 email always gets the default. The Worker creates the table on first use (its
 own `pages_quota_schema` version table) and reads it once per isolate every five
 minutes, so a change takes up to five minutes to apply. If D1 fails, accounts get
-the default and the Worker logs a `page-quota` failure.
+the default and the Worker logs a `page-quota` failure. A failed read is retried
+after 30 seconds; a schema setup that hangs is abandoned after 30 seconds, so a
+recovered D1 applies the rules again without a restart.
 
 This release ships no write path for rules. celld's internal listener answers
 only celld's own routes, so a host-only Worker route there isn't reachable, and

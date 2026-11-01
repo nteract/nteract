@@ -4,7 +4,7 @@ import { createServerAppSession } from "@cloud/app-session.ts";
 import { createAuthFixture } from "../../auth-fixtures.mjs";
 import { sqliteD1 } from "../test/sqlite-d1.mjs";
 import worker, { Catalog } from "./index.mjs";
-import { countedStorage, listAll } from "./catalog.mjs";
+import { listAll } from "./catalog.mjs";
 import {
   DEFAULT_PAGE_QUOTA,
   MAX_PAGE_QUOTA,
@@ -257,39 +257,82 @@ test("rules are read once per snapshot, and a change shows after it expires", as
   assert.equal((await resolvePageQuota(env, identity, now + pageQuotaBounds.rulesMs)).limit, 600);
 });
 
+/** Await `promise` while advancing mocked time `step` ms at a time, at most
+ * `limit` ms. Real I/O turns run between steps, so D1 calls still settle. */
+async function advance(t, promise, { step = 100, limit = 60_000 } = {}) {
+  let settled = false;
+  promise.then(
+    () => (settled = true),
+    () => (settled = true),
+  );
+  for (let elapsed = 0; !settled && elapsed <= limit; elapsed += step) {
+    for (let turn = 0; turn < 5; turn++) await new Promise((resolve) => setImmediate(resolve));
+    if (!settled) t.mock.timers.tick(step);
+  }
+  return promise;
+}
+
 test("when D1 fails or hangs every account gets the default, and the failure is logged", async (t) => {
   const errors = t.mock.method(console, "error", () => {});
-  const readMs = pageQuotaBounds.readMs;
-  pageQuotaBounds.readMs = 50;
-  t.after(() => {
-    pageQuotaBounds.readMs = readMs;
-  });
+  t.mock.timers.enable({ apis: ["setTimeout", "Date"], now });
   for (const mode of ["fail", "hang"]) {
     const db = await rulesDb(t, [["email", "rgbkrk@gmail.com", 1000]]);
     const env = { DB: db, PAGES_DEFAULT_PAGE_QUOTA: "300" };
     const identity = apiKeyIdentity("rgbkrk@gmail.com");
     // The schema is ready before the outage starts.
-    assert.equal((await resolvePageQuota(env, identity, now)).limit, 1000);
+    assert.equal((await resolvePageQuota(env, identity, Date.now())).limit, 1000);
     resetPageQuotaCache(db);
     db.mode = mode;
-    assert.deepEqual(await resolvePageQuota(env, identity, now), { limit: 300, source: "default" });
+    const started = Date.now();
+    assert.deepEqual(await advance(t, resolvePageQuota(env, identity, Date.now())), {
+      limit: 300,
+      source: "default",
+    });
+    // A hung read gives up at its own deadline.
+    assert.ok(Date.now() - started <= pageQuotaBounds.readMs, mode);
     // The failure is cached briefly, so an outage costs one read per window.
     const calls = db.calls;
-    assert.equal((await resolvePageQuota(env, identity, now + 1)).limit, 300);
+    assert.equal((await resolvePageQuota(env, identity, Date.now())).limit, 300);
     assert.equal(db.calls, calls);
     // Once D1 answers again, the next window reads the rules.
     db.mode = "ok";
-    assert.equal(
-      (await resolvePageQuota(env, identity, now + pageQuotaBounds.failureMs)).limit,
-      1000,
-      mode,
-    );
+    t.mock.timers.tick(pageQuotaBounds.failureMs);
+    assert.equal((await resolvePageQuota(env, identity, Date.now())).limit, 1000, mode);
   }
   assert.ok(errors.mock.callCount() >= 2, "each outage is logged");
   // A missing binding is the default too, never unlimited.
   assert.deepEqual(await resolvePageQuota({}, apiKeyIdentity("rgbkrk@gmail.com"), now), {
     limit: 250,
     source: "default",
+  });
+});
+
+test("a schema setup that hangs is abandoned, and a 0 rule applies once D1 recovers", async (t) => {
+  t.mock.method(console, "error", () => {});
+  t.mock.timers.enable({ apis: ["setTimeout", "Date"], now });
+  // A fresh D1: the first read must create the schema, and it hangs.
+  const db = sqliteD1(t, "pages-quota-").open();
+  db.mode = "hang";
+  const env = { DB: db };
+  const identity = apiKeyIdentity("paused@example.com");
+  assert.deepEqual(await advance(t, resolvePageQuota(env, identity, Date.now())), {
+    limit: 250,
+    source: "default",
+  });
+  // D1 recovers and an operator pauses the account.
+  db.mode = "ok";
+  await migrateQuotaRules(db);
+  db.sqlite
+    .prepare(
+      "INSERT INTO pages_quota_rules (match_kind, match_value, page_limit, updated_at) VALUES ('email', 'paused@example.com', 0, 1)",
+    )
+    .run();
+  // The failed read is cached for its window, then the next refresh starts a
+  // new setup attempt instead of waiting behind the hung one.
+  t.mock.timers.tick(pageQuotaBounds.failureMs);
+  assert.deepEqual(await advance(t, resolvePageQuota(env, identity, Date.now())), {
+    limit: 0,
+    source: "email",
   });
 });
 
@@ -523,59 +566,6 @@ test("a listing repairs stored counts that disagree with storage", async (t) => 
   // Agreeing counts are left alone.
   await g.call("list_pages");
   assert.equal(warnings.mock.callCount(), 1);
-});
-
-test("counted storage tracks keys across puts, deletes and transactions", async () => {
-  const raw = new Storage();
-  raw.transaction = async (run) => {
-    const before = new Map(raw.values);
-    try {
-      return await run(raw);
-    } catch (error) {
-      raw.values = before;
-      throw error;
-    }
-  };
-  const storage = countedStorage(raw);
-  const counts = async () => [
-    await raw.get("host/count/active"),
-    await raw.get("host/count/trash"),
-  ];
-  // Before the counts are stored, writes leave them absent.
-  await storage.put("page/a", {});
-  assert.deepEqual(await counts(), [undefined, undefined]);
-  await storage.rebuildCounts();
-  assert.deepEqual(await counts(), [1, 0]);
-  await storage.put({ "page/b": {}, "page/c": {}, "host/other": 1 });
-  assert.deepEqual(await counts(), [3, 0]);
-  // Overwriting an existing key changes nothing.
-  await storage.put("page/b", { title: "again" });
-  assert.deepEqual(await counts(), [3, 0]);
-  await storage.transaction(async (transaction) => {
-    await transaction.put("trash/b", {});
-    await transaction.delete("page/b");
-  });
-  assert.deepEqual(await counts(), [2, 1]);
-  // A transaction that throws leaves storage and the counts as they were.
-  await assert.rejects(
-    storage.transaction(async (transaction) => {
-      await transaction.put("trash/c", {});
-      await transaction.delete("page/c");
-      throw new Error("rolled back");
-    }),
-    /rolled back/,
-  );
-  assert.deepEqual(await counts(), [2, 1]);
-  await storage.put("trash/d", {});
-  assert.deepEqual(await counts(), [2, 2]);
-  // Deleting a missing key changes nothing.
-  await storage.delete("page/missing");
-  await storage.delete(["page/a", "trash/b"]);
-  assert.deepEqual(await counts(), [1, 1]);
-  assert.deepEqual(
-    [(await listAll(raw, "page/")).size, (await listAll(raw, "trash/")).size],
-    await counts(),
-  );
 });
 
 test("listAll reads past any page size", async () => {

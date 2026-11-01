@@ -100,7 +100,6 @@ import {
   capacityFor,
   catalogTitle,
   countCapacity,
-  countedStorage,
   countSlot,
   intentState,
   listAll,
@@ -171,6 +170,7 @@ import {
 export { Space } from "./spaces.mjs";
 import { spaceCreationEffect, spaceCreationTransition } from "./space-lifecycle.mjs";
 import { handleImportPageImage } from "./import-image.mjs";
+import { countedStorage } from "./catalog-counts.mjs";
 import { forwardedPageLimit, quotaError, quotaRefusal, resolvePageQuota } from "./page-quota.mjs";
 import { serialQueue, serialQueueBounds } from "./serial-queue.mjs";
 import { holdUntilSettled } from "./request-hold.mjs";
@@ -250,10 +250,10 @@ function refuseSocket(error, identity) {
   socket.close(admissionCloseCode(error), admissionCode(error));
   return new Response(null, { status: 101, webSocket: pair[0] });
 }
-/** The most children of one shared parent a listing checks. Each is a Page
- * host read made while the caller's Catalog queue waits, so this stays fixed
- * whatever the owner's Page limit is. */
-const SHARED_CHILDREN_LIMIT = 100;
+/** The most children of a shared parent one listing request checks. Each is
+ * a Page host read made while the caller's Catalog queue waits, so this stays
+ * fixed whatever the owner's Page limit is; a cursor reaches the rest. */
+export const sharedChildBounds = { scan: 100 };
 /** Budgets for reading Page lifecycles while the Catalog queue waits. */
 export const lifecycleBounds = { readMs: 2000, passMs: 5000, concurrency: 4 };
 const lifecycleUnsettled = () =>
@@ -798,7 +798,7 @@ export class Catalog {
   }
   /** Storage that keeps the `page/` and `trash/` key counts (catalog.mjs). */
   get storage() {
-    return (this.counted ??= countedStorage(this.ctx.storage));
+    return (this.counted ??= countedStorage(this.ctx.storage, { ctx: this.ctx }));
   }
   fetch(request) {
     // Location reads write nothing, so they never wait behind the queue. A
@@ -849,6 +849,20 @@ export class Catalog {
       slotKey,
       current: (pageId) => this.pageLifecycle(pageId),
     });
+  }
+  /** Room at a lifecycle request's destination: `{ room, count, limit }`.
+   * Restore applies the account's Page limit, and Trash the same limit, except
+   * that a paused account (limit 0) can always move Pages to Trash. Its Trash
+   * then holds at most the Pages it already had, since it can't create more. */
+  async destinationCapacity(run, slotKey) {
+    const limit = run.limit;
+    const exempt = run.operation === "delete_page" && limit === 0;
+    const capacity = await this.capacity(
+      slotPrefix[run.operation],
+      exempt ? Infinity : limit,
+      slotKey,
+    );
+    return { ...capacity, limit };
   }
   /** Refuse a new Page when the account is at its limit. */
   async requirePageRoom(limit) {
@@ -1369,8 +1383,7 @@ export class Catalog {
     let destination = "none";
     if (slotKey) {
       // The check counts this Page's own slot first, removing it when stale.
-      run.capacity = await this.capacity(slotPrefix[operation], run.limit, slotKey);
-      run.capacity.limit = run.limit;
+      run.capacity = await this.destinationCapacity(run, slotKey);
       const entry = await storage.get(slotKey);
       destination = !entry
         ? run.capacity.room
@@ -1393,8 +1406,7 @@ export class Catalog {
     const event = { type: "request", expired: entry ? !(entry.expires_at > Date.now()) : false };
     if (holdsSlot(state, event.expired)) return { event, state };
     const slotKey = lifecycleSlotKey(operation, pageId);
-    run.capacity = await this.capacity(slotPrefix[operation], run.limit, slotKey);
-    run.capacity.limit = run.limit;
+    run.capacity = await this.destinationCapacity(run, slotKey);
     event.capacity = run.capacity.room;
     // Counting may have removed this intent's own expired slot.
     state = { ...state, slot: (await intentState(storage, key, operation, pageId)).slot };
@@ -1988,11 +2000,7 @@ export class Catalog {
       );
       if (!response.ok) throw Error(`Owner location read failed: ${response.status}`);
       const { children } = await response.json();
-      // An exhaustive child listing checks each child with its Page host, so
-      // it reads at most SHARED_CHILDREN_LIMIT of them.
-      return Array.isArray(children)
-        ? children.filter(validPageId).slice(0, SHARED_CHILDREN_LIMIT)
-        : [];
+      return Array.isArray(children) ? children.filter(validPageId) : [];
     } catch (error) {
       logFailure(error, "catalog-location");
       throw new HttpError(503, "Shared Pages are temporarily unavailable");
@@ -2056,7 +2064,12 @@ export class Catalog {
     // Children of a shared parent come from its owner's Catalog, so a
     // rejected one may be a Page the caller can't see at all. That listing
     // checks every child before it paginates; see scanCandidates.
-    const scope = { locations, located, sharedChildren, exhaustive: !!sharedChildren };
+    const scope = {
+      locations,
+      located,
+      sharedChildren: sharedChildren && new Set(sharedChildren),
+      exhaustive: !!sharedChildren,
+    };
     const context = {
       principal: identity.principal,
       needle: options.needle,
@@ -2190,8 +2203,7 @@ export class Catalog {
       // Pages hold sub-pages: a shared Page is listed under a parent only
       // when that parent's owner lists it as a child.
       if (options.inTrash || options.spaceId) return null;
-      if (options.parentId !== undefined && !scope.sharedChildren?.includes(row.page_id))
-        return null;
+      if (options.parentId !== undefined && !scope.sharedChildren?.has(row.page_id)) return null;
       const result = await this.verifyShared(request, row.page_id);
       if (result.status === "unavailable")
         throw new HttpError(503, "Shared Pages are temporarily unavailable");
@@ -2223,12 +2235,14 @@ export class Catalog {
     };
     const limit = options.limit;
     // A bounded scan may stop on rejected candidates and return a cursor
-    // over them. That is safe only when every candidate is already disclosed
-    // to the caller: its own entries, or Pages it discovered. Candidates from
-    // another account's Catalog are not, so an exhaustive scan checks them
-    // all (at most one owner's Catalog limit, 8 at a time) and returns a
-    // cursor only when another authorized result follows the page.
-    const scanBound = scope.exhaustive ? Infinity : limit * 2 + 16;
+    // over them. That is safe when every candidate is already disclosed to
+    // the caller: its own entries, or Pages it discovered. Candidates from
+    // another account's Catalog are not. An exhaustive scan checks up to
+    // sharedChildBounds.scan of them per request, 8 at a time. Within that
+    // bound it returns a cursor only when another authorized result follows
+    // the page. Past it, the sealed cursor continues from the last child
+    // checked; it shows the caller only that the parent has more children.
+    const scanBound = scope.exhaustive ? sharedChildBounds.scan : limit * 2 + 16;
     const verified = [];
     let position = after;
     let scanned = 0;
@@ -2248,6 +2262,10 @@ export class Catalog {
         break;
       }
     }
+    // An exhaustive scan that stopped at its bound continues only if another
+    // child remains. Its source is in memory, so the check is free.
+    if (scope.exhaustive && !exhausted && verified.length <= limit)
+      exhausted = (await source.next(position, 1)).length === 0;
     if (db) {
       // A rejected owner row means D1 missed a lifecycle change; reconcile it.
       if (stale) await markCatalogIndexDirty(storage);

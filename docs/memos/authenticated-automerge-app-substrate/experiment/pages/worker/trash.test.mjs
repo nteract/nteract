@@ -490,6 +490,29 @@ test("trashed records stay unavailable to builds that predate Trash", async (t) 
   );
 });
 
+test("a paused account (limit 0) can move a Page to Trash but can't restore it", async (t) => {
+  const f = await fixture(t, { env: { PAGES_DEFAULT_PAGE_QUOTA: "0" } });
+  const owned = f.catalogOf(f.owner).catalog.storage;
+  // Trash already holds Pages; at 0 nothing caps it.
+  await fill(owned, "trash/", 3);
+  const moved = await f.catalogCall("owner", "delete_page", trashArgs(f));
+  assert.equal(moved.status, 200, JSON.stringify(moved.body));
+  assert.equal(pageState(f.page.metadata), "trashed");
+  const refused = await f.catalogCall("owner", "restore_page", {
+    page_id: pageId,
+    idempotency_key: "restore-paused",
+  });
+  assert.equal(refused.status, 409);
+  assert.deepEqual(refused.body, {
+    error: "Creating Pages is turned off for this account.",
+    code: "page_quota_exceeded",
+    limit: 0,
+    count: 0,
+  });
+  assert.equal(pageState(f.page.metadata), "trashed");
+  assert.equal(await owned.get("host/count/trash"), 4);
+});
+
 test("Trash and restore respect their capacity limits", async (t) => {
   const f = await fixture(t, { env: { PAGES_DEFAULT_PAGE_QUOTA: String(LIMIT) } });
   const owned = f.catalogOf(f.owner).catalog.storage;

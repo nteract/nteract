@@ -13,8 +13,9 @@
  * 3. the deploy target's default, `PAGES_DEFAULT_PAGE_QUOTA` (250 when unset).
  *
  * A matching rule replaces the default, so it may be lower, including 0,
- * which turns creation off for the account. A quota never deletes or hides a
- * Page the account already has.
+ * which pauses the account: it can't create or restore Pages, but it can still
+ * move them to Trash, which no limit caps at 0. A quota never deletes or hides
+ * a Page the account already has.
  *
  * Only server-verified email counts. An API key's identity carries the email
  * Anaconda whoami verified. A browser session or OAuth grant carries only HMAC
@@ -27,7 +28,9 @@
  * and caches each account's answer against that snapshot. Only settled values
  * are cached, so no request awaits work another request started
  * (isolate-setup.mjs). When D1 is missing, slow or failing, every account gets
- * the default: a failure never lifts a limit.
+ * the default: a failure never lifts a limit. The schema setup each read
+ * starts is an isolateSetup attempt, so one that hangs is abandoned after
+ * `isolateSetupTimeouts.attempt` and a later refresh tries again.
  */
 import {
   appSessionHasFreshVerifiedEmail,
@@ -246,13 +249,12 @@ export async function resolvePageQuota(env, identity, now = Date.now()) {
 export const pageCount = (value) =>
   `${String(value).replace(/\B(?=(\d{3})+(?!\d))/g, ",")} ${value === 1 ? "Page" : "Pages"}`;
 
-/** The refusal body when `prefix` ("page/" or "trash/") is at `limit`. */
+/** The refusal body when `prefix` ("page/" or "trash/") is at `limit`. Trash
+ * is never full at limit 0 (Catalog destinationCapacity). */
 export function quotaRefusal(prefix, { limit, count }) {
   const trash = prefix === "trash/";
   const error = trash
-    ? limit === 0
-      ? "Moving Pages to Trash is turned off for this account."
-      : `This alpha release allows ${pageCount(limit)} in Trash per account. Permanently delete Pages from Trash before moving more Pages there.`
+    ? `This alpha release allows ${pageCount(limit)} in Trash per account. Permanently delete Pages from Trash before moving more Pages there.`
     : limit === 0
       ? "Creating Pages is turned off for this account."
       : `This alpha release allows ${pageCount(limit)} per account.`;

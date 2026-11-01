@@ -4,7 +4,13 @@ import { test } from "node:test";
 import { randomSecret, SERVER_SESSION_COOKIE } from "@cloud/oidc-session-store.ts";
 import { createAuthFixture } from "../../auth-fixtures.mjs";
 import { authenticate } from "./auth.mjs";
-import { isolateSetup, isolateSetupTimeouts, isolateSingleFlight } from "./isolate-setup.mjs";
+import {
+  isolateSetup,
+  isolateSetupTimeouts,
+  isolateSingleFlight,
+  setupAction,
+  setupTransition,
+} from "./isolate-setup.mjs";
 import worker from "./index.mjs";
 
 // Real I/O turns. Tests mock only setTimeout, so these still advance.
@@ -67,11 +73,11 @@ test("a failed setup lets the next request start it again", async (t) => {
   assert.equal(calls.length, 0, "the waiter ran the setup itself");
 });
 
-test("a waiter gives up with a retryable 503 when the setup never settles", async (t) => {
+test("the starter and a waiter give up with a retryable 503 when the setup never settles", async (t) => {
   t.mock.timers.enable({ apis: ["setTimeout", "Date"] });
   const ready = isolateSetup(() => new Promise(() => {}));
   const key = {};
-  void ready(key);
+  const owner = ready(key).catch((error) => error);
   const waiter = ready(key);
   const waiting = track(waiter);
   for (
@@ -89,6 +95,73 @@ test("a waiter gives up with a retryable 503 when the setup never settles", asyn
     assert.equal(error.reason, "credential_unverified");
     return true;
   });
+  assert.equal((await owner).code, "request_timeout");
+});
+
+test("an abandoned attempt frees its key, and its late result changes nothing", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout", "Date"] });
+  const attempts = [deferred(), deferred()];
+  let runs = 0;
+  const ready = isolateSetup(() => attempts[runs++].promise);
+  const key = {};
+  const first = ready(key).catch((error) => error);
+  await turns();
+  t.mock.timers.tick(isolateSetupTimeouts.wait);
+  assert.equal((await first).code, "request_timeout");
+  // Inside the attempt's lifetime the key is still held.
+  t.mock.timers.tick(isolateSetupTimeouts.attempt - isolateSetupTimeouts.wait - 1);
+  const blocked = ready(key).catch((error) => error);
+  await turns();
+  assert.equal(runs, 1, "the waiter waits on the abandoned attempt");
+  // At the attempt's deadline the waiter starts the second attempt itself.
+  t.mock.timers.tick(isolateSetupTimeouts.poll);
+  await turns();
+  assert.equal(runs, 2);
+  // The abandoned attempt fails late. It names an old generation, so the
+  // second attempt keeps the key.
+  attempts[0].reject(new Error("late failure"));
+  await turns();
+  const third = ready(key);
+  await turns();
+  assert.equal(runs, 2, "the late failure did not free the key");
+  attempts[1].resolve();
+  assert.equal(await blocked, undefined);
+  t.mock.timers.tick(isolateSetupTimeouts.poll);
+  await third;
+  assert.equal(runs, 2);
+});
+
+test("the setup machine accepts only its own attempt's results", () => {
+  const idle = { name: "idle" };
+  const running = { name: "running", generation: 2, deadline: 100 };
+  const ready = { name: "ready" };
+  const start = (now) => ({ type: "start", generation: 3, now, deadline: now + 50 });
+  const cases = [
+    [idle, start(0), { name: "running", generation: 3, deadline: 50 }],
+    [running, start(99), "an attempt holds the key"],
+    [running, start(100), { name: "running", generation: 3, deadline: 150 }],
+    [ready, start(0), "setup is ready"],
+    [running, { type: "succeed", generation: 2 }, ready],
+    [running, { type: "succeed", generation: 1 }, "not the running attempt"],
+    [running, { type: "fail", generation: 2 }, idle],
+    [running, { type: "fail", generation: 1 }, "not the running attempt"],
+    [idle, { type: "succeed", generation: 2 }, "not the running attempt"],
+    [idle, { type: "fail", generation: 2 }, "not the running attempt"],
+    [ready, { type: "succeed", generation: 2 }, "not the running attempt"],
+    [ready, { type: "fail", generation: 2 }, "not the running attempt"],
+    [idle, { type: "other" }, "unknown event"],
+  ];
+  for (const [state, event, expected] of cases) {
+    const result = setupTransition(state, event);
+    if (typeof expected === "string") {
+      assert.equal(result.rejected, expected, JSON.stringify([state, event]));
+      assert.equal(result.state, state);
+    } else assert.deepEqual(result, { state: expected }, JSON.stringify([state, event]));
+  }
+  assert.equal(setupAction(ready, 0), "ready");
+  assert.equal(setupAction(idle, 0), "start");
+  assert.equal(setupAction(running, 99), "wait");
+  assert.equal(setupAction(running, 100), "start");
 });
 
 test("each key has its own setup", async () => {

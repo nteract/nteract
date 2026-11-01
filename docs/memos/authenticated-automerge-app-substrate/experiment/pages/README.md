@@ -694,8 +694,10 @@ sets up each D1 schema (server sessions, MCP OAuth) once per isolate. Work in
 front of the API-key verifier's cache, which shares pending lookups, runs one
 lookup per token at a time. The request that starts the work awaits it; others
 wait on their own timers. Either side gives up with a retryable `503` after 10
-seconds. A key stays held until its lookup settles, or for 65 seconds, past the
-cache's 60-second lifetime for an entry. The OIDC libraries' discovery,
+seconds. A setup attempt holds its key until it settles or for 30 seconds; the
+next request after that starts a new attempt, and a late result from the
+abandoned one changes nothing. A lookup key stays held until its lookup
+settles, or for 65 seconds, past the cache's 60-second lifetime for an entry. The OIDC libraries' discovery,
 signing-key and UserInfo caches, the ChatGPT client metadata check and the
 loopback issuer's key still share pending promises across requests (#4567). Remove it when celld keeps request context across shared
 promises; [celld-context-probe.mjs](scripts/celld-context-probe.mjs) then exits 0.
@@ -749,8 +751,8 @@ it from the first match of:
 | `domain` | that email's domain, lowercased; subdomains don't match |
 | default | `PAGES_DEFAULT_PAGE_QUOTA` for the deploy target, 250 when unset |
 
-A matching rule replaces the default, so it can lower it, and `0` turns creation
-off. A quota never deletes or hides existing Pages. Only server-verified email
+A matching rule replaces the default, so it can lower it. `0` pauses the
+account: it can't create or restore Pages, but it can still move them to Trash. A quota never deletes or hides existing Pages. Only server-verified email
 counts: an API key's whoami email, or the HMAC bindings a browser session or
 OAuth grant carries. An identity without one gets the default without reading
 D1. Rules live in D1's `pages_quota_rules` table, which the gateway reads whole
@@ -763,8 +765,12 @@ arguments, on Catalog calls that can add a Page to either listing
 (`create_page`, `register_page`, `create_space`, `delete_page`, `restore_page`)
 and on `list_pages`. The Catalog stays the authority for the count. It keeps
 `host/count/active` and `host/count/trash` equal to the number of `page/` and
-`trash/` keys, reservations and pending creations included, and writes them in
-the same storage batch as each change, inside its serial queue. Below the limit
+`trash/` keys, reservations and pending creations included
+([catalog-counts.mjs](worker/catalog-counts.mjs)). Each counted write runs in
+one storage transaction that reads the key's existence and the stored counts
+and writes both, and counted writes run one at a time, so concurrent writes in
+a settle pass never derive counts from the same value. Memory caches the counts
+only after a transaction commits; a failed write invalidates the cache. Below the limit
 a check reads only the stored count. At the limit, or before the counts exist,
 it counts every entry, releasing stale reservations, and rebuilds them. Every
 `list_pages` reads every owned entry for location anyway and rewrites counts
@@ -1268,7 +1274,10 @@ argument and reveals nothing about either resource.
 Listing by Project or parent reads the Catalog's entries, not D1: a Project
 lists every descendant of its roots, and a parent lists its direct children.
 Children of a parent shared with the caller come from the parent owner's
-Catalog, and each is verified by its Page host with the caller's access.
+Catalog, and each is verified by its Page host with the caller's access. One
+request checks at most 100 of them. Past that, a sealed cursor continues from
+the last child checked, even on a short page, so the caller can learn only that
+the parent has more than 100 children.
 `list_projects` takes candidates from `pages_catalog_spaces` and confirms each
 against the owner's `space/<id>` Catalog entry; cursors are sealed to the
 listing's filters. `read_page` breadcrumbs are computed in the gateway with one

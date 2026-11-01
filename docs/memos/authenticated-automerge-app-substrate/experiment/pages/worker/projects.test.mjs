@@ -3,7 +3,7 @@ import { test } from "node:test";
 import * as A from "@automerge/automerge";
 import { createAuthFixture } from "../../auth-fixtures.mjs";
 import { sqliteD1 } from "../test/sqlite-d1.mjs";
-import worker, { Catalog, Page, Space, lifecycleBounds } from "./index.mjs";
+import worker, { Catalog, Page, Space, lifecycleBounds, sharedChildBounds } from "./index.mjs";
 import { DocumentPolicy } from "./policy.mjs";
 import { pageState, proposeAccessUpdate } from "./access.mjs";
 import { CATALOG_MIGRATIONS, migrateCatalogIndex, reportPageIndex } from "./catalog-index.mjs";
@@ -1795,6 +1795,48 @@ test("a shared parent's hidden children never show through pagination", async (t
   // A query that matches only a hidden child answers like the empty parent.
   const hidden = children.findIndex((pageId, index) => index >= 10 && !readable.includes(pageId));
   assert.deepEqual(await list(parent, { query: `Hidden ${hidden}` }), none);
+});
+
+test("a shared parent's readable children past the first 100 are reached through cursors", async (t) => {
+  const w = await world(t);
+  const parent = (await w.createPage({ title: "Parent" })).body.page_id;
+  await grant(w, parent);
+  const children = [];
+  for (let index = 0; index < sharedChildBounds.scan + 5; index++)
+    children.push(
+      (await w.createPage({ title: `Child ${index}`, parent_id: parent })).body.page_id,
+    );
+  // Rows order by Page ID, descending, so the two smallest IDs sit past the
+  // first 100 children a request checks.
+  const readable = [...children].sort().slice(0, 2);
+  for (const pageId of readable) await grant(w, pageId);
+  const list = async (args = {}) => {
+    const listed = await w.call("member", "list_pages", { parent_id: parent, ...args });
+    assert.equal(listed.status, 200, JSON.stringify(listed.body));
+    return listed.body;
+  };
+  const follow = async (args) => {
+    const seen = [];
+    let cursor;
+    for (let request = 0; request < 10; request++) {
+      const page = await list({ ...args, ...(cursor && { cursor }) });
+      seen.push(...page.pages.map((entry) => entry.page_id));
+      cursor = page.next_cursor;
+      if (!cursor) return { seen, requests: request + 1 };
+    }
+    assert.fail("the cursor never ended");
+  };
+  // The first request checks 100 hidden children and continues past them.
+  const first = await list({ limit: 100 });
+  assert.deepEqual(first.pages, []);
+  assert.equal(typeof first.next_cursor, "string");
+  const all = await follow({ limit: 100 });
+  assert.deepEqual(all.seen.sort(), readable);
+  assert.equal(all.requests, 2);
+  // Title search reaches a readable child past the bound too.
+  const title = `Child ${children.indexOf(readable[0])}`;
+  const searched = await follow({ query: title });
+  assert.deepEqual(searched.seen, [readable[0]]);
 });
 
 test("MCP location refusals carry their stable codes in structuredContent", async (t) => {

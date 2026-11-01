@@ -29,7 +29,7 @@ export async function locationEntries(storage) {
 
 /** Location entries, plus the number of keys under each prefix that the
  * scan read: `{ entries, counts }`. A Page listing uses the counts to check
- * the Catalog's stored counts (catalog.mjs countedStorage). */
+ * the Catalog's stored counts (catalog-counts.mjs). */
 export async function locationScan(storage) {
   const entries = new Map();
   const counts = {};

@@ -7,8 +7,8 @@
  * Page's location (catalog-location.mjs). Trashed entries use a
  * separate prefix so they never consume active listing or quota slots, and so
  * builds that predate Trash do not list them. `host/count/active` and
- * `host/count/trash` count the keys under `page/` and `trash/`; see
- * countedStorage.
+ * `host/count/trash` count the keys under `page/` and `trash/`
+ * (catalog-counts.mjs).
  *
  * Callers see Projects. Storage keeps the Space name so a rollback build reads
  * the same records: `space/<id>` entries, `space_id` placement fields and the
@@ -33,137 +33,6 @@ export async function listAll(storage, prefix, pageSize = 500) {
       throw new Error("Catalog storage did not advance past startAfter");
     startAfter = last;
   }
-}
-
-/** Where each counted prefix keeps its count. */
-export const COUNT_KEYS = Object.freeze({
-  "page/": "host/count/active",
-  "trash/": "host/count/trash",
-});
-const COUNTED = Object.keys(COUNT_KEYS);
-const countedPrefix = (key) =>
-  typeof key === "string" ? COUNTED.find((prefix) => key.startsWith(prefix)) : undefined;
-const countEntries = (counts) =>
-  Object.fromEntries(COUNTED.map((prefix) => [COUNT_KEYS[prefix], counts[prefix]]));
-
-/**
- * The Catalog's storage, keeping `host/count/active` and `host/count/trash`
- * equal to the number of keys under `page/` and `trash/`. Pending creations
- * and Trash or restore reservations are keys too, so the counts are at least
- * what countCapacity counts; capacityFor relies on that.
- *
- * Every write that adds or removes such a key writes the new counts with it:
- * a put adds them to the same multi-key put, and a delete and its count put
- * run in one transaction (inside a transaction, which has no nested one, they
- * join it). The counts are held in memory once read, and each write adjusts them
- * synchronously before it is issued, so writes running concurrently in one
- * request (a settle pass) never lose an update. A failed write or transaction
- * drops the memory copy; the next write reads storage again.
- *
- * Until the counts are first stored (capacityFor or verifyCounts does that),
- * writes leave them absent. A build without this wrapper writes keys without
- * counts; verifyCounts, which every Page listing runs, repairs that.
- */
-export function countedStorage(storage, state = { counts: undefined }) {
-  const load = async () => {
-    if (state.counts !== undefined) return state.counts;
-    const active = await storage.get(COUNT_KEYS["page/"]);
-    const trash = await storage.get(COUNT_KEYS["trash/"]);
-    const loaded =
-      Number.isSafeInteger(active) && Number.isSafeInteger(trash)
-        ? { "page/": active, "trash/": trash }
-        : null;
-    if (state.counts === undefined) state.counts = loaded;
-    return state.counts;
-  };
-  const delta = async (keys, adding) => {
-    const change = { "page/": 0, "trash/": 0 };
-    let changed = false;
-    for (const key of new Set(keys)) {
-      const prefix = countedPrefix(key);
-      if (!prefix) continue;
-      const exists = (await storage.get(key)) !== undefined;
-      if (exists === adding) continue;
-      change[prefix] += adding ? 1 : -1;
-      changed = true;
-    }
-    return changed ? change : null;
-  };
-  // Synchronous from here to the write, so concurrent writes adjust in turn.
-  const adjusted = (change) => {
-    if (!change || !state.counts) return null;
-    for (const prefix of COUNTED)
-      state.counts[prefix] = Math.max(0, state.counts[prefix] + change[prefix]);
-    return countEntries(state.counts);
-  };
-  const guarded = async (write) => {
-    try {
-      return await write;
-    } catch (error) {
-      state.counts = undefined;
-      throw error;
-    }
-  };
-  const put = async (keyOrEntries, valueOrOptions, options) => {
-    const single = typeof keyOrEntries === "string";
-    const keys = single ? [keyOrEntries] : Object.keys(keyOrEntries);
-    if (!keys.some(countedPrefix)) return storage.put(keyOrEntries, valueOrOptions, options);
-    await load();
-    const counts = adjusted(await delta(keys, true));
-    if (!counts) return storage.put(keyOrEntries, valueOrOptions, options);
-    const entries = single ? { [keyOrEntries]: valueOrOptions } : { ...keyOrEntries };
-    return guarded(storage.put({ ...entries, ...counts }, single ? options : valueOrOptions));
-  };
-  const remove = async (keyOrKeys, options) => {
-    const keys = Array.isArray(keyOrKeys) ? keyOrKeys : [keyOrKeys];
-    if (!keys.some(countedPrefix)) return storage.delete(keyOrKeys, options);
-    await load();
-    const counts = adjusted(await delta(keys, false));
-    if (!counts) return storage.delete(keyOrKeys, options);
-    const both = async (target) =>
-      (await Promise.all([target.delete(keyOrKeys, options), target.put(counts)]))[0];
-    return guarded(
-      typeof storage.transaction === "function" ? storage.transaction(both) : both(storage),
-    );
-  };
-  const write = async (counts) => {
-    state.counts = counts;
-    await guarded(storage.put(countEntries(counts)));
-    return counts;
-  };
-  const extra = {
-    put,
-    delete: remove,
-    /** The stored counts, or null before they are first stored. */
-    counts: load,
-    /** Count every key under both prefixes and store the result. Callers run
-     * it between the steps of the Catalog's serial queue, never beside
-     * another write. */
-    rebuildCounts: async () =>
-      write({
-        "page/": (await listAll(storage, "page/")).size,
-        "trash/": (await listAll(storage, "trash/")).size,
-      }),
-    /** Store `counts`, read by a full scan, if they differ from the stored
-     * ones. Returns true when stored counts existed and disagreed. */
-    verifyCounts: async (counts) => {
-      const stored = await load();
-      if (stored && COUNTED.every((prefix) => stored[prefix] === counts[prefix])) return false;
-      await write({ ...counts });
-      return stored !== null;
-    },
-    ...(typeof storage.transaction === "function" && {
-      transaction: (run) =>
-        guarded(storage.transaction((transaction) => run(countedStorage(transaction, state)))),
-    }),
-  };
-  return new Proxy(storage, {
-    get(target, name) {
-      if (Object.hasOwn(extra, name)) return extra[name];
-      const value = Reflect.get(target, name, target);
-      return typeof value === "function" ? value.bind(target) : value;
-    },
-  });
 }
 
 export function catalogTitle(title) {
@@ -333,7 +202,7 @@ export async function countCapacity(storage, prefix, { now = Date.now(), current
 }
 /**
  * Whether `prefix` has room for one more entry within `limit`, and the count
- * that decided it. `storage` is countedStorage. Its stored count covers every
+ * that decided it. `storage` is countedStorage (catalog-counts.mjs). Its stored count covers every
  * key, reservations included, so a count below the limit answers at once. At
  * or above the limit, or before the count is first stored, countCapacity
  * counts exactly (removing stale reservations as it goes) and the stored
