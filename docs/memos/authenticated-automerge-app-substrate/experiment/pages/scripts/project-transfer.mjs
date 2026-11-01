@@ -446,12 +446,47 @@ export function targetPlacement(page, { homeSourceId, targetHomeId, pageIds }) {
 
 const escapeRegExp = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
-// Link tokens, each taken whole so a URL nested inside another is never
-// matched on its own: a Markdown link destination `](...)`, an autolink
-// `<...>`, or a bare URL that starts a line or follows whitespace, ( [ or a
-// quote and runs to whitespace, < > ] or a quote.
-const LINK_TOKEN =
-  /\]\((<[^>\n]*>|[^\s)]+)|<(https?:\/\/[^\s<>]+)>|(?<=^|[\s(["'])(https?:\/\/[^\s<>\]"']+)/gm;
+// Where a link token can start. Each token is consumed whole before scanning
+// resumes, so a URL nested inside another is never matched on its own: a
+// Markdown link destination `](...)`, an autolink `<...>`, or a bare URL that
+// starts a line or follows whitespace, ( [ or a quote.
+const TOKEN_START = /\]\(|<(?=https?:\/\/)|(?<=^|[\s(["'])https?:\/\//gm;
+const AUTOLINK = /<(https?:\/\/[^\s<>]+)>/y;
+const BARE_URL = /https?:\/\/[^\s<>\]"']+/y;
+const ESCAPABLE = /[!-/:-@[-`{-~]/;
+
+/**
+ * The link destination starting at `start` (just after `](`), read the
+ * CommonMark way: `<...>` on one line, or a run without spaces or control
+ * characters in which parentheses balance and a backslash escapes ASCII
+ * punctuation. `end` is where the destination stops. `url` is null when the
+ * span isn't a valid destination (unbalanced parentheses, an unclosed `<`);
+ * the span is still consumed so nothing inside it is matched on its own.
+ */
+export function readDestination(text, start) {
+  if (text[start] === "<") {
+    for (let i = start + 1; i < text.length; i++) {
+      const char = text[i];
+      if (char === "\\" && ESCAPABLE.test(text[i + 1] ?? "")) i++;
+      else if (char === ">") return { url: text.slice(start + 1, i), angle: true, end: i + 1 };
+      else if (char === "<" || char === "\n") return { url: null, end: i };
+    }
+    return { url: null, end: text.length };
+  }
+  let depth = 0;
+  let i = start;
+  for (; i < text.length; i++) {
+    const char = text[i];
+    if (char === "\\" && ESCAPABLE.test(text[i + 1] ?? "")) i++;
+    else if (char <= " " || char === "\x7f") break;
+    else if (char === "(") depth++;
+    else if (char === ")") {
+      if (depth === 0) break;
+      depth--;
+    }
+  }
+  return { url: depth === 0 && i > start ? text.slice(start, i) : null, angle: false, end: i };
+}
 const TRAILING = new Set([".", ",", ";", ":", "!", "?"]);
 const count = (text, char) => text.split(char).length - 1;
 
@@ -510,20 +545,42 @@ export function rewriteLinks(
       return `${targetOrigin}/p/${target}${legacyQuery ? `?${legacyQuery.slice(1)}` : ""}${legacyFragment ?? ""}`;
     return `${targetOrigin}/project/${target}${projectRest ?? ""}`;
   };
-  const result = markdown.replace(LINK_TOKEN, (match, destination, autolink, bare) => {
-    if (destination !== undefined) {
-      const angle = destination.startsWith("<");
-      const next = rewriteUrl(angle ? destination.slice(1, -1) : destination, true);
-      return next === null ? match : `](${angle ? `<${next}>` : next}`;
+  let result = "";
+  let copied = 0;
+  const starts = new RegExp(TOKEN_START.source, TOKEN_START.flags);
+  for (let found = starts.exec(markdown); found; found = starts.exec(markdown)) {
+    const at = found.index;
+    let end, replacement;
+    if (found[0] === "](") {
+      const destination = readDestination(markdown, at + 2);
+      end = destination.end;
+      const next = destination.url === null ? null : rewriteUrl(destination.url, true);
+      if (next !== null) replacement = `](${destination.angle ? `<${next}>` : next}`;
+    } else if (found[0] === "<") {
+      AUTOLINK.lastIndex = at;
+      const autolink = AUTOLINK.exec(markdown);
+      if (!autolink) {
+        starts.lastIndex = at + 1;
+        continue;
+      }
+      end = AUTOLINK.lastIndex;
+      const next = rewriteUrl(autolink[1], false);
+      if (next !== null) replacement = `<${next}>`;
+    } else {
+      BARE_URL.lastIndex = at;
+      const [token] = BARE_URL.exec(markdown);
+      end = BARE_URL.lastIndex;
+      const [url, tail] = splitTrailing(token);
+      const next = rewriteUrl(url, false);
+      if (next !== null) replacement = `${next}${tail}`;
     }
-    if (autolink !== undefined) {
-      const next = rewriteUrl(autolink, false);
-      return next === null ? match : `<${next}>`;
+    if (replacement !== undefined) {
+      result += markdown.slice(copied, at) + replacement;
+      copied = end;
     }
-    const [url, tail] = splitTrailing(bare);
-    const next = rewriteUrl(url, false);
-    return next === null ? match : `${next}${tail}`;
-  });
+    starts.lastIndex = Math.max(end, at + 1);
+  }
+  result += markdown.slice(copied);
   return { markdown: result, rewritten, unresolved };
 }
 

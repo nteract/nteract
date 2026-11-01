@@ -857,6 +857,10 @@ test("rewriteLinks rewrites only complete source links", () => {
     `https://other.example/go?(${SOURCE}/p/${id})`,
     `see https://other.example/go?(${SOURCE}/p/${id}).`,
     `[a](https://other.example/go?(${SOURCE}/p/${id}))`,
+    `[a](https://other.example/go(x)?(${SOURCE}/p/${id}))`,
+    `[a](https://other.example/go(x(y))?(${SOURCE}/p/${id}))`,
+    `[a](https://other.example/go\\(?(${SOURCE}/p/${id}))`,
+    `[a](https://other.example/go((${SOURCE}/p/${id})`,
     `<https://other.example/go?u=${SOURCE}/p/${id}>`,
     `[a](https://other.example/${SOURCE}/p/${id})`,
   ])
@@ -880,6 +884,12 @@ test("rewriteLinks rewrites only complete source links", () => {
   assert.equal(rewrite(`(${SOURCE}/p/${id}),`), `(${TARGET}/p/new),`);
   assert.equal(rewrite(`(see ${SOURCE}/p/${id})`), `(see ${TARGET}/p/new)`);
   assert.equal(rewrite(`[a](<${SOURCE}/p/${id}>)`), `[a](<${TARGET}/p/new>)`);
+  assert.equal(rewrite(`[x](${SOURCE}/p/${id}?q=(a))`), `[x](${TARGET}/p/new?q=(a))`);
+  assert.equal(rewrite(`[x](${SOURCE}/p/${id}?q=\\()`), `[x](${TARGET}/p/new?q=\\()`);
+  assert.equal(
+    rewrite(`[x](${SOURCE}/p/${id}) and ${SOURCE}/p/${id}`),
+    `[x](${TARGET}/p/new) and ${TARGET}/p/new`,
+  );
   assert.equal(rewrite(`[a](${SOURCE}/p/${id} "Title")`), `[a](${TARGET}/p/new "Title")`);
   assert.equal(rewrite(`see /p/${id}`), `see /p/${id}`, "only a link destination is relative");
 });

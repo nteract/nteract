@@ -486,7 +486,8 @@ runs in this order:
    home Page's title and body, the remaining blocks of a multi-block Page, and
    internal links. Source links `/p/<id>`, `/?page=<id>`, `/project/<id>` and
    `/s/<id>`, and root-relative `](/p/<id>` destinations, point at the new IDs.
-   Links are read as whole tokens: a Markdown link destination `](...)`, an
+   Links are read as whole tokens: a Markdown link destination `](...)`, read
+   as CommonMark does (balanced parentheses, backslash escapes, or `<...>`), an
    autolink `<...>`, or a bare URL running to whitespace. A token is rewritten
    only when the whole token is a source URL, so a longer ID or a source URL
    nested inside another URL is left alone. A path, query or fragment after
