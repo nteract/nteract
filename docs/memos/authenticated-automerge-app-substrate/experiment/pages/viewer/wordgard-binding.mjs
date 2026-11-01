@@ -96,6 +96,34 @@ export const wordgardListStarts = Correction.onContent(OrderedList, (position) =
       },
 );
 
+// Where an editor position lands after a binding change event. Positions are
+// carried through native Automerge cursors, so they follow characters rather
+// than a projection diff. A caret sticks to the character before it: when a
+// peer types at the same spot, their text lands after the caret and each
+// person keeps typing an unbroken run. Selection ends, and a caret with no
+// character before it, stick to the character after them. If the character a
+// caret sticks to is deleted, the caret stays where it was.
+export function remoteEditorPosition(event, path, pos, { caret = false } = {}) {
+  const { before, after, nativeBefore, nativeAfter } = event;
+  const index = before.map.wgToAm[pos];
+  let offset;
+  if (caret && index > 0) {
+    const cursor = A.getCursor(nativeBefore, path, index - 1, "after");
+    const at = A.getCursorPosition(nativeAfter, path, cursor);
+    let alive = false;
+    try {
+      alive = A.getCursor(nativeAfter, path, at, "after") === cursor;
+    } catch {
+      /* `at` is past the end: the character is gone. */
+    }
+    offset = alive ? at + 1 : at;
+  } else {
+    const cursor = A.getCursor(nativeBefore, path, index, "after");
+    offset = A.getCursorPosition(nativeAfter, path, cursor);
+  }
+  return after.map.amToWg[offset] ?? after.doc.length - 1;
+}
+
 // Undo history for one editor, in a compartment so a rejected local
 // transaction can drop it. A rejected change stays in the history even though
 // the Page never accepted it, and undoing it would apply its inverse to the

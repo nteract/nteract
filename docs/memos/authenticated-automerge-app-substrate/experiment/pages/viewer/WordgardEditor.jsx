@@ -71,6 +71,7 @@ import {
   createWordgardBinding,
   wordgardCodeNewlines,
   insertPlainLineBreak,
+  remoteEditorPosition,
   wordgardHistory,
   wordgardListStarts,
 } from "./wordgard-binding.mjs";
@@ -555,18 +556,9 @@ export function WordgardEditor(props) {
         ) {
           const path = ["blocks", id, "richText"];
           try {
-            const translate = (pos) => {
-              const cursor = A.getCursor(
-                event.nativeBefore,
-                path,
-                event.before.map.wgToAm[pos],
-                "after",
-              );
-              const offset = A.getCursorPosition(event.nativeAfter, path, cursor);
-              return event.after.map.amToWg[offset] ?? event.after.doc.length - 1;
-            };
-            const a = translate(anchor),
-              h = translate(head);
+            const caret = anchor === head;
+            const a = remoteEditorPosition(event, path, anchor, { caret }),
+              h = caret ? a : remoteEditorPosition(event, path, head);
             selection = (cx) =>
               GardSelection.range(GardSelection.near(cx, a).anchor, GardSelection.near(cx, h).head);
           } catch {

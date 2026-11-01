@@ -35,6 +35,7 @@ import {
 import {
   commitEditorTransactions,
   createWordgardBinding,
+  remoteEditorPosition,
   wordgardCodeNewlines,
   wordgardHistory,
   wordgardListStarts,
@@ -842,5 +843,61 @@ test("editor writes stamp the schema features their content needs in the same ch
   const start = state(binding);
   binding.applyEditorTransaction(start.update({ changes: projectChanges(start.doc, target) }));
   assert.deepEqual(stampedIn(replica, before), ["test-highlight"]);
+  binding.destroy();
+});
+
+// Two people typing at the same spot each keep an unbroken run: a caret sticks
+// to the character before it, so text a peer inserts there lands after it.
+test("a caret keeps its side of a peer's insertion at the same spot", () => {
+  for (const peerActor of ["00".repeat(16), "ff".repeat(16)]) {
+    const replica = fixture("ab cd"),
+      binding = createWordgardBinding(replica, "one"),
+      events = [];
+    binding.observe((event) => events.push(event));
+    const path = textPath("one");
+    const base = A.clone(replica.doc, { actor: peerActor });
+    // Local typing: "L" after "ab", caret after it at editor position 4.
+    replica.change((d) => A.splice(d, path, 2, 0, "L"));
+    const caret = 4;
+    // The peer typed "R" at the same spot without seeing "L".
+    replica.receive(A.change(base, (d) => A.splice(d, path, 2, 0, "R")));
+    const event = events.at(-1);
+    assert.equal(event.remote, true);
+    const text = replica.doc.blocks.one.richText;
+    const at = remoteEditorPosition(event, path, caret, { caret: true });
+    assert.equal(text.slice(0, at - 1), text.slice(0, text.indexOf("L") + 1), peerActor);
+    binding.destroy();
+  }
+});
+
+test("a caret at a peer's insertion point stays before the inserted text", () => {
+  const replica = fixture("ab cd"),
+    binding = createWordgardBinding(replica, "one"),
+    events = [];
+  binding.observe((event) => events.push(event));
+  const path = textPath("one");
+  replica.receive(A.change(A.clone(replica.doc), (d) => A.splice(d, path, 2, 0, "XY")));
+  const event = events.at(-1);
+  // Caret after "ab" (editor position 3) stays there; a selection end moves.
+  assert.equal(remoteEditorPosition(event, path, 3, { caret: true }), 3);
+  assert.equal(remoteEditorPosition(event, path, 3), 5);
+  // A caret at the start of the paragraph has no character before it.
+  assert.equal(remoteEditorPosition(event, path, 1, { caret: true }), 1);
+  binding.destroy();
+});
+
+test("a caret whose preceding character a peer deletes stays in place", () => {
+  const replica = fixture("ab cd"),
+    binding = createWordgardBinding(replica, "one"),
+    events = [];
+  binding.observe((event) => events.push(event));
+  const path = textPath("one");
+  replica.receive(A.change(A.clone(replica.doc), (d) => A.splice(d, path, 1, 1)));
+  const event = events.at(-1);
+  assert.equal(replica.doc.blocks.one.richText, "a cd");
+  assert.equal(remoteEditorPosition(event, path, 3, { caret: true }), 2);
+  // Deleting the whole run before the caret leaves it at the paragraph start.
+  replica.receive(A.change(A.clone(replica.doc), (d) => A.splice(d, path, 0, 1)));
+  assert.equal(remoteEditorPosition(events.at(-1), path, 2, { caret: true }), 1);
   binding.destroy();
 });
