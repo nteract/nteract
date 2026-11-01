@@ -534,6 +534,61 @@ try {
     "Markdown contains references only; viewer reload and phone-width layout render private images",
   );
 
+  // Type, paste a screenshot, keep typing: the text after the paste follows
+  // the image. Then the same with an upload slow enough to type through.
+  const caretPageId = await createPage("Image paste caret");
+  const caretPath = `/api/pages/${caretPageId}/assets`;
+  const caretMarkdown = async () =>
+    (await tool(owner, "read_page", { page_id: caretPageId })).body.blocks
+      .map((block) => block.markdown)
+      .join("\n\n")
+      .replaceAll(/!\[[^\]]*\]\([^)]*\)/g, "[image]");
+  await owner.goto(`${origin}/p/${caretPageId}`);
+  await expect(content(owner)).toContainText("A shared image");
+  await content(owner).click();
+  await owner.keyboard.press("ControlOrMeta+End");
+  await owner.keyboard.press("Enter");
+  await owner.keyboard.type("a");
+  await imageEvent(owner, "paste", fixtures[1], "caret-paste.png");
+  await expectImages(owner, 1);
+  await owner.keyboard.type("b");
+  await expect
+    .poll(caretMarkdown, { timeout: 15000 })
+    .toMatch(/Images stay private with this Page\.\n\na\[image\]b$/);
+  let resumeCaret;
+  const holdCaret = new Promise((resolve) => {
+    resumeCaret = resolve;
+  });
+  let sawCaret;
+  const caretStarted = new Promise((resolve) => {
+    sawCaret = resolve;
+  });
+  await owner.route(
+    origin + caretPath,
+    async (route) => {
+      sawCaret();
+      await holdCaret;
+      await route.continue();
+    },
+    { times: 1 },
+  );
+  await owner.keyboard.press("Enter");
+  await owner.keyboard.type("c");
+  await imageEvent(owner, "paste", fixtures[2], "caret-slow.png");
+  await caretStarted;
+  try {
+    await expect(content(owner).locator(".wordgard-upload-preview")).toBeVisible();
+    await owner.keyboard.type("de");
+  } finally {
+    resumeCaret();
+  }
+  await expectImages(owner, 2);
+  // The image lands where it was pasted, and the caret stays after "de".
+  await owner.keyboard.type("f");
+  await expect.poll(caretMarkdown, { timeout: 15000 }).toMatch(/\n\na\[image\]b\n\nc\[image\]def$/);
+  await owner.screenshot({ path: `${output}/image-paste-caret.png` });
+  complete("Typing after an image paste follows the image, including through a slow upload");
+
   await access({
     action: "set_role",
     principal: identities[2].body.identity.principal,

@@ -641,7 +641,11 @@ uploads; they do not consume the document history budget.
 Uploads check current edit permission before transfer and again before returning
 the asset. Transfer does not hold the Page mutation queue. Browser insertion
 captures a CRDT cursor and refuses to redirect a completed upload into a replaced
-block or revoked editor. `GET`/`HEAD /api/pages/:pageId/assets/:sha256` check current
+block or revoked editor. The cursor sticks to the character before the insertion
+point, so text typed while the image uploads goes after it. When the upload
+lands and the selection hasn't moved since the paste, drop or pick, the caret
+moves to just after the image; otherwise the selection stays where the person
+put it. `GET`/`HEAD /api/pages/:pageId/assets/:sha256` check current
 read access before lookup, then return verified raster MIME, `nosniff`, and
 `Cache-Control: private, no-store`. No public bucket, persistent presigned URL,
 or cross-Page hash lookup is exposed.

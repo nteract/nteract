@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import * as A from "@automerge/automerge";
 import { JSDOM } from "jsdom";
-import { parse, serialize } from "wordgard/doc";
+import { Leaf, parse, serialize } from "wordgard/doc";
 import { GardState, Transaction } from "wordgard/state";
 import { history, undo, redo } from "wordgard/history";
 import { Command } from "wordgard/command";
@@ -23,11 +23,11 @@ const assetId = "a".repeat(64),
   pageId = "page-a",
   asset = { asset_id: assetId, url: imageAssetUrl(pageId, assetId), mime_type: "image/png" },
   file = { name: "Screenshot.png", type: "image/png", size: 100 };
-function fixture() {
+function fixture(markdown = "hello world", { trailingLine = false, anchor = 7 } = {}) {
   let doc = A.change(
     A.from({
       page_id: pageId,
-      blocks: { one: { id: "one", kind: "markdown", markdown: "hello world" } },
+      blocks: { one: { id: "one", kind: "markdown", markdown } },
     }),
     (d) => enableRich(d, "one"),
   );
@@ -54,11 +54,11 @@ function fixture() {
         return () => observers.delete(fn);
       },
     },
-    binding = createWordgardBinding(replica, "one");
+    binding = createWordgardBinding(replica, "one", { trailingLine });
   let state = GardState.create({
     doc: binding.current.doc,
     config: [history(), ...schema.elements.map((element) => GardState.schemaElement.of(element))],
-    selection: { anchor: 7 },
+    selection: { anchor: typeof anchor === "function" ? anchor(binding.current) : anchor },
   });
   const editor = {
     get state() {
@@ -179,6 +179,83 @@ test("delayed image upload follows a native cursor through peer edits and remain
   f.binding.destroy();
 });
 
+function uploaderFor(f, upload) {
+  return createImageUploader({
+    replica: f.replica,
+    getEditor: () => f.editor,
+    getMap: () => f.binding.current.map,
+    isCurrent: () => true,
+    onState: () => {},
+    upload,
+  });
+}
+function type(f, text) {
+  for (const character of text) {
+    const from = f.editor.state.selection.head;
+    f.editor.dispatch({
+      changes: { from, insert: [Leaf.text(character)] },
+      selection: { anchor: from + 1 },
+      userEvent: "input.type",
+    });
+  }
+}
+const image = `![Screenshot](${asset.url})`;
+
+test("after an image paste the caret follows the image, so typing continues after it", async () => {
+  const f = fixture(),
+    uploader = uploaderFor(f, async () => asset);
+  await uploader.start([file], f.target());
+  assert.equal(blockMarkdown(f.replica.doc.blocks.one), `hello ${image}world`);
+  assert.equal(f.editor.state.selection.head, 8);
+  type(f, "b");
+  assert.equal(blockMarkdown(f.replica.doc.blocks.one), `hello ${image}bworld`);
+  uploader.destroy();
+  f.binding.destroy();
+});
+
+test("typing during a slow upload stays after the image and keeps the caret", async () => {
+  const f = fixture(),
+    pending = deferred(),
+    uploader = uploaderFor(f, () => pending.promise);
+  const completion = uploader.start([file], f.target());
+  type(f, "bc");
+  assert.equal(blockMarkdown(f.replica.doc.blocks.one), "hello bcworld");
+  // A peer edit before the paste point moves both anchors together.
+  f.replica.change((d) => A.splice(d, textPath("one"), 0, 0, "Peer "), true);
+  pending.resolve(asset);
+  await completion;
+  assert.equal(blockMarkdown(f.replica.doc.blocks.one), `Peer hello ${image}bcworld`);
+  // The caret stays after "bc", which moved right past the image.
+  assert.equal(f.editor.state.selection.head, 1 + "Peer hello ".length + 1 + 2);
+  type(f, "d");
+  assert.equal(blockMarkdown(f.replica.doc.blocks.one), `Peer hello ${image}bcdworld`);
+  uploader.destroy();
+  f.binding.destroy();
+});
+
+test("an image pasted at the start of a block or on the trailing line lands there", async () => {
+  const start = fixture("hello world", { anchor: 1 }),
+    first = uploaderFor(start, async () => asset);
+  await first.start([file], start.target());
+  assert.equal(blockMarkdown(start.replica.doc.blocks.one), `${image}hello world`);
+  assert.equal(start.editor.state.selection.head, 2);
+  first.destroy();
+  start.binding.destroy();
+
+  const code = fixture("```js\nlet x = 1\n```", {
+      trailingLine: true,
+      anchor: ({ map }) => map.trailing + 1,
+    }),
+    second = uploaderFor(code, async () => asset);
+  await second.start([file], code.target());
+  assert.equal(
+    blockMarkdown(code.replica.doc.blocks.one),
+    `\`\`\`js\nlet x = 1\n\`\`\`\n\n${image}`,
+  );
+  second.destroy();
+  code.binding.destroy();
+});
+
 test("pending images never insert into a revoked, disposed, replaced, deleted or different Page", async () => {
   for (const scenario of ["revoked", "disposed", "replaced", "deleted", "page", "anchor removed"]) {
     const f = fixture(),
@@ -209,7 +286,8 @@ test("pending images never insert into a revoked, disposed, replaced, deleted or
       }, true);
     if (scenario === "page") f.replica.pageId = "other-page";
     if (scenario === "anchor removed")
-      f.replica.change((d) => A.splice(d, textPath("one"), 6, 5, ""), true);
+      // The image is anchored to the character before the insertion point.
+      f.replica.change((d) => A.splice(d, textPath("one"), 5, 1, ""), true);
     const before = A.getHeads(f.replica.doc);
     pending.resolve(asset);
     await completion;
