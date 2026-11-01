@@ -32,13 +32,16 @@ export function driverLabel(request) {
 
 /** An agent's optional session label, such as "release agent", so two
  * sessions of one account and harness show and key as separate agents. It is
- * trusted like the driver: it always sits under the authenticated account. */
+ * trusted like the driver: it always sits under the authenticated account.
+ * A blank label means no label. Clients fill the header from config
+ * templates such as `{env:PAGES_AGENT}`, which send "" when the variable is
+ * unset. */
 export function agentLabel(request) {
   const value =
     request.headers.get("x-pages-agent") ?? new URL(request.url).searchParams.get("agent");
-  if (value === null) return undefined;
+  if (value === null || !value.trim()) return undefined;
   // eslint-disable-next-line no-control-regex
-  if (!value.trim() || value.length > 80 || /[\x00-\x1f\x7f]/.test(value))
+  if (value.length > 80 || /[\x00-\x1f\x7f]/.test(value))
     throw new HttpError(400, "Invalid agent label");
   return value.trim();
 }

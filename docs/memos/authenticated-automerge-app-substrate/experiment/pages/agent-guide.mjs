@@ -829,7 +829,7 @@ it as your account and client, such as "Kyle's Kilo". If several sessions share 
 account and client, each MCP session already gets its own caret: Pages hands out
 an Mcp-Session-Id on initialize, and your client echoes it. Send an X-Pages-Agent
 header with a short session label (at most 80 characters), such as "release
-agent", to name the session. Use report_page_progress for temporary
+agent", to name the session. A blank header means no label. Use report_page_progress for temporary
 agent activity and read_page_presence for recent selections. Use these tools for document work; /api/sync is a binary native client protocol,
 not a JSON editing endpoint.
 `;
