@@ -54,7 +54,7 @@
  * then runs the pass again on its next write.
  */
 import { generateNKeysBetween } from "fractional-indexing";
-import { MAX_TREE_DEPTH, subtreeOf, validPositionKey } from "../model/location.mjs";
+import { MAX_TREE_DEPTH, childIndex, subtreeOf, validPositionKey } from "../model/location.mjs";
 import { STORAGE_KEYS_PER_CALL } from "./actor-authorship.mjs";
 import { listAll } from "./catalog.mjs";
 import { locationEntries } from "./catalog-location.mjs";
@@ -180,10 +180,13 @@ export function planLocationShape(entries, spaces = new Map()) {
       homes.set(entry.space_id, entry);
   const isHome = (entry) => homes.get(entry.space_id)?.page_id === entry.page_id;
 
-  // Every other root with space_id moves under its home Page.
+  // Every other root with space_id moves under its home Page. One child
+  // index serves every root's height check, so planning a Catalog of many
+  // roots stays linear in its entries.
   const legacy = [...map.values()].filter(
     (entry) => entry.parent_id === null && entry.space_id && !isHome(entry),
   );
+  const children = legacy.length ? childIndex(map) : undefined;
   for (const entry of legacy) {
     const home = homes.get(entry.space_id);
     const block = (reason) => ({
@@ -209,7 +212,9 @@ export function planLocationShape(entries, spaces = new Map()) {
     // The home Page is at depth 1 and this root moves to depth 2. Its deepest
     // descendant (trashed ones included: a restore puts them back without a
     // depth check) must fit the depth the model holds.
-    const height = Math.max(...subtreeOf(map, entry.page_id).map((member) => member.depth));
+    const height = Math.max(
+      ...subtreeOf(map, entry.page_id, children).map((member) => member.depth),
+    );
     if (2 + height > MAX_TREE_DEPTH) return block("nesting_depth_exceeded");
     write({
       page_id: entry.page_id,

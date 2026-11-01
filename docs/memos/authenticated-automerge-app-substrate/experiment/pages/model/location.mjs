@@ -162,11 +162,13 @@ export function deriveLocation(entries, pageId) {
   }
 }
 
-/** Child IDs by parent ID, in sibling order. Trashed entries count only
- * under trashed parents, which keeps them out of the active tree. */
-function childrenByParent(map) {
+/** Child entries by parent ID, in sibling order, for every entry with a
+ * parent. Trashed entries are included under whatever parent they record.
+ * One pass over the Catalog; a caller that walks many subtrees builds it once
+ * and hands it to `subtreeOf`. */
+export function childIndex(entries) {
   const children = new Map();
-  for (const entry of map.values()) {
+  for (const entry of asMap(entries).values()) {
     if (entry.parent_id === null) continue;
     if (!children.has(entry.parent_id)) children.set(entry.parent_id, []);
     children.get(entry.parent_id).push(entry);
@@ -180,11 +182,11 @@ const siblingOrder = (a, b) => compare(a.position, b.position) || compare(a.page
 /** The Page and every descendant, top-down, each with its depth below the
  * Page (the Page is 0). It follows every child link, however deep, and visits
  * each entry once, so it ends on corrupt input too: an over-deep chain comes
- * back whole and the caller's depth check sees it. */
-export function subtreeOf(entries, pageId) {
+ * back whole and the caller's depth check sees it. `children` is a
+ * `childIndex` of `entries`, built here when the caller has none. */
+export function subtreeOf(entries, pageId, children = childIndex(entries)) {
   const map = asMap(entries);
   if (!map.has(pageId)) return [];
-  const children = childrenByParent(map);
   const members = [];
   const seen = new Set();
   let level = [pageId];

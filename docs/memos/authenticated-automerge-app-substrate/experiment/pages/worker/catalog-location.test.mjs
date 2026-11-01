@@ -572,11 +572,11 @@ test("migration: a chain already past the depth the model holds blocks, naming t
   await assertCurrentShape(storage);
 });
 
-test("migration: a pass cut between batches finishes the sibling repair on its rerun", async () => {
-  // 130 legacy roots, one of which ("a1") ties with guide, already under
-  // home. The repair of that tie is in the second batch. The first batch
-  // commits; the second fails; the rerun finds no root left to move and must
-  // still repair the tie before it declares migrated.
+/** A Catalog in the older shape with `count` legacy roots under PROJECT, the
+ * first holding "a1", and `guide` already under home at "a1": one tie whose
+ * repair (guide is rekeyed, since the root sorts first by page_id) is the
+ * last write of the plan. */
+function legacyRoots(count, { withGuide = true } = {}) {
   const values = {
     [`space/${PROJECT}`]: { space_id: PROJECT, home_page_id: home },
     [`page/${home}`]: entry(home, {
@@ -585,10 +585,10 @@ test("migration: a pass cut between batches finishes the sibling repair on its r
       space_id: PROJECT,
       home: true,
     }),
-    [`page/${guide}`]: entry(guide, { parent_id: home, position: "a1" }),
+    ...(withGuide && { [`page/${guide}`]: entry(guide, { parent_id: home, position: "a1" }) }),
   };
-  const keys = ["a1", ...generateNKeysBetween("a1", null, 129)];
-  for (let i = 0; i < 130; i++) {
+  const keys = ["a1", ...generateNKeysBetween("a1", null, count - 1)];
+  for (let i = 0; i < count; i++) {
     const pageId = `${String(i).padStart(8, "0")}-0000-4000-8000-000000000000`;
     values[`page/${pageId}`] = entry(pageId, {
       parent_id: null,
@@ -596,30 +596,97 @@ test("migration: a pass cut between batches finishes the sibling repair on its r
       space_id: PROJECT,
     });
   }
-  const storage = new Storage(values);
+  return new Storage(values);
+}
+const legacyRootsIn = (storage) =>
+  [...storage.values.values()].filter(
+    (value) => value.parent_id === null && value.space_id && !value.home,
+  ).length;
+/** Fail the nth multi-key put. With `afterCommit`, the values land first and
+ * only the acknowledgement is lost. */
+function failPut(storage, nth, { afterCommit = false } = {}) {
   let puts = 0;
   const put = storage.put.bind(storage);
   storage.put = async (key, value) => {
-    if (typeof key === "object" && ++puts === 2) throw new Error("injected storage failure");
-    return put(key, value);
+    if (typeof key !== "object" || ++puts !== nth) return put(key, value);
+    if (afterCommit) await put(key, value);
+    throw new Error("injected storage failure");
   };
+  return () => {
+    storage.put = put;
+  };
+}
+
+test("migration: a pass cut after its last roots moved finishes the repair alone on its rerun", async () => {
+  // 127 roots fill the first batch exactly; the second holds only guide's
+  // repair and the migrated record, and fails.
+  const storage = legacyRoots(STORAGE_KEYS_PER_CALL - 1);
+  const restore = failPut(storage, 2);
   await assert.rejects(migrateLocationShape(storage), /injected/);
   assert.deepEqual(await shapeOf(storage), { name: "migrating" });
-  const moved = [...storage.values.values()].filter(
-    (value) => value.parent_id === home && value.page_id !== guide,
-  ).length;
-  assert.equal(moved, 127, "the first batch committed");
-  // Both guide and the tied root hold "a1" under home right now.
+  assert.equal(legacyRootsIn(storage), 0, "every root moved in the first batch");
   const tied = [...storage.values.values()].filter(
     (value) => value.parent_id === home && value.position === "a1",
   );
-  assert.equal(tied.length, 2);
-  storage.put = put;
+  assert.equal(tied.length, 2, "the tie is still there");
+  const beforeRerun = checkInvariants({ revision: 0, entries: await locationEntries(storage) });
+  assert.deepEqual(
+    beforeRerun.map((violation) => violation.code),
+    ["duplicate_position"],
+  );
+  // The rerun has no root to move and must still repair the tie.
+  restore();
   assert.deepEqual(await migrateLocationShape(storage), { name: "migrated" });
   const entries = await assertCurrentShape(storage);
-  assert.equal(childrenOf(entries, home).length, 131);
-  const other = tied.find((value) => value.page_id !== guide).page_id;
-  assert.notEqual(entries.get(guide).position, entries.get(other).position);
+  assert.equal(childrenOf(entries, home).length, STORAGE_KEYS_PER_CALL);
+  assert.equal(entries.get(guide).position > "a1", true, "guide was rekeyed, the root kept a1");
+  assert.equal(storage.transactions, 3, "one failed, one per pass that wrote");
+});
+
+test("migration: a repair-only batch whose acknowledgement is lost reruns to migrated with nothing to do", async () => {
+  // Already current, with one tie under home: the plan is the repair alone.
+  const storage = tree({ [`page/${guide}`]: entry(guide, { parent_id: home, position: "a0" }) });
+  const restore = failPut(storage, 1, { afterCommit: true });
+  await assert.rejects(migrateLocationShape(storage), /injected/);
+  // The batch committed before its caller heard: record and repair are there.
+  assert.deepEqual(await shapeOf(storage), { name: "migrated" });
+  const after = await assertCurrentShape(storage);
+  assert.notEqual(after.get(guide).position, after.get(top).position);
+  restore();
+  const snapshot = new Map(storage.values);
+  assert.deepEqual(await migrateLocationShape(storage), { name: "migrated" });
+  assert.deepEqual(storage.values, snapshot, "the rerun reads the record and writes nothing");
+});
+
+test("migration: planning a flat Catalog of thousands of roots is linear, not quadratic", async () => {
+  // 5,000 roots, each with a two-Page chain below it: 15,000 entries. Walking
+  // each root's subtree over a child index built per root would visit about
+  // 75 million entries; one index per plan keeps it to one pass.
+  const values = {
+    [`space/${PROJECT}`]: { space_id: PROJECT, home_page_id: home },
+    [`page/${home}`]: entry(home, {
+      parent_id: null,
+      position: "a0",
+      space_id: PROJECT,
+      home: true,
+    }),
+  };
+  const keys = generateNKeysBetween("a0", null, 5000);
+  for (let i = 0; i < 5000; i++) {
+    const root = `${String(i).padStart(8, "0")}-0000-4000-8000-000000000000`;
+    const mid = `${String(i).padStart(8, "0")}-0001-4000-8000-000000000000`;
+    const leaf = `${String(i).padStart(8, "0")}-0002-4000-8000-000000000000`;
+    values[`page/${root}`] = entry(root, { parent_id: null, position: keys[i], space_id: PROJECT });
+    values[`page/${mid}`] = entry(mid, { parent_id: root, position: "a0" });
+    values[`page/${leaf}`] = entry(leaf, { parent_id: mid, position: "a0" });
+  }
+  const entries = await locationEntries(new Storage(values));
+  const started = performance.now();
+  const plan = planLocationShape(entries, new Map([[PROJECT, { home_page_id: home }]]));
+  const elapsed = performance.now() - started;
+  assert.equal(plan.ok, true);
+  assert.equal(plan.writes.length, 5000);
+  assert.ok(elapsed < 2000, `planning took ${Math.round(elapsed)}ms`);
 });
 
 test("migration: a home Page the Project record names but didn't flag is the root, and gains the flag", async () => {
