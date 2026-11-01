@@ -99,7 +99,6 @@ import {
   CATALOG_LIMIT,
   TRASH_LIMIT,
   catalogTitle,
-  catalogEntries,
   countCapacity,
   intentState,
   knownRevision,
@@ -128,7 +127,6 @@ import {
   markSpaceIndexDirty,
   openCursor,
   parseListArguments,
-  placementMatches,
   reconcileSpaceIndex,
   spaceCatalogSource,
   spaceIndexSource,
@@ -142,16 +140,25 @@ import {
   withTimeout,
 } from "./catalog-index.mjs";
 import { readRegistration, requireRegistrationAccount, validPageId } from "./registration.mjs";
-import { generateKeyBetween } from "fractional-indexing";
 import { handleImageAssets, requireStoredImageAsset } from "./image-assets.mjs";
+import {
+  appendPosition,
+  childrenOf,
+  locationAnswer,
+  locationEntries,
+  projectOf,
+  publicLocation,
+  receiptLocation,
+  rekeyedEntries,
+  restoreTarget,
+} from "./catalog-location.mjs";
+import { deriveLocation } from "../model/location.mjs";
 import {
   MAX_DEPTH,
   SPACE_LIMIT,
-  entryPlacement,
   homePageMarkdown,
   newSpaceId,
   pagePlacement,
-  placementEntry,
   requirePageIdArgument,
   requireSpaceIdArgument,
   spaceNotFound,
@@ -260,14 +267,21 @@ const leafRefusalOf = (error) =>
   ["page_has_children", "home_page_protected"].includes(error.code)
     ? { status: error.status, body: { error: error.message, code: error.code } }
     : undefined;
-/** A home Page sits first at its Space's top level. */
-const homePlacement = (spaceId) => ({
-  space_id: spaceId,
+/** A home Page's Catalog location: a root of its Project, before every
+ * other Page at the Project's top level. */
+const homeLocation = (spaceId) => ({
   parent_id: null,
   position: "a0",
-  placement_epoch: 0,
+  space_id: spaceId,
   home: true,
 });
+/** A Page's owner Catalog, reached with a host request. It answers IDs
+ * only; callers filter them with the caller's access. */
+const locationRequest = (query) =>
+  new Request("https://pages.internal/internal/location", {
+    method: "POST",
+    body: JSON.stringify(query),
+  });
 const INDEX_REPORT_PENDING = "host/index/report-pending";
 /** Lifecycle receipts kept per Page for retries; older ones are pruned. */
 const LIFECYCLE_RECEIPT_LIMIT = 256;
@@ -447,8 +461,8 @@ async function invoke(request, env, operation, args = {}) {
       authorize: (write) => authorizeImage(request, env, args.page_id, write),
     });
   }
-  // One deadline covers the Page fetch, its body and read_page's placement
-  // sanitation, so a timeout never returns an unsanitized body.
+  // One deadline covers the Page fetch, its body and read_page's location
+  // view, so a timeout never returns an unfiltered body.
   return withinToolDeadline(async (signal) => {
     const response = await untilAborted(
       env.PAGES.getByName(args.page_id).fetch(
@@ -459,44 +473,41 @@ async function invoke(request, env, operation, args = {}) {
     );
     if (operation !== "read_page" || !response.ok) return bufferedResponse(response, signal);
     const body = await readResponseJson(response, signal);
-    await placementView(request, env, body, signal);
+    await locationView(request, env, body, signal);
     return json(body, response.status);
   });
 }
 
 /**
- * Replace a read_page result's private placement with what the caller can
- * see. Each ancestor and the Space answer with the caller's own credentials,
- * so a breadcrumb or ID appears only when the caller could open it: the walk
- * stops at the first Page the caller cannot read, and space_id appears only
- * when the Space is readable. Direct access to a Page never reveals its Space.
- * This runs in the stateless gateway, so a Page never calls another object.
+ * Add what the caller may see of a read_page result's location. The Page
+ * admitted the caller's read and names its owner. The owner's Catalog, the
+ * only record of location, answers the Page's ancestor IDs and Project in
+ * one call. Each ancestor and the Project then answer with the caller's own
+ * credentials, so a breadcrumb or ID appears only when the caller could open
+ * it: the chain stops at the first Page the caller cannot read, and space_id
+ * appears only when the Project is readable. Direct access to a Page never
+ * reveals its Project. This runs in the stateless gateway: a Page never calls
+ * its owner's Catalog.
  */
-async function placementView(request, env, body, signal) {
-  const placement = body._placement;
-  delete body._placement;
+async function locationView(request, env, body, signal) {
+  const owner = body._owner;
+  delete body._owner;
   body.kind = "page";
   body.breadcrumbs = [];
-  // Top-level Pages in Your items.
-  if (!placement?.space_id && !placement?.parent_id) {
-    body.space_id = null;
-    body.parent_id = null;
-    return;
-  }
   // Each read, body included, is bounded by its own timeout and by the
-  // request's deadline. Only the request deadline ends the whole walk.
-  const readable = async (stub, path, payload) => {
+  // request's deadline. Only the request deadline ends the whole view.
+  const readable = async (namespace, name, outbound) => {
     const controller = new AbortController();
     const abort = () => controller.abort(signal.reason);
     if (signal.aborted) abort();
     else signal.addEventListener("abort", abort, { once: true });
     const timer = setTimeout(
-      () => controller.abort(new Error("Placement read timed out")),
+      () => controller.abort(new Error("Location read timed out")),
       catalogIndexTimeouts.verify,
     );
     try {
       const response = await untilAborted(
-        stub.fetch(forwarded(request, path, payload), { signal: controller.signal }),
+        namespace.getByName(name).fetch(outbound, { signal: controller.signal }),
         controller.signal,
       );
       if (!response.ok) {
@@ -513,29 +524,44 @@ async function placementView(request, env, body, signal) {
       signal.removeEventListener("abort", abort);
     }
   };
-  const chain = [];
-  const seen = new Set([body.page_id]);
-  let next = placement.parent_id;
-  while (next && chain.length < MAX_DEPTH && !seen.has(next)) {
-    seen.add(next);
-    const parent = await readable(env.PAGES.getByName(next), "/internal/catalog", {});
-    if (!parent || (parent.state && parent.state !== "active")) break;
-    chain.unshift({ kind: "page", page_id: next, title: catalogTitle(parent.title) });
-    next = parent.parent_id ?? null;
+  const location =
+    typeof owner === "string"
+      ? await readable(env.CATALOGS, owner, locationRequest({ page_id: body.page_id }))
+      : null;
+  if (!location) return;
+  // Top-level Pages in Your items.
+  if (!location.space_id && !location.parent_id) {
+    body.space_id = null;
+    body.parent_id = null;
+    return;
   }
-  if (placement.parent_id && chain.at(-1)?.page_id === placement.parent_id)
-    body.parent_id = placement.parent_id;
-  const space = placement.space_id
-    ? await readable(env.PROJECTS.getByName(placement.space_id), "/internal/space/read", {
-        space_id: placement.space_id,
-      })
+  const ancestors = location.ancestors.slice(0, MAX_DEPTH);
+  const parents = await Promise.all(
+    ancestors.map((pageId) =>
+      readable(env.PAGES, pageId, forwarded(request, "/internal/catalog", {})),
+    ),
+  );
+  const chain = [];
+  for (const [index, parent] of parents.entries()) {
+    if (!parent || (parent.state && parent.state !== "active")) break;
+    chain.unshift({ kind: "page", page_id: ancestors[index], title: catalogTitle(parent.title) });
+  }
+  const reachedRoot = location.complete && chain.length === location.ancestors.length;
+  if (location.parent_id && chain.at(-1)?.page_id === location.parent_id)
+    body.parent_id = location.parent_id;
+  const space = location.space_id
+    ? await readable(
+        env.PROJECTS,
+        location.space_id,
+        forwarded(request, "/internal/space/read", { space_id: location.space_id }),
+      )
     : null;
   if (space) {
-    body.space_id = placement.space_id;
-    if (!placement.parent_id) body.parent_id = null;
-    if (placement.home) body.home = true;
-    // The whole chain is visible to whoever can read the Space in this build.
-    if (!next) chain.unshift({ kind: "space", space_id: space.space_id, title: space.title });
+    body.space_id = location.space_id;
+    if (!location.parent_id) body.parent_id = null;
+    if (location.home) body.home = true;
+    // The whole chain is visible to whoever can read the Project in this build.
+    if (reachedRoot) chain.unshift({ kind: "space", space_id: space.space_id, title: space.title });
     // The home Page stands for its Project; viewers may fold its crumb into
     // the Project's.
     for (const crumb of chain)
@@ -727,7 +753,40 @@ export class Catalog {
     this.queue = serialQueue(ctx, "catalog-queue");
   }
   fetch(request) {
+    // Location reads write nothing, so they never wait behind the queue. A
+    // Catalog listing a shared parent asks the owner's Catalog from inside
+    // its own queue; two Catalogs doing that to each other must not wait on
+    // each other.
+    if (new URL(request.url).pathname === "/internal/location") return this.location(request);
     return this.queue(() => this.run(request));
+  }
+  /**
+   * Host-only location route: the gateway never forwards /internal/* paths.
+   * It answers IDs only, for a Page's ancestors or a parent's children, and
+   * its callers filter them with the caller's access. Host requests carry no
+   * credential. A request that carries one answers only to this Catalog's
+   * own account, like every other Catalog route.
+   */
+  async location(request) {
+    try {
+      if (request.headers.has("authorization") || request.headers.has("cookie")) {
+        const identity = await authenticate(request, this.env);
+        if (this.ctx.id.name && this.ctx.id.name !== identity.principal)
+          throw new HttpError(403, "Account access denied");
+      }
+      const query = await readJson(request);
+      const entries = await locationEntries(this.ctx.storage);
+      if (query?.children_of !== undefined) {
+        if (!validPageId(query.children_of)) throw new HttpError(400, "Invalid children_of");
+        return json({ children: childrenOf(entries, query.children_of) });
+      }
+      if (!validPageId(query?.page_id)) throw new HttpError(400, "Invalid page_id");
+      const answer = locationAnswer(entries, query.page_id);
+      if (!answer) throw new HttpError(404, "Page not found");
+      return json(answer);
+    } catch (error) {
+      return errorResponse(error, "catalog-location");
+    }
   }
   async countEntries(prefix) {
     return countCapacity(this.ctx.storage, prefix, {
@@ -934,44 +993,49 @@ export class Catalog {
             (await this.ctx.storage.get(`trash/${args.page_id}`)))
         )
           throw new HttpError(409, "Page already has another creation request");
-        const placement =
-          body.operation === "create_page" ? await this.resolvePlacement(request, args) : undefined;
+        const { location, rekeyed } = await this.resolveLocation(request, registering ? {} : args);
         intent = {
           fingerprint: digest,
           pending: true,
           pageId: body.operation === "create_page" ? crypto.randomUUID() : args.page_id,
           createdAt: new Date().toISOString(),
-          ...(placement && { placement }),
         };
         intent = await reserveOperation(this.ctx.storage, {
           key,
           entry: intent,
           retry: inspected.retry,
         });
-        await this.ctx.storage.put(key, intent);
+        // The intent and the pending entry, which alone records the new
+        // Page's location, commit together. A retry reads the location back.
+        await this.ctx.storage.put({
+          ...(await rekeyedEntries(this.ctx.storage, rekeyed)),
+          [key]: intent,
+          [`page/${intent.pageId}`]: {
+            page_id: intent.pageId,
+            title: catalogTitle(args.title),
+            created_at: intent.createdAt,
+            updated_at: intent.createdAt,
+            pending: true,
+            ...location,
+          },
+        });
       }
       const pageId = intent.pageId;
+      const pending = await this.ctx.storage.get(`page/${pageId}`);
+      if (!pending) throw new Error("A pending creation has no Catalog entry");
       // A resumed creation checks its parent again: the parent may have
       // moved to Trash since the intent was reserved. The intent stays
       // pending; restoring the parent and retrying finishes it.
-      if (inspected.entry && intent.placement?.parent_id)
-        await this.activeParent(intent.placement.parent_id);
-      await this.ctx.storage.put(`page/${pageId}`, {
-        page_id: pageId,
-        title: catalogTitle(args.title),
-        created_at: intent.createdAt,
-        updated_at: intent.createdAt,
-        pending: true,
-        ...placementEntry(intent.placement),
-      });
-      // Placement comes only from the resolved intent, never the caller.
-      const { placement: _placement, ...requested } = args;
+      if (inspected.entry && pending.parent_id) await this.activeParent(pending.parent_id);
+      // The Page learns its content and owner, never its location.
       const response = await this.env.PAGES.getByName(pageId).fetch(
-        forwarded(request, registering ? "/internal/register" : "/internal/create", {
-          ...requested,
-          page_id: pageId,
-          ...(intent.placement && { placement: intent.placement }),
-        }),
+        forwarded(
+          request,
+          registering ? "/internal/register" : "/internal/create",
+          registering
+            ? { ...args, page_id: pageId }
+            : { title: args.title, markdown: args.markdown, page_id: pageId },
+        ),
       );
       if (!response.ok && response.headers.get("x-pages-create-rejected") === "before-intent") {
         // Only this explicit pre-intent rejection proves there is no Page
@@ -981,17 +1045,18 @@ export class Catalog {
         await this.ctx.storage.sync();
       }
       if (!response.ok) return response;
-      intent.receipt = await response.json();
-      await this.ctx.storage.put(`page/${pageId}`, {
-        page_id: pageId,
-        title: catalogTitle(intent.receipt.title),
-        created_at: intent.createdAt,
-        updated_at: intent.createdAt,
-        ...placementEntry(intent.placement),
-      });
-      await markCatalogIndexDirty(this.ctx.storage);
+      // The receipt reports the location this Catalog recorded.
+      intent.receipt = {
+        ...(await response.json()),
+        ...receiptLocation(await locationEntries(this.ctx.storage), pageId),
+      };
       intent.pending = false;
-      await this.ctx.storage.put(key, intent);
+      const { pending: _pending, ...created } = pending;
+      await markCatalogIndexDirty(this.ctx.storage);
+      await this.ctx.storage.put({
+        [key]: intent,
+        [`page/${pageId}`]: { ...created, title: catalogTitle(intent.receipt.title) },
+      });
       await this.ctx.storage.sync();
       return json(intent.receipt);
     } catch (error) {
@@ -1165,8 +1230,7 @@ export class Catalog {
    * `page_reply`. An unread failure is kept to pass through unchanged. */
   async forwardIntent(run, effect) {
     const { request, operation, args, pageId } = run;
-    const restorePosition =
-      operation === "restore_page" ? await this.restorePosition(pageId) : undefined;
+    if (operation === "restore_page") await this.settleRestoreParent(pageId);
     let response;
     try {
       response = await this.env.PAGES.getByName(pageId).fetch(
@@ -1177,7 +1241,6 @@ export class Catalog {
             expected_revision: effect.expectedRevision,
           }),
           ...(effect.replayOnly && { replay_only: true }),
-          ...(restorePosition && { restore_position: restorePosition }),
         }),
       );
     } catch (error) {
@@ -1194,6 +1257,16 @@ export class Catalog {
       };
     }
     const { receipt, current } = await response.json();
+    // A restore's receipt reports where this Catalog's projection, the next
+    // effect, puts the Page.
+    if (operation === "restore_page" && receipt?.restored === true && current?.state === "active") {
+      const { location } = await restoreTarget(this.ctx.storage, pageId);
+      const spaceId = location.parent_id
+        ? projectOf(await locationEntries(this.ctx.storage), location.parent_id)
+        : (location.space_id ?? null);
+      if (spaceId || location.parent_id)
+        Object.assign(receipt, { space_id: spaceId, parent_id: location.parent_id });
+    }
     const known = await knownRevision(this.ctx.storage, pageId);
     return {
       type: "page_reply",
@@ -1263,13 +1336,15 @@ export class Catalog {
     }
   }
 
-  /** Placement for a new Page from create_page's space_id and parent_id.
-   * A parent implies its Space; naming a different Space is an error. Only
-   * Pages and Spaces this account owns can hold new Pages in this build, so
-   * this account's own entries settle parent, depth and sibling order, and
-   * the Space record confirms the Space.
+  /** A new Page's Catalog location from create_page's space_id and
+   * parent_id: `{ location, rekeyed }`. A parent implies its Project, which
+   * is derived from the parent's root; naming a different Project is an
+   * error. Without a parent the Page is a root, in the named Project or in
+   * Your items. Only Pages and Projects this account owns can hold new Pages
+   * in this build, so this account's own entries settle parent, depth and
+   * sibling order, and the Project record confirms the Project.
    */
-  async resolvePlacement(request, args) {
+  async resolveLocation(request, args) {
     const storage = this.ctx.storage;
     const spaceArg =
       args.space_id === undefined || args.space_id === null
@@ -1279,47 +1354,45 @@ export class Catalog {
       args.parent_id === undefined || args.parent_id === null
         ? null
         : requirePageIdArgument(args.parent_id, "parent_id");
-    if (!spaceArg && !parentId) return undefined;
-    let spaceId = spaceArg;
+    if (parentId) await this.activeParent(parentId);
+    const entries = await locationEntries(storage);
     if (parentId) {
-      const parent = await this.activeParent(parentId);
-      const placement = entryPlacement(parent);
-      if (spaceArg && placement.space_id !== spaceArg)
+      const parent = deriveLocation(entries, parentId);
+      if (!parent.ok)
+        throw new HttpError(
+          409,
+          "The parent Page's location can't be resolved",
+          "parent_unavailable",
+        );
+      if (spaceArg && parent.space_id !== spaceArg)
         throw new HttpError(
           400,
           "parent_id is not in that Project. Omit project_id: a parent implies its Project.",
           "placement_mismatch",
         );
-      spaceId = placement.space_id;
-      // A top-level Page is at depth 1; the new Page sits one below its parent.
-      let depth = 2;
-      for (let cursor = placement.parent_id; cursor; depth++) {
-        if (depth > MAX_DEPTH) break;
-        const ancestor =
-          (await storage.get(`page/${cursor}`)) ?? (await storage.get(`trash/${cursor}`));
-        cursor = ancestor ? entryPlacement(ancestor).parent_id : null;
-      }
-      if (depth > MAX_DEPTH)
+      // A root is at depth 1; the new Page sits one below its parent.
+      if (parent.depth + 1 > MAX_DEPTH)
         throw new HttpError(
           400,
           `Pages nest at most ${MAX_DEPTH} levels deep`,
           "nesting_depth_exceeded",
         );
+      const { position, rekeyed } = appendPosition(entries, parentId, null);
+      return { location: { parent_id: parentId, position }, rekeyed };
     }
-    if (spaceId) {
-      const entry = await storage.get(`space/${spaceId}`);
+    if (spaceArg) {
+      const entry = await storage.get(`space/${spaceArg}`);
       if (!entry || entry.pending) throw spaceNotFound();
-      const response = await this.env.PROJECTS.getByName(spaceId).fetch(
-        forwarded(request, "/internal/space/read", { space_id: spaceId }),
+      const response = await this.env.PROJECTS.getByName(spaceArg).fetch(
+        forwarded(request, "/internal/space/read", { space_id: spaceArg }),
       );
       if (response.status === 404) throw spaceNotFound();
       if (!response.ok) throw new HttpError(503, "Project is temporarily unavailable");
     }
+    const { position, rekeyed } = appendPosition(entries, null, spaceArg);
     return {
-      space_id: spaceId,
-      parent_id: parentId,
-      position: await this.nextPosition(spaceId, parentId),
-      placement_epoch: 0,
+      location: { parent_id: null, position, ...(spaceArg && { space_id: spaceArg }) },
+      rekeyed,
     };
   }
 
@@ -1344,26 +1417,6 @@ export class Catalog {
     return parent;
   }
 
-  /** A position after every current sibling. */
-  async nextPosition(spaceId, parentId) {
-    let last = null;
-    for (const entry of (await catalogEntries(this.ctx.storage, "page/")).values()) {
-      const placement = entryPlacement(entry);
-      if (
-        placement.space_id === spaceId &&
-        placement.parent_id === parentId &&
-        typeof placement.position === "string" &&
-        (last === null || placement.position > last)
-      )
-        last = placement.position;
-    }
-    try {
-      return generateKeyBetween(last, null);
-    } catch {
-      return generateKeyBetween(null, null);
-    }
-  }
-
   /** Trash moves one Page at a time in this build. A Page with active
    * children, or children still being created, stays put until they move,
    * so no Page is ever active under a trashed parent. A Space's home Page
@@ -1378,7 +1431,7 @@ export class Catalog {
     const storage = this.ctx.storage;
     const entry = await storage.get(`page/${pageId}`);
     if (!entry) return;
-    if (entryPlacement(entry).home)
+    if (entry.home)
       throw new HttpError(
         409,
         "A Project's home Page stays with its Project; it can't move to Trash on its own",
@@ -1389,8 +1442,7 @@ export class Catalog {
       if (!child?.page_id || child.page_id === pageId) continue;
       const trashed = await storage.get(`trash/${child.page_id}`);
       const parent =
-        entryPlacement(child).parent_id ??
-        (child.reservation && trashed ? entryPlacement(trashed).parent_id : null);
+        child.parent_id ?? (child.reservation && trashed ? (trashed.parent_id ?? null) : null);
       if (parent !== pageId) continue;
       if (child.reservation || trashed?.reservation) unsettled.push(child.page_id);
       else throw hasChildren();
@@ -1455,36 +1507,24 @@ export class Catalog {
     }
   }
 
-  /** Where a pending restore returns its Page: the Space and parent its
-   * Trash entry records. */
+  /** Where a pending restore returns its Page: the parent (or a root's
+   * Project) its Trash entry records. */
   async slotPlacement(operation, pageId) {
     if (operation !== "restore_page") return undefined;
     const entry = await this.ctx.storage.get(`trash/${pageId}`);
-    return entry && !entry.reservation ? entryPlacement(entry) : undefined;
+    return entry && !entry.reservation
+      ? { space_id: entry.space_id ?? null, parent_id: entry.parent_id ?? null }
+      : undefined;
   }
 
-  /** Whether a parent is active and staying so. Any Trash entry, or a live
-   * Trash reservation, makes it unavailable: a pending trash may still apply
-   * on retry even when the Page has not applied it yet. A reservation is
-   * settled first so an applied trash is projected. */
-  async parentAvailable(parentId) {
+  /** Settle the restoring Page's parent's Trash reservation, so a trash that
+   * already applied is projected before this restore's projection decides
+   * whether the parent can still hold it. */
+  async settleRestoreParent(pageId) {
     const storage = this.ctx.storage;
-    if ((await storage.get(`trash/${parentId}`))?.reservation)
+    const parentId = (await storage.get(`trash/${pageId}`))?.parent_id;
+    if (parentId && (await storage.get(`trash/${parentId}`))?.reservation)
       await this.settleReservation(parentId);
-    if (await storage.get(`trash/${parentId}`)) return false;
-    const parent = await storage.get(`page/${parentId}`);
-    return !!parent && !parent.pending && !parent.reservation;
-  }
-
-  /** Where a restored Page goes when its parent is in Trash, leaving it, or
-   * gone: the top level of its Space, or of Your items. Undefined keeps its
-   * place. */
-  async restorePosition(pageId) {
-    const entry = await this.ctx.storage.get(`trash/${pageId}`);
-    const placement = entry && !entry.reservation && entryPlacement(entry);
-    if (!placement?.parent_id) return undefined;
-    if (await this.parentAvailable(placement.parent_id)) return undefined;
-    return this.nextPosition(placement.space_id, null);
   }
 
   async createSpace(request, identity, args) {
@@ -1548,7 +1588,7 @@ export class Catalog {
           created_at: createdAt,
           updated_at: createdAt,
           pending: true,
-          ...placementEntry(homePlacement(intent.spaceId)),
+          ...homeLocation(intent.spaceId),
         },
       });
     }
@@ -1581,7 +1621,6 @@ export class Catalog {
             page_id: intent.pageId,
             title: intent.title,
             markdown: homePageMarkdown(intent.description),
-            placement: homePlacement(intent.spaceId),
           }),
         );
         if (!response.ok) return response;
@@ -1604,7 +1643,7 @@ export class Catalog {
             title: catalogTitle(intent.homeTitle),
             created_at: intent.createdAt,
             updated_at: intent.createdAt,
-            ...placementEntry(homePlacement(intent.spaceId)),
+            ...homeLocation(intent.spaceId),
           },
         });
         await markCatalogIndexDirty(storage);
@@ -1840,6 +1879,25 @@ export class Catalog {
     return { status: "unavailable" };
   }
 
+  /** Child IDs of a Page another account owns, from that account's
+   * Catalog. Only its owner's Catalog records what sits under it. */
+  async childIdsFromOwner(owner, parentId) {
+    try {
+      if (typeof owner !== "string") throw Error("Shared Page check named no owner");
+      const response = await withTimeout(
+        this.env.CATALOGS.getByName(owner).fetch(locationRequest({ children_of: parentId })),
+        catalogIndexTimeouts.verify,
+        "Owner location read timed out",
+      );
+      if (!response.ok) throw Error(`Owner location read failed: ${response.status}`);
+      const { children } = await response.json();
+      return new Set(Array.isArray(children) ? children : []);
+    } catch (error) {
+      logFailure(error, "catalog-location");
+      throw new HttpError(503, "Shared Pages are temporarily unavailable");
+    }
+  }
+
   /**
    * D1 or this Catalog's entries supply candidates; neither is authority for a
    * title. Owner rows must match this account's own `page/` (or `trash/`)
@@ -1861,10 +1919,14 @@ export class Catalog {
       const space = await storage.get(`space/${options.spaceId}`);
       if (!space || space.pending) throw spaceNotFound();
     }
+    // This account's entries record where each owned Page is, and its
+    // Project is derived from them. A listing builds the map once.
+    const locations = await locationEntries(storage);
+    // Child IDs of a shared parent, from its owner's Catalog.
+    let sharedChildren;
     if (typeof options.parentId === "string") {
-      const parent = await storage.get(`page/${options.parentId}`);
-      if (parent && !parent.pending && !parent.reservation) {
-        if (options.spaceId && entryPlacement(parent).space_id !== options.spaceId)
+      if (locations.get(options.parentId)?.state === "active") {
+        if (options.spaceId && projectOf(locations, options.parentId) !== options.spaceId)
           throw new HttpError(400, "parent_id is not in that Project", "placement_mismatch");
       } else {
         // Children of a Page shared with this account: the caller must be
@@ -1874,8 +1936,19 @@ export class Catalog {
           throw new HttpError(503, "Shared Pages are temporarily unavailable");
         if (shared.status !== "ok" || (shared.page.state && shared.page.state !== "active"))
           throw new HttpError(404, "Parent Page not found", "parent_unavailable");
+        sharedChildren = await this.childIdsFromOwner(shared.page.owner, options.parentId);
       }
     }
+    const located = (pageId) => {
+      const entry = locations.get(pageId);
+      if (!entry) return false;
+      if (options.spaceId && projectOf(locations, pageId) !== options.spaceId) return false;
+      if (options.parentId === null && entry.parent_id !== null) return false;
+      if (options.parentId && entry.parent_id !== options.parentId) return false;
+      return true;
+    };
+    const filtered = options.spaceId !== null || options.parentId !== undefined;
+    const scope = { locations, located, sharedChildren };
     const context = {
       principal: identity.principal,
       needle: options.needle,
@@ -1897,7 +1970,9 @@ export class Catalog {
     const epoch = catalogIndexEpoch(this.env);
     let db;
     let source;
-    if (epoch) {
+    // D1 rows don't carry the location derived from this account's entries,
+    // so a listing filtered by Project or parent reads the entries.
+    if (epoch && !filtered) {
       try {
         db = await withTimeout(catalogIndexDatabase(this.env, this.ctx), catalogIndexTimeouts.read);
         const ready = await reconcileAccountIndex({
@@ -1916,8 +1991,6 @@ export class Catalog {
             domain: evidence?.expiresAt > Date.now() ? evidence.domain : null,
             inTrash: options.inTrash,
             needle: options.needle,
-            spaceId: options.spaceId,
-            parentId: options.parentId,
           });
       } catch (error) {
         // Listing degrades to the Catalog entries; editing never waits on D1.
@@ -1927,7 +2000,7 @@ export class Catalog {
     let result;
     if (source) {
       try {
-        result = await this.scanCandidates(request, identity, source, options, after, db);
+        result = await this.scanCandidates(request, identity, source, options, scope, after, db);
         result.source = "index";
       } catch (error) {
         if (!(error instanceof CatalogIndexUnavailable)) throw error;
@@ -1938,8 +2011,16 @@ export class Catalog {
       ...(await this.scanCandidates(
         request,
         identity,
-        await catalogSource(storage, options),
+        await catalogSource(storage, {
+          inTrash: options.inTrash,
+          needle: options.needle,
+          owned: (entry) => located(entry.page_id),
+          // Shared Pages are never in a Project here, and never under a
+          // parent this account owns.
+          shared: !options.spaceId && (options.parentId === undefined || !!sharedChildren),
+        }),
         options,
+        scope,
         after,
         null,
       )),
@@ -1958,7 +2039,7 @@ export class Catalog {
     return response;
   }
 
-  async scanCandidates(request, identity, source, options, after, db) {
+  async scanCandidates(request, identity, source, options, scope, after, db) {
     const storage = this.ctx.storage;
     const pruned = [];
     let stale = false;
@@ -1978,9 +2059,8 @@ export class Catalog {
         if (!entry || entry.pending) return null;
         const title = catalogTitle(entry.title);
         if (!titleMatches(title, options.needle)) return null;
-        // This entry copied the Page's placement; D1's copy only chose it.
-        const placement = entryPlacement(entry);
-        if (!placementMatches(placement, options)) return null;
+        // This account's entries record location; a candidate row only chose it.
+        if (!options.inTrash && !scope.located(row.page_id)) return null;
         return {
           page_id: row.page_id,
           title,
@@ -1989,16 +2069,14 @@ export class Catalog {
           ...(entry.trashed_at ? { trashed_at: entry.trashed_at } : {}),
           ...(options.inTrash && trashFields({ ...entry, page_id: row.page_id })),
           // Top-level Pages in Your items keep the original row shape.
-          ...((placement.space_id || placement.parent_id) && {
-            space_id: placement.space_id,
-            parent_id: placement.parent_id,
-            position: placement.position,
-            ...(placement.home && { home: true }),
-          }),
+          ...publicLocation(scope.locations, row.page_id),
         };
       }
-      // Pages in a Space belong to its owner in this build.
+      // Pages in a Project belong to its owner in this build, and only owned
+      // Pages hold sub-pages: a shared Page is listed under a parent only
+      // when that parent's owner lists it as a child.
       if (options.inTrash || options.spaceId) return null;
+      if (options.parentId !== undefined && !scope.sharedChildren?.has(row.page_id)) return null;
       const result = await this.verifyShared(request, row.page_id);
       if (result.status === "unavailable")
         throw new HttpError(503, "Shared Pages are temporarily unavailable");
@@ -2014,17 +2092,15 @@ export class Catalog {
       }
       const title = catalogTitle(result.page.title);
       if (!titleMatches(title, options.needle)) return null;
-      // A shared Page's placement shows only under a parent the caller can
-      // already read; its Space never shows.
-      const placement = pagePlacement({ placement: result.page });
-      if (options.parentId !== undefined && placement.parent_id !== options.parentId) return null;
+      // A shared Page's parent shows only under a parent the caller can
+      // already read; its Project never shows.
       return {
         page_id: row.page_id,
         title,
         created_at: row.created_at,
         updated_at: row.updated_at,
         shared: true,
-        ...(options.parentId !== undefined && { parent_id: placement.parent_id }),
+        ...(options.parentId !== undefined && { parent_id: options.parentId }),
       };
     };
     const limit = options.limit;
@@ -2568,8 +2644,6 @@ export class Page {
         if (!validPageId(args?.page_id) || (this.ctx.id.name && args.page_id !== this.ctx.id.name))
           throw new HttpError(400, "Invalid page_id");
         validateCreateInput(args);
-        const placement =
-          args.placement === undefined ? undefined : validatePlacement(args.placement);
         let intent = await this.ctx.storage.get("host/creation");
         if (intent) {
           // Catalog handles argument replay; this DO independently pins ownership.
@@ -2592,18 +2666,12 @@ export class Page {
               documentId,
               tree: logicalId(documentIdToBinary(documentId)),
               deleted: false,
-              // Set by the owner's Catalog from a resolved placement.
-              ...(placement && { placement }),
+              // Location lives in the owner's Catalog; the receipt there adds it.
               createdReceipt: {
                 page_id: args.page_id,
                 title: doc.title,
                 heads: A.getHeads(doc),
                 ...(warning ? { warnings: [warning] } : {}),
-                ...(placement && {
-                  space_id: placement.space_id,
-                  parent_id: placement.parent_id,
-                  ...(placement.home && { home: true }),
-                }),
               },
             };
             intent = { metadata, bytes: A.save(doc) };
@@ -2696,9 +2764,6 @@ export class Page {
           lifecycle_revision: this.metadata.lifecycleRevision ?? 0,
           state: indexedState(this.metadata),
           title_observed_at: this.titleObservedAt,
-          // For the caller's Catalog and the gateway, which decide what of the
-          // placement the caller may see.
-          ...pagePlacement(this.metadata),
         });
       }
       if (url.pathname === "/internal/access") {
@@ -2805,9 +2870,10 @@ export class Page {
           }
           if (state === "trashed" && result.body && typeof result.body === "object")
             result.body.trash = publicTrash(this.metadata);
-          // The gateway turns this into what the caller may see of it.
+          // The gateway asks the owner's Catalog where this Page is and shows
+          // the caller what they may see of it.
           if (body.operation === "read_page" && result.status === 200 && result.body)
-            result.body._placement = pagePlacement(this.metadata);
+            result.body._owner = this.metadata.owner;
           return json(result.body, result.status);
         }
         this.policy.account(identity, true);
@@ -2934,7 +3000,6 @@ export class Page {
       revision: this.metadata.lifecycleRevision ?? 0,
       ...(state !== "deleted" && this.handle && { title: catalogTitle(this.handle.doc().title) }),
       ...(state === "trashed" && publicTrash(this.metadata)),
-      ...(this.metadata.placement && pagePlacement(this.metadata)),
     };
   }
 

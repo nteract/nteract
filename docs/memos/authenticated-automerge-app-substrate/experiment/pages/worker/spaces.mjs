@@ -8,11 +8,10 @@
  * and a Space's Pages are readable by its owner plus anyone holding a direct
  * grant on a Page.
  *
- * Pages carry their placement in the Page record (`metadata.placement`):
- * `space_id` (null for Your items), `parent_id` (null at the top level),
- * `position` among siblings, `placement_epoch` and `home`. The owner's Catalog
- * entries copy it at creation. Placement only changes when a restore returns
- * a Page whose parent is gone to the top level, which bumps the epoch.
+ * The owner's Catalog records where each Page is (catalog-location.mjs).
+ * Page records carry no location. The placement helpers below read a Page
+ * record's `metadata.placement`, which Page creation no longer writes, for
+ * the Page's restore path and the D1 index report.
  *
  * Callers see Projects; project-api.mjs maps the API onto this module.
  * Storage keeps the Space name so a rollback build reads the same records.

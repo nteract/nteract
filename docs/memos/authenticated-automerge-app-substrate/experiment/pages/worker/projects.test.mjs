@@ -228,6 +228,13 @@ async function world(t, { index = "1" } = {}) {
 }
 
 const ids = (listing) => listing.body.pages.map((page) => page.page_id).sort();
+/** A Catalog entry's location fields. */
+const locationOf = (entry) =>
+  Object.fromEntries(
+    ["parent_id", "position", "space_id", "home", "restore_space_id"]
+      .filter((field) => Object.hasOwn(entry, field))
+      .map((field) => [field, entry[field]]),
+  );
 
 test("a Project is created with its home Page, then read, listed and updated", async (t) => {
   const w = await world(t);
@@ -241,15 +248,16 @@ test("a Project is created with its home Page, then read, listed and updated", a
   assert.match(project.project_id, /^prj_/);
 
   const home = w.page(project.home_page_id);
-  // Storage keeps the Space name: the Page record says space_id.
-  assert.deepEqual(home.metadata.placement, {
-    space_id: project.project_id,
+  // Only the owner's Catalog records location; the Page record has none.
+  assert.equal(home.metadata.placement, undefined);
+  assert.equal(home.metadata.owner, w.owner);
+  const homeEntry = await w.catalogStorage().get(`page/${project.home_page_id}`);
+  assert.deepEqual(locationOf(homeEntry), {
     parent_id: null,
     position: "a0",
-    placement_epoch: 0,
+    space_id: project.project_id,
     home: true,
   });
-  assert.equal(home.metadata.owner, w.owner);
 
   const read = await w.call("owner", "get_project", { project_id: project.project_id });
   assert.equal(read.status, 200);
@@ -428,7 +436,8 @@ test("an interrupted create_project resumes the same Project and home Page on re
   assert.equal(retry.status, 200);
   assert.equal(retry.body.project_id, intent.spaceId);
   assert.equal(retry.body.home_page_id, intent.pageId);
-  assert.equal(w.page(intent.pageId).metadata.placement.home, true);
+  assert.equal(w.page(intent.pageId).metadata.placement, undefined);
+  assert.equal((await storage.get(`page/${intent.pageId}`)).home, true);
   const again = await w.call("owner", "create_project", args);
   assert.deepEqual(again.body, retry.body);
   assert.equal(
@@ -458,9 +467,11 @@ test("create_page places Pages in a Project, under a parent, and enforces depth 
   assert.equal(child.body.project_id, project.project_id, "a parent implies its Project");
   assert.equal(child.body.parent_id, top.body.page_id);
   const sibling = await w.createPage({ title: "Configure", parent_id: top.body.page_id });
-  const positions = [child, sibling].map(
-    (result) => w.page(result.body.page_id).metadata.placement.position,
-  );
+  const positions = [];
+  for (const result of [child, sibling]) {
+    assert.equal(w.page(result.body.page_id).metadata.placement, undefined);
+    positions.push((await w.catalogStorage().get(`page/${result.body.page_id}`)).position);
+  }
   assert.ok(positions[0] < positions[1], "new siblings sort after existing ones");
 
   const mismatch = await w.createPage({
@@ -525,6 +536,11 @@ test("create_page places Pages in a Project, under a parent, and enforces depth 
   });
   assert.equal(forged.status, 200);
   assert.equal(w.page(forged.body.page_id).metadata.placement, undefined);
+  assert.equal(forged.body.project_id, undefined);
+  const forgedEntry = await w.catalogStorage().get(`page/${forged.body.page_id}`);
+  assert.equal(forgedEntry.parent_id, null);
+  assert.equal(forgedEntry.space_id, undefined);
+  assert.equal(forgedEntry.home, undefined);
 });
 
 test("list_pages filters by Project and parent, verifies every row and hides the Project from grantees", async (t) => {
@@ -724,17 +740,18 @@ test("Trash moves one Page at a time; restore returns a Page to its parent or th
   assert.equal(back.body.parent_id, null);
   assert.equal(back.body.project_id, project.project_id);
   assert.equal(pageState(w.page(a).metadata), "trashed", "restoring B leaves A in Trash");
-  assert.equal(w.page(b).metadata.placement.parent_id, null);
-  assert.equal(w.page(b).metadata.placement.placement_epoch, 1);
+  assert.equal(w.page(b).metadata.placement, undefined);
   const entry = await storage.get(`page/${b}`);
   assert.equal(entry.parent_id, null);
-  assert.equal(entry.placement_epoch, 1);
+  assert.equal(entry.space_id, project.project_id, "a Project top-level Page is a root");
+  assert.equal(entry.restore_space_id, undefined);
+  assert.ok(entry.position > (await storage.get(`page/${project.home_page_id}`)).position);
   // C's parent is active again, so C keeps its place.
   const child = await restore(c);
   assert.equal(child.status, 200);
   assert.equal(child.body.parent_id, b);
-  assert.equal(w.page(c).metadata.placement.parent_id, b);
-  assert.equal(w.page(c).metadata.placement.placement_epoch, 0);
+  assert.equal(child.body.project_id, project.project_id, "derived through B");
+  assert.equal((await storage.get(`page/${c}`)).parent_id, b);
   assert.deepEqual(
     ids(await w.call("owner", "list_pages", { project_id: project.project_id, parent_id: null })),
     [project.home_page_id, b].sort(),
@@ -988,7 +1005,9 @@ test("an unapplied restore does not hold its parent, and returns to the top leve
   assert.equal(retried.status, 200);
   assert.equal(retried.body.parent_id, null);
   assert.equal(retried.body.project_id, project.project_id);
-  assert.equal(w.page(child).metadata.placement.placement_epoch, 1);
+  const entry = await w.catalogStorage().get(`page/${child}`);
+  assert.equal(entry.parent_id, null);
+  assert.equal(entry.space_id, project.project_id);
 });
 
 for (const variant of ["lost", "barrier"])
@@ -1125,7 +1144,7 @@ test("rollback: storage written here stays readable by older builds", async (t) 
   assert.equal(entry.pending, undefined);
   assert.equal(entry.space_id, project.project_id);
   assert.equal(Object.hasOwn(entry, "project_id"), false);
-  assert.equal(Object.hasOwn(metadata.placement, "project_id"), false);
+  assert.equal(metadata.placement, undefined, "the Page record holds no location");
   const catalog = w.catalogStorage();
   assert.ok(await catalog.get(`space/${project.project_id}`), "Catalog keeps space/<id>");
   assert.equal((await catalog.list({ prefix: "project/" })).size, 0);
@@ -1139,31 +1158,6 @@ test("rollback: storage written here stays readable by older builds", async (t) 
   assert.equal(latest, 4);
   assert.equal(await migrateCatalogIndex(w.db), latest);
   assert.equal(await migrateCatalogIndex(w.db, CATALOG_MIGRATIONS.slice(0, 3)), latest);
-  // Its page upsert (no placement columns) neither fails nor clears placement.
-  const legacyUpsert = (title, at) =>
-    w.db
-      .prepare(
-        `INSERT INTO pages_catalog_pages
-          (page_id, owner, title, title_search, state, created_at, updated_at, trashed_at,
-            acl_revision, lifecycle_revision)
-        VALUES (?, ?, ?, ?, 'active', ?, ?, NULL, 0, 0)
-        ON CONFLICT (page_id) DO UPDATE SET title = excluded.title,
-          updated_at = max(pages_catalog_pages.updated_at, excluded.updated_at)`,
-      )
-      .bind(child.page_id, w.owner, title, title.toLowerCase(), at, at)
-      .run();
-  await reportPageIndex(w.env, testCtx, {
-    metadata,
-    title: "Child",
-    observedAt: new Date().toISOString(),
-  });
-  await legacyUpsert("Child renamed", "2031-01-01T00:00:00.000Z");
-  const [row] = w.db.rows(
-    "SELECT space_id, parent_id, placement_epoch FROM pages_catalog_pages WHERE page_id = ?",
-    child.page_id,
-  );
-  assert.equal(row.space_id, project.project_id);
-  assert.equal(row.placement_epoch, 0);
   // A row an older build inserted has no placement until a report supplies it.
   const legacyPage = crypto.randomUUID();
   await w.db
@@ -1231,18 +1225,18 @@ test("intents a build from before the Project name left pending resume through t
   assert.equal(Object.hasOwn(resumed.body, "space_id"), false);
   const projectId = resumed.body.project_id;
 
-  // create_page with placement {space_id}, interrupted before the Page.
+  // create_page with space_id, interrupted before the Page. The intent
+  // names no Project: the pending Catalog entry alone records the location.
   failNextPageCreate(w);
   const pageArgs = { title: "Queued", space_id: projectId, idempotency_key: "old-create-page" };
   assert.equal((await w.oldGateway("owner", "create_page", pageArgs)).status, 500);
   const pageIntent = await storage.get("host/operation/old-create-page");
   assert.equal(pageIntent.pending, true);
-  assert.deepEqual(Object.keys(pageIntent.placement).sort(), [
-    "parent_id",
-    "placement_epoch",
-    "position",
-    "space_id",
-  ]);
+  assert.equal(pageIntent.placement, undefined);
+  const pendingEntry = await storage.get(`page/${pageIntent.pageId}`);
+  assert.equal(pendingEntry.pending, true);
+  assert.equal(pendingEntry.space_id, projectId);
+  assert.equal(pendingEntry.parent_id, null);
   // The same call with the new argument name. Fingerprints cover the
   // arguments in order, as they always have.
   const apiArgs = { title: "Queued", project_id: projectId, idempotency_key: "old-create-page" };
@@ -1250,7 +1244,7 @@ test("intents a build from before the Project name left pending resume through t
   assert.equal(page.status, 200, JSON.stringify(page.body));
   assert.equal(page.body.page_id, pageIntent.pageId);
   assert.equal(page.body.project_id, projectId);
-  assert.equal(w.page(page.body.page_id).metadata.placement.space_id, projectId);
+  assert.equal(w.page(page.body.page_id).metadata.placement, undefined);
   // The completed receipt replays in the API's names, and once.
   const replay = await w.call("owner", "create_page", apiArgs);
   assert.deepEqual(replay.body, page.body);
@@ -1371,4 +1365,355 @@ test("a credential that expires while the Project reads its record is refused", 
   const refused = await read();
   assert.equal(refused.status, 404);
   assert.equal((await refused.json()).code, "project_not_found");
+});
+
+/** Give `principal` a direct viewer grant on an owned Page. */
+async function grant(w, pageId, principal = w.member) {
+  const host = w.page(pageId);
+  const ownerIdentity = { principal: w.owner, canWrite: true, expiresAt: Date.now() + 60_000 };
+  const acl = proposeAccessUpdate(host.metadata, ownerIdentity, {
+    principal,
+    role: "viewer",
+    expected_revision: host.metadata.acl?.revision ?? 0,
+  }).acl;
+  host.metadata = { ...host.metadata, acl };
+  await host.ctx.storage.put("host/document", host.metadata);
+}
+
+/** Count requests by object and path. */
+function spy(w) {
+  const calls = [];
+  for (const binding of ["PAGES", "CATALOGS"]) {
+    const original = w.env[binding].getByName;
+    w.env[binding].getByName = (name) => {
+      const stub = original(name);
+      return {
+        ...stub,
+        ctx: stub.ctx,
+        fetch: async (request, init) => {
+          calls.push({
+            binding,
+            name,
+            path: new URL(request.url).pathname,
+            body: await request
+              .clone()
+              .json()
+              .catch(() => null),
+          });
+          return stub.fetch(request, init);
+        },
+      };
+    };
+  }
+  return calls;
+}
+
+test("create under a parent records its location only in the owner's Catalog", async (t) => {
+  const w = await world(t);
+  const project = await w.createProject("Docs");
+  const top = (await w.createPage({ title: "Guide", project_id: project.project_id })).body;
+  const calls = spy(w);
+  const childKey = w.key();
+  const child = await w.createPage({
+    title: "Install",
+    parent_id: top.page_id,
+    idempotency_key: childKey,
+  });
+  assert.equal(child.status, 200);
+  const grandchild = (await w.createPage({ title: "macOS", parent_id: child.body.page_id })).body;
+
+  // The Page learned its content, never a parent or Project.
+  const creates = calls.filter((call) => call.path === "/internal/create");
+  assert.equal(creates.length, 2);
+  for (const { body } of creates) assert.deepEqual(Object.keys(body).sort(), ["page_id", "title"]);
+  for (const pageId of [top.page_id, child.body.page_id, grandchild.page_id])
+    assert.equal(w.page(pageId).metadata.placement, undefined);
+  // The intent names no location; the Catalog entry is the only record.
+  const intent = await w.catalogStorage().get(`host/operation/${childKey}`);
+  for (const field of ["placement", "parent_id", "space_id", "parentId", "spaceId"])
+    assert.equal(Object.hasOwn(intent, field), false, field);
+  const storage = w.catalogStorage();
+  assert.deepEqual(locationOf(await storage.get(`page/${top.page_id}`)), {
+    parent_id: null,
+    position: "a1",
+    space_id: project.project_id,
+  });
+  assert.deepEqual(locationOf(await storage.get(`page/${child.body.page_id}`)), {
+    parent_id: top.page_id,
+    position: "a0",
+  });
+  // The Project is derived through the root, and receipts report it.
+  assert.equal(child.body.project_id, project.project_id);
+  assert.equal(child.body.parent_id, top.page_id);
+  assert.equal(grandchild.project_id, project.project_id);
+  const read = await w.call("owner", "read_page", {
+    page_id: grandchild.page_id,
+    include_content: false,
+  });
+  assert.equal(read.body.project_id, project.project_id);
+
+  // Only the root records the Project: without it the subtree is Your items.
+  const root = await storage.get(`page/${top.page_id}`);
+  const { space_id: _space, ...unplaced } = root;
+  await storage.put(`page/${top.page_id}`, unplaced);
+  const moved = await w.call("owner", "read_page", {
+    page_id: grandchild.page_id,
+    include_content: false,
+  });
+  assert.equal(moved.body.project_id, undefined);
+  assert.deepEqual(
+    moved.body.breadcrumbs.map((crumb) => crumb.page_id),
+    [top.page_id, child.body.page_id],
+  );
+  await storage.put(`page/${top.page_id}`, root);
+});
+
+test("breadcrumbs come from one Catalog call, and a viewer's stop at the first Page they can't read", async (t) => {
+  const w = await world(t);
+  const project = await w.createProject("Team");
+  const a = (await w.createPage({ title: "A", project_id: project.project_id })).body.page_id;
+  const b = (await w.createPage({ title: "B", parent_id: a })).body.page_id;
+  const c = (await w.createPage({ title: "C", parent_id: b })).body.page_id;
+  const calls = spy(w);
+  const readC = async (who) => {
+    calls.length = 0;
+    const read = await w.call(who, "read_page", { page_id: c, include_content: false });
+    assert.equal(read.status, 200, JSON.stringify(read.body));
+    return read.body;
+  };
+
+  const owner = await readC("owner");
+  assert.deepEqual(owner.breadcrumbs, [
+    { kind: "project", project_id: project.project_id, title: "Team" },
+    { kind: "page", page_id: a, title: "A" },
+    { kind: "page", page_id: b, title: "B" },
+  ]);
+  const locationCalls = calls.filter((call) => call.path === "/internal/location");
+  assert.deepEqual(
+    locationCalls.map(({ name, body }) => ({ name, body })),
+    [{ name: w.owner, body: { page_id: c } }],
+    "one call to the owner's Catalog",
+  );
+  // Every other Page read is an access check of an ancestor, one each.
+  assert.deepEqual(
+    calls
+      .filter((call) => call.binding === "PAGES" && call.path === "/internal/catalog")
+      .map((call) => call.name)
+      .sort(),
+    [a, b].sort(),
+  );
+
+  // A viewer of C alone: B is unreadable, so nothing above C shows.
+  await grant(w, c);
+  const alone = await readC("member");
+  assert.deepEqual(alone.breadcrumbs, []);
+  assert.equal(alone.parent_id, undefined);
+  assert.equal(alone.project_id, undefined);
+  assert.equal(JSON.stringify(alone).includes(a), false);
+  // Readable A doesn't help while B, nearer, is unreadable.
+  await grant(w, a);
+  assert.deepEqual((await readC("member")).breadcrumbs, []);
+  // With B readable too the chain shows, but never the owner-only Project.
+  await grant(w, b);
+  const chain = await readC("member");
+  assert.deepEqual(chain.breadcrumbs, [
+    { kind: "page", page_id: a, title: "A" },
+    { kind: "page", page_id: b, title: "B" },
+  ]);
+  assert.equal(chain.parent_id, b);
+  assert.equal(chain.project_id, undefined);
+  assert.equal(calls.filter((call) => call.path === "/internal/location").length, 1);
+});
+
+test("list_pages by Project lists every descendant; by parent, direct children, also under a shared parent", async (t) => {
+  const w = await world(t);
+  const project = await w.createProject("Wiki");
+  const a = (await w.createPage({ title: "A", project_id: project.project_id })).body.page_id;
+  const b = (await w.createPage({ title: "B", parent_id: a })).body.page_id;
+  const c = (await w.createPage({ title: "C", parent_id: b })).body.page_id;
+  const c2 = (await w.createPage({ title: "C2", parent_id: b })).body.page_id;
+  const loose = (await w.createPage({ title: "Loose" })).body.page_id;
+  const looseChild = (await w.createPage({ title: "Loose child", parent_id: loose })).body.page_id;
+
+  for (const index of ["1", undefined]) {
+    if (index) w.env.PAGES_CATALOG_INDEX = index;
+    else delete w.env.PAGES_CATALOG_INDEX;
+    const inProject = await w.call("owner", "list_pages", { project_id: project.project_id });
+    assert.deepEqual(ids(inProject), [project.home_page_id, a, b, c, c2].sort());
+    const rows = new Map(inProject.body.pages.map((page) => [page.page_id, page]));
+    assert.equal(rows.get(project.home_page_id).home, true);
+    assert.equal(rows.get(c).project_id, project.project_id, "derived through A");
+    assert.equal(rows.get(c).parent_id, b);
+    assert.ok(rows.get(c).position < rows.get(c2).position);
+    assert.deepEqual(
+      ids(await w.call("owner", "list_pages", { project_id: project.project_id, parent_id: null })),
+      [project.home_page_id, a].sort(),
+    );
+    assert.deepEqual(ids(await w.call("owner", "list_pages", { parent_id: b })), [c, c2].sort());
+    assert.deepEqual(ids(await w.call("owner", "list_pages", { parent_id: loose })), [looseChild]);
+    const mismatch = await w.call("owner", "list_pages", {
+      project_id: project.project_id,
+      parent_id: loose,
+    });
+    assert.equal(mismatch.body.code, "placement_mismatch");
+  }
+
+  // A viewer of B and C lists B's children: the owner's Catalog names them,
+  // and each one is checked with the viewer's access. C2 isn't shared.
+  for (const pageId of [b, c]) {
+    await grant(w, pageId);
+    await w.catalogStorage(w.member).put(`shared/${pageId}`, {
+      page_id: pageId,
+      title: pageId === b ? "B" : "C",
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+      shared: true,
+    });
+  }
+  const calls = spy(w);
+  const shared = await w.call("member", "list_pages", { parent_id: b });
+  assert.equal(shared.status, 200, JSON.stringify(shared.body));
+  assert.deepEqual(ids(shared), [c]);
+  assert.equal(shared.body.pages[0].parent_id, b);
+  assert.equal(shared.body.pages[0].project_id, undefined);
+  assert.deepEqual(
+    calls
+      .filter((call) => call.path === "/internal/location")
+      .map(({ name, body }) => ({ name, body })),
+    [{ name: w.owner, body: { children_of: b } }],
+  );
+  // A shared Page with no children lists none.
+  assert.deepEqual(ids(await w.call("member", "list_pages", { parent_id: c })), []);
+  // A, unreadable, can't be listed.
+  assert.equal((await w.call("member", "list_pages", { parent_id: a })).status, 404);
+});
+
+test("an interrupted create under a parent keeps that parent on retry", async (t) => {
+  const w = await world(t);
+  const parent = (await w.createPage({ title: "Parent" })).body.page_id;
+  const args = { title: "Child", parent_id: parent, idempotency_key: "interrupted-child" };
+  failNextPageCreate(w);
+  assert.equal((await w.call("owner", "create_page", args)).status, 500);
+  const storage = w.catalogStorage();
+  const intent = await storage.get("host/operation/interrupted-child");
+  assert.equal(intent.pending, true);
+  const pending = await storage.get(`page/${intent.pageId}`);
+  assert.equal(pending.pending, true);
+  assert.equal(pending.parent_id, parent, "the pending entry holds the parent");
+  // A sibling created meanwhile doesn't take its slot.
+  const sibling = (await w.createPage({ title: "Sibling", parent_id: parent })).body.page_id;
+  assert.ok((await storage.get(`page/${sibling}`)).position > pending.position);
+
+  const retry = await w.call("owner", "create_page", args);
+  assert.equal(retry.status, 200, JSON.stringify(retry.body));
+  assert.equal(retry.body.page_id, intent.pageId);
+  assert.equal(retry.body.parent_id, parent);
+  const created = await storage.get(`page/${intent.pageId}`);
+  assert.equal(created.pending, undefined);
+  assert.deepEqual(locationOf(created), locationOf(pending));
+  assert.deepEqual(
+    ids(await w.call("owner", "list_pages", { parent_id: parent })),
+    [intent.pageId, sibling].sort(),
+  );
+  assert.deepEqual((await w.call("owner", "create_page", args)).body, retry.body);
+});
+
+test("a restore whose parent was purged returns to the Project it was trashed from", async (t) => {
+  const w = await world(t);
+  const project = await w.createProject("Archive");
+  const a = (await w.createPage({ title: "A", project_id: project.project_id })).body.page_id;
+  const b = (await w.createPage({ title: "B", parent_id: a })).body.page_id;
+  for (const pageId of [b, a]) {
+    const trashed = await w.call("owner", "delete_page", {
+      page_id: pageId,
+      base_heads: w.heads(pageId),
+      idempotency_key: w.key(),
+    });
+    assert.equal(trashed.status, 200, JSON.stringify(trashed.body));
+  }
+  const storage = w.catalogStorage();
+  assert.equal((await storage.get(`trash/${b}`)).restore_space_id, project.project_id);
+  assert.equal((await storage.get(`trash/${a}`)).restore_space_id, undefined, "a root has its own");
+  const preview = await w.call("owner", "purge_page", { page_id: a, action: "preview" });
+  assert.equal(preview.status, 200, JSON.stringify(preview.body));
+  const purged = await w.call("owner", "purge_page", {
+    page_id: a,
+    action: "confirm",
+    preview_token: preview.body.preview_token,
+    idempotency_key: w.key(),
+  });
+  assert.equal(purged.status, 200, JSON.stringify(purged.body));
+
+  const restored = await w.call("owner", "restore_page", { page_id: b, idempotency_key: w.key() });
+  assert.equal(restored.status, 200, JSON.stringify(restored.body));
+  assert.equal(restored.body.project_id, project.project_id);
+  assert.equal(restored.body.parent_id, null);
+  const entry = await storage.get(`page/${b}`);
+  assert.deepEqual(locationOf(entry), {
+    parent_id: null,
+    position: "a1",
+    space_id: project.project_id,
+  });
+});
+
+test("the Catalog location route is host-only and answers only its own account", async (t) => {
+  const w = await world(t);
+  const project = await w.createProject("Private");
+  const a = (await w.createPage({ title: "A", project_id: project.project_id })).body.page_id;
+  const b = (await w.createPage({ title: "B", parent_id: a })).body.page_id;
+  const body = JSON.stringify({ page_id: b });
+
+  // The gateway never forwards /internal/*, with or without a credential.
+  for (const headers of [{}, { authorization: `Bearer ${w.auth.apiKey()}` }]) {
+    const outside = await worker.fetch(
+      new Request("https://pages.invalid/internal/location", { method: "POST", headers, body }),
+      w.env,
+    );
+    assert.equal(outside.status, 404);
+    assert.equal(JSON.stringify(await outside.json()).includes(a), false);
+  }
+  // Nor is it a tool or a Catalog operation.
+  assert.equal((await w.call("owner", "location", { page_id: b })).status, 400);
+  const asOperation = await w.oldGateway("owner", "location", { page_id: b });
+  assert.equal(asOperation.status, 400);
+
+  const ask = (headers) =>
+    w
+      .catalog()
+      .fetch(
+        new Request("https://pages.internal/internal/location", { method: "POST", headers, body }),
+      );
+  // A request carrying another account's credential is refused.
+  const other = await ask({ authorization: `Bearer ${w.auth.apiKey({ userId: "member-user" })}` });
+  assert.equal(other.status, 403);
+  assert.equal(JSON.stringify(await other.json()).includes(a), false);
+  // The owner's own credential, or a host request with none, gets IDs only.
+  const expected = {
+    page_id: b,
+    state: "active",
+    parent_id: a,
+    ancestors: [a],
+    complete: true,
+    space_id: project.project_id,
+    home: false,
+  };
+  assert.deepEqual(
+    await (await ask({ authorization: `Bearer ${w.auth.apiKey()}` })).json(),
+    expected,
+  );
+  const host = await ask({});
+  assert.equal(host.status, 200);
+  assert.deepEqual(await host.json(), expected);
+  const children = await w.catalog().fetch(
+    new Request("https://pages.internal/internal/location", {
+      method: "POST",
+      body: JSON.stringify({ children_of: a }),
+    }),
+  );
+  assert.deepEqual(await children.json(), { children: [b] });
+  // Another account's Catalog doesn't know the Page.
+  const elsewhere = await w
+    .catalog(w.member)
+    .fetch(new Request("https://pages.internal/internal/location", { method: "POST", body }));
+  assert.equal(elsewhere.status, 404);
 });

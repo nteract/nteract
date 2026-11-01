@@ -3,9 +3,8 @@
  * Keys: `page/<id>` holds active (or pending) owned Pages, `trash/<id>` holds
  * owned Pages in Trash, `shared/<id>` caches Pages shared with this account,
  * `space/<id>` holds Spaces this account owns and `host/deleted/<id>`
- * tombstones permanent deletions. Owned entries copy their Page's placement
- * (space_id, parent_id, position, placement_epoch, home); entries written
- * before Spaces have none and are Your items. Trashed entries use a
+ * tombstones permanent deletions. Owned entries are the only record of each
+ * Page's location (catalog-location.mjs). Trashed entries use a
  * separate prefix so they never consume active listing or quota slots, and so
  * builds that predate Trash do not list them.
  *
@@ -16,7 +15,7 @@
 import { markCatalogIndexDirty } from "./catalog-index.mjs";
 import { RETRY_LIFETIME_MS } from "./operation-journal.mjs";
 import { operationIntent } from "./operation-intent.mjs";
-import { placementEntry } from "./spaces.mjs";
+import { locationEntries, projectOf, rekeyedEntries, restoreTarget } from "./catalog-location.mjs";
 
 export const CATALOG_LIMIT = 100;
 export const TRASH_LIMIT = 100;
@@ -57,8 +56,8 @@ export function lifecycleSlotKey(operation, pageId) {
   if (operation === "delete_page") return `trash/${pageId}`;
   if (operation === "restore_page") return `page/${pageId}`;
 }
-/** `placement` records where a restore returns the Page (its Space and
- * recorded parent), so placement checks see a pending restore. */
+/** `placement` records the parent (and a root's Project) a restore returns
+ * the Page to, so the leaf guard sees a pending restore. */
 export function lifecycleSlot(operation, pageId, intentKey, now = Date.now(), placement) {
   const key = lifecycleSlotKey(operation, pageId);
   return key
@@ -223,25 +222,37 @@ async function projectEntries(storage, pageId, current) {
   } = known[0] ?? { page_id: pageId };
   const now = new Date().toISOString();
   // Each transition is a newer observation: owner reconciliation compares
-  // these timestamps, so an older index write cannot win over it.
+  // these timestamps, so an older index write cannot win over it. Location
+  // stays this Catalog's: the entry keeps its parent and position.
+  const { restore_space_id: restoreSpaceId, ...kept } = entry;
   const base = {
-    ...entry,
+    ...kept,
     page_id: pageId,
     title: catalogTitle(current.title ?? entry.title),
     created_at: entry.created_at ?? current.trashed_at ?? now,
     updated_at: entry.updated_at && entry.updated_at > now ? entry.updated_at : now,
     lifecycle_revision: current.revision ?? 0,
-    // A restore can return a Page whose parent is gone to the top level.
-    ...(Number.isSafeInteger(current.placement_epoch) && placementEntry(current)),
   };
   if (current.state === "trashed") {
+    // A sub-page records its Project, which a restore needs if its parent
+    // is gone by then. A root carries its own space_id.
+    const spaceId =
+      restoreSpaceId ?? (base.parent_id ? projectOf(await locationEntries(storage), pageId) : null);
     await storage.put(`trash/${pageId}`, {
       ...base,
       ...trashFields({ ...current, page_id: pageId }),
+      ...(spaceId && { restore_space_id: spaceId }),
     });
     await storage.delete(`page/${pageId}`);
   } else if (current.state === "active") {
-    await storage.put(`page/${pageId}`, base);
+    // An active Page has an active parent: a restore whose parent is in
+    // Trash or gone returns to the top level.
+    const { location, rekeyed } = await restoreTarget(storage, pageId);
+    const { space_id: _space, home: _home, ...rest } = base;
+    await storage.put({
+      ...(await rekeyedEntries(storage, rekeyed)),
+      [`page/${pageId}`]: { ...rest, ...location },
+    });
     await storage.delete(`trash/${pageId}`);
   } else throw new TypeError("Unknown Page lifecycle state");
 }

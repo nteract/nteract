@@ -131,7 +131,7 @@ Storage keeps every Space name exactly as 3548b9750 writes it:
 - the `Space` Durable Object class, now behind the `PROJECTS` binding;
 - `space/record` with `space_id` inside each Project's object;
 - `space/<id>` Catalog entries with `space_id`;
-- `space_id` in Page placement and owned Catalog entries;
+- `space_id` on owned Catalog entries (Page records carry no location);
 - journal intents (`spaceId`, `space_recorded`), receipts and fingerprints
   (`create_space`, `update_space`);
 - the D1 `pages_catalog_spaces` table, the `space_id` column and the
@@ -164,9 +164,9 @@ New Projects get `prj_` IDs; `sp_` IDs stay valid. IDs aren't key names, so a
 Because stored intents are unchanged, work 3548b9750 left pending resumes here.
 A `create_space` interrupted before its home Page finishes when retried as
 `create_project` with the same key and payload: the fingerprint still uses the
-stored operation name. A `create_page` whose intent holds placement
-`{space_id}` finishes when retried with `project_id`, the same key and the
-arguments in the same order. Fingerprints have always covered argument order.
+stored operation name. A `create_page` interrupted before its Page finishes
+when retried with `project_id`, the same key and the arguments in the same
+order: its pending Catalog entry holds the location. Fingerprints have always covered argument order.
 Both cases are tested by writing the intent through the Catalog exactly as the
 3548b9750 gateway does, then retrying through the Project API. So Page8 needs no
 cleanup of pending intents before this build deploys.

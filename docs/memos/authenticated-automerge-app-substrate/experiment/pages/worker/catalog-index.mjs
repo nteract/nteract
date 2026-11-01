@@ -772,14 +772,6 @@ export function listScope(options) {
   ]);
 }
 
-/** Whether a Page's placement matches a listing's Space and parent filters. */
-export function placementMatches(placement, { spaceId, parentId }) {
-  if (spaceId && placement.space_id !== spaceId) return false;
-  if (parentId === null && placement.parent_id !== null) return false;
-  if (parentId && placement.parent_id !== parentId) return false;
-  return true;
-}
-
 export const escapeLike = (value) => value.replace(/[\\%_]/g, "\\$&");
 export const titleMatches = (title, needle) => !needle || searchText(title).includes(needle);
 const sortKey = (row) => row.updated_at ?? "";
@@ -845,25 +837,24 @@ export async function queryCatalogIndex(
   }));
 }
 
-/** Candidate source over the Catalog entries, for when the index is off or
- * unavailable. Each prefix read is bounded. */
-export async function catalogSource(storage, { inTrash, needle, spaceId = null, parentId }) {
+/** Candidate source over the Catalog entries: for when the index is off or
+ * unavailable, and for listings filtered by location, which only the
+ * Catalog's entries record. `owned(entry)` keeps an owned entry; `shared`
+ * says whether shared entries are candidates. Each prefix read is bounded. */
+export async function catalogSource(
+  storage,
+  { inTrash, needle, owned = () => true, shared = true },
+) {
   const list = async (prefix) => [
     ...(await storage.list({ prefix, limit: catalogIndexBounds.fallbackScan })).values(),
   ];
-  const filtered = spaceId !== null || parentId !== undefined;
   const entries = inTrash
     ? (await list("trash/")).map((entry) => ({ entry, owned: true }))
     : [
         ...(await list("page/"))
-          .filter((entry) => !entry.pending)
-          .filter(
-            (entry) => !filtered || placementMatches(entryPlacement(entry), { spaceId, parentId }),
-          )
+          .filter((entry) => !entry.pending && owned(entry))
           .map((entry) => ({ entry, owned: true })),
-        // Shared entries hold no placement; their Page host decides. Only the
-        // owner sees a Space in this build, so Space listings skip them.
-        ...(spaceId ? [] : await list("shared/")).map((entry) => ({ entry, owned: false })),
+        ...(shared ? await list("shared/") : []).map((entry) => ({ entry, owned: false })),
       ];
   const rows = entries
     .filter(({ entry }) => validPageId(entry?.page_id))

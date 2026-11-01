@@ -110,10 +110,8 @@ const childEntry = {
   title: "Child",
   created_at: CREATED,
   updated_at: CREATED,
-  space_id: null,
   parent_id: pageId,
   position: "a1",
-  placement_epoch: 0,
 };
 
 const catalogEntry = (prefix, revision) => ({

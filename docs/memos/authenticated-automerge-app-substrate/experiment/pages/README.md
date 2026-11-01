@@ -1098,8 +1098,8 @@ can map one-to-one onto a host's project. Its Durable Object
 
 Projects were called Spaces, and storage keeps that name so a rollback build
 reads the same records: the `Space` class behind the `PROJECTS` binding,
-`space/<id>` Catalog entries, `space_id` in Page placement, journal intents and
-receipts, and the D1 `pages_catalog_spaces` table and `space_id` column.
+`space/<id>` Catalog entries, `space_id` on Catalog location entries, journal
+intents and receipts, and the D1 `pages_catalog_spaces` table and `space_id` column.
 [project-api.mjs](worker/project-api.mjs) is the one place callers' names meet
 storage's: it maps `project_id` and the Project tools in, and `space_id` out.
 `create_space`, `list_spaces`, `get_space` and `update_space` answer
@@ -1141,32 +1141,42 @@ and `list_projects` omits it. The home Page holds orientation and guidance for
 people and agents. It is ordinary, untrusted Page content and cannot move to
 Trash on its own (`home_page_protected`).
 
-Placement lives in the Page record (`placement`: `space_id`, `parent_id`,
-`position`, `placement_epoch`, `home`) and is copied into the owner's Catalog
-entry at creation; results call `space_id` `project_id`. A parent implies its
-Project; a different `project_id` is
-`placement_mismatch`. Pages nest at most 8 levels (`nesting_depth_exceeded`), and
+The owner's Catalog is the only record of where a Page is
+([catalog-location.mjs](worker/catalog-location.mjs)); Page records carry no
+location. Each owned entry stores `parent_id` and `position`. A root in a
+Project stores the Project's `space_id`, and the home Page adds `home`; a
+sub-page's Project is derived by walking parents to its root with
+[model/location.mjs](model/location.mjs). `create_page` writes the location
+into the pending Catalog entry in the same put as its journal intent, so a
+retry finds its parent there, and the Page learns only its content. Results
+call `space_id` `project_id`. A parent implies its Project; a different
+`project_id` is `placement_mismatch`. Pages nest at most 8 levels (`nesting_depth_exceeded`), and
 only Pages the caller owns can hold sub-pages in this build. Project and Page IDs
 have different shapes, so a swapped ID is a structural error
 (`project_id_as_page_id`, `page_id_as_project_id`) that names the right tool and
 argument and reveals nothing about either resource.
 
-Listing by Project or parent reuses the catalog index: D1's placement columns
-choose candidates, owner rows must match the owner's Catalog entry, and shared
-rows are verified by their Page host, which also supplies their placement.
+Listing by Project or parent reads the Catalog's entries, not D1: a Project
+lists every descendant of its roots, and a parent lists its direct children.
+Children of a parent shared with the caller come from the parent owner's
+Catalog, and each is verified by its Page host with the caller's access.
 `list_projects` takes candidates from `pages_catalog_spaces` and confirms each
 against the owner's `space/<id>` Catalog entry; cursors are sealed to the
-listing's filters. `read_page` breadcrumbs are computed in the gateway: each
-ancestor and the Project answer with the caller's credentials, so the trail stops at
-the first Page the caller cannot open and `project_id` appears only when the Project
-is readable.
+listing's filters. `read_page` breadcrumbs are computed in the gateway with one
+call to the owner's Catalog, a host-only `/internal/location` route that answers
+ancestor IDs and the root's Project and nothing else. Each ancestor and the
+Project then answer with the caller's credentials, so the trail stops at the
+first Page the caller cannot open and `project_id` appears only when the
+Project is readable.
 
 Trash stays single-Page. `delete_page` on a Page with active sub-pages, or
 sub-pages still being created, returns `page_has_children`; trash the sub-pages
 first. Subtree Trash is not available yet: it will return on an explicit
 operation intent with per-item fences and capacity reservations. A restored Page
 whose parent is in Trash or gone returns to the top level of its Project (or Your
-items) and its `placement_epoch` advances. Creating a Page under a parent in
+items); a sub-page's Trash entry records its Project (`restore_space_id`) for
+when the parent is purged. The Catalog decides this when it projects the
+restore. Creating a Page under a parent in
 Trash returns `parent_unavailable`, including a resumed creation, which checks
 its parent again before it reaches the Page.
 
