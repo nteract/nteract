@@ -620,6 +620,46 @@ test("a person's edit is named only for a change hash the host attested to its a
   assert.deepEqual(seen(), neutral);
 });
 
+test("typing into text that just arrived takes those characters out of the earlier mark", async () => {
+  const { presenceColor } = await import("./presence-color.mjs");
+  const h = harness(fixture("x"));
+  // The host's whole paragraph reaches this editor as one remote change, as
+  // when an editor mounts before its first sync. Within its mark's lifetime,
+  // an attested writer types inside that paragraph.
+  batch(h, [["e1".repeat(16), (d, path) => A.splice(d, path, 1, 0, "Writer keeps the caret.")]]);
+  const actor = "d1".repeat(16);
+  const at = h.replica.doc.blocks.first.richText.indexOf(".");
+  const [typed] = batch(h, [[actor, (d, path) => A.splice(d, path, at, 0, " still here")]]);
+  h.actorProfiles.set(actor, { principal: "user:ana", displayName: "Ana", driver: "Browser" });
+  h.attestedChanges.set(typed, actor);
+  const found = marks(h);
+  // Editor positions sit one past Automerge text offsets in this block.
+  const text = " " + h.replica.doc.blocks.first.richText;
+  const insertion = { from: at + 1, to: at + 1 + " still here".length };
+  // Every character has one edit mark: no range overlaps another.
+  for (const [i, mark] of found.entries())
+    for (const other of found.slice(i + 1))
+      assert.ok(mark.to <= other.from || other.to <= mark.from, JSON.stringify([mark, other]));
+  const covering = found.filter((mark) => mark.from < insertion.to && insertion.from < mark.to);
+  assert.deepEqual(
+    covering.map(({ from, to, style, title }) => ({ from, to, style, title })),
+    [
+      {
+        ...insertion,
+        style: `--peer-color: ${presenceColor("user:ana", "Browser").background}`,
+        title: "Edited by Ana · Browser",
+      },
+    ],
+  );
+  // The host's paragraph keeps its neutral mark on both sides.
+  assert.deepEqual(
+    found
+      .filter((mark) => mark.title === "Edited by a collaborator")
+      .map(({ from, to }) => text.slice(from, to)),
+    ["Writer keeps the caret", "."],
+  );
+});
+
 test("a tool edit's change identity wins over an actor profile; the host actor stays neutral", async () => {
   const { presenceColor } = await import("./presence-color.mjs");
   const host = "e1".repeat(16);

@@ -72,6 +72,18 @@ export function wordgardCommentRanges(doc, id, map, threads) {
 
 // Ephemeral presentation only. PageSession owns the document, transport,
 // authenticated names, and permissions. The caller owns subscriptions/timers.
+/** The parts of [from, to) outside every claimed range. */
+function unclaimed(from, to, claimed) {
+  let pieces = [[from, to]];
+  for (const [start, end] of claimed)
+    pieces = pieces.flatMap(([a, b]) =>
+      end <= a || start >= b
+        ? [[a, b]]
+        : [...(a < start ? [[a, start]] : []), ...(end < b ? [[end, b]] : [])],
+    );
+  return pieces;
+}
+
 export function createWordgardCollaboration({
   replica,
   id,
@@ -352,7 +364,12 @@ export function createWordgardCollaboration({
     const object = textObject(doc, id);
     const current = getCurrent();
     illumination = illumination.filter((mark) => mark.until > now() && mark.object === object);
-    for (const mark of illumination) {
+    // Each character carries the newest edit mark that covers it. A later
+    // edit inside an earlier one, such as typing into text that just arrived,
+    // takes its characters out of the earlier mark, so their underline and
+    // title name only the later author.
+    const claimed = [];
+    for (const mark of [...illumination].reverse()) {
       try {
         const path = pathFor(id);
         const last = A.getCursorPosition(doc, path, mark.last);
@@ -380,7 +397,7 @@ export function createWordgardCollaboration({
         const color = tool
           ? presenceColor(tool.principal, tool.driver, tool.agent, tool.session)
           : person && presenceColor(person.principal, person.driver);
-        add(from, to, {
+        const attributes = {
           class: "remote-edit",
           // An unattested range never borrows a name: the host's actor would
           // name whichever agent edited last.
@@ -388,7 +405,9 @@ export function createWordgardCollaboration({
             ? `Edited by ${[who.displayName, who.driver, who.agent].filter(Boolean).join(" · ")}`
             : "Edited by a collaborator",
           ...(who?.principal && { style: `--peer-color: ${color.background}` }),
-        });
+        };
+        for (const [start, end] of unclaimed(from, to, claimed)) add(start, end, attributes);
+        claimed.push([from, to]);
       } catch {
         // The native text object or selected characters no longer exist.
       }
