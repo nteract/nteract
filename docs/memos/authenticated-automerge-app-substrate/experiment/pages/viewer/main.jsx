@@ -1,5 +1,5 @@
 import "../../../../../../src/styles/notebook-tokens.css";
-import React, { useEffect, useRef, useState } from "react";
+import React, { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import {
   ChevronDown,
@@ -142,6 +142,9 @@ function App() {
     creationPending = useRef(false),
     article = useRef(null),
     titleInput = useRef(null),
+    // The title value this tab last showed and its selection as native
+    // cursors, so a peer's edit can put the caret back on its side.
+    titleSelection = useRef(null),
     activeBlock = useRef(null),
     commentsButton = useRef(null);
   // The inline comment composer. It outlives Pages; resetDocumentUI resets it,
@@ -542,6 +545,39 @@ function App() {
     });
     return () => cancelAnimationFrame(frame);
   }, [titleFocusRequest, session]);
+  // React writes a peer's title into the focused input, which moves the
+  // caret to the end. Resolve the selection's cursors in the new document.
+  const shownTitle = page?.title;
+  function rememberTitleSelection(input = titleInput.current) {
+    const module = editor.module;
+    if (!input || !session || !module) return;
+    // The heads name the document the input's value came from, while React
+    // shows it; a peer's change can land before React renders it.
+    const shown = input.value === session.doc.title;
+    titleSelection.current = {
+      input,
+      session,
+      value: input.value,
+      heads: shown ? module.pageHeads(session.doc) : titleSelection.current?.heads,
+      direction: input.selectionDirection,
+      cursors: module.captureTitleSelection(session.doc, input.selectionStart, input.selectionEnd),
+    };
+  }
+  useLayoutEffect(() => {
+    const input = titleInput.current,
+      seen = titleSelection.current;
+    if (!input || shownTitle === undefined) return;
+    if (
+      seen?.input === input &&
+      seen.session === session &&
+      seen.value !== shownTitle &&
+      document.activeElement === input
+    ) {
+      const next = editor.module?.resolveTitleSelection(session.doc, seen.cursors);
+      if (next) input.setSelectionRange(next.start, next.end, seen.direction);
+    }
+    rememberTitleSelection(input);
+  }, [shownTitle, session]);
   useEffect(() => {
     if (!focusBlock || !session?.canWrite) return;
     const frame = requestAnimationFrame(() => {
@@ -996,9 +1032,21 @@ function App() {
                   placeholder="Untitled"
                   value={page.title}
                   readOnly={!session.canWrite}
+                  onSelect={(event) => rememberTitleSelection(event.currentTarget)}
                   onChange={(event) => {
                     try {
-                      session.change((doc) => editor.module.setPageTitle(doc, event.target.value));
+                      const seen = titleSelection.current;
+                      const edit = editor.module.titleEdit(
+                        session.doc,
+                        seen?.session === session ? seen : null,
+                        event.target.value,
+                        event.target.selectionStart,
+                      );
+                      session.change((doc) =>
+                        editor.module.setPageTitle(doc, event.target.value, edit),
+                      );
+                      // This tab's own edit: the input already shows it.
+                      rememberTitleSelection(event.currentTarget);
                     } catch (error) {
                       showError(error);
                     }

@@ -15,9 +15,16 @@ export { CommentsPanel } from "./CommentsPanel.jsx";
 export { CommentPopover } from "./CommentPopover.jsx";
 export { SaveStatus } from "./SaveStatus.jsx";
 export { PageControls } from "./PageControls.jsx";
+export { captureTitleSelection, resolveTitleSelection, titleEdit } from "./title-selection.mjs";
 
 /** The heads a Trash move compares with the host's copy. */
 export const pageHeads = (doc) => A.getHeads(doc);
 
-/** Replace a Page title inside `session.change`. */
-export const setPageTitle = (doc, title) => A.updateText(doc, ["title"], title);
+/** Replace a Page title inside `session.change`. `edit` comes from
+ * titleEdit against the document before the change; without one the title
+ * is diffed as a whole. */
+export function setPageTitle(doc, title, edit = null) {
+  if (edit) {
+    if (edit.remove || edit.insert) A.splice(doc, ["title"], edit.index, edit.remove, edit.insert);
+  } else A.updateText(doc, ["title"], title);
+}
