@@ -14,6 +14,10 @@
     {
       "id": "preserved-markdown-converted",
       "description": "The Page host converted the Page's preserved Markdown blocks to native rich text. A build without this feature may still write or convert preserved blocks, so it opens the Page read-only."
+    },
+    {
+      "id": "comments-doc",
+      "description": "The Page's comments live in their own Automerge document, not in the Page document. A build without this feature would write comments into the Page document, so it opens the Page read-only."
     }
   ]
 }

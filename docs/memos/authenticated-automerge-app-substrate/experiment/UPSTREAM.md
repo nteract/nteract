@@ -164,6 +164,19 @@ and the buffered persistence protocol. The two original 16 MiB scenarios in
 legacy intents. In-process fault injection is not a proof of host power-loss or
 object-store failover behavior.
 
+The record-refusal patch in `patch-record-refusal.mjs` lets a byte store refuse
+one record. A store that throws, before writing anything, an error whose
+`recordRefused` is true rejects that save to native ingress and nothing else:
+the record index stays valid, the owner's storage-failure callback isn't
+called (so the native engine isn't reset and other connections stay up), and
+the attempt leaves the mutation ledger (so a later flush doesn't report it), and
+a flush that captured the attempt before the refusal filters it out of its
+results.
+Any other error keeps the failure path. Pages uses it for per-author admission
+of comment records. `record-refusal.test.mjs` runs real peers: a refused
+signer's record stays out while another peer keeps syncing both ways on its
+open connection, and an unmarked error still resets.
+
 The causal-history patch in `patch-causal-history.mjs` changes two upstream
 files. Storage may persist only a prefix of one flush: Pages splits a flush
 into PageRecords batches of 128 keys or 2 MB, and a crash can land between any

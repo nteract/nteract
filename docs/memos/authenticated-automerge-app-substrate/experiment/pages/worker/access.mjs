@@ -22,7 +22,9 @@ export class AccessError extends Error {
 }
 
 const MEMBER_LIMIT = 100;
-const roles = new Set(["viewer", "editor", "none"]);
+const roles = new Set(["viewer", "commenter", "editor", "none"]);
+/** Grantable member roles, weakest first. */
+export const MEMBER_ROLES = Object.freeze(["viewer", "commenter", "editor"]);
 const own = (value, key) => value && Object.hasOwn(value, key);
 const revisionOf = (metadata) => metadata?.acl?.revision ?? 0;
 
@@ -114,8 +116,8 @@ export function proposeAccessUpdate(metadata, identity, input, options) {
     throw new AccessError(400, "Invalid access update");
   const principal = validateAccessPrincipal(input.principal);
   if (principal === metadata.owner) throw new AccessError(400, "The Page owner cannot be changed");
-  if (!["viewer", "editor", null].includes(input.role))
-    throw new AccessError(400, "Access must be viewer, editor, or null to remove");
+  if (![...MEMBER_ROLES, null].includes(input.role))
+    throw new AccessError(400, "Access must be viewer, commenter, editor, or null to remove");
   if (!Number.isSafeInteger(input.expected_revision) || input.expected_revision < 0)
     throw new AccessError(400, "expected_revision is required");
   const revision = revisionOf(metadata);
@@ -161,7 +163,7 @@ export function proposeAccessUpdate(metadata, identity, input, options) {
 
 /** Intersection used while the new host ACL is awaiting its durability barrier. */
 export function restrictAccessDuringCommit(previous, proposed) {
-  const ranks = { none: 0, viewer: 1, editor: 2, owner: 3 };
+  const ranks = { none: 0, viewer: 1, commenter: 2, editor: 3, owner: 4 };
   const members = { ...previous.acl?.members };
   for (const principal of new Set([
     ...Object.keys(previous.acl?.members ?? {}),

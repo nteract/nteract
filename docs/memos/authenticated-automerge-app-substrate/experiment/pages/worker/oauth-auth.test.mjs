@@ -8,6 +8,7 @@ import { createServerAppSession } from "@cloud/app-session.ts";
 import { authenticate } from "./auth.mjs";
 import { DocumentPolicy } from "./policy.mjs";
 import { applyPageOperation, createPageData, initializePage } from "../model/page.mjs";
+import { comment, newCommentsDoc } from "../model/comments-test-support.mjs";
 import { retryKey } from "../model/retry-key.mjs";
 import {
   exchangeAuthorizationCode,
@@ -431,12 +432,14 @@ function readPageFixture(t, f, role) {
         ],
       },
     });
-    threadId = applyPageOperation(draft, {
-      operation: "manage_page_comment",
-      arguments: { block_id: blockId, body: "Private comment sentinel." },
-      identity: { ...person, driver: "Browser" },
-    }).thread_id;
   });
+  const commented = comment(
+    doc,
+    newCommentsDoc(),
+    { block_id: blockId, body: "Private comment sentinel." },
+    { ...person, driver: "Browser" },
+  );
+  threadId = commented.result.thread_id;
   t.after(() => A.free(doc));
   const storage = new Storage();
   const page = Object.assign(Object.create(Page.prototype), {
@@ -458,6 +461,7 @@ function readPageFixture(t, f, role) {
       },
     },
     handle: { doc: () => doc },
+    commentsHandle: { doc: () => commented.comments },
     cacheTitle() {},
   });
   page.policy = new DocumentPolicy({ storage, metadata: () => page.metadata });
@@ -587,6 +591,7 @@ test("a live Page ACL downgrade and revocation override an existing OAuth write 
       },
     },
     handle: { doc: () => doc },
+    commentsHandle: { doc: () => commented.comments },
     cacheTitle() {},
   });
   page.policy = new DocumentPolicy({ storage, metadata: () => page.metadata });

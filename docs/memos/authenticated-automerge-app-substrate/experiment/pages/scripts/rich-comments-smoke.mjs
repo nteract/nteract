@@ -162,19 +162,48 @@ try {
   const popover = page.getByRole("dialog", { name: "Comment on selection", exact: true });
   const inline = popover.getByRole("textbox", { name: "Comment on selection", exact: true });
   await select(documentText, "discussion");
+  // Where the composer is in the first frame it paints. A later re-placement
+  // can't hide a first frame drawn somewhere else.
+  const firstFrame = page.evaluate(
+    () =>
+      new Promise((done) => {
+        const measure = () => {
+          if (!document.querySelector("#comment-popover")) return requestAnimationFrame(measure);
+          const popover = document.querySelector("#comment-popover").getBoundingClientRect();
+          const passage = document.querySelector(".comment-draft-passage")?.getBoundingClientRect();
+          done({
+            popover: { x: popover.x, y: popover.y },
+            passage: passage && { x: passage.x, bottom: passage.bottom },
+          });
+        };
+        requestAnimationFrame(measure);
+      }),
+  );
+  // A failed step before the await below closes the page under it.
+  firstFrame.catch(() => {});
   await page.getByRole("button", { name: "Comment on selection", exact: true }).click();
   await expect(popover).toBeVisible();
   await expect(inline).toBeFocused();
   await expect(panel).toBeHidden();
   await expect(page.locator(".comment-draft-passage")).toHaveText("discussion");
+  const first = await firstFrame;
+  assert.ok(first.passage, "the passage is marked in the composer's first frame");
   const passageBox = await page.locator(".comment-draft-passage").boundingBox();
   const popoverBox = await popover.boundingBox();
-  const gap = popoverBox.y - (passageBox.y + passageBox.height);
-  assert.ok(gap >= 0 && gap <= 24, `the composer opens just below the passage (gap ${gap})`);
-  assert.ok(
-    Math.abs(popoverBox.x - passageBox.x) <= 2,
-    `the composer lines up with the passage (${popoverBox.x} vs ${passageBox.x})`,
-  );
+  for (const [when, popoverAt, passageAt] of [
+    ["first frame", first.popover, first.passage],
+    ["settled", popoverBox, { x: passageBox.x, bottom: passageBox.y + passageBox.height }],
+  ]) {
+    const gap = popoverAt.y - passageAt.bottom;
+    assert.ok(
+      gap >= 0 && gap <= 24,
+      `the composer opens just below the passage (${when}, gap ${gap})`,
+    );
+    assert.ok(
+      Math.abs(popoverAt.x - passageAt.x) <= 2,
+      `the composer lines up with the passage (${when}, ${popoverAt.x} vs ${passageAt.x})`,
+    );
+  }
   await inline.pressSequentially("Inline note");
   await page.screenshot({ path: output + "/inline-composer.png" });
   await page.keyboard.press("Escape");

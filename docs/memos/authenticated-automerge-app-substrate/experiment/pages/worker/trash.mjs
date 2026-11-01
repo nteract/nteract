@@ -1,4 +1,5 @@
 import * as A from "@automerge/automerge";
+import { threadsOf } from "../model/comments.mjs";
 
 /** Host-owned Trash records and permanent-deletion previews.
  *
@@ -34,11 +35,13 @@ export function publicTrash(metadata) {
   };
 }
 
-/** Collaborators who lose access when the Page is permanently deleted. */
-export function purgeImpact(metadata, doc) {
-  const threads = Object.values(doc.comments ?? {});
+/** Collaborators who lose access when the Page is permanently deleted, and
+ * the discussion deleted with it: `commentsDoc` is the Page's comments
+ * document. */
+export function purgeImpact(metadata, doc, commentsDoc) {
+  const threads = Object.values(threadsOf(doc, commentsDoc));
   const collaborators = Object.entries(metadata.acl?.members ?? {})
-    .filter(([, member]) => ["viewer", "editor"].includes(member?.role))
+    .filter(([, member]) => ["viewer", "commenter", "editor"].includes(member?.role))
     .map(([principal, member]) => ({
       principal,
       role: member.role,

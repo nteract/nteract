@@ -4,7 +4,8 @@ import * as A from "@automerge/automerge";
 import { projectReadChanges } from "./read-changes.mjs";
 import { enableRich, setRichMarkdown, textPath } from "./richtext.mjs";
 import { replaceMatch } from "./replace-match.mjs";
-import { applyComment } from "./comments.mjs";
+import { applyComment as applyCommentTo } from "./comments.mjs";
+import { comment, newCommentsDoc } from "./comments-test-support.mjs";
 
 const author = { principal: "user", displayName: "Collaborator", driver: "Browser" };
 function page(markdown = "# Start\n\nFirst paragraph.\n\n## Later\n\nSecond paragraph.") {
@@ -31,6 +32,34 @@ function read(doc, since_heads, options = {}) {
   return result;
 }
 const errorCode = (status, code) => (error) => error.status === status && error.code === code;
+/** Changes since a Page revision and a comments revision, each with its own
+ * heads, as the Page host reads them. */
+function readBoth(doc, comments, since_heads, since_comment_heads, options = {}) {
+  const heads = A.getHeads(doc),
+    commentHeads = A.getHeads(comments);
+  const result = projectReadChanges(
+    doc,
+    { since_heads, ...(since_comment_heads && { since_comment_heads }), ...options },
+    comments,
+  );
+  assert.deepEqual(A.getHeads(doc), heads);
+  assert.deepEqual(A.getHeads(comments), commentHeads);
+  return result;
+}
+/** Apply comment actions in order, in one change on `comments`. */
+function commentChange(doc, comments, fn) {
+  const results = [];
+  const next = A.change(comments, (draft) =>
+    fn((input, who = author) => {
+      const value = applyCommentDraft(draft, doc, input, who);
+      results.push(value);
+      return value;
+    }, draft),
+  );
+  return { comments: next, results };
+}
+const applyCommentDraft = (draft, page, input, who) =>
+  applyCommentTo(draft, input, who, undefined, { page, role: "editor" });
 
 test("an unchanged revision returns an empty net feed without author inference", () => {
   const doc = page(),
@@ -365,63 +394,77 @@ test("synced thread keys outside selector limits require resync without a partia
 });
 
 test("comment defaults return compact changes and all mode only changed current messages", () => {
-  let doc = page(),
-    ids;
-  doc = A.change(doc, (draft) => {
-    ids = applyComment(draft, { block_id: "one", body: "Old visible message" }, author);
+  const doc = page();
+  let { comments, result: ids } = comment(doc, newCommentsDoc(), {
+    block_id: "one",
+    body: "Old visible message",
   });
-  const before = A.getHeads(doc);
+  const before = A.getHeads(doc),
+    commentsBefore = A.getHeads(comments);
   let reply;
-  doc = A.change(doc, (draft) => {
-    reply = applyComment(
-      draft,
-      { action: "reply", thread_id: ids.thread_id, body: "New reply" },
-      author,
-    );
-    applyComment(draft, { action: "resolve", thread_id: ids.thread_id }, author);
-  });
-  const summary = read(doc, before);
+  ({ comments } = commentChange(doc, comments, (apply) => {
+    reply = apply({ action: "reply", thread_id: ids.thread_id, body: "New reply" });
+    apply({ action: "resolve", thread_id: ids.thread_id });
+  }));
+  // Comment writes never move the Page's heads.
+  assert.deepEqual(A.getHeads(doc), before);
+  const summary = readBoth(doc, comments, before, commentsBefore);
+  assert.deepEqual(summary.comment_heads, A.getHeads(comments));
+  assert.deepEqual(summary.changes, []);
   assert.equal(summary.comments.length, 1);
   assert.equal(summary.comments[0].state, "resolved");
   assert.equal(summary.comments[0].message_count, 2);
   assert.equal(summary.comments[0].messages, undefined);
-  const all = read(doc, before, { comments: "all" });
+  const all = readBoth(doc, comments, before, commentsBefore, { comments: "all" });
   assert.equal(all.comments[0].messages.length, 1);
   assert.equal(all.comments[0].messages[0].id, reply.message_id);
   assert.equal(all.comments[0].messages[0].body, "New reply");
   assert.doesNotMatch(JSON.stringify(all), /Old visible message/);
-  assert.deepEqual(read(doc, before, { comments: "none" }).comments, []);
+  assert.deepEqual(
+    readBoth(doc, comments, before, commentsBefore, { comments: "none" }).comments,
+    [],
+  );
+  // Without a comments baseline the delta is unknown: every current thread,
+  // flagged as a snapshot, so an older client keeps seeing comments.
+  const unknown = readBoth(doc, comments, before);
+  assert.equal(unknown.comments_snapshot, true);
+  assert.equal(unknown.comments.length, 1);
+  assert.equal(unknown.comments[0].change, "snapshot");
+  assert.equal(unknown.comments[0].thread_id, ids.thread_id);
+  assert.equal(unknown.comments[0].messages, undefined, "summary mode carries no bodies");
+  const unknownAll = readBoth(doc, comments, before, undefined, { comments: "all" });
+  assert.equal(unknownAll.comments[0].messages.length, 2);
+  assert.equal(
+    readBoth(doc, comments, before, undefined, { comments: "none" }).comments_snapshot,
+    undefined,
+  );
+  assert.throws(
+    () => readBoth(doc, comments, before, ["0".repeat(64)]),
+    errorCode(409, "resync_required"),
+  );
 });
 
 test("comment tombstones and removed threads/messages never export old bodies or authors", () => {
-  let doc = page(),
-    one,
-    two,
-    three;
-  doc = A.change(doc, (draft) => {
-    one = applyComment(
-      draft,
+  const doc = page();
+  let one, two, three;
+  let { comments } = commentChange(doc, newCommentsDoc(), (apply) => {
+    one = apply(
       { block_id: "one", body: "SECRET TOMBSTONE" },
       { ...author, displayName: "SECRET AUTHOR" },
     );
-    two = applyComment(draft, { block_id: "one", body: "SECRET THREAD" }, author);
-    three = applyComment(
-      draft,
-      { action: "reply", thread_id: one.thread_id, body: "SECRET REMOVED" },
-      author,
-    );
+    two = apply({ block_id: "one", body: "SECRET THREAD" });
+    three = apply({ action: "reply", thread_id: one.thread_id, body: "SECRET REMOVED" });
   });
-  const before = A.getHeads(doc);
-  doc = A.change(doc, (draft) => {
-    applyComment(
-      draft,
-      { action: "delete_message", thread_id: one.thread_id, message_id: one.message_id },
-      author,
-    );
-    delete draft.comments[one.thread_id].messages[three.message_id];
-    delete draft.comments[two.thread_id];
-  });
-  const result = read(doc, before, { comments: "all" });
+  const before = A.getHeads(doc),
+    commentsBefore = A.getHeads(comments);
+  ({ comments } = commentChange(doc, comments, (apply, draft) => {
+    apply({ action: "delete_message", thread_id: one.thread_id, message_id: one.message_id });
+    // Raw removals a peer could sync; the authority check refuses them, but
+    // the projection must stay safe either way.
+    delete draft.threads[one.thread_id].messages[three.message_id];
+    delete draft.threads[two.thread_id];
+  }));
+  const result = readBoth(doc, comments, before, commentsBefore, { comments: "all" });
   assert.doesNotMatch(JSON.stringify(result), /SECRET/);
   assert.ok(result.comments.some((c) => c.thread_id === two.thread_id && c.change === "deleted"));
   const updated = result.comments.find((c) => c.thread_id === one.thread_id);
@@ -433,14 +476,16 @@ test("comment tombstones and removed threads/messages never export old bodies or
 
 test("moving text before a comment does not itself count as a comment mutation", () => {
   let doc = page();
-  doc = A.change(doc, (draft) => {
-    applyComment(draft, { block_id: "one", selected_text: "Second", body: "Discuss" }, author);
+  const { comments } = comment(doc, newCommentsDoc(), {
+    block_id: "one",
+    selected_text: "Second",
+    body: "Discuss",
   });
   const before = A.getHeads(doc);
   doc = A.change(doc, (draft) =>
     replaceMatch(draft, "one", { match_text: "First", replacement: "Much longer first" }),
   );
-  assert.deepEqual(read(doc, before).comments, []);
+  assert.deepEqual(readBoth(doc, comments, before, A.getHeads(comments)).comments, []);
 });
 
 test("byte budget errors return counts and recovery guidance, never a truncated success", () => {

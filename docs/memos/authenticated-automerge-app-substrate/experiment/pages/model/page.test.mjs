@@ -8,7 +8,8 @@ import {
   applyPageOperation,
   orderedBlockIds,
 } from "./page.mjs";
-import { applyComment, projectComments } from "./comments.mjs";
+import { projectComments } from "./comments.mjs";
+import { comment, newCommentsDoc } from "./comments-test-support.mjs";
 import { richDoc, schema } from "./richtext.mjs";
 function page(markdown = "Hello 🌊 people") {
   let doc = A.from(createPageData({ pageId: "page_fixture", title: "Test" }));
@@ -62,22 +63,24 @@ test("ambiguous literal patch rejects atomically with no partially applied sibli
 test("anchored Unicode comments follow concurrent text and detach after the selected text is removed", () => {
   let doc = page("Before 🌊 passage after");
   const id = orderedBlockIds(doc)[0];
-  doc = A.change(doc, (d) =>
-    applyComment(
-      d,
-      { action: "add", block_id: id, body: "Discuss this", selected_text: "🌊 passage" },
-      identity,
-    ),
+  let { comments } = comment(
+    doc,
+    newCommentsDoc(),
+    { action: "add", block_id: id, body: "Discuss this", selected_text: "🌊 passage" },
+    identity,
   );
-  const thread = projectComments(doc)[0];
+  const thread = projectComments(doc, comments)[0];
   assert.equal(thread.selectionContext.text, "🌊 passage");
-  const left = A.change(A.clone(doc), (d) => A.splice(d, ["blocks", id, "richText"], 0, 0, "New "));
-  const right = A.change(A.clone(doc), (d) =>
-    applyComment(d, { action: "reply", thread_id: thread.id, body: "Agreed" }, identity),
-  );
-  doc = A.merge(left, right);
-  assert.equal(projectComments(doc)[0].messages.length, 2);
-  assert.equal(projectComments(doc)[0].selectionContext.text, "🌊 passage");
+  // Text and a reply land concurrently, each in its own document.
+  doc = A.change(doc, (d) => A.splice(d, ["blocks", id, "richText"], 0, 0, "New "));
+  comments = comment(
+    doc,
+    comments,
+    { action: "reply", thread_id: thread.id, body: "Agreed" },
+    identity,
+  ).comments;
+  assert.equal(projectComments(doc, comments)[0].messages.length, 2);
+  assert.equal(projectComments(doc, comments)[0].selectionContext.text, "🌊 passage");
   doc = A.change(doc, (d) =>
     applyPageOperation(d, {
       operation: "patch_page",
@@ -88,7 +91,7 @@ test("anchored Unicode comments follow concurrent text and detach after the sele
       },
     }),
   );
-  assert.equal(projectComments(doc)[0].selectionContext.status, "detached");
+  assert.equal(projectComments(doc, comments)[0].selectionContext.status, "detached");
 });
 test("unsafe link and image attributes are inert even in an open document schema", () => {
   const mark = schema.marks.link.create({ href: "javascript:alert(1)" });

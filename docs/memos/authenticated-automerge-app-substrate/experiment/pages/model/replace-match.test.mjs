@@ -8,7 +8,8 @@ import {
   orderedBlockIds,
   projectPage,
 } from "./page.mjs";
-import { applyComment, projectComments } from "./comments.mjs";
+import { projectComments } from "./comments.mjs";
+import { comment, newCommentsDoc } from "./comments-test-support.mjs";
 import { richDoc, textPath } from "./richtext.mjs";
 
 function fixture(markdown) {
@@ -31,17 +32,11 @@ test("visible text replacement crosses marks while preserving untouched marks, o
   let { doc, id } = fixture(
     "Before **hello** *world* — [🌊 passage](https://example.com).\n\nLater.",
   );
-  doc = A.change(doc, (draft) =>
-    applyComment(
-      draft,
-      {
-        action: "add",
-        block_id: id,
-        selected_text: "🌊 passage",
-        body: "Keep this",
-      },
-      { principal: "user:one", displayName: "Kyle", driver: "Browser" },
-    ),
+  const { comments } = comment(
+    doc,
+    newCommentsDoc(),
+    { action: "add", block_id: id, selected_text: "🌊 passage", body: "Keep this" },
+    { principal: "user:one", displayName: "Kyle", driver: "Browser" },
   );
   const object = A.getObjectId(doc.blocks[id], "richText");
   const cursor = A.getCursor(doc, textPath(id), doc.blocks[id].richText.indexOf("🌊"));
@@ -57,8 +52,8 @@ test("visible text replacement crosses marks while preserving untouched marks, o
     A.spans(after.blocks[id], ["richText"]).filter((span) => span.type === "block"),
     markers,
   );
-  assert.equal(projectComments(after)[0].selectionContext.text, "🌊 passage");
-  assert.equal(projectComments(after)[0].selectionContext.status, "attached");
+  assert.equal(projectComments(after, comments)[0].selectionContext.text, "🌊 passage");
+  assert.equal(projectComments(after, comments)[0].selectionContext.status, "attached");
   assert.ok(projectPage(after).blocks[0].markdown.includes("[🌊 passage](https://example.com)"));
   assert.match(richDoc(after.blocks[id]).textContent, /Before friends — 🌊 passage.Later./);
   richDoc(after.blocks[id]).check();

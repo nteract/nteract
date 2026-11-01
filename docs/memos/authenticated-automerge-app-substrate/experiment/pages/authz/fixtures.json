@@ -74,6 +74,39 @@
       ]
     },
     {
+      "name": "direct commenter grant: read and comment, never edit",
+      "modes": ["built-in", "external"],
+      "object": "page:reviewed",
+      "lifecycle": "active",
+      "revision": 4,
+      "relationships": [
+        "page:reviewed#owner@user:alice",
+        "page:reviewed#commenter@user:dana",
+        "page:reviewed#viewer@user:carol"
+      ],
+      "principals": [
+        {
+          "subject": "user:dana",
+          "credential": "write",
+          "capabilities": ["read", "comment"],
+          "basis": { "relation": "commenter", "via": "direct" }
+        },
+        {
+          "subject": "user:dana",
+          "credential": "read",
+          "capabilities": ["read"],
+          "basis": { "relation": "commenter", "via": "direct" }
+        },
+        {
+          "subject": "user:carol",
+          "credential": "write",
+          "capabilities": ["read"],
+          "basis": { "relation": "viewer", "via": "direct" }
+        },
+        { "subject": "user:mallory", "credential": "write", "capabilities": [] }
+      ]
+    },
+    {
       "name": "company view: today's verified email-domain rule as organization membership",
       "modes": ["built-in", "external"],
       "object": "page:company",

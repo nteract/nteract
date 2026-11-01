@@ -115,8 +115,15 @@ async function mcp(name, args = {}) {
   return result.data;
 }
 const read = () => mcp("read_page", { page_id: pageId, comments: "none" });
-const changes = (heads, comments = "none") =>
-  mcp("read_page_changes", { page_id: pageId, since_heads: heads, comments });
+// Comments have their own revision: `commentHeads` is the comment_heads from
+// the previous read, the baseline for comment changes.
+const changes = (heads, comments = "none", commentHeads) =>
+  mcp("read_page_changes", {
+    page_id: pageId,
+    since_heads: heads,
+    comments,
+    ...(commentHeads && { since_comment_heads: commentHeads }),
+  });
 function patchArgs(authority, operations) {
   return guarded(authority, {
     page_id: pageId,
@@ -255,7 +262,7 @@ try {
   assert.deepEqual(firstReceipt.concurrency.observed_heads, human.heads);
   await expect(content()).toContainText("Beta was revised by the agent.");
   await expect(content()).toContainText("Alpha was revised in the browser.");
-  const firstDelta = await changes(baseline.heads);
+  const firstDelta = await changes(baseline.heads, "summary", baseline.comment_heads);
   onlyNodes(firstDelta, [0, 1]);
   assert.ok(!JSON.stringify(firstDelta).includes("Preserve this exact sentinel."));
   assert.equal(firstDelta.comments.length, 0);
@@ -348,8 +355,11 @@ try {
     }),
   );
   const { thread_id, message_id } = added.result;
-  const addedDelta = await changes(afterRetry.heads, "all");
+  // A comment moves only the comments document; the Page's heads stay put.
+  assert.deepEqual(added.heads, afterRetry.heads);
+  const addedDelta = await changes(afterRetry.heads, "all", afterRetry.comment_heads);
   assert.deepEqual(addedDelta.changes, []);
+  assert.deepEqual(addedDelta.heads, afterRetry.heads);
   assert.equal(addedDelta.comments.length, 1);
   assert.equal(addedDelta.comments[0].thread_id, thread_id);
   assert.equal(addedDelta.comments[0].messages[0].body, originalComment);
@@ -358,14 +368,14 @@ try {
     "manage_page_comment",
     commentArgs(addedDelta, { action: "edit", thread_id, message_id, body: revisedComment }),
   );
-  const editedDelta = await changes(addedDelta.heads, "all");
+  const editedDelta = await changes(addedDelta.heads, "all", addedDelta.comment_heads);
   assert.equal(editedDelta.comments[0].messages[0].body, revisedComment);
   assert.ok(!JSON.stringify(editedDelta).includes(originalComment));
   await mcp(
     "manage_page_comment",
     commentArgs(editedDelta, { action: "delete_message", thread_id, message_id }),
   );
-  const deletedDelta = await changes(addedDelta.heads, "all");
+  const deletedDelta = await changes(addedDelta.heads, "all", addedDelta.comment_heads);
   assert.deepEqual(deletedDelta.changes, []);
   assert.equal(deletedDelta.comments.length, 1);
   const tombstone = deletedDelta.comments[0].messages.find((message) => message.id === message_id);
@@ -377,7 +387,7 @@ try {
       !JSON.stringify(deletedDelta).includes(secret),
       "deleted comment body is absent from the delta",
     );
-  const unchanged = await changes(deletedDelta.heads, "all");
+  const unchanged = await changes(deletedDelta.heads, "all", deletedDelta.comment_heads);
   assert.deepEqual(unchanged.changes, []);
   assert.deepEqual(unchanged.comments, []);
   assert.deepEqual(unchanged.heads, deletedDelta.heads);
