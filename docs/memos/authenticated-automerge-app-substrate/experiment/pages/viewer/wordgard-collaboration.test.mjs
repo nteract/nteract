@@ -48,12 +48,16 @@ function harness(doc) {
   const scrolls = [];
   const publications = [];
   const names = new Map();
+  const identities = new Map();
+  const changeIdentities = new Map();
   const replica = {
     doc,
     peers: new Map(),
     canWrite: true,
     publishPresence: (value) => publications.push(value),
     actorDisplayName: (actor) => names.get(actor) ?? "Collaborator",
+    actorIdentity: (actor) => identities.get(actor) ?? null,
+    changeIdentity: (hash) => changeIdentities.get(hash) ?? null,
   };
   const editor = {
     hasFocus: true,
@@ -80,6 +84,8 @@ function harness(doc) {
     now: () => time,
   });
   return {
+    identities,
+    changeIdentities,
     replica,
     editor,
     collaboration,
@@ -525,4 +531,131 @@ test("an agent's newest progress message rides on its caret", () => {
   assert.equal(dot.title, "Kilo on behalf of Kyle Kelley (release agent): Fixing the table");
   h.replica.agentProgress = new Map();
   assert.equal(h.collaboration.carets()[0].message, "");
+});
+
+test("the edit underline takes the editor's caret color when known", async () => {
+  const { presenceColor } = await import("./presence-color.mjs");
+  const h = harness(fixture("Hello world"));
+  const before = h.replica.doc;
+  const at = before.blocks.first.richText.indexOf("world");
+  const after = A.change(A.clone(before), (d) => A.splice(d, textPath("first"), at, 0, "new "));
+  h.replica.doc = after;
+  const decoded = current(after);
+  const actor = A.getActorId(after);
+  h.collaboration.observeChange({
+    nativeBefore: before,
+    nativeAfter: after,
+    before: current(before),
+    after: decoded,
+    changes: projectChanges(current(before).doc, decoded.doc),
+    actors: [actor],
+    remote: true,
+  });
+  const style = () => {
+    const elt = entries(h.collaboration.ranges())[0].value.elt;
+    const at = elt.attrs.indexOf("style");
+    return at < 0 ? null : elt.attrs[at + 1];
+  };
+  // Unknown editor: the neutral color from CSS.
+  assert.equal(style(), null);
+  h.identities.set(actor, { principal: "user:kyle", driver: "Kilo", agent: "rich text" });
+  const color = presenceColor("user:kyle", "Kilo", "rich text").background;
+  assert.equal(style(), `--peer-color: ${color}`);
+  // Two sessions of one account and harness get different colors.
+  assert.notEqual(color, presenceColor("user:kyle", "Kilo", "release agent").background);
+});
+
+test("one actor writing for two agents: each edit takes its own agent's color", async () => {
+  const { presenceColor } = await import("./presence-color.mjs");
+  const h = harness(fixture("one two"));
+  const host = "aa".repeat(16);
+  const edit = (doc, at, text) => {
+    const next = A.change(A.clone(doc, { actor: host }), (d) =>
+      A.splice(d, textPath("first"), at, 0, text),
+    );
+    const [meta] = A.getChangesMetaSince(next, A.getHeads(doc));
+    return { next, hash: meta.hash };
+  };
+  const observe = (before, after, hash) =>
+    h.collaboration.observeChange({
+      nativeBefore: before,
+      nativeAfter: after,
+      before: current(before),
+      after: current(after),
+      changes: projectChanges(current(before).doc, current(after).doc),
+      actors: [host],
+      hashes: [hash],
+      remote: true,
+    });
+  const d0 = h.replica.doc;
+  const first = edit(d0, 0, "ALPHA ");
+  h.replica.doc = first.next;
+  observe(d0, first.next, first.hash);
+  const second = edit(first.next, first.next.blocks.first.richText.length, " OMEGA");
+  h.replica.doc = second.next;
+  observe(first.next, second.next, second.hash);
+  h.identities.set(host, { principal: "user:kyle", driver: "Kilo", agent: "release agent" });
+  h.changeIdentities.set(first.hash, {
+    principal: "user:kyle",
+    driver: "Kilo",
+    agent: "release agent",
+  });
+  h.changeIdentities.set(second.hash, {
+    principal: "user:kyle",
+    driver: "Kilo",
+    agent: "rich text",
+  });
+  const styles = entries(h.collaboration.ranges()).map((e) => {
+    const at = e.value.elt.attrs.indexOf("style");
+    return e.value.elt.attrs[at + 1];
+  });
+  assert.deepEqual(styles, [
+    `--peer-color: ${presenceColor("user:kyle", "Kilo", "release agent").background}`,
+    `--peer-color: ${presenceColor("user:kyle", "Kilo", "rich text").background}`,
+  ]);
+});
+
+test("two agents' edits arriving in one sync batch each take their own color", async () => {
+  const { presenceColor } = await import("./presence-color.mjs");
+  const h = harness(fixture("one two"));
+  const host = "bb".repeat(16);
+  const before = h.replica.doc;
+  const heads = A.getHeads(before);
+  const first = A.change(A.clone(before, { actor: host }), (d) =>
+    A.splice(d, textPath("first"), 0, 0, "ALPHA "),
+  );
+  const both = A.change(first, (d) =>
+    A.splice(d, textPath("first"), d.blocks.first.richText.length, 0, " OMEGA"),
+  );
+  const metas = A.getChangesMetaSince(both, heads);
+  h.replica.doc = both;
+  h.collaboration.observeChange({
+    nativeBefore: before,
+    nativeAfter: both,
+    before: current(before),
+    after: current(both),
+    changes: projectChanges(current(before).doc, current(both).doc),
+    actors: [host],
+    hashes: metas.map((m) => m.hash),
+    changeOps: metas.map(({ hash, actor, startOp, maxOp }) => ({ hash, actor, startOp, maxOp })),
+    remote: true,
+  });
+  h.changeIdentities.set(metas[0].hash, {
+    principal: "user:kyle",
+    driver: "Kilo",
+    agent: "release agent",
+  });
+  h.changeIdentities.set(metas[1].hash, {
+    principal: "user:kyle",
+    driver: "Kilo",
+    agent: "rich text",
+  });
+  const styles = entries(h.collaboration.ranges()).map((e) => {
+    const at = e.value.elt.attrs.indexOf("style");
+    return e.value.elt.attrs[at + 1];
+  });
+  assert.deepEqual(styles, [
+    `--peer-color: ${presenceColor("user:kyle", "Kilo", "release agent").background}`,
+    `--peer-color: ${presenceColor("user:kyle", "Kilo", "rich text").background}`,
+  ]);
 });

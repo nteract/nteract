@@ -183,7 +183,7 @@ export function createWordgardCollaboration({
           .join(" · "),
         tag: "agent",
         title: agent.agent ? `${identity.label} (${agent.agent})` : identity.label,
-        color: presenceColor(agent.principal, agent.driver),
+        color: presenceColor(agent.principal, agent.driver, agent.agent),
         idle: agent.state === "idle",
         message,
       };
@@ -211,6 +211,20 @@ export function createWordgardCollaboration({
     return marks;
   }
 
+  // The change that wrote the character a cursor names: cursors read
+  // "counter@actor", and each change covers ops startOp..maxOp of its actor.
+  function writtenBy(cursor, changeOps) {
+    const at = typeof cursor === "string" ? cursor.indexOf("@") : -1;
+    if (at < 1 || !changeOps?.length) return null;
+    const counter = Number(cursor.slice(0, at));
+    const actor = cursor.slice(at + 1);
+    return (
+      changeOps.find(
+        (change) => change.actor === actor && change.startOp <= counter && counter <= change.maxOp,
+      )?.hash ?? null
+    );
+  }
+
   function observeChange(event) {
     if (event.remote === false || !event.actors?.length || !event.changes) return;
     const doc = event.nativeAfter;
@@ -227,11 +241,16 @@ export function createWordgardCollaboration({
       // Anchor the final character, not the next character after the range:
       // deleting the received text must not illuminate unrelated surviving text.
       const last = to - Array.from(text).at(-1).length;
+      const first = A.getCursor(doc, pathFor(id), from, "after");
+      // Inserted text names the change that wrote it; formatting keeps old
+      // characters, so it falls back to every change in the batch.
+      const written = writtenBy(first, event.changeOps);
       illumination.push({
         object,
-        first: A.getCursor(doc, pathFor(id), from, "after"),
+        first,
         last: A.getCursor(doc, pathFor(id), last, "before"),
         actors: [...new Set(event.actors)],
+        hashes: written ? [written] : (event.hashes ?? []),
         until: now() + illuminationTTL,
       });
     });
@@ -307,9 +326,17 @@ export function createWordgardCollaboration({
         const from = mapped(current?.map.amToWg, A.getCursorPosition(doc, path, mark.first));
         const to = mapped(current?.map.amToWg, last + (point > 0xffff ? 2 : 1));
         if (from === null || to === null) continue;
+        // The underline takes the editor's own caret color when we know who
+        // they are; otherwise the neutral edit color.
+        const who =
+          mark.hashes.map((hash) => replica.changeIdentity?.(hash)).find(Boolean) ??
+          mark.actors.map((actor) => replica.actorIdentity?.(actor)).find(Boolean);
         add(from, to, {
           class: "remote-edit",
           title: `Edited by ${[...new Set(mark.actors.map((actor) => replica.actorDisplayName(actor)))].join(", ")}`,
+          ...(who?.principal && {
+            style: `--peer-color: ${presenceColor(who.principal, who.driver, who.agent).background}`,
+          }),
         });
       } catch {
         // The native text object or selected characters no longer exist.

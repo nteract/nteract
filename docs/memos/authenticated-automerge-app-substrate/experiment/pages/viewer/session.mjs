@@ -160,6 +160,13 @@ export class PageSession {
   presencePaused = false;
   profiles = {};
   actorNames = new Map();
+  // Who an Automerge actor is: from the host's tool-edit hints for agents, and
+  // from each browser peer's own selection for people. Colors their edits.
+  actorIdentities = new Map();
+  // Who made a change, by hash, from the host's tool-edit hints. The host
+  // writes every API agent's edits with one actor, so this is what tells two
+  // agents apart; actorIdentities covers browser peers.
+  changeIdentities = new Map();
   toolHints = [];
   composing = 0;
   localDepth = 0;
@@ -1485,6 +1492,12 @@ export class PageSession {
   actorDisplayName(actor) {
     return this.actorNames.get(actor) ?? "Collaborator";
   }
+  actorIdentity(actor) {
+    return this.actorIdentities.get(actor) ?? null;
+  }
+  changeIdentity(hash) {
+    return this.changeIdentities.get(hash) ?? null;
+  }
   watchPresence(fn) {
     this.presenceObservers.add(fn);
     return () => this.presenceObservers.delete(fn);
@@ -1500,7 +1513,10 @@ export class PageSession {
       !this.accessReloadRequired
     )
       try {
-        this.handle.broadcast({ kind: "selection", value });
+        this.handle.broadcast({
+          kind: "selection",
+          value: value && { ...value, actor: this.actor() },
+        });
       } catch (error) {
         this.problem = error.message;
         this.emit();
@@ -1615,6 +1631,19 @@ export class PageSession {
       value.heads.length <= 100 &&
       value.heads.every((head) => typeof head === "string" && /^[0-9a-f]{64}$/.test(head))
     ) {
+      // A peer names its own actor; the host vouches for its profile. A host
+      // tool-edit hint for the same actor wins.
+      if (
+        typeof value.actor === "string" &&
+        /^[0-9a-f]{1,128}$/.test(value.actor) &&
+        !this.actorNames.has(value.actor)
+      )
+        this.actorIdentities.set(value.actor, {
+          principal: profile.principal,
+          displayName: profile.displayName,
+          driver: profile.driver,
+          agent: null,
+        });
       this.peers.set(senderId, {
         value,
         at: this.now(),
@@ -1637,8 +1666,19 @@ export class PageSession {
       for (const head of message.heads) {
         try {
           const meta = A.inspectChange(this.doc, head);
-          if (meta && display) this.actorNames.set(meta.actor, display);
-          else pending = true;
+          if (meta && display) {
+            this.actorNames.set(meta.actor, display);
+            const who = {
+              principal: message.identity?.principal,
+              displayName: message.identity?.displayName,
+              driver: message.identity?.driver,
+              agent: typeof message.identity?.agent === "string" ? message.identity.agent : null,
+            };
+            this.actorIdentities.set(meta.actor, who);
+            this.changeIdentities.set(head, who);
+            if (this.changeIdentities.size > 512)
+              this.changeIdentities.delete(this.changeIdentities.keys().next().value);
+          } else pending = true;
         } catch {
           pending = true;
         }

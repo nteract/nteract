@@ -159,15 +159,20 @@ export function createWordgardBinding(replica, id, { encodeSpans = encode } = {}
       after = decode(A.spans(nativeAfter, path));
     current = after;
     const changes = projectChanges(before.doc, after.doc);
-    const actors = event.remote
-      ? [
-          ...new Set(
-            A.getChangesMetaSince(nativeAfter, A.getHeads(nativeBefore)).map(
-              (change) => change.actor,
-            ),
-          ),
-        ]
+    const remoteChanges = event.remote
+      ? A.getChangesMetaSince(nativeAfter, A.getHeads(nativeBefore))
       : [];
+    const actors = [...new Set(remoteChanges.map((change) => change.actor))];
+    // Change hashes name an edit even when one actor writes for several
+    // people (the host writes every API agent's edit with its own actor).
+    const hashes = remoteChanges.map((change) => change.hash);
+    // Op ranges let a reader find which change wrote a given character.
+    const changeOps = remoteChanges.map(({ hash, actor, startOp, maxOp }) => ({
+      hash,
+      actor,
+      startOp,
+      maxOp,
+    }));
     for (const listener of listeners)
       listener({
         before,
@@ -177,6 +182,8 @@ export function createWordgardBinding(replica, id, { encodeSpans = encode } = {}
         changes,
         remote: !!event.remote,
         actors,
+        hashes,
+        changeOps,
       });
   });
   return {

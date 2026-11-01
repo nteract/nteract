@@ -212,6 +212,55 @@ test("only signed host profile hints name edits, including hints arriving before
   assert.equal(session.toolHints.length, 0);
   assert.equal(session.actorDisplayName(A.getActorId(later)), "Kyle Kelley · ChatGPT");
 });
+test("edits know who made them: host hints for agents, a peer's own selection for people", () => {
+  let doc = A.from({ text: "one" });
+  const agentChange = A.change(A.clone(doc), (d) => A.updateText(d, ["text"], "two"));
+  const session = new PageSession("fixture");
+  session.handle = { doc: () => doc };
+  session.connection = { serverSenderId: "verified-host" };
+  session.ephemeral({
+    senderId: "verified-host",
+    message: {
+      kind: "tool-edit",
+      heads: A.getHeads(agentChange),
+      identity: {
+        principal: "user:kyle",
+        displayName: "Kyle Kelley",
+        driver: "Kilo",
+        agent: "rich text",
+      },
+    },
+  });
+  doc = agentChange;
+  session.resolveToolHints();
+  const agentActor = A.getActorId(agentChange);
+  assert.equal(session.changeIdentity(A.getHeads(agentChange)[0]).agent, "rich text");
+  assert.deepEqual(session.actorIdentity(agentActor), {
+    principal: "user:kyle",
+    displayName: "Kyle Kelley",
+    driver: "Kilo",
+    agent: "rich text",
+  });
+  // A browser peer names its own actor; the host vouches for its profile.
+  session.profiles = { peer: { principal: "user:ana", displayName: "Ana", driver: "Browser" } };
+  const select = (actor) =>
+    session.ephemeral({
+      senderId: "peer",
+      message: {
+        kind: "selection",
+        value: { block_id: "b", start: "s", end: "e", heads: [], actor },
+      },
+    });
+  select("abc123");
+  assert.equal(session.actorIdentity("abc123").principal, "user:ana");
+  // It can't take over an actor the host already attributed.
+  select(agentActor);
+  assert.equal(session.actorIdentity(agentActor).principal, "user:kyle");
+  // Malformed actors are ignored.
+  select("not hex!");
+  assert.equal(session.actorIdentity("not hex!"), null);
+});
+
 test("presence rejects malformed causal heads and ignores claimed display identity", () => {
   const session = new PageSession("fixture");
   session.connection = { serverSenderId: "verified-host" };
