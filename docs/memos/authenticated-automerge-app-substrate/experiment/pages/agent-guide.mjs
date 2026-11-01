@@ -225,10 +225,10 @@ availability depends on its connection UI; a configured plugin alone isn't proof
 
 ### Kilo Desktop / CLI (OAuth, one process at a time)
 
-Use this only for a single Kilo process. Kilo processes share one stored token
-set, so Kilo Desktop plus the CLI, or several worktrees running at once, can
-refresh concurrently and revoke the grant. Use the API-key recipe above for
-those setups.
+Use this for a single Kilo process. If several Kilo processes share one set of
+OAuth credentials (Kilo Desktop plus the CLI, or several worktrees running at
+once), concurrent refreshes can revoke the grant. Use the API-key recipe above
+for those setups.
 
 Ask the human early to complete browser authorization. Meanwhile, merge this
 non-secret configuration into GLOBAL ~/.config/kilo/kilo.jsonc (respect
