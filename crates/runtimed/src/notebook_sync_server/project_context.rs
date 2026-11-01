@@ -169,7 +169,17 @@ fn update_watch_dirs(
     watcher: &mut dyn notify::Watcher,
     watched: &mut Vec<PathBuf>,
     desired: &[PathBuf],
+    invalidated: WatchInvalidations,
 ) {
+    watched.retain(|dir| {
+        if invalidated.all || invalidated.paths.iter().any(|path| dir.starts_with(path)) {
+            // DELETE_SELF can already have removed the backend watch.
+            let _ = watcher.unwatch(dir);
+            false
+        } else {
+            true
+        }
+    });
     for dir in desired {
         if !watched.contains(dir) {
             match watcher.watch(dir, notify::RecursiveMode::NonRecursive) {
@@ -194,6 +204,27 @@ fn update_watch_dirs(
     });
 }
 
+#[derive(Default)]
+struct WatchInvalidations {
+    all: bool,
+    paths: std::collections::HashSet<PathBuf>,
+}
+
+impl WatchInvalidations {
+    fn record(&mut self, event: &notify::Event) {
+        // Overflow can hide DELETE_SELF, so pathname bookkeeping is no longer
+        // evidence that any backend subscription is still live.
+        self.all |= event.need_rescan();
+        if matches!(
+            event.kind,
+            notify::EventKind::Remove(notify::event::RemoveKind::Folder)
+                | notify::EventKind::Modify(notify::event::ModifyKind::Name(_))
+        ) {
+            self.paths.extend(event.paths.iter().cloned());
+        }
+    }
+}
+
 async fn run_project_file_watcher(
     room: &NotebookRoom,
     anchor: &Path,
@@ -204,10 +235,20 @@ async fn run_project_file_watcher(
     // A single queued trigger is enough: each pass reads current filesystem
     // state. Never block notify's OS thread while dropping/reconfiguring it.
     let (changed_tx, mut changed_rx) = tokio::sync::mpsc::channel(1);
+    // Unlike refresh triggers, lifecycle invalidations cannot be coalesced away:
+    // notify may have dropped a subscription while its pathname stayed desired.
+    let invalidated = Arc::new(std::sync::Mutex::new(WatchInvalidations::default()));
+    let callback_invalidated = invalidated.clone();
     let mut watcher = match notify::RecommendedWatcher::new(
         move |result: notify::Result<notify::Event>| {
             let relevant = match result {
-                Ok(event) => relevant_project_event(&event),
+                Ok(event) => {
+                    callback_invalidated
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .record(&event);
+                    relevant_project_event(&event)
+                }
                 Err(error) => {
                     warn!("[project-watch] Watcher error: {error}");
                     true
@@ -227,7 +268,7 @@ async fn run_project_file_watcher(
         }
     };
 
-    let mut watched = Vec::new();
+    let mut watched: Vec<PathBuf> = Vec::new();
     let mut ready = Some(ready_tx);
     loop {
         if room
@@ -252,7 +293,11 @@ async fn run_project_file_watcher(
                 hook();
             }
         }
-        update_watch_dirs(&mut watcher, &mut watched, &desired);
+        let removed = {
+            let mut invalidated = invalidated.lock().unwrap_or_else(|e| e.into_inner());
+            std::mem::take(&mut *invalidated)
+        };
+        update_watch_dirs(&mut watcher, &mut watched, &desired, removed);
         let ctx = build_context(anchor);
         // The manifest boundary can itself change during subscription setup.
         // Expand/shrink coverage and rescan before advertising readiness.
@@ -266,13 +311,18 @@ async fn run_project_file_watcher(
         if let Some(ready_tx) = ready.take() {
             let _ = ready_tx.send(());
         }
-        if watched.is_empty() {
+        let missing_directory = desired.iter().any(|dir| !watched.contains(dir));
+        if watched.is_empty() && !missing_directory {
             return;
         }
         tokio::select! {
             biased;
             _ = &mut shutdown_rx => return,
             event = changed_rx.recv() => if event.is_none() { return; },
+            // No subscription can report recreation when every desired path
+            // is absent. Retry coverage without restarting healthy watches.
+            _ = tokio::time::sleep(std::time::Duration::from_millis(500)),
+                if missing_directory => continue,
         }
         // Bound refresh rate during write bursts, while keeping shutdown prompt.
         tokio::select! {
@@ -297,6 +347,14 @@ fn relevant_project_event(event: &notify::Event) -> bool {
         if kind != AccessKind::Close(AccessMode::Write))
     {
         return false;
+    }
+    if matches!(
+        event.kind,
+        notify::EventKind::Create(notify::event::CreateKind::Folder)
+            | notify::EventKind::Remove(notify::event::RemoveKind::Folder)
+            | notify::EventKind::Modify(notify::event::ModifyKind::Name(_))
+    ) {
+        return true;
     }
     event.paths.iter().any(|path| {
         path.file_name()
@@ -702,12 +760,65 @@ mod tests {
         assert!(relevant_project_event(
             &Event::new(EventKind::Other).set_flag(Flag::Rescan)
         ));
+        for kind in [
+            EventKind::Create(CreateKind::Folder),
+            EventKind::Remove(RemoveKind::Folder),
+            EventKind::Modify(ModifyKind::Name(RenameMode::From)),
+        ] {
+            assert!(relevant_project_event(
+                &Event::new(kind).add_path("analysis".into())
+            ));
+        }
     }
 
     fn write(dir: &Path, name: &str, body: &str) -> PathBuf {
         let path = dir.join(name);
         std::fs::write(&path, body).unwrap();
         path
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn pathless_rescan_rearms_lost_subscription() {
+        use notify::event::Flag;
+        let temp = TempDir::new().unwrap();
+        let desired = vec![temp.path().to_path_buf()];
+        let (tx, rx) = std::sync::mpsc::channel();
+        let mut watcher =
+            notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
+                if let Ok(event) = event {
+                    if relevant_project_event(&event) {
+                        let _ = tx.send(());
+                    }
+                }
+            })
+            .unwrap();
+        let mut watched = Vec::new();
+        update_watch_dirs(
+            &mut watcher,
+            &mut watched,
+            &desired,
+            WatchInvalidations::default(),
+        );
+        // Simulate a kernel subscription lost without its lifecycle callback.
+        watcher.unwatch(temp.path()).unwrap();
+        let mut invalidated = WatchInvalidations::default();
+        invalidated.record(&notify::Event::new(notify::EventKind::Other).set_flag(Flag::Rescan));
+        update_watch_dirs(&mut watcher, &mut watched, &desired, invalidated);
+        let manifest = write(
+            temp.path(),
+            "environment.yml",
+            "dependencies:\n  - pandas\n",
+        );
+        rx.recv_timeout(std::time::Duration::from_secs(5)).unwrap();
+        // Wait for the first write's notifications to settle without changing
+        // coverage, then require another event from the repaired subscription.
+        while rx
+            .recv_timeout(std::time::Duration::from_millis(100))
+            .is_ok()
+        {}
+        std::fs::write(manifest, "dependencies:\n  - scipy\n").unwrap();
+        rx.recv_timeout(std::time::Duration::from_secs(5)).unwrap();
     }
 
     #[test]
