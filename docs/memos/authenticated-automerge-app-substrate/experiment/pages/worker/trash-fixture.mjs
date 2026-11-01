@@ -132,6 +132,9 @@ export async function fixture(t, { env: extraEnv = {}, auth: shared, docBytes } 
       metadata,
       handle: {
         doc: () => doc,
+        async update(fn) {
+          doc = fn(doc);
+        },
         broadcast() {},
         on() {},
         off() {},
@@ -143,6 +146,7 @@ export async function fixture(t, { env: extraEnv = {}, auth: shared, docBytes } 
         async delete() {
           removed++;
         },
+        async flush() {},
       },
       backend: { async flush() {} },
     });

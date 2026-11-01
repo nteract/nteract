@@ -1033,7 +1033,8 @@ text, so agents never branch on message text. The Worker codes specific refusals
 where they're raised: a stale exact-head guard is `409 stale_heads`, malformed
 `base_heads` and an edit batch that can't apply (zero or multiple matches, an
 unknown block, operation or mark) are `400 invalid_edit_selector`, and a comment
-action on a missing thread, message or block is `400 invalid_comment_selector`.
+action on a missing thread, message or block is `400 invalid_comment_selector`
+(a `thread_ids` batch adds `not_found_thread_ids`).
 An MCP result has no HTTP status, so [mcp.mjs](mcp.mjs) names any refusal the
 Worker left uncoded by its status (`access_denied`, `not_found`, `conflict` and
 so on). It adds `retryable: true` to `stale_heads`, whose retry is a new request
@@ -1087,7 +1088,15 @@ guard. `manage_page_comment` `add` with `selected_text` requires known
 its cursors there. It returns `edit_conflict` only when the passage no longer
 resolves, and `resync_required` for unknown heads. A block comment needs only
 its block. Replies, status changes, message edits and deletions touch only the
-thread, so `base_heads` is optional and never compared. `report_page_progress`
+thread, so `base_heads` is optional and never compared. `resolve` and `reopen`
+take `thread_id` or `thread_ids` (1–100 unique IDs), never both. A batch is one
+Automerge change, one journal entry and one receipt, and `result.threads` gives
+each thread's outcome: `resolved`, `already_resolved`, `reopened` or
+`already_open`. A thread already in the target state is a no-op success and
+keeps its status time. The batch is all-or-nothing. An unknown ID rejects it
+with `invalid_comment_selector` and `not_found_thread_ids`, before anything is
+written. Permission is the Page's edit access, the same check a single resolve
+makes, so a denial also rejects the whole batch. `report_page_progress`
 targets follow the same rule with `expected_heads`, failing with
 `presence_revision_changed` for unknown heads or a detached passage. Retries
 still replay the recorded receipt; these guards run only for new intents.

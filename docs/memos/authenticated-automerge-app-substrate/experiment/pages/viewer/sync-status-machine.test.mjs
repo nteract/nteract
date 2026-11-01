@@ -170,3 +170,29 @@ test("every rendered status carries its presentation key", () => {
   assert.deepEqual([...seen].sort(), Object.keys(KEYS).sort());
   assert.throws(() => overlayStatus("readOnly"), /unknown status overlay/);
 });
+
+// Retry belongs to a stalled receipt only. Deletion and access changes share
+// the "attention" key, and a failed local save shares "failed", but a manual
+// reconnect fixes none of them, so they never offer Retry.
+const RETRY = new Set(["Offline", "Saved locally", "Unsaved"]);
+
+test("only a stalled receipt offers Retry, whatever the presentation key", () => {
+  const offered = new Set();
+  for (const name of viewerSyncStatusMachine.states)
+    for (const link of LINKS)
+      for (const localCopy of [false, true]) {
+        const state = { name, revision: 1, pending: name === "saving", link };
+        const status = syncStatus(state, { localCopy });
+        assert.equal(status.retry, RETRY.has(status.label), `${name} / ${link} / ${localCopy}`);
+        if (status.retry) offered.add(status.label);
+      }
+  assert.deepEqual([...offered].sort(), [...RETRY].sort());
+  const saving = { name: "saving", revision: 1, pending: true, link: "connected" };
+  for (const flag of OVERLAY_FLAGS) {
+    assert.equal(overlayStatus(flag).retry, false, flag);
+    // An overlay hides Retry even while the receipt underneath is stalled.
+    const offline = { name: "unsaved", revision: 1, pending: false, link: "offline" };
+    assert.equal(fullStatus(offline, { [flag]: true }).retry, false, `${flag} over offline`);
+    assert.equal(fullStatus(saving, { [flag]: true }).retry, false, flag);
+  }
+});

@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import * as A from "@automerge/automerge";
 import { fixture, trashArgs } from "./trash-fixture.mjs";
+import { proposeAccessUpdate } from "./access.mjs";
 
 const staleHeads = ["0".repeat(64)];
 
@@ -157,4 +158,65 @@ test("a receipt for edits the native gate refused answers schema_unsupported at 
     schema_features: ["Not An Id"],
   });
   assert.equal(malformed.status, 400);
+});
+
+test("a thread batch names unknown threads, refuses readers, and applies for editors", async (t) => {
+  const f = await fixture(t);
+  const [threadId] = Object.keys(f.doc().comments);
+  const heads = f.heads();
+  const unknown = await f.tool("owner", "manage_page_comment", {
+    idempotency_key: "batch-unknown-thread",
+    action: "resolve",
+    thread_ids: [threadId, "no-such-thread"],
+  });
+  assert.equal(unknown.status, 400);
+  assert.equal(unknown.body.code, "invalid_comment_selector");
+  assert.deepEqual(unknown.body.not_found_thread_ids, ["no-such-thread"]);
+  const shape = await f.tool("owner", "manage_page_comment", {
+    idempotency_key: "batch-both-fields",
+    action: "resolve",
+    thread_id: threadId,
+    thread_ids: [threadId],
+  });
+  assert.equal(shape.status, 400);
+  assert.equal(shape.body.code, "invalid_comment_selector");
+  assert.equal(shape.body.not_found_thread_ids, undefined);
+
+  // A viewer may read the thread but not change its status, alone or in a batch.
+  const reader = "user:anaconda-fixture:stranger-user";
+  const owner = { principal: f.owner, canWrite: true, expiresAt: Date.now() + 60_000 };
+  f.setPage(
+    f.build({
+      ...f.page.metadata,
+      acl: proposeAccessUpdate(f.page.metadata, owner, {
+        principal: reader,
+        role: "viewer",
+        expected_revision: f.page.metadata.acl.revision,
+      }).acl,
+    }),
+  );
+  assert.equal((await f.tool("stranger", "list_page_comments")).status, 200);
+  for (const args of [{ thread_id: threadId }, { thread_ids: [threadId] }]) {
+    const denied = await f.tool("stranger", "manage_page_comment", {
+      idempotency_key: `batch-reader-${Object.keys(args)[0]}`,
+      action: "resolve",
+      ...args,
+    });
+    assert.equal(denied.status, 403, Object.keys(args)[0]);
+    assert.equal(denied.body.code, undefined, "uncoded 403 becomes MCP access_denied");
+  }
+  assert.deepEqual(f.heads(), heads, "nothing is written");
+
+  // An editor resolves a thread someone else opened, in one batch and one receipt.
+  const resolved = await f.tool("member", "manage_page_comment", {
+    idempotency_key: "batch-editor-resolve",
+    action: "resolve",
+    thread_ids: [threadId],
+  });
+  assert.equal(resolved.status, 200);
+  assert.deepEqual(resolved.body.result, {
+    threads: [{ thread_id: threadId, outcome: "resolved" }],
+  });
+  assert.deepEqual(resolved.body.heads, f.heads());
+  assert.equal(f.doc().comments[threadId].status.value, "resolved");
 });

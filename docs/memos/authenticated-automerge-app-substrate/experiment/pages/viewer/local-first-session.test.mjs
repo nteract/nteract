@@ -79,6 +79,7 @@ test("new Pages are editable and durable without any completed network operation
   t.after(() => session.close());
   assert.equal(calls, 0);
   assert.equal(session.status, "Saved locally");
+  assert.equal(session.statusRetry, true);
   assert.equal(session.snapshot().title, "Local first");
   assert.equal(documentIdToBinary(session.localPage.registration.document_id).byteLength, 32);
   assert.equal(session.localPage.registration.expected_principal, auth.identity.principal);
@@ -890,6 +891,7 @@ test("a deletion marker from another tab terminates stale local checkpoint write
   await session.saveReceipt();
   assert.equal(session.status, "Deleted");
   assert.equal(session.statusKey, "attention");
+  assert.equal(session.statusRetry, false);
   assert.equal(session.canWrite, false);
   assert.equal(session.alive, false);
   assert.equal(session.receiptRetryTimer, undefined);
