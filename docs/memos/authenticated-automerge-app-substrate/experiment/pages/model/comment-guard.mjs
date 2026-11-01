@@ -30,10 +30,15 @@ export function guardCommentIntent(current, operation, args) {
   const action = operation === "reply_page_comment" ? "reply" : (args.action ?? "add");
   if (action !== "add") {
     if (args.base_heads !== undefined && !headsShape(args.base_heads))
-      fail(400, "base_heads must contain 1 to 128 revision hashes from a Page read");
+      fail(
+        400,
+        "base_heads must contain 1 to 128 revision hashes from a Page read",
+        "invalid_edit_selector",
+      );
     return args;
   }
-  if (!headsShape(args.base_heads)) fail(400, "base_heads from read_page are required");
+  if (!headsShape(args.base_heads))
+    fail(400, "base_heads from read_page are required", "invalid_edit_selector");
   if (!args.selected_text) return args;
   const currentHeads = A.getHeads(current);
   if (!A.hasHeads(current, args.base_heads))
@@ -55,7 +60,7 @@ export function guardCommentIntent(current, operation, args) {
         args.occurrence ?? 1,
       );
     } catch (error) {
-      fail(400, error.message);
+      fail(400, error.message, "invalid_comment_selector");
     }
     if (selectionContext(current, target)?.status !== "attached")
       fail(

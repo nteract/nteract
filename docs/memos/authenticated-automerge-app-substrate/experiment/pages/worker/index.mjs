@@ -28,6 +28,7 @@ import { agentGuideResponse } from "../agent-guide.mjs";
 import { connectAgentResponse } from "../connect-agent.mjs";
 import { handleOAuth, mcpAuthChallenge } from "./oauth.mjs";
 import { sessionStoreReady } from "./isolate-setup.mjs";
+import { localOidcStore } from "./local-oidc-store.mjs";
 import { WebSocketByteTransport } from "../shared/byte-transport.mjs";
 import { MISSING_EDITS_MESSAGE } from "../shared/receipts.mjs";
 import { openingTitleWarning } from "../model/title-warning.mjs";
@@ -560,7 +561,9 @@ const gateway = {
         env.NOTEBOOK_CLOUD_LOCAL_OIDC === "true" &&
         ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname)
       ) {
-        const local = await handleLocalOidcRequest(request, env);
+        const local = await handleLocalOidcRequest(request, env, {
+          store: localOidcStore(env.DB),
+        });
         if (local) return local;
       }
       if (url.pathname === "/connect") return connectAgentResponse(request, env);
@@ -2834,12 +2837,13 @@ export class Page {
           identity,
           prepare: images.length
             ? async () => {
-                if (images.length > 100) throw new HttpError(400, "Provide up to 100 operations");
+                if (images.length > 100)
+                  throw new HttpError(400, "Provide up to 100 operations", "invalid_edit_selector");
                 for (const image of images) {
                   try {
                     validateImageInsertion(image);
                   } catch (error) {
-                    throw new HttpError(400, error.message);
+                    throw new HttpError(400, error.message, "invalid_edit_selector");
                   }
                 }
                 for (const assetId of new Set(images.map((image) => image.asset_id))) {
@@ -2871,7 +2875,16 @@ export class Page {
               }
               return result;
             } catch (error) {
-              throw new HttpError(400, error.message);
+              // The batch cannot apply as written: zero or multiple matches, an
+              // unknown block, operation or mark, or an invalid comment target.
+              throw new HttpError(
+                400,
+                error.message,
+                error.code ??
+                  (body.operation === "edit_page" || body.operation === "patch_page"
+                    ? "invalid_edit_selector"
+                    : "invalid_comment_selector"),
+              );
             }
           },
           flush: () => this.flush(),

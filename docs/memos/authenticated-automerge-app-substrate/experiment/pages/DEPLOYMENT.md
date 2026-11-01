@@ -1,31 +1,40 @@
 # Pages deployment
 
-The current release is qualified for the isolated **Page9** celld target only.
-Page8 and earlier services are frozen. Deployment helpers reject mutations to
-those targets and check their fingerprints when publishing Page9. Historical
+The current release is qualified for the isolated **Page10** celld target only.
+Page9 and earlier services are frozen. Deployment helpers reject mutations to
+those targets and check their fingerprints when publishing Page10. Historical
 profiles remain in [profiles.mjs](scripts/deployment/profiles.mjs) for inspection
 and isolation checks; their presence is not permission to deploy to them.
 
 Page targets are short-lived prototypes. A release that would break existing
 clients goes to a new target instead of carrying compatibility code; data is
-not copied between targets.
+not copied between targets. Page10 is one of those: a fresh, empty target for
+the location and comments redesign, with no compatibility with Page9's data.
 
-## Page9 release
+## Page10 release
 
-The allowlisted profile owns `page9.runtimed.run`, service `nteract-page9`,
-listeners `127.0.0.1:9479` / `127.0.0.1:19479`, and the `standalone/page9` prefix
-in the lab1 fleet bucket. Its Wordgard editor, buffered persistence, and lossless
-cleanup retain `CELLD_DURABILITY=bucket`. It uses production Anaconda verification.
+The allowlisted profile owns `page10.runtimed.run`, service `nteract-page10`,
+listeners `127.0.0.1:9480` / `127.0.0.1:19480`, and the `standalone/page10`
+prefix in the lab1 fleet bucket. It carries every Page9 flag: Wordgard editor,
+buffered persistence, lossless cleanup with `CELLD_DURABILITY=bucket`, sharing,
+OAuth, the catalog index, and the hashed-asset, Project-link and index routes.
+It uses production Anaconda verification.
 
 From `pages`, after review, commit, and a fresh build:
 
 ```sh
-node scripts/deploy.mjs --target page9 plan
-node scripts/deploy.mjs --target page9 prepare
-node scripts/deploy.mjs --target page9 upload LOCAL_STAGE
-node scripts/deploy.mjs --target page9 install REMOTE_STAGE --apply
-node scripts/deploy.mjs --target page9 publish REMOTE_STAGE --apply
+node scripts/deploy.mjs --target page10 plan
+node scripts/deploy.mjs --target page10 prepare
+node scripts/deploy.mjs --target page10 upload LOCAL_STAGE
+node scripts/deploy.mjs --target page10 install REMOTE_STAGE --apply
+node scripts/deploy.mjs --target page10 provision            # inspect
+node scripts/deploy.mjs --target page10 provision --apply    # first publication only
+node scripts/deploy.mjs --target page10 publish REMOTE_STAGE --apply
 ```
+
+`provision` creates the target's tunnel and DNS record; see
+[Tunnel and DNS provisioning](#tunnel-and-dns-provisioning). A later release
+skips it, or runs it without `--apply` to confirm both are still in place.
 
 `plan` is read-only. Use the stage paths returned by the helpers. Preparation
 requires clean committed source and a matching build fingerprint. Only explicitly
@@ -34,10 +43,16 @@ state are excluded. Target-bound manifests and a deployment lock prevent stages
 or simultaneous operator commands from crossing service boundaries.
 
 Each target owns its `/opt`, `/etc`, and `/var/lib` directories, session secret,
-service account, firewall table/mark, and release stage. Page9's firewall mark is
-`0x00400000`. The installer checks ownership and resource conflicts, preserves
-Durable Object bindings/migrations and persistent data, and restarts only the
-selected QA service. Installation and publication require lab1 SSH and sudo.
+service account, firewall table/mark, and release stage. Page10's firewall mark
+is `0x00200000`, the next bit below Page9's `0x00400000`. The installer checks
+ownership and resource conflicts, preserves Durable Object bindings/migrations
+and persistent data, and restarts only the selected QA service. Installation and
+publication require lab1 SSH and sudo.
+
+Each installation copies `firewall.mjs` and `profiles.mjs` into its own
+`/opt/<service>`, and its unit's `ExecStartPre` runs that copy. A frozen service
+keeps the copy that qualified it, so Page9 keeps restarting after this release
+moves qualification to Page10.
 
 The runtime must match the official celld 0.6.3 Linux x86_64 executable at
 `/usr/local/bin/celld-v0.6.3`, including the SHA-256 in `CELLD_RELEASE`. Services
@@ -66,7 +81,7 @@ frames are unchanged, so earlier builds read the result. A rollback build still 
 forever on stored history whose parent never became durable; startup recovery
 from that shape needs this build or later.
 
-The Page8 and Page9 profiles set `PAGES_CATALOG_INDEX=1`. Changing this epoch label starts
+The Page8, Page9 and Page10 profiles set `PAGES_CATALOG_INDEX=1`. Changing this epoch label starts
 account reconciliation on the next listing. Reconciliation may take several
 listings. Unsetting the variable turns the index off, and listings read Catalog
 entries directly.
@@ -266,23 +281,45 @@ There is no repair tool. To repair a Page:
 ## Tunnel and DNS provisioning
 
 This is first-publication setup for a new target, not a step to repeat for each
-release. Both helpers inspect by default; `--apply` creates only what is absent
-and never adopts, updates or deletes. They need `CLOUDFLARE_API_TOKEN`: an
-account token for `1cfb529b94b3d6cde3aaf49d1d6ed5e6` with Cloudflare Tunnel edit
-and DNS edit on `runtimed.run`. Read it from the operator's password manager into
-the environment for the one command; never write it to a file.
-
-For a new target, run these between `install` and `publish`:
+release. `deploy.mjs provision` runs between `install` and `publish`. It calls
+the tunnel helper, then the DNS helper with the tunnel UUID the first step
+reports. It inspects by default; `--apply` creates only what is absent and never
+adopts, updates or deletes. Both steps are idempotent, so a rerun after a
+partial failure picks up where the last one stopped.
 
 ```sh
-node scripts/deployment/tunnel.mjs --target page9 --apply
-node scripts/deployment/dns.mjs --target page9 TUNNEL_UUID --apply
+CLOUDFLARE_API_TOKEN=... node scripts/deploy.mjs --target page10 provision
+CLOUDFLARE_API_TOKEN=... node scripts/deploy.mjs --target page10 provision --apply
 ```
 
-`tunnel.mjs` creates a locally managed tunnel named after the service
-(`nteract-page9`). Cloudflare returns a tunnel secret only when it is set, so the
-same run writes it over SSH to root-owned mode 0600 `/etc/nteract-page9/tunnel.json`
-and writes the nonsecret receipt `/etc/nteract-page9/tunnel-provisioning.json`.
+Inspection prints the tunnel and DNS state. Before the tunnel exists there is no
+UUID to check DNS against, so `dns` is `null`. With `--apply` it prints the new
+tunnel UUID and CNAME, never the tunnel secret or the token. The two helpers it
+calls still run on their own:
+
+```sh
+node scripts/deployment/tunnel.mjs --target page10 [--apply]
+node scripts/deployment/dns.mjs --target page10 TUNNEL_UUID [--apply]
+```
+
+`provision` reads `CLOUDFLARE_API_TOKEN` from the environment only and never
+writes it. It is an account token for `1cfb529b94b3d6cde3aaf49d1d6ed5e6` with
+Cloudflare Tunnel edit and DNS edit on `runtimed.run`. Set it for the one command;
+never write it to a file. An operator can read it from a password manager. A
+1Password service account lets provisioning run without a person at the
+keyboard: with `OP_SERVICE_ACCOUNT_TOKEN` set in the runner's environment,
+`op read` fetches the token for the one command. The runner still needs lab1
+SSH and sudo, because the tunnel step writes its files on the host.
+
+```sh
+CLOUDFLARE_API_TOKEN="$(op read 'op://<vault>/<item>/<field>')" \
+  node scripts/deploy.mjs --target page10 provision --apply
+```
+
+The tunnel step creates a locally managed tunnel named after the service
+(`nteract-page10`). Cloudflare returns a tunnel secret only when it is set, so the
+same run writes it over SSH to root-owned mode 0600 `/etc/nteract-page10/tunnel.json`
+and writes the nonsecret receipt `/etc/nteract-page10/tunnel-provisioning.json`.
 Both writes require the directory that installation created and refuse to
 replace an existing file. The command prints the tunnel UUID, never the secret.
 A tunnel that exists without credentials on the host must be deleted in
@@ -293,7 +330,7 @@ Cloudflare before retrying. The receipt has this form:
   "schema": 1,
   "account_id": "1cfb529b94b3d6cde3aaf49d1d6ed5e6",
   "tunnel_id": "TUNNEL_UUID",
-  "name": "nteract-page9",
+  "name": "nteract-page10",
   "config_src": "local"
 }
 ```
@@ -303,10 +340,15 @@ configuration. It installs only the target's connector and verifies frozen
 service/connector configuration and PIDs. Do not use `cloudflared service
 install`, which targets the shared connector.
 
-`dns.mjs --apply` creates only an absent owned CNAME; conflicts are rejected.
+The DNS step creates only an absent owned CNAME; conflicts are rejected.
 Public ingress allows application, auth, sharing, MCP, asset, and sync routes,
 then ends in a catch-all 404. Internal Durable Object routes stay private.
-Page9 also admits the viewer's content-hashed chunks, `/chunks/` followed by
+Page10 serves Page9's route set on its own hostname and listener. It has no
+predecessor config, so the publisher installs its tunnel configuration fresh and
+refuses any other installation receipt, including Page9's earlier ones. The
+route migrations below are Page9's history; Page10 starts at the end of them.
+
+Both admit the viewer's content-hashed chunks, `/chunks/` followed by
 eight base32 characters and `.js`. `build-receipt.json` maps each chunk to the
 sha256 of its bytes in `viewer_chunks`. `prepare` stages exactly those chunks,
 checks each one's bytes against its digest first, and refuses a changed chunk or
@@ -314,33 +356,36 @@ a `public/chunks` directory that holds any other file.
 
 The shell's own files are hashed the same way: `app-<hash>.js`,
 `app-<hash>.css`, `theme-<hash>.js`, `mermaid-<hash>.js`,
-`automerge-<hash>.wasm` and `subduction-<hash>.wasm`. Page9 admits each name
+`automerge-<hash>.wasm` and `subduction-<hash>.wasm`. Both admit each name
 with its own extension only. `viewer_assets` in the receipt maps each to its
 sha256, and the name's hash must be the first 40 bits of that digest.
 `prepare` stages exactly those six files, checks their bytes first, and refuses
 any other file of that shape in `public`.
 
-Page9 admits Project links: `/project/<id>` and the older `/s/<id>`, where the
+Both admit Project links: `/project/<id>` and the older `/s/<id>`, where the
 ID is `prj_` or `sp_` followed by a lowercase v4 UUID, with an optional
 trailing slash. These are the paths `shared/routes.mjs` opens as a Project;
-the viewer rewrites `/s/<id>` to `/project/<id>`. The publisher migrates only
-from Page9's hashed-asset config to this one, so an older installation must
+the viewer rewrites `/s/<id>` to `/project/<id>`. Page9's publisher migrates only
+from its hashed-asset config to this one, so an older installation must
 publish the hashed-asset release first.
 
-Page9 also admits the viewer's index routes, `/projects` and `/pages`, as exact
+Both admit the viewer's index routes, `/projects` and `/pages`, as exact
 paths with an optional trailing slash. `/pages` keeps its search in `?q=`;
 ingress matches the path only. These are the paths `shared/routes.mjs` opens
-as index routes. The publisher migrates only from Page9's Project-link config
+as index routes. Page9's publisher migrates only from its Project-link config
 to this one, so an older installation must publish the Project-link release
 first.
 
 The OIDC client must allow `https://<hostname>/oidc` as a redirect URI before
-sign-in works on a new target.
+sign-in works on a new target. For Page10, add
+`https://page10.runtimed.run/oidc` to client
+`1a90d36b-5b97-4ebb-a1bc-f3de7ddb70e0`. That change is made in the identity
+provider; no helper here does it.
 
 ## Telemetry
 
 Service units enable `CELLD_OTEL=1` and `CELLD_OTEL_RETENTION=30d` with celld's
-five-minute/5 MiB batching defaults. Page8 and Page9 also set
+five-minute/5 MiB batching defaults. Page8 through Page10 also set
 `OTEL_TRACES_SAMPLER=always_on`. Requests reach it with a `traceparent` whose
 sampled flag is clear. For a request with an unsampled parent, celld's default
 `parentbased_always_on` sampler records nothing, including the Worker's
@@ -376,8 +421,8 @@ Use a new destination directory and the intended D1 database UUID. The helper
 neither provisions resources nor attaches a domain. Live use needs explicit
 resource, auth, persistence, memory, and recovery qualification, plus configuration
 of the current editor/persistence profile; this staging configuration does not
-select Page9's flags. Do not repoint the existing preview domain as part of a
-Page9 release.
+select Page10's flags. Do not repoint the existing preview domain as part of a
+Page10 release.
 
 ## Copying a Project to a new target
 

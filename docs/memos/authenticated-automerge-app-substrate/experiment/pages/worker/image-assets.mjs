@@ -309,7 +309,7 @@ export async function requireStoredImageAsset(bucket, { pageId, assetId }) {
     throw new HttpError(400, "Invalid image reference");
   if (!bucket) throw new HttpError(503, "Image storage is unavailable");
   const stored = await bucket.head(imageAssetKey(pageId, assetId));
-  if (!stored) throw new HttpError(404, "Image not found in this Page");
+  if (!stored) throw new HttpError(404, "Image not found in this Page", "image_not_found");
   return storedImageMetadata(stored, pageId, assetId);
 }
 

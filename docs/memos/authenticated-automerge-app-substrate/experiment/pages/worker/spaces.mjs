@@ -257,7 +257,11 @@ export class Space {
     const recorded = await this.ctx.storage.get(receiptKey(key));
     if (recorded) {
       if (recorded.fingerprint !== digest)
-        throw new HttpError(409, "idempotency_key was used for a different request");
+        throw new HttpError(
+          409,
+          "idempotency_key was used for a different request",
+          "idempotency_conflict",
+        );
       return json(recorded.receipt);
     }
     // The fence: a request applies only at the revision its caller read.

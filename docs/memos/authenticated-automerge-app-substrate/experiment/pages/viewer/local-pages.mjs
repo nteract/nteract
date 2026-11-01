@@ -1,4 +1,5 @@
 import * as A from "@automerge/automerge";
+import { mergeLocalEdits } from "./local-edits.mjs";
 import { decoder, encoder, key, store } from "./local-catalog.mjs";
 export { forgetLocalPage, listLocalPages } from "./local-catalog.mjs";
 
@@ -92,7 +93,10 @@ export async function readLocalPage(identity, pageId) {
     throw Error("Local Page account does not match");
   return page.deleted ? null : page;
 }
-export async function writeLocalPage(identity, page) {
+/** Write a checkpoint, merging it into the stored one. `replica` is the
+ * writing session's native replica; it decides that replica's localEdits
+ * entries (local-edits.mjs). */
+export async function writeLocalPage(identity, page, { replica } = {}) {
   if (!identity?.principal || page.principal !== identity.principal)
     throw Error("Local Page account does not match");
   // Cache checkpoints are shared by independent tab replicas. Merge inside one
@@ -146,10 +150,12 @@ export async function writeLocalPage(identity, page) {
               previous.access?.role === "none")
           )
             next = { ...next, access: previous.access, canWrite: false };
+          let diverged = false;
           if (!previous.resetReplica && previous.snapshot !== page.snapshot) {
             const incoming = A.load(decodeSnapshot(page.snapshot));
             const existing = A.load(decodeSnapshot(previous.snapshot));
             if (!A.hasHeads(incoming, A.getHeads(existing))) {
+              diverged = true;
               const merged = A.merge(incoming, existing);
               next = {
                 ...next,
@@ -159,6 +165,13 @@ export async function writeLocalPage(identity, page) {
               };
             }
           }
+          // Which edits are this browser's own survives every checkpoint
+          // write, including a slower tab's (local-edits.mjs).
+          const localEdits = mergeLocalEdits(previous.localEdits, page.localEdits, {
+            diverged,
+            replica,
+          });
+          if (localEdits) next = { ...next, localEdits };
         }
         // The compare-and-swap authority is only for this checkpoint write;
         // stale tabs must explicitly reconcile before replacing another token.

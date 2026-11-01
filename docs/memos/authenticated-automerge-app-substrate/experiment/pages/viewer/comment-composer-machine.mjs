@@ -41,14 +41,23 @@ const only = (value, keys) => {
   for (const key of Object.keys(value)) check(keys.includes(key), `unexpected field ${key}`);
 };
 const isKey = (value) => typeof value === "string" && value !== "";
-const named = (keys = []) => (value) => only(value, ["name", ...keys]);
-const keyed = (head) => (extra = []) => (value) => {
-  only(value, [head, "key", ...extra]);
-  check(isKey(value.key), "key is required");
-};
+const named =
+  (keys = []) =>
+  (value) =>
+    only(value, ["name", ...keys]);
+const keyed =
+  (head) =>
+  (extra = []) =>
+  (value) => {
+    only(value, [head, "key", ...extra]);
+    check(isKey(value.key), "key is required");
+  };
 const keyedState = keyed("name");
 const keyedEvent = keyed("type");
-const typed = (keys = []) => (value) => only(value, ["type", ...keys]);
+const typed =
+  (keys = []) =>
+  (value) =>
+    only(value, ["type", ...keys]);
 const booleans = (keys) => (value) => {
   only(value, ["type", ...keys]);
   for (const key of keys) check(typeof value[key] === "boolean", `${key} must be a boolean`);

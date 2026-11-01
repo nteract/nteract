@@ -115,6 +115,7 @@ was a caret race in the smoke; the editor side is
 | Local creation and navigation | `PAGES_ORIGIN=http://localhost:9894 node scripts/navigation-smoke.mjs` | Uses the running Wordgard fixture |
 | Editing, comments, links, diagrams, and recovery | `PAGES_ORIGIN=http://localhost:9894 npm run smoke:editor` | Uses the running Wordgard fixture |
 | History growth and typing latency | `PAGES_ORIGIN=http://localhost:9894 node scripts/latency-smoke.mjs` | Uses the running Wordgard fixture with buffered persistence |
+| Client catch-up after reopening a Page far behind the host | `node scripts/catch-up-benchmark.mjs --runs 5 2000+2000` | No server; in-process Repo peers over the authenticated wire, Node with MemoryByteStore (no IndexedDB or editor cost) |
 
 Use `PAGES_ASYNC_PERSISTENCE=true` for the latency check. The editor checks
 exercise the same Wordgard path used by deployed Pages.
@@ -430,6 +431,31 @@ server refuses (401 or 403) still signs the tab out, and says why: "Your
 session ended. Sign in again." or the server's 403 message, or the open
 Page's own sign-in prompt. Each screen renders its banners
 from one deduplicated list ([alerts.mjs](viewer/alerts.mjs)).
+
+The status line separates syncing from saving. Every head change asks the host
+for a receipt, but only a local edit marks the replica as holding unacknowledged
+work. Catching up on other peers' changes after a reopen says "Syncing"; a
+local edit says "Saving" until a receipt for heads that include it lands, even
+if remote changes arrive in between.
+
+A reopen decides from the restored replica, not from the checkpoint's `pending`
+flag, which only says a receipt was outstanding. The checkpoint's `localEdits`
+records every Automerge actor this browser authored with (each session records
+its fresh actor before it accepts an edit) and the heads the host last
+acknowledged. The replica has unconfirmed work exactly when it holds a change by
+one of those actors outside the acknowledged history. Native storage persists
+an edit before the debounced checkpoint, so a tab that dies in between still
+reopens Saving, and its edit is not claimed as saved. Checkpoints from before
+`localEdits` keep their `pending` flag as unattributed local work until a receipt
+covers them. Each actor is recorded with the native replica it wrote into, and
+only that replica's session drops it: earlier actors once a receipt covers the
+whole replica, its own when it closes with nothing unconfirmed. Another tab's
+actor is never dropped, by count or otherwise, because that tab may be live or
+may be restored later with its native database.
+[local-edits.mjs](viewer/local-edits.mjs) holds these rules.
+[sync-status-machine.mjs](viewer/sync-status-machine.mjs) holds these
+transitions and the label each state renders; a phase pause (sign-in, access,
+deletion) or a failed local save outranks it.
 
 A binding write that never settles still blocks its own signing key until the
 host restarts; other keys are unaffected. A rejected write may have taken effect,
@@ -946,6 +972,31 @@ overlapping batch targets are rejected. Structural/Markdown changes retain the
 exact-head guard. Conflicts provide bounded addresses for focused rereading.
 Guards check the preparation snapshot; native changes can still merge during
 persistence. Tool mutations do not simulate typing or lock out peers.
+
+### Refusal codes and tool hints
+
+Every MCP refusal carries a stable `code`, in `structuredContent` and in the JSON
+text, so agents never branch on message text. The Worker codes specific refusals
+where they're raised: a stale exact-head guard is `409 stale_heads`, malformed
+`base_heads` and an edit batch that can't apply (zero or multiple matches, an
+unknown block, operation or mark) are `400 invalid_edit_selector`, and a comment
+action on a missing thread, message or block is `400 invalid_comment_selector`.
+An MCP result has no HTTP status, so [mcp.mjs](mcp.mjs) names any refusal the
+Worker left uncoded by its status (`access_denied`, `not_found`, `conflict` and
+so on). It adds `retryable: true` to `stale_heads`, whose retry is a new request
+built from a fresh read. The HTTP API keeps `retryable` for transient failures
+only, because the browser treats those as an outage. A tool call that gets no
+answer returns `read_failed` or `outcome_unknown`. The `/llms.txt` guide lists the
+codes agents act on.
+
+Every tool declares all four MCP annotation hints, and `tool()` refuses one that
+doesn't, because clients read an absent hint as destructive and open-world.
+Reads are read-only. Keyed writes are idempotent and not destructive: edits stay
+in Automerge history. `delete_page` and `purge_page` are destructive; Trash is
+reversible, but it revokes every collaborator's access until restored.
+`import_page_image` is open-world because it downloads the client's file, and
+`report_page_progress` is not idempotent because each call without a lease starts
+another session.
 
 ### Agent carets
 

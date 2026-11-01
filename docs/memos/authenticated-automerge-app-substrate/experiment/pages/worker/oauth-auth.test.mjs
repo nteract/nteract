@@ -544,8 +544,9 @@ for (const scope of ["pages:read pages:write offline_access", "pages:read offlin
       for (const name of ["read_page", "list_page_comments"]) {
         const result = await call(f, name, { page_id: pageId });
         assert.equal(result.isError, true);
-        assert.deepEqual(JSON.parse(result.content[0].text), { error: "Document access denied" });
-        assert.equal(result.structuredContent, undefined);
+        const denial = { error: "Document access denied", code: "access_denied" };
+        assert.deepEqual(JSON.parse(result.content[0].text), denial);
+        assert.deepEqual(result.structuredContent, denial);
         assert.equal(result._meta, undefined, "ACL denial cannot be repaired by scope escalation");
       }
     });

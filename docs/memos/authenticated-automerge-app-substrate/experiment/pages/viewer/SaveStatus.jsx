@@ -1,7 +1,7 @@
 import { Check, CircleAlert, LoaderCircle } from "lucide-react";
 import "./save-status.css";
 
-const workingStates = new Set(["Connecting", "Reconnecting", "Saving"]);
+const workingStates = new Set(["Connecting", "Reconnecting", "Syncing", "Saving"]);
 const attentionStates = new Set([
   "Saved locally",
   "Offline",
