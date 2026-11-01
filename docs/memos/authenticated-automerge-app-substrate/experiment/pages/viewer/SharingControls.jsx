@@ -66,7 +66,8 @@ function projection(value, manage) {
  * `returnFocus`. `trigger` can change while the panel is open (the phone
  * header and the desktop header share one instance); the draft, any message
  * and the focused field stay as they are. `panelRef` receives the open panel,
- * the element that takes focus, so the caller can move focus into it.
+ * the element that takes focus, so the caller can move focus into it;
+ * `triggerRef` receives the Share button while there is one.
  */
 export function SharingControls({ session, ...options }) {
   return (
@@ -84,6 +85,7 @@ function PageSharing({
   onOpenChange,
   returnFocus,
   panelRef,
+  triggerRef,
 }) {
   const [own, setOwn] = useState(false),
     [email, setEmail] = useState(""),
@@ -223,7 +225,10 @@ function PageSharing({
     <div className="page-sharing" ref={root}>
       {trigger && (
         <button
-          ref={button}
+          ref={(node) => {
+            button.current = node;
+            if (triggerRef) triggerRef.current = node;
+          }}
           className="subtle-button"
           aria-expanded={open}
           aria-haspopup="dialog"

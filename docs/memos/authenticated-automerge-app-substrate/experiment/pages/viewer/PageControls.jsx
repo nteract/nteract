@@ -40,6 +40,7 @@ function Controls({
   const current = useRef(state),
     button = useRef(null),
     sharePanel = useRef(null),
+    shareTrigger = useRef(null),
     pendingAction = useRef(null),
     committedEffects = useRef([]);
   const run = (effects, domEvent) => {
@@ -47,19 +48,21 @@ function Controls({
       if (effect === "focusButton") button.current?.focus({ preventScroll: true });
       else if (effect === "preventDefault") domEvent?.preventDefault();
       else if (effect === "runAction") pendingAction.current?.run();
-      else if (effect === "reclaimShare") {
-        const focused = document.activeElement;
-        if (!focused || focused === document.body)
-          sharePanel.current?.focus({ preventScroll: true });
-      }
+      else if (effect === "reclaimShare") sharePanel.current?.focus({ preventScroll: true });
     }
   };
   // The breakpoint is a prop, so its event applies during render, before
-  // either layout paints with the other's state. Its effects wait for the
-  // new layout's commit, when a removed control has already lost focus.
+  // either layout paints with the other's state. The event records whether
+  // the Share button held focus while it is still mounted; its effects wait
+  // for the new layout's commit.
   let shown = state;
   if (state.phone !== !!phone) {
-    const event = { type: "breakpoint", phone };
+    const trigger = shareTrigger.current;
+    const event = {
+      type: "breakpoint",
+      phone,
+      shareFocused: !!trigger && trigger === document.activeElement,
+    };
     shown = transition(state, event);
     committedEffects.current = pageMenuEffects(state, shown, event);
     setState(shown);
@@ -87,6 +90,7 @@ function Controls({
       onOpenChange={(open) => dispatch({ type: "share", open })}
       returnFocus={button}
       panelRef={sharePanel}
+      triggerRef={shareTrigger}
     />
   );
   const comments = <Fragment key="comments">{children}</Fragment>;

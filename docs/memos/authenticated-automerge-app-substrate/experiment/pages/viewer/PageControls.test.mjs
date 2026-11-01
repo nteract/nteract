@@ -441,3 +441,22 @@ test("desktop to phone leaves focus alone when the Share button did not have it"
   await f.setPhone(true);
   assert.equal(document.activeElement, email, "the focused field keeps focus");
 });
+
+test("desktop to phone with Share open and its button blurred leaves focus on the page", async (t) => {
+  const f = await fixture(t, { phone: false });
+  const dialog = () => f.container.querySelector('[role="dialog"][aria-label="Share Page"]');
+  const trigger = f.byName("Share");
+  await f.focus(trigger);
+  await f.click(trigger);
+  await act(() => trigger.blur());
+  assert.equal(document.activeElement, document.body);
+  await f.setPhone(true);
+  assert.ok(dialog(), "Share stays open");
+  assert.equal(document.activeElement, document.body, "focus does not jump into Share");
+
+  // Focus elsewhere on the page stays there too.
+  await f.setPhone(false);
+  await f.focus(f.outside);
+  await f.setPhone(true);
+  assert.equal(document.activeElement, f.outside);
+});

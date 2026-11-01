@@ -173,12 +173,17 @@ test("effects: focus returns to ⋯ on Escape and Tab, Shift+Tab stays, actions 
   assert.deepEqual(effects("menu", EVENTS.chooseAction), ["focusButton", "runAction"]);
   assert.deepEqual(effects("menu", EVENTS.chooseShare), []);
   assert.deepEqual(effects("menu", EVENTS.outside), []);
-  // Desktop to phone with Share open reclaims focus the removed Share button held.
+  // Desktop to phone with Share open reclaims focus only if the removed Share
+  // button held it.
   const desktop = (view) => ({ view, phone: false });
+  const toPhoneFromShare = { ...EVENTS.toPhone, shareFocused: true };
+  assert.deepEqual(transition(desktop("share"), toPhoneFromShare), at("share"));
   const switched = (state, event) => pageMenuEffects(state, transition(state, event), event);
-  assert.deepEqual(switched(desktop("share"), EVENTS.toPhone), ["reclaimShare"]);
+  assert.deepEqual(switched(desktop("share"), toPhoneFromShare), ["reclaimShare"]);
+  assert.deepEqual(switched(desktop("share"), EVENTS.toPhone), []);
   for (const view of ["closed", "menu", "activity"])
-    assert.deepEqual(switched(desktop(view), EVENTS.toPhone), [], `desktop ${view} to phone`);
+    for (const event of [EVENTS.toPhone, toPhoneFromShare])
+      assert.deepEqual(switched(desktop(view), event), [], `desktop ${view} to phone`);
   for (const view of VIEWS)
     assert.deepEqual(switched(at(view), EVENTS.toDesktop), [], `phone ${view} to desktop`);
   // Nothing runs when the event changed nothing.
