@@ -4,7 +4,13 @@
 // default jsdom environment splits them and breaks JWT signing.
 import { describe, expect, it } from "vitest";
 import * as jose from "jose";
-import { createLocalOidcIssuer, type LocalOidcIssuer, type LocalOidcOptions } from "../src/index";
+import {
+  createLocalOidcIssuer,
+  createMemoryLocalOidcStore,
+  type LocalOidcIssuer,
+  type LocalOidcOptions,
+  type LocalOidcStore,
+} from "../src/index";
 
 const ISSUER_URL = "http://localhost:9911/local-oidc";
 const CLIENT_ID = "local-oidc-client";
@@ -512,6 +518,58 @@ describe("createLocalOidcIssuer", () => {
     const first = await makeIssuer().jwks();
     const second = await makeIssuer().jwks();
     expect(first.keys[0].kid).not.toBe(second.keys[0].kid);
+  });
+
+  it("redeems a code at a second instance that shares the store", async () => {
+    const store = createMemoryLocalOidcStore();
+    const first = makeIssuer({ store });
+    const second = makeIssuer({ store });
+    const code = await authorizeCode(first);
+
+    const response = await exchangeCode(second, code);
+    expect(response.status).toBe(200);
+    const tokens = await readJson(response);
+    // Both instances sign with the store's key, so either one's JWKS verifies.
+    const { payload } = await jose.jwtVerify(tokens.id_token, await verifierFor(first), {
+      issuer: ISSUER_URL,
+      audience: CLIENT_ID,
+    });
+    expect(payload.email).toBe("dev@localhost");
+    expect((await first.jwks()).keys[0].kid).toBe((await second.jwks()).keys[0].kid);
+  });
+
+  it("rejects a second redemption of a shared code at either instance", async () => {
+    const store = createMemoryLocalOidcStore();
+    const first = makeIssuer({ store });
+    const second = makeIssuer({ store });
+    const code = await authorizeCode(first);
+
+    const [a, b] = await Promise.all([exchangeCode(first, code), exchangeCode(second, code)]);
+    expect([a.status, b.status].sort()).toEqual([200, 400]);
+    await expectOAuthError(a.status === 400 ? a : b, "invalid_grant");
+    await expectOAuthError(await exchangeCode(first, code), "invalid_grant");
+  });
+
+  it("does not redeem a code at an instance with its own store", async () => {
+    const code = await authorizeCode(makeIssuer());
+    await expectOAuthError(await exchangeCode(makeIssuer(), code), "invalid_grant");
+  });
+
+  it("signs with the key a shared store returns, generating only when it has none", async () => {
+    let generated = 0;
+    const memory = createMemoryLocalOidcStore();
+    const store: LocalOidcStore = {
+      ...memory,
+      signingKey: (generate) =>
+        memory.signingKey(() => {
+          generated++;
+          return generate();
+        }),
+    };
+    const [a, b] = await Promise.all([makeIssuer({ store }).jwks(), makeIssuer({ store }).jwks()]);
+    expect(generated).toBe(1);
+    expect(a.keys[0].kid).toBe(b.keys[0].kid);
+    expect(a.keys[0].d).toBeUndefined();
   });
 
   it("rejects a non-loopback redirect_uri at authorize", async () => {
