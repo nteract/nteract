@@ -241,12 +241,13 @@ references; it does not publish the Page or change asset access.
     key space (`host/operation/internal:`), so full client receipt budgets
     can't block it, and a run that applied but didn't finish replays under its
     own key until the journal entry is terminal before the fence clears.
-  - Permanent failure: a run that fails for a reason that won't pass falls
-    back to converting each source as plain text, but only once no journal
-    reservation remains. A reserved run keeps the fence and retries its own
-    intent; after five permanent failures the host abandons it explicitly
-    (journal entry `abandoned`, reservation released), then falls back. If that fails too, the Page
-    is `stuck`: logged (`page.preserved_markdown_stuck`), unfenced, and its
+  - Reserved runs: once a run's journal entry is reserved, it keeps the
+    fence and retries that exact intent with capped backoff, indefinitely,
+    whatever the failure. It is never reauthored, abandoned or unfenced; it
+    logs `page.preserved_markdown_stuck` every five failures.
+  - Permanent failure before anything was reserved: the run falls back to
+    converting each source as plain text. If that fails too, the Page is
+    `stuck`: logged (`page.preserved_markdown_stuck`), unfenced, and its
     preserved blocks stay read-only until an edit replaces them
     (DEPLOYMENT.md, "Preserved Markdown conversion"). Runs are serialized, and each is a journaled host
     intent keyed by the heads it converted, so a restart replays the recorded

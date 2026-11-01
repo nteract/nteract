@@ -538,50 +538,95 @@ test("when both modes fail for good the Page is stuck, logged, and open", async 
 });
 
 // A 413 after the journal entry is reserved, such as the record store
-// refusing the conversion's records on install: the run is reserved and
-// can't finish. It must keep the fence and retry its own intent, never fall
-// back over it, then be abandoned explicitly so nothing stays reserved.
-test("a permanent failure after the reservation retries its intent, then is abandoned", async (t) => {
-  const { ABANDON_AFTER } = await import("./preserved-conversion.mjs");
+// refusing the conversion's records on install. The run's change may already
+// be in the serving document, so it keeps the fence and retries that exact
+// intent, never a fallback, until storage recovers.
+test("a permanent failure after the reservation retries the same intent until storage recovers", async (t) => {
+  const { STUCK_LOG_EVERY } = await import("./preserved-conversion.mjs");
   const f = await preservedFixture(t);
   const admission = fakeAdmission();
   f.page.admission = admission;
-  t.mock.method(console, "error", () => {});
+  const logged = [];
+  t.mock.method(console, "error", (line) => logged.push(String(line)));
   // Every flush after the change applied is refused for capacity.
   f.hooks.flush = () => {
     if (!hasPreservedBlocks(f.doc()))
       throw Object.assign(Error("record capacity"), { status: 413 });
   };
   await f.page.convertPreservedMarkdown();
-  const [[key, first]] = await internalEntries(f);
-  assert.equal(first.pending, true);
-  for (let attempt = 1; attempt < ABANDON_AFTER; attempt++) {
-    // Fenced, retrying the same reserved native intent.
+  const [[key]] = await internalEntries(f);
+  const attempts = STUCK_LOG_EVERY * 3;
+  for (let attempt = 1; attempt <= attempts; attempt++) {
     assert.deepEqual(f.page.conversion, { name: "failed", mode: "native", attempt });
     assert.ok(f.page.conversionWriteFence(), "the fence stays");
     assert.ok(admission.pending(key), "still reserved");
-    await f.page.convertPreservedMarkdown();
+    const entries = await internalEntries(f);
     assert.deepEqual(
-      (await internalEntries(f)).map(([name]) => name),
+      entries.map(([name]) => name),
       [key],
-      "no literal run while the intent is reserved",
+      "the same key, no other run",
     );
+    assert.equal(entries[0][1].pending, true);
+    if (attempt < attempts) await f.page.convertPreservedMarkdown();
   }
-  // The last permanent failure abandons it, then falls back. The literal run
-  // fails for capacity too, before reserving, so the Page is stuck: open,
-  // with nothing reserved.
-  assert.equal(f.page.conversion.name, "stuck");
-  assert.equal(f.page.conversionWriteFence(), undefined);
-  assert.equal(admission.hasPending, false, "the reservation is released");
-  const abandoned = await f.storage.get(key);
-  assert.equal(abandoned.pending, false);
-  assert.equal(abandoned.abandoned, true);
-  assert.equal(abandoned.changes, undefined, "recovery never replays it");
+  const stuckLines = logged.filter((line) => line.includes('"page.preserved_markdown_stuck"'));
+  assert.equal(stuckLines.length, 3, "logged every STUCK_LOG_EVERY failures");
+  assert.match(stuckLines[0], /"reason":"status_413"/);
+  // Edits are refused, never pending_operation_capacity.
+  const refused = await f.tool("owner", "edit_page", {
+    base_heads: f.heads(),
+    idempotency_key: "while-fenced",
+    operations: [{ op: "insert_markdown", markdown: "Next." }],
+  });
+  assert.equal(refused.body.code, "preserved_markdown_converting");
+  // An operator frees capacity: the next retry finishes the same intent.
   f.hooks.flush = undefined;
+  await f.page.convertPreservedMarkdown();
+  assert.equal(f.page.conversion.name, "clear");
+  assert.equal(admission.hasPending, false);
+  const [[finishedKey, finished]] = await internalEntries(f);
+  assert.equal(finishedKey, key);
+  assert.equal(finished.pending, false);
+  assert.equal(finished.abandoned, undefined);
+  const markdown = exportMarkdown(richDoc(f.doc().blocks[orderedBlockIds(f.doc())[0]]));
+  assert.equal(markdown.split("drop").length, 2, "converted once");
   const edit = await f.tool("owner", "edit_page", {
     base_heads: f.heads(),
-    idempotency_key: "after-abandon",
+    idempotency_key: "after-recovery",
     operations: [{ op: "insert_markdown", markdown: "Next." }],
   });
   assert.equal(edit.status, 200, JSON.stringify(edit.body));
+});
+
+test("a restart during the retry loop resumes the same intent and finishes it once", async (t) => {
+  const f = await preservedFixture(t);
+  t.mock.method(console, "error", () => {});
+  f.hooks.flush = () => {
+    if (!hasPreservedBlocks(f.doc()))
+      throw Object.assign(Error("record capacity"), { status: 413 });
+  };
+  await f.page.convertPreservedMarkdown();
+  await f.page.convertPreservedMarkdown();
+  assert.equal(f.page.conversion.name, "failed");
+  const [[key, pending]] = await internalEntries(f);
+  assert.equal(pending.pending, true);
+  // The process dies; storage has the journal entry but not the converted
+  // document. Capacity is freed before it starts again.
+  f.hooks.flush = undefined;
+  await f.crashRestart();
+  assert.equal(f.page.conversion.name, "clear");
+  assert.equal(hasPreservedBlocks(f.doc()), false);
+  const entries = await internalEntries(f);
+  assert.deepEqual(
+    entries.map(([name]) => name),
+    [key],
+    "no second run",
+  );
+  assert.equal(entries[0][1].pending, false);
+  const markdown = exportMarkdown(richDoc(f.doc().blocks[orderedBlockIds(f.doc())[0]]));
+  assert.equal(markdown.split("drop").length, 2, "converted once");
+  // Restarting again changes nothing.
+  const heads = f.heads();
+  await f.crashRestart();
+  assert.deepEqual(f.heads(), heads);
 });

@@ -288,16 +288,22 @@ The conversion journals in its own key space (`host/operation/internal:`),
 outside the client receipt budgets, so a full legacy receipt store can't
 block it. A run that fails for a reason that passes (storage, a pending edit)
 retries with backoff, 5 seconds doubling to 5 minutes, and on every refused
-connection or edit. A run that applied but couldn't finish replays under the
-same key until its journal entry is terminal, whatever the failure: the
-fallback below waits until no reservation remains. After five permanent
-failures of a reserved run, the host abandons it (its journal entry is marked
-`abandoned` and recovery never replays it, and the reservation is released),
-then falls back.
+connection or edit.
 
-A run that fails for a reason that won't pass (the change is too large, the
-conversion throws, or a request-shaped refusal) retries once converting each
-source as plain text. If that fails too, the host logs one line:
+Once a run's journal entry is reserved, the host retries that exact intent,
+indefinitely, whatever the failure, and the Page stays fenced and read-only.
+It never reauthors or abandons the run, because its change may already be in
+the serving document. A restart replays the same journal entry. Every five
+failures it logs `page.preserved_markdown_stuck` (below). Such a Page usually
+can't store records at all, for example a `413` on record capacity, so it
+couldn't take writes anyway. An operator frees storage or record capacity
+(see Page quotas); the host's next retry then finishes the same intent on its
+own, and the fence clears.
+
+A run that fails before anything is reserved, for a reason that won't pass
+(the change is too large, the conversion throws, or a request-shaped
+refusal), retries once converting each source as plain text. If that fails
+too, the host logs one line:
 
 ```json
 {"service":"nteract-pages-native","event":"page.preserved_markdown_stuck","page_id":"…","reason":"history_capacity","timestamp":"…"}
@@ -305,8 +311,10 @@ source as plain text. If that fails too, the host logs one line:
 
 `reason` is a bounded code (`history_capacity`, `conversion_error`, an error
 code, or `status_<n>`); the line carries no content. After a deploy, search the
-target's logs for `page.preserved_markdown_stuck`. A stuck Page is not fenced: it edits
-normally, and its preserved blocks stay read-only with a notice. The next
+target's logs for `page.preserved_markdown_stuck`. If the Page is still
+fenced (reads work, edits get `preserved_markdown_converting`), it is retrying
+a reserved run: free storage or capacity as above. Otherwise the Page is stuck
+and not fenced: it edits normally, and its preserved blocks stay read-only with a notice. The next
 load tries again. To recover a Page now, as its owner or with an agent:
 
 1. `read_page` the Page. A preserved block reads as the Markdown it would

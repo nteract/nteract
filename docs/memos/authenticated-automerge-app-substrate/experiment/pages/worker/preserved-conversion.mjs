@@ -30,15 +30,16 @@ import { defineMachine, reject } from "../shared/machine.mjs";
  *   fallback when a native run fails for a reason that won't pass.
  * - failed { mode, attempt }: the last run failed transiently (storage, a
  *   pending edit), or failed after its journal entry was reserved. Fenced; a
- *   retry is scheduled, and every refused connection or edit observes again.
- *   A reserved run retries its exact intent: the fallback and `stuck` wait
- *   until no reservation remains. After ABANDON_AFTER permanent failures of
- *   a reserved run, the host abandons it (finishes its journal entry as
- *   abandoned and releases the reservation), then falls back.
- * - stuck { reason }: both modes failed for reasons that won't pass. Open:
- *   with no host conversion coming, a peer's edit can't compete with one, so
- *   the Page edits normally and its preserved blocks stay read-only. The
- *   next load tries again. DEPLOYMENT.md describes the recovery.
+ *   retry is scheduled (5 s doubling to 5 minutes), and every refused
+ *   connection or edit observes again. A reserved run retries its exact
+ *   intent indefinitely, whatever the failure: it is never reauthored,
+ *   abandoned or unfenced, because its change may already be in the serving
+ *   document. Every STUCK_LOG_EVERY failures it is logged for an operator.
+ * - stuck { reason }: a run with nothing reserved failed for good in both
+ *   modes. Open: with no host conversion coming, and none reserved, a peer's
+ *   edit can't compete with one, so the Page edits normally and its
+ *   preserved blocks stay read-only. The next load tries again.
+ *   DEPLOYMENT.md describes the recovery.
  *
  * Events:
  * - observe { preserved, unfinished, eligible }: what the host sees now.
@@ -51,13 +52,10 @@ import { defineMachine, reject } from "../shared/machine.mjs";
  * - convert { mode }: run the journaled conversion; report its outcome.
  * - observe: observe the document again.
  * - scheduleRetry { attempt }: observe again after a backoff.
- * - logStuck { reason }: record that the Page is stuck.
- * - abandon { reason }: finish the reserved journal entry as abandoned and
- *   release its reservation, then report `failed` with `unfinished: false`
- *   (or `failed` transiently, still unfinished, if that fails).
+ * - logStuck { reason }: record that the Page is stuck, fenced or not.
  */
-/** Permanent failures of one reserved run before the host abandons it. */
-export const ABANDON_AFTER = 5;
+/** A reserved run that keeps failing is logged every this many attempts. */
+export const STUCK_LOG_EVERY = 5;
 export const PRESERVED_CONVERSION_STATES = Object.freeze([
   "unchecked",
   "clear",
@@ -134,10 +132,6 @@ export const preservedConversionMachine = defineMachine({
         only(effect, ["type", "reason"]);
         reason(effect);
       },
-      abandon: (effect) => {
-        only(effect, ["type", "reason"]);
-        reason(effect);
-      },
     },
   },
   transition(state, event) {
@@ -161,16 +155,18 @@ export const preservedConversionMachine = defineMachine({
       case "succeeded":
         return { state: { name: "unchecked" }, effects: [{ type: "observe" }] };
       case "failed":
-        // A reserved run keeps the fence and retries its exact intent, or is
-        // abandoned once it has failed for good often enough.
-        if (event.unfinished) {
-          if (event.permanent && state.attempt >= ABANDON_AFTER)
-            return { state, effects: [{ type: "abandon", reason: event.reason }] };
+        // A reserved run keeps the fence and retries its exact intent, with
+        // a log line for an operator every STUCK_LOG_EVERY failures.
+        if (event.unfinished)
           return {
             state: { name: "failed", mode: state.mode, attempt: state.attempt },
-            effects: [{ type: "scheduleRetry", attempt: state.attempt }],
+            effects: [
+              ...(state.attempt % STUCK_LOG_EVERY === 0
+                ? [{ type: "logStuck", reason: event.reason }]
+                : []),
+              { type: "scheduleRetry", attempt: state.attempt },
+            ],
           };
-        }
         if (!event.permanent)
           return {
             state: { name: "failed", mode: state.mode, attempt: state.attempt },

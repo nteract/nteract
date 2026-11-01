@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
-  ABANDON_AFTER,
+  STUCK_LOG_EVERY,
   PRESERVED_CONVERSION_STATES,
   conversionFenced,
   conversionRetryDelay,
@@ -14,7 +14,7 @@ const STATES = {
   clear: { name: "clear" },
   held: { name: "held" },
   converting: { name: "converting", mode: "native", attempt: 2 },
-  convertingLast: { name: "converting", mode: "native", attempt: ABANDON_AFTER },
+  convertingLast: { name: "converting", mode: "native", attempt: STUCK_LOG_EVERY },
   convertingLiteral: { name: "converting", mode: "literal", attempt: 1 },
   failed: { name: "failed", mode: "native", attempt: 2 },
   failedLiteral: { name: "failed", mode: "literal", attempt: 1 },
@@ -62,11 +62,24 @@ const running = (mode, attempt) => ({
   succeeded: [{ name: "unchecked" }, [{ type: "observe" }]],
   transient: [{ name: "failed", mode, attempt }, [{ type: "scheduleRetry", attempt }]],
   // A reserved run retries its own intent; no fallback while it's reserved.
-  reservedTransient: [{ name: "failed", mode, attempt }, [{ type: "scheduleRetry", attempt }]],
-  reservedPermanent:
-    attempt >= ABANDON_AFTER
-      ? [{ name: "converting", mode, attempt }, [{ type: "abandon", reason: "status_413" }]]
-      : [{ name: "failed", mode, attempt }, [{ type: "scheduleRetry", attempt }]],
+  reservedTransient: [
+    { name: "failed", mode, attempt },
+    [
+      ...(attempt % STUCK_LOG_EVERY === 0
+        ? [{ type: "logStuck", reason: "storage_or_runtime" }]
+        : []),
+      { type: "scheduleRetry", attempt },
+    ],
+  ],
+  // Permanent or not: retry the same intent, fenced, logging every
+  // STUCK_LOG_EVERY attempts. Never a fallback.
+  reservedPermanent: [
+    { name: "failed", mode, attempt },
+    [
+      ...(attempt % STUCK_LOG_EVERY === 0 ? [{ type: "logStuck", reason: "status_413" }] : []),
+      { type: "scheduleRetry", attempt },
+    ],
+  ],
   permanent:
     mode === "native"
       ? converting("literal", 1)
@@ -82,7 +95,7 @@ const TABLE = {
   clear: idle,
   held: idle,
   converting: running("native", 2),
-  convertingLast: running("native", ABANDON_AFTER),
+  convertingLast: running("native", STUCK_LOG_EVERY),
   convertingLiteral: running("literal", 1),
   failed: { ...idle, convert: converting("native", 3), unfinished: converting("native", 3) },
   failedLiteral: {
