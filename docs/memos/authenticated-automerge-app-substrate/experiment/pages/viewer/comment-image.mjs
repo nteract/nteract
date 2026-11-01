@@ -3,8 +3,14 @@
 // The File and its AbortController stay here, keyed by token; the machine
 // sees only tokens. The composer owns the editor: it places the preview when
 // an upload starts and inserts the asset when asked.
+//
+// An uploading image is an unsent draft to the reload gate, even when the
+// draft text is still empty: a reload would lose it. Each uploader holds its
+// own draft source and reports `uploading` through it after every step, from
+// paste or drop until insertion, failure or cancel.
 import { commentImageMachine } from "./comment-image-machine.mjs";
 import { imageAlt, imageFiles, uploadPageImage, validateImageFile } from "./image-upload.mjs";
+import { reloadGate } from "./build-freshness.mjs";
 
 export { imageFiles };
 
@@ -17,13 +23,16 @@ export const ONE_AT_A_TIME = "Add one image at a time.";
  * - insert(asset, alt): put the asset where the preview is. Throws when the
  *   insertion point is gone.
  * - onState(state): the machine state after each step.
+ * - drafts: the reload gate's draft sources (`watchDrafts()`).
  */
 export function createCommentImageUploader({
   pageId,
   upload = (file, signal) => uploadPageImage(pageId, file, signal),
   insert,
   onState = () => {},
+  drafts = reloadGate,
 }) {
+  const draft = drafts.watchDrafts();
   let state = commentImageMachine.initial,
     next = 0,
     alive = true;
@@ -33,6 +42,7 @@ export function createCommentImageUploader({
     const result = commentImageMachine.step(state, event);
     if (result.rejected) return result;
     state = result.state;
+    draft.set(state.name === "uploading");
     for (const effect of result.effects) run(effect);
     onState(state);
     return result;
@@ -98,6 +108,7 @@ export function createCommentImageUploader({
     destroy() {
       if (state.name === "uploading") step({ type: "cancel" });
       alive = false;
+      draft.stop();
     },
   };
 }

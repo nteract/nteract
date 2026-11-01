@@ -6,6 +6,9 @@ import { readFile } from "node:fs/promises";
 import { runTable } from "../shared/machine-test.mjs";
 import { REJECT, commentImageMachine } from "./comment-image-machine.mjs";
 import { NEEDS_EDIT_ACCESS, ONE_AT_A_TIME, createCommentImageUploader } from "./comment-image.mjs";
+import { VirtualTimeScheduler } from "rxjs";
+import { ReloadGate } from "./build-freshness.mjs";
+import { UNSENT_COMMENT } from "./reload-gate-machine.mjs";
 
 const idle = { name: "idle" };
 const uploading = { name: "uploading", token: 2 };
@@ -174,11 +177,15 @@ function deferred() {
   const promise = new Promise((yes, no) => ((resolve = yes), (reject = no)));
   return { promise, resolve, reject };
 }
-function harness({ insert } = {}) {
+function harness({
+  insert,
+  drafts = new ReloadGate({ scheduler: new VirtualTimeScheduler() }),
+} = {}) {
   const uploads = [],
     inserted = [],
     states = [];
   const uploader = createCommentImageUploader({
+    drafts,
     pageId: "page-1",
     upload(file, signal) {
       const pending = { file, signal, ...deferred() };
@@ -188,7 +195,7 @@ function harness({ insert } = {}) {
     insert: insert ?? ((asset, alt) => inserted.push([asset.url, alt])),
     onState: (state) => states.push(state.name === "failed" ? state.message : state.name),
   });
-  return { uploader, uploads, inserted, states };
+  return { uploader, uploads, inserted, states, gate: drafts };
 }
 
 test("a pasted image uploads once and lands as its asset", async () => {
@@ -301,4 +308,44 @@ test("the comment composer has no table button and one draft scroller", async ()
 test("typed trailing spaces can't scroll the editor sideways", async () => {
   const css = await readFile(new URL("./wordgard.css", import.meta.url), "utf8");
   assert.match(css, /\.wordgard-document > wg-scroller \{\s*overflow: clip visible;/);
+});
+
+// An image pasted into an empty composer is the only draft there is: the
+// reload gate must hold it from paste until it lands, fails or is cancelled.
+for (const [ending, finish, expected] of [
+  [
+    "lands in the draft",
+    (h) => h.uploads[0].resolve({ url: "/api/pages/page-1/assets/" + "d".repeat(64) }),
+    "idle",
+  ],
+  ["fails", (h) => h.uploads[0].reject(Error("Image upload failed.")), "failed"],
+  ["is cancelled", (h) => h.uploader.cancel(), "idle"],
+]) {
+  test(`reload waits for an uploading image until it ${ending}`, async () => {
+    const h = harness();
+    let reloads = 0;
+    const reload = () => h.gate.reload({ reload: () => reloads++ });
+    assert.equal(h.gate.hasDrafts(), false, "nothing to protect before the paste");
+    h.uploader.accept([png()]);
+    assert.equal(h.gate.hasDrafts(), true);
+    assert.deepEqual(await reload(), { ok: false, message: UNSENT_COMMENT });
+    assert.equal(reloads, 0);
+    await settle();
+    finish(h);
+    await settle();
+    assert.equal(h.uploader.state.name, expected);
+    assert.equal(h.gate.hasDrafts(), false);
+    assert.deepEqual(await reload(), { ok: true });
+    assert.equal(reloads, 1);
+  });
+}
+
+test("a refused image never counts as a draft, and closing releases the gate", async () => {
+  const h = harness();
+  h.uploader.accept([png("notes.gif", 100, "image/gif")]);
+  assert.equal(h.gate.hasDrafts(), false);
+  h.uploader.accept([png()]);
+  assert.equal(h.gate.hasDrafts(), true);
+  h.uploader.destroy();
+  assert.equal(h.gate.hasDrafts(), false);
 });
