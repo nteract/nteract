@@ -126,16 +126,3 @@ export function PagePreview({ preview }) {
     </main>
   );
 }
-
-/** Whether a value has the shape model/page-preview.mjs produces. */
-export function isPagePreview(value) {
-  return (
-    !!value &&
-    typeof value === "object" &&
-    typeof value.title === "string" &&
-    Array.isArray(value.blocks) &&
-    value.blocks.every(
-      (block) => block && typeof block.id === "string" && Array.isArray(block.content),
-    )
-  );
-}

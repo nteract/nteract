@@ -3320,9 +3320,13 @@ export class Page {
           activity: this.activityState().snapshot(),
           // The head script asks for this on a Page route, so the viewer can
           // show the Page read-only before its runtimes load and it syncs.
-          ...(url.searchParams.get("preview") === "1" && {
-            preview: pagePreview(this.handle.doc()),
-          }),
+          // Admission above already refused anyone who can't read the Page;
+          // a Page in Trash gets none, so its notice isn't hidden.
+          ...(url.searchParams.get("preview") === "1" &&
+            state !== "trashed" &&
+            pageAccess(this.metadata, identity).canRead && {
+              preview: pagePreview(this.handle.doc()),
+            }),
         });
       }
       if (url.pathname === "/api/sync" && request.method === "GET")

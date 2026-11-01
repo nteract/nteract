@@ -26,7 +26,7 @@ const bundled = await build({
     },
   ],
 });
-const { PagePreview, isPagePreview, previewHref, previewSrc } = await import(
+const { PagePreview, previewHref, previewSrc } = await import(
   `data:text/javascript;base64,${Buffer.from(bundled.outputFiles[0].contents).toString("base64")}`
 );
 const asset = `/api/pages/5f0c4a5e-6c1e-4b0e-9a8f-0d0d4c5e6f70/assets/${"a".repeat(64)}`;
@@ -120,19 +120,4 @@ test("preview link and image rules", () => {
   assert.equal(previewSrc("https://cdn.example/a.png"), "https://cdn.example/a.png");
   for (const bad of ["http://x/a.png", "/api/pages/x/assets/y", "data:image/png;base64,AA"])
     assert.equal(previewSrc(bad), null);
-});
-
-test("only the projection's shape counts as a preview", () => {
-  assert.equal(
-    isPagePreview({ title: "x", blocks: [{ id: "b", content: [] }], truncated: false }),
-    true,
-  );
-  for (const bad of [
-    null,
-    "x",
-    { title: 1, blocks: [] },
-    { title: "x" },
-    { title: "x", blocks: [{ id: 1, content: [] }] },
-  ])
-    assert.equal(isPagePreview(bad), false);
 });

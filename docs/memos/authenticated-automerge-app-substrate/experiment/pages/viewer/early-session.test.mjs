@@ -9,7 +9,7 @@ import {
   EARLY_SESSION_MAX_AGE_MS,
   SESSION_URL,
   connectUrl,
-  earlyPreview,
+  earlyConnectAnswer,
   requestConnect,
   requestSession,
   startEarlyConnect,
@@ -511,25 +511,64 @@ test("the session and connect slots are independent", async (t) => {
   assert.equal(fetched.length, 0);
 });
 
-test("the early discovery's preview is readable without taking the request", async (t) => {
+test("the early discovery's answer is readable without taking the request", async (t) => {
   const preview = { title: "Roadmap", blocks: [], truncated: false };
-  const { win } = browser(`/p/${PAGE}`, () =>
-    Promise.resolve(sessionResponse({ ...connection, preview })),
-  );
+  const body = { ...connection, identity, access: { canRead: true }, preview };
+  const { win } = browser(`/p/${PAGE}`, () => Promise.resolve(sessionResponse(body)));
   startEarlyConnect(win);
-  assert.deepEqual(await earlyPreview(PAGE, win), preview);
-  assert.equal(await earlyPreview(OTHER, win), null);
-  assert.ok(win[EARLY_CONNECT], "reading the preview leaves the request for the session");
+  assert.equal(earlyConnectAnswer(OTHER, win), null);
+  const early = earlyConnectAnswer(PAGE, win);
+  // The preview keeps the principal the host authenticated for it.
+  assert.deepEqual(await early.answer, { ok: true, principal: "one", preview });
+  assert.ok(win[EARLY_CONNECT], "reading the answer leaves the request for the session");
   const fetched = stubFetch(t, () => sessionResponse(connection));
-  assert.deepEqual(await requestConnect(PAGE, request, { win }), { ...connection, preview });
+  assert.deepEqual(await requestConnect(PAGE, request, { win }), body);
   assert.equal(fetched.length, 0);
-  assert.equal(await earlyPreview(PAGE, win), null);
+  assert.equal(earlyConnectAnswer(PAGE, win), null);
 });
 
-test("a refused early discovery has no preview", async () => {
-  const { win } = browser(`/p/${PAGE}`, () =>
-    Promise.resolve(sessionResponse({ error: "Sign in" }, { status: 401 })),
-  );
+test("the early answer refuses anything but a readable, authenticated preview", async () => {
+  const preview = { title: "Roadmap", blocks: [], truncated: false };
+  const cases = [
+    [sessionResponse({ error: "Sign in" }, { status: 401 }), 401],
+    [sessionResponse({ error: "No access", code: "page_access_denied" }, { status: 403 }), 403],
+    [new Response("<html>", { status: 200, headers: { "content-type": "text/html" } }), 200],
+    [sessionResponse({ ...connection, preview }), 200],
+    [sessionResponse({ ...connection, identity: { principal: "" }, preview }), 200],
+    [sessionResponse({ ...connection, identity }), 200],
+    [sessionResponse({ ...connection, identity, preview: "x" }), 200],
+    [sessionResponse({ ...connection, identity, access: { canRead: false }, preview }), 200],
+    [sessionResponse({ ...connection, identity, trash: { trashed_at: 1 }, preview }), 200],
+  ];
+  for (const [response, status] of cases) {
+    const { win } = browser(`/p/${PAGE}`, () => Promise.resolve(response));
+    startEarlyConnect(win);
+    assert.deepEqual(await earlyConnectAnswer(PAGE, win).answer, { ok: false, status });
+  }
+  const { win } = browser(`/p/${PAGE}`, () => Promise.reject(new TypeError("Failed to fetch")));
   startEarlyConnect(win);
-  assert.equal(await earlyPreview(PAGE, win), null);
+  assert.deepEqual(await earlyConnectAnswer(PAGE, win).answer, { ok: false, status: 0 });
+});
+
+test("only the tab dropping the early request invalidates it, once", async (t) => {
+  const { win } = browser(`/p/${PAGE}`, () => new Promise(() => {}));
+  startEarlyConnect(win);
+  const calls = [];
+  const early = earlyConnectAnswer(PAGE, win);
+  const stop = early.onInvalidate(() => calls.push("kept"));
+  early.onInvalidate(() => calls.push("dropped"))();
+  win.document.visibilityState = "visible";
+  win.document.dispatch("visibilitychange");
+  win.document.dispatch("visibilitychange");
+  assert.deepEqual(calls, ["kept"]);
+  stop();
+  // Taking it for the session is not an invalidation.
+  const taken = browser(`/p/${PAGE}`, () => Promise.resolve(sessionResponse(connection)));
+  startEarlyConnect(taken.win);
+  earlyConnectAnswer(PAGE, taken.win).onInvalidate(() => calls.push("taken"));
+  stubFetch(t, () => sessionResponse(connection));
+  await requestConnect(PAGE, request, { win: taken.win });
+  taken.win.document.visibilityState = "visible";
+  taken.win.document.dispatch("visibilitychange");
+  assert.deepEqual(calls, ["kept"]);
 });

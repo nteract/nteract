@@ -68,6 +68,8 @@ function startEarly(win, slotName, key, url, init, now) {
     response,
     controller,
     startedAt: now(),
+    // Called when the tab drops this request, not when the viewer takes it.
+    dropped: new Set(),
     release() {
       page?.removeEventListener?.("visibilitychange", onVisibility);
       win.removeEventListener?.("pageshow", onPageShow);
@@ -78,6 +80,10 @@ function startEarly(win, slotName, key, url, init, now) {
     delete win[slotName];
     slot.release();
     controller.abort();
+    // A listener may unsubscribe while this runs; call the ones held now.
+    const listeners = Array.from(slot.dropped);
+    slot.dropped.clear();
+    for (const listener of listeners) listener();
   }
   page?.addEventListener?.("visibilitychange", onVisibility);
   win.addEventListener?.("pageshow", onPageShow);
@@ -110,7 +116,8 @@ export function startEarlySession(win, now = monotonic) {
  * route only. It runs beside the session check, so a Page this device has
  * never opened doesn't wait for the session answer before it asks. It also
  * asks for the Page's read-only preview (model/page-preview.mjs), which the
- * shell shows while the editor loads; openConnection ignores that field. */
+ * shell may show while the editor loads (boot-preview.mjs); openConnection
+ * ignores that field. */
 export function startEarlyConnect(win, now = monotonic) {
   const route = readPageRoute(win.location.href);
   if (route.kind !== "page") return;
@@ -127,22 +134,56 @@ export function startEarlyConnect(win, now = monotonic) {
   // Tee the body before the session reads it. This reader is registered
   // first, so it clones before openConnection's request() consumes the
   // original.
-  slot.preview = slot.response
+  slot.answer = slot.response
     .then((response) =>
       response.ok && /json/i.test(response.headers.get("content-type") ?? "")
-        ? response.clone().json()
-        : null,
+        ? response
+            .clone()
+            .json()
+            .then((body) => previewAnswer(body, response.status))
+        : { ok: false, status: response.status },
     )
-    .then(
-      (body) => (body && typeof body.preview === "object" ? body.preview : null),
-      () => null,
-    );
+    .catch(() => ({ ok: false, status: 0 }));
 }
 
-/** The head script's preview of `pageId`, or null. Doesn't take the slot. */
-export function earlyPreview(pageId, win = globalThis) {
+/**
+ * The part of a discovery answer the boot preview may use:
+ * `{ ok: true, principal, preview }` when the host authenticated a principal
+ * that can read the Page and sent a preview, otherwise `{ ok: false, status }`.
+ * A Page in Trash is refused here too: its preview would hide the Trash
+ * notice the live Page shows.
+ */
+export function previewAnswer(body, status = 200) {
+  const principal = body?.identity?.principal;
+  if (
+    status < 200 ||
+    status >= 300 ||
+    typeof principal !== "string" ||
+    principal === "" ||
+    body.access?.canRead === false ||
+    body.trash ||
+    !body.preview ||
+    typeof body.preview !== "object"
+  )
+    return { ok: false, status };
+  return { ok: true, principal, preview: body.preview };
+}
+
+/** The head script's discovery of `pageId` for the boot preview, without
+ * taking it: `{ answer, onInvalidate }`, or null when there is none for that
+ * Page. `answer` resolves with previewAnswer's result. `onInvalidate(fn)`
+ * calls `fn` if the tab drops the request (visibility or a back/forward
+ * cache restore) and returns its unsubscribe. */
+export function earlyConnectAnswer(pageId, win = globalThis) {
   const early = win[EARLY_CONNECT];
-  return early?.key === pageId && early.preview ? early.preview : Promise.resolve(null);
+  if (early?.key !== pageId || !early.answer) return null;
+  return {
+    answer: early.answer,
+    onInvalidate(listener) {
+      early.dropped.add(listener);
+      return () => early.dropped.delete(listener);
+    },
+  };
 }
 
 /** Take the head script's session request, at most once. */
