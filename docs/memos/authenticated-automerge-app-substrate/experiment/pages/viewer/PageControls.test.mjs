@@ -406,3 +406,38 @@ test("rotating to desktop closes the ⋯ menu", async (t) => {
   assert.equal(f.menu(), null, "the menu stays closed back on the phone");
   assert.equal(f.more().getAttribute("aria-expanded"), "false");
 });
+
+test("desktop to phone with Share opened from its focused button moves focus into the panel", async (t) => {
+  const f = await fixture(t, { phone: false });
+  const dialog = () => f.container.querySelector('[role="dialog"][aria-label="Share Page"]');
+  const trigger = f.byName("Share");
+  await f.focus(trigger);
+  await f.click(trigger);
+  const panel = dialog();
+  assert.ok(panel, "Share opens from its button");
+  assert.equal(document.activeElement, trigger, "the Share button keeps focus on desktop");
+  await f.type(panel.querySelector('input[type="email"]'), "colleague@example.com");
+  await f.focus(trigger);
+
+  await f.setPhone(true);
+  assert.equal(f.byName("Share"), null, "the phone header has no Share button");
+  assert.equal(dialog(), panel, "the same Share panel stays open");
+  assert.equal(panel.querySelector('input[type="email"]').value, "colleague@example.com");
+  assert.ok(panel.contains(document.activeElement), "focus moves into the Share panel");
+  assert.equal(document.activeElement, panel);
+
+  // Back on desktop, focus stays where it is in the panel.
+  await f.setPhone(false);
+  assert.equal(dialog(), panel);
+  assert.equal(document.activeElement, panel);
+});
+
+test("desktop to phone leaves focus alone when the Share button did not have it", async (t) => {
+  const f = await fixture(t, { phone: false });
+  const dialog = () => f.container.querySelector('[role="dialog"][aria-label="Share Page"]');
+  await f.click(f.byName("Share"));
+  const email = dialog().querySelector('input[type="email"]');
+  await f.focus(email);
+  await f.setPhone(true);
+  assert.equal(document.activeElement, email, "the focused field keeps focus");
+});

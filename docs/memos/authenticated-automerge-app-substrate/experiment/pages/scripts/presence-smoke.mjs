@@ -497,6 +497,20 @@ try {
   await expect(more).toBeVisible();
   await expect(inviteEmail).toHaveValue("rotation@example.com");
   await inviteEmail.fill("");
+  // Share opened from the keyboard on the wide layout: its button has focus
+  // and leaves with the phone layout, so focus moves into the panel.
+  await phone.keyboard.press("Escape");
+  await expect(share).toHaveCount(0);
+  await phone.setViewportSize({ width: 700, height: 390 });
+  const wideShare = phone.getByRole("button", { name: "Share", exact: true });
+  await wideShare.focus();
+  await phone.keyboard.press("Enter");
+  await expect(share).toBeVisible();
+  await expect(wideShare).toBeFocused();
+  await phone.setViewportSize({ width: 390, height: 844 });
+  await expect(more).toBeVisible();
+  await expect(share).toBeVisible();
+  await expect(share).toBeFocused();
   await phone.keyboard.press("Escape");
   await expect(share).toHaveCount(0);
   await expect(more).toBeFocused();

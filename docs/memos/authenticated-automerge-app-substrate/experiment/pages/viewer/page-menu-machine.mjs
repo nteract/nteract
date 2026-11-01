@@ -73,6 +73,9 @@ export function transition(state, event) {
  *   focusButton     focus returns to ⋯
  *   preventDefault  the key's own action is cancelled (Shift+Tab stays on ⋯)
  *   runAction       the chosen page action runs
+ *   reclaimShare    focus moves into the Share panel if it was lost; the
+ *                   phone layout has no desktop Share button, so a focused
+ *                   button leaves with the switch
  * Plain Tab focuses ⋯ and keeps its default, so focus moves on to the next
  * control after ⋯ (the menu items are not Tab stops).
  */
@@ -85,6 +88,8 @@ export function pageMenuEffects(previous, next, event) {
       return event.shift ? ["focusButton", "preventDefault"] : ["focusButton"];
     case "choose":
       return event.item === "action" ? ["focusButton", "runAction"] : [];
+    case "breakpoint":
+      return next.phone && next.view === "share" ? ["reclaimShare"] : [];
     default:
       return [];
   }

@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useId, useRef, useState } from "react";
+import { Fragment, useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import { MoreHorizontal, Share2, UsersRound } from "lucide-react";
 import { SharingControls } from "./SharingControls.jsx";
 import { ActivityList, PageActivity, activitySessions, usePageActivity } from "./PageActivity.jsx";
@@ -39,25 +39,44 @@ function Controls({
   const [state, setState] = useState(() => initialPageMenu(phone));
   const current = useRef(state),
     button = useRef(null),
-    pendingAction = useRef(null);
+    sharePanel = useRef(null),
+    pendingAction = useRef(null),
+    committedEffects = useRef([]);
+  const run = (effects, domEvent) => {
+    for (const effect of effects) {
+      if (effect === "focusButton") button.current?.focus({ preventScroll: true });
+      else if (effect === "preventDefault") domEvent?.preventDefault();
+      else if (effect === "runAction") pendingAction.current?.run();
+      else if (effect === "reclaimShare") {
+        const focused = document.activeElement;
+        if (!focused || focused === document.body)
+          sharePanel.current?.focus({ preventScroll: true });
+      }
+    }
+  };
   // The breakpoint is a prop, so its event applies during render, before
-  // either layout paints with the other's state.
+  // either layout paints with the other's state. Its effects wait for the
+  // new layout's commit, when a removed control has already lost focus.
   let shown = state;
   if (state.phone !== !!phone) {
-    shown = transition(state, { type: "breakpoint", phone });
+    const event = { type: "breakpoint", phone };
+    shown = transition(state, event);
+    committedEffects.current = pageMenuEffects(state, shown, event);
     setState(shown);
   }
   current.current = shown;
+  useLayoutEffect(() => {
+    const effects = committedEffects.current;
+    if (!effects.length) return;
+    committedEffects.current = [];
+    run(effects);
+  });
   const dispatch = (event, domEvent) => {
     const previous = current.current;
     const next = transition(previous, event);
     current.current = next;
     if (next !== previous) setState(next);
-    for (const effect of pageMenuEffects(previous, next, event)) {
-      if (effect === "focusButton") button.current?.focus({ preventScroll: true });
-      else if (effect === "preventDefault") domEvent?.preventDefault();
-      else if (effect === "runAction") pendingAction.current?.run();
-    }
+    run(pageMenuEffects(previous, next, event), domEvent);
   };
   const sharing = (
     <SharingControls
@@ -67,6 +86,7 @@ function Controls({
       open={shown.view === "share"}
       onOpenChange={(open) => dispatch({ type: "share", open })}
       returnFocus={button}
+      panelRef={sharePanel}
     />
   );
   const comments = <Fragment key="comments">{children}</Fragment>;

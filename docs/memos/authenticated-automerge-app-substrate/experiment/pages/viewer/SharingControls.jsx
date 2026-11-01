@@ -65,7 +65,8 @@ function projection(value, manage) {
  * the panel takes focus when it opens, and Escape returns focus to
  * `returnFocus`. `trigger` can change while the panel is open (the phone
  * header and the desktop header share one instance); the draft, any message
- * and the focused field stay as they are.
+ * and the focused field stay as they are. `panelRef` receives the open panel,
+ * the element that takes focus, so the caller can move focus into it.
  */
 export function SharingControls({ session, ...options }) {
   return (
@@ -76,7 +77,14 @@ export function SharingControls({ session, ...options }) {
     />
   );
 }
-function PageSharing({ session, trigger = true, open: requested, onOpenChange, returnFocus }) {
+function PageSharing({
+  session,
+  trigger = true,
+  open: requested,
+  onOpenChange,
+  returnFocus,
+  panelRef,
+}) {
   const [own, setOwn] = useState(false),
     [email, setEmail] = useState(""),
     [role, setRole] = useState("viewer"),
@@ -227,7 +235,10 @@ function PageSharing({ session, trigger = true, open: requested, onOpenChange, r
       )}
       {open && (
         <div
-          ref={dialog}
+          ref={(node) => {
+            dialog.current = node;
+            if (panelRef) panelRef.current = node;
+          }}
           className="page-sharing-popover"
           role="dialog"
           aria-label="Share Page"
