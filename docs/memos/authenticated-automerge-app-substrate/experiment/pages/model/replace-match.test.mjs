@@ -194,6 +194,63 @@ test("a comment on an accented letter detaches when the letter changes, instead 
   assert.equal(kept.context.text, "caf\u0065\u0301");
 });
 
+test("a match_text that cuts a character is refused, for replace_match and format_match alike", () => {
+  const family = "👨‍👩‍👧";
+  const flag = "🇺🇸";
+  for (const [markdown, match_text, where] of [
+    ["Order a caf\u0065\u0301 au lait.", "cafe", "ends"],
+    ["Order a caf\u0065\u0301 au lait.", "\u0301 au", "starts"],
+    [`The ${family} waved.`, `The ${family.slice(0, 2)}`, "ends"],
+    [`The ${family} waved.`, `${family.slice(-2)} waved`, "starts"],
+    [`From ${flag} with love.`, `From ${flag.slice(0, 2)}`, "ends"],
+    [`From ${flag} with love.`, `${flag.slice(2)} with`, "starts"],
+  ]) {
+    const { doc, id } = fixture(markdown);
+    const heads = A.getHeads(doc);
+    const raw = doc.blocks[id].richText;
+    assert.ok(
+      raw.includes(match_text),
+      "the cut text is a substring, so only the check refuses it",
+    );
+    assert.throws(
+      () => replace(doc, id, { match_text, replacement: "x" }),
+      new RegExp(
+        `replace_match match_text ${where} inside a character; include the whole character`,
+      ),
+    );
+    assert.throws(
+      () =>
+        A.change(doc, (draft) =>
+          applyPageOperation(draft, {
+            operation: "patch_page",
+            arguments: {
+              operations: [{ op: "format_match", block_id: id, match_text, add: { strong: true } }],
+            },
+          }),
+        ),
+      new RegExp(`format_match match_text ${where} inside a character`),
+    );
+    assert.deepEqual(A.getHeads(doc), heads);
+    assert.equal(doc.blocks[id].richText, raw);
+  }
+  // Whole characters at either end are fine, including the accent's letter.
+  const { doc, id } = fixture(`Order a caf\u0065\u0301 ${family} ${flag} au lait.`);
+  const { after } = replace(doc, id, {
+    match_text: `caf\u0065\u0301 ${family} ${flag}`,
+    replacement: `th\u0065\u0301 ${family} 🇺🇦`,
+  });
+  assert.equal(
+    richDoc(after.blocks[id]).textContent,
+    `Order a th\u0065\u0301 ${family} 🇺🇦 au lait.`,
+  );
+  const anchored = anchorAfter("Order a caf\u0065\u0301 au lait.", "caf\u0065\u0301", {
+    match_text: "caf\u0065\u0301",
+    replacement: "caf\u0065\u0301s",
+  });
+  assert.equal(anchored.context.status, "attached");
+  assert.equal(anchored.context.text, "caf\u0065\u0301");
+});
+
 test("an edit past the diff budget is split at words unique to both sides, so interior anchors survive", () => {
   const before = `${"old ".repeat(501)}KEEP ${"old ".repeat(500)}`.trim();
   const after = `${"new ".repeat(501)}KEEP ${"new ".repeat(500)}`.trim();

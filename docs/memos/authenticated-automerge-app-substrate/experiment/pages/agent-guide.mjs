@@ -756,7 +756,9 @@ matching to one top-level node inside a large block. Node indexes are revision-b
 not permanent IDs; always pair them with the base_heads that supplied them.
 Use optional context_before/context_after to distinguish repeated text; context
 must be in the same segment, between this occurrence and its neighboring matches.
-Exactly one match is required; zero or multiple matches reject the entire batch.
+Exactly one match is required; zero or multiple matches reject the entire batch,
+and so does a match_text that starts or ends inside a character (an accented
+letter, an emoji sequence or a flag): include the whole character.
 Successful receipts include result.edits with matched: 1 for each replace_match.
 Only the words that differ between match_text and replacement are written: words
 and whitespace both share stay in place, and a changed word is narrowed to the

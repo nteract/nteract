@@ -1323,8 +1323,10 @@ replacement ([`textSplices`](model/replace-match.mjs)): a word-token diff over
 grapheme clusters (`Intl.Segmenter`), with each changed run narrowed by its
 common prefix and suffix in whole clusters, so a combining accent, a ZWJ emoji
 sequence or a flag pair is never split and never left as an anchor on its own.
-Shared words keep their characters, so comment anchors on them stay attached
-and a replacement equal to its match writes nothing. A word that changes
+A `match_text` that starts or ends inside a cluster is refused
+(`invalid_edit_selector`), since the rest of that character would stay behind
+with any anchor on it. Shared words keep their characters, so comment anchors
+on them stay attached and a replacement equal to its match writes nothing. A word that changes
 beyond a prefix or suffix is replaced whole, so an anchor ending in it detaches
 and one starting in it shrinks to the words that remain. This is deliberately
 not the character-level LCS `replace_block_markdown` gets from `updateSpans`,

@@ -91,8 +91,19 @@ export function textSegments(block) {
   return segments;
 }
 
+const graphemeSegmenter = new Intl.Segmenter("und", { granularity: "grapheme" });
+const graphemes = (text) => Array.from(graphemeSegmenter.segment(text), (part) => part.segment);
+/** Whether UTF-16 offset `at` in `text` falls between grapheme clusters. */
+function graphemeBoundary(text, at) {
+  if (at <= 0 || at >= text.length) return true;
+  return graphemeSegmenter.segment(text).containing(at).index === at;
+}
+
 /** Resolve one visible range without changing the document. Context is searched
  * between occurrences and cannot cross a paragraph or embedded-node boundary.
+ * The match must start and end between grapheme clusters: a match that cuts
+ * an accented letter, an emoji sequence or a flag would otherwise leave the
+ * rest of that character behind, and a comment anchored on it attached to it.
  */
 export function findUniqueVisibleRange(doc, id, input) {
   const match = replacementLiteral(input.match_text, "match_text");
@@ -120,25 +131,26 @@ export function findUniqueVisibleRange(doc, id, input) {
       if (before !== undefined && !segment.text.slice(gapStart, at).includes(before)) continue;
       if (after !== undefined && !segment.text.slice(at + match.length, gapEnd).includes(after))
         continue;
-      matches.push(segment.offset + at);
+      matches.push({ at: segment.offset + at, segment, local: at });
     }
   }
   if (matches.length !== 1)
     throw Error(
       `${input.op ?? "replace_match"} found ${matches.length} matches; exactly one is required. Use context_before/context_after or a longer match_text.`,
     );
-  const path = textPath(id);
-  const start = matches[0];
-  const end = start + match.length;
-  return { path, start, end };
+  const [{ at: start, segment, local }] = matches;
+  const op = input.op ?? "replace_match";
+  if (!graphemeBoundary(segment.text, local))
+    throw Error(`${op} match_text starts inside a character; include the whole character`);
+  if (!graphemeBoundary(segment.text, local + match.length))
+    throw Error(`${op} match_text ends inside a character; include the whole character`);
+  return { path: textPath(id), start, end: start + match.length };
 }
 
 // Diff tokens are built from grapheme clusters, so a combining accent, a ZWJ
 // emoji sequence or a flag pair is never split: a run of word clusters
 // (letters, digits, marks, underscore), a run of whitespace, or one other
 // cluster.
-const graphemeSegmenter = new Intl.Segmenter("und", { granularity: "grapheme" });
-const graphemes = (text) => Array.from(graphemeSegmenter.segment(text), (part) => part.segment);
 const WORD = /^[\p{L}\p{N}\p{M}_]/u;
 const SPACE = /^\s/u;
 function tokenize(text) {
