@@ -6,6 +6,7 @@ import {
   listTrash,
   previewPurge,
   purgeSummary,
+  purgeGrant,
   restorePage,
   retirePurgedPage,
   trashedDate,
@@ -58,14 +59,15 @@ export function TrashView({ tool, principal, identity, onOpen, onRestored, onPur
     });
   const purge = () =>
     run(preview.page_id, async () => {
-      await confirmPurge(tool, preview, principal);
       const pageId = preview.page_id;
+      const grant = await purgeGrant(identity, pageId);
+      await confirmPurge(tool, preview, principal);
       setPreview(null);
       // The host's copy is gone; this browser's copy moves to the recovery
       // archive. A failed archive is reported after the listing refreshes.
       let kept;
       try {
-        await retirePurgedPage(identity, pageId);
+        await retirePurgedPage(identity, pageId, grant);
       } catch (cause) {
         kept = cause;
       }

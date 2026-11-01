@@ -799,7 +799,10 @@ function App() {
       // recovery archive instead of leaving it listed as saved locally.
       if (!deleting.localPage?.registered) {
         await closing;
-        await retireLocalPage(deleting.identity, deleting.pageId, { reason: "deleted" });
+        await retireLocalPage(deleting.identity, deleting.pageId, {
+          reason: "deleted",
+          grant: deleting.replicaKey,
+        });
       }
       setNotice("Moved to Trash");
       await refresh();

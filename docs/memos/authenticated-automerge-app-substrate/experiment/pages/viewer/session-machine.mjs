@@ -38,9 +38,10 @@
  * - retireFailed: the archive write failed, so the copy exists only in this
  *   tab's memory export and the untouched checkpoint. The backend release has
  *   started or finished. The notice offers that export and a retry; the
- *   reload gate keeps it as an unsaved record. The refusal fence
- *   (refusal-fence.mjs) keeps the checkpoint from rendering on a later open.
- *   A transient host failure never reaches a retirement state.
+ *   reload gate keeps it as an unsaved record. The checkpoint stays as it
+ *   was, so a later open renders it until the host refuses again, which
+ *   retires it again. A transient host failure never reaches a retirement
+ *   state.
  *
  * `drained` and `saved` record how a session was left: through the drain, and
  * whether the host had every edit when the drain ended. The reload gate keeps

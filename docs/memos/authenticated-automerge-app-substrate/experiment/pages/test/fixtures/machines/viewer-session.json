@@ -1054,7 +1054,7 @@
     },
     {
       "label": "retireFailed × retireRetry writes the archive again",
-      "note": "the backend is already released; a retry that succeeds clears the refusal fence",
+      "note": "the backend is already released; only the archive runs again",
       "state": { "name": "retireFailed", "reason": "access" },
       "event": { "type": "retireRetry" },
       "expect": {

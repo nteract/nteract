@@ -4,7 +4,6 @@
 // Subduction WASM. local-pages.mjs owns the snapshot reads and merges, through
 // this module's one store instance.
 import { IndexedDBByteStore } from "@automerge/automerge-repo-subduction";
-import { readRefusalFence } from "./refusal-fence.mjs";
 
 export const store = new IndexedDBByteStore({ database: "pages-local-catalog-v1" });
 export const encoder = new TextEncoder();
@@ -28,8 +27,6 @@ export async function listLocalPages(identity, { pendingOnly = false } = {}) {
         !page.deleted &&
         // An access marker holds no copy; its recovery records stay unlisted.
         !page.revoked &&
-        // A refused copy whose archive failed stays out of sight too.
-        !readRefusalFence(identity, page.page_id) &&
         // A local replica of a trashed Page is kept for restore; Trash lists it.
         !page.access?.trashed &&
         (!pendingOnly || page.pending),
@@ -43,6 +40,20 @@ export async function listLocalPages(identity, { pendingOnly = false } = {}) {
       registered,
     }))
     .sort((a, b) => b.updated_at.localeCompare(a.updated_at));
+}
+/** The grant generation a replica key names ("3:writer" is 3). An unknown
+ * key compares as no generation, which no comparison finds newer. */
+export function grantGeneration(replicaKey) {
+  const match = /^(\d+):/.exec(typeof replicaKey === "string" ? replicaKey : "");
+  return match ? Number(match[1]) : NaN;
+}
+/** The replica key of this account's stored checkpoint, or undefined. */
+export async function readLocalGrant(identity, pageId) {
+  if (!identity?.principal) return undefined;
+  const value = await store.load(key(identity, pageId));
+  if (!value) return undefined;
+  const page = JSON.parse(decoder.decode(value));
+  return page.principal === identity.principal ? page.replicaKey : undefined;
 }
 const recoveryKey = (identity, pageId) =>
   `recovery/${encodeURIComponent(identity.principal)}/${pageId}/${crypto.randomUUID()}`;
@@ -74,10 +85,22 @@ export function archiveSnapshot(records, identity, page, sequence) {
  * next checkpoint written with `regrant` (a host-verified open) replaces it,
  * and every other write archives its snapshot and fails with
  * LOCAL_PAGE_REVOKED. With nothing stored and nothing to archive, an access
- * refusal writes nothing. Everything lands in one transaction. Resolves with
- * the marker, or null.
+ * refusal writes nothing.
+ *
+ * `grant` is the replica key the refused session opened under. When the
+ * stored checkpoint belongs to a newer grant (another tab opened the Page
+ * after a re-grant), the refusal is stale for it: only the caller's own copy
+ * and drafts are archived, and the checkpoint stays, with no marker. Without
+ * a `grant` the stored checkpoint is retired whatever its grant.
+ *
+ * Everything lands in one transaction. Resolves with the marker,
+ * `{ superseded: true }` for a newer grant's checkpoint, or null.
  */
-export async function retireLocalPage(identity, pageId, { reason, snapshot, title, drafts } = {}) {
+export async function retireLocalPage(
+  identity,
+  pageId,
+  { reason, snapshot, title, drafts, grant } = {},
+) {
   if (!identity?.principal) throw Error("Local Page account does not match");
   if (reason !== "access" && reason !== "deleted") throw Error("Unknown retirement reason");
   return store.run("readwrite", (records, done, fail) => {
@@ -89,8 +112,15 @@ export async function retireLocalPage(identity, pageId, { reason, snapshot, titl
           throw Error("Local Page account does not match");
         let sequence = previous?.recovery_sequence ?? 0;
         const base = previous ?? { principal: identity.principal, page_id: pageId };
+        // A marker names no grant. A newer grant's entry can be its reset
+        // marker, before that grant's first checkpoint.
+        const superseded =
+          !!previous &&
+          !previous.deleted &&
+          !previous.revoked &&
+          grantGeneration(previous.replicaKey) > grantGeneration(grant);
         const copies = [];
-        if (previous?.snapshot) copies.push({ ...previous, retired: reason });
+        if (previous?.snapshot && !superseded) copies.push({ ...previous, retired: reason });
         if (snapshot && snapshot !== previous?.snapshot)
           copies.push({
             ...base,
@@ -110,6 +140,10 @@ export async function retireLocalPage(identity, pageId, { reason, snapshot, titl
             });
         }
         for (const copy of copies) archiveSnapshot(records, identity, copy, ++sequence);
+        if (superseded) {
+          done({ superseded: true });
+          return;
+        }
         let marker;
         if (previous?.deleted || reason === "deleted")
           marker = {

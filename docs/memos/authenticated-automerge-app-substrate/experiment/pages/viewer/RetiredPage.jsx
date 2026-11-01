@@ -7,7 +7,7 @@ export const RETIRED_COPY =
 export const RETIRING_COPY =
   "The copy this browser kept is no longer shown. It is being moved to this device's recovery archive.";
 export const RETIRE_FAILED =
-  "This browser couldn't move its copy to the recovery archive. Download it now, or try again. It stays hidden here either way.";
+  "This browser couldn't move its copy to the recovery archive. Download it now, or try again.";
 
 /** Shown in place of a Page the host refused (`session.revoked`) or reports
  * deleted (`session.deleted`). Nothing from the Page renders here, its title

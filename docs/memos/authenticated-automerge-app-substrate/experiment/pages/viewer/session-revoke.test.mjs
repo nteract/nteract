@@ -12,11 +12,11 @@ import { createPageData, initializePage } from "../model/page.mjs";
 import { applyComment } from "../model/comments.mjs";
 import { admissionCloseOutcome } from "../shared/admission.mjs";
 import { retiredCopies } from "./retired-copies.mjs";
-import { clearRefusalFence, readRefusalFence } from "./refusal-fence.mjs";
 import {
   decodeSnapshot,
   encodeSnapshot,
   listLocalRecoveries,
+  prepareLocalPageReload,
   readLocalPage,
   retireLocalPage,
   writeLocalPage,
@@ -607,153 +607,166 @@ test("divergent stored and live copies are both offered, before and after a relo
   for (const copy of after.copies) assert.match(copy.markdown, new RegExp(COMMENT));
 });
 
-/** A copy whose retirement failed: the session is retireFailed, the
- * checkpoint is untouched in IndexedDB and the refusal fence is set. */
-async function failedRetirement(t, { drafts = [] } = {}) {
-  const first = await openCopy();
-  first.session.watchCommentDrafts(() => drafts);
-  first.session.retireLocal = async () => {
-    throw Object.assign(Error("The quota has been exceeded."), { name: "QuotaExceededError" });
-  };
-  await first.session.revoke();
-  assert.equal(first.session.phase$.snapshot().name, "retireFailed");
-  await first.session.close();
-  assert.equal(readRefusalFence(first.auth.identity, first.pageId).reason, "access");
-  assert.ok((await readLocalPage(first.auth.identity, first.pageId)).snapshot);
-  t.after(() => clearRefusalFence(first.auth.identity, first.pageId));
-  return first;
-}
 const reopen = (first) =>
   PageSession.open(first.pageId, {
     authentication: first.auth,
     refreshSession: async () => first.auth,
   });
+const quota = () =>
+  Object.assign(Error("The quota has been exceeded."), { name: "QuotaExceededError" });
+async function until(condition, label) {
+  for (let i = 0; i < 200 && !condition(); i++)
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  assert.ok(condition(), label);
+}
 
-test("after a failed archive, reopening never renders the copy and the refusal archives it", async (t) => {
+test("a failed archive leaves the copy as stored; the next refusal retires it", async (t) => {
   browser(t);
-  const first = await failedRetirement(t, {
-    drafts: [{ kind: "comment", body: "Draft the failed archive kept in the fence." }],
-  });
-  // Home hides the fenced Page too.
-  assert.deepEqual(await listLocalPages(first.auth.identity), []);
-  let imported = 0;
-  t.mock.method(globalThis, "fetch", async (url) => {
-    assert.match(String(url), /\/api\/connect/);
-    return Response.json(
-      { error: "Document access denied", code: "page_access_denied" },
-      { status: 403 },
-    );
-  });
+  const first = await openCopy();
+  first.session.retireLocal = async () => {
+    throw quota();
+  };
+  await first.session.revoke();
+  assert.equal(first.session.phase$.snapshot().name, "retireFailed");
+  await first.session.close();
+  // Nothing claims the copy was retired: the checkpoint is as it was, listed.
+  const stored = await readLocalPage(first.auth.identity, first.pageId, { markers: true });
+  assert.equal(stored.revoked, undefined);
+  assert.ok(stored.snapshot);
+  assert.equal((await listLocalPages(first.auth.identity)).length, 1);
+  assert.deepEqual(await listLocalRecoveries(first.auth.identity, first.pageId), []);
+  // The next open reaches the host, which refuses again: retirement runs again.
+  t.mock.method(
+    globalThis,
+    "fetch",
+    respond(403, { error: "Document access denied", code: "page_access_denied" }),
+  );
   const session = await reopen(first);
   t.after(() => session.close());
-  imported += session.doc ? 1 : 0;
-  assert.equal(imported, 0, "the checkpoint was never imported");
-  assert.equal(session.revoked, true);
+  await until(() => session.recoveryArchived, "the second retirement archives the copy");
   assert.equal(session.snapshot(), null);
-  await session.closeSettled();
-  assert.equal(session.phase$.snapshot().name, "retired", "the reopen retried the archive");
-  assert.equal(readRefusalFence(first.auth.identity, first.pageId), undefined, "fence cleared");
   const marker = await readLocalPage(first.auth.identity, first.pageId, { markers: true });
   assert.equal(marker.revoked, true);
-  const [record] = await listLocalRecoveries(first.auth.identity, first.pageId);
-  assert.match(textOf(record), new RegExp(BODY));
-  assert.deepEqual(
-    record.comment_drafts.map((draft) => draft.body),
-    ["Draft the failed archive kept in the fence."],
-  );
-});
-
-test("an offline reopen with a fence shows the notice and the stored copy, never the Page", async (t) => {
-  browser(t);
-  const first = await failedRetirement(t);
-  t.mock.method(globalThis, "fetch", async () => {
-    throw new TypeError("fetch failed");
-  });
-  // The archive fails again on this open.
-  const failing = t.mock.method(PageSession.prototype, "retireLocal", async () => {
-    throw Error("The quota has been exceeded.");
-  });
-  const session = await reopen(first);
-  t.after(() => session.close());
-  assert.equal(session.doc, undefined);
-  assert.equal(session.snapshot(), null);
-  await session.closeSettled();
-  assert.equal(session.phase$.snapshot().name, "retireFailed");
-  assert.equal(readRefusalFence(first.auth.identity, first.pageId).reason, "access");
-  // The notice offers the stored checkpoint, which no session imported.
-  assert.equal(retiredCopies(session, []), 1);
-  const [copy] = session.exportRecoveries([]).copies;
-  assert.match(copy.markdown, new RegExp(BODY));
-  assert.match(copy.markdown, new RegExp(COMMENT));
-  // Try again succeeds once storage recovers, and clears the fence.
-  failing.mock.restore();
-  await session.retryRetirement();
-  assert.equal(session.phase$.snapshot().name, "retired");
-  assert.equal(readRefusalFence(first.auth.identity, first.pageId), undefined);
-  assert.equal((await listLocalRecoveries(first.auth.identity, first.pageId)).length, 1);
-  assert.equal(
-    (await readLocalPage(first.auth.identity, first.pageId, { markers: true })).revoked,
-    true,
-  );
-});
-
-test("Try again in the same tab archives the copy and clears the fence", async (t) => {
-  const first = await openCopy();
-  let fail = true;
-  first.session.retireLocal = (...args) =>
-    fail
-      ? Promise.reject(Error("The quota has been exceeded."))
-      : PageSession.prototype.retireLocal.apply(first.session, args);
-  await first.session.revoke();
-  t.after(() => first.session.close());
-  assert.equal(first.session.retireFailed, true);
-  assert.ok(readRefusalFence(first.auth.identity, first.pageId));
-  fail = false;
-  await first.session.retryRetirement();
-  assert.equal(first.session.recoveryArchived, true);
-  assert.equal(first.session.retireProblem, undefined);
-  assert.equal(readRefusalFence(first.auth.identity, first.pageId), undefined);
+  assert.deepEqual(await listLocalPages(first.auth.identity), []);
   const records = await listLocalRecoveries(first.auth.identity, first.pageId);
   assert.ok(records.some((record) => textOf(record).includes(BODY)));
 });
 
-test("a re-grant after a failed archive clears the fence and sets the copy aside", async (t) => {
-  const first = await failedRetirement(t);
-  const server = A.change(
-    A.from(createPageData({ pageId: first.pageId, title: "Server version after re-grant" })),
+test("Try again in the same tab archives the copy", async (t) => {
+  const first = await openCopy();
+  let fail = true;
+  first.session.retireLocal = (...args) =>
+    fail ? Promise.reject(quota()) : PageSession.prototype.retireLocal.apply(first.session, args);
+  await first.session.revoke();
+  t.after(() => first.session.close());
+  assert.equal(first.session.retireFailed, true);
+  fail = false;
+  await first.session.retryRetirement();
+  assert.equal(first.session.recoveryArchived, true);
+  assert.equal(first.session.retireProblem, undefined);
+  assert.equal(
+    (await readLocalPage(first.auth.identity, first.pageId, { markers: true })).revoked,
+    true,
+  );
+  const records = await listLocalRecoveries(first.auth.identity, first.pageId);
+  assert.ok(records.some((record) => textOf(record).includes(BODY)));
+});
+
+/** Tab B opens the Page under a re-grant: the reset marker for the new key,
+ * then the new grant's first checkpoint. */
+async function regrantedTab(first) {
+  const granted = access("editor", 2, 3);
+  await prepareLocalPageReload(first.auth.identity, first.session.localPage, granted, "2:writer");
+  const doc = A.change(
+    A.from(createPageData({ pageId: first.pageId, title: "Tab B after the re-grant" })),
     initializePage,
   );
-  const session = new PageSession(first.pageId, {
-    authentication: first.auth,
-    refreshSession: async () => first.auth,
-  });
-  const keys = [];
-  session.initializeLocal = async (key) => {
-    keys.push(key);
-    session.replicaKey = key;
-    session.repo = {
-      flush: async () => {},
-      find: async () => ({ doc: () => server, documentId: first.documentId, on() {} }),
-    };
+  const page = {
+    ...first.session.localPage,
+    access: granted,
+    replicaKey: "2:writer",
+    snapshot: encodeSnapshot(A.save(doc)),
+    title: doc.title,
+    pending: false,
   };
-  session.releaseLocal = async () => {};
-  session.connect = async () => {
-    await session.acceptPageAccess(access("editor", 2, 3));
-    session.connection = { documentId: first.documentId };
-  };
-  session.queueSaved = () => {};
-  t.after(() => session.close());
-  await session.start();
-  clearInterval(session.presenceTimer);
-  assert.deepEqual(keys, ["0:reader", "2:writer"]);
-  assert.equal(session.hidden, false);
-  assert.doesNotMatch(JSON.stringify(session.snapshot()), new RegExp(BODY));
-  assert.equal(readRefusalFence(first.auth.identity, first.pageId), undefined);
-  const stored = await readLocalPage(first.auth.identity, first.pageId);
+  await writeLocalPage(first.auth.identity, page);
+  return page;
+}
+
+test("Try again after a re-grant leaves the newer grant's checkpoint and marks nothing", async (t) => {
+  const first = await openCopy();
+  let fail = true;
+  first.session.retireLocal = (...args) =>
+    fail ? Promise.reject(quota()) : PageSession.prototype.retireLocal.apply(first.session, args);
+  await first.session.revoke();
+  t.after(() => first.session.close());
+  assert.equal(first.session.retireFailed, true);
+  // The owner shares the Page again and tab B opens it.
+  const tabB = await regrantedTab(first);
+  const before = await listLocalRecoveries(first.auth.identity, first.pageId);
+  fail = false;
+  await first.session.retryRetirement();
+  assert.equal(first.session.recoveryArchived, true, "tab A's own copy is archived");
+  const stored = await readLocalPage(first.auth.identity, first.pageId, { markers: true });
+  assert.equal(stored.revoked, undefined, "no marker over the newer grant");
   assert.equal(stored.replicaKey, "2:writer");
-  assert.equal(A.load(decodeSnapshot(stored.snapshot)).title, "Server version after re-grant");
-  const [record] = await listLocalRecoveries(first.auth.identity, first.pageId);
-  assert.match(textOf(record), new RegExp(BODY), "the refused copy stays download-only");
+  assert.equal(stored.snapshot, tabB.snapshot, "tab B's checkpoint is untouched");
+  const after = await listLocalRecoveries(first.auth.identity, first.pageId);
+  assert.equal(after.length, before.length + 1, "only tab A's live copy joins the archive");
+  assert.match(textOf(after.at(-1)), new RegExp(BODY));
+  assert.ok(!after.some((record) => record.snapshot === tabB.snapshot));
+  // Tab B keeps writing; nothing refuses it.
+  await writeLocalPage(first.auth.identity, { ...tabB, pending: true });
+  assert.equal((await listLocalPages(first.auth.identity)).length, 1);
+});
+
+test("a first retirement or a purge under an older grant leaves a newer checkpoint", async (t) => {
+  for (const reason of ["access", "deleted"]) {
+    const first = await openCopy();
+    const tabB = await regrantedTab(first);
+    // Tab A still holds the first grant's replica ("1:writer") when its
+    // refusal lands.
+    if (reason === "access") await first.session.revoke();
+    else await first.session.markDeleted();
+    t.after(() => first.session.close());
+    assert.equal(first.session.phase$.snapshot().name, "retired", reason);
+    const stored = await readLocalPage(first.auth.identity, first.pageId, { markers: true });
+    assert.equal(stored.snapshot, tabB.snapshot, reason);
+    assert.equal(stored.revoked ?? stored.deleted, undefined, reason);
+    // A purge read under the older grant is stale the same way.
+    assert.deepEqual(
+      await retireLocalPage(first.auth.identity, first.pageId, { reason, grant: "1:writer" }),
+      { superseded: true },
+    );
+  }
+});
+
+test("a retirement under the same or a newer grant writes the marker", async () => {
+  for (const [stored, grant] of [
+    ["1:writer", "1:writer"],
+    ["1:writer", "2:writer"],
+    ["1:writer", undefined],
+  ]) {
+    const { session, auth, pageId } = await openCopy();
+    await session.close();
+    await writeLocalPage(auth.identity, { ...session.localPage, replicaKey: stored });
+    const marker = await retireLocalPage(auth.identity, pageId, { reason: "access", grant });
+    assert.equal(marker.revoked, true, `${stored} retired under ${grant}`);
+    assert.equal((await listLocalRecoveries(auth.identity, pageId)).length, 1);
+  }
+  // A reset marker from a newer grant counts as that grant's entry.
+  const { session, auth, pageId } = await openCopy();
+  await session.close();
+  await prepareLocalPageReload(
+    auth.identity,
+    session.localPage,
+    access("editor", 2, 3),
+    "2:writer",
+  );
+  assert.deepEqual(
+    await retireLocalPage(auth.identity, pageId, { reason: "access", grant: "1:writer" }),
+    { superseded: true },
+  );
 });
 
 test("every recovery record is offered, equal snapshots with different drafts included", async (t) => {

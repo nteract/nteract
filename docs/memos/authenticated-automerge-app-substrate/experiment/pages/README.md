@@ -353,16 +353,21 @@ with its Markdown (comments, unsent comments and drafts included) and its
 Automerge snapshot. A permanent deletion from Trash archives the owner's copy
 the same way.
 
-Retirement first writes a refusal fence for the account and Page to
-localStorage, outside IndexedDB, and clears it once the marker is written. If
-the archive write fails (quota, storage error), the session says so and never
-reports the copy archived. The notice offers the tab's in-memory export and Try
-again. The reload gate keeps the export as an unsaved Page that only Download
-or Discard clears: it can hold comment drafts no document receipt covers. The
-fence keeps the untouched checkpoint off Home and out of the next open. That
-open asks the host before importing anything; a refusal or a failed connection
-retires it again, retrying the archive, and a grant sets the checkpoint aside
-in the archive and opens the grant's replica.
+The client hides the copy for good only once the archive and marker are
+committed in IndexedDB. If that write fails (quota, storage error), the session
+says so and never reports the copy archived; the notice offers the tab's
+in-memory export and Try again. The reload gate keeps the export as an unsaved
+Page that only Download or Discard clears: it can hold comment drafts no
+document receipt covers. The stored copy stays as it was. The next open reaches
+the host, is refused again, and retires again; that is the retry. The host is
+the access boundary, and hiding a refused copy is a courtesy on top of it.
+
+Retirement carries the grant it was refused under: the replica key the session
+opened with. When the stored checkpoint belongs to a newer grant (another tab
+opened the Page after the owner shared it again), the same transaction archives
+only the refused tab's own copy and drafts and leaves that checkpoint, with no
+marker. A permanent deletion from Trash reads the copy's grant before the purge
+and retires under it.
 
 An access marker only blocks: a tab that hasn't seen the refusal archives its
 own copy when it next writes, and the next open the host grants writes over the
