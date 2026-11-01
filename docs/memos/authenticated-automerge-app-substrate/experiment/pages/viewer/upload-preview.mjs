@@ -4,22 +4,40 @@
 import { Decoration, Widget } from "wordgard/editor";
 import { GardState, Transaction } from "wordgard/state";
 
-/** Set or clear the pending upload: `{ pos, src, name, onCancel }` or null. */
-export const setUploadPreview = Transaction.Effect.define({
-  map(value, mapping) {
-    if (!value) return value;
-    const pos = mapping.mapPos(value.pos, 1);
-    return pos == null ? null : { ...value, pos };
-  },
-});
+/** Set or clear the pending upload: `{ resolve, src, name, onCancel }` or
+ * null. `resolve()` returns the editor position of the upload's native
+ * Automerge cursor, or throws when that target is gone. It's the same
+ * resolution the final insert uses, so the preview always marks the spot the
+ * image will land, including in repeated text. */
+export const setUploadPreview = Transaction.Effect.define();
+/** Re-resolve the pending preview against the native document, after a local
+ * write has landed in Automerge. */
+export const resolveUploadPreview = Transaction.Effect.define();
+
+function place(value) {
+  try {
+    const pos = value.resolve();
+    return Number.isSafeInteger(pos) ? { ...value, pos } : null;
+  } catch {
+    // The insertion point is gone; the upload reports that itself.
+    return null;
+  }
+}
 
 export const uploadPreview = GardState.Field.define({
   create: () => null,
   update(value, transaction) {
-    for (const effect of transaction.effects) if (effect.is(setUploadPreview)) return effect.value;
+    for (const effect of transaction.effects) {
+      if (effect.is(setUploadPreview)) return effect.value ? place(effect.value) : null;
+      if (effect.is(resolveUploadPreview) && value) return place(value);
+    }
     if (!value || !transaction.docChanged) return value;
-    // Follow the insertion point through typing and remote edits, the way its
-    // Automerge cursor does, so the finished image replaces the preview in place.
+    // Remote changes reach Automerge first, so the native cursor is current:
+    // re-resolve it rather than map the editor position, since a value diff
+    // can't tell which of several equal characters a peer inserted. A local
+    // edit's diff is exact, and Automerge sees it only after this update, so
+    // map it here; the editor re-resolves once the write lands.
+    if (transaction.annotation(Transaction.remote)) return place(value);
     const pos = transaction.changes.mapPos(value.pos, 1);
     return pos == null ? null : { ...value, pos };
   },

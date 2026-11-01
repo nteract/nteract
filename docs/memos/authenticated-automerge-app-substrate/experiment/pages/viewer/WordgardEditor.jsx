@@ -18,7 +18,12 @@ import { tables } from "wordgard/table";
 import { tablePresentation, tableKeys, selectedTable } from "./wordgard-tables.mjs";
 import { TableMenu } from "./TableMenu.jsx";
 import { CODE_LANGUAGES, codeHighlighting } from "./code-highlight.mjs";
-import { setUploadPreview, uploadPreview, uploadPreviews } from "./upload-preview.mjs";
+import {
+  resolveUploadPreview,
+  setUploadPreview,
+  uploadPreview,
+  uploadPreviews,
+} from "./upload-preview.mjs";
 import { HighlightMenu } from "./HighlightMenu.jsx";
 import { monotonicNow } from "./monotonic.mjs";
 import { selectionHighlight, toggleHighlight } from "./highlight.mjs";
@@ -359,6 +364,16 @@ export function WordgardEditor(props) {
           } finally {
             writing = false;
           }
+          // The local write is in Automerge now: put a pending upload preview
+          // back on its native cursor, exactly where the image will land.
+          if (transactions.some((tr) => tr.docChanged) && editor.state.field(uploadPreview))
+            queueMicrotask(() => {
+              if (alive && editor.state.field(uploadPreview))
+                editor.dispatch({
+                  effects: resolveUploadPreview.of(null),
+                  annotations: Transaction.addToHistory.of(false),
+                });
+            });
         }),
         Wordgard.updateListener.of(() => refresh.current()),
         Decoration.Range.source.of(() => collab.ranges()),
@@ -384,15 +399,21 @@ export function WordgardEditor(props) {
         // Draw the pending upload inline where the image will land. If the
         // insertion point can't be resolved, the status row stays as the fallback.
         let preview = null;
-        if (state?.pending && state.target)
+        if (state?.pending && state.target) {
+          const target = state.target;
+          preview = {
+            // The binding updates its map before the editor sees a change.
+            resolve: () => resolveImageInsertion(replica, target, bound.current.map),
+            src: state.preview ?? "",
+            name: state.name ?? "",
+            onCancel: () => uploader.cancel(),
+          };
           try {
-            preview = {
-              pos: resolveImageInsertion(replica, state.target, bound.current.map),
-              src: state.preview ?? "",
-              name: state.name ?? "",
-              onCancel: () => uploader.cancel(),
-            };
-          } catch {}
+            preview.resolve();
+          } catch {
+            preview = null;
+          }
+        }
         if (preview || editor.state.field(uploadPreview))
           editor.dispatch({
             effects: setUploadPreview.of(preview),
