@@ -175,16 +175,23 @@ references; it does not publish the Page or change asset access.
   their own tint and underline; where they overlap a highlight, both tints show.
 - **Markdown import:** every construct Markdown-it reads has a native mapping,
   except math and HTML other than highlight tags (and `<br>` in a table cell).
+  Markdown that would parse to less than it says is unsupported too: an image
+  inside a link or mark, a table row with more cells than its header, a link
+  with no text, and a reference definition no link uses (or a repeated label).
   Strikethrough (`~~x~~`) is the `strike` mark, `---` a horizontal rule, and
   reference links resolve to ordinary links at import. Code spans, fenced and
   indented code, escaped characters, and link destinations and titles never
   count as math or HTML.
   - Agent writes (create, insert/replace Markdown, comments with
-    `body_format: "markdown"`) refuse math and HTML with
+    `body_format: "markdown"`) refuse these with
     `400 unsupported_markdown` and `unsupported: { construct, line, column,
     excerpt }`, before anything is written. The column counts code points.
-  - Stored source, browser drafts and paste keep them as literal, editable
-    text. Export escapes literal `$` and `<`, so a read is always writable.
+  - Stored source, browser drafts and paste keep math and HTML as literal,
+    editable text. Lossy source is literal text in full, so nothing is lost.
+    Export escapes literal `$` and `<`, so a read is always writable.
+  - The scan masks code per table cell, as Markdown-it splits cells first,
+    and recognizes a tag of any length, with `>` inside quoted values, in
+    linear time.
   - Nothing writes a preserved block (`raw`, `pages-opaque`). The schema keeps
     it read-only so older Pages open; the Page host converts each stored one
     on load (see Preserved blocks below).
@@ -210,14 +217,22 @@ references; it does not publish the Page or change asset access.
     each replaced the same marker would each insert a copy, and Automerge keeps
     both. Browsers show the block read-only with a notice until the host's
     change syncs.
-  - When: on load, before native connections open, and after creating or
-    registering a Page. Runs are serialized, and each is a journaled host
+  - When: on load, before native connections open, after creating or
+    registering a Page, and when restoring one from Trash, before access
+    reopens. Runs are serialized, and each is a journaled host
     intent keyed by the heads it converted, so a restart replays the recorded
     change instead of converting again. A Page with nothing to convert gets
     no change.
   - Fence: the change stamps `preserved-markdown-converted`, so a build that
     could still write or convert one opens the Page read-only and the host
     refuses its writes. Viewer protocol 2 retires those builds everywhere.
+  - Reload: native admission sees signing keys, not records, and a reloaded
+    tab keeps its key. So before connecting, a reopened Page checks its
+    unconfirmed history for edits to a preserved block that aren't the
+    host's stamped conversion (an old build's Edit table, or a deletion).
+    If it finds any, the whole replica becomes a recovery record (Download
+    previous local draft), and the tab reopens on a fresh replica holding
+    only history the host has. The block syncs once.
   - Remove `nodes.raw`, `OpaqueBlock` and the conversion once no stored Page
     can hold a preserved block.
 - **Schema features:** every mark and block type that existed when Page10

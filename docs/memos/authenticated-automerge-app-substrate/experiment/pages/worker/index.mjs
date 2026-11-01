@@ -3348,6 +3348,10 @@ export class Page {
           );
         } else this.metadata = pending.metadata;
         return;
+      case "convertPreserved":
+        // Journaled and idempotent, so a repeated commit sequence is safe.
+        await this.convertPreservedMarkdown();
+        return;
       case "refreshAccess":
         await this.policy.refreshAccess();
         this.activity?.prune();

@@ -8,7 +8,7 @@ import { createPageData, initializePage, orderedBlockIds } from "../model/page.m
 import { adapter, exportMarkdown, richDoc, schema, textPath } from "../model/richtext.mjs";
 import { CONVERSION_FEATURE, hasPreservedBlocks } from "../model/raw-migration.mjs";
 import { documentFeatures } from "../model/schema-features.mjs";
-import { fixture, pageId } from "./trash-fixture.mjs";
+import { fixture, pageId, trashArgs } from "./trash-fixture.mjs";
 
 const refusedWith = (response, construct, line, column) => {
   assert.equal(response.status, 400);
@@ -150,4 +150,113 @@ test("the host leaves a Page alone when this build can't write it", async (t) =>
   await f.page.convertPreservedMarkdown();
   assert.deepEqual(f.heads(), heads);
   assert.ok(hasPreservedBlocks(f.doc()));
+});
+
+// Cut the conversion after its durable intent and before the document bytes
+// reach storage, then rebuild the host from storage alone. Journal recovery
+// applies the recorded change, and the load's conversion finds nothing left.
+test("a crash after the conversion intent and before the document flush converts exactly once", async (t) => {
+  const plain = await fixture(t);
+  const stored = preservedPage();
+  const f = await fixture(t, { auth: plain.auth, docBytes: A.save(stored) });
+  A.free(stored);
+  let flushes = 0;
+  // documentMutation flushes the base, persists the intent, applies, then
+  // flushes the result: the second flush is the cut.
+  f.hooks.flush = () => {
+    if (++flushes === 2) throw Object.assign(Error("process killed"), { cut: true });
+  };
+  await f.page.convertPreservedMarkdown();
+  const journal = async () => [
+    ...(await f.storage.list({ prefix: "host/operation/pages_preserved_markdown_" })),
+  ];
+  const [[, intent]] = await journal();
+  assert.equal(intent.pending, true, "the intent is durable and unfinished");
+  f.hooks.flush = undefined;
+
+  await f.crashRestart();
+  assert.equal(hasPreservedBlocks(f.doc()), false);
+  const id = orderedBlockIds(f.doc())[0];
+  const markdown = exportMarkdown(richDoc(f.doc().blocks[id]));
+  assert.equal(markdown.split("drop").length, 2, "converted once");
+  const entries = await journal();
+  assert.equal(entries.length, 1);
+  assert.equal(entries[0][1].pending, false);
+  // Another crash restart writes nothing.
+  const heads = f.heads();
+  await f.crashRestart();
+  assert.deepEqual(f.heads(), heads);
+});
+
+test("restoring a trashed Page converts its preserved blocks before access reopens", async (t) => {
+  const plain = await fixture(t);
+  const stored = preservedPage();
+  const f = await fixture(t, { auth: plain.auth, docBytes: A.save(stored) });
+  A.free(stored);
+  // Trash it before the host converts, as a Page trashed under an older build.
+  const trashed = await f.catalogCall("owner", "delete_page", trashArgs(f));
+  assert.equal(trashed.status, 200, JSON.stringify(trashed.body));
+  await f.page.convertPreservedMarkdown();
+  assert.ok(hasPreservedBlocks(f.doc()), "a trashed Page is not converted");
+  let convertedBeforeAccess;
+  const refresh = f.page.policy.refreshAccess.bind(f.page.policy);
+  f.page.policy.refreshAccess = async (...args) => {
+    convertedBeforeAccess ??= !hasPreservedBlocks(f.doc());
+    return refresh(...args);
+  };
+  const restored = await f.catalogCall("owner", "restore_page", {
+    page_id: pageId,
+    idempotency_key: "restore-preserved",
+  });
+  assert.equal(restored.status, 200, JSON.stringify(restored.body));
+  // No restart: the restore itself converted, before access refreshed.
+  assert.equal(convertedBeforeAccess, true);
+  assert.equal(hasPreservedBlocks(f.doc()), false);
+  assert.ok(documentFeatures(f.doc()).includes(CONVERSION_FEATURE));
+});
+
+test("agent writes that would lose content are refused with the construct and position", async (t) => {
+  const f = await fixture(t);
+  for (const [markdown, construct, line, column] of [
+    ["[![caption](image.png)](https://example.org)", "wrapped-image", 1, 2],
+    ["| A |\n| --- |\n| b | c |", "table-cells", 3, 5],
+    ["See [](https://example.org)", "empty-link", 1, 5],
+    ["Prose.\n\n[unused]: https://example.org", "definition", 3, 1],
+  ]) {
+    const refused = await f.tool("owner", "edit_page", {
+      base_heads: f.heads(),
+      idempotency_key: `lossy-${construct}`,
+      operations: [{ op: "insert_markdown", markdown }],
+    });
+    refusedWith(refused, construct, line, column);
+  }
+});
+
+test("a preserved block whose source would lose content converts to literal text", async (t) => {
+  const plain = await fixture(t);
+  let stored = A.change(A.from(createPageData({ pageId, title: "Lossy" })), (draft) =>
+    initializePage(draft, ""),
+  );
+  const id = orderedBlockIds(stored)[0];
+  const source = "[![caption](image.png)](https://example.org)\n\n| A |\n| --- |\n| b | c |";
+  stored = A.change(stored, (draft) =>
+    A.updateSpans(
+      draft,
+      textPath(id),
+      pmNodeToSpans(
+        adapter,
+        schema.node("doc", null, [schema.node("raw", { source, importId: "", kind: "markdown" })]),
+      ),
+      adapter.updateSpansConfig(),
+    ),
+  );
+  const f = await fixture(t, { auth: plain.auth, docBytes: A.save(stored) });
+  A.free(stored);
+  await f.page.convertPreservedMarkdown();
+  const doc = richDoc(f.doc().blocks[id]);
+  // Every character survives as text: the link, the image and every cell.
+  for (const part of source.split("\n").filter(Boolean)) assert.ok(doc.textContent.includes(part));
+  doc.descendants((node) => {
+    assert.ok(!["image", "table", "raw"].includes(node.type.name), node.type.name);
+  });
 });

@@ -114,6 +114,34 @@ const cases = [
   { id: "code-hides-syntax", markdown: "Keep `~~x~~`, `$x$` and `<div>`.\n\n```\n$$\n<section>\n```\n\n    $y$ <b>" },
   { id: "literal-comment-around-math", markdown: "<!-- $x$ --> after" },
   { id: "literal-escaped-math", markdown: "Escaped \\$x\\$ and $a \\$ b$." },
+  ...[
+    ["literal-linked-image", "[![caption](image.png)](https://example.org)"],
+    ["literal-strong-image", "**![caption](image.png)**"],
+    ["literal-emphasized-image", "*![caption](image.png)*"],
+    ["literal-nested-image-marks", "[***![caption](image.png)***](https://example.org)"],
+    ["literal-linked-image-with-prose", "Before\n\n[Text and ![caption](image.png)](https://example.org)\n\nAfter\n"],
+    ["literal-marked-table-image", "| A |\n| --- |\n| **![caption](image.png)** |"],
+    ["literal-linked-heading-image", "# [![caption](image.png)](https://example.org)"],
+    ["literal-marked-nested-list-image", "> - *![caption](image.png)*"],
+    ["literal-highlighted-image", "<mark>![caption](image.png)</mark>"],
+    ["literal-extra-table-cells", "| A |\n| --- |\n| b | c |"],
+    ["literal-extra-table-cells-quoted", "> | A | B |\n> | --- | --- |\n> | 1 | 2 | 3 |"],
+    ["literal-empty-link", "Before [](https://example.org) after"],
+    ["literal-unused-definition", "Prose.\n\n[unused]: https://example.org"],
+    ["literal-repeated-definition", "[a][r]\n\n[r]: /one\n[r]: /two"],
+    ["escaped-pipe-cell-is-native", "| A |\n| --- |\n| b \\| c |"],
+    ["short-row-is-native", "| A | B |\n| --- | --- |\n| c |"],
+    ["literal-math-across-cells", "| a | b |\n| - | - |\n| `$x | y$` |"],
+    ["literal-html-across-cells", "| a | b |\n| - | - |\n| `<i> | </i>` |"],
+    ["code-within-one-cell", "| a |\n| - |\n| `$x$ <i>` |"],
+    ["literal-long-tag", `<a title="${"x".repeat(600)}">t</a>`],
+    ["literal-quoted-gt-tag", '<a href="x>y">t</a> and <b c=\'>\'>d'],
+    ["literal-comment-with-gt", "<!-- a > b --> and <?php x > y ?>"],
+    ["literal-multiline-tag", 'text <a\nb="c">'],
+    ["not-a-tag-nbsp", "<mark\u00a0>x</mark>"],
+    ["not-a-tag-unspaced-attribute", "<a b='x'c>"],
+    ["literal-definition-then-setext", "[r]: x\n==="],
+  ].map(([id, markdown]) => ({ id, markdown })),
   { id: "destinations-are-not-syntax", markdown: '[a](<x> "<b> $t$") and ![p](</$y$/i.png>) then $z$\n\n[r]: <x>' },
 ];
 
@@ -124,31 +152,6 @@ const fixtures = cases.map((input) => {
 
 // Differences from the JavaScript codec, each with its exact Rust result.
 const divergences = [
-  ...[
-    ["linked-image-preserved", "[![caption](image.png)](https://example.org)"],
-    ["strong-image-preserved", "**![caption](image.png)**"],
-    ["emphasized-image-preserved", "*![caption](image.png)*"],
-    ["nested-image-marks-preserved", "[***![caption](image.png)***](https://example.org)"],
-    ["linked-image-with-prose-preserved", "Before\n\n[Text and ![caption](image.png)](https://example.org)\n\nAfter\n"],
-    ["marked-table-image-preserved", "| A |\n| --- |\n| **![caption](image.png)** |"],
-    ["linked-heading-image-preserved", "# [![caption](image.png)](https://example.org)"],
-    ["marked-nested-list-image-preserved", "> - *![caption](image.png)*"],
-    ["highlighted-image-preserved", "<mark>![caption](image.png)</mark>"],
-  ].map(([id, markdown]) => ({
-    id,
-    markdown,
-    reason: "Image markers cannot carry enclosing links or marks. The legacy adapter drops those wrappers; Rust preserves the whole source as opaque content.",
-    legacy_spans: importLegacy(markdown),
-    expected_spans: [{
-      type: "block",
-      value: {
-        type: "pages-opaque",
-        parents: [],
-        attrs: { source: markdown, importId: "", kind: "markdown" },
-        isEmbed: false,
-      },
-    }],
-  })),
   {
     id: "nested-quote-siblings-preserved",
     markdown: "> > a\n\n> > b",

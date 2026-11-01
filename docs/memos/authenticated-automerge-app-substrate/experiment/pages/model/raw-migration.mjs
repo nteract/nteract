@@ -27,7 +27,7 @@ import * as A from "@automerge/automerge/slim";
 import { pmNodeToSpans } from "@automerge/prosemirror";
 import { updateSpansConfig } from "./marks.mjs";
 import { adapter, isRich, parseMarkdown } from "./richtext.mjs";
-import { stampFeatures, stampSpans } from "./schema-features.mjs";
+import { documentFeatures, stampFeatures, stampSpans } from "./schema-features.mjs";
 
 export const PRESERVED_BLOCK = "pages-opaque";
 export const CONVERSION_FEATURE = "preserved-markdown-converted";
@@ -103,6 +103,85 @@ export function convertedSpans(marker) {
           },
         },
   );
+}
+
+// The element ids of every preserved marker `doc` holds. A marker's cursor
+// is its element id, which is also the id of its map object.
+function preservedMarkerIds(doc) {
+  const ids = new Set();
+  for (const path of preservedTextPaths(doc)) {
+    let index = 0;
+    for (const span of spansAt(doc, path)) {
+      if (isPreserved(span)) ids.add(A.getCursor(doc, path, index));
+      index += span.type === "block" ? 1 : span.value.length;
+    }
+  }
+  return ids;
+}
+
+// The element ids of every marker any change in `doc` created: the object a
+// change sets `type: "pages-opaque"` on.
+function createdMarkerIds(doc) {
+  const ids = new Set();
+  for (const change of A.getAllChanges(doc))
+    for (const op of A.decodeChange(change).ops)
+      if (op.key === "type" && op.value === PRESERVED_BLOCK) ids.add(op.obj);
+  return ids;
+}
+
+/**
+ * Changes after `since` that rewrite, retype or delete a preserved block,
+ * other than the host's own conversion, and the heads of `doc` without them.
+ * Returns `{ baseHeads, changes }`, or null when there are none.
+ *
+ * Only a build from before the conversion writes such a change (its Edit
+ * table action, or deleting the block). The host converts every preserved
+ * block itself, and Automerge keeps both conversions, so publishing one
+ * would hold the block's content twice. `since` is history the host already
+ * has; pass [] when that is unknown, which reads the whole history.
+ *
+ * The host's conversion is told apart by its stamp: the conversion feature
+ * is set in the same change. Everything that depends on a selected change
+ * is left out of `baseHeads` too, so the history there is closed.
+ */
+export function preservedBlockEdits(doc, since = []) {
+  const metas = A.getChangesSince(doc, since).map((change) => A.decodeChange(change));
+  if (!metas.length) return null;
+  const markers = since.length ? preservedMarkerIds(A.view(doc, since)) : createdMarkerIds(doc);
+  if (!markers.size) return null;
+  const touched = new Set();
+  for (const meta of metas) {
+    // The change that creates a marker writes its fields too.
+    const created = new Set(
+      meta.ops
+        .filter((op) => op.key === "type" && op.value === PRESERVED_BLOCK)
+        .map((op) => op.obj),
+    );
+    const touches = meta.ops.some(
+      (op) =>
+        (markers.has(op.obj) && !created.has(op.obj)) ||
+        (op.action === "del" && markers.has(op.elemId)),
+    );
+    if (touches && !documentFeatures(A.view(doc, [meta.hash])).includes(CONVERSION_FEATURE))
+      touched.add(meta.hash);
+  }
+  if (!touched.size) return null;
+  // Dependents of a selected change go with it.
+  const left = new Set(touched);
+  for (let grew = true; grew; ) {
+    grew = false;
+    for (const meta of metas)
+      if (!left.has(meta.hash) && meta.deps.some((dep) => left.has(dep))) {
+        left.add(meta.hash);
+        grew = true;
+      }
+  }
+  const kept = metas.filter((meta) => !left.has(meta.hash));
+  const covered = new Set(kept.flatMap((meta) => meta.deps));
+  const baseHeads = [...new Set([...since, ...kept.map((meta) => meta.hash)])].filter(
+    (head) => !covered.has(head),
+  );
+  return { baseHeads, changes: [...touched] };
 }
 
 /**

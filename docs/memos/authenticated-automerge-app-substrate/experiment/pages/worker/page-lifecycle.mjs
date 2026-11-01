@@ -228,6 +228,8 @@ export const pageLifecycleSpec = {
       sync: effect(),
       // Install the committed record in memory, after its barrier.
       install: effect(),
+      // Convert preserved Markdown blocks, as the host's journaled intent.
+      convertPreserved: effect(),
       refreshAccess: effect(),
       projectTitle: effect(),
       retireIndex: effect(),
@@ -309,11 +311,14 @@ const TRASH_COMMIT = [
   effectOf("retireIndex"),
   effectOf("end"),
 ];
-/** Restore: nothing is granted until the record is durable and installed. */
+/** Restore: nothing is granted until the record is durable and installed.
+ * Preserved Markdown blocks convert after install and before access reopens,
+ * so no peer writes beside a block the host is about to convert. */
 const RESTORE_COMMIT = [
   put(true, true),
   effectOf("sync"),
   effectOf("install"),
+  effectOf("convertPreserved"),
   effectOf("refreshAccess"),
   effectOf("projectTitle"),
   effectOf("end"),

@@ -161,13 +161,13 @@ test("other HTML is refused for agents and literal text otherwise", () => {
     assert.equal(doc.firstChild.type.name, "paragraph");
     assert.equal(doc.textContent, source);
   }
-  // Markdown reads `<mark:x>` as ordinary text, so an agent may write it.
-  // `<mark\u00a0>` is a tag to Markdown-it (its `\s` includes U+00A0) but not
-  // a highlight, so it is refused like any other tag.
-  assert.equal(unsupportedMarkdown("<mark:x>"), null);
-  assert.equal(parseMarkdown("<mark:x>").textContent, "<mark:x>");
-  assert.equal(unsupportedMarkdown("<mark\u00a0>x</mark>")?.construct, "html");
-  assert.equal(parseMarkdown("<mark\u00a0>x</mark>").textContent, "<mark\u00a0>x</mark>");
+  // Neither is a tag: `<mark:x>` is an autolink to a refused scheme, and a
+  // tag's spaces are ASCII, as in CommonMark, so `<mark\u00a0>` is text. An
+  // agent may write both.
+  for (const source of ["<mark:x>", "<mark\u00a0>x</mark>"]) {
+    assert.equal(unsupportedMarkdown(source), null, source);
+    assert.equal(parseMarkdown(source).textContent, source);
+  }
 });
 
 test("strikethrough round trips through Markdown and native spans", () => {

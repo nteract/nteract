@@ -11,9 +11,9 @@ use crate::{
 /// Import the `pages-markdown-v1` profile into native span data, as the
 /// JavaScript `parseMarkdown` in `pages/model/richtext.mjs` does. Math and
 /// HTML Pages can't represent stay literal text (see `scan`); content whose
-/// kind is not Markdown is all literal text. The one preserved block left is
-/// an image inside a link or mark, which a native image marker can't carry.
-/// Both source and resulting serialized spans must fit.
+/// kind is not Markdown is all literal text, and so is Markdown that would
+/// parse to less than it says (see `lossy`). Import never writes a preserved
+/// block. Both source and resulting serialized spans must fit.
 pub fn markdown_to_spans(source: &str, options: &ImportOptions<'_>) -> Result<Vec<Span>> {
     if source.len() > MAX_INPUT_BYTES {
         return Err(CodecError("Markdown exceeds the input byte limit".into()));
@@ -22,6 +22,7 @@ pub fn markdown_to_spans(source: &str, options: &ImportOptions<'_>) -> Result<Ve
         return literal_document(source);
     }
     guard_container_prefixes(source)?;
+    let original = source;
 
     // This is deliberately not Constructs::gfm(): Pages keeps bare URLs as
     // text, recognizes tasks only in bullet lists, and has no footnotes.
@@ -53,12 +54,14 @@ pub fn markdown_to_spans(source: &str, options: &ImportOptions<'_>) -> Result<Ve
     };
     let source: &str = &source;
 
-    if needs_opaque(&tree, 0, false)? {
-        return opaque(source, options);
+    if lossy(&tree, 0, false)? {
+        return literal_document(original);
     }
     let mut tree = tree;
     let mut definitions = Definitions::new();
-    collect_definitions(&mut tree, &mut definitions);
+    if collect_definitions(&mut tree, &mut definitions) || !all_used(&tree, &definitions) {
+        return literal_document(original);
+    }
     let Node::Root(root) = tree else {
         return Err(CodecError("Markdown parser did not return a root".into()));
     };
@@ -76,7 +79,7 @@ pub fn markdown_to_spans(source: &str, options: &ImportOptions<'_>) -> Result<Ve
     }
     // An image marker cannot carry a highlight, as with links and emphasis.
     if builder.highlighted_image {
-        return opaque(source, options);
+        return literal_document(original);
     }
     validate_spans(&builder.spans)?;
     Ok(builder.spans)
@@ -443,7 +446,8 @@ fn literal_document(source: &str) -> Result<Vec<Span>> {
                 },
             });
         }
-        for (index, line) in part.split('\n').enumerate() {
+        // Line breaks at a paragraph's edges separate it; they aren't content.
+        for (index, line) in part.trim_matches('\n').split('\n').enumerate() {
             if index > 0 {
                 spans.push(Span::Block {
                     value: Block {
@@ -477,43 +481,64 @@ type Definitions = std::collections::HashMap<String, (String, Option<String>)>;
 
 /// Move every definition out of the tree into `definitions`. Like
 /// Markdown-it, a definition leaves no block behind, so the blocks around it
-/// are siblings.
-fn collect_definitions(node: &mut Node, definitions: &mut Definitions) {
+/// are siblings. Returns whether a label was defined twice: the second
+/// destination would be dropped.
+fn collect_definitions(node: &mut Node, definitions: &mut Definitions) -> bool {
     let Some(children) = node.children_mut() else {
-        return;
+        return false;
     };
+    let mut repeated = false;
     children.retain(|child| {
         let Node::Definition(definition) = child else {
             return true;
         };
-        definitions
-            .entry(definition.identifier.clone())
-            .or_insert_with(|| (definition.url.clone(), definition.title.clone()));
+        match definitions.entry(definition.identifier.clone()) {
+            std::collections::hash_map::Entry::Occupied(_) => repeated = true,
+            std::collections::hash_map::Entry::Vacant(entry) => {
+                entry.insert((definition.url.clone(), definition.title.clone()));
+            }
+        }
         false
     });
     for child in children {
-        collect_definitions(child, definitions);
+        repeated |= collect_definitions(child, definitions);
     }
+    repeated
 }
 
-fn opaque(source: &str, options: &ImportOptions<'_>) -> Result<Vec<Span>> {
-    let spans = vec![Span::Block {
-        value: Block {
-            kind: "pages-opaque".into(),
-            parents: Vec::new(),
-            attrs: Attributes::from([
-                ("source".into(), json!(source)),
-                ("importId".into(), json!(options.import_id)),
-                ("kind".into(), json!(options.kind)),
-            ]),
-            is_embed: false,
-        },
-    }];
-    validate_spans(&spans)?;
-    Ok(spans)
+/// Whether some reference uses every definition; an unused one's destination
+/// would be dropped.
+fn all_used(tree: &Node, definitions: &Definitions) -> bool {
+    fn walk(node: &Node, used: &mut std::collections::HashSet<String>) {
+        match node {
+            Node::LinkReference(reference) => {
+                used.insert(reference.identifier.clone());
+            }
+            Node::ImageReference(reference) => {
+                used.insert(reference.identifier.clone());
+            }
+            _ => {}
+        }
+        if let Some(children) = node.children() {
+            for child in children {
+                walk(child, used);
+            }
+        }
+    }
+    if definitions.is_empty() {
+        return true;
+    }
+    let mut used = std::collections::HashSet::new();
+    walk(tree, &mut used);
+    definitions.keys().all(|label| used.contains(label))
 }
 
-fn needs_opaque(node: &Node, depth: usize, inside_marks: bool) -> Result<bool> {
+/// Markdown that would parse to less than it says, which import keeps as
+/// literal text, as the JavaScript `pages_lossy` rules do: an image inside a
+/// link or mark (an image marker can't carry one), a link with no text, and a
+/// table body row with more cells than its header. Constructs this profile
+/// doesn't enable count too, so a parser change can't drop content.
+fn lossy(node: &Node, depth: usize, inside_marks: bool) -> Result<bool> {
     if depth > MAX_DEPTH {
         return Err(CodecError(
             "Markdown nesting exceeds the depth limit".into(),
@@ -535,11 +560,24 @@ fn needs_opaque(node: &Node, depth: usize, inside_marks: bool) -> Result<bool> {
     {
         return Ok(true);
     }
-    // Marks live on text spans; an image marker cannot carry its enclosing
-    // link or emphasis. Preserve the entire source before building any spans
-    // instead of accepting an image with those semantics silently removed.
     if inside_marks && matches!(node, Node::Image(_) | Node::ImageReference(_)) {
         return Ok(true);
+    }
+    match node {
+        Node::Link(markdown::mdast::Link { children, .. })
+        | Node::LinkReference(markdown::mdast::LinkReference { children, .. })
+            if children.is_empty() =>
+        {
+            return Ok(true)
+        }
+        Node::Table(table)
+            if table.children.iter().skip(1).any(
+                |row| matches!(row, Node::TableRow(row) if row.children.len() > table.align.len()),
+            ) =>
+        {
+            return Ok(true)
+        }
+        _ => {}
     }
     let inside_marks = inside_marks
         || matches!(
@@ -552,7 +590,7 @@ fn needs_opaque(node: &Node, depth: usize, inside_marks: bool) -> Result<bool> {
         );
     if let Some(children) = node.children() {
         for child in children {
-            if needs_opaque(child, depth + 1, inside_marks)? {
+            if lossy(child, depth + 1, inside_marks)? {
                 return Ok(true);
             }
         }
@@ -1236,7 +1274,7 @@ mod tests {
     }
 
     #[test]
-    fn image_wrappers_preserve_whole_source_and_provenance() {
+    fn lossy_markdown_stays_literal_text() {
         for source in [
             "[![caption](image.png)](https://example.org)",
             "**![caption](image.png)**",
@@ -1252,8 +1290,20 @@ mod tests {
                 kind: "markdown",
             };
             let spans = markdown_to_spans(source, &options).unwrap();
-            assert_eq!(spans, opaque(source, &options).unwrap(), "{source}");
-            assert_eq!(crate::spans_to_markdown(&spans).unwrap(), source);
+            assert_eq!(spans, literal_document(source).unwrap(), "{source}");
+        }
+        for source in [
+            "| a |\n| --- |\n| b | c |",
+            "[](https://example.org)",
+            "[r]: /x",
+            "[r]: /a\n[r]: /b\n\n[q][r]",
+            "Text <mark>and ![caption](image.png)</mark>",
+        ] {
+            assert_eq!(
+                import(source),
+                literal_document(source).unwrap(),
+                "{source}"
+            );
         }
     }
 
@@ -1505,7 +1555,7 @@ mod tests {
     }
 
     #[test]
-    fn highlighted_images_preserve_whole_source() {
+    fn highlighted_images_stay_literal_text() {
         let options = ImportOptions {
             import_id: "image-import",
             kind: "markdown",
@@ -1513,7 +1563,7 @@ mod tests {
         let source = "Text <mark>and ![caption](image.png)</mark>";
         assert_eq!(
             markdown_to_spans(source, &options).unwrap(),
-            opaque(source, &options).unwrap()
+            literal_document(source).unwrap()
         );
         // Balanced tags inside alt text are markup, not alt characters.
         let spans = import("![<mark>x</mark> y](cat.png)");

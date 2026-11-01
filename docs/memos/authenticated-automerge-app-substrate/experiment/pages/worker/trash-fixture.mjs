@@ -123,22 +123,28 @@ export async function fixture(t, { env: extraEnv = {}, auth: shared, docBytes } 
       },
     },
   };
+  // The document as durable storage holds it: written by the repo flush, the
+  // only place the host persists document bytes. `hooks.flush` runs first and
+  // may throw, to cut a run before the bytes are written.
+  let persisted = A.save(doc);
+  const hooks = {};
   const build = (metadata) => {
+    const handle = {
+      doc: () => doc,
+      async update(fn) {
+        doc = fn(doc);
+      },
+      broadcast() {},
+      on() {},
+      off() {},
+    };
     const instance = Object.assign(Object.create(Page.prototype), {
       ready: Promise.resolve(),
       tail: Promise.resolve(),
       env,
       ctx: { storage, waitUntil: (promise) => tasks.push(promise) },
       metadata,
-      handle: {
-        doc: () => doc,
-        async update(fn) {
-          doc = fn(doc);
-        },
-        broadcast() {},
-        on() {},
-        off() {},
-      },
+      handle,
       wires: new Set(),
       serverKey,
       serverSenderId: "server-sender",
@@ -146,7 +152,13 @@ export async function fixture(t, { env: extraEnv = {}, auth: shared, docBytes } 
         async delete() {
           removed++;
         },
-        async flush() {},
+        async find() {
+          return handle;
+        },
+        async flush() {
+          await hooks.flush?.();
+          persisted = A.save(doc);
+        },
       },
       backend: { async flush() {} },
     });
@@ -229,10 +241,22 @@ export async function fixture(t, { env: extraEnv = {}, auth: shared, docBytes } 
     },
     /** A new Page object over the same durable storage, as after eviction. */
     async restart() {
-      page = build(await storage.get("host/document"));
+      page = build((await storage.get("host/document")) ?? structuredClone(page.metadata));
       await page.policy.load();
       return page;
     },
+    /** A new Page object loaded from durable storage alone, as after a crash:
+     * the document is the bytes the last flush wrote, and the load path runs
+     * (journal recovery, then preserved-block conversion). */
+    async crashRestart() {
+      doc = A.load(persisted);
+      // The fixture installs its first record in memory only.
+      page = build((await storage.get("host/document")) ?? structuredClone(page.metadata));
+      await page.policy.load();
+      await page.loadDocument();
+      return page;
+    },
+    hooks,
     tasks,
     blockId,
     catalogOf,

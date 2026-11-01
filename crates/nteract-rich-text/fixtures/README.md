@@ -12,7 +12,9 @@ paragraphs, nested lists and quotes, tasks, native tables and alignment, empty
 cells, ragged rows, pipes, and table hard breaks, strikethrough, horizontal
 rules, and reference links resolved against their definitions. Math, HTML and
 links to unsafe destinations stay literal text, and non-Markdown input is
-literal text in paragraphs. General GFM support is not the Pages compatibility
+literal text in paragraphs. So is all of a source that would parse to less than
+it says: a wrapped image, extra table cells, an empty link, or an unused or
+repeated definition. General GFM support is not the Pages compatibility
 profile: bare URLs remain prose, for example. Code spans, fenced and indented
 code, escaped characters and link destinations and titles never count as math
 or HTML. A `$$` pair anywhere on a line is math, with or without surrounding
@@ -42,8 +44,8 @@ codec. Each includes observed JavaScript spans and the exact required Rust
 result. There is no blanket exception
 for parser differences.
 
-Linked, emphasized, or highlighted images also retain the whole original source as opaque
-content: native image markers cannot carry those enclosing marks. Fixtures
+Linked, emphasized, or highlighted images keep the whole original source as
+literal text: native image markers cannot carry those enclosing marks. Fixtures
 cover nested wrappers, surrounding prose, headings, lists, and table cells.
 Ordinary images, formatting inside alt text, adjacent marked prose, and text
 links keep their existing native mappings.

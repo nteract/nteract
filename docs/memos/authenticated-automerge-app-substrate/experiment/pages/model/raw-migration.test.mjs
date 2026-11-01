@@ -8,7 +8,9 @@ import { projectReadContent } from "./read-content.mjs";
 import {
   CONVERSION_FEATURE,
   convertPreservedBlocks,
+  convertedSpans,
   hasPreservedBlocks,
+  preservedBlockEdits,
   preservedTextPaths,
 } from "./raw-migration.mjs";
 import {
@@ -112,6 +114,17 @@ const SHAPES = [
   ["two blocks", [raw("~~a~~"), p("mid"), raw("$b$")], "~~a~~\n\nmid\n\n\\$b\\$"],
   ["an instruction block", [raw("# not *Markdown*", "instruction")], "\\# not \\*Markdown\\*"],
   ["an empty source", [p("Kept"), raw("")], "Kept"],
+  // Sources that would parse to less than they say stay literal, all of them.
+  [
+    "an image inside a link",
+    [raw("[![caption](image.png)](https://example.org)")],
+    "\\[!\\[caption\\](image.png)\\](https://example.org)",
+  ],
+  [
+    "a row with more cells than its header",
+    [raw("| A |\n| --- |\n| b | c |")],
+    "| A |\\\n| --- |\\\n| b | c |",
+  ],
 ];
 
 for (const [label, nodes, markdown] of SHAPES) {
@@ -256,4 +269,57 @@ test("read-content, outline and export read converted blocks as native nodes", (
     "# Title\n\nBody ~~x~~\n\n---\n\n\\$m\\$",
   );
   assert.equal(orderedBlockIds(after)[0], id);
+});
+
+test("conversion keeps every character of a lossy source", () => {
+  for (const source of [
+    "[![caption](image.png)](https://example.org)",
+    "| A |\n| --- |\n| b | c | d |",
+    "**![c](i.png)** and [](https://x.test)",
+    "Prose.\n\n[unused]: https://example.org",
+  ]) {
+    const { doc, id } = stored([raw(source)]);
+    const tree = richDoc(convert(doc).doc.blocks[id]);
+    for (const line of source.split("\n").filter(Boolean))
+      assert.ok(tree.textContent.includes(line), `${source}: ${line}`);
+  }
+});
+
+// A pre-cutover tab's own conversion, or its deletion of the block, is
+// selected; the host's stamped conversion and unrelated edits are not.
+test("preservedBlockEdits selects only unstamped edits to a preserved block", () => {
+  const { doc: base, id } = stored([p("Intro"), raw("~~x~~")]);
+  const since = A.getHeads(base);
+  const competing = A.change(A.clone(base, { actor: "4d".repeat(16) }), (draft) => {
+    const spans = A.spans(draft, textPath(id)).flatMap((span) =>
+      span.type === "block" && String(span.value.type) === "pages-opaque"
+        ? convertedSpans(span)
+        : [span],
+    );
+    A.updateSpans(draft, textPath(id), spans, adapter.updateSpansConfig());
+  });
+  const found = preservedBlockEdits(competing, since);
+  assert.deepEqual(found.baseHeads, since);
+  assert.equal(found.changes.length, 1);
+  // Deleting the block counts too.
+  const deleted = A.change(A.clone(base, { actor: "5d".repeat(16) }), (draft) => {
+    const spans = A.spans(draft, textPath(id)).filter(
+      (span) => !(span.type === "block" && String(span.value.type) === "pages-opaque"),
+    );
+    A.updateSpans(draft, textPath(id), spans, adapter.updateSpansConfig());
+  });
+  assert.ok(preservedBlockEdits(deleted, since));
+  // Not selected: the host's conversion, an edit elsewhere, no edit at all.
+  assert.equal(preservedBlockEdits(convert(A.clone(base)).doc, since), null);
+  const titled = A.change(A.clone(base), (draft) => {
+    draft.title = "Renamed";
+  });
+  assert.equal(preservedBlockEdits(titled, since), null);
+  assert.equal(preservedBlockEdits(base, since), null);
+  assert.equal(preservedBlockEdits(base, []), null);
+  // A later edit built on the competing conversion goes with it.
+  const later = A.change(A.clone(competing), (draft) => {
+    draft.title = "After";
+  });
+  assert.deepEqual(preservedBlockEdits(later, since).baseHeads, since);
 });

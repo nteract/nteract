@@ -711,3 +711,40 @@ test("--- alone in a paragraph becomes a horizontal rule and round trips", () =>
   assert.ok(!g.editor.state.doc.content.some((node) => node.type === HorizontalRule.type));
   g.binding.destroy();
 });
+
+test("emphasis delimiters typed one at a time inside URLs stay literal", () => {
+  for (const typed of [
+    "https://example.org/_draft_",
+    "see https://example.org/_a_ now",
+    "www.example.org/*x*",
+    "(https://x.test/~~old~~)",
+    "ftp://h/**b**",
+  ]) {
+    const f = fixture("");
+    f.editor.select(1);
+    f.editor.type(typed);
+    assert.deepEqual(markedRuns(f.editor.state.doc), [[typed, []]], typed);
+    f.binding.destroy();
+  }
+  // A URL elsewhere on the line doesn't stop a span outside it.
+  const g = fixture("");
+  g.editor.select(1);
+  g.editor.type("https://x.test then _done_");
+  assert.deepEqual(markedRuns(g.editor.state.doc), [
+    ["https://x.test then ", []],
+    ["done", ["em"]],
+  ]);
+  g.binding.destroy();
+});
+
+test("pasted <del> and <strike> tags read as strikethrough", async () => {
+  const { Wordgard } = await import("wordgard/editor");
+  const { pasteStrikethroughTags } = await import("./wordgard-shortcuts.mjs");
+  const state = GardState.create({ config: [...editorConfig(), pasteStrikethroughTags] });
+  const filters = state.facet(Wordgard.clipboardInputHTMLFilter);
+  const html = filters.reduce(
+    (value, filter) => filter(value, state),
+    '<p><del>a</del> <STRIKE class="x">b</STRIKE> <details>c</details> <delta>d</delta></p>',
+  );
+  assert.equal(html, '<p><s>a</s> <s class="x">b</s> <details>c</details> <delta>d</delta></p>');
+});

@@ -69,6 +69,14 @@ const runs = {
   "nested destination run": "[a](b(".repeat(RUN / 6),
   "unclosed title run": '](x "'.repeat(RUN / 5),
   "unbalanced definition run": `${"]:x".repeat(RUN / 3)}(`,
+  "unclosed quoted attribute run": '<a b="'.repeat(RUN / 6),
+  "nested quoted tag run": '<a b="<a b="'.repeat(RUN / 12),
+  "long open tag run": `<a ${"b ".repeat(RUN / 2)}`,
+  "unclosed declaration run": "<!x".repeat(RUN / 3),
+  "unclosed CDATA run": "<![CDATA[".repeat(RUN / 9),
+  "table cell backtick run": `| a |\n| - |\n${"| ` ".repeat(RUN / 4)}`,
+  "wrapped image run": "[![a](b)](c)".repeat(RUN / 12),
+  "unused definition run": "[a]: b\n".repeat(RUN / 7),
 };
 
 // The scan is ours and must stay well under the parser. The parse includes
@@ -104,6 +112,78 @@ test("code spans and fenced or indented code never count as math or HTML", () =>
     assert.equal(unsupportedMarkdown(source), null, JSON.stringify(source));
     assert.ok(!nodeNames(parseAgentMarkdown(source)).includes("raw"));
   }
+});
+
+test("a code span can't cross a table cell boundary", () => {
+  // Markdown-it splits cells before reading them, so these backticks open no
+  // span and the dollars are math.
+  assert.deepEqual(unsupportedMarkdown("| a | b |\n| - | - |\n| `$x | y$` |"), {
+    construct: "math",
+    line: 3,
+    column: 4,
+    excerpt: "$x | y$",
+  });
+  assert.equal(unsupportedMarkdown("| a | b |\n| - | - |\n| `<i> | </i>` |")?.construct, "html");
+  // Inside one cell they are code.
+  assert.equal(unsupportedMarkdown("| a |\n| - |\n| `$x$ <i>` |"), null);
+});
+
+test("HTML tags are recognized whatever their length, with > inside quoted values", () => {
+  const long = `<a title="${"x".repeat(5000)}">`;
+  for (const [source, excerpt] of [
+    [`${long}t</a>`, long.slice(0, 80)],
+    ['<a href="x>y">t</a>', '<a href="x>y">'],
+    ["<a b='>'>", "<a b='>'>"],
+    ["<!-- a > b -->", "<!-- a > b -->"],
+    ["<?php x > y ?>", "<?php x > y ?>"],
+    ["<![CDATA[ x > y ]]>", "<![CDATA[ x > y ]]>"],
+    ['<a\nb="c">', "<a"],
+  ]) {
+    const found = unsupportedMarkdown(source);
+    assert.equal(found?.construct, "html", source.slice(0, 40));
+    assert.equal(found.excerpt, excerpt, source.slice(0, 40));
+    const doc = parseMarkdown(source);
+    assert.ok(parseAgentMarkdown(exportMarkdown(doc)).eq(doc), source.slice(0, 40));
+  }
+  // Not tags: a tag's spaces are ASCII, and an attribute needs a space first.
+  for (const source of ["x < y > z", "<a b='x'c>", "<mark\u00a0>x</mark>"])
+    assert.equal(unsupportedMarkdown(source), null, source);
+});
+
+test("Markdown that would parse to less than it says is refused or kept literal", () => {
+  for (const [source, construct, line, column] of [
+    ["[![caption](image.png)](https://example.org)", "wrapped-image", 1, 2],
+    ["**![caption](image.png)**", "wrapped-image", 1, 3],
+    ["<mark>![c](i.png)</mark>", "wrapped-image", 1, 7],
+    ["| A |\n| --- |\n| **![c](i.png)** |", "wrapped-image", 3, 5],
+    ["| A |\n| --- |\n| b | c |", "table-cells", 3, 5],
+    ["> | A | B |\n> | - | - |\n> | 1 | 2 | 3 |", "table-cells", 3, 11],
+    ["Before [](https://example.org)", "empty-link", 1, 8],
+    ["Prose.\n\n[unused]: https://example.org", "definition", 3, 1],
+    ["[a][r]\n\n[r]: /one\n[r]: /two", "definition", 4, 1],
+  ]) {
+    const found = unsupportedMarkdown(source);
+    assert.deepEqual(
+      [found?.construct, found?.line, found?.column],
+      [construct, line, column],
+      source,
+    );
+    assert.throws(() => parseAgentMarkdown(source), { code: "unsupported_markdown" });
+    // Literal import keeps every character as text.
+    const doc = parseMarkdown(source);
+    for (const part of source.split("\n"))
+      if (part.trim()) assert.ok(doc.textContent.includes(part.trim()), `${source}: ${part}`);
+    assert.ok(parseAgentMarkdown(exportMarkdown(doc)).eq(doc), source);
+  }
+  // Still native: a used definition, a short row padded with empty cells, an
+  // escaped pipe, an image beside a link.
+  for (const source of [
+    "[a][r]\n\n[r]: /x",
+    "| A | B |\n| - | - |\n| c |",
+    "| A |\n| - |\n| b \\| c |",
+    "![c](i.png) [link](https://example.org)",
+  ])
+    assert.equal(unsupportedMarkdown(source), null, source);
 });
 
 test("link destinations and titles are never math or HTML", () => {
@@ -232,6 +312,12 @@ test("random input never imports a preserved block, and its export is writable",
     "]:",
     "<x>",
     "](<x>",
+    "![i](p)",
+    "[r]: u",
+    "[r]",
+    "| a | b |",
+    '<a b="',
+    "'>",
   ];
   for (let n = 0; n < 10_000; n++) {
     let source = "";

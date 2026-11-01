@@ -76,23 +76,22 @@ character; and content whose kind is not Markdown is all literal text. Existing
 Pages immutable source provenance remains the caller's responsibility; exports
 are canonical projections, not a byte-for-byte reconstruction of Markdown.
 
-Linked or emphasized images import as whole-source opaque content because
-the native image marker cannot represent its enclosing link or marks. This
-preserves source and provenance without silently discarding the wrapper.
+Markdown that would parse to less than it says imports as literal text, all of
+it: an image inside a link or mark (the native image marker can't carry one), a
+table row with more cells than its header, a link with no text, and a reference
+definition no link uses or a repeated label.
 
 Markdown cannot represent all rich states, including arbitrary whitespace
 marks or independent alignment per table cell. Export reports unsupported
 content instead of silently stripping it; a semantic reimport check verifies
 representability at this explicit export boundary. Callers must retain the
 native document and surface that limitation. Re-import is not an editor migration.
-Import writes no opaque block except for those wrapped images. An isolated
-opaque block, which older Pages builds also stored, exports its original
-source. A mixture of opaque blocks and rich prose returns an export error. The
+Import writes no opaque block. An isolated opaque block, which older Pages
+builds stored, exports its original source. A mixture of opaque blocks and rich prose returns an export error. The
 original rich document remains intact in both cases.
 
 Ordered-list starts currently normalize to one because the existing span
-contract does not carry them. Ragged tables export with padding to retain every
-cell. Markdown source and serialized spans each have a separate 256 KiB
+contract does not carry them. Short table rows export with padding. Markdown source and serialized spans each have a separate 256 KiB
 admission limit, following the existing Pages rich-block ingress limit.
 JSON escaping, block markers, marks, and opaque provenance count toward the
 span limit, so some source below 256 KiB can still exceed it after conversion.

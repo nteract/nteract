@@ -294,6 +294,11 @@ function watchHost(page, h) {
     cacheTitle.call(this, identity);
     trace.record({ type: "projectTitle" });
   };
+  const convert = page.convertPreservedMarkdown.bind(page);
+  page.convertPreservedMarkdown = async () => {
+    await convert();
+    trace.record({ type: "convertPreserved" });
+  };
   const policy = page.policy;
   const refresh = policy.refreshAccess.bind(policy);
   policy.refreshAccess = async (options) => {

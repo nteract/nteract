@@ -1255,6 +1255,9 @@
             "type": "install"
           },
           {
+            "type": "convertPreserved"
+          },
+          {
             "type": "refreshAccess"
           },
           {
@@ -1906,6 +1909,9 @@
           },
           {
             "type": "install"
+          },
+          {
+            "type": "convertPreserved"
           },
           {
             "type": "refreshAccess"

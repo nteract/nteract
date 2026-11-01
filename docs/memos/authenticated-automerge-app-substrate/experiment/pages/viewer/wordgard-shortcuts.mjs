@@ -1,6 +1,6 @@
 import { ChangeSet, Node, Plot } from "wordgard/doc";
 import { GardSelection } from "wordgard/state";
-import { InputRule, KeyBinding } from "wordgard/editor";
+import { InputRule, KeyBinding, Wordgard } from "wordgard/editor";
 import {
   Command,
   enter,
@@ -357,6 +357,9 @@ const WORD = /[\p{L}\p{N}]/u;
  * - The content is non-empty, starts and ends with a non-space, and holds no
  *   leaf (a hard break or image).
  * - A delimiter after an odd number of backslashes is literal.
+ * - Nothing converts inside a URL-like token (a run of non-spaces holding
+ *   `://`, starting `www.`, or an email address), so typing
+ *   `https://example.org/_draft_` keeps the underscores.
  * The opening delimiter is the nearest one before the closing one, found by a
  * backward scan, so a long line without one costs one linear pass.
  */
@@ -381,6 +384,7 @@ export function delimitedSpan(text, delimiter) {
     const content = text.slice(open + width, close);
     if (
       !content ||
+      urlToken(text, open, close + width) ||
       /^\s|\s$/.test(content) ||
       content.includes(LEAF) ||
       escaped(open) ||
@@ -391,6 +395,27 @@ export function delimitedSpan(text, delimiter) {
   }
   return null;
 }
+
+// Whether text[from, to) lies in a URL-like token: the run of non-spaces
+// around it holds `://`, starts with `www.`, or reads as an email address.
+// Reads only that run.
+function urlToken(text, from, to) {
+  let start = from,
+    end = to;
+  while (start > 0 && !/\s/.test(text[start - 1])) start--;
+  while (end < text.length && !/\s/.test(text[end])) end++;
+  const token = text.slice(start, end);
+  return (
+    token.includes("://") || /^[(<]?www\./i.test(token) || /^[^@\s]+@[^@\s]+\.[^@\s]/.test(token)
+  );
+}
+
+// Pasted HTML from other editors writes strikethrough as `<del>` or
+// `<strike>`. Wordgard reads `<s>` and a line-through style, so the tags are
+// renamed before parsing. A tag name ends at a space, `/` or `>`.
+export const pasteStrikethroughTags = Wordgard.clipboardInputHTMLFilter.of((html) =>
+  html.replace(/<(\/?)(?:del|strike)(?=[\s/>])/gi, "<$1s"),
+);
 
 // `delimiter`text`delimiter` becomes `mark`ed text when the closing
 // delimiter is typed. Like the inline code rule, the text keeps its tokens:
@@ -458,4 +483,5 @@ export const markdownShortcuts = () => [
   // `---` alone in a paragraph becomes a horizontal rule.
   horizontalRule.createOnDashes,
   strikethroughKey,
+  pasteStrikethroughTags,
 ];

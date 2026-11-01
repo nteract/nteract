@@ -1,6 +1,5 @@
 import * as A from "@automerge/automerge/slim";
 import MarkdownIt from "markdown-it";
-import { HTML_TAG_RE } from "markdown-it/lib/common/html_re.mjs";
 import {
   basicSchemaAdapter,
   SchemaAdapter,
@@ -42,7 +41,10 @@ baseMarks.strike = {
     { tag: "s" },
     { tag: "del" },
     { tag: "strike" },
-    { style: "text-decoration", getAttrs: (value) => value.includes("line-through") && null },
+    {
+      style: "text-decoration",
+      getAttrs: (value) => value.includes("line-through") && null,
+    },
   ],
   toDOM: () => ["s", 0],
   automerge: { markName: "strike" },
@@ -117,7 +119,10 @@ nodes.list_item = {
   automerge: {
     ...nodes.list_item.automerge,
     block: {
-      within: { ...nodes.list_item.automerge.block.within, task_list: "task-list-item" },
+      within: {
+        ...nodes.list_item.automerge.block.within,
+        task_list: "task-list-item",
+      },
     },
     attrParsers: {
       fromAutomerge: (block) => ({ checked: block.attrs.checked ?? false }),
@@ -132,7 +137,9 @@ nodes.code_block = {
     block: "code-block",
     attrParsers: {
       fromAutomerge: (block) => ({ params: String(block.attrs.params ?? "") }),
-      fromProsemirror: (node) => ({ params: new A.ImmutableString(node.attrs.params) }),
+      fromProsemirror: (node) => ({
+        params: new A.ImmutableString(node.attrs.params),
+      }),
     },
   },
 };
@@ -159,7 +166,11 @@ nodes.raw = {
   marks: "",
   atom: true,
   selectable: true,
-  attrs: { source: { default: "" }, importId: { default: "" }, kind: { default: "markdown" } },
+  attrs: {
+    source: { default: "" },
+    importId: { default: "" },
+    kind: { default: "markdown" },
+  },
   automerge: {
     block: "pages-opaque",
     attrParsers: {
@@ -175,7 +186,11 @@ nodes.raw = {
   },
   toDOM: (node) => [
     "section",
-    { class: "opaque", contenteditable: "false", "aria-label": `Preserved ${node.attrs.kind}` },
+    {
+      class: "opaque",
+      contenteditable: "false",
+      "aria-label": `Preserved ${node.attrs.kind}`,
+    },
     ["small", node.attrs.kind === "instruction" ? "Instruction" : "Preserved Markdown"],
     ["pre", node.attrs.source],
   ],
@@ -245,10 +260,10 @@ adapter.nodeMappings.find((mapping) => mapping.blockName === "task-list-item").a
 export const schema = adapter.schema;
 // Keep bare URLs and email addresses as prose. Use a private tokenizer so table
 // support does not mutate other consumers of the default Markdown parser.
-const tokenizer = new MarkdownIt("commonmark", { html: false, linkify: false }).enable([
-  "table",
-  "strikethrough",
-]);
+const tokenizer = new MarkdownIt("commonmark", {
+  html: false,
+  linkify: false,
+}).enable(["table", "strikethrough"]);
 // A destination Pages can't render stays literal text, so import never writes
 // a link or image that validation would then refuse.
 const defaultValidateLink = tokenizer.validateLink;
@@ -397,6 +412,135 @@ tokenizer.core.ruler.at("inline", (state) => {
       );
   }
 });
+// Markdown that parses to less than its source said. Each rule records
+// `{ construct, offset }` in `env.pagesLossy`, where `offset` is a source
+// position for the error's line and column:
+// - "table-cells": a body row with more cells than the header. The extra
+//   cells are dropped.
+// - "definition": a reference definition no link uses, or a second definition
+//   of a label. Its destination is dropped.
+// - "wrapped-image": an image inside a link, emphasis, strikethrough or
+//   highlight. An image is a block marker, which can't carry a mark.
+// - "empty-link": a link with no text. Its destination has nowhere to live.
+// parseMarkdown keeps such source as literal text; parseAgentMarkdown
+// refuses it. Positions are found with bounded reads of the source.
+const lossy = (env, construct, offset) => (env.pagesLossy ??= []).push({ construct, offset });
+const lineOffset = (state, line) => state.bMarks[line] + state.tShift[line];
+function splitCells(text) {
+  // Markdown-it's escapedSplit, returning each cell's start offset.
+  const starts = [0];
+  for (let i = 0, escaped = false; i < text.length; i++) {
+    const code = text.charCodeAt(i);
+    if (code === 0x7c && !escaped) starts.push(i + 1);
+    escaped = code === 0x5c;
+  }
+  return starts;
+}
+// Wrapped in place: `at` takes the rule's terminator list (`alt`) from its
+// options, so each wrapper passes the original's.
+const blockRule = (name) => tokenizer.block.ruler.__rules__.find((rule) => rule.name === name);
+const { fn: tableRule, alt: tableAlt } = blockRule("table");
+const { fn: referenceRule, alt: referenceAlt } = blockRule("reference");
+tokenizer.block.ruler.at(
+  "table",
+  (state, startLine, endLine, silent) => {
+    if (!tableRule(state, startLine, endLine, silent)) return false;
+    if (silent) return true;
+    const cells = (line) => {
+      const start = lineOffset(state, line);
+      const raw = state.src.slice(start, state.eMarks[line]);
+      const lead = raw.length - raw.trimStart().length;
+      const text = raw.trim();
+      const starts = splitCells(text);
+      // A leading and a trailing pipe open and close no cell.
+      let first = 0,
+        count = starts.length;
+      if (text.startsWith("|")) {
+        first = 1;
+        count--;
+      }
+      if (text.endsWith("|") && !text.endsWith("\\|") && count > 0) count--;
+      return { count, at: (index) => start + lead + starts[first + index] };
+    };
+    const columns = cells(startLine).count;
+    for (let line = startLine + 2; line < state.line; line++) {
+      const row = cells(line);
+      if (row.count > columns) lossy(state.env, "table-cells", row.at(columns) - 1);
+    }
+    return true;
+  },
+  { alt: [...tableAlt] },
+);
+tokenizer.block.ruler.at(
+  "reference",
+  (state, startLine, endLine, silent) => {
+    const before = new Set(Object.keys(state.env.references ?? {}));
+    if (!referenceRule(state, startLine, endLine, silent)) return false;
+    if (silent) return true;
+    const added = Object.keys(state.env.references ?? {}).filter((label) => !before.has(label));
+    const offset = lineOffset(state, startLine);
+    if (!added.length) lossy(state.env, "definition", offset);
+    else (state.env.pagesDefinitions ??= new Map()).set(added[0], offset);
+    return true;
+  },
+  { alt: [...referenceAlt] },
+);
+// Record which definitions a link reads, through the object the inline rules
+// look labels up in.
+tokenizer.core.ruler.before("inline", "pages_reference_use", (state) => {
+  const references = state.env.references;
+  if (!references) return;
+  const used = (state.env.pagesUsedDefinitions = new Set());
+  state.env.references = new Proxy(references, {
+    get(target, label) {
+      if (typeof label === "string") used.add(label);
+      return target[label];
+    },
+  });
+});
+tokenizer.core.ruler.after("inline", "pages_lossy", (state) => {
+  const env = state.env;
+  for (const [label, offset] of env.pagesDefinitions ?? [])
+    if (!env.pagesUsedDefinitions?.has(label)) lossy(env, "definition", offset);
+  const marks = new Set(["link_open", "strong_open", "em_open", "s_open", "pages_highlight_open"]);
+  let lineStarts;
+  const lineStart = (line) => {
+    if (!lineStarts) {
+      lineStarts = [0];
+      for (let i = state.src.indexOf("\n"); i >= 0; i = state.src.indexOf("\n", i + 1))
+        lineStarts.push(i + 1);
+    }
+    return line < lineStarts.length ? lineStarts[line] : state.src.length;
+  };
+  // Table cells have no line map; their row's map stands in.
+  let map;
+  for (const token of state.tokens) {
+    if (token.map) map = token.map;
+    if (token.type !== "inline" || !map) continue;
+    if (!token.children?.some((child) => child.type === "image" || child.type === "link_open"))
+      continue;
+    // Inline children have no positions: point at the nearest bracket after
+    // the previous finding, within this block.
+    const start = lineStart(map[0]);
+    const end = lineStart(map[1]);
+    let cursor = start;
+    const find = (needle) => {
+      const at = state.src.indexOf(needle, cursor);
+      cursor = at >= 0 && at < end ? at + 1 : cursor;
+      return at >= 0 && at < end ? at : start;
+    };
+    let depth = 0;
+    const children = token.children ?? [];
+    children.forEach((child, index) => {
+      if (marks.has(child.type)) depth++;
+      else if (child.nesting === -1 && marks.has(child.type.replace(/_close$/, "_open"))) depth--;
+      if (child.type === "image" && depth > 0) lossy(env, "wrapped-image", find("!["));
+      if (child.type === "link_open" && children[index + 1]?.type === "link_close")
+        lossy(env, "empty-link", find("[]"));
+    });
+  }
+  env.pagesLossy?.sort((a, b) => a.offset - b.offset);
+});
 const cellAttrs = (token) => ({
   isAmgBlock: true,
   align: /^text-align:(left|center|right)$/.exec(token.attrGet("style") ?? "")?.[1] ?? null,
@@ -435,7 +579,10 @@ const parser = new MarkdownParser(schema, tokenizer, {
   tr: { block: "table_row", attrs: { isAmgBlock: true } },
   th: { block: "table_header", getAttrs: cellAttrs },
   td: { block: "table_cell", getAttrs: cellAttrs },
-  pages_highlight: { mark: "highlight", getAttrs: (token) => ({ color: token.attrGet("color") }) },
+  pages_highlight: {
+    mark: "highlight",
+    getAttrs: (token) => ({ color: token.attrGet("color") }),
+  },
   s: { mark: "strike" },
   // An explicit block: the span adapter emits no marker for a leaf it infers.
   hr: { node: "horizontal_rule", attrs: { isAmgBlock: true } },
@@ -450,7 +597,12 @@ const plainImportParser = new MarkdownParser(
 // replace_match and format_match, which work on native spans.
 const markSerializers = {
   ...defaultMarkdownSerializer.marks,
-  strike: { open: "~~", close: "~~", mixable: true, expelEnclosingWhitespace: true },
+  strike: {
+    open: "~~",
+    close: "~~",
+    mixable: true,
+    expelEnclosingWhitespace: true,
+  },
   highlight: {
     open: (_state, mark) => `<mark data-color="${mark.attrs.color}">`,
     close: "</mark>",
@@ -483,6 +635,21 @@ const serializer = new MarkdownSerializer(
       state.write("\n");
       state.write(fence);
       state.closeBlock(node);
+    },
+    // Text after a hard break starts a source line, where block syntax such
+    // as `>`, `#` or a setext `=` would start a new block. Escape it as at a
+    // block start.
+    text(state, node) {
+      if (!state.inAutolink && state.out.endsWith("\\\n")) {
+        state.atBlockStart = true;
+        if (node.text.startsWith("=")) {
+          state.text(`\\=`, false);
+          state.atBlockStart = false;
+          if (node.text.length > 1) state.text(node.text.slice(1), true);
+          return;
+        }
+      }
+      state.text(node.text, !state.inAutolink);
     },
     task_list(state, node) {
       // The Markdown list marker is '- '; '[x] ' belongs to the paragraph.
@@ -602,7 +769,10 @@ export const MATH_SYNTAX =
 // within a bounded window.
 
 // Block structure only: which lines are code, tables or inline content.
-const blockTokenizer = new MarkdownIt("commonmark", { html: false, linkify: false })
+const blockTokenizer = new MarkdownIt("commonmark", {
+  html: false,
+  linkify: false,
+})
   .enable("table")
   .disable(["inline", "text_join"]);
 const MASKED = "\u0000";
@@ -716,20 +886,32 @@ function scanMarkdown(source, tokens = blockTokenizer.parse(source, {})) {
     lineStarts.push(i + 1);
   const offset = (line) => (line < lineStarts.length ? lineStarts[line] : source.length);
   const masked = new Uint8Array(source.length);
-  const tables = [];
+  // Inline content, as `[start, end, inTable]`, in order: where code spans
+  // pair and where HTML can be. A table cell is its own range, as Markdown-it
+  // splits cells before reading their inline content.
+  const inline = [];
   for (const token of tokens) {
     if (!token.map) continue;
     const start = offset(token.map[0]),
       end = offset(token.map[1]);
     if (token.type === "fence" || token.type === "code_block") masked.fill(1, start, end);
-    else if (token.type === "inline") maskInline(source, masked, start, end);
-    else if (token.type === "table_open") {
-      tables.push([start, end]);
-      // Cell content has no line map. A code span can't cross its row.
-      for (let line = token.map[0]; line < token.map[1]; line++)
-        maskInline(source, masked, offset(line), offset(line + 1));
-    }
+    else if (token.type === "inline") inline.push([start, end, false]);
+    else if (token.type === "table_open")
+      for (let line = token.map[0]; line < token.map[1]; line++) {
+        if (line === token.map[0] + 1) continue; // the delimiter row
+        const lineStart = offset(line);
+        const lineEnd = Math.max(lineStart, offset(line + 1) - 1);
+        const starts = splitCells(source.slice(lineStart, lineEnd));
+        starts.forEach((cell, index) =>
+          inline.push([
+            lineStart + cell,
+            index + 1 < starts.length ? lineStart + starts[index + 1] - 1 : lineEnd,
+            true,
+          ]),
+        );
+      }
   }
+  for (const [start, end] of inline) maskInline(source, masked, start, end);
   maskDestinations(source, masked);
   // Line breaks stay, so the line-start rules still see every line.
   let text = source;
@@ -763,35 +945,29 @@ function scanMarkdown(source, tokens = blockTokenizer.parse(source, {})) {
     math.lastIndex = end;
   }
   const mathCount = found.length;
-  let inMath = 0,
-    inTable = 0;
-  let close = -1;
-  for (let at = text.indexOf("<"); at >= 0; at = text.indexOf("<", at + 1)) {
-    while (inMath < mathCount && found[inMath].end <= at) inMath++;
-    if (inMath < mathCount && found[inMath].start <= at) {
-      at = found[inMath].end - 1;
-      continue;
+  let inMath = 0;
+  const tags = text.includes("<") ? tagMatcher(text) : null;
+  for (const [rangeStart, rangeEnd, inTable] of tags ? inline : []) {
+    for (let at = text.indexOf("<", rangeStart); at >= 0 && at < rangeEnd; ) {
+      while (inMath < mathCount && found[inMath].end <= at) inMath++;
+      if (inMath < mathCount && found[inMath].start <= at) {
+        at = text.indexOf("<", found[inMath].end);
+        continue;
+      }
+      const end = tags.match(at, rangeEnd);
+      if (end < 0) {
+        at = text.indexOf("<", at + 1);
+        continue;
+      }
+      const tag = text.slice(at, end);
+      const highlight = [HIGHLIGHT_OPEN, HIGHLIGHT_CLOSE].some((pattern) => {
+        const match = pattern.exec(tag);
+        return match?.[0].length === tag.length && highlightColorValid(match);
+      });
+      const tableBreak = inTable && TABLE_BREAK.exec(tag)?.[0].length === tag.length;
+      if (!highlight && !tableBreak) found.push({ construct: "html", start: at, end });
+      at = text.indexOf("<", end);
     }
-    // A tag is read up to the first `>` after its `<`, and at most the window,
-    // so each `<` costs a bounded read. A tag with `>` inside an attribute
-    // value or comment is not read as one and stays literal text.
-    if (close < at) close = text.indexOf(">", at);
-    if (close < 0) break;
-    const window = text.slice(at, Math.min(close + 1, at + TAG_WINDOW));
-    const tag = HTML_TAG_RE.exec(window);
-    if (!tag) continue;
-    const length = tag[0].length;
-    const highlight = [HIGHLIGHT_OPEN, HIGHLIGHT_CLOSE].some((pattern) => {
-      const match = pattern.exec(window);
-      return match?.[0].length === length && highlightColorValid(match);
-    });
-    while (inTable < tables.length && tables[inTable][1] <= at) inTable++;
-    const tableBreak =
-      inTable < tables.length &&
-      tables[inTable][0] <= at &&
-      TABLE_BREAK.exec(window)?.[0].length === length;
-    if (!highlight && !tableBreak) found.push({ construct: "html", start: at, end: at + length });
-    at += length - 1;
   }
   // An HTML comment or instruction can span a math range. Overlapping ranges
   // merge, and the first one names the construct.
@@ -803,7 +979,104 @@ function scanMarkdown(source, tokens = blockTokenizer.parse(source, {})) {
   }
   return { found: merged, masked };
 }
-const TAG_WINDOW = 256;
+
+// CommonMark raw HTML, recognized at a `<` within an inline range: an open or
+// closing tag, a comment, a processing instruction, a declaration or CDATA.
+// `match(at, end)` returns the tag's end, or -1. Whitespace is ASCII, as in
+// CommonMark and the Rust codec.
+//
+// The work is linear in the text. A quoted attribute value jumps to its
+// closing quote through a precomputed next-quote table. Comment, instruction,
+// declaration and CDATA ends come from forward searches whose start only
+// moves forward, so no stretch of text is searched twice. Walks over names,
+// spaces and unquoted values cost one step a character, and only a quoted
+// value can hold a later `<`, so a re-walk needs a quote pair; past a budget
+// of steps (only adversarial input reaches it) every remaining `<` reads as
+// HTML, which only ever escapes it.
+function tagMatcher(text) {
+  const length = text.length;
+  const nextOf = (char) => {
+    const table = new Int32Array(length + 1).fill(-1);
+    for (let i = length - 1; i >= 0; i--) table[i] = text[i] === char ? i : table[i + 1];
+    return table;
+  };
+  let doubleQuote, singleQuote;
+  const searches = new Map();
+  const after = (needle, from) => {
+    let search = searches.get(needle);
+    if (!search) searches.set(needle, (search = { from: -1, at: -1 }));
+    if (from < search.from || (search.at >= 0 && from > search.at) || search.from < 0) {
+      search.from = from;
+      search.at = text.indexOf(needle, from);
+    }
+    return search.at;
+  };
+  let budget = 16 * length + 4096;
+  const code = (i) => text.charCodeAt(i);
+  const isSpace = (c) => c === 0x20 || (c >= 0x09 && c <= 0x0d);
+  const isLetter = (c) => (c | 0x20) >= 0x61 && (c | 0x20) <= 0x7a;
+  const isDigit = (c) => c >= 0x30 && c <= 0x39;
+  const nameChar = (c) => isLetter(c) || isDigit(c) || c === 0x2d;
+  const attrStart = (c) => isLetter(c) || c === 0x5f || c === 0x3a;
+  const attrChar = (c) => attrStart(c) || isDigit(c) || c === 0x2e || c === 0x2d;
+  // Not space or a control character, and not one of " ' = < > `.
+  const unquoted = (c) =>
+    c > 0x20 && c !== 0x22 && c !== 0x27 && c !== 0x3d && c !== 0x3c && c !== 0x3e && c !== 0x60;
+  const bounded = (at, needle, end) =>
+    at >= 0 && at + needle.length <= end ? at + needle.length : -1;
+  function match(at, end) {
+    if (budget < 0) return at + 1;
+    const walk = (i, test) => {
+      const start = i;
+      while (i < end && test(code(i))) i++;
+      budget -= i - start + 1;
+      return i;
+    };
+    const next = code(at + 1);
+    if (next === 0x21) {
+      if (text.startsWith("<!--", at)) {
+        if (text.startsWith("<!-->", at)) return at + 5 <= end ? at + 5 : -1;
+        if (text.startsWith("<!--->", at)) return at + 6 <= end ? at + 6 : -1;
+        return bounded(after("-->", at + 4), "-->", end);
+      }
+      if (text.startsWith("<![CDATA[", at)) return bounded(after("]]>", at + 9), "]]>", end);
+      if (isLetter(code(at + 2))) return bounded(after(">", at + 2), ">", end);
+      return -1;
+    }
+    if (next === 0x3f) return bounded(after("?>", at + 2), "?>", end);
+    if (next === 0x2f) {
+      if (!isLetter(code(at + 2))) return -1;
+      const i = walk(walk(at + 3, nameChar), isSpace);
+      return i < end && code(i) === 0x3e ? i + 1 : -1;
+    }
+    if (!isLetter(next)) return -1;
+    let i = walk(at + 2, nameChar);
+    for (;;) {
+      const spaced = walk(i, isSpace);
+      if (spaced < end && code(spaced) === 0x3e) return spaced + 1;
+      if (spaced + 1 < end && code(spaced) === 0x2f && code(spaced + 1) === 0x3e) return spaced + 2;
+      if (spaced === i || spaced >= end || !attrStart(code(spaced))) return -1;
+      i = walk(spaced + 1, attrChar);
+      let j = walk(i, isSpace);
+      if (j >= end || code(j) !== 0x3d) continue;
+      j = walk(j + 1, isSpace);
+      const quote = code(j);
+      if (quote === 0x22 || quote === 0x27) {
+        const table =
+          quote === 0x22 ? (doubleQuote ??= nextOf('"')) : (singleQuote ??= nextOf("'"));
+        const close = j + 1 <= length ? table[j + 1] : -1;
+        if (close < 0 || close >= end) return -1;
+        budget--;
+        i = close + 1;
+      } else {
+        const valueEnd = walk(j, unquoted);
+        if (valueEnd === j) return -1;
+        i = valueEnd;
+      }
+    }
+  }
+  return { match };
+}
 const TABLE_BREAK = /^<br\s*(?:\/\s*)?>/i;
 function highlightColorValid(match) {
   if (match[1] === undefined && match[2] === undefined) return true;
@@ -816,6 +1089,25 @@ function highlightColorValid(match) {
 }
 
 const CONSTRUCTS = {
+  "table-cells": {
+    name: "A table row with more cells than its header",
+    advice:
+      "Add the missing header cells, or remove the extra cells, so every row matches the header.",
+  },
+  definition: {
+    name: "A reference definition no link uses (or a repeated label)",
+    advice:
+      "Use it in a link such as [text][label], or remove it. Write [label]: as \\[label]: to keep it as text.",
+  },
+  "wrapped-image": {
+    name: "An image inside a link or formatting",
+    advice:
+      "Pages images can't be linked or formatted. Put the image on its own and the link next to it.",
+  },
+  "empty-link": {
+    name: "A link with no text",
+    advice: "Give the link text, as in [text](url).",
+  },
   math: {
     name: "Math",
     advice:
@@ -833,8 +1125,20 @@ const CONSTRUCTS = {
  * 1-based; the column counts characters (code points) in that line. */
 export function unsupportedMarkdown(source) {
   const text = normalizeSource(source);
-  const [first] = scanMarkdown(text).found;
-  return first ? locate(text, first) : null;
+  const env = {};
+  return firstUnsupported(text, tokenizer.parse(text, env), env);
+}
+// The earliest construct, math and HTML or lossy, located.
+function firstUnsupported(text, tokens, env) {
+  const [range] = scanMarkdown(text, tokens).found;
+  const [lost] = env.pagesLossy ?? [];
+  if (!range && !lost) return null;
+  if (range && (!lost || range.start <= lost.offset)) return locate(text, range);
+  return locate(text, {
+    construct: lost.construct,
+    start: lost.offset,
+    end: lost.offset + 40,
+  });
 }
 function locate(text, first) {
   const lineStart = text.lastIndexOf("\n", first.start - 1) + 1;
@@ -856,7 +1160,11 @@ export function unsupportedMarkdownError(found) {
     Error(
       `${name} at line ${found.line}, column ${found.column} (${JSON.stringify(found.excerpt)}) isn't supported in Pages Markdown. ${advice}`,
     ),
-    { status: 400, code: "unsupported_markdown", details: { unsupported: found } },
+    {
+      status: 400,
+      code: "unsupported_markdown",
+      details: { unsupported: found },
+    },
   );
 }
 
@@ -902,7 +1210,9 @@ function literalDoc(source) {
       schema.node(
         "paragraph",
         null,
+        // Line breaks at a paragraph's edges separate it; they aren't content.
         part
+          .replace(/^\n+|\n+$/g, "")
           .split("\n")
           .flatMap((line, index) => [
             ...(index ? [schema.node("hard_break")] : []),
@@ -922,9 +1232,12 @@ function literalDoc(source) {
 export function parseMarkdown(source, { kind = "markdown" } = {}) {
   if (kind !== "markdown") return literalDoc(source);
   const text = normalizeSource(source);
-  const tokens = tokenizer.parse(text, {});
+  let env = {};
+  let tokens = tokenizer.parse(text, env);
   const scan = scanMarkdown(text, tokens);
-  return scan.found.length ? parser.parse(literalize(text, scan)) : parseTokens(tokens);
+  if (scan.found.length) tokens = tokenizer.parse(literalize(text, scan), (env = {}));
+  // Markdown that would parse to less than it says stays literal, all of it.
+  return env.pagesLossy?.length ? literalDoc(source) : parseTokens(tokens);
 }
 
 /** Markdown an agent wrote, as native rich text. Throws a 400
@@ -932,9 +1245,10 @@ export function parseMarkdown(source, { kind = "markdown" } = {}) {
  * represent, so the agent can rewrite and retry. */
 export function parseAgentMarkdown(source) {
   const text = normalizeSource(source);
-  const tokens = tokenizer.parse(text, {});
-  const [first] = scanMarkdown(text, tokens).found;
-  if (first) throw unsupportedMarkdownError(locate(text, first));
+  const env = {};
+  const tokens = tokenizer.parse(text, env);
+  const found = firstUnsupported(text, tokens, env);
+  if (found) throw unsupportedMarkdownError(found);
   return parseTokens(tokens);
 }
 // The parser over tokens this module already read, so one import tokenizes
