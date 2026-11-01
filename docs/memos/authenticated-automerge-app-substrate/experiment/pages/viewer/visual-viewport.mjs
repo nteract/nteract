@@ -16,7 +16,11 @@ const finite = (...values) => values.every(Number.isFinite);
 export function viewportInsets({ visualViewport, layoutHeight }) {
   const { offsetTop, height } = visualViewport ?? {};
   if (!finite(offsetTop, height, layoutHeight) || height <= 0 || layoutHeight <= 0)
-    return { top: 0, bottom: 0, height: finite(layoutHeight) && layoutHeight > 0 ? layoutHeight : 0 };
+    return {
+      top: 0,
+      bottom: 0,
+      height: finite(layoutHeight) && layoutHeight > 0 ? layoutHeight : 0,
+    };
   return {
     top: Math.max(0, Math.round(offsetTop)),
     bottom: Math.max(0, Math.round(layoutHeight - (offsetTop + height))),

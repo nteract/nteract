@@ -363,7 +363,9 @@ try {
             if (!preview) return null;
             const blocks = [...root.querySelectorAll(":scope > *")];
             const last = blocks.filter((b) => !b.contains(preview) && b.textContent.trim()).at(-1);
-            return !!last && preview.getBoundingClientRect().top >= last.getBoundingClientRect().top;
+            return (
+              !!last && preview.getBoundingClientRect().top >= last.getBoundingClientRect().top
+            );
           }),
         { message: "the pending image sits at the insertion point, after the text before it" },
       )
@@ -430,13 +432,19 @@ try {
     },
     { times: 1 },
   );
-  await content(owner).locator("p").first().click({ position: { x: 20, y: 12 } });
+  await content(owner)
+    .locator("p")
+    .first()
+    .click({ position: { x: 20, y: 12 } });
   await owner.keyboard.press("End");
   await imageEvent(owner, "paste", fixtures[1], "orphaned-screenshot.png");
   await orphanStarted;
   try {
     await expect(content(owner).locator(".wordgard-upload-preview")).toBeVisible();
-    await content(editor).locator("p").first().click({ position: { x: 20, y: 12 } });
+    await content(editor)
+      .locator("p")
+      .first()
+      .click({ position: { x: 20, y: 12 } });
     await editor.keyboard.press("Home");
     await editor.keyboard.press("Shift+End");
     await editor.keyboard.press("Backspace");

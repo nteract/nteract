@@ -884,10 +884,7 @@ export function WordgardEditor(props) {
   // Mobile bar commands act only while this editor or its bar holds focus.
   function ownsBar() {
     const editor = view.current;
-    return (
-      !!editor &&
-      (editor.hasFocus || !!mobileBar.current?.contains(document.activeElement))
-    );
+    return !!editor && (editor.hasFocus || !!mobileBar.current?.contains(document.activeElement));
   }
   function chooseImage() {
     const editor = view.current;
