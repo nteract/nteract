@@ -390,7 +390,7 @@ const internalEntries = async (f) => [
   ...(await f.storage.list({ prefix: "host/operation/internal:" })),
 ];
 
-test("a full legacy receipt store doesn't block the conversion", async (t) => {
+test("a full tokenless receipt store doesn't block the conversion", async (t) => {
   const f = await preservedFixture(t);
   for (let n = 0; n < 1000; n++)
     await f.storage.put(`host/operation/legacy-${String(n).padStart(4, "0")}`, {
@@ -411,7 +411,10 @@ test("a full legacy receipt store doesn't block the conversion", async (t) => {
     idempotency_key: "legacy-overflow",
     operations: [{ op: "insert_markdown", markdown: "More." }],
   });
-  assert.equal(legacy.body.code, "operation_receipt_capacity", "client budgets are unchanged");
+  assert.equal(legacy.status, 200, "a full tokenless lane evicts its oldest receipt");
+  const entries = await f.storage.list({ prefix: "host/operation/" });
+  assert.ok(!entries.has("host/operation/legacy-0000"));
+  assert.ok(entries.has("host/operation/legacy-overflow"));
 });
 
 test("a conversion that applied but failed to finish replays until its journal entry is terminal", async (t) => {

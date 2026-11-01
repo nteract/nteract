@@ -829,9 +829,10 @@ execute again. The server returns retry_until when issuing a token. An expired
 request returns HTTP 410 with code retry_expired and does not execute. Read the
 current Page/catalog to reconcile its outcome; never automatically replace an
 expired token or key and resend an uncertain operation. Pending admitted edits
-remain recoverable with their original request. Keys bind to their exact token: replacing or stripping that token cannot reuse an expired key. Legacy
-requests without a token retain their receipts, with a separate lifetime cap of 1,000 operations. Use the
-token protocol for ongoing work.
+remain recoverable with their original request. Keys bind to their exact token: replacing or stripping that token cannot reuse an expired key. Requests
+without a token keep only their newest 1,000 receipts: a key repeated right after a lost
+response replays, but once 1,000 newer tokenless requests have landed on the same Page
+or catalog the key is a new request again. Use the token protocol for ongoing work.
 
 For insert_markdown, insert_image, and move_block, after_block_id is the preceding block's ID;
 null places the block first, and omission appends it. For a comment, use action

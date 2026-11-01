@@ -5,6 +5,7 @@ import { createAuthFixture } from "../../auth-fixtures.mjs";
 import { Catalog } from "./index.mjs";
 import { documentMutation } from "./mutations.mjs";
 import { reserveOperation } from "./operation-journal.mjs";
+import { fixture, pageId } from "./trash-fixture.mjs";
 
 class Storage {
   values = new Map();
@@ -42,7 +43,7 @@ function fill(storage, count, pending = false) {
     });
 }
 
-test("the 1000th legacy document receipt succeeds; exact retries work but new legacy operations stop", async () => {
+test("the 1001st tokenless document receipt evicts the oldest; exact retries and payload guards hold", async () => {
   const storage = new Storage();
   fill(storage, 999);
   let doc = A.from({ page_id: "fixture-page", text: "base" });
@@ -71,38 +72,91 @@ test("the 1000th legacy document receipt succeeds; exact retries work but new le
     status: 409,
     message: "idempotency_key was used for a different request",
   });
-  await assert.rejects(
-    documentMutation({
-      ...context,
-      args: { idempotency_key: "next-receipt", base_heads: A.getHeads(doc) },
-    }),
-    {
-      status: 429,
-      code: "operation_receipt_capacity",
-      message: /use the retry_token from read_page or list_pages/,
+  // The lane is full. The next tokenless write makes room by evicting the
+  // oldest completed receipt (the unstamped fixture rows sort oldest, in key
+  // order), instead of refusing.
+  const next = await documentMutation({
+    ...context,
+    args: { idempotency_key: "next-receipt", base_heads: A.getHeads(doc) },
+    apply(draft) {
+      draft.text = "accepted after eviction";
     },
-  );
-  assert.equal(applications, 1);
-  assert.deepEqual(A.getHeads(doc), receipt.heads);
+  });
+  assert.equal(applications, 2);
+  assert.deepEqual(A.getHeads(doc), next.heads);
+  const keys = [...(await storage.list({ prefix: "host/operation/" })).keys()];
+  assert.equal(keys.length, 1000);
+  assert.ok(!keys.includes("host/operation/old-0"), "the oldest receipt was evicted");
+  assert.ok(keys.includes("host/operation/old-1"));
+  assert.ok(keys.includes("host/operation/last-receipt"), "the newest receipts stay");
+  assert.ok(keys.includes("host/operation/next-receipt"));
+  // Both recent keys still replay without applying again.
+  assert.deepEqual(await documentMutation(context), receipt);
+  assert.equal(applications, 2);
 });
 
-for (const pending of [false, true]) {
-  test(`legacy receipt age does not release capacity (pending=${pending})`, async () => {
-    const storage = new Storage();
-    fill(storage, 1000, pending);
-    await assert.rejects(
-      reserveOperation(storage, {
-        key: "host/operation/new-legacy-request",
-        entry: { fingerprint: "new", pending: true },
-      }),
-      { status: 429, code: pending ? "pending_operation_capacity" : "operation_receipt_capacity" },
-    );
-    assert.equal((await storage.list({ prefix: "host/operation/" })).size, 1000);
+test("pending tokenless entries never release capacity by age", async () => {
+  const storage = new Storage();
+  fill(storage, 1000, true);
+  await assert.rejects(
+    reserveOperation(storage, {
+      key: "host/operation/new-legacy-request",
+      entry: { fingerprint: "new", pending: true },
+    }),
+    { status: 429, code: "pending_operation_capacity" },
+  );
+  assert.equal((await storage.list({ prefix: "host/operation/" })).size, 1000);
+});
+
+test("completed tokenless receipts make room for a new one, oldest stamp first", async () => {
+  const storage = new Storage();
+  fill(storage, 1000);
+  // Stamped rows are newer than the unstamped fixture rows; among stamped
+  // rows the smallest stamp goes first.
+  storage.values.get("host/operation/old-5").recordedAt = 10;
+  storage.values.get("host/operation/old-6").recordedAt = 5;
+  const admitted = await reserveOperation(storage, {
+    key: "host/operation/new-legacy-request",
+    entry: { fingerprint: "new", pending: true },
+    now: 1000,
   });
-}
+  assert.equal(admitted.recordedAt, 1000);
+  const after = await storage.list({ prefix: "host/operation/" });
+  assert.equal(after.size, 999, "reserve only makes room; the caller stores the entry");
+  assert.ok(!after.has("host/operation/old-0"), "unstamped rows are the oldest");
+  assert.ok(after.has("host/operation/old-5") && after.has("host/operation/old-6"));
+  for (let n = 1; n < 1000; n++) storage.values.delete(`host/operation/old-${n}`);
+  storage.values.set("host/operation/old-5", {
+    fingerprint: "a",
+    pending: false,
+    receipt: {},
+    recordedAt: 10,
+  });
+  storage.values.set("host/operation/old-6", {
+    fingerprint: "b",
+    pending: false,
+    receipt: {},
+    recordedAt: 5,
+  });
+  for (let n = 0; n < 998; n++)
+    storage.values.set(`host/operation/stamped-${String(n).padStart(4, "0")}`, {
+      fingerprint: `s-${n}`,
+      pending: false,
+      receipt: {},
+      recordedAt: 100 + n,
+    });
+  await reserveOperation(storage, {
+    key: "host/operation/another-request",
+    entry: { fingerprint: "new", pending: true },
+    now: 5000,
+  });
+  const next = await storage.list({ prefix: "host/operation/" });
+  assert.ok(!next.has("host/operation/old-6"), "the smallest stamp went first");
+  assert.ok(next.has("host/operation/old-5"));
+});
 
 for (const operation of ["create_page", "delete_page"]) {
-  test(`a catalog full of legacy deletion receipts rejects new legacy ${operation}`, async (t) => {
+  test(`a catalog full of tokenless deletion receipts still admits a new tokenless ${operation}`, async (t) => {
     const auth = await createAuthFixture();
     t.mock.method(globalThis, "fetch", auth.fetch);
     const storage = new Storage();
@@ -115,7 +169,7 @@ for (const operation of ["create_page", "delete_page"]) {
         PAGES: {
           getByName: () => {
             pageRequests++;
-            throw Error("must reject before contacting a Page");
+            throw Error("the fixture stops once the Page is contacted");
           },
         },
       },
@@ -134,12 +188,11 @@ for (const operation of ["create_page", "delete_page"]) {
         }),
       }),
     );
-    assert.equal(response.status, 429);
-    const failure = await response.json();
-    assert.equal(failure.code, "operation_receipt_capacity");
-    assert.match(failure.error, /use the retry_token from read_page or list_pages/);
-    assert.equal(pageRequests, 0);
-    assert.equal((await storage.list({ prefix: "host/operation/" })).size, 1000);
+    assert.notEqual(response.status, 429, await response.text());
+    assert.equal(pageRequests, 1, "the request was admitted and reached the Page");
+    const keys = await storage.list({ prefix: "host/operation/" });
+    assert.ok(!keys.has("host/operation/old-0"), "the oldest receipt made room");
+    assert.ok(keys.size <= 1000);
   });
 }
 
@@ -148,9 +201,11 @@ test("host migrations reserve in their own key space, past full client budgets",
   const storage = new Storage();
   fill(storage, 1000);
   const entry = (n) => ({ fingerprint: `migration-${n}`, pending: true, changes: [] });
+  // Pending client work fills the client lane; the internal key space is apart.
+  for (const value of storage.values.values()) value.pending = true;
   await assert.rejects(
     reserveOperation(storage, { key: "host/operation/client-new", entry: entry(0) }),
-    { code: "operation_receipt_capacity" },
+    { code: "pending_operation_capacity" },
   );
   const key = `${INTERNAL_PREFIX}preserved_markdown_one`;
   assert.deepEqual(await reserveOperation(storage, { key, entry: entry(1) }), entry(1));
@@ -174,4 +229,109 @@ test("host migrations reserve in their own key space, past full client budgets",
     }),
     { code: "invalid_idempotency_key" },
   );
+});
+
+test("1,500 tokenless comment writes leave the Page writable; the token lane keeps its window", async (t) => {
+  const f = await fixture(t);
+  const journal = () => f.storage.list({ prefix: "host/operation/" });
+  // The first 1,000 comments' receipts, as the host holds them once the lane
+  // is full. (Writing them through the fixture would save the whole comments
+  // document 1,000 times.) The next 500 go through the host.
+  for (let n = 0; n < 1000; n++)
+    await f.storage.put(`host/operation/comment-${String(n).padStart(4, "0")}`, {
+      fingerprint: `comment-${n}`,
+      pending: false,
+      doc: "comments",
+      receipt: { page_id: pageId, result: { thread_id: `thread-${n}` } },
+      recordedAt: 1_700_000_000_000 + n,
+    });
+  assert.equal((await journal()).size, 1000);
+  for (let n = 1000; n < 1500; n++) {
+    const added = await f.tool("owner", "manage_page_comment", {
+      idempotency_key: `comment-${String(n).padStart(4, "0")}`,
+      action: "add",
+      block_id: f.blockId,
+      body: `Comment ${n}`,
+    });
+    assert.equal(added.status, 200, `comment ${n}: ${JSON.stringify(added.body)}`);
+  }
+  const retained = await journal();
+  assert.equal(retained.size, 1000, "the tokenless lane holds its newest 1,000 receipts");
+  assert.ok(!retained.has("host/operation/comment-0499"), "the oldest 500 receipts were evicted");
+  assert.ok(retained.has("host/operation/comment-0500"));
+  assert.equal(Object.keys(f.commentsDoc().threads).length, 501);
+  // A tokenless edit still lands.
+  const edit = await f.tool("owner", "patch_page", {
+    idempotency_key: "edit-after-the-discussion",
+    base_heads: f.heads(),
+    operations: [
+      { op: "replace_match", block_id: f.blockId, match_text: "Friday", replacement: "Monday" },
+    ],
+  });
+  assert.equal(edit.status, 200, JSON.stringify(edit.body));
+  assert.deepEqual(f.heads(), edit.body.heads);
+  // Its receipt replays exactly and guards its payload.
+  const again = await f.tool("owner", "patch_page", {
+    idempotency_key: "edit-after-the-discussion",
+    base_heads: edit.body.heads,
+    operations: [
+      { op: "replace_match", block_id: f.blockId, match_text: "Friday", replacement: "Monday" },
+    ],
+  });
+  assert.equal(again.status, 409, "a changed payload under the same key conflicts");
+  assert.equal(again.body.code, "idempotency_conflict");
+  // So does a comment that came in late enough to keep its receipt.
+  const recent = await f.tool("owner", "manage_page_comment", {
+    idempotency_key: "comment-1499",
+    action: "add",
+    block_id: f.blockId,
+    body: "Comment 1499",
+  });
+  assert.equal(recent.status, 200);
+  assert.equal(Object.keys(f.commentsDoc().threads).length, 501, "an exact retry replays");
+  // The token lane is untouched by all of this and keeps its own window.
+  const read = await f.tool("owner", "read_page", { include_content: false });
+  const tokened = {
+    idempotency_key: `${read.body.retry_key_prefix}first-request`,
+    retry_token: read.body.retry_token,
+    base_heads: read.body.heads,
+    operations: [{ op: "set_title", title: "With a token" }],
+  };
+  const first = await f.tool("owner", "edit_page", tokened);
+  assert.equal(first.status, 200, JSON.stringify(first.body));
+  const replay = await f.tool("owner", "edit_page", tokened);
+  assert.deepEqual(replay.body, first.body, "an exact retry replays the receipt");
+  const changed = await f.tool("owner", "edit_page", {
+    ...tokened,
+    operations: [{ op: "set_title", title: "Another title" }],
+  });
+  assert.equal(changed.body.code, "idempotency_conflict");
+  // A full retry window still refuses new tokened work, as before.
+  const stored = await f.storage.get(`host/operation/${tokened.idempotency_key}`);
+  for (let n = 0; n < 999; n++)
+    await f.storage.put(
+      `host/operation/${read.body.retry_key_prefix}filler-${String(n).padStart(4, "0")}`,
+      {
+        fingerprint: `filler-${n}`,
+        pending: false,
+        retry: stored.retry,
+        receipt: {},
+      },
+    );
+  const full = await f.tool("owner", "edit_page", {
+    ...tokened,
+    idempotency_key: `${read.body.retry_key_prefix}second-request`,
+    base_heads: f.heads(),
+  });
+  assert.equal(full.status, 429, JSON.stringify(full.body));
+  assert.equal(full.body.code, "operation_receipt_capacity");
+  assert.match(full.body.error, /active retry window is full/);
+  // And the tokenless lane still takes a comment beside the full token lane.
+  const beside = await f.tool("owner", "manage_page_comment", {
+    idempotency_key: "comment-beside-a-full-window",
+    action: "add",
+    block_id: f.blockId,
+    body: "Still commenting",
+  });
+  assert.equal(beside.status, 200, JSON.stringify(beside.body));
 });

@@ -4,6 +4,17 @@ import { retryKeyPrefix } from "../model/retry-key.mjs";
  * completed receipt, never authority to run an uncertain request again. Caller
  * serializes these helpers with its resource's mutation queue and persists the
  * returned entry before applying its side effect. Pending entries never expire.
+ *
+ * Receipts sit in two lanes, each bounded by JOURNAL_LIMITS. A call with a
+ * retry token holds its receipt for the token's seven-day window: an exact
+ * retry replays it, and a full lane refuses new work until collection frees
+ * expired receipts. A call without a token has no window, so its receipt
+ * can't expire; it serves only to replay an exact repeat of the same key,
+ * normally a client retrying a lost response moments later. That lane keeps
+ * the newest receipts instead: at capacity, reserving a new entry evicts the
+ * oldest completed tokenless receipts to make room, so a Page that takes
+ * thousands of tokenless comments never turns read-only. A key whose receipt
+ * was evicted is a new request again.
  */
 export const RETRY_LIFETIME_MS = 7 * 24 * 60 * 60 * 1000;
 export const JOURNAL_LIMITS = Object.freeze({
@@ -317,6 +328,9 @@ export async function reserveOperation(storage, { key, entry, retry, now = Date.
       reject(429, "pending_operation_capacity", "Pending host migrations need recovery first");
     return prepared;
   }
+  // A tokenless receipt's age orders eviction; entries from builds before the
+  // stamp sort oldest.
+  if (!retry) prepared.recordedAt = now;
   const lane = [...values].filter(
     ([name, value]) => !isInternal(name) && Boolean(value.retry) === Boolean(retry),
   );
@@ -334,17 +348,33 @@ export async function reserveOperation(storage, { key, entry, retry, now = Date.
       "pending_operation_capacity",
       "Pending operations need recovery before accepting more edits",
     );
-  if (
-    lane.length >= JOURNAL_LIMITS.entries ||
-    lane.reduce((sum, [name, value]) => sum + operationEntryBytes(name, value), bytes) >
-      JOURNAL_LIMITS.bytes
-  )
+  const laneBytes = () =>
+    lane.reduce((sum, [name, value]) => sum + operationEntryBytes(name, value), bytes);
+  const full = () => lane.length >= JOURNAL_LIMITS.entries || laneBytes() > JOURNAL_LIMITS.bytes;
+  if (!retry && full()) {
+    const evictable = lane
+      .filter(([, value]) => value.pending === false)
+      .sort(
+        ([leftKey, left], [rightKey, right]) =>
+          (left.recordedAt ?? -1) - (right.recordedAt ?? -1) ||
+          (leftKey < rightKey ? -1 : leftKey > rightKey ? 1 : 0),
+      );
+    while (full() && evictable.length) {
+      const [name] = evictable.shift();
+      await storage.delete(name);
+      lane.splice(
+        lane.findIndex(([laneKey]) => laneKey === name),
+        1,
+      );
+    }
+  }
+  if (full())
     reject(
       429,
       "operation_receipt_capacity",
       retry
         ? "The active retry window is full; retry later with the same token, key and payload"
-        : "Legacy operation receipts are full; use the retry_token from read_page or list_pages for new requests",
+        : "Pending operations fill the receipt journal; finish or recover them before new requests",
     );
   return prepared;
 }

@@ -1677,13 +1677,26 @@ their original replay authority. The journal first persists the causal base and
 encoded changes, then replays identical CRDT change IDs after interruption.
 Exact record reservations protect those changes from concurrent ingress and cleanup.
 
-The versioned journal bounds active receipts at 1,000 entries/8 MiB and pending
-work at 64 entries/4 MiB. Capacity causes explicit backpressure. Collection removes
-expired completed receipts with a durable monotonic clock floor, not arbitrary
-keys. Legacy receipts retain a separate 1,000-entry cap; browser edits do not
-consume this budget. Catalog deletion tombstones remain permanent; Trash writes
-none. See the
-[operation journal](worker/operation-journal.mjs) and its integration tests.
+The journal keeps receipts in two lanes of 1,000 entries/8 MiB each, with
+pending work bounded separately at 64 entries/4 MiB. The token lane holds the
+receipts of calls that carried a `retry_token`, for the token's seven-day
+window: an exact retry replays its receipt, a changed payload under the same
+key is an `idempotency_conflict`, and a full lane refuses new tokened work
+with `429 operation_receipt_capacity` until collection removes expired
+receipts behind a durable monotonic clock floor, never arbitrary keys. The
+tokenless lane holds the receipts of calls without a token. Those have no
+window and so never expire; a receipt there exists to replay an exact repeat
+of the same key, which in practice is a client retrying a lost response
+moments later. So that lane keeps its newest receipts: when it is full, a new
+tokenless call evicts the oldest completed tokenless receipts (by the
+`recordedAt` stamp each one gets at admission, oldest first) to make room,
+and a key whose receipt was evicted is a new request again. A Page that takes
+thousands of tokenless comments stays writable, and comments and edits share
+one Page's lanes without one locking the other. Pending entries are never
+evicted. Browser edits consume neither lane. Catalog deletion tombstones
+remain permanent; Trash writes none. See the
+[operation journal](worker/operation-journal.mjs) and its tests
+([unit](worker/operation-journal.test.mjs), [capacity](worker/receipt-capacity.test.mjs)).
 
 ### Progress and presence
 
