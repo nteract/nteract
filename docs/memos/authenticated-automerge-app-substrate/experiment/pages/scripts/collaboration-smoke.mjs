@@ -1,0 +1,365 @@
+// Local OIDC + two browser writers on one Page. Never uses live credentials.
+// Run against the built local Pages fixture; this script does not start servers.
+//
+// Covers what people do together that the editor and presence smokes don't:
+// typing at the same caret in the body and the title, offline edits, comment
+// threads across writers, rich paste, keyboard focus, and Move to Trash
+// against a peer's edit.
+import assert from "node:assert/strict";
+import { mkdir, writeFile } from "node:fs/promises";
+import { chromium, expect } from "@playwright/test";
+import { purgeTrashedFixture } from "./purge-fixture.mjs";
+
+const origin = process.env.PAGES_ORIGIN || "http://localhost:9896";
+const url = new URL(origin);
+assert.equal(url.origin, origin);
+assert.equal(url.hostname, "localhost");
+assert.equal(url.protocol, "http:");
+const output = process.env.PAGES_SCREENSHOTS || "/tmp/pages-collaboration-browser";
+await mkdir(output, { recursive: true });
+const browser = await chromium.launch({
+  headless: true,
+  args: [
+    "--no-proxy-server",
+    "--host-resolver-rules=MAP * ~NOTFOUND, EXCLUDE localhost, EXCLUDE 127.0.0.1",
+  ],
+});
+const report = { origin, completed: [], errors: [] };
+let a,
+  b,
+  pageId,
+  stage = "local OIDC sign-in";
+const content = (page) => page.locator(".page-block wg-content").first();
+const title = (page) => page.getByRole("textbox", { name: "Page title" });
+const textOf = async (page) => (await content(page).innerText()).replace(/\u200b/g, "");
+const saved = (page) =>
+  expect(page.getByRole("status").filter({ hasText: /^Saved$/ })).toBeVisible({ timeout: 20000 });
+function complete(name) {
+  report.completed.push(name);
+  console.log("PASS " + name);
+}
+
+async function signIn() {
+  const context = await browser.newContext({ viewport: { width: 1280, height: 900 } });
+  context.setDefaultTimeout(10000);
+  context.setDefaultNavigationTimeout(20000);
+  const page = await context.newPage();
+  page.on("pageerror", (error) => report.errors.push(error.message.slice(0, 1000)));
+  await page.goto(origin + "/api/auth/login", { waitUntil: "domcontentloaded" });
+  await expect(page.getByRole("button", { name: /, switch page$/ })).toBeVisible({
+    timeout: 20000,
+  });
+  return page;
+}
+// Same-origin tool calls carry the browser session cookie; nothing is stored.
+async function tool(page, operation, args = {}) {
+  const { status, body } = await page.evaluate(
+    async ({ operation, args }) => {
+      const response = await fetch("/api/tools", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        signal: AbortSignal.timeout(15000),
+        body: JSON.stringify({ operation, arguments: args }),
+      });
+      return { status: response.status, body: await response.json() };
+    },
+    { operation, args },
+  );
+  if (status !== 200) throw Error(`${operation}: HTTP ${status} ${body?.code ?? ""}`);
+  return body;
+}
+async function mutate(operation, args) {
+  const catalog = ["create_page", "delete_page", "purge_page"].includes(operation);
+  const authority = await tool(
+    a,
+    catalog ? "list_pages" : "read_page",
+    catalog ? {} : { page_id: pageId },
+  );
+  return tool(a, operation, {
+    ...args,
+    retry_token: authority.retry_token,
+    idempotency_key: authority.retry_key_prefix + crypto.randomUUID(),
+  });
+}
+const read = () => tool(a, "read_page", { page_id: pageId });
+const markdown = async () => (await read()).blocks.map((block) => block.markdown).join("\n\n");
+
+async function selectText(page, text, collapse = false) {
+  await content(page).focus();
+  await content(page).evaluate(
+    (element, { text, collapse }) => {
+      const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT, {
+        acceptNode(node) {
+          return node.parentElement.closest(
+            ".peer-caret,.wordgard-widget,.wordgard-diagram-actions,select,button",
+          )
+            ? NodeFilter.FILTER_REJECT
+            : NodeFilter.FILTER_ACCEPT;
+        },
+      });
+      const nodes = [];
+      let source = "",
+        node;
+      while ((node = walker.nextNode())) {
+        nodes.push({ node, start: source.length });
+        source += node.textContent;
+      }
+      const start = source.indexOf(text);
+      if (start < 0) throw Error("Selection fixture text is missing: " + text);
+      const at = (offset, starting = false) => {
+        const entry = nodes.find(
+          ({ node, start }) =>
+            offset >= start &&
+            (starting ? offset < start + node.length : offset <= start + node.length),
+        );
+        return [entry.node, offset - entry.start];
+      };
+      const range = document.createRange();
+      range.setStart(...at(start, true));
+      range.setEnd(...at(start + text.length));
+      if (collapse) range.collapse(false);
+      getSelection().removeAllRanges();
+      getSelection().addRange(range);
+      document.dispatchEvent(new Event("selectionchange"));
+    },
+    { text, collapse },
+  );
+  await expect
+    .poll(() => page.evaluate(() => getSelection().toString()))
+    .toBe(collapse ? "" : text);
+}
+async function paste(page, html, plain) {
+  await content(page).evaluate(
+    (element, { html, plain }) => {
+      const data = new DataTransfer();
+      data.setData("text/html", html);
+      data.setData("text/plain", plain);
+      // The editor's own paste path, without the host clipboard.
+      const range = getSelection().getRangeAt(0);
+      element.dispatchEvent(
+        new InputEvent("beforeinput", {
+          inputType: "insertFromPaste",
+          bubbles: true,
+          cancelable: true,
+          dataTransfer: data,
+          targetRanges: [
+            new StaticRange({
+              startContainer: range.startContainer,
+              startOffset: range.startOffset,
+              endContainer: range.endContainer,
+              endOffset: range.endOffset,
+            }),
+          ],
+        }),
+      );
+    },
+    { html, plain },
+  );
+}
+
+try {
+  a = await signIn();
+  b = await signIn();
+  complete(stage);
+
+  stage = "one disposable Page opened by two writers";
+  const created = await mutate("create_page", {
+    title: "Notes:",
+    markdown: "Meeting notes: and more.\n\nThe quick brown fox jumps over the lazy dog.",
+  });
+  pageId = created.page_id;
+  for (const page of [a, b]) {
+    await page.goto(`${origin}/p/${pageId}`);
+    await expect(content(page)).toContainText("Meeting notes:");
+  }
+  complete(stage);
+
+  stage = "two writers typing at one caret keep unbroken runs";
+  await selectText(a, "Meeting notes:", true);
+  await selectText(b, "Meeting notes:", true);
+  // Human speed with offset starts: every keystroke crosses a peer's.
+  await Promise.all([
+    a.keyboard.type(" Alpha writes first", { delay: 110 }),
+    b.waitForTimeout(50).then(() => b.keyboard.type(" Beta replies", { delay: 130 })),
+  ]);
+  for (const page of [a, b]) {
+    await expect.poll(() => textOf(page)).toContain(" Alpha writes first");
+    await expect.poll(() => textOf(page)).toContain(" Beta replies");
+  }
+  assert.equal(await textOf(a), await textOf(b));
+  complete(stage);
+
+  stage = "two writers typing in the title keep unbroken runs";
+  for (const page of [a, b]) {
+    await title(page).click();
+    await title(page).press("End");
+  }
+  await Promise.all([
+    a.keyboard.type(" Alpha", { delay: 90 }),
+    b.waitForTimeout(40).then(() => b.keyboard.type(" Beta", { delay: 100 })),
+  ]);
+  for (const page of [a, b]) {
+    await expect.poll(() => title(page).inputValue()).toContain(" Alpha");
+    await expect.poll(() => title(page).inputValue()).toContain(" Beta");
+  }
+  // A peer's edit before the caret leaves the caret after the same text.
+  await title(a).press("End");
+  await title(b).press("Home");
+  await b.keyboard.type("My ");
+  await expect.poll(() => title(a).inputValue()).toMatch(/^My /);
+  await a.keyboard.type("!");
+  await expect.poll(() => title(b).inputValue()).toMatch(/!$/);
+  assert.equal(await title(a).inputValue(), await title(b).inputValue());
+  complete(stage);
+
+  stage = "Tab leaves the Page body outside a table";
+  await selectText(a, "lazy dog.", true);
+  await a.keyboard.press("Tab");
+  await expect
+    .poll(() => a.evaluate(() => !!document.activeElement?.closest(".page-block")))
+    .toBe(false);
+  await a.keyboard.press("Shift+Tab");
+  await expect
+    .poll(() => a.evaluate(() => !!document.activeElement?.closest(".page-block")))
+    .toBe(true);
+  complete(stage);
+
+  stage = "pasted HTML keeps links, bold and italic";
+  await selectText(a, "lazy dog.", true);
+  await paste(
+    a,
+    '<p class=MsoNormal><b>Word bold</b> and <i>slanted</i> and <a href="https://example.com/x" title="X">a link</a> and <a href="javascript:alert(1)">unsafe</a></p>',
+    "Word bold and slanted and a link and unsafe",
+  );
+  await expect
+    .poll(markdown)
+    .toContain('**Word bold** and *slanted* and [a link](https://example.com/x "X") and unsafe');
+  await expect(content(b).locator('a[href="https://example.com/x"]')).toHaveText("a link");
+  assert.equal(await content(b).locator('a[href^="javascript"]').count(), 0);
+  complete(stage);
+
+  stage = "an offline writer's edits merge on reconnect";
+  await b.context().setOffline(true);
+  await selectText(b, "and more.", true);
+  await b.keyboard.type(" Offline line.");
+  await expect(b.getByRole("status").filter({ hasText: /Saved locally/ })).toBeVisible();
+  await selectText(a, "The quick", true);
+  await a.keyboard.type(" online");
+  await saved(a);
+  await b.context().setOffline(false);
+  for (const page of [a, b]) {
+    await expect.poll(() => textOf(page), { timeout: 30000 }).toContain("and more. Offline line.");
+    await expect.poll(() => textOf(page), { timeout: 30000 }).toContain("The quick online");
+  }
+  await saved(b);
+  complete(stage);
+
+  stage = "a comment follows edits around it; reply, resolve and reopen reach the other writer";
+  await selectText(a, "brown fox");
+  await a.getByRole("button", { name: "Comment on selection", exact: true }).click();
+  const composer = a
+    .getByRole("dialog", { name: "Comment on selection", exact: true })
+    .getByRole("textbox", { name: "Comment on selection", exact: true });
+  await expect(composer).toBeFocused();
+  await a.keyboard.type("Is it brown?");
+  await a.keyboard.press("ControlOrMeta+Enter");
+  await expect
+    .poll(async () => (await tool(a, "list_page_comments", { page_id: pageId })).comments.length)
+    .toBe(1);
+  await selectText(b, "The quick", true);
+  await b.keyboard.type(" very");
+  await selectText(b, "brown", true);
+  await b.keyboard.type(" small");
+  await expect.poll(markdown).toContain("brown small fox");
+  await expect
+    .poll(
+      async () =>
+        (await tool(a, "list_page_comments", { page_id: pageId })).comments[0].selectionContext,
+    )
+    .toMatchObject({ status: "attached", text: "brown small fox" });
+  await b.getByRole("button", { name: /^Comments/ }).click();
+  const thread = b.locator(".thread").first();
+  await expect(thread).toContainText("Is it brown?");
+  await thread.getByRole("button", { name: "Reply" }).click();
+  await expect(thread.getByRole("textbox", { name: "Reply" })).toBeFocused();
+  await b.keyboard.type("Yes, brown.");
+  await thread.getByRole("button", { name: "Send" }).click();
+  await a.getByRole("button", { name: /^Comments/ }).click();
+  await thread.getByRole("button", { name: "Resolve" }).click();
+  await expect(a.locator("details.resolved-threads > summary")).toHaveText(/Resolved \(1\)/);
+  const resolved = a.locator("details.resolved-threads");
+  if (!(await resolved.evaluate((element) => element.open)))
+    await resolved.locator("summary").click();
+  await resolved.locator(".thread").getByRole("button", { name: "1 reply" }).click();
+  await expect(resolved.locator(".thread")).toContainText("Yes, brown.");
+  await resolved.locator(".thread").getByRole("button", { name: "Reopen" }).click();
+  await expect(b.locator(".thread:not(.resolved)")).toHaveCount(1);
+  complete(stage);
+
+  stage = "Move to Trash refused by a peer's edit says so in plain words";
+  await saved(a);
+  // Hold A's delete request until B's edit reaches the host, so the heads A
+  // sends are behind the Page.
+  let release;
+  const held = new Promise((resolve) => (release = resolve));
+  await a.route("**/api/tools", async (route) => {
+    if (route.request().postDataJSON()?.operation === "delete_page") await held;
+    await route.continue();
+  });
+  a.once("dialog", (dialog) => dialog.accept());
+  await a.getByLabel("Document actions").click();
+  await a.getByRole("button", { name: /Move to Trash/ }).click();
+  await selectText(b, "Offline line.", true);
+  await b.keyboard.type(" Peer edit.");
+  await expect.poll(markdown).toContain("Peer edit.");
+  release();
+  await expect(
+    a.getByText("Someone edited this Page while it was moving to Trash. Try again."),
+  ).toBeVisible();
+  await a.unroute("**/api/tools");
+  assert.equal((await read()).blocks.length > 0, true, "the Page is still active");
+  complete(stage);
+
+  assert.deepEqual(report.errors, [], "no unhandled browser errors");
+  report.result = "pass";
+} catch (error) {
+  report.result = "fail";
+  report.stage = stage;
+  report.failure = String(error.stack ?? error);
+  for (const [name, page] of [
+    ["a", a],
+    ["b", b],
+  ])
+    if (page)
+      await page
+        .screenshot({ path: output + `/failure-${name}.png`, fullPage: true })
+        .catch(() => {});
+  console.error("FAIL " + stage + "\n" + report.failure);
+  process.exitCode = 1;
+} finally {
+  // Only this run's scratch Page is eligible for cleanup, including after failure.
+  if (a && pageId) {
+    try {
+      await a.unroute("**/api/tools").catch(() => {});
+      await mutate("delete_page", { page_id: pageId, base_heads: (await read()).heads });
+      await purgeTrashedFixture(
+        (name, args) => tool(a, name, args),
+        pageId,
+        async () => {
+          const authority = await tool(a, "list_pages");
+          return {
+            retry_token: authority.retry_token,
+            idempotency_key: authority.retry_key_prefix + crypto.randomUUID(),
+          };
+        },
+      );
+      report.cleanedUp = true;
+    } catch (error) {
+      report.cleanedUp = false;
+      report.cleanupFailure = error.message;
+      process.exitCode = 1;
+    }
+  }
+  await writeFile(output + "/report.json", JSON.stringify(report, null, 2) + "\n");
+  await browser.close();
+}
