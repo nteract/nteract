@@ -86,9 +86,10 @@ test("reads carry comment_heads, and read_page_changes lists comment changes fro
   assert.equal(changes.body.comments.length, 1);
   assert.equal(changes.body.comments[0].thread_id, existing.id);
   assert.equal(changes.body.comments[0].state, "resolved");
-  // Without a comments baseline the delta is unknown, and says so.
+  // Without a comments baseline: a snapshot of every current thread.
   const unknown = await f.tool("owner", "read_page_changes", { since_heads: read.body.heads });
-  assert.equal(unknown.body.comments_baseline, "missing");
+  assert.equal(unknown.body.comments_snapshot, true);
+  assert.equal(unknown.body.comments.length, listed.body.comments.length);
 });
 
 test("a commenter comments but can't edit, and touches only its own messages", async (t) => {
@@ -159,9 +160,10 @@ test("a viewer can read comments but not write them", async (t) => {
   assert.equal(write.status, 403);
 });
 
-test("a commenter may upload a comment image; a viewer may not", async (t) => {
+test("uploads need edit access: a commenter comments in text", async (t) => {
   for (const [role, status] of [
-    ["commenter", 200],
+    ["editor", 200],
+    ["commenter", 403],
     ["viewer", 403],
   ]) {
     const f = await fixture(t, { memberRole: role });
@@ -178,4 +180,95 @@ test("the purge preview counts the comments document's threads", async (t) => {
   await comment(f, "owner", { action: "add", block_id: f.blockId, body: "Two" });
   assert.equal(Object.keys(f.commentsDoc().threads).length, 2);
   assert.ok(A.getHeads(f.commentsDoc()).length > 0);
+});
+
+test("a refused key stops writing comments at once; its connection alone closes", async (t) => {
+  const f = await fixture(t);
+  const editorKey = "ab".repeat(32),
+    otherKey = "cd".repeat(32);
+  await f.bind(editorKey, f.member);
+  await f.bind(otherKey, f.owner);
+  await f.page.policy.put(editorKey, editorKey, "c".repeat(32));
+  const persisted = f.page.policy.refuseComments(editorKey);
+  // In memory at once, before the binding write lands.
+  await assert.rejects(f.page.policy.put(editorKey, editorKey, "c".repeat(32)));
+  await persisted;
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.deepEqual(f.disconnected, [editorKey], "only the refused key's connection closed");
+  // Reconnecting with the same key: still an editor of the Page, never again
+  // a comment author.
+  await f.bind(editorKey, f.member);
+  await assert.rejects(f.page.policy.put(editorKey, editorKey, "c".repeat(32)), /read-only|author/);
+  // That attempt closed its own connection too; a fresh one still edits.
+  await f.bind(editorKey, f.member);
+  await f.page.policy.put(editorKey, editorKey, f.page.metadata.tree);
+  // The owner's key keeps writing both documents.
+  await f.page.policy.put(otherKey, otherKey, "c".repeat(32));
+  await f.page.policy.put(otherKey, otherKey, f.page.metadata.tree);
+  // Durable: a restart keeps the block.
+  const restarted = await f.restart();
+  assert.equal(restarted.policy.bindings.get(editorKey).commentsBlocked, true);
+});
+
+test("a comment receipt's heads are the Page revision it read, stable across retries", async (t) => {
+  const f = await fixture(t);
+  const before = f.heads();
+  // A browser edit lands while the comment is being journaled.
+  let typed = false;
+  f.hooks.flush = () => {
+    if (typed) return;
+    typed = true;
+    f.edit("typed while commenting");
+  };
+  const args = {
+    idempotency_key: key(),
+    action: "add",
+    block_id: f.blockId,
+    body: "Concurrent",
+  };
+  const first = await f.tool("owner", "manage_page_comment", args);
+  f.hooks.flush = undefined;
+  assert.equal(first.status, 200, JSON.stringify(first.body));
+  assert.ok(typed);
+  assert.deepEqual(first.body.heads, before, "the baseline, not the live Page");
+  assert.notDeepEqual(f.heads(), before);
+  // Polling from the receipt still returns the browser's edit.
+  const changes = await f.tool("owner", "read_page_changes", { since_heads: first.body.heads });
+  assert.equal(changes.status, 200, JSON.stringify(changes.body));
+  assert.equal(changes.body.title_changed, true);
+  assert.equal(changes.body.title, "typed while commenting");
+  // An exact retry returns the recorded receipt, after yet another edit.
+  f.edit(" and more");
+  const retry = await f.tool("owner", "manage_page_comment", args);
+  assert.deepEqual(retry.body, first.body);
+});
+
+test("receipts journaled before the comments document keep their Page heads", async (t) => {
+  const f = await fixture(t);
+  const args = { idempotency_key: key(), action: "add", block_id: f.blockId, body: "Old build" };
+  const fresh = await f.tool("owner", "manage_page_comment", args);
+  assert.equal(fresh.status, 200);
+  // Rewrite that entry as a build before the comments document stored it:
+  // journaled on the Page, its receipt's heads Page heads.
+  const path = `host/operation/${args.idempotency_key}`;
+  const entry = await f.storage.get(path);
+  const pageHeads = f.heads();
+  const legacy = {
+    fingerprint: entry.fingerprint,
+    pending: false,
+    receipt: { page_id: entry.receipt.page_id, heads: pageHeads, result: entry.receipt.result },
+  };
+  await f.storage.put(path, legacy);
+  const retried = await f.tool("owner", "manage_page_comment", args);
+  assert.equal(retried.status, 200, JSON.stringify(retried.body));
+  assert.equal(retried.body.legacy_receipt, true);
+  assert.deepEqual(retried.body.heads, pageHeads, "Page heads stay labeled as Page heads");
+  assert.equal(retried.body.comment_heads, undefined, "never relabeled as comment heads");
+  // A legacy entry still pending never replays into the comments document.
+  await f.storage.put(path, { ...legacy, pending: true, changes: [] });
+  const commentHeads = f.commentHeads();
+  const pending = await f.tool("owner", "manage_page_comment", args);
+  assert.equal(pending.status, 409, JSON.stringify(pending.body));
+  assert.equal(pending.body.code, "operation_pending");
+  assert.deepEqual(f.commentHeads(), commentHeads);
 });

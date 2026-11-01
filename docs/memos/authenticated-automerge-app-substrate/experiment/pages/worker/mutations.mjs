@@ -67,6 +67,13 @@ export function requireHeads(doc, heads) {
  * comments document passes the Page's. `guard(args)` replaces the exact-heads
  * check: it validates the intent against the caller's snapshot and returns
  * the arguments to apply (comment intents use model/comment-guard.mjs).
+ * `receiptFields()` adds fields to a new intent's receipt, computed after
+ * the guard; they're journaled, so an exact retry returns them unchanged.
+ *
+ * An entry the journal recorded for another document (`entry.doc`) never
+ * applies here. A finished one returns its receipt with `recorded_doc` naming
+ * that document, so the caller can label its heads; a pending one is refused.
+ * Builds before the comments document journaled comment intents on the Page.
  */
 export async function documentMutation({
   storage,
@@ -85,6 +92,7 @@ export async function documentMutation({
   pageId = handle.doc().page_id,
   scope = `page:${pageId}`,
   guard,
+  receiptFields,
 }) {
   const key = internal
     ? `${INTERNAL_PREFIX}${mutationKey(args).slice("host/operation/".length)}`
@@ -99,6 +107,15 @@ export async function documentMutation({
     pendingEntry: admission?.pending(key),
   });
   let entry = inspected.entry;
+  if (entry && entryDoc(entry) !== doc) {
+    if (entry.pending)
+      throw Object.assign(
+        Error("This request was recorded for another document and hasn't finished; retry shortly"),
+        { status: 409, code: "operation_pending" },
+      );
+    await storage.sync();
+    return { ...entry.receipt, recorded_doc: entryDoc(entry) };
+  }
   let recorded = false;
   if (!entry) {
     if (admission?.hasPending)
@@ -176,6 +193,7 @@ export async function documentMutation({
             },
           }),
           ...(warning ? { warnings: [warning] } : {}),
+          ...receiptFields?.(),
         },
       };
       assertIntentSize(key, entry.changes, {

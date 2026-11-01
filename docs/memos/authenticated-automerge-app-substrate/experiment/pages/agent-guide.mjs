@@ -642,8 +642,9 @@ with page_id and since_heads to learn what changed since that revision. The resp
 contains current heads, retry authority, title_changed, changed nodes/blocks and
 changed comment threads. Comments live in their own document with their own
 revision: every read returns it as comment_heads. Pass the comment_heads you kept
-as since_comment_heads to list comment changes; without it the response says
-comments_baseline: "missing" and lists none. Updated/inserted nodes include current Markdown,
+as since_comment_heads to list comment changes. Without it the response lists
+every current thread with comments_snapshot: true; replace what you hold instead
+of merging. Updated/inserted nodes include current Markdown,
 node_index and heading_path; deleted nodes contain only their old address, never
 deleted body text. Use these current addresses for a focused read or replace_match.
 If a whole block is inserted or cannot be indexed, its change has scope:block;

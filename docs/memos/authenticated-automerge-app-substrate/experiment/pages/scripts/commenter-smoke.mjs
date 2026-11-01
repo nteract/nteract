@@ -162,6 +162,9 @@ try {
     await expect(page.getByRole("button", { name: /, switch page$/ })).toBeVisible({
       timeout: 60000,
     });
+    // Every socket a tab opens: a reconnect would show up as a second one.
+    page.sockets = [];
+    page.on("websocket", (socket) => page.sockets.push(socket.url()));
     people.push(page);
   }
   [owner, commenter] = people;
@@ -284,6 +287,9 @@ try {
   // A raw native peer as alice skips every rule and rewrites the owner's
   // message in the comments document. The host's per-author check refuses
   // it before storage, so nobody ever sees it.
+  await commenter.getByRole("button", { name: /^Comments/ }).click();
+  const ownerSockets = owner.sockets.length,
+    commenterSockets = commenter.sockets.length;
   const raw = await nativeCommentsPeer(commenter);
   const ownerThreadId = ownerComment.body.result.thread_id;
   const ownerMessageId = ownerComment.body.result.message_id;
@@ -301,12 +307,43 @@ try {
     await tool(owner, "list_page_comments", { page_id: pageId, state: "all" })
   ).body.comments.find((thread) => thread.id === ownerThreadId);
   assert.equal(afterForge.messages[0].body, "Owner's note", "the forged edit never landed");
-  // The owner's tab is still connected and live afterwards.
-  await expect(owner.locator(".thread", { hasText: "Owner's note" }).first()).toBeAttached();
-  checkpoint("a raw native edit of another author's message is refused by the host");
+  // Every other peer keeps syncing both ways on the sockets it already had.
+  // The owner types in the Page; alice's open tab shows it.
+  await content(owner).click();
+  await owner.keyboard.press("End");
+  await owner.keyboard.type(" Still live.");
+  await expect(content(commenter)).toContainText("Still live.", { timeout: 10000 });
+  // A comment the host writes reaches both open tabs.
+  const live = await tool(owner, "manage_page_comment", {
+    page_id: pageId,
+    action: "reply",
+    // Alice's open thread: the owner's is resolved and collapsed by now.
+    thread_id: aliceThread.id,
+    body: "Reply after the refusal",
+    idempotency_key: crypto.randomUUID(),
+  });
+  assert.equal(live.status, 200, JSON.stringify(live.body));
+  // Both open tabs show the reply arrive (collapsed as "1 reply").
+  const aliceCard = (page) => page.locator(`[data-thread-id="${aliceThread.id}"]`);
+  for (const page of [owner, commenter])
+    await expect(aliceCard(page)).toContainText("1 reply", { timeout: 10000 });
+  // Only the forging key was blocked: alice herself still comments.
+  const aliceReply = await tool(commenter, "manage_page_comment", {
+    page_id: pageId,
+    action: "reply",
+    thread_id: aliceThread.id,
+    body: "Alice still comments",
+    idempotency_key: crypto.randomUUID(),
+  });
+  assert.equal(aliceReply.status, 200, JSON.stringify(aliceReply.body));
+  await expect(aliceCard(owner)).toContainText("2 replies", { timeout: 10000 });
+  assert.equal(owner.sockets.length, ownerSockets, "the owner's tab never reconnected");
+  assert.equal(commenter.sockets.length, commenterSockets, "alice's tab never reconnected");
+  checkpoint(
+    "a raw native edit of another author's message is refused; every other peer keeps syncing",
+  );
 
   // Her thread list offers the comment controls a commenter holds.
-  await commenter.getByRole("button", { name: /^Comments/ }).click();
   const ownThread = commenter.locator(`[data-thread-id="${aliceThread.id}"]`);
   await expect(ownThread).toBeVisible();
   await expect(ownThread.getByRole("button", { name: "Resolve", exact: true })).toBeEnabled();

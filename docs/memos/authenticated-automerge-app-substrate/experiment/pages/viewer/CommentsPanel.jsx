@@ -257,6 +257,14 @@ export function CommentsPanel({
             {problem}
           </p>
         )}
+        {session.commentsUnavailable && (
+          <p role="alert" className="error comments-unavailable">
+            Comments couldn't load. You can still read the Page.{" "}
+            <button type="button" className="subtle-button" onClick={() => session.retryComments()}>
+              Try again
+            </button>
+          </p>
+        )}
         {keptDraft && (
           <section className="comment-kept-draft" aria-label="Unsent comment">
             <p className="muted comment-kept-draft-label">Unsent comment</p>
@@ -465,7 +473,7 @@ function CommentThread({
             value={value}
             onChange={onChange}
             disabled={!canReply}
-            images={{ pageId: session.pageId, canUpload: session.canComment }}
+            images={{ pageId: session.pageId, canUpload: session.canComment && session.canWrite }}
             onDiscard={() => {
               onChange("");
               hideReply(!keptDraft);

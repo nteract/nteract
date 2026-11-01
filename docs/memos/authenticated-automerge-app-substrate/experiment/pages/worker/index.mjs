@@ -2813,10 +2813,12 @@ export class Page {
           serverKey,
           signer: (key) => policy.signer(key),
           seed: () => this.commentsHandle?.doc(),
-          onRefused: async (key, reason) => {
+          // Off the save path: block and disconnect the signer, never wait.
+          onRefused: (key, reason) => {
             logCommentRefused(metadata?.pageId, reason);
-            await policy.blockComments(key);
+            policy.refuseComments(key).catch((error) => logFailure(error, "comment-refusal"));
           },
+          maxRecordBytes: BACKEND_LIMITS.maxRecordBytes,
         });
         const recordStore =
           metadata?.recordStorage === "buffered"
@@ -3471,10 +3473,10 @@ export class Page {
         const args = await readJson(request);
         if (args.page_id !== this.metadata.pageId || typeof args.write !== "boolean")
           throw new HttpError(400, "Invalid image access request");
-        // An upload stores an image for this Page; it changes no document.
-        // Commenters may attach images to comments, so it needs `comment`.
-        // Placing an image in the Page itself is an edit (edit_page).
-        this.policy.account(identity, args.write && "comment");
+        // Uploads need edit access. Asset storage has no per-Page aggregate
+        // quota, so comment access alone doesn't open it: commenters comment
+        // in text, and can't attach images until that quota exists.
+        this.policy.account(identity, args.write);
         return json({ page_id: this.metadata.pageId });
       }
       if (url.pathname === "/internal/catalog") {
@@ -3726,8 +3728,6 @@ export class Page {
    */
   async writeComment(request, identity, body) {
     this.policy.account(identity, "comment");
-    // The Page's stamp gates both documents, as the native gate does.
-    requireSupportedSchema(this.handle.doc());
     await this.requireConverted();
     if (!this.commentsView())
       throw new HttpError(
@@ -3757,8 +3757,13 @@ export class Page {
       },
       guard: (input) => {
         page = this.handle.doc();
+        // The Page's stamp gates both documents, as the native gate does. A
+        // recorded receipt still replays; this runs for new intents only.
+        requireSupportedSchema(page);
         return guardCommentIntent(page, operation, input);
       },
+      // The Page revision this write read, journaled with its receipt.
+      receiptFields: () => ({ page_heads: A.getHeads(page) }),
       apply: (draft, effectiveArgs) => {
         try {
           return applyComment(
@@ -3783,6 +3788,25 @@ export class Page {
       },
       flush: () => this.flush(),
     });
+    return this.commentReceipt(receipt, identity);
+  }
+
+  /**
+   * The tool receipt for a comment write. `heads` are Page heads and
+   * `comment_heads` comments-document heads; neither ever holds the other's.
+   *
+   * - A receipt journaled on the comments document carries `page_heads`, the
+   *   Page revision its write was based on, recorded with it. `heads` is that
+   *   baseline, not the live Page: a browser edit landing meanwhile stays
+   *   after it, so `read_page_changes` from these heads still returns it, and
+   *   an exact retry returns the same heads.
+   * - A receipt a build before the comments document journaled on the Page
+   *   (`recorded_doc: "page"`) keeps its Page heads and has no comment heads;
+   *   `legacy_receipt` says so.
+   */
+  commentReceipt(receipt, identity) {
+    const { recorded_doc, page_heads, ...rest } = receipt;
+    if (recorded_doc === PAGE_DOC) return { ...rest, legacy_receipt: true };
     this.commentsHandle.broadcast({
       kind: "tool-edit",
       identity: {
@@ -3790,12 +3814,10 @@ export class Page {
         ...(identity.agent && { agent: identity.agent }),
         ...(identity.session && { session: identity.session }),
       },
-      heads: receipt.heads,
+      heads: rest.heads,
       comments: true,
     });
-    // `heads` stay the Page's: a comment never moves them, so an agent can
-    // keep editing from the revision it read.
-    return { ...receipt, heads: A.getHeads(this.handle.doc()), comment_heads: receipt.heads };
+    return { ...rest, heads: page_heads, comment_heads: rest.heads };
   }
 
   /** Owner or a valid viewer/editor grant on the deleted metadata. A role

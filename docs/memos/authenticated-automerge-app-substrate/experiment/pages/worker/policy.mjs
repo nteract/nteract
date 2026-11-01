@@ -612,18 +612,45 @@ export class DocumentPolicy {
     };
   }
 
-  /** A key whose comment change failed the per-author check authors no more
-   * comments. Applied at once; the write persists it for restarts. Its
-   * session closes on the next access refresh or the engine reset the
-   * refusal causes. */
-  async blockComments(key) {
+  /**
+   * The native per-author check refused a comment record signed by `key`.
+   * The key authors no more comments, from this moment: the binding changes in
+   * memory at once, so the next put from it is refused by `put`, nonfatally.
+   * Its connection closes, and only its connection. The returned promise
+   * persists the block for restarts; callers on the storage path must not
+   * await it, and the disconnect runs after they return.
+   *
+   * A principal can come back with a fresh key (bounded by the lifetime key
+   * cap), but each refusal costs the host one admission check and drops
+   * nothing else, so it isn't a lever over other peers.
+   */
+  refuseComments(key) {
     const binding = this.bindings.get(key);
-    if (!binding || binding.commentsBlocked) return;
-    const blocked = { ...binding, commentsBlocked: true };
-    this.bindings.set(key, blocked);
-    this.dirtyBindings.add(key);
-    await this.writeBinding(key, { ...blocked, pending: false });
-    if (this.bindings.get(key) === blocked) this.dirtyBindings.delete(key);
+    let persisted = Promise.resolve();
+    if (binding && !binding.commentsBlocked) {
+      const blocked = { ...binding, commentsBlocked: true };
+      this.bindings.set(key, blocked);
+      this.dirtyBindings.add(key);
+      persisted = Promise.resolve()
+        .then(() => this.writeBinding(key, { ...blocked, pending: false }))
+        .then(() => {
+          if (this.bindings.get(key) === blocked) this.dirtyBindings.delete(key);
+        });
+    }
+    const session = this.sessions.get(key);
+    if (session) {
+      this.sessions.delete(key);
+      setTimeout(() => {
+        void Promise.resolve()
+          .then(() =>
+            session.disconnect(
+              new PermissionDenied("Comment change refused", "comment_change_refused"),
+            ),
+          )
+          .catch(() => {});
+      }, 0);
+    }
+    return persisted;
   }
 
   profiles() {

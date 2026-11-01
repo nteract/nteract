@@ -424,10 +424,20 @@ test("comment defaults return compact changes and all mode only changed current 
     readBoth(doc, comments, before, commentsBefore, { comments: "none" }).comments,
     [],
   );
-  // Without a comments baseline the delta is unknown, and says so.
+  // Without a comments baseline the delta is unknown: every current thread,
+  // flagged as a snapshot, so an older client keeps seeing comments.
   const unknown = readBoth(doc, comments, before);
-  assert.deepEqual(unknown.comments, []);
-  assert.equal(unknown.comments_baseline, "missing");
+  assert.equal(unknown.comments_snapshot, true);
+  assert.equal(unknown.comments.length, 1);
+  assert.equal(unknown.comments[0].change, "snapshot");
+  assert.equal(unknown.comments[0].thread_id, ids.thread_id);
+  assert.equal(unknown.comments[0].messages, undefined, "summary mode carries no bodies");
+  const unknownAll = readBoth(doc, comments, before, undefined, { comments: "all" });
+  assert.equal(unknownAll.comments[0].messages.length, 2);
+  assert.equal(
+    readBoth(doc, comments, before, undefined, { comments: "none" }).comments_snapshot,
+    undefined,
+  );
   assert.throws(
     () => readBoth(doc, comments, before, ["0".repeat(64)]),
     errorCode(409, "resync_required"),

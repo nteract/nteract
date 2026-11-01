@@ -1,6 +1,6 @@
 import * as A from "@automerge/automerge/slim";
-import { RICH_FORMAT, validateRichSpans } from "./richtext.mjs";
-import { COMMENT_MAX_BYTES, COMMENT_MAX_LENGTH } from "./comment-content.mjs";
+import { RICH_FORMAT } from "./richtext.mjs";
+import { validateCommentBody, validateCommentSpans } from "./comment-content.mjs";
 import {
   MESSAGE_EDITABLE,
   MESSAGE_FIELDS,
@@ -172,35 +172,20 @@ function validateBody(message, where) {
     reject(REJECTION.INVALID_VALUE, "Unsupported message format", where);
   const body = scalar(message.body);
   if (body === undefined) reject(REJECTION.INVALID_VALUE, "Message body must be text", where);
-  if (format !== RICH_FORMAT) {
-    if (own(message, "richText"))
-      reject(REJECTION.INVALID_VALUE, "richText needs the rich format", where);
-    if (!body.trim() || body.length > COMMENT_MAX_LENGTH)
-      reject(
-        REJECTION.INVALID_VALUE,
-        `Comment must contain 1–${COMMENT_MAX_LENGTH} characters`,
-        where,
-      );
-    return;
-  }
+  if (format !== RICH_FORMAT && own(message, "richText"))
+    reject(REJECTION.INVALID_VALUE, "richText needs the rich format", where);
+  // The shared content rule (comment-content.mjs): the same one the tools and
+  // the browser apply before writing, so an honest write always passes here.
   let spans;
+  if (format === RICH_FORMAT)
+    try {
+      spans = A.spans(message, ["richText"]);
+    } catch {
+      reject(REJECTION.INVALID_VALUE, "richText must be rich text", where);
+    }
   try {
-    spans = A.spans(message, ["richText"]);
-  } catch {
-    reject(REJECTION.INVALID_VALUE, "richText must be rich text", where);
-  }
-  const text = spans
-    .filter((span) => span.type === "text")
-    .map((span) => span.value)
-    .join("");
-  if (!text.trim() || text.length > COMMENT_MAX_LENGTH)
-    reject(
-      REJECTION.INVALID_VALUE,
-      `Comment must contain 1–${COMMENT_MAX_LENGTH} characters`,
-      where,
-    );
-  try {
-    validateRichSpans(spans, COMMENT_MAX_BYTES);
+    if (format === RICH_FORMAT) validateCommentSpans(spans);
+    else validateCommentBody(body);
   } catch (error) {
     reject(REJECTION.INVALID_VALUE, error.message, where);
   }

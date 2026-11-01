@@ -647,14 +647,50 @@ from a peer. The native check runs in the record byte store
 ([worker/comment-admission.mjs](worker/comment-admission.mjs)): each saved
 comments-document record carries its signer's key and its Automerge change, so
 [model/comment-authority.mjs](model/comment-authority.mjs) decides the change
-for that signer's principal and role before the record is written. A refused
-record is never stored or delivered. The bridge treats the refusal as a storage
-failure and restarts its native engine, which drops every connection; peers
-reconnect. The refused key never authors comments again, so a reconnect is
-refused cleanly. An honest client never writes a refused change.
+for that signer's principal and role before the record is written. Content is
+checked by the same rule the tools and the browser apply
+(`validateCommentSpans` in [model/comment-content.mjs](model/comment-content.mjs)):
+non-whitespace text or a valid embed, so an image-only comment is content.
 
-Commenters may upload images for their comments: `/api/assets` uploads need
-`comment`. Placing an image in the Page is still an edit.
+A refused record is never stored or delivered. The store throws a refusal
+(`recordRefused: true`), and the bridge answers that one save without treating
+it as a storage failure ([../patch-record-refusal.mjs](../patch-record-refusal.mjs)):
+the native engine keeps running and every other connection stays up. When the
+signer broke a rule, its key is blocked from authoring comments, durably, and
+only its connection closes. A missing dependency, an unreadable frame or a
+checker error refuses the record without blocking anyone. So a refusal is not a
+lever over other peers, whatever a principal does with fresh keys. An honest
+client never writes a refused change.
+
+Admission costs one Automerge clone per checked batch, plus the per-op check.
+Measured on a laptop, one reply against a comments document of 200, 2,000 and
+6,000 messages: 1.5, 3.2 and 12.3 ms per record. The clone is most of it at
+the top end (12 ms at 6,000 messages, 762 KiB saved). Reproduce with
+`npx tsx scripts/comment-admission-bench.mjs`.
+
+Uploads need edit access. Asset storage has no per-Page aggregate byte or
+object quota yet, so comment access alone doesn't open it: commenters comment
+in text and can't attach images until that quota exists.
+
+Comment receipts carry the Page revision their write read as `heads`, journaled
+with the receipt, and the comments document's revision as `comment_heads`. An
+agent polling `read_page_changes` from a comment receipt still sees a browser
+edit that landed meanwhile, and an exact retry returns the same heads. A
+receipt a build before the comments document journaled on the Page replays
+with its Page heads, `legacy_receipt: true` and no comment heads.
+
+`read_page_changes` takes `since_comment_heads` for comment changes. Without
+it, `comments` lists every current thread (`change: "snapshot"`) and
+`comments_snapshot: true` says to replace what the caller holds, so a client
+from before the comments document keeps seeing comments.
+
+The browser opens the comments document with its own lifecycle
+([viewer/comments-open-machine.mjs](viewer/comments-open-machine.mjs)): a
+lookup with a 15 s timeout, retries after 1, 2, 4 and 8 s, then a visible
+"Comments couldn't load" with Try again. A reconnect starts over, and a
+replaced replica cancels its lookup. Offline, the local record's comments
+checkpoint restores the document before lookup; checkpoints, recovery
+archives and Download draft carry both documents with separate heads.
 
 ### Moving existing comments
 

@@ -278,10 +278,23 @@ const sameHeads = (a, b) => canonical([...a].sort()) === canonical([...b].sort()
 
 /** Comment changes from the comments document since `since`, its own heads.
  * Comments have their own history, so Page heads can't serve as their
- * baseline: without `since` the delta is unknown and says so. */
+ * baseline. Without `since` the delta is unknown: the result is a snapshot of
+ * every current thread with `comments_snapshot: true`. */
 function commentsDocChanges(page, commentsDoc, since, mode) {
   if (mode === "none") return { comments: [] };
-  if (!since) return { comments: [], comments_baseline: "missing" };
+  // No comments baseline: a client from before the comments document, or one
+  // that never kept comment_heads. Every current thread, flagged as a
+  // snapshot, so it keeps seeing comments and can tell it must replace what
+  // it holds rather than merge a delta. Deleted threads can't be listed.
+  if (!since)
+    return {
+      comments: projectReadComments(
+        page,
+        { state: "all", include_messages: mode === "all" },
+        commentsDoc,
+      ).map((thread) => ({ thread_id: thread.id, change: "snapshot", ...thread })),
+      comments_snapshot: true,
+    };
   if (!A.hasHeads(commentsDoc, since))
     fail(
       409,

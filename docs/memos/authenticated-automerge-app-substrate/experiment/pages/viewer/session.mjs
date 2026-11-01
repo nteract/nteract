@@ -52,6 +52,7 @@ import {
   reconnectDelay,
   viewerReconnectMachine,
 } from "./reconnect-machine.mjs";
+import { commentsOpenMachine } from "./comments-open-machine.mjs";
 import { fullStatus, overlayStatus, viewerSyncStatusMachine } from "./sync-status-machine.mjs";
 import {
   acknowledgedHeads,
@@ -268,6 +269,8 @@ export class PageSession {
    * signing key, or a pause after repeated admission refusals. `retryTimer`
    * is pending exactly while it is `waiting`. */
   reconnect$ = new Store(viewerReconnectMachine.initial);
+  // Opening the comments document (comments-open-machine.mjs).
+  commentsOpen$ = new Store(commentsOpenMachine.initial);
   /** What the status line says about receipts and the connection (see
    * sync-status-machine.mjs). `status` renders it with the phase's pauses. */
   sync$ = new Store(viewerSyncStatusMachine.initial);
@@ -605,6 +608,7 @@ export class PageSession {
   #release() {
     this.#stop();
     this.checkpointSnapshot = this.checkpointHeads = undefined;
+    this.commentsCheckpointSnapshot = this.commentsCheckpointHeads = undefined;
     return this.releaseLocal();
   }
   /** The forget effect: drop the local copy of a deleted Page, then close. */
@@ -965,8 +969,15 @@ export class PageSession {
     if (!record && this.closedRecovery) return { ...this.closedRecovery };
     const doc = record ? A.load(decodeSnapshot(record.snapshot)) : this.doc;
     if (!doc) throw Error("No local Page to export");
+    // An archived record carries its own comments checkpoint.
+    const recordComments =
+      record?.comments_snapshot && A.load(decodeSnapshot(record.comments_snapshot));
     try {
-      const comments = record ? undefined : this.commentsView;
+      const comments = record
+        ? recordComments && commentsMigrated(doc)
+          ? recordComments
+          : undefined
+        : this.commentsView;
       const page = projectPage(doc, comments);
       // Comments are part of the draft: list the ones the host never
       // acknowledged. An archived record has no receipt, so it lists them all.
@@ -986,10 +997,28 @@ export class PageSession {
         markdown: `# ${page.title}\n\n${page.blocks.map((block) => block.markdown).join("\n\n")}\n${unsentCommentsMarkdown(page, saved)}`,
         snapshot: record?.snapshot ?? encodeSnapshot(A.save(doc)),
         heads: A.getHeads(doc),
+        ...(comments && {
+          comments_snapshot: record?.comments_snapshot ?? encodeSnapshot(A.save(comments)),
+          comment_heads: A.getHeads(comments),
+        }),
         page_id: this.pageId,
       };
     } finally {
       if (record) A.free(doc);
+      if (recordComments) A.free(recordComments);
+    }
+  }
+  /** Store a record's comments checkpoint in this replica's native storage,
+   * before the comments document is looked up, so an offline reopen still
+   * holds comments the host never acknowledged. */
+  async restoreCommentsCheckpoint(record) {
+    if (!record?.comments_snapshot || !record.comments_document_id || !this.backend) return;
+    const checkpoint = A.load(decodeSnapshot(record.comments_snapshot));
+    try {
+      const id = documentIdToBinary(record.comments_document_id);
+      await this.backend.storeSnapshot(id, await checkpointRecords(this.backend, id, checkpoint));
+    } finally {
+      A.free(checkpoint);
     }
   }
   /** Archive this reload-required replica, release it and open the
@@ -1084,6 +1113,7 @@ export class PageSession {
       } finally {
         A.free(checkpoint);
       }
+      await this.restoreCommentsCheckpoint(this.localPage);
       this.handle = await this.repo.find(this.localPage.document_id);
       this.canWrite = !!this.canWrite && !!this.localPage.canWrite;
       // Native storage can hold an edit the checkpoint never saw, so decide
@@ -1160,7 +1190,7 @@ export class PageSession {
     this.observeSchema();
     this.handle.on("change", (event) => this.receiveChange(event));
     this.handle.on("ephemeral-message", (event) => this.ephemeral(event));
-    void this.openComments();
+    this.openComments();
     if (this.accessDenied)
       this.accessProblem =
         "You no longer have access to this Page. Your local copy is kept on this device.";
@@ -1223,6 +1253,9 @@ export class PageSession {
       await this.initializeLocal(this.replicaKey, { fresh: true });
       const id = documentIdToBinary(this.localPage.document_id);
       await this.backend.storeSnapshot(id, await checkpointRecords(this.backend, id, base));
+      // Comments can't rewrite a preserved block: they move to the fresh
+      // replica whole.
+      await this.restoreCommentsCheckpoint(this.localPage);
       this.handle = await this.repo.find(this.localPage.document_id);
       this.localPage = await writeLocalPage(
         this.identity,
@@ -1323,10 +1356,22 @@ export class PageSession {
       this.checkpointSnapshot = encodeSnapshot(A.save(this.doc));
       this.checkpointHeads = heads;
     }
+    // The comments document checkpoints beside the Page, with its own heads,
+    // so a comment typed offline survives a reload or a recovery archive.
+    const comments = this.commentsDoc;
+    const commentHeads = comments ? A.getHeads(comments).join(",") : "";
+    if (comments && this.commentsCheckpointHeads !== commentHeads) {
+      this.commentsCheckpointSnapshot = encodeSnapshot(A.save(comments));
+      this.commentsCheckpointHeads = commentHeads;
+    }
     const value = {
       title: this.doc.title,
       updated_at: new Date().toISOString(),
       snapshot: this.checkpointSnapshot,
+      ...(comments && {
+        comments_snapshot: this.commentsCheckpointSnapshot,
+        comments_document_id: this.commentsHandle.documentId,
+      }),
       access: this.access,
       replicaKey: this.replicaKey,
       ...patch,
@@ -1600,7 +1645,10 @@ export class PageSession {
       )
         return;
       this.socketAdmittedAt.set(socket, this.now());
-      if (this.handle) void this.openComments();
+      if (this.handle) {
+        this.openComments();
+        this.commentsOpen({ type: "reconnected" });
+      }
       this.clearConnectionProblem();
       this.syncStatus({ type: "admitted" });
       // A receipt that outlasted its transient retries starts over now that
@@ -1768,38 +1816,107 @@ export class PageSession {
     );
   }
   /**
-   * Open the Page's comments document on this replica. It syncs over the
-   * same socket as the Page. `documentId` comes from discovery, or from the
-   * local record once a discovery named it, so an offline reopen finds the
-   * copy this browser stored. Nothing to do before either names one.
+   * Open the Page's comments document on this replica: the comments-open
+   * machine (comments-open-machine.mjs) drives lookups, retries and failure.
+   * It syncs over the same socket as the Page. The document ID comes from
+   * discovery, or from the local record once a discovery named it, so an
+   * offline reopen finds the copy this browser stored.
    */
   openComments(
     documentId = this.connection?.commentsDocumentId ?? this.localPage?.comments_document_id,
   ) {
-    if (this.commentsHandle || this.commentsOpening || !documentId || !this.repo) return;
-    const repo = this.repo;
-    this.commentsOpening = (async () => {
-      try {
-        const handle = await repo.find(documentId, { signal: AbortSignal.timeout(15000) });
-        if (!this.alive || this.repo !== repo || this.commentsHandle) return;
-        this.commentsHandle = handle;
-        this.savedCommentHeads = this.localPage?.comment_saved_heads ?? [];
-        handle.on("change", () => this.receiveCommentsChange());
-        if (this.localPage && this.localPage.comments_document_id !== documentId)
-          await this.persistLocal({ comments_document_id: documentId });
-        if (!this.alive || this.commentsHandle !== handle) return;
-        this.observeSchema();
-        this.updateCapabilities();
-        this.queueSaved();
-        this.emit();
-      } catch {
-        // Offline with no stored copy, or the host didn't answer: comments
-        // stay read-only. The next connection tries again.
-      } finally {
-        this.commentsOpening = undefined;
+    if (!documentId || !this.repo) return;
+    this.commentsOpen({ type: "open", id: documentId });
+  }
+  /** How long one comments lookup may take before it counts as failed. */
+  commentsLookupTimeout = 15000;
+  /** Step the comments-open machine and run its effects at the edge. */
+  commentsOpen(event) {
+    const result = commentsOpenMachine.step(this.commentsOpen$.snapshot(), event);
+    if (result.rejected) return result;
+    const before = this.commentsOpen$.snapshot();
+    this.commentsOpen$.update(() => result.state);
+    for (const effect of result.effects) {
+      switch (effect.type) {
+        case "lookup":
+          this.lookupComments(effect.attempt, effect.id);
+          break;
+        case "cancel":
+          this.commentsLookup?.abort();
+          this.commentsLookup = undefined;
+          break;
+        case "schedule":
+          clearTimeout(this.commentsTimer);
+          this.commentsTimer = setTimeout(() => {
+            this.commentsTimer = undefined;
+            this.commentsOpen({ type: "timer", attempt: effect.attempt });
+          }, effect.delay);
+          break;
+        case "clearTimer":
+          clearTimeout(this.commentsTimer);
+          this.commentsTimer = undefined;
+          break;
+        case "install":
+          void this.installComments(this.commentsFound);
+          break;
       }
-    })();
-    return this.commentsOpening;
+    }
+    // A replaced or closed document is no longer this replica's.
+    if (before.name === "ready" && result.state.name !== "ready") this.commentsHandle = undefined;
+    if (result.state.name !== before.name) {
+      this.updateCapabilities();
+      this.emit();
+    }
+    return result;
+  }
+  /** One lookup in this replica's repo. Its result reaches the machine only
+   * as an event naming its attempt, so a cancelled lookup can't install. */
+  lookupComments(attempt, documentId) {
+    const repo = this.repo;
+    const controller = new AbortController();
+    this.commentsLookup = controller;
+    const signal = AbortSignal.any([
+      controller.signal,
+      AbortSignal.timeout(this.commentsLookupTimeout),
+    ]);
+    Promise.resolve()
+      .then(() => repo.find(documentId, { signal }))
+      .then(
+        (handle) => {
+          if (this.repo !== repo || controller.signal.aborted) return;
+          this.commentsFound = handle;
+          this.commentsOpen({ type: "opened", attempt });
+        },
+        () => {
+          if (this.repo !== repo || controller.signal.aborted) return;
+          this.commentsOpen({ type: "lookupFailed", attempt });
+        },
+      );
+  }
+  /** Adopt the comments document a lookup found. */
+  async installComments(handle) {
+    this.commentsFound = undefined;
+    if (!handle || !this.alive) return;
+    this.commentsHandle = handle;
+    this.savedCommentHeads = this.localPage?.comment_saved_heads ?? [];
+    handle.on("change", () => {
+      if (this.commentsHandle === handle) this.receiveCommentsChange();
+    });
+    if (this.localPage && this.localPage.comments_document_id !== handle.documentId)
+      await this.persistLocal({ comments_document_id: handle.documentId });
+    if (!this.alive || this.commentsHandle !== handle) return;
+    this.observeSchema();
+    this.updateCapabilities();
+    this.queueSaved();
+    this.emit();
+  }
+  /** Whether the comments document failed to open; the Page says so. */
+  get commentsUnavailable() {
+    return this.commentsOpen$.snapshot().name === "failed";
+  }
+  /** Try opening the comments document again, after a visible failure. */
+  retryComments() {
+    return this.commentsOpen({ type: "retry" });
   }
   actorDisplayName(actor) {
     return this.actorNames.get(actor) ?? "Collaborator";
@@ -2474,6 +2591,8 @@ export class PageSession {
         this.signer?.free();
       } finally {
         this.local?.release();
+        // The replica goes, and with it any comments lookup.
+        this.commentsOpen({ type: "close" });
         this.repo = this.backend = this.storage = this.signer = this.local = undefined;
         this.commentsHandle = undefined;
       }

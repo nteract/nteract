@@ -389,6 +389,7 @@ export function errorResponse(error, stage = "request") {
         "preserved_markdown_converting",
         "comment_not_author",
         "comment_access_denied",
+        "operation_pending",
       ].includes(error?.code) && { code: error.code }),
       ...(error?.code === "unsupported_markdown" &&
         error.details?.unsupported && {

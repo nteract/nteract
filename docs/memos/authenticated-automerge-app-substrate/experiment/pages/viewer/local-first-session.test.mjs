@@ -1212,3 +1212,49 @@ test("reopening sets aside a pre-cutover conversion with no acknowledged heads",
   assert.equal(exportMarkdown(richDoc(synced.blocks[id])).split("Only once").length - 1, 1);
   assert.equal(synced.title, "Notes (edited)");
 });
+
+test("an offline comment survives a reload: both documents restore from the checkpoint", async (t) => {
+  browser(t);
+  t.mock.method(PageSession.prototype, "retryConnection", async () => {});
+  const auth = authentication();
+  const first = await PageSession.create(
+    { title: "Offline comments" },
+    { authentication: auth, refreshSession: async () => auth },
+  );
+  // A comments document as discovery would have named it; offline, the
+  // replica creates it locally the way the host's deterministic genesis does.
+  const { commentsGenesis } = await import("../model/comments-doc.mjs");
+  const comments = await first.repo.import(
+    A.save(commentsGenesis("c0000000-0000-4000-8000-0000000000aa")),
+  );
+  first.commentsHandle = comments;
+  await first.change((doc) => {
+    doc.schema = { features: ["comments-doc"] };
+  });
+  first.access = { ...first.access, canComment: true };
+  first.updateCapabilities();
+  const blockId = Object.keys(first.doc.blocks)[0];
+  await first.comment({ action: "add", block_id: blockId, body: "Typed offline" });
+  clearTimeout(first.savedTimer);
+  await first.persistLocal({ pending: true });
+  const pageId = first.pageId;
+  const commentsId = comments.documentId;
+  await first.close();
+
+  const restored = await PageSession.open(pageId, {
+    authentication: auth,
+    refreshSession: async () => auth,
+  });
+  t.after(() => restored.close());
+  assert.equal(restored.localPage.comments_document_id, commentsId);
+  // Offline, the stored ID opens the restored copy.
+  await new Promise((resolve) => {
+    const check = () =>
+      restored.commentsOpen$.snapshot().name === "ready" ? resolve() : setTimeout(check, 5);
+    check();
+  });
+  const threads = Object.values(restored.commentsDoc.threads);
+  assert.equal(threads.length, 1);
+  assert.equal(String(Object.values(threads[0].messages)[0].body), "Typed offline");
+  assert.match(restored.exportRecovery().markdown, /Typed offline/);
+});

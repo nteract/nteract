@@ -1,0 +1,970 @@
+{
+  "machine": "comments-open",
+  "description": "Opening a Page's comments document on a replica: lookups with a timeout, bounded retries, a visible failure, and restarts on reconnect or replica replacement (viewer/comments-open-machine.mjs).",
+  "states": [
+    "closed",
+    "opening",
+    "ready",
+    "retrying",
+    "failed"
+  ],
+  "events": [
+    "open",
+    "opened",
+    "lookupFailed",
+    "timer",
+    "reconnected",
+    "retry",
+    "close"
+  ],
+  "unreachable": [],
+  "cases": {
+    "opening/opened": [
+      "current",
+      "stale"
+    ],
+    "opening/lookupFailed": [
+      "retry",
+      "exhausted",
+      "stale"
+    ],
+    "retrying/timer": [
+      "current",
+      "stale"
+    ],
+    "closed/open": [
+      "new"
+    ],
+    "ready/open": [
+      "same",
+      "other"
+    ]
+  },
+  "rows": [
+    {
+      "label": "discovery names the document: first lookup",
+      "case": "new",
+      "state": {
+        "name": "closed"
+      },
+      "event": {
+        "type": "open",
+        "id": "doc-a"
+      },
+      "expect": {
+        "state": {
+          "name": "opening",
+          "attempt": 1,
+          "id": "doc-a"
+        },
+        "effects": [
+          {
+            "type": "lookup",
+            "attempt": 1,
+            "id": "doc-a"
+          }
+        ]
+      }
+    },
+    {
+      "label": "a late result after close is ignored",
+      "state": {
+        "name": "closed"
+      },
+      "event": {
+        "type": "opened",
+        "attempt": 1
+      },
+      "expect": {
+        "state": {
+          "name": "closed"
+        },
+        "effects": [],
+        "rejected": "That lookup was cancelled"
+      }
+    },
+    {
+      "label": "a late failure after close is ignored",
+      "state": {
+        "name": "closed"
+      },
+      "event": {
+        "type": "lookupFailed",
+        "attempt": 1
+      },
+      "expect": {
+        "state": {
+          "name": "closed"
+        },
+        "effects": [],
+        "rejected": "That lookup was cancelled"
+      }
+    },
+    {
+      "label": "a timer after close is ignored",
+      "state": {
+        "name": "closed"
+      },
+      "event": {
+        "type": "timer",
+        "attempt": 1
+      },
+      "expect": {
+        "state": {
+          "name": "closed"
+        },
+        "effects": [],
+        "rejected": "That lookup was cancelled"
+      }
+    },
+    {
+      "label": "reconnecting with no document ID opens nothing",
+      "state": {
+        "name": "closed"
+      },
+      "event": {
+        "type": "reconnected"
+      },
+      "expect": {
+        "state": {
+          "name": "closed"
+        },
+        "effects": [],
+        "rejected": "No comments document to open"
+      }
+    },
+    {
+      "label": "retry with no document ID opens nothing",
+      "state": {
+        "name": "closed"
+      },
+      "event": {
+        "type": "retry"
+      },
+      "expect": {
+        "state": {
+          "name": "closed"
+        },
+        "effects": [],
+        "rejected": "No comments document to open"
+      }
+    },
+    {
+      "label": "closing twice is a no-op",
+      "state": {
+        "name": "closed"
+      },
+      "event": {
+        "type": "close"
+      },
+      "expect": {
+        "state": {
+          "name": "closed"
+        },
+        "effects": [],
+        "rejected": "Nothing is opening"
+      }
+    },
+    {
+      "label": "the same document while opening keeps the lookup",
+      "state": {
+        "name": "opening",
+        "attempt": 1,
+        "id": "doc-a"
+      },
+      "event": {
+        "type": "open",
+        "id": "doc-a"
+      },
+      "expect": {
+        "state": {
+          "name": "opening",
+          "attempt": 1,
+          "id": "doc-a"
+        },
+        "effects": [],
+        "rejected": "Already opening"
+      }
+    },
+    {
+      "label": "a different document cancels the lookup and starts over",
+      "state": {
+        "name": "opening",
+        "attempt": 2,
+        "id": "doc-a"
+      },
+      "event": {
+        "type": "open",
+        "id": "doc-b"
+      },
+      "expect": {
+        "state": {
+          "name": "opening",
+          "attempt": 1,
+          "id": "doc-b"
+        },
+        "effects": [
+          {
+            "type": "cancel",
+            "attempt": 2
+          },
+          {
+            "type": "lookup",
+            "attempt": 1,
+            "id": "doc-b"
+          }
+        ]
+      }
+    },
+    {
+      "label": "the current lookup finds it: install",
+      "case": "current",
+      "state": {
+        "name": "opening",
+        "attempt": 2,
+        "id": "doc-a"
+      },
+      "event": {
+        "type": "opened",
+        "attempt": 2
+      },
+      "expect": {
+        "state": {
+          "name": "ready",
+          "id": "doc-a"
+        },
+        "effects": [
+          {
+            "type": "install",
+            "attempt": 2
+          }
+        ]
+      }
+    },
+    {
+      "label": "a cancelled lookup completing late is ignored",
+      "case": "stale",
+      "state": {
+        "name": "opening",
+        "attempt": 2,
+        "id": "doc-a"
+      },
+      "event": {
+        "type": "opened",
+        "attempt": 1
+      },
+      "expect": {
+        "state": {
+          "name": "opening",
+          "attempt": 2,
+          "id": "doc-a"
+        },
+        "effects": [],
+        "rejected": "That lookup was cancelled"
+      }
+    },
+    {
+      "label": "a timeout schedules a retry after a second",
+      "case": "retry",
+      "state": {
+        "name": "opening",
+        "attempt": 1,
+        "id": "doc-a"
+      },
+      "event": {
+        "type": "lookupFailed",
+        "attempt": 1
+      },
+      "expect": {
+        "state": {
+          "name": "retrying",
+          "attempt": 1,
+          "id": "doc-a"
+        },
+        "effects": [
+          {
+            "type": "schedule",
+            "attempt": 1,
+            "delay": 1000
+          }
+        ]
+      }
+    },
+    {
+      "label": "the fifth failure stops retrying and shows the failure",
+      "case": "exhausted",
+      "state": {
+        "name": "opening",
+        "attempt": 5,
+        "id": "doc-a"
+      },
+      "event": {
+        "type": "lookupFailed",
+        "attempt": 5
+      },
+      "expect": {
+        "state": {
+          "name": "failed",
+          "attempt": 5,
+          "id": "doc-a"
+        },
+        "effects": []
+      }
+    },
+    {
+      "label": "a cancelled lookup failing late is ignored",
+      "case": "stale",
+      "state": {
+        "name": "opening",
+        "attempt": 3,
+        "id": "doc-a"
+      },
+      "event": {
+        "type": "lookupFailed",
+        "attempt": 2
+      },
+      "expect": {
+        "state": {
+          "name": "opening",
+          "attempt": 3,
+          "id": "doc-a"
+        },
+        "effects": [],
+        "rejected": "That lookup was cancelled"
+      }
+    },
+    {
+      "label": "a timer while a lookup runs is stale",
+      "state": {
+        "name": "opening",
+        "attempt": 2,
+        "id": "doc-a"
+      },
+      "event": {
+        "type": "timer",
+        "attempt": 1
+      },
+      "expect": {
+        "state": {
+          "name": "opening",
+          "attempt": 2,
+          "id": "doc-a"
+        },
+        "effects": [],
+        "rejected": "That lookup was cancelled"
+      }
+    },
+    {
+      "label": "a reconnect while opening keeps the lookup",
+      "state": {
+        "name": "opening",
+        "attempt": 1,
+        "id": "doc-a"
+      },
+      "event": {
+        "type": "reconnected"
+      },
+      "expect": {
+        "state": {
+          "name": "opening",
+          "attempt": 1,
+          "id": "doc-a"
+        },
+        "effects": [],
+        "rejected": "Already opening"
+      }
+    },
+    {
+      "label": "retry while opening keeps the lookup",
+      "state": {
+        "name": "opening",
+        "attempt": 1,
+        "id": "doc-a"
+      },
+      "event": {
+        "type": "retry"
+      },
+      "expect": {
+        "state": {
+          "name": "opening",
+          "attempt": 1,
+          "id": "doc-a"
+        },
+        "effects": [],
+        "rejected": "Already opening"
+      }
+    },
+    {
+      "label": "closing while opening cancels the lookup",
+      "state": {
+        "name": "opening",
+        "attempt": 3,
+        "id": "doc-a"
+      },
+      "event": {
+        "type": "close"
+      },
+      "expect": {
+        "state": {
+          "name": "closed"
+        },
+        "effects": [
+          {
+            "type": "cancel",
+            "attempt": 3
+          }
+        ]
+      }
+    },
+    {
+      "label": "the same document again is already open",
+      "case": "same",
+      "state": {
+        "name": "ready",
+        "id": "doc-a"
+      },
+      "event": {
+        "type": "open",
+        "id": "doc-a"
+      },
+      "expect": {
+        "state": {
+          "name": "ready",
+          "id": "doc-a"
+        },
+        "effects": [],
+        "rejected": "Already open"
+      }
+    },
+    {
+      "label": "a different document replaces the open one",
+      "case": "other",
+      "state": {
+        "name": "ready",
+        "id": "doc-a"
+      },
+      "event": {
+        "type": "open",
+        "id": "doc-b"
+      },
+      "expect": {
+        "state": {
+          "name": "opening",
+          "attempt": 1,
+          "id": "doc-b"
+        },
+        "effects": [
+          {
+            "type": "lookup",
+            "attempt": 1,
+            "id": "doc-b"
+          }
+        ]
+      }
+    },
+    {
+      "label": "a stale result after ready is ignored",
+      "state": {
+        "name": "ready",
+        "id": "doc-a"
+      },
+      "event": {
+        "type": "opened",
+        "attempt": 1
+      },
+      "expect": {
+        "state": {
+          "name": "ready",
+          "id": "doc-a"
+        },
+        "effects": [],
+        "rejected": "That lookup was cancelled"
+      }
+    },
+    {
+      "label": "a stale failure after ready is ignored",
+      "state": {
+        "name": "ready",
+        "id": "doc-a"
+      },
+      "event": {
+        "type": "lookupFailed",
+        "attempt": 1
+      },
+      "expect": {
+        "state": {
+          "name": "ready",
+          "id": "doc-a"
+        },
+        "effects": [],
+        "rejected": "That lookup was cancelled"
+      }
+    },
+    {
+      "label": "a stale timer after ready is ignored",
+      "state": {
+        "name": "ready",
+        "id": "doc-a"
+      },
+      "event": {
+        "type": "timer",
+        "attempt": 1
+      },
+      "expect": {
+        "state": {
+          "name": "ready",
+          "id": "doc-a"
+        },
+        "effects": [],
+        "rejected": "That lookup was cancelled"
+      }
+    },
+    {
+      "label": "a reconnect keeps the open document",
+      "state": {
+        "name": "ready",
+        "id": "doc-a"
+      },
+      "event": {
+        "type": "reconnected"
+      },
+      "expect": {
+        "state": {
+          "name": "ready",
+          "id": "doc-a"
+        },
+        "effects": [],
+        "rejected": "Already open"
+      }
+    },
+    {
+      "label": "retry keeps the open document",
+      "state": {
+        "name": "ready",
+        "id": "doc-a"
+      },
+      "event": {
+        "type": "retry"
+      },
+      "expect": {
+        "state": {
+          "name": "ready",
+          "id": "doc-a"
+        },
+        "effects": [],
+        "rejected": "Already open"
+      }
+    },
+    {
+      "label": "closing drops the open document",
+      "state": {
+        "name": "ready",
+        "id": "doc-a"
+      },
+      "event": {
+        "type": "close"
+      },
+      "expect": {
+        "state": {
+          "name": "closed"
+        },
+        "effects": []
+      }
+    },
+    {
+      "label": "the same document while waiting keeps the timer",
+      "state": {
+        "name": "retrying",
+        "attempt": 2,
+        "id": "doc-a"
+      },
+      "event": {
+        "type": "open",
+        "id": "doc-a"
+      },
+      "expect": {
+        "state": {
+          "name": "retrying",
+          "attempt": 2,
+          "id": "doc-a"
+        },
+        "effects": [],
+        "rejected": "Already opening"
+      }
+    },
+    {
+      "label": "a different document while waiting clears the timer and starts over",
+      "state": {
+        "name": "retrying",
+        "attempt": 2,
+        "id": "doc-a"
+      },
+      "event": {
+        "type": "open",
+        "id": "doc-b"
+      },
+      "expect": {
+        "state": {
+          "name": "opening",
+          "attempt": 1,
+          "id": "doc-b"
+        },
+        "effects": [
+          {
+            "type": "clearTimer"
+          },
+          {
+            "type": "lookup",
+            "attempt": 1,
+            "id": "doc-b"
+          }
+        ]
+      }
+    },
+    {
+      "label": "a result while waiting is stale",
+      "state": {
+        "name": "retrying",
+        "attempt": 2,
+        "id": "doc-a"
+      },
+      "event": {
+        "type": "opened",
+        "attempt": 2
+      },
+      "expect": {
+        "state": {
+          "name": "retrying",
+          "attempt": 2,
+          "id": "doc-a"
+        },
+        "effects": [],
+        "rejected": "That lookup was cancelled"
+      }
+    },
+    {
+      "label": "a failure while waiting is stale",
+      "state": {
+        "name": "retrying",
+        "attempt": 2,
+        "id": "doc-a"
+      },
+      "event": {
+        "type": "lookupFailed",
+        "attempt": 2
+      },
+      "expect": {
+        "state": {
+          "name": "retrying",
+          "attempt": 2,
+          "id": "doc-a"
+        },
+        "effects": [],
+        "rejected": "That lookup was cancelled"
+      }
+    },
+    {
+      "label": "the timer fires: the next attempt",
+      "case": "current",
+      "state": {
+        "name": "retrying",
+        "attempt": 2,
+        "id": "doc-a"
+      },
+      "event": {
+        "type": "timer",
+        "attempt": 2
+      },
+      "expect": {
+        "state": {
+          "name": "opening",
+          "attempt": 3,
+          "id": "doc-a"
+        },
+        "effects": [
+          {
+            "type": "lookup",
+            "attempt": 3,
+            "id": "doc-a"
+          }
+        ]
+      }
+    },
+    {
+      "label": "an older timer is ignored",
+      "case": "stale",
+      "state": {
+        "name": "retrying",
+        "attempt": 2,
+        "id": "doc-a"
+      },
+      "event": {
+        "type": "timer",
+        "attempt": 1
+      },
+      "expect": {
+        "state": {
+          "name": "retrying",
+          "attempt": 2,
+          "id": "doc-a"
+        },
+        "effects": [],
+        "rejected": "That lookup was cancelled"
+      }
+    },
+    {
+      "label": "a reconnect retries at once from the first attempt",
+      "state": {
+        "name": "retrying",
+        "attempt": 3,
+        "id": "doc-a"
+      },
+      "event": {
+        "type": "reconnected"
+      },
+      "expect": {
+        "state": {
+          "name": "opening",
+          "attempt": 1,
+          "id": "doc-a"
+        },
+        "effects": [
+          {
+            "type": "clearTimer"
+          },
+          {
+            "type": "lookup",
+            "attempt": 1,
+            "id": "doc-a"
+          }
+        ]
+      }
+    },
+    {
+      "label": "retry clears the timer and tries at once",
+      "state": {
+        "name": "retrying",
+        "attempt": 3,
+        "id": "doc-a"
+      },
+      "event": {
+        "type": "retry"
+      },
+      "expect": {
+        "state": {
+          "name": "opening",
+          "attempt": 1,
+          "id": "doc-a"
+        },
+        "effects": [
+          {
+            "type": "clearTimer"
+          },
+          {
+            "type": "lookup",
+            "attempt": 1,
+            "id": "doc-a"
+          }
+        ]
+      }
+    },
+    {
+      "label": "closing while waiting clears the timer",
+      "state": {
+        "name": "retrying",
+        "attempt": 2,
+        "id": "doc-a"
+      },
+      "event": {
+        "type": "close"
+      },
+      "expect": {
+        "state": {
+          "name": "closed"
+        },
+        "effects": [
+          {
+            "type": "clearTimer"
+          }
+        ]
+      }
+    },
+    {
+      "label": "the same document after failure stays failed",
+      "state": {
+        "name": "failed",
+        "attempt": 5,
+        "id": "doc-a"
+      },
+      "event": {
+        "type": "open",
+        "id": "doc-a"
+      },
+      "expect": {
+        "state": {
+          "name": "failed",
+          "attempt": 5,
+          "id": "doc-a"
+        },
+        "effects": [],
+        "rejected": "Already opening"
+      }
+    },
+    {
+      "label": "a different document after failure starts over",
+      "state": {
+        "name": "failed",
+        "attempt": 5,
+        "id": "doc-a"
+      },
+      "event": {
+        "type": "open",
+        "id": "doc-b"
+      },
+      "expect": {
+        "state": {
+          "name": "opening",
+          "attempt": 1,
+          "id": "doc-b"
+        },
+        "effects": [
+          {
+            "type": "lookup",
+            "attempt": 1,
+            "id": "doc-b"
+          }
+        ]
+      }
+    },
+    {
+      "label": "a late result after failure is stale",
+      "state": {
+        "name": "failed",
+        "attempt": 5,
+        "id": "doc-a"
+      },
+      "event": {
+        "type": "opened",
+        "attempt": 5
+      },
+      "expect": {
+        "state": {
+          "name": "failed",
+          "attempt": 5,
+          "id": "doc-a"
+        },
+        "effects": [],
+        "rejected": "That lookup was cancelled"
+      }
+    },
+    {
+      "label": "a late failure after failure is stale",
+      "state": {
+        "name": "failed",
+        "attempt": 5,
+        "id": "doc-a"
+      },
+      "event": {
+        "type": "lookupFailed",
+        "attempt": 5
+      },
+      "expect": {
+        "state": {
+          "name": "failed",
+          "attempt": 5,
+          "id": "doc-a"
+        },
+        "effects": [],
+        "rejected": "That lookup was cancelled"
+      }
+    },
+    {
+      "label": "a timer after failure is stale",
+      "state": {
+        "name": "failed",
+        "attempt": 5,
+        "id": "doc-a"
+      },
+      "event": {
+        "type": "timer",
+        "attempt": 5
+      },
+      "expect": {
+        "state": {
+          "name": "failed",
+          "attempt": 5,
+          "id": "doc-a"
+        },
+        "effects": [],
+        "rejected": "That lookup was cancelled"
+      }
+    },
+    {
+      "label": "a reconnect after failure tries again",
+      "state": {
+        "name": "failed",
+        "attempt": 5,
+        "id": "doc-a"
+      },
+      "event": {
+        "type": "reconnected"
+      },
+      "expect": {
+        "state": {
+          "name": "opening",
+          "attempt": 1,
+          "id": "doc-a"
+        },
+        "effects": [
+          {
+            "type": "lookup",
+            "attempt": 1,
+            "id": "doc-a"
+          }
+        ]
+      }
+    },
+    {
+      "label": "retry after failure tries again",
+      "state": {
+        "name": "failed",
+        "attempt": 5,
+        "id": "doc-a"
+      },
+      "event": {
+        "type": "retry"
+      },
+      "expect": {
+        "state": {
+          "name": "opening",
+          "attempt": 1,
+          "id": "doc-a"
+        },
+        "effects": [
+          {
+            "type": "lookup",
+            "attempt": 1,
+            "id": "doc-a"
+          }
+        ]
+      }
+    },
+    {
+      "label": "closing after failure",
+      "state": {
+        "name": "failed",
+        "attempt": 5,
+        "id": "doc-a"
+      },
+      "event": {
+        "type": "close"
+      },
+      "expect": {
+        "state": {
+          "name": "closed"
+        },
+        "effects": []
+      }
+    }
+  ]
+}

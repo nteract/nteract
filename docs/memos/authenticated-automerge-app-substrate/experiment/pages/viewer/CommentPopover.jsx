@@ -264,7 +264,7 @@ function PopoverSurface({ composer, session, containerRef, state, current, body 
           onChange={(text, spans) => composer.change(spans ? { markdown: text, spans } : text)}
           onError={setDraftError}
           disabled={disabled}
-          images={{ pageId: session.pageId, canUpload: session.canComment }}
+          images={{ pageId: session.pageId, canUpload: session.canComment && session.canWrite }}
           onUploadingChange={setUploading}
         />
         {error && (

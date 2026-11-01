@@ -91,6 +91,13 @@
         "before": "25bb4f4bb9471ecd22ed59784b9f7055bc87e3163ccc2271f6ff28e14c2247f0",
         "after": "88fc5e062021def09b19c4f5f109c3c925ec2a6ab379ce41cd1411922c73a107"
       }
+    ],
+    "recordRefusal": [
+      {
+        "path": "packages/automerge-repo-subduction/src/storage.ts",
+        "before": "c13da8f677672ba78161336729e5f9f092559d8dcfc60dacb17aa53651115e27",
+        "after": "9a046cb2487e78d730c0c78315d6cf715b27b109cdcaffebbf95800e66861d89"
+      }
     ]
   }
 }

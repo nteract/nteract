@@ -51,7 +51,7 @@ function harness() {
     serverKey: SERVER,
     signer: (key) => SIGNERS[key],
     seed: () => comments,
-    onRefused: async (key, reason) => refused.push({ key, code: reason.code }),
+    onRefused: (key, reason) => refused.push({ key, code: reason.code }),
   });
   let fail = false;
   const store = admission.guard({
@@ -68,12 +68,13 @@ function harness() {
   });
   /** One comment action as `who` writes it; returns its encoded change and
    * advances the serving document as delivery would. */
-  const write = (who, input, deliver = true) => {
+  const write = (who, input, deliver = true, spans) => {
     const before = comments;
     const after = A.change(A.clone(before, { actor: who.actor }), (draft) =>
-      applyComment(draft, input, { principal: who.principal }, undefined, {
+      applyComment(draft, input, { principal: who.principal }, spans, {
         page,
         role: who.role,
+        literal: !!spans,
       }),
     );
     const [change] = A.getChanges(before, after);
@@ -103,16 +104,25 @@ const actor = () => Buffer.from(crypto.getRandomValues(new Uint8Array(16))).toSt
 const alice = { ...SIGNERS[ALICE_KEY], actor: actor() };
 const bob = { ...SIGNERS[BOB_KEY], actor: actor() };
 
-test("recordFrame reads tree, kind, issuer and blob, and ignores everything else", () => {
+test("recordFrame decodes with the bridge's codec and checks the frame against its path", () => {
   const change = A.getAllChanges(A.from({ x: 1 }))[0];
   const [path, value] = frame(change, BOB_KEY);
-  const read = recordFrame(path, value);
+  const read = recordFrame(path, value, 1 << 20);
   assert.equal(read.tree, TREE.padEnd(64, "0"));
   assert.equal(read.kind, "commit");
   assert.equal(read.issuer, BOB_KEY);
   assert.deepEqual(read.blob, change);
-  assert.equal(recordFrame(`${path.split("/commits/")[0]}/id`, new Uint8Array([1])), null);
-  assert.equal(recordFrame(path, value.subarray(0, 50)), null);
+  assert.equal(recordFrame(`${path.split("/commits/")[0]}/id`, new Uint8Array([1]), 1 << 20), null);
+  assert.throws(() => recordFrame(path, value.subarray(0, 50), 1 << 20));
+  assert.throws(() => recordFrame(path.replace("/commits/", "/fragments/"), value, 1 << 20));
+});
+
+test("a malformed frame in the comments tree is refused, not a storage failure", async () => {
+  const h = harness();
+  const change = h.write(bob, { block_id: "b1", body: "Mine" }, false);
+  const [path, value] = frame(change, BOB_KEY);
+  await assert.rejects(h.store.save(path, value.subarray(0, 120)), { recordRefused: true });
+  assert.deepEqual(h.refused, [], "an unreadable frame proves no broken rule");
 });
 
 test("a commenter's own thread and replies pass and are stored", async () => {
@@ -139,9 +149,104 @@ test("a commenter editing another author's message is refused before storage and
   );
   await assert.rejects(h.store.save(...frame(forged, BOB_KEY)), {
     code: "comment_change_refused",
+    // The marker the bridge reads: a refusal, not a storage failure.
+    recordRefused: true,
   });
   assert.equal(h.saved.length, 1, "the refused record was never written");
   assert.deepEqual(h.refused, [{ key: BOB_KEY, code: "not_message_author" }]);
+});
+
+const IMAGE = "/api/assets/p1/" + "a".repeat(64);
+const imageSpans = [
+  {
+    type: "block",
+    value: {
+      type: "image",
+      parents: ["paragraph"],
+      attrs: { src: IMAGE, alt: "", title: null },
+      isEmbed: true,
+    },
+  },
+];
+
+test("an image-only comment from the browser passes, and the same key writes again", async () => {
+  const h = harness();
+  // The composer's draft: one image, no text. Its Markdown source is the
+  // image reference, as comment-draft.mjs sends it.
+  const add = h.write(
+    bob,
+    { block_id: "b1", body: `![](${IMAGE})`, body_format: "markdown" },
+    false,
+    imageSpans,
+  );
+  await h.store.save(...frame(add, BOB_KEY));
+  h.deliver(add);
+  assert.deepEqual(h.refused, []);
+  const [threadId] = Object.keys(h.comments().threads);
+  const reply = h.write(
+    bob,
+    { action: "reply", thread_id: threadId, body: "And a caption" },
+    false,
+  );
+  await h.store.save(...frame(reply, BOB_KEY));
+  assert.equal(h.saved.length, 2);
+  assert.deepEqual(h.refused, []);
+});
+
+test("a comment with neither text nor an image is refused everywhere alike", async () => {
+  const h = harness();
+  const rule = [
+    { type: "block", value: { type: "horizontal-rule", parents: [], attrs: {}, isEmbed: false } },
+  ];
+  // The tools refuse it before writing.
+  assert.throws(
+    () => h.write(bob, { block_id: "b1", body: "---", body_format: "markdown" }, false, rule),
+    /1–16000 characters/,
+  );
+  // So does native admission, written raw.
+  const raw = h.raw(bob.actor, (draft) => {
+    const now = new Date().toISOString();
+    const author = { principal: bob.principal, displayName: "Bob", driver: "Browser" };
+    draft.threads.rule = {
+      target: { kind: "block", blockId: "b1" },
+      author,
+      createdAt: now,
+      status: { value: "open", at: now },
+      messages: {
+        m1: {
+          body: "---",
+          format: "automerge-rich-text-v1",
+          richText: "",
+          author,
+          createdAt: now,
+          deletedAt: null,
+        },
+      },
+    };
+    A.updateSpans(draft, ["threads", "rule", "messages", "m1", "richText"], rule);
+  });
+  await assert.rejects(h.store.save(...frame(raw, BOB_KEY)), { recordRefused: true });
+});
+
+test("an unexpected checker error refuses the record without blocking the key", async () => {
+  const h = harness();
+  const add = h.write(bob, { block_id: "b1", body: "Mine" }, false);
+  h.admission.signer = () => {
+    throw Error("checker bug");
+  };
+  const errors = [];
+  const original = console.error;
+  console.error = (line) => errors.push(line);
+  try {
+    await assert.rejects(
+      h.store.save(...frame(add, BOB_KEY)),
+      (error) => error.recordRefused === true && error.reason.code === "admission_error",
+    );
+  } finally {
+    console.error = original;
+  }
+  assert.deepEqual(h.refused, []);
+  assert.match(errors[0], /page.comment_admission_error/);
 });
 
 test("any commenter may resolve another author's thread", async () => {
@@ -208,11 +313,17 @@ test("a change whose dependencies never arrive is refused without blocking its k
   const threadId = Object.keys(h.comments().threads)[0];
   const second = h.write(bob, { action: "reply", thread_id: threadId, body: "Second" });
   const fresh = harness();
-  await assert.rejects(fresh.store.save(...frame(second, BOB_KEY)), {
-    code: "comment_change_refused",
-  });
+  // Nonfatal, like every refusal, and no proof of a broken rule: the key
+  // isn't blocked, so repeating it gains an attacker nothing.
+  await assert.rejects(
+    fresh.store.save(...frame(second, BOB_KEY)),
+    (error) => error.recordRefused === true && error.reason.code === "missing_dependencies",
+  );
   assert.deepEqual(fresh.refused, []);
-  assert.ok(first);
+  // Once its dependency lands, the same record is accepted.
+  await fresh.store.save(...frame(first, BOB_KEY));
+  await fresh.store.save(...frame(second, BOB_KEY));
+  assert.equal(fresh.saved.length, 2);
 });
 
 test("a failed save rebuilds the admission document from storage", async () => {
