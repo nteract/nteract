@@ -15,11 +15,13 @@ const keyOf = (session) => `${session.identity?.principal}:${session.pageId}`;
 
 /** Settles once a session's whole close has, whatever its outcome. */
 const closeSettled = (session) => session.closeSettled?.().catch(() => {});
-// The release has started: the checkpoint settled, or a deleted Page's local
-// copy is forgotten and its close is under way.
+// The release has started: the checkpoint settled, or a retired copy's
+// archive write settled, whatever its result. A failed capture holds its
+// backend until the session is left.
 const releasing = (phase) =>
   (phase.name === "closed" && !phase.archived) ||
-  (phase.name === "deleted" && phase.closing === true);
+  phase.name === "retired" ||
+  (phase.name === "retireFailed" && !phase.held);
 
 export class SessionHost {
   store = new Store({ current: null, owned: [], generation: 0 });

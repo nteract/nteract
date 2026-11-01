@@ -418,8 +418,10 @@ function logCountRepair(counts) {
 }
 /** Journal operation names for the Catalog's lifecycle routes. */
 const LIFECYCLE_OPERATIONS = { trash: "trash_page", restore: "restore_page", purge: "purge_page" };
-/** A request's base_heads as requireHeads judges them. */
+/** A request's base_heads as requireHeads judges them, or `absent` when the
+ * request omitted them. The lifecycle machine decides what absence means. */
 function headsCheck(doc, heads) {
+  if (heads === undefined) return "absent";
   try {
     requireHeads(doc, heads);
     return "match";
@@ -3380,11 +3382,14 @@ export class Page {
           if (creation) await this.finishCreation(creation);
           else await this.flush();
           return json(
-            this.metadata.createdReceipt ?? {
-              page_id: this.metadata.pageId,
-              title: this.handle.doc().title,
-              heads: A.getHeads(this.handle.doc()),
-            },
+            await this.createdReply(
+              this.metadata.createdReceipt ?? {
+                page_id: this.metadata.pageId,
+                title: this.handle.doc().title,
+                heads: A.getHeads(this.handle.doc()),
+              },
+              identity,
+            ),
           );
         }
         const args = await readJson(request);
@@ -3440,7 +3445,7 @@ export class Page {
         }
         await this.initializeRepo(intent.metadata);
         await this.finishCreation(intent);
-        return json(intent.metadata.createdReceipt, 201);
+        return json(await this.createdReply(intent.metadata.createdReceipt, identity), 201);
       }
       // Anyone without a current grant cannot tell a trashed Page from a
       // missing one. Only the owner and current members learn it exists.
@@ -3745,10 +3750,41 @@ export class Page {
       }
       throw new HttpError(404, "Not found");
     } catch (error) {
-      if (!admissionRoute) return errorResponse(error, "page");
+      if (!admissionRoute) return errorResponse(this.withCommentHeads(error), "page");
       if ((error.status ?? 500) >= 500) logFailure(error, "page");
       return admissionErrorResponse(error, { stage: "page", identity });
     }
+  }
+
+  /** The create_page receipt with this Page's edit authority: the Page-scoped
+   * retry_token, retry_key_prefix and retry_until that read_page would issue,
+   * so the first edit needs no read. The stored receipt stays as recorded;
+   * the token is minted per reply and journaled by the owner's Catalog with
+   * the rest of the receipt, so an exact retry returns the same one. */
+  async createdReply(receipt, identity) {
+    return {
+      ...receipt,
+      ...(await issueRetryToken(this.ctx.storage, {
+        scope: `page:${this.metadata.pageId}`,
+        principal: identity.principal,
+      })),
+    };
+  }
+
+  /** A revision refusal (stale_heads, edit_conflict, resync_required) names
+   * the live Page revision in `details.current_heads`. Add the comments
+   * document's revision beside it, so the caller holds both baselines
+   * without a read. Other errors pass through unchanged. */
+  withCommentHeads(error) {
+    if (
+      !["stale_heads", "edit_conflict", "resync_required"].includes(error?.code) ||
+      !Array.isArray(error.details?.current_heads) ||
+      error.details.comment_heads !== undefined
+    )
+      return error;
+    const comments = this.commentsView();
+    if (comments) error.details = { ...error.details, comment_heads: A.getHeads(comments) };
+    return error;
   }
 
   /**
@@ -4201,10 +4237,12 @@ export class Page {
   async lifecycleReply(response, context = {}) {
     if (response.status >= 500) return json({ error: response.error }, response.status);
     if (response.status !== 200) {
-      const reply = errorResponse(
-        new HttpError(response.status, response.error, response.code),
-        "page-lifecycle",
-      );
+      const error = new HttpError(response.status, response.error, response.code);
+      // A trash refused for stale base_heads names the live revision, as an
+      // edit refusal does.
+      if (response.code === "stale_heads" && this.handle)
+        error.details = { current_heads: A.getHeads(this.handle.doc()) };
+      const reply = errorResponse(this.withCommentHeads(error), "page-lifecycle");
       // Every refusal before the record changes lets the Catalog release its
       // reservation, as for a rejected creation.
       if (response.beforeChange) reply.headers.set("x-pages-lifecycle-rejected", "before-change");

@@ -30,16 +30,24 @@ test("MCP forwards authorized operations and preserves stale-write failure", asy
     async (op, args) => {
       calls.push({ op, args });
       return Response.json(
-        { error: "Page changed; read_page again before editing", code: "stale_heads" },
+        {
+          error: "Page changed; read_page again before editing",
+          code: "stale_heads",
+          current_heads: ["c".repeat(64)],
+          comment_heads: ["d".repeat(64)],
+        },
         { status: 409 },
       );
     },
   );
   const result = (await response.json()).result;
   assert.equal(result.isError, true);
+  // The service's revision fields ride along with retryable.
   const expected = {
     error: "Page changed; read_page again before editing",
     code: "stale_heads",
+    current_heads: ["c".repeat(64)],
+    comment_heads: ["d".repeat(64)],
     retryable: true,
   };
   assert.deepEqual(result.structuredContent, expected);

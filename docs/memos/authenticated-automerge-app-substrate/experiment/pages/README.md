@@ -106,6 +106,7 @@ was a caret race in the smoke; the editor side is
 | Admission codes, celld restart, and reconnect to Saved | `node scripts/local-sharing-e2e.mjs --admission` | Starts and restarts an isolated fixture |
 | Reload prompt after a deploy under an open tab | `node scripts/local-sharing-e2e.mjs --build-update` | Starts an isolated fixture and swaps its build |
 | Trash, restore, and permanent deletion | `node scripts/local-sharing-e2e.mjs --trash` | Starts an isolated fixture |
+| Removed access hides the local copy across a reload, with its download | `node scripts/local-sharing-e2e.mjs --revocation` | Starts an isolated fixture |
 | A commenter comments but can't edit; a forged native edit of another author's message is refused | `node scripts/local-sharing-e2e.mjs --commenter` | Starts an isolated fixture |
 | Projects over MCP and in the browser, `/projects` and `/pages` on a phone-sized screen, breadcrumbs, Trash and restore in a Project | `node scripts/local-sharing-e2e.mjs --projects` | Starts an isolated fixture |
 | Cold first open of a 300-paragraph Page with images on Fast 3G and 4x CPU, phase by phase (records timings, gates on nothing) | `node scripts/local-sharing-e2e.mjs --cold-open` | Starts an isolated fixture behind a brotli proxy; writes `report.json` |
@@ -340,6 +341,78 @@ Automerge history, and local deletion tombstones prevent stale tabs from revivin
 removed entries. Browser storage eviction is outside the recovery guarantee.
 An existing local replica can open before network sync; this does not guarantee
 an offline cold start of application assets or authentication.
+
+When the host refuses this account, the browser stops rendering its copy. A
+`page_access_denied` answer (access removed, or a Page missing to this account,
+purged included) or an access fact with a role of none retires the session for
+access; a 404 (`page_deleted`, the legacy missing-Page answer, or the 4404
+admission close) retires it as deleted. Sync stops first, and any comments
+document lookup is cancelled. Then one IndexedDB transaction moves the
+checkpoint and the live replica's copy to the recovery archive, with any
+unsent comment or reply drafts from the UI, and leaves a marker in the
+checkpoint's place. Each archived copy holds both documents: the Page snapshot
+and `comments_snapshot` with `comments_document_id`, so comments the host
+never acknowledged survive like unsent Page edits. Only then is the backend
+released; a leave waits for the archive. A reload shows the same "You no
+longer have access" or "This Page was deleted" notice instead of the Page.
+The notice downloads every copy the archive holds for the Page as one JSON
+bundle, each with its Markdown (comments, unsent comments and drafts included)
+and its Automerge snapshots. A permanent deletion from Trash archives the
+owner's copy the same way.
+
+The client hides the copy for good only once the archive and marker are
+committed in IndexedDB. If that write fails (quota, storage error), the session
+says so and never reports the copy archived; the notice offers the tab's
+in-memory export and Try again. The reload gate keeps the export as an unsaved
+Page that only Download or Discard clears: it can hold comment drafts no
+document receipt covers. The stored copy stays as it was. The next open reaches
+the host, is refused again, and retires again; that is the retry. The host is
+the access boundary, and hiding a refused copy is a courtesy on top of it.
+
+Capturing the live copy is part of the retirement. The raw snapshots of both
+documents must serialize; their Markdown is a projection that may fall back
+to a note. If a snapshot fails, nothing is archived, closed or released: the
+session holds its backend, both documents and the comments lookup
+(`retireFailed` with `held`), and Try again captures again. The drafts the
+first capture read stay with the session after the hidden Page resets the
+composer and unmounts the panel; every retry merges them, without
+duplicates, with any drafts the UI still holds. The
+notice and the reload gate get the Markdown the replica still projects, with
+the drafts. Leaving a held copy releases its backend; the reload gate keeps
+that Markdown as an unsaved Page.
+
+Retirement carries the grant it was refused under: the replica key the session
+opened with, and the host access revision it last held (the refusal's own,
+when the host sent one). Every checkpoint records `grant_revision`, the highest
+readable access revision its writers held. The stored entry belongs to a newer
+grant when its replica key names a later member generation or its
+`grant_revision` is greater; owner and company access stay at generation 0, so
+the revision is what tells those grants apart. A legacy entry without
+`grant_revision` is judged by generation alone. For a newer grant's entry (another tab
+opened the Page after access came back), the same transaction archives only the
+refused tab's own copy and drafts, advances the entry's `recovery_sequence` so
+later archives sort after them, and leaves the content and grant fields with no
+marker. A permanent deletion from Trash reads the copy's grant before the purge
+and retires under it.
+
+An access marker only blocks: a tab that hasn't seen the refusal archives its
+own copy when it next writes, and the next open the host grants writes over the
+marker on the new grant's replica, never the archived one. Neither document
+restores from a marker: a reopen asks the host first, and a hidden session
+never opens its comments document. Every comments install reads the stored
+entry before it adopts the document: a marker retires this tab too, with the
+found document's unsent comments in the archive, and another grant's entry (a
+different replica key, or a greater grant revision) installs nothing. While
+that read runs, the found document waits where a retirement's capture reads
+it, so a refusal in this tab archives it too; nothing renders from it. A
+comments restore checks the stored entry against the record's grant, and the
+session's own lifecycle fence, at its start and again right before the native
+write; a retirement, release or replacement in between stores nothing.
+A deletion marker is permanent. Trash, a refusal without a code, sign-in and
+transient failures keep the copy. Discovery, reconnects, the open and save
+receipts classify a refusal in one place (`classifyRefusal` in
+[viewer/session.mjs](viewer/session.mjs)), so `page_trashed` shows the Trash
+notice whichever request sees it first.
 
 ```text
 Browser Repo + Wordgard                 Authorized HTTP / MCP operations
@@ -1149,9 +1222,12 @@ person confirms Discard unsaved edits. Records are keyed by account and Page id.
 Each Page session moves through the
 [viewer-session machine](viewer/session-machine.mjs): opening, open, paused
 (sign-in, access, Trash or access reload), draining while it is left, then
-checkpointing, closed or deleted. `PageSession.phase$` is that state in a
+checkpointing or closed. A refusal retires it instead: retiring while the
+archive writes, then retired or retireFailed; Try again moves a failed archive
+back to retiring. A failed capture is retireFailed with `held`: the backend
+stays until Try again or a leave. `PageSession.phase$` is that state in a
 [Store](viewer/store.mjs), and every lifecycle flag derives from it. A close
-can grow while it runs (a late deletion adds its forget), so the close itself
+can grow while it runs (a late refusal adds its archive), so the close itself
 is private and `closeSettled()` is the only way to wait for it. The
 [SessionHost](viewer/session-host.mjs) owns the installed session and every
 session still closing. The [reload gate](viewer/reload-gate-machine.mjs) follows
@@ -1169,8 +1245,9 @@ Deliberate differences from the earlier flag-based sessions:
   release settles, like a Page left through the drain, and keeps the same
   record if its edits never reached the server. Closing a held Page cancels a
   waiting Reload.
-- A deleted Page forgets its local copy before it starts closing. It counts as
-  closing, and Reload waits for it, until that close releases its backend.
+- A deleted or revoked Page archives its local copy before it releases its
+  backend. It counts as closing, and Reload waits for it, until both settle.
+  A failed archive keeps the tab's export as an unsaved record.
 - Leaving during access reload waits for archiving and the replacement-open
   attempt.
 - If the replacement fails to open, the archived Page stays installed with

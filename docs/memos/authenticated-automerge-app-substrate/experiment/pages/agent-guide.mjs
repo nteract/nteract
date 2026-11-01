@@ -477,6 +477,8 @@ limit: {limit, count, trash_count}. At the limit, create_page and restore_page r
 page_quota_exceeded with limit and count; tell the person rather than retrying.
 
 - create_page: title, optional markdown, optional project_id or parent_id, and idempotency_key.
+  Returns page_id, heads and the Page's own retry_token, retry_key_prefix and retry_until,
+  so the first edit needs no read_page. The list_pages token creates; it never edits.
 - read_page: page_id, optional block_ids, section/section_occurrence, search/context_nodes,
   node_range, include_content, include_presence, comments, outline_offset/outline_limit and max_bytes.
 - list_page_comments: page_id, optional state (open by default), block_id, thread_ids,
@@ -493,7 +495,8 @@ page_quota_exceeded with limit and count; tell the person rather than retrying.
   reopen also take thread_ids to change up to 100 threads in one call. See Comments below.
 - import_page_image: page_id and a ChatGPT-supplied file descriptor; returns a
   private asset_id and asset_url for a subsequent insert_image edit. See Images above.
-- delete_page: move a Page you own to Trash. See Trash below.
+- delete_page: page_id, idempotency_key and the list_pages retry_token move a Page
+  you own to Trash; base_heads is an optional guard. See Trash below.
 - restore_page: page_id, idempotency_key and the list_pages retry_token.
 - purge_page: permanently delete a trashed Page in two calls. See Trash below.
 - create_project, list_projects, get_project, update_project: Projects. See Projects below.
@@ -542,7 +545,10 @@ retry the same request shortly.
 ### Trash
 
 delete_page is recoverable. It moves the Page to Trash with its content, comments
-and sharing intact, and hides it from default listings. Collaborators lose access
+and sharing intact, and hides it from default listings. It needs only page_id,
+idempotency_key and the list_pages retry_token, so trashing several Pages takes
+one call each with no read_page first. Send base_heads only when the trash should
+fail if the Page changed since your read (stale_heads). Collaborators lose access
 while it is in Trash. The owner can still read it (read_page, read_page_changes,
 list_page_comments), but cannot edit, comment, report progress or change sharing
 until it is restored; those calls return code page_trashed. Reads of a trashed
@@ -581,6 +587,7 @@ opening_heading_repeats_title, the actual block_id, heading and match_kind.
 The heading may be a bounded preview (heading_truncated:true). Warnings are part
 of the exact stored receipt and describe its heads, even on retries after later
 edits. A warning means the write succeeded; it is not a reason to repeat it.
+patch_page receipts use the same list for marks_dropped (see Guarded edits).
 
 The detector checks only the first nonempty top-level body node. It compares
 opening headings with the title using conservative Unicode/case/punctuation
@@ -721,8 +728,9 @@ Pages preserves supplied body content; it does not silently delete headings.
 
 ### Guarded edits
 
-Read before editing. Document edits, passage comments and deletion require page_id,
-base_heads from a read, and idempotency_key. Include retry_token
+Read before editing. Document edits and passage comments require page_id,
+base_heads from a read, and idempotency_key; delete_page takes base_heads as an
+optional guard. Include retry_token
 from read_page or read_page_changes for edits/comments; use the list_pages token for
 create, delete, restore and purge.
 Append a new UUID to retry_key_prefix from the same result for
@@ -760,7 +768,12 @@ Exactly one match is required; zero or multiple matches reject the entire batch.
 Successful receipts include result.edits with matched: 1 for each replace_match.
 Replacement text keeps formatting shared by the entire matched range, including
 link destinations and titles. Formatting present on only part of the match does
-not spread across the replacement. Untouched characters, marks, and comment
+not spread across the replacement: a match that spans a code span or a link
+comes back as plain text. When that happens the edit's entry carries a warning
+with code marks_dropped, the mark names and their ranges as offsets into
+match_text; the receipt's top-level warnings repeat it with edit_index and
+block_id. The write succeeded. If the new text should keep those marks, follow
+with format_match over the right ranges. Untouched characters, marks, and comment
 anchors retain their CRDT identities.
 
 By default conflict_scope:"page" requires the exact current Page revision. For a
@@ -821,7 +834,8 @@ literal $ and < the same way, so Markdown you read is always writable.
 To restructure a block (headings, lists, tables), replace it with
 edit_page replace_block_markdown, or insert, move and delete whole blocks.
 Copy the whole heads array, even when it has more than one entry. On a stale-revision error
-(code stale_heads), read again, reconsider the edit, and use a new key. After a timeout or unknown
+(code stale_heads), the refusal names current_heads: reconsider the edit, then resend with
+those heads and a new key, or read again when you need the changed text. After a timeout or unknown
 outcome, retry the exact request body, key, token, account, and driver label.
 
 Retry tokens keep completed-operation receipts bounded without making old retries
@@ -904,8 +918,11 @@ The same operations and guards apply. Results contain JSON in content[].text
 and the same object in structuredContent; check result.isError even when HTTP
 succeeds. Every error has a stable code. Branch on code, not on the error message:
 
-- stale_heads: the Page changed since your read (retryable:true). Read again,
-  reconsider, and send a new request with fresh base_heads, token and key.
+- stale_heads: the Page changed since your read (retryable:true). The refusal
+  carries current_heads (and comment_heads when the Page has a comments
+  document). Reconsider the edit against the current content, then send a new
+  request with those heads and a new key; read again only when you need the
+  changed text.
 - invalid_edit_selector: the request can't apply as written: missing or
   malformed base_heads, zero or multiple matches, an unknown block, operation or
   mark. Fix the request; repeating it unchanged fails again.
