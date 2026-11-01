@@ -20,7 +20,7 @@ import { comment, newCommentsDoc } from "../model/comments-test-support.mjs";
 import { stampFeatures } from "../model/schema-features.mjs";
 import { admissionCloseOutcome } from "../shared/admission.mjs";
 import { retiredCopies } from "./retired-copies.mjs";
-import { decoder, encoder, key, store } from "./local-catalog.mjs";
+import { decoder, encoder, entryStanding, key, store } from "./local-catalog.mjs";
 import {
   decodeSnapshot,
   encodeSnapshot,
@@ -1132,30 +1132,215 @@ test("a comments restore that starts after another tab retired the copy writes n
   assert.deepEqual(stores, []);
 });
 
-test("a tab installing its comments document after another tab retired the copy retires too", async (t) => {
-  const copy = await openCopy();
-  const { session, auth, pageId } = copy;
-  t.after(() => session.close());
+/** Wait until `check` passes, or `limit` turns. */
+async function turnsUntil(check, limit = 100) {
+  for (let turn = 0; turn < limit && !check(); turn++) await tick();
+}
+/** Take the open copy's comments document away, as before its lookup
+ * settles, and return a repo whose lookup finds `handle` when released. */
+function pendingLookup(session) {
   const handle = session.commentsHandle;
   session.commentsHandle = undefined;
-  session.localPage = { ...session.localPage, comments_document_id: undefined };
-  const sequence = (await readLocalPage(auth.identity, pageId)).recovery_sequence ?? 0;
-  await retireLocalPage(auth.identity, pageId, {
-    reason: "access",
-    grant: "1:writer",
-    revision: 1,
+  const found = { resolve: undefined };
+  session.repo = {
+    flush: async () => {},
+    find: () => new Promise((resolve) => (found.resolve = () => resolve(handle))),
+  };
+  return { handle, found };
+}
+
+for (const keepsId of [true, false])
+  test(`a lookup that settles after another tab retired the copy retires this tab too${keepsId ? ", with the comments ID already known" : ""}`, async (t) => {
+    const copy = await openCopy();
+    const { session, auth, pageId, commentsDocumentId } = copy;
+    t.after(() => session.close());
+    const { handle, found } = pendingLookup(session);
+    if (!keepsId) session.localPage = { ...session.localPage, comments_document_id: undefined };
+    session.openComments(commentsDocumentId);
+    await tick();
+    const sequence = (await readLocalPage(auth.identity, pageId)).recovery_sequence ?? 0;
+    // Another tab sees the refusal first.
+    await retireLocalPage(auth.identity, pageId, {
+      reason: "access",
+      grant: "1:writer",
+      revision: 1,
+    });
+    // This replica's comments document holds a comment no checkpoint has.
+    typeUnsentComment({ ...copy, session: { commentsHandle: handle } });
+    let rendered = false;
+    session.subscribe(() => {
+      if (!session.hidden && Object.keys(session.commentThreads).length) rendered = true;
+    });
+    found.resolve();
+    await turnsUntil(() => session.recoveryArchived);
+    await session.closeSettled();
+    assert.equal(session.revoked, true);
+    assert.equal(rendered, false, "the retired comments never render");
+    assert.deepEqual(session.commentThreads, {});
+    const stored = await readLocalPage(auth.identity, pageId, { markers: true });
+    assert.equal(stored.revoked, true, "the marker stays");
+    assert.equal(stored.snapshot, undefined);
+    const records = await listLocalRecoveries(auth.identity, pageId);
+    assert.ok(records.length > sequence);
+    assert.match(
+      commentsText(records.at(-1)),
+      new RegExp(UNSENT),
+      "the unsent comment is archived",
+    );
   });
-  typeUnsentComment({ ...copy, session: { commentsHandle: handle } });
-  await session.installComments(handle);
-  await session.closeSettled();
-  assert.equal(session.revoked, true);
-  assert.deepEqual(session.commentThreads, {});
-  const stored = await readLocalPage(auth.identity, pageId, { markers: true });
-  assert.equal(stored.revoked, true, "the marker stays");
-  assert.equal(stored.snapshot, undefined);
+
+test("a lookup that settles after another grant replaced the copy installs nothing", async (t) => {
+  const copy = await openCopy();
+  const { session, auth, pageId, commentsDocumentId } = copy;
+  t.after(() => session.close());
+  const { found } = pendingLookup(session);
+  session.openComments(commentsDocumentId);
+  await tick();
+  // Company sharing went off and on again: the same replica key, a newer
+  // grant revision.
+  const stored = await readLocalPage(auth.identity, pageId);
+  await writeLocalPage(auth.identity, { ...stored, access: access("editor", 1, 5) });
+  found.resolve();
+  await turnsUntil(() => session.accessReloadRequired || session.commentsHandle);
+  assert.equal(session.commentsHandle, undefined);
+  assert.equal(session.hidden, false, "another grant's entry is not a refusal");
+});
+
+test("a comments serialization that throws fails the retirement and keeps both documents", async (t) => {
+  const copy = await openCopy();
+  const { session, auth, pageId, commentsDocumentId } = copy;
+  t.after(() => session.close());
+  typeUnsentComment(copy);
+  session.watchCommentDrafts(() => [{ kind: "comment", body: "A draft beside it." }]);
+  const handle = session.commentsHandle;
+  const real = handle.doc;
+  // The comments document can still be read, but not serialized.
+  let broken = true;
+  handle.doc = () => (broken ? JSON.parse(JSON.stringify(real())) : real());
+  const releases = t.mock.method(session, "releaseLocal", async () => {});
+  const before = await readLocalPage(auth.identity, pageId, { markers: true });
+  await session.revoke();
+  assert.deepEqual(session.phase$.snapshot(), {
+    name: "retireFailed",
+    reason: "access",
+    held: true,
+  });
+  assert.equal(session.hidden, true, "the Page stays hidden");
+  assert.equal(session.recoveryArchived, false);
+  assert.match(session.retireProblem, /couldn't copy the Page/);
+  assert.equal(releases.mock.callCount(), 0, "the backend stays for Try again");
+  assert.equal(session.commentsHandle, handle, "the comments document stays open");
+  assert.ok(session.handle);
+  assert.equal(session.closedRecovery, undefined, "nothing claims a complete copy");
+  // Nothing was archived and the stored checkpoint is as it was.
+  assert.deepEqual(await listLocalRecoveries(auth.identity, pageId), []);
+  assert.deepEqual(await readLocalPage(auth.identity, pageId, { markers: true }), before);
+  // The notice and the reload gate still get the Markdown it projects.
+  assert.match(session.retainedCopy.markdown, new RegExp(UNSENT));
+  assert.match(session.retainedCopy.markdown, /A draft beside it\./);
+  const download = session.exportRecoveries([]);
+  assert.equal(download.copies.length, 1);
+  assert.match(download.copies[0].markdown, new RegExp(UNSENT));
+  assert.equal(download.copies[0].snapshot, undefined);
+  assert.equal(retiredCopies(session, []), 1);
+  // Try again captures both documents and archives them.
+  broken = false;
+  await session.retryRetirement();
+  assert.equal(session.recoveryArchived, true);
+  assert.equal(releases.mock.callCount(), 1, "the release follows the archive");
   const records = await listLocalRecoveries(auth.identity, pageId);
-  assert.ok(records.length > sequence);
-  assert.match(commentsText(records.at(-1)), new RegExp(UNSENT));
+  const live = records.at(-1);
+  assert.equal(live.comments_document_id, commentsDocumentId);
+  assert.match(commentsText(live), new RegExp(UNSENT));
+  assert.deepEqual(live.comment_drafts, [{ kind: "comment", body: "A draft beside it." }]);
+  assert.equal((await readLocalPage(auth.identity, pageId, { markers: true })).revoked, true);
+});
+
+test("leaving a failed capture releases the backend and keeps its best-effort copy", async (t) => {
+  const copy = await openCopy();
+  const { session } = copy;
+  typeUnsentComment(copy);
+  const handle = session.commentsHandle;
+  const real = handle.doc;
+  handle.doc = () => JSON.parse(JSON.stringify(real()));
+  const releases = t.mock.method(session, "releaseLocal", async () => {});
+  await session.revoke();
+  assert.equal(session.phase$.snapshot().held, true);
+  await session.close();
+  assert.deepEqual(session.phase$.snapshot(), { name: "retireFailed", reason: "access" });
+  assert.equal(releases.mock.callCount(), 1);
+  assert.match(session.retainedCopy.markdown, new RegExp(UNSENT));
+});
+
+/** A native backend whose history read waits on `gate` before it reports
+ * the replica's records, so a test can act between a restore's check and its
+ * write. */
+function pausedBackend() {
+  let open;
+  const gate = new Promise((resolve) => (open = resolve));
+  const reading = { started: false };
+  const stores = [];
+  return {
+    open: () => open(),
+    reading,
+    stores,
+    backend: {
+      open: () => ({
+        events: (async function* () {
+          reading.started = true;
+          await gate;
+          yield { type: "local-load-complete" };
+        })(),
+        close: async () => {},
+      }),
+      storeSnapshot: async (...args) => stores.push(args),
+    },
+  };
+}
+
+test("a restore paused before its native write stores nothing once the copy is retired or replaced", async (t) => {
+  const interleavings = {
+    "no interference": async () => {},
+    "another tab retires the copy": ({ auth, pageId }) =>
+      retireLocalPage(auth.identity, pageId, { reason: "access", grant: "1:writer", revision: 1 }),
+    "another tab deletes it": ({ auth, pageId }) =>
+      retireLocalPage(auth.identity, pageId, { reason: "deleted" }),
+    "a replacement grant keeps the replica key with a newer revision": async ({ auth, pageId }) => {
+      const stored = await readLocalPage(auth.identity, pageId);
+      await writeLocalPage(auth.identity, { ...stored, access: access("editor", 1, 7) });
+    },
+    "this tab retires": ({ session }) => {
+      session.releaseLocal = async () => {};
+      return session.revoke();
+    },
+  };
+  for (const [name, interfere] of Object.entries(interleavings))
+    await t.test(name, async () => {
+      const copy = await openCopy();
+      const { session } = copy;
+      const record = await readLocalPage(copy.auth.identity, copy.pageId);
+      const paused = pausedBackend();
+      session.backend = paused.backend;
+      const restoring = session.restoreCommentsCheckpoint(record);
+      await turnsUntil(() => paused.reading.started);
+      await interfere(copy);
+      paused.open();
+      await restoring;
+      assert.equal(paused.stores.length, name === "no interference" ? 1 : 0);
+      await session.close();
+    });
+});
+
+test("entryStanding names markers, other grants and the current copy", () => {
+  const grant = { grant: "0:reader", revision: 3 };
+  assert.equal(entryStanding(undefined, grant), "missing");
+  assert.equal(entryStanding({ deleted: true }, grant), "deleted");
+  assert.equal(entryStanding({ revoked: true }, grant), "revoked");
+  assert.equal(entryStanding({ replicaKey: "1:reader", grant_revision: 3 }, grant), "replaced");
+  assert.equal(entryStanding({ replicaKey: "0:reader", grant_revision: 4 }, grant), "replaced");
+  assert.equal(entryStanding({ replicaKey: "0:reader", grant_revision: 3 }, grant), "current");
+  assert.equal(entryStanding({ replicaKey: "0:reader" }, grant), "current", "a legacy entry");
+  assert.equal(entryStanding({ replicaKey: "0:reader", grant_revision: 9 }, {}), "current");
 });
 
 test("a superseded retirement archives its own comments, never the newer grant's", async () => {

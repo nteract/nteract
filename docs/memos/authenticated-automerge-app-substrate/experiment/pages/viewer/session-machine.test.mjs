@@ -238,10 +238,19 @@ async function prepare(state, event) {
         await ctx.pending.catch(() => {});
         await settle();
       }
+      if (state.held) {
+        // Serializing the live copy fails once; Try again captures it.
+        const exportRecovery = session.exportRecovery.bind(session);
+        let failures = 1;
+        session.exportRecovery = (...args) => {
+          if (failures-- > 0) throw Error("could not save the document");
+          return exportRecovery(...args);
+        };
+      }
       const refusal = state.reason === "deleted" ? session.markDeleted() : session.revoke();
       track(ctx, refusal);
       if (state.name === "retired") ctx.retire.resolve();
-      if (state.name === "retireFailed") {
+      if (state.name === "retireFailed" && !state.held) {
         ctx.retire.reject(Error("quota"));
         ctx.retireFailed = true;
       }
@@ -346,6 +355,12 @@ function deliver(ctx, event) {
       ctx.retire.resolve();
       return ctx.pending.catch(() => {}).then(settle);
     case "retireFail":
+      // A capture failure reports inside the retire effect, before any
+      // archive write: deliver its result as that effect would.
+      if (event.held) {
+        session.dispatch({ type: "retireFail", held: true });
+        return settle();
+      }
       ctx.retire.reject(Error("quota"));
       return ctx.pending.catch(() => {}).then(settle);
   }
@@ -426,7 +441,7 @@ async function drive(state, event) {
 }
 
 const table = loadTable(TABLE);
-const COUNTS = { rows: 98, pairs: 51, unreachable: 66, cases: 69 };
+const COUNTS = { rows: 102, pairs: 51, unreachable: 66, cases: 75 };
 
 test("the viewer-session table runs through the pure machine", async () => {
   assert.deepEqual(await runTable(viewerSessionMachine, table), COUNTS);

@@ -57,6 +57,30 @@ export async function readLocalGrant(identity, pageId) {
   if (page.principal !== identity.principal) return undefined;
   return { grant: page.replicaKey, revision: page.grant_revision };
 }
+/** Where a stored entry stands against the grant a session holds or a
+ * record was read under (`grant` is its replica key, `revision` its grant
+ * revision): `missing`, `deleted` or `revoked` (a retirement marker),
+ * `replaced` (another grant's entry: a different replica key, or a greater
+ * `grant_revision`, as when company sharing comes back on `0:reader`), or
+ * `current`. A field either side lacks never makes the entry another grant's. */
+export function entryStanding(entry, { grant, revision } = {}) {
+  if (!entry) return "missing";
+  if (entry.deleted) return "deleted";
+  if (entry.revoked) return "revoked";
+  if (
+    typeof entry.replicaKey === "string" &&
+    typeof grant === "string" &&
+    entry.replicaKey !== grant
+  )
+    return "replaced";
+  if (
+    Number.isSafeInteger(entry.grant_revision) &&
+    Number.isSafeInteger(revision) &&
+    entry.grant_revision > revision
+  )
+    return "replaced";
+  return "current";
+}
 /** The host access revision a readable grant carries, or undefined. */
 export const grantRevisionOf = (access) =>
   access?.canRead && Number.isSafeInteger(access.revision) ? access.revision : undefined;

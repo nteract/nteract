@@ -214,7 +214,9 @@
     "closed/accessChanged": ["late-answer", "revoked", "deleted"],
     "closed/reloadAccess": ["archived", "not-archived"],
     "retiring/retireOk": ["release", "released"],
-    "retiring/retireFail": ["release", "released"]
+    "retiring/retireFail": ["release", "released", "held", "held-released"],
+    "retireFailed/retireRetry": ["released", "held"],
+    "retireFailed/leave": ["held", "released"]
   },
   "rows": [
     {
@@ -961,6 +963,21 @@
       "expect": { "state": { "name": "retireFailed", "reason": "deleted" }, "effects": [] }
     },
     {
+      "label": "retiring × retireFail held keeps the backend for Try again",
+      "note": "capturing the live copy failed: nothing was archived, so the replica and both documents stay",
+      "case": "held",
+      "state": { "name": "retiring", "reason": "access" },
+      "event": { "type": "retireFail", "held": true },
+      "expect": { "state": { "name": "retireFailed", "reason": "access", "held": true }, "effects": [] }
+    },
+    {
+      "case": "held-released",
+      "note": "a close already released the backend: there is nothing left to hold",
+      "state": { "name": "retiring", "reason": "deleted", "released": true },
+      "event": { "type": "retireFail", "held": true },
+      "expect": { "state": { "name": "retireFailed", "reason": "deleted" }, "effects": [] }
+    },
+    {
       "note": "the close already covers the archive, so a leave waits for it",
       "state": { "name": "retiring", "reason": "access" },
       "event": { "type": "leave", "drain": false },
@@ -1055,12 +1072,20 @@
     {
       "label": "retireFailed × retireRetry writes the archive again",
       "note": "the backend is already released; only the archive runs again",
+      "case": "released",
       "state": { "name": "retireFailed", "reason": "access" },
       "event": { "type": "retireRetry" },
       "expect": {
         "state": { "name": "retiring", "reason": "access", "released": true },
         "effects": [{ "type": "retire" }]
       }
+    },
+    {
+      "case": "held",
+      "note": "a held backend captures again and is released after the archive",
+      "state": { "name": "retireFailed", "reason": "access", "held": true },
+      "event": { "type": "retireRetry" },
+      "expect": { "state": { "name": "retiring", "reason": "access" }, "effects": [{ "type": "retire" }] }
     },
     {
       "state": { "name": "retireFailed", "reason": "deleted" },
@@ -1099,6 +1124,18 @@
       }
     },
     {
+      "label": "retireFailed × leave releases a held backend",
+      "note": "the notice and the reload gate keep the best-effort copy",
+      "case": "held",
+      "state": { "name": "retireFailed", "reason": "access", "held": true },
+      "event": { "type": "leave", "drain": false },
+      "expect": {
+        "state": { "name": "retireFailed", "reason": "access" },
+        "effects": [{ "type": "release" }]
+      }
+    },
+    {
+      "case": "released",
       "state": { "name": "retireFailed", "reason": "access" },
       "event": { "type": "leave", "drain": false },
       "expect": {

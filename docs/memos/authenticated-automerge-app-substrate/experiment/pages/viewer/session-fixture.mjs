@@ -75,6 +75,9 @@ export class FakeSession {
   get retireFailed() {
     return this.phase$.snapshot().name === "retireFailed";
   }
+  get retainedCopy() {
+    return this.closedRecovery ?? this.unarchivedCopy;
+  }
   get recoveryPending() {
     return this.pending;
   }

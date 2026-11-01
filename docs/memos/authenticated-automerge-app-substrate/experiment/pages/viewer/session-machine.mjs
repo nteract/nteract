@@ -41,7 +41,9 @@
  *   reload gate keeps it as an unsaved record. The checkpoint stays as it
  *   was, so a later open renders it until the host refuses again, which
  *   retires it again. A transient host failure never reaches a retirement
- *   state.
+ *   state. With `held`, capturing the live copy failed before anything was
+ *   archived: the backend and both documents stay for Try again, and leaving
+ *   releases them.
  *
  * `drained` and `saved` record how a session was left: through the drain, and
  * whether the host had every edit when the drain ended. The reload gate keeps
@@ -58,8 +60,9 @@
  * `reloadAccess` (Reload current Page), `leave` (the host releases the
  * session, through the drain or by closing at once), `drained`,
  * `checkpointOk`, `checkpointFail` (`deleted` when another tab marked the
- * Page deleted), `retireOk`, `retireFail` and `retireRetry` (the person asks
- * a failed archive to try again).
+ * Page deleted), `retireOk`, `retireFail` (`held` when capturing the live
+ * copy failed, so nothing was archived) and `retireRetry` (the person asks a
+ * failed archive to try again).
  *
  * Effects: `disconnect` closes sockets and stops reconnecting; `persistLocal`
  * writes the access fact and a checkpoint to IndexedDB; `drain` waits for the
@@ -110,6 +113,11 @@ const fieldless = (value) => only(value, ["name"]);
 function retiredState(state) {
   only(state, ["name", "reason"]);
   check(RETIRE_REASONS.includes(state.reason), "reason must be access or deleted");
+}
+function retireFailedState(state) {
+  only(state, ["name", "reason", "held"]);
+  check(RETIRE_REASONS.includes(state.reason), "reason must be access or deleted");
+  flag(state.held, "held");
 }
 const typed = (keys) => (value) => only(value, ["type", ...keys]);
 
@@ -267,7 +275,9 @@ export const viewerSessionSpec = Object.freeze({
     "closed/accessChanged": ["late-answer", "revoked", "deleted"],
     "closed/reloadAccess": ["archived", "not-archived"],
     "retiring/retireOk": ["release", "released"],
-    "retiring/retireFail": ["release", "released"],
+    "retiring/retireFail": ["release", "released", "held", "held-released"],
+    "retireFailed/retireRetry": ["released", "held"],
+    "retireFailed/leave": ["held", "released"],
   },
   validate: {
     states: {
@@ -307,7 +317,7 @@ export const viewerSessionSpec = Object.freeze({
         flag(state.released, "released");
       },
       retired: retiredState,
-      retireFailed: retiredState,
+      retireFailed: retireFailedState,
     },
     events: {
       opened(event) {
@@ -341,7 +351,10 @@ export const viewerSessionSpec = Object.freeze({
         check(isBoolean(event.deleted), "deleted must be a boolean");
       },
       retireOk: typed([]),
-      retireFail: typed([]),
+      retireFail(event) {
+        only(event, ["type", "held"]);
+        flag(event.held, "held");
+      },
       retireRetry: typed([]),
     },
     effects: {
@@ -524,6 +537,8 @@ function transition(state, event) {
       // The archive settled; release the backend unless a close already did.
       if (event.type === "retireOk" || event.type === "retireFail") {
         const name = event.type === "retireOk" ? "retired" : "retireFailed";
+        // Nothing was captured: the backend stays for Try again.
+        if (event.held && !state.released) return ok({ name, reason, held: true });
         return state.released ? ok({ name, reason }) : ok({ name, reason }, "release");
       }
       // The session's close already covers the archive and the release.
@@ -531,9 +546,16 @@ function transition(state, event) {
       return reject(state, reason === "deleted" ? REJECT.deleted : REJECT.revoked);
     }
     case "retireFailed":
-      // The backend is already released; only the archive runs again.
+      // A held backend captures again and releases after the archive;
+      // otherwise it is already released and only the archive runs again.
       if (event.type === "retireRetry")
-        return ok({ name: "retiring", reason: state.reason, released: true }, "retire");
+        return state.held
+          ? ok({ name: "retiring", reason: state.reason }, "retire")
+          : ok({ name: "retiring", reason: state.reason, released: true }, "retire");
+      // Leaving a held copy releases its backend; the notice and the reload
+      // gate keep its best-effort copy.
+      if (event.type === "leave" && state.held)
+        return ok({ name: "retireFailed", reason: state.reason }, "release");
     // falls through
     case "retired":
       if (event.type === "leave") return reject(state, REJECT.alreadyClosing);

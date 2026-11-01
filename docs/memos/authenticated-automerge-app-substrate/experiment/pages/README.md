@@ -368,6 +368,15 @@ document receipt covers. The stored copy stays as it was. The next open reaches
 the host, is refused again, and retires again; that is the retry. The host is
 the access boundary, and hiding a refused copy is a courtesy on top of it.
 
+Capturing the live copy is part of the retirement. The raw snapshots of both
+documents must serialize; their Markdown is a projection that may fall back
+to a note. If a snapshot fails, nothing is archived, closed or released: the
+session holds its backend, both documents, the comments lookup and the draft
+sources (`retireFailed` with `held`), and Try again captures again. The
+notice and the reload gate get the Markdown the replica still projects, with
+the drafts. Leaving a held copy releases its backend; the reload gate keeps
+that Markdown as an unsaved Page.
+
 Retirement carries the grant it was refused under: the replica key the session
 opened with, and the host access revision it last held (the refusal's own,
 when the host sent one). Every checkpoint records `grant_revision`, the highest
@@ -385,9 +394,14 @@ and retires under it.
 An access marker only blocks: a tab that hasn't seen the refusal archives its
 own copy when it next writes, and the next open the host grants writes over the
 marker on the new grant's replica, never the archived one. Neither document
-restores from a marker: a reopen asks the host first, a hidden session never
-opens its comments document, and a comments restore that finds a marker (or
-another grant's entry) written since its open read the record stores nothing.
+restores from a marker: a reopen asks the host first, and a hidden session
+never opens its comments document. Every comments install reads the stored
+entry before it adopts the document: a marker retires this tab too, with the
+found document's unsent comments in the archive, and another grant's entry (a
+different replica key, or a greater grant revision) installs nothing. A
+comments restore checks the stored entry against the record's grant, and the
+session's own lifecycle fence, at its start and again right before the native
+write; a retirement, release or replacement in between stores nothing.
 A deletion marker is permanent. Trash, a refusal without a code, sign-in and
 transient failures keep the copy.
 
@@ -1190,7 +1204,8 @@ Each Page session moves through the
 (sign-in, access, Trash or access reload), draining while it is left, then
 checkpointing or closed. A refusal retires it instead: retiring while the
 archive writes, then retired or retireFailed; Try again moves a failed archive
-back to retiring. `PageSession.phase$` is that state in a
+back to retiring. A failed capture is retireFailed with `held`: the backend
+stays until Try again or a leave. `PageSession.phase$` is that state in a
 [Store](viewer/store.mjs), and every lifecycle flag derives from it. A close
 can grow while it runs (a late refusal adds its archive), so the close itself
 is private and `closeSettled()` is the only way to wait for it. The

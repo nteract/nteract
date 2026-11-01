@@ -885,3 +885,44 @@ test("a saved Page's failed retirement with a comment draft blocks Reload until 
   assert.deepEqual(await g.reload({ discard: [key] }), { ok: true });
   assert.equal(g.reloaded(), 1);
 });
+
+test("a retirement whose capture fails holds its backend and Reload, then keeps its copy", async () => {
+  const g = gate();
+  const { session } = closingSession();
+  session.statusId = "saved";
+  session.localPage = { pending: false };
+  session.savedHeads = Automerge.getHeads(session.doc);
+  // The replica can't be serialized for the archive; its Markdown still
+  // projects.
+  session.exportRecovery = () => {
+    throw new Error("could not save the document");
+  };
+  let released = 0;
+  session.releaseLocal = async () => {
+    released++;
+  };
+  g.hold(session);
+  await session.revoke();
+  await settle();
+  assert.deepEqual(session.phase$.snapshot(), {
+    name: "retireFailed",
+    reason: "access",
+    held: true,
+  });
+  assert.equal(released, 0, "the backend stays for Try again");
+  assert.equal(g.owned().length, 1, "the gate still follows the held copy");
+  const waiting = g.reload();
+  await settle();
+  assert.equal(g.reloaded(), 0, "a held copy holds Reload");
+  await g.host.release();
+  await settle();
+  assert.equal(released, 1, "leaving releases the backend");
+  const key = `dev:${session.pageId}`;
+  assert.equal(g.record(key).explicit, true);
+  assert.match(g.record(key).markdown, /Garden notes/);
+  assert.equal((await waiting).ok, false);
+  const again = await g.reload();
+  assert.equal(again.reason, "unsaved", "the best-effort copy blocks Reload until downloaded");
+  assert.equal(again.pages[0].pageId, session.pageId);
+  assert.equal(g.reloaded(), 0);
+});

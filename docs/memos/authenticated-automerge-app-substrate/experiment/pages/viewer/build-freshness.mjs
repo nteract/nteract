@@ -118,9 +118,12 @@ function pendingOf(session) {
 
 const HELD = new Set(["opening", "open", "paused"]);
 // The release has started: the checkpoint settled, or a retired copy's
-// archive write settled, whatever its result.
+// archive write settled, whatever its result. A failed capture holds its
+// backend until the session is left.
 const releasing = (phase) =>
-  phase.name === "closed" || phase.name === "retired" || phase.name === "retireFailed";
+  phase.name === "closed" ||
+  phase.name === "retired" ||
+  (phase.name === "retireFailed" && !phase.held);
 
 /** What the gate keeps about an owned session, from its phase and receipt.
  * Membership follows the lifecycle, not who started the close: a session
@@ -151,9 +154,10 @@ function released(id, session) {
   const savedHeads = [...(session.savedHeads ?? [])];
   if (session.hidden) {
     // An archived copy is in IndexedDB like a deleted one: the gate keeps no
-    // record. A failed archive leaves only the tab's export, so it keeps that
-    // as an unsaved record and blocks Reload until it is downloaded.
-    const kept = session.retireFailed ? session.closedRecovery : undefined;
+    // record. A failed archive leaves only the tab's export, or a failed
+    // capture's best-effort copy, so it keeps that as an unsaved record and
+    // blocks Reload until it is downloaded.
+    const kept = session.retireFailed ? session.retainedCopy : undefined;
     if (!kept) return { id, key: keyOf(session), phase: "deleted", savedHeads };
     return {
       id,
