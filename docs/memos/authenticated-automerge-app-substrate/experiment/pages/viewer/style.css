@@ -1635,6 +1635,20 @@ dialog::backdrop {
 .access-notice button {
   margin: 0 8px 0 0;
 }
+/* A Page the host refused or deleted: the notice stands in for the Page. */
+.retired-notice {
+  padding: 1.25rem 1.5rem;
+}
+.retired-notice h1 {
+  margin: 0 0 0.75rem;
+  font-size: 1.5rem;
+}
+.retired-notice button {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.375rem;
+  vertical-align: middle;
+}
 
 /* Trash reuses library rows; a permanent-deletion review spans the row. */
 .library-actions {

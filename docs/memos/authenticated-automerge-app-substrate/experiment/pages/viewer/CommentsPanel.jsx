@@ -124,6 +124,28 @@ export function CommentsPanel({
     };
   }, []);
   useEffect(() => draftSource.current?.set(unsent), [unsent]);
+  // Reply drafts live only here. A refusal reads them into the recovery
+  // archive before this panel unmounts.
+  const replyDrafts = useRef(null);
+  replyDrafts.current = { drafts, threads };
+  useEffect(
+    () =>
+      session.watchCommentDrafts?.(() =>
+        replyDrafts.current.threads
+          .filter((thread) => hasDraft(replyDrafts.current.drafts[thread.id]))
+          .map((thread) => {
+            const value = replyDrafts.current.drafts[thread.id];
+            return {
+              kind: "reply",
+              thread_id: thread.id,
+              body: value?.markdown ?? value,
+              quote:
+                thread.selectionContext?.status === "attached" ? thread.selectionContext.text : "",
+            };
+          }),
+      ),
+    [session],
+  );
   const resolvedDraft = threads.some((t) => t.state === "resolved" && hasDraft(drafts[t.id]));
   useEffect(() => {
     if (resolvedDraft && resolvedDisclosure.current) resolvedDisclosure.current.open = true;

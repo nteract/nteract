@@ -132,7 +132,7 @@ const guard = {
     type: "array",
     items: string,
     description:
-      "Observed heads from read_page or read_page_changes. edit_page, patch_page and delete_page require exact current heads by default; patch_page conflict_scope:target accepts older heads for unchanged replace_match and format_match targets. manage_page_comment add with selected_text resolves its passage at these heads; other comment actions ignore them.",
+      "Observed heads from read_page or read_page_changes. edit_page and patch_page require exact current heads by default; patch_page conflict_scope:target accepts older heads for unchanged replace_match and format_match targets. delete_page checks them only when given. A stale_heads refusal carries current_heads (and comment_heads), so reconsider the edit and resend with those heads and a new key, without another read. manage_page_comment add with selected_text resolves its passage at these heads; other comment actions ignore them.",
   },
   retry_token: {
     ...string,
@@ -159,7 +159,7 @@ const matchProperties = {
     ...string,
     maxLength: 262144,
     description:
-      "Literal replacement text, not Markdown. Keeps formatting shared by the entire match (including link destination/title); partial formatting does not spread. Untouched text keeps its CRDT identity.",
+      "Literal replacement text, not Markdown. Keeps formatting shared by the entire match (including link destination/title); partial formatting does not spread, and the edit's receipt reports it as a marks_dropped warning. Untouched text keeps its CRDT identity.",
   },
   context_before: {
     ...string,
@@ -292,7 +292,7 @@ export const tools = [
   ),
   tool(
     "create_page",
-    "Create an editable rich-text Page and return its browser URL. title is displayed above the body: supply body-only markdown, without repeating or paraphrasing the title as an opening heading. Start with introductory prose or a section heading. Check returned advisory warnings and read back the opening; intentional headings remain unchanged. Human and API edits sync into the same document. Omit project_id and parent_id for Your items. project_id creates it at a Project's top level; parent_id makes it a sub-page and implies the parent's Project (at most 9 levels deep).",
+    "Create an editable rich-text Page and return its browser URL, heads, and the new Page's edit authority (retry_token, retry_key_prefix, retry_until, as read_page issues them), so the first edit_page or patch_page needs no read first. title is displayed above the body: supply body-only markdown, without repeating or paraphrasing the title as an opening heading. Start with introductory prose or a section heading. Check returned advisory warnings and read back the opening; intentional headings remain unchanged. Human and API edits sync into the same document. Omit project_id and parent_id for Your items. project_id creates it at a Project's top level; parent_id makes it a sub-page and implies the parent's Project (at most 9 levels deep).",
     {
       title,
       markdown: markdownBody,
@@ -524,7 +524,7 @@ export const tools = [
   ),
   tool(
     "patch_page",
-    "Apply an atomic targeted edit batch. Prefer replace_match for visible prose: replace one literal range, optionally scoped by node_index and context, preserving untouched formatting and comment anchors. Use format_match to add or remove formatting (bold, italic, code, links, highlights) over one literal range without changing its text. conflict_scope:target permits older base_heads only for unchanged native targets in replace_match and format_match batches; other patch_page and edit_page operations retain the exact-page revision guard. Conflicts identify passages to reread with read_page_changes. Zero or multiple matches fail the whole batch, as does a match_text that starts or ends inside a character (an accented letter, an emoji sequence or a flag). replace_match writes only the words that differ, so comment anchors on the rest of the match survive; one that changes too much text to diff at once fails with replace_match_too_large: use smaller operations, or replace_block_markdown when no anchors need preserving. Tool edits arrive atomically, without streamed keystrokes; people see your caret where the batch landed.",
+    "Apply an atomic targeted edit batch. Prefer replace_match for visible prose: replace one literal range, optionally scoped by node_index and context, preserving untouched formatting and comment anchors. replace_match writes only the words that differ, so comment anchors on the rest of the match survive. Inserted text keeps only marks shared by the whole match; when a mark (code, link, bold...) covered part of the match and met inserted text, the receipt says so: result.edits[i].warnings and the top-level warnings carry code marks_dropped with the mark names and their ranges in match_text, so you can reapply them with format_match. Use format_match to add or remove formatting (bold, italic, code, links, highlights) over one literal range without changing its text. conflict_scope:target permits older base_heads only for unchanged native targets in replace_match and format_match batches; other patch_page and edit_page operations retain the exact-page revision guard. Conflicts identify passages to reread with read_page_changes. Zero or multiple matches fail the whole batch, as does a match_text that starts or ends inside a character (an accented letter, an emoji sequence or a flag). A replace_match that changes too much text to diff at once fails with replace_match_too_large: use smaller operations, or replace_block_markdown when no anchors need preserving. Tool edits arrive atomically, without streamed keystrokes; people see your caret where the batch landed.",
     {
       ...guard,
       conflict_scope: {
@@ -649,9 +649,16 @@ export const tools = [
   ),
   tool(
     "delete_page",
-    "Move a Page you own to Trash. Content, comments and sharing are kept, and restore_page brings the Page back with the same ID. Trash a Page's sub-pages first (page_has_children otherwise); subtree Trash is not available yet. A Project's home Page cannot be trashed. While in Trash, collaborators lose access and the Page leaves default listings; you can still read it, but not edit, comment or share. Use list_pages with in_trash:true to find trashed Pages. Deleting permanently is a separate purge_page call. A result with superseded:true and applied:false means this request was not applied; read the Page's current state (list_pages with in_trash, or read_page) before deciding what to do.",
-    guard,
-    ["page_id", "base_heads", "idempotency_key"],
+    "Move a Page you own to Trash. Content, comments and sharing are kept, and restore_page brings the Page back with the same ID. Needs only page_id, idempotency_key and the list_pages retry_token, like restore_page: no read_page first. base_heads is an optional guard; when given, they must be the Page's current heads (stale_heads otherwise). Trash a Page's sub-pages first (page_has_children otherwise); subtree Trash is not available yet. A Project's home Page cannot be trashed. While in Trash, collaborators lose access and the Page leaves default listings; you can still read it, but not edit, comment or share. Use list_pages with in_trash:true to find trashed Pages. Deleting permanently is a separate purge_page call. A result with superseded:true and applied:false means this request was not applied; read the Page's current state (list_pages with in_trash, or read_page) before deciding what to do.",
+    {
+      ...guard,
+      base_heads: {
+        ...guard.base_heads,
+        description:
+          "Optional. Heads from a read of this Page; when given, the trash is refused with stale_heads unless they are current. Omit to trash on the catalog retry_token alone.",
+      },
+    },
+    ["page_id", "idempotency_key"],
     DESTRUCTIVE,
   ),
   tool(
@@ -708,7 +715,7 @@ const STATUS_CODES = {
 /** The body of a failed tool result, in its text and structured content. Every
  * refusal has a stable code, so agents never branch on message text.
  * retryable:true means a retry can succeed; for stale_heads that retry is a new
- * request built from a fresh read. */
+ * request built on the refusal's current_heads (or a fresh read). */
 function refusal(status, body) {
   const fields = body && typeof body === "object" && !Array.isArray(body) ? body : {};
   const code =

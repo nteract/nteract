@@ -585,7 +585,8 @@ async function requestBody(h, state, event) {
       if (event.heads === "invalid") heads = ["not-a-head"];
       return {
         page_id: pageId,
-        base_heads: heads,
+        // An absent guard trashes on the catalog retry_token alone.
+        ...(event.heads !== "absent" && { base_heads: heads }),
         idempotency_key: keyFor(event, "trash"),
         ...expected,
         ...replay,

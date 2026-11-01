@@ -4,7 +4,7 @@ import "fake-indexeddb/auto";
 import * as A from "@automerge/automerge";
 import {
   encodeSnapshot,
-  forgetLocalPage,
+  retireLocalPage,
   listLocalPages,
   readLocalPage,
   writeLocalPage,
@@ -33,7 +33,7 @@ function fixture() {
 test("deletion hides the checkpoint and rejects late receipt or close writes", async () => {
   const { identity, page } = fixture();
   await writeLocalPage(identity, page);
-  await forgetLocalPage(identity, page.page_id);
+  await retireLocalPage(identity, page.page_id, { reason: "deleted" });
   for (const late of [
     { ...page, pending: false },
     { ...page, pending: true, title: "Closed after deletion" },
@@ -54,7 +54,7 @@ test("a deletion wins against both earlier and later queued checkpoint transacti
   await writeLocalPage(identity, page);
   const outcomes = await Promise.allSettled([
     writeLocalPage(identity, { ...page, title: "Queued before deletion" }),
-    forgetLocalPage(identity, page.page_id),
+    retireLocalPage(identity, page.page_id, { reason: "deleted" }),
     writeLocalPage(identity, { ...page, title: "Queued after deletion" }),
   ]);
   assert.equal(outcomes[0].status, "fulfilled");
@@ -71,7 +71,7 @@ test("deletion is scoped to the account even when another account has the same P
   const otherPage = { ...page, principal: other.principal };
   await writeLocalPage(identity, page);
   await writeLocalPage(other, otherPage);
-  await forgetLocalPage(identity, page.page_id);
+  await retireLocalPage(identity, page.page_id, { reason: "deleted" });
   await writeLocalPage(other, { ...otherPage, title: "Other account's checkpoint" });
   assert.equal(await readLocalPage(identity, page.page_id), null);
   assert.equal((await readLocalPage(other, page.page_id)).title, "Other account's checkpoint");
@@ -84,7 +84,7 @@ test("a persisted deletion blocks stale writers using another tab's database con
   assert.notEqual(peer.readLocalPage, readLocalPage);
   await writeLocalPage(identity, page);
   const stale = await peer.readLocalPage(identity, page.page_id);
-  await forgetLocalPage(identity, page.page_id);
+  await retireLocalPage(identity, page.page_id, { reason: "deleted" });
   await assert.rejects(peer.writeLocalPage(identity, stale), { code: "LOCAL_PAGE_DELETED" });
   assert.equal(await peer.readLocalPage(identity, page.page_id), null);
   assert.deepEqual(await peer.listLocalPages(identity), []);
@@ -92,9 +92,9 @@ test("a persisted deletion blocks stale writers using another tab's database con
 
 test("deleting before a local checkpoint exists prevents a delayed initial write", async () => {
   const { identity, page } = fixture();
-  await forgetLocalPage(identity, page.page_id);
+  await retireLocalPage(identity, page.page_id, { reason: "deleted" });
   await assert.rejects(writeLocalPage(identity, page), { code: "LOCAL_PAGE_DELETED" });
-  await forgetLocalPage(identity, page.page_id);
+  await retireLocalPage(identity, page.page_id, { reason: "deleted" });
   assert.equal(await readLocalPage(identity, page.page_id), null);
 });
 

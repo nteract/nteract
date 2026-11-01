@@ -30,6 +30,49 @@ async function fill(storage, prefix, count) {
     });
 }
 
+test("delete_page needs no base_heads: the catalog retry_token alone trashes, and sent heads still guard", async (t) => {
+  const f = await fixture(t);
+  const listed = await f.catalogCall("owner", "list_pages");
+  const { retry_token, retry_key_prefix } = listed.body;
+  // Heads the caller does send are checked: malformed ones are refused and
+  // stale ones name the live revision, as for an edit.
+  const malformed = await f.catalogCall("owner", "delete_page", {
+    page_id: pageId,
+    base_heads: ["not-a-head"],
+    retry_token,
+    idempotency_key: `${retry_key_prefix}malformed-heads`,
+  });
+  assert.equal(malformed.status, 400);
+  assert.equal(malformed.body.code, "invalid_edit_selector");
+  const stale = await f.catalogCall("owner", "delete_page", {
+    page_id: pageId,
+    base_heads: ["0".repeat(64)],
+    retry_token,
+    idempotency_key: `${retry_key_prefix}stale-heads-guard`,
+  });
+  assert.equal(stale.status, 409);
+  assert.equal(stale.body.code, "stale_heads");
+  assert.deepEqual(stale.body.current_heads, f.heads());
+  assert.equal(pageState(f.page.metadata), "active");
+  // No read_page first: list, then trash.
+  const trashed = await f.catalogCall("owner", "delete_page", {
+    page_id: pageId,
+    retry_token,
+    idempotency_key: `${retry_key_prefix}token-only-trash`,
+  });
+  assert.equal(trashed.status, 200, JSON.stringify(trashed.body));
+  assert.equal(trashed.body.state, "trashed");
+  assert.equal(pageState(f.page.metadata), "trashed");
+  // The same key replays the receipt.
+  const replay = await f.catalogCall("owner", "delete_page", {
+    page_id: pageId,
+    retry_token,
+    idempotency_key: `${retry_key_prefix}token-only-trash`,
+  });
+  assert.equal(replay.status, 200);
+  assert.deepEqual(replay.body, trashed.body);
+});
+
 test("delete_page moves a Page to Trash and keeps its document, comments and ACL", async (t) => {
   const f = await fixture(t);
   const before = structuredClone(f.page.metadata);

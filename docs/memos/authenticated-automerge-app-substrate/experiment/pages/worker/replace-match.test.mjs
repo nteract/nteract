@@ -64,8 +64,15 @@ test("visible-text replacement uses existing head, idempotency, and account/driv
   assert.deepEqual(A.getHeads(f.handle.doc()), heads);
   await assert.rejects(
     documentMutation(f.context({ ...f.args, idempotency_key: "new-key-stale-heads" })),
-    (error) =>
-      error.status === 409 && error.code === "stale_heads" && /Page changed/.test(error.message),
+    (error) => {
+      assert.equal(error.status, 409);
+      assert.equal(error.code, "stale_heads");
+      assert.match(error.message, /Page changed/);
+      // The refusal names the live revision, so the caller can rebuild its
+      // request without a read_page round trip.
+      assert.deepEqual(error.details, { current_heads: [...heads].sort() });
+      return true;
+    },
   );
   for (const identity of [
     { ...f.identity, driver: "Codex" },
