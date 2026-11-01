@@ -8,7 +8,11 @@ import { build } from "esbuild";
 import { JSDOM } from "jsdom";
 import * as A from "@automerge/automerge";
 import { createPageData, initializePage } from "../model/page.mjs";
+import { VirtualTimeScheduler } from "rxjs";
 import { PageSession, pageSyncAddress } from "./session.mjs";
+import { SessionHost } from "./session-host.mjs";
+import { ReloadGate } from "./build-freshness.mjs";
+import { SCHEMA_CHECKPOINT_FAILED } from "./reload-gate-machine.mjs";
 
 const owner = {
   role: "owner",
@@ -198,4 +202,63 @@ test("every local change repairs an incomplete stamp in the same change", (t) =>
   assert.equal(doc().schema.features.length, 1);
   s.change((draft) => A.updateText(draft, ["title"], "Renamed"));
   assert.deepEqual([...doc().schema.features], ["alpha", "beta"]);
+});
+
+/** A session whose receipt the host refused for an unsupported feature,
+ * owned by a SessionHost the reload gate follows. */
+async function refusedForReload(t, persistLocal) {
+  const { session: s } = session(t, unstamped(), { buildFeatures: [] });
+  s.identity = { principal: "dev" };
+  s.repo = { flush: async () => {} };
+  s.connection = { documentId: "doc" };
+  s.localPage = { pending: true };
+  s.persistLocal = persistLocal;
+  s.requestWithRenewal = async () => {
+    throw Object.assign(Error("refused"), { status: 409, code: "schema_unsupported" });
+  };
+  s.scheduleReceiptRetry = () => assert.fail("a schema refusal never retries");
+  await s.saveReceipt();
+  assert.equal(s.schemaHold, "refused");
+  const host = new SessionHost();
+  const gate = new ReloadGate({ scheduler: new VirtualTimeScheduler() });
+  gate.watch(host);
+  host.install(s, host.generation, "dev");
+  return { session: s, gate };
+}
+
+test("a schema refusal checkpoints the edits locally, then the notice's Reload goes ahead", async (t) => {
+  let writes = 0;
+  const { session: s, gate } = await refusedForReload(t, async (patch) => {
+    assert.equal(patch.pending, true);
+    writes++;
+  });
+  writes = 0;
+  let reloaded = false;
+  const result = await gate.reload({ reload: () => (reloaded = true), acceptCheckpoints: true });
+  assert.deepEqual(result, { ok: true });
+  assert.equal(reloaded, true);
+  assert.equal(writes, 1, "the reload wrote one checkpoint");
+  assert.equal(s.schemaHold, "written");
+});
+
+test("a failed schema checkpoint blocks the reload and keeps the edits", async (t) => {
+  let fail = false;
+  const { session: s, gate } = await refusedForReload(t, async () => {
+    if (fail) throw Error("QuotaExceededError");
+  });
+  fail = true;
+  let reloaded = false;
+  const result = await gate.reload({ reload: () => (reloaded = true), acceptCheckpoints: true });
+  assert.deepEqual(result, { ok: false, message: SCHEMA_CHECKPOINT_FAILED });
+  assert.equal(reloaded, false);
+  assert.equal(s.schemaHold, "failed");
+  assert.equal(s.recoveryPending, true, "the edits stay pending in this tab");
+  assert.equal(s.canWrite, false);
+  // The next Reload writes again.
+  fail = false;
+  assert.deepEqual(
+    await gate.reload({ reload: () => (reloaded = true), acceptCheckpoints: true }),
+    { ok: true },
+  );
+  assert.equal(reloaded, true);
 });

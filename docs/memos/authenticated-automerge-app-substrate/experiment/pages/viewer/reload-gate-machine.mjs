@@ -27,6 +27,17 @@
  * closing session's final `sessionPhase` (`closed` or `deleted`) arrives once
  * its backend release settles; until then every attempt waits for it.
  *
+ * Schema holds: a held session whose schema gate made it read-only with edits
+ * the host won't accept carries `schema` and its `title`. The host refuses
+ * those edits until a build with the feature opens the Page, so a receipt can
+ * never settle them. Instead the attempt asks for a local checkpoint
+ * (`checkpoint`): `refused` (none written for the reload yet), then
+ * `writing`, then `written` or `failed`. Read-only means the replica takes no
+ * new local edits, so one written checkpoint covers them all. A written one
+ * settles like a closed Page's checkpoint: it reloads when the attempt
+ * accepts checkpoints, and otherwise blocks as `checkpointed`. A failed one
+ * blocks and keeps the edits in the open tab; the next Reload writes again.
+ *
  * Records are keyed `account:pageId`. A record with `checkpointWritten` waits
  * in IndexedDB and syncs on the next open, which supersedes it. A failed
  * checkpoint's record keeps the recovery Markdown and its heads, since that is
@@ -40,14 +51,16 @@
  *
  * Effects: `pauseEdits` and `resumeEdits` hold and release the reload's edit
  * pause; `requestSave` asks a session for its receipt (`retry` retries a
- * stalled save like the Retry button); `startTimer` arms the attempt's
- * timeout; `reload` reloads the tab.
+ * stalled save like the Retry button); `checkpoint` asks a schema-held session
+ * to write its local checkpoint; `startTimer` arms the attempt's timeout;
+ * `reload` reloads the tab.
  */
 import { defineMachine, reject } from "../shared/machine.mjs";
 
 const PHASES = new Set(["held", "closing"]);
 const SAVES = new Set(["saving", "stalled", "failed"]);
 const REASONS = new Set(["auth", "access", "trash", "reload"]);
+const SCHEMA_HOLDS = new Set(["refused", "writing", "written", "failed"]);
 
 const check = (condition, message) => {
   if (!condition) throw new Error(message);
@@ -66,7 +79,18 @@ const strings = (value, field) =>
 
 function sessionEntry(entry) {
   check(isObject(entry), "a session entry is an object");
-  only(entry, ["id", "key", "phase", "alive", "pending", "save", "reason", "savedHeads"]);
+  only(entry, [
+    "id",
+    "key",
+    "phase",
+    "alive",
+    "pending",
+    "save",
+    "reason",
+    "savedHeads",
+    "schema",
+    "title",
+  ]);
   check(isString(entry.id) && isString(entry.key), "id and key are required");
   check(PHASES.has(entry.phase), "phase must be held or closing");
   check(isBoolean(entry.alive) && isBoolean(entry.pending), "alive and pending are booleans");
@@ -77,6 +101,13 @@ function sessionEntry(entry) {
   check(SAVES.has(entry.save), "save must be saving, stalled or failed");
   check(entry.reason === undefined || REASONS.has(entry.reason), "reason must be a pause reason");
   strings(entry.savedHeads, "savedHeads");
+  check(entry.schema === undefined || SCHEMA_HOLDS.has(entry.schema), "schema must be a hold");
+  check(
+    (entry.schema === undefined) === (entry.title === undefined),
+    "a schema hold names its title",
+  );
+  check(entry.schema === undefined || entry.phase === "held", "only a held session is held");
+  if (entry.title !== undefined) check(typeof entry.title === "string", "title is a string");
 }
 
 function record(value) {
@@ -196,6 +227,10 @@ export const reloadGateSpec = Object.freeze({
       "discard",
       "receipt-acknowledges",
       "deleted-releasing",
+      "schema-checkpoints",
+      "schema-failed-retries",
+      "schema-written-accepted",
+      "schema-written-not-accepted",
     ],
     "idle/sessionPhase": [
       "held-new",
@@ -232,8 +267,11 @@ export const reloadGateSpec = Object.freeze({
       "deleted-released",
       "deleted-still-releasing",
       "late-deletion",
+      "schema-writing",
+      "schema-written-reloads",
+      "schema-failed-blocks",
     ],
-    "waiting/timeout": ["live-waiting", "closing-still", "none-waiting"],
+    "waiting/timeout": ["live-waiting", "closing-still", "none-waiting", "schema-checkpoint-slow"],
   },
   validate: {
     states: {
@@ -276,6 +314,10 @@ export const reloadGateSpec = Object.freeze({
         only(effect, ["type", "id", "retry"]);
         check(isString(effect.id) && isBoolean(effect.retry), "requestSave names a session");
       },
+      checkpoint(effect) {
+        only(effect, ["type", "id"]);
+        check(isString(effect.id), "checkpoint names a session");
+      },
       startTimer(effect) {
         only(effect, ["type", "ms"]);
         check(Number.isSafeInteger(effect.ms) && effect.ms > 0, "ms must be positive");
@@ -296,6 +338,10 @@ export const BLOCKED = Object.freeze({
   failed: "Your latest edits couldn't be saved on this device, so Pages won't reload.",
 });
 export const NOTHING_SAVING = "No held Page is still saving";
+export const SCHEMA_CHECKPOINT_FAILED =
+  "Your edits on this Page couldn't be saved in this browser, so Pages won't reload. Keep this tab open and try Reload again.";
+// A live result: the session's edits wait in a written local checkpoint.
+const KEPT = "checkpointed";
 
 const names = (pages) => {
   const titles = pages.map((page) => page.title);
@@ -312,8 +358,19 @@ function blockedMessage(entry) {
   if (entry.reason) return BLOCKED.access;
   return undefined;
 }
-const resultFor = (entry) =>
-  !entry.alive || !entry.pending ? "ok" : (blockedMessage(entry) ?? null);
+/** A live session's result: "ok", KEPT, a blocking message, or null while it
+ * waits. A schema hold waits on its checkpoint, never on a receipt. */
+function resultFor(entry) {
+  if (!entry.alive || !entry.pending) return "ok";
+  if (entry.schema === "written") return KEPT;
+  if (entry.schema === "failed") return SCHEMA_CHECKPOINT_FAILED;
+  if (entry.schema) return null;
+  return blockedMessage(entry) ?? null;
+}
+const splitKey = (key) => {
+  const at = key.lastIndexOf(":");
+  return { account: key.slice(0, at), pageId: key.slice(at + 1) };
+};
 
 function entryOf(event) {
   const { type: _, ...entry } = event;
@@ -399,7 +456,7 @@ function complete(state, effects) {
   if (attempt.navigated)
     return { state: { name: "cancelled", ...base(state) }, effects: [...effects, ...resume] };
   if (state.drafts) return blocked({ message: UNSENT_COMMENT });
-  const failed = attempt.live.find((entry) => entry.result !== "ok");
+  const failed = attempt.live.find((entry) => entry.result !== "ok" && entry.result !== KEPT);
   if (failed) return blocked({ message: failed.result });
   let records = state.records;
   for (const entry of attempt.live) records = acknowledge(records, entry.key, entry.savedHeads);
@@ -409,9 +466,18 @@ function complete(state, effects) {
       { reason: "unsaved", pages: unsaved, message: unsavedMessage(unsaved) },
       records,
     );
-  if (records.length && !attempt.acceptCheckpoints)
+  // Open Pages whose edits wait in a schema checkpoint, listed like records.
+  const kept = attempt.live
+    .filter((entry) => entry.result === KEPT)
+    .map((entry) => {
+      const title = state.sessions.find((s) => s.id === entry.id)?.title.trim() || "Untitled";
+      return { key: entry.key, ...splitKey(entry.key), title, checkpointWritten: true };
+    })
+    .filter((page) => !records.some((record) => record.key === page.key));
+  const waiting = [...records, ...kept];
+  if (waiting.length && !attempt.acceptCheckpoints)
     return blocked(
-      { reason: "checkpointed", pages: records, message: checkpointedMessage(records) },
+      { reason: "checkpointed", pages: waiting, message: checkpointedMessage(waiting) },
       records,
     );
   return {
@@ -445,8 +511,13 @@ function start(state, event) {
     savedHeads: s.savedHeads,
   }));
   for (const s of live)
-    if (resultFor(s) === null)
+    if (resultFor(s) === null && !s.schema)
       effects.push({ type: "requestSave", id: s.id, retry: s.save === "stalled" });
+  // A schema hold writes a checkpoint for this attempt; a failed one retries.
+  for (const s of live)
+    if (s.alive && s.pending && (s.schema === "refused" || s.schema === "failed"))
+      effects.push({ type: "checkpoint", id: s.id });
+  for (const entry of entries) if (entry.result === SCHEMA_CHECKPOINT_FAILED) entry.result = null;
   if (entries.some((entry) => entry.result === null))
     effects.push({ type: "startTimer", ms: SAVE_BEFORE_RELOAD_MS });
   const attempt = {

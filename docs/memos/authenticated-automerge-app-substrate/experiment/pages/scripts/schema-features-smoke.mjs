@@ -223,6 +223,16 @@ try {
   assert.equal(after.body.blocks[0].markdown, "Words from a newer build.");
   checkpoint("the viewer shows the notice and writes nothing");
 
+  stage = "the notice's Reload reloads the tab";
+  await Promise.all([
+    page.waitForEvent("load", { timeout: 30_000 }),
+    notice().getByRole("button", { name: "Reload" }).click(),
+  ]);
+  await expect(content().first()).toBeVisible();
+  // This build still lacks the feature, so the Page opens read-only again.
+  await expect(notice()).toBeVisible();
+  checkpoint("Reload goes ahead from a read-only Page");
+
   stage = "navigating back to the unstamped Page";
   await page.goto(origin + "/p/" + baseline);
   await expect(content().first()).toBeVisible();

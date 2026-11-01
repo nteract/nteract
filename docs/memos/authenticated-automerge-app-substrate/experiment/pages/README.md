@@ -191,7 +191,7 @@ references; it does not publish the Page or change asset access.
   | Who | Rule |
   | --- | --- |
   | Writer (host tools, import, Wordgard binding, comments) | Adds a feature's id in the same Automerge change that first writes content needing it. Never removes an id. |
-  | Viewer | `unsupported = stamp − BUILD_FEATURES`. Non-empty opens the Page read-only with a Reload notice; sync continues. |
+  | Viewer | `unsupported = stamp − BUILD_FEATURES`. Non-empty opens the Page read-only with a Reload notice; sync continues. The notice's Reload writes any edits the host refused to this browser's store, then reloads without the host's receipt; if that write fails, it blocks and keeps the edits in the tab. |
   | Host, tools | Refuses tool writes and draft registration with `409 unsupported_schema_feature` and `unsupported_features`. Replays of recorded receipts still answer. |
   | Host, native sync | The viewer declares its build's features on `/api/sync` (`schema_features`; none means the baseline). The policy refuses a put authored by the requesting key while its build lacks a stamped id, and the matching `/api/saved` receipt answers `409 schema_unsupported`, which the viewer shows as the read-only notice. Relayed history signed by another key is not gated. |
   | Agents | `read_page` returns `schema_features`, an empty array when unstamped. |

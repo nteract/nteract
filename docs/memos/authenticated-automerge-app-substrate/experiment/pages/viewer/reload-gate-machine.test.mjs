@@ -50,7 +50,9 @@ function apply(session, entry) {
     pending: entry.pending,
     status: statusOf(entry),
     savedHeads: [...entry.savedHeads],
+    schemaHold: entry.schema,
   });
+  if (entry.title !== undefined) session.doc.title = entry.title;
   if (entry.reason && session.phase$.snapshot().reason !== entry.reason)
     session.pause(entry.reason);
   else session.emit();
@@ -76,12 +78,15 @@ function own(ctx, entry, event, { install = true } = {}) {
   };
   session.retryConnection = () => ctx.calls.push(["save", entry.id, true]);
   session.queueSaved = () => ctx.calls.push(["save", entry.id, false]);
+  session.checkpointForSchema = () => ctx.calls.push(["checkpoint", entry.id]);
   ctx.sessions.set(entry.id, session);
   Object.assign(session, {
     pending: entry.pending,
     status: statusOf(entry),
     savedHeads: [...entry.savedHeads],
+    schemaHold: entry.schema,
   });
+  if (entry.title !== undefined) session.doc.title = entry.title;
   if (entry.reason) session.step(pauseEvent(entry.reason));
   if (install) ctx.host.install(session, ctx.host.generation, session.identity.principal);
   else
@@ -200,18 +205,21 @@ async function deliver(ctx, event) {
 function effectsOf(ctx, timersBefore) {
   const pauses = [];
   const saves = [];
+  const checkpoints = [];
   const resumes = [];
   let reload = false;
   for (const [kind, id, retry] of ctx.calls) {
     if (kind === "pause") pauses.push(id);
     else if (kind === "resume") resumes.push(id);
     else if (kind === "save") saves.push({ type: "requestSave", id, retry });
+    else if (kind === "checkpoint") checkpoints.push({ type: "checkpoint", id });
     else if (kind === "reload") reload = true;
   }
   const timer = ctx.armed > timersBefore;
   return [
     ...(pauses.length ? [{ type: "pauseEdits", ids: pauses }] : []),
     ...saves,
+    ...checkpoints,
     ...(timer ? [{ type: "startTimer", ms: SAVE_BEFORE_RELOAD_MS }] : []),
     ...(resumes.length ? [{ type: "resumeEdits", ids: resumes }] : []),
     ...(reload ? [{ type: "reload" }] : []),
@@ -234,7 +242,7 @@ async function drive(state, event) {
 }
 
 const table = loadTable(TABLE);
-const COUNTS = { rows: 62, pairs: 19, unreachable: 6, cases: 48 };
+const COUNTS = { rows: 70, pairs: 19, unreachable: 6, cases: 56 };
 
 test("the reload-gate table runs through the pure machine", async () => {
   assert.deepEqual(await runTable(reloadGateMachine, table), COUNTS);

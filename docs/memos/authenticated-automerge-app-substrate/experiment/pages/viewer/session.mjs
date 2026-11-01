@@ -568,6 +568,36 @@ export class PageSession {
   /** Re-derive the schema gate from the replica. Runs before observers see a
    * change, so an editor never applies a local edit over content it can't
    * express. */
+  /** The reload gate's view of a schema hold (reload-gate-machine.mjs):
+   * undefined unless the schema gate holds edits the host won't accept;
+   * otherwise `refused` until a checkpoint for the reload is written, then
+   * `writing`, `written` or `failed`. */
+  get schemaHold() {
+    if (this.schemaGate.editable || !this.recoveryPending) return undefined;
+    return this.schemaCheckpoint ?? "refused";
+  }
+  /** Write every local edit to this browser's store so a reload can go ahead
+   * without the host's receipt. The schema gate keeps the replica read-only,
+   * so no later local edit can escape the checkpoint. */
+  checkpointForSchema() {
+    if (this.schemaCheckpoint === "writing") return this.schemaCheckpointing;
+    this.schemaCheckpoint = "writing";
+    this.emit();
+    this.schemaCheckpointing = (async () => {
+      let written = false;
+      try {
+        await this.repo?.flush();
+        await this.persistLocal({ pending: true });
+        written = !!this.localPage && !!this.handle;
+      } catch {
+        // Reported as failed below; the edits stay in this tab.
+      }
+      if (!this.alive) return;
+      this.schemaCheckpoint = written ? "written" : "failed";
+      this.emit();
+    })();
+    return this.schemaCheckpointing;
+  }
   observeSchema() {
     this.stepSchema({ type: "observe", doc: this.doc });
   }

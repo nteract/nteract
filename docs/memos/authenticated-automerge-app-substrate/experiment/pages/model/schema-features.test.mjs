@@ -354,10 +354,13 @@ test("schema gate: every state and event", () => {
   const editable = SCHEMA_GATE_INITIAL;
   const readOnly = schemaGateStep(editable, { type: "observe", doc: stampedDoc }, build).gate;
   const refusedGate = schemaGateStep(editable, { type: "refused" }, build).gate;
+  const both = schemaGateStep(readOnly, { type: "refused" }, build).gate;
+  assert.deepEqual(both, { editable: false, unsupported: ["future"], refused: true });
   const states = {
     editable,
     "read-only (stamp)": readOnly,
     "read-only (host refused)": refusedGate,
+    "read-only (stamp and host refused)": both,
   };
   const events = {
     "open or change with no unknown stamp": { type: "observe", doc: unstamped },
@@ -393,7 +396,16 @@ test("schema gate: every state and event", () => {
       "local edit attempted": [false, [], true, false],
       reload: [true, [], false, true],
     },
+    "read-only (stamp and host refused)": {
+      "open or change with no unknown stamp": [false, ["future"], true, false],
+      "open with an unknown stamp": [false, ["future"], true, false],
+      "remote stamp adds another id": [false, ["future", "later"], true, false],
+      "host refuses a receipt": [false, ["future"], true, false],
+      "local edit attempted": [false, ["future"], true, false],
+      reload: [true, [], false, true],
+    },
   };
+  assert.deepEqual(Object.keys(expected), Object.keys(states));
   for (const [stateName, state] of Object.entries(states))
     for (const [eventName, event] of Object.entries(events)) {
       const { gate, allowed } = schemaGateStep(state, event, build);

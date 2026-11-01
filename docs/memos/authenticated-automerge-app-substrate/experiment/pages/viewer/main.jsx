@@ -994,7 +994,12 @@ function App() {
                     <button onClick={showTrash}>Open Trash</button>
                   </div>
                 )}
-                <SchemaNotice gate={session.schemaGate} reload={() => reloadGate.reload()} />
+                {/* Edits the host refuses can only wait in this browser's checkpoint;
+                    the notice's Reload accepts that. */}
+                <SchemaNotice
+                  gate={session.schemaGate}
+                  reload={() => reloadGate.reload({ acceptCheckpoints: true })}
+                />
                 <input
                   ref={titleInput}
                   className="document-title"
