@@ -17,6 +17,7 @@ import { SubductionBackend, IndexedDBByteStore } from "@automerge/automerge-repo
 import { applyComment } from "../model/comments.mjs";
 import { createPageData, initializePage, projectPage } from "../model/page.mjs";
 import { commentDraftsMarkdown, unsentCommentsMarkdown } from "../model/markdown-export.mjs";
+import { clearRefusalFence, readRefusalFence, writeRefusalFence } from "./refusal-fence.mjs";
 import {
   BUILD_FEATURES,
   SCHEMA_GATE_INITIAL,
@@ -649,31 +650,41 @@ export class PageSession {
     return drafts;
   }
   /** The retire effect. Read the live replica and the UI's comment drafts
-   * before anything releases or resets them, write them to the recovery
-   * archive, then report the result. The release follows unless a close
-   * already ran it. A failed archive keeps `closedRecovery` for the notice
-   * and the reload gate. Resolves once the release settles. */
+   * before anything releases or resets them, fence the Page off, write them
+   * to the recovery archive, then report the result. The release follows
+   * unless a close already ran it. A failed archive keeps `closedRecovery`
+   * for the notice and the reload gate, and leaves the fence so no later
+   * open renders the checkpoint. A retry reuses `closedRecovery`. Resolves
+   * once the release settles. */
   async #retire() {
     const { reason } = this.phase$.snapshot();
-    let live;
-    try {
-      const drafts = this.#commentDrafts();
-      if (this.handle && this.doc)
-        live = this.exportRecovery(undefined, { drafts, allComments: true });
-      else if (drafts.length)
-        live = {
-          page_id: this.pageId,
-          title: "",
-          heads: [],
-          comment_drafts: drafts,
-          markdown: commentDraftsMarkdown(drafts),
-        };
-      if (live) this.closedRecovery = live;
-    } catch {}
+    let live = this.closedRecovery;
+    if (!live)
+      try {
+        const drafts = [...(this.fence?.comment_drafts ?? []), ...this.#commentDrafts()];
+        if (this.handle && this.doc)
+          live = this.exportRecovery(undefined, { drafts, allComments: true });
+        // A fenced open never imported its checkpoint: export it as stored.
+        else if (this.fencedCopy)
+          live = this.exportRecovery({ ...this.fencedCopy, comment_drafts: drafts });
+        else if (drafts.length)
+          live = {
+            page_id: this.pageId,
+            title: "",
+            heads: [],
+            comment_drafts: drafts,
+            markdown: commentDraftsMarkdown(drafts),
+          };
+        if (live) this.closedRecovery = live;
+      } catch {}
+    writeRefusalFence(this.identity, this.pageId, { reason, drafts: live?.comment_drafts });
     let archived = false;
     try {
       await this.retireLocal(reason, live);
       archived = true;
+      this.retireProblem = undefined;
+      // The marker fences the copy from here on.
+      clearRefusalFence(this.identity, this.pageId);
     } catch (error) {
       this.retireProblem = error instanceof Error ? error.message : String(error);
     }
@@ -681,6 +692,14 @@ export class PageSession {
     const { done } = this.dispatch({ type: archived ? "retireOk" : "retireFail" });
     this.emit();
     return done;
+  }
+  /** Try a failed archive again (the notice's Try again). Resolves once it
+   * settles; a retry that fails again stays in retireFailed. */
+  async retryRetirement() {
+    const { rejected } = this.dispatch({ type: "retireRetry" });
+    if (rejected) return;
+    this.emit();
+    await this.closeSettled().catch(() => {});
   }
   /** Write `live` and the stored checkpoint to the recovery archive and leave
    * the marker for `reason` (retireLocalPage). */
@@ -1021,17 +1040,15 @@ export class PageSession {
   listRecoveries() {
     return listLocalRecoveries(this.identity, this.pageId);
   }
-  /** Every copy of this Page the person can download, as one bundle: each
+  /** Every copy of this Page the person can download, as one bundle: every
    * recovery record, plus this tab's own export while the archive doesn't
-   * hold it (it is still writing, or failed). */
+   * hold it (it is still writing, or failed). Records are never merged: two
+   * with the same snapshot can carry different comment drafts. */
   exportRecoveries(records = []) {
     const copies = [];
     if (this.closedRecovery && !this.recoveryArchived) copies.push(this.exportRecovery());
-    for (const record of records) {
-      const copy = this.exportRecovery(record);
-      if (!copies.some((other) => other.snapshot && other.snapshot === copy.snapshot))
-        copies.push({ ...copy, archived_at: record.archived_at });
-    }
+    for (const record of records)
+      copies.push({ ...this.exportRecovery(record), archived_at: record.archived_at });
     return { page_id: this.pageId, copies };
   }
   /** One copy as `{ title, markdown, snapshot, heads, page_id }`: a recovery
@@ -1103,9 +1120,14 @@ export class PageSession {
     } else await this.refreshAuthentication();
     const stored = await readLocalPage(this.identity, this.pageId, { markers: true });
     // A marker (retireLocalPage) means this browser's copy is in the recovery
-    // archive. Nothing local renders: the host decides, and a host-verified
-    // open replaces an access marker.
-    const retired = !!stored && (!!stored.deleted || !!stored.revoked);
+    // archive. A refusal fence means the host refused it but the archive
+    // failed, so the checkpoint is still stored. Either way nothing local
+    // renders: the host decides, and a host-verified open replaces both.
+    const fence = readRefusalFence(this.identity, this.pageId);
+    const marked = !!stored && (!!stored.deleted || !!stored.revoked);
+    const retired = marked || !!fence;
+    this.fence = fence;
+    this.fencedCopy = fence && !marked && stored?.snapshot ? stored : undefined;
     this.localPage = retired ? null : stored;
     if (creation && !this.credentialCanWrite) throw Error("This account cannot create Pages");
     this.access =
@@ -1189,10 +1211,17 @@ export class PageSession {
       try {
         await this.connect(false);
       } catch (error) {
+        // A fenced copy stays retired until the host grants it again, offline
+        // included. Retiring again retries its archive.
+        if (fence && this.alive) await this.#retireFenced(fence);
         // A browser that held a copy shows why it's gone, with its recovery
         // archive. One that never held the Page reports the error.
-        if (stored && this.hidden) return;
+        if ((stored || fence) && this.hidden) return;
         throw error;
+      }
+      if (fence && !this.connection && this.alive) {
+        await this.#retireFenced(fence);
+        return;
       }
       if (this.nativeRefused) throw signingKeyRefused(this.refusal);
       const lookupDeadline = AbortSignal.timeout(15000);
@@ -1246,10 +1275,19 @@ export class PageSession {
         snapshot: encodeSnapshot(A.save(this.doc)),
         localEdits: withActor(emptyLocalEdits(), this.actor(), this.replicaId),
       };
+      // A re-grant after a failed archive: set the refused checkpoint aside,
+      // download-only, before this grant's replica takes its key.
+      if (this.fencedCopy)
+        await retireLocalPage(this.identity, this.pageId, {
+          reason: "access",
+          drafts: fence.comment_drafts,
+        }).catch(() => {});
       await writeLocalPage(this.identity, this.localPage, {
         replica: this.replicaId,
         regrant: retired,
       });
+      if (fence) clearRefusalFence(this.identity, this.pageId);
+      this.fence = this.fencedCopy = undefined;
       unconfirmed = false;
     }
     this.observeSchema();
@@ -1589,6 +1627,10 @@ export class PageSession {
     if (rejected) return;
     this.emit();
     await done;
+  }
+  /** Retire a fenced open the host didn't grant, for the fence's reason. */
+  #retireFenced(fence) {
+    return fence.reason === "deleted" ? this.markDeleted() : this.revoke();
   }
   /** The host refused this account: archive the local copy, stop rendering
    * it, then close. */

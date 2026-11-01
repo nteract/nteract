@@ -7,14 +7,14 @@ export const RETIRED_COPY =
 export const RETIRING_COPY =
   "The copy this browser kept is no longer shown. It is being moved to this device's recovery archive.";
 export const RETIRE_FAILED =
-  "This browser couldn't move its copy to the recovery archive. Download it now: it is lost when you leave this Page or reload.";
+  "This browser couldn't move its copy to the recovery archive. Download it now, or try again. It stays hidden here either way.";
 
 /** Shown in place of a Page the host refused (`session.revoked`) or reports
  * deleted (`session.deleted`). Nothing from the Page renders here, its title
  * included. The download bundles every copy this browser holds for the Page
  * (session.exportRecoveries): the stored checkpoint, other tabs' replicas,
  * earlier archives, and this tab's replica with its unsent comment drafts. */
-export function RetiredPage({ session, recoveries, onDownload, onHome }) {
+export function RetiredPage({ session, recoveries, onDownload, onRetry, onHome }) {
   const copies = retiredCopies(session, recoveries);
   const failed = session.retireFailed;
   const status = failed
@@ -33,6 +33,11 @@ export function RetiredPage({ session, recoveries, onDownload, onHome }) {
         </p>
         {copies > 0 && <p>{status}</p>}
         {failed && session.retireProblem && <p className="muted">{session.retireProblem}</p>}
+        {failed && (
+          <button type="button" onClick={onRetry}>
+            Try again
+          </button>
+        )}
         {copies > 0 && (
           <button type="button" onClick={() => onDownload(undefined, { bundle: true })}>
             <Download size={15} aria-hidden="true" />

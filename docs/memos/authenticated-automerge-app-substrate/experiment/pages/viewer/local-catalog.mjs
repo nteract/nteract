@@ -4,6 +4,7 @@
 // Subduction WASM. local-pages.mjs owns the snapshot reads and merges, through
 // this module's one store instance.
 import { IndexedDBByteStore } from "@automerge/automerge-repo-subduction";
+import { readRefusalFence } from "./refusal-fence.mjs";
 
 export const store = new IndexedDBByteStore({ database: "pages-local-catalog-v1" });
 export const encoder = new TextEncoder();
@@ -27,6 +28,8 @@ export async function listLocalPages(identity, { pendingOnly = false } = {}) {
         !page.deleted &&
         // An access marker holds no copy; its recovery records stay unlisted.
         !page.revoked &&
+        // A refused copy whose archive failed stays out of sight too.
+        !readRefusalFence(identity, page.page_id) &&
         // A local replica of a trashed Page is kept for restore; Trash lists it.
         !page.access?.trashed &&
         (!pendingOnly || page.pending),

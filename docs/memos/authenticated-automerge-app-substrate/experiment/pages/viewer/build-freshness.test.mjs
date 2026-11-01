@@ -851,3 +851,37 @@ test("a close's ownership ends only after its last step, in every settling order
     }
   assert.equal(runs, 48);
 });
+
+test("a saved Page's failed retirement with a comment draft blocks Reload until discarded", async () => {
+  const g = gate();
+  const { session } = closingSession();
+  session.statusId = "saved";
+  session.localPage = { pending: false };
+  session.savedHeads = Automerge.getHeads(session.doc);
+  session.watchCommentDrafts(() => [{ kind: "comment", body: "Unsent draft before removal" }]);
+  session.retireLocal = async () => {
+    throw new Error("The quota has been exceeded.");
+  };
+  g.hold(session);
+  await session.revoke();
+  await g.host.release();
+  await settle();
+  const key = `dev:${session.pageId}`;
+  assert.equal(session.phase$.snapshot().name, "retireFailed");
+  assert.equal(g.record(key).explicit, true);
+  assert.match(g.record(key).markdown, /Unsent draft before removal/);
+  // The unchanged Page reopens, and its receipt covers every recorded head.
+  const reopened = g.session(session.pageId);
+  g.hold(reopened);
+  const waiting = g.reload();
+  reopened.set({ statusId: "saved", pending: false, savedHeads: [...session.savedHeads] });
+  const blocked = await waiting;
+  assert.equal(blocked.reason, "unsaved", "a document receipt never clears the drafts");
+  assert.deepEqual(
+    blocked.pages.map((page) => page.key),
+    [key],
+  );
+  assert.equal(g.reloaded(), 0);
+  assert.deepEqual(await g.reload({ discard: [key] }), { ok: true });
+  assert.equal(g.reloaded(), 1);
+});

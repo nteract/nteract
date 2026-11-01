@@ -28,6 +28,7 @@
       "accept-checkpoints",
       "discard",
       "receipt-acknowledges",
+      "receipt-keeps-explicit",
       "deleted-releasing",
       "schema-checkpoints",
       "schema-failed-retries",
@@ -47,6 +48,7 @@
       "closed-failed-again",
       "closed-other-account",
       "closed-acknowledged",
+      "closed-explicit-kept",
       "closed-archive",
       "closed-direct",
       "deleted",
@@ -587,6 +589,87 @@
           "drafts": false
         },
         "effects": [{ "type": "pauseEdits", "ids": ["a"] }, { "type": "reload" }]
+      }
+    },
+    {
+      "note": "an explicit record blocks Reload even when the reopened Page's receipt covers its heads",
+      "case": "receipt-keeps-explicit",
+      "state": {
+        "name": "idle",
+        "sessions": [
+          {
+            "id": "a",
+            "key": "dev:page-lost",
+            "phase": "held",
+            "alive": true,
+            "pending": false,
+            "save": "saving",
+            "savedHeads": ["lost-1", "lost-2"]
+          }
+        ],
+        "records": [
+          {
+            "key": "dev:page-lost",
+            "account": "dev",
+            "pageId": "page-lost",
+            "title": "Garden notes",
+            "checkpointWritten": false,
+            "heads": ["lost-1", "lost-2"],
+            "markdown": "# Garden notes\n\nA draft never sent\n",
+            "explicit": true
+          }
+        ],
+        "drafts": false
+      },
+      "event": { "type": "reload", "acceptCheckpoints": false, "discard": [] },
+      "expect": {
+        "state": {
+          "name": "blocked",
+          "sessions": [
+            {
+              "id": "a",
+              "key": "dev:page-lost",
+              "phase": "held",
+              "alive": true,
+              "pending": false,
+              "save": "saving",
+              "savedHeads": ["lost-1", "lost-2"]
+            }
+          ],
+          "records": [
+            {
+              "key": "dev:page-lost",
+              "account": "dev",
+              "pageId": "page-lost",
+              "title": "Garden notes",
+              "checkpointWritten": false,
+              "heads": ["lost-1", "lost-2"],
+              "markdown": "# Garden notes\n\nA draft never sent\n",
+              "explicit": true
+            }
+          ],
+          "drafts": false,
+          "outcome": {
+            "reason": "unsaved",
+            "pages": [
+              {
+                "key": "dev:page-lost",
+                "account": "dev",
+                "pageId": "page-lost",
+                "title": "Garden notes",
+                "checkpointWritten": false,
+                "heads": ["lost-1", "lost-2"],
+                "markdown": "# Garden notes\n\nA draft never sent\n",
+                "explicit": true
+              }
+            ],
+            "message": "Edits on Garden notes couldn't be saved in this browser and haven't reached the server. Download them before reloading, or they'll be lost."
+          }
+        },
+        "effects": [
+          { "type": "pauseEdits", "ids": ["a"] },
+          { "type": "resumeEdits", "ids": ["a"] }
+        ]
       }
     },
     {
@@ -1242,6 +1325,69 @@
       },
       "expect": {
         "state": { "name": "idle", "sessions": [], "records": [], "drafts": false },
+        "effects": []
+      }
+    },
+    {
+      "note": "a retired copy's record holds drafts no receipt covers: a covering receipt leaves it",
+      "case": "closed-explicit-kept",
+      "state": {
+        "name": "idle",
+        "sessions": [
+          {
+            "id": "a",
+            "key": "dev:page-a",
+            "phase": "closing",
+            "alive": false,
+            "pending": false,
+            "save": "saving",
+            "savedHeads": []
+          }
+        ],
+        "records": [
+          {
+            "key": "dev:page-a",
+            "account": "dev",
+            "pageId": "page-a",
+            "title": "Garden notes",
+            "checkpointWritten": false,
+            "heads": ["lost-1"],
+            "markdown": "# Garden notes\n\nA draft never sent\n",
+            "explicit": true
+          }
+        ],
+        "drafts": false
+      },
+      "event": {
+        "type": "sessionPhase",
+        "id": "a",
+        "key": "dev:page-a",
+        "phase": "closed",
+        "saved": true,
+        "checkpointWritten": true,
+        "savedHeads": ["lost-1"],
+        "account": "dev",
+        "pageId": "page-a",
+        "title": "Garden notes"
+      },
+      "expect": {
+        "state": {
+          "name": "idle",
+          "sessions": [],
+          "records": [
+            {
+              "key": "dev:page-a",
+              "account": "dev",
+              "pageId": "page-a",
+              "title": "Garden notes",
+              "checkpointWritten": false,
+              "heads": ["lost-1"],
+              "markdown": "# Garden notes\n\nA draft never sent\n",
+              "explicit": true
+            }
+          ],
+          "drafts": false
+        },
         "effects": []
       }
     },

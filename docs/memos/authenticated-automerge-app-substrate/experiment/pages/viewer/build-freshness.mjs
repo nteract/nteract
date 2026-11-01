@@ -165,7 +165,9 @@ function released(id, session) {
       account: session.identity?.principal,
       pageId: session.pageId,
       title: kept.title ?? "",
-      recovery: { markdown: kept.markdown, heads: [...(kept.heads ?? [])] },
+      // A retired copy can hold comment drafts no document receipt
+      // acknowledges, and its host refused it: only Discard clears it.
+      recovery: { markdown: kept.markdown, heads: [...(kept.heads ?? [])], explicit: true },
     };
   }
   const left = (!session.phase$.snapshot().archived && session.leaveRecord) || { saved: true };

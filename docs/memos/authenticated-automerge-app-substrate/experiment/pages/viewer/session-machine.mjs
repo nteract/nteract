@@ -36,8 +36,10 @@
  *   started or finished. Reopening shows the refusal, never the copy. A
  *   re-grant opens a new session.
  * - retireFailed: the archive write failed, so the copy exists only in this
- *   tab's memory export. The backend release has started or finished. The
- *   notice offers that export; the reload gate keeps it as an unsaved record.
+ *   tab's memory export and the untouched checkpoint. The backend release has
+ *   started or finished. The notice offers that export and a retry; the
+ *   reload gate keeps it as an unsaved record. The refusal fence
+ *   (refusal-fence.mjs) keeps the checkpoint from rendering on a later open.
  *   A transient host failure never reaches a retirement state.
  *
  * `drained` and `saved` record how a session was left: through the drain, and
@@ -55,7 +57,8 @@
  * `reloadAccess` (Reload current Page), `leave` (the host releases the
  * session, through the drain or by closing at once), `drained`,
  * `checkpointOk`, `checkpointFail` (`deleted` when another tab marked the
- * Page deleted), `retireOk` and `retireFail`.
+ * Page deleted), `retireOk`, `retireFail` and `retireRetry` (the person asks
+ * a failed archive to try again).
  *
  * Effects: `disconnect` closes sockets and stops reconnecting; `persistLocal`
  * writes the access fact and a checkpoint to IndexedDB; `drain` waits for the
@@ -75,6 +78,7 @@ export const RETIRE_REASONS = Object.freeze(["access", "deleted"]);
 const RETIRED = ["retiring", "retired", "retireFailed"];
 const RETIRE_RESULT = "the interpreter delivers a retirement result only while retiring";
 const CHECKPOINT_RESULT = "the interpreter delivers a checkpoint result only while checkpointing";
+const RETRY_OFFERED = "only a failed archive offers Try again";
 
 const check = (condition, message) => {
   if (!condition) throw new Error(message);
@@ -134,6 +138,7 @@ export const viewerSessionSpec = Object.freeze({
     "checkpointFail",
     "retireOk",
     "retireFail",
+    "retireRetry",
   ],
   unreachable: [
     ["opening", "restore", "Restore is offered only on an installed session"],
@@ -214,7 +219,10 @@ export const viewerSessionSpec = Object.freeze({
     ...["opening", "open", "paused", "draining", "checkpointing", "closed"].flatMap((state) => [
       [state, "retireOk", RETIRE_RESULT],
       [state, "retireFail", RETIRE_RESULT],
+      [state, "retireRetry", RETRY_OFFERED],
     ]),
+    ["retiring", "retireRetry", RETRY_OFFERED],
+    ["retired", "retireRetry", RETRY_OFFERED],
     ...RETIRED.flatMap((state) => [
       [state, "opened", "start() reports opened once, before the session is installed"],
       [state, "restore", "a retired copy can't be restored"],
@@ -333,6 +341,7 @@ export const viewerSessionSpec = Object.freeze({
       },
       retireOk: typed([]),
       retireFail: typed([]),
+      retireRetry: typed([]),
     },
     effects: {
       disconnect: typed([]),
@@ -520,8 +529,12 @@ function transition(state, event) {
       if (event.type === "leave") return reject(state, REJECT.alreadyClosing);
       return reject(state, reason === "deleted" ? REJECT.deleted : REJECT.revoked);
     }
-    case "retired":
     case "retireFailed":
+      // The backend is already released; only the archive runs again.
+      if (event.type === "retireRetry")
+        return ok({ name: "retiring", reason: state.reason, released: true }, "retire");
+    // falls through
+    case "retired":
       if (event.type === "leave") return reject(state, REJECT.alreadyClosing);
       return reject(state, state.reason === "deleted" ? REJECT.deleted : REJECT.revoked);
   }

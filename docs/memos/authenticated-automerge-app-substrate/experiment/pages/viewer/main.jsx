@@ -324,9 +324,9 @@ function App() {
       ];
     });
     // A refusal hides the Page at once and archives its copy afterwards:
-    // list the archive again once it's written.
+    // list the archive again each time a write settles, a retry included.
     let hiding = next.hidden,
-      archived = next.recoveryArchived;
+      settled = next.phase$.snapshot().name;
     next.subscribe(() => {
       if (host.current === next) {
         paint((n) => n + 1);
@@ -335,10 +335,10 @@ function App() {
           hiding = true;
           resetDocumentUI();
         }
-        if ((next.recoveryArchived || next.retireFailed) && !archived) {
-          archived = true;
+        const phase = next.phase$.snapshot().name;
+        if ((phase === "retired" || phase === "retireFailed") && phase !== settled)
           listRecoveries();
-        }
+        settled = phase;
       }
     });
     listRecoveries();
@@ -1250,6 +1250,7 @@ function App() {
               session={session}
               recoveries={localRecoveries}
               onDownload={downloadDraft}
+              onRetry={() => void session.retryRetirement()}
               onHome={() => home(null)}
             />
           ) : opening ? (

@@ -113,6 +113,8 @@ async function fixture({ opening = false, startable = false, role = "editor" } =
   session.drainBeforeClose = record("drain", session.drainBeforeClose);
   session.retireLocal = () => {
     ctx.raw.push("retire");
+    // A failed archive's retry waits on a fresh write.
+    if (ctx.retireFailed) ctx.retire = deferred();
     return ctx.retire.promise;
   };
   session.disconnectSockets = () => {
@@ -239,7 +241,10 @@ async function prepare(state, event) {
       const refusal = state.reason === "deleted" ? session.markDeleted() : session.revoke();
       track(ctx, refusal);
       if (state.name === "retired") ctx.retire.resolve();
-      if (state.name === "retireFailed") ctx.retire.reject(Error("quota"));
+      if (state.name === "retireFailed") {
+        ctx.retire.reject(Error("quota"));
+        ctx.retireFailed = true;
+      }
       if (state.name !== "retiring") await ctx.pending.catch(() => {});
       await settle();
       break;
@@ -334,6 +339,9 @@ function deliver(ctx, event) {
       // A deletion found by the checkpoint retires the copy; its archive
       // is still writing when the phase is read.
       return event.deleted ? settle().then(settle) : ctx.pending.catch(() => {}).then(settle);
+    case "retireRetry":
+      track(ctx, session.retryRetirement());
+      return settle();
     case "retireOk":
       ctx.retire.resolve();
       return ctx.pending.catch(() => {}).then(settle);
@@ -418,7 +426,7 @@ async function drive(state, event) {
 }
 
 const table = loadTable(TABLE);
-const COUNTS = { rows: 97, pairs: 50, unreachable: 58, cases: 69 };
+const COUNTS = { rows: 98, pairs: 51, unreachable: 66, cases: 69 };
 
 test("the viewer-session table runs through the pure machine", async () => {
   assert.deepEqual(await runTable(viewerSessionMachine, table), COUNTS);

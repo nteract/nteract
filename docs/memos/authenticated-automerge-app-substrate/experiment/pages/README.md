@@ -353,10 +353,16 @@ with its Markdown (comments, unsent comments and drafts included) and its
 Automerge snapshot. A permanent deletion from Trash archives the owner's copy
 the same way.
 
-If the archive write fails (quota, storage error), the session says so and
-never reports the copy archived. The notice offers the tab's in-memory export
-instead, and the reload gate keeps it as an unsaved Page that blocks Reload
-until it is downloaded or discarded.
+Retirement first writes a refusal fence for the account and Page to
+localStorage, outside IndexedDB, and clears it once the marker is written. If
+the archive write fails (quota, storage error), the session says so and never
+reports the copy archived. The notice offers the tab's in-memory export and Try
+again. The reload gate keeps the export as an unsaved Page that only Download
+or Discard clears: it can hold comment drafts no document receipt covers. The
+fence keeps the untouched checkpoint off Home and out of the next open. That
+open asks the host before importing anything; a refusal or a failed connection
+retires it again, retrying the archive, and a grant sets the checkpoint aside
+in the archive and opens the grant's replica.
 
 An access marker only blocks: a tab that hasn't seen the refusal archives its
 own copy when it next writes, and the next open the host grants writes over the
@@ -1038,7 +1044,8 @@ Each Page session moves through the
 [viewer-session machine](viewer/session-machine.mjs): opening, open, paused
 (sign-in, access, Trash or access reload), draining while it is left, then
 checkpointing or closed. A refusal retires it instead: retiring while the
-archive writes, then retired or retireFailed. `PageSession.phase$` is that state in a
+archive writes, then retired or retireFailed; Try again moves a failed archive
+back to retiring. `PageSession.phase$` is that state in a
 [Store](viewer/store.mjs), and every lifecycle flag derives from it. A close
 can grow while it runs (a late refusal adds its archive), so the close itself
 is private and `closeSettled()` is the only way to wait for it. The

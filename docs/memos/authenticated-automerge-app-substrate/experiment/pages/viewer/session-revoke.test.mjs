@@ -12,6 +12,7 @@ import { createPageData, initializePage } from "../model/page.mjs";
 import { applyComment } from "../model/comments.mjs";
 import { admissionCloseOutcome } from "../shared/admission.mjs";
 import { retiredCopies } from "./retired-copies.mjs";
+import { clearRefusalFence, readRefusalFence } from "./refusal-fence.mjs";
 import {
   decodeSnapshot,
   encodeSnapshot,
@@ -604,4 +605,180 @@ test("divergent stored and live copies are both offered, before and after a relo
     "Shared garden",
   ]);
   for (const copy of after.copies) assert.match(copy.markdown, new RegExp(COMMENT));
+});
+
+/** A copy whose retirement failed: the session is retireFailed, the
+ * checkpoint is untouched in IndexedDB and the refusal fence is set. */
+async function failedRetirement(t, { drafts = [] } = {}) {
+  const first = await openCopy();
+  first.session.watchCommentDrafts(() => drafts);
+  first.session.retireLocal = async () => {
+    throw Object.assign(Error("The quota has been exceeded."), { name: "QuotaExceededError" });
+  };
+  await first.session.revoke();
+  assert.equal(first.session.phase$.snapshot().name, "retireFailed");
+  await first.session.close();
+  assert.equal(readRefusalFence(first.auth.identity, first.pageId).reason, "access");
+  assert.ok((await readLocalPage(first.auth.identity, first.pageId)).snapshot);
+  t.after(() => clearRefusalFence(first.auth.identity, first.pageId));
+  return first;
+}
+const reopen = (first) =>
+  PageSession.open(first.pageId, {
+    authentication: first.auth,
+    refreshSession: async () => first.auth,
+  });
+
+test("after a failed archive, reopening never renders the copy and the refusal archives it", async (t) => {
+  browser(t);
+  const first = await failedRetirement(t, {
+    drafts: [{ kind: "comment", body: "Draft the failed archive kept in the fence." }],
+  });
+  // Home hides the fenced Page too.
+  assert.deepEqual(await listLocalPages(first.auth.identity), []);
+  let imported = 0;
+  t.mock.method(globalThis, "fetch", async (url) => {
+    assert.match(String(url), /\/api\/connect/);
+    return Response.json(
+      { error: "Document access denied", code: "page_access_denied" },
+      { status: 403 },
+    );
+  });
+  const session = await reopen(first);
+  t.after(() => session.close());
+  imported += session.doc ? 1 : 0;
+  assert.equal(imported, 0, "the checkpoint was never imported");
+  assert.equal(session.revoked, true);
+  assert.equal(session.snapshot(), null);
+  await session.closeSettled();
+  assert.equal(session.phase$.snapshot().name, "retired", "the reopen retried the archive");
+  assert.equal(readRefusalFence(first.auth.identity, first.pageId), undefined, "fence cleared");
+  const marker = await readLocalPage(first.auth.identity, first.pageId, { markers: true });
+  assert.equal(marker.revoked, true);
+  const [record] = await listLocalRecoveries(first.auth.identity, first.pageId);
+  assert.match(textOf(record), new RegExp(BODY));
+  assert.deepEqual(
+    record.comment_drafts.map((draft) => draft.body),
+    ["Draft the failed archive kept in the fence."],
+  );
+});
+
+test("an offline reopen with a fence shows the notice and the stored copy, never the Page", async (t) => {
+  browser(t);
+  const first = await failedRetirement(t);
+  t.mock.method(globalThis, "fetch", async () => {
+    throw new TypeError("fetch failed");
+  });
+  // The archive fails again on this open.
+  const failing = t.mock.method(PageSession.prototype, "retireLocal", async () => {
+    throw Error("The quota has been exceeded.");
+  });
+  const session = await reopen(first);
+  t.after(() => session.close());
+  assert.equal(session.doc, undefined);
+  assert.equal(session.snapshot(), null);
+  await session.closeSettled();
+  assert.equal(session.phase$.snapshot().name, "retireFailed");
+  assert.equal(readRefusalFence(first.auth.identity, first.pageId).reason, "access");
+  // The notice offers the stored checkpoint, which no session imported.
+  assert.equal(retiredCopies(session, []), 1);
+  const [copy] = session.exportRecoveries([]).copies;
+  assert.match(copy.markdown, new RegExp(BODY));
+  assert.match(copy.markdown, new RegExp(COMMENT));
+  // Try again succeeds once storage recovers, and clears the fence.
+  failing.mock.restore();
+  await session.retryRetirement();
+  assert.equal(session.phase$.snapshot().name, "retired");
+  assert.equal(readRefusalFence(first.auth.identity, first.pageId), undefined);
+  assert.equal((await listLocalRecoveries(first.auth.identity, first.pageId)).length, 1);
+  assert.equal(
+    (await readLocalPage(first.auth.identity, first.pageId, { markers: true })).revoked,
+    true,
+  );
+});
+
+test("Try again in the same tab archives the copy and clears the fence", async (t) => {
+  const first = await openCopy();
+  let fail = true;
+  first.session.retireLocal = (...args) =>
+    fail
+      ? Promise.reject(Error("The quota has been exceeded."))
+      : PageSession.prototype.retireLocal.apply(first.session, args);
+  await first.session.revoke();
+  t.after(() => first.session.close());
+  assert.equal(first.session.retireFailed, true);
+  assert.ok(readRefusalFence(first.auth.identity, first.pageId));
+  fail = false;
+  await first.session.retryRetirement();
+  assert.equal(first.session.recoveryArchived, true);
+  assert.equal(first.session.retireProblem, undefined);
+  assert.equal(readRefusalFence(first.auth.identity, first.pageId), undefined);
+  const records = await listLocalRecoveries(first.auth.identity, first.pageId);
+  assert.ok(records.some((record) => textOf(record).includes(BODY)));
+});
+
+test("a re-grant after a failed archive clears the fence and sets the copy aside", async (t) => {
+  const first = await failedRetirement(t);
+  const server = A.change(
+    A.from(createPageData({ pageId: first.pageId, title: "Server version after re-grant" })),
+    initializePage,
+  );
+  const session = new PageSession(first.pageId, {
+    authentication: first.auth,
+    refreshSession: async () => first.auth,
+  });
+  const keys = [];
+  session.initializeLocal = async (key) => {
+    keys.push(key);
+    session.replicaKey = key;
+    session.repo = {
+      flush: async () => {},
+      find: async () => ({ doc: () => server, documentId: first.documentId, on() {} }),
+    };
+  };
+  session.releaseLocal = async () => {};
+  session.connect = async () => {
+    await session.acceptPageAccess(access("editor", 2, 3));
+    session.connection = { documentId: first.documentId };
+  };
+  session.queueSaved = () => {};
+  t.after(() => session.close());
+  await session.start();
+  clearInterval(session.presenceTimer);
+  assert.deepEqual(keys, ["0:reader", "2:writer"]);
+  assert.equal(session.hidden, false);
+  assert.doesNotMatch(JSON.stringify(session.snapshot()), new RegExp(BODY));
+  assert.equal(readRefusalFence(first.auth.identity, first.pageId), undefined);
+  const stored = await readLocalPage(first.auth.identity, first.pageId);
+  assert.equal(stored.replicaKey, "2:writer");
+  assert.equal(A.load(decodeSnapshot(stored.snapshot)).title, "Server version after re-grant");
+  const [record] = await listLocalRecoveries(first.auth.identity, first.pageId);
+  assert.match(textOf(record), new RegExp(BODY), "the refused copy stays download-only");
+});
+
+test("every recovery record is offered, equal snapshots with different drafts included", async (t) => {
+  const { session, pageId } = await openCopy();
+  t.after(() => session.close());
+  const snapshot = session.localPage.snapshot;
+  const record = (comment_drafts, at) => ({
+    page_id: pageId,
+    snapshot,
+    archived_at: at,
+    ...(comment_drafts && { comment_drafts }),
+  });
+  const records = [
+    record(undefined, "2026-11-01T00:00:00.000Z"),
+    record([{ kind: "comment", body: "First draft" }], "2026-11-01T00:00:01.000Z"),
+    record([{ kind: "comment", body: "Second draft" }], "2026-11-01T00:00:02.000Z"),
+  ];
+  const { copies } = session.exportRecoveries(records);
+  assert.equal(copies.length, 3);
+  assert.doesNotMatch(copies[0].markdown, /Unsent comment drafts/);
+  assert.match(copies[1].markdown, /First draft/);
+  assert.doesNotMatch(copies[1].markdown, /Second draft/);
+  assert.match(copies[2].markdown, /Second draft/);
+  assert.deepEqual(
+    copies.map((copy) => copy.archived_at),
+    records.map((entry) => entry.archived_at),
+  );
 });

@@ -24,7 +24,8 @@
     "checkpointOk",
     "checkpointFail",
     "retireOk",
-    "retireFail"
+    "retireFail",
+    "retireRetry"
   ],
   "unreachable": [
     ["opening", "restore", "Restore is offered only on an installed session"],
@@ -104,12 +105,16 @@
     ],
     ["opening", "retireOk", "the interpreter delivers a retirement result only while retiring"],
     ["opening", "retireFail", "the interpreter delivers a retirement result only while retiring"],
+    ["opening", "retireRetry", "only a failed archive offers Try again"],
     ["open", "retireOk", "the interpreter delivers a retirement result only while retiring"],
     ["open", "retireFail", "the interpreter delivers a retirement result only while retiring"],
+    ["open", "retireRetry", "only a failed archive offers Try again"],
     ["paused", "retireOk", "the interpreter delivers a retirement result only while retiring"],
     ["paused", "retireFail", "the interpreter delivers a retirement result only while retiring"],
+    ["paused", "retireRetry", "only a failed archive offers Try again"],
     ["draining", "retireOk", "the interpreter delivers a retirement result only while retiring"],
     ["draining", "retireFail", "the interpreter delivers a retirement result only while retiring"],
+    ["draining", "retireRetry", "only a failed archive offers Try again"],
     [
       "checkpointing",
       "retireOk",
@@ -120,8 +125,12 @@
       "retireFail",
       "the interpreter delivers a retirement result only while retiring"
     ],
+    ["checkpointing", "retireRetry", "only a failed archive offers Try again"],
     ["closed", "retireOk", "the interpreter delivers a retirement result only while retiring"],
     ["closed", "retireFail", "the interpreter delivers a retirement result only while retiring"],
+    ["closed", "retireRetry", "only a failed archive offers Try again"],
+    ["retiring", "retireRetry", "only a failed archive offers Try again"],
+    ["retired", "retireRetry", "only a failed archive offers Try again"],
     ["retiring", "opened", "start() reports opened once, before the session is installed"],
     ["retiring", "restore", "a retired copy can't be restored"],
     ["retiring", "drained", "the interpreter delivers drained only while draining"],
@@ -1041,6 +1050,16 @@
         "state": { "name": "retired", "reason": "access" },
         "effects": [],
         "rejected": "The session is already closing"
+      }
+    },
+    {
+      "label": "retireFailed × retireRetry writes the archive again",
+      "note": "the backend is already released; a retry that succeeds clears the refusal fence",
+      "state": { "name": "retireFailed", "reason": "access" },
+      "event": { "type": "retireRetry" },
+      "expect": {
+        "state": { "name": "retiring", "reason": "access", "released": true },
+        "effects": [{ "type": "retire" }]
       }
     },
     {
