@@ -190,6 +190,42 @@ for (const [index, spans] of featureCases.entries()) {
   assert.deepEqual(features[index].features, spanFeatures(spans), `feature case ${index}`);
 }
 
+// Never silent loss, in the JavaScript codec: every Markdown fixture, and
+// each one wrapped in a link, a table cell, bold and a highlight, imports
+// with every link destination, image and visible character natively, or as
+// the whole source in literal text. An agent write is refused exactly when
+// the native parse would lose something or names math or HTML.
+const pages = await import(pathToFileURL(resolve(pagesRoot, "model/richtext.mjs")).href);
+const squash = (text) => text.replace(/\s+/g, "");
+const wrappings = [
+  (source) => source,
+  (source) => `[${source.replace(/\n/g, " ")}](https://example.org/w)`,
+  (source) => `| h |\n| - |\n| ${source.replace(/\n/g, "<br>").replace(/\|/g, "\\|")} |`,
+  (source) => `**${source.replace(/\n/g, " ")}**`,
+  (source) => `<mark>${source.replace(/\n/g, " ")}</mark> ![after](a.png)`,
+];
+let preserved = 0,
+  literalized = 0;
+for (const fixture of corpus.fixtures) {
+  if ((fixture.kind ?? "markdown") !== "markdown") continue;
+  for (const wrap of wrappings) {
+    const source = wrap(fixture.markdown);
+    const label = `${fixture.id}: ${JSON.stringify(source).slice(0, 80)}`;
+    const doc = pages.parseMarkdown(source);
+    doc.descendants((node) => assert.notEqual(node.type.name, "raw", label));
+    if (pages.nativeImportLoss(source)) {
+      literalized++;
+      assert.equal(squash(doc.textContent), squash(source.replace(/\r/g, "")), label);
+      assert.throws(() => pages.parseAgentMarkdown(source), { code: "unsupported_markdown" }, label);
+    } else {
+      preserved++;
+      if (!pages.unsupportedMarkdown(source))
+        assert.ok(pages.parseAgentMarkdown(source).eq(doc), label);
+    }
+  }
+}
+assert.ok(preserved > 500 && literalized > 0, `${preserved} preserved, ${literalized} literal`);
+
 const invalid = [
   { op: "export", spans: [{ type: "text", value: "bad mark", marks: { unknown: true } }] },
   { op: "export", spans: [{ type: "text", value: "bad link", marks: { link: "not JSON" } }] },
@@ -204,5 +240,5 @@ for (const result of runBoth(invalid)) {
 }
 
 console.log(
-  `${allImports.length} imports, ${exportFixtures.length} exports and round trips, ${wordgardCases.length} Wordgard round trips, ${featureCases.length} schema feature checks, and ${invalid.length} invalid inputs passed (${requestCount} identical native/WASM responses).`,
+  `${allImports.length} imports, ${exportFixtures.length} exports and round trips, ${wordgardCases.length} Wordgard round trips, ${featureCases.length} schema feature checks, ${invalid.length} invalid inputs, and ${preserved + literalized} preservation checks (${literalized} literal) passed (${requestCount} identical native/WASM responses).`,
 );
