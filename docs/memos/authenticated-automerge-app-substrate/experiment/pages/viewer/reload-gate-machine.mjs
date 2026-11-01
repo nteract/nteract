@@ -42,7 +42,10 @@
  * Records are keyed `account:pageId`. A record with `checkpointWritten` waits
  * in IndexedDB and syncs on the next open, which supersedes it. A failed
  * checkpoint's record keeps the recovery Markdown and its heads, since that is
- * the only copy; only a covering receipt or "Discard" removes it.
+ * the only copy; only a covering receipt or "Discard" removes it. An
+ * `explicit` record holds what no receipt can cover (a retired copy whose
+ * archive failed, with comment drafts the document never saw): only
+ * "Discard" removes it.
  *
  * Events: `reload` (the banner's Reload, Reload anyway, or Discard and
  * reload), `sessionPhase` (a session's new phase; `closed` and `deleted`
@@ -113,7 +116,16 @@ function sessionEntry(entry) {
 
 function record(value) {
   check(isObject(value), "a record is an object");
-  only(value, ["key", "account", "pageId", "title", "checkpointWritten", "heads", "markdown"]);
+  only(value, [
+    "key",
+    "account",
+    "pageId",
+    "title",
+    "checkpointWritten",
+    "heads",
+    "markdown",
+    "explicit",
+  ]);
   check(value.key === `${value.account}:${value.pageId}`, "records are keyed account:pageId");
   check(isString(value.title) && isBoolean(value.checkpointWritten), "title and checkpointWritten");
   if (value.checkpointWritten)
@@ -122,6 +134,8 @@ function record(value) {
     strings(value.heads, "heads");
     check(typeof value.markdown === "string", "a failed checkpoint keeps its Markdown");
   }
+  check(value.explicit === undefined || value.explicit === true, "explicit is true or absent");
+  check(!value.explicit || !value.checkpointWritten, "only a lost copy is explicit");
 }
 
 function common(state, extra = []) {
@@ -185,9 +199,13 @@ function sessionPhase(event) {
     check(typeof event.title === "string", "title is a string");
     strings(event.savedHeads, "savedHeads");
     if (event.recovery !== undefined) {
-      only(event.recovery, ["markdown", "heads"]);
+      only(event.recovery, ["markdown", "heads", "explicit"]);
       check(typeof event.recovery.markdown === "string", "recovery Markdown");
       strings(event.recovery.heads, "recovery heads");
+      check(
+        event.recovery.explicit === undefined || event.recovery.explicit === true,
+        "explicit is true or absent",
+      );
     }
   } else {
     check(event.phase === "deleted", "phase must be held, closing, closed or deleted");
@@ -227,6 +245,7 @@ export const reloadGateSpec = Object.freeze({
       "accept-checkpoints",
       "discard",
       "receipt-acknowledges",
+      "receipt-keeps-explicit",
       "deleted-releasing",
       "schema-checkpoints",
       "schema-failed-retries",
@@ -246,6 +265,7 @@ export const reloadGateSpec = Object.freeze({
       "closed-failed-again",
       "closed-other-account",
       "closed-acknowledged",
+      "closed-explicit-kept",
       "closed-archive",
       "closed-direct",
       "deleted",
@@ -380,12 +400,14 @@ function entryOf(event) {
   return entry;
 }
 
+// A receipt clears a lost copy it covers; an explicit one waits for Discard.
 const acknowledge = (records, key, savedHeads) =>
   records.filter(
     (record) =>
       !(
         record.key === key &&
         !record.checkpointWritten &&
+        !record.explicit &&
         record.heads.length > 0 &&
         record.heads.every((head) => savedHeads.includes(head))
       ),
@@ -412,6 +434,7 @@ function recordClosed(records, sessions, event) {
     markdown: [lost?.markdown, event.recovery?.markdown ?? ""]
       .filter((part) => part !== undefined)
       .join("\n---\n\n"),
+    ...((lost?.explicit || event.recovery?.explicit) && { explicit: true }),
   };
   return previous
     ? records.map((record) => (record.key === key ? next : record))

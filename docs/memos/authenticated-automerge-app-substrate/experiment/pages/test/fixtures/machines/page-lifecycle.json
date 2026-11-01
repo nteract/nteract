@@ -162,6 +162,7 @@
   "cases": {
     "active/trash": [
       "owner",
+      "heads-absent",
       "non-owner",
       "heads-mismatch",
       "stale-revision",
@@ -513,6 +514,68 @@
         "actor": "owner",
         "key": "fresh",
         "heads": "match",
+        "expected": 0
+      },
+      "expect": {
+        "state": {
+          "name": "trashed",
+          "revision": 1
+        },
+        "effects": [
+          {
+            "type": "withdrawAccess",
+            "record": "trashed"
+          },
+          {
+            "type": "begin",
+            "phase": "trashing",
+            "revision": 1
+          },
+          {
+            "type": "restrictIndex"
+          },
+          {
+            "type": "putRecord",
+            "receipt": true,
+            "record": true
+          },
+          {
+            "type": "sync"
+          },
+          {
+            "type": "refreshAccess"
+          },
+          {
+            "type": "retireIndex"
+          },
+          {
+            "type": "end"
+          }
+        ],
+        "response": {
+          "status": 200,
+          "reply": "receipt",
+          "receipt": {
+            "state": "trashed"
+          },
+          "current": {
+            "state": "trashed",
+            "revision": 1
+          }
+        }
+      }
+    },
+    {
+      "case": "heads-absent",
+      "state": {
+        "name": "active",
+        "revision": 0
+      },
+      "event": {
+        "type": "trash",
+        "actor": "owner",
+        "key": "fresh",
+        "heads": "absent",
         "expected": 0
       },
       "expect": {

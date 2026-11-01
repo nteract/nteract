@@ -18,6 +18,7 @@ import {
   REJECT,
   isLive,
   pauseOf,
+  retirementOf,
   viewerSessionMachine,
   viewerSessionSpec,
 } from "./session-machine.mjs";
@@ -84,7 +85,15 @@ async function fixture({ opening = false, startable = false, role = "editor" } =
     authentication: auth,
     refreshSession: async () => auth,
   });
-  const ctx = { session, auth, doc, raw: [], flush: deferred(), persist: deferred() };
+  const ctx = {
+    session,
+    auth,
+    doc,
+    raw: [],
+    flush: deferred(),
+    persist: deferred(),
+    retire: deferred(),
+  };
   current = ctx;
   const handle = { doc: () => doc, documentId, on() {} };
   const repo = {
@@ -102,7 +111,12 @@ async function fixture({ opening = false, startable = false, role = "editor" } =
     };
   };
   session.drainBeforeClose = record("drain", session.drainBeforeClose);
-  session.forgetLocal = record("forget", session.forgetLocal);
+  session.retireLocal = () => {
+    ctx.raw.push("retire");
+    // A failed archive's retry waits on a fresh write.
+    if (ctx.retireFailed) ctx.retire = deferred();
+    return ctx.retire.promise;
+  };
   session.disconnectSockets = () => {
     ctx.raw.push("disconnect");
     return Promise.resolve();
@@ -214,10 +228,36 @@ async function prepare(state, event) {
       await ctx.pending.catch(() => {});
       await settle();
       break;
-    case "deleted":
-      if (state.closing) await session.markDeleted();
-      else void session.markDeleted();
+    case "retiring":
+    case "retired":
+    case "retireFailed": {
+      if (state.released) {
+        track(ctx, session.close());
+        ctx.flush.resolve();
+        ctx.persist.resolve();
+        await ctx.pending.catch(() => {});
+        await settle();
+      }
+      if (state.held) {
+        // Serializing the live copy fails once; Try again captures it.
+        const exportRecovery = session.exportRecovery.bind(session);
+        let failures = 1;
+        session.exportRecovery = (...args) => {
+          if (failures-- > 0) throw Error("could not save the document");
+          return exportRecovery(...args);
+        };
+      }
+      const refusal = state.reason === "deleted" ? session.markDeleted() : session.revoke();
+      track(ctx, refusal);
+      if (state.name === "retired") ctx.retire.resolve();
+      if (state.name === "retireFailed" && !state.held) {
+        ctx.retire.reject(Error("quota"));
+        ctx.retireFailed = true;
+      }
+      if (state.name !== "retiring") await ctx.pending.catch(() => {});
+      await settle();
       break;
+    }
   }
   return () => {
     finish();
@@ -246,6 +286,17 @@ function deliver(ctx, event) {
     case "accessChanged": {
       if (event.grant === "deleted") {
         void session.markDeleted().catch(() => {});
+        return undefined;
+      }
+      // The host's page_access_denied, through the handler openConnection,
+      // receipts and acceptPageAccess share.
+      if (event.grant === "revoked") {
+        void session.revoke().catch(() => {});
+        return undefined;
+      }
+      // A refusal without a code keeps the copy (pauseForAccess).
+      if (event.grant === "denied" && !event.tab) {
+        session.pauseForAccess(DENIED, { denied: true });
         return undefined;
       }
       if (event.tab) {
@@ -294,6 +345,23 @@ function deliver(ctx, event) {
           ? Object.assign(Error("Page was deleted"), { code: "LOCAL_PAGE_DELETED" })
           : Error("disk"),
       );
+      // A deletion found by the checkpoint retires the copy; its archive
+      // is still writing when the phase is read.
+      return event.deleted ? settle().then(settle) : ctx.pending.catch(() => {}).then(settle);
+    case "retireRetry":
+      track(ctx, session.retryRetirement());
+      return settle();
+    case "retireOk":
+      ctx.retire.resolve();
+      return ctx.pending.catch(() => {}).then(settle);
+    case "retireFail":
+      // A capture failure reports inside the retire effect, before any
+      // archive write: deliver its result as that effect would.
+      if (event.held) {
+        session.dispatch({ type: "retireFail", held: true });
+        return settle();
+      }
+      ctx.retire.reject(Error("quota"));
       return ctx.pending.catch(() => {}).then(settle);
   }
   return undefined;
@@ -303,7 +371,12 @@ function deliver(ctx, event) {
 function assertFlags(session, phase) {
   const pause = pauseOf(phase);
   assert.equal(session.alive, isLive(phase));
-  assert.equal(session.deleted, phase.name === "deleted");
+  const retirement = retirementOf(phase);
+  assert.equal(session.deleted, retirement === "deleted");
+  assert.equal(session.revoked, retirement === "access");
+  assert.equal(session.hidden, retirement !== undefined);
+  assert.equal(session.recoveryArchived, phase.name === "retired");
+  assert.equal(session.retireFailed, phase.name === "retireFailed");
   assert.equal(session.authRequired, pause.auth);
   // An archived replica still needs its replacement: Reload stays offered.
   assert.equal(
@@ -311,7 +384,10 @@ function assertFlags(session, phase) {
     pause.access === "reload" || (phase.name === "closed" && !!phase.archived),
   );
   if (phase.name !== "opening")
-    assert.equal(session.accessDenied, pause.access === "access" || pause.access === "trash");
+    assert.equal(
+      session.accessDenied,
+      pause.access === "access" || pause.access === "trash" || retirement === "access",
+    );
   assert.equal(session.checkpointWritten, phase.name === "closed" && phase.checkpointWritten);
 }
 
@@ -333,8 +409,11 @@ function effectsOf(ctx, event) {
 /** Calls that change nothing name the guard that refused them. */
 function guardFor(state, event) {
   switch (state.name) {
-    case "deleted":
-      return event.type === "leave" ? REJECT.alreadyClosing : REJECT.deleted;
+    case "retiring":
+    case "retired":
+    case "retireFailed":
+      if (event.type === "leave") return REJECT.alreadyClosing;
+      return state.reason === "deleted" ? REJECT.deleted : REJECT.revoked;
     case "closed":
       return event.type === "leave" ? REJECT.alreadyClosed : REJECT.closed;
     case "checkpointing":
@@ -362,7 +441,7 @@ async function drive(state, event) {
 }
 
 const table = loadTable(TABLE);
-const COUNTS = { rows: 78, pairs: 38, unreachable: 32, cases: 61 };
+const COUNTS = { rows: 102, pairs: 51, unreachable: 66, cases: 75 };
 
 test("the viewer-session table runs through the pure machine", async () => {
   assert.deepEqual(await runTable(viewerSessionMachine, table), COUNTS);

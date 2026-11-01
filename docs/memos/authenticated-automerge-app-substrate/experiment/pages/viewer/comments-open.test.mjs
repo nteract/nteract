@@ -12,6 +12,11 @@ import { stampFeatures } from "../model/schema-features.mjs";
 // replacement. The machine itself is covered by its table.
 
 const tick = () => new Promise((resolve) => setImmediate(resolve));
+/** An install reads the stored entry before it adopts the handle, so it
+ * settles over several turns. Wait until `check` passes, or `limit` turns. */
+async function until(check, limit = 50) {
+  for (let turn = 0; turn < limit && !check(); turn++) await tick();
+}
 const access = {
   role: "commenter",
   generation: 1,
@@ -82,8 +87,7 @@ test("a lookup that times out retries, then a later success installs and enables
   await tick();
   assert.equal(repo.calls.length, 2);
   repo.calls[1].resolve(handleFor("doc-1"));
-  await tick();
-  await tick();
+  await until(() => session.commentsHandle);
   assert.equal(session.commentsOpen$.snapshot().name, "ready");
   assert.equal(session.commentsHandle.documentId, "doc-1");
   assert.equal(session.canComment, true);
@@ -98,11 +102,10 @@ test("a cancelled lookup completing late never installs", async (t) => {
   await tick();
   assert.equal(repo.calls[0].signal.aborted, true);
   repo.calls[0].resolve(handleFor("doc-1"));
-  await tick();
+  await until(() => false, 20);
   assert.equal(session.commentsHandle, undefined);
   repo.calls[1].resolve(handleFor("doc-2"));
-  await tick();
-  await tick();
+  await until(() => session.commentsHandle);
   assert.equal(session.commentsHandle.documentId, "doc-2");
 });
 
@@ -125,8 +128,7 @@ test("repeated failures show a visible failure; a reconnect starts over", async 
   assert.equal(session.commentsUnavailable, false);
   assert.equal(repo.calls.length, 6);
   repo.calls[5].resolve(handleFor("doc-1"));
-  await tick();
-  await tick();
+  await until(() => session.canComment);
   assert.equal(session.canComment, true);
 });
 
@@ -149,13 +151,13 @@ test("replacing the replica cancels its lookup; the new replica opens its own", 
   const next = heldRepo();
   session.repo = next;
   repo.calls[0].resolve(handleFor("doc-1"));
-  await tick();
+  await until(() => false, 20);
   assert.equal(session.commentsHandle, undefined, "the old replica's lookup never installs");
   session.openComments("doc-1");
   await tick();
   assert.equal(next.calls.length, 1);
   next.calls[0].resolve(handleFor("doc-1"));
-  await tick();
-  await tick();
+  await until(() => session.commentsHandle);
   assert.equal(session.commentsOpen$.snapshot().name, "ready");
+  assert.equal(session.commentsHandle.documentId, "doc-1");
 });

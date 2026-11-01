@@ -33,7 +33,7 @@ test("the page-lifecycle table covers every pair and case and drives the Page ho
   const summary = await runTable(pageLifecycleSpec, s.table, {
     drive: async (state, event) => (await drive(s, state, event)).result,
   });
-  assert.deepEqual(summary, { rows: s.table.rows.length, pairs: 45, unreachable: 27, cases: 40 });
+  assert.deepEqual(summary, { rows: s.table.rows.length, pairs: 45, unreachable: 27, cases: 41 });
 });
 
 test("a request or tombstone in a pending phase settles it first, then runs as in the settled state", async (t) => {
@@ -231,14 +231,15 @@ test("every mutation the lifecycle makes can reject before or after it applies, 
   assert.deepEqual(
     { cuts, runs, ...tally },
     {
-      // The comments document's import and delete are cut points too.
-      cuts: 148,
-      runs: 552,
-      indexRetirement: 14,
+      // The comments document's import and delete are cut points too. The
+      // active/trash heads-absent row runs the full trash commit again.
+      cuts: 160,
+      runs: 600,
+      indexRetirement: 21,
       titleProjection: 14,
-      bindingRetirement: 24,
-      prune: 20,
-      index: 12,
+      bindingRetirement: 30,
+      prune: 22,
+      index: 14,
     },
   );
 });
