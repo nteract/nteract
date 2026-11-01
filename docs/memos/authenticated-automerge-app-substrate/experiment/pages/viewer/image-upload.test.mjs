@@ -253,6 +253,42 @@ test("an image pasted at the start or the end of a block puts the caret after it
   end.binding.destroy();
 });
 
+test("an image pasted right after an astral character keeps the character whole", async () => {
+  // 🌊 is a surrogate pair: two UTF-16 units in the native text.
+  for (const delayed of [false, true]) {
+    const f = fixture("wave 🌊 here", { anchor: ({ doc }) => 1 + "wave 🌊".length }),
+      pending = deferred(),
+      uploader = uploaderFor(f, delayed ? () => pending.promise : async () => asset);
+    const completion = uploader.start([file], f.target());
+    if (delayed) {
+      type(f, "b");
+      // A peer adds another astral character before the paste point.
+      f.replica.change((d) => A.splice(d, textPath("one"), 0, 0, "🎉"), true);
+      pending.resolve(asset);
+    }
+    await completion;
+    const markdown = blockMarkdown(f.replica.doc.blocks.one);
+    assert.equal(markdown, delayed ? `🎉wave 🌊${image}b here` : `wave 🌊${image} here`);
+    assert.doesNotMatch(markdown, /\uFFFD/);
+    validateRich(f.replica.doc.blocks.one);
+    type(f, "!");
+    assert.equal(
+      blockMarkdown(f.replica.doc.blocks.one),
+      delayed ? `🎉wave 🌊${image}b! here` : `wave 🌊${image}! here`,
+    );
+    uploader.destroy();
+    f.binding.destroy();
+  }
+  // An astral character as the very first character of the block.
+  const first = fixture("🌊", { anchor: ({ doc }) => doc.length - 1 }),
+    upload = uploaderFor(first, async () => asset);
+  await upload.start([file], first.target());
+  assert.equal(blockMarkdown(first.replica.doc.blocks.one), `🌊${image}`);
+  assert.equal(first.editor.state.selection.head, first.editor.state.doc.length - 1);
+  upload.destroy();
+  first.binding.destroy();
+});
+
 test("pending images never insert into a revoked, disposed, replaced, deleted or different Page", async () => {
   for (const scenario of ["revoked", "disposed", "replaced", "deleted", "page", "anchor removed"]) {
     const f = fixture(),

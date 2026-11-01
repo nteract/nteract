@@ -586,8 +586,51 @@ try {
   // The image lands where it was pasted, and the caret stays after "de".
   await owner.keyboard.type("f");
   await expect.poll(caretMarkdown, { timeout: 15000 }).toMatch(/\n\na\[image\]b\n\nc\[image\]def$/);
+  // Right after an astral character (a surrogate pair), immediately and with
+  // a held upload. The character stays whole and the text follows the image.
+  await owner.keyboard.press("Enter");
+  await owner.keyboard.insertText("wave 🌊");
+  await imageEvent(owner, "paste", fixtures[1], "caret-emoji.png");
+  await expectImages(owner, 3);
+  await owner.keyboard.type("x");
+  await expect.poll(caretMarkdown, { timeout: 15000 }).toMatch(/\n\nwave 🌊\[image\]x$/);
+  let resumeEmoji;
+  const holdEmoji = new Promise((resolve) => {
+    resumeEmoji = resolve;
+  });
+  let sawEmoji;
+  const emojiStarted = new Promise((resolve) => {
+    sawEmoji = resolve;
+  });
+  await owner.route(
+    origin + caretPath,
+    async (route) => {
+      sawEmoji();
+      await holdEmoji;
+      await route.continue();
+    },
+    { times: 1 },
+  );
+  await owner.keyboard.press("Enter");
+  await owner.keyboard.insertText("sea 🌊");
+  await imageEvent(owner, "paste", fixtures[2], "caret-emoji-slow.png");
+  await emojiStarted;
+  try {
+    await expect(content(owner).locator(".wordgard-upload-preview")).toBeVisible();
+    await owner.keyboard.type("yz");
+  } finally {
+    resumeEmoji();
+  }
+  await expectImages(owner, 4);
+  await owner.keyboard.type("!");
+  await expect
+    .poll(caretMarkdown, { timeout: 15000 })
+    .toMatch(/\n\nwave 🌊\[image\]x\n\nsea 🌊\[image\]yz!$/);
+  assert.ok(!(await caretMarkdown()).includes("\uFFFD"), "no split surrogate");
   await owner.screenshot({ path: `${output}/image-paste-caret.png` });
-  complete("Typing after an image paste follows the image, including through a slow upload");
+  complete(
+    "Typing after an image paste follows the image, through a slow upload and after an emoji",
+  );
 
   await access({
     action: "set_role",

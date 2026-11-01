@@ -43,21 +43,32 @@ function validateFile(file) {
 
 /** A native position that sticks to the character before it: text typed at the
  * position lands after the anchor, so whatever is placed there later stays
- * where it was chosen. `null` stands for the start of the text. */
+ * where it was chosen. `null` stands for the start of the text.
+ *
+ * Offsets are UTF-16 units. The anchor is the first unit of the character
+ * before, so an astral character (a surrogate pair) is never split. */
 function anchorBefore(doc, path, offset) {
-  return offset > 0 ? A.getCursor(doc, path, offset - 1, "after") : null;
+  if (offset <= 0) return null;
+  const text = textAt(doc, path);
+  const low = text.charCodeAt(offset - 1);
+  const pair =
+    offset >= 2 && low >= 0xdc00 && low <= 0xdfff && text.codePointAt(offset - 2) > 0xffff;
+  return A.getCursor(doc, path, offset - (pair ? 2 : 1), "after");
 }
-/** The current offset of an `anchorBefore` anchor, or null once its character
- * is gone. */
+/** The current offset just after an `anchorBefore` anchor's character, or
+ * null once that character is gone. */
 function resolveAnchor(doc, path, anchor) {
   if (anchor === null) return 0;
   try {
     const before = A.getCursorPosition(doc, path, anchor);
-    return A.getCursor(doc, path, before, "after") === anchor ? before + 1 : null;
+    if (A.getCursor(doc, path, before, "after") !== anchor) return null;
+    const point = textAt(doc, path).codePointAt(before);
+    return point === undefined ? null : before + (point > 0xffff ? 2 : 1);
   } catch {
     return null;
   }
 }
+const textAt = (doc, path) => doc.blocks[path[1]].richText;
 
 // Capture a native cursor before opening a picker or starting a network request.
 // Screen coordinates and editor offsets are not stable while peers keep editing.
