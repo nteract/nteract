@@ -371,6 +371,29 @@ export function WordgardEditor(props) {
             bottom: bar ? Math.max(0, bottomEdge - bar.top) : 0,
           };
         }),
+        // Wordgard 0.6.2 shrinks the caret's rect by the covered margins
+        // before scrolling; once both margins together exceed one line, as
+        // the header and compact bar do on phones, the rect flips and the
+        // caret can stop under the header. On phones, scroll the caret
+        // between the header and the bar here first; Wordgard's own pass then
+        // finds it in view and only handles horizontal scrolling.
+        Wordgard.scrollHandler.of((wg, target) => {
+          if (target.spec.y !== "nearest" || !matchMedia(MOBILE_EDITOR_QUERY).matches) return false;
+          const start = wg.coordsAtPos(target.from, target.from === target.to ? target.assoc : 1);
+          const end = target.from === target.to ? start : wg.coordsAtPos(target.to, -1);
+          if (!start || !end) return false;
+          const margins = wg.getScrollMargins();
+          const viewport = window.visualViewport;
+          const visibleTop = (viewport?.offsetTop ?? 0) + margins.top;
+          const visibleBottom =
+            (viewport ? viewport.offsetTop + viewport.height : innerHeight) - margins.bottom;
+          const top = Math.min(start.top, end.top),
+            bottom = Math.max(start.bottom, end.bottom),
+            margin = target.spec.yMargin ?? 5;
+          if (top < visibleTop) window.scrollBy(0, top - visibleTop - margin);
+          else if (bottom > visibleBottom) window.scrollBy(0, bottom - visibleBottom + margin);
+          return false;
+        }),
         Wordgard.exceptionSink.of(report),
         Wordgard.transactionListener.of((transactions) => {
           if (!alive) return;

@@ -58,11 +58,23 @@ function projection(value, manage) {
     runtimeAccessSummary: null,
   };
 }
-export function SharingControls({ session }) {
-  return <PageSharing key={`${session.identity?.principal}:${session.pageId}`} session={session} />;
+/**
+ * Share for one Page. By default it renders its own Share button and owns its
+ * open state. With `trigger={false}` another control opens it: the caller owns
+ * `open` and `onOpenChange`, the panel takes focus when it opens, and Escape
+ * returns focus to `returnFocus`.
+ */
+export function SharingControls({ session, ...options }) {
+  return (
+    <PageSharing
+      key={`${session.identity?.principal}:${session.pageId}`}
+      session={session}
+      {...options}
+    />
+  );
 }
-function PageSharing({ session }) {
-  const [open, setOpen] = useState(false),
+function PageSharing({ session, trigger = true, open: requested, onOpenChange, returnFocus }) {
+  const [own, setOwn] = useState(false),
     [email, setEmail] = useState(""),
     [role, setRole] = useState("viewer"),
     [copyError, setCopyError] = useState(""),
@@ -79,8 +91,13 @@ function PageSharing({ session }) {
     error = state.error?.message || copyError,
     loading = available && !value && !state.error;
   const domainId = useId();
+  const controlled = requested !== undefined;
+  const open = controlled ? requested : own;
+  const changeOpen = useRef(null);
+  changeOpen.current = controlled ? (value) => onOpenChange?.(value) : setOwn;
   const root = useRef(null),
     button = useRef(null),
+    dialog = useRef(null),
     epoch = useRef(0),
     proofExpired = useRef(false);
   useEffect(() => {
@@ -114,12 +131,12 @@ function PageSharing({ session }) {
     refresh();
     const timer = setInterval(refresh, SHARING_FRESH_MS);
     const outside = (event) => {
-      if (!root.current?.contains(event.target)) setOpen(false);
+      if (!root.current?.contains(event.target)) changeOpen.current(false);
     };
     const escape = (event) => {
       if (event.key === "Escape") {
-        setOpen(false);
-        button.current?.focus();
+        changeOpen.current(false);
+        (trigger ? button : returnFocus)?.current?.focus();
       }
     };
     document.addEventListener("pointerdown", outside);
@@ -134,7 +151,11 @@ function PageSharing({ session }) {
       window.removeEventListener("focus", refresh);
       document.removeEventListener("visibilitychange", refresh);
     };
-  }, [open, cache]);
+  }, [open, cache, trigger, returnFocus]);
+  // Opened from another control, the panel takes focus so its contents come next.
+  useEffect(() => {
+    if (open && !trigger) dialog.current?.focus({ preventScroll: true });
+  }, [open, trigger]);
   async function mutate(action, key) {
     if (busy || !manage) return;
     const revision = epoch.current;
@@ -183,18 +204,26 @@ function PageSharing({ session }) {
   proofExpired.current = !!domainSharing?.expired;
   return (
     <div className="page-sharing" ref={root}>
-      <button
-        ref={button}
-        className="subtle-button"
-        aria-expanded={open}
-        aria-haspopup="dialog"
-        onClick={() => setOpen(!open)}
-      >
-        <Share2 size={17} aria-hidden="true" />
-        <span>Share</span>
-      </button>
+      {trigger && (
+        <button
+          ref={button}
+          className="subtle-button"
+          aria-expanded={open}
+          aria-haspopup="dialog"
+          onClick={() => changeOpen.current(!open)}
+        >
+          <Share2 size={17} aria-hidden="true" />
+          <span>Share</span>
+        </button>
+      )}
       {open && (
-        <div className="page-sharing-popover" role="dialog" aria-label="Share Page">
+        <div
+          ref={dialog}
+          className="page-sharing-popover"
+          role="dialog"
+          aria-label="Share Page"
+          tabIndex={trigger ? undefined : -1}
+        >
           <SharingPanel
             resourceLabel="Page"
             title="Share Page"

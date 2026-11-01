@@ -11,11 +11,10 @@ export { captureCommentDraft, sendCommentDraft } from "./comment-draft.mjs";
 export { writingContinuation } from "./writing-continuation.mjs";
 export { WordgardEditor } from "./WordgardEditor.jsx";
 export { onRendererUnavailable } from "./wordgard-widgets.mjs";
-export { SharingControls } from "./SharingControls.jsx";
 export { CommentsPanel } from "./CommentsPanel.jsx";
 export { CommentPopover } from "./CommentPopover.jsx";
 export { SaveStatus } from "./SaveStatus.jsx";
-export { PageActivity } from "./PageActivity.jsx";
+export { PageControls } from "./PageControls.jsx";
 
 /** The heads a Trash move compares with the host's copy. */
 export const pageHeads = (doc) => A.getHeads(doc);
