@@ -346,7 +346,7 @@ describe("Bokeh renderer plugin", () => {
       live: true,
       writable: false,
     });
-    const { container, getByText, queryByText } = render(
+    const { container, findByText, queryByText } = render(
       <NativeRenderer
         data={nativeSessionPayload()}
         mimeType={NTERACT_BOKEH_SESSION_MIME_TYPE}
@@ -356,9 +356,11 @@ describe("Bokeh renderer plugin", () => {
     const root = () => container.querySelector('[data-testid="native-bokeh-root"]');
 
     await waitFor(() => expect(root()).not.toBeNull());
+    // BokehJS appends the root imperatively. The label is React state from the
+    // same open result and commits in a later Scheduler task, so wait for it.
+    const label = await findByText("View only");
     // Viewers keep pan, zoom, tooltips and keyboard access.
     expect(container.querySelector("[inert]")).toBeNull();
-    const label = getByText("View only");
     expect(root()!.parentElement).toHaveAttribute("aria-describedby", label.id);
     expect(container).not.toHaveTextContent("Disconnected");
 
