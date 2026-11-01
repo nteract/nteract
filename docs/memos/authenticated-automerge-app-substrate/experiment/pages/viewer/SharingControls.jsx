@@ -60,9 +60,12 @@ function projection(value, manage) {
 }
 /**
  * Share for one Page. By default it renders its own Share button and owns its
- * open state. With `trigger={false}` another control opens it: the caller owns
- * `open` and `onOpenChange`, the panel takes focus when it opens, and Escape
- * returns focus to `returnFocus`.
+ * open state; a caller can own it instead with `open` and `onOpenChange`.
+ * With `trigger={false}` another control opens it: there is no Share button,
+ * the panel takes focus when it opens, and Escape returns focus to
+ * `returnFocus`. `trigger` can change while the panel is open (the phone
+ * header and the desktop header share one instance); the draft, any message
+ * and the focused field stay as they are.
  */
 export function SharingControls({ session, ...options }) {
   return (
@@ -95,6 +98,11 @@ function PageSharing({ session, trigger = true, open: requested, onOpenChange, r
   const open = controlled ? requested : own;
   const changeOpen = useRef(null);
   changeOpen.current = controlled ? (value) => onOpenChange?.(value) : setOwn;
+  const detached = useRef(!trigger);
+  detached.current = !trigger;
+  // Where Escape sends focus, read when the key arrives.
+  const escapeTarget = useRef(null);
+  escapeTarget.current = () => (trigger ? button : returnFocus)?.current;
   const root = useRef(null),
     button = useRef(null),
     dialog = useRef(null),
@@ -136,7 +144,7 @@ function PageSharing({ session, trigger = true, open: requested, onOpenChange, r
     const escape = (event) => {
       if (event.key === "Escape") {
         changeOpen.current(false);
-        (trigger ? button : returnFocus)?.current?.focus();
+        escapeTarget.current()?.focus();
       }
     };
     document.addEventListener("pointerdown", outside);
@@ -151,11 +159,12 @@ function PageSharing({ session, trigger = true, open: requested, onOpenChange, r
       window.removeEventListener("focus", refresh);
       document.removeEventListener("visibilitychange", refresh);
     };
-  }, [open, cache, trigger, returnFocus]);
-  // Opened from another control, the panel takes focus so its contents come next.
+  }, [open, cache]);
+  // Opened from another control, the panel takes focus so its contents come
+  // next. Only opening moves focus; a layout switch while open leaves it.
   useEffect(() => {
-    if (open && !trigger) dialog.current?.focus({ preventScroll: true });
-  }, [open, trigger]);
+    if (open && detached.current) dialog.current?.focus({ preventScroll: true });
+  }, [open]);
   async function mutate(action, key) {
     if (busy || !manage) return;
     const revision = epoch.current;

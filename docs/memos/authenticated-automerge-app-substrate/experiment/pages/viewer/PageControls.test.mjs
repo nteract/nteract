@@ -104,15 +104,16 @@ async function fixture(t, { phone, agents = 1 } = {}) {
     { key: "copy-link", label: "Copy link", run: () => ran.push("copy-link") },
     { key: "trash", label: "Move to Trash", danger: true, run: () => ran.push("trash") },
   ];
-  await act(() =>
+  const current = session({ agents });
+  const render = (phone) =>
     root.render(
       createElement(
         PageControls,
-        { phone, session: session({ agents }), actions, onReveal: () => {} },
+        { phone, session: current, actions, onReveal: () => {} },
         createElement("button", { "aria-label": "Comments" }, "Comments"),
       ),
-    ),
-  );
+    );
+  await act(() => render(phone));
   t.after(async () => {
     await act(() => root.unmount());
     container.remove();
@@ -161,6 +162,38 @@ async function fixture(t, { phone, agents = 1 } = {}) {
     },
     async focus(element) {
       await act(() => element.focus());
+    },
+    /** Cross the phone breakpoint, as rotating the phone does. */
+    async setPhone(value) {
+      await act(() => render(value));
+    },
+    /** Press a key on the focused element; returns whether its default ran. */
+    async press(name, options = {}) {
+      let event;
+      await act(() => {
+        event = new dom.window.KeyboardEvent("keydown", {
+          key: name,
+          bubbles: true,
+          cancelable: true,
+          ...options,
+        });
+        document.activeElement.dispatchEvent(event);
+      });
+      return !event.defaultPrevented;
+    },
+    async type(element, value) {
+      await act(() => {
+        const prototype =
+          element.tagName === "SELECT"
+            ? dom.window.HTMLSelectElement.prototype
+            : dom.window.HTMLInputElement.prototype;
+        Object.getOwnPropertyDescriptor(prototype, "value").set.call(element, value);
+        element.dispatchEvent(
+          new dom.window.Event(element.tagName === "SELECT" ? "change" : "input", {
+            bubbles: true,
+          }),
+        );
+      });
     },
   };
 }
@@ -298,4 +331,78 @@ test("without activity, ⋯ has no dot and the menu has no Activity entry", asyn
     [...f.menu().querySelectorAll('[role="menuitem"]')].map((element) => element.textContent),
     ["Share", "Copy link", "Move to Trash"],
   );
+});
+
+test("menu items are not Tab stops; arrows, Home and End move between them", async (t) => {
+  const f = await fixture(t, { phone: true });
+  await f.open();
+  for (const element of f.menu().querySelectorAll('[role="menuitem"]'))
+    assert.equal(element.tabIndex, -1, element.textContent);
+  await f.press("End");
+  assert.equal(document.activeElement, f.item("Move to Trash"));
+  await f.press("ArrowDown");
+  assert.equal(document.activeElement, f.item("Share"), "ArrowDown wraps to the first item");
+  await f.press("ArrowUp");
+  assert.equal(document.activeElement, f.item("Move to Trash"), "ArrowUp wraps to the last item");
+  await f.press("Home");
+  assert.equal(document.activeElement, f.item("Share"));
+});
+
+test("Tab closes the menu and moves on from ⋯; Shift+Tab closes it and stays on ⋯", async (t) => {
+  const f = await fixture(t, { phone: true });
+  await f.open();
+  assert.equal(await f.press("Tab"), true, "Tab keeps its default, so focus moves on");
+  assert.equal(f.menu(), null);
+  assert.equal(document.activeElement, f.more(), "Tab moves on from ⋯");
+
+  await f.open();
+  await f.press("ArrowDown");
+  assert.equal(await f.press("Tab", { shiftKey: true }), false, "Shift+Tab stops on ⋯");
+  assert.equal(f.menu(), null);
+  assert.equal(document.activeElement, f.more());
+  assert.equal(f.more().getAttribute("aria-expanded"), "false");
+});
+
+test("rotating with Share open keeps the panel, the draft, the role and the focused field", async (t) => {
+  const f = await fixture(t, { phone: true });
+  const dialog = () => f.container.querySelector('[role="dialog"][aria-label="Share Page"]');
+  await f.open();
+  await f.click(f.item("Share"));
+  const panel = dialog();
+  const email = () => dialog().querySelector('input[type="email"]');
+  const role = () => dialog().querySelector("select");
+  await f.type(email(), "colleague@example.com");
+  await f.type(role(), "editor");
+  await f.focus(email());
+  const input = email();
+
+  await f.setPhone(false);
+  assert.equal(f.more(), null, "the desktop header has no ⋯");
+  assert.ok(f.byName("Share"), "the desktop Share button is back");
+  assert.equal(f.byName("Share").getAttribute("aria-expanded"), "true");
+  assert.equal(dialog(), panel, "the same Share panel stays open");
+  assert.equal(email(), input);
+  assert.equal(email().value, "colleague@example.com");
+  assert.equal(role().value, "editor");
+  assert.equal(document.activeElement, input, "focus stays in the email field");
+
+  await f.setPhone(true);
+  assert.equal(dialog(), panel);
+  assert.equal(email().value, "colleague@example.com");
+  assert.equal(role().value, "editor");
+  assert.equal(document.activeElement, input);
+  // Escape from the phone panel returns focus to ⋯.
+  await f.press("Escape");
+  assert.equal(dialog(), null);
+  assert.equal(document.activeElement, f.more());
+});
+
+test("rotating to desktop closes the ⋯ menu", async (t) => {
+  const f = await fixture(t, { phone: true });
+  await f.open();
+  await f.setPhone(false);
+  assert.equal(f.menu(), null);
+  await f.setPhone(true);
+  assert.equal(f.menu(), null, "the menu stays closed back on the phone");
+  assert.equal(f.more().getAttribute("aria-expanded"), "false");
 });

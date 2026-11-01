@@ -1488,6 +1488,11 @@ dialog::backdrop {
   .has-document .document-status {
     margin-right: auto;
   }
+  /* Share has no button here (⋯ opens it) and its panel is fixed, so its
+     wrapper takes no room in the row. */
+  .document-controls > .page-sharing {
+    display: contents;
+  }
 }
 
 .page-sharing {

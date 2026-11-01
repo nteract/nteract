@@ -474,6 +474,24 @@ try {
   await expect(share).toBeVisible();
   await expect(share).toBeFocused();
   await withinViewport(share, "Share");
+  // Rotating past the phone breakpoint keeps the open panel and its draft.
+  const inviteEmail = share.getByRole("textbox", { name: "Invite by email" });
+  await inviteEmail.fill("rotation@example.com");
+  await share.getByRole("combobox", { name: "Access" }).selectOption("editor");
+  await phone.setViewportSize({ width: 700, height: 390 });
+  await expect(more).toHaveCount(0);
+  await expect(phone.getByRole("button", { name: "Share", exact: true })).toHaveAttribute(
+    "aria-expanded",
+    "true",
+  );
+  await expect(share).toBeVisible();
+  await expect(inviteEmail).toHaveValue("rotation@example.com");
+  await expect(inviteEmail).toBeFocused();
+  await expect(share.getByRole("combobox", { name: "Access" })).toHaveValue("editor");
+  await phone.setViewportSize({ width: 390, height: 844 });
+  await expect(more).toBeVisible();
+  await expect(inviteEmail).toHaveValue("rotation@example.com");
+  await inviteEmail.fill("");
   await phone.keyboard.press("Escape");
   await expect(share).toHaveCount(0);
   await expect(more).toBeFocused();
