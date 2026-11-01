@@ -8,7 +8,6 @@ import {
   LogOut,
   Link,
   MessageSquare,
-  MoreHorizontal,
   Plus,
   Plug,
   RotateCcw,
@@ -133,14 +132,8 @@ function App() {
   const session = useStore(host.store, installedSession);
   const editorUnavailable = useStore(editor.store, editorFailed);
   // Rendered only beside a session; handlers read editor.module when they run.
-  const {
-    WordgardEditor,
-    SharingControls,
-    CommentsPanel,
-    CommentPopover,
-    SaveStatus,
-    PageActivity,
-  } = editor.module ?? {};
+  const { WordgardEditor, CommentsPanel, CommentPopover, SaveStatus, PageControls } =
+    editor.module ?? {};
   const auth = useRef(null),
     authentication = useRef(null),
     catalogRevision = useRef(0),
@@ -467,11 +460,12 @@ function App() {
   }
   // Publish the visual viewport's edges for the mobile bar and header.
   useEffect(() => trackVisualViewport(), []);
-  // On phones the status is a dot; its label stays for screen readers.
-  const [compactStatus, setCompactStatus] = useState(() => matchMedia(MOBILE_EDITOR_QUERY).matches);
+  // On phones the status is a dot (its label stays for screen readers), and
+  // Share, activity and the page actions sit under one ⋯ menu.
+  const [phoneHeader, setPhoneHeader] = useState(() => matchMedia(MOBILE_EDITOR_QUERY).matches);
   useEffect(() => {
     const media = matchMedia(MOBILE_EDITOR_QUERY);
-    const change = () => setCompactStatus(media.matches);
+    const change = () => setPhoneHeader(media.matches);
     media.addEventListener("change", change);
     return () => media.removeEventListener("change", change);
   }, []);
@@ -760,6 +754,45 @@ function App() {
   );
   const libraryPages = matchingPages(listedPages, libraryQuery);
   const openComments = threads.filter((thread) => thread.state === "open").length;
+  // The page menu: Document actions on desktop, the ⋯ menu on phones.
+  const pageActions = session
+    ? [
+        session.canWrite && {
+          key: "formatting",
+          label: toolbarOpen ? "Hide formatting" : "Show formatting",
+          icon: Type,
+          kbd: "Alt F10",
+          attributes: {
+            "aria-expanded": toolbarOpen,
+            "aria-controls": "page-formatting",
+            "aria-keyshortcuts": "Alt+F10",
+          },
+          run: () => {
+            showFormatting(!toolbarOpen, !toolbarOpen);
+            if (toolbarOpen) documentDisclosure.current?.querySelector("summary")?.focus();
+          },
+        },
+        { key: "copy-link", label: "Copy link", icon: Link, run: () => copyLink() },
+        localRecoveries.length > 0 && {
+          key: "local-draft",
+          label: "Download previous local draft",
+          run: () => downloadDraft(localRecoveries.at(-1)),
+        },
+        session.canRestore && {
+          key: "restore",
+          label: "Restore from Trash",
+          icon: RotateCcw,
+          run: restoreCurrent,
+        },
+        session.canDelete && {
+          key: "trash",
+          label: "Move to Trash",
+          icon: Trash2,
+          danger: true,
+          run: remove,
+        },
+      ].filter(Boolean)
+    : [];
   return (
     <div className={page ? "app has-document" : "app"} onKeyDownCapture={formattingShortcut}>
       <header className="app-header">
@@ -792,7 +825,7 @@ function App() {
                 <SaveStatus
                   status={session.status}
                   statusKey={session.statusKey}
-                  compact={compactStatus}
+                  compact={phoneHeader}
                 />
                 {session.statusRetry && (
                   <button
@@ -804,76 +837,31 @@ function App() {
                 )}
               </div>
               <div className="document-controls">
-                <PageActivity
-                  key={session.pageId}
+                <PageControls
+                  phone={phoneHeader}
                   session={session}
-                  disclosure={activityDisclosure}
+                  actions={pageActions}
                   onReveal={revealProgress}
-                />
-                <SharingControls key={session.pageId} session={session} />
-                <button
-                  ref={commentsButton}
-                  className="subtle-button comments-toggle"
-                  aria-label="Comments"
-                  aria-describedby="open-comment-count"
-                  aria-expanded={commentsOpen}
-                  aria-controls="page-comments"
-                  onClick={toggleComments}
+                  activityDisclosure={activityDisclosure}
+                  actionsDisclosure={documentDisclosure}
                 >
-                  <MessageSquare size={18} aria-hidden="true" />
-                  <span>Comments</span>
-                  <span id="open-comment-count" className="sr-only">
-                    {openComments} open {openComments === 1 ? "comment" : "comments"}
-                  </span>
-                  {openComments > 0 && <span className="comment-count">{openComments}</span>}
-                </button>
-                {
-                  <details className="document-actions" ref={documentDisclosure}>
-                    <summary
-                      className="icon-button"
-                      aria-label="Document actions"
-                      title="Document actions"
-                    >
-                      <MoreHorizontal size={20} aria-hidden="true" />
-                    </summary>
-                    <div className="menu-popover">
-                      {session.canWrite && (
-                        <button
-                          aria-expanded={toolbarOpen}
-                          aria-controls="page-formatting"
-                          aria-keyshortcuts="Alt+F10"
-                          onClick={() => {
-                            showFormatting(!toolbarOpen, !toolbarOpen);
-                            if (toolbarOpen)
-                              documentDisclosure.current?.querySelector("summary")?.focus();
-                          }}
-                        >
-                          <Type size={16} aria-hidden="true" />
-                          {toolbarOpen ? "Hide formatting" : "Show formatting"}
-                          <kbd>Alt F10</kbd>
-                        </button>
-                      )}
-                      <button onClick={() => copyLink()}>
-                        <Link size={16} aria-hidden="true" /> Copy link
-                      </button>
-                      {localRecoveries.length > 0 && (
-                        <button onClick={() => downloadDraft(localRecoveries.at(-1))}>
-                          Download previous local draft
-                        </button>
-                      )}
-                      {session.canRestore && (
-                        <button onClick={restoreCurrent}>
-                          <RotateCcw size={16} aria-hidden="true" /> Restore from Trash
-                        </button>
-                      )}
-                      {session.canDelete && (
-                        <button className="danger" onClick={remove}>
-                          <Trash2 size={16} aria-hidden="true" /> Move to Trash
-                        </button>
-                      )}
-                    </div>
-                  </details>
-                }
+                  <button
+                    ref={commentsButton}
+                    className="subtle-button comments-toggle"
+                    aria-label="Comments"
+                    aria-describedby="open-comment-count"
+                    aria-expanded={commentsOpen}
+                    aria-controls="page-comments"
+                    onClick={toggleComments}
+                  >
+                    <MessageSquare size={18} aria-hidden="true" />
+                    <span>Comments</span>
+                    <span id="open-comment-count" className="sr-only">
+                      {openComments} open {openComments === 1 ? "comment" : "comments"}
+                    </span>
+                    {openComments > 0 && <span className="comment-count">{openComments}</span>}
+                  </button>
+                </PageControls>
               </div>
             </div>
           )}
