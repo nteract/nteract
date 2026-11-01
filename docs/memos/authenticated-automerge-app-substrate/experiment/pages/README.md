@@ -1318,6 +1318,19 @@ exact-head guard. Conflicts provide bounded addresses for focused rereading.
 Guards check the preparation snapshot; native changes can still merge during
 persistence. Tool mutations do not simulate typing or lock out peers.
 
+`replace_match` writes only the words that differ between the match and its
+replacement ([`textSplices`](model/replace-match.mjs)): a word-token diff, with
+each changed run narrowed by its common prefix and suffix at code-point
+boundaries. Shared words keep their characters, so comment anchors on them stay
+attached and a replacement equal to its match writes nothing. A word that
+changes beyond a prefix or suffix is replaced whole, so an anchor ending in it
+detaches and one starting in it shrinks to the words that remain. This is
+deliberately not the character-level LCS `replace_block_markdown` gets from
+`updateSpans`, which keeps stray letters and leaves an anchor on "table"
+attached to the "e" of "desk". Inserted text carries the marks shared by the
+whole match; untouched characters keep their own. The agent caret covers the
+changed words.
+
 ### Refusal codes and tool hints
 
 Every MCP refusal carries a stable `code`, in `structuredContent` and in the JSON

@@ -11,6 +11,7 @@ import {
 import { projectComments } from "./comments.mjs";
 import { comment, newCommentsDoc } from "./comments-test-support.mjs";
 import { richDoc, textPath } from "./richtext.mjs";
+import { textSplices } from "./replace-match.mjs";
 
 function fixture(markdown) {
   let doc = A.from(createPageData({ pageId: "page_fixture", title: "Original" }));
@@ -57,6 +58,143 @@ test("visible text replacement crosses marks while preserving untouched marks, o
   assert.ok(projectPage(after).blocks[0].markdown.includes("[🌊 passage](https://example.com)"));
   assert.match(richDoc(after.blocks[id]).textContent, /Before friends — 🌊 passage.Later./);
   richDoc(after.blocks[id]).check();
+});
+
+// A comment on `selected_text`, then one replace_match; returns the anchor's
+// projection afterwards.
+function anchorAfter(markdown, selected_text, input) {
+  const { doc, id } = fixture(markdown);
+  const { comments } = comment(doc, newCommentsDoc(), {
+    action: "add",
+    block_id: id,
+    selected_text,
+    body: "Keep this",
+  });
+  const { after } = replace(doc, id, input);
+  return { after, context: projectComments(after, comments)[0].selectionContext };
+}
+
+test("anchors on words the replacement keeps survive, including a no-op replacement", () => {
+  const expanded = anchorAfter("The room has oak table legs in it.", "oak table legs", {
+    match_text: "oak table legs in it",
+    replacement: "oak table legs and chairs in it",
+  });
+  assert.equal(
+    projectPage(expanded.after).blocks[0].markdown,
+    "The room has oak table legs and chairs in it.",
+  );
+  assert.equal(expanded.context.status, "attached");
+  assert.equal(expanded.context.text, "oak table legs");
+
+  const unchanged = anchorAfter("The room has oak table legs in it.", "oak table legs", {
+    match_text: "oak table legs in it",
+    replacement: "oak table legs in it",
+  });
+  assert.equal(unchanged.context.status, "attached");
+  assert.equal(unchanged.context.text, "oak table legs");
+  assert.equal(
+    projectPage(unchanged.after).blocks[0].markdown,
+    "The room has oak table legs in it.",
+  );
+});
+
+test("an anchor on a changed word detaches; one that starts in it shrinks to the words left", () => {
+  const changed = anchorAfter("The room has oak table legs in it.", "table", {
+    match_text: "oak table legs",
+    replacement: "oak desk legs",
+  });
+  assert.equal(projectPage(changed.after).blocks[0].markdown, "The room has oak desk legs in it.");
+  assert.equal(changed.context.status, "detached");
+
+  const shrunk = anchorAfter("The room has oak table legs in it.", "table legs", {
+    match_text: "oak table legs",
+    replacement: "oak desk legs",
+  });
+  assert.equal(shrunk.context.status, "attached");
+  assert.equal(shrunk.context.text, " legs");
+});
+
+test("a typo fix inside a commented word keeps the anchor on the characters it had", () => {
+  const plural = anchorAfter("The room has oak table legs in it.", "table", {
+    match_text: "oak table legs",
+    replacement: "oak tables legs",
+  });
+  assert.equal(projectPage(plural.after).blocks[0].markdown, "The room has oak tables legs in it.");
+  assert.equal(plural.context.status, "attached");
+  assert.equal(plural.context.text, "table");
+
+  const spelling = anchorAfter("The room has oak tabel legs in it.", "oak tabel legs", {
+    match_text: "oak tabel legs",
+    replacement: "oak table legs",
+  });
+  assert.equal(spelling.context.status, "attached");
+  assert.equal(spelling.context.text, "oak table legs");
+});
+
+test("textSplices keeps shared words, never splits a surrogate pair, and spans the changed words", () => {
+  const splices = (before, after) => textSplices(before, after).splices;
+  assert.deepEqual(textSplices("same", "same"), { splices: [], changed: null });
+  assert.deepEqual(textSplices("oak table legs in it", "oak table legs and chairs in it"), {
+    splices: [{ at: 15, remove: 0, insert: "and chairs " }],
+    changed: { start: 15, end: 26 },
+  });
+  assert.deepEqual(textSplices("old words", "new phrase"), {
+    splices: [
+      { at: 0, remove: 3, insert: "new" },
+      { at: 4, remove: 5, insert: "phrase" },
+    ],
+    changed: { start: 0, end: 10 },
+  });
+  // The splice is narrowed to the letters that differ; the changed span is the word.
+  assert.deepEqual(textSplices("Monday", "Tuesday"), {
+    splices: [{ at: 0, remove: 3, insert: "Tues" }],
+    changed: { start: 0, end: 7 },
+  });
+  assert.deepEqual(splices("table", "tables"), [{ at: 5, remove: 0, insert: "s" }]);
+  assert.deepEqual(textSplices("drop it", ""), {
+    splices: [{ at: 0, remove: 7, insert: "" }],
+    changed: { start: 0, end: 0 },
+  });
+  // 😀 and 😁 share a high surrogate; the whole pair is replaced.
+  assert.deepEqual(splices("a 😀 b", "a 😁 b"), [{ at: 2, remove: 2, insert: "😁" }]);
+  assert.deepEqual(splices("🌊", "🌋"), [{ at: 0, remove: 2, insert: "🌋" }]);
+  assert.deepEqual(splices("x🌊", "y🌊"), [{ at: 0, remove: 1, insert: "y" }]);
+  for (const [before, after] of [
+    ["a 😀 b", "a 😁 b"],
+    ["🌊 Keep 🌳 target", "🌊 Keep 🪴 garden"],
+    ["x".repeat(5000), "y".repeat(5000)],
+    ["w ".repeat(3000), "v ".repeat(3000)],
+  ]) {
+    let text = before;
+    for (const splice of splices(before, after).reverse())
+      text = text.slice(0, splice.at) + splice.insert + text.slice(splice.at + splice.remove);
+    assert.equal(text, after);
+  }
+});
+
+test("unchanged words inside the match keep their own marks; inserted text gets the shared ones", () => {
+  for (const [source, input, expected] of [
+    [
+      "Before **keep old** words after.",
+      { match_text: "old words", replacement: "old phrase" },
+      "Before **keep old** phrase after.",
+    ],
+    [
+      "Before **old words** after.",
+      { match_text: "old words", replacement: "new words" },
+      "Before **new words** after.",
+    ],
+    [
+      'Before [old words](https://example.com "Title") after.',
+      { match_text: "old words", replacement: "old phrase" },
+      'Before [old phrase](https://example.com "Title") after.',
+    ],
+  ]) {
+    const { doc, id } = fixture(source);
+    const { after } = replace(doc, id, input);
+    assert.equal(projectPage(after).blocks[0].markdown, expected, source);
+    richDoc(after.blocks[id]).check();
+  }
 });
 
 test("context disambiguates repeated visible text without becoming replacement content", () => {

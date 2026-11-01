@@ -758,10 +758,14 @@ Use optional context_before/context_after to distinguish repeated text; context
 must be in the same segment, between this occurrence and its neighboring matches.
 Exactly one match is required; zero or multiple matches reject the entire batch.
 Successful receipts include result.edits with matched: 1 for each replace_match.
-Replacement text keeps formatting shared by the entire matched range, including
-link destinations and titles. Formatting present on only part of the match does
-not spread across the replacement. Untouched characters, marks, and comment
-anchors retain their CRDT identities.
+Only the words that differ between match_text and replacement are written: words
+and whitespace both share stay in place, and a changed word is narrowed to the
+letters that differ. So a comment anchored on words the replacement keeps stays
+attached, a replacement equal to its match changes nothing, and an anchor ending
+in a word you changed detaches. Inserted text keeps formatting shared by the
+entire matched range, including link destinations and titles. Formatting present
+on only part of the match does not spread across the insertion; untouched
+characters keep their own marks and CRDT identities.
 
 By default conflict_scope:"page" requires the exact current Page revision. For a
 batch of only replace_match and format_match, opt into conflict_scope:"target" to

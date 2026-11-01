@@ -1,4 +1,5 @@
 import * as A from "@automerge/automerge/slim";
+import { diffArrays } from "diff";
 import { amSpliceIdxToPmIdx, pmRangeToAmRange } from "@automerge/prosemirror/dist/traversal.js";
 import { adapter, isRich, richDoc, textPath } from "./richtext.mjs";
 import {
@@ -132,18 +133,108 @@ export function findUniqueVisibleRange(doc, id, input) {
   return { path, start, end };
 }
 
-/** Replace one visible text range, preserving every untouched CRDT character. */
+// Diff tokens: a run of letters, digits and underscores, a run of whitespace,
+// or one other code point. The `u` flag keeps a surrogate pair in one token.
+const TOKEN = /[\p{L}\p{N}_]+|\s+|[\s\S]/gu;
+// Past this many token edits the diff falls back to one changed run.
+const MAX_TOKEN_EDITS = 2000;
+const isHighSurrogate = (unit) => unit >= 0xd800 && unit <= 0xdbff;
+const isLowSurrogate = (unit) => unit >= 0xdc00 && unit <= 0xdfff;
+const tokenize = (text) => text.match(TOKEN) ?? [];
+
+/** How to turn `before` into `after`: `splices`, each `{ at, remove, insert }`
+ * with `at` an offset into `before`, in ascending order, and `changed`, the
+ * span of `after` holding every word that differs (null when nothing does).
+ *
+ * Words and whitespace the two texts share stay in place, so a comment anchor
+ * on an unchanged word keeps its characters. A changed run is narrowed by its
+ * common prefix and suffix, so fixing a typo inside a word keeps the rest of
+ * that word. A word that changes beyond that is replaced whole: an anchor
+ * ending in it detaches, and one starting in it shrinks to the words that
+ * remain. A character-level LCS (what `A.updateText` runs) would instead keep
+ * stray letters, leaving an anchor on "table" attached to the "e" of "desk".
+ */
+export function textSplices(before, after) {
+  if (before === after) return { splices: [], changed: null };
+  const parts = diffArrays(tokenize(before), tokenize(after), {
+    maxEditLength: MAX_TOKEN_EDITS,
+  }) ?? [
+    { removed: true, value: [before] },
+    { added: true, value: [after] },
+  ];
+  const splices = [];
+  let at = 0,
+    atAfter = 0,
+    removed = "",
+    added = "",
+    changed = null;
+  const flush = () => {
+    if (removed || added) {
+      let prefix = 0;
+      while (
+        prefix < removed.length &&
+        prefix < added.length &&
+        removed.charCodeAt(prefix) === added.charCodeAt(prefix)
+      )
+        prefix++;
+      if (prefix && isHighSurrogate(removed.charCodeAt(prefix - 1))) prefix--;
+      let suffix = 0;
+      while (
+        suffix < removed.length - prefix &&
+        suffix < added.length - prefix &&
+        removed.charCodeAt(removed.length - 1 - suffix) ===
+          added.charCodeAt(added.length - 1 - suffix)
+      )
+        suffix++;
+      if (suffix && isLowSurrogate(removed.charCodeAt(removed.length - suffix))) suffix--;
+      const remove = removed.length - prefix - suffix;
+      const insert = added.slice(prefix, added.length - suffix);
+      if (remove || insert) splices.push({ at: at + prefix, remove, insert });
+      changed = { start: changed?.start ?? atAfter, end: atAfter + added.length };
+      at += removed.length;
+      atAfter += added.length;
+      removed = "";
+      added = "";
+    }
+  };
+  for (const part of parts) {
+    const text = part.value.join("");
+    if (part.removed) removed += text;
+    else if (part.added) added += text;
+    else {
+      flush();
+      at += text.length;
+      atAfter += text.length;
+    }
+  }
+  flush();
+  return { splices, changed };
+}
+
+/** Replace one visible text range, preserving every untouched CRDT character:
+ * only the words that differ between the match and the replacement are
+ * spliced, so comment anchors on the rest of the match survive. */
 export function replaceMatch(doc, id, input, trace) {
   const replacement = replacementLiteral(input.replacement, "replacement");
   const { path, start, end } = findUniqueVisibleRange(doc, id, input);
   const commonMarks = A.marks(doc, path).filter((mark) => mark.start <= start && mark.end >= end);
-  A.splice(doc, path, start, end - start, replacement);
-  if (replacement.length) {
-    const range = { start, end: start + replacement.length };
-    const actual = A.marks(doc, path).filter((mark) => mark.start < range.end && mark.end > start);
+  const { splices, changed } = textSplices(doc.blocks[id].richText.slice(start, end), replacement);
+  const inserted = [];
+  let shift = 0;
+  for (const splice of splices) {
+    const at = start + splice.at + shift;
+    A.splice(doc, path, at, splice.remove, splice.insert);
+    if (splice.insert.length) inserted.push({ start: at, end: at + splice.insert.length });
+    shift += splice.insert.length - splice.remove;
+  }
+  for (const range of inserted) {
+    const actual = A.marks(doc, path).filter(
+      (mark) => mark.start < range.end && mark.end > range.start,
+    );
     // A splice inherits marks at its insertion boundary. That can drop a
-    // non-expanding link or spread a partial bold run across the replacement.
-    // Reconcile only inserted characters against marks shared by the full match.
+    // non-expanding link or spread a partial bold run across the insertion.
+    // Reconcile only inserted characters against marks shared by the full
+    // match; untouched characters keep their own marks.
     for (const mark of actual)
       if (!commonMarks.some((common) => common.name === mark.name && common.value === mark.value))
         A.unmark(doc, path, { ...range, expand: "none" }, mark.name);
@@ -153,19 +244,25 @@ export function replaceMatch(doc, id, input, trace) {
           (current) =>
             current.name === mark.name &&
             current.value === mark.value &&
-            current.start <= start &&
+            current.start <= range.start &&
             current.end >= range.end,
         )
       )
         A.mark(doc, path, { ...range, expand: markExpand(mark.name) }, mark.name, mark.value);
   }
-  // The replacement carries the marks shared by the whole match.
-  if (replacement.length)
+  // Inserted text carries the marks shared by the whole match.
+  if (inserted.length)
     stampMarks(
       doc,
       commonMarks.map((mark) => mark.name),
     );
-  trace?.push({ type: "text", block_id: id, start, end: start + replacement.length });
+  // The caret covers the words that changed; a replacement that changed
+  // nothing shows the match it addressed.
+  trace?.push({
+    type: "text",
+    block_id: id,
+    ...(changed ? { start: start + changed.start, end: start + changed.end } : { start, end }),
+  });
   return { op: "replace_match", block_id: id, matched: 1 };
 }
 
