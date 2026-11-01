@@ -8,8 +8,9 @@ import { DocumentPolicy } from "./policy.mjs";
 import { pageState, proposeAccessUpdate } from "./access.mjs";
 import { CATALOG_MIGRATIONS, migrateCatalogIndex, reportPageIndex } from "./catalog-index.mjs";
 import { validSpaceId } from "./spaces.mjs";
-import { MAX_DEPTH, deriveLocation } from "../model/location.mjs";
+import { MAX_DEPTH, checkInvariants, deriveLocation, planMove } from "../model/location.mjs";
 import { locationEntries } from "./catalog-location.mjs";
+import { LOCATION_SHAPE_KEY, shapeState } from "./location-shape.mjs";
 import { tools } from "../mcp.mjs";
 
 /** Object state for direct index calls; the test awaits each one. */
@@ -463,7 +464,7 @@ test("create_page places Pages in a Project, under a parent, and enforces depth 
   const top = await w.createPage({ title: "Guide", project_id: project.project_id });
   assert.equal(top.status, 200);
   assert.equal(top.body.project_id, project.project_id);
-  assert.equal(top.body.parent_id, null);
+  assert.equal(top.body.parent_id, project.home_page_id, "a Project's top level is under its home");
   const child = await w.createPage({ title: "Install", parent_id: top.body.page_id });
   assert.equal(child.status, 200);
   assert.equal(child.body.project_id, project.project_id, "a parent implies its Project");
@@ -490,12 +491,12 @@ test("create_page places Pages in a Project, under a parent, and enforces depth 
   });
   assert.equal(matching.status, 200);
 
-  // Depth comes from the model: a root is at depth 1. Until Project top-level
-  // Pages move under the home Page, they are roots, so a Project's chain
-  // starts at depth 1 there too.
+  // Depth comes from the model: a root is at depth 1. The home Page is the
+  // Project's root, so its top-level Pages are at depth 2 and a Project's
+  // chain holds one level fewer than Your items'.
   assert.equal(MAX_DEPTH, 9);
   let parent = top.body.page_id;
-  for (let depth = 2; depth <= MAX_DEPTH; depth++) {
+  for (let depth = 3; depth <= MAX_DEPTH; depth++) {
     const nested = await w.createPage({ title: `Depth ${depth}`, parent_id: parent });
     assert.equal(nested.status, 200, `depth ${depth}`);
     parent = nested.body.page_id;
@@ -503,6 +504,7 @@ test("create_page places Pages in a Project, under a parent, and enforces depth 
   const deepest = deriveLocation(await locationEntries(w.catalogStorage()), parent);
   assert.equal(deepest.depth, 9, "the model puts the last Page at depth 9");
   assert.equal(deepest.space_id, project.project_id);
+  assert.deepEqual(deepest.ancestors.at(-1), project.home_page_id, "the chain ends at home");
   const tooDeep = await w.createPage({ title: "Depth 10", parent_id: parent });
   assert.equal(tooDeep.status, 400);
   assert.equal(tooDeep.body.code, "nesting_depth_exceeded");
@@ -571,11 +573,21 @@ test("list_pages filters by Project and parent, verifies every row and hides the
     true,
   );
 
+  // The Project's top level: its home Page and the home Page's children.
   const topLevel = await w.call("owner", "list_pages", {
     project_id: project.project_id,
     parent_id: null,
   });
   assert.deepEqual(ids(topLevel), [project.home_page_id, top.page_id].sort());
+  assert.equal(
+    topLevel.body.pages.find((page) => page.page_id === top.page_id).parent_id,
+    project.home_page_id,
+  );
+  assert.deepEqual(
+    ids(await w.call("owner", "list_pages", { parent_id: project.home_page_id })),
+    [top.page_id],
+    "the same Pages, listed as the home Page's children",
+  );
   const children = await w.call("owner", "list_pages", { parent_id: top.page_id });
   assert.deepEqual(ids(children), [child.page_id]);
   const all = await w.call("owner", "list_pages");
@@ -647,8 +659,11 @@ test("list_pages filters by Project and parent, verifies every row and hides the
     page_id: child.page_id,
     include_content: false,
   });
+  // The home Page is on the chain, flagged so viewers can fold it into the
+  // Project crumb (viewer/projects.mjs visibleCrumbs).
   assert.deepEqual(ownerRead.body.breadcrumbs, [
     { kind: "project", project_id: project.project_id, title: "Team" },
+    { kind: "page", page_id: project.home_page_id, title: "Team", home: true },
     { kind: "page", page_id: top.page_id, title: "Roadmap" },
   ]);
   assert.equal(ownerRead.body.parent_id, top.page_id);
@@ -743,18 +758,19 @@ test("Trash moves one Page at a time; restore returns a Page to its parent or th
   assert.equal(orphan.status, 409);
   assert.equal(orphan.body.code, "parent_unavailable");
 
-  // B's parent is in Trash, so B returns to the Project's top level.
+  // B's parent is in Trash, so B returns to the Project's top level: under
+  // the home Page, after the Pages already there.
   const back = await restore(b);
   assert.equal(back.status, 200);
-  assert.equal(back.body.parent_id, null);
+  assert.equal(back.body.parent_id, project.home_page_id);
   assert.equal(back.body.project_id, project.project_id);
   assert.equal(pageState(w.page(a).metadata), "trashed", "restoring B leaves A in Trash");
   assert.equal(w.page(b).metadata.placement, undefined);
   const entry = await storage.get(`page/${b}`);
-  assert.equal(entry.parent_id, null);
-  assert.equal(entry.space_id, project.project_id, "a Project top-level Page is a root");
+  assert.equal(entry.parent_id, project.home_page_id);
+  assert.equal(entry.space_id, undefined, "only the home Page carries the Project");
   assert.equal(entry.restore_space_id, undefined);
-  assert.ok(entry.position > (await storage.get(`page/${project.home_page_id}`)).position);
+  assert.ok(entry.position, "placed among the home Page's active children");
   // C's parent is active again, so C keeps its place.
   const child = await restore(c);
   assert.equal(child.status, 200);
@@ -1043,11 +1059,11 @@ test("an unapplied restore does not hold its parent, and returns to the top leve
   assert.equal((await trash(parent)).status, 200, "the settled child is still in Trash");
   const retried = await w.call("owner", "restore_page", restore);
   assert.equal(retried.status, 200);
-  assert.equal(retried.body.parent_id, null);
+  assert.equal(retried.body.parent_id, project.home_page_id);
   assert.equal(retried.body.project_id, project.project_id);
   const entry = await w.catalogStorage().get(`page/${child}`);
-  assert.equal(entry.parent_id, null);
-  assert.equal(entry.space_id, project.project_id);
+  assert.equal(entry.parent_id, project.home_page_id);
+  assert.equal(entry.space_id, undefined);
 });
 
 for (const variant of ["lost", "barrier"])
@@ -1065,7 +1081,7 @@ for (const variant of ["lost", "barrier"])
       idempotency_key: w.key(),
     });
     assert.equal(restored.status, 200, JSON.stringify(restored.body));
-    assert.equal(restored.body.parent_id, null);
+    assert.equal(restored.body.parent_id, project.home_page_id);
     assert.equal(restored.body.project_id, project.project_id);
     assert.equal(pageState(w.page(parent).metadata), "trashed");
     assert.equal((await storage.get(`trash/${parent}`)).reservation, undefined, "settled");
@@ -1182,11 +1198,19 @@ test("rollback: storage written here stays readable by older builds", async (t) 
   for (const field of ["page_id", "title", "created_at", "updated_at"])
     assert.ok(Object.hasOwn(entry, field), field);
   assert.equal(entry.pending, undefined);
-  assert.equal(entry.space_id, project.project_id);
+  // A Project top-level Page is the home Page's child. An older build derives
+  // its Project from the root too, so it reads the same Project.
+  assert.equal(entry.parent_id, project.home_page_id);
+  assert.equal(entry.space_id, undefined);
   assert.equal(Object.hasOwn(entry, "project_id"), false);
+  const home = await w.catalogStorage().get(`page/${project.home_page_id}`);
+  assert.equal(home.space_id, project.project_id, "the home Page keeps space_id");
+  assert.equal(home.home, true);
   assert.equal(metadata.placement, undefined, "the Page record holds no location");
   const catalog = w.catalogStorage();
   assert.ok(await catalog.get(`space/${project.project_id}`), "Catalog keeps space/<id>");
+  // The shape record is versioned; an older build ignores it.
+  assert.deepEqual(await catalog.get("host/location/shape"), { version: 1, state: "migrated" });
   assert.equal((await catalog.list({ prefix: "project/" })).size, 0);
   const record = await w.projects.get(project.project_id).ctx.storage.get("space/record");
   assert.equal(record.space_id, project.project_id);
@@ -1266,8 +1290,8 @@ test("intents a build from before the Project name left pending resume through t
   assert.equal(pageIntent.placement, undefined);
   const pendingEntry = await storage.get(`page/${pageIntent.pageId}`);
   assert.equal(pendingEntry.pending, true);
-  assert.equal(pendingEntry.space_id, projectId);
-  assert.equal(pendingEntry.parent_id, null);
+  assert.equal(pendingEntry.space_id, undefined);
+  assert.equal(pendingEntry.parent_id, resumed.body.home_page_id, "under the home Page");
   // The same call with the new argument name. Fingerprints cover the
   // arguments in order, as they always have.
   const apiArgs = { title: "Queued", project_id: projectId, idempotency_key: "old-create-page" };
@@ -1465,9 +1489,8 @@ test("create under a parent records its location only in the owner's Catalog", a
     assert.equal(Object.hasOwn(intent, field), false, field);
   const storage = w.catalogStorage();
   assert.deepEqual(locationOf(await storage.get(`page/${top.page_id}`)), {
-    parent_id: null,
-    position: "a1",
-    space_id: project.project_id,
+    parent_id: project.home_page_id,
+    position: "a0",
   });
   assert.deepEqual(locationOf(await storage.get(`page/${child.body.page_id}`)), {
     parent_id: top.page_id,
@@ -1483,10 +1506,10 @@ test("create under a parent records its location only in the owner's Catalog", a
   });
   assert.equal(read.body.project_id, project.project_id);
 
-  // Only the root records the Project: without it the subtree is Your items.
+  // Only the root records the Project: a subtree moved out from under the
+  // home Page is Your items.
   const root = await storage.get(`page/${top.page_id}`);
-  const { space_id: _space, ...unplaced } = root;
-  await storage.put(`page/${top.page_id}`, unplaced);
+  await storage.put(`page/${top.page_id}`, { ...root, parent_id: null });
   const moved = await w.call("owner", "read_page", {
     page_id: grandchild.page_id,
     include_content: false,
@@ -1516,6 +1539,7 @@ test("breadcrumbs come from one Catalog call, and a viewer's stop at the first P
   const owner = await readC("owner");
   assert.deepEqual(owner.breadcrumbs, [
     { kind: "project", project_id: project.project_id, title: "Team" },
+    { kind: "page", page_id: project.home_page_id, title: "Team", home: true },
     { kind: "page", page_id: a, title: "A" },
     { kind: "page", page_id: b, title: "B" },
   ]);
@@ -1525,13 +1549,14 @@ test("breadcrumbs come from one Catalog call, and a viewer's stop at the first P
     [{ name: w.owner, body: { page_id: c } }],
     "one call to the owner's Catalog",
   );
-  // Every other Page read is an access check of an ancestor, one each.
+  // Every other Page read is an access check of an ancestor, one each; the
+  // home Page is an ancestor too.
   assert.deepEqual(
     calls
       .filter((call) => call.binding === "PAGES" && call.path === "/internal/catalog")
       .map((call) => call.name)
       .sort(),
-    [a, b].sort(),
+    [project.home_page_id, a, b].sort(),
   );
 
   // A viewer of C alone: B is unreadable, so nothing above C shows.
@@ -1678,8 +1703,11 @@ test("a restore whose parent was purged returns to the Project it was trashed fr
     assert.equal(trashed.status, 200, JSON.stringify(trashed.body));
   }
   const storage = w.catalogStorage();
+  // Every Page in a Project is below its home Page, so each records the
+  // Project it was trashed from.
   assert.equal((await storage.get(`trash/${b}`)).restore_space_id, project.project_id);
-  assert.equal((await storage.get(`trash/${a}`)).restore_space_id, undefined, "a root has its own");
+  assert.equal((await storage.get(`trash/${a}`)).restore_space_id, project.project_id);
+  assert.equal((await storage.get(`trash/${a}`)).parent_id, project.home_page_id);
   const preview = await w.call("owner", "purge_page", { page_id: a, action: "preview" });
   assert.equal(preview.status, 200, JSON.stringify(preview.body));
   const purged = await w.call("owner", "purge_page", {
@@ -1693,13 +1721,9 @@ test("a restore whose parent was purged returns to the Project it was trashed fr
   const restored = await w.call("owner", "restore_page", { page_id: b, idempotency_key: w.key() });
   assert.equal(restored.status, 200, JSON.stringify(restored.body));
   assert.equal(restored.body.project_id, project.project_id);
-  assert.equal(restored.body.parent_id, null);
+  assert.equal(restored.body.parent_id, project.home_page_id);
   const entry = await storage.get(`page/${b}`);
-  assert.deepEqual(locationOf(entry), {
-    parent_id: null,
-    position: "a1",
-    space_id: project.project_id,
-  });
+  assert.deepEqual(locationOf(entry), { parent_id: project.home_page_id, position: "a0" });
 });
 
 test("the Catalog location route is host-only and answers only its own account", async (t) => {
@@ -1738,7 +1762,7 @@ test("the Catalog location route is host-only and answers only its own account",
     page_id: b,
     state: "active",
     parent_id: a,
-    ancestors: [a],
+    ancestors: [a, project.home_page_id],
     complete: true,
     space_id: project.project_id,
     home: false,
@@ -1908,9 +1932,10 @@ test("MCP location refusals carry their stable codes in structuredContent", asyn
     idempotency_key: w.key(),
   });
   assert.equal(underTrash.body.code, "parent_unavailable");
-  // One level past the model's depth limit.
+  // One level past the model's depth limit. The parent is at depth 2, under
+  // the home Page.
   let deepest = parent.page_id;
-  for (let depth = 2; depth <= MAX_DEPTH; depth++)
+  for (let depth = 3; depth <= MAX_DEPTH; depth++)
     deepest = (await w.createPage({ title: `Depth ${depth}`, parent_id: deepest })).body.page_id;
   const tooDeep = await w.mcp("owner", "create_page", {
     title: "Too deep",
@@ -1919,4 +1944,176 @@ test("MCP location refusals carry their stable codes in structuredContent", asyn
   });
   assert.equal(tooDeep.isError, true);
   assert.equal(tooDeep.body.code, "nesting_depth_exceeded");
+});
+
+/** Rewrite a live Catalog into the shape builds before this one wrote: every
+ * Project top-level Page a root with space_id, and no shape record. */
+async function unmigrate(storage) {
+  const entries = await locationEntries(storage);
+  for (const [prefix, state] of [
+    ["page/", "active"],
+    ["trash/", "trashed"],
+  ])
+    for (const entry of (await storage.list({ prefix })).values()) {
+      if (!entry?.page_id || entry.reservation) continue;
+      const location = entries.get(entry.page_id);
+      const home = location?.parent_id && entries.get(location.parent_id);
+      if (!home?.home || location.state !== state) continue;
+      const { restore_space_id: _restore, ...rest } = entry;
+      await storage.put(`${prefix}${entry.page_id}`, {
+        ...rest,
+        parent_id: null,
+        space_id: home.space_id,
+      });
+    }
+  await storage.delete(LOCATION_SHAPE_KEY);
+}
+
+const shapeOf = async (storage) => shapeState(await storage.get(LOCATION_SHAPE_KEY));
+
+test("a Catalog in the older shape migrates on its first write; reads work in both shapes", async (t) => {
+  const w = await world(t);
+  const project = await w.createProject("Legacy");
+  const a = (await w.createPage({ title: "A", project_id: project.project_id })).body.page_id;
+  const b = (await w.createPage({ title: "B", project_id: project.project_id })).body.page_id;
+  const c = (await w.createPage({ title: "C", parent_id: b })).body.page_id;
+  const storage = w.catalogStorage();
+  assert.deepEqual(await shapeOf(storage), { name: "migrated" }, "a new account starts current");
+  const trashed = await w.call("owner", "delete_page", {
+    page_id: a,
+    base_heads: w.heads(a),
+    idempotency_key: w.key(),
+  });
+  assert.equal(trashed.status, 200, JSON.stringify(trashed.body));
+
+  await unmigrate(storage);
+  assert.deepEqual(await shapeOf(storage), { name: "unmigrated" });
+  assert.equal((await storage.get(`page/${b}`)).space_id, project.project_id);
+  assert.equal((await storage.get(`page/${b}`)).parent_id, null);
+  assert.equal((await storage.get(`trash/${a}`)).space_id, project.project_id);
+
+  // Listings derive the Project from the root in either shape, and a listing
+  // alone runs no pass.
+  const topLevel = () =>
+    w.call("owner", "list_pages", { project_id: project.project_id, parent_id: null });
+  assert.deepEqual(ids(await topLevel()), [project.home_page_id, b].sort());
+  assert.deepEqual(
+    ids(await w.call("owner", "list_pages", { project_id: project.project_id })),
+    [project.home_page_id, b, c].sort(),
+  );
+  assert.deepEqual(await shapeOf(storage), { name: "unmigrated" }, "listings don't migrate");
+  // A read_page works in the older shape too. Opening a Page makes its host
+  // project the title into this Catalog, which is a queued write and may
+  // run the pass; the read itself never waits for it.
+  const read = await w.call("owner", "read_page", { page_id: c, include_content: false });
+  assert.equal(read.status, 200);
+  assert.equal(read.body.project_id, project.project_id);
+
+  // A queued write runs the pass first, then itself.
+  const d = await w.createPage({ title: "D", project_id: project.project_id });
+  assert.equal(d.status, 200, JSON.stringify(d.body));
+  assert.equal(d.body.parent_id, project.home_page_id);
+  assert.deepEqual(await shapeOf(storage), { name: "migrated" });
+  const entries = await locationEntries(storage);
+  assert.equal(entries.get(b).parent_id, project.home_page_id);
+  assert.equal(entries.get(b).space_id, undefined);
+  assert.equal(entries.get(a).parent_id, project.home_page_id, "the trashed root moved too");
+  assert.equal((await storage.get(`trash/${a}`)).restore_space_id, project.project_id);
+  assert.deepEqual(ids(await topLevel()), [project.home_page_id, b, d.body.page_id].sort());
+  assert.deepEqual(checkInvariants({ revision: 0, entries }), [], "live entries hold the model");
+  // The model's move plans run clean against the live shape: no top-level
+  // Page reads as a home, and a Project's top level is one sibling set.
+  const reorder = planMove(
+    { revision: 0, entries },
+    d.body.page_id,
+    { parent_id: null, project_id: project.project_id },
+    "first",
+  );
+  assert.equal(reorder.ok, true, JSON.stringify(reorder));
+  assert.equal(reorder.moved.parent_id, project.home_page_id);
+  assert.equal(
+    planMove({ revision: 0, entries }, project.home_page_id, { project_id: null }).code,
+    "home_page_protected",
+  );
+  assert.equal(planMove({ revision: 0, entries }, c, { project_id: null }).ok, true);
+  // A restore of the migrated trashed root goes back under the home Page.
+  const restored = await w.call("owner", "restore_page", { page_id: a, idempotency_key: w.key() });
+  assert.equal(restored.status, 200, JSON.stringify(restored.body));
+  assert.equal(restored.body.parent_id, project.home_page_id);
+});
+
+test("a blocked migration refuses location writes with 503 location_migration_required and keeps reads", async (t) => {
+  const w = await world(t);
+  const project = await w.createProject("Ready");
+  const a = (await w.createPage({ title: "A", project_id: project.project_id })).body.page_id;
+  const storage = w.catalogStorage();
+  // A Project whose home Page never got created, as an interrupted
+  // create_project leaves it. An older build would not have placed a Page in
+  // it, but a Catalog that somehow holds one can't be migrated until the
+  // Project finishes.
+  failNextPageCreate(w);
+  const pendingArgs = { title: "Pending", idempotency_key: "pending-project" };
+  assert.equal((await w.call("owner", "create_project", pendingArgs)).status, 500);
+  const intent = await storage.get("host/operation/pending-project");
+  assert.equal((await storage.get(`space/${intent.spaceId}`)).pending, true);
+  const stray = crypto.randomUUID();
+  await storage.put(`page/${stray}`, {
+    page_id: stray,
+    title: "Stray",
+    created_at: new Date().toISOString(),
+    updated_at: new Date().toISOString(),
+    parent_id: null,
+    position: "a1",
+    space_id: intent.spaceId,
+  });
+  await unmigrate(storage);
+
+  const refused = await w.createPage({ title: "B", project_id: project.project_id });
+  assert.equal(refused.status, 503);
+  assert.equal(refused.body.code, "location_migration_required");
+  assert.deepEqual(await shapeOf(storage), {
+    name: "blocked",
+    reason: "home_pending",
+    page_id: stray,
+    space_id: intent.spaceId,
+  });
+  assert.equal((await storage.get(`page/${a}`)).space_id, project.project_id, "nothing moved");
+  // Trash and restore wait too; a purge preview is a read.
+  const trash = await w.call("owner", "delete_page", {
+    page_id: a,
+    base_heads: w.heads(a),
+    idempotency_key: w.key(),
+  });
+  assert.equal(trash.body.code, "location_migration_required", JSON.stringify(trash));
+  assert.equal(
+    (await w.call("owner", "restore_page", { page_id: a, idempotency_key: w.key() })).body.code,
+    "location_migration_required",
+  );
+  assert.equal(
+    (await w.mcp("owner", "create_page", { title: "B", idempotency_key: w.key() })).body.code,
+    "location_migration_required",
+    "Your items too: the Catalog is one shape or the other",
+  );
+  // Reads keep working in the older shape.
+  assert.deepEqual(
+    ids(await w.call("owner", "list_pages", { project_id: project.project_id, parent_id: null })),
+    [project.home_page_id, a].sort(),
+  );
+  const read = await w.call("owner", "read_page", { page_id: a, include_content: false });
+  assert.equal(read.status, 200);
+  assert.equal(read.body.project_id, project.project_id);
+  // Project writes aren't location writes: finishing the Project is how the
+  // block clears. The pass runs first in that write too, while the home is
+  // still pending, so the write after it is the one that migrates.
+  const finished = await w.call("owner", "create_project", pendingArgs);
+  assert.equal(finished.status, 200, JSON.stringify(finished.body));
+  assert.equal((await shapeOf(storage)).name, "blocked");
+  const created = await w.createPage({ title: "B", project_id: project.project_id });
+  assert.equal(created.status, 200, JSON.stringify(created.body));
+  assert.equal(created.body.parent_id, project.home_page_id);
+  assert.deepEqual(await shapeOf(storage), { name: "migrated" });
+  const entries = await locationEntries(storage);
+  assert.equal(entries.get(stray).parent_id, finished.body.home_page_id);
+  assert.equal(entries.get(a).parent_id, project.home_page_id);
+  assert.deepEqual(checkInvariants({ revision: 0, entries }), []);
 });

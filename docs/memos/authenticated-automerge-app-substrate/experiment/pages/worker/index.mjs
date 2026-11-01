@@ -197,6 +197,7 @@ import { handleImageAssets, requireStoredImageAsset } from "./image-assets.mjs";
 import {
   appendPosition,
   childrenOf,
+  homeEntry,
   locationAnswer,
   locationEntries,
   locationScan,
@@ -206,6 +207,7 @@ import {
   rekeyedEntries,
   restoreTarget,
 } from "./catalog-location.mjs";
+import { MIGRATION_REQUIRED, migrateLocationShape } from "./location-shape.mjs";
 import { MAX_DEPTH, deriveLocation } from "../model/location.mjs";
 import {
   SPACE_LIMIT,
@@ -1042,12 +1044,33 @@ export class Catalog {
       logFailure(error, "catalog-tombstone");
     }
   }
+  /**
+   * The Catalog's location shape, brought up to date. Every queued write
+   * runs this once its input is sound and before it reserves or writes
+   * anything; a `migrated` record costs one read (location-shape.mjs).
+   * Location writes need `migrated`; other writes and every read run in
+   * either shape, because a Page's Project is derived from its root in both.
+   */
+  async locationShape() {
+    return migrateLocationShape(this.storage);
+  }
+  /** Refuse a location write while this Catalog isn't in the current shape.
+   * The pass that found the obstacle logged it; the next write tries again. */
+  static requireMigrated(shape) {
+    if (shape.name === "migrated") return;
+    throw new HttpError(
+      503,
+      "This account's Pages are being reorganized; retry shortly. If this persists, a Project is still being created or a Page nests too deep to move under its Project's home Page.",
+      MIGRATION_REQUIRED,
+    );
+  }
   async run(request) {
     try {
       if (new URL(request.url).pathname === "/internal/projection") {
         // Reachable only through the host's CATALOGS namespace, never the gateway.
         const value = await readJson(request);
         if (!validPageId(value.page_id)) throw new HttpError(400, "Invalid page_id");
+        await this.locationShape();
         const key = `${value.shared ? "shared/" : "page/"}${value.page_id}`;
         const previous = await this.storage.get(key);
         if (value.remove) await this.storage.delete(key);
@@ -1084,6 +1107,7 @@ export class Catalog {
           !Number.isFinite(Date.parse(body.observed_at))
         )
           throw new HttpError(400, "Invalid title projection");
+        await this.locationShape();
         await refreshCatalogTitle(this.storage, body);
         return json({ ok: true });
       }
@@ -1137,6 +1161,11 @@ export class Catalog {
         if (await this.storage.get(`host/deleted/${args.page_id}`))
           throw new HttpError(409, "Page was deleted");
       }
+      // Input is sound: this write runs the shape pass first. Creating,
+      // trashing and restoring place a Page, so they also wait for the
+      // current shape. Purging removes a Trash entry in either shape.
+      const shape = await this.locationShape();
+      if (body.operation !== "purge_page") Catalog.requireMigrated(shape);
       const key = mutationKey(args);
       const digest = await fingerprint(
         lifecycleFingerprint[body.operation] ?? body.operation,
@@ -1536,10 +1565,11 @@ export class Catalog {
   /** A new Page's Catalog location from create_page's space_id and
    * parent_id: `{ location, rekeyed }`. A parent implies its Project, which
    * is derived from the parent's root; naming a different Project is an
-   * error. Without a parent the Page is a root, in the named Project or in
-   * Your items. Only Pages and Projects this account owns can hold new Pages
-   * in this build, so this account's own entries settle parent, depth and
-   * sibling order, and the Project record confirms the Project.
+   * error. A Project alone means its top level: under its home Page, the
+   * Project's one root. Neither means a root in Your items. Only Pages and
+   * Projects this account owns can hold new Pages in this build, so this
+   * account's own entries settle parent, depth and sibling order, and the
+   * Project record confirms the Project.
    */
   async resolveLocation(request, args) {
     const storage = this.storage;
@@ -1547,10 +1577,22 @@ export class Catalog {
       args.space_id === undefined || args.space_id === null
         ? null
         : requireSpaceIdArgument(args.space_id);
-    const parentId =
+    let parentId =
       args.parent_id === undefined || args.parent_id === null
         ? null
         : requirePageIdArgument(args.parent_id, "parent_id");
+    if (spaceArg && !parentId) {
+      const entry = await storage.get(`space/${spaceArg}`);
+      if (!entry || entry.pending) throw spaceNotFound();
+      const response = await this.env.PROJECTS.getByName(spaceArg).fetch(
+        forwarded(request, "/internal/space/read", { space_id: spaceArg }),
+      );
+      if (response.status === 404) throw spaceNotFound();
+      if (!response.ok) throw new HttpError(503, "Project is temporarily unavailable");
+      const home = homeEntry(await locationEntries(storage), spaceArg);
+      if (!home) throw spaceNotFound();
+      parentId = home.page_id;
+    }
     if (parentId) await this.activeParent(parentId);
     const entries = await locationEntries(storage);
     if (parentId) {
@@ -1568,33 +1610,19 @@ export class Catalog {
           "placement_mismatch",
         );
       // Depth is the model's: a root is at depth 1, and the new Page sits one
-      // below its parent. Project top-level Pages are roots until they move
-      // under the home Page, so today a Project chain also starts at depth 1;
-      // once the home Page is the Project's root, its top-level Pages are at
-      // depth 2 and that chain holds one level fewer.
+      // below its parent. A Project's home Page is its root, so its top-level
+      // Pages are at depth 2.
       if (parent.depth + 1 > MAX_DEPTH)
         throw new HttpError(
           400,
           `Pages nest at most ${MAX_DEPTH} levels deep`,
           "nesting_depth_exceeded",
         );
-      const { position, rekeyed } = appendPosition(entries, parentId, null);
+      const { position, rekeyed } = appendPosition(entries, parentId);
       return { location: { parent_id: parentId, position }, rekeyed };
     }
-    if (spaceArg) {
-      const entry = await storage.get(`space/${spaceArg}`);
-      if (!entry || entry.pending) throw spaceNotFound();
-      const response = await this.env.PROJECTS.getByName(spaceArg).fetch(
-        forwarded(request, "/internal/space/read", { space_id: spaceArg }),
-      );
-      if (response.status === 404) throw spaceNotFound();
-      if (!response.ok) throw new HttpError(503, "Project is temporarily unavailable");
-    }
-    const { position, rekeyed } = appendPosition(entries, null, spaceArg);
-    return {
-      location: { parent_id: null, position, ...(spaceArg && { space_id: spaceArg }) },
-      rekeyed,
-    };
+    const { position, rekeyed } = appendPosition(entries, null);
+    return { location: { parent_id: null, position }, rekeyed };
   }
 
   /** The parent's Catalog entry when it can take a new child: owned, created
@@ -1735,6 +1763,9 @@ export class Catalog {
   async createSpace(request, identity, args, limit) {
     const storage = this.storage;
     const { title, description } = validateSpaceInput(args, { creating: true });
+    // A Project write isn't a location write, but it is a queued write: the
+    // shape pass runs first. Its home Page is a root in either shape.
+    await this.locationShape();
     const key = mutationKey(args);
     const digest = await fingerprint("create_space", args, identity);
     const inspected = await inspectOperation(storage, {
@@ -1865,6 +1896,7 @@ export class Catalog {
   async updateSpace(request, identity, args) {
     const storage = this.storage;
     validateSpaceInput(args, { creating: false });
+    await this.locationShape();
     const key = mutationKey(args);
     const digest = await fingerprint("update_space", args, identity);
     const inspected = await inspectOperation(storage, {
@@ -2147,11 +2179,22 @@ export class Catalog {
         sharedChildren = await this.childIdsFromOwner(shared.page.owner, options.parentId);
       }
     }
+    // A Project's top level (`project_id` with `parent_id: null`) is its home
+    // Page and the home Page's children. A Catalog not yet migrated still
+    // holds top-level Pages as roots; they list here too.
+    const projectHome = options.spaceId
+      ? homeEntry(locations, options.spaceId)?.page_id
+      : undefined;
     const located = (pageId) => {
       const entry = locations.get(pageId);
       if (!entry) return false;
       if (options.spaceId && projectOf(locations, pageId) !== options.spaceId) return false;
-      if (options.parentId === null && entry.parent_id !== null) return false;
+      if (
+        options.parentId === null &&
+        entry.parent_id !== null &&
+        (projectHome === undefined || entry.parent_id !== projectHome)
+      )
+        return false;
       if (options.parentId && entry.parent_id !== options.parentId) return false;
       return true;
     };

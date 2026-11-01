@@ -135,6 +135,22 @@ celld resumes, then serves normally. On Cloudflare, removing a Durable Object
 class takes a `deleted_classes` migration that erases its storage, so a
 Cloudflare rollback must keep exporting `Space` and its binding instead.
 
+A Project's home Page is its only root: `create_page {project_id}` makes a
+child of the home Page, and `list_pages {project_id, parent_id: null}` lists
+the home Page and its children. Builds before this one made every Project
+top-level Page a root with `space_id`. Each Catalog migrates itself lazily
+(`worker/location-shape.mjs`): the first queued write after deploy moves every
+such root under its Project's home Page, in batches of 128 keys, and records
+`host/location/shape` as `migrated`. Reads work in both shapes, because a
+Page's Project is derived from its root either way. If a Project's home Page is
+still pending or a chain would nest past the depth limit, the Catalog logs
+`catalog.location_migration_blocked`, records `blocked`, and answers `503
+location_migration_required` to create, trash and restore until a later write
+clears it; listings and reads keep working. A rollback build reads the migrated
+shape (it derives the Project from the root) but writes the older one for new
+Pages; a roll forward after such writes must bump `LOCATION_SHAPE_VERSION` so
+every Catalog runs the pass again.
+
 ### Projects and their storage identity
 
 Projects were called Spaces through 3548b9750, which Page8 runs. Callers now see

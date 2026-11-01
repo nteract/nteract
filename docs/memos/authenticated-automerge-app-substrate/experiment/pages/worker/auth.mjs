@@ -258,6 +258,9 @@ const RETRYABLE_SERVER_CODES = [
   "request_timeout",
   // The host is moving a Page's comments to their own document.
   "comments_migrating",
+  // The owner's Catalog isn't in the current location shape yet
+  // (location-shape.mjs); the next write tries the pass again.
+  "location_migration_required",
 ];
 
 const LOGGED_ERROR_TYPES = [

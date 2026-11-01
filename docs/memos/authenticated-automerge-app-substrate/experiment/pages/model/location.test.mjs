@@ -228,6 +228,26 @@ test("subtreeOf and subtreeSpaceIds list a Page's descendants top-down", () => {
   assert.deepEqual(subtreeSpaceIds(entries, "nope"), []);
 });
 
+test("roots: home Pages are each alone, Your items roots are siblings", () => {
+  const s = world();
+  // launch and archive are home Pages (roots with space_id); loose and
+  // drafts are the Your items roots. gone is in Trash.
+  assert.deepEqual(ordered(s, null), ["loose", "drafts"]);
+  assert.deepEqual(ordered(s, "launch"), ["plan", "notes"], "a Project's top level");
+  // A move to Your items places among Your items roots only, so a home's
+  // key never constrains it.
+  const toRoot = planMove(s, "plan", { project_id: null }, "first");
+  assert.equal(toRoot.ok, true, JSON.stringify(toRoot));
+  assert.ok(toRoot.moved.position < "a2", "before loose");
+  const after = applyWrite(s, toRoot);
+  assert.deepEqual(ordered(after, null), ["plan", "loose", "drafts"]);
+  assert.deepEqual(checkInvariants(after), []);
+  // A move to a Project's top level lands under its home Page.
+  const toProject = planMove(s, "loose", { project_id: OTHER });
+  assert.equal(toProject.moved.parent_id, "archive");
+  assert.deepEqual(ordered(applyWrite(s, toProject), "archive"), ["old", "loose"]);
+});
+
 test("every refusal code has a case, and refusals carry a message", () => {
   const s = world();
   const cases = [
@@ -566,13 +586,22 @@ test("checkInvariants finds each kind of violation", () => {
   assert.deepEqual(codes(stateOf(entry("p", null, { state: "trashed" }), entry("a", "p"))), [
     "inactive_parent",
   ]);
-  assert.deepEqual(codes(stateOf(entry("p"), entry("t", "p", { state: "trashed" }))), [
-    "trashed_parent_active",
-  ]);
+  // A trashed entry's parent_id is the restore hint the adapter keeps. The
+  // parent may be active, trashed, or purged; none of those is a violation.
+  assert.deepEqual(
+    codes(stateOf(entry("p"), entry("t", "p", { state: "trashed" }))),
+    [],
+    "a trashed entry under an active parent",
+  );
   assert.deepEqual(
     codes(stateOf(entry("p", null, { state: "trashed" }), entry("t", "p", { state: "trashed" }))),
     [],
     "a trashed subtree can keep its shape",
+  );
+  assert.deepEqual(
+    codes(stateOf(entry("t", "purged", { state: "trashed" }))),
+    [],
+    "a trashed entry whose parent was purged",
   );
   assert.deepEqual(codes(stateOf(entry("a", "b"), entry("b", "a"))), [
     "placement_cycle",
@@ -592,6 +621,24 @@ test("checkInvariants finds each kind of violation", () => {
       stateOf(entry("p"), entry("x", "p"), entry("y", "p"), entry("q", null, { position: "a1" })),
     ),
     [{ code: "duplicate_position", page_id: "y", detail: "a0" }],
+  );
+  assert.deepEqual(
+    codes(
+      stateOf(
+        entry("h1", null, { space_id: PRJ, position: "a0" }),
+        entry("h2", null, { space_id: OTHER, position: "a0" }),
+        entry("loose", null, { position: "a0" }),
+      ),
+    ),
+    [],
+    "home Pages are each alone: their keys never tie with each other or Your items",
+  );
+  assert.deepEqual(
+    checkInvariants(
+      stateOf(entry("a", null, { position: "a0" }), entry("b", null, { position: "a0" })),
+    ),
+    [{ code: "duplicate_position", page_id: "b", detail: "a0" }],
+    "Your items roots are siblings",
   );
   assert.deepEqual(
     codes(

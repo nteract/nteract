@@ -4,11 +4,14 @@
  * The owner's Catalog is the only record of where its Pages live. Page
  * objects store no location. Each owned entry (`page/<id>` while active or
  * pending, `trash/<id>` in Trash) stores:
- * - `parent_id`: another owned Page, or null for a root;
- * - `position`: a fractional key among its siblings;
- * - `space_id`: only on a root in a Project. Project top-level Pages are
- *   roots until a Project's Pages move under its home Page, so every one of
- *   them carries it; the home Page also has `home: true`;
+ * - `parent_id`: another owned Page, or null for a root. A Project's
+ *   top-level Pages are children of its home Page. On a trashed entry it is
+ *   the restore hint: the parent the Page had when it was trashed;
+ * - `position`: a fractional key among its siblings. Roots without
+ *   `space_id` are the siblings of Your items; a home Page is alone;
+ * - `space_id` and `home: true`: only on a Project's home Page, the one root
+ *   a Project has. location-shape.mjs migrates Catalogs written before this
+ *   shape, where every Project top-level Page was a root with `space_id`;
  * - `restore_space_id`: only on a trashed entry that isn't a root. It is the
  *   Project the Page was in when it was trashed, for a restore whose parent
  *   is gone by then.
@@ -105,20 +108,26 @@ export function receiptLocation(entries, pageId) {
   return location;
 }
 
-/** Siblings a new Page joins: children of `parentId`, or roots in Project
- * `spaceId` (null for Your items). */
-const siblingsAt = (entries, parentId, spaceId, excludeId) =>
-  siblingsOf(entries, parentId, excludeId).filter(
-    (entry) =>
-      validPositionKey(entry.position) &&
-      (parentId !== null || (entry.space_id ?? null) === spaceId),
-  );
+/** Siblings a new Page joins: children of `parentId`, or the roots of Your
+ * items for null. The model keeps home Pages out of the root sibling set. An
+ * entry whose stored key isn't a fractional key can't anchor a new one and is
+ * skipped. */
+const siblingsAt = (entries, parentId, excludeId) =>
+  siblingsOf(entries, parentId, excludeId).filter((entry) => validPositionKey(entry.position));
 
 /** A key after every sibling, and the siblings' new keys when ties had to be
  * repaired (`{ page_id: key }`). */
-export function appendPosition(entries, parentId, spaceId, excludeId) {
-  const placed = positionAmong(siblingsAt(entries, parentId, spaceId, excludeId), "last");
+export function appendPosition(entries, parentId, excludeId) {
+  const placed = positionAmong(siblingsAt(entries, parentId, excludeId), "last");
   return { position: placed.position, rekeyed: placed.rekeyed };
+}
+
+/** The live home Page of Project `spaceId`: active (not pending, not in
+ * Trash) and flagged `home`, or undefined. */
+export function homeEntry(entries, spaceId) {
+  for (const entry of entries.values())
+    if (entry.home === true && entry.space_id === spaceId && entry.state === "active") return entry;
+  return undefined;
 }
 
 /** Whether an owned Page can hold children: created, not in Trash, and not
@@ -131,10 +140,14 @@ export async function parentActive(storage, parentId) {
 
 /**
  * Where a restore puts a Page: under its recorded parent while that parent
- * is active, otherwise at the top level of its Project while the Project
- * exists, otherwise at the top level of Your items. Returns the entry's
- * location fields, `{ parent_id, position, space_id?, home? }`, and `rekeyed`
- * siblings. An already active Page keeps its place.
+ * is active, otherwise at the top level of its Project (under its home Page)
+ * while the Project exists, otherwise at the top level of Your items.
+ * Returns the entry's location fields, `{ parent_id, position }`, and
+ * `rekeyed` siblings. An already active Page keeps its place.
+ *
+ * A trashed root with `space_id` is an entry from before the home Page was
+ * the Project's only root; its Project is that `space_id`, and it returns
+ * under the home Page like any other.
  */
 export async function restoreTarget(storage, pageId) {
   const entries = await locationEntries(storage);
@@ -147,36 +160,25 @@ export async function restoreTarget(storage, pageId) {
     ...(entry.home && { home: true }),
   };
   if (entry.state !== "trashed") return { location: keep, rekeyed: {} };
-  if (entry.parent_id && (await parentActive(storage, entry.parent_id))) {
+  const placeUnder = (parentId) => {
     // A sibling created while this Page was in Trash may hold its old key.
-    const taken = siblingsOf(entries, entry.parent_id, pageId).some(
-      (sibling) => sibling.position === entry.position,
-    );
-    if (!taken) return { location: keep, rekeyed: {} };
-    const { position, rekeyed } = appendPosition(entries, entry.parent_id, null, pageId);
-    return { location: { ...keep, position }, rekeyed };
-  }
+    const taken =
+      entry.parent_id !== parentId ||
+      siblingsOf(entries, parentId, pageId).some((sibling) => sibling.position === entry.position);
+    if (!taken) return { location: { parent_id: parentId, position: entry.position }, rekeyed: {} };
+    const { position, rekeyed } = appendPosition(entries, parentId, pageId);
+    return { location: { parent_id: parentId, position }, rekeyed };
+  };
+  if (entry.parent_id && (await parentActive(storage, entry.parent_id)))
+    return placeUnder(entry.parent_id);
   let spaceId = entry.parent_id ? projectOf(entries, pageId) : (entry.space_id ?? null);
   if (spaceId) {
     const space = await storage.get(`space/${spaceId}`);
     if (!space || space.pending) spaceId = null;
   }
-  if (!entry.parent_id && (entry.space_id ?? null) === spaceId) {
-    const taken = siblingsAt(entries, null, spaceId, pageId).some(
-      (sibling) => sibling.position === entry.position,
-    );
-    if (!taken) return { location: keep, rekeyed: {} };
-  }
-  const { position, rekeyed } = appendPosition(entries, null, spaceId, pageId);
-  return {
-    location: {
-      parent_id: null,
-      position,
-      ...(spaceId && { space_id: spaceId }),
-      ...(spaceId && entry.home && { home: true }),
-    },
-    rekeyed,
-  };
+  const home = spaceId ? homeEntry(entries, spaceId) : undefined;
+  if (home) return placeUnder(home.page_id);
+  return placeUnder(null);
 }
 
 /** Puts that give `rekeyed` siblings their new keys, keeping the rest of

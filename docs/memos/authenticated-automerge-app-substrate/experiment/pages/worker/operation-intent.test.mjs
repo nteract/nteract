@@ -14,6 +14,7 @@ import { RETRY_LIFETIME_MS } from "./operation-journal.mjs";
 import { operationIntent, operationIntentAlphabet } from "./operation-intent.mjs";
 import { quotaRefusal } from "./page-quota.mjs";
 import { CrashStorage, assertProjected, describe, normalize } from "./operation-intent-fixture.mjs";
+import { LOCATION_SHAPE_KEY, shapeRecord } from "./location-shape.mjs";
 
 const TABLE = new URL("../test/fixtures/machines/operation-intent.json", import.meta.url);
 const auth = await createAuthFixture();
@@ -255,6 +256,8 @@ class Drive {
 
   seed(values = this.storage.values) {
     const { state, event, operation } = this;
+    // The Catalog is in the current location shape: the pass writes nothing.
+    values.set(LOCATION_SHAPE_KEY, shapeRecord({ name: "migrated" }));
     if (this.mode === "leaf") return this.seedWaiting(values);
     const set = (name, value) => values.set(name, structuredClone(value));
     const revision =
@@ -675,6 +678,7 @@ test("a retargeted Trash keeps its slot, so its lost reply can't overfill Trash"
   }
   storage.values.set(`page/${pageId}`, catalogEntry("page/", 0));
   storage.values.set(`page/${otherId}`, { ...catalogEntry("page/", 0), page_id: otherId });
+  storage.values.set(LOCATION_SHAPE_KEY, shapeRecord({ name: "migrated" }));
   const trashed = (id, revision) => ({
     receipt: { page_id: id, state: "trashed", trashed: true },
     current: { page_id: id, state: "trashed", revision, title: "Launch plan" },

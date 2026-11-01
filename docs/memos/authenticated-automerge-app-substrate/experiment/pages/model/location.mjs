@@ -15,9 +15,11 @@
  * - `page_id`: its own key.
  * - `state`: "active", "pending" (its Page object is still being created) or
  *   "trashed".
- * - `parent_id`: an active owned Page, or null for a root. A trashed entry's
- *   parent is null or another trashed entry; it has left the active tree.
- * - `position`: a fractional key among its siblings.
+ * - `parent_id`: an active owned Page, or null for a root. On a trashed
+ *   entry it is a restore hint, not tree membership: the Page has left the
+ *   active tree, and the parent it names may be active, trashed, or gone.
+ * - `position`: a fractional key among its siblings. Roots without
+ *   `space_id` are siblings in Your items; a root with `space_id` is alone.
  * - `space_id`: only on a root that is a Project's home Page.
  * - `restore_parent_id`, `restore_space_id`: only on a trashed entry. Where a
  *   restore returns it: under that parent while it is active, otherwise at
@@ -203,13 +205,18 @@ export function subtreeSpaceIds(entries, pageId) {
   return subtreeOf(map, pageId).map(({ page_id }) => ({ page_id, space_id: location.space_id }));
 }
 
-/** Siblings under `parentId` (null for roots) in order, without trashed
- * entries and without `excludeId`. */
+/** Siblings under `parentId` in order, without trashed entries and without
+ * `excludeId`. `parentId` null means the roots of Your items: a root with
+ * `space_id` is a Project's home Page, alone at the top of its Project, so it
+ * is nobody's sibling. */
 export function siblingsOf(entries, parentId, excludeId) {
   return [...asMap(entries).values()]
     .filter(
       (entry) =>
-        entry.parent_id === parentId && entry.state !== "trashed" && entry.page_id !== excludeId,
+        entry.parent_id === parentId &&
+        entry.state !== "trashed" &&
+        entry.page_id !== excludeId &&
+        (parentId !== null || !("space_id" in entry)),
     )
     .sort(siblingOrder);
 }
@@ -440,12 +447,13 @@ export function applyWrite(state, write) {
  * detail? }`. Empty when the location model holds:
  * - every entry has a valid shape (`invalid_entry`);
  * - an active or pending entry's parent is an active owned entry
- *   (`missing_parent`, `inactive_parent`);
- * - a trashed entry's parent is null or trashed (`trashed_parent_active`);
+ *   (`missing_parent`, `inactive_parent`). A trashed entry's parent is a
+ *   restore hint and may be in any state or gone, so it isn't checked;
  * - no cycles (`placement_cycle`) and no entry deeper than MAX_DEPTH
  *   (`nesting_depth_exceeded`);
  * - siblings that aren't in Trash have distinct position keys
- *   (`duplicate_position`, reported for each sibling after the first);
+ *   (`duplicate_position`, reported for each sibling after the first). Roots
+ *   with `space_id` are each alone, so only Your items roots are compared;
  * - at most one live home Page per Project (`duplicate_home`), and a home Page
  *   stays a root, which entryProblems checks.
  *
@@ -465,15 +473,10 @@ export function checkInvariants(state, { projects } = {}) {
   if (violations.length) return violations;
 
   for (const entry of map.values()) {
-    if (entry.parent_id !== null) {
+    if (entry.parent_id !== null && entry.state !== "trashed") {
       const parent = map.get(entry.parent_id);
       if (!parent) add("missing_parent", entry.page_id, entry.parent_id);
-      else if (entry.state === "trashed" ? parent.state !== "trashed" : parent.state !== "active")
-        add(
-          entry.state === "trashed" ? "trashed_parent_active" : "inactive_parent",
-          entry.page_id,
-          entry.parent_id,
-        );
+      else if (parent.state !== "active") add("inactive_parent", entry.page_id, entry.parent_id);
     }
     const location = deriveLocation(map, entry.page_id);
     if (!location.ok && location.problem === "cycle") add("placement_cycle", entry.page_id);
@@ -483,7 +486,7 @@ export function checkInvariants(state, { projects } = {}) {
 
   const keysByParent = new Map();
   for (const entry of [...map.values()].sort(siblingOrder)) {
-    if (entry.state === "trashed") continue;
+    if (entry.state === "trashed" || (entry.parent_id === null && "space_id" in entry)) continue;
     const keys = keysByParent.get(entry.parent_id) ?? new Set();
     keysByParent.set(entry.parent_id, keys);
     if (keys.has(entry.position)) add("duplicate_position", entry.page_id, entry.position);
