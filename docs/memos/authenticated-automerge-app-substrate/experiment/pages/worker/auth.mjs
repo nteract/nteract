@@ -359,6 +359,7 @@ export function errorResponse(error, stage = "request") {
         "purge_preview_invalid",
         "invalid_idempotency_key",
         "invalid_edit_selector",
+        "replace_match_too_large",
         "invalid_comment_selector",
         "stale_heads",
         "edit_conflict",

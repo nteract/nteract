@@ -91,6 +91,31 @@ test("an edit batch that cannot apply names the selector, and nothing is written
   assert.equal(comment.status, 400);
   assert.equal(comment.body.code, "invalid_comment_selector");
   assert.deepEqual(f.heads(), heads);
+  // Past the diff budget with nothing unique to split on, replace_match refuses
+  // with its own code rather than detach anchors on words it would keep.
+  const tooLarge = await f.tool("owner", "edit_page", {
+    base_heads: f.heads(),
+    idempotency_key: "selector-too-large",
+    operations: [
+      { op: "replace_block_markdown", block_id: f.blockId, markdown: "w ".repeat(3000).trim() },
+    ],
+  });
+  assert.equal(tooLarge.status, 200, JSON.stringify(tooLarge.body));
+  const refusedLarge = await f.tool("owner", "patch_page", {
+    base_heads: tooLarge.body.heads,
+    idempotency_key: "selector-too-large-replace",
+    operations: [
+      {
+        op: "replace_match",
+        block_id: f.blockId,
+        match_text: "w ".repeat(3000).trim(),
+        replacement: "v ".repeat(3000).trim(),
+      },
+    ],
+  });
+  assert.equal(refusedLarge.status, 400);
+  assert.equal(refusedLarge.body.code, "replace_match_too_large");
+  assert.deepEqual(f.heads(), tooLarge.body.heads, "nothing was written");
 });
 
 test("the host refuses every write to a Page stamped with a feature it lacks, and reads report the stamp", async (t) => {

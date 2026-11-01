@@ -1,4 +1,5 @@
 import * as A from "@automerge/automerge/slim";
+import { diffArrays } from "diff";
 import { amSpliceIdxToPmIdx, pmRangeToAmRange } from "@automerge/prosemirror/dist/traversal.js";
 import { adapter, isRich, richDoc, textPath } from "./richtext.mjs";
 import {
@@ -90,8 +91,19 @@ export function textSegments(block) {
   return segments;
 }
 
+const graphemeSegmenter = new Intl.Segmenter("und", { granularity: "grapheme" });
+const graphemes = (text) => Array.from(graphemeSegmenter.segment(text), (part) => part.segment);
+/** Whether UTF-16 offset `at` in `text` falls between grapheme clusters. */
+function graphemeBoundary(text, at) {
+  if (at <= 0 || at >= text.length) return true;
+  return graphemeSegmenter.segment(text).containing(at).index === at;
+}
+
 /** Resolve one visible range without changing the document. Context is searched
  * between occurrences and cannot cross a paragraph or embedded-node boundary.
+ * The match must start and end between grapheme clusters: a match that cuts
+ * an accented letter, an emoji sequence or a flag would otherwise leave the
+ * rest of that character behind, and a comment anchored on it attached to it.
  */
 export function findUniqueVisibleRange(doc, id, input) {
   const match = replacementLiteral(input.match_text, "match_text");
@@ -119,17 +131,165 @@ export function findUniqueVisibleRange(doc, id, input) {
       if (before !== undefined && !segment.text.slice(gapStart, at).includes(before)) continue;
       if (after !== undefined && !segment.text.slice(at + match.length, gapEnd).includes(after))
         continue;
-      matches.push(segment.offset + at);
+      matches.push({ at: segment.offset + at, segment, local: at });
     }
   }
   if (matches.length !== 1)
     throw Error(
       `${input.op ?? "replace_match"} found ${matches.length} matches; exactly one is required. Use context_before/context_after or a longer match_text.`,
     );
-  const path = textPath(id);
-  const start = matches[0];
-  const end = start + match.length;
-  return { path, start, end };
+  const [{ at: start, segment, local }] = matches;
+  const op = input.op ?? "replace_match";
+  if (!graphemeBoundary(segment.text, local))
+    throw Error(`${op} match_text starts inside a character; include the whole character`);
+  if (!graphemeBoundary(segment.text, local + match.length))
+    throw Error(`${op} match_text ends inside a character; include the whole character`);
+  return { path: textPath(id), start, end: start + match.length };
+}
+
+// Diff tokens are built from grapheme clusters, so a combining accent, a ZWJ
+// emoji sequence or a flag pair is never split: a run of word clusters
+// (letters, digits, marks, underscore), a run of whitespace, or one other
+// cluster.
+const WORD = /^[\p{L}\p{N}\p{M}_]/u;
+const SPACE = /^\s/u;
+function tokenize(text) {
+  const tokens = [];
+  let kind;
+  for (const cluster of graphemes(text)) {
+    const next = WORD.test(cluster) ? "word" : SPACE.test(cluster) ? "space" : "other";
+    if (next !== "other" && next === kind) tokens[tokens.length - 1] += cluster;
+    else tokens.push(cluster);
+    kind = next;
+  }
+  return tokens;
+}
+
+// Myers is O((N + M) D). Past this many token edits, one diff is refused and
+// the texts are split at tokens unique to both; a chunk with no such token
+// that is still over budget refuses the whole edit rather than fall back to a
+// coarse splice that would detach anchors on words it kept.
+const MAX_TOKEN_EDITS = 2000;
+const tooLarge = () =>
+  Object.assign(
+    Error(
+      "replace_match changes too much text at once to keep comment anchors on the words it leaves alone. Split it into smaller replace_match operations, or use replace_block_markdown if the block has no comments to keep.",
+    ),
+    { status: 400, code: "replace_match_too_large" },
+  );
+
+/** The longest run of `pairs` ([i, j], ascending in i) whose j also ascends. */
+function increasing(pairs) {
+  const tails = [],
+    links = [];
+  for (let n = 0; n < pairs.length; n++) {
+    let low = 0,
+      high = tails.length;
+    while (low < high) {
+      const mid = (low + high) >> 1;
+      if (pairs[tails[mid]][1] < pairs[n][1]) low = mid + 1;
+      else high = mid;
+    }
+    links[n] = low ? tails[low - 1] : -1;
+    tails[low] = n;
+  }
+  const result = [];
+  for (let n = tails.at(-1) ?? -1; n >= 0; n = links[n]) result.unshift(pairs[n]);
+  return result;
+}
+
+/** jsdiff change parts for `before` → `after`, each within the edit budget.
+ * Over budget, the sequences are split at tokens that occur exactly once in
+ * both (in a common order) and each piece is diffed on its own. */
+function diffTokens(before, after) {
+  const direct = diffArrays(before, after, { maxEditLength: MAX_TOKEN_EDITS });
+  if (direct) return direct;
+  const count = (tokens) => {
+    const counts = new Map();
+    for (const token of tokens) counts.set(token, (counts.get(token) ?? 0) + 1);
+    return counts;
+  };
+  const inBefore = count(before),
+    inAfter = count(after);
+  const afterIndex = new Map(after.map((token, index) => [token, index]));
+  const pairs = [];
+  before.forEach((token, index) => {
+    if (inBefore.get(token) === 1 && inAfter.get(token) === 1)
+      pairs.push([index, afterIndex.get(token)]);
+  });
+  const anchors = increasing(pairs);
+  if (!anchors.length) throw tooLarge();
+  const parts = [];
+  let from = 0,
+    to = 0;
+  for (const [i, j] of [...anchors, [before.length, after.length]]) {
+    if (i > from || j > to) parts.push(...diffTokens(before.slice(from, i), after.slice(to, j)));
+    if (i < before.length) parts.push({ value: [before[i]] });
+    from = i + 1;
+    to = j + 1;
+  }
+  return parts;
+}
+
+/** How to turn `before` into `after`: `splices`, each `{ at, remove, insert }`
+ * with `at` an offset into `before`, in ascending order, and `changed`, the
+ * span of `after` holding every word that differs (null when nothing does).
+ *
+ * Words and whitespace the two texts share stay in place, so a comment anchor
+ * on an unchanged word keeps its characters. A changed run is narrowed by its
+ * common prefix and suffix, in whole grapheme clusters, so fixing a typo
+ * inside a word keeps the rest of that word. A word that changes beyond that
+ * is replaced whole: an anchor ending in it detaches, and one starting in it
+ * shrinks to the words that remain. A character-level LCS (what
+ * `A.updateText` runs) would instead keep stray letters, leaving an anchor on
+ * "table" attached to the "e" of "desk".
+ */
+export function textSplices(before, after) {
+  if (before === after) return { splices: [], changed: null };
+  const splices = [];
+  let at = 0,
+    atAfter = 0,
+    removed = "",
+    added = "",
+    changed = null;
+  const flush = () => {
+    if (removed || added) {
+      const gone = graphemes(removed),
+        came = graphemes(added);
+      let prefix = 0;
+      while (prefix < gone.length && prefix < came.length && gone[prefix] === came[prefix])
+        prefix++;
+      let suffix = 0;
+      while (
+        suffix < gone.length - prefix &&
+        suffix < came.length - prefix &&
+        gone[gone.length - 1 - suffix] === came[came.length - 1 - suffix]
+      )
+        suffix++;
+      const prefixLength = gone.slice(0, prefix).join("").length;
+      const suffixLength = suffix ? gone.slice(-suffix).join("").length : 0;
+      const remove = removed.length - prefixLength - suffixLength;
+      const insert = added.slice(prefixLength, added.length - suffixLength);
+      if (remove || insert) splices.push({ at: at + prefixLength, remove, insert });
+      changed = { start: changed?.start ?? atAfter, end: atAfter + added.length };
+      at += removed.length;
+      atAfter += added.length;
+      removed = "";
+      added = "";
+    }
+  };
+  for (const part of diffTokens(tokenize(before), tokenize(after))) {
+    const text = part.value.join("");
+    if (part.removed) removed += text;
+    else if (part.added) added += text;
+    else {
+      flush();
+      at += text.length;
+      atAfter += text.length;
+    }
+  }
+  flush();
+  return { splices, changed };
 }
 
 /** At most this many partial-mark ranges are named in a marks_dropped warning. */
@@ -157,46 +317,92 @@ function marksDroppedWarning(partial, start, end) {
   };
 }
 
-/** Replace one visible text range, preserving every untouched CRDT character.
- * The result reports `matched: 1`, and a `marks_dropped` warning when a mark
- * covered part of the match without covering all of it. */
+/** Replace one visible text range, preserving every untouched CRDT character:
+ * only the words that differ between the match and the replacement are
+ * spliced, so comment anchors on the rest of the match survive. The result
+ * reports `matched: 1`, and a `marks_dropped` warning when a mark that
+ * covered part of the match without covering all of it was crossed by a
+ * replacement or touched by an insertion at its boundary: the inserted
+ * characters are plain there. A replaced word inside a mark run, or text
+ * inserted strictly inside one, continues the run; a partial mark none of
+ * whose words changed still covers every character it did; neither is
+ * reported. */
 export function replaceMatch(doc, id, input, trace) {
   const replacement = replacementLiteral(input.replacement, "replacement");
   const { path, start, end } = findUniqueVisibleRange(doc, id, input);
   const overlapping = A.marks(doc, path).filter((mark) => mark.start < end && mark.end > start);
   const covers = (mark) => mark.start <= start && mark.end >= end;
   const commonMarks = overlapping.filter(covers);
-  // Reported, never kept: partial formatting must not spread (see below).
-  const partialMarks = replacement.length ? overlapping.filter((mark) => !covers(mark)) : [];
-  A.splice(doc, path, start, end - start, replacement);
-  if (replacement.length) {
-    const range = { start, end: start + replacement.length };
-    const actual = A.marks(doc, path).filter((mark) => mark.start < range.end && mark.end > start);
+  const { splices, changed } = textSplices(doc.blocks[id].richText.slice(start, end), replacement);
+  const same = (mark) => (other) => other.name === mark.name && other.value === mark.value;
+  // Judged before splicing, in the document's offsets at that time. A splice
+  // meets a mark when the characters it replaces overlap the mark, or its
+  // insertion point touches it. A mark run that encloses the splice (the
+  // replaced characters all inside it, or a pure insertion strictly inside
+  // it) continues through the inserted text, as under a keystroke that
+  // retypes a marked word. A pure insertion at a run's boundary, or a
+  // replacement crossing its edge, does not spread the mark, and a partial
+  // mark met that way is reported as dropped.
+  const meets = (mark, { at, remove }) =>
+    remove
+      ? mark.start < start + at + remove && mark.end > start + at
+      : mark.start <= start + at && start + at <= mark.end;
+  const encloses = (mark, { at, remove }) =>
+    remove
+      ? mark.start <= start + at && start + at + remove <= mark.end
+      : mark.start < start + at && start + at < mark.end;
+  const partialMarks = overlapping.filter(
+    (mark) =>
+      !covers(mark) &&
+      splices.some(
+        (splice) => splice.insert.length && meets(mark, splice) && !encloses(mark, splice),
+      ),
+  );
+  const inserted = [];
+  let shift = 0;
+  for (const splice of splices) {
+    const at = start + splice.at + shift;
+    A.splice(doc, path, at, splice.remove, splice.insert);
+    if (splice.insert.length)
+      inserted.push({
+        start: at,
+        end: at + splice.insert.length,
+        keep: [
+          ...commonMarks,
+          ...overlapping.filter((mark) => !covers(mark) && encloses(mark, splice)),
+        ],
+      });
+    shift += splice.insert.length - splice.remove;
+  }
+  for (const { keep, ...range } of inserted) {
+    const actual = A.marks(doc, path).filter(
+      (mark) => mark.start < range.end && mark.end > range.start,
+    );
     // A splice inherits marks at its insertion boundary. That can drop a
-    // non-expanding link or spread a partial bold run across the replacement.
-    // Reconcile only inserted characters against marks shared by the full match.
+    // non-expanding link or spread a partial bold run across the insertion.
+    // Reconcile only inserted characters against the marks they keep: those
+    // shared by the full match, and the runs that enclose this insertion.
+    // Untouched characters keep their own marks.
     for (const mark of actual)
-      if (!commonMarks.some((common) => common.name === mark.name && common.value === mark.value))
-        A.unmark(doc, path, { ...range, expand: "none" }, mark.name);
-    for (const mark of commonMarks)
+      if (!keep.some(same(mark))) A.unmark(doc, path, { ...range, expand: "none" }, mark.name);
+    for (const mark of keep)
       if (
         !actual.some(
           (current) =>
-            current.name === mark.name &&
-            current.value === mark.value &&
-            current.start <= start &&
-            current.end >= range.end,
+            same(mark)(current) && current.start <= range.start && current.end >= range.end,
         )
       )
         A.mark(doc, path, { ...range, expand: markExpand(mark.name) }, mark.name, mark.value);
   }
-  // The replacement carries the marks shared by the whole match.
-  if (replacement.length)
-    stampMarks(
-      doc,
-      commonMarks.map((mark) => mark.name),
-    );
-  trace?.push({ type: "text", block_id: id, start, end: start + replacement.length });
+  if (inserted.length)
+    stampMarks(doc, [...new Set(inserted.flatMap(({ keep }) => keep.map((mark) => mark.name)))]);
+  // The caret covers the words that changed; a replacement that changed
+  // nothing shows the match it addressed.
+  trace?.push({
+    type: "text",
+    block_id: id,
+    ...(changed ? { start: start + changed.start, end: start + changed.end } : { start, end }),
+  });
   return {
     op: "replace_match",
     block_id: id,
