@@ -348,6 +348,17 @@ try {
   await uploadStarted;
   try {
     await expect(owner.getByText("Uploading image…", { exact: true })).toBeVisible();
+    // The pending image is drawn inside the editor at the insertion point (the
+    // end of the block), not as a status row above the block.
+    const pending = content(owner).locator(".wordgard-upload-preview");
+    await expect(pending).toBeVisible();
+    await expect(owner.locator(".image-upload-status")).toHaveCount(0);
+    const below = await pending.evaluate((preview) => {
+      const blocks = [...preview.closest("wg-content").querySelectorAll(":scope > *")];
+      const last = blocks.filter((b) => !b.contains(preview) && b.textContent.trim()).at(-1);
+      return preview.getBoundingClientRect().top >= last.getBoundingClientRect().top;
+    });
+    assert.ok(below, "the pending image sits at the insertion point, after the text before it");
     await atEnd(editor);
     await editor.keyboard.insertText(" A collaborator writes during the upload.");
     await expect(content(owner)).toContainText("collaborator writes during the upload");

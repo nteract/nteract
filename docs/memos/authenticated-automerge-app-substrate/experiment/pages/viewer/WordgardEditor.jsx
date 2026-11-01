@@ -18,6 +18,7 @@ import { tables } from "wordgard/table";
 import { tablePresentation, tableKeys, selectedTable } from "./wordgard-tables.mjs";
 import { TableMenu } from "./TableMenu.jsx";
 import { CODE_LANGUAGES, codeHighlighting } from "./code-highlight.mjs";
+import { setUploadPreview, uploadPreview, uploadPreviews } from "./upload-preview.mjs";
 import { HighlightMenu } from "./HighlightMenu.jsx";
 import { monotonicNow } from "./monotonic.mjs";
 import { selectionHighlight, toggleHighlight } from "./highlight.mjs";
@@ -85,6 +86,7 @@ import {
   captureImageInsertion,
   createImageUploader,
   imageFiles,
+  resolveImageInsertion,
 } from "./image-upload.mjs";
 import "./wordgard.css";
 
@@ -145,7 +147,8 @@ export function WordgardEditor(props) {
     [remoteCarets, setRemoteCarets] = useState([]),
     [link, setLink] = useState(null),
     [editingLink, setEditingLink] = useState(false),
-    [imageStatus, setImageStatus] = useState(null);
+    [imageStatus, setImageStatus] = useState(null),
+    [imagePreviewShown, setImagePreviewShown] = useState(false);
   const [generation, reset] = useState(0);
   const pendingLink = useRef(null),
     refresh = useRef(() => {}),
@@ -316,6 +319,7 @@ export function WordgardEditor(props) {
         wordgardCodeNewlines,
         wordgardListStarts,
         codeHighlighting,
+        uploadPreviews,
         undoHistory.extension,
         permissions.current.of(editConfig(latest.current.editable)),
         Wordgard.domEventHandler("paste", (event) => acceptImages(imageFiles(event.clipboardData))),
@@ -374,7 +378,28 @@ export function WordgardEditor(props) {
         latest.current.replica === replica &&
         latest.current.id === id &&
         latest.current.editable,
-      onState: setImageStatus,
+      onState: (state) => {
+        setImageStatus(state);
+        if (view.current !== editor) return;
+        // Draw the pending upload inline where the image will land. If the
+        // insertion point can't be resolved, the status row stays as the fallback.
+        let preview = null;
+        if (state?.pending && state.target)
+          try {
+            preview = {
+              pos: resolveImageInsertion(replica, state.target, bound.current.map),
+              src: state.preview ?? "",
+              name: state.name ?? "",
+              onCancel: () => uploader.cancel(),
+            };
+          } catch {}
+        if (preview || editor.state.field(uploadPreview))
+          editor.dispatch({
+            effects: setUploadPreview.of(preview),
+            annotations: Transaction.addToHistory.of(false),
+          });
+        setImagePreviewShown(!!preview);
+      },
     });
     imageUploader.current = uploader;
     editor.dom.classList.add("wordgard-document");
@@ -953,7 +978,7 @@ export function WordgardEditor(props) {
           if (files.length && target) imageUploader.current?.start(files, target);
         }}
       />
-      {imageStatus && (
+      {imageStatus && !(imageStatus.pending && imagePreviewShown) && (
         <div className="image-upload-status" role="status" aria-live="polite">
           <span>{imageStatus.message}</span>
           {imageStatus.retryable && editable && (
