@@ -587,6 +587,7 @@ opening_heading_repeats_title, the actual block_id, heading and match_kind.
 The heading may be a bounded preview (heading_truncated:true). Warnings are part
 of the exact stored receipt and describe its heads, even on retries after later
 edits. A warning means the write succeeded; it is not a reason to repeat it.
+patch_page receipts use the same list for marks_dropped (see Guarded edits).
 
 The detector checks only the first nonempty top-level body node. It compares
 opening headings with the title using conservative Unicode/case/punctuation
@@ -767,7 +768,12 @@ Exactly one match is required; zero or multiple matches reject the entire batch.
 Successful receipts include result.edits with matched: 1 for each replace_match.
 Replacement text keeps formatting shared by the entire matched range, including
 link destinations and titles. Formatting present on only part of the match does
-not spread across the replacement. Untouched characters, marks, and comment
+not spread across the replacement: a match that spans a code span or a link
+comes back as plain text. When that happens the edit's entry carries a warning
+with code marks_dropped, the mark names and their ranges as offsets into
+match_text; the receipt's top-level warnings repeat it with edit_index and
+block_id. The write succeeded. If the new text should keep those marks, follow
+with format_match over the right ranges. Untouched characters, marks, and comment
 anchors retain their CRDT identities.
 
 By default conflict_scope:"page" requires the exact current Page revision. For a

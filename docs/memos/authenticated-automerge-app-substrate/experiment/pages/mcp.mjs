@@ -159,7 +159,7 @@ const matchProperties = {
     ...string,
     maxLength: 262144,
     description:
-      "Literal replacement text, not Markdown. Keeps formatting shared by the entire match (including link destination/title); partial formatting does not spread. Untouched text keeps its CRDT identity.",
+      "Literal replacement text, not Markdown. Keeps formatting shared by the entire match (including link destination/title); partial formatting does not spread, and the edit's receipt reports it as a marks_dropped warning. Untouched text keeps its CRDT identity.",
   },
   context_before: {
     ...string,
@@ -524,7 +524,7 @@ export const tools = [
   ),
   tool(
     "patch_page",
-    "Apply an atomic targeted edit batch. Prefer replace_match for visible prose: replace one literal range, optionally scoped by node_index and context, preserving untouched formatting and comment anchors. Use format_match to add or remove formatting (bold, italic, code, links, highlights) over one literal range without changing its text. conflict_scope:target permits older base_heads only for unchanged native targets in replace_match and format_match batches; other patch_page and edit_page operations retain the exact-page revision guard. Conflicts identify passages to reread with read_page_changes. Zero or multiple matches fail the whole batch. Tool edits arrive atomically, without streamed keystrokes; people see your caret where the batch landed.",
+    "Apply an atomic targeted edit batch. Prefer replace_match for visible prose: replace one literal range, optionally scoped by node_index and context, preserving untouched formatting and comment anchors. The replacement keeps only marks shared by the whole match; when a mark (code, link, bold...) covered part of it, the receipt says so: result.edits[i].warnings and the top-level warnings carry code marks_dropped with the mark names and their ranges in match_text, so you can reapply them with format_match. Use format_match to add or remove formatting (bold, italic, code, links, highlights) over one literal range without changing its text. conflict_scope:target permits older base_heads only for unchanged native targets in replace_match and format_match batches; other patch_page and edit_page operations retain the exact-page revision guard. Conflicts identify passages to reread with read_page_changes. Zero or multiple matches fail the whole batch. Tool edits arrive atomically, without streamed keystrokes; people see your caret where the batch landed.",
     {
       ...guard,
       conflict_scope: {

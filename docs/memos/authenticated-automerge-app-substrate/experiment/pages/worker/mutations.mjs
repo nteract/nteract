@@ -43,6 +43,14 @@ export async function fingerprint(operation, args, identity) {
     .map((byte) => byte.toString(16).padStart(2, "0"))
     .join("");
 }
+/** The warnings a batch's edits carry (`result.edits[i].warnings`), each with
+ * the index and block of the edit that raised it. */
+function editWarnings(result) {
+  if (!Array.isArray(result?.edits)) return [];
+  return result.edits.flatMap((edit, edit_index) =>
+    (edit?.warnings ?? []).map((warning) => ({ ...warning, edit_index, block_id: edit.block_id })),
+  );
+}
 export function requireHeads(doc, heads) {
   if (
     !Array.isArray(heads) ||
@@ -178,9 +186,11 @@ export async function documentMutation({
       assertDocumentLimits(after);
       // Warnings describe this exact result, including on retries after later edits.
       // Capture them before the journal budget/barrier, never from the live handle.
-      const warning = ["edit_page", "patch_page"].includes(operation)
-        ? openingTitleWarning(after)
-        : null;
+      // Per-edit warnings (a replace_match that dropped partial marks) also
+      // appear here, naming their edit, so a caller reads one list.
+      const warnings = ["edit_page", "patch_page"].includes(operation)
+        ? [openingTitleWarning(after), ...editWarnings(result)].filter(Boolean)
+        : [];
       entry = {
         fingerprint: digest,
         pending: true,
@@ -197,7 +207,7 @@ export async function documentMutation({
               observed_heads: guarded.current_heads,
             },
           }),
-          ...(warning ? { warnings: [warning] } : {}),
+          ...(warnings.length ? { warnings } : {}),
           ...receiptFields?.(),
         },
       };
