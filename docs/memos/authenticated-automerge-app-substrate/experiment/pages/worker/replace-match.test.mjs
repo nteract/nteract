@@ -64,7 +64,8 @@ test("visible-text replacement uses existing head, idempotency, and account/driv
   assert.deepEqual(A.getHeads(f.handle.doc()), heads);
   await assert.rejects(
     documentMutation(f.context({ ...f.args, idempotency_key: "new-key-stale-heads" })),
-    /Page changed/,
+    (error) =>
+      error.status === 409 && error.code === "stale_heads" && /Page changed/.test(error.message),
   );
   for (const identity of [
     { ...f.identity, driver: "Codex" },
