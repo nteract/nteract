@@ -419,7 +419,10 @@ export function errorResponse(error, stage = "request") {
             .slice(0, 100)
             .map((id) => String(id).slice(0, 256)),
         }),
-      ...(["edit_conflict", "resync_required"].includes(error?.code) && {
+      // Revision refusals name the live revision so the caller can rebuild
+      // its request without another read: Page heads, and the comments
+      // document's where the host knows them.
+      ...(["stale_heads", "edit_conflict", "resync_required"].includes(error?.code) && {
         ...(Array.isArray(error.details?.conflicts) && {
           conflicts: error.details.conflicts.slice(0, 10).map((conflict) => ({
             block_id: String(conflict.block_id ?? "").slice(0, 128),
@@ -429,6 +432,9 @@ export function errorResponse(error, stage = "request") {
         }),
         ...(Array.isArray(error.details?.current_heads) && {
           current_heads: error.details.current_heads.slice(0, 128),
+        }),
+        ...(Array.isArray(error.details?.comment_heads) && {
+          comment_heads: error.details.comment_heads.slice(0, 128),
         }),
       }),
     },

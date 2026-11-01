@@ -132,7 +132,7 @@ const guard = {
     type: "array",
     items: string,
     description:
-      "Observed heads from read_page or read_page_changes. edit_page, patch_page and delete_page require exact current heads by default; patch_page conflict_scope:target accepts older heads for unchanged replace_match and format_match targets. manage_page_comment add with selected_text resolves its passage at these heads; other comment actions ignore them.",
+      "Observed heads from read_page or read_page_changes. edit_page, patch_page and delete_page require exact current heads by default; patch_page conflict_scope:target accepts older heads for unchanged replace_match and format_match targets. A stale_heads refusal carries current_heads (and comment_heads), so reconsider the edit and resend with those heads and a new key, without another read. manage_page_comment add with selected_text resolves its passage at these heads; other comment actions ignore them.",
   },
   retry_token: {
     ...string,
@@ -708,7 +708,7 @@ const STATUS_CODES = {
 /** The body of a failed tool result, in its text and structured content. Every
  * refusal has a stable code, so agents never branch on message text.
  * retryable:true means a retry can succeed; for stale_heads that retry is a new
- * request built from a fresh read. */
+ * request built on the refusal's current_heads (or a fresh read). */
 function refusal(status, body) {
   const fields = body && typeof body === "object" && !Array.isArray(body) ? body : {};
   const code =

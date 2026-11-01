@@ -3728,10 +3728,26 @@ export class Page {
       }
       throw new HttpError(404, "Not found");
     } catch (error) {
-      if (!admissionRoute) return errorResponse(error, "page");
+      if (!admissionRoute) return errorResponse(this.withCommentHeads(error), "page");
       if ((error.status ?? 500) >= 500) logFailure(error, "page");
       return admissionErrorResponse(error, { stage: "page", identity });
     }
+  }
+
+  /** A revision refusal (stale_heads, edit_conflict, resync_required) names
+   * the live Page revision in `details.current_heads`. Add the comments
+   * document's revision beside it, so the caller holds both baselines
+   * without a read. Other errors pass through unchanged. */
+  withCommentHeads(error) {
+    if (
+      !["stale_heads", "edit_conflict", "resync_required"].includes(error?.code) ||
+      !Array.isArray(error.details?.current_heads) ||
+      error.details.comment_heads !== undefined
+    )
+      return error;
+    const comments = this.commentsView();
+    if (comments) error.details = { ...error.details, comment_heads: A.getHeads(comments) };
+    return error;
   }
 
   /**
@@ -4184,10 +4200,12 @@ export class Page {
   async lifecycleReply(response, context = {}) {
     if (response.status >= 500) return json({ error: response.error }, response.status);
     if (response.status !== 200) {
-      const reply = errorResponse(
-        new HttpError(response.status, response.error, response.code),
-        "page-lifecycle",
-      );
+      const error = new HttpError(response.status, response.error, response.code);
+      // A trash refused for stale base_heads names the live revision, as an
+      // edit refusal does.
+      if (response.code === "stale_heads" && this.handle)
+        error.details = { current_heads: A.getHeads(this.handle.doc()) };
+      const reply = errorResponse(this.withCommentHeads(error), "page-lifecycle");
       // Every refusal before the record changes lets the Catalog release its
       // reservation, as for a rejected creation.
       if (response.beforeChange) reply.headers.set("x-pages-lifecycle-rejected", "before-change");

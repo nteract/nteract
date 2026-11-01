@@ -16,10 +16,11 @@ export const PAGE_DOC = "page";
 export const COMMENTS_DOC = "comments";
 const entryDoc = (entry) => entry?.doc ?? PAGE_DOC;
 
-function reject(status, message, code) {
+function reject(status, message, code, details) {
   const error = new Error(message);
   error.status = status;
   error.code = code;
+  if (details) error.details = details;
   throw error;
 }
 export function mutationKey(args) {
@@ -55,7 +56,11 @@ export function requireHeads(doc, heads) {
     heads.length !== current.length ||
     [...heads].sort().some((head, index) => head !== current[index])
   )
-    reject(409, "Page changed; read_page again before editing", "stale_heads");
+    // The refusal carries the live revision, as edit_conflict does, so the
+    // caller can rebuild its request without a read_page round trip.
+    reject(409, "Page changed; read_page again before editing", "stale_heads", {
+      current_heads: current,
+    });
 }
 
 /** Journal the exact CRDT edit under shared native history admission. Retrying

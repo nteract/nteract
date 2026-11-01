@@ -821,7 +821,8 @@ literal $ and < the same way, so Markdown you read is always writable.
 To restructure a block (headings, lists, tables), replace it with
 edit_page replace_block_markdown, or insert, move and delete whole blocks.
 Copy the whole heads array, even when it has more than one entry. On a stale-revision error
-(code stale_heads), read again, reconsider the edit, and use a new key. After a timeout or unknown
+(code stale_heads), the refusal names current_heads: reconsider the edit, then resend with
+those heads and a new key, or read again when you need the changed text. After a timeout or unknown
 outcome, retry the exact request body, key, token, account, and driver label.
 
 Retry tokens keep completed-operation receipts bounded without making old retries
@@ -901,8 +902,11 @@ The same operations and guards apply. Results contain JSON in content[].text
 and the same object in structuredContent; check result.isError even when HTTP
 succeeds. Every error has a stable code. Branch on code, not on the error message:
 
-- stale_heads: the Page changed since your read (retryable:true). Read again,
-  reconsider, and send a new request with fresh base_heads, token and key.
+- stale_heads: the Page changed since your read (retryable:true). The refusal
+  carries current_heads (and comment_heads when the Page has a comments
+  document). Reconsider the edit against the current content, then send a new
+  request with those heads and a new key; read again only when you need the
+  changed text.
 - invalid_edit_selector: the request can't apply as written: missing or
   malformed base_heads, zero or multiple matches, an unknown block, operation or
   mark. Fix the request; repeating it unchanged fails again.
