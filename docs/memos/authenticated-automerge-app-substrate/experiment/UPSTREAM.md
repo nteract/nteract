@@ -94,6 +94,9 @@ its generated hash. Existing admission limits and atomic single-value writes
 are unchanged. This changes stored framing, not native signatures, history,
 wire messages, or authentication. Stored-envelope checks detect corruption;
 native authenticated ingress remains responsible for signer verification.
+The package entry re-exports `decodeRecordFrame` and `RECORD_HEADER_BYTES`, so
+Pages reads saved commit records for authorship with this codec rather than a
+copy of the layout; provenance records that `index.ts` change with the codec.
 `record-codec.test.mjs` covers native commit/fragment round trips, legacy reads,
 malformed lengths, binding/digest failures, ownership, and uncertain atomic saves.
 
@@ -160,6 +163,19 @@ and the buffered persistence protocol. The two original 16 MiB scenarios in
 `pages/worker/capacity-race.test.mjs` now require readable recovery of stranded
 legacy intents. In-process fault injection is not a proof of host power-loss or
 object-store failover behavior.
+
+The record-refusal patch in `patch-record-refusal.mjs` lets a byte store refuse
+one record. A store that throws, before writing anything, an error whose
+`recordRefused` is true rejects that save to native ingress and nothing else:
+the record index stays valid, the owner's storage-failure callback isn't
+called (so the native engine isn't reset and other connections stay up), and
+the attempt leaves the mutation ledger (so a later flush doesn't report it), and
+a flush that captured the attempt before the refusal filters it out of its
+results.
+Any other error keeps the failure path. Pages uses it for per-author admission
+of comment records. `record-refusal.test.mjs` runs real peers: a refused
+signer's record stays out while another peer keeps syncing both ways on its
+open connection, and an unmarked error still resets.
 
 The causal-history patch in `patch-causal-history.mjs` changes two upstream
 files. Storage may persist only a prefix of one flush: Pages splits a flush
@@ -235,6 +251,23 @@ exactly the records a whole-document rescan before each edit would select.
 `MemoryByteStore`; it does not measure IndexedDB or editor work. Stored keys,
 frames, signatures and wire messages are unchanged. The upstream fix belongs in
 `StorageBridge.saveBatchAll` and the delegate's `records` handling.
+
+The outbound sync patch in `patch-outbound-sync.mjs` adds an optional
+`scheduleLocalSync(id, start)` option to `SubductionBackend`. Every successful
+local store started a native sync round with each peer: a request, the peer's
+reply, then the commits it asked for. Pages makes one Automerge change per
+editor transaction, so that was a round per keystroke. With the hook, the
+application decides when a local store's round starts and can give a run of
+stores one round. `start` is the existing coalescing `scheduleSync`: a round in
+flight still absorbs it, and it does nothing after close, during deletion, or
+once the connection generation stopped. A hook that throws starts the round at
+once. Durability is unchanged: the store has persisted before the hook runs.
+Reconnect replay and session opens still start their rounds immediately, and
+without the hook the backend behaves as before. `outbound-sync.test.mjs` shows
+three stores reaching a peer only when `start` runs, in one round. Native still
+sends one frame per commit. Stored keys, frames, signatures and wire messages
+are unchanged. Upstream, this belongs in the backend options next to the
+existing sync timeout.
 
 ## Runtime evidence
 

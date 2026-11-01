@@ -12,11 +12,13 @@ import {
   LineBreak,
   Strong,
   Emphasis,
+  Strikethrough,
   Code,
   Blockquote,
   ListItem,
   OrderedList,
   BulletList,
+  HorizontalRule,
   Table,
   TableRow,
   Cell,
@@ -76,6 +78,13 @@ export const PagesLink = Mark.Type.define("PagesLink", {
             rel: "noopener noreferrer",
           }
         : {},
+    // Pasted and dropped HTML keeps its links. The raw attribute keeps a
+    // relative link relative; an unsafe scheme keeps the text unlinked.
+    readElement(element) {
+      const href = element.getAttribute("href");
+      if (!href || !safeUrl(href)) return parse.Reject;
+      return { href, title: element.getAttribute("title") || null };
+    },
   },
 });
 // Palette highlights render through theme tokens. A custom color is a raw hex
@@ -123,6 +132,10 @@ export const PagesForeignMarks = Mark.Type.define("PagesForeignMarks", {
     attributes: (value) => ({ "data-pages-foreign-marks": Object.keys(value).sort().join(" ") }),
   },
 });
+// A preserved Markdown block from an older build. Read-only: no writer
+// creates one, and the Page host converts each stored one to native content
+// (model/raw-migration.mjs). The editor still decodes it so a Page that holds
+// one opens; remove it once no stored Page can hold one.
 export const OpaqueBlock = Leaf.Type.define("PagesOpaque", {
   group: Node.Group.Content,
   selectable: true,
@@ -132,11 +145,18 @@ export const OpaqueBlock = Leaf.Type.define("PagesOpaque", {
   },
   shape: {
     structure: (value) =>
-      Elt.mk("section", { class: "opaque", "data-pages-opaque": "true" }, [
-        Elt.mk("pre", [value.source]),
-      ]),
+      // The notice is a CSS attribute, not content, so copying the block
+      // copies only its source, which pastes as an editable code block.
+      Elt.mk(
+        "section",
+        { class: "opaque", "data-pages-opaque": "true", "data-pages-notice": PRESERVED_NOTICE },
+        [Elt.mk("pre", [value.source])],
+      ),
   },
 });
+/** Shown above a preserved block until the host's conversion arrives. */
+export const PRESERVED_NOTICE =
+  "Saved by an older version of Pages. It becomes editable text once Pages finishes converting it; this happens when the Page syncs.";
 export const PagesImage = Leaf.Type.define("PagesImage", {
   inline: true,
   selectable: true,
@@ -208,6 +228,7 @@ export const elements = [
   LineBreak,
   Strong,
   Emphasis,
+  Strikethrough,
   Code,
   PagesLink,
   PagesHighlight,
@@ -218,6 +239,7 @@ export const elements = [
   BulletList,
   TaskList,
   TaskChecked,
+  HorizontalRule,
   OpaqueBlock,
   PagesImage,
   Aside,
@@ -226,8 +248,8 @@ export const elements = [
   Cell,
   HeaderCell,
   Alignment,
-  ...[Strong, Emphasis, Code, PagesLink, PagesHighlight, PagesForeignMarks].map((mark) =>
-    Schema.Override.markTarget(mark, Leaf.Text),
+  ...[Strong, Emphasis, Strikethrough, Code, PagesLink, PagesHighlight, PagesForeignMarks].map(
+    (mark) => Schema.Override.markTarget(mark, Leaf.Text),
   ),
 ];
 export const schema = Schema.define(elements);
@@ -239,11 +261,13 @@ export {
   LineBreak,
   Strong,
   Emphasis,
+  Strikethrough,
   Code,
   Blockquote,
   ListItem,
   OrderedList,
   BulletList,
+  HorizontalRule,
   Table,
   TableRow,
   Cell,
@@ -254,6 +278,7 @@ export const expand = updateSpansConfig;
 const markTypes = {
   strong: { type: Strong, of: () => Strong, value: () => true },
   em: { type: Emphasis, of: () => Emphasis, value: () => true },
+  strike: { type: Strikethrough, of: () => Strikethrough, value: () => true },
   code: { type: Code, of: () => Code, value: () => true },
   link: {
     type: PagesLink,
@@ -434,7 +459,9 @@ export function decode(spans) {
       if (d.outer) outer.push(d.outer);
       outer.push(d.tag);
     }
-    const desc = type === "pages-opaque" ? null : descriptor(type, attrs);
+    // Leaf blocks hold no content of their own.
+    const leafBlock = type === "pages-opaque" || type === "horizontal-rule";
+    const desc = leafBlock ? null : descriptor(type, attrs);
     if (desc?.outer) outer.push(desc.outer);
     let common = 0;
     while (
@@ -445,7 +472,8 @@ export function decode(spans) {
       common++;
     while (stack.length > common) close();
     for (let i = common; i < outer.length; i++) open(outer[i]);
-    if (type === "pages-opaque") {
+    if (type === "horizontal-rule") leaf(HorizontalRule);
+    else if (type === "pages-opaque") {
       leaf(
         OpaqueBlock.of({
           source: String(attrs.source ?? ""),
@@ -500,6 +528,10 @@ export function encode(doc) {
   const block = (node, parents, implicit = false, listType = null) => {
     if (node.type === OpaqueBlock) {
       marker("pages-opaque", parents, node.param);
+      return;
+    }
+    if (node.type === HorizontalRule.type) {
+      marker("horizontal-rule", parents);
       return;
     }
     if (!node.isPlot) throw Error(`Unsupported Wordgard block: ${node.name}`);

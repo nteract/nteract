@@ -169,11 +169,32 @@ async function selectionPosition(page) {
     };
   });
 }
+const pageMenu = (page) => page.getByRole("button", { name: "More page actions", exact: true });
+// On a phone (narrow and touch) activity lives under the header's ⋯ menu.
 async function openActivity(page) {
-  await expect(activity(page)).toBeVisible();
-  if (!(await activity(page).evaluate((element) => element.open)))
-    await activity(page).locator("summary").click();
+  if (await pageMenu(page).isVisible()) {
+    if (!(await popover(page).isVisible())) {
+      await pageMenu(page).click();
+      await page.getByRole("menuitem", { name: /^Activity, \d+ active sessions?$/ }).click();
+    }
+  } else {
+    await expect(activity(page)).toBeVisible();
+    if (!(await activity(page).evaluate((element) => element.open)))
+      await activity(page).locator("summary").click();
+  }
   await expect(popover(page)).toBeVisible();
+}
+async function withinViewport(locator, label) {
+  const bounds = await locator.boundingBox();
+  const viewport = locator.page().viewportSize();
+  assert.ok(
+    bounds &&
+      bounds.x >= 0 &&
+      bounds.y >= 0 &&
+      bounds.x + bounds.width <= viewport.width + 1 &&
+      bounds.y + bounds.height <= viewport.height + 1,
+    `${label} stays within the viewport: ${JSON.stringify({ bounds, viewport })}`,
+  );
 }
 async function setTheme(page, mode) {
   const account = page.locator(".account-actions");
@@ -314,6 +335,11 @@ try {
   await selectText(a, "opening caret", true);
   await a.keyboard.insertText(insertion);
   await expect(content(b)).toContainText("opening caret" + insertion);
+  // The host attests writer a's actor from its signed commit, so b underlines
+  // the received text in a's color and names them.
+  const underline = b.locator(".remote-edit", { hasText: "still here" }).first();
+  await expect(underline).toHaveAttribute("title", /^Edited by (?!a collaborator)/);
+  await expect(underline).toHaveAttribute("style", /--peer-color:/);
   await expect
     .poll(
       async () => {
@@ -325,7 +351,7 @@ try {
       { timeout: 15000 },
     )
     .toBe(originalTarget.start_utf16 + insertion.length);
-  const edited = await read();
+  let edited = await read();
   observed = await presence();
   assert.deepEqual(observed.heads, edited.heads);
   assert.equal(
@@ -363,6 +389,220 @@ try {
     edited.heads,
     "theme, navigation and renewal create no history",
   );
+  complete(stage);
+
+  stage = "phone header: Share and activity live under ⋯ at 390px; 1280px is unchanged";
+  await update(first, {});
+  await update(second, {});
+  const phoneContext = await browser.newContext({
+    storageState: await a.context().storageState(),
+    viewport: { width: 390, height: 844 },
+    isMobile: true,
+    hasTouch: true,
+    colorScheme: "light",
+  });
+  phoneContext.setDefaultTimeout(10000);
+  const phone = await phoneContext.newPage();
+  phone.on("pageerror", (error) => report.errors.push(redact(error.message).slice(0, 1000)));
+  await phone.goto(origin + "/p/" + pageId, { waitUntil: "domcontentloaded" });
+  await expect(content(phone)).toContainText(anchorText, { timeout: 20000 });
+  // The theme follows the account's stored choice; the phone shots are light.
+  await setTheme(phone, "light");
+  const more = pageMenu(phone);
+  await expect(more).toBeVisible();
+  await expect(more).toHaveAttribute("aria-haspopup", "menu");
+  await expect(more).toHaveAttribute("aria-expanded", "false");
+  // Agents are at work, so ⋯ carries the activity dot.
+  await expect(more.locator(".page-menu-indicator")).toBeVisible();
+  const target = await more.boundingBox();
+  assert.ok(target.width >= 44 && target.height >= 44, JSON.stringify(target));
+  await expect(phone.getByRole("button", { name: "Share", exact: true })).toHaveCount(0);
+  await expect(activity(phone)).toHaveCount(0);
+  await expect(phone.getByLabel("Document actions", { exact: true })).toHaveCount(0);
+  await expect(phone.getByRole("button", { name: "Comments", exact: true })).toBeVisible();
+  await expect(phone.locator(".document-status .save-status--dot")).toHaveCount(1);
+  // One header row: the switcher, Comments, ⋯ and Account share it, and the
+  // title follows it with no empty row between.
+  const layout = await phone.evaluate(() => {
+    const box = (selector) => {
+      const rect = document.querySelector(selector).getBoundingClientRect();
+      return { top: rect.top, bottom: rect.bottom, height: rect.height };
+    };
+    return {
+      header: box(".app-header"),
+      controls: [
+        ".document-switcher",
+        ".comments-toggle",
+        ".page-menu-button",
+        ".account-actions summary",
+      ].map((selector) => ({ selector, ...box(selector) })),
+      title: box(".document-title"),
+      rootHeight: getComputedStyle(document.documentElement).getPropertyValue(
+        "--page-header-height",
+      ),
+    };
+  });
+  assert.ok(layout.header.height <= 56, JSON.stringify(layout));
+  assert.equal(layout.rootHeight.trim(), "48px", JSON.stringify(layout));
+  const centers = layout.controls.map(({ top, height }) => top + height / 2);
+  assert.ok(Math.max(...centers) - Math.min(...centers) <= 4, JSON.stringify(layout));
+  for (const control of layout.controls)
+    assert.ok(control.height >= 44, `${control.selector} is a 44px target: ${control.height}`);
+  assert.ok(
+    layout.title.top >= layout.header.bottom && layout.title.top - layout.header.bottom < 40,
+    `the title follows the header: ${JSON.stringify(layout)}`,
+  );
+  await phone.screenshot({ path: output + "/phone-header-closed.png" });
+  report.screenshots.push("phone-header-closed.png");
+
+  await more.tap();
+  const phoneMenu = phone.getByRole("menu", { name: "More page actions" });
+  await expect(phoneMenu).toBeVisible();
+  await expect(more).toHaveAttribute("aria-expanded", "true");
+  await expect(phoneMenu.getByRole("menuitem", { name: "Share", exact: true })).toBeFocused();
+  const entries = await phoneMenu
+    .getByRole("menuitem")
+    .evaluateAll((items) =>
+      items.map((item) => item.getAttribute("aria-label") ?? item.textContent.trim()),
+    );
+  assert.equal(entries[0], "Share");
+  assert.match(entries[1], /^Activity, \d+ active sessions?$/);
+  for (const name of ["Show formatting", "Copy link", "Move to Trash"])
+    assert.ok(entries.includes(name), `${name} is under ⋯: ${entries}`);
+  await withinViewport(phoneMenu, "the ⋯ menu");
+  await phone.screenshot({ path: output + "/phone-header-open.png" });
+  report.screenshots.push("phone-header-open.png");
+
+  await phoneMenu.getByRole("menuitem", { name: "Share", exact: true }).tap();
+  await expect(phoneMenu).toHaveCount(0);
+  const share = phone.getByRole("dialog", { name: "Share Page" });
+  await expect(share).toBeVisible();
+  await expect(share).toBeFocused();
+  await withinViewport(share, "Share");
+  // Rotating past the phone breakpoint keeps the open panel and its draft.
+  const inviteEmail = share.getByRole("textbox", { name: "Invite by email" });
+  await inviteEmail.fill("rotation@example.com");
+  await share.getByRole("combobox", { name: "Access" }).selectOption("editor");
+  await phone.setViewportSize({ width: 700, height: 390 });
+  await expect(more).toHaveCount(0);
+  await expect(phone.getByRole("button", { name: "Share", exact: true })).toHaveAttribute(
+    "aria-expanded",
+    "true",
+  );
+  await expect(share).toBeVisible();
+  await expect(inviteEmail).toHaveValue("rotation@example.com");
+  await expect(inviteEmail).toBeFocused();
+  await expect(share.getByRole("combobox", { name: "Access" })).toHaveValue("editor");
+  await phone.setViewportSize({ width: 390, height: 844 });
+  await expect(more).toBeVisible();
+  await expect(inviteEmail).toHaveValue("rotation@example.com");
+  await inviteEmail.fill("");
+  // Share opened from the keyboard on the wide layout: its button has focus
+  // and leaves with the phone layout, so focus moves into the panel.
+  await phone.keyboard.press("Escape");
+  await expect(share).toHaveCount(0);
+  await phone.setViewportSize({ width: 700, height: 390 });
+  const wideShare = phone.getByRole("button", { name: "Share", exact: true });
+  await wideShare.focus();
+  await phone.keyboard.press("Enter");
+  await expect(share).toBeVisible();
+  await expect(wideShare).toBeFocused();
+  await phone.setViewportSize({ width: 390, height: 844 });
+  await expect(more).toBeVisible();
+  await expect(share).toBeVisible();
+  await expect(share).toBeFocused();
+  await phone.keyboard.press("Escape");
+  await expect(share).toHaveCount(0);
+  await expect(more).toBeFocused();
+
+  await openActivity(phone);
+  const phoneActivity = phone.getByRole("dialog", { name: "Page activity" });
+  await expect(phoneActivity).toContainText("Checking sources beside the passage");
+  await expect(phoneActivity).toContainText("Reviewing the introduction");
+  await expect(phoneActivity).toContainText(driver);
+  await withinViewport(phoneActivity, "activity");
+  await phone.screenshot({ path: output + "/phone-activity.png" });
+  report.screenshots.push("phone-activity.png");
+  // A tap on the Page below the panel closes it.
+  await phone.touchscreen.tap(195, 800);
+  await expect(phoneActivity).toHaveCount(0);
+
+  // With a tall keyboard the menu stays above it and scrolls. Emulation has
+  // no software keyboard, so set the visible height the tracker would publish.
+  await phone.evaluate(() => document.documentElement.style.setProperty("--vv-height", "240px"));
+  await more.tap();
+  await expect(phoneMenu).toBeVisible();
+  const fit = await phoneMenu.evaluate((element) => ({
+    bottom: Math.round(element.getBoundingClientRect().bottom),
+    scrolls: element.scrollHeight > element.clientHeight,
+  }));
+  assert.ok(fit.bottom <= 240 && fit.scrolls, JSON.stringify(fit));
+  await phone.touchscreen.tap(195, 800);
+  await expect(phoneMenu).toHaveCount(0);
+  await phone.evaluate(() => document.documentElement.style.removeProperty("--vv-height"));
+
+  // Editing: typing on a line the header covers scrolls the Page so the
+  // caret clears the header (Wordgard coveredMargins).
+  const caretTop = () =>
+    phone.evaluate(() => {
+      const range = getSelection().getRangeAt(0);
+      const rect = range.getClientRects()[0] ?? range.getBoundingClientRect();
+      return {
+        caret: Math.round(rect.top),
+        header: Math.round(document.querySelector(".app-header").getBoundingClientRect().bottom),
+        scrollY: Math.round(scrollY),
+      };
+    });
+  await phone.locator("wg-content p", { hasText: "Context paragraph 3." }).tap();
+  await expect(phone.locator(".mobile-bar")).toBeVisible();
+  const placed = await caretTop();
+  await phone.evaluate(({ caret, header }) => scrollBy(0, caret - header + 30), placed);
+  const covered = await caretTop();
+  assert.ok(
+    covered.caret < covered.header,
+    `the header covers the caret: ${JSON.stringify(covered)}`,
+  );
+  await phone.keyboard.insertText("!");
+  await expect
+    .poll(async () => {
+      const position = await caretTop();
+      return position.caret >= position.header && position.scrollY < covered.scrollY;
+    })
+    .toBe(true);
+  // The typed character is this stage's only edit; wait for the host to have it.
+  const typed = await phone
+    .locator("wg-content p", { hasText: "Context paragraph 3." })
+    .textContent();
+  await expect
+    .poll(async () => (await read()).blocks.some((block) => block.markdown.includes(typed)), {
+      timeout: 15000,
+    })
+    .toBe(true);
+  edited = await read();
+  await phone.screenshot({ path: output + "/phone-header-editing.png" });
+  report.screenshots.push("phone-header-editing.png");
+  await phoneContext.close();
+
+  await a.setViewportSize({ width: 1280, height: 900 });
+  await expect(pageMenu(a)).toHaveCount(0);
+  await expect(a.getByLabel("Document actions", { exact: true })).toBeVisible();
+  await expect(activity(a)).toBeVisible();
+  const desktopShare = a.getByRole("button", { name: "Share", exact: true });
+  await desktopShare.click();
+  await expect(a.getByRole("dialog", { name: "Share Page" })).toBeVisible();
+  await a.keyboard.press("Escape");
+  await expect(a.getByRole("dialog", { name: "Share Page" })).toHaveCount(0);
+  await expect(desktopShare).toBeFocused();
+  await a.evaluate(() => document.activeElement.blur());
+  await a.mouse.move(0, 400);
+  await expect(a.locator(".document-status [role=status]")).toHaveAttribute(
+    "aria-label",
+    "All changes saved",
+    { timeout: 15000 },
+  );
+  await a.locator(".app-header").screenshot({ path: output + "/desktop-header.png" });
+  report.screenshots.push("desktop-header.png");
+  await openActivity(a);
   complete(stage);
 
   stage = "clearing one lease preserves the other; clearing both removes their highlights";

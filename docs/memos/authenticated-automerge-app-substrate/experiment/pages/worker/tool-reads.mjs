@@ -2,6 +2,7 @@ import * as A from "@automerge/automerge";
 import { projectPage } from "../model/page.mjs";
 import { projectReadContent } from "../model/read-content.mjs";
 import { projectReadComments } from "../model/read-comments.mjs";
+import { documentFeatures } from "../model/schema-features.mjs";
 
 export const DEFAULT_READ_BYTES = 128 * 1024;
 const encoder = new TextEncoder();
@@ -92,14 +93,18 @@ function outlinePage(entries, offset, limit) {
   };
 }
 
-/** One captured CRDT revision supplies content, comments and heads across token issuance. */
+/** One captured CRDT revision supplies content, comments and heads across
+ * token issuance. `commentsDoc` is the Page's comments document; its own heads
+ * come back as `comment_heads`, the baseline read_page_changes takes as
+ * `since_comment_heads`. Comment writes never move `heads`. */
 export async function readTool(
   doc,
   operation,
   args,
-  { issueAuthority, recovery, historyIncomplete, getPresence } = {},
+  { issueAuthority, recovery, historyIncomplete, getPresence, commentsDoc } = {},
 ) {
   const heads = A.getHeads(doc);
+  const commentHeads = commentsDoc ? A.getHeads(commentsDoc) : undefined;
   let settings = { maxBytes: DEFAULT_READ_BYTES, offset: 0, limit: 100 },
     legacy = false,
     content,
@@ -117,12 +122,12 @@ export async function readTool(
       payload = {
         page_id: doc.page_id,
         title: doc.title,
-        comments: projectReadComments(doc, { state: "open", ...filters }),
+        comments: projectReadComments(doc, { state: "open", ...filters }, commentsDoc),
       };
     } else if (Object.keys(args).every((key) => key === "page_id")) {
       // Keep the existing default contract for clients with cached tool schemas.
       legacy = true;
-      payload = projectPage(doc);
+      payload = projectPage(doc, commentsDoc);
     } else {
       content = projectReadContent(doc, args);
       const mode = args.comments ?? (args.include_content === false ? "none" : "summary");
@@ -135,10 +140,14 @@ export async function readTool(
         comments:
           mode === "none"
             ? []
-            : projectReadComments(doc, {
-                state: mode === "open" ? "open" : "all",
-                include_messages: mode !== "summary",
-              }),
+            : projectReadComments(
+                doc,
+                {
+                  state: mode === "open" ? "open" : "all",
+                  include_messages: mode !== "summary",
+                },
+                commentsDoc,
+              ),
         ...(content.selection && { selection: content.selection }),
         ...(args.include_presence && { presence: getPresence(doc) }),
       };
@@ -158,6 +167,9 @@ export async function readTool(
   const authority = await issueAuthority();
   const common = {
     heads,
+    ...(commentHeads && { comment_heads: commentHeads }),
+    // The Page's schema stamp; empty when it uses only the baseline.
+    ...(operation === "read_page" && { schema_features: documentFeatures(doc) }),
     ...authority,
     ...(recovery && { recovery }),
     ...(historyIncomplete && { history_incomplete: historyIncomplete }),

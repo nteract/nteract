@@ -47,7 +47,8 @@ const PAUSES = {
 
 export class FakeSession {
   phase$ = new Store({ name: "open" });
-  status = "Saving";
+  // The status id the reload gate reads (STATUS_IDS in sync-status-machine.mjs).
+  statusId = "saving";
   pending = true;
   savedHeads = [];
   heads = ["h1"];
@@ -72,7 +73,7 @@ export class FakeSession {
     return this.pending;
   }
   get saveState() {
-    return saveStateOf(this.status);
+    return saveStateOf(this.statusId);
   }
   get checkpointWritten() {
     const phase = this.phase$.snapshot();
@@ -185,7 +186,7 @@ export class FakeSession {
       !!this.phase$.snapshot().reason ||
       this.deleted ||
       !this.pending ||
-      !drainingStatus(this.status);
+      !drainingStatus(this.statusId);
     return new Promise((resolve) => {
       let finished = false;
       let unsubscribe;

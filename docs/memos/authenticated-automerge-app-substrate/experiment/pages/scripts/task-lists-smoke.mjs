@@ -331,6 +331,70 @@ try {
   await expect(menu).toHaveCount(0);
   await expect(bar).toHaveCount(0);
   await mobile.evaluate(() => document.documentElement.style.removeProperty("--vv-height"));
+
+  // Comment on the bar is an action. With only a caret it comments on that
+  // paragraph; with a selection, on the selection. Showing the comments list
+  // is the header's Comments button, the only one on the page.
+  await prose
+    .locator("p")
+    .first()
+    .click({ position: { x: 24, y: 10 } });
+  await expect(bar).toBeVisible();
+  await expect(mobile.getByRole("button", { name: /^Comments/ })).toHaveCount(1);
+  await expect(
+    mobile.locator(".app-header").getByRole("button", { name: "Comments" }),
+  ).toBeVisible();
+  await expect(bar.locator("button[aria-pressed]")).toHaveCount(3);
+  const paragraphText = (await prose.locator("p").first().textContent()).trim();
+  const commentParagraph = bar.getByRole("button", { name: "Comment on paragraph", exact: true });
+  await expect(commentParagraph).not.toHaveAttribute("aria-pressed");
+  await commentParagraph.tap();
+  const sheet = mobile.getByRole("dialog", { name: "Comment on selection", exact: true });
+  await expect(sheet).toBeVisible();
+  await expect(
+    sheet.getByRole("textbox", { name: "Comment on selection", exact: true }),
+  ).toBeFocused();
+  const draftPassage = async () =>
+    (await prose.locator(".comment-draft-passage").allTextContents()).join("");
+  await expect.poll(draftPassage).toBe(paragraphText);
+  await mobile.screenshot({ path: output + "/mobile-comment-paragraph.png" });
+  await sheet.getByRole("button", { name: "Cancel", exact: true }).tap();
+  await expect(sheet).toHaveCount(0);
+  const commentSelection = bar.getByRole("button", { name: "Comment on selection", exact: true });
+  // Cancel returns focus to the editor and restores its selection, so retry
+  // until the bar reports the new passage.
+  await expect(async () => {
+    await prose
+      .locator("p")
+      .first()
+      .evaluate((paragraph) => {
+        const walker = document.createTreeWalker(paragraph, NodeFilter.SHOW_TEXT);
+        const node = walker.nextNode();
+        const range = document.createRange();
+        range.setStart(node, 0);
+        range.setEnd(node, Math.min(4, node.textContent.length));
+        getSelection().removeAllRanges();
+        getSelection().addRange(range);
+      });
+    await expect(commentSelection).toBeVisible({ timeout: 1500 });
+  }).toPass({ timeout: 15000 });
+  await commentSelection.tap();
+  await expect(sheet).toBeVisible();
+  await expect.poll(draftPassage).toBe(paragraphText.slice(0, 4));
+  await sheet.getByRole("button", { name: "Cancel", exact: true }).tap();
+  await expect(sheet).toHaveCount(0);
+  // Cancel hands focus back to the editor on its own schedule. Move focus to
+  // the title until that refocus has happened, so the bar goes away for good.
+  await expect(async () => {
+    await mobile.getByRole("textbox", { name: "Page title" }).evaluate((title) => title.focus());
+    await expect(bar).toHaveCount(0, { timeout: 1500 });
+  }).toPass({ timeout: 15000 });
+
+  // On a phone the header status is a dot with its label for screen readers.
+  const phoneStatus = mobile.locator(".document-status [role=status]");
+  await expect(phoneStatus).toHaveClass(/save-status--dot/);
+  await expect(phoneStatus.locator(".save-status-label")).toHaveCount(0);
+  await expect(phoneStatus.locator(".sr-only")).not.toHaveText("");
   // A full-page screenshot resets Chromium's touch emulation, so it comes last.
   await mobile.screenshot({ path: output + "/task-lists-mobile.png", fullPage: true });
   await mobileContext.close();

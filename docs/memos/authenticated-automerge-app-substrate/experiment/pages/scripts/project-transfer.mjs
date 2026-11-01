@@ -11,6 +11,7 @@
 import { open, readFile, rename } from "node:fs/promises";
 import { pathToFileURL } from "node:url";
 import { isProjectId } from "../shared/routes.mjs";
+import { exportMarkdown, parseMarkdown, unsupportedMarkdown } from "../model/richtext.mjs";
 
 export const BUNDLE_FORMAT = "nteract-pages-project-bundle";
 export const BUNDLE_VERSION = 1;
@@ -304,8 +305,8 @@ function bundlePage(row, parentSourceId, read, homePageId) {
     home: row.page_id === homePageId,
     title: read.title ?? row.title,
     markdown,
-    // Block boundaries matter only when there are several: Markdown import
-    // preserves a whole block verbatim if any of it is unsupported syntax.
+    // Block boundaries matter only when there are several. A source that
+    // stores preserved blocks exports each one's source as its own block.
     ...(blocks.length > 1 && { blocks }),
     preserved_markdown:
       read.types.includes("raw") ||
@@ -422,7 +423,12 @@ export function validateBundle(bundle) {
   return bundle;
 }
 
-const pageBlocks = (page) => page.blocks ?? [page.markdown];
+// A Page10 target refuses Markdown it can't represent (math and HTML) with
+// unsupported_markdown. Such a block is written as the literal text it reads
+// as, which is how the target itself converts a preserved block.
+const importable = (markdown) =>
+  unsupportedMarkdown(markdown) ? exportMarkdown(parseMarkdown(markdown)) : markdown;
+const pageBlocks = (page) => (page.blocks ?? [page.markdown]).map(importable);
 
 /**
  * Where a source Page goes on the target. On Page10 a Project is its home Page

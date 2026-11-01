@@ -6,6 +6,8 @@ import { Catalog, Page } from "./index.mjs";
 import { DocumentPolicy } from "./policy.mjs";
 import { retryKey } from "../model/retry-key.mjs";
 import { applyPageOperation, createPageData, initializePage } from "../model/page.mjs";
+import { comment, newCommentsDoc } from "../model/comments-test-support.mjs";
+import { stampFeatures } from "../model/schema-features.mjs";
 import { documentMutation, recoverDocumentMutations } from "./mutations.mjs";
 import { issueRetryToken, JOURNAL_LIMITS, RETRY_LIFETIME_MS } from "./operation-journal.mjs";
 
@@ -242,21 +244,24 @@ test("patch removal omits warnings and comment operations do not report existing
   await f.handle.update((doc) =>
     A.change(doc, (draft) => initializePage(draft, "# Guide\n\nOriginal body.")),
   );
-  const bodyBefore = f.handle.doc().blocks[f.blockId].richText;
-  const comment = await documentMutation(
-    f.context(
-      {
-        idempotency_key: "opening-title-comment",
-        base_heads: A.getHeads(f.handle.doc()),
-        block_id: f.blockId,
-        body: "A comment on the existing content.",
-      },
-      "manage_page_comment",
+  // Comments never go through a Page edit, so they never carry its warnings:
+  // the Page document refuses a comment operation outright.
+  const headsBefore = A.getHeads(f.handle.doc());
+  await assert.rejects(
+    documentMutation(
+      f.context(
+        {
+          idempotency_key: "opening-title-comment",
+          base_heads: headsBefore,
+          block_id: f.blockId,
+          body: "A comment on the existing content.",
+        },
+        "manage_page_comment",
+      ),
     ),
+    /Unsupported Page operation/,
   );
-  assert.equal(Object.hasOwn(comment, "warnings"), false);
-  assert.equal(f.handle.doc().blocks[f.blockId].richText, bodyBefore);
-  assert.ok(comment.result.thread_id);
+  assert.deepEqual(A.getHeads(f.handle.doc()), headsBefore);
 });
 
 test("old receipts without warnings are replayed unchanged despite a currently duplicate heading", async (t) => {
@@ -644,7 +649,11 @@ async function pageFixture(t, { readContent = false } = {}) {
   const auth = await createAuthFixture();
   t.mock.method(globalThis, "fetch", auth.fetch);
   const storage = new Storage();
-  let doc = A.from(createPageData({ pageId, title: "Accepted content" }));
+  // A current Page: its comments already live in their own document.
+  let doc = A.change(A.from(createPageData({ pageId, title: "Accepted content" })), (draft) =>
+    stampFeatures(draft, ["comments-doc"]),
+  );
+  let comments = newCommentsDoc();
   let updates = 0;
   const principal = `user:anaconda-fixture:${auth.subject}`;
   const blockId = Object.keys(doc.blocks)[0];
@@ -660,12 +669,15 @@ async function pageFixture(t, { readContent = false } = {}) {
           ],
         },
       });
-      threadId = applyPageOperation(draft, {
-        operation: "manage_page_comment",
-        arguments: { block_id: blockId, body: "Original comment." },
-        identity: { principal, displayName: "Fixture owner", driver: "Browser" },
-      }).thread_id;
     });
+    let result;
+    ({ comments, result } = comment(
+      doc,
+      comments,
+      { block_id: blockId, body: "Original comment." },
+      { principal, displayName: "Fixture owner", driver: "Browser" },
+    ));
+    threadId = result.thread_id;
   }
   const page = Object.assign(Object.create(Page.prototype), {
     ready: Promise.resolve(),
@@ -684,6 +696,13 @@ async function pageFixture(t, { readContent = false } = {}) {
       async update(fn) {
         updates++;
         doc = fn(doc);
+      },
+      broadcast() {},
+    },
+    commentsHandle: {
+      doc: () => comments,
+      async update(fn) {
+        comments = fn(comments);
       },
       broadcast() {},
     },
@@ -817,12 +836,16 @@ test(
       A.change(doc, (draft) => {
         A.updateText(draft, ["title"], "Concurrent native title");
         initializePage(draft, "Concurrent native content.");
-        applyPageOperation(draft, {
-          operation: "manage_page_comment",
-          arguments: { action: "reply", thread_id: f.threadId, body: "Concurrent native reply." },
-          identity: { principal: f.principal, displayName: "Fixture owner", driver: "Browser" },
-        });
       }),
+    );
+    await f.page.commentsHandle.update(
+      (current) =>
+        comment(
+          f.page.handle.doc(),
+          current,
+          { action: "reply", thread_id: f.threadId, body: "Concurrent native reply." },
+          { principal: f.principal, displayName: "Fixture owner", driver: "Browser" },
+        ).comments,
     );
     assert.notDeepEqual(A.getHeads(f.page.handle.doc()), heads);
     released.resolve();

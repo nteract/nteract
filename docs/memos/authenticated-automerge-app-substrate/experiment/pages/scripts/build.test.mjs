@@ -31,9 +31,12 @@ import {
   viewerBuildOptions,
   viewerSplit,
   withHashedAssets,
+  withInlineFavicon,
   withModulePreloads,
 } from "./viewer-chunks.mjs";
+import { FAVICON_HREF } from "../shared/favicon.mjs";
 import { createHash } from "node:crypto";
+import { crc32 } from "node:zlib";
 
 const app = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const require = createRequire(import.meta.url);
@@ -118,8 +121,12 @@ test("failed rebuild removes the previous receipt before replacing any artifacts
       "scripts/browser-mermaid.mjs",
       readFileSync(new URL("./browser-mermaid.mjs", import.meta.url), "utf8"),
     );
-    for (const name of ["browser-wasm.mjs", "viewer-chunks.mjs"])
+    for (const name of ["browser-wasm.mjs", "viewer-chunks.mjs", "deployment/profiles.mjs"])
       write(`scripts/${name}`, readFileSync(new URL(`./${name}`, import.meta.url), "utf8"));
+    write(
+      "shared/favicon.mjs",
+      readFileSync(new URL("../shared/favicon.mjs", import.meta.url), "utf8"),
+    );
     write(
       "scripts/source-fingerprint.mjs",
       "export const sourceFingerprint = () => ({sha256:'source-B'}); export const writeBuildReceipt = () => {throw new Error('failed build must not certify outputs');};",
@@ -227,7 +234,7 @@ test("the blocking theme asset applies preferences without loading the editor", 
     Object.keys(result.metafile.inputs)
       .map((file) => path.basename(file))
       .sort(),
-    ["early-session.mjs", "routes.mjs", "theme-bootstrap.mjs", "theme.mjs"],
+    ["admission.mjs", "early-session.mjs", "routes.mjs", "theme-bootstrap.mjs", "theme.mjs"],
   );
   const classes = new Set();
   const root = {
@@ -251,6 +258,19 @@ test("the blocking theme asset applies preferences without loading the editor", 
   // The viewer's first session refresh takes this request (early-session.mjs).
   assert.deepEqual(fetches, [["/api/auth/session", ["signal"]]]);
   assert.ok(window.__pagesEarlySession);
+  // On a Page route the head script also starts that Page's discovery.
+  fetches.length = 0;
+  const pageId = "5f0c4a5e-6c1e-4b0e-9a8f-0d0d4c5e6f70";
+  vm.runInNewContext(output, {
+    window: { ...window, location: { href: `https://pages.example/p/${pageId}` } },
+    URL,
+    AbortController,
+    performance,
+  });
+  assert.deepEqual(fetches, [
+    ["/api/auth/session", ["signal"]],
+    [`/api/connect?page=${pageId}&preview=1`, ["headers", "signal"]],
+  ]);
   assert.equal(root.dataset.theme, "dark");
   assert.equal(root.dataset.colorTheme, undefined);
   assert.equal(root.style.colorScheme, "dark");
@@ -478,6 +498,44 @@ test("index.html names every shell asset by its hashed file", () => {
     /Expected a hashed app[.]css/,
   );
   assert.throws(() => withHashedAssets(html, assets), /reference [/]theme[.]js exactly once/);
+});
+
+test("the inlined tab icon is a complete 32x32 PNG", () => {
+  const prefix = "data:image/png;base64,";
+  assert.ok(FAVICON_HREF.startsWith(prefix));
+  const base64 = FAVICON_HREF.slice(prefix.length);
+  const png = Buffer.from(base64, "base64");
+  assert.equal(png.toString("base64"), base64, "canonical base64");
+  assert.deepEqual([...png.subarray(0, 8)], [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+  // Walk every chunk and check its CRC, so a truncated or edited string fails.
+  const chunks = [];
+  for (let at = 8; at < png.length; ) {
+    const length = png.readUInt32BE(at);
+    const typeAndData = png.subarray(at + 4, at + 8 + length);
+    assert.equal(png.readUInt32BE(at + 8 + length), crc32(typeAndData), `chunk at ${at}`);
+    chunks.push({
+      type: typeAndData.subarray(0, 4).toString("latin1"),
+      data: typeAndData.subarray(4),
+    });
+    at += 12 + length;
+  }
+  assert.equal(chunks[0].type, "IHDR");
+  assert.equal(chunks[0].data.readUInt32BE(0), 32, "width");
+  assert.equal(chunks[0].data.readUInt32BE(4), 32, "height");
+  assert.ok(chunks.some(({ type }) => type === "IDAT"));
+  assert.equal(chunks.at(-1).type, "IEND");
+});
+
+test("index.html inlines the nteract app icon as its tab icon", () => {
+  const source = readFileSync(path.join(app, "viewer/index.html"), "utf8");
+  const html = withInlineFavicon(source);
+  assert.equal(
+    html.split(`<link rel="icon" type="image/png" sizes="32x32" href="${FAVICON_HREF}" />`).length,
+    2,
+  );
+  assert.equal(html.includes("/favicon.png"), false);
+  assert.throws(() => withInlineFavicon(html), /reference [/]favicon[.]png exactly once/);
+  assert.throws(() => withInlineFavicon(source, "/favicon.ico"), /PNG data URL/);
 });
 
 test("_headers caches exactly the hashed files as immutable", () => {

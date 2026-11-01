@@ -3,7 +3,13 @@ import { test } from "node:test";
 import worker from "../worker/index.mjs";
 import { agentGuide } from "../agent-guide.mjs";
 import { tools } from "../mcp.mjs";
-import { codexConfig, kiloConfig, saveKeyCommand } from "../agent-client-setup.mjs";
+import {
+  codexConfig,
+  kiloApiKeyConfig,
+  kiloConfig,
+  pagesAgentEnvrc,
+  saveKeyCommand,
+} from "../agent-client-setup.mjs";
 
 const origin = "https://pages-next.runtimed.run";
 const env = {
@@ -33,7 +39,33 @@ test("GET llms.txt is readable without authentication and explains the supported
     guide.indexOf("Ask the human for their step early") < guide.indexOf("### Kilo Desktop"),
   );
   assert.ok(guide.includes(kiloConfig(origin)));
+  assert.ok(guide.includes(kiloApiKeyConfig(origin)));
   assert.ok(guide.includes(codexConfig(origin)));
+  // API keys lead; OAuth follows for interactive clients, with its lifecycle
+  // and the shared-token warning.
+  assert.ok(
+    guide.indexOf("### Kilo Desktop / CLI (API key, recommended)") <
+      guide.indexOf("### ChatGPT / cloud connection (OAuth)"),
+  );
+  assert.ok(
+    guide.indexOf("### ChatGPT / cloud connection (OAuth)") <
+      guide.indexOf("### Kilo Desktop / CLI (OAuth, one process at a time)"),
+  );
+  const prose = guide.replace(/\s+/g, " ");
+  for (const fact of [
+    "access tokens expire after 10 minutes",
+    "each one works once and is replaced on use",
+    "The grant expires 30 days after authorization",
+    "Nothing needs to run in the background",
+    "revokes the whole grant",
+    "X-Pages-Agent: a short session label",
+    "at most 80 characters",
+    '"X-Pages-Agent": "{env:PAGES_AGENT}"',
+    "Mcp-Session-Id",
+    "self-declared",
+  ])
+    assert.ok(prose.includes(fact), fact);
+  assert.ok(guide.includes(pagesAgentEnvrc));
   assert.ok(guide.includes(saveKeyCommand));
   for (const value of [
     "Authorization: Bearer",
@@ -66,6 +98,9 @@ test("GET llms.txt is readable without authentication and explains the supported
     "MCP structured",
     "asset_url (also url for existing",
     "It does not insert content",
+    "thread_ids",
+    "not_found_thread_ids",
+    "already_resolved",
     "No additional API key or public hosting",
     `${origin}/mcp`,
     `${origin}/api/tools`,

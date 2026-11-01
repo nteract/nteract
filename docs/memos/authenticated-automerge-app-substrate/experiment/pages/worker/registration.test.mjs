@@ -11,6 +11,7 @@ import { createAuthFixture } from "../../auth-fixtures.mjs";
 import { createPageData, initializePage } from "../model/page.mjs";
 import worker, { Catalog, Page } from "./index.mjs";
 import { readRegistration } from "./registration.mjs";
+import { DEFAULT_PAGE_QUOTA } from "./page-quota.mjs";
 
 class Storage {
   values = new Map();
@@ -261,7 +262,8 @@ test("malformed and mismatched snapshots reserve no capacity and leave the key r
       initial_snapshot_base64: Buffer.from(
         A.save(
           A.change(A.clone(doc), (draft) => {
-            draft.comments.fake = { author: "someone else" };
+            // Comments never arrive in a bootstrap snapshot.
+            draft.comments = { fake: { author: "someone else" } };
           }),
         ),
       ).toString("base64"),
@@ -305,8 +307,17 @@ test("registration obeys account quota, same-origin and credential write gates",
     (await f.send(args, { headers: { origin: "https://foreign.invalid" } })).status,
     403,
   );
-  for (let i = 0; i < 100; i++) await f.catalog().storage.put(`page/${i}`, {});
-  assert.equal((await f.send(args)).status, 409);
+  // Entries a Catalog wrote before it stored key counts: the first capacity
+  // check counts them.
+  for (let i = 0; i < DEFAULT_PAGE_QUOTA; i++) await f.catalog().storage.put(`page/${i}`, {});
+  const refused = await f.send(args);
+  assert.equal(refused.status, 409);
+  assert.deepEqual(await refused.json(), {
+    error: "This alpha release allows 250 Pages per account.",
+    code: "page_quota_exceeded",
+    limit: DEFAULT_PAGE_QUOTA,
+    count: DEFAULT_PAGE_QUOTA,
+  });
   assert.equal(f.pages.size, 0);
   assert.equal((await f.catalog().storage.list({ prefix: "host/operation/" })).size, 0);
 });
@@ -531,4 +542,44 @@ test("a changed account cannot cancel an unknown local draft in the wrong catalo
     (await f.catalog("another-user").storage.list({ prefix: "host/operation/" })).size,
     0,
   );
+});
+
+test("registration refuses a draft stamped with a schema feature this host lacks", async (t) => {
+  const f = await fixture(t),
+    { args, doc } = registration();
+  // A newer build's draft: a mark this host's registry doesn't know, and the
+  // stamp for it. The stamp decides before content validation would reject it.
+  const stamped = A.change(A.clone(doc), (draft) => {
+    const id = Object.keys(draft.blocks)[0];
+    A.mark(draft, ["blocks", id, "richText"], { start: 0, end: 4, expand: "none" }, "future", true);
+    draft.schema = { features: ["future-feature"] };
+  });
+  const unstamped = A.change(A.clone(doc), (draft) => {
+    const id = Object.keys(draft.blocks)[0];
+    A.mark(draft, ["blocks", id, "richText"], { start: 0, end: 4, expand: "none" }, "future", true);
+  });
+  assert.throws(
+    () =>
+      readRegistration({
+        ...args,
+        initial_snapshot_base64: Buffer.from(A.save(unstamped)).toString("base64"),
+      }),
+    { status: 400, message: "Invalid initial Page snapshot" },
+    "without a stamp, an unknown mark is a malformed draft",
+  );
+  const request = {
+    ...args,
+    initial_snapshot_base64: Buffer.from(A.save(stamped)).toString("base64"),
+  };
+  assert.throws(() => readRegistration(request), {
+    status: 409,
+    code: "unsupported_schema_feature",
+  });
+  const refused = await f.send(request);
+  assert.equal(refused.status, 409);
+  assert.equal((await refused.json()).code, "unsupported_schema_feature");
+  assert.equal(f.catalog().storage.values.size, 0);
+  assert.equal(f.pages.size, 0);
+  // The same draft without the stamp registers.
+  assert.equal((await f.send(args)).status, 200);
 });

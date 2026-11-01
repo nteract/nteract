@@ -2,8 +2,16 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import * as A from "@automerge/automerge";
 import { pmDocFromSpans, pmNodeToSpans } from "@automerge/prosemirror";
-import { MATH_SYNTAX, adapter, exportMarkdown, parseMarkdown, richDoc } from "./richtext.mjs";
-import { applyComment } from "./comments.mjs";
+import {
+  MATH_SYNTAX,
+  adapter,
+  exportMarkdown,
+  parseAgentMarkdown,
+  parseMarkdown,
+  richDoc,
+  unsupportedMarkdown,
+} from "./richtext.mjs";
+import { comment } from "./comments-test-support.mjs";
 import { commentMarkdown, markdownCommentSpans } from "./comment-content.mjs";
 import {
   applyPageOperation,
@@ -67,27 +75,24 @@ test("the diagnosis body's Markdown export reimports to the same document", () =
 });
 
 test("manage_page_comment add with body_format markdown stores the diagnosis as native rich text", () => {
-  let doc = A.from({
+  const page = A.from({
     page_id: "comments",
     title: "Test",
     blocks: { one: { markdown: "A passage", position: "a0" } },
-    comments: {},
   });
-  let ids;
-  doc = A.change(doc, (d) => {
-    ids = applyComment(
-      d,
-      {
-        action: "add",
-        block_id: "one",
-        selected_text: "passage",
-        body: BODY,
-        body_format: "markdown",
-      },
-      { principal: "fixture", displayName: "Agent", driver: "MCP" },
-    );
-  });
-  const message = doc.comments[ids.thread_id].messages[ids.message_id];
+  const { comments, result: ids } = comment(
+    page,
+    A.from({ threads: {} }),
+    {
+      action: "add",
+      block_id: "one",
+      selected_text: "passage",
+      body: BODY,
+      body_format: "markdown",
+    },
+    { principal: "fixture", displayName: "Agent", driver: "MCP" },
+  );
+  const message = comments.threads[ids.thread_id].messages[ids.message_id];
   const stored = richDoc(message);
   assertDiagnosisStructure(stored);
   assert.ok(pmDocFromSpans(adapter, markdownCommentSpans(BODY)).eq(stored));
@@ -130,6 +135,19 @@ for (const [label, source] of [
   });
 }
 
+// Math is found: an agent write naming it is refused, and a literal import
+// keeps it as text whose export an agent may write back unchanged.
+function assertLiteralMath(source) {
+  assert.equal(unsupportedMarkdown(source)?.construct, "math");
+  assert.throws(() => parseAgentMarkdown(source), { code: "unsupported_markdown" });
+  const doc = parseMarkdown(source);
+  doc.descendants((node) => assert.notEqual(node.type.name, "raw"));
+  for (const part of source.split(/\r\n?|\n/)) assert.ok(doc.textContent.includes(part.trim()));
+  const exported = exportMarkdown(doc);
+  assert.equal(unsupportedMarkdown(exported), null, exported);
+  assert.ok(parseAgentMarkdown(exported).eq(doc), exported);
+}
+
 for (const source of [
   "The value is $x + 1$.",
   "$x$",
@@ -159,10 +177,8 @@ for (const source of [
   "$\u2028x$",
   "$x\u00a0$",
 ]) {
-  test(`math source stays opaque: ${JSON.stringify(source)}`, () => {
-    const doc = parseMarkdown(source);
-    assert.equal(doc.firstChild.type.name, "raw");
-    assert.equal(doc.firstChild.attrs.source, source);
+  test(`math is found and stays literal text: ${JSON.stringify(source)}`, () => {
+    assertLiteralMath(source);
   });
 }
 
@@ -182,11 +198,14 @@ for (const space of [
   "\ufeff",
   " \t\v\f\u00a0\ufeff",
 ]) {
-  for (const source of [`${space}$$\n\\{x\\}`, `Before\r${space}$$\n\\{x\\}`]) {
+  // A space and a tab at the start of a block indent four columns, which
+  // makes an indented code block; only the continuation line is prose there.
+  const sources = space.startsWith(" \t")
+    ? [`Before\r${space}$$\n\\{x\\}`]
+    : [`${space}$$\n\\{x\\}`, `Before\r${space}$$\n\\{x\\}`];
+  for (const source of sources) {
     test(`a Unicode space before $$ opens display math: ${JSON.stringify(source)}`, () => {
-      const doc = parseMarkdown(source);
-      assert.equal(doc.firstChild.type.name, "raw");
-      assert.equal(doc.firstChild.attrs.source, source);
+      assertLiteralMath(source);
     });
   }
 }
@@ -196,9 +215,8 @@ test("other characters before $$ do not open display math", () => {
     assert.equal(parseMarkdown(source).firstChild.type.name, "paragraph", JSON.stringify(source));
 });
 
-// The pattern has no flags: multiline anchors differ between JS and Rust, and
-// its BMP `\uXXXX` escapes need no `u` flag. The crate's
-// `math_pattern_matches_pages` test checks that Rust uses the same text.
+// The pattern has no flags: it writes its own line starts, so a multiline `^`
+// would overlap them, and its BMP `\uXXXX` escapes need no `u` flag.
 test("the math pattern has no JS flags", () => {
   assert.equal(MATH_SYNTAX.flags, "");
 });

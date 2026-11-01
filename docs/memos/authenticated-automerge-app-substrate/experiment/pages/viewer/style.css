@@ -342,7 +342,67 @@ summary svg {
     left: 1rem;
     right: 1rem;
     width: auto;
+    /* --vv-height is the part above the iOS keyboard. */
+    max-height: min(32rem, calc(var(--vv-height, 100dvh) - var(--page-header-height) - 2rem));
   }
+}
+/* The phone header's ⋯ menu (PageMenu in PageControls.jsx). The header
+   follows the visual viewport's top, so the menu hangs from it and caps its
+   height at the visible part below; the rest scrolls. */
+.page-menu {
+  position: relative;
+}
+.page-menu-button {
+  position: relative;
+  width: 44px;
+  height: 44px;
+}
+.page-menu-indicator {
+  position: absolute;
+  top: 9px;
+  right: 8px;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--primary);
+  box-shadow: 0 0 0 2px var(--surface);
+}
+.page-menu-list {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 6px);
+  z-index: 30;
+  display: grid;
+  min-width: 220px;
+  max-height: calc(var(--vv-height, 100dvh) - var(--page-header-height) - 16px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 6px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: var(--popover, var(--surface));
+  box-shadow: 0 10px 30px #00000026;
+}
+.page-menu-list button {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 44px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 8px;
+  color: var(--foreground);
+  font-size: 15px;
+  text-align: left;
+}
+.page-menu-list button.danger {
+  color: var(--destructive);
+}
+.page-menu-count {
+  margin-left: auto;
+  color: var(--muted-foreground);
+  font-size: 0.8rem;
+  font-variant-numeric: tabular-nums;
 }
 details.account-actions,
 details.document-actions {
@@ -711,7 +771,7 @@ details.document-actions > div button {
 .toolbar-select:hover {
   background: var(--accent);
 }
-/* Preserved Markdown is also displayed by Wordgard's opaque widget. */
+/* A preserved Markdown block waiting for the host's conversion. */
 .opaque pre {
   background: var(--muted);
   border: 1px solid var(--border);
@@ -1043,8 +1103,12 @@ dialog::backdrop {
     background: color-mix(in srgb, var(--warning) 48%, transparent);
   }
 }
-.opaque small {
+.opaque::before {
+  content: attr(data-pages-notice);
+  display: block;
+  margin-bottom: 0.35rem;
   color: var(--muted-foreground);
+  font-size: 0.82rem;
 }
 @keyframes illumination {
   from {
@@ -1379,6 +1443,9 @@ dialog::backdrop {
     font-size: 0.65rem;
     text-align: center;
   }
+  .document-status:has(.save-status--dot) {
+    max-width: none;
+  }
   .peer-avatars .avatar ~ .avatar {
     display: none;
   }
@@ -1386,6 +1453,49 @@ dialog::backdrop {
     max-width: 58px;
     text-align: right;
     font-size: 0.7rem;
+  }
+}
+/* Phones (MOBILE_EDITOR_QUERY in visual-viewport.mjs, the same query that
+   puts Share and activity under ⋯): one 48px header row, so the keyboard
+   leaves the most room for writing. The switcher and save dot sit left;
+   Comments, ⋯ and Account sit right. The wrappers between the header and
+   those controls drop out of layout so all of them share the header's row. */
+@media (max-width: 600px) and (pointer: coarse) {
+  :root {
+    --page-header-height: 48px;
+  }
+  .app-header,
+  .has-document .app-header {
+    display: flex;
+    gap: 2px;
+    min-height: var(--page-header-height);
+    padding: 2px 8px;
+  }
+  .has-document .header-actions,
+  .has-document .document-meta {
+    display: contents;
+  }
+  .has-document .header-navigation {
+    flex: 0 1 auto;
+    width: auto;
+    min-height: 44px;
+    gap: 0;
+  }
+  .has-document .brand {
+    display: block;
+    flex-shrink: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .has-document .document-status {
+    margin-right: auto;
+  }
+  /* Share has no button here (⋯ opens it) and its panel is fixed, so its
+     wrapper takes no room in the row. */
+  .document-controls > .page-sharing {
+    display: contents;
   }
 }
 
@@ -1508,7 +1618,7 @@ dialog::backdrop {
 @media (max-width: 600px) {
   .page-sharing-popover {
     top: calc(var(--page-header-height) + 6px);
-    max-height: calc(100dvh - var(--page-header-height) - 18px);
+    max-height: calc(var(--vv-height, 100dvh) - var(--page-header-height) - 18px);
   }
 }
 

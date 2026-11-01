@@ -1,7 +1,15 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { createAuthFixture } from "../../auth-fixtures.mjs";
-import { authenticate, requireSameOrigin, readJson, errorResponse, logFailure } from "./auth.mjs";
+import {
+  agentLabel,
+  authenticate,
+  bearerDriver,
+  requireSameOrigin,
+  readJson,
+  errorResponse,
+  logFailure,
+} from "./auth.mjs";
 import worker from "./index.mjs";
 import { recordPersistenceTimeout } from "./record-persistence.mjs";
 
@@ -51,6 +59,31 @@ test("API keys use production scope checks and ignore claimed account/operator h
     authenticate(request(fixture.apiKey({ scopes: [] })), fixture.env),
     /scopes do not allow/,
   );
+});
+
+test("an API key can't present itself as a person in the browser", async (t) => {
+  const fixture = await createAuthFixture();
+  t.mock.method(globalThis, "fetch", fixture.fetch);
+  const token = fixture.apiKey();
+  const as = (headers, query = "") =>
+    authenticate(
+      new Request(`https://pages.invalid/api/connect?page=test${query}`, {
+        headers: { authorization: `Bearer ${token}`, ...headers },
+      }),
+      fixture.env,
+    );
+  for (const label of ["Browser", " browser ", "BROWSER"])
+    assert.equal((await as({ "x-pages-driver": label })).driver, "API", label);
+  assert.equal((await as({}, "&driver=Browser")).driver, "API");
+  assert.equal((await as({})).driver, "API");
+  assert.equal((await as({ "x-pages-driver": "Kilo" })).driver, "Kilo");
+  assert.equal((await as({ "x-pages-driver": "Browser extension" })).driver, "Browser extension");
+  // The agent label is a separate field and doesn't change the driver.
+  const agent = await as({ "x-pages-driver": "Browser", "x-pages-agent": "release agent" });
+  assert.equal(agent.driver, "API");
+  assert.equal(agent.agent, "release agent");
+  assert.equal(bearerDriver("Browser"), "API");
+  assert.equal(bearerDriver("Mobile"), "Mobile");
 });
 
 test("API-key invitation identity comes from provider whoami and configured namespace, never caller claims", async (t) => {
@@ -131,6 +164,54 @@ test("API-key invitation identity comes from provider whoami and configured name
     assert.equal(Object.hasOwn(projection.identity, privateField), false);
   assert.equal(JSON.stringify(projection).includes("provider@example.invalid"), false);
   assert.equal(JSON.stringify(projection).includes("attacker-proof"), false);
+});
+
+test("an MCP session id becomes an account-scoped presence tag, never the raw id", async (t) => {
+  const fixture = await createAuthFixture();
+  t.mock.method(globalThis, "fetch", fixture.fetch);
+  const request = (session, path = "/mcp") =>
+    new Request(`https://pages.invalid${path}`, {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${fixture.apiKey()}`,
+        ...(session !== undefined && { "mcp-session-id": session }),
+      },
+    });
+  const a = await authenticate(request("11111111-2222-4333-8444-555555555555"), fixture.env);
+  const b = await authenticate(request("66666666-7777-4888-9999-000000000000"), fixture.env);
+  const again = await authenticate(request("11111111-2222-4333-8444-555555555555"), fixture.env);
+  assert.match(a.session, /^[0-9a-f]{16}$/);
+  assert.equal(again.session, a.session, "stable per session");
+  assert.notEqual(b.session, a.session, "distinct per session");
+  assert.ok(!a.session.includes("1111"), "never the raw id");
+  const none = await authenticate(request(undefined), fixture.env);
+  assert.equal(none.session, undefined);
+  for (const bad of ["short", "has space here!", "x".repeat(200)])
+    await assert.rejects(authenticate(request(bad), fixture.env), /Invalid MCP session id/);
+  // Internal forwards from /mcp keep the session.
+  const forwarded = await authenticate(
+    request("11111111-2222-4333-8444-555555555555", "/internal/tool"),
+    fixture.env,
+  );
+  assert.equal(forwarded.session, a.session);
+  // Other public routes ignore the header, even a malformed one.
+  for (const path of ["/api/tools", "/api/connect?page=test"]) {
+    const ignored = await authenticate(request("not valid!", path), fixture.env);
+    assert.equal(ignored.session, undefined, path);
+  }
+});
+
+test("a blank agent label means no label, so an unset {env:...} template still connects", () => {
+  const request = (value) =>
+    new Request("https://pages.test/mcp", {
+      headers: value === undefined ? {} : { "x-pages-agent": value },
+    });
+  assert.equal(agentLabel(request()), undefined);
+  assert.equal(agentLabel(request("")), undefined);
+  assert.equal(agentLabel(request("   ")), undefined);
+  assert.equal(agentLabel(request(" release agent ")), "release agent");
+  assert.throws(() => agentLabel(request("x".repeat(81))), /Invalid agent label/);
+  assert.throws(() => agentLabel(request("a\tb")), /Invalid agent label/);
 });
 
 test("cookie writes and WebSocket upgrades require same-origin, API keys never permit foreign Origin", () => {

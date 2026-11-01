@@ -34,33 +34,51 @@
   /* Wordgard's base theme adds its own whole-editor focus outline. */
   outline: none;
 }
-.wordgard-document wg-content {
+/* Wordgard's scroller is overflow: auto. Chromium adds the caret to an
+   editable block's scrollable overflow, so a caret after spaces that hang
+   past a full line made it a few pixels wider than the editor and flashed a
+   horizontal scrollbar until the next character wrapped. Its height is
+   auto, so it never scrolls vertically; tables and code blocks scroll in
+   their own boxes. Clip it sideways and let it size to its content. */
+.wordgard-document > wg-scroller {
+  overflow: clip visible;
+}
+/* Prose rules below also style the read-only preview (PagePreview.jsx), whose
+   content sits in .preview-content instead of the editor's wg-content. :where
+   keeps each rule's specificity what the wg-content selector alone gives. */
+.wordgard-document :is(wg-content, :where(.preview-content)) {
   display: block;
   outline: none;
   min-height: 1.7em;
   padding: 8px 0;
   overflow-wrap: anywhere;
 }
-.wordgard-document wg-content p {
+.wordgard-document :is(wg-content, :where(.preview-content)) p {
   margin: 0 0 1em;
 }
-.wordgard-document wg-content h1,
-.wordgard-document wg-content h2,
-.wordgard-document wg-content h3 {
+.wordgard-document :is(wg-content, :where(.preview-content)) h1,
+.wordgard-document :is(wg-content, :where(.preview-content)) h2,
+.wordgard-document :is(wg-content, :where(.preview-content)) h3 {
   line-height: 1.3;
   margin: 1.2em 0 0.6em;
 }
-.wordgard-document wg-content > :first-child {
+.wordgard-document :is(wg-content, :where(.preview-content)) > :first-child {
   margin-top: 0;
 }
-.wordgard-document wg-content ul,
-.wordgard-document wg-content ol {
+.wordgard-document :is(wg-content, :where(.preview-content)) ul,
+.wordgard-document :is(wg-content, :where(.preview-content)) ol {
   padding-inline-start: 1.5em;
 }
-.wordgard-document wg-content li > p {
+.wordgard-document :is(wg-content, :where(.preview-content)) li > p {
   margin: 0.15em 0;
 }
-.wordgard-document wg-content .wordgard-task-item {
+/* A checkbox starts where a bullet's disc starts (about 0.45em in from the
+   text edge), and the item text follows it, so a task list reads as indented
+   as a bulleted list instead of hanging the box on the paragraph edge. */
+.wordgard-document :is(wg-content, :where(.preview-content)) ul[data-task-list] {
+  padding-inline-start: 1.9em;
+}
+.wordgard-document :is(wg-content, :where(.preview-content)) .wordgard-task-item {
   list-style: none;
   position: relative;
 }
@@ -69,13 +87,14 @@
 }
 .wordgard-task-control {
   position: absolute;
-  inset-inline-start: -1.7em;
+  inset-inline-start: -1.9em;
   top: 0;
   display: flex;
   align-items: center;
-  justify-content: center;
-  width: 1.7em;
+  justify-content: flex-start;
+  width: 1.9em;
   height: 1.7em;
+  padding-inline-start: 0.45em;
   cursor: pointer;
 }
 .wordgard-task-control input[type="checkbox"] {
@@ -99,19 +118,29 @@
     min-height: 44px;
   }
   .wordgard-task-control {
+    justify-content: center;
     width: 44px;
     height: 44px;
+    padding: 0;
     inset-inline-start: -36px;
     top: -8px;
   }
 }
-.wordgard-document wg-content a {
+.wordgard-document :is(wg-content, :where(.preview-content)) a {
   color: inherit;
   text-decoration: underline;
   text-underline-offset: 3px;
   cursor: pointer;
 }
-.wordgard-document wg-content pre {
+.wordgard-document :is(wg-content, :where(.preview-content)) s {
+  text-decoration-thickness: 1px;
+}
+.wordgard-document :is(wg-content, :where(.preview-content)) hr {
+  border: 0;
+  border-top: 1px solid var(--border);
+  margin: 1.5em 0;
+}
+.wordgard-document :is(wg-content, :where(.preview-content)) pre {
   font:
     14px/1.6 ui-monospace,
     SFMono-Regular,
@@ -150,35 +179,38 @@
   --syntax-comment: #8b949e;
   --syntax-error: #f97583;
 }
-.wordgard-document wg-content pre .wg-t-keyword {
+.wordgard-document :is(wg-content, :where(.preview-content)) pre .wg-t-keyword {
   color: var(--syntax-keyword);
 }
-.wordgard-document wg-content pre :is(.wg-t-name, .wg-t-local) {
+.wordgard-document :is(wg-content, :where(.preview-content)) pre :is(.wg-t-name, .wg-t-local) {
   color: var(--syntax-name);
 }
-.wordgard-document wg-content pre :is(.wg-t-def, .wg-t-prop, .wg-t-class) {
+.wordgard-document
+  :is(wg-content, :where(.preview-content))
+  pre
+  :is(.wg-t-def, .wg-t-prop, .wg-t-class) {
   color: var(--syntax-def);
 }
-.wordgard-document wg-content pre :is(.wg-t-type, .wg-t-namespace) {
+.wordgard-document :is(wg-content, :where(.preview-content)) pre :is(.wg-t-type, .wg-t-namespace) {
   color: var(--syntax-type);
 }
-.wordgard-document wg-content pre .wg-t-number {
+.wordgard-document :is(wg-content, :where(.preview-content)) pre .wg-t-number {
   color: var(--syntax-number);
 }
 .wordgard-document
-  wg-content
+  :is(wg-content, :where(.preview-content))
   pre
   :is(.wg-t-atom, .wg-t-bool, .wg-t-special, .wg-t-label, .wg-t-macro) {
   color: var(--syntax-atom);
 }
-.wordgard-document wg-content pre :is(.wg-t-string, .wg-t-literal) {
+.wordgard-document :is(wg-content, :where(.preview-content)) pre :is(.wg-t-string, .wg-t-literal) {
   color: var(--syntax-string);
 }
-.wordgard-document wg-content pre .wg-t-comment {
+.wordgard-document :is(wg-content, :where(.preview-content)) pre .wg-t-comment {
   color: var(--syntax-comment);
   font-style: italic;
 }
-.wordgard-document wg-content pre .wg-t-error {
+.wordgard-document :is(wg-content, :where(.preview-content)) pre .wg-t-error {
   color: var(--syntax-error);
 }
 .wordgard-document .wg-code-language {
@@ -200,7 +232,7 @@
 .wordgard-document .wg-code-language:hover {
   background: var(--accent);
 }
-.wordgard-document wg-content img {
+.wordgard-document :is(wg-content, :where(.preview-content)) img {
   max-width: 100%;
   height: auto;
 }
@@ -246,6 +278,23 @@
 /* An agent's caret fades when it stops writing. */
 .wordgard-caret-layer .peer-caret.is-idle {
   opacity: 0.4;
+}
+/* Agent caret glide (experiment, feature-flags.mjs): a faint caret where an
+   agent's caret was before its last move. The fade runs as an animation. */
+.wordgard-caret-layer .agent-caret-ghosts {
+  position: absolute;
+  inset: 0;
+}
+.wordgard-caret-layer .agent-caret-ghost {
+  position: absolute;
+  width: 0;
+  border-left: 2px solid var(--peer-color, #8b5fbf);
+  opacity: 0.3;
+}
+@media (prefers-reduced-motion: reduce) {
+  .wordgard-caret-layer .agent-caret-ghosts {
+    display: none;
+  }
 }
 .wordgard-caret-layer .peer-caret > span em,
 .wordgard-caret-layer .agent-dot > span em {
@@ -458,10 +507,6 @@
     sans-serif;
   white-space: normal;
 }
-.wordgard-document .preserved-table,
-.wordgard-document .preserved-table .markdown-table-scroll {
-  margin: 0;
-}
 .wordgard-document .remote-edit {
   text-decoration: underline;
   text-decoration-color: var(--peer-color, #b79551);
@@ -469,7 +514,7 @@
   text-underline-offset: 4px;
 }
 @media (max-width: 600px) {
-  .wordgard-document wg-content pre {
+  .wordgard-document :is(wg-content, :where(.preview-content)) pre {
     padding-top: 56px;
     padding-inline: 12px;
   }
@@ -488,15 +533,15 @@
   }
 }
 
-.wordgard-document wg-content table {
+.wordgard-document :is(wg-content, :where(.preview-content)) table {
   width: 100%;
   table-layout: fixed;
   border-collapse: collapse;
   margin: 12px 0 20px;
   font-size: 0.94em;
 }
-.wordgard-document wg-content td,
-.wordgard-document wg-content th {
+.wordgard-document :is(wg-content, :where(.preview-content)) td,
+.wordgard-document :is(wg-content, :where(.preview-content)) th {
   border: 1px solid var(--border);
   padding: 10px 12px;
   vertical-align: top;
@@ -505,11 +550,11 @@
   min-width: 0;
   overflow-wrap: anywhere;
 }
-.wordgard-document wg-content [data-table-header="true"] {
+.wordgard-document :is(wg-content, :where(.preview-content)) [data-table-header="true"] {
   background: var(--muted);
   font-weight: 600;
 }
-.wordgard-document wg-content .wg-selected-cell {
+.wordgard-document :is(wg-content, :where(.preview-content)) .wg-selected-cell {
   background: var(--accent);
   box-shadow: inset 0 0 0 1px var(--primary);
 }
@@ -583,8 +628,8 @@
   color: var(--secondary-foreground);
 }
 @media (max-width: 600px) {
-  .wordgard-document wg-content td,
-  .wordgard-document wg-content th {
+  .wordgard-document :is(wg-content, :where(.preview-content)) td,
+  .wordgard-document :is(wg-content, :where(.preview-content)) th {
     padding: 8px;
   }
   .pages-table-menu button {

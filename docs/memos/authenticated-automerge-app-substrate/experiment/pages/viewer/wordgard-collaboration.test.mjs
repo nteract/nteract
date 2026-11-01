@@ -2,7 +2,10 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import * as A from "@automerge/automerge";
 import { Decoration } from "wordgard/editor";
-import { applyComment, projectComments } from "../model/comments.mjs";
+import {
+  applyComment as applyCommentTo,
+  projectComments as projectCommentsOf,
+} from "../model/comments.mjs";
 import { createProgressTargets } from "../model/presence.mjs";
 import { enableRich, textPath } from "../model/richtext.mjs";
 import { captureCommentDraft, resolveCommentDraft } from "./comment-draft.mjs";
@@ -15,8 +18,13 @@ import {
   wordgardCommentSelection,
 } from "./wordgard-collaboration.mjs";
 
+// One document plays both roles here: it holds the blocks anchors resolve
+// against and the comments document's `threads`.
+const applyComment = (d, input) =>
+  applyCommentTo(d, input, undefined, undefined, { page: d, role: "editor" });
+const projectComments = (doc) => projectCommentsOf(doc, doc);
 function fixture(source = "Same passage here and same passage again 😀.") {
-  let doc = A.from({ blocks: {}, comments: {} });
+  let doc = A.from({ blocks: {}, threads: {} });
   doc = A.change(doc, (d) => {
     for (const [id, position] of [
       ["first", "a0"],
@@ -49,6 +57,8 @@ function harness(doc) {
   const publications = [];
   const names = new Map();
   const changeIdentities = new Map();
+  const actorProfiles = new Map();
+  const attestedChanges = new Map();
   const replica = {
     doc,
     peers: new Map(),
@@ -56,6 +66,8 @@ function harness(doc) {
     publishPresence: (value) => publications.push(value),
     actorDisplayName: (actor) => names.get(actor) ?? "Collaborator",
     changeIdentity: (hash) => changeIdentities.get(hash) ?? null,
+    actorIdentity: (actor) => actorProfiles.get(actor) ?? null,
+    attestedActor: (hash) => attestedChanges.get(hash) ?? null,
   };
   const editor = {
     hasFocus: true,
@@ -83,6 +95,8 @@ function harness(doc) {
   });
   return {
     changeIdentities,
+    actorProfiles,
+    attestedChanges,
     replica,
     editor,
     collaboration,
@@ -449,6 +463,30 @@ test("an agent write fills the changed text, then collapses to a labeled caret",
   assert.equal(h.collaboration.nextRepaint(), 600);
 });
 
+test("an agent caret's anchor survives text shifts and idle, and changes with the next write", () => {
+  const doc = fixture("Ship on Tuesday morning.");
+  const h = harness(doc);
+  const at = "Ship on ".length;
+  h.replica.agentPresence = new Map([
+    ["agent-1", agent(doc, [textAt(doc, "text", at, at + "Tuesday".length)])],
+  ]);
+  const [first] = h.collaboration.carets();
+  assert.equal(typeof first.anchor, "string");
+  // A person types before the caret: it moves, its anchor does not.
+  h.replica.doc = A.change(h.replica.doc, (d) => A.splice(d, textPath("first"), 0, 0, "Please "));
+  const [shifted] = h.collaboration.carets();
+  assert.equal(shifted.position, first.position + "Please ".length);
+  assert.equal(shifted.anchor, first.anchor);
+  h.replica.agentPresence.get("agent-1").state = "idle";
+  assert.equal(h.collaboration.carets()[0].anchor, first.anchor);
+  // The next write batch is a new record, even at the same characters.
+  h.replica.agentPresence.set(
+    "agent-1",
+    agent(doc, [textAt(doc, "text", at, at + "Tuesday".length)], { seq: 2 }),
+  );
+  assert.notEqual(h.collaboration.carets()[0].anchor, first.anchor);
+});
+
 test("reading shows a margin bar per passage, fills search hits, and labels once", () => {
   const doc = fixture("fade here and fade there");
   const h = harness(doc);
@@ -586,6 +624,111 @@ test("the edit underline takes the editor's caret color only from a host-atteste
   assert.equal(mark.title, "Edited by Kyle Kelley · Kilo · rich text");
 });
 
+test("a person's edit is named only for a change hash the host attested to its actor", async () => {
+  const { presenceColor } = await import("./presence-color.mjs");
+  const h = harness(fixture("Hello world"));
+  const actor = "d1".repeat(16);
+  const [hash] = batch(h, [[actor, (d, path) => A.splice(d, path, 0, 0, "Ana says ")]]);
+  const seen = () => marks(h).map(({ style, title }) => ({ style, title }));
+  const neutral = [{ style: null, title: "Edited by a collaborator" }];
+  assert.deepEqual(seen(), neutral, "unattested actor: neutral");
+  // A profile alone names nothing: this change could have reached the host
+  // inside a fragment, unchecked, under someone else's actor.
+  h.actorProfiles.set(actor, { principal: "user:ana", displayName: "Ana", driver: "Browser" });
+  assert.deepEqual(seen(), neutral, "attested actor, unattested hash: neutral");
+  h.attestedChanges.set(hash, "d2".repeat(16));
+  assert.deepEqual(seen(), neutral, "a hash attested to another actor: neutral");
+  h.attestedChanges.set(hash, actor);
+  // The same key as the caret: presenceColor(principal, driver).
+  assert.deepEqual(seen(), [
+    {
+      style: `--peer-color: ${presenceColor("user:ana", "Browser").background}`,
+      title: "Edited by Ana · Browser",
+    },
+  ]);
+  // A retraction removes the profile and the actor's hashes.
+  h.actorProfiles.delete(actor);
+  h.attestedChanges.delete(hash);
+  assert.deepEqual(seen(), neutral);
+});
+
+test("typing into text that just arrived takes those characters out of the earlier mark", async () => {
+  const { presenceColor } = await import("./presence-color.mjs");
+  const h = harness(fixture("x"));
+  // The host's whole paragraph reaches this editor as one remote change, as
+  // when an editor mounts before its first sync. Within its mark's lifetime,
+  // an attested writer types inside that paragraph.
+  batch(h, [["e1".repeat(16), (d, path) => A.splice(d, path, 1, 0, "Writer keeps the caret.")]]);
+  const actor = "d1".repeat(16);
+  const at = h.replica.doc.blocks.first.richText.indexOf(".");
+  const [typed] = batch(h, [[actor, (d, path) => A.splice(d, path, at, 0, " still here")]]);
+  h.actorProfiles.set(actor, { principal: "user:ana", displayName: "Ana", driver: "Browser" });
+  h.attestedChanges.set(typed, actor);
+  const found = marks(h);
+  // Editor positions sit one past Automerge text offsets in this block.
+  const text = " " + h.replica.doc.blocks.first.richText;
+  const insertion = { from: at + 1, to: at + 1 + " still here".length };
+  // Every character has one edit mark: no range overlaps another.
+  for (const [i, mark] of found.entries())
+    for (const other of found.slice(i + 1))
+      assert.ok(mark.to <= other.from || other.to <= mark.from, JSON.stringify([mark, other]));
+  const covering = found.filter((mark) => mark.from < insertion.to && insertion.from < mark.to);
+  assert.deepEqual(
+    covering.map(({ from, to, style, title }) => ({ from, to, style, title })),
+    [
+      {
+        ...insertion,
+        style: `--peer-color: ${presenceColor("user:ana", "Browser").background}`,
+        title: "Edited by Ana · Browser",
+      },
+    ],
+  );
+  // The host's paragraph keeps its neutral mark on both sides.
+  assert.deepEqual(
+    found
+      .filter((mark) => mark.title === "Edited by a collaborator")
+      .map(({ from, to }) => text.slice(from, to)),
+    ["Writer keeps the caret", "."],
+  );
+});
+
+test("a tool edit's change identity wins over an actor profile; the host actor stays neutral", async () => {
+  const { presenceColor } = await import("./presence-color.mjs");
+  const host = "e1".repeat(16);
+  const person = "e2".repeat(16);
+  const h = harness(fixture("one two"));
+  const [agentEdit, unhinted, personEdit] = batch(h, [
+    [host, (d, path) => A.splice(d, path, 0, 0, "AAAA")],
+    [host, (d, path) => A.splice(d, path, 4, 0, "HHHH")],
+    [person, (d, path) => A.splice(d, path, 8, 0, "PPPP")],
+  ]);
+  assert.ok(unhinted && personEdit);
+  // Even if a profile named the host actor, a tool hint names its own change.
+  h.actorProfiles.set(host, {
+    principal: "user:mallory",
+    displayName: "Mallory",
+    driver: "Browser",
+  });
+  h.changeIdentities.set(agentEdit, { principal: "user:kyle", driver: "Kilo", agent: "rich text" });
+  h.attestedChanges.set(agentEdit, host);
+  h.actorProfiles.set(person, { principal: "user:ana", displayName: "Ana", driver: "Browser" });
+  h.attestedChanges.set(personEdit, person);
+  const found = marks(h);
+  assert.equal(found.length, 3);
+  assert.equal(
+    found[0].style,
+    `--peer-color: ${presenceColor("user:kyle", "Kilo", "rich text").background}`,
+  );
+  assert.equal(found[2].style, `--peer-color: ${presenceColor("user:ana", "Browser").background}`);
+  // The host never attests its own actor's changes: even with a profile, the
+  // unhinted host change is neutral.
+  assert.equal(found[1].style, null);
+  h.actorProfiles.delete(host);
+  const [, neutral] = marks(h);
+  assert.equal(neutral.style, null);
+  assert.equal(neutral.title, "Edited by a collaborator");
+});
+
 test("adjacent and interleaved inserts from two agents in one batch keep their own colors", async () => {
   const { presenceColor } = await import("./presence-color.mjs");
   const ALPHA = { principal: "user:kyle", driver: "Kilo", agent: "release agent" };
@@ -667,5 +810,17 @@ test("many changes from one actor in one batch each find their own author", asyn
     agents.map(
       (who) => `--peer-color: ${presenceColor(who.principal, who.driver, who.agent).background}`,
     ),
+  );
+});
+
+test("two unlabeled MCP sessions get different colors", async () => {
+  const { presenceColor } = await import("./presence-color.mjs");
+  const a = presenceColor("user:kyle", "Kilo", null, "aaaaaaaaaaaaaaaa").background;
+  const b = presenceColor("user:kyle", "Kilo", null, "bbbbbbbbbbbbbbbb").background;
+  assert.notEqual(a, b);
+  // Without a session the key is unchanged from before.
+  assert.equal(
+    presenceColor("user:kyle", "Kilo").background,
+    presenceColor("user:kyle", "Kilo", null, null).background,
   );
 });

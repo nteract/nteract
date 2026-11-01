@@ -24,6 +24,11 @@ export const ADMISSION_REASONS = Object.freeze({
   activity_epoch_changed: "temporarily_unavailable",
   connection_capacity: "temporarily_unavailable",
   receipt_heads_missing: "temporarily_unavailable",
+  // A receipt for edits the native gate refused: the tab's declared build
+  // lacks a feature the Page is stamped with.
+  schema_unsupported: "schema_unsupported",
+  // The host is converting the Page's preserved Markdown blocks.
+  preserved_markdown_converting: "temporarily_unavailable",
   // Native signing-key admission after the WebSocket upgrade.
   native_handshake_failed: "temporarily_unavailable",
   native_admission_cancelled: "temporarily_unavailable",
@@ -34,6 +39,12 @@ export const ADMISSION_REASONS = Object.freeze({
   native_binding_persistence_failed: "temporarily_unavailable",
   native_connection_failed: "temporarily_unavailable",
   native_access_changed: "access_changed",
+  // The native per-author check refused a comment record (comment-admission.mjs).
+  // The key's comment authority is gone; discovery reports what remains.
+  comment_change_refused: "access_changed",
+  // The signer's principal spent its refusal budget; it may reconnect after
+  // backing off, and its keys keep their authority.
+  comment_admission_budget: "temporarily_unavailable",
   native_acl_committing: "access_changed",
   // Byte-transport refusals of native input, before or after admission.
   native_frame_unsupported: "request_rejected",

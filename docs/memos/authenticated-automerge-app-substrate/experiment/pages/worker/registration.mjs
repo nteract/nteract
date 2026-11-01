@@ -3,6 +3,7 @@ import { documentIdToBinary } from "@automerge/automerge-repo";
 import { generateKeyBetween } from "fractional-indexing";
 import { assertDocumentLimits } from "../model/limits.mjs";
 import { RICH_FORMAT, validateRich } from "../model/richtext.mjs";
+import { requireSupportedSchema } from "../model/schema-features.mjs";
 import { HttpError } from "./auth.mjs";
 
 export const validPageId = (id) =>
@@ -12,7 +13,8 @@ const map = (value) => value && typeof value === "object" && !Array.isArray(valu
 
 /** Validate the immutable bootstrap, never a replacement for an existing Page.
  * Authorization and ownership are host metadata outside this document. A fresh
- * bootstrap has no comments; later edits and comments arrive through native sync.
+ * bootstrap has no comments; later edits arrive through native sync, and comments
+ * through the Page's comments document.
  */
 export function readRegistration(args) {
   requireRegistrationAccount(args);
@@ -48,10 +50,15 @@ export function readRegistration(args) {
       doc.page_id !== args.page_id ||
       doc.title !== args.title ||
       !map(doc.blocks) ||
-      !map(doc.comments) ||
-      Object.keys(doc.comments).length
+      // A bootstrap from before the comments document carries an empty map;
+      // a current one carries none.
+      (doc.comments !== undefined && (!map(doc.comments) || Object.keys(doc.comments).length))
     )
       throw Error("Invalid Page bootstrap");
+    // A draft from a newer build can use features this host can't express.
+    // Check the stamp before validating content against this build's schema,
+    // so a future mark is refused as a feature, not as a malformed snapshot.
+    requireSupportedSchema(doc);
     for (const [id, block] of Object.entries(doc.blocks)) {
       if (
         !validPageId(id) ||
@@ -75,6 +82,10 @@ export function readRegistration(args) {
   } catch (error) {
     if (doc) A.free(doc);
     if (error.status === 413) throw error;
+    if (error.code === "unsupported_schema_feature")
+      throw Object.assign(new HttpError(409, error.message, error.code), {
+        details: error.details,
+      });
     throw new HttpError(400, "Invalid initial Page snapshot");
   }
 }

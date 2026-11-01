@@ -6,7 +6,8 @@ import { history, undo } from "wordgard/history";
 import { Command, insertLineBreak, insertText, toggleMark } from "wordgard/command";
 import { enableRich, textPath, blockMarkdown } from "../model/richtext.mjs";
 import { createPageData, initializePage, orderedBlockIds } from "../model/page.mjs";
-import { applyComment, projectComments } from "../model/comments.mjs";
+import { projectComments } from "../model/comments.mjs";
+import { comment, newCommentsDoc } from "../model/comments-test-support.mjs";
 import { schema, decode, Strong } from "./wordgard-model.mjs";
 import {
   createWordgardBinding,
@@ -241,12 +242,11 @@ test("unformatting code text keeps its Automerge characters, cursors and comment
   let page = A.from(createPageData({ pageId: "page_fixture", title: "Code" }));
   page = A.change(page, (d) => initializePage(d, "```\nalpha beta\ngamma\n```"));
   const id = orderedBlockIds(page)[0];
-  page = A.change(page, (d) =>
-    applyComment(
-      d,
-      { action: "add", block_id: id, selected_text: "beta", body: "About beta" },
-      { principal: "account:one", displayName: "Kyle", driver: "Browser" },
-    ),
+  const { comments } = comment(
+    page,
+    newCommentsDoc(),
+    { action: "add", block_id: id, selected_text: "beta", body: "About beta" },
+    { principal: "account:one", displayName: "Kyle", driver: "Browser" },
   );
   const path = textPath(id);
   const text = page.blocks[id].richText;
@@ -266,7 +266,7 @@ test("unformatting code text keeps its Automerge characters, cursors and comment
     assert.equal(A.getCursorPosition(after, path, cursor), at, `cursor ${at}`);
     assert.equal(A.getCursor(after, path, at), cursor, `character ${at}`);
   });
-  const [thread] = projectComments(after);
+  const [thread] = projectComments(after, comments);
   assert.equal(thread.selectionContext.status, "attached");
   assert.equal(thread.selectionContext.text, "beta");
   binding.destroy();

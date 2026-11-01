@@ -1,5 +1,5 @@
 {
-  "$comment": "Inline marks a Pages rich-text block may store. JavaScript (model/marks.mjs) and Rust (crates/nteract-rich-text) both read this file. Order is the ProseMirror schema order; code stays last so it is the innermost Markdown mark. Add marks; never reuse a name for a different meaning.",
+  "$comment": "Inline marks a Pages rich-text block may store. model/marks.mjs reads this file. Order is the ProseMirror schema order; code stays last so it is the innermost Markdown mark. Add marks; never reuse a name for a different meaning. A mark added after the baseline names its schema feature in an optional \"feature\" field, an id from features.json; a mark without one is baseline.",
   "version": 1,
   "marks": [
     {
@@ -25,6 +25,13 @@
       "value": { "type": "flag" },
       "expand": "both",
       "markdown": "native"
+    },
+    {
+      "name": "strike",
+      "value": { "type": "flag" },
+      "expand": "both",
+      "markdown": "native",
+      "feature": "strike"
     },
     {
       "name": "highlight",

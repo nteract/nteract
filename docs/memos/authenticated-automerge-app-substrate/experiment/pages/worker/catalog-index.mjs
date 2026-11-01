@@ -20,7 +20,7 @@
  */
 import { pageGrant, pageState } from "./access.mjs";
 import { HttpError } from "./auth.mjs";
-import { catalogTitle } from "./catalog.mjs";
+import { catalogTitle, listAll } from "./catalog.mjs";
 import { configuredDomainView } from "./domain-access.mjs";
 import { validPageId } from "./registration.mjs";
 import { holdUntilSettled } from "./request-hold.mjs";
@@ -111,11 +111,6 @@ export const CATALOG_MIGRATIONS = Object.freeze([
   }),
 ]);
 
-const SCHEMA_TABLE = `CREATE TABLE IF NOT EXISTS pages_catalog_schema (
-  version INTEGER PRIMARY KEY,
-  name TEXT NOT NULL,
-  applied_at TEXT NOT NULL
-)`;
 const DIRTY = "host/index/dirty";
 const SYNC = "host/index/sync";
 const SPACES_DIRTY = "host/index/spaces-dirty";
@@ -172,10 +167,27 @@ export async function migrateCatalogIndex(
   migrations = CATALOG_MIGRATIONS,
   now = () => new Date().toISOString(),
 ) {
-  await db.prepare(SCHEMA_TABLE).run();
+  return migrateSchema(db, { table: "pages_catalog_schema", migrations, now });
+}
+
+/** Apply `migrations` in order, recording each version in `table`. Each
+ * schema keeps its own version table, so its migrations number from 1. */
+export async function migrateSchema(
+  db,
+  { table, migrations, now = () => new Date().toISOString() },
+) {
+  if (!/^[a-z_]+$/.test(table)) throw new TypeError("Invalid schema table name");
+  await db
+    .prepare(
+      `CREATE TABLE IF NOT EXISTS ${table} (
+        version INTEGER PRIMARY KEY,
+        name TEXT NOT NULL,
+        applied_at TEXT NOT NULL
+      )`,
+    )
+    .run();
   const current = async () =>
-    (await db.prepare("SELECT max(version) AS version FROM pages_catalog_schema").first())
-      ?.version ?? 0;
+    (await db.prepare(`SELECT max(version) AS version FROM ${table}`).first())?.version ?? 0;
   let version = await current();
   for (const migration of migrations) {
     if (migration.version <= version) continue;
@@ -183,7 +195,7 @@ export async function migrateCatalogIndex(
       await db.batch([
         ...migration.statements.map((sql) => db.prepare(sql)),
         db
-          .prepare("INSERT INTO pages_catalog_schema (version, name, applied_at) VALUES (?, ?, ?)")
+          .prepare(`INSERT INTO ${table} (version, name, applied_at) VALUES (?, ?, ?)`)
           .bind(migration.version, migration.name, now()),
       ]);
     } catch (error) {
@@ -252,8 +264,15 @@ export function accessRows(metadata, env, reader) {
   const rows = [{ principal: metadata.owner, role: "owner", source: "owner", domain: null }];
   for (const principal of Object.keys(members)) {
     const { role } = pageGrant(metadata, principal);
-    if (role === "viewer" || role === "editor")
-      rows.push({ principal, role, source: "member", domain: null });
+    // The index lists; it never grants. Its role column predates commenters
+    // and accepts owner, editor and viewer, so a commenter lists as a viewer.
+    if (role === "viewer" || role === "editor" || role === "commenter")
+      rows.push({
+        principal,
+        role: role === "commenter" ? "viewer" : role,
+        source: "member",
+        domain: null,
+      });
   }
   const domain = configuredDomainView(metadata, env)?.domain ?? null;
   if (
@@ -803,13 +822,18 @@ export async function queryCatalogIndex(db, { principal, domain, inTrash, needle
 /** Candidate source over the Catalog entries: for when the index is off or
  * unavailable, and for listings filtered by location, which only the
  * Catalog's entries record. `owned(entry)` keeps an owned entry; `shared`
- * says whether shared entries are candidates. Each prefix read is bounded. */
+ * says whether shared entries are candidates. Owned entries are read whole:
+ * the account's Page limit bounds them, and a listing reads them all for
+ * location anyway. Shared entries have no limit, so that read is bounded. */
 export async function catalogSource(
   storage,
   { inTrash, needle, owned = () => true, shared = true },
 ) {
   const list = async (prefix) => [
-    ...(await storage.list({ prefix, limit: catalogIndexBounds.fallbackScan })).values(),
+    ...(prefix === "shared/"
+      ? await storage.list({ prefix, limit: catalogIndexBounds.fallbackScan })
+      : await listAll(storage, prefix)
+    ).values(),
   ];
   const entries = inTrash
     ? (await list("trash/")).map((entry) => ({ entry, owned: true }))

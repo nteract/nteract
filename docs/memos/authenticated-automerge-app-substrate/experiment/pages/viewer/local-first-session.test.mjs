@@ -79,6 +79,7 @@ test("new Pages are editable and durable without any completed network operation
   t.after(() => session.close());
   assert.equal(calls, 0);
   assert.equal(session.status, "Saved locally");
+  assert.equal(session.statusRetry, true);
   assert.equal(session.snapshot().title, "Local first");
   assert.equal(documentIdToBinary(session.localPage.registration.document_id).byteLength, 32);
   assert.equal(session.localPage.registration.expected_principal, auth.identity.principal);
@@ -786,6 +787,7 @@ test("native catch-up cannot publish a stale receipt after either asynchronous b
         else if (invalidate === "deleted") {
           session.phase$.update(() => ({ name: "deleted" }));
           session.status = "Deleted";
+          session.statusId = "deleted";
         } else await session.close();
         if (invalidate === "deleted") fail(Error("Stale native failure"));
         else finish();
@@ -889,6 +891,8 @@ test("a deletion marker from another tab terminates stale local checkpoint write
   clearTimeout(session.savedTimer);
   await session.saveReceipt();
   assert.equal(session.status, "Deleted");
+  assert.equal(session.statusKey, "attention");
+  assert.equal(session.statusRetry, false);
   assert.equal(session.canWrite, false);
   assert.equal(session.alive, false);
   assert.equal(session.receiptRetryTimer, undefined);
@@ -912,7 +916,9 @@ test("duplicated tabs open a shared checkpoint larger than an ordinary native ed
     Object.assign(draft, data),
   );
   doc = A.change(doc, { time: 0 }, initializePage);
-  for (let i = 0; i < 600; i++)
+  // Fragment boundaries follow change hashes, so the count that exceeds the
+  // batch limit depends on the fixture's exact history.
+  for (let i = 0; i < 1200; i++)
     doc = A.change(doc, { time: 0 }, (draft) => {
       draft.title = `Cached history ${i % 2}`;
     });
@@ -1050,4 +1056,205 @@ test("reopening restores checkpoint changes a same-head stored fragment lacks", 
   assert.equal(reopened.doc.left, "1c".repeat(16));
   assert.equal(reopened.doc.right, "1d".repeat(16));
   assert.equal(reopened.snapshot().title, "Merged");
+});
+
+// An offline tab from before the preserved-block conversion converted a raw
+// table with its Edit table action. The host converted the same table and
+// refused that tab's write (its build lacks the conversion feature). The tab
+// reloads into this build: its pre-cutover edit must not sync, or the merge
+// holds the table twice.
+test("reopening sets aside a pre-cutover conversion of a preserved block, so sync holds one copy", async (t) => {
+  browser(t);
+  t.mock.method(PageSession.prototype, "retryConnection", async () => {});
+  const { pmNodeToSpans } = await import("@automerge/prosemirror");
+  const { adapter, schema, textPath, exportMarkdown, richDoc } =
+    await import("../model/richtext.mjs");
+  const { convertPreservedBlocks, convertedSpans, hasPreservedBlocks } =
+    await import("../model/raw-migration.mjs");
+  const { orderedBlockIds } = await import("../model/page.mjs");
+  const auth = authentication(),
+    pageId = "0b6c1f5e-8a2d-4f3b-9c7e-1d2e3f4a5b6c";
+  const documentId = interpretAsDocumentId(generateAutomergeUrl());
+  // The Page as an older build stored it, already on the host.
+  let base = A.change(A.from(createPageData({ pageId, title: "Release" })), (draft) =>
+    initializePage(draft, ""),
+  );
+  const id = orderedBlockIds(base)[0];
+  base = A.change(base, (draft) =>
+    A.updateSpans(
+      draft,
+      textPath(id),
+      pmNodeToSpans(
+        adapter,
+        schema.node("doc", null, [
+          schema.node("paragraph", null, [schema.text("Plan")]),
+          schema.node("raw", {
+            source: "| Step | Owner |\n| --- | --- |\n| Tag release | Kyle |",
+            importId: "",
+            kind: "markdown",
+          }),
+        ]),
+      ),
+      adapter.updateSpansConfig(),
+    ),
+  );
+  const oldActor = "1c".repeat(16);
+  const oldTab = A.change(A.clone(base, { actor: oldActor }), (draft) => {
+    const spans = A.spans(draft, textPath(id)).flatMap((span) =>
+      span.type === "block" && String(span.value.type) === "pages-opaque"
+        ? convertedSpans(span)
+        : [span],
+    );
+    A.updateSpans(draft, textPath(id), spans, adapter.updateSpansConfig());
+  });
+  const host = A.change(A.clone(base), (draft) => convertPreservedBlocks(draft));
+  const copies = (doc) => exportMarkdown(richDoc(doc.blocks[id])).split("Tag release").length - 1;
+  // Without the fix: both conversions merge and the table appears twice.
+  assert.equal(copies(A.merge(A.clone(host), oldTab)), 2);
+  // The host refused the old tab's write: its build lacks the stamp.
+  const { missingFeatures, documentFeatures, BUILD_FEATURES } =
+    await import("../model/schema-features.mjs");
+  const { CONVERSION_FEATURE } = await import("../model/raw-migration.mjs");
+  const oldBuild = BUILD_FEATURES.filter((feature) => feature !== CONVERSION_FEATURE);
+  assert.deepEqual(missingFeatures(documentFeatures(host), oldBuild), [CONVERSION_FEATURE]);
+
+  await writeLocalPage(auth.identity, {
+    ...checkpointPage(auth, pageId, documentId, oldTab),
+    localEdits: {
+      actors: [{ actor: oldActor, replica: "ab".repeat(16) }],
+      ackedHeads: A.getHeads(base),
+      unattributed: false,
+    },
+  });
+  const reopened = await PageSession.open(pageId, { authentication: auth });
+  t.after(() => reopened.close());
+  assert.equal(reopened.recoveredPreservedEdits, true);
+  assert.match(reopened.problem, /Download previous local draft/);
+  assert.deepEqual(A.getHeads(reopened.doc).sort(), A.getHeads(base).sort());
+  assert.equal(hasPreservedBlocks(reopened.doc), true, "the host's conversion will arrive");
+  assert.equal(reopened.status, "Saved locally", "nothing of its own is waiting to sync");
+  // The set-aside edit is kept as a recovery copy.
+  const [recovery] = (await reopened.listRecoveries()).slice(-1);
+  const kept = A.load(decodeSnapshot(recovery.snapshot));
+  assert.ok(A.hasHeads(kept, A.getHeads(oldTab)));
+  assert.match(reopened.exportRecovery(recovery).markdown, /Tag release/);
+  // Native sync: the host's history plus everything this replica can publish.
+  const synced = A.merge(A.clone(host), reopened.doc);
+  assert.equal(copies(synced), 1);
+  assert.equal(hasPreservedBlocks(synced), false);
+  // A second open finds nothing to set aside.
+  await reopened.close();
+  const again = await PageSession.open(pageId, { authentication: auth });
+  t.after(() => again.close());
+  assert.ok(!again.recoveredPreservedEdits);
+  assert.deepEqual(A.getHeads(again.doc).sort(), A.getHeads(base).sort());
+});
+
+// The same pre-cutover conversion in a checkpoint with no acknowledgement
+// record (unattributed edits): the whole history is read, and the set-aside
+// still leaves exactly one copy after sync. An ordinary offline edit made
+// beside it with the new build is kept.
+test("reopening sets aside a pre-cutover conversion with no acknowledged heads", async (t) => {
+  browser(t);
+  t.mock.method(PageSession.prototype, "retryConnection", async () => {});
+  const { pmNodeToSpans } = await import("@automerge/prosemirror");
+  const { adapter, schema, textPath, exportMarkdown, richDoc } =
+    await import("../model/richtext.mjs");
+  const { convertPreservedBlocks, convertedSpans, preservedBlockEdits } =
+    await import("../model/raw-migration.mjs");
+  const { orderedBlockIds } = await import("../model/page.mjs");
+  const auth = authentication(),
+    pageId = "4e5f6a7b-8c9d-4e0f-9a1b-2c3d4e5f6a7b";
+  const documentId = interpretAsDocumentId(generateAutomergeUrl());
+  let base = A.change(A.from(createPageData({ pageId, title: "Notes" })), (draft) =>
+    initializePage(draft, ""),
+  );
+  const id = orderedBlockIds(base)[0];
+  base = A.change(base, (draft) =>
+    A.updateSpans(
+      draft,
+      textPath(id),
+      pmNodeToSpans(
+        adapter,
+        schema.node("doc", null, [
+          schema.node("raw", { source: "~~Only once~~", importId: "", kind: "markdown" }),
+        ]),
+      ),
+      adapter.updateSpansConfig(),
+    ),
+  );
+  const oldTab = A.change(A.clone(base, { actor: "2c".repeat(16) }), (draft) => {
+    const spans = A.spans(draft, textPath(id)).flatMap((span) =>
+      span.type === "block" && String(span.value.type) === "pages-opaque"
+        ? convertedSpans(span)
+        : [span],
+    );
+    A.updateSpans(draft, textPath(id), spans, adapter.updateSpansConfig());
+  });
+  // An ordinary title edit, also unconfirmed, on a different branch.
+  const titled = A.change(A.clone(base, { actor: "3c".repeat(16) }), (draft) => {
+    draft.title = "Notes (edited)";
+  });
+  const local = A.merge(A.clone(oldTab), titled);
+  // The host's own conversion is never selected.
+  const host = A.change(A.clone(base), (draft) => convertPreservedBlocks(draft));
+  assert.equal(preservedBlockEdits(A.merge(A.clone(host), titled), []), null);
+  await writeLocalPage(auth.identity, {
+    ...checkpointPage(auth, pageId, documentId, local),
+    localEdits: { actors: [], ackedHeads: [], unattributed: true },
+  });
+  const reopened = await PageSession.open(pageId, { authentication: auth });
+  t.after(() => reopened.close());
+  assert.equal(reopened.recoveredPreservedEdits, true);
+  // The title edit doesn't depend on the conversion, so it stays.
+  assert.equal(reopened.doc.title, "Notes (edited)");
+  const synced = A.merge(A.clone(host), reopened.doc);
+  assert.equal(exportMarkdown(richDoc(synced.blocks[id])).split("Only once").length - 1, 1);
+  assert.equal(synced.title, "Notes (edited)");
+});
+
+test("an offline comment survives a reload: both documents restore from the checkpoint", async (t) => {
+  browser(t);
+  t.mock.method(PageSession.prototype, "retryConnection", async () => {});
+  const auth = authentication();
+  const first = await PageSession.create(
+    { title: "Offline comments" },
+    { authentication: auth, refreshSession: async () => auth },
+  );
+  // A comments document as discovery would have named it; offline, the
+  // replica creates it locally the way the host's deterministic genesis does.
+  const { commentsGenesis } = await import("../model/comments-doc.mjs");
+  const comments = await first.repo.import(
+    A.save(commentsGenesis("c0000000-0000-4000-8000-0000000000aa")),
+  );
+  first.commentsHandle = comments;
+  await first.change((doc) => {
+    doc.schema = { features: ["comments-doc"] };
+  });
+  first.access = { ...first.access, canComment: true };
+  first.updateCapabilities();
+  const blockId = Object.keys(first.doc.blocks)[0];
+  await first.comment({ action: "add", block_id: blockId, body: "Typed offline" });
+  clearTimeout(first.savedTimer);
+  await first.persistLocal({ pending: true });
+  const pageId = first.pageId;
+  const commentsId = comments.documentId;
+  await first.close();
+
+  const restored = await PageSession.open(pageId, {
+    authentication: auth,
+    refreshSession: async () => auth,
+  });
+  t.after(() => restored.close());
+  assert.equal(restored.localPage.comments_document_id, commentsId);
+  // Offline, the stored ID opens the restored copy.
+  await new Promise((resolve) => {
+    const check = () =>
+      restored.commentsOpen$.snapshot().name === "ready" ? resolve() : setTimeout(check, 5);
+    check();
+  });
+  const threads = Object.values(restored.commentsDoc.threads);
+  assert.equal(threads.length, 1);
+  assert.equal(String(Object.values(threads[0].messages)[0].body), "Typed offline");
+  assert.match(restored.exportRecovery().markdown, /Typed offline/);
 });

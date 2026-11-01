@@ -22,11 +22,11 @@ const TABLE = new URL("../test/fixtures/machines/reload-gate.json", import.meta.
 
 const settle = () => new Promise((resolve) => setImmediate(resolve));
 
-/** The receipt status a session would show for an entry's facts. */
+/** The status id a session would show for an entry's facts. */
 function statusOf({ save, pending }) {
-  if (save === "failed") return "Local save failed";
-  if (save === "stalled") return "Offline";
-  return pending ? "Saving" : "Saved";
+  if (save === "failed") return "local-failed";
+  if (save === "stalled") return "offline";
+  return pending ? "saving" : "saved";
 }
 
 function harness() {
@@ -48,9 +48,11 @@ function harness() {
 function apply(session, entry) {
   Object.assign(session, {
     pending: entry.pending,
-    status: statusOf(entry),
+    statusId: statusOf(entry),
     savedHeads: [...entry.savedHeads],
+    schemaHold: entry.schema,
   });
+  if (entry.title !== undefined) session.doc.title = entry.title;
   if (entry.reason && session.phase$.snapshot().reason !== entry.reason)
     session.pause(entry.reason);
   else session.emit();
@@ -76,12 +78,15 @@ function own(ctx, entry, event, { install = true } = {}) {
   };
   session.retryConnection = () => ctx.calls.push(["save", entry.id, true]);
   session.queueSaved = () => ctx.calls.push(["save", entry.id, false]);
+  session.checkpointForSchema = () => ctx.calls.push(["checkpoint", entry.id]);
   ctx.sessions.set(entry.id, session);
   Object.assign(session, {
     pending: entry.pending,
-    status: statusOf(entry),
+    statusId: statusOf(entry),
     savedHeads: [...entry.savedHeads],
+    schemaHold: entry.schema,
   });
+  if (entry.title !== undefined) session.doc.title = entry.title;
   if (entry.reason) session.step(pauseEvent(entry.reason));
   if (install) ctx.host.install(session, ctx.host.generation, session.identity.principal);
   else
@@ -181,7 +186,7 @@ async function deliver(ctx, event) {
       }
       if (phase.name === "draining") {
         if (event.phase === "closed" && event.saved) session.pending = false;
-        session.status = event.phase === "closed" && event.saved ? "Saved" : "Offline";
+        session.statusId = event.phase === "closed" && event.saved ? "saved" : "offline";
         session.emit();
         await settle();
       }
@@ -200,18 +205,21 @@ async function deliver(ctx, event) {
 function effectsOf(ctx, timersBefore) {
   const pauses = [];
   const saves = [];
+  const checkpoints = [];
   const resumes = [];
   let reload = false;
   for (const [kind, id, retry] of ctx.calls) {
     if (kind === "pause") pauses.push(id);
     else if (kind === "resume") resumes.push(id);
     else if (kind === "save") saves.push({ type: "requestSave", id, retry });
+    else if (kind === "checkpoint") checkpoints.push({ type: "checkpoint", id });
     else if (kind === "reload") reload = true;
   }
   const timer = ctx.armed > timersBefore;
   return [
     ...(pauses.length ? [{ type: "pauseEdits", ids: pauses }] : []),
     ...saves,
+    ...checkpoints,
     ...(timer ? [{ type: "startTimer", ms: SAVE_BEFORE_RELOAD_MS }] : []),
     ...(resumes.length ? [{ type: "resumeEdits", ids: resumes }] : []),
     ...(reload ? [{ type: "reload" }] : []),
@@ -234,7 +242,7 @@ async function drive(state, event) {
 }
 
 const table = loadTable(TABLE);
-const COUNTS = { rows: 62, pairs: 19, unreachable: 6, cases: 48 };
+const COUNTS = { rows: 72, pairs: 19, unreachable: 6, cases: 58 };
 
 test("the reload-gate table runs through the pure machine", async () => {
   assert.deepEqual(await runTable(reloadGateMachine, table), COUNTS);

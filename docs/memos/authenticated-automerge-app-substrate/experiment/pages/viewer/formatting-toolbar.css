@@ -132,16 +132,24 @@
 .mobile-bar-spacer {
   flex: 1;
 }
-.mobile-bar-count {
+/* Comment's "select some text" note. The live region stays mounted so screen
+   readers announce it; it takes no room while empty. */
+.mobile-bar-hint {
   position: absolute;
-  top: 4px;
-  right: 2px;
-  min-width: 16px;
-  padding: 1px 4px;
-  border-radius: 8px;
-  background: var(--comment-anchor-line, #e16c10);
-  color: #fff;
-  font: 700 10px/14px system-ui;
+  right: 6px;
+  bottom: calc(100% + 6px);
+  margin: 0;
+  padding: 6px 10px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface);
+  color: var(--foreground);
+  font: 500 14px system-ui;
+  pointer-events: none;
+}
+.mobile-bar-hint:empty {
+  padding: 0;
+  border: 0;
 }
 .mobile-bar-menu {
   position: absolute;

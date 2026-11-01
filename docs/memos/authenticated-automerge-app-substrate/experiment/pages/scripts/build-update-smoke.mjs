@@ -5,6 +5,7 @@
 import assert from "node:assert/strict";
 import { mkdir, writeFile } from "node:fs/promises";
 import { chromium, expect } from "@playwright/test";
+import { MIN_VIEWER_PROTOCOL } from "../shared/build-identity.mjs";
 
 const origin = process.env.PAGES_ORIGIN || "http://localhost:9894";
 assert.equal(new URL(origin).hostname, "localhost");
@@ -160,10 +161,10 @@ try {
   const buildA = health.body.build;
   assert.match(buildA, /^[0-9a-f]{12}$/);
   assert.equal(health.build, buildA);
-  assert.equal(health.body.minViewerProtocol, 1);
+  assert.equal(health.body.minViewerProtocol, MIN_VIEWER_PROTOCOL);
   const session = await api(owner, "/api/auth/session");
   assert.equal(session.build, buildA);
-  assert.equal(session.minViewerProtocol, "1");
+  assert.equal(session.minViewerProtocol, String(MIN_VIEWER_PROTOCOL));
   // The build id lives in app.js or one of the chunks it imports.
   const { source: entry } = await viewerEntry();
   const viewerSources = [
@@ -206,10 +207,9 @@ try {
   await owner.keyboard.insertText(" During deploy.");
   await paragraph(owner, "Deploy garden. Before deploy. During deploy.");
   await deployed;
-  await expect(banner(owner)).toContainText(
-    "Pages changed on the server. Reload to use the current version.",
-    { timeout: 60000 },
-  );
+  await expect(banner(owner)).toContainText("App updated. Reload to use the latest version.", {
+    timeout: 60000,
+  });
   await expect(banner(owner)).toHaveAttribute("role", "status");
   await owner.screenshot({ path: `${output}/update-banner.png` });
   // An optional update never pauses editing.
@@ -341,10 +341,9 @@ try {
     owner,
     "Deploy garden. Before deploy. During deploy. Checkpointed. After banner. Floor raised.",
   );
-  await expect(banner(owner)).toContainText(
-    "Pages changed on the server. This tab can't edit until you reload.",
-    { timeout: 30000 },
-  );
+  await expect(banner(owner)).toContainText("App updated. This tab can't edit until you reload.", {
+    timeout: 30000,
+  });
   await expect(banner(owner)).toHaveAttribute("role", "alert");
   await expect(content(owner)).toHaveAttribute("contenteditable", "false");
   await expect(owner.getByRole("textbox", { name: "Page title" })).toHaveAttribute("readonly", "");
@@ -441,12 +440,12 @@ try {
     {
       label: "same build",
       stale: false,
-      expected: "Pages couldn't load the editor. Reload to try again.",
+      expected: "The editor didn't load. Reload to try again.",
     },
     {
       label: "older build",
       stale: true,
-      expected: "Pages changed on the server. This tab can't edit until you reload.",
+      expected: "App updated. This tab can't edit until you reload.",
     },
   ]) {
     const older = "d".repeat(12);

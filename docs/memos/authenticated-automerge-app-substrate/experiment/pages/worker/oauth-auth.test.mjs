@@ -8,6 +8,7 @@ import { createServerAppSession } from "@cloud/app-session.ts";
 import { authenticate } from "./auth.mjs";
 import { DocumentPolicy } from "./policy.mjs";
 import { applyPageOperation, createPageData, initializePage } from "../model/page.mjs";
+import { comment, newCommentsDoc } from "../model/comments-test-support.mjs";
 import { retryKey } from "../model/retry-key.mjs";
 import {
   exchangeAuthorizationCode,
@@ -289,6 +290,19 @@ test("Pages-issued tokens authenticate MCP and each host-only forwarding hop loc
   );
   assert.equal(identities.at(-1).identity.driver, "Dot demo");
   assert.equal(identities.at(-1).identity.principal, person.principal);
+  // An MCP session can't present itself as a person in the browser, on /mcp
+  // or on the internal hop it forwards to.
+  await call(f, "read_page", { page_id: pageId }, { "X-Pages-Driver": "Browser" });
+  assert.equal(identities.at(-1).identity.driver, "API");
+  assert.equal(
+    (
+      await authenticate(
+        request("/mcp", f.tokens.access_token, { "X-Pages-Driver": " browser " }),
+        f.env,
+      )
+    ).driver,
+    "API",
+  );
 });
 
 test("read-only OAuth scope rejects every mutating MCP tool before forwarding", async (t) => {
@@ -418,12 +432,14 @@ function readPageFixture(t, f, role) {
         ],
       },
     });
-    threadId = applyPageOperation(draft, {
-      operation: "manage_page_comment",
-      arguments: { block_id: blockId, body: "Private comment sentinel." },
-      identity: { ...person, driver: "Browser" },
-    }).thread_id;
   });
+  const commented = comment(
+    doc,
+    newCommentsDoc(),
+    { block_id: blockId, body: "Private comment sentinel." },
+    { ...person, driver: "Browser" },
+  );
+  threadId = commented.result.thread_id;
   t.after(() => A.free(doc));
   const storage = new Storage();
   const page = Object.assign(Object.create(Page.prototype), {
@@ -445,6 +461,7 @@ function readPageFixture(t, f, role) {
       },
     },
     handle: { doc: () => doc },
+    commentsHandle: { doc: () => commented.comments },
     cacheTitle() {},
   });
   page.policy = new DocumentPolicy({ storage, metadata: () => page.metadata });
@@ -574,6 +591,7 @@ test("a live Page ACL downgrade and revocation override an existing OAuth write 
       },
     },
     handle: { doc: () => doc },
+    commentsHandle: { doc: () => commented.comments },
     cacheTitle() {},
   });
   page.policy = new DocumentPolicy({ storage, metadata: () => page.metadata });

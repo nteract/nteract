@@ -1,0 +1,1287 @@
+{
+  "machine": "boot-preview",
+  "description": "The read-only preview a Page route may show while the editor loads, for one page load and only to the account the host authenticated for the answer. Runs against viewer/boot-preview-machine.mjs in viewer/boot-preview.test.mjs.",
+  "states": [
+    "idle",
+    "pending",
+    "shown",
+    "retired"
+  ],
+  "events": [
+    "start",
+    "session",
+    "resolved",
+    "refused",
+    "navigated",
+    "installed",
+    "invalidated"
+  ],
+  "unreachable": [
+    [
+      "idle",
+      "resolved",
+      "The early answer is read only after start"
+    ],
+    [
+      "idle",
+      "invalidated",
+      "Only a started preview watches the early request"
+    ],
+    [
+      "shown",
+      "resolved",
+      "The early answer resolves once, and shown already holds it"
+    ]
+  ],
+  "cases": {
+    "pending/session": [
+      "signed-out",
+      "changed",
+      "shows",
+      "mismatch",
+      "records",
+      "unchanged"
+    ],
+    "pending/resolved": [
+      "wrong-page",
+      "duplicate",
+      "shows",
+      "mismatch",
+      "records"
+    ],
+    "pending/navigated": [
+      "same-page",
+      "other-route"
+    ],
+    "shown/session": [
+      "unchanged",
+      "signed-out",
+      "changed"
+    ],
+    "shown/navigated": [
+      "same-page",
+      "other-route"
+    ]
+  },
+  "rows": [
+    {
+      "label": "boot on a Page route asks for its preview",
+      "state": {
+        "name": "idle"
+      },
+      "event": {
+        "type": "start",
+        "pageId": "5f0c4a5e-6c1e-4b0e-9a8f-0d0d4c5e6f70"
+      },
+      "expect": {
+        "state": {
+          "name": "pending",
+          "pageId": "5f0c4a5e-6c1e-4b0e-9a8f-0d0d4c5e6f70"
+        },
+        "effects": []
+      }
+    },
+    {
+      "label": "a session answer with nothing asked for changes nothing",
+      "note": "Boot on Home, a Project or an index route.",
+      "state": {
+        "name": "idle"
+      },
+      "event": {
+        "type": "session",
+        "principal": "alice"
+      },
+      "expect": {
+        "state": {
+          "name": "idle"
+        },
+        "effects": [],
+        "rejected": "No preview was asked for"
+      }
+    },
+    {
+      "label": "a failed open before any preview ends the boot moment",
+      "state": {
+        "name": "idle"
+      },
+      "event": {
+        "type": "refused"
+      },
+      "expect": {
+        "state": {
+          "name": "retired",
+          "reason": "refused"
+        },
+        "effects": [
+          {
+            "type": "release"
+          }
+        ]
+      }
+    },
+    {
+      "label": "leaving the boot route before any preview ends the boot moment",
+      "state": {
+        "name": "idle"
+      },
+      "event": {
+        "type": "navigated",
+        "pageId": null
+      },
+      "expect": {
+        "state": {
+          "name": "retired",
+          "reason": "navigated"
+        },
+        "effects": [
+          {
+            "type": "release"
+          }
+        ]
+      }
+    },
+    {
+      "label": "a live Page before any preview ends the boot moment",
+      "state": {
+        "name": "idle"
+      },
+      "event": {
+        "type": "installed"
+      },
+      "expect": {
+        "state": {
+          "name": "retired",
+          "reason": "installed"
+        },
+        "effects": [
+          {
+            "type": "release"
+          }
+        ]
+      }
+    },
+    {
+      "label": "a second start is refused",
+      "state": {
+        "name": "pending",
+        "pageId": "5f0c4a5e-6c1e-4b0e-9a8f-0d0d4c5e6f70"
+      },
+      "event": {
+        "type": "start",
+        "pageId": "6a1d5b6f-7d2f-4c1f-8b9a-1e1e5d6f7a81"
+      },
+      "expect": {
+        "state": {
+          "name": "pending",
+          "pageId": "5f0c4a5e-6c1e-4b0e-9a8f-0d0d4c5e6f70"
+        },
+        "effects": [],
+        "rejected": "The preview was already asked for"
+      }
+    },
+    {
+      "label": "signed out while waiting retires",
+      "case": "signed-out",
+      "state": {
+        "name": "pending",
+        "pageId": "5f0c4a5e-6c1e-4b0e-9a8f-0d0d4c5e6f70"
+      },
+      "event": {
+        "type": "session",
+        "principal": null
+      },
+      "expect": {
+        "state": {
+          "name": "retired",
+          "reason": "signed-out"
+        },
+        "effects": [
+          {
+            "type": "release"
+          }
+        ]
+      }
+    },
+    {
+      "label": "another account after the first answer retires",
+      "note": "Another tab switched the cookie to a different account.",
+      "case": "changed",
+      "state": {
+        "name": "pending",
+        "pageId": "5f0c4a5e-6c1e-4b0e-9a8f-0d0d4c5e6f70",
+        "principal": "alice"
+      },
+      "event": {
+        "type": "session",
+        "principal": "bob"
+      },
+      "expect": {
+        "state": {
+          "name": "retired",
+          "reason": "principal-changed"
+        },
+        "effects": [
+          {
+            "type": "release"
+          }
+        ]
+      }
+    },
+    {
+      "label": "the session confirms the account the host answered for: show",
+      "case": "shows",
+      "state": {
+        "name": "pending",
+        "pageId": "5f0c4a5e-6c1e-4b0e-9a8f-0d0d4c5e6f70",
+        "answer": {
+          "principal": "alice",
+          "preview": {
+            "title": "Roadmap",
+            "blocks": [
+              {
+                "id": "b1",
+                "content": [
+                  [
+                    "p",
+                    {},
+                    "We ship on Friday."
+                  ]
+                ]
+              }
+            ],
+            "truncated": false
+          }
+        }
+      },
+      "event": {
+        "type": "session",
+        "principal": "alice"
+      },
+      "expect": {
+        "state": {
+          "name": "shown",
+          "pageId": "5f0c4a5e-6c1e-4b0e-9a8f-0d0d4c5e6f70",
+          "principal": "alice",
+          "preview": {
+            "title": "Roadmap",
+            "blocks": [
+              {
+                "id": "b1",
+                "content": [
+                  [
+                    "p",
+                    {},
+                    "We ship on Friday."
+                  ]
+                ]
+              }
+            ],
+            "truncated": false
+          }
+        },
+        "effects": []
+      }
+    },
+    {
+      "label": "the session names another account than the host answered for: retire",
+      "case": "mismatch",
+      "state": {
+        "name": "pending",
+        "pageId": "5f0c4a5e-6c1e-4b0e-9a8f-0d0d4c5e6f70",
+        "answer": {
+          "principal": "alice",
+          "preview": {
+            "title": "Roadmap",
+            "blocks": [
+              {
+                "id": "b1",
+                "content": [
+                  [
+                    "p",
+                    {},
+                    "We ship on Friday."
+                  ]
+                ]
+              }
+            ],
+            "truncated": false
+          }
+        }
+      },
+      "event": {
+        "type": "session",
+        "principal": "bob"
+      },
+      "expect": {
+        "state": {
+          "name": "retired",
+          "reason": "principal-mismatch"
+        },
+        "effects": [
+          {
+            "type": "release"
+          }
+        ]
+      }
+    },
+    {
+      "label": "the session answers first: remember the account",
+      "case": "records",
+      "state": {
+        "name": "pending",
+        "pageId": "5f0c4a5e-6c1e-4b0e-9a8f-0d0d4c5e6f70"
+      },
+      "event": {
+        "type": "session",
+        "principal": "alice"
+      },
+      "expect": {
+        "state": {
+          "name": "pending",
+          "pageId": "5f0c4a5e-6c1e-4b0e-9a8f-0d0d4c5e6f70",
+          "principal": "alice"
+        },
+        "effects": []
+      }
+    },
+    {
+      "label": "a renewal for the same account changes nothing",
+      "case": "unchanged",
+      "state": {
+        "name": "pending",
+        "pageId": "5f0c4a5e-6c1e-4b0e-9a8f-0d0d4c5e6f70",
+        "principal": "alice"
+      },
+      "event": {
+        "type": "session",
+        "principal": "alice"
+      },
+      "expect": {
+        "state": {
+          "name": "pending",
+          "pageId": "5f0c4a5e-6c1e-4b0e-9a8f-0d0d4c5e6f70",
+          "principal": "alice"
+        },
+        "effects": [],
+        "rejected": "The signed-in account is unchanged"
+      }
+    },
+    {
+      "label": "an answer for another Page retires",
+      "case": "wrong-page",
+      "state": {
+        "name": "pending",
+        "pageId": "5f0c4a5e-6c1e-4b0e-9a8f-0d0d4c5e6f70"
+      },
+      "event": {
+        "type": "resolved",
+        "pageId": "6a1d5b6f-7d2f-4c1f-8b9a-1e1e5d6f7a81",
+        "principal": "alice",
+        "preview": {
+          "title": "Roadmap",
+          "blocks": [
+            {
+              "id": "b1",
+              "content": [
+                [
+                  "p",
+                  {},
+                  "We ship on Friday."
+                ]
+              ]
+            }
+          ],
+          "truncated": false
+        }
+      },
+      "expect": {
+        "state": {
+          "name": "retired",
+          "reason": "wrong-page"
+        },
+        "effects": [
+          {
+            "type": "release"
+          }
+        ]
+      }
+    },
+    {
+      "label": "a second answer is ignored",
+      "case": "duplicate",
+      "state": {
+        "name": "pending",
+        "pageId": "5f0c4a5e-6c1e-4b0e-9a8f-0d0d4c5e6f70",
+        "answer": {
+          "principal": "alice",
+          "preview": {
+            "title": "Roadmap",
+            "blocks": [
+              {
+                "id": "b1",
+                "content": [
+                  [
+                    "p",
+                    {},
+                    "We ship on Friday."
+                  ]
+                ]
+              }
+            ],
+            "truncated": false
+          }
+        }
+      },
+      "event": {
+        "type": "resolved",
+        "pageId": "5f0c4a5e-6c1e-4b0e-9a8f-0d0d4c5e6f70",
+        "principal": "alice",
+        "preview": {
+          "title": "Roadmap",
+          "blocks": [
+            {
+              "id": "b1",
+              "content": [
+                [
+                  "p",
+                  {},
+                  "We ship on Friday."
+                ]
+              ]
+            }
+          ],
+          "truncated": false
+        }
+      },
+      "expect": {
+        "state": {
+          "name": "pending",
+          "pageId": "5f0c4a5e-6c1e-4b0e-9a8f-0d0d4c5e6f70",
+          "answer": {
+            "principal": "alice",
+            "preview": {
+              "title": "Roadmap",
+              "blocks": [
+                {
+                  "id": "b1",
+                  "content": [
+                    [
+                      "p",
+                      {},
+                      "We ship on Friday."
+                    ]
+                  ]
+                }
+              ],
+              "truncated": false
+            }
+          }
+        },
+        "effects": [],
+        "rejected": "The early answer already arrived"
+      }
+    },
+    {
+      "label": "the host answers for the signed-in account: show",
+      "case": "shows",
+      "state": {
+        "name": "pending",
+        "pageId": "5f0c4a5e-6c1e-4b0e-9a8f-0d0d4c5e6f70",
+        "principal": "alice"
+      },
+      "event": {
+        "type": "resolved",
+        "pageId": "5f0c4a5e-6c1e-4b0e-9a8f-0d0d4c5e6f70",
+        "principal": "alice",
+        "preview": {
+          "title": "Roadmap",
+          "blocks": [
+            {
+              "id": "b1",
+              "content": [
+                [
+                  "p",
+                  {},
+                  "We ship on Friday."
+                ]
+              ]
+            }
+          ],
+          "truncated": false
+        }
+      },
+      "expect": {
+        "state": {
+          "name": "shown",
+          "pageId": "5f0c4a5e-6c1e-4b0e-9a8f-0d0d4c5e6f70",
+          "principal": "alice",
+          "preview": {
+            "title": "Roadmap",
+            "blocks": [
+              {
+                "id": "b1",
+                "content": [
+                  [
+                    "p",
+                    {},
+                    "We ship on Friday."
+                  ]
+                ]
+              }
+            ],
+            "truncated": false
+          }
+        },
+        "effects": []
+      }
+    },
+    {
+      "label": "the host answers for another account than the session: retire",
+      "note": "The cookie changed between the session check and discovery.",
+      "case": "mismatch",
+      "state": {
+        "name": "pending",
+        "pageId": "5f0c4a5e-6c1e-4b0e-9a8f-0d0d4c5e6f70",
+        "principal": "alice"
+      },
+      "event": {
+        "type": "resolved",
+        "pageId": "5f0c4a5e-6c1e-4b0e-9a8f-0d0d4c5e6f70",
+        "principal": "bob",
+        "preview": {
+          "title": "Roadmap",
+          "blocks": [
+            {
+              "id": "b1",
+              "content": [
+                [
+                  "p",
+                  {},
+                  "We ship on Friday."
+                ]
+              ]
+            }
+          ],
+          "truncated": false
+        }
+      },
+      "expect": {
+        "state": {
+          "name": "retired",
+          "reason": "principal-mismatch"
+        },
+        "effects": [
+          {
+            "type": "release"
+          }
+        ]
+      }
+    },
+    {
+      "label": "the host answers first: hold it until the session confirms",
+      "case": "records",
+      "state": {
+        "name": "pending",
+        "pageId": "5f0c4a5e-6c1e-4b0e-9a8f-0d0d4c5e6f70"
+      },
+      "event": {
+        "type": "resolved",
+        "pageId": "5f0c4a5e-6c1e-4b0e-9a8f-0d0d4c5e6f70",
+        "principal": "alice",
+        "preview": {
+          "title": "Roadmap",
+          "blocks": [
+            {
+              "id": "b1",
+              "content": [
+                [
+                  "p",
+                  {},
+                  "We ship on Friday."
+                ]
+              ]
+            }
+          ],
+          "truncated": false
+        }
+      },
+      "expect": {
+        "state": {
+          "name": "pending",
+          "pageId": "5f0c4a5e-6c1e-4b0e-9a8f-0d0d4c5e6f70",
+          "answer": {
+            "principal": "alice",
+            "preview": {
+              "title": "Roadmap",
+              "blocks": [
+                {
+                  "id": "b1",
+                  "content": [
+                    [
+                      "p",
+                      {},
+                      "We ship on Friday."
+                    ]
+                  ]
+                }
+              ],
+              "truncated": false
+            }
+          }
+        },
+        "effects": []
+      }
+    },
+    {
+      "label": "a refusal retires",
+      "state": {
+        "name": "pending",
+        "pageId": "5f0c4a5e-6c1e-4b0e-9a8f-0d0d4c5e6f70"
+      },
+      "event": {
+        "type": "refused"
+      },
+      "expect": {
+        "state": {
+          "name": "retired",
+          "reason": "refused"
+        },
+        "effects": [
+          {
+            "type": "release"
+          }
+        ]
+      }
+    },
+    {
+      "label": "rewriting the same Page's address keeps waiting",
+      "note": "A legacy ?page= link becomes /p/<id>.",
+      "case": "same-page",
+      "state": {
+        "name": "pending",
+        "pageId": "5f0c4a5e-6c1e-4b0e-9a8f-0d0d4c5e6f70"
+      },
+      "event": {
+        "type": "navigated",
+        "pageId": "5f0c4a5e-6c1e-4b0e-9a8f-0d0d4c5e6f70"
+      },
+      "expect": {
+        "state": {
+          "name": "pending",
+          "pageId": "5f0c4a5e-6c1e-4b0e-9a8f-0d0d4c5e6f70"
+        },
+        "effects": [],
+        "rejected": "The route still names the previewed Page"
+      }
+    },
+    {
+      "label": "navigating elsewhere retires",
+      "case": "other-route",
+      "state": {
+        "name": "pending",
+        "pageId": "5f0c4a5e-6c1e-4b0e-9a8f-0d0d4c5e6f70"
+      },
+      "event": {
+        "type": "navigated",
+        "pageId": "6a1d5b6f-7d2f-4c1f-8b9a-1e1e5d6f7a81"
+      },
+      "expect": {
+        "state": {
+          "name": "retired",
+          "reason": "navigated"
+        },
+        "effects": [
+          {
+            "type": "release"
+          }
+        ]
+      }
+    },
+    {
+      "label": "the live Page arriving first retires",
+      "state": {
+        "name": "pending",
+        "pageId": "5f0c4a5e-6c1e-4b0e-9a8f-0d0d4c5e6f70"
+      },
+      "event": {
+        "type": "installed"
+      },
+      "expect": {
+        "state": {
+          "name": "retired",
+          "reason": "installed"
+        },
+        "effects": [
+          {
+            "type": "release"
+          }
+        ]
+      }
+    },
+    {
+      "label": "a dropped early request retires",
+      "state": {
+        "name": "pending",
+        "pageId": "5f0c4a5e-6c1e-4b0e-9a8f-0d0d4c5e6f70"
+      },
+      "event": {
+        "type": "invalidated"
+      },
+      "expect": {
+        "state": {
+          "name": "retired",
+          "reason": "invalidated"
+        },
+        "effects": [
+          {
+            "type": "release"
+          }
+        ]
+      }
+    },
+    {
+      "label": "a second start is refused while shown",
+      "state": {
+        "name": "shown",
+        "pageId": "5f0c4a5e-6c1e-4b0e-9a8f-0d0d4c5e6f70",
+        "principal": "alice",
+        "preview": {
+          "title": "Roadmap",
+          "blocks": [
+            {
+              "id": "b1",
+              "content": [
+                [
+                  "p",
+                  {},
+                  "We ship on Friday."
+                ]
+              ]
+            }
+          ],
+          "truncated": false
+        }
+      },
+      "event": {
+        "type": "start",
+        "pageId": "5f0c4a5e-6c1e-4b0e-9a8f-0d0d4c5e6f70"
+      },
+      "expect": {
+        "state": {
+          "name": "shown",
+          "pageId": "5f0c4a5e-6c1e-4b0e-9a8f-0d0d4c5e6f70",
+          "principal": "alice",
+          "preview": {
+            "title": "Roadmap",
+            "blocks": [
+              {
+                "id": "b1",
+                "content": [
+                  [
+                    "p",
+                    {},
+                    "We ship on Friday."
+                  ]
+                ]
+              }
+            ],
+            "truncated": false
+          }
+        },
+        "effects": [],
+        "rejected": "The preview was already asked for"
+      }
+    },
+    {
+      "label": "a renewal for the same account keeps showing",
+      "case": "unchanged",
+      "state": {
+        "name": "shown",
+        "pageId": "5f0c4a5e-6c1e-4b0e-9a8f-0d0d4c5e6f70",
+        "principal": "alice",
+        "preview": {
+          "title": "Roadmap",
+          "blocks": [
+            {
+              "id": "b1",
+              "content": [
+                [
+                  "p",
+                  {},
+                  "We ship on Friday."
+                ]
+              ]
+            }
+          ],
+          "truncated": false
+        }
+      },
+      "event": {
+        "type": "session",
+        "principal": "alice"
+      },
+      "expect": {
+        "state": {
+          "name": "shown",
+          "pageId": "5f0c4a5e-6c1e-4b0e-9a8f-0d0d4c5e6f70",
+          "principal": "alice",
+          "preview": {
+            "title": "Roadmap",
+            "blocks": [
+              {
+                "id": "b1",
+                "content": [
+                  [
+                    "p",
+                    {},
+                    "We ship on Friday."
+                  ]
+                ]
+              }
+            ],
+            "truncated": false
+          }
+        },
+        "effects": [],
+        "rejected": "The signed-in account is unchanged"
+      }
+    },
+    {
+      "label": "signing out hides it for good",
+      "case": "signed-out",
+      "state": {
+        "name": "shown",
+        "pageId": "5f0c4a5e-6c1e-4b0e-9a8f-0d0d4c5e6f70",
+        "principal": "alice",
+        "preview": {
+          "title": "Roadmap",
+          "blocks": [
+            {
+              "id": "b1",
+              "content": [
+                [
+                  "p",
+                  {},
+                  "We ship on Friday."
+                ]
+              ]
+            }
+          ],
+          "truncated": false
+        }
+      },
+      "event": {
+        "type": "session",
+        "principal": null
+      },
+      "expect": {
+        "state": {
+          "name": "retired",
+          "reason": "signed-out"
+        },
+        "effects": [
+          {
+            "type": "release"
+          }
+        ]
+      }
+    },
+    {
+      "label": "another account hides it for good",
+      "case": "changed",
+      "state": {
+        "name": "shown",
+        "pageId": "5f0c4a5e-6c1e-4b0e-9a8f-0d0d4c5e6f70",
+        "principal": "alice",
+        "preview": {
+          "title": "Roadmap",
+          "blocks": [
+            {
+              "id": "b1",
+              "content": [
+                [
+                  "p",
+                  {},
+                  "We ship on Friday."
+                ]
+              ]
+            }
+          ],
+          "truncated": false
+        }
+      },
+      "event": {
+        "type": "session",
+        "principal": "bob"
+      },
+      "expect": {
+        "state": {
+          "name": "retired",
+          "reason": "principal-changed"
+        },
+        "effects": [
+          {
+            "type": "release"
+          }
+        ]
+      }
+    },
+    {
+      "label": "a failed open hides it for good",
+      "state": {
+        "name": "shown",
+        "pageId": "5f0c4a5e-6c1e-4b0e-9a8f-0d0d4c5e6f70",
+        "principal": "alice",
+        "preview": {
+          "title": "Roadmap",
+          "blocks": [
+            {
+              "id": "b1",
+              "content": [
+                [
+                  "p",
+                  {},
+                  "We ship on Friday."
+                ]
+              ]
+            }
+          ],
+          "truncated": false
+        }
+      },
+      "event": {
+        "type": "refused"
+      },
+      "expect": {
+        "state": {
+          "name": "retired",
+          "reason": "refused"
+        },
+        "effects": [
+          {
+            "type": "release"
+          }
+        ]
+      }
+    },
+    {
+      "label": "rewriting the same Page's address keeps showing",
+      "case": "same-page",
+      "state": {
+        "name": "shown",
+        "pageId": "5f0c4a5e-6c1e-4b0e-9a8f-0d0d4c5e6f70",
+        "principal": "alice",
+        "preview": {
+          "title": "Roadmap",
+          "blocks": [
+            {
+              "id": "b1",
+              "content": [
+                [
+                  "p",
+                  {},
+                  "We ship on Friday."
+                ]
+              ]
+            }
+          ],
+          "truncated": false
+        }
+      },
+      "event": {
+        "type": "navigated",
+        "pageId": "5f0c4a5e-6c1e-4b0e-9a8f-0d0d4c5e6f70"
+      },
+      "expect": {
+        "state": {
+          "name": "shown",
+          "pageId": "5f0c4a5e-6c1e-4b0e-9a8f-0d0d4c5e6f70",
+          "principal": "alice",
+          "preview": {
+            "title": "Roadmap",
+            "blocks": [
+              {
+                "id": "b1",
+                "content": [
+                  [
+                    "p",
+                    {},
+                    "We ship on Friday."
+                  ]
+                ]
+              }
+            ],
+            "truncated": false
+          }
+        },
+        "effects": [],
+        "rejected": "The route still names the previewed Page"
+      }
+    },
+    {
+      "label": "leaving the Page hides it for good",
+      "note": "Coming back later opens the replica, not this preview.",
+      "case": "other-route",
+      "state": {
+        "name": "shown",
+        "pageId": "5f0c4a5e-6c1e-4b0e-9a8f-0d0d4c5e6f70",
+        "principal": "alice",
+        "preview": {
+          "title": "Roadmap",
+          "blocks": [
+            {
+              "id": "b1",
+              "content": [
+                [
+                  "p",
+                  {},
+                  "We ship on Friday."
+                ]
+              ]
+            }
+          ],
+          "truncated": false
+        }
+      },
+      "event": {
+        "type": "navigated",
+        "pageId": null
+      },
+      "expect": {
+        "state": {
+          "name": "retired",
+          "reason": "navigated"
+        },
+        "effects": [
+          {
+            "type": "release"
+          }
+        ]
+      }
+    },
+    {
+      "label": "the live Page replaces it",
+      "state": {
+        "name": "shown",
+        "pageId": "5f0c4a5e-6c1e-4b0e-9a8f-0d0d4c5e6f70",
+        "principal": "alice",
+        "preview": {
+          "title": "Roadmap",
+          "blocks": [
+            {
+              "id": "b1",
+              "content": [
+                [
+                  "p",
+                  {},
+                  "We ship on Friday."
+                ]
+              ]
+            }
+          ],
+          "truncated": false
+        }
+      },
+      "event": {
+        "type": "installed"
+      },
+      "expect": {
+        "state": {
+          "name": "retired",
+          "reason": "installed"
+        },
+        "effects": [
+          {
+            "type": "release"
+          }
+        ]
+      }
+    },
+    {
+      "label": "a dropped early request hides it for good",
+      "state": {
+        "name": "shown",
+        "pageId": "5f0c4a5e-6c1e-4b0e-9a8f-0d0d4c5e6f70",
+        "principal": "alice",
+        "preview": {
+          "title": "Roadmap",
+          "blocks": [
+            {
+              "id": "b1",
+              "content": [
+                [
+                  "p",
+                  {},
+                  "We ship on Friday."
+                ]
+              ]
+            }
+          ],
+          "truncated": false
+        }
+      },
+      "event": {
+        "type": "invalidated"
+      },
+      "expect": {
+        "state": {
+          "name": "retired",
+          "reason": "invalidated"
+        },
+        "effects": [
+          {
+            "type": "release"
+          }
+        ]
+      }
+    },
+    {
+      "label": "retired ignores start",
+      "state": {
+        "name": "retired",
+        "reason": "navigated"
+      },
+      "event": {
+        "type": "start",
+        "pageId": "5f0c4a5e-6c1e-4b0e-9a8f-0d0d4c5e6f70"
+      },
+      "expect": {
+        "state": {
+          "name": "retired",
+          "reason": "navigated"
+        },
+        "effects": [],
+        "rejected": "The preview is retired for this page load"
+      }
+    },
+    {
+      "label": "retired ignores session",
+      "state": {
+        "name": "retired",
+        "reason": "navigated"
+      },
+      "event": {
+        "type": "session",
+        "principal": "alice"
+      },
+      "expect": {
+        "state": {
+          "name": "retired",
+          "reason": "navigated"
+        },
+        "effects": [],
+        "rejected": "The preview is retired for this page load"
+      }
+    },
+    {
+      "label": "retired ignores resolved",
+      "note": "A late answer after retirement lands here.",
+      "state": {
+        "name": "retired",
+        "reason": "navigated"
+      },
+      "event": {
+        "type": "resolved",
+        "pageId": "5f0c4a5e-6c1e-4b0e-9a8f-0d0d4c5e6f70",
+        "principal": "alice",
+        "preview": {
+          "title": "Roadmap",
+          "blocks": [
+            {
+              "id": "b1",
+              "content": [
+                [
+                  "p",
+                  {},
+                  "We ship on Friday."
+                ]
+              ]
+            }
+          ],
+          "truncated": false
+        }
+      },
+      "expect": {
+        "state": {
+          "name": "retired",
+          "reason": "navigated"
+        },
+        "effects": [],
+        "rejected": "The preview is retired for this page load"
+      }
+    },
+    {
+      "label": "retired ignores refused",
+      "state": {
+        "name": "retired",
+        "reason": "navigated"
+      },
+      "event": {
+        "type": "refused"
+      },
+      "expect": {
+        "state": {
+          "name": "retired",
+          "reason": "navigated"
+        },
+        "effects": [],
+        "rejected": "The preview is retired for this page load"
+      }
+    },
+    {
+      "label": "retired ignores navigated",
+      "state": {
+        "name": "retired",
+        "reason": "navigated"
+      },
+      "event": {
+        "type": "navigated",
+        "pageId": "5f0c4a5e-6c1e-4b0e-9a8f-0d0d4c5e6f70"
+      },
+      "expect": {
+        "state": {
+          "name": "retired",
+          "reason": "navigated"
+        },
+        "effects": [],
+        "rejected": "The preview is retired for this page load"
+      }
+    },
+    {
+      "label": "retired ignores installed",
+      "state": {
+        "name": "retired",
+        "reason": "navigated"
+      },
+      "event": {
+        "type": "installed"
+      },
+      "expect": {
+        "state": {
+          "name": "retired",
+          "reason": "navigated"
+        },
+        "effects": [],
+        "rejected": "The preview is retired for this page load"
+      }
+    },
+    {
+      "label": "retired ignores invalidated",
+      "state": {
+        "name": "retired",
+        "reason": "navigated"
+      },
+      "event": {
+        "type": "invalidated"
+      },
+      "expect": {
+        "state": {
+          "name": "retired",
+          "reason": "navigated"
+        },
+        "effects": [],
+        "rejected": "The preview is retired for this page load"
+      }
+    }
+  ]
+}

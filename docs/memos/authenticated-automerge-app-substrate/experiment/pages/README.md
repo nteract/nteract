@@ -106,12 +106,16 @@ was a caret race in the smoke; the editor side is
 | Admission codes, celld restart, and reconnect to Saved | `node scripts/local-sharing-e2e.mjs --admission` | Starts and restarts an isolated fixture |
 | Reload prompt after a deploy under an open tab | `node scripts/local-sharing-e2e.mjs --build-update` | Starts an isolated fixture and swaps its build |
 | Trash, restore, and permanent deletion | `node scripts/local-sharing-e2e.mjs --trash` | Starts an isolated fixture |
+| A commenter comments but can't edit; a forged native edit of another author's message is refused | `node scripts/local-sharing-e2e.mjs --commenter` | Starts an isolated fixture |
 | Projects over MCP and in the browser, `/projects` and `/pages` on a phone-sized screen, breadcrumbs, Trash and restore in a Project | `node scripts/local-sharing-e2e.mjs --projects` | Starts an isolated fixture |
+| Cold first open of a 300-paragraph Page with images on Fast 3G and 4x CPU, phase by phase (records timings, gates on nothing) | `node scripts/local-sharing-e2e.mjs --cold-open` | Starts an isolated fixture behind a brotli proxy; writes `report.json` |
 | Rollback to a previous build and forward again on one data directory | `node scripts/rollback-qualification.mjs --previous <previous pages dir>` | Starts an isolated fixture; build the previous commit first |
 | Rich comment tables and drafts | `PAGES_ORIGIN=http://localhost:9894 node scripts/rich-comments-smoke.mjs` | Uses the running Wordgard fixture |
 | Comments panel placement at 1920/1440/1100/800px | `PAGES_ORIGIN=http://localhost:9894 node scripts/comments-layout-smoke.mjs` | Uses the running Wordgard fixture |
+| Schema-feature gate: a Page stamped with an unknown feature opens read-only and refuses tool writes | `PAGES_ORIGIN=http://localhost:9894 node scripts/schema-features-smoke.mjs` | Uses the running Wordgard fixture |
 | Native table editing | `PAGES_ORIGIN=http://localhost:9894 npm run smoke:tables` | Uses the running Wordgard fixture |
 | Passage edits and revision deltas | `PAGES_ORIGIN=http://localhost:9894 node scripts/passages-changes-smoke.mjs` | Uses the running Wordgard fixture |
+| Reload banner placement, browser presence labels, leaving a final code block, checkbox indent | `PAGES_ORIGIN=http://localhost:9894 node scripts/editor-chrome-smoke.mjs` | Uses the running Wordgard fixture |
 | Local creation and navigation | `PAGES_ORIGIN=http://localhost:9894 node scripts/navigation-smoke.mjs` | Uses the running Wordgard fixture |
 | Editing, comments, links, diagrams, and recovery | `PAGES_ORIGIN=http://localhost:9894 npm run smoke:editor` | Uses the running Wordgard fixture |
 | History growth and typing latency | `PAGES_ORIGIN=http://localhost:9894 node scripts/latency-smoke.mjs` | Uses the running Wordgard fixture with buffered persistence |
@@ -127,8 +131,10 @@ mobile-keyboard, object-store failover, or deployment reliability.
 
 ## Document and editor
 
-A Page contains its title, stable ordered block IDs, rich text, and comments in
-Automerge. Markdown is the import/export and tool projection. A dedicated title
+A Page contains its title, stable ordered block IDs and rich text in Automerge.
+Its comments live in a second Automerge document beside it (see [Comments
+document](#comments-document)). Markdown is the import/export and tool
+projection. A dedicated title
 is displayed above the body; agents should not repeat it as an opening heading.
 Authoring receipts warn about likely duplicates without removing or hiding text.
 
@@ -141,6 +147,11 @@ browser editor is simplified; replacing it requires a separate compatibility
 pass. Each Pages block has its own continuous editor. Moves update fractional positions without recreating the block or its
 text object, preserving comment and selection anchors. Concurrent positions use
 block IDs as deterministic ties. Cross-Pages-block selections remain unsupported.
+When a block ends in a code block, table, preserved block or an image, ArrowDown
+on its last line, Mod-Enter, or a click below it adds an empty paragraph and puts
+the caret there. Mod-Enter also leaves a code block anywhere else. The paragraph
+is an ordinary edit, written only when someone asks for it, so opening a Page
+writes nothing.
 The binding's upstream attribution is in [WORDGARD-NOTICE](viewer/WORDGARD-NOTICE).
 
 The interface keeps navigation and account actions outside the document, with
@@ -172,13 +183,130 @@ references; it does not publish the Page or change asset access.
   Palette names resolve to theme tokens; agents can also set `#rrggbb`. Markdown
   projects highlights as `<mark data-color="…">…</mark>`. Comment anchors keep
   their own tint and underline; where they overlap a highlight, both tints show.
+- **Markdown import:** every construct Markdown-it reads has a native mapping,
+  except math and HTML other than highlight tags (and `<br>` in a table cell).
+  Markdown that would parse to less than it says is unsupported too: an image
+  inside a link or mark, a table row with more cells than its header, a link
+  with no text, and a reference definition no link uses (or a repeated label).
+  Behind those named cases is a general check: after parsing, every link href,
+  image src and alt, and all visible text (whitespace aside) must be in the
+  native spans. Anything else is `unrepresentable`.
+  Strikethrough (`~~x~~`) is the `strike` mark, `---` a horizontal rule, and
+  reference links resolve to ordinary links at import. Code spans, fenced and
+  indented code, escaped characters, and link destinations and titles never
+  count as math or HTML.
+  - Agent writes (create, insert/replace Markdown, comments with
+    `body_format: "markdown"`) refuse these with
+    `400 unsupported_markdown` and `unsupported: { construct, line, column,
+    excerpt }`, before anything is written. The column counts code points.
+  - Stored source, browser drafts and paste keep math and HTML as literal,
+    editable text. Lossy source is literal text in full, so nothing is lost.
+    Export escapes literal `$` and `<`, so a read is always writable.
+  - The scan masks code per table cell, as Markdown-it splits cells first,
+    and recognizes a tag of any length, with `>` inside quoted values, in
+    linear time.
+  - Nothing writes a preserved block (`raw`, `pages-opaque`). The schema keeps
+    it read-only so older Pages open; the Page host converts each stored one
+    on load (see Preserved blocks below).
+- **Typing shortcuts:** `*x*` and `_x_` italicize, `**x**` bolds, `~~x~~`
+  strikes through when the closing delimiter is typed. A delimiter touching a
+  letter or digit (`snake_case_name`, `2*3*4`), an escaped one, and one inside
+  code stay literal; undo restores the typed delimiters. `---` alone in a
+  paragraph inserts a horizontal rule. Cmd/Ctrl+Shift+X toggles strikethrough.
 - **Mark registry:** [`model/marks.json`](model/marks.json) lists every inline
   mark with its value shape, expand rule, and Markdown projection. Validation,
-  the Wordgard binding, Markdown import/export, the MCP `format_match` schema,
-  and the Rust codec read it. Readers keep marks they don't know: they render as
+  the Wordgard binding, Markdown import/export, and the MCP `format_match`
+  schema read it. Readers keep marks they don't know: they render as
   plain text and survive edits. Agents edit existing text through
   `replace_match` and `format_match`, which work on native spans; Markdown is
   for reading and for writing whole blocks.
+- **Preserved blocks:** older builds stored Markdown they couldn't import as one
+  read-only `pages-opaque` block holding its source. The Page host replaces
+  each with what its source imports as today, in
+  [`model/raw-migration.mjs`](model/raw-migration.mjs):
+  - Where: in place, under the block's own parents, in block bodies and
+    comment messages. Text around it keeps its identity, so anchors survive.
+  - Who: only the host, the Page's single serialized writer. Two peers that
+    each replaced the same marker would each insert a copy, and Automerge keeps
+    both. Browsers show the block read-only with a notice until the host's
+    change syncs.
+  - When: on load, before native connections open, after creating or
+    registering a Page, and when restoring one from Trash, before access
+    reopens.
+  - Fence: [`worker/preserved-conversion.mjs`](worker/preserved-conversion.mjs)
+    is the conversion's state machine (`unchecked`, `clear`, `held`,
+    `converting`, `failed`, `stuck`). In `held`, `converting` and `failed`,
+    on an active Page the host refuses every native put, relayed or
+    self-authored, and answers HTTP edits with
+    `503 preserved_markdown_converting` after one more attempt. Peers still
+    connect and sync down: discovery reports `converting`, and the viewer
+    shows the Page read-only without retiring its writer key. When the fence
+    drops, the host closes their sockets with `temporarily_unavailable`, so
+    they rediscover and edit. A tab that discovered `converting` says so on
+    its upgrade (`converting=1`); if the fence dropped in between, the host
+    refuses that upgrade the same way, so no tab misses the completion. Refusing puts is what keeps an old tab's
+    competing conversion out, so admitting the connection reopens nothing.
+    A trashed Page is `held`, so the fence is up before restore installs the
+    active record. A failed run keeps the fence and retries with backoff.
+    Connections (after their capacity check) and edits only nudge the
+    machine: a nudge can clear the fence, but never starts a retry before
+    its timer. If startup's journal recovery
+    can't finish a pending conversion (its records still can't be stored),
+    startup completes anyway and hands that entry to the retry loop, so the
+    Page stays readable. The conversion journals in its own
+    key space (`host/operation/internal:`), so full client receipt budgets
+    can't block it, and a run that applied but didn't finish replays under its
+    own key until the journal entry is terminal before the fence clears.
+  - Reserved runs: once a run's journal entry is reserved, it keeps the
+    fence and retries that exact intent with capped backoff, indefinitely,
+    whatever the failure. It is never reauthored, abandoned or unfenced; it
+    logs `page.preserved_markdown_stuck` every five failures.
+  - Permanent failure before anything was reserved: the run falls back to
+    converting each source as plain text. If that fails too, the Page is
+    `stuck`: logged (`page.preserved_markdown_stuck`), unfenced, and its
+    preserved blocks stay read-only until an edit replaces them
+    (DEPLOYMENT.md, "Preserved Markdown conversion"). Runs are serialized, and each is a journaled host
+    intent keyed by the heads it converted, so a restart replays the recorded
+    change instead of converting again. A Page with nothing to convert gets
+    no change.
+  - Stamp: the change stamps `preserved-markdown-converted`, so a build that
+    could still write or convert one opens the Page read-only and the host
+    refuses its writes. Viewer protocol 2 retires those builds everywhere.
+  - Reload: native admission sees signing keys, not records, and a reloaded
+    tab keeps its key. So before connecting, a reopened Page checks its
+    unconfirmed history for edits to a preserved block that aren't the
+    host's stamped conversion (an old build's Edit table, or a deletion).
+    If it finds any, the whole replica becomes a recovery record (Download
+    previous local draft), and the tab reopens on a fresh replica holding
+    only history the host has. The block syncs once.
+  - Limits: the reload check runs in the browser, so it guards honest older
+    tabs, not hostile clients. An authorized writer can already delete or
+    rewrite content; the host's fence and stamp bound what a client of an
+    older build writes, not what a malicious one does.
+  - Remove `nodes.raw`, `OpaqueBlock` and the conversion once no stored Page
+    can hold a preserved block.
+- **Schema features:** every mark and block type that existed when Page10
+  launched is baseline. A later one names a feature id: a mark in
+  `marks.json`, a block type in [`model/features.json`](model/features.json).
+  A Page that uses one carries a stamp at its document root,
+  `schema: { features: [...] }`, sorted and never shrinking. Unstamped Pages
+  use only the baseline, so no Page10 document needs a migration.
+  [`model/schema-features.mjs`](model/schema-features.mjs) holds the rules:
+
+  | Who | Rule |
+  | --- | --- |
+  | Writer (host tools, import, Wordgard binding, comments) | Adds a feature's id in the same Automerge change that first writes content needing it. Never removes an id. |
+  | Viewer | `unsupported = stamp − BUILD_FEATURES`. Non-empty opens the Page read-only with a Reload notice; sync continues. The notice's Reload writes any edits the host refused to this browser's store, then reloads without the host's receipt; if that write fails, it blocks and keeps the edits in the tab. |
+  | Host, tools | Refuses tool writes and draft registration with `409 unsupported_schema_feature` and `unsupported_features`. Replays of recorded receipts still answer. |
+  | Host, native sync | The viewer declares its build's features on `/api/sync` (`schema_features`; none means the baseline). The policy refuses a put authored by the requesting key while its build lacks a stamped id, and the matching `/api/saved` receipt answers `409 schema_unsupported`, which the viewer shows as the read-only notice. Relayed history signed by another key is not gated. |
+  | Agents | `read_page` returns `schema_features`, an empty array when unstamped. |
+
+  Concurrent first stamps can conflict on `schema`; readers union every
+  conflicting value and the next writer folds them into the visible list. The
+  stamp is per document; the minimum viewer protocol in [Build updates](#build-updates)
+  is per build. A declaration is the client's own claim: the native gate stops
+  stale clients from writing what they can't express, not hostile ones, whose
+  edits write authority already bounds.
 - **Links:** click for Open, Edit, and Remove; Cmd/Ctrl-click opens directly and
   Cmd/Ctrl+K edits. Incoming edits update or dismiss the link control, and URL
   policy applies both to stored content and navigation.
@@ -191,9 +319,7 @@ references; it does not publish the Page or change asset access.
 - **Tables:** native row/cell markers live in the same rich-text field as prose.
   Insert table chooses dimensions; Table options changes rows and columns. Tab
   moves between cells and appends a row at the end. The first row is the header.
-  Preserved Markdown tables convert only through an explicit, undoable Edit
-  table action; unsupported syntax stays preserved. Column resizing/moving and
-  merged cells are not implemented.
+  Column resizing/moving and merged cells are not implemented.
 - **Task lists:** use Task list or type `- [ ] ` / `- [x] `. Enter creates an
   unchecked item; an empty item returns to prose. Native list-item markers store
   checked state independently of the text, so checkbox and text edits can merge.
@@ -314,17 +440,32 @@ family. Provider tokens stay on the server. Refresh does not refresh verified
 email evidence, and MCP tokens cannot authorize raw HTTP assets, sharing, or sync.
 
 `/connect` and the public `/llms.txt` are the maintained client setup guides.
-They cover OAuth, API-key alternatives, and driver attribution. Agents can prepare
-non-secret configuration while a person authorizes the connection; a successful
-`list_pages` call verifies access. A driver label is a description, not verified
-vendor identity or a permission grant.
+They lead with API keys, the method for coding agents, scripts, and anything
+long-running or headless (Kilo, Claude Code, Codex). OAuth is for interactive
+cloud clients such as ChatGPT: the client refreshes on next use, so nothing runs
+in the background, and the person authorizes again after thirty days. One OAuth
+token set must not be shared between processes. Two processes refreshing it
+concurrently trip replay detection and revoke the grant, so concurrent agents
+use an API key. Agents can prepare non-secret configuration while a person
+creates a key or authorizes the connection; a successful `list_pages` call
+verifies access.
+
+API-key recipes send `X-Pages-Driver` (the harness, such as Kilo) and an
+optional `X-Pages-Agent` session label of at most 80 characters; blank means no
+label. The Kilo recipe uses one shared entry with
+`"X-Pages-Agent": "{env:PAGES_AGENT}"`, and each worktree sets `PAGES_AGENT` in
+its `.envrc`. Both labels are self-declared descriptions shown under the
+authenticated account, not verified vendor identity or a permission grant.
+`Browser` is the one driver a bearer credential can't claim: viewers show a
+browser session by the person's name alone, so on a request with an API key or
+OAuth token the server reads `X-Pages-Driver: Browser` (any case) as `API`.
 
 A Page starts private. Its immutable owner manages access, Trash, and permanent
-deletion, editors write/comment, and viewers read. Each operation intersects the Page role with
-credential scopes. Email invitations expire after seven days, become stable
+deletion, editors write/comment, commenters read and comment, and viewers read.
+Each operation intersects the Page role with credential scopes. Email invitations expire after seven days, become stable
 principal grants only after verified provider email admission, and do not send
 email. Pending invitations cannot authorize sockets or override a newer role.
-There is no public/anonymous access, commenter-only role, or ownership transfer.
+There is no public/anonymous access, guest commenting, or ownership transfer.
 
 Company-domain viewing is an optional, read-only fallback. Deployment configuration
 and the owner's Page setting must both allow it; only `anaconda.com` is currently
@@ -467,8 +608,128 @@ Membership, invitation, connection, and lifetime signing-key counts are bounded;
 retired keys remain recorded to prevent regained authority. See [access.mjs](worker/access.mjs) and the Worker tests for membership admission
 and the associated resource limits. Sharing
 receipts retain the latest 256 results; older retries must still pass the revision
-guard, and receipt capacity never prevents revocation. Comment author labels are
-editable document data, not an audit log; author-only comment editing is not implemented.
+guard, and receipt capacity never prevents revocation. Comment `displayName` and
+`driver` labels are editable data, not an audit log; `author.principal` is
+checked against the signer (see [Comments document](#comments-document)).
+
+## Comments document
+
+A Page's comments live in their own Automerge document, owned by the same Page
+Durable Object. The Page record names it by a deployment-relative id,
+`comments_doc: "<uuid>"`, derived from the Page ID. There is no hostname and no
+origin: comments are platform data, not part of the Page. The browser syncs it
+on the same socket as the Page; `/api/connect` returns `commentsDocumentId`.
+Trash, restore, permanent deletion and the purge preview cover both documents.
+
+Shape ([model/comments-doc.mjs](model/comments-doc.mjs)):
+`{ threads: { [id]: { target, author, createdAt, status, messages } } }`.
+`target` is a cursor anchor into the Page document, `{ kind: "block", blockId }`
+or `{ kind: "selection", anchor, head }`, resolved against the Page on read.
+The Page's rich text carries no comment marks and no hint. Its first change is
+a pure function of the id, so a host that creates it twice stores one document.
+Reactions aren't implemented; the shape leaves room for a per-thread
+`reactions` map, which the authority check refuses until a build adds it.
+
+One ACL governs both documents. `read` reads both, `comment` writes the
+comments document, and `edit` writes the Page. Owners and editors hold
+`comment`; the `commenter` relation grants `read` and `comment` only. Per
+author ([model/comment-rules.mjs](model/comment-rules.mjs)):
+
+| Action | Who |
+| --- | --- |
+| add, reply, resolve, reopen | anyone with `comment` |
+| edit, delete a message | the message's author |
+| delete a thread | owners and editors, or the thread's author |
+| move an anchor | the thread's author |
+
+The rules hold at three layers: the viewer only offers what they allow, the
+tools check them in `applyComment`, and the host checks every native change
+from a peer. The native check runs in the record byte store
+([worker/comment-admission.mjs](worker/comment-admission.mjs)): each saved
+comments-document record carries its signer's key and its Automerge change, so
+[model/comment-authority.mjs](model/comment-authority.mjs) decides the change
+for that signer's principal and role before the record is written. Content is
+checked by the same rule the tools and the browser apply
+(`validateCommentSpans` in [model/comment-content.mjs](model/comment-content.mjs)):
+non-whitespace text or a valid embed, so an image-only comment is content.
+
+A refused record is never stored or delivered. The store throws a refusal
+(`recordRefused: true`), and the bridge answers that one save without treating
+it as a storage failure ([../patch-record-refusal.mjs](../patch-record-refusal.mjs)):
+the native engine keeps running and every other connection stays up. When the
+signer broke a rule, its key is blocked from authoring comments, durably, and
+only its connection closes. A missing dependency, an unreadable frame or a
+checker error refuses the record without blocking anyone. So a refusal is not a
+lever over other peers, whatever a principal does with fresh keys. An honest
+client never writes a refused change. A flush already waiting on a refused save
+filters the refusal out of its results, so a Page mutation's flush doesn't fail
+on it either.
+
+Refusals have a work budget. An identical refused record (same path and signed
+envelope) is refused again without decoding for 30 s, until something new is
+admitted. Each refusal of a peer's record charges its principal; 8 in a minute
+throttle that principal for a minute: its records are refused unread, and every
+submission while throttled closes the submitting connection with
+`temporarily_unavailable` (close 4503). That covers a reconnect and the
+principal's other keys, so each client backs off and reconnects. The key isn't blocked, so a record refused for
+a missing dependency is admitted once the dependency arrives.
+
+Admission costs one Automerge clone per checked batch, plus the per-op check.
+Measured on a laptop, one reply against a comments document of 200, 2,000 and
+6,000 messages: 1.5, 3.2 and 12.3 ms per record. The clone is most of it at
+the top end (12 ms at 6,000 messages, 762 KiB saved). Reproduce with
+`npx tsx scripts/comment-admission-bench.mjs`.
+
+Uploads need edit access. Asset storage has no per-Page aggregate byte or
+object quota yet, so comment access alone doesn't open it: commenters comment
+in text and can't attach images until that quota exists.
+
+Comment receipts carry the Page revision their write read as `heads`, journaled
+with the receipt, and the comments document's revision as `comment_heads`. An
+agent polling `read_page_changes` from a comment receipt still sees a browser
+edit that landed meanwhile, and an exact retry returns the same heads. A
+receipt a build before the comments document journaled on the Page replays
+with its Page heads, `legacy_receipt: true` and no comment heads.
+
+`read_page_changes` takes `since_comment_heads` for comment changes. Without
+it, `comments` lists every current thread (`change: "snapshot"`) and
+`comments_snapshot: true` says to replace what the caller holds, so a client
+from before the comments document keeps seeing comments.
+
+The browser opens the comments document with its own lifecycle
+([viewer/comments-open-machine.mjs](viewer/comments-open-machine.mjs)): a
+lookup with a 15 s timeout, retries after 1, 2, 4 and 8 s, then a visible
+"Comments couldn't load" with Try again. A reconnect starts over, and a
+replaced replica cancels its lookup. Offline, the local record's comments
+checkpoint restores the document before lookup; checkpoints, recovery
+archives and Download draft carry both documents with separate heads.
+
+### Moving existing comments
+
+Pages created before the comments document kept threads at `page.comments`.
+The host moves them the first time the Page loads, under the same fence and
+journal as the preserved-block conversion
+([model/comments-migration.mjs](model/comments-migration.mjs)):
+
+1. Copy: every legacy thread into the comments document under its original
+   ID, as one journaled host change keyed by the Page heads it read. Threads
+   already there are skipped, so a rerun copies nothing twice.
+2. Detach: remove the Page's `comments` map and stamp the `comments-doc` schema
+   feature, in one journaled host change at those heads.
+
+Page text is never touched. Peer writes wait while it runs. A restart replays
+whichever step's journal entry is pending, then finishes the other. The stamp
+makes an older build open the Page read-only, and the host refuses its native
+writes with `schema_unsupported`, so it can't write comments back into the
+Page document. Until the move finishes, reads come from the Page's legacy map
+and comment writes wait for it.
+
+What the move drops: a thread or message whose ID isn't 1–128 letters, digits,
+`-` or `_` (Pages always wrote UUIDs); a thread whose content can't be read or
+written, such as unreadable rich text, which is skipped whole; every thread if
+the copy keeps failing for good and the host falls back to `drop` mode; and a
+comment an older tab wrote locally that the host hadn't accepted before the
+move. That last one lands in the detached map on sync, where nothing reads it.
 
 ## Authorization
 
@@ -494,6 +755,10 @@ project), company view, and only that principal's member row. A decision
 therefore costs one member lookup, however many grants and removal tombstones
 the ACL has collected.
 
+A commenter holds `read` and `comment`: it writes the comments document, never
+the Page. In `schema.zed`, `comment = edit + commenter` and `read` builds on
+`comment`.
+
 Capabilities are named: `read`, `comment`, `edit`, `share`, `administer`,
 `trash`, `restore`, `purge`, `create_items`, `manage_members`, `move_within`,
 `move_out`. A Page never gets `manage_members`, and a project never gets
@@ -502,7 +767,7 @@ yet. Execute is out of scope for Pages.
 
 decide() runs three steps, in this order:
 
-1. **Relations.** A viewer or editor member row grants, and a removal
+1. **Relations.** A viewer, commenter or editor member row grants, and a removal
    tombstone becomes `removed`. Company view is the `organization#member`
    userset. Built-in mode has no tenants, so the verified email-domain lease
    stands in for organization membership. A tombstone subtracts from the
@@ -601,7 +866,11 @@ uploads; they do not consume the document history budget.
 Uploads check current edit permission before transfer and again before returning
 the asset. Transfer does not hold the Page mutation queue. Browser insertion
 captures a CRDT cursor and refuses to redirect a completed upload into a replaced
-block or revoked editor. `GET`/`HEAD /api/pages/:pageId/assets/:sha256` check current
+block or revoked editor. The cursor sticks to the character before the insertion
+point, so text typed while the image uploads goes after it. When the upload
+lands and the selection hasn't moved since the paste, drop or pick, the caret
+moves to just after the image; otherwise the selection stays where the person
+put it. `GET`/`HEAD /api/pages/:pageId/assets/:sha256` check current
 read access before lookup, then return verified raster MIME, `nosniff`, and
 `Cache-Control: private, no-store`. No public bucket, persistent presigned URL,
 or cross-Page hash lookup is exposed.
@@ -643,6 +912,27 @@ batches to cross the configured durability barrier before acknowledging heads.
 The browser retains pending state through bounded receipt retries; sign-in failure
 pauses them until renewal. A client timeout does not cancel or reorder persistence.
 
+### Outbound edits
+
+Every editor transaction is one Automerge change, and the browser stores it in
+IndexedDB at once. Sending is grouped: the backend's `scheduleLocalSync` hook
+(see [UPSTREAM.md](../UPSTREAM.md)) hands each local store's native sync round
+to [outbound-sync-machine.mjs](viewer/outbound-sync-machine.mjs). A round and
+the newest caret go out 30 ms after typing pauses, and every 100 ms while it
+doesn't. The window losing focus, `beforeunload`, a save receipt and leaving
+the Page send at once. A hidden tab or `pagehide` sends what waits and stops
+batching until the tab shows again: a browser may throttle or freeze a hidden
+tab's timers while saves still finish. Delivery before an unload is best
+effort; the round starts and the browser decides whether it completes. A
+closing session sends anything waiting and then stops batching. Native framing still
+carries one commit per frame, so the grouping removes per-keystroke sync rounds
+and caret frames, not commit frames. `scripts/typing-batch-smoke.mjs` (the
+`typing` E2E suite) types 200 characters at 60–100 ms and at 20 ms per key and
+reports changes, frames, bytes and the other writer's main-thread time. The
+20 ms run may take one round and one caret per four keys, plus one for each
+100 ms the writer spends past the typing schedule or catching up on saves
+after the last key; a slow runner's store latency sets that catch-up time.
+
 With `PAGES_ASYNC_PERSISTENCE=true`, the live Page keeps a bounded in-memory record
 replica and sends batches to a separate `PageRecords` object, normally after one
 second or on a receipt request. Its output gate does not block ordinary outgoing
@@ -681,9 +971,16 @@ request, so it stays held until the object is discarded.
 sets up each D1 schema (server sessions, MCP OAuth) once per isolate. Work in
 front of the API-key verifier's cache, which shares pending lookups, runs one
 lookup per token at a time. The request that starts the work awaits it; others
-wait on their own timers. Either side gives up with a retryable `503` after 10
-seconds. A key stays held until its lookup settles, or for 65 seconds, past the
-cache's 60-second lifetime for an entry. The OIDC libraries' discovery,
+wait on their own timers and give up with a retryable `503` after 10 seconds. A
+lookup's starter gives up at 10 seconds too. A setup's starter waits up to 30
+seconds, the attempt's deadline, so slow setup that finishes in time still
+succeeds. At that deadline the attempt expires: the starter gets the same
+retryable `503`, the next request starts a new attempt, and a late result from
+the abandoned one changes nothing. That retry runs fresh work because
+setup callbacks hold no pending promise of their own: the shared session store
+(`oidcDatabase`) caches only settled schema readiness. A lookup key stays held
+until its lookup settles, or for 65 seconds, past the cache's 60-second
+lifetime for an entry. The OIDC libraries' discovery,
 signing-key and UserInfo caches, the ChatGPT client metadata check and the
 loopback issuer's key still share pending promises across requests (#4567). Remove it when celld keeps request context across shared
 promises; [celld-context-probe.mjs](scripts/celld-context-probe.mjs) then exits 0.
@@ -725,6 +1022,49 @@ are source-checked and regression-tested; a passing storage probe alone does not
 qualify ephemeral presence. Diagnostics exclude provider messages, credentials,
 request bodies, and document content.
 
+### Page quotas
+
+Each account has one Page limit. It bounds the account's active Pages and,
+separately, its Pages in Trash. [page-quota.mjs](worker/page-quota.mjs) resolves
+it from the first match of:
+
+| Rule | Matches |
+| --- | --- |
+| `email` | the account's server-verified email, normalized as invites normalize it |
+| `domain` | that email's domain, lowercased; subdomains don't match |
+| default | `PAGES_DEFAULT_PAGE_QUOTA` for the deploy target, 250 when unset |
+
+A matching rule replaces the default, so it can lower it. `0` pauses the
+account: it can't create or restore Pages, but it can still move them to Trash. A quota never deletes or hides existing Pages. Only server-verified email
+counts: an API key's whoami email, or the HMAC bindings a browser session or
+OAuth grant carries. An identity without one gets the default without reading
+D1. Rules live in D1's `pages_quota_rules` table, which the gateway reads whole
+(at most 1,000 rows) once per isolate every five minutes. A failed or slow read
+gives every account the default for 30 seconds and logs the failure; it never
+lifts a limit.
+
+The gateway forwards the resolved limit as `page_limit`, beside the caller's
+arguments, on Catalog calls that can add a Page to either listing
+(`create_page`, `register_page`, `create_space`, `delete_page`, `restore_page`)
+and on `list_pages`. The Catalog stays the authority for the count. It keeps
+`host/count/active` and `host/count/trash` equal to the number of `page/` and
+`trash/` keys, reservations and pending creations included
+([catalog-counts.mjs](worker/catalog-counts.mjs)). Each counted write runs in
+one storage transaction that reads the key's existence and the stored counts
+and writes both, and counted writes run one at a time, so concurrent writes in
+a settle pass never derive counts from the same value. Memory caches the counts
+only after a transaction commits; a failed write invalidates the cache. Below the limit
+a check reads only the stored count. At the limit, or before the counts exist,
+it counts every entry, releasing stale reservations, and rebuilds them. Every
+`list_pages` reads every owned entry for location anyway and rewrites counts
+that disagree, logging `catalog.count_repaired`; a rollback build that writes
+entries without counts leaves that to repair.
+
+At the limit, creating or restoring returns `409 page_quota_exceeded` and moving
+to Trash returns `409 trash_capacity`, each with `limit` and `count`.
+`list_pages` returns `quota: {limit, count, trash_count}` for the caller's own
+account, whatever the listing's filters. Home shows usage from 90% of the limit.
+
 ## Build updates
 
 Each build has a 12-character id: the start of its source fingerprint, also
@@ -741,10 +1081,14 @@ visible. It never polls while hidden and never reloads by itself.
 | Server advertises | Viewer shows | Editing |
 | --- | --- | --- |
 | Same build | Nothing | Unchanged |
-| Different build (newer or a rollback), floor at or below this viewer | "Pages changed on the server. Reload to use the current version." | Unchanged |
-| Floor above this viewer's protocol | "Pages changed on the server. This tab can't edit until you reload." | Paused; accepted edits keep saving |
-| Editor chunk failed to load, server on another build | "Pages changed on the server. This tab can't edit until you reload." | No Page opens until reload |
-| Editor chunk failed to load, same build | "Pages couldn't load the editor. Reload to try again." | No Page opens until reload |
+| Different build (newer or a rollback), floor at or below this viewer | "App updated. Reload to use the latest version." | Unchanged |
+| Floor above this viewer's protocol | "App updated. This tab can't edit until you reload." | Paused; accepted edits keep saving |
+| Editor chunk failed to load, server on another build | "App updated. This tab can't edit until you reload." | No Page opens until reload |
+| Editor chunk failed to load, same build | "The editor didn't load. Reload to try again." | No Page opens until reload |
+
+The banner sticks below the header, and below the formatting toolbar when it's
+pinned, so it stays in view while the Page scrolls. It names the app, not
+"Pages", which is also what people call their documents.
 
 The viewer is `app.js`, which renders the shell (header, account, sign-in and
 the Page list), plus content-hashed files under `/chunks/`. `app.js` imports the
@@ -928,8 +1272,9 @@ as [store.test.mjs](viewer/store.test.mjs) does for a backoff interpreter.
 `POST /api/tools` accepts `{operation, arguments}`; `POST /mcp` exposes the same
 Page operations through Streamable HTTP MCP. MCP accepts a Pages OAuth access
 token or Anaconda API key in `Authorization: Bearer ...`; `X-Pages-Driver` is an
-optional client label. OAuth scopes and current Page permissions apply on every
-call. The public `/llms.txt` is the tool usage and authentication reference.
+optional client label and `X-Pages-Agent` an optional session label. OAuth
+scopes and current Page permissions apply on every call. The public `/llms.txt`
+is the tool usage and authentication reference.
 
 A single `tools/list` or `ping` message needs no credential: tool definitions are
 static and carry no account data. `initialize`, `tools/call` and every other method
@@ -980,7 +1325,10 @@ text, so agents never branch on message text. The Worker codes specific refusals
 where they're raised: a stale exact-head guard is `409 stale_heads`, malformed
 `base_heads` and an edit batch that can't apply (zero or multiple matches, an
 unknown block, operation or mark) are `400 invalid_edit_selector`, and a comment
-action on a missing thread, message or block is `400 invalid_comment_selector`.
+action on a missing thread, message or block is `400 invalid_comment_selector`
+(a `thread_ids` batch adds `not_found_thread_ids`). A full account is
+`409 page_quota_exceeded` and a full Trash `409 trash_capacity`; both carry
+`limit` and `count` (see Page quotas).
 An MCP result has no HTTP status, so [mcp.mjs](mcp.mjs) names any refusal the
 Worker left uncoded by its status (`access_denied`, `not_found`, `conflict` and
 so on). It adds `retryable: true` to `stale_heads`, whose retry is a new request
@@ -1019,18 +1367,33 @@ nothing, since that person's editor shows their own caret. A caret reads
 "Kyle's Kilo · release agent": the account, the `x-pages-driver` harness and an
 optional `x-pages-agent` session label. Labels sit under the authenticated
 account and are trusted as such. Records key by account, harness and session
-label, so two sessions of one account keep separate carets. A reading marker's
+label, so two sessions of one account keep separate carets. MCP `initialize`
+responses also carry an `Mcp-Session-Id`, and clients echo it; the transport
+stays stateless. The worker turns the id into an account-scoped SHA-256 tag
+(`identity.session`), so two unlabeled sessions on one credential still get two
+carets and two colors, and the raw id never leaves the worker. A reading marker's
 targets are captured on the revision the read returned.
 Each participant's color comes from nteract's cursor palette, keyed by
 principal and driver.
 
 Comment and progress anchors are native cursors, so they skip the exact-head
-guard. `manage_page_comment` `add` with `selected_text` requires known
+guard. Comments are written to the comments document, so a comment never
+changes the Page's heads: the receipt's `heads` are the Page's, unchanged, and
+`comment_heads` name the comments document's new revision.
+`manage_page_comment` `add` with `selected_text` requires known
 `base_heads`, finds the passage (and `occurrence`) at that revision, and anchors
 its cursors there. It returns `edit_conflict` only when the passage no longer
 resolves, and `resync_required` for unknown heads. A block comment needs only
 its block. Replies, status changes, message edits and deletions touch only the
-thread, so `base_heads` is optional and never compared. `report_page_progress`
+thread, so `base_heads` is optional and never compared. `resolve` and `reopen`
+take `thread_id` or `thread_ids` (1–100 unique IDs), never both. A batch is one
+Automerge change, one journal entry and one receipt, and `result.threads` gives
+each thread's outcome: `resolved`, `already_resolved`, `reopened` or
+`already_open`. A thread already in the target state is a no-op success and
+keeps its status time. The batch is all-or-nothing. An unknown ID rejects it
+with `invalid_comment_selector` and `not_found_thread_ids`, before anything is
+written. Permission is the Page's comment access, the same check a single
+resolve makes, so a denial also rejects the whole batch. `report_page_progress`
 targets follow the same rule with `expected_heads`, failing with
 `presence_revision_changed` for unknown heads or a detached passage. Retries
 still replay the recorded receipt; these guards run only for new intents.
@@ -1061,7 +1424,8 @@ reader key, so restore reloads onto the writer replica. An upload authorized
 before trashing can still store its bytes before the final authorization check
 rejects it; those bytes are unreferenced and are not cleaned up. Reads of a trashed Page carry a `trash` object
 and no edit retry authority. The owner's catalog moves the entry from `page/` to
-`trash/`, so trashed Pages leave default listings and the 100-Page quota.
+`trash/`, so trashed Pages leave default listings and the account's active Page
+quota (see Page quotas).
 `list_pages({in_trash:true})` lists them.
 
 Each transition increments the record's `lifecycleRevision`. The Catalog
@@ -1210,7 +1574,10 @@ argument and reveals nothing about either resource.
 Listing by Project or parent reads the Catalog's entries, not D1: a Project
 lists every descendant of its roots, and a parent lists its direct children.
 Children of a parent shared with the caller come from the parent owner's
-Catalog, and each is verified by its Page host with the caller's access.
+Catalog, and each is verified by its Page host with the caller's access. One
+request checks at most 100 of them. Past that, a sealed cursor continues from
+the last child checked, even on a short page, so the caller can learn only that
+the parent has more than 100 children.
 `list_projects` takes candidates from `pages_catalog_spaces` and confirms each
 against the owner's `space/<id>` Catalog entry; cursors are sealed to the
 listing's filters. `read_page` breadcrumbs are computed in the gateway with one

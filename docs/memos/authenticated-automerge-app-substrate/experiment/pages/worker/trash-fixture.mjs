@@ -3,7 +3,10 @@
 
 import * as A from "@automerge/automerge";
 import { createAuthFixture } from "../../auth-fixtures.mjs";
-import { applyPageOperation, createPageData, initializePage } from "../model/page.mjs";
+import { createPageData, initializePage } from "../model/page.mjs";
+import { applyComment } from "../model/comments.mjs";
+import { commentsGenesis } from "../model/comments-doc.mjs";
+import { BUILD_FEATURES, documentFeatures } from "../model/schema-features.mjs";
 import { Catalog, Page } from "./index.mjs";
 import { DocumentPolicy } from "./policy.mjs";
 import { proposeAccessUpdate } from "./access.mjs";
@@ -30,11 +33,11 @@ export class Storage {
   async sync() {
     this.synced = structuredClone(this.values);
   }
-  async list({ prefix = "", limit = Infinity } = {}) {
+  async list({ prefix = "", limit = Infinity, startAfter } = {}) {
     return new Map(
       [...this.values]
         .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
-        .filter(([key]) => key.startsWith(prefix))
+        .filter(([key]) => key.startsWith(prefix) && (startAfter === undefined || key > startAfter))
         .slice(0, limit),
     );
   }
@@ -49,12 +52,17 @@ export const serverKey = "f".repeat(64);
 export const ownerKey = "1".repeat(64);
 export const memberKey = "2".repeat(64);
 export const readerKey = "3".repeat(64);
+export const commentsUuid = "c0000000-0000-4000-8000-000000000001";
 
-/** An owner's Page with one editor member and one comment, its owner's and
- * member's Catalogs, and helpers to call both. `env` adds Worker bindings.
- * `auth` shares an auth fixture whose fetch the caller has mocked, and
- * `docBytes` loads that document instead of building a new one. */
-export async function fixture(t, { env: extraEnv = {}, auth: shared, docBytes } = {}) {
+/** An owner's Page with one member (an editor, or `memberRole`) and one
+ * comment by that member in its comments document, its owner's and member's Catalogs, and helpers to call both.
+ * `env` adds Worker bindings. `auth` shares an auth fixture whose fetch the
+ * caller has mocked, and `docBytes` loads that document instead of building
+ * a new one, with an empty comments document. */
+export async function fixture(
+  t,
+  { env: extraEnv = {}, auth: shared, docBytes, memberRole = "editor" } = {},
+) {
   const auth = shared ?? (await createAuthFixture());
   if (!shared) t.mock.method(globalThis, "fetch", auth.fetch);
   const owner = `user:anaconda-fixture:${auth.subject}`;
@@ -65,27 +73,36 @@ export async function fixture(t, { env: extraEnv = {}, auth: shared, docBytes } 
     stranger: auth.apiKey({ userId: "stranger-user" }),
   };
   let doc;
+  let commentsDoc = A.clone(commentsGenesis(commentsUuid));
   if (docBytes) doc = A.load(docBytes);
   else {
     doc = A.change(A.from(createPageData({ pageId, title: "Launch plan" })), (draft) =>
       initializePage(draft, "We ship on Friday."),
     );
     const firstBlock = Object.keys(doc.blocks)[0];
-    doc = A.change(doc, (draft) =>
-      applyPageOperation(draft, {
-        operation: "manage_page_comment",
-        arguments: { action: "add", block_id: firstBlock, body: "Looks good" },
-        identity: { principal: member, displayName: "Member", driver: "Browser" },
-      }),
+    commentsDoc = A.change(commentsDoc, (draft) =>
+      applyComment(
+        draft,
+        { action: "add", block_id: firstBlock, body: "Looks good" },
+        { principal: member, displayName: "Member", driver: "Browser" },
+        undefined,
+        { page: doc, role: "editor" },
+      ),
     );
   }
   const blockId = Object.keys(doc.blocks)[0];
   t.after(() => A.free(doc));
-  const base = { pageId, owner, documentId: "fixture-document", tree: "a".repeat(32) };
+  const base = {
+    pageId,
+    owner,
+    documentId: "fixture-document",
+    tree: "a".repeat(32),
+    comments_doc: commentsUuid,
+  };
   const ownerIdentity = { principal: owner, canWrite: true, expiresAt: Date.now() + 60_000 };
   const acl = proposeAccessUpdate(base, ownerIdentity, {
     principal: member,
-    role: "editor",
+    role: memberRole,
     expected_revision: 0,
   }).acl;
   const storage = new Storage();
@@ -123,25 +140,59 @@ export async function fixture(t, { env: extraEnv = {}, auth: shared, docBytes } 
       },
     },
   };
+  // The document as durable storage holds it: written by the repo flush, the
+  // only place the host persists document bytes. `hooks.flush` runs first and
+  // may throw, to cut a run before the bytes are written.
+  let persisted = A.save(doc);
+  let persistedComments = A.save(commentsDoc);
+  const hooks = {};
   const build = (metadata) => {
+    const handle = {
+      doc: () => doc,
+      async update(fn) {
+        doc = fn(doc);
+      },
+      broadcast() {},
+      on() {},
+      off() {},
+    };
+    const commentsHandle = {
+      doc: () => commentsDoc,
+      async update(fn) {
+        commentsDoc = fn(commentsDoc);
+      },
+      broadcast() {},
+      on() {},
+      off() {},
+    };
     const instance = Object.assign(Object.create(Page.prototype), {
       ready: Promise.resolve(),
       tail: Promise.resolve(),
       env,
       ctx: { storage, waitUntil: (promise) => tasks.push(promise) },
       metadata,
-      handle: {
-        doc: () => doc,
-        broadcast() {},
-        on() {},
-        off() {},
-      },
+      handle,
       wires: new Set(),
+      wirePrincipals: new Map(),
       serverKey,
       serverSenderId: "server-sender",
+      commentsUuid,
+      commentsHandle,
       repo: {
-        async delete() {
-          removed++;
+        async delete(id) {
+          if (id === "fixture-document") removed++;
+        },
+        async find() {
+          return handle;
+        },
+        async import(bytes) {
+          commentsDoc = A.merge(commentsDoc, A.load(bytes));
+          return commentsHandle;
+        },
+        async flush() {
+          await hooks.flush?.();
+          persisted = A.save(doc);
+          persistedComments = A.save(commentsDoc);
         },
       },
       backend: { async flush() {} },
@@ -150,6 +201,11 @@ export async function fixture(t, { env: extraEnv = {}, auth: shared, docBytes } 
       storage,
       metadata: () => instance.metadata,
       serverKey,
+      writeFence: () => instance.conversionWriteFence(),
+      commentsTree: () => "c".repeat(32),
+      // As the Page host wires it: each document's own stamp.
+      schemaFeatures: (scope) =>
+        documentFeatures((scope === "comments" ? instance.commentsHandle : instance.handle).doc()),
     });
     return instance;
   };
@@ -198,12 +254,17 @@ export async function fixture(t, { env: extraEnv = {}, auth: shared, docBytes } 
     expiresAt: Date.now() + 60_000,
   });
   const disconnected = [];
-  const bind = (key, principal) =>
+  const disconnectErrors = [];
+  /** Admit native key `key` for `principal`. `features` are the schema
+   * features its build declares; this build's by default. */
+  const bind = (key, principal, features = BUILD_FEATURES) =>
     page.policy.bind(key, key, identity(principal), {
       reauthenticate: async () => identity(principal),
-      disconnect: async () => {
+      disconnect: async (error) => {
         disconnected.push(key);
+        disconnectErrors.push(error);
       },
+      features,
     });
   return {
     auth,
@@ -225,10 +286,25 @@ export async function fixture(t, { env: extraEnv = {}, auth: shared, docBytes } 
     },
     /** A new Page object over the same durable storage, as after eviction. */
     async restart() {
-      page = build(await storage.get("host/document"));
+      page = build((await storage.get("host/document")) ?? structuredClone(page.metadata));
       await page.policy.load();
       return page;
     },
+    /** A new Page object loaded from durable storage alone, as after a crash:
+     * the document is the bytes the last flush wrote, and the load path runs
+     * (journal recovery, then preserved-block conversion). */
+    async crashRestart() {
+      doc = A.load(persisted);
+      commentsDoc = A.load(persistedComments);
+      // The fixture installs its first record in memory only.
+      page = build((await storage.get("host/document")) ?? structuredClone(page.metadata));
+      await page.policy.load();
+      // The load path opens the comments document itself.
+      page.commentsHandle = undefined;
+      await page.loadDocument();
+      return page;
+    },
+    hooks,
     tasks,
     blockId,
     catalogOf,
@@ -237,8 +313,11 @@ export async function fixture(t, { env: extraEnv = {}, auth: shared, docBytes } 
     tool,
     bind,
     disconnected,
+    disconnectErrors,
     removed: () => removed,
     doc: () => doc,
+    commentsDoc: () => commentsDoc,
+    commentHeads: () => A.getHeads(commentsDoc),
     edit(text) {
       doc = A.change(doc, (draft) => {
         draft.title = text;
@@ -268,9 +347,16 @@ export function coldPage(f, t) {
     this.backend = { async flush() {} };
     this.repo = {
       find: async () => ({ doc: () => f.doc(), broadcast() {}, on() {}, off() {} }),
+      import: async () => ({
+        doc: () => f.commentsDoc(),
+        broadcast() {},
+        on() {},
+        off() {},
+      }),
       async delete() {},
       async flush() {},
     };
+    this.commentsUuid = commentsUuid;
   });
   return new Page(
     {

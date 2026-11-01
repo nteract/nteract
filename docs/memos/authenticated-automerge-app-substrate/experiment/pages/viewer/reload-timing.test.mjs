@@ -17,7 +17,7 @@ import { FakeSession } from "./session-fixture.mjs";
 import { createPageData, initializePage } from "../model/page.mjs";
 
 const SAVE_TIMEOUT =
-  "Your latest edits haven't saved yet, so Pages won't reload. Check your connection and try again.";
+  "Your latest edits haven't saved yet, so this tab won't reload. Check your connection and try again.";
 const OUTCOMES = {
   o: { ok: true },
   x: { ok: false, cancelled: true },
@@ -48,16 +48,16 @@ function savingSession() {
   session.persistLocal = async () => {};
   session.releaseLocal = async () => {};
   session.disconnectSockets = async () => {};
-  session.status = "Saving";
+  session.statusId = "saving";
   session.dispatch({ type: "opened", denied: false });
   const receipt = () => {
     session.savedHeads = A.getHeads(doc);
     session.localPage = { pending: false };
-    session.status = "Saved";
+    session.statusId = "saved";
     session.emit();
   };
   const offline = () => {
-    session.status = "Offline";
+    session.statusId = "offline";
     session.emit();
   };
   return { session, receipt, offline };
@@ -117,11 +117,11 @@ function reloadWith(inputs, expected) {
           leave: () => void host.release(),
           open: () =>
             host.install(
-              Object.assign(new FakeSession("page-b"), { pending: false, status: "Saved" }),
+              Object.assign(new FakeSession("page-b"), { pending: false, statusId: "saved" }),
               host.generation,
               "dev",
             ),
-          receipt: () => a.set({ pending: false, status: "Saved", savedHeads: ["h1"] }),
+          receipt: () => a.set({ pending: false, statusId: "saved", savedHeads: ["h1"] }),
         },
         output$: gate.store
           .select((state) => state.name)

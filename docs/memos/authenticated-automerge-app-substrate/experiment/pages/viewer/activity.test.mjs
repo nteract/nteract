@@ -1,7 +1,13 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import * as A from "@automerge/automerge";
-import { activitySnapshot, activityIdentity, progressPassages, pageActivity } from "./activity.mjs";
+import {
+  activitySnapshot,
+  activityIdentity,
+  presenceLabel,
+  progressPassages,
+  pageActivity,
+} from "./activity.mjs";
 import { createProgressTargets } from "../model/presence.mjs";
 import { enableRich, textPath } from "../model/richtext.mjs";
 
@@ -64,6 +70,17 @@ test("activity keeps account attribution explicit without calling browser select
     "Kyle Kelley",
   );
   assert.equal(activityIdentity({}).label, "Collaborator");
+});
+
+test("a person in the browser is presented by name; other clients keep their label", () => {
+  assert.equal(presenceLabel({ displayName: "Kyle Kelley", driver: "Browser" }), "Kyle Kelley");
+  assert.equal(presenceLabel({ displayName: "Kyle Kelley", driver: " browser " }), "Kyle Kelley");
+  assert.equal(presenceLabel({ displayName: "Kyle Kelley" }), "Kyle Kelley");
+  assert.equal(
+    presenceLabel({ displayName: "Kyle Kelley", driver: "Mobile" }),
+    "Kyle Kelley · Mobile",
+  );
+  assert.equal(presenceLabel({ driver: "Browser" }), "Collaborator");
 });
 
 test("a closed activity count does not read or project the document", () => {
@@ -273,4 +290,38 @@ test("progress snapshots keep the session label", () => {
   assert.equal([...snapshot.progress.values()][0].agent, "release agent");
   const unlabeled = activitySnapshot(message(), 1000);
   assert.equal([...unlabeled.progress.values()][0].agent, null);
+});
+
+test("a caret and a lease merge only within one MCP session", async () => {
+  const { agentParticipants } = await import("./activity.mjs");
+  const who = { principal: "user:kyle", displayName: "Kyle", driver: "Kilo", agent: null };
+  const session = {
+    agentPresence: new Map([
+      ["c1", { ...who, session: "aaaaaaaaaaaaaaaa", agent_id: "c1", state: "active", until: 5000 }],
+      ["c2", { ...who, session: "bbbbbbbbbbbbbbbb", agent_id: "c2", state: "active", until: 5000 }],
+    ]),
+    agentProgress: new Map([
+      [
+        "p1",
+        {
+          ...who,
+          session: "bbbbbbbbbbbbbbbb",
+          progress_id: "p1",
+          message: "B",
+          until: 4000,
+          updated: 1,
+        },
+      ],
+    ]),
+  };
+  assert.deepEqual(
+    agentParticipants(session, 1000).map((p) => [
+      p.presence?.agent_id,
+      p.progress.map((x) => x.message),
+    ]),
+    [
+      ["c1", []],
+      ["c2", ["B"]],
+    ],
+  );
 });

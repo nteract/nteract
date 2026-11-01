@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import * as A from "@automerge/automerge";
-import { createPageData, initializePage, applyPageOperation, projectPage } from "../model/page.mjs";
+import { createPageData, initializePage, projectPage } from "../model/page.mjs";
+import { comment, newCommentsDoc } from "../model/comments-test-support.mjs";
 import { readTool } from "./tool-reads.mjs";
 
 const authority = {
@@ -13,18 +14,23 @@ function fixture(t, markdown = "# First\n\nKeep this passage.\n\n# Second\n\nOth
   let doc = A.from(createPageData({ pageId: "read-fixture", title: "Read fixture" }));
   doc = A.change(doc, (d) => initializePage(d, markdown));
   const blockId = Object.keys(doc.blocks)[0];
-  doc = A.change(doc, (d) =>
-    applyPageOperation(d, {
-      operation: "manage_page_comment",
-      arguments: { action: "add", block_id: blockId, selected_text: "Keep", body: "Comment body" },
-      identity: { principal: "user:one", displayName: "One", driver: "Test" },
-    }),
+  const { comments } = comment(
+    doc,
+    newCommentsDoc(),
+    { action: "add", block_id: blockId, selected_text: "Keep", body: "Comment body" },
+    { principal: "user:one", displayName: "One", driver: "Test" },
   );
+  // Reads take the Page and its comments document together.
+  commentsOf.set(doc, comments);
   t.after(() => A.free(doc));
-  return { doc, blockId };
+  return { doc, blockId, comments };
 }
+const commentsOf = new WeakMap();
 const read = (doc, args = {}, op = "read_page") =>
-  readTool(doc, op, args, { issueAuthority: async () => authority });
+  readTool(doc, op, args, {
+    issueAuthority: async () => authority,
+    commentsDoc: commentsOf.get(doc),
+  });
 
 test("presence is opt-in, captured before async authority, and counted in the read budget", async (t) => {
   const { doc } = fixture(t);
@@ -36,6 +42,7 @@ test("presence is opt-in, captured before async authority, and counted in the re
     "read_page",
     { include_content: false, include_presence: true },
     {
+      commentsDoc: commentsOf.get(doc),
       getPresence(captured) {
         events.push("presence");
         assert.equal(captured, doc);
@@ -71,13 +78,21 @@ test("unfiltered reads preserve the old shape; explicit body reads exclude comme
   const before = A.getHeads(doc);
   const legacy = await read(doc, { page_id: doc.page_id });
   assert.equal(legacy.status, 200);
-  assert.deepEqual(legacy.body, { ...projectPage(doc), heads: before, ...authority });
+  // Additive fields only: the comments document's heads, and the stamp.
+  assert.deepEqual(legacy.body, {
+    ...projectPage(doc, commentsOf.get(doc)),
+    heads: before,
+    comment_heads: A.getHeads(commentsOf.get(doc)),
+    schema_features: ["comments-doc"],
+    ...authority,
+  });
   assert.ok(legacy.body.comments[0].target.anchor.textObjectId);
   const body = await read(doc, { comments: "none" });
   assert.equal(body.status, 200);
   assert.deepEqual(body.body.comments, []);
   assert.equal(body.body.blocks[0].markdown, legacy.body.blocks[0].markdown);
   assert.deepEqual(body.body.heads, before);
+  assert.deepEqual(body.body.schema_features, ["comments-doc"]);
   assert.deepEqual(A.getHeads(doc), before);
 });
 
@@ -137,15 +152,16 @@ test("oversized content returns only an explicitly paginated outline and edit au
 });
 
 test("a large comment response can be narrowed to summaries", async (t) => {
-  const { doc, blockId } = fixture(t);
-  const expanded = A.change(A.clone(doc), (d) => {
-    for (let i = 0; i < 6; i++)
-      applyPageOperation(d, {
-        operation: "manage_page_comment",
-        arguments: { action: "add", block_id: blockId, body: "Long comment ".repeat(400) },
-        identity: { principal: "user:one" },
-      });
-  });
+  const { doc, blockId, comments } = fixture(t);
+  const expanded = A.clone(doc);
+  let more = comments;
+  for (let i = 0; i < 6; i++)
+    more = comment(expanded, more, {
+      action: "add",
+      block_id: blockId,
+      body: "Long comment ".repeat(400),
+    }).comments;
+  commentsOf.set(expanded, more);
   t.after(() => A.free(expanded));
   const result = await read(expanded, { max_bytes: 4096 }, "list_page_comments");
   assert.equal(result.status, 413);

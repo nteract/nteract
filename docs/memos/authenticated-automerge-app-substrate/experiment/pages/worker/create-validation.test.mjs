@@ -143,7 +143,11 @@ test("a marked pre-intent size rejection frees the catalog reservation and retry
   f.rejectSize();
   const args = { title: "Too large", idempotency_key: "oversized-create" };
   assert.equal((await f.create(args)).status, 413);
-  assert.equal(f.storage.values.size, 0);
+  // Only the key counts remain, back at zero.
+  assert.deepEqual(Object.fromEntries(f.storage.values), {
+    "host/count/active": 0,
+    "host/count/trash": 0,
+  });
   f.recover();
   assert.equal((await f.create({ ...args, title: "Smaller" })).status, 200);
 });

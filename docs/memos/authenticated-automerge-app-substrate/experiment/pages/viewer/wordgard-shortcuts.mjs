@@ -1,16 +1,26 @@
 import { ChangeSet, Node, Plot } from "wordgard/doc";
 import { GardSelection } from "wordgard/state";
-import { InputRule } from "wordgard/editor";
-import { Command, enter, setTextblockType, toggleBlock, toggleList } from "wordgard/command";
-import { blockquote, bulletList, heading, orderedList } from "wordgard/schema";
+import { InputRule, KeyBinding, Wordgard } from "wordgard/editor";
+import {
+  Command,
+  enter,
+  setTextblockType,
+  toggleBlock,
+  toggleList,
+  toggleMark,
+} from "wordgard/command";
+import { blockquote, bulletList, heading, horizontalRule, orderedList } from "wordgard/schema";
 import { history } from "wordgard/history";
 import {
   Code,
   CodeBlock,
   CodeBlockLanguage,
+  Emphasis,
   Heading,
   ListItem,
   Paragraph,
+  Strikethrough,
+  Strong,
 } from "./wordgard-model.mjs";
 import { taskListInputRule } from "./wordgard-task-lists.mjs";
 
@@ -331,9 +341,147 @@ export const inlineCodeInputRule = InputRule.define({
   },
 });
 
+// A letter or digit. Emphasis delimiters next to one are part of a word, as
+// in snake_case_name or 2*3*4, and never become a mark.
+const WORD = /[\p{L}\p{N}]/u;
+
+/**
+ * The span a typed closing `delimiter` ends, as textblock-map indices of the
+ * opening and closing delimiters, or null. Stricter than CommonMark, so typing
+ * never formats text by surprise:
+ * - The delimiters are exact runs: `**` never closes `*`, and `~~~` is not
+ *   `~~`.
+ * - The opening delimiter starts the line or follows a space or punctuation;
+ *   the closing one is followed by the same (the rule's lookahead). Neither
+ *   touches a letter or digit.
+ * - The content is non-empty, starts and ends with a non-space, and holds no
+ *   leaf (a hard break or image).
+ * - A delimiter after an odd number of backslashes is literal.
+ * - Nothing converts inside a URL-like token (a run of non-spaces holding
+ *   `://`, starting `www.`, or an email address), so typing
+ *   `https://example.org/_draft_` keeps the underscores.
+ * The opening delimiter is the nearest one before the closing one, found by a
+ * backward scan, so a long line without one costs one linear pass.
+ */
+export function delimitedSpan(text, delimiter) {
+  const width = delimiter.length,
+    char = delimiter[0];
+  const close = text.length - width;
+  if (close < 1 || !text.endsWith(delimiter) || text[close - 1] === char) return null;
+  const escaped = (at) => {
+    let slashes = 0;
+    while (text[at - 1 - slashes] === "\\") slashes++;
+    return slashes % 2 === 1;
+  };
+  if (escaped(close)) return null;
+  for (let open = text.lastIndexOf(delimiter, close - width - 1); open >= 0; ) {
+    // A longer run ending here: its last delimiter is not an opener.
+    if (text[open + width] === char) return null;
+    if (text[open - 1] === char) {
+      open = text.lastIndexOf(delimiter, open - 1);
+      continue;
+    }
+    const content = text.slice(open + width, close);
+    if (
+      !content ||
+      urlToken(text, open, close + width) ||
+      /^\s|\s$/.test(content) ||
+      content.includes(LEAF) ||
+      escaped(open) ||
+      (open > 0 && WORD.test(text[open - 1]))
+    )
+      return null;
+    return { open, close };
+  }
+  return null;
+}
+
+// Whether text[from, to) lies in a URL-like token: the run of non-spaces
+// around it holds `://`, starts with `www.`, or reads as an email address.
+// Reads only that run.
+function urlToken(text, from, to) {
+  let start = from,
+    end = to;
+  while (start > 0 && !/\s/.test(text[start - 1])) start--;
+  while (end < text.length && !/\s/.test(text[end])) end++;
+  const token = text.slice(start, end);
+  return (
+    token.includes("://") || /^[(<]?www\./i.test(token) || /^[^@\s]+@[^@\s]+\.[^@\s]/.test(token)
+  );
+}
+
+// Pasted HTML from other editors writes strikethrough as `<del>` or
+// `<strike>`. Wordgard reads `<s>` and a line-through style, so the tags are
+// renamed before parsing. A tag name ends at a space, `/` or `>`.
+export const pasteStrikethroughTags = Wordgard.clipboardInputHTMLFilter.of((html) =>
+  html.replace(/<(\/?)(?:del|strike)(?=[\s/>])/gi, "<$1s"),
+);
+
+// `delimiter`text`delimiter` becomes `mark`ed text when the closing
+// delimiter is typed. Like the inline code rule, the text keeps its tokens:
+// the rule deletes the delimiters and adds the mark, so undo restores them.
+// Nothing happens inside code.
+const delimitedMarkRule = (delimiter, mark) =>
+  InputRule.define({
+    expr: new RegExp(`${delimiter.replace(/[*~]/g, "\\$&")}$`),
+    lookahead: /^(?![\p{L}\p{N}])/u,
+    apply(state, [typed]) {
+      if (state.readOnly) return null;
+      const block = typed.to.textblockParent;
+      if (!block) return null;
+      const map = state.textblockMap(block);
+      const span = delimitedSpan(map.text.slice(0, map.toIndex(typed.to.pos)), delimiter);
+      if (!span) return null;
+      const width = delimiter.length;
+      const open = map.fromIndex(span.open),
+        start = map.fromIndex(span.open + width),
+        end = map.fromIndex(span.close),
+        close = map.fromIndex(span.close + width);
+      let coded = false;
+      state.doc.iterate(open, close, (node) => {
+        if (node.isText && Code.isInSet(node.marks)) coded = true;
+      });
+      if (coded) return null;
+      const changes = ChangeSet.create(state.doc, [
+        { from: open, to: start },
+        { from: start, to: end, add: mark },
+        { from: end, to: close },
+      ]);
+      return {
+        changes,
+        // Text typed after the conversion is not marked.
+        selection: GardSelection.Text.create({
+          anchor: changes.mapPos(end, -1),
+          marks: mark.removeFromSet(state.doc.resolve(end).marks()),
+        }),
+        annotations: history.isolate.of(true),
+        userEvent: "input.markdown",
+      };
+    },
+  });
+
+// Order matters: a typed `**` is tried as bold first. The single-delimiter
+// rules then refuse it, because their closing delimiter must be an exact run.
+export const markInputRules = [
+  delimitedMarkRule("**", Strong),
+  delimitedMarkRule("~~", Strikethrough),
+  delimitedMarkRule("*", Emphasis),
+  delimitedMarkRule("_", Emphasis),
+];
+
+export const strikethroughKey = KeyBinding.of({
+  key: "Mod-Shift-x",
+  run: (editor) => !editor.state.readOnly && Command.dispatch(editor, toggleMark, Strikethrough),
+});
+
 export const markdownShortcuts = () => [
   lineStartInputRule(),
   lineCodeFence,
   lineBlockCommands,
   inlineCodeInputRule,
+  markInputRules,
+  // `---` alone in a paragraph becomes a horizontal rule.
+  horizontalRule.createOnDashes,
+  strikethroughKey,
+  pasteStrikethroughTags,
 ];

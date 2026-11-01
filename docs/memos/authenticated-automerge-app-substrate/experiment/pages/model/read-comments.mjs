@@ -1,19 +1,10 @@
-import { selectionContext } from "./comments.mjs";
+import { selectionContext, threadsOf, validCommentId as validId } from "./comments.mjs";
 import { commentBodyProjection } from "./comment-content.mjs";
 
-const encoder = new TextEncoder();
 const fields = new Set(["state", "block_id", "thread_ids", "include_messages"]);
 const invalid = (message) => {
   throw Object.assign(Error(message), { status: 400, code: "invalid_comment_selector" });
 };
-function validId(value) {
-  if (typeof value !== "string" || !value.trim() || value.length > 256) return false;
-  for (const character of value) {
-    const code = character.codePointAt(0);
-    if (code < 32 || code === 127) return false;
-  }
-  return encoder.encode(value).byteLength <= 256;
-}
 function selectors(options) {
   if (
     !options ||
@@ -78,10 +69,12 @@ function message(id, value) {
   };
 }
 
-/** Compact read-only threads; message_count includes body-free deleted tombstones. */
-export function projectReadComments(doc, options = {}) {
+/** Compact read-only threads; message_count includes body-free deleted
+ * tombstones. `doc` is the Page document, which anchors resolve against;
+ * threads come from `commentsDoc` (model/comments.mjs threadsOf). */
+export function projectReadComments(doc, options = {}, commentsDoc) {
   const filter = selectors(options),
-    comments = doc.comments ?? {};
+    comments = threadsOf(doc, commentsDoc);
   if (filter.ids)
     for (const id of filter.ids)
       if (!Object.hasOwn(comments, id))
@@ -111,7 +104,11 @@ export function projectReadComments(doc, options = {}) {
           ? {
               messages: Object.entries(messages)
                 .map(([id, value]) => message(id, value))
-                .sort((a, b) => (a.createdAt ?? "").localeCompare(b.createdAt ?? "")),
+                .sort(
+                  (a, b) =>
+                    (a.createdAt ?? "").localeCompare(b.createdAt ?? "") ||
+                    a.id.localeCompare(b.id),
+                ),
             }
           : {}),
       };

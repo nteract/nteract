@@ -20,6 +20,34 @@ import {
   applyPageOperation,
   validateImageInsertion,
 } from "../model/page.mjs";
+import {
+  documentFeatures,
+  missingFeatures,
+  parseDeclaredFeatures,
+  requireSupportedSchema,
+  schemaUnsupported,
+  unsupportedFeatures,
+} from "../model/schema-features.mjs";
+import { unsupportedMarkdown, unsupportedMarkdownError } from "../model/richtext.mjs";
+import { convertPreservedBlocks, hasPreservedBlocks } from "../model/raw-migration.mjs";
+import { commentsGenesis } from "../model/comments-doc.mjs";
+import { applyComment, commentsMigrated } from "../model/comments.mjs";
+import { guardCommentIntent } from "../model/comment-guard.mjs";
+import {
+  copyLegacyThreads,
+  detachLegacyComments,
+  needsCommentsMigration,
+} from "../model/comments-migration.mjs";
+import { CommentAdmission } from "./comment-admission.mjs";
+import { commentsDocUuid, commentsDocumentId, commentsTreeOf } from "./comments-store.mjs";
+import {
+  conversionFenceError,
+  conversionFenced,
+  conversionNotice,
+  conversionRetryDelay,
+  permanentFailure,
+  preservedConversionMachine,
+} from "./preserved-conversion.mjs";
 import { readTargets, writeTargets } from "../model/agent-presence.mjs";
 import { BACKEND_LIMITS, assertDocumentLimits, assertIntentSize } from "../model/limits.mjs";
 import { handleMcp } from "../mcp.mjs";
@@ -28,10 +56,12 @@ import { agentGuideResponse } from "../agent-guide.mjs";
 import { connectAgentResponse } from "../connect-agent.mjs";
 import { handleOAuth, mcpAuthChallenge } from "./oauth.mjs";
 import { sessionStoreReady } from "./isolate-setup.mjs";
+import { signInCallbackOptions } from "./sign-in-failure.mjs";
 import { localOidcStore } from "./local-oidc-store.mjs";
 import { WebSocketByteTransport } from "../shared/byte-transport.mjs";
 import { MISSING_EDITS_MESSAGE } from "../shared/receipts.mjs";
 import { openingTitleWarning } from "../model/title-warning.mjs";
+import { pagePreview } from "../model/page-preview.mjs";
 import {
   authenticate,
   agentLabel,
@@ -51,11 +81,28 @@ import {
   isHistoryCapacityError,
   logIncompleteHistory,
 } from "./history-admission.mjs";
-import { issueRetryToken, inspectOperation, reserveOperation } from "./operation-journal.mjs";
+import {
+  INTERNAL_PREFIX,
+  listOperationEntries,
+  issueRetryToken,
+  inspectOperation,
+  reserveOperation,
+} from "./operation-journal.mjs";
 import { BufferedRecordStore, RemoteRecordSink } from "./record-persistence.mjs";
 import { RecordMaintenance } from "./record-maintenance.mjs";
+import {
+  ActorAuthorship,
+  commitAuthor,
+  loadActorEntries,
+  observeRecordSaves,
+  ActorPersistence,
+  MAX_ATTESTED_CHANGES,
+  loadCommitAuthors,
+  replayAuthor,
+} from "./actor-authorship.mjs";
 export { PageRecords } from "./record-persistence.mjs";
 import {
+  COMMENTS_SCOPE,
   DocumentPolicy,
   PermissionDenied,
   admissionCancelled,
@@ -86,8 +133,11 @@ import {
 const unifiedMissing = (request) =>
   request.headers.get(ADMISSION_CAPABILITY.header) === ADMISSION_CAPABILITY.value;
 import {
+  COMMENTS_DOC,
+  PAGE_DOC,
   documentMutation,
   recoverDocumentMutations,
+  replayRecordedMutation,
   mutationKey,
   fingerprint,
   requireHeads,
@@ -97,11 +147,12 @@ import { claimInvitation, proposeSharingMutation, sharingProjection } from "./sh
 import { pageAccess, pageRelation, pageState, restrictAccessDuringCommit } from "./access.mjs";
 
 import {
-  CATALOG_LIMIT,
-  TRASH_LIMIT,
+  capacityFor,
   catalogTitle,
   countCapacity,
+  countSlot,
   intentState,
+  listAll,
   knownRevision,
   lifecycleSlot,
   lifecycleSlotKey,
@@ -148,6 +199,7 @@ import {
   childrenOf,
   locationAnswer,
   locationEntries,
+  locationScan,
   projectOf,
   publicLocation,
   receiptLocation,
@@ -168,6 +220,8 @@ import {
 export { Space } from "./spaces.mjs";
 import { spaceCreationEffect, spaceCreationTransition } from "./space-lifecycle.mjs";
 import { handleImportPageImage } from "./import-image.mjs";
+import { countedStorage } from "./catalog-counts.mjs";
+import { forwardedPageLimit, quotaError, quotaRefusal, resolvePageQuota } from "./page-quota.mjs";
 import { serialQueue, serialQueueBounds } from "./serial-queue.mjs";
 import { holdUntilSettled } from "./request-hold.mjs";
 import { readTool } from "./tool-reads.mjs";
@@ -238,6 +292,47 @@ const noop = async () => {};
 /** Complete the upgrade and close at once with the refusal's admission code.
  * A browser reads a refused HTTP upgrade only as close 1006, which its
  * reconnect treats as transient; the close code lets it count the refusal. */
+/** A bounded, content-free reason for a failed conversion run. */
+function failureReason(error) {
+  if (isHistoryCapacityError(error)) return "history_capacity";
+  if (error?.conversion) return "conversion_error";
+  if (typeof error?.code === "string") return error.code.slice(0, 64);
+  if (Number.isInteger(error?.status)) return `status_${error.status}`;
+  return "storage_or_runtime";
+}
+/** One structured line when a Page's preserved blocks can't be converted:
+ * its Page ID, like `page.creation_intent_conflict`, and a bounded reason,
+ * never content. DEPLOYMENT.md describes the recovery. */
+function logPreservedStuck(pageId, reason) {
+  console.error(
+    JSON.stringify({
+      service: "nteract-pages-native",
+      event: "page.preserved_markdown_stuck",
+      page_id: pageId,
+      reason,
+      timestamp: new Date().toISOString(),
+    }),
+  );
+}
+/** One structured line when the native per-author check refuses a comment
+ * change: the Page, the rule it broke, never content. */
+function logCommentRefused(pageId, reason) {
+  console.error(
+    JSON.stringify({
+      service: "nteract-pages-native",
+      event: "page.comment_change_refused",
+      page_id: pageId,
+      code: reason?.code,
+      timestamp: new Date().toISOString(),
+    }),
+  );
+}
+/** Keys of journal entries for document `doc` still pending with changes. */
+async function pendingEntryKeys(storage, doc) {
+  return [...(await listOperationEntries(storage))]
+    .filter(([, entry]) => entry.pending && entry.changes && (entry.doc ?? PAGE_DOC) === doc)
+    .map(([key]) => key);
+}
 function refuseSocket(error, identity) {
   logAdmissionDenied(error, { stage: "page", identity });
   const pair = new WebSocketPair();
@@ -246,6 +341,10 @@ function refuseSocket(error, identity) {
   socket.close(admissionCloseCode(error), admissionCode(error));
   return new Response(null, { status: 101, webSocket: pair[0] });
 }
+/** The most children of a shared parent one listing request checks. Each is
+ * a Page host read made while the caller's Catalog queue waits, so this stays
+ * fixed whatever the owner's Page limit is; a cursor reaches the rest. */
+export const sharedChildBounds = { scan: 100 };
 /** Budgets for reading Page lifecycles while the Catalog queue waits. */
 export const lifecycleBounds = { readMs: 2000, passMs: 5000, concurrency: 4 };
 const lifecycleUnsettled = () =>
@@ -302,6 +401,20 @@ function logCreationIntentConflict(intent, installed) {
     }),
   );
 }
+/** One structured line when a listing finds a Catalog's stored Page counts
+ * wrong and rewrites them. Expected after a rollback build wrote Catalog
+ * entries; anything else points at a write path that skips countedStorage. */
+function logCountRepair(counts) {
+  console.warn(
+    JSON.stringify({
+      service: "nteract-pages-native",
+      event: "catalog.count_repaired",
+      active: counts["page/"],
+      trash: counts["trash/"],
+      timestamp: new Date().toISOString(),
+    }),
+  );
+}
 /** Journal operation names for the Catalog's lifecycle routes. */
 const LIFECYCLE_OPERATIONS = { trash: "trash_page", restore: "restore_page", purge: "purge_page" };
 /** A request's base_heads as requireHeads judges them. */
@@ -333,6 +446,9 @@ function validateCreateInput(args) {
     throw new HttpError(400, "Invalid title");
   if (args.markdown !== undefined && typeof args.markdown !== "string")
     throw new HttpError(400, "Invalid markdown");
+  // Refused before any reservation, so the agent can rewrite and retry.
+  const unsupported = args.markdown && unsupportedMarkdown(args.markdown);
+  if (unsupported) throw unsupportedMarkdownError(unsupported);
 }
 
 function forwarded(request, path, body) {
@@ -344,6 +460,9 @@ function forwarded(request, path, body) {
     const value = request.headers.get(name);
     if (value) headers.set(name, value);
   }
+  // The MCP session travels only from /mcp; internal routes trust their forwards.
+  if (new URL(request.url).pathname === "/mcp" && request.headers.has("mcp-session-id"))
+    headers.set("mcp-session-id", request.headers.get("mcp-session-id"));
   if (request.headers.has("x-pages-driver") || new URL(request.url).searchParams.has("driver"))
     headers.set("x-pages-driver", driverLabel(request));
   const agent = agentLabel(request);
@@ -412,6 +531,23 @@ function authorizeImage(request, env, pageId, write) {
   return env.PAGES.getByName(pageId).fetch(internal);
 }
 
+/** Catalog operations that apply the account's Page limit, or report it. */
+const QUOTA_OPERATIONS = new Set([
+  "list_pages",
+  "create_page",
+  "register_page",
+  "create_space",
+  "delete_page",
+  "restore_page",
+]);
+/** The resolved Page limit for a Catalog forward (page-quota.mjs). It sits
+ * beside `arguments`, never inside them, so a caller can't set it, and
+ * /internal/catalog is reachable only through the host. */
+async function quotaFields(env, identity, operation) {
+  if (!QUOTA_OPERATIONS.has(operation)) return {};
+  return { page_limit: (await resolvePageQuota(env, identity)).limit };
+}
+
 async function invoke(request, env, operation, args = {}) {
   if (!operations.has(operation) || !args || typeof args !== "object" || Array.isArray(args))
     throw new HttpError(400, "Unknown operation or invalid arguments");
@@ -434,11 +570,12 @@ async function invoke(request, env, operation, args = {}) {
       operation,
     )
   ) {
+    const body = { operation, arguments: args, ...(await quotaFields(env, identity, operation)) };
     return withinToolDeadline(async (signal) =>
       bufferedResponse(
         await untilAborted(
           env.CATALOGS.getByName(identity.principal).fetch(
-            forwarded(request, "/internal/catalog", { operation, arguments: args }),
+            forwarded(request, "/internal/catalog", body),
             { signal },
           ),
           signal,
@@ -603,7 +740,8 @@ const gateway = {
       if (oauth) return oauth;
       if (url.pathname === "/api/auth/login" && request.method === "GET")
         return beginServerOidcLogin(request, env);
-      if (url.pathname === "/oidc") return completeServerOidcLogin(request, env, noop);
+      if (url.pathname === "/oidc")
+        return completeServerOidcLogin(request, env, noop, signInCallbackOptions);
       if (url.pathname === "/api/auth/logout" && request.method === "POST") {
         requireSameOrigin(request, env);
         return deleteServerOidcSession(request, env);
@@ -668,6 +806,7 @@ const gateway = {
         const identity = await authenticate(request, env);
         requireWrite(identity);
         const args = await readJson(request);
+        const quota = await quotaFields(env, identity, "register_page");
         return await withinToolDeadline(async (signal) =>
           bufferedResponse(
             await untilAborted(
@@ -675,6 +814,7 @@ const gateway = {
                 forwarded(request, "/internal/catalog", {
                   operation: "register_page",
                   arguments: args,
+                  ...quota,
                 }),
                 { signal },
               ),
@@ -751,6 +891,10 @@ export class Catalog {
     this.env = env;
     this.queue = serialQueue(ctx, "catalog-queue");
   }
+  /** Storage that keeps the `page/` and `trash/` key counts (catalog.mjs). */
+  get storage() {
+    return (this.counted ??= countedStorage(this.ctx.storage, { ctx: this.ctx }));
+  }
   fetch(request) {
     // Location reads write nothing, so they never wait behind the queue. A
     // Catalog listing a shared parent asks the owner's Catalog from inside
@@ -774,7 +918,7 @@ export class Catalog {
           throw new HttpError(403, "Account access denied");
       }
       const query = await readJson(request);
-      const entries = await locationEntries(this.ctx.storage);
+      const entries = await locationEntries(this.storage);
       if (query?.children_of !== undefined) {
         if (!validPageId(query.children_of)) throw new HttpError(400, "Invalid children_of");
         return json({ children: childrenOf(entries, query.children_of) });
@@ -788,9 +932,37 @@ export class Catalog {
     }
   }
   async countEntries(prefix) {
-    return countCapacity(this.ctx.storage, prefix, {
+    return countCapacity(this.storage, prefix, {
       current: (pageId) => this.pageLifecycle(pageId),
     });
+  }
+  /** Room for one more entry under `prefix` within `limit`: `{ room, count }`.
+   * `slotKey` names the caller's own reservation slot, which is counted (and
+   * released when stale) first, as a full count would. */
+  async capacity(prefix, limit, slotKey) {
+    return capacityFor(this.storage, prefix, limit, {
+      slotKey,
+      current: (pageId) => this.pageLifecycle(pageId),
+    });
+  }
+  /** Room at a lifecycle request's destination: `{ room, count, limit }`.
+   * Restore applies the account's Page limit, and Trash the same limit, except
+   * that a paused account (limit 0) can always move Pages to Trash. Its Trash
+   * then holds at most the Pages it already had, since it can't create more. */
+  async destinationCapacity(run, slotKey) {
+    const limit = run.limit;
+    const exempt = run.operation === "delete_page" && limit === 0;
+    const capacity = await this.capacity(
+      slotPrefix[run.operation],
+      exempt ? Infinity : limit,
+      slotKey,
+    );
+    return { ...capacity, limit };
+  }
+  /** Refuse a new Page when the account is at its limit. */
+  async requirePageRoom(limit) {
+    const { room, count } = await this.capacity("page/", limit);
+    if (!room) throw quotaError("page/", { limit, count });
   }
   /** Read a Page's current lifecycle state. The Catalog may call its Pages;
    * a Page never calls its owner's Catalog.
@@ -877,18 +1049,18 @@ export class Catalog {
         const value = await readJson(request);
         if (!validPageId(value.page_id)) throw new HttpError(400, "Invalid page_id");
         const key = `${value.shared ? "shared/" : "page/"}${value.page_id}`;
-        const previous = await this.ctx.storage.get(key);
-        if (value.remove) await this.ctx.storage.delete(key);
+        const previous = await this.storage.get(key);
+        if (value.remove) await this.storage.delete(key);
         else if (
           !previous?.pending &&
-          !(await this.ctx.storage.get(`host/deleted/${value.page_id}`)) &&
+          !(await this.storage.get(`host/deleted/${value.page_id}`)) &&
           // A projection observed before trashing must not relist the Page.
-          (value.shared || !(await this.ctx.storage.get(`trash/${value.page_id}`))) &&
+          (value.shared || !(await this.storage.get(`trash/${value.page_id}`))) &&
           (!previous?.updated_at || previous.updated_at <= value.observed_at)
         ) {
           // A new discovery entry may not have reached D1; reconcile on next listing.
-          if (!previous) await markCatalogIndexDirty(this.ctx.storage);
-          await this.ctx.storage.put(key, {
+          if (!previous) await markCatalogIndexDirty(this.storage);
+          await this.storage.put(key, {
             ...previous,
             page_id: value.page_id,
             title: catalogTitle(value.title),
@@ -912,15 +1084,18 @@ export class Catalog {
           !Number.isFinite(Date.parse(body.observed_at))
         )
           throw new HttpError(400, "Invalid title projection");
-        await refreshCatalogTitle(this.ctx.storage, body);
+        await refreshCatalogTitle(this.storage, body);
         return json({ ok: true });
       }
       const args = body.arguments ?? {};
-      if (body.operation === "list_pages") return await this.listPages(request, identity, args);
+      const limit = forwardedPageLimit(body.page_limit, this.env);
+      if (body.operation === "list_pages")
+        return await this.listPages(request, identity, args, limit);
       if (body.operation === "list_spaces") return await this.listSpaces(request, identity, args);
       if (body.operation === "get_space") return await this.getSpace(request, args);
       requireWrite(identity);
-      if (body.operation === "create_space") return await this.createSpace(request, identity, args);
+      if (body.operation === "create_space")
+        return await this.createSpace(request, identity, args, limit);
       if (body.operation === "update_space") return await this.updateSpace(request, identity, args);
       const lifecycle = lifecycleRoutes[body.operation];
       if (!["create_page", "register_page"].includes(body.operation) && !lifecycle)
@@ -939,8 +1114,8 @@ export class Catalog {
           throw new HttpError(400, "action must be preview or confirm");
         // A preview is an owner read of the trashed Page; it reserves nothing.
         if (args.action === "preview") {
-          if (await this.ctx.storage.get(`host/deleted/${args.page_id}`)) {
-            await this.ctx.storage.delete(`trash/${args.page_id}`);
+          if (await this.storage.get(`host/deleted/${args.page_id}`)) {
+            await this.storage.delete(`trash/${args.page_id}`);
             await this.notifyTombstone(args.page_id);
             throw new HttpError(404, "Page not found");
           }
@@ -959,7 +1134,7 @@ export class Catalog {
         A.free(readRegistration(args).doc);
         // The browser knows its UUID before the Page host has an intent. A
         // successful deletion must also cancel retries of that local creation.
-        if (await this.ctx.storage.get(`host/deleted/${args.page_id}`))
+        if (await this.storage.get(`host/deleted/${args.page_id}`))
           throw new HttpError(409, "Page was deleted");
       }
       const key = mutationKey(args);
@@ -968,7 +1143,7 @@ export class Catalog {
         args,
         identity,
       );
-      const inspected = await inspectOperation(this.ctx.storage, {
+      const inspected = await inspectOperation(this.storage, {
         key,
         digest,
         retryToken: args.retry_token,
@@ -976,20 +1151,24 @@ export class Catalog {
         principal: identity.principal,
       });
       if (lifecycle)
-        return await this.runLifecycle(request, body.operation, args, { key, digest, inspected });
+        return await this.runLifecycle(request, body.operation, args, {
+          key,
+          digest,
+          inspected,
+          limit,
+        });
       let intent = inspected.entry;
       if (intent && !intent.pending) {
         // A previous attempt may have stored its receipt before sync failed.
-        await this.ctx.storage.sync();
+        await this.storage.sync();
         return json(intent.receipt);
       }
       if (!intent) {
-        if ((await this.countEntries("page/")) >= CATALOG_LIMIT)
-          throw new HttpError(409, "This prototype permits 100 pages per account");
+        await this.requirePageRoom(limit);
         if (
           registering &&
-          ((await this.ctx.storage.get(`page/${args.page_id}`)) ||
-            (await this.ctx.storage.get(`trash/${args.page_id}`)))
+          ((await this.storage.get(`page/${args.page_id}`)) ||
+            (await this.storage.get(`trash/${args.page_id}`)))
         )
           throw new HttpError(409, "Page already has another creation request");
         const { location, rekeyed } = await this.resolveLocation(request, registering ? {} : args);
@@ -999,15 +1178,15 @@ export class Catalog {
           pageId: body.operation === "create_page" ? crypto.randomUUID() : args.page_id,
           createdAt: new Date().toISOString(),
         };
-        intent = await reserveOperation(this.ctx.storage, {
+        intent = await reserveOperation(this.storage, {
           key,
           entry: intent,
           retry: inspected.retry,
         });
         // The intent and the pending entry, which alone records the new
         // Page's location, commit together. A retry reads the location back.
-        await this.ctx.storage.put({
-          ...(await rekeyedEntries(this.ctx.storage, rekeyed)),
+        await this.storage.put({
+          ...(await rekeyedEntries(this.storage, rekeyed)),
           [key]: intent,
           [`page/${intent.pageId}`]: {
             page_id: intent.pageId,
@@ -1020,7 +1199,7 @@ export class Catalog {
         });
       }
       const pageId = intent.pageId;
-      const pending = await this.ctx.storage.get(`page/${pageId}`);
+      const pending = await this.storage.get(`page/${pageId}`);
       if (!pending) throw new Error("A pending creation has no Catalog entry");
       // A resumed creation checks its parent again: the parent may have
       // moved to Trash since the intent was reserved. The intent stays
@@ -1039,24 +1218,24 @@ export class Catalog {
       if (!response.ok && response.headers.get("x-pages-create-rejected") === "before-intent") {
         // Only this explicit pre-intent rejection proves there is no Page
         // creation to recover. Ambiguous failures retain their reservation.
-        await this.ctx.storage.delete(`page/${pageId}`);
-        await this.ctx.storage.delete(key);
-        await this.ctx.storage.sync();
+        await this.storage.delete(`page/${pageId}`);
+        await this.storage.delete(key);
+        await this.storage.sync();
       }
       if (!response.ok) return response;
       // The receipt reports the location this Catalog recorded.
       intent.receipt = {
         ...(await response.json()),
-        ...receiptLocation(await locationEntries(this.ctx.storage), pageId),
+        ...receiptLocation(await locationEntries(this.storage), pageId),
       };
       intent.pending = false;
       const { pending: _pending, ...created } = pending;
-      await markCatalogIndexDirty(this.ctx.storage);
-      await this.ctx.storage.put({
+      await markCatalogIndexDirty(this.storage);
+      await this.storage.put({
         [key]: intent,
         [`page/${pageId}`]: { ...created, title: catalogTitle(intent.receipt.title) },
       });
-      await this.ctx.storage.sync();
+      await this.storage.sync();
       return json(intent.receipt);
     } catch (error) {
       return errorResponse(error, "catalog");
@@ -1070,10 +1249,10 @@ export class Catalog {
    * Page in order, and feeds the Page's answers back in until it replies.
    * Requests reach it one at a time through this Catalog's queue.
    */
-  async runLifecycle(request, operation, args, { key, digest, inspected }) {
-    const storage = this.ctx.storage;
+  async runLifecycle(request, operation, args, { key, digest, inspected, limit }) {
+    const storage = this.storage;
     const pageId = args.page_id;
-    const run = { request, operation, args, pageId, key, digest, retry: inspected.retry };
+    const run = { request, operation, args, pageId, key, digest, retry: inspected.retry, limit };
     run.row = inspected.entry;
     let state = await intentState(storage, key, operation, pageId);
     let outcome;
@@ -1090,7 +1269,7 @@ export class Catalog {
       state = outcome.state;
     }
     if (state.name === "absent") {
-      outcome = await this.stepIntent(run, state, await this.newIntentFacts(operation, pageId));
+      outcome = await this.stepIntent(run, state, await this.newIntentFacts(run));
       if (outcome.reply) return outcome.reply;
       state = outcome.state;
     }
@@ -1123,12 +1302,24 @@ export class Catalog {
           ? undefined
           : response.source === "page"
             ? run.reply
-            : json(response.body, response.status),
+            : this.intentReply(run, response),
     };
   }
 
+  /** A reply the machine gave. A full destination's reply names its code
+   * only; the message, limit and count come from the capacity check. */
+  intentReply(run, response) {
+    if ([replies.trashFull.body.code, replies.pageQuota.body.code].includes(response.body?.code)) {
+      const prefix = slotPrefix[run.operation];
+      // Every path to a full reply runs a capacity check first.
+      const { status, body } = quotaRefusal(prefix, run.capacity);
+      return json(body, status);
+    }
+    return json(response.body, response.status);
+  }
+
   async runIntentEffect(run, effect) {
-    const storage = this.ctx.storage;
+    const storage = this.storage;
     const { operation, pageId, key } = run;
     switch (effect.type) {
       case "persist":
@@ -1259,14 +1450,14 @@ export class Catalog {
     // A restore's receipt reports where this Catalog's projection, the next
     // effect, puts the Page.
     if (operation === "restore_page" && receipt?.restored === true && current?.state === "active") {
-      const { location } = await restoreTarget(this.ctx.storage, pageId);
+      const { location } = await restoreTarget(this.storage, pageId);
       const spaceId = location.parent_id
-        ? projectOf(await locationEntries(this.ctx.storage), location.parent_id)
+        ? projectOf(await locationEntries(this.storage), location.parent_id)
         : (location.space_id ?? null);
       if (spaceId || location.parent_id)
         Object.assign(receipt, { space_id: spaceId, parent_id: location.parent_id });
     }
-    const known = await knownRevision(this.ctx.storage, pageId);
+    const known = await knownRevision(this.storage, pageId);
     return {
       type: "page_reply",
       status: response.status,
@@ -1279,17 +1470,23 @@ export class Catalog {
   /** What a new lifecycle request needs before it is reserved: the leaf
    * guard for Trash, room at its destination, and the lifecycle revision
    * this account last observed for the Page. */
-  async newIntentFacts(operation, pageId) {
-    const storage = this.ctx.storage;
+  async newIntentFacts(run) {
+    const { operation, pageId } = run;
+    const storage = this.storage;
     if (operation === "delete_page") await this.requireLeafPage(pageId);
     const slotKey = lifecycleSlotKey(operation, pageId);
     let destination = "none";
     if (slotKey) {
-      const limit = operation === "delete_page" ? TRASH_LIMIT : CATALOG_LIMIT;
-      // Counting first removes stale reservations, including this Page's.
-      const full = (await this.countEntries(slotPrefix[operation])) >= limit;
+      // The check counts this Page's own slot first, removing it when stale.
+      run.capacity = await this.destinationCapacity(run, slotKey);
       const entry = await storage.get(slotKey);
-      destination = !entry ? (full ? "full" : "room") : entry.reservation ? "taken" : "entry";
+      destination = !entry
+        ? run.capacity.room
+          ? "room"
+          : "full"
+        : entry.reservation
+          ? "taken"
+          : "entry";
     }
     const revision = await observedLifecycleRevision(storage, pageId);
     return { type: "request", operation, pageId, destination, revision };
@@ -1298,13 +1495,14 @@ export class Catalog {
   /** What a pending request needs before it continues. Capacity, and for
    * Trash the leaf guard, are read only when it no longer holds its slot. */
   async pendingIntentFacts(run, state) {
-    const storage = this.ctx.storage;
+    const storage = this.storage;
     const { operation, pageId, key } = run;
     const entry = state.slot === "live" ? await storage.get(slotPrefix[operation] + pageId) : null;
     const event = { type: "request", expired: entry ? !(entry.expires_at > Date.now()) : false };
     if (holdsSlot(state, event.expired)) return { event, state };
-    const limit = operation === "delete_page" ? TRASH_LIMIT : CATALOG_LIMIT;
-    event.capacity = (await this.countEntries(slotPrefix[operation])) < limit;
+    const slotKey = lifecycleSlotKey(operation, pageId);
+    run.capacity = await this.destinationCapacity(run, slotKey);
+    event.capacity = run.capacity.room;
     // Counting may have removed this intent's own expired slot.
     state = { ...state, slot: (await intentState(storage, key, operation, pageId)).slot };
     // A trash that lost its slot never applied (an applied one leaves a real
@@ -1344,7 +1542,7 @@ export class Catalog {
    * sibling order, and the Project record confirms the Project.
    */
   async resolveLocation(request, args) {
-    const storage = this.ctx.storage;
+    const storage = this.storage;
     const spaceArg =
       args.space_id === undefined || args.space_id === null
         ? null
@@ -1401,9 +1599,13 @@ export class Catalog {
 
   /** The parent's Catalog entry when it can take a new child: owned, created
    * and not in Trash. A trash slot (even one still being reserved) counts as
-   * Trash, so a child is never created under a Page that is leaving. */
+   * Trash, so a child is never created under a Page that is leaving. The slot
+   * is counted first, so one that went stale no longer holds the parent. */
   async activeParent(parentId) {
-    const storage = this.ctx.storage;
+    const storage = this.storage;
+    await countSlot(storage, `trash/${parentId}`, {
+      current: (pageId) => this.pageLifecycle(pageId),
+    });
     if (await storage.get(`trash/${parentId}`))
       throw new HttpError(
         409,
@@ -1431,7 +1633,7 @@ export class Catalog {
    * still unapplied afterwards is not a child: once this Page is in Trash,
    * that restore returns to the top level. */
   async requireLeafPage(pageId) {
-    const storage = this.ctx.storage;
+    const storage = this.storage;
     const entry = await storage.get(`page/${pageId}`);
     if (!entry) return;
     if (entry.home)
@@ -1441,7 +1643,7 @@ export class Catalog {
         "home_page_protected",
       );
     const unsettled = [];
-    for (const child of (await storage.list({ prefix: "page/", limit: 1000 })).values()) {
+    for (const child of (await listAll(storage, "page/")).values()) {
       if (!child?.page_id || child.page_id === pageId) continue;
       const trashed = await storage.get(`trash/${child.page_id}`);
       const parent =
@@ -1487,7 +1689,7 @@ export class Catalog {
    * can't answer, the caller is refused rather than left to guess. Each
    * reservation is a `settle` event for its operation intent. */
   async settleReservation(pageId, deadline = Date.now() + lifecycleBounds.passMs) {
-    const storage = this.ctx.storage;
+    const storage = this.storage;
     for (const key of [`page/${pageId}`, `trash/${pageId}`]) {
       const entry = await storage.get(key);
       if (!entry?.reservation) continue;
@@ -1514,7 +1716,7 @@ export class Catalog {
    * Project) its Trash entry records. */
   async slotPlacement(operation, pageId) {
     if (operation !== "restore_page") return undefined;
-    const entry = await this.ctx.storage.get(`trash/${pageId}`);
+    const entry = await this.storage.get(`trash/${pageId}`);
     return entry && !entry.reservation
       ? { space_id: entry.space_id ?? null, parent_id: entry.parent_id ?? null }
       : undefined;
@@ -1524,14 +1726,14 @@ export class Catalog {
    * already applied is projected before this restore's projection decides
    * whether the parent can still hold it. */
   async settleRestoreParent(pageId) {
-    const storage = this.ctx.storage;
+    const storage = this.storage;
     const parentId = (await storage.get(`trash/${pageId}`))?.parent_id;
     if (parentId && (await storage.get(`trash/${parentId}`))?.reservation)
       await this.settleReservation(parentId);
   }
 
-  async createSpace(request, identity, args) {
-    const storage = this.ctx.storage;
+  async createSpace(request, identity, args, limit) {
+    const storage = this.storage;
     const { title, description } = validateSpaceInput(args, { creating: true });
     const key = mutationKey(args);
     const digest = await fingerprint("create_space", args, identity);
@@ -1555,8 +1757,7 @@ export class Catalog {
           `This prototype permits ${SPACE_LIMIT} Projects per account`,
           "project_capacity",
         );
-      if ((await this.countEntries("page/")) >= CATALOG_LIMIT)
-        throw new HttpError(409, "This prototype permits 100 pages per account");
+      await this.requirePageRoom(limit);
       const createdAt = new Date().toISOString();
       intent = await reserveOperation(storage, {
         key,
@@ -1602,7 +1803,7 @@ export class Catalog {
    * idempotent; its outcome is persisted with the next state before the
    * following effect starts, so a retry resumes where the last one stopped. */
   async completeSpaceCreation(request, key, intent) {
-    const storage = this.ctx.storage;
+    const storage = this.storage;
     intent.phase ??= "reserved";
     for (let effect = spaceCreationEffect(intent.phase); effect; ) {
       let event;
@@ -1662,7 +1863,7 @@ export class Catalog {
   }
 
   async updateSpace(request, identity, args) {
-    const storage = this.ctx.storage;
+    const storage = this.storage;
     validateSpaceInput(args, { creating: false });
     const key = mutationKey(args);
     const digest = await fingerprint("update_space", args, identity);
@@ -1750,7 +1951,7 @@ export class Catalog {
     const spaceId = requireSpaceIdArgument(args.space_id);
     if (Object.keys(args).some((name) => name !== "space_id"))
       throw new HttpError(400, "get_project takes only project_id");
-    const entry = await this.ctx.storage.get(`space/${spaceId}`);
+    const entry = await this.storage.get(`space/${spaceId}`);
     if (entry?.pending)
       throw new HttpError(
         409,
@@ -1763,13 +1964,13 @@ export class Catalog {
     if (!response.ok) return response;
     const space = await response.json();
     if (entry && entry.updated_at < space.updated_at) {
-      await this.ctx.storage.put(`space/${spaceId}`, {
+      await this.storage.put(`space/${spaceId}`, {
         ...entry,
         title: space.title,
         description: space.description,
         updated_at: space.updated_at,
       });
-      await markSpaceIndexDirty(this.ctx.storage);
+      await markSpaceIndexDirty(this.storage);
     }
     return json(space);
   }
@@ -1778,7 +1979,7 @@ export class Catalog {
    * candidates; each must match this account's own `space/` entry, which
    * supplies what is returned. */
   async listSpaces(request, identity, args) {
-    const storage = this.ctx.storage;
+    const storage = this.storage;
     if (!args || typeof args !== "object" || Array.isArray(args))
       throw new HttpError(400, "Invalid list arguments", "invalid_list_arguments");
     let limit = 50;
@@ -1894,9 +2095,7 @@ export class Catalog {
       );
       if (!response.ok) throw Error(`Owner location read failed: ${response.status}`);
       const { children } = await response.json();
-      // An owner's Catalog holds at most CATALOG_LIMIT active Pages, which
-      // bounds the checks an exhaustive child listing makes.
-      return Array.isArray(children) ? children.filter(validPageId).slice(0, CATALOG_LIMIT) : [];
+      return Array.isArray(children) ? children.filter(validPageId) : [];
     } catch (error) {
       logFailure(error, "catalog-location");
       throw new HttpError(503, "Shared Pages are temporarily unavailable");
@@ -1914,9 +2113,9 @@ export class Catalog {
    * The cursor is sealed to the caller, query and in_trash, and rejected rows
    * are pruned on encounter.
    */
-  async listPages(request, identity, args) {
+  async listPages(request, identity, args, limit) {
     const options = parseListArguments(args);
-    const storage = this.ctx.storage;
+    const storage = this.storage;
     if (options.inTrash) await pruneTombstonedTrash(storage);
     if (options.spaceId) {
       // Only the owner can see a Space in this build, and the owner's own
@@ -1925,8 +2124,12 @@ export class Catalog {
       if (!space || space.pending) throw spaceNotFound();
     }
     // This account's entries record where each owned Page is, and its
-    // Project is derived from them. A listing builds the map once.
-    const locations = await locationEntries(storage);
+    // Project is derived from them. A listing builds the map once. The same
+    // scan counts every key, which checks the stored counts: a build that
+    // wrote keys without them leaves them wrong until this repairs them.
+    const { entries: locations, counts } = await locationScan(storage);
+    if (await storage.verifyCounts(counts)) logCountRepair(counts);
+    const quota = { limit, count: counts["page/"], trash_count: counts["trash/"] };
     // Child IDs of a shared parent, from its owner's Catalog.
     let sharedChildren;
     if (typeof options.parentId === "string") {
@@ -1956,7 +2159,12 @@ export class Catalog {
     // Children of a shared parent come from its owner's Catalog, so a
     // rejected one may be a Page the caller can't see at all. That listing
     // checks every child before it paginates; see scanCandidates.
-    const scope = { locations, located, sharedChildren, exhaustive: !!sharedChildren };
+    const scope = {
+      locations,
+      located,
+      sharedChildren: sharedChildren && new Set(sharedChildren),
+      exhaustive: !!sharedChildren,
+    };
     const context = {
       principal: identity.principal,
       needle: options.needle,
@@ -1969,6 +2177,7 @@ export class Catalog {
         pages: [],
         limit: options.limit,
         next_cursor: null,
+        quota,
         ...(await issueRetryToken(storage, {
           scope: `catalog:${identity.principal}`,
           principal: identity.principal,
@@ -2042,6 +2251,7 @@ export class Catalog {
       pages: result.pages,
       limit: options.limit,
       next_cursor: result.next ? await sealCursor(this.env, context, result.next) : null,
+      quota,
       ...(await issueRetryToken(storage, {
         scope: `catalog:${identity.principal}`,
         principal: identity.principal,
@@ -2052,7 +2262,7 @@ export class Catalog {
   }
 
   async scanCandidates(request, identity, source, options, scope, after, db) {
-    const storage = this.ctx.storage;
+    const storage = this.storage;
     const pruned = [];
     let stale = false;
     const check = async (row) => {
@@ -2088,8 +2298,7 @@ export class Catalog {
       // Pages hold sub-pages: a shared Page is listed under a parent only
       // when that parent's owner lists it as a child.
       if (options.inTrash || options.spaceId) return null;
-      if (options.parentId !== undefined && !scope.sharedChildren?.includes(row.page_id))
-        return null;
+      if (options.parentId !== undefined && !scope.sharedChildren?.has(row.page_id)) return null;
       const result = await this.verifyShared(request, row.page_id);
       if (result.status === "unavailable")
         throw new HttpError(503, "Shared Pages are temporarily unavailable");
@@ -2121,12 +2330,14 @@ export class Catalog {
     };
     const limit = options.limit;
     // A bounded scan may stop on rejected candidates and return a cursor
-    // over them. That is safe only when every candidate is already disclosed
-    // to the caller: its own entries, or Pages it discovered. Candidates from
-    // another account's Catalog are not, so an exhaustive scan checks them
-    // all (at most one owner's Catalog limit, 8 at a time) and returns a
-    // cursor only when another authorized result follows the page.
-    const scanBound = scope.exhaustive ? Infinity : limit * 2 + 16;
+    // over them. That is safe when every candidate is already disclosed to
+    // the caller: its own entries, or Pages it discovered. Candidates from
+    // another account's Catalog are not. An exhaustive scan checks up to
+    // sharedChildBounds.scan of them per request, 8 at a time. Within that
+    // bound it returns a cursor only when another authorized result follows
+    // the page. Past it, the sealed cursor continues from the last child
+    // checked; it shows the caller only that the parent has more children.
+    const scanBound = scope.exhaustive ? sharedChildBounds.scan : limit * 2 + 16;
     const verified = [];
     let position = after;
     let scanned = 0;
@@ -2146,6 +2357,10 @@ export class Catalog {
         break;
       }
     }
+    // An exhaustive scan that stopped at its bound continues only if another
+    // child remains. Its source is in memory, so the check is free.
+    if (scope.exhaustive && !exhausted && verified.length <= limit)
+      exhausted = (await source.next(position, 1)).length === 0;
     if (db) {
       // A rejected owner row means D1 missed a lifecycle change; reconcile it.
       if (stale) await markCatalogIndexDirty(storage);
@@ -2210,15 +2425,346 @@ export class Page {
         this.admission,
       );
     } catch (error) {
-      if (!isHistoryCapacityError(error)) throw error;
-      // Capacity is checked on a clone before any pending edit reaches the
-      // serving handle. Preserve accepted history and the unresolved intent.
-      this.recoveryBlocked = {
-        code: "page_recovery_blocked",
-        pending: true,
-        message:
-          "A pending edit exceeds this Page's history capacity. Accepted content is available read-only.",
+      if (isHistoryCapacityError(error)) {
+        // Capacity is checked on a clone before any pending edit reaches the
+        // serving handle. Preserve accepted history and the unresolved intent.
+        this.recoveryBlocked = {
+          code: "page_recovery_blocked",
+          pending: true,
+          message:
+            "A pending edit exceeds this Page's history capacity. Accepted content is available read-only.",
+        };
+      } else {
+        // A pending host migration whose records still can't be stored (a
+        // 413 on record capacity, say) mustn't stop the Page from starting:
+        // it stays readable, fenced, and the conversion machine retries the
+        // same journal entries with backoff. A pending client edit still
+        // rejects startup, as before.
+        const pending = await pendingEntryKeys(this.ctx.storage, PAGE_DOC);
+        if (!pending.length || !pending.every((key) => key.startsWith(INTERNAL_PREFIX)))
+          throw error;
+        logFailure(error, "preserved-markdown-recovery");
+        this.conversionIntent = { replayKeys: pending.map((key) => ({ key, doc: PAGE_DOC })) };
+      }
+    }
+    await this.loadComments();
+    // Before native connections open, so peers sync the converted content.
+    await this.convertPreservedMarkdown();
+  }
+
+  /** Open the Page's comments document (model/comments-doc.mjs) and finish
+   * any journaled write to it. Importing its deterministic genesis is a
+   * no-op once it exists, so this also creates it the first time. */
+  async loadComments(metadata = this.metadata) {
+    if (this.commentsHandle || !this.commentsUuid) return;
+    const documentId = commentsDocumentId(this.commentsUuid);
+    this.commentsHandle = await this.repo.import(A.save(commentsGenesis(this.commentsUuid)), {
+      docId: documentId,
+    });
+    this.commentAdmission?.reset();
+    try {
+      await recoverDocumentMutations(
+        this.ctx.storage,
+        this.commentsHandle,
+        () => this.flush(),
+        this.commentsAdmission,
+        COMMENTS_DOC,
+      );
+    } catch (error) {
+      // As for the Page document: a pending host migration retries under the
+      // conversion machine; a pending client comment stops startup.
+      const pending = await pendingEntryKeys(this.ctx.storage, COMMENTS_DOC);
+      if (!pending.length || !pending.every((key) => key.startsWith(INTERNAL_PREFIX))) throw error;
+      logFailure(error, "comments-migration-recovery");
+      this.conversionIntent = {
+        replayKeys: [
+          ...(this.conversionIntent?.replayKeys ?? []),
+          ...pending.map((key) => ({ key, doc: COMMENTS_DOC })),
+        ],
       };
+    }
+    // The Page record names its comments document. Derivation gives the same
+    // ID, so a record written without it loses nothing.
+    if (
+      metadata &&
+      metadata === this.metadata &&
+      !metadata.comments_doc &&
+      !this.pendingAccess &&
+      !this.pendingLifecycle
+    ) {
+      this.metadata = { ...metadata, comments_doc: this.commentsUuid };
+      await this.ctx.storage.put("host/document", this.metadata);
+    }
+  }
+
+  /** Replace the Page's preserved Markdown blocks with native rich text, and
+   * hold the write fence until that's done (worker/preserved-conversion.mjs).
+   * The host is the only writer of this conversion (model/raw-migration.mjs).
+   * Resolves when no run is in flight. A failed run leaves the Page fenced,
+   * read-only, with a scheduled retry. */
+  async convertPreservedMarkdown() {
+    this.observeConversion({ due: true });
+    while (this.conversionRun) await this.conversionRun;
+  }
+
+  /** The conversion machine's state; fenced until the first observation. */
+  get conversion() {
+    return this.conversionState ?? preservedConversionMachine.initial;
+  }
+
+  /** Whether peer writes are refused now. */
+  conversionFenced() {
+    return conversionFenced(this.conversion);
+  }
+
+  /** The refusal for a native put or connection while the fence is up on an
+   * active Page, or undefined. A trashed Page keeps its own rules. */
+  conversionWriteFence() {
+    return this.conversionFenced() && pageState(this.metadata) === "active"
+      ? withAdmissionReason(conversionFenceError(), "preserved_markdown_converting")
+      : undefined;
+  }
+
+  /** Feed what the host sees now into the conversion machine. Without a
+   * document there is nothing to observe, and the state stays as it is. */
+  observeConversion({ due = false } = {}) {
+    const doc = typeof this.handle?.doc === "function" ? this.handle.doc() : undefined;
+    if (!doc) return;
+    // The host's migrations share one fence: preserved blocks to rich text,
+    // then legacy comments into the comments document.
+    const preserved =
+      hasPreservedBlocks(doc) || (!!this.commentsHandle && needsCommentsMigration(doc));
+    const unfinished = !!this.conversionIntent;
+    this.conversionEvent({
+      type: "observe",
+      due,
+      preserved,
+      unfinished,
+      eligible:
+        (preserved || unfinished) &&
+        !this.recoveryBlocked &&
+        pageState(this.metadata) === "active" &&
+        !unsupportedFeatures(doc).length,
+    });
+  }
+
+  conversionEvent(event) {
+    const wasFenced = this.conversionFenced();
+    const result = preservedConversionMachine.step(this.conversion, event);
+    this.conversionState = result.state;
+    // Peers connected read-only while fenced. Once the fence drops, close
+    // their sockets with a transient code: they reconnect, discovery no
+    // longer reports `converting`, and editing resumes.
+    if (wasFenced && !this.conversionFenced() && this.wires?.size) {
+      const done = withAdmissionReason(
+        Object.assign(Error("Preserved Markdown converted"), { status: 503 }),
+        "preserved_markdown_converting",
+      );
+      for (const wire of this.wires)
+        void wire.disconnect(admissionCloseCode(done), admissionCode(done));
+    }
+    for (const effect of result.effects) {
+      if (effect.type === "observe") this.observeConversion({ due: true });
+      else if (effect.type === "scheduleRetry") {
+        clearTimeout(this.conversionRetry);
+        this.conversionRetry = setTimeout(
+          () => this.observeConversion({ due: true }),
+          conversionRetryDelay(effect.attempt),
+        );
+        // Node keeps no process alive for it; a Durable Object stays resident.
+        this.conversionRetry?.unref?.();
+      } else if (effect.type === "logStuck")
+        logPreservedStuck(this.metadata?.pageId ?? this.handle.doc().page_id, effect.reason);
+      else if (effect.type === "convert") {
+        const run = this.convertPreservedOnce(effect.mode).then(
+          () => ({ type: "succeeded" }),
+          (error) => {
+            logFailure(error, "preserved-markdown");
+            return {
+              type: "failed",
+              permanent: permanentFailure(error, { isHistoryCapacityError }),
+              // Whether the run's journal entry is still reserved.
+              unfinished: !!this.conversionIntent,
+              reason: failureReason(error),
+            };
+          },
+        );
+        this.conversionRun = run.then((outcome) => {
+          this.conversionRun = undefined;
+          this.conversionEvent(outcome);
+        });
+      }
+    }
+  }
+
+  /** Before an HTTP edit: while fenced, try the conversion once more, then
+   * refuse with `preserved_markdown_converting` if the fence stays. */
+  async requireConverted() {
+    if (this.conversion.name === "unchecked") await this.convertPreservedMarkdown();
+    else if (this.conversionFenced()) {
+      // A nudge: it may clear the fence, but a retry waits for its backoff.
+      this.observeConversion();
+      while (this.conversionRun) await this.conversionRun;
+    }
+    if (this.conversionFenced()) throw conversionFenceError();
+  }
+
+  /** One journaled conversion run. A run is a host intent in the journal's
+   * internal key space, keyed by the heads it converted, so a restart replays
+   * the recorded change instead of converting again. The intent is kept
+   * until its journal entry is terminal: a run that applied but failed to
+   * finish replays under the same key, so its reservation completes. Throws
+   * on failure; an error from the conversion itself carries `conversion`. */
+  async convertPreservedOnce(mode) {
+    if (this.conversionIntent?.replayKeys) {
+      // Entries startup recovery couldn't finish: replay them as recorded.
+      for (const { key, doc } of this.conversionIntent.replayKeys) {
+        const comments = doc === COMMENTS_DOC;
+        await replayRecordedMutation({
+          storage: this.ctx.storage,
+          handle: comments ? this.commentsHandle : this.handle,
+          key,
+          flush: () => this.flush(),
+          admission: comments ? this.commentsAdmission : this.admission,
+        });
+      }
+      this.conversionIntent = undefined;
+      return;
+    }
+    // Preserved blocks convert first; legacy comments move once they're done.
+    // A conversion run past its first step finishes before comments move.
+    const converting = !!this.conversionIntent && !this.conversionIntent.comments;
+    if (this.conversionIntent?.comments || (!converting && !hasPreservedBlocks(this.handle.doc())))
+      return this.migrateCommentsOnce(mode === "literal" ? "drop" : "copy");
+    if (!this.conversionIntent) {
+      const heads = A.getHeads(this.handle.doc()).sort();
+      const digest = hex(
+        new Uint8Array(
+          await crypto.subtle.digest("SHA-256", new TextEncoder().encode(heads.join(","))),
+        ),
+      );
+      const literal = mode === "literal";
+      this.conversionIntent = {
+        operation: literal ? "convert_preserved_markdown_literal" : "convert_preserved_markdown",
+        literal,
+        args: {
+          idempotency_key: `preserved_${literal ? "literal" : "markdown"}_${digest.slice(0, 32)}`,
+          base_heads: heads,
+        },
+      };
+    }
+    const intent = this.conversionIntent;
+    try {
+      await documentMutation({
+        storage: this.ctx.storage,
+        admission: this.admission,
+        handle: this.handle,
+        operation: intent.operation,
+        args: intent.args,
+        identity: { principal: "service:pages", driver: "API" },
+        internal: true,
+        apply: (draft) => {
+          try {
+            return { converted: convertPreservedBlocks(draft, { literal: intent.literal }) };
+          } catch (error) {
+            throw Object.assign(error, { conversion: true });
+          }
+        },
+        flush: () => this.flush(),
+      });
+      this.conversionIntent = undefined;
+    } catch (error) {
+      // Keep the intent while its journal entry is pending: the next run
+      // replays it. Without one, the next run starts over from current heads.
+      const key = `${INTERNAL_PREFIX}${intent.args.idempotency_key}`;
+      const entry = await this.ctx.storage.get(key).catch(() => ({ pending: true }));
+      if (!entry?.pending && !this.admission?.pending(key)) this.conversionIntent = undefined;
+      throw error;
+    }
+  }
+
+  /**
+   * Move legacy comments out of the Page document (model/comments-migration.mjs),
+   * as two journaled host intents under the conversion fence:
+   *
+   * 1. copy: every legacy thread into the comments document, keyed by the
+   *    Page heads it read. Threads already there are skipped.
+   * 2. detach: drop the Page's legacy map and stamp `comments-doc`, at
+   *    exactly those heads.
+   *
+   * The fence holds peer writes, so the heads can't move between the steps.
+   * If they do anyway, detach fails with stale heads and the next run copies
+   * again from the new heads. A run that fails after reserving its entry
+   * replays that entry. `mode` is `copy`, or `drop` after a copy keeps
+   * failing for good: then no thread moves and the Page still detaches.
+   */
+  async migrateCommentsOnce(mode) {
+    if (!this.conversionIntent?.comments) {
+      const heads = A.getHeads(this.handle.doc()).sort();
+      const digest = hex(
+        new Uint8Array(
+          await crypto.subtle.digest("SHA-256", new TextEncoder().encode(heads.join(","))),
+        ),
+      ).slice(0, 32);
+      this.conversionIntent = { comments: { mode, heads, digest, step: "copy" } };
+    }
+    const intent = this.conversionIntent.comments;
+    const identity = { principal: "service:pages", driver: "API" };
+    try {
+      if (intent.step === "copy") {
+        const page = this.handle.doc();
+        await documentMutation({
+          storage: this.ctx.storage,
+          admission: this.commentsAdmission,
+          handle: this.commentsHandle,
+          doc: COMMENTS_DOC,
+          pageId: this.metadata.pageId,
+          operation: "migrate_comments_copy",
+          args: {
+            idempotency_key: `comments_copy_${intent.mode}_${intent.digest}`,
+            base_heads: intent.heads,
+          },
+          identity,
+          internal: true,
+          // The copy reads the Page at the heads it names, never later.
+          guard: (args) => {
+            requireHeads(this.handle.doc(), intent.heads);
+            return args;
+          },
+          apply: (draft) => {
+            try {
+              return copyLegacyThreads(draft, page, { mode: intent.mode });
+            } catch (error) {
+              throw Object.assign(error, { conversion: true });
+            }
+          },
+          flush: () => this.flush(),
+        });
+        intent.step = "detach";
+      }
+      await documentMutation({
+        storage: this.ctx.storage,
+        admission: this.admission,
+        handle: this.handle,
+        operation: "migrate_comments_detach",
+        args: {
+          idempotency_key: `comments_detach_${intent.mode}_${intent.digest}`,
+          base_heads: intent.heads,
+        },
+        identity,
+        internal: true,
+        apply: (draft) => detachLegacyComments(draft),
+        flush: () => this.flush(),
+      });
+      this.conversionIntent = undefined;
+    } catch (error) {
+      // Keep the intent while its journal entry is pending: the next run
+      // replays it. Without one, the next run starts over from current heads.
+      const key = `${INTERNAL_PREFIX}comments_${intent.step}_${intent.mode}_${intent.digest}`;
+      const admission = intent.step === "copy" ? this.commentsAdmission : this.admission;
+      const entry = await this.ctx.storage.get(key).catch(() => ({ pending: true }));
+      if (!entry?.pending && !admission?.pending(key)) this.conversionIntent = undefined;
+      throw error;
     }
   }
 
@@ -2234,6 +2780,12 @@ export class Page {
           throw Error("Unsupported Page record storage mode");
         signer = N.MemorySigner.fromBytes(await persistentSeed(ctx.storage));
         const serverKey = hex(signer.verifyingKey());
+        // The comments document is named before any peer can connect, so the
+        // policy serves its tree from the first frame.
+        const commentsUuid = metadata?.pageId
+          ? (metadata.comments_doc ?? (await commentsDocUuid(metadata.pageId)))
+          : undefined;
+        const commentsTree = commentsUuid && commentsTreeOf(commentsUuid);
         const peer = signer.peerId();
         let serverSenderId;
         try {
@@ -2248,8 +2800,31 @@ export class Page {
               ? { ...(this.policyMetadata ?? this.metadata), recoveryBlocked: true }
               : (this.policyMetadata ?? this.metadata),
           serverKey,
+          schemaFeatures: (scope) => {
+            const handle = scope === COMMENTS_SCOPE ? this.commentsHandle : this.handle;
+            return handle ? documentFeatures(handle.doc()) : [];
+          },
+          // Peer puts wait for the host's own migrations.
+          writeFence: () => this.conversionWriteFence(),
+          commentsTree: () => commentsTree,
         });
         await policy.load();
+        // The comments document's per-author check, at the byte store: the
+        // one place that sees each record's signer and its change.
+        const commentAdmission = new CommentAdmission({
+          tree: () => commentsTree,
+          serverKey,
+          signer: (key) => policy.signer(key),
+          seed: () => this.commentsHandle?.doc(),
+          // Off the save path: block and disconnect the signer, never wait.
+          onRefused: (key, reason) => {
+            logCommentRefused(metadata?.pageId, reason);
+            policy.refuseComments(key).catch((error) => logFailure(error, "comment-refusal"));
+          },
+          // Retryable: close the submitter's connection, keep its key.
+          onThrottled: (key) => policy.throttleComments(key),
+          maxRecordBytes: BACKEND_LIMITS.maxRecordBytes,
+        });
         const recordStore =
           metadata?.recordStorage === "buffered"
             ? new BufferedRecordStore(
@@ -2263,9 +2838,35 @@ export class Page {
               )
             : new DurableByteStore(ctx.storage);
         if (recordStore.ready) await recordStore.ready;
+        const actorAuthorship = new ActorAuthorship({
+          serverKey,
+          binding: (key) => policy.bindings.get(key),
+          entries: await loadActorEntries(ctx.storage),
+        });
+        // Retries wait on a held timer, as schedulePersistence does from the
+        // same save callback; saves and connects also retry sooner.
+        const actorPersistence = new ActorPersistence(ctx.storage, {
+          hold: (work) => holdUntilSettled(ctx, work),
+          onError: (error) => logFailure(error, "actor-authorship"),
+        });
+        // Before the backend can save or anything is published, rebuild
+        // bindings and conflicts the persisted entries may lack.
+        actorPersistence.enqueue(
+          actorAuthorship.replay(
+            await loadCommitAuthors(recordStore, (key, value) =>
+              replayAuthor(key, value, BACKEND_LIMITS.maxRecordBytes),
+            ),
+          ),
+        );
         backend = new SubductionBackend({
           signer,
-          storage: recordStore,
+          // Only the backend's saves attest authors; maintenance and flushes
+          // use recordStore itself.
+          storage: commentAdmission.guard(
+            observeRecordSaves(recordStore, (key, value) =>
+              this.recordSaved(actorAuthorship, key, value, actorPersistence),
+            ),
+          ),
           policy: policy.native(),
           ephemeralPolicy: policy.ephemeral(),
           ...BACKEND_LIMITS,
@@ -2280,8 +2881,18 @@ export class Page {
           ...(metadata?.documentId && {
             admission: new DocumentAdmission(backend, documentIdToBinary(metadata.documentId)),
           }),
+          ...(commentsUuid && {
+            commentsUuid,
+            commentsAdmission: new DocumentAdmission(
+              backend,
+              documentIdToBinary(commentsDocumentId(commentsUuid)),
+            ),
+          }),
+          commentAdmission,
           repo,
           recordStore,
+          actorAuthorship,
+          actorPersistence,
         });
         this.recordMaintenance = new RecordMaintenance({
           enabled:
@@ -2292,7 +2903,12 @@ export class Page {
             return backend.compact(documentIdToBinary(this.metadata.documentId), {
               // Both compaction barriers drain the remote record sink. Calling
               // repo/backend.flush here would recurse into its held owner queue.
-              durable: () => recordStore.flush(),
+              // Removed commit records are replay's evidence: their actor
+              // effects must be stored first.
+              durable: async () => {
+                await recordStore.flush();
+                await actorPersistence.durable();
+              },
             });
           },
           waitUntil: (work) => ctx.waitUntil(work),
@@ -2327,6 +2943,8 @@ export class Page {
    * a replay never undoes a later Trash, restore or ACL change. */
   async finishCreation(intent) {
     await this.applyLifecycle(this.metadata ? CREATION_REPLAY : CREATION_COMMIT, { intent });
+    // A registered draft from an older build can hold preserved blocks.
+    await this.convertPreservedMarkdown();
   }
 
   profiles() {
@@ -2393,6 +3011,78 @@ export class Page {
     }
   }
 
+  /** Attest the author of a commit record the backend just stored. Storage
+   * and broadcast run after the save and never fail it. Actor writes go
+   * through ActorPersistence, which retries a failed write until it lands. */
+  recordSaved(actorAuthorship, key, value, persistence = this.actorPersistence) {
+    persistence?.nudge();
+    const author = commitAuthor(key, value, BACKEND_LIMITS.maxRecordBytes);
+    if (!author) return;
+    const effects = actorAuthorship.observe({ ...author, now: Date.now() });
+    if (effects.put.length || effects.remove.length) persistence?.enqueue(effects);
+    if (effects.delta || effects.attested)
+      this.queueActorDelta(effects.delta ?? {}, effects.attested ?? {});
+  }
+
+  /** Coalesce actor deltas into one broadcast per microtask, so a batch of
+   * saves reported together goes out once. It uses no timer: under celld an
+   * unheld timer set from a native save callback did not deliver. A
+   * retraction drops that actor's pending hashes, so no hash outlives its
+   * actor's retraction. Pending hashes keep the newest MAX_ATTESTED_CHANGES. */
+  queueActorDelta(actorProfiles, attestedChanges) {
+    const pending = (this.actorDelta ??= { actorProfiles: {}, attestedChanges: {} });
+    for (const [actor, profile] of Object.entries(actorProfiles)) {
+      pending.actorProfiles[actor] = profile;
+      if (profile === null)
+        for (const [hash, owner] of Object.entries(pending.attestedChanges))
+          if (owner === actor) delete pending.attestedChanges[hash];
+    }
+    for (const [hash, actor] of Object.entries(attestedChanges)) {
+      delete pending.attestedChanges[hash];
+      pending.attestedChanges[hash] = actor;
+    }
+    const hashes = Object.keys(pending.attestedChanges);
+    for (const hash of hashes.slice(0, Math.max(0, hashes.length - MAX_ATTESTED_CHANGES)))
+      delete pending.attestedChanges[hash];
+    if (this.actorDeltaQueued) return;
+    this.actorDeltaQueued = true;
+    queueMicrotask(() => this.flushActorDelta());
+  }
+
+  flushActorDelta() {
+    this.actorDeltaQueued = false;
+    const delta = this.actorDelta;
+    this.actorDelta = undefined;
+    if (!delta || !this.handle) return;
+    try {
+      this.handle.broadcast({ kind: "actor-profiles", ...delta });
+    } catch (error) {
+      logFailure(error, "actor-profiles");
+    }
+  }
+
+  /** Attested actors and their recent attested change hashes, now. */
+  actorSnapshot() {
+    const now = Date.now();
+    const actorProfiles = this.actorAuthorship?.profiles(now) ?? {};
+    return {
+      actorProfiles,
+      attestedChanges: this.actorAuthorship?.attestedChanges(now, actorProfiles) ?? {},
+    };
+  }
+
+  /** Resend the whole snapshot once a socket subscribes: an attestation made
+   * after its /api/connect response reached only earlier subscribers. */
+  broadcastActorSnapshot() {
+    if (!this.handle || !this.actorAuthorship) return;
+    this.flushActorDelta();
+    try {
+      this.handle.broadcast({ kind: "actor-profiles", ...this.actorSnapshot(), snapshot: true });
+    } catch (error) {
+      logFailure(error, "actor-profiles");
+    }
+  }
+
   cacheTitle(identity) {
     // A trashed Page must not relist itself in owner or member catalogs.
     if (pageState(this.metadata) !== "active") return;
@@ -2408,7 +3098,7 @@ export class Page {
       : [
           this.metadata.owner,
           ...Object.entries(this.metadata.acl?.members ?? {})
-            .filter(([, value]) => ["viewer", "editor"].includes(value.role))
+            .filter(([, value]) => ["viewer", "commenter", "editor"].includes(value.role))
             .map(([principal]) => principal),
           ...(observedReader ? [observedReader] : []),
         ];
@@ -2585,8 +3275,26 @@ export class Page {
     );
   }
 
+  /** The comments document readers use: the Page's once its comments have
+   * moved there. Before that, readers fall back to the Page's legacy map
+   * (model/comments.mjs threadsOf) and comment writes wait. */
+  commentsView() {
+    return this.commentsHandle && this.handle && commentsMigrated(this.handle.doc())
+      ? this.commentsHandle.doc()
+      : undefined;
+  }
+
+  /** The repo document IDs this Page host holds: the Page and, once open,
+   * its comments document. */
+  documentIds() {
+    return [
+      this.metadata.documentId,
+      ...(this.commentsHandle ? [commentsDocumentId(this.commentsUuid)] : []),
+    ];
+  }
+
   async flush() {
-    await this.repo.flush([this.metadata.documentId]);
+    await this.repo.flush(this.documentIds());
     await this.backend.flush();
     await this.recordStore?.flush?.();
     await this.ctx.storage.sync();
@@ -2687,6 +3395,8 @@ export class Page {
               ownerName: identity.displayName,
               documentId,
               tree: logicalId(documentIdToBinary(documentId)),
+              // The Page's comments document, by its deployment-relative id.
+              comments_doc: await commentsDocUuid(args.page_id),
               deleted: false,
               // Location lives in the owner's Catalog; the receipt there adds it.
               createdReceipt: {
@@ -2699,6 +3409,11 @@ export class Page {
             intent = { metadata, bytes: A.save(doc) };
             assertIntentSize("host/creation", [intent.bytes], { metadata });
           } catch (error) {
+            if (error.code === "unsupported_markdown") {
+              const response = errorResponse(error, "page-create");
+              response.headers.set("x-pages-create-rejected", "before-intent");
+              return response;
+            }
             if (error.status !== 413) throw error;
             const response = json({ error: error.message }, 413);
             response.headers.set("x-pages-create-rejected", "before-intent");
@@ -2763,6 +3478,9 @@ export class Page {
         const args = await readJson(request);
         if (args.page_id !== this.metadata.pageId || typeof args.write !== "boolean")
           throw new HttpError(400, "Invalid image access request");
+        // Uploads need edit access. Asset storage has no per-Page aggregate
+        // quota, so comment access alone doesn't open it: commenters comment
+        // in text, and can't attach images until that quota exists.
         this.policy.account(identity, args.write);
         return json({ page_id: this.metadata.pageId });
       }
@@ -2809,37 +3527,57 @@ export class Page {
         });
       }
       if (url.pathname === "/api/connect" && request.method === "GET") {
+        this.actorPersistence?.nudge();
         this.cacheTitle(identity);
         return json({
           page_id: this.metadata.pageId,
           documentId: this.metadata.documentId,
+          // The comments document syncs on the same socket.
+          ...(this.commentsHandle && { commentsDocumentId: commentsDocumentId(this.commentsUuid) }),
           serverPeerId: this.serverKey,
           serverSenderId: this.serverSenderId,
           identity: publicIdentity(identity),
+          // Access is the grant; `converting` is a temporary hold the viewer
+          // shows as read-only without retiring its writer key.
           canWrite: !this.recoveryBlocked && pageAccess(this.metadata, identity).canWrite,
           access: {
             ...pageAccess(this.metadata, identity),
             ...(this.recoveryBlocked && { canWrite: false, canComment: false }),
           },
           ...(this.recoveryBlocked && { recovery: this.recoveryBlocked }),
+          ...(this.conversionWriteFence() && { converting: conversionNotice() }),
           ...(incompleteHistory(this.handle.doc()) && {
             historyIncomplete: incompleteHistory(this.handle.doc()),
           }),
           ...(state === "trashed" && { trash: publicTrash(this.metadata) }),
           peerProfiles: this.profiles(),
+          ...this.actorSnapshot(),
           activity: this.activityState().snapshot(),
+          // The head script asks for this on a Page route, so the viewer can
+          // show the Page read-only before its runtimes load and it syncs.
+          // Admission above already refused anyone who can't read the Page;
+          // a Page in Trash gets none, so its notice isn't hidden.
+          ...(url.searchParams.get("preview") === "1" &&
+            state !== "trashed" &&
+            pageAccess(this.metadata, identity).canRead && {
+              preview: pagePreview(this.handle.doc()),
+            }),
         });
       }
       if (url.pathname === "/api/sync" && request.method === "GET")
         return this.connect(request, identity);
       if (url.pathname === "/api/saved" && request.method === "POST") {
-        const { heads } = await readJson(request);
-        await this.waitForHeads(heads);
+        const { heads, comment_heads, schema_features } = await readJson(request);
+        await this.waitForHeads(heads, schema_features);
+        // A viewer that wrote comments waits for those heads too.
+        if (comment_heads !== undefined && this.commentsHandle)
+          await this.waitForHeads(comment_heads, schema_features, this.commentsHandle);
         this.policy.account(await authenticate(request, this.env));
         const durableHeads = A.getHeads(this.handle.doc());
+        const durableCommentHeads = this.commentsHandle && A.getHeads(this.commentsHandle.doc());
         await this.flush();
         this.cacheTitle();
-        return json({ durableHeads });
+        return json({ durableHeads, ...(durableCommentHeads && { durableCommentHeads }) });
       }
       if (url.pathname === "/internal/tool") {
         const body = await readJson(request);
@@ -2861,6 +3599,7 @@ export class Page {
             recovery: this.recoveryBlocked,
             historyIncomplete: incompleteHistory(this.handle.doc()),
             getPresence: (doc) => this.activityState().read(doc),
+            commentsDoc: this.commentsView(),
             // A trashed Page cannot be edited, so it issues no edit authority.
             issueAuthority: () =>
               state === "trashed"
@@ -2898,14 +3637,12 @@ export class Page {
             result.body._owner = this.metadata.owner;
           return json(result.body, result.status);
         }
+        if (["manage_page_comment", "reply_page_comment"].includes(body.operation))
+          return json(await this.writeComment(request, identity, body));
         this.policy.account(identity, true);
         if (body.operation === "report_page_progress")
           return json(this.activityState().report(this.handle.doc(), identity, body.arguments));
-        if (
-          !["edit_page", "patch_page", "manage_page_comment", "reply_page_comment"].includes(
-            body.operation,
-          )
-        )
+        if (!["edit_page", "patch_page"].includes(body.operation))
           throw new HttpError(400, "Unknown document operation");
         const images = Array.isArray(body.arguments?.operations)
           ? body.arguments.operations.filter((op) => (op?.op ?? op?.type) === "insert_image")
@@ -2913,6 +3650,7 @@ export class Page {
         // Where this batch landed, captured inside the change so the cursors
         // name the characters it wrote. A replayed receipt has no caret.
         let caret = null;
+        await this.requireConverted();
         const receipt = await documentMutation({
           storage: this.ctx.storage,
           admission: this.admission,
@@ -2960,15 +3698,11 @@ export class Page {
               }
               return result;
             } catch (error) {
-              // The batch cannot apply as written: zero or multiple matches, an
-              // unknown block, operation or mark, or an invalid comment target.
-              throw new HttpError(
-                400,
-                error.message,
-                error.code ??
-                  (body.operation === "edit_page" || body.operation === "patch_page"
-                    ? "invalid_edit_selector"
-                    : "invalid_comment_selector"),
+              // The batch cannot apply as written: zero or multiple matches, or
+              // an unknown block, operation or mark.
+              throw Object.assign(
+                new HttpError(400, error.message, error.code ?? "invalid_edit_selector"),
+                error.details && { details: error.details },
               );
             }
           },
@@ -2980,6 +3714,7 @@ export class Page {
           identity: {
             ...publicIdentity(identity),
             ...(identity.agent && { agent: identity.agent }),
+            ...(identity.session && { session: identity.session }),
           },
           heads: receipt.heads,
         });
@@ -2997,6 +3732,106 @@ export class Page {
       if ((error.status ?? 500) >= 500) logFailure(error, "page");
       return admissionErrorResponse(error, { stage: "page", identity });
     }
+  }
+
+  /**
+   * One manage_page_comment or reply_page_comment call, written to the
+   * comments document. It needs `comment`, never `edit`, and never changes
+   * the Page document or its heads. The receipt's `comment_heads` are the
+   * comments document's revision after the write.
+   */
+  async writeComment(request, identity, body) {
+    this.policy.account(identity, "comment");
+    await this.requireConverted();
+    if (!this.commentsView())
+      throw new HttpError(
+        503,
+        "This Page's comments are moving to their own document; try again shortly",
+        "comments_migrating",
+      );
+    const role = pageAccess(this.metadata, identity).role;
+    const operation = body.operation;
+    const args = body.arguments ?? {};
+    // The Page snapshot a new comment anchors in. The guard captures it and
+    // the edit uses it, with no await between them.
+    let page;
+    const receipt = await documentMutation({
+      storage: this.ctx.storage,
+      admission: this.commentsAdmission,
+      handle: this.commentsHandle,
+      doc: COMMENTS_DOC,
+      pageId: this.metadata.pageId,
+      operation,
+      args,
+      identity,
+      // Receipts carry no image prerequisites; this only re-checks access
+      // after the journal inspection awaited storage.
+      prepare: async () => {
+        this.policy.account(await authenticate(request, this.env), "comment");
+      },
+      guard: (input) => {
+        page = this.handle.doc();
+        // The Page's stamp gates both documents, as the native gate does. A
+        // recorded receipt still replays; this runs for new intents only.
+        requireSupportedSchema(page);
+        return guardCommentIntent(page, operation, input);
+      },
+      // The Page revision this write read, journaled with its receipt.
+      receiptFields: () => ({ page_heads: A.getHeads(page) }),
+      apply: (draft, effectiveArgs) => {
+        try {
+          return applyComment(
+            draft,
+            operation === "reply_page_comment"
+              ? { ...effectiveArgs, action: "reply" }
+              : effectiveArgs,
+            publicIdentity(identity),
+            undefined,
+            { page, role },
+          );
+        } catch (error) {
+          throw Object.assign(
+            new HttpError(
+              error.status ?? 400,
+              error.message,
+              error.code ?? "invalid_comment_selector",
+            ),
+            error.details && { details: error.details },
+          );
+        }
+      },
+      flush: () => this.flush(),
+    });
+    return this.commentReceipt(receipt, identity);
+  }
+
+  /**
+   * The tool receipt for a comment write. `heads` are Page heads and
+   * `comment_heads` comments-document heads; neither ever holds the other's.
+   *
+   * - A receipt journaled on the comments document carries `page_heads`, the
+   *   Page revision its write was based on, recorded with it. `heads` is that
+   *   baseline, not the live Page: a browser edit landing meanwhile stays
+   *   after it, so `read_page_changes` from these heads still returns it, and
+   *   an exact retry returns the same heads.
+   * - A receipt a build before the comments document journaled on the Page
+   *   (`recorded_doc: "page"`) keeps its Page heads and has no comment heads;
+   *   `legacy_receipt` says so.
+   */
+  commentReceipt(receipt, identity) {
+    const { recorded_doc, page_heads, ...rest } = receipt;
+    if (recorded_doc === PAGE_DOC) return { ...rest, legacy_receipt: true };
+    this.commentsHandle.broadcast({
+      kind: "tool-edit",
+      identity: {
+        ...publicIdentity(identity),
+        ...(identity.agent && { agent: identity.agent }),
+        ...(identity.session && { session: identity.session }),
+      },
+      heads: rest.heads,
+      comments: true,
+    });
+    return { ...rest, heads: page_heads, comment_heads: rest.heads };
   }
 
   /** Owner or a valid viewer/editor grant on the deleted metadata. A role
@@ -3268,6 +4103,10 @@ export class Page {
           );
         } else this.metadata = pending.metadata;
         return;
+      case "convertPreserved":
+        // Journaled and idempotent, so a repeated commit sequence is safe.
+        await this.convertPreservedMarkdown();
+        return;
       case "refreshAccess":
         await this.policy.refreshAccess();
         this.activity?.prune();
@@ -3286,12 +4125,16 @@ export class Page {
         for (const wire of this.wires) await wire.disconnect();
         return;
       case "deleteDocument":
+        // Both documents go together: the Page and its comments.
         await this.repo.delete(this.metadata.documentId);
+        if (this.commentsUuid) {
+          this.commentAdmission?.reset();
+          await this.repo.delete(commentsDocumentId(this.commentsUuid));
+        }
         return;
       case "flush":
         // A deleted document has nothing left in the repo to flush.
-        if (pageState(this.metadata) !== "deleted")
-          await this.repo.flush([this.metadata.documentId]);
+        if (pageState(this.metadata) !== "deleted") await this.repo.flush(this.documentIds());
         await this.backend.flush();
         await this.recordStore?.flush?.();
         return;
@@ -3301,6 +4144,8 @@ export class Page {
         return;
       case "dropDocument":
         this.handle = undefined;
+        this.commentsHandle = undefined;
+        this.commentAdmission?.reset();
         return;
       case "loadDocument":
         await this.loadDocument();
@@ -3309,6 +4154,10 @@ export class Page {
         this.handle = await this.repo.import(context.intent.bytes, {
           docId: context.intent.metadata.documentId,
         });
+        await this.loadComments(context.intent.metadata);
+        // Not active yet: preserved blocks are held, fenced, until
+        // finishCreation observes again after the record is installed.
+        this.observeConversion();
         // Before its record is installed, `install` starts presence instead.
         if (this.metadata) this.observeActivity();
         return;
@@ -3358,7 +4207,7 @@ export class Page {
         return json({
           page_id: this.metadata.pageId,
           ...publicTrash(this.metadata),
-          ...purgeImpact(this.metadata, doc),
+          ...purgeImpact(this.metadata, doc, this.commentsView()),
           heads: A.getHeads(doc),
           ...(await issuePurgePreview(
             this.ctx.storage,
@@ -3458,6 +4307,7 @@ export class Page {
             ownerName: identity.displayName,
             documentId: args.document_id,
             tree: logicalId(documentIdToBinary(args.document_id)),
+            comments_doc: await commentsDocUuid(args.page_id),
             deleted: false,
             registration: digest,
             createdReceipt: {
@@ -3488,7 +4338,12 @@ export class Page {
     return json(this.metadata.createdReceipt, 201);
   }
 
-  async waitForHeads(heads) {
+  /** `declared` is the schema features the tab's build declared with this
+   * receipt; a build from before the stamp sends none, the baseline. When
+   * heads are missing and that build lacks a stamped id, the native gate has
+   * refused, or will refuse, those edits: answer `schema_unsupported` rather
+   * than wait for heads that can't arrive. */
+  async waitForHeads(heads, declared, handle = this.handle) {
     if (
       !Array.isArray(heads) ||
       heads.length < 1 ||
@@ -3496,22 +4351,39 @@ export class Page {
       heads.some((head) => typeof head !== "string" || !/^[0-9a-f]{64}$/.test(head))
     )
       throw new HttpError(400, "Invalid heads");
-    if (A.hasHeads(this.handle.doc(), heads)) return;
+    if (A.hasHeads(handle.doc(), heads)) return;
+    const features =
+      declared === undefined
+        ? []
+        : Array.isArray(declared) && declared.every((id) => typeof id === "string")
+          ? parseDeclaredFeatures(declared.join(","))
+          : null;
+    if (!features) throw new HttpError(400, "Invalid schema_features");
+    const refusal = () => {
+      // The Page's stamp gates both documents.
+      const missing = missingFeatures(documentFeatures(this.handle.doc()), features);
+      return missing.length
+        ? withAdmissionReason(schemaUnsupported(missing), "schema_unsupported")
+        : null;
+    };
+    const refused = refusal();
+    if (refused) throw refused;
     await new Promise((resolve, reject) => {
       const changed = () => {
-        if (A.hasHeads(this.handle.doc(), heads)) {
+        if (A.hasHeads(handle.doc(), heads)) {
           clearTimeout(timer);
-          this.handle.off("heads-changed", changed);
+          handle.off("heads-changed", changed);
           resolve();
         }
       };
       const timer = setTimeout(() => {
-        this.handle.off("heads-changed", changed);
+        handle.off("heads-changed", changed);
         reject(
-          withAdmissionReason(new HttpError(409, MISSING_EDITS_MESSAGE), "receipt_heads_missing"),
+          refusal() ??
+            withAdmissionReason(new HttpError(409, MISSING_EDITS_MESSAGE), "receipt_heads_missing"),
         );
       }, 10_000);
-      this.handle.on("heads-changed", changed);
+      handle.on("heads-changed", changed);
       changed();
     });
   }
@@ -3551,8 +4423,32 @@ export class Page {
           "activity_epoch_changed",
         );
     }
+    // The build's schema features, for the native schema gate in policy.put().
+    // A viewer from before the stamp sends none: the baseline.
+    const declared = new URL(request.url).searchParams.getAll("schema_features");
+    const features = declared.length > 1 ? null : parseDeclaredFeatures(declared[0]);
+    if (!features) throw new HttpError(400, "Invalid schema_features");
+    // While the preserved-block conversion holds the fence, peers still
+    // connect and sync down, read-only: the policy refuses every put, relayed
+    // or self-authored, so no competing conversion lands. Discovery tells the
+    // viewer it's converting. Each connection retries a failed conversion.
     const capacity = this.connectionCapacity(identity);
     if (capacity) return refuseSocket(capacity, identity);
+    // A first observation is due; afterwards a connection only nudges, which
+    // never starts a retry before its backoff.
+    this.observeConversion({ due: this.conversion.name === "unchecked" });
+    // The viewer discovered `converting` but the fence dropped before this
+    // upgrade, so it would miss the completion close: send it back to
+    // discovery. Synchronous with the wire's registration below, so the
+    // fence can't drop between this check and the socket joining `wires`.
+    if (new URL(request.url).searchParams.get("converting") === "1" && !this.conversionWriteFence())
+      return refuseSocket(
+        withAdmissionReason(
+          Object.assign(Error("Preserved Markdown converted"), { status: 503 }),
+          "preserved_markdown_converting",
+        ),
+        identity,
+      );
     const pair = new WebSocketPair();
     const client = pair[0],
       socket = pair[1];
@@ -3633,6 +4529,7 @@ export class Page {
             onRenewal: (expiresAt) => {
               if (identity.credentialKind === "api-key") armExpiry(expiresAt);
             },
+            features,
           });
           wire.onDisconnect(release);
           if (!this.wires.has(wire)) return;
@@ -3659,6 +4556,7 @@ export class Page {
           }
           this.broadcastProfiles();
           this.broadcastActivity();
+          this.broadcastActorSnapshot();
         } finally {
           transport.free();
         }

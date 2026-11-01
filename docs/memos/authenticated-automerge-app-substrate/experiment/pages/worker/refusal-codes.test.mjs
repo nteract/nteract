@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import * as A from "@automerge/automerge";
 import { fixture, trashArgs } from "./trash-fixture.mjs";
+import { proposeAccessUpdate } from "./access.mjs";
 
 const staleHeads = ["0".repeat(64)];
 
@@ -83,4 +85,143 @@ test("an edit batch that cannot apply names the selector, and nothing is written
   assert.equal(comment.status, 400);
   assert.equal(comment.body.code, "invalid_comment_selector");
   assert.deepEqual(f.heads(), heads);
+});
+
+test("the host refuses every write to a Page stamped with a feature it lacks, and reads report the stamp", async (t) => {
+  const plain = await fixture(t);
+  // A new Page carries only the comments-doc stamp.
+  const current = await plain.tool("owner", "read_page", { comments: "none" });
+  assert.deepEqual(current.body.schema_features, ["comments-doc"]);
+  const legacy = await plain.tool("owner", "read_page");
+  assert.deepEqual(legacy.body.schema_features, ["comments-doc"]);
+
+  const doc = A.change(A.load(A.save(plain.doc())), (draft) => {
+    draft.schema = { features: ["comments-doc", "future-feature"] };
+  });
+  const f = await fixture(t, { auth: plain.auth, docBytes: A.save(doc) });
+  A.free(doc);
+  const read = await f.tool("owner", "read_page", { comments: "none" });
+  assert.equal(read.status, 200);
+  assert.deepEqual(read.body.schema_features, ["comments-doc", "future-feature"]);
+  const heads = f.heads();
+  for (const [operation, args] of [
+    ["edit_page", { operations: [{ op: "set_title", title: "Changed" }] }],
+    [
+      "patch_page",
+      {
+        operations: [
+          { op: "replace_match", block_id: f.blockId, match_text: "Friday", replacement: "Monday" },
+        ],
+      },
+    ],
+    [
+      "patch_page",
+      {
+        conflict_scope: "target",
+        operations: [
+          { op: "format_match", block_id: f.blockId, match_text: "Friday", add: { strong: true } },
+        ],
+      },
+    ],
+    ["manage_page_comment", { action: "add", block_id: f.blockId, body: "Hello" }],
+  ]) {
+    const refused = await f.tool("owner", operation, {
+      ...args,
+      base_heads: heads,
+      idempotency_key: `schema-${operation}-${args.conflict_scope ?? "page"}`,
+    });
+    assert.equal(refused.status, 409, operation);
+    assert.equal(refused.body.code, "unsupported_schema_feature", operation);
+    assert.deepEqual(refused.body.unsupported_features, ["future-feature"], operation);
+    assert.match(refused.body.error, /future-feature/);
+  }
+  assert.deepEqual(f.heads(), heads, "nothing is written");
+});
+
+test("a receipt for edits the native gate refused answers schema_unsupported at once", async (t) => {
+  const plain = await fixture(t);
+  const doc = A.change(A.load(A.save(plain.doc())), (draft) => {
+    draft.schema = { features: ["future-feature"] };
+  });
+  const f = await fixture(t, { auth: plain.auth, docBytes: A.save(doc) });
+  A.free(doc);
+  const missing = ["e".repeat(64)];
+  for (const body of [{ heads: missing }, { heads: missing, schema_features: ["other"] }]) {
+    const refused = await f.pageCall("owner", "/api/saved", body);
+    assert.equal(refused.status, 409);
+    assert.deepEqual(refused.body, {
+      error: "This Page uses features this version doesn't support. Reload to update.",
+      code: "schema_unsupported",
+    });
+  }
+  const malformed = await f.pageCall("owner", "/api/saved", {
+    heads: missing,
+    schema_features: ["Not An Id"],
+  });
+  assert.equal(malformed.status, 400);
+});
+
+test("a thread batch names unknown threads, refuses readers, and applies for editors", async (t) => {
+  const f = await fixture(t);
+  const [threadId] = Object.keys(f.commentsDoc().threads);
+  const heads = f.heads();
+  const unknown = await f.tool("owner", "manage_page_comment", {
+    idempotency_key: "batch-unknown-thread",
+    action: "resolve",
+    thread_ids: [threadId, "no-such-thread"],
+  });
+  assert.equal(unknown.status, 400);
+  assert.equal(unknown.body.code, "invalid_comment_selector");
+  assert.deepEqual(unknown.body.not_found_thread_ids, ["no-such-thread"]);
+  const shape = await f.tool("owner", "manage_page_comment", {
+    idempotency_key: "batch-both-fields",
+    action: "resolve",
+    thread_id: threadId,
+    thread_ids: [threadId],
+  });
+  assert.equal(shape.status, 400);
+  assert.equal(shape.body.code, "invalid_comment_selector");
+  assert.equal(shape.body.not_found_thread_ids, undefined);
+
+  // A viewer may read the thread but not change its status, alone or in a batch.
+  const reader = "user:anaconda-fixture:stranger-user";
+  const owner = { principal: f.owner, canWrite: true, expiresAt: Date.now() + 60_000 };
+  f.setPage(
+    f.build({
+      ...f.page.metadata,
+      acl: proposeAccessUpdate(f.page.metadata, owner, {
+        principal: reader,
+        role: "viewer",
+        expected_revision: f.page.metadata.acl.revision,
+      }).acl,
+    }),
+  );
+  assert.equal((await f.tool("stranger", "list_page_comments")).status, 200);
+  for (const args of [{ thread_id: threadId }, { thread_ids: [threadId] }]) {
+    const denied = await f.tool("stranger", "manage_page_comment", {
+      idempotency_key: `batch-reader-${Object.keys(args)[0]}`,
+      action: "resolve",
+      ...args,
+    });
+    assert.equal(denied.status, 403, Object.keys(args)[0]);
+    assert.equal(denied.body.code, undefined, "uncoded 403 becomes MCP access_denied");
+  }
+  assert.deepEqual(f.heads(), heads, "nothing is written");
+
+  // An editor resolves a thread someone else opened, in one batch and one receipt.
+  const resolved = await f.tool("member", "manage_page_comment", {
+    idempotency_key: "batch-editor-resolve",
+    action: "resolve",
+    thread_ids: [threadId],
+  });
+  assert.equal(resolved.status, 200);
+  assert.deepEqual(resolved.body.result, {
+    threads: [{ thread_id: threadId, outcome: "resolved" }],
+  });
+  // The Page is untouched: its heads hold, and the receipt names the
+  // comments document's new revision.
+  assert.deepEqual(resolved.body.heads, heads);
+  assert.deepEqual(f.heads(), heads);
+  assert.deepEqual(resolved.body.comment_heads, f.commentHeads());
+  assert.equal(f.commentsDoc().threads[threadId].status.value, "resolved");
 });

@@ -1,6 +1,6 @@
 // Native transaction/selection approach adapted from rgbkrk/wordgard-automerge
 // c9c6ea8 (BSD-3-Clause). See WORDGARD-NOTICE for attribution.
-import { Fragment, useEffect, useRef, useState } from "react";
+import { Fragment, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import * as A from "@automerge/automerge/slim";
 import { Wordgard, Decoration, KeyBinding } from "wordgard/editor";
@@ -19,6 +19,7 @@ import { insertTable, tablePresentation, tableKeys, selectedTable } from "./word
 import { TableMenu } from "./TableMenu.jsx";
 import { CODE_LANGUAGES, codeHighlighting } from "./code-highlight.mjs";
 import { MobileBar } from "./MobileBar.jsx";
+import { mobileCommentScope } from "./mobile-comment.mjs";
 import { MOBILE_EDITOR_QUERY } from "./visual-viewport.mjs";
 import {
   resolveUploadPreview,
@@ -48,6 +49,7 @@ import {
   Heading,
   Strong,
   Emphasis,
+  Strikethrough,
   Code,
   CodeBlock,
   BulletList,
@@ -56,13 +58,14 @@ import {
 import {
   Bold,
   Italic,
+  Strikethrough as StrikethroughIcon,
   Code as CodeIcon,
   List,
   ListOrdered,
   ListTodo,
   Undo2,
   Redo2,
-  MessageSquare,
+  MessageSquarePlus,
   Link as LinkIcon,
   ImagePlus,
 } from "lucide-react";
@@ -71,12 +74,14 @@ import {
   createWordgardBinding,
   wordgardCodeNewlines,
   insertPlainLineBreak,
+  remoteEditorPosition,
   wordgardHistory,
   wordgardListStarts,
 } from "./wordgard-binding.mjs";
 import { PagesLink, TaskList, elements } from "./wordgard-model.mjs";
 import { taskLists } from "./wordgard-task-lists.mjs";
 import { markdownShortcuts } from "./wordgard-shortcuts.mjs";
+import { clickBelowFinalBlock, exitBlock, leaveFinalBlock } from "./wordgard-leave-block.mjs";
 import { projectChanges } from "./wordgard-projection.mjs";
 import {
   createWordgardCollaboration,
@@ -88,6 +93,7 @@ import { selectionToolbarPosition } from "./selection-toolbar.mjs";
 import { linkDestination } from "./link-destination.mjs";
 import { LinkPopover } from "./LinkPopover.jsx";
 import { selectedImage } from "./image-selection.mjs";
+import { normalizePastedHTML } from "./clipboard-html.mjs";
 import {
   IMAGE_ACCEPT,
   captureImageInsertion,
@@ -95,6 +101,8 @@ import {
   imageFiles,
   resolveImageInsertion,
 } from "./image-upload.mjs";
+import { caretGlideFor, createGlideRunner, mediaMatches$ } from "./caret-glide.mjs";
+import { glideSettings } from "./feature-flags.mjs";
 import "./wordgard.css";
 
 const styles = [
@@ -104,19 +112,31 @@ const styles = [
   ["h3", "Heading 3"],
   ["code", "Code block"],
 ];
-const controls = [
+// Toolbar order, by how often each is reached for: history, the text style,
+// marks (the highlight menu follows inline code), lists, then the insert
+// actions (table, image) at the far end. Comment always ends the bar.
+const historyControls = [
   ["undo", "Undo", Undo2],
   ["redo", "Redo", Redo2],
+];
+const markControls = [
   ["bold", "Bold", Bold],
   ["italic", "Italic", Italic],
+  ["strike", "Strikethrough", StrikethroughIcon],
+  ["link", "Link", LinkIcon],
   ["code", "Inline code", CodeIcon],
+];
+const listControls = [
   ["bullet", "Bulleted list", List],
   ["ordered", "Numbered list", ListOrdered],
   ["task", "Task list", ListTodo],
-  ["link", "Link", LinkIcon],
-  ["comment", "Comment on selection", MessageSquare],
 ];
-const marks = { bold: Strong, italic: Emphasis, code: Code };
+// The plus marks an action that adds a comment. The header's Comments button,
+// which shows the comments, keeps the plain bubble.
+const commentControl = ["comment", "Comment on selection", MessageSquarePlus];
+// Link and Comment act on a selection; they aren't toggles.
+const actions = new Set(["link", "comment"]);
+const marks = { bold: Strong, italic: Emphasis, strike: Strikethrough, code: Code };
 const remoteAnnotations = () => [Transaction.remote.of(true), Transaction.addToHistory.of(false)];
 const editConfig = (editable) => [
   GardState.readOnly.of(!editable),
@@ -135,16 +155,21 @@ export function WordgardEditor(props) {
     replica,
     id,
     editable,
+    // A commenter's read-only block still offers Comment on a selection.
+    commentable = editable,
     toolbarHost,
     toolbarOpen = false,
     threads,
     commentTarget,
     commentDraft,
   } = props;
+  // The toolbar shows for an editor, or with only Comment for a commenter.
+  const toolbarUsable = editable || commentable;
   const latest = useRef(props);
   latest.current = props;
   const mount = useRef(null),
     caretLayer = useRef(null),
+    ghostLayer = useRef(null),
     view = useRef(null),
     binding = useRef(null),
     collaboration = useRef(null),
@@ -163,6 +188,9 @@ export function WordgardEditor(props) {
     [mobile, setMobile] = useState(() => matchMedia(MOBILE_EDITOR_QUERY).matches),
     [barFocus, setBarFocus] = useState(false);
   const mobileBar = useRef(null);
+  // Agent caret glide is an experiment; with it off the caret layer is unchanged.
+  const glide = glideSettings();
+  const flushGlide = useRef(() => {});
   const [generation, reset] = useState(0);
   const pendingLink = useRef(null),
     refresh = useRef(() => {}),
@@ -171,11 +199,26 @@ export function WordgardEditor(props) {
     latest.current.onError(error instanceof Error ? error.message : String(error));
   function comment() {
     const editor = view.current;
-    if (!editor || !latest.current.editable) return false;
+    const { editable: canEdit, commentable: canComment = canEdit } = latest.current;
+    if (!editor || !(canEdit || canComment)) return false;
     const selected = wordgardCommentSelection(replica, id, editor, binding.current.current.map);
     if (!selected) return false;
     latest.current.onComment?.(selected);
     return true;
+  }
+  // The phone bar's Comment: the selection, or else the caret's whole
+  // paragraph. The desktop toolbar's Comment needs a selection.
+  function commentHere() {
+    const editor = view.current;
+    if (!editor) return false;
+    if (comment()) return true;
+    const block = editor.state.sel.head.textblockParent;
+    if (!block || block.end <= block.start) return false;
+    const { anchor, head } = editor.state.selection;
+    editor.dispatch({ selection: { anchor: block.start, head: block.end } });
+    if (comment()) return true;
+    editor.dispatch({ selection: { anchor, head } });
+    return false;
   }
   function openLink(position) {
     const editor = view.current,
@@ -336,6 +379,7 @@ export function WordgardEditor(props) {
         uploadPreviews,
         undoHistory.extension,
         permissions.current.of(editConfig(latest.current.editable)),
+        Wordgard.clipboardInputHTMLFilter.of((html) => normalizePastedHTML(html)),
         Wordgard.domEventHandler("paste", (event) => acceptImages(imageFiles(event.clipboardData))),
         Wordgard.domEventHandler("drop", (event) => {
           const files = imageFiles(event.dataTransfer);
@@ -354,6 +398,9 @@ export function WordgardEditor(props) {
         }),
         KeyBinding.of({ key: "Mod-Alt-m", run: () => comment() }),
         KeyBinding.of({ key: "Shift-Enter", run: insertPlainLineBreak }),
+        KeyBinding.of({ key: "Mod-Enter", run: exitBlock, allowDefault: true }),
+        KeyBinding.of({ key: "ArrowDown", run: leaveFinalBlock, allowDefault: true }),
+        Wordgard.domEventHandler("mousedown", (event) => clickBelowFinalBlock(editor, event)),
         KeyBinding.of({
           key: "Mod-Shift-h",
           run: () => latest.current.editable && Command.dispatch(editor, toggleHighlight),
@@ -363,13 +410,41 @@ export function WordgardEditor(props) {
         // edges; keep the caret clear of both when scrolling it into view.
         Wordgard.coveredMargins.of(() => {
           const bar = mobileBar.current?.getBoundingClientRect();
+          // The pinned toolbar and the reload banner stick below the header.
           const header = document.querySelector(".app-header")?.getBoundingClientRect();
+          const stack = document.querySelector(".status-stack")?.getBoundingClientRect();
+          const covered = Math.max(header?.bottom ?? 0, stack?.bottom ?? 0);
           const viewport = window.visualViewport;
           const bottomEdge = viewport ? viewport.offsetTop + viewport.height : innerHeight;
           return {
-            top: header ? Math.max(0, header.bottom - (viewport?.offsetTop ?? 0)) : 0,
+            top: Math.max(0, covered - (viewport?.offsetTop ?? 0)),
             bottom: bar ? Math.max(0, bottomEdge - bar.top) : 0,
           };
+        }),
+        // Wordgard 0.6.2's scrollTo shrinks the caret's rect by the covered
+        // margins where it should grow it, so with any covered margin the
+        // caret can stop under the header or the bar; margins taller than a
+        // line flip the rect and skip the scroll entirely. Desktop's header
+        // has the same bug. On phones, scroll the caret between the header
+        // and the bar here first; Wordgard's own pass then finds it in view
+        // and only handles horizontal scrolling. This handler can go once
+        // Wordgard grows the rect by the margins.
+        Wordgard.scrollHandler.of((wg, target) => {
+          if (target.spec.y !== "nearest" || !matchMedia(MOBILE_EDITOR_QUERY).matches) return false;
+          const start = wg.coordsAtPos(target.from, target.from === target.to ? target.assoc : 1);
+          const end = target.from === target.to ? start : wg.coordsAtPos(target.to, -1);
+          if (!start || !end) return false;
+          const margins = wg.getScrollMargins();
+          const viewport = window.visualViewport;
+          const visibleTop = (viewport?.offsetTop ?? 0) + margins.top;
+          const visibleBottom =
+            (viewport ? viewport.offsetTop + viewport.height : innerHeight) - margins.bottom;
+          const top = Math.min(start.top, end.top),
+            bottom = Math.max(start.bottom, end.bottom),
+            margin = target.spec.yMargin ?? 5;
+          if (top < visibleTop) window.scrollBy(0, top - visibleTop - margin);
+          else if (bottom > visibleBottom) window.scrollBy(0, bottom - visibleBottom + margin);
+          return false;
         }),
         Wordgard.exceptionSink.of(report),
         Wordgard.transactionListener.of((transactions) => {
@@ -446,6 +521,31 @@ export function WordgardEditor(props) {
     editor.dom.classList.add("wordgard-document");
     let caretFrame = null,
       beatTimer;
+    const reducedMotion = glide.enabled && matchMedia("(prefers-reduced-motion: reduce)");
+    const motion = glide.enabled
+      ? caretGlideFor(replica, {
+          settings: glide,
+          now: monotonicNow,
+          reducedMotion$: mediaMatches$(reducedMotion),
+        })
+      : null;
+    const glideRunner =
+      motion &&
+      createGlideRunner({
+        layer: caretLayer.current,
+        ghostLayer: ghostLayer.current,
+        settings: glide,
+        onSettled: (session, anchor) => motion.settle(session, anchor),
+        isCurrent: (effect) => motion.current(effect),
+      });
+    // Turning on reduced motion snaps every caret to its anchor.
+    const glideCancels = motion?.cancels$.subscribe((effects) => glideRunner.run(effects));
+    // Glide effects wait in the runner for React to draw each caret at its
+    // new position.
+    let measuredCarets = null;
+    flushGlide.current = () => {
+      if (alive) glideRunner?.flush();
+    };
     const measureCarets = () => {
       if (!alive || caretFrame !== null) return;
       caretFrame = requestAnimationFrame(() => {
@@ -455,6 +555,11 @@ export function WordgardEditor(props) {
         const bounds = editor.contentDOM.getBoundingClientRect();
         const visibleTop = Math.max(0, bounds.top),
           visibleBottom = Math.min(innerHeight, bounds.bottom);
+        // Glide positions are article-relative, so they hold across blocks and scrolling.
+        const article =
+          motion &&
+          (mount.current?.closest("article")?.getBoundingClientRect() ?? { left: 0, top: 0 });
+        const agentCarets = [];
         const next = collab.carets().flatMap((peer) => {
           try {
             if (peer.type === "dot")
@@ -473,6 +578,14 @@ export function WordgardEditor(props) {
               ];
             }
             const rect = editor.coordsAtPos(peer.position);
+            if (motion && peer.tag === "agent" && peer.anchor && rect && rect.bottom > rect.top)
+              agentCarets.push({
+                session: peer.session,
+                anchor: peer.anchor,
+                x: rect.left - article.left,
+                y: rect.top - article.top,
+                height: rect.height,
+              });
             const visibleLeft = Math.max(0, bounds.left),
               visibleRight = Math.min(innerWidth, bounds.right),
               labelOnLeft = rect.left - visibleLeft > visibleRight - rect.left;
@@ -504,6 +617,17 @@ export function WordgardEditor(props) {
         setRemoteCarets((previous) =>
           JSON.stringify(previous) === JSON.stringify(next) ? previous : next,
         );
+        if (motion) {
+          const effects = motion.observe(id, agentCarets);
+          glideRunner.queue(effects, {
+            x: origin.left - article.left,
+            y: origin.top - article.top,
+          });
+          // Unchanged carets mean no render, so run the effects now.
+          const changed = JSON.stringify(measuredCarets) !== JSON.stringify(next);
+          measuredCarets = next;
+          if (!changed) flushGlide.current();
+        }
         // An agent's select beat collapses to a caret on its own schedule.
         clearTimeout(beatTimer);
         const beat = collab.nextRepaint();
@@ -530,18 +654,9 @@ export function WordgardEditor(props) {
         ) {
           const path = ["blocks", id, "richText"];
           try {
-            const translate = (pos) => {
-              const cursor = A.getCursor(
-                event.nativeBefore,
-                path,
-                event.before.map.wgToAm[pos],
-                "after",
-              );
-              const offset = A.getCursorPosition(event.nativeAfter, path, cursor);
-              return event.after.map.amToWg[offset] ?? event.after.doc.length - 1;
-            };
-            const a = translate(anchor),
-              h = translate(head);
+            const caret = anchor === head;
+            const a = remoteEditorPosition(event, path, anchor, { caret }),
+              h = caret ? a : remoteEditorPosition(event, path, head);
             selection = (cx) =>
               GardSelection.range(GardSelection.near(cx, a).anchor, GardSelection.near(cx, h).head);
           } catch {
@@ -607,6 +722,10 @@ export function WordgardEditor(props) {
         }
       }
       const selected = wordgardCommentSelection(replica, id, editor, bound.current.map);
+      // A commenter's read-only block activates on a selection, so its
+      // Comment button has somewhere to show.
+      if (!editor.hasFocus && selected && !latest.current.editable && latest.current.commentable)
+        latest.current.onActivate?.();
       if (editor.hasFocus) {
         latest.current.onActivate?.();
         latest.current.onSelection?.(selected);
@@ -630,6 +749,10 @@ export function WordgardEditor(props) {
         undo: undoDepth(state) > 0,
         redo: redoDepth(state) > 0,
         comment: !!selected,
+        commentScope: mobileCommentScope({
+          selected: !!selected,
+          paragraphText: block?.textContent(),
+        }),
         link: !!selected || !!PagesLink.isInSet(state.sel.activeMarks),
         bullet: listIsActive(BulletList)(state),
         ordered: listIsActive(OrderedList.of(1))(state),
@@ -719,6 +842,10 @@ export function WordgardEditor(props) {
       imageTarget.current = null;
       clearInterval(timer);
       if (caretFrame !== null) cancelAnimationFrame(caretFrame);
+      glideCancels?.unsubscribe();
+      motion?.release(id);
+      glideRunner?.dispose();
+      flushGlide.current = () => {};
       clearTimeout(beatTimer);
       document.removeEventListener("scroll", measureCarets, true);
       window.removeEventListener("resize", measureCarets);
@@ -740,6 +867,7 @@ export function WordgardEditor(props) {
       refresh.current = () => {};
     };
   }, [replica, id]);
+  useLayoutEffect(() => flushGlide.current(), [remoteCarets]);
   useEffect(() => {
     const editor = view.current;
     if (!editor) return;
@@ -753,6 +881,21 @@ export function WordgardEditor(props) {
     if (view.current && !view.current.composing)
       view.current.dispatch({ annotations: remoteAnnotations() });
   }, [threads, commentTarget, commentDraft, generation]);
+  // CommentPopover anchors to the draft passage's mark in its own layout
+  // pass, which runs after this one in the same commit. Wordgard writes a
+  // dispatch to the DOM on its next animation frame, so the mark is flushed
+  // here: the composer's first frame is then beside the passage, not at the
+  // block's corner. The passive effect above still dispatches if this can't.
+  useLayoutEffect(() => {
+    const editor = view.current;
+    if (!editor || editor.composing) return;
+    try {
+      editor.dispatch({ annotations: remoteAnnotations() });
+      editor.flush();
+    } catch {
+      // Inside Wordgard's own flush phase; the next frame writes the mark.
+    }
+  }, [commentDraft]);
   useEffect(() => {
     if (commentTarget?.source !== "quote") return;
     const thread = threads?.find((thread) => thread.id === commentTarget.id);
@@ -768,7 +911,7 @@ export function WordgardEditor(props) {
   useEffect(() => {
     const editor = view.current,
       element = toolbar.current;
-    if (!editor || !element || !toolbarHost || !editable) {
+    if (!editor || !element || !toolbarHost || !toolbarUsable) {
       setFloating(null);
       setContextualToolbar(false);
       return;
@@ -782,12 +925,20 @@ export function WordgardEditor(props) {
       if (dragging) return;
       let next = null;
       const selection = editor.state.selection;
+      // A read-only editor may not take focus; its selection lives in the DOM.
+      const domSelection = document.getSelection();
+      const selectedHere =
+        !editable &&
+        !!domSelection &&
+        !domSelection.isCollapsed &&
+        editor.dom.contains(domSelection.anchorNode);
       const contextual =
         !mobile &&
         !selection.empty &&
         !selectedImage(editor.state) &&
         !editor.composing &&
         (editor.hasFocus ||
+          selectedHere ||
           element.contains(document.activeElement) ||
           !!element.querySelector('[aria-expanded="true"]'));
       setContextualToolbar(contextual);
@@ -848,12 +999,12 @@ export function WordgardEditor(props) {
       listeners.forEach(([target, name, fn]) => target?.removeEventListener(name, fn, true));
       positionToolbar.current = () => {};
     };
-  }, [toolbarHost, toolbarOpen, editable, generation, mobile]);
+  }, [toolbarHost, toolbarOpen, toolbarUsable, editable, generation, mobile]);
   function run(name) {
     const editor = view.current;
+    if (editor && name === "comment" && commentable) return comment();
     if (!editor || !editable) return;
     try {
-      if (name === "comment") return comment();
       if (name === "link") return openLink();
       if (name === "highlight") Command.dispatch(editor, toggleHighlight);
       else if (name === "table") insertTable(editor);
@@ -921,6 +1072,23 @@ export function WordgardEditor(props) {
           : (index + (event.key === "ArrowRight" ? 1 : -1) + controls.length) % controls.length
     ].focus();
   }
+  function formatButton([name, label, Icon]) {
+    const action = actions.has(name);
+    return (
+      <button
+        key={name}
+        className={`toolbar-button${format?.[name] && !action ? " is-active" : ""}`}
+        aria-label={label}
+        title={label}
+        aria-pressed={action ? undefined : !!format?.[name]}
+        disabled={!(editable || (name === "comment" && commentable)) || (action && !format?.[name])}
+        onPointerDown={(event) => event.preventDefault()}
+        onClick={() => run(name)}
+      >
+        <Icon size={18} aria-hidden="true" />
+      </button>
+    );
+  }
   return (
     <div className="rich-editor wordgard-editor">
       {toolbarHost &&
@@ -928,14 +1096,14 @@ export function WordgardEditor(props) {
           <div
             ref={toolbar}
             className={`rich-toolbar ${toolbarOpen ? "is-pinned" : "is-contextual"}${floating ? " is-floating" : ""}`}
-            hidden={!editable || (!toolbarOpen && !contextualToolbar)}
+            hidden={!toolbarUsable || (!toolbarOpen && !contextualToolbar)}
             style={floating || undefined}
             role="toolbar"
             aria-label={format?.image ? "Image actions" : "Text formatting"}
             onKeyDown={toolbarKeys}
           >
             {toolbarOpen &&
-              controls.slice(0, 2).map(([name, label, Icon]) => (
+              historyControls.map(([name, label, Icon]) => (
                 <button
                   key={name}
                   className="toolbar-button"
@@ -949,7 +1117,9 @@ export function WordgardEditor(props) {
                 </button>
               ))}
             {toolbarOpen && <span className="toolbar-separator" role="separator" />}
-            {format?.image ? (
+            {!editable ? (
+              formatButton(commentControl)
+            ) : format?.image ? (
               <span className="image-selection-label">Image</span>
             ) : (
               <>
@@ -969,13 +1139,31 @@ export function WordgardEditor(props) {
                   ))}
                 </select>
                 <span className="toolbar-separator" role="separator" />
+                {markControls.map((control) => (
+                  <Fragment key={control[0]}>
+                    {formatButton(control)}
+                    {control[0] === "code" && (
+                      <HighlightMenu
+                        editor={view.current}
+                        current={format?.highlight ?? null}
+                        present={!!format?.highlightPresent}
+                        editable={editable}
+                        onError={report}
+                      />
+                    )}
+                  </Fragment>
+                ))}
+                {toolbarOpen && listControls.map(formatButton)}
                 {(toolbarOpen || format?.table) && (
-                  <TableMenu
-                    editor={view.current}
-                    inTable={!!format?.table}
-                    editable={editable}
-                    onError={report}
-                  />
+                  <>
+                    <span className="toolbar-separator" role="separator" />
+                    <TableMenu
+                      editor={view.current}
+                      inTable={!!format?.table}
+                      editable={editable}
+                      onError={report}
+                    />
+                  </>
                 )}
                 {toolbarOpen && (
                   <button
@@ -989,37 +1177,7 @@ export function WordgardEditor(props) {
                     <ImagePlus size={18} aria-hidden="true" />
                   </button>
                 )}
-                {controls
-                  .slice(2)
-                  .filter(([name]) => toolbarOpen || !["bullet", "ordered", "task"].includes(name))
-                  .map(([name, label, Icon]) => (
-                    <Fragment key={name}>
-                      <button
-                        className={`toolbar-button${format?.[name] && !["link", "comment"].includes(name) ? " is-active" : ""}`}
-                        aria-label={label}
-                        title={label}
-                        aria-pressed={
-                          !["link", "comment"].includes(name) ? !!format?.[name] : undefined
-                        }
-                        disabled={
-                          !editable || (["link", "comment"].includes(name) && !format?.[name])
-                        }
-                        onPointerDown={(event) => event.preventDefault()}
-                        onClick={() => run(name)}
-                      >
-                        <Icon size={18} aria-hidden="true" />
-                      </button>
-                      {name === "code" && (
-                        <HighlightMenu
-                          editor={view.current}
-                          current={format?.highlight ?? null}
-                          present={!!format?.highlightPresent}
-                          editable={editable}
-                          onError={report}
-                        />
-                      )}
-                    </Fragment>
-                  ))}
+                {formatButton(commentControl)}
               </>
             )}
           </div>,
@@ -1058,17 +1216,17 @@ export function WordgardEditor(props) {
           format={format}
           editable={editable}
           styles={styles}
-          openComments={props.openComments ?? 0}
           editorDom={view.current?.dom}
           onRun={(name) => ownsBar() && run(name)}
           onStyle={(value) => ownsBar() && run(value === "code" ? "code-block" : value)}
           onImage={() => ownsBar() && chooseImage()}
-          onComments={() => props.onOpenComments?.()}
+          onComment={() => ownsBar() && commentHere()}
           onFocusChange={setBarFocus}
         />
       )}
       <div ref={mount} />
       <div ref={caretLayer} className="wordgard-caret-layer" aria-hidden="true">
+        {glide.enabled && <div ref={ghostLayer} className="agent-caret-ghosts" />}
         {remoteCarets.map((peer) => {
           const color = peer.color && {
             "--peer-color": peer.color.background,
@@ -1107,6 +1265,7 @@ export function WordgardEditor(props) {
               key={peer.session}
               className={`peer-caret${peer.idle ? " is-idle" : ""}`}
               data-label-side={peer.labelOnLeft ? "left" : "right"}
+              {...(glide.enabled && peer.tag === "agent" && { "data-glide": peer.session })}
               title={peer.title}
               style={{ ...color, left: peer.left, top: peer.top, height: peer.height }}
             >

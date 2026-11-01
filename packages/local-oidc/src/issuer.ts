@@ -154,7 +154,10 @@ interface SigningKey {
  */
 export function createMemoryLocalOidcStore(): LocalOidcStore {
   const codes = new Map<string, LocalOidcAuthorizationCode>();
-  let key: Promise<JWK> | undefined;
+  // Only a settled key is kept, never a pending generation: a caller never
+  // awaits another caller's work, so one that hangs or fails holds no one else.
+  // Concurrent first callers each generate, and the first key saved wins.
+  let key: JWK | undefined;
   return {
     async putAuthorizationCode(code, entry) {
       const now = Date.now();
@@ -170,8 +173,12 @@ export function createMemoryLocalOidcStore(): LocalOidcStore {
       codes.delete(code);
       return entry;
     },
-    signingKey(generate) {
-      key ??= generate();
+    async signingKey(generate) {
+      if (key) {
+        return key;
+      }
+      const generated = await generate();
+      key ??= generated;
       return key;
     },
   };

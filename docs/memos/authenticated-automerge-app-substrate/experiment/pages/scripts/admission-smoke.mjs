@@ -325,7 +325,7 @@ try {
   await owner.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
   await expect(saved(owner)).toHaveCount(0, { timeout: 15000 });
   await expect.poll(() => gatewayAnswers, { timeout: 15000 }).toBeGreaterThanOrEqual(3);
-  await expect(owner.locator(".save-status")).toHaveText(/Saved locally|Unsaved|Offline/);
+  await expect(owner.locator(".save-status")).toHaveText(/Saved locally|Not saved|Offline/);
   assert.deepEqual(await banners(owner), [], "a gateway 503 showed a red banner");
   await owner.unrouteAll({ behavior: "wait" });
   await expect(saved(owner)).toBeVisible({ timeout: 30000 });

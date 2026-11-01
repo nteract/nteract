@@ -15,7 +15,7 @@
   "patch": {
     "path": "packages/automerge-repo-subduction/src/index.ts",
     "before": "1a870be50a4a447a91038034cb5ec227568b34afc844d4f5e19d787fd58a0bd3",
-    "after": "d23a227f6f4f8b36b29b6ea7ef117645f2338b3054edbd76ca76a192cbc73d56",
+    "after": "5a878143c5d0d7e30de7650f94ac92dec9e813fc5fbdc457ce88a7884d37fff3",
     "storageIndex": {
       "path": "packages/automerge-repo-subduction/src/storage.ts",
       "before": "00169b3a71473e01c00cd37298ffcf4bc2b7c8d6f8f7f8bcce90ada9c23d4029",
@@ -56,6 +56,11 @@
       "codec": {
         "path": "packages/automerge-repo-subduction/src/record-codec.ts",
         "sha256": "fad0c5dcddd327f1ac07f8cac0c3b3b156aeaabd8a9bf1283266b5f391c212cb"
+      },
+      "index": {
+        "path": "packages/automerge-repo-subduction/src/index.ts",
+        "before": "2797c8191d7b0bea2992f75e8da27b952591b38310b7f44f4dea69b2341dc107",
+        "after": "5df508f9ecbe6d788b4c8422590be7be11b2c4610700ca3f7b48ff1806e49780"
       }
     },
     "causalHistory": [
@@ -78,14 +83,26 @@
       },
       {
         "path": "packages/automerge-repo-subduction/src/index.ts",
-        "before": "2797c8191d7b0bea2992f75e8da27b952591b38310b7f44f4dea69b2341dc107",
-        "after": "d23a227f6f4f8b36b29b6ea7ef117645f2338b3054edbd76ca76a192cbc73d56"
+        "before": "5df508f9ecbe6d788b4c8422590be7be11b2c4610700ca3f7b48ff1806e49780",
+        "after": "112a57f36a78db48b7b520a2a24e312ba022e1d380ab9011352a221dbd3cc2d1"
       },
       {
         "path": "packages/automerge-repo/src/DocumentDelegate.ts",
         "before": "25bb4f4bb9471ecd22ed59784b9f7055bc87e3163ccc2271f6ff28e14c2247f0",
         "after": "88fc5e062021def09b19c4f5f109c3c925ec2a6ab379ce41cd1411922c73a107"
       }
-    ]
+    ],
+    "recordRefusal": [
+      {
+        "path": "packages/automerge-repo-subduction/src/storage.ts",
+        "before": "c13da8f677672ba78161336729e5f9f092559d8dcfc60dacb17aa53651115e27",
+        "after": "48c6771e1c8edc7983c7fb80a84859c328e5ac01ac017f7effb20608437c71e3"
+      }
+    ],
+    "outboundSync": {
+      "path": "packages/automerge-repo-subduction/src/index.ts",
+      "before": "112a57f36a78db48b7b520a2a24e312ba022e1d380ab9011352a221dbd3cc2d1",
+      "after": "5a878143c5d0d7e30de7650f94ac92dec9e813fc5fbdc457ce88a7884d37fff3"
+    }
   }
 }

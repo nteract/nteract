@@ -566,10 +566,55 @@ describe("createLocalOidcIssuer", () => {
           return generate();
         }),
     };
+    // Concurrent first callers may each generate, but the first key saved wins.
     const [a, b] = await Promise.all([makeIssuer({ store }).jwks(), makeIssuer({ store }).jwks()]);
-    expect(generated).toBe(1);
     expect(a.keys[0].kid).toBe(b.keys[0].kid);
     expect(a.keys[0].d).toBeUndefined();
+    const afterFirst = generated;
+    expect(afterFirst).toBeGreaterThanOrEqual(1);
+    const c = await makeIssuer({ store }).jwks();
+    expect(c.keys[0].kid).toBe(a.keys[0].kid);
+    expect(generated).toBe(afterFirst);
+  });
+
+  it("does not let a hung key generation block a later caller of the memory store", async () => {
+    const store = createMemoryLocalOidcStore();
+    const hung = store.signingKey(() => new Promise(() => {}));
+    let hungSettled = false;
+    void hung.then(() => (hungSettled = true));
+    const { privateKey } = await jose.generateKeyPair("RS256", { extractable: true });
+    const jwk = await jose.exportJWK(privateKey);
+    // The later caller runs its own generation instead of awaiting the hung one.
+    expect(await store.signingKey(async () => jwk)).toBe(jwk);
+    expect(hungSettled).toBe(false);
+    // The settled key is cached for every later caller.
+    expect(
+      await store.signingKey(async () => {
+        throw new Error("a saved key must not regenerate");
+      }),
+    ).toBe(jwk);
+  });
+
+  it("does not cache a failed key generation in the memory store", async () => {
+    const store = createMemoryLocalOidcStore();
+    await expect(
+      store.signingKey(async () => {
+        throw new Error("generation failed");
+      }),
+    ).rejects.toThrow("generation failed");
+    const { privateKey } = await jose.generateKeyPair("RS256", { extractable: true });
+    const jwk = await jose.exportJWK(privateKey);
+    expect(await store.signingKey(async () => jwk)).toBe(jwk);
+  });
+
+  it("keeps the first saved key when concurrent generations settle out of order", async () => {
+    const store = createMemoryLocalOidcStore();
+    let releaseSlow!: (jwk: jose.JWK) => void;
+    const slow = store.signingKey(() => new Promise((resolve) => (releaseSlow = resolve)));
+    const fastKey = { kty: "RSA", n: "fast", e: "AQAB" };
+    expect(await store.signingKey(async () => fastKey)).toBe(fastKey);
+    releaseSlow({ kty: "RSA", n: "slow", e: "AQAB" });
+    expect(await slow).toBe(fastKey);
   });
 
   it("rejects a non-loopback redirect_uri at authorize", async () => {

@@ -46,10 +46,14 @@ try {
     id = new URL(url).pathname.split("/")[2];
   const title = "Local creation " + Date.now();
   await titleInput(page).fill(title);
-  await titleInput(page).press("Enter");
+  // Keys typed straight after Enter belong to the new Page's first block,
+  // even though that block doesn't exist until Enter creates it.
+  await page.keyboard.press("Enter");
+  await page.keyboard.type("Written while registration is held.");
   await expect(editor(page)).toBeFocused({ timeout: 3000 });
   const editableMs = Math.round(performance.now() - started);
-  await editor(page).pressSequentially("Written while registration is held.");
+  await expect(titleInput(page)).toHaveValue(title);
+  await expect(editor(page)).toHaveText("Written while registration is held.");
   await expect.poll(() => registrations).toBeGreaterThan(0);
   await expect(saveStatus(page)).not.toHaveText("Saved");
   await page.getByRole("link", { name: "Pages", exact: true }).click();
@@ -136,7 +140,12 @@ try {
     route.fulfill({
       status: 409,
       contentType: "application/json",
-      body: JSON.stringify({ error: "This prototype permits 100 pages per account" }),
+      body: JSON.stringify({
+        error: "This alpha release allows 250 Pages per account.",
+        code: "page_quota_exceeded",
+        limit: 250,
+        count: 250,
+      }),
     }),
   );
   await page.getByRole("button", { name: "New Page", exact: true }).click();

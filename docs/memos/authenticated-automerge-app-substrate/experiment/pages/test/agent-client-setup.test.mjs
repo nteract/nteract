@@ -10,6 +10,7 @@ import {
   saveKeyCommand,
 } from "../agent-client-setup.mjs";
 import { connectAgentResponse } from "../connect-agent.mjs";
+import { FAVICON_LINK } from "../shared/favicon.mjs";
 
 test("private key recipe keeps secrets out of output and rejects empty input without overwriting", () => {
   const code = saveKeyCommand.slice("python3 -c '\n".length, -2);
@@ -78,17 +79,24 @@ test("Kilo OAuth recipe binds the supported public client without a static crede
   assert.deepEqual(pages.headers, { "X-Pages-Driver": "Kilo" });
 });
 
-test("Kilo API-key fallback uses static bearer auth and a file reference rather than an empty credential", () => {
+test("Kilo API-key recipe uses static bearer auth and a file reference rather than an empty credential", () => {
   const { pages } = JSON.parse(kiloApiKeyConfig("https://page7.runtimed.run")).mcp;
   assert.equal(pages.oauth, false);
-  assert.equal(pages.headers.Authorization, "Bearer {file:~/.config/pages/anaconda-api-key}");
+  assert.deepEqual(pages.headers, {
+    Authorization: "Bearer {file:~/.config/pages/anaconda-api-key}",
+    "X-Pages-Driver": "Kilo",
+    // One shared entry; each worktree names its session through PAGES_AGENT.
+    "X-Pages-Agent": "{env:PAGES_AGENT}",
+  });
 });
 
 test("copy actions copy only public recipes and report the matching next step", async () => {
   const response = connectAgentResponse(new Request("https://pages.example/connect"), {
     NOTEBOOK_CLOUD_PUBLIC_ORIGIN: "https://pages.example",
   });
-  const dom = new JSDOM(await response.text(), { runScripts: "outside-only" });
+  const page = await response.text();
+  assert.ok(page.includes(FAVICON_LINK), "the setup page carries the inlined tab icon");
+  const dom = new JSDOM(page, { runScripts: "outside-only" });
   const copied = [];
   Object.defineProperty(dom.window.navigator, "clipboard", {
     value: { writeText: async (text) => copied.push(text) },

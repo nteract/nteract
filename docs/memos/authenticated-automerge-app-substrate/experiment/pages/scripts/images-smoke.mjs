@@ -347,11 +347,13 @@ try {
   ).setFiles({ name: "shared-screenshot.png", mimeType: "image/png", buffer: fixture });
   await uploadStarted;
   try {
-    await expect(owner.getByText("Uploading image…", { exact: true })).toBeVisible();
     // The pending image is drawn inside the editor at the insertion point (the
-    // end of the block), not as a status row above the block.
+    // end of the block), not as a status row above the block. The status row
+    // and the widget read different snapshots, so both can show this text for
+    // a moment; read it from the widget, then wait for the row to go.
     const pending = content(owner).locator(".wordgard-upload-preview");
     await expect(pending).toBeVisible();
+    await expect(pending.getByText("Uploading image…", { exact: true })).toBeVisible();
     await expect(owner.locator(".image-upload-status")).toHaveCount(0);
     // The widget can re-render between locating and reading it; poll on a
     // fresh lookup so a detached copy never answers.
@@ -532,6 +534,104 @@ try {
   );
   complete(
     "Markdown contains references only; viewer reload and phone-width layout render private images",
+  );
+
+  // Type, paste a screenshot, keep typing: the text after the paste follows
+  // the image. Then the same with an upload slow enough to type through.
+  const caretPageId = await createPage("Image paste caret");
+  const caretPath = `/api/pages/${caretPageId}/assets`;
+  const caretMarkdown = async () =>
+    (await tool(owner, "read_page", { page_id: caretPageId })).body.blocks
+      .map((block) => block.markdown)
+      .join("\n\n")
+      .replaceAll(/!\[[^\]]*\]\([^)]*\)/g, "[image]");
+  await owner.goto(`${origin}/p/${caretPageId}`);
+  await expect(content(owner)).toContainText("A shared image");
+  await content(owner).click();
+  await owner.keyboard.press("ControlOrMeta+End");
+  await owner.keyboard.press("Enter");
+  await owner.keyboard.type("a");
+  await imageEvent(owner, "paste", fixtures[1], "caret-paste.png");
+  await expectImages(owner, 1);
+  await owner.keyboard.type("b");
+  await expect
+    .poll(caretMarkdown, { timeout: 15000 })
+    .toMatch(/Images stay private with this Page\.\n\na\[image\]b$/);
+  let resumeCaret;
+  const holdCaret = new Promise((resolve) => {
+    resumeCaret = resolve;
+  });
+  let sawCaret;
+  const caretStarted = new Promise((resolve) => {
+    sawCaret = resolve;
+  });
+  await owner.route(
+    origin + caretPath,
+    async (route) => {
+      sawCaret();
+      await holdCaret;
+      await route.continue();
+    },
+    { times: 1 },
+  );
+  await owner.keyboard.press("Enter");
+  await owner.keyboard.type("c");
+  await imageEvent(owner, "paste", fixtures[2], "caret-slow.png");
+  await caretStarted;
+  try {
+    await expect(content(owner).locator(".wordgard-upload-preview")).toBeVisible();
+    await owner.keyboard.type("de");
+  } finally {
+    resumeCaret();
+  }
+  await expectImages(owner, 2);
+  // The image lands where it was pasted, and the caret stays after "de".
+  await owner.keyboard.type("f");
+  await expect.poll(caretMarkdown, { timeout: 15000 }).toMatch(/\n\na\[image\]b\n\nc\[image\]def$/);
+  // Right after an astral character (a surrogate pair), immediately and with
+  // a held upload. The character stays whole and the text follows the image.
+  await owner.keyboard.press("Enter");
+  await owner.keyboard.insertText("wave 🌊");
+  await imageEvent(owner, "paste", fixtures[1], "caret-emoji.png");
+  await expectImages(owner, 3);
+  await owner.keyboard.type("x");
+  await expect.poll(caretMarkdown, { timeout: 15000 }).toMatch(/\n\nwave 🌊\[image\]x$/);
+  let resumeEmoji;
+  const holdEmoji = new Promise((resolve) => {
+    resumeEmoji = resolve;
+  });
+  let sawEmoji;
+  const emojiStarted = new Promise((resolve) => {
+    sawEmoji = resolve;
+  });
+  await owner.route(
+    origin + caretPath,
+    async (route) => {
+      sawEmoji();
+      await holdEmoji;
+      await route.continue();
+    },
+    { times: 1 },
+  );
+  await owner.keyboard.press("Enter");
+  await owner.keyboard.insertText("sea 🌊");
+  await imageEvent(owner, "paste", fixtures[2], "caret-emoji-slow.png");
+  await emojiStarted;
+  try {
+    await expect(content(owner).locator(".wordgard-upload-preview")).toBeVisible();
+    await owner.keyboard.type("yz");
+  } finally {
+    resumeEmoji();
+  }
+  await expectImages(owner, 4);
+  await owner.keyboard.type("!");
+  await expect
+    .poll(caretMarkdown, { timeout: 15000 })
+    .toMatch(/\n\nwave 🌊\[image\]x\n\nsea 🌊\[image\]yz!$/);
+  assert.ok(!(await caretMarkdown()).includes("\uFFFD"), "no split surrogate");
+  await owner.screenshot({ path: `${output}/image-paste-caret.png` });
+  complete(
+    "Typing after an image paste follows the image, through a slow upload and after an emoji",
   );
 
   await access({

@@ -1,4 +1,5 @@
 import { celldCborPlugin } from "./celld-cbor.mjs";
+import { AUTH_D1 } from "./deployment/profiles.mjs";
 import { mermaidSource } from "./browser-mermaid.mjs";
 import { sourceFingerprint, writeBuildReceipt } from "./source-fingerprint.mjs";
 import {
@@ -12,6 +13,7 @@ import {
   viewerBuildOptions,
   viewerSplit,
   withHashedAssets,
+  withInlineFavicon,
   withModulePreloads,
 } from "./viewer-chunks.mjs";
 import { build } from "esbuild";
@@ -144,9 +146,11 @@ await build({
 await copyFile(path.join(app, "viewer/connect-agent.js"), path.join(dist, "public/connect.js"));
 await writeFile(
   path.join(dist, "public/index.html"),
-  withHashedAssets(
-    withModulePreloads(await readFile(path.join(app, "viewer/index.html"), "utf8"), preloads),
-    assets,
+  withInlineFavicon(
+    withHashedAssets(
+      withModulePreloads(await readFile(path.join(app, "viewer/index.html"), "utf8"), preloads),
+      assets,
+    ),
   ),
 );
 await writeFile(
@@ -190,7 +194,11 @@ await writeFile(
         { tag: "v3", new_sqlite_classes: ["Space"] },
       ],
       d1_databases: [
-        { binding: "DB", database_name: "pages-next-auth", database_id: "pages-next-auth" },
+        {
+          binding: AUTH_D1.binding,
+          database_name: AUTH_D1.database_name,
+          database_id: AUTH_D1.database_id,
+        },
       ],
       // celld scopes this bucket beneath the deployment's fleet prefix.
       r2_buckets: [{ binding: "PAGES_ASSETS", bucket_name: "pages-images" }],

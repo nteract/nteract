@@ -276,6 +276,196 @@ There is no repair tool. To repair a Page:
    the receipts. Restore it from a backup, or ask the owner to grant access
    again.
 
+### Preserved Markdown conversion
+
+Older builds stored Markdown they couldn't import as one read-only preserved
+block. The Page host converts each one when it loads, creates, registers or
+restores a Page (README, "Preserved blocks"). While it converts, the Page is
+read-only: viewers connect and sync it down, discovery reports `converting`
+and the viewer shows a read-only notice, native puts are refused, and HTTP
+edits get `503 preserved_markdown_converting`. A restart while records still
+can't be stored doesn't stop the Page from starting; it stays readable and
+keeps retrying.
+
+The conversion journals in its own key space (`host/operation/internal:`),
+outside the client receipt budgets, so a full legacy receipt store can't
+block it. A run that fails for a reason that passes (storage, a pending edit)
+retries with backoff, 5 seconds doubling to 5 minutes. Connections and edits
+don't start retries early.
+
+Once a run's journal entry is reserved, the host retries that exact intent,
+indefinitely, whatever the failure, and the Page stays fenced and read-only.
+It never reauthors or abandons the run, because its change may already be in
+the serving document. A restart replays the same journal entry. Every five
+failures it logs `page.preserved_markdown_stuck` (below). Such a Page usually
+can't store records at all, for example a `413` on record capacity, so it
+couldn't take writes anyway. An operator frees storage or record capacity
+(see Page quotas); the host's next retry then finishes the same intent on its
+own, and the fence clears.
+
+A run that fails before anything is reserved, for a reason that won't pass
+(the change is too large, the conversion throws, or a request-shaped
+refusal), retries once converting each source as plain text. If that fails
+too, the host logs one line:
+
+```json
+{"service":"nteract-pages-native","event":"page.preserved_markdown_stuck","page_id":"…","reason":"history_capacity","timestamp":"…"}
+```
+
+`reason` is a bounded code (`history_capacity`, `conversion_error`, an error
+code, or `status_<n>`); the line carries no content. After a deploy, search the
+target's logs for `page.preserved_markdown_stuck`. If the Page is still
+fenced (reads work, edits get `preserved_markdown_converting`), it is retrying
+a reserved run: free storage or capacity as above. Otherwise the Page is stuck
+and not fenced: it edits normally, and its preserved blocks stay read-only with a notice. The next
+load tries again. To recover a Page now, as its owner or with an agent:
+
+1. `read_page` the Page. A preserved block reads as the Markdown it would
+   convert to.
+2. `edit_page` with `replace_block_markdown` on that block, passing the
+   Markdown from step 1. If it's refused with `unsupported_markdown` or for
+   size, simplify or split the Markdown and retry.
+
+The replacement removes the preserved block, so nothing is left to convert.
+
+## Page quotas
+
+Each account may hold a limited number of active Pages and, separately, the
+same number in Trash. The profile's `pageQuota` sets the target's default, which
+the installer writes as `PAGES_DEFAULT_PAGE_QUOTA`; Page10's is 250. Without the
+variable the Worker uses 250. Changing the default needs a new install.
+
+Rules in D1 override the default for one account or one email domain:
+
+```sql
+CREATE TABLE pages_quota_rules (
+  match_kind TEXT NOT NULL CHECK (match_kind IN ('email', 'domain')),
+  match_value TEXT NOT NULL,
+  page_limit INTEGER NOT NULL CHECK (page_limit >= 0),
+  note TEXT,
+  updated_at INTEGER NOT NULL,
+  PRIMARY KEY (match_kind, match_value)
+);
+```
+
+| Precedence | Rule | Example |
+| --- | --- | --- |
+| 1 | `email` equal to the account's server-verified email | `('email', 'rgbkrk@gmail.com', 1000)` |
+| 2 | `domain` equal to that email's domain, lowercased | `('domain', 'anaconda.com', 500)` |
+| 3 | the target default | `PAGES_DEFAULT_PAGE_QUOTA` |
+
+A rule replaces the default: it can be lower. `0` pauses the account: it can't
+create, restore or add sub-pages or Projects, but it can still move Pages to
+Trash, and its Pages stay readable. Store emails lowercased and
+trimmed, and domains lowercased with no `@`; the resolver normalizes them the
+same way, and a value that can't match is ignored. An account with no verified
+email always gets the default. The Worker creates the table on first use (its
+own `pages_quota_schema` version table) and reads it once per isolate every five
+minutes, so a change takes up to five minutes to apply. If D1 fails, accounts get
+the default and the Worker logs a `page-quota` failure. A failed read is retried
+after 30 seconds; a schema setup that hangs is abandoned after 30 seconds, so a
+recovered D1 applies the rules again without a restart.
+
+With no rules, every account gets the default.
+
+### Changing quota rules
+
+`scripts/quota-rules.mjs` lists, sets and deletes rules from an operator
+machine. It builds the SQL locally and sends it over SSH stdin to one fixed
+command on the target's host. That command runs `celld d1 execute`, which goes
+through the live owner of `pages-next-auth`, under its fence and in one
+transaction. The host, service, binary, bucket and database come from the
+target's deployment profile.
+
+```bash
+node scripts/quota-rules.mjs check                     # tables, schema version, rule count
+node scripts/quota-rules.mjs list
+node scripts/quota-rules.mjs get    email rgbkrk@gmail.com
+node scripts/quota-rules.mjs set    email rgbkrk@gmail.com 1000 --note "design partner"
+node scripts/quota-rules.mjs set    domain anaconda.com 500
+node scripts/quota-rules.mjs set    email someone@example.com 0
+node scripts/quota-rules.mjs delete domain anaconda.com
+```
+
+| Option | Meaning |
+| --- | --- |
+| `--target NAME` | Deployment profile, `page10` by default. Only a profile with `pageQuota` and `d1` is accepted. |
+| `--ssh-host HOST` | SSH destination, the profile's host (`lab1`) by default, for example `root@lab1`. |
+| `--dry-run` | Print the remote script and every SQL step, and write nothing. `delete` runs its read-only preflight to show the stored rows it would remove; every other command sends nothing. |
+| `--create-only` | `set` only: refuse when the rule already exists. |
+| `--note TEXT` | `set` only: a note of at most 200 characters. |
+
+Run it with Node 22.18 or later, which loads `sharing.ts` without a build step.
+The SSH user must be root or able to `sudo -n -u nteract-page10`: the service's
+loopback firewall resets connections from any other uid.
+
+- **Values.** The script never accepts SQL. The kind is `email` or `domain`.
+  Values are normalized as the Worker normalizes them
+  (`worker/quota-rule-match.mjs`, shared by both), and a value no account could
+  match is refused. The limit is a whole number from 0 to 10,000. Values and
+  notes reach the SQL only as `CAST(X'<hex>' AS TEXT)`.
+- **Limit 0** pauses Page creation for the match: the account can't create or
+  restore Pages, or add sub-pages or Projects. It keeps its Pages, can read
+  them, and can still move them to Trash.
+- **`set` writes the whole rule.** Leaving out `--note` clears the note. The
+  script reads the row back in the same transaction and prints it. It refuses a
+  new rule when the table already holds 1,000, because past that the Worker
+  ignores every rule.
+- **Stored spellings.** The Worker normalizes stored values again, so a row
+  written by hand as `Example.COM` still matches `example.com`. `get` and `list`
+  print stored values quoted, and flag a row that isn't canonical or that a
+  newer row for the same match shadows. `delete` removes every stored row the
+  Worker reads as the named rule, however it is spelled. `set` writes the
+  canonical form; an older spelling stays stored but no longer applies.
+- **Guards.** Before it reads any SQL, the remote command checks that the binary
+  is celld 0.6.3 and that the cell `__D1Database:c131e246…` is already in the
+  target's bucket. celld creates an empty database for a `database_id` it
+  hasn't seen, so a wrong id would otherwise write somewhere no Worker reads.
+  Before every write, `set` and `delete` run the `check` query: both
+  `pages_quota_rules` and `pages_quota_schema` must exist, at schema version 1.
+  The script never creates a table. The Worker's migration owns both, so after
+  deploying a quota build, call `list_pages` once before the first rule.
+- **Five-minute cache.** Each Worker isolate reads the rule table at most once
+  every five minutes. A change can take that long to apply, and different
+  isolates can disagree until then. Poll `list_pages` for `quota.limit` rather
+  than expecting it at once.
+
+Never run `celld d1 execute` by hand against `pages-next-auth`. It also holds
+the auth and OIDC tables, and celld reports some errors misleadingly.
+
+#### After a failed write
+
+An error doesn't prove that nothing was written. In qualification, a write
+that returned an error during an owner restart had committed. After any failed
+`set` or `delete`, the script reads the rule back once and never re-sends on
+its own.
+
+- **Requested state observed.** The read-back shows exactly the change asked
+  for: for `set`, the row carrying this run's `updated_at`; for `delete`, no
+  stored row for the rule. The script says the write landed and exits 0.
+- **Requested state not observed.** The script prints the current state and
+  exits 1. That state doesn't show the write failed. The write may have
+  committed, lost its response, and been replaced by a newer change before the
+  read-back; running it again would overwrite that change. Reconcile first:
+  find out who else changed the rule, and decide from the current state.
+- **Read-back failed.** The state is unknown. Run `get` and reconcile before
+  running anything again.
+
+A `delete` also reports "requested state not observed" without any error when
+a row changed between its preflight read and its write. Each row is deleted
+only if its `updated_at` still matches the preflight, so the changed row
+survives and is shown.
+
+A listing that finds a Catalog's stored Page counts wrong rewrites them and logs
+one line without the account:
+
+```json
+{"service":"nteract-pages-native","event":"catalog.count_repaired","active":3,"trash":0,"timestamp":"…"}
+```
+
+Expect it after a rollback build has written Catalog entries. Without a rollback,
+it points at a write path that skips the counts.
+
 ## Tunnel and DNS provisioning
 
 This is first-publication setup for a new target, not a step to repeat for each
@@ -447,7 +637,8 @@ page: User Resources read-only for export, read and write for import, Platform
 Channels no access. Save it with the `/connect` instructions, which write
 `~/.config/pages/anaconda-api-key`, and point `*_FILE` at that file so the key
 stays out of shell history. A Pages OAuth access token (`pages_…`) also works on
-`/mcp`, but it expires after ten minutes. Only the source Project's owner can
+`/mcp`, but it expires after ten minutes and the script does not refresh it, so
+use an API key for anything that runs unattended. Only the source Project's owner can
 list it. The target Project belongs to the account that imports it.
 
 ### Export
@@ -490,14 +681,15 @@ The bundle is JSON for review before import:
 `pages` is in tree order: the home Page first, then each subtree depth first,
 siblings by source position, so parents always come before children.
 `markdown` is the body: the Page's blocks joined by a blank line. `blocks`
-appears only when a Page has more than one block. Markdown import preserves a
-whole block verbatim when any of it is unsupported syntax, so the importer
-writes each block separately to keep one Preserved Markdown block from
-swallowing its neighbours. If you edit a Page's `markdown`, edit `blocks` to
-match or delete it; import refuses a mismatch.
+appears only when a Page has more than one block. Each block is written
+separately. A Page10 target refuses math and HTML with `unsupported_markdown`,
+so import writes such a block as the literal text it reads as, the same text
+the target's own conversion of a preserved block produces. If you edit a Page's
+`markdown`, edit `blocks` to match or delete it; import refuses a mismatch.
 
-The report lists Pages with `preserved_markdown` (carried verbatim; check that
-they render as intended), Pages with `private_images` (their
+The report lists Pages with `preserved_markdown` (the source stored preserved
+blocks or non-Markdown blocks; check that they read as intended),
+Pages with `private_images` (their
 `/api/pages/<id>/assets/<sha256>` references point at the source Page's assets
 and will not load on the target), comment threads that stay behind, and links to
 source Pages outside the Project.

@@ -2,10 +2,19 @@ import * as A from "@automerge/automerge";
 import { assertDocumentLimits, assertIntentSize } from "../model/limits.mjs";
 import { openingTitleWarning } from "../model/title-warning.mjs";
 import { guardPassageEdits } from "../model/passage-edits.mjs";
-import { guardCommentIntent } from "../model/comment-guard.mjs";
-import { inspectOperation, reserveOperation, listOperationEntries } from "./operation-journal.mjs";
+import { requireSupportedSchema } from "../model/schema-features.mjs";
+import {
+  INTERNAL_PREFIX,
+  inspectOperation,
+  reserveOperation,
+  listOperationEntries,
+} from "./operation-journal.mjs";
 
-const COMMENT_OPERATIONS = ["manage_page_comment", "reply_page_comment"];
+/** The document a journal entry writes. Entries without `doc` predate the
+ * comments document and wrote the Page. */
+export const PAGE_DOC = "page";
+export const COMMENTS_DOC = "comments";
+const entryDoc = (entry) => entry?.doc ?? PAGE_DOC;
 
 function reject(status, message, code) {
   const error = new Error(message);
@@ -51,6 +60,20 @@ export function requireHeads(doc, heads) {
 
 /** Journal the exact CRDT edit under shared native history admission. Retrying
  * never repeats the semantic operation; terminal receipts retain retry metadata.
+ *
+ * `doc` names the document `handle` holds (PAGE_DOC or COMMENTS_DOC); the
+ * entry records it, so startup recovery replays each entry into its own
+ * document. `scope` and `pageId` default to the Page document's own ID; a
+ * comments document passes the Page's. `guard(args)` replaces the exact-heads
+ * check: it validates the intent against the caller's snapshot and returns
+ * the arguments to apply (comment intents use model/comment-guard.mjs).
+ * `receiptFields()` adds fields to a new intent's receipt, computed after
+ * the guard; they're journaled, so an exact retry returns them unchanged.
+ *
+ * An entry the journal recorded for another document (`entry.doc`) never
+ * applies here. A finished one returns its receipt with `recorded_doc` naming
+ * that document, so the caller can label its heads; a pending one is refused.
+ * Builds before the comments document journaled comment intents on the Page.
  */
 export async function documentMutation({
   storage,
@@ -62,18 +85,37 @@ export async function documentMutation({
   apply,
   flush,
   admission,
+  // The host's own migration: its key is in the reserved internal key space,
+  // with its own journal capacity (operation-journal.mjs).
+  internal = false,
+  doc = PAGE_DOC,
+  pageId = handle.doc().page_id,
+  scope = `page:${pageId}`,
+  guard,
+  receiptFields,
 }) {
-  const key = mutationKey(args);
+  const key = internal
+    ? `${INTERNAL_PREFIX}${mutationKey(args).slice("host/operation/".length)}`
+    : mutationKey(args);
   const digest = await fingerprint(operation, args, identity);
   const inspected = await inspectOperation(storage, {
     key,
     digest,
     retryToken: args.retry_token,
-    scope: `page:${handle.doc().page_id}`,
+    scope,
     principal: identity.principal,
     pendingEntry: admission?.pending(key),
   });
   let entry = inspected.entry;
+  if (entry && entryDoc(entry) !== doc) {
+    if (entry.pending)
+      throw Object.assign(
+        Error("This request was recorded for another document and hasn't finished; retry shortly"),
+        { status: 409, code: "operation_pending" },
+      );
+    await storage.sync();
+    return { ...entry.receipt, recorded_doc: entryDoc(entry) };
+  }
   let recorded = false;
   if (!entry) {
     if (admission?.hasPending)
@@ -81,6 +123,9 @@ export async function documentMutation({
         status: 429,
         code: "pending_operation_capacity",
       });
+    // A new intent never edits a Page stamped with a schema feature this build
+    // can't express. A recorded receipt still replays.
+    requireSupportedSchema(handle.doc());
     // Check external prerequisites only for new intents. A retry must replay
     // its original bytes/receipt even if an external service is unavailable.
     const targetScope = args.conflict_scope === "target";
@@ -99,25 +144,25 @@ export async function documentMutation({
           code: "invalid_edit_selector",
         },
       );
-    // Comment intents carry their own guard: only a passage comment depends on
-    // text the caller read, and it resolves that text at base_heads.
-    const comment = COMMENT_OPERATIONS.includes(operation);
     if (prepare) {
       if (targetScope) guardPassageEdits(handle.doc(), args.base_heads, args.operations);
-      else if (comment) guardCommentIntent(handle.doc(), operation, args);
+      else if (guard) guard(args);
       else requireHeads(handle.doc(), args.base_heads);
       await prepare();
     }
     const before = handle.doc();
+    // Native edits can land while prepare awaits; check the exact base again.
+    requireSupportedSchema(before);
     const guarded = targetScope
       ? guardPassageEdits(before, args.base_heads, args.operations)
       : null;
-    const commentArgs =
-      !targetScope && comment ? guardCommentIntent(before, operation, args) : null;
-    if (!targetScope && !comment) requireHeads(before, args.base_heads);
+    // A guarded intent (a comment) checks its own preconditions: only a
+    // passage comment depends on text the caller read.
+    const guardedArgs = !targetScope && guard ? guard(args) : null;
+    if (!targetScope && !guard) requireHeads(before, args.base_heads);
     const effectiveArgs = guarded
       ? { ...args, operations: guarded.operations }
-      : (commentArgs ?? args);
+      : (guardedArgs ?? args);
     let result, after;
     const candidate = A.clone(before);
     // No await between the head guard and immutable edit construction.
@@ -134,9 +179,10 @@ export async function documentMutation({
       entry = {
         fingerprint: digest,
         pending: true,
+        ...(doc !== PAGE_DOC && { doc }),
         changes: A.getChanges(before, after),
         receipt: {
-          page_id: before.page_id,
+          page_id: pageId,
           heads: A.getHeads(after),
           result: result ?? null,
           ...(guarded && {
@@ -147,6 +193,7 @@ export async function documentMutation({
             },
           }),
           ...(warning ? { warnings: [warning] } : {}),
+          ...receiptFields?.(),
         },
       };
       assertIntentSize(key, entry.changes, {
@@ -194,9 +241,31 @@ export async function documentMutation({
   return entry.receipt;
 }
 
-export async function recoverDocumentMutations(storage, handle, flush, admission) {
+/** Finish one recorded, still-pending journal entry by its key: apply its
+ * recorded changes (a no-op where the handle holds them), flush, and record
+ * the receipt as terminal. The host uses it to keep retrying an internal
+ * migration whose recovery at startup failed. A missing or terminal entry
+ * only releases the key. */
+export async function replayRecordedMutation({ storage, handle, key, flush, admission }) {
+  const entry = await storage.get(key);
+  if (entry?.pending && entry.changes) {
+    if (admission) await admission.replay(key, entry, handle);
+    else await handle.update((doc) => A.applyChanges(doc, entry.changes)[0]);
+    if (!A.hasHeads(handle.doc(), entry.receipt.heads))
+      throw new Error("Recorded edit dependencies are unavailable");
+    await flush();
+    const completed = { ...entry, pending: false };
+    delete completed.changes;
+    await storage.put(key, completed);
+    await storage.sync();
+  }
+  await admission?.release(key);
+}
+
+/** Replay every pending entry for document `doc` into `handle`. */
+export async function recoverDocumentMutations(storage, handle, flush, admission, doc = PAGE_DOC) {
   const pending = [...(await listOperationEntries(storage))].filter(
-    ([, entry]) => entry.pending && entry.changes,
+    ([, entry]) => entry.pending && entry.changes && entryDoc(entry) === doc,
   );
   if (!pending.length) return;
   // Journal order is not causal order. Validate the entire dependency closure

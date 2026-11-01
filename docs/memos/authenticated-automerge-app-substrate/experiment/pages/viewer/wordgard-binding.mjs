@@ -1,5 +1,6 @@
 // Adapted from rgbkrk/wordgard-automerge c9c6ea8 (BSD-3-Clause).
 import * as A from "@automerge/automerge/slim";
+import { stickyCaret, stickyCaretPosition } from "../model/sticky-caret.mjs";
 import { ChangeSet, Leaf, Token } from "wordgard/doc";
 import { Correction, GardSelection, GardState, Transaction } from "wordgard/state";
 import { insertLineBreak } from "wordgard/command";
@@ -16,6 +17,7 @@ import {
 } from "./wordgard-model.mjs";
 import { projectChanges } from "./wordgard-projection.mjs";
 import { MARK_NAMES, markExpand } from "../model/marks.mjs";
+import { stampMarks, stampSpans } from "../model/schema-features.mjs";
 
 // Enter inserts LineBreak leaves, while Wordgard's code clipboard parser can
 // insert text containing newlines. Keep one editor representation before local
@@ -94,6 +96,26 @@ export const wordgardListStarts = Correction.onContent(OrderedList, (position) =
         insert: [OrderedList.of(1).withMarks(position.node.tag.marks)],
       },
 );
+
+// Where an editor position lands after a binding change event. Positions are
+// carried through native Automerge cursors, so they follow characters rather
+// than a projection diff. A caret sticks to the code point before it (see
+// model/sticky-caret.mjs). Selection ends, and a caret with no character
+// before it, stick to the character after them.
+export function remoteEditorPosition(event, path, pos, { caret = false } = {}) {
+  const { before, after, nativeBefore, nativeAfter } = event;
+  const index = before.map.wgToAm[pos];
+  const textOf = (doc) => path.reduce((value, key) => value?.[key], doc) ?? "";
+  let offset;
+  if (caret && index > 0) {
+    const cursor = stickyCaret(nativeBefore, path, textOf(nativeBefore), index);
+    offset = stickyCaretPosition(nativeAfter, path, textOf(nativeAfter), cursor);
+  } else {
+    const cursor = A.getCursor(nativeBefore, path, index, "after");
+    offset = A.getCursorPosition(nativeAfter, path, cursor);
+  }
+  return after.map.amToWg[offset] ?? after.doc.length - 1;
+}
 
 // Undo history for one editor, in a compartment so a rejected local
 // transaction can drop it. A rejected change stays in the history even though
@@ -229,8 +251,14 @@ export function createWordgardBinding(replica, id, { encodeSpans = encode } = {}
         },
       );
       return replica.change((d) => {
-        if (structural) A.updateSpans(d, path, encodeSpans(tr.newDoc), expand);
-        else {
+        // Schema features this transaction's content needs join the Page's
+        // stamp in the same change.
+        if (structural) {
+          const spans = encodeSpans(tr.newDoc);
+          A.updateSpans(d, path, spans, expand);
+          stampSpans(d, spans);
+        } else {
+          const written = new Set();
           for (const range of [...replacements].reverse()) {
             const from = original.map.wgToAm[range.from],
               to = original.map.wgToAm[range.to];
@@ -259,8 +287,11 @@ export function createWordgardBinding(replica, id, { encodeSpans = encode } = {}
               ]);
               for (const name of names) {
                 const range = { start: pos, end: pos + length, expand: markExpand(name) };
-                if (desired[name] !== undefined) A.mark(d, path, range, name, desired[name]);
-                else if (present.some((mark) => mark.name === name)) A.unmark(d, path, range, name);
+                if (desired[name] !== undefined) {
+                  A.mark(d, path, range, name, desired[name]);
+                  written.add(name);
+                } else if (present.some((mark) => mark.name === name))
+                  A.unmark(d, path, range, name);
               }
               pos += length;
             }
@@ -271,9 +302,12 @@ export function createWordgardBinding(replica, id, { encodeSpans = encode } = {}
             if (end <= start) continue;
             for (const name of format.remove ?? [])
               A.unmark(d, path, { start, end, expand: "both" }, name);
-            for (const [name, value] of Object.entries(format.add ?? {}))
+            for (const [name, value] of Object.entries(format.add ?? {})) {
               A.mark(d, path, { start, end, expand: markExpand(name) }, name, value);
+              written.add(name);
+            }
           }
+          stampMarks(d, written);
         }
         if (!decode(A.spans(d, path)).doc.eq(tr.newDoc))
           throw Error("Wordgard operation did not reproduce its native Pages projection");

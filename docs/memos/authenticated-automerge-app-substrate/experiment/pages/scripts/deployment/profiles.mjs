@@ -49,6 +49,18 @@ export function verifyRuntime(candidate, installed) {
   throw new Error("Refusing to replace a newer or unrecognized celld runtime");
 }
 
+// The D1 database every build binds as DB (scripts/build.mjs). celld names its
+// cell HMAC(D1 namespace, database_id), with no fleet input, so `cell` is the
+// same on every fleet. A different database_id names a different database,
+// which celld creates empty on first use; scripts/quota-rules.mjs refuses to
+// run SQL unless `cell` is already listed in the target's bucket.
+export const AUTH_D1 = Object.freeze({
+  binding: "DB",
+  database_name: "pages-next-auth",
+  database_id: "pages-next-auth",
+  cell: "__D1Database:c131e246b9200ef544cc9ae3b62b2878a6704bda1361a6c675d1f0fad09da941",
+});
+
 const shared = {
   host: "lab1",
   bucket: "nteract-celld-lab-621741996708",
@@ -286,6 +298,11 @@ const targets = Object.freeze({
     compactRecords: true,
     companyViewDomains: "anaconda.com",
     catalogIndex: "1",
+    // Each account's Page limit when no quota rule matches it
+    // (worker/page-quota.mjs). It also bounds that account's Trash.
+    pageQuota: "250",
+    // The D1 database holding pages_quota_rules, for scripts/quota-rules.mjs.
+    d1: AUTH_D1,
     // The Cloudflare edge forwards an unsampled traceparent, and celld's
     // default parent-based sampler then drops every request-scoped log line.
     otelTracesSampler: "always_on",

@@ -508,10 +508,12 @@ test("MCP advertises visible-text replacement separately from Markdown replaceme
     "link",
     "em",
     "strong",
+    "strike",
     "highlight",
     "code",
   ]);
   assert.equal(variants[1].properties.add.properties.strong.const, true);
+  assert.equal(variants[1].properties.add.properties.strike.const, true);
   assert.deepEqual(variants[0].required, ["op", "block_id", "match_text", "replacement"]);
   assert.equal(variants[0].properties.context_before.type, "string");
   assert.equal(variants[0].properties.context_after.type, "string");
@@ -684,4 +686,86 @@ test("only verified OAuth credential failures produce tool reauthorization chall
     assert.equal(challenge.includes("untrusted.example"), false);
     assert.equal(challenge.includes("127.0.0.1"), false);
   }
+});
+test("initialize hands out a presence session id; other calls don't, and stay stateless", async () => {
+  const init = await handleMcp(
+    request("initialize", {
+      protocolVersion: "2025-03-26",
+      capabilities: {},
+      clientInfo: { name: "session-test", version: "1" },
+    }),
+    async () => {
+      throw Error("Initialization must not invoke a document tool");
+    },
+  );
+  const id = init.headers.get("mcp-session-id");
+  assert.match(id, /^[0-9a-f-]{36}$/);
+  const again = await handleMcp(
+    request("initialize", {
+      protocolVersion: "2025-03-26",
+      capabilities: {},
+      clientInfo: { name: "session-test", version: "1" },
+    }),
+    async () => {},
+  );
+  assert.notEqual(again.headers.get("mcp-session-id"), id);
+  // A tool call with or without the id works without server-side session state.
+  const list = await handleMcp(request("tools/list"), async () => {});
+  assert.equal(list.status, 200);
+  assert.equal(list.headers.get("mcp-session-id"), null);
+});
+
+test("MCP advertises thread_ids for batch resolve and keeps the refusal's named IDs", async () => {
+  const descriptor = tools.find((tool) => tool.name === "manage_page_comment");
+  const { thread_id, thread_ids } = descriptor.inputSchema.properties;
+  assert.equal(thread_id.type, "string");
+  assert.deepEqual(
+    {
+      type: thread_ids.type,
+      minItems: thread_ids.minItems,
+      maxItems: thread_ids.maxItems,
+      uniqueItems: thread_ids.uniqueItems,
+      items: thread_ids.items,
+    },
+    {
+      type: "array",
+      minItems: 1,
+      maxItems: 100,
+      uniqueItems: true,
+      items: { type: "string", minLength: 1, maxLength: 256 },
+    },
+  );
+  assert.deepEqual(descriptor.inputSchema.required, ["page_id", "idempotency_key", "action"]);
+  assert.match(descriptor.description, /thread_ids/);
+  assert.match(descriptor.description, /not_found_thread_ids/);
+  // Resolving keeps every message; a status change is not destructive.
+  assert.equal(descriptor.annotations.destructiveHint, false);
+  assert.equal(descriptor.annotations.idempotentHint, true);
+
+  const calls = [];
+  const refusal = {
+    error:
+      "1 of 2 comment threads not found; nothing was changed. not_found_thread_ids names them.",
+    code: "invalid_comment_selector",
+    not_found_thread_ids: ["gone"],
+  };
+  const response = await handleMcp(
+    request("tools/call", {
+      name: "manage_page_comment",
+      arguments: {
+        page_id: "page_x",
+        idempotency_key: "batch-1234",
+        action: "resolve",
+        thread_ids: ["kept", "gone"],
+      },
+    }),
+    async (op, args) => {
+      calls.push({ op, args });
+      return Response.json(refusal, { status: 400 });
+    },
+  );
+  const result = (await response.json()).result;
+  assert.equal(result.isError, true);
+  assert.deepEqual(result.structuredContent, refusal);
+  assert.deepEqual(calls[0].args.thread_ids, ["kept", "gone"]);
 });

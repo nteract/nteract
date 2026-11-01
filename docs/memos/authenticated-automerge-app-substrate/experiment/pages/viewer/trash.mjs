@@ -22,6 +22,18 @@ export function closeTrashedSessions(host, sessions, options) {
   );
 }
 
+/** delete_page fences on the heads this tab has seen, so a peer's edit that
+ * lands first refuses the move with stale_heads. The host's message is for
+ * agents ("read_page again"); a person gets one they can act on. */
+export function moveToTrashError(error) {
+  return error?.code === "stale_heads"
+    ? Object.assign(Error("Someone edited this Page while it was moving to Trash. Try again."), {
+        code: error.code,
+        status: error.status,
+      })
+    : error;
+}
+
 /** A superseded result was not applied; the Page changed since the request. */
 function applied(result) {
   if (result?.superseded || result?.applied === false)
@@ -29,11 +41,22 @@ function applied(result) {
   return result;
 }
 
+/** The largest Page limit any account can have (worker/page-quota.mjs
+ * MAX_PAGE_QUOTA). A paused account can move every active Page to Trash, so
+ * its Trash can hold twice that. */
+export const MAX_PAGE_QUOTA = 10_000;
+/** A safety bound on list_pages requests for one Trash listing: four times
+ * what the largest possible Trash needs at 100 Pages per request, so short
+ * pages never reach it. */
+export const TRASH_REQUESTS = ((2 * MAX_PAGE_QUOTA) / 100) * 4;
+
+/** Every Page in the caller's Trash, following cursors until there are none.
+ * A listing that would need more than TRASH_REQUESTS requests throws rather
+ * than show part of Trash as all of it. */
 export async function listTrash(tool) {
   const pages = [];
   let cursor;
-  // Trash holds at most 100 Pages; two pages of results cover it.
-  for (let request = 0; request < 2; request++) {
+  for (let request = 0; request < TRASH_REQUESTS; request++) {
     const result = await tool("list_pages", {
       in_trash: true,
       limit: 100,
@@ -41,9 +64,9 @@ export async function listTrash(tool) {
     });
     if (Array.isArray(result?.pages)) pages.push(...result.pages);
     cursor = result?.next_cursor;
-    if (typeof cursor !== "string") break;
+    if (typeof cursor !== "string") return pages;
   }
-  return pages;
+  throw Error("Trash has more Pages than this view can list.");
 }
 
 export async function restorePage(tool, pageId, principal) {

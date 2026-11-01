@@ -1,7 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import * as A from "@automerge/automerge";
-import { Leaf } from "wordgard/doc";
+import { Leaf, parse } from "wordgard/doc";
+import { JSDOM } from "jsdom";
 import { enableRich, textPath, validateRich, blockMarkdown } from "../model/richtext.mjs";
 import {
   decode,
@@ -55,9 +56,24 @@ test("Pages headings, nested lists, quotes, hard breaks, code params and links r
     assert.equal(blockMarkdown(rewritten.blocks.one), blockMarkdown(native.blocks.one), source);
   }
 });
-test("preserved unsupported Markdown and instruction nodes retain exact source and kind", () => {
+// Older builds stored preserved blocks; this build only reads them.
+const preserved = (source) =>
+  A.change(A.from({ blocks: { one: { id: "one", kind: "markdown", markdown: source } } }), (d) => {
+    enableRich(d, "one");
+    A.updateSpans(
+      d,
+      textPath("one"),
+      encode(schema.doc([OpaqueBlock.of({ source, importId: "", kind: "markdown" })])),
+    );
+  });
+test("stored preserved Markdown and instruction nodes retain exact source and kind", () => {
   const source = "<div>preserved unsupported markup</div>";
-  const doc = fixture(source),
+  // Import never writes one: this HTML is literal text in a paragraph.
+  assert.equal(
+    decode(A.spans(fixture(source), textPath("one"))).doc.content[0].type,
+    Paragraph.type,
+  );
+  const doc = preserved(source),
     tree = decode(A.spans(doc, textPath("one"))).doc;
   assert.equal(tree.content[0].type, OpaqueBlock);
   assert.equal(tree.content[0].param.source, source);
@@ -76,7 +92,7 @@ test("native positions preserve paragraph ends and opaque leaf endpoints", () =>
     assert.equal(map.amToWg[map.wgToAm[end]], end);
     pos += block.length;
   }
-  const table = decode(A.spans(fixture("<div>preserved markup</div>"), textPath("one")));
+  const table = decode(A.spans(preserved("<div>preserved markup</div>"), textPath("one")));
   assert.deepEqual(table.map.wgToAm, [0, 1]);
   assert.deepEqual(table.map.amToWg, [0, 1]);
 });
@@ -165,4 +181,27 @@ test("highlights decode to palette or custom colors and round trip", () => {
   }
   for (const color of ["red", "#ABCDEF", "#abc", true])
     assert.throws(() => decode([{ type: "text", value: "x", marks: { highlight: color } }]));
+});
+
+test("pasted HTML links keep their destination and title; unsafe ones keep only text", () => {
+  const { document } = new JSDOM("").window;
+  const host = document.createElement("div");
+  host.innerHTML =
+    '<p>see <a href="https://example.com/x" title="T">abs</a> <a href="/p/abc">rel</a> ' +
+    '<a href="javascript:alert(1)">js</a> <a>bare</a></p>';
+  const texts = parse.slice(schema, host, {}).content.filter((token) => token.isText);
+  const link = (text) => {
+    const token = texts.find((entry) => entry.param.includes(text));
+    return PagesLink.isInSet(token.marks)?.value ?? null;
+  };
+  assert.deepEqual(link("abs"), { href: "https://example.com/x", title: "T" });
+  assert.deepEqual(link("rel"), { href: "/p/abc", title: null });
+  assert.equal(link("js"), null);
+  assert.equal(link("bare"), null);
+  assert.ok(
+    texts
+      .map((token) => token.param)
+      .join("")
+      .includes("js bare"),
+  );
 });

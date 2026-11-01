@@ -13,6 +13,13 @@ export const JOURNAL_LIMITS = Object.freeze({
   pendingBytes: 4 * 1024 * 1024,
 });
 const PREFIX = "host/operation/";
+/** The host's own migrations, such as the preserved-block conversion. A
+ * client key can't reach it: client keys hold only letters, digits, `_` and
+ * `-`, never `:`. Its entries count against neither client lane nor the
+ * client pending budget, so a full legacy receipt store can't block them. */
+export const INTERNAL_PREFIX = `${PREFIX}internal:`;
+export const INTERNAL_LIMITS = Object.freeze({ pendingEntries: 4 });
+const isInternal = (key) => key.startsWith(INTERNAL_PREFIX);
 const SECRET = "host/retry-secret-v1";
 const CLOCK = "host/retry-clock-v1";
 const encoder = new TextEncoder();
@@ -297,8 +304,25 @@ export async function reserveOperation(storage, { key, entry, retry, now = Date.
   if (values.has(key))
     throw Error("Operation already exists; inspect it before reserving capacity");
   const prepared = { ...entry, ...(retry && { retry }) };
-  const lane = [...values].filter(([, value]) => Boolean(value.retry) === Boolean(retry));
-  const pending = [...values].filter(([, value]) => value.pending === true);
+  if (isInternal(key)) {
+    if (retry) throw new TypeError("Internal operations take no retry token");
+    // A finished migration's receipt is never read again: its key names the
+    // heads it converted, which the document has moved past. Drop them.
+    for (const [name, value] of values)
+      if (isInternal(name) && value.pending === false) await storage.delete(name);
+    const pendingInternal = [...values].filter(
+      ([name, value]) => isInternal(name) && value.pending === true,
+    );
+    if (pendingInternal.length >= INTERNAL_LIMITS.pendingEntries)
+      reject(429, "pending_operation_capacity", "Pending host migrations need recovery first");
+    return prepared;
+  }
+  const lane = [...values].filter(
+    ([name, value]) => !isInternal(name) && Boolean(value.retry) === Boolean(retry),
+  );
+  const pending = [...values].filter(
+    ([name, value]) => !isInternal(name) && value.pending === true,
+  );
   const bytes = operationEntryBytes(key, prepared);
   if (
     pending.length >= JOURNAL_LIMITS.pendingEntries ||

@@ -165,6 +165,30 @@ export async function writeLocalPage(identity, page, { replica } = {}) {
               };
             }
           }
+          // The comments document merges the same way, independently: a
+          // slower tab's checkpoint never drops another tab's comments.
+          if (
+            !previous.resetReplica &&
+            previous.comments_snapshot &&
+            previous.comments_snapshot !== page.comments_snapshot &&
+            previous.comments_document_id ===
+              (page.comments_document_id ?? previous.comments_document_id)
+          ) {
+            const existing = A.load(decodeSnapshot(previous.comments_snapshot));
+            const incoming = page.comments_snapshot
+              ? A.load(decodeSnapshot(page.comments_snapshot))
+              : undefined;
+            if (!incoming || !A.hasHeads(incoming, A.getHeads(existing))) {
+              const merged = incoming ? A.merge(incoming, existing) : existing;
+              next = {
+                ...next,
+                comments_snapshot: encodeSnapshot(A.save(merged)),
+                comments_document_id: previous.comments_document_id,
+                comment_saved_heads: page.comment_saved_heads ?? previous.comment_saved_heads,
+                pending: true,
+              };
+            }
+          }
           // Which edits are this browser's own survives every checkpoint
           // write, including a slower tab's (local-edits.mjs).
           const localEdits = mergeLocalEdits(previous.localEdits, page.localEdits, {

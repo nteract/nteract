@@ -132,7 +132,7 @@ async function open(h, pageId, seen = []) {
     authentication: h.auth,
     refreshSession: async () => h.auth,
   });
-  session.subscribe(() => seen.push(session.status));
+  session.subscribe(() => seen.push(session.statusId));
   await session.connecting?.catch(() => {});
   await tick();
   clearTimeout(session.retryTimer);
@@ -168,10 +168,13 @@ test("a Page closed while syncing remote changes reopens Syncing, not Saving", a
   const pageId = await cachedPage(h);
   const first = await open(h, pageId);
   assert.equal(first.status, "Syncing");
+  assert.equal(first.statusKey, "syncing");
   await acknowledge(h, first);
   assert.equal(first.status, "Saved");
+  assert.equal(first.statusKey, "saved");
   await remoteChange(first, "From an agent");
   assert.equal(first.status, "Syncing");
+  assert.equal(first.statusKey, "syncing");
   await receipt(h, first); // Outstanding when the Page closes.
   await first.close();
   const closed = await readLocalPage(h.auth.identity, pageId);
@@ -182,7 +185,7 @@ test("a Page closed while syncing remote changes reopens Syncing, not Saving", a
   t.after(() => reopened.close());
   assert.equal(reopened.sync$.snapshot().pending, false);
   assert.equal(reopened.status, "Syncing");
-  assert.ok(!seen.includes("Saving"), seen.join(", "));
+  assert.ok(!seen.includes("saving"), seen.join(", "));
   await acknowledge(h, reopened);
   assert.equal(reopened.status, "Saved");
 });
@@ -211,7 +214,7 @@ test("a Page closed offline with no local edit reopens without Saving", async (t
   await tick();
   t.after(() => offline.close());
   assert.equal(offline.status, "Syncing");
-  assert.ok(!seen.includes("Saving"), seen.join(", "));
+  assert.ok(!seen.includes("saving"), seen.join(", "));
 });
 
 test("a local edit that reached native storage but not the checkpoint reopens Saving", async (t) => {
@@ -235,12 +238,15 @@ test("a local edit that reached native storage but not the checkpoint reopens Sa
   assert.equal(reopened.sync$.snapshot().pending, true);
   assert.equal(reopened.recoveryPending, true, "the restored edit is not claimed as saved");
   assert.ok(!A.getHeads(reopened.doc).every((head) => reopened.savedHeads.includes(head)));
-  assert.equal(reopened.status, "Saving");
+  // Saving, drawn quiet until the receipt has been pending SLOW_SAVE_MS.
+  assert.equal(reopened.statusId, "saving");
+  assert.equal(reopened.statusKey, "quiet");
   // Remote catch-up before the receipt lands keeps it Saving.
   await remoteChange(reopened, "From an agent");
-  assert.equal(reopened.status, "Saving");
+  assert.equal(reopened.statusId, "saving");
   await acknowledge(h, reopened);
   assert.equal(reopened.status, "Saved");
+  assert.equal(reopened.slowSaveTimer, undefined, "the acknowledgement disarms the timer");
   const saved = await readLocalPage(h.auth.identity, pageId);
   assert.deepEqual(saved.localEdits.ackedHeads, A.getHeads(reopened.doc));
 });
@@ -251,7 +257,7 @@ test("an acknowledged local edit followed by remote catch-up never reopens Savin
   const first = await open(h, pageId);
   await acknowledge(h, first);
   await first.change((doc) => A.updateText(doc, ["title"], "Typed and saved"));
-  assert.equal(first.status, "Saving");
+  assert.equal(first.statusId, "saving");
   await acknowledge(h, first);
   assert.equal(first.status, "Saved");
   await remoteChange(first, "From an agent");
@@ -273,7 +279,7 @@ test("an acknowledged local edit followed by remote catch-up never reopens Savin
   assert.equal(reopened.status, "Syncing");
   await acknowledge(h, reopened);
   assert.equal(reopened.status, "Saved");
-  assert.ok(!seen.includes("Saving"), seen.join(", "));
+  assert.ok(!seen.includes("saving"), seen.join(", "));
 });
 
 test("a checkpoint from before local-edit tracking keeps its receipt flag until acknowledged", async (t) => {
@@ -290,7 +296,7 @@ test("a checkpoint from before local-edit tracking keeps its receipt flag until 
   h.state.offline = false;
   const reopened = await open(h, pageId);
   t.after(() => reopened.close());
-  assert.equal(reopened.status, "Saving", "unattributed edits stay unconfirmed across reopens");
+  assert.equal(reopened.statusId, "saving", "unattributed edits stay unconfirmed across reopens");
   await acknowledge(h, reopened);
   assert.equal(reopened.status, "Saved");
   assert.equal((await readLocalPage(h.auth.identity, pageId)).localEdits.unattributed, false);
@@ -344,7 +350,7 @@ test("an unacknowledged edit stays attributed behind any number of other actors"
   t.after(() => reopened.close());
   assert.ok(reopened.localPage.localEdits.actors.some((entry) => entry.actor === actor));
   assert.equal(reopened.snapshot().title, "Behind 600 actors");
-  assert.equal(reopened.status, "Saving");
+  assert.equal(reopened.statusId, "saving");
   assert.equal(reopened.recoveryPending, true);
 });
 
@@ -378,7 +384,7 @@ test("another tab's live actor survives this tab's covering receipt and clean cl
     A.getChangesMetaSince(reopened.doc, []).some((change) => change.actor === actor),
     "the right tab's edit is restored from its native replica",
   );
-  assert.equal(reopened.status, "Saving");
+  assert.equal(reopened.statusId, "saving");
 });
 
 test("a covering receipt frees its replica's earlier actors and a clean close frees its own", async (t) => {
@@ -394,7 +400,7 @@ test("a covering receipt frees its replica's earlier actors and a clean close fr
     ownEntries(second.localPage, replica).map((entry) => entry.actor),
     [first.actor(), second.actor()],
   );
-  assert.equal(second.status, "Saving");
+  assert.equal(second.statusId, "saving");
   await acknowledge(h, second);
   assert.equal(second.status, "Saved");
   const acknowledged = await readLocalPage(h.auth.identity, pageId);
@@ -445,7 +451,7 @@ test("an open that fails before classifying keeps the replica's unconfirmed acto
   t.after(() => reopened.close());
   assert.equal(reopened.snapshot().title, "Unsaved before a failed open");
   assert.equal(reopened.recoveryPending, true);
-  assert.equal(reopened.status, "Saving");
+  assert.equal(reopened.statusId, "saving");
 });
 
 test("closing a legacy pending checkpoint early keeps its receipt flag as unattributed", async (t) => {

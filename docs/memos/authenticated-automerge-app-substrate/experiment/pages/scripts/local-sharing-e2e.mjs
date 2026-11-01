@@ -36,13 +36,24 @@ const admission = process.argv.includes("--admission");
 const buildUpdate = process.argv.includes("--build-update");
 const trash = process.argv.includes("--trash");
 const projects = process.argv.includes("--projects");
+const coldOpen = process.argv.includes("--cold-open");
+const commenter = process.argv.includes("--commenter");
 if (
-  [domainView, images, mcpImages, taskLists, admission, buildUpdate, trash, projects].filter(
-    Boolean,
-  ).length > 1
+  [
+    domainView,
+    images,
+    mcpImages,
+    taskLists,
+    admission,
+    buildUpdate,
+    trash,
+    projects,
+    coldOpen,
+    commenter,
+  ].filter(Boolean).length > 1
 )
   throw new Error(
-    "Choose one qualification: --domain-view, --images, --mcp-images, --task-lists, --admission, --build-update, --trash or --projects",
+    "Choose one qualification: --domain-view, --images, --mcp-images, --task-lists, --admission, --build-update, --trash, --projects, --cold-open or --commenter",
   );
 const children = new Set();
 let canceled = false;
@@ -72,9 +83,13 @@ function start(command, args, options = {}) {
 async function run(command, args, options, onMessage) {
   const child = start(command, args, options);
   if (onMessage) child.on("message", (message) => onMessage(message, child));
-  const timeout = setTimeout(() => {
-    void stop(child);
-  }, 180000);
+  // The cold-open benchmark runs throttled page loads back to back.
+  const timeout = setTimeout(
+    () => {
+      void stop(child);
+    },
+    coldOpen ? 1_800_000 : 180000,
+  );
   let code;
   try {
     code = await new Promise((resolve, reject) => {
@@ -218,7 +233,8 @@ try {
       .filter((key) => process.env[key] !== undefined)
       .map((key) => [key, process.env[key]]),
   );
-  if (images || mcpImages) hostEnv.CELLD_MAX_REQUEST_BODY_BYTES = String(6 * 1024 * 1024);
+  if (images || mcpImages || coldOpen)
+    hostEnv.CELLD_MAX_REQUEST_BODY_BYTES = String(6 * 1024 * 1024);
   const version = parseRuntimeVersion(
     execFileSync(process.env.CELLD_BIN || "celld", ["--version"], {
       encoding: "utf8",
@@ -339,23 +355,27 @@ try {
   await run(
     process.execPath,
     [
-      projects
-        ? "scripts/projects-smoke.mjs"
-        : trash
-          ? "scripts/trash-smoke.mjs"
-          : admission
-            ? "scripts/admission-smoke.mjs"
-            : taskLists
-              ? "scripts/task-lists-smoke.mjs"
-              : mcpImages
-                ? "scripts/mcp-image-import-smoke.mjs"
-                : images
-                  ? "scripts/images-smoke.mjs"
-                  : domainView
-                    ? "scripts/domain-sharing-smoke.mjs"
-                    : buildUpdate
-                      ? "scripts/build-update-smoke.mjs"
-                      : "scripts/sharing-smoke.mjs",
+      coldOpen
+        ? "scripts/cold-open-benchmark.mjs"
+        : commenter
+          ? "scripts/commenter-smoke.mjs"
+          : projects
+            ? "scripts/projects-smoke.mjs"
+            : trash
+              ? "scripts/trash-smoke.mjs"
+              : admission
+                ? "scripts/admission-smoke.mjs"
+                : taskLists
+                  ? "scripts/task-lists-smoke.mjs"
+                  : mcpImages
+                    ? "scripts/mcp-image-import-smoke.mjs"
+                    : images
+                      ? "scripts/images-smoke.mjs"
+                      : domainView
+                        ? "scripts/domain-sharing-smoke.mjs"
+                        : buildUpdate
+                          ? "scripts/build-update-smoke.mjs"
+                          : "scripts/sharing-smoke.mjs",
     ],
     {
       env: {
@@ -377,7 +397,7 @@ try {
   if (!result.cleaned || result.failure)
     throw new Error("Sharing qualification did not complete cleanly");
   console.log(
-    `${admission ? "Local admission and reconnect" : buildUpdate ? "Deploy while open" : "Local OIDC, sharing and MCP"} qualification passed. Artifacts: ${output}`,
+    `${coldOpen ? "Cold-open benchmark" : admission ? "Local admission and reconnect" : buildUpdate ? "Deploy while open" : "Local OIDC, sharing and MCP"} qualification passed. Artifacts: ${output}`,
   );
 } finally {
   await Promise.all([...children].map(stop));

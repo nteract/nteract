@@ -1,5 +1,13 @@
 import { pageAccess, pageDecision, pageGrant, pageState } from "./access.mjs";
 import { withAdmissionReason } from "./admission-reasons.mjs";
+import { missingFeatures, schemaUnsupported } from "../model/schema-features.mjs";
+import { COMMENTING_ROLES } from "../model/comment-rules.mjs";
+
+/** The two documents a Page host serves. The Page document takes `edit`;
+ * its comments document takes `comment`. One ACL governs both. */
+export const PAGE_SCOPE = "page";
+export const COMMENTS_SCOPE = "comments";
+const EDITING_ROLES = ["owner", "editor"];
 
 export const hex = (bytes) => [...bytes].map((byte) => byte.toString(16).padStart(2, "0")).join("");
 export const logicalId = (bytes) => {
@@ -32,7 +40,7 @@ export function pageTrashed(access, grant) {
       status: 409,
       code: "page_trashed",
     });
-  return ["viewer", "editor"].includes(grant?.role)
+  return ["viewer", "commenter", "editor"].includes(grant?.role)
     ? withAdmissionReason(
         new PermissionDenied("This Page is in its owner's Trash", "page_trashed"),
         "page_trashed",
@@ -46,13 +54,36 @@ export function admissionCancelled(code = "native_admission_cancelled") {
 
 /** Durable authorship admission is distinct from a connection's live credential.
  * Host-owned grants and credential ceilings apply together. The CRDT never grants access.
+ *
+ * A Page host serves two trees: the Page document (`metadata.tree`) and its
+ * comments document (`commentsTree()`, once the Page record names one).
+ * Reading either needs `read`. Writing the Page needs `edit`; writing the
+ * comments document needs `comment`. A signing key's binding records what it
+ * was admitted to author: `writer` for the Page, `commenter` for comments
+ * (a writer may comment too). `commentsBlocked` marks a key whose comment
+ * change failed the per-author check; it never authors comments again.
  */
 export class DocumentPolicy {
-  constructor({ storage, metadata, serverKey, now = Date.now }) {
+  /** `schemaFeatures(scope)` reads that document's current schema stamp
+   * (model/schema-features.mjs) for the native schema gate in put().
+   * `commentsTree()` is the comments document's tree, or undefined. */
+  constructor({
+    storage,
+    metadata,
+    serverKey,
+    now = Date.now,
+    schemaFeatures = () => [],
+    writeFence = () => undefined,
+    commentsTree = () => undefined,
+  }) {
     this.storage = storage;
     this.metadata = metadata;
     this.serverKey = serverKey;
     this.now = now;
+    this.schemaFeatures = schemaFeatures;
+    this.commentsTree = commentsTree;
+    // Returns the refusal while the host holds peer writes, or undefined.
+    this.writeFence = writeFence;
     this.bindings = new Map();
     this.sessions = new Map();
     this.admissions = new Map();
@@ -69,19 +100,33 @@ export class DocumentPolicy {
     );
   }
 
+  /** `write` is false to read, true to edit the Page, or "comment" to write
+   * its comments document. */
   account(identity, write = false) {
     const access = pageAccess(this.metadata(), identity, { now: this.now() });
     if (access.trashed && (!access.canRead || write))
       throw pageTrashed(access, pageGrant(this.metadata(), identity?.principal));
     if (!access.canRead) throw this.readDenied(identity);
-    if (write && this.metadata()?.recoveryBlocked)
+    const comment = write === "comment";
+    if (write && !comment && this.metadata()?.recoveryBlocked)
       throw Object.assign(
         new Error("Page recovery is blocked; accepted content is available read-only"),
         { status: 409, code: "page_recovery_blocked" },
       );
     if (write && !identity.canWrite) throw new PermissionDenied("Credential is read-only");
-    if (write && !access.canWrite) throw new PermissionDenied("Page is read-only");
+    if (comment && !access.canComment)
+      throw new PermissionDenied("Commenting is not allowed on this Page");
+    if (write && !comment && !access.canWrite) throw new PermissionDenied("Page is read-only");
     return access;
+  }
+
+  /** Which document `tree` names: PAGE_SCOPE, COMMENTS_SCOPE, or undefined. */
+  scopeOf(tree) {
+    const metadata = this.metadata();
+    if (tree === metadata?.tree) return PAGE_SCOPE;
+    const comments = this.commentsTree();
+    if (comments && tree === comments) return COMMENTS_SCOPE;
+    return undefined;
   }
 
   /** Classify a read denial for logs. Expiry is the only case with a distinct
@@ -110,14 +155,26 @@ export class DocumentPolicy {
     return binding.generation ?? (binding.principal === this.metadata()?.owner ? 0 : -1);
   }
 
-  authorAllowed(binding) {
-    if (!binding || binding.pending || binding.revoked || binding.retired || !binding.writer)
-      return false;
+  /** Whether `binding` may author records in `scope` now. */
+  authorAllowed(binding, scope = PAGE_SCOPE) {
+    if (!binding || binding.pending || binding.revoked || binding.retired) return false;
     const grant = pageGrant(this.metadata(), binding.principal);
-    return (
-      ["owner", "editor"].includes(grant.role) &&
-      this.bindingGeneration(binding) === grant.generation
-    );
+    if (this.bindingGeneration(binding) !== grant.generation) return false;
+    if (scope === COMMENTS_SCOPE)
+      return (
+        !binding.commentsBlocked &&
+        (!!binding.writer || !!binding.commenter) &&
+        COMMENTING_ROLES.includes(grant.role)
+      );
+    return !!binding.writer && EDITING_ROLES.includes(grant.role);
+  }
+
+  /** A session's write flags for `access`. */
+  sessionWrites(access, binding) {
+    return {
+      canWrite: access.canWrite && this.authorAllowed(binding),
+      canComment: access.canComment && this.authorAllowed(binding, COMMENTS_SCOPE),
+    };
   }
 
   /** Retire lost writer authority synchronously, then persist and close leases.
@@ -131,7 +188,8 @@ export class DocumentPolicy {
       const grant = pageGrant(this.metadata(), binding.principal);
       const retire =
         this.bindingGeneration(binding) !== grant.generation ||
-        (binding.writer && !["owner", "editor"].includes(grant.role));
+        (binding.writer && !EDITING_ROLES.includes(grant.role)) ||
+        (binding.commenter && !COMMENTING_ROLES.includes(grant.role));
       if (retire && !binding.retired) {
         const retired = { ...binding, writer: false, retired: true };
         this.bindings.set(key, retired);
@@ -140,11 +198,13 @@ export class DocumentPolicy {
       const session = this.sessions.get(key);
       if (!session) continue;
       const access = pageAccess(this.metadata(), session.identity, { now: this.now() });
+      const writes = this.sessionWrites(access, this.bindings.get(key));
       if (
         !access.canRead ||
         session.generation !== access.generation ||
         session.role !== access.role ||
-        session.canWrite !== (access.canWrite && this.authorAllowed(this.bindings.get(key)))
+        session.canWrite !== writes.canWrite ||
+        session.canComment !== writes.canComment
       ) {
         this.sessions.delete(key);
         disconnects.push(() =>
@@ -162,7 +222,8 @@ export class DocumentPolicy {
         !access.canRead ||
         access.generation !== claim.access.generation ||
         access.role !== claim.access.role ||
-        access.canWrite !== claim.access.canWrite
+        access.canWrite !== claim.access.canWrite ||
+        access.canComment !== claim.access.canComment
       ) {
         const changed = new PermissionDenied(
           "Page access changed during connection",
@@ -251,7 +312,14 @@ export class DocumentPolicy {
     key,
     senderId,
     identity,
-    { reauthenticate, disconnect, onRenewal = () => {}, signal, waitUntil = () => {} },
+    {
+      reauthenticate,
+      disconnect,
+      onRenewal = () => {},
+      signal,
+      waitUntil = () => {},
+      features = [],
+    },
   ) {
     const access = this.account(identity);
     if (this.closed || signal?.aborted) throw signal?.reason ?? admissionCancelled();
@@ -310,6 +378,13 @@ export class DocumentPolicy {
         // A key first admitted as a reader, or under an earlier grant, cannot
         // later publish the records it authored without write authority.
         writer: previous ? !!previous.writer && this.authorAllowed(previous) : access.canWrite,
+        // The same rule for the comments document: a key admitted without
+        // comment authority never gains it.
+        commenter: previous
+          ? !!(previous.commenter || previous.writer) &&
+            this.authorAllowed(previous, COMMENTS_SCOPE)
+          : access.canComment,
+        ...(previous?.commentsBlocked && { commentsBlocked: true }),
         retired:
           !!previous?.retired ||
           (!!previous && this.bindingGeneration(previous) !== access.generation),
@@ -363,7 +438,8 @@ export class DocumentPolicy {
         this.metadata()?.aclCommitting ||
         current.generation !== access.generation ||
         current.role !== access.role ||
-        current.canWrite !== access.canWrite
+        current.canWrite !== access.canWrite ||
+        current.canComment !== access.canComment
       )
         throw new PermissionDenied(
           "Page access changed during connection",
@@ -373,12 +449,16 @@ export class DocumentPolicy {
         identity,
         generation: current.generation,
         role: current.role,
-        canWrite: current.canWrite && this.authorAllowed(this.bindings.get(key)),
+        ...this.sessionWrites(current, this.bindings.get(key)),
         reauthenticate,
         disconnect,
         onRenewal,
         checkedAt: this.now(),
         checking: undefined,
+        // The schema features this connection's build declared. They live on
+        // the session, not the persisted binding: a tab keeps its signing key
+        // across a reload, and the reloaded build declares its own features.
+        features: Object.freeze([...features]),
       };
       this.sessions.set(key, session);
       return () => {
@@ -396,12 +476,14 @@ export class DocumentPolicy {
     }
   }
 
+  /** `write` is false, PAGE_SCOPE or COMMENTS_SCOPE (true means the Page). */
   async active(key, write = false) {
+    const scope = write === true ? PAGE_SCOPE : write;
     const session = this.sessions.get(key);
     const binding = this.bindings.get(key);
     if (!session || !binding || binding.revoked) throw new PermissionDenied("Unknown peer");
     try {
-      this.account(session.identity, write);
+      this.account(session.identity, scope === COMMENTS_SCOPE ? "comment" : !!scope);
       if (this.now() - session.checkedAt >= 15_000) {
         session.checking ??= (async () => {
           // Count cadence from the start so verifier latency cannot cause the
@@ -425,11 +507,14 @@ export class DocumentPolicy {
             binding.revoked
           )
             throw new PermissionDenied("Connection ended");
-          for (const access of [this.account(previous, write), this.account(renewed, write)]) {
+          const need = scope === COMMENTS_SCOPE ? "comment" : !!scope;
+          for (const access of [this.account(previous, need), this.account(renewed, need)]) {
+            const writes = this.sessionWrites(access, binding);
             if (
               access.generation !== session.generation ||
               access.role !== session.role ||
-              (access.canWrite && this.authorAllowed(binding)) !== session.canWrite
+              writes.canWrite !== session.canWrite ||
+              writes.canComment !== session.canComment
             )
               throw new PermissionDenied("Page access changed during renewal");
           }
@@ -446,9 +531,9 @@ export class DocumentPolicy {
       }
       if (this.sessions.get(key) !== session || this.bindings.get(key)?.revoked)
         throw new PermissionDenied("Connection ended");
-      this.account(session.identity, write);
+      this.account(session.identity, scope === COMMENTS_SCOPE ? "comment" : !!scope);
       const current = this.bindings.get(key);
-      if (write && !this.authorAllowed(current))
+      if (scope && !this.authorAllowed(current, scope))
         throw new PermissionDenied("Signing key is read-only; reconnect with a new key");
       return current;
     } catch (error) {
@@ -458,23 +543,138 @@ export class DocumentPolicy {
     }
   }
 
+  /** Check `key` against `tree`; resolves with the tree's scope. A write to
+   * the comments tree needs `comment`, to the Page tree `edit`. */
   async access(key, tree, write = false) {
     const metadata = this.metadata();
+    const scope = this.scopeOf(tree);
     // The owner may still read a trashed Page; account() denies everyone else.
-    if (!metadata || pageState(metadata) === "deleted" || metadata.tree !== tree)
-      throw new PermissionDenied();
-    if (key === this.serverKey) return;
-    await this.active(key, write);
+    if (!metadata || pageState(metadata) === "deleted" || !scope) throw new PermissionDenied();
+    if (key === this.serverKey) return scope;
+    await this.active(key, write ? scope : false);
+    return scope;
   }
 
   async put(requestor, author, tree) {
-    await this.access(requestor, tree, true);
+    const scope = await this.access(requestor, tree, true);
     if (author === this.serverKey) return;
     const binding = this.bindings.get(author);
     // A current writer may relay previously admitted author history. Author
     // credential expiry is not retroactive deletion; a reader's key or revoked
-    // key never gains write authority through relay.
-    if (!this.authorAllowed(binding)) throw new PermissionDenied("Unknown document author");
+    // key never gains write authority through relay. A commenter's key
+    // authors only the comments document.
+    if (!this.authorAllowed(binding, scope)) throw new PermissionDenied("Unknown document author");
+    // While the host converts preserved Markdown blocks, no peer record lands,
+    // relayed or self-authored: either could be a competing conversion.
+    const fence = this.writeFence();
+    if (fence) throw fence;
+    // The native schema gate. A peer's own edits arrive with itself as the
+    // author; refuse them while its build lacks an id in the current stamp.
+    // Records signed by another key are relayed history: the relay rule above
+    // governs them, and the gate does not apply. Peers sync only with this
+    // host, so such a record is one the host already accepted or one its
+    // author published while admitted. Refusing every self-authored put is
+    // acceptable: edits a stale tab made before the stamp stay in its local
+    // store and sync after it reloads, because a reload keeps the tab's key
+    // and the new build declares the feature. The one exception is an edit
+    // to a preserved Markdown block, which the host converts itself. This
+    // gate sees keys, not records, so the reloaded viewer sets such edits
+    // aside before it connects (PageSession.recoverPreservedBlockEdits).
+    if (requestor === author) {
+      // The Page's stamp gates both documents: a build without the
+      // comments-doc feature must not write either. The comments document's
+      // own stamp gates its rich content.
+      this.requireSchemaSupport(author, PAGE_SCOPE);
+      if (scope === COMMENTS_SCOPE) this.requireSchemaSupport(author, COMMENTS_SCOPE);
+    }
+  }
+
+  /** Throw `schema_unsupported` when the document's stamp names an id the
+   * build connected as `key` didn't declare. A declaration is the client's
+   * claim: this stops stale clients from writing what they can't express, not
+   * hostile ones, whose edits write authority already bounds. */
+  requireSchemaSupport(key, scope = PAGE_SCOPE) {
+    const missing = missingFeatures(
+      this.schemaFeatures(scope),
+      this.sessions.get(key)?.features ?? [],
+    );
+    if (missing.length) throw withAdmissionReason(schemaUnsupported(missing), "schema_unsupported");
+  }
+
+  /** The principal and Page role a signing key was admitted as, or undefined
+   * for an unknown key. The native comment check reads this for each record. */
+  signer(key) {
+    const binding = this.bindings.get(key);
+    if (!binding) return undefined;
+    return {
+      principal: binding.principal,
+      role: pageGrant(this.metadata(), binding.principal).role,
+    };
+  }
+
+  /**
+   * The native per-author check refused a comment record signed by `key`.
+   * The key authors no more comments, from this moment: the binding changes in
+   * memory at once, so the next put from it is refused by `put`, nonfatally.
+   * Its connection closes, and only its connection. The returned promise
+   * persists the block for restarts; callers on the storage path must not
+   * await it, and the disconnect runs after they return.
+   *
+   * A principal can come back with a fresh key (bounded by the lifetime key
+   * cap), but each refusal costs the host one admission check and drops
+   * nothing else, so it isn't a lever over other peers.
+   */
+  refuseComments(key) {
+    const binding = this.bindings.get(key);
+    let persisted = Promise.resolve();
+    if (binding && !binding.commentsBlocked) {
+      const blocked = { ...binding, commentsBlocked: true };
+      this.bindings.set(key, blocked);
+      this.dirtyBindings.add(key);
+      persisted = Promise.resolve()
+        .then(() => this.writeBinding(key, { ...blocked, pending: false }))
+        .then(() => {
+          if (this.bindings.get(key) === blocked) this.dirtyBindings.delete(key);
+        });
+    }
+    const session = this.sessions.get(key);
+    if (session) {
+      this.sessions.delete(key);
+      setTimeout(() => {
+        void Promise.resolve()
+          .then(() =>
+            session.disconnect(
+              new PermissionDenied("Comment change refused", "comment_change_refused"),
+            ),
+          )
+          .catch(() => {});
+      }, 0);
+    }
+    return persisted;
+  }
+
+  /**
+   * The signer behind `key` spent its principal's refusal budget
+   * (comment-admission.mjs). Its connection closes with a retryable code; the
+   * key keeps its authority, so a record refused only for a missing
+   * dependency is admitted after the client reconnects and backs off.
+   */
+  throttleComments(key) {
+    const session = this.sessions.get(key);
+    if (!session) return;
+    this.sessions.delete(key);
+    setTimeout(() => {
+      void Promise.resolve()
+        .then(() =>
+          session.disconnect(
+            withAdmissionReason(
+              Object.assign(new Error("Too many refused comment changes"), { status: 503 }),
+              "comment_admission_budget",
+            ),
+          ),
+        )
+        .catch(() => {});
+    }, 0);
   }
 
   profiles() {

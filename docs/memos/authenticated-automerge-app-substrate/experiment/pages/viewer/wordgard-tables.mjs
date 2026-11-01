@@ -89,7 +89,14 @@ export function moveTableCell(editor, direction) {
   return true;
 }
 
+// Wordgard prevents the default for every matched key unless the binding sets
+// allowDefault. Outside a table these commands return false, so allowDefault
+// lets Tab and Shift-Tab move focus instead of trapping keyboard users.
 export const tableKeys = [
-  KeyBinding.of({ key: "Tab", run: (editor) => moveTableCell(editor, 1) }),
-  KeyBinding.of({ key: "Shift-Tab", run: (editor) => moveTableCell(editor, -1) }),
+  KeyBinding.of({ key: "Tab", run: (editor) => moveTableCell(editor, 1), allowDefault: true }),
+  KeyBinding.of({
+    key: "Shift-Tab",
+    run: (editor) => moveTableCell(editor, -1),
+    allowDefault: true,
+  }),
 ];

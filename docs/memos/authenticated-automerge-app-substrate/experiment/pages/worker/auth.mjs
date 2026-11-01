@@ -30,18 +30,53 @@ export function driverLabel(request) {
   return value.trim();
 }
 
+/** "Browser" means a person in the Pages web app, signed in with a cookie;
+ * viewers show such a session by name alone (viewer/activity.mjs). A request
+ * that carries a bearer credential (API key or Pages OAuth token) is a
+ * client acting for the account, so a "Browser" label from it reads as "API".
+ * Other labels pass through. */
+export function bearerDriver(driver) {
+  return driver.toLowerCase() === "browser" ? "API" : driver;
+}
+
 /** An agent's optional session label, such as "release agent", so two
  * sessions of one account and harness show and key as separate agents. It is
- * trusted like the driver: it always sits under the authenticated account. */
+ * trusted like the driver: it always sits under the authenticated account.
+ * A blank label means no label. Clients fill the header from config
+ * templates such as `{env:PAGES_AGENT}`, which send "" when the variable is
+ * unset. */
 export function agentLabel(request) {
   const value =
     request.headers.get("x-pages-agent") ?? new URL(request.url).searchParams.get("agent");
-  if (value === null) return undefined;
+  if (value === null || !value.trim()) return undefined;
   // eslint-disable-next-line no-control-regex
-  if (!value.trim() || value.length > 80 || /[\x00-\x1f\x7f]/.test(value))
+  if (value.length > 80 || /[\x00-\x1f\x7f]/.test(value))
     throw new HttpError(400, "Invalid agent label");
   return value.trim();
 }
+
+/** A presence tag for the MCP session a request belongs to. Pages issues the
+ * `Mcp-Session-Id` on initialize and clients echo it, so two sessions on one
+ * credential show as two agents. The tag is a digest scoped to the account,
+ * so the raw session id never reaches other participants. */
+export async function sessionTag(request, principal) {
+  // Only the MCP endpoint, and the worker's own forwards from it to internal
+  // routes, carry a session. Elsewhere the header is ignored, never rejected.
+  const path = new URL(request.url).pathname;
+  if (path !== "/mcp" && !path.startsWith("/internal/")) return undefined;
+  const value = request.headers.get("mcp-session-id");
+  if (value === null) return undefined;
+  if (!/^[A-Za-z0-9._-]{8,128}$/.test(value)) throw new HttpError(400, "Invalid MCP session id");
+  const bytes = new Uint8Array(
+    await crypto.subtle.digest("SHA-256", new TextEncoder().encode(`${principal}\u0000${value}`)),
+  );
+  return Array.from(bytes.slice(0, 8), (byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+const mcpSession = async (request, principal) => {
+  const session = await sessionTag(request, principal);
+  return session ? { session } : {};
+};
 
 export function requireSameOrigin(request, env) {
   const origin = new URL(env.NOTEBOOK_CLOUD_PUBLIC_ORIGIN || request.url).origin;
@@ -114,13 +149,14 @@ export async function authenticate(request, env) {
           displayName: grant.identity.displayName || grant.identity.principal,
           driver:
             request.headers.has("x-pages-driver") || new URL(request.url).searchParams.has("driver")
-              ? driver
+              ? bearerDriver(driver)
               : ["pages-chatgpt", "https://chatgpt.com/oauth/client.json"].includes(grant.clientId)
                 ? "ChatGPT"
                 : grant.clientId === "pages-kilo"
                   ? "Kilo"
                   : "MCP",
           ...(agent && { agent }),
+          ...(await mcpSession(request, grant.identity.principal)),
           canWrite: scopes.has("pages:write"),
           credentialKind: "oauth",
           namespace: grant.identity.namespace,
@@ -165,8 +201,9 @@ export async function authenticate(request, env) {
       {
         principal: identity.principal,
         displayName: identity.metadata.displayName || identity.principal,
-        driver,
+        driver: bearerDriver(driver),
         ...(agent && { agent }),
+        ...(await mcpSession(request, identity.principal)),
         canWrite: identity.scope === "editor",
         credentialKind: "api-key",
         namespace: identity.metadata.principalNamespace,
@@ -216,7 +253,12 @@ export function requireWrite(identity) {
 
 /** Server failures whose fixed message tells the caller to retry the same
  * request. Every other 5xx keeps the generic message. */
-const RETRYABLE_SERVER_CODES = ["record_persistence_timeout", "request_timeout"];
+const RETRYABLE_SERVER_CODES = [
+  "record_persistence_timeout",
+  "request_timeout",
+  // The host is moving a Page's comments to their own document.
+  "comments_migrating",
+];
 
 const LOGGED_ERROR_TYPES = [
   "Error",
@@ -309,6 +351,7 @@ export function errorResponse(error, stage = "request") {
         "page_trashed",
         "page_not_in_trash",
         "trash_capacity",
+        "page_quota_exceeded",
         "purge_preview_required",
         "purge_preview_invalid",
         "invalid_idempotency_key",
@@ -341,7 +384,41 @@ export function errorResponse(error, stage = "request") {
         "home_page_protected",
         "page_has_children",
         "lifecycle_unsettled",
+        "unsupported_schema_feature",
+        "unsupported_markdown",
+        "preserved_markdown_converting",
+        "comment_not_author",
+        "comment_access_denied",
+        "operation_pending",
       ].includes(error?.code) && { code: error.code }),
+      ...(error?.code === "unsupported_markdown" &&
+        error.details?.unsupported && {
+          unsupported: {
+            construct: String(error.details.unsupported.construct).slice(0, 32),
+            line: Number(error.details.unsupported.line) || 1,
+            column: Number(error.details.unsupported.column) || 1,
+            excerpt: String(error.details.unsupported.excerpt ?? "").slice(0, 80),
+          },
+        }),
+      ...(["page_quota_exceeded", "trash_capacity"].includes(error?.code) &&
+        Number.isSafeInteger(error.details?.limit) &&
+        Number.isSafeInteger(error.details?.count) && {
+          limit: error.details.limit,
+          count: error.details.count,
+        }),
+      ...(error?.code === "unsupported_schema_feature" &&
+        Array.isArray(error.details?.features) && {
+          unsupported_features: error.details.features
+            .slice(0, 32)
+            .map((id) => String(id).slice(0, 64)),
+        }),
+      // A thread batch is bounded to 100 IDs of at most 256 bytes each.
+      ...(error?.code === "invalid_comment_selector" &&
+        Array.isArray(error.details?.not_found_thread_ids) && {
+          not_found_thread_ids: error.details.not_found_thread_ids
+            .slice(0, 100)
+            .map((id) => String(id).slice(0, 256)),
+        }),
       ...(["edit_conflict", "resync_required"].includes(error?.code) && {
         ...(Array.isArray(error.details?.conflicts) && {
           conflicts: error.details.conflicts.slice(0, 10).map((conflict) => ({

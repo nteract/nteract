@@ -446,7 +446,8 @@ test("import fills the home Page, nests the top level under it and keeps sibling
   );
   assert.deepEqual(
     target.pages.get(id("Alpha")).blocks.map((block) => block.markdown),
-    ["First section.", "$$x$$"],
+    // Math becomes the literal text Page10 accepts.
+    ["First section.", "\\$\\$x\\$\\$"],
   );
   assert.ok(target.calls.every((call) => call.name !== "create_page" || call.args.parent_id));
   for (const call of target.calls.filter((call) => MUTATIONS.has(call.name))) {

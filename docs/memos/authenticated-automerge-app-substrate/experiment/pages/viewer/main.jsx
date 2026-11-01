@@ -1,5 +1,6 @@
 import "../../../../../../src/styles/notebook-tokens.css";
-import React, { useEffect, useRef, useState } from "react";
+import React, { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { flushSync } from "react-dom";
 import { createRoot } from "react-dom/client";
 import {
   ChevronDown,
@@ -8,7 +9,6 @@ import {
   LogOut,
   Link,
   MessageSquare,
-  MoreHorizontal,
   Plus,
   Plug,
   RotateCcw,
@@ -37,11 +37,12 @@ import {
   pageListing,
 } from "../shared/routes.mjs";
 import { maintainBrowserSession } from "./browser-session.mjs";
-import { requestSession } from "./early-session.mjs";
+import { earlyConnectAnswer, requestSession } from "./early-session.mjs";
+import { PagePreview } from "./PagePreview.jsx";
+import { BootPreview, visiblePreview } from "./boot-preview.mjs";
 import { openPageWithRetry } from "./page-open.mjs";
 // app.css carries the editor's styles too, ahead of style.css so the cascade
 // matches the editor modules' own import order.
-import "./table-fragment.css";
 import "./link-popover.css";
 import "./wordgard.css";
 import "./sharing-panel.css";
@@ -52,14 +53,16 @@ import { TrashView } from "./TrashView.jsx";
 import { Breadcrumbs, ProjectView } from "./ProjectView.jsx";
 import { IndexNav, PagesIndex, ProjectsIndex } from "./IndexViews.jsx";
 import { listProjects, pageBreadcrumbs } from "./projects.mjs";
-import { closeTrashedSessions, restorePage } from "./trash.mjs";
+import { closeTrashedSessions, moveToTrashError, restorePage } from "./trash.mjs";
 import { listAllPages, matchingPages } from "./page-list.mjs";
+import { quotaNotice } from "./quota.mjs";
 import { AppearanceControls } from "./AppearanceControls.jsx";
 import { retryKey } from "../model/retry-key.mjs";
 import "./style.css";
 import "./formatting-toolbar.css";
 import { focusCreatedPageTitle, titleHandsOffToBody } from "./title-navigation.mjs";
 import { BuildUpdate, buildMonitor } from "./BuildUpdate.jsx";
+import { SchemaNotice } from "./SchemaNotice.jsx";
 import { reloadGate } from "./build-freshness.mjs";
 import { EditorLoader } from "./editor-loader.mjs";
 import { SessionHost } from "./session-host.mjs";
@@ -67,7 +70,12 @@ import { useStore } from "./store.mjs";
 import { CommentComposer } from "./comment-composer.mjs";
 import { focusReturnTarget } from "./focus-return.mjs";
 import { timer } from "rxjs";
-import { trackVisualViewport } from "./visual-viewport.mjs";
+import { MOBILE_EDITOR_QUERY, trackVisualViewport } from "./visual-viewport.mjs";
+import { glideSettings } from "./feature-flags.mjs";
+
+// Opening a Page rewrites the address to its canonical path, which drops the
+// query, so read the experiment flags before anything routes.
+glideSettings();
 
 // The editor, and the WASM runtimes it waits for, load beside the shell
 // from boot, except on the index routes (/projects, /pages), which only list;
@@ -84,6 +92,15 @@ const editor = new EditorLoader({
   checkBuild: () => buildMonitor.check(),
 });
 if (!isIndexRoute(readPageRoute(location.href))) editor.start();
+// The routed Page's read-only preview from the head script's discovery
+// (boot-preview.mjs). Read at boot, before a session can take that request.
+// The shell reports the session, navigation, failed opens and the live Page
+// to it; once retired it stays retired for this load.
+const bootPreview = new BootPreview();
+{
+  const route = readPageRoute(location.href);
+  if (route.kind === "page") bootPreview.start(route.pageId, earlyConnectAnswer(route.pageId));
+}
 // A pointer going down on a Page row is a strong hint a Page opens next.
 const warmEditor = () => editor.start();
 // How long a new thread's passage stays emphasized after the inline composer
@@ -111,6 +128,8 @@ function App() {
     [libraryQuery, setLibraryQuery] = useState(""),
     [trashOpen, setTrashOpen] = useState(false),
     [projects, setProjects] = useState([]),
+    // list_pages' `quota` for the signed-in account, or null.
+    [quota, setQuota] = useState(null),
     [projectOpen, setProjectOpen] = useState(null),
     // An index route: { kind: "projects" | "pages", query, visit, principal }
     // or null. `visit` remounts the listing for each navigation, Back
@@ -130,16 +149,11 @@ function App() {
     [titleFocusRequest, setTitleFocusRequest] = useState(null),
     [localRecoveries, setLocalRecoveries] = useState([]);
   const session = useStore(host.store, installedSession);
+  const bootPreviewState = useStore(bootPreview.store);
   const editorUnavailable = useStore(editor.store, editorFailed);
   // Rendered only beside a session; handlers read editor.module when they run.
-  const {
-    WordgardEditor,
-    SharingControls,
-    CommentsPanel,
-    CommentPopover,
-    SaveStatus,
-    PageActivity,
-  } = editor.module ?? {};
+  const { WordgardEditor, CommentsPanel, CommentPopover, SaveStatus, PageControls } =
+    editor.module ?? {};
   const auth = useRef(null),
     authentication = useRef(null),
     catalogRevision = useRef(0),
@@ -148,6 +162,12 @@ function App() {
     creationPending = useRef(false),
     article = useRef(null),
     titleInput = useRef(null),
+    // The title value this tab last showed and its selection as native
+    // cursors, so a peer's edit can put the caret back on its side.
+    titleSelection = useRef(null),
+    // The title input's composition state (title-selection.mjs). The ref is
+    // read by event handlers; the state re-renders the value an IME shows.
+    titleCompositionRef = useRef(null),
     activeBlock = useRef(null),
     commentsButton = useRef(null);
   // The inline comment composer. It outlives Pages; resetDocumentUI resets it,
@@ -225,8 +245,10 @@ function App() {
         .catch(() => {});
     const remote = await remoteRequest;
     if (!stillCurrent()) return [];
-    if (remote.value)
+    if (remote.value) {
       lastRemote.current = { principal: identity.principal, pages: remote.value.pages ?? [] };
+      setQuota(remote.value.quota ?? null);
+    }
     const result = listing.remote(remote.value?.pages ?? null);
     setPages(result);
     if (remote.error && !result.length) throw remote.error;
@@ -281,6 +303,7 @@ function App() {
       await next.close();
       return false;
     }
+    bootPreview.dispatch({ type: "installed" });
     setProjectOpen(null);
     setIndex(null);
     setCrumbs([]);
@@ -328,6 +351,7 @@ function App() {
   }
   async function open(id, { focus = false, historyMode = "push" } = {}) {
     if (historyMode !== "none") writePageRoute(id, { replace: historyMode === "replace" });
+    bootPreview.dispatch({ type: "navigated", pageId: id });
     setPickerOpen(false);
     setNotice("");
     if (host.current?.pageId === id) return;
@@ -355,6 +379,7 @@ function App() {
       );
       await install(next, revision, { focus });
     } catch (error) {
+      if (host.isCurrent(revision)) bootPreview.dispatch({ type: "refused" });
       if (host.isCurrent(revision) && !bannerShows(error)) showError(error);
     } finally {
       host.finishRequest(controller);
@@ -367,6 +392,7 @@ function App() {
       event.preventDefault();
     }
     host.navigate();
+    bootPreview.dispatch({ type: "navigated", pageId: null });
     releaseCurrent();
     setAccount(authentication.current?.identity ?? null);
     setError("");
@@ -466,6 +492,15 @@ function App() {
   }
   // Publish the visual viewport's edges for the mobile bar and header.
   useEffect(() => trackVisualViewport(), []);
+  // On phones the status is a dot (its label stays for screen readers), and
+  // Share, activity and the page actions sit under one ⋯ menu.
+  const [phoneHeader, setPhoneHeader] = useState(() => matchMedia(MOBILE_EDITOR_QUERY).matches);
+  useEffect(() => {
+    const media = matchMedia(MOBILE_EDITOR_QUERY);
+    const change = () => setPhoneHeader(media.matches);
+    media.addEventListener("change", change);
+    return () => media.removeEventListener("change", change);
+  }, []);
   useEffect(() => {
     let alive = true;
     const maintenance = maintainBrowserSession({
@@ -477,11 +512,15 @@ function App() {
         setSessionNotice(
           sessionAnswerNotice(refusal, { signedIn: !!authentication.current?.identity }),
         );
+        // Before anything renders for the new answer: a different or no
+        // account retires the boot preview.
+        bootPreview.dispatch({ type: "session", principal: result.identity?.principal ?? null });
         const changed = authentication.current?.identity?.principal !== result.identity?.principal;
         if (changed) {
           host.navigate();
           catalogRevision.current++;
           setPages([]);
+          setQuota(null);
           setOpening(false);
         }
         authentication.current = result;
@@ -528,6 +567,12 @@ function App() {
   }, []);
   const page = session?.snapshot(),
     threads = page?.comments ?? [];
+  const shownPreview = page
+    ? null
+    : visiblePreview(bootPreviewState, {
+        pageId: readPageRoute(location.href).pageId,
+        principal: account?.principal,
+      });
   // The screen's one banner region (screenBanners). The sign-in prompt and
   // access notice beside the Page show their own messages with their actions.
   const banners = screenBanners({ error, sessionNotice, page: page ? session : null });
@@ -539,6 +584,89 @@ function App() {
     });
     return () => cancelAnimationFrame(frame);
   }, [titleFocusRequest, session]);
+  // React writes a peer's title into the focused input, which moves the
+  // caret to the end. Resolve the selection's cursors in the new document.
+  const shownTitle = page?.title;
+  const [titleComposing, setTitleComposing] = useState(null);
+  // A composition belongs to the Page it began on.
+  useEffect(() => {
+    titleCompositionRef.current = null;
+    setTitleComposing(null);
+  }, [session]);
+  function composing() {
+    const state = titleCompositionRef.current;
+    return !!state && !!editor.module?.composingTitle(state, session);
+  }
+  function titleBase() {
+    const seen = titleSelection.current;
+    return seen?.session === session ? seen : null;
+  }
+  // Every title input event goes through one transition (titleInput in
+  // title-selection.mjs); its effect runs here.
+  function titleEvent(event, input) {
+    const module = editor.module;
+    if (!module || !session) return;
+    const { state, effect } = module.titleInput(titleCompositionRef.current ?? module.TITLE_IDLE, {
+      ...event,
+      session,
+    });
+    titleCompositionRef.current = state;
+    setTitleComposing(module.composingTitle(state, session) ? state.value : null);
+    if (effect?.type !== "commit") return;
+    try {
+      commitTitle(input, effect.base);
+    } catch (error) {
+      showError(error);
+    }
+  }
+  // One title keystroke, or a finished composition, read against the
+  // revision the input showed and written to the current document. When a
+  // peer's change React hadn't shown yet was kept, the input shows the merged
+  // title with the caret carried across, so it matches a revision again.
+  function commitTitle(input, base) {
+    const module = editor.module;
+    const value = input.value;
+    const plan = module.titleChange(session.doc, base, value, input.selectionStart);
+    if (!plan) return;
+    session.change((doc) => module.writeTitle(doc, plan.edits));
+    if (session.doc.title !== value) {
+      input.value = session.doc.title;
+      input.setSelectionRange(plan.caret, plan.caret);
+    }
+    rememberTitleSelection(input);
+  }
+  function rememberTitleSelection(input = titleInput.current) {
+    const module = editor.module;
+    // While an IME composes, the snapshot stays on the revision it began on.
+    if (!input || !session || !module || composing()) return;
+    const previous = titleSelection.current;
+    const snapshot = module.titleSnapshot(
+      session.doc,
+      previous?.input === input && previous.session === session ? previous : null,
+      input.value,
+      input.selectionStart,
+      input.selectionEnd,
+    );
+    if (snapshot)
+      titleSelection.current = { ...snapshot, input, session, direction: input.selectionDirection };
+  }
+  useLayoutEffect(() => {
+    const input = titleInput.current,
+      seen = titleSelection.current;
+    if (!input || shownTitle === undefined) return;
+    if (
+      seen?.input === input &&
+      seen.session === session &&
+      seen.value !== shownTitle &&
+      session.doc.title === shownTitle &&
+      !composing() &&
+      document.activeElement === input
+    ) {
+      const next = editor.module?.resolveTitleSelection(session.doc, seen.cursors);
+      if (next) input.setSelectionRange(next.start, next.end, seen.direction);
+    }
+    rememberTitleSelection(input);
+  }, [shownTitle, session]);
   useEffect(() => {
     if (!focusBlock || !session?.canWrite) return;
     const frame = requestAnimationFrame(() => {
@@ -636,6 +764,8 @@ function App() {
         retry_token: prepared.retry_token,
         base_heads: editor.module.pageHeads(deleting.doc),
         idempotency_key: await retryKey(prepared.retry_token),
+      }).catch((error) => {
+        throw moveToTrashError(error);
       });
       if (trashed?.superseded)
         throw Error("This Page changed before it could move to Trash. Try again.");
@@ -677,11 +807,11 @@ function App() {
     }
   }
   // Comment on a selection opens the inline composer beside it. Readers
-  // without write access get the thread list instead.
+  // without comment access get the thread list instead.
   function startComment(id, selected) {
     if (!session || !id || !selected) return;
     activateBlock(id);
-    if (!session.canWrite) {
+    if (!session.canComment) {
       setCommentsOpen(true);
       return;
     }
@@ -750,7 +880,47 @@ function App() {
     item.page_id === page?.page_id ? { ...item, title: page.title } : item,
   );
   const libraryPages = matchingPages(listedPages, libraryQuery);
+  const usage = quotaNotice(quota);
   const openComments = threads.filter((thread) => thread.state === "open").length;
+  // The page menu: Document actions on desktop, the ⋯ menu on phones.
+  const pageActions = session
+    ? [
+        session.canWrite && {
+          key: "formatting",
+          label: toolbarOpen ? "Hide formatting" : "Show formatting",
+          icon: Type,
+          kbd: "Alt F10",
+          attributes: {
+            "aria-expanded": toolbarOpen,
+            "aria-controls": "page-formatting",
+            "aria-keyshortcuts": "Alt+F10",
+          },
+          run: () => {
+            showFormatting(!toolbarOpen, !toolbarOpen);
+            if (toolbarOpen) documentDisclosure.current?.querySelector("summary")?.focus();
+          },
+        },
+        { key: "copy-link", label: "Copy link", icon: Link, run: () => copyLink() },
+        localRecoveries.length > 0 && {
+          key: "local-draft",
+          label: "Download previous local draft",
+          run: () => downloadDraft(localRecoveries.at(-1)),
+        },
+        session.canRestore && {
+          key: "restore",
+          label: "Restore from Trash",
+          icon: RotateCcw,
+          run: restoreCurrent,
+        },
+        session.canDelete && {
+          key: "trash",
+          label: "Move to Trash",
+          icon: Trash2,
+          danger: true,
+          run: remove,
+        },
+      ].filter(Boolean)
+    : [];
   return (
     <div className={page ? "app has-document" : "app"} onKeyDownCapture={formattingShortcut}>
       <header className="app-header">
@@ -780,8 +950,12 @@ function App() {
           {page && (
             <div className="document-meta">
               <div className="document-status">
-                <SaveStatus status={session.status} />
-                {["Unsaved", "Offline", "Saved locally"].includes(session.status) && (
+                <SaveStatus
+                  status={session.status}
+                  statusKey={session.statusKey}
+                  compact={phoneHeader}
+                />
+                {session.statusRetry && (
                   <button
                     className="subtle-button"
                     onClick={() => session.retryConnection({ retryReceipt: true })}
@@ -791,76 +965,31 @@ function App() {
                 )}
               </div>
               <div className="document-controls">
-                <PageActivity
-                  key={session.pageId}
+                <PageControls
+                  phone={phoneHeader}
                   session={session}
-                  disclosure={activityDisclosure}
+                  actions={pageActions}
                   onReveal={revealProgress}
-                />
-                <SharingControls key={session.pageId} session={session} />
-                <button
-                  ref={commentsButton}
-                  className="subtle-button comments-toggle"
-                  aria-label="Comments"
-                  aria-describedby="open-comment-count"
-                  aria-expanded={commentsOpen}
-                  aria-controls="page-comments"
-                  onClick={toggleComments}
+                  activityDisclosure={activityDisclosure}
+                  actionsDisclosure={documentDisclosure}
                 >
-                  <MessageSquare size={18} aria-hidden="true" />
-                  <span>Comments</span>
-                  <span id="open-comment-count" className="sr-only">
-                    {openComments} open {openComments === 1 ? "comment" : "comments"}
-                  </span>
-                  {openComments > 0 && <span className="comment-count">{openComments}</span>}
-                </button>
-                {
-                  <details className="document-actions" ref={documentDisclosure}>
-                    <summary
-                      className="icon-button"
-                      aria-label="Document actions"
-                      title="Document actions"
-                    >
-                      <MoreHorizontal size={20} aria-hidden="true" />
-                    </summary>
-                    <div className="menu-popover">
-                      {session.canWrite && (
-                        <button
-                          aria-expanded={toolbarOpen}
-                          aria-controls="page-formatting"
-                          aria-keyshortcuts="Alt+F10"
-                          onClick={() => {
-                            showFormatting(!toolbarOpen, !toolbarOpen);
-                            if (toolbarOpen)
-                              documentDisclosure.current?.querySelector("summary")?.focus();
-                          }}
-                        >
-                          <Type size={16} aria-hidden="true" />
-                          {toolbarOpen ? "Hide formatting" : "Show formatting"}
-                          <kbd>Alt F10</kbd>
-                        </button>
-                      )}
-                      <button onClick={() => copyLink()}>
-                        <Link size={16} aria-hidden="true" /> Copy link
-                      </button>
-                      {localRecoveries.length > 0 && (
-                        <button onClick={() => downloadDraft(localRecoveries.at(-1))}>
-                          Download previous local draft
-                        </button>
-                      )}
-                      {session.canRestore && (
-                        <button onClick={restoreCurrent}>
-                          <RotateCcw size={16} aria-hidden="true" /> Restore from Trash
-                        </button>
-                      )}
-                      {session.canDelete && (
-                        <button className="danger" onClick={remove}>
-                          <Trash2 size={16} aria-hidden="true" /> Move to Trash
-                        </button>
-                      )}
-                    </div>
-                  </details>
-                }
+                  <button
+                    ref={commentsButton}
+                    className="subtle-button comments-toggle"
+                    aria-label="Comments"
+                    aria-describedby="open-comment-count"
+                    aria-expanded={commentsOpen}
+                    aria-controls="page-comments"
+                    onClick={toggleComments}
+                  >
+                    <MessageSquare size={18} aria-hidden="true" />
+                    <span>Comments</span>
+                    <span id="open-comment-count" className="sr-only">
+                      {openComments} open {openComments === 1 ? "comment" : "comments"}
+                    </span>
+                    {openComments > 0 && <span className="comment-count">{openComments}</span>}
+                  </button>
+                </PageControls>
               </div>
             </div>
           )}
@@ -895,13 +1024,16 @@ function App() {
           )}
         </div>
       </header>
-      {page && <div id="page-formatting" className="toolbar-host" ref={setToolbar} />}
-      <BuildUpdate
-        session={session}
-        principal={authentication.current?.identity?.principal}
-        onOpenPage={(id) => void open(id)}
-        editorUnavailable={editorUnavailable && !!account}
-      />
+      {/* Sticks under the header: the pinned toolbar, then the reload banner. */}
+      <div className="status-stack">
+        {page && <div id="page-formatting" className="toolbar-host" ref={setToolbar} />}
+        <BuildUpdate
+          session={session}
+          principal={authentication.current?.identity?.principal}
+          onOpenPage={(id) => void open(id)}
+          editorUnavailable={editorUnavailable && !!account}
+        />
+      </div>
       {banners.map((message) => (
         <p key={message} role="alert" className="error app-error">
           {message}
@@ -981,29 +1113,70 @@ function App() {
                     <button onClick={showTrash}>Open Trash</button>
                   </div>
                 )}
+                {/* Edits the host refuses can only wait in this browser's checkpoint;
+                    the notice's Reload accepts that. */}
+                <SchemaNotice
+                  gate={session.schemaGate}
+                  reload={() => reloadGate.reload({ acceptCheckpoints: true })}
+                />
                 <input
                   ref={titleInput}
                   className="document-title"
                   aria-label="Page title"
                   title={page.title || "Untitled"}
                   placeholder="Untitled"
-                  value={page.title}
+                  maxLength={editor.module?.TITLE_MAX_LENGTH}
+                  value={titleComposing ?? page.title}
                   readOnly={!session.canWrite}
-                  onChange={(event) => {
-                    try {
-                      session.change((doc) => editor.module.setPageTitle(doc, event.target.value));
-                    } catch (error) {
-                      showError(error);
-                    }
-                  }}
+                  onSelect={(event) => rememberTitleSelection(event.currentTarget)}
+                  onCompositionStart={(event) =>
+                    titleEvent(
+                      {
+                        type: "compositionstart",
+                        base: titleBase(),
+                        value: event.currentTarget.value,
+                      },
+                      event.currentTarget,
+                    )
+                  }
+                  onCompositionEnd={(event) =>
+                    titleEvent({ type: "compositionend" }, event.currentTarget)
+                  }
+                  onBlur={(event) =>
+                    titleEvent(
+                      { type: "blur", value: event.currentTarget.value },
+                      event.currentTarget,
+                    )
+                  }
+                  onChange={(event) =>
+                    titleEvent(
+                      {
+                        type: "input",
+                        composing: !!event.nativeEvent.isComposing,
+                        base: titleBase(),
+                        value: event.currentTarget.value,
+                      },
+                      event.currentTarget,
+                    )
+                  }
                   onKeyDown={(event) => {
                     if (!titleHandsOffToBody(event, session.canWrite)) return;
                     event.preventDefault();
                     const first = editor.module.orderedBlockIds(session.doc)[0];
-                    if (first) {
-                      activateBlock(first);
-                      setFocusBlock(first);
-                    } else continueWriting();
+                    // Mount and focus the body before the next key: a new Page
+                    // has no block yet, and keys typed while one renders would
+                    // land in the title.
+                    flushSync(() => {
+                      if (first) {
+                        activateBlock(first);
+                        setFocusBlock(first);
+                      } else continueWriting();
+                    });
+                    const id = first ?? editor.module.orderedBlockIds(session.doc)[0];
+                    if (id)
+                      article.current
+                        ?.querySelector(`[data-block-id="${CSS.escape(id)}"] wg-content`)
+                        ?.focus();
                   }}
                 />
                 {page.blocks.map((block) => (
@@ -1013,11 +1186,10 @@ function App() {
                         replica={session}
                         id={block.id}
                         editable={session.canWrite}
+                        commentable={session.canComment}
                         onError={setError}
                         onComment={(selected) => startComment(block.id, selected)}
                         onRevealComment={selectComment}
-                        openComments={openComments}
-                        onOpenComments={toggleComments}
                         toolbarHost={active === block.id ? toolbar : null}
                         toolbarOpen={toolbarOpen}
                         onActivate={() => activateBlock(block.id)}
@@ -1061,9 +1233,13 @@ function App() {
               />
             </main>
           ) : opening ? (
-            <main className="welcome">
-              <p role="status">Opening…</p>
-            </main>
+            shownPreview ? (
+              <PagePreview preview={shownPreview} />
+            ) : (
+              <main className="welcome">
+                <p role="status">Opening…</p>
+              </main>
+            )
           ) : projectOpen ? (
             <ProjectView
               key={projectOpen}
@@ -1136,6 +1312,11 @@ function App() {
                   type="search"
                 />
               </label>
+              {usage && (
+                <p className="muted quota-notice" role="status">
+                  {usage}
+                </p>
+              )}
               {!pages.length && <p className="muted">Start a page and write together.</p>}
               {!!pages.length && !libraryPages.length && (
                 <p className="muted">No matching pages.</p>

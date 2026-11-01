@@ -6,6 +6,7 @@ import { generateAutomergeUrl, interpretAsDocumentId } from "@automerge/automerg
 import { PageSession } from "./session.mjs";
 import { OUTAGE_ATTEMPTS, OUTAGE_MS, REFUSAL_LIMIT, backoffStep } from "./reconnect-machine.mjs";
 import { SERVER_UNREACHABLE } from "./alerts.mjs";
+import { SLOW_SAVE_MS } from "./sync-status-machine.mjs";
 
 const drain = () => new Promise((resolve) => setImmediate(resolve));
 function deferred() {
@@ -162,11 +163,11 @@ test("same-head reconnect keeps a delayed successful or failed receipt current",
         ),
       );
       await drain();
-      assert.equal(f.session.status, status === 200 ? "Saved" : "Unsaved");
+      assert.equal(f.session.status, status === 200 ? "Saved" : "Not saved");
       assert.equal(f.session.problem, status === 200 ? "" : "Requested edits have not arrived");
       assert.equal(f.session.receiptRetryAttempts, status === 200 ? 0 : 1);
       await f.session.openConnection(false);
-      assert.equal(f.session.status, status === 200 ? "Saved" : "Unsaved");
+      assert.equal(f.session.status, status === 200 ? "Saved" : "Not saved");
       assert.equal(f.session.problem, status === 200 ? "" : "Requested edits have not arrived");
       if (status === 200) {
         await f.advance(10000);
@@ -213,6 +214,7 @@ test("duplicate events and a successful receipt cannot erase a failed native con
   };
   await f.session.retryConnection();
   assert.equal(f.session.status, "Offline");
+  assert.equal(f.session.statusRetry, true);
   assert.equal(f.session.problem, "Native handshake failed");
   f.session.queueSaved();
   assert.equal(f.session.status, "Offline");
@@ -241,6 +243,8 @@ test("same-head reconnect preserves an asynchronous local change error while flu
   await assert.rejects(stored, /Local change persistence failed/);
   await drain();
   assert.equal(f.session.status, "Local save failed");
+  assert.equal(f.session.statusKey, "failed");
+  assert.equal(f.session.statusRetry, false, "a failed local save has nothing to retry");
   await f.session.openConnection(false);
   f.session.queueSaved();
   assert.equal(f.session.status, "Local save failed");
@@ -299,7 +303,7 @@ test("automatic reconnect preserves exhausted retry budget; explicit Retry start
   assert.equal(f.requests.length, 4);
   assert.equal(f.session.receiptRevision, revision);
   assert.equal(f.session.receiptRetryTimer, undefined);
-  assert.equal(f.session.status, "Unsaved");
+  assert.equal(f.session.status, "Not saved");
   f.hooks.receipt = ({ heads }) => Response.json({ durableHeads: heads });
   await f.session.retryConnection({ retryReceipt: true });
   assert.ok(f.session.receiptRevision > revision);
@@ -406,6 +410,8 @@ test("edits queued during expired sign-in resume after reauthentication at uncha
   await f.advance(300);
   assert.equal(f.requests.length, 0);
   assert.equal(f.session.status, "Sign in to sync");
+  assert.equal(f.session.statusKey, "attention");
+  assert.equal(f.session.statusRetry, false, "signing in, not Retry, resumes sync");
   await f.session.openConnection(true);
   await f.advance(300);
   assert.equal(f.requests.length, 1);
@@ -458,6 +464,7 @@ test("late receipt success cannot overwrite sign-in, access, deletion or closed-
         if (stop === "deleted") {
           f.session.phase$.update(() => ({ name: "deleted" }));
           f.session.status = "Deleted";
+          f.session.statusId = "deleted";
         }
         await f.session.close();
       }
@@ -902,7 +909,7 @@ test("transient receipt failures retry quietly; an outage reports once and recon
       f.hooks.receipt = respond;
       await f.start();
       assert.equal(f.requests.length, 1);
-      assert.equal(f.session.status, "Unsaved");
+      assert.equal(f.session.status, "Not saved");
       assert.equal(f.session.problem, "");
       // A short outage recovers on a retry, without a banner.
       for (let attempt = 0; attempt < 2; attempt++) {
@@ -1060,11 +1067,11 @@ test("a wall-clock jump doesn't change whether a socket proved stable", async (t
   }
 });
 
-test("catching up on remote changes after a reopen says Syncing; only a local edit says Saving", async (t) => {
+test("catching up on remote changes after a reopen is syncing; only a local edit is saving", async (t) => {
   const f = fixture(t);
   f.session.syncStatus({ type: "opened", pending: false });
   const seen = [];
-  f.session.subscribe(() => seen.push(f.session.status));
+  f.session.subscribe(() => seen.push(f.session.statusId));
   await f.session.openConnection(false);
   assert.equal(f.session.status, "Syncing", "the connect receipt only syncs");
   // Remote batches keep arriving while the host catches this replica up.
@@ -1073,7 +1080,7 @@ test("catching up on remote changes after a reopen says Syncing; only a local ed
     f.session.receiveChange({});
     await f.advance(100);
   }
-  assert.ok(!seen.includes("Saving"), `catch-up never says Saving: ${seen.join(", ")}`);
+  assert.ok(!seen.includes("saving"), `catch-up is never saving: ${seen.join(", ")}`);
   await f.advance(300);
   const caughtUp = f.requests.at(-1);
   caughtUp.resolve(Response.json({ durableHeads: caughtUp.heads }));
@@ -1081,11 +1088,11 @@ test("catching up on remote changes after a reopen says Syncing; only a local ed
   assert.equal(f.session.status, "Saved");
 
   await f.session.change((doc) => A.updateText(doc, ["text"], "Typed here"));
-  assert.equal(f.session.status, "Saving");
+  assert.equal(f.session.statusId, "saving");
   // A remote change during the save keeps the edit pending.
   f.mutate("Remote during save");
   f.session.receiveChange({});
-  assert.equal(f.session.status, "Saving");
+  assert.equal(f.session.statusId, "saving");
   await f.advance(300);
   const latest = f.requests.at(-1);
   assert.deepEqual(latest.heads, A.getHeads(f.session.doc));
@@ -1099,7 +1106,7 @@ test("a checkpoint left before its receipt reopens as Saving until the host ackn
   const f = fixture(t);
   f.session.syncStatus({ type: "opened", pending: true });
   await f.session.openConnection(false);
-  assert.equal(f.session.status, "Saving");
+  assert.equal(f.session.statusId, "saving");
   await f.advance(300);
   f.requests[0].resolve(Response.json({ durableHeads: f.requests[0].heads }));
   await drain();
@@ -1107,4 +1114,125 @@ test("a checkpoint left before its receipt reopens as Saving until the host ackn
   f.mutate("Remote after the save");
   f.session.receiveChange({});
   assert.equal(f.session.status, "Syncing");
+});
+
+// The slow-save threshold in virtual time. A save shows nothing for its first
+// SLOW_SAVE_MS, measured from the latest local edit; after that it shows
+// Saving until the receipt is acknowledged or fails.
+async function savedFixture(t) {
+  const f = fixture(t);
+  await f.start();
+  f.requests[0].resolve(Response.json({ durableHeads: f.requests[0].heads }));
+  await drain();
+  assert.equal(f.session.status, "Saved");
+  const keys = [];
+  const unsubscribe = f.session.subscribe(() => keys.push(f.session.statusKey));
+  t.after(unsubscribe);
+  const edit = (text) => f.session.change((doc) => A.updateText(doc, ["text"], text));
+  return { ...f, keys, edit };
+}
+
+test("a fast save never shows Saving", async (t) => {
+  const f = await savedFixture(t);
+  await f.edit("Typed here");
+  assert.equal(f.session.statusId, "saving", "the reload gate reads it as saving");
+  assert.equal(f.session.status, "Syncing", "people read Syncing");
+  assert.equal(f.session.statusKey, "quiet");
+  await f.advance(300);
+  assert.equal(f.requests.length, 2, "the debounced receipt is out");
+  await f.advance(500);
+  f.requests[1].resolve(Response.json({ durableHeads: f.requests[1].heads }));
+  await drain();
+  assert.equal(f.session.status, "Saved");
+  assert.equal(f.session.slowSaveTimer, undefined, "the acknowledgement disarms the timer");
+  await f.advance(SLOW_SAVE_MS * 2);
+  assert.ok(!f.keys.includes("saving"), f.keys.join(", "));
+});
+
+test("typing longer than the threshold stays quiet until typing stops", async (t) => {
+  const f = await savedFixture(t);
+  // Ten seconds of typing, a keystroke every 250 ms: the receipt debounce
+  // never fires, and every edit re-arms the threshold.
+  for (let i = 0; i < 40; i++) {
+    await f.edit(`Typing ${i}`);
+    await f.advance(250);
+  }
+  assert.equal(f.requests.length, 1, "no receipt went out while typing");
+  assert.ok(!f.keys.includes("saving"), f.keys.join(", "));
+  // Typing stopped 250 ms ago. The receipt goes out at 300 ms and is still
+  // pending SLOW_SAVE_MS after the last keystroke.
+  await f.advance(SLOW_SAVE_MS - 251);
+  assert.equal(f.requests.length, 2);
+  assert.equal(f.session.statusKey, "quiet");
+  await f.advance(1);
+  assert.equal(f.session.statusKey, "saving");
+  f.requests[1].resolve(Response.json({ durableHeads: f.requests[1].heads }));
+  await drain();
+  assert.equal(f.session.status, "Saved");
+});
+
+test("a slow save shows Saving at the threshold", async (t) => {
+  const f = await savedFixture(t);
+  await f.edit("Typed here");
+  await f.advance(SLOW_SAVE_MS - 1);
+  assert.equal(f.requests.length, 2);
+  assert.equal(f.session.statusKey, "quiet");
+  assert.ok(!f.keys.includes("saving"));
+  await f.advance(1);
+  assert.equal(f.session.statusId, "saving");
+  assert.equal(f.session.statusKey, "saving");
+  // A remote change while Saving shows keeps it showing.
+  f.mutate("Remote during save");
+  f.session.receiveChange({});
+  assert.equal(f.session.statusKey, "saving");
+  await f.advance(300);
+  const latest = f.requests.at(-1);
+  latest.resolve(Response.json({ durableHeads: latest.heads }));
+  await drain();
+  assert.equal(f.session.status, "Saved");
+  assert.equal(f.session.statusKey, "saved");
+});
+
+test("a save that fails after showing stays Unsaved, and the next save shows at once", async (t) => {
+  const f = await savedFixture(t);
+  await f.edit("Typed here");
+  await f.advance(SLOW_SAVE_MS);
+  assert.equal(f.session.statusKey, "saving");
+  f.requests[1].resolve(
+    Response.json({ error: "Requested edits have not arrived" }, { status: 409 }),
+  );
+  await drain();
+  assert.equal(f.session.status, "Not saved");
+  assert.equal(f.session.statusKey, "failed");
+  assert.equal(f.session.saveState, "stalled", "the reload gate retries it like Retry");
+  // Unsaved stays visible while nothing new happens.
+  await f.advance(SLOW_SAVE_MS * 2 - 600);
+  assert.equal(f.session.status, "Not saved");
+  // An edit after a failure never goes quiet: that would read as the failure
+  // clearing.
+  await f.edit("Typed after the failure");
+  assert.equal(f.session.statusId, "saving");
+  assert.equal(f.session.statusKey, "saving");
+  await f.advance(300);
+  const latest = f.requests.at(-1);
+  latest.resolve(Response.json({ durableHeads: latest.heads }));
+  await drain();
+  assert.equal(f.session.status, "Saved");
+});
+
+test("a quiet save that goes offline shows Offline, then stays quiet when it lands", async (t) => {
+  const f = await savedFixture(t);
+  await f.edit("Typed here");
+  f.session.syncStatus({ type: "unreachable" });
+  f.session.renderStatus();
+  assert.equal(f.session.status, "Offline");
+  assert.equal(f.session.statusKey, "attention");
+  f.session.syncStatus({ type: "admitted" });
+  f.session.renderStatus();
+  assert.equal(f.session.statusKey, "quiet");
+  await f.advance(300);
+  f.requests[1].resolve(Response.json({ durableHeads: f.requests[1].heads }));
+  await drain();
+  assert.equal(f.session.status, "Saved");
+  assert.ok(!f.keys.includes("saving"), f.keys.join(", "));
 });

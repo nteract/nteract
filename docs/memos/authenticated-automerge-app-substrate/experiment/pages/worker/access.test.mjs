@@ -146,7 +146,7 @@ test("revision guards and explicit target validation reject stale or malformed m
     "user:" + "x".repeat(513),
   ])
     assert.throws(() => update(doc, owner, principal, "editor"), status(400));
-  for (const role of ["owner", "commenter", "public", "none", undefined])
+  for (const role of ["owner", "reviewer", "public", "none", undefined])
     assert.throws(() => update(doc, owner, editor.principal, role), status(400));
 });
 

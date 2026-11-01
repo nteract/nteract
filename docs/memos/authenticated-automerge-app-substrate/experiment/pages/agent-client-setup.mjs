@@ -17,8 +17,10 @@ with path.open("w") as output:
 print("Key saved privately. Tell your agent it is ready.")
 '`;
 
+export const pagesAgentEnvrc = `export PAGES_AGENT="release agent"`;
+
 export function setupPrompt(origin) {
-  return `Configure Pages for ${origin}/ using the agent guide at ${origin}/llms.txt. Follow the connection method for this client. Ask me early to complete browser authorization or save an API key privately through ${origin}/connect, as needed. Prepare the non-secret settings while I do that. Do not ask me to paste credentials into chat or enable an empty-key connection. Preserve my other client settings. Once authenticated, call list_pages to verify the connection.`;
+  return `Configure Pages for ${origin}/ using the agent guide at ${origin}/llms.txt. Coding agents, CLIs, and scripts connect with an Anaconda API key; ChatGPT and other interactive cloud clients use OAuth. Ask me early to save an API key privately through ${origin}/connect, or to complete browser authorization, as needed. Prepare the non-secret settings while I do that. Do not ask me to paste credentials into chat or enable an empty-key connection. Preserve my other client settings. Once authenticated, call list_pages to verify the connection.`;
 }
 
 export function kiloConfig(origin) {
@@ -54,6 +56,7 @@ export function kiloApiKeyConfig(origin) {
           headers: {
             Authorization: `Bearer {file:${keyFile}}`,
             "X-Pages-Driver": "Kilo",
+            "X-Pages-Agent": "{env:PAGES_AGENT}",
           },
         },
       },

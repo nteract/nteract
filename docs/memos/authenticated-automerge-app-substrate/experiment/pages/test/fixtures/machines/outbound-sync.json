@@ -1,0 +1,569 @@
+{
+  "machine": "outbound-sync",
+  "description": "When a viewer PageSession's local sync rounds and caret go out: a 30 ms debounce, a send every 100 ms during continuous typing, an immediate send on flush, no batching while the tab is hidden, and none once closed. Runs against viewer/outbound-sync-machine.mjs in viewer/outbound-sync.test.mjs.",
+  "states": [
+    "idle",
+    "waiting",
+    "background",
+    "closed"
+  ],
+  "events": [
+    "request",
+    "timer",
+    "flush",
+    "hide",
+    "show",
+    "close"
+  ],
+  "unreachable": [],
+  "cases": {
+    "idle/request": [
+      "fresh",
+      "after-send"
+    ],
+    "waiting/request": [
+      "debounce",
+      "deadline",
+      "due"
+    ]
+  },
+  "rows": [
+    {
+      "label": "the first edit after a quiet spell arms the debounce",
+      "case": "fresh",
+      "state": {
+        "name": "idle",
+        "sent": null
+      },
+      "event": {
+        "type": "request",
+        "at": 1000
+      },
+      "expect": {
+        "state": {
+          "name": "waiting",
+          "deadline": 1100,
+          "last": 1000
+        },
+        "effects": [
+          {
+            "type": "arm",
+            "ms": 30
+          }
+        ]
+      }
+    },
+    {
+      "label": "an edit soon after a send is due one maximum wait after that send",
+      "case": "after-send",
+      "state": {
+        "name": "idle",
+        "sent": 1000
+      },
+      "event": {
+        "type": "request",
+        "at": 1080
+      },
+      "expect": {
+        "state": {
+          "name": "waiting",
+          "deadline": 1100,
+          "last": 1080
+        },
+        "effects": [
+          {
+            "type": "arm",
+            "ms": 20
+          }
+        ]
+      }
+    },
+    {
+      "label": "a stale timer after a send does nothing",
+      "state": {
+        "name": "idle",
+        "sent": 1000
+      },
+      "event": {
+        "type": "timer",
+        "at": 1030
+      },
+      "expect": {
+        "state": {
+          "name": "idle",
+          "sent": 1000
+        },
+        "effects": [],
+        "rejected": "No send is armed"
+      }
+    },
+    {
+      "label": "a blur with nothing waiting sends nothing",
+      "state": {
+        "name": "idle",
+        "sent": null
+      },
+      "event": {
+        "type": "flush",
+        "at": 1000
+      },
+      "expect": {
+        "state": {
+          "name": "idle",
+          "sent": null
+        },
+        "effects": [],
+        "rejected": "Nothing is waiting to go out"
+      }
+    },
+    {
+      "label": "hiding the tab with nothing waiting stops batching",
+      "state": {
+        "name": "idle",
+        "sent": 1000
+      },
+      "event": {
+        "type": "hide"
+      },
+      "expect": {
+        "state": {
+          "name": "background"
+        },
+        "effects": []
+      }
+    },
+    {
+      "label": "showing a visible tab changes nothing",
+      "state": {
+        "name": "idle",
+        "sent": null
+      },
+      "event": {
+        "type": "show"
+      },
+      "expect": {
+        "state": {
+          "name": "idle",
+          "sent": null
+        },
+        "effects": [],
+        "rejected": "The tab is already visible"
+      }
+    },
+    {
+      "label": "closing with nothing waiting stops batching",
+      "state": {
+        "name": "idle",
+        "sent": null
+      },
+      "event": {
+        "type": "close"
+      },
+      "expect": {
+        "state": {
+          "name": "closed"
+        },
+        "effects": []
+      }
+    },
+    {
+      "label": "another keystroke soon after the first re-arms the full debounce",
+      "case": "debounce",
+      "state": {
+        "name": "waiting",
+        "deadline": 1100,
+        "last": 1000
+      },
+      "event": {
+        "type": "request",
+        "at": 1020
+      },
+      "expect": {
+        "state": {
+          "name": "waiting",
+          "deadline": 1100,
+          "last": 1020
+        },
+        "effects": [
+          {
+            "type": "arm",
+            "ms": 30
+          }
+        ]
+      }
+    },
+    {
+      "label": "continuous typing arms only up to the deadline",
+      "case": "deadline",
+      "state": {
+        "name": "waiting",
+        "deadline": 1100,
+        "last": 1060
+      },
+      "event": {
+        "type": "request",
+        "at": 1080
+      },
+      "expect": {
+        "state": {
+          "name": "waiting",
+          "deadline": 1100,
+          "last": 1080
+        },
+        "effects": [
+          {
+            "type": "arm",
+            "ms": 20
+          }
+        ]
+      }
+    },
+    {
+      "label": "a keystroke at the deadline sends the whole run",
+      "case": "due",
+      "state": {
+        "name": "waiting",
+        "deadline": 1100,
+        "last": 1080
+      },
+      "event": {
+        "type": "request",
+        "at": 1100
+      },
+      "expect": {
+        "state": {
+          "name": "idle",
+          "sent": 1100
+        },
+        "effects": [
+          {
+            "type": "cancel"
+          },
+          {
+            "type": "send"
+          }
+        ]
+      }
+    },
+    {
+      "label": "a pause in typing sends the run",
+      "state": {
+        "name": "waiting",
+        "deadline": 1100,
+        "last": 1040
+      },
+      "event": {
+        "type": "timer",
+        "at": 1070
+      },
+      "expect": {
+        "state": {
+          "name": "idle",
+          "sent": 1070
+        },
+        "effects": [
+          {
+            "type": "send"
+          }
+        ]
+      }
+    },
+    {
+      "label": "a blur, unload or receipt sends at once",
+      "state": {
+        "name": "waiting",
+        "deadline": 1100,
+        "last": 1040
+      },
+      "event": {
+        "type": "flush",
+        "at": 1050
+      },
+      "expect": {
+        "state": {
+          "name": "idle",
+          "sent": 1050
+        },
+        "effects": [
+          {
+            "type": "cancel"
+          },
+          {
+            "type": "send"
+          }
+        ]
+      }
+    },
+    {
+      "label": "hiding the tab sends what waits and stops batching",
+      "state": {
+        "name": "waiting",
+        "deadline": 1100,
+        "last": 1040
+      },
+      "event": {
+        "type": "hide"
+      },
+      "expect": {
+        "state": {
+          "name": "background"
+        },
+        "effects": [
+          {
+            "type": "cancel"
+          },
+          {
+            "type": "send"
+          }
+        ]
+      }
+    },
+    {
+      "label": "a waiting run is never in a hidden tab",
+      "state": {
+        "name": "waiting",
+        "deadline": 1100,
+        "last": 1040
+      },
+      "event": {
+        "type": "show"
+      },
+      "expect": {
+        "state": {
+          "name": "waiting",
+          "deadline": 1100,
+          "last": 1040
+        },
+        "effects": [],
+        "rejected": "The tab is already visible"
+      }
+    },
+    {
+      "label": "closing sends what waits before stopping",
+      "state": {
+        "name": "waiting",
+        "deadline": 1100,
+        "last": 1040
+      },
+      "event": {
+        "type": "close"
+      },
+      "expect": {
+        "state": {
+          "name": "closed"
+        },
+        "effects": [
+          {
+            "type": "cancel"
+          },
+          {
+            "type": "send"
+          }
+        ]
+      }
+    },
+    {
+      "label": "a save that finishes after the tab hid goes out at once",
+      "state": {
+        "name": "background"
+      },
+      "event": {
+        "type": "request",
+        "at": 2000
+      },
+      "expect": {
+        "state": {
+          "name": "background"
+        },
+        "effects": [
+          {
+            "type": "send"
+          }
+        ]
+      }
+    },
+    {
+      "label": "no timer runs in a hidden tab",
+      "state": {
+        "name": "background"
+      },
+      "event": {
+        "type": "timer",
+        "at": 2000
+      },
+      "expect": {
+        "state": {
+          "name": "background"
+        },
+        "effects": [],
+        "rejected": "No send is armed"
+      }
+    },
+    {
+      "label": "nothing waits in a hidden tab",
+      "state": {
+        "name": "background"
+      },
+      "event": {
+        "type": "flush",
+        "at": 2000
+      },
+      "expect": {
+        "state": {
+          "name": "background"
+        },
+        "effects": [],
+        "rejected": "Nothing is waiting to go out"
+      }
+    },
+    {
+      "label": "hiding a hidden tab changes nothing",
+      "state": {
+        "name": "background"
+      },
+      "event": {
+        "type": "hide"
+      },
+      "expect": {
+        "state": {
+          "name": "background"
+        },
+        "effects": [],
+        "rejected": "The tab is already hidden"
+      }
+    },
+    {
+      "label": "showing the tab resumes batching",
+      "state": {
+        "name": "background"
+      },
+      "event": {
+        "type": "show"
+      },
+      "expect": {
+        "state": {
+          "name": "idle",
+          "sent": null
+        },
+        "effects": []
+      }
+    },
+    {
+      "label": "closing a hidden tab's session stops",
+      "state": {
+        "name": "background"
+      },
+      "event": {
+        "type": "close"
+      },
+      "expect": {
+        "state": {
+          "name": "closed"
+        },
+        "effects": []
+      }
+    },
+    {
+      "label": "after close every store goes out at once",
+      "state": {
+        "name": "closed"
+      },
+      "event": {
+        "type": "request",
+        "at": 5000
+      },
+      "expect": {
+        "state": {
+          "name": "closed"
+        },
+        "effects": [
+          {
+            "type": "send"
+          }
+        ]
+      }
+    },
+    {
+      "label": "no timer runs after close",
+      "state": {
+        "name": "closed"
+      },
+      "event": {
+        "type": "timer",
+        "at": 5000
+      },
+      "expect": {
+        "state": {
+          "name": "closed"
+        },
+        "effects": [],
+        "rejected": "Outbound sync is closed"
+      }
+    },
+    {
+      "label": "a flush after close has nothing to send",
+      "state": {
+        "name": "closed"
+      },
+      "event": {
+        "type": "flush",
+        "at": 5000
+      },
+      "expect": {
+        "state": {
+          "name": "closed"
+        },
+        "effects": [],
+        "rejected": "Outbound sync is closed"
+      }
+    },
+    {
+      "label": "hiding after close changes nothing",
+      "state": {
+        "name": "closed"
+      },
+      "event": {
+        "type": "hide"
+      },
+      "expect": {
+        "state": {
+          "name": "closed"
+        },
+        "effects": [],
+        "rejected": "Outbound sync is closed"
+      }
+    },
+    {
+      "label": "showing after close changes nothing",
+      "state": {
+        "name": "closed"
+      },
+      "event": {
+        "type": "show"
+      },
+      "expect": {
+        "state": {
+          "name": "closed"
+        },
+        "effects": [],
+        "rejected": "Outbound sync is closed"
+      }
+    },
+    {
+      "label": "closing twice is refused",
+      "state": {
+        "name": "closed"
+      },
+      "event": {
+        "type": "close"
+      },
+      "expect": {
+        "state": {
+          "name": "closed"
+        },
+        "effects": [],
+        "rejected": "Outbound sync is closed"
+      }
+    }
+  ]
+}

@@ -72,6 +72,18 @@ export function wordgardCommentRanges(doc, id, map, threads) {
 
 // Ephemeral presentation only. PageSession owns the document, transport,
 // authenticated names, and permissions. The caller owns subscriptions/timers.
+/** The parts of [from, to) outside every claimed range. */
+function unclaimed(from, to, claimed) {
+  let pieces = [[from, to]];
+  for (const [start, end] of claimed)
+    pieces = pieces.flatMap(([a, b]) =>
+      end <= a || start >= b
+        ? [[a, b]]
+        : [...(a < start ? [[a, start]] : []), ...(end < b ? [[end, b]] : [])],
+    );
+  return pieces;
+}
+
 export function createWordgardCollaboration({
   replica,
   id,
@@ -183,7 +195,7 @@ export function createWordgardCollaboration({
           .join(" · "),
         tag: "agent",
         title: agent.agent ? `${identity.label} (${agent.agent})` : identity.label,
-        color: presenceColor(agent.principal, agent.driver, agent.agent),
+        color: presenceColor(agent.principal, agent.driver, agent.agent, agent.session),
         idle: agent.state === "idle",
         message,
       };
@@ -203,7 +215,10 @@ export function createWordgardCollaboration({
           live.add(key);
           if (!beats.has(key)) beats.set(key, at);
           const beat = agent.state === "active" && from < to ? beats.get(key) + SELECT_BEAT_MS : 0;
-          marks.push({ ...base, type: "caret", from, to, position: to, fillUntil: beat });
+          // The write this caret marks. Idle fades and text shifting the caret
+          // keep it; only the agent's next record changes it.
+          const anchor = `${key}:${target.end}`;
+          marks.push({ ...base, type: "caret", from, to, position: to, fillUntil: beat, anchor });
         } else marks.push({ ...base, type: target.kind, from, to });
       }
     }
@@ -211,8 +226,9 @@ export function createWordgardCollaboration({
     return marks;
   }
 
-  // The change that wrote the character a cursor names: cursors read
-  // "counter@actor", and each change covers ops startOp..maxOp of its actor.
+  // The change ({ hash, actor, startOp, maxOp }) that wrote the character a
+  // cursor names, or null: cursors read "counter@actor", and each change
+  // covers ops startOp..maxOp of its actor.
   // `byActor` holds each actor's changes sorted by startOp. One actor's
   // changes never overlap in op counters, so a binary search finds the change
   // covering a counter in O(log changes), even for a large batch from the
@@ -230,7 +246,7 @@ export function createWordgardCollaboration({
       const change = changes[middle];
       if (counter < change.startOp) high = middle - 1;
       else if (counter > change.maxOp) low = middle + 1;
-      else return change.hash;
+      else return change;
     }
     return null;
   }
@@ -257,7 +273,7 @@ export function createWordgardCollaboration({
       // One mark per run of characters written by the same change, so adjacent
       // inserts from two authors in one batch keep their own colors. Characters
       // no change in this batch wrote (formatting on old text) have no known
-      // author: they get a mark with no hash, drawn in the neutral color.
+      // author: they get a mark with no hash or actor, drawn in the neutral color.
       const path = pathFor(id);
       let start = from,
         owner;
@@ -277,7 +293,8 @@ export function createWordgardCollaboration({
               first: A.getCursor(doc, path, start, "after"),
               last: A.getCursor(doc, path, last, "before"),
               actors: [...new Set(event.actors)],
-              hash: owner,
+              hash: owner?.hash ?? null,
+              actor: owner?.actor ?? null,
               until: now() + illuminationTTL,
             });
           }
@@ -350,7 +367,12 @@ export function createWordgardCollaboration({
     const object = textObject(doc, id);
     const current = getCurrent();
     illumination = illumination.filter((mark) => mark.until > now() && mark.object === object);
-    for (const mark of illumination) {
+    // Each character carries the newest edit mark that covers it. A later
+    // edit inside an earlier one, such as typing into text that just arrived,
+    // takes its characters out of the earlier mark, so their underline and
+    // title name only the later author.
+    const claimed = [];
+    for (const mark of [...illumination].reverse()) {
       try {
         const path = pathFor(id);
         const last = A.getCursorPosition(doc, path, mark.last);
@@ -360,22 +382,35 @@ export function createWordgardCollaboration({
         const from = mapped(current?.map.amToWg, A.getCursorPosition(doc, path, mark.first));
         const to = mapped(current?.map.amToWg, last + (point > 0xffff ? 2 : 1));
         if (from === null || to === null) continue;
-        // The underline takes the editor's own caret color when we know who
-        // they are; otherwise the neutral edit color.
-        // Only a host-attested change identity names an author. Anything
-        // else, including the host's shared actor, stays neutral.
-        const who = mark.hash ? replica.changeIdentity?.(mark.hash) : null;
-        add(from, to, {
+        // The underline takes the editor's own caret color when the host
+        // attests who they are; otherwise the neutral edit color. A tool
+        // edit's change hash names its agent. A person is named only for a
+        // change hash the host attested from that change's own signed commit
+        // record, to the actor that change carries; their profile is colored
+        // like their caret. A change that reached the host only inside a
+        // fragment has no attested hash and stays neutral, whatever its actor.
+        // The host never publishes its own shared actor, so agents' edits are
+        // never named by actor.
+        const tool = mark.hash ? replica.changeIdentity?.(mark.hash) : null;
+        const person =
+          !tool && mark.hash && mark.actor && replica.attestedActor?.(mark.hash) === mark.actor
+            ? replica.actorIdentity?.(mark.actor)
+            : null;
+        const who = tool ?? person;
+        const color = tool
+          ? presenceColor(tool.principal, tool.driver, tool.agent, tool.session)
+          : person && presenceColor(person.principal, person.driver);
+        const attributes = {
           class: "remote-edit",
           // An unattested range never borrows a name: the host's actor would
           // name whichever agent edited last.
           title: who
             ? `Edited by ${[who.displayName, who.driver, who.agent].filter(Boolean).join(" · ")}`
             : "Edited by a collaborator",
-          ...(who?.principal && {
-            style: `--peer-color: ${presenceColor(who.principal, who.driver, who.agent).background}`,
-          }),
-        });
+          ...(who?.principal && { style: `--peer-color: ${color.background}` }),
+        };
+        for (const [start, end] of unclaimed(from, to, claimed)) add(start, end, attributes);
+        claimed.push([from, to]);
       } catch {
         // The native text object or selected characters no longer exist.
       }
@@ -409,6 +444,7 @@ export function createWordgardCollaboration({
           idle,
           message,
           position: mark.position,
+          anchor: mark.anchor,
         });
       else if (mark.type === "dot")
         entries.push({ type: "dot", session, displayName, tag, title, color, idle, message });

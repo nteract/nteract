@@ -14,9 +14,15 @@ import {
 } from "rxjs";
 import { Repo, documentIdToBinary } from "@automerge/automerge-repo";
 import { SubductionBackend, IndexedDBByteStore } from "@automerge/automerge-repo-subduction";
-import { applyComment } from "../model/comments.mjs";
+import { applyComment, commentsMigrated, threadsOf } from "../model/comments.mjs";
 import { createPageData, initializePage, projectPage } from "../model/page.mjs";
 import { unsentCommentsMarkdown } from "../model/markdown-export.mjs";
+import {
+  BUILD_FEATURES,
+  SCHEMA_GATE_INITIAL,
+  schemaGateStep,
+  stampFeatures,
+} from "../model/schema-features.mjs";
 import {
   decodeSnapshot,
   encodeSnapshot,
@@ -32,11 +38,15 @@ import { retryKey } from "../model/retry-key.mjs";
 import { MISSING_EDITS_MESSAGE } from "../shared/receipts.mjs";
 import { ADMISSION_CAPABILITY, admissionCloseOutcome } from "../shared/admission.mjs";
 import { isTransientFailure, request } from "./request.mjs";
+import { requestConnect } from "./early-session.mjs";
 import { SERVER_UNREACHABLE } from "./alerts.mjs";
 import { monotonicNow } from "./monotonic.mjs";
-import { activitySnapshot } from "./activity.mjs";
+import { activitySnapshot, presenceLabel } from "./activity.mjs";
 import { checkpointRecords } from "./checkpoint-records.mjs";
+import { guardSocketSend } from "./socket-send.mjs";
+import { preservedBlockEdits } from "../model/raw-migration.mjs";
 import { Store } from "./store.mjs";
+import { OutboundSync } from "./outbound-sync.mjs";
 import { REJECT, isLive, pauseOf, viewerSessionMachine } from "./session-machine.mjs";
 import {
   OUTAGE_ATTEMPTS,
@@ -45,7 +55,8 @@ import {
   reconnectDelay,
   viewerReconnectMachine,
 } from "./reconnect-machine.mjs";
-import { statusLabel, viewerSyncStatusMachine } from "./sync-status-machine.mjs";
+import { commentsOpenMachine } from "./comments-open-machine.mjs";
+import { fullStatus, overlayStatus, viewerSyncStatusMachine } from "./sync-status-machine.mjs";
 import {
   acknowledgedHeads,
   afterAcknowledgement,
@@ -67,7 +78,17 @@ const ownerAccess = () => ({
   canManageAccess: true,
   canDelete: true,
 });
-const replicaKey = (access, writer) => `${access?.generation ?? 0}:${writer ? "writer" : "reader"}`;
+/** The native replica for an access fact. A key's authority is fixed when the
+ * host first admits it: writer (edits the Page and comments), commenter
+ * (comments only) or reader. */
+const replicaKey = (access, credentialCanWrite) =>
+  `${access?.generation ?? 0}:${
+    credentialCanWrite && access?.canWrite
+      ? "writer"
+      : credentialCanWrite && access?.canComment
+        ? "commenter"
+        : "reader"
+  }`;
 // A trashed Page previews on a reader replica. The host binds any key first
 // admitted there as a reader, so restore reloads onto the writer replica and
 // never promotes preview history.
@@ -84,12 +105,13 @@ const bytes = (value) => Uint8Array.from(value.match(/../g), (v) => parseInt(v, 
 export const STABLE_CONNECTION_MS = 15_000;
 // A Page being left keeps syncing this long for its receipt before closing.
 export const CLOSE_DRAIN_MS = 10_000;
-// Receipt states in which a Page being left may still save.
-const DRAINING_STATES = new Set(["Connecting", "Reconnecting", "Syncing", "Saving"]);
-const STALLED_STATES = new Set(["Unsaved", "Offline", "Saved locally"]);
-/** A receipt status as the reload gate reads it. */
-export const saveStateOf = (status) =>
-  status === "Local save failed" ? "failed" : STALLED_STATES.has(status) ? "stalled" : "saving";
+// Status ids (STATUS_IDS in sync-status-machine.mjs) in which a Page being
+// left may still save. These read ids, never labels.
+const DRAINING_STATES = new Set(["connecting", "reconnecting", "syncing", "saving"]);
+const STALLED_STATES = new Set(["unsaved", "offline", "saved-locally"]);
+/** A status id as the reload gate reads it. */
+export const saveStateOf = (id) =>
+  id === "local-failed" ? "failed" : STALLED_STATES.has(id) ? "stalled" : "saving";
 /** Settles once every promise has settled, then rejects with the first
  * failure. Later work never starts before earlier work finishes. */
 const allSettledThen = (...promises) =>
@@ -97,8 +119,8 @@ const allSettledThen = (...promises) =>
     const failed = results.find((result) => result.status === "rejected");
     if (failed) throw failed.reason;
   });
-/** Whether a Page being left may still save in this receipt state. */
-export const drainingStatus = (status) => DRAINING_STATES.has(status);
+/** Whether a Page being left may still save with this status id. */
+export const drainingStatus = (id) => DRAINING_STATES.has(id);
 const SIGNING_KEY_REFUSED =
   "This Page refused this tab's signing key. Your edits stay on this device. Retry, or open the Page in a new tab.";
 const SYNC_PAUSED =
@@ -121,15 +143,28 @@ export const signingKeyRefused = (admission, cause) =>
     code: "SIGNING_KEY_REFUSED",
     admission,
   });
-export function pageSyncAddress(pageId, href, activityEpoch) {
+/** `features` is this build's schema features. The host refuses native edits
+ * from a tab whose build lacks an id the Page is stamped with; no parameter
+ * means the baseline, as for builds from before the stamp. */
+export function pageSyncAddress(pageId, href, activityEpoch, features = [], { converting } = {}) {
   const address = new URL(`/api/sync?page=${encodeURIComponent(pageId)}`, href);
   address.protocol = address.protocol === "https:" ? "wss:" : "ws:";
   if (activityEpoch) address.searchParams.set("activity_epoch", activityEpoch);
+  // Discovery reported the preserved-block conversion. If it finished before
+  // this upgrade, the host refuses the socket so the tab rediscovers.
+  if (converting) address.searchParams.set("converting", "1");
+  if (features.length) address.searchParams.set("schema_features", [...features].sort().join(","));
   return address;
 }
-async function exclusiveIdentity(scope) {
+/** Shown when reopening set aside edits an older build made to a preserved
+ * Markdown block (recoverPreservedBlockEdits). */
+export const PRESERVED_EDITS_RECOVERED =
+  "Edits this browser made with an older version of Pages changed a block Pages has since converted. They weren't synced, so the block isn't duplicated. Download them from the Page menu: Download previous local draft.";
+/** `fresh` starts a new native replica instead of reopening this tab's. */
+async function exclusiveIdentity(scope, { fresh = false } = {}) {
   const key = `pages-native:${scope}`;
-  let seed = sessionStorage.getItem(key) || hex(crypto.getRandomValues(new Uint8Array(32)));
+  let seed =
+    (!fresh && sessionStorage.getItem(key)) || hex(crypto.getRandomValues(new Uint8Array(32)));
   let release = () => {};
   if (navigator.locks) {
     for (;;) {
@@ -148,6 +183,27 @@ async function exclusiveIdentity(scope) {
   sessionStorage.setItem(key, seed);
   return { seed, release, reloadRecovery: !!navigator.locks };
 }
+const ACTOR_ID = /^[0-9a-f]{1,128}$/;
+const MAX_ACTOR_PROFILES = 1024;
+const CHANGE_HASH = /^[0-9a-f]{64}$/;
+const MAX_ATTESTED_CHANGES = 4096;
+const plainObject = (value) => !!value && typeof value === "object" && !Array.isArray(value);
+/** A host actor profile, null for a removal, or undefined when malformed. */
+function actorProfile(value) {
+  if (value === null) return null;
+  if (!value || typeof value !== "object") return undefined;
+  const { principal, displayName, driver } = value;
+  if (
+    typeof principal !== "string" ||
+    principal.length > 256 ||
+    typeof displayName !== "string" ||
+    displayName.length > 256 ||
+    typeof driver !== "string" ||
+    driver.length > 64
+  )
+    return undefined;
+  return { principal, displayName, driver };
+}
 export class PageSession {
   listeners = new Set();
   observers = new Set();
@@ -162,12 +218,24 @@ export class PageSession {
   actorNames = new Map();
   // Who made a change, by hash, from the host's tool-edit hints. The host
   // writes every API agent's edits, so a change hash, not an actor, names the
-  // author. Browser edits have no host-attested author yet and stay neutral.
+  // author.
   changeIdentities = new Map();
+  // Who wrote a browser's changes, by Automerge actor, and which change
+  // hashes the host read from their own signed commit records. A person is
+  // named only for an attested hash whose actor has a profile. Only the
+  // host's connect response and its actor-profiles messages fill these maps.
+  actorProfiles = new Map();
+  attestedChanges = new Map();
   toolHints = [];
   composing = 0;
   localDepth = 0;
   status = "Connecting";
+  statusId = "connecting";
+  // How `status` is drawn (STATUS_KEYS in sync-status-machine.mjs). Set only
+  // with `status`, through showStatus.
+  statusKey = "connecting";
+  // The current status is a stalled receipt that Retry can move.
+  statusRetry = false;
   problem = "";
   // Why the last connection attempt failed, when the person should see it.
   // It shows as `problem` unless a local save failure is in front of it.
@@ -181,6 +249,8 @@ export class PageSession {
   // restart the quiet window; only a successful receipt ends the run.
   receiptOutageSince = null;
   savedHeads = [];
+  // The comments document's heads the host last acknowledged.
+  savedCommentHeads = [];
   authProblem = "";
   accessProblem = "";
   sockets = new Set();
@@ -189,6 +259,12 @@ export class PageSession {
   // Reasons edits are held while the session keeps syncing: the reload gate's
   // "reload" and the build floor's "protocol". They are not lifecycle phases.
   editPauses = new Set();
+  /** The schema gate (schemaGateStep in model/schema-features.mjs):
+   * `editable: false` when the Page is stamped with a feature this build
+   * lacks, or the host refused this tab's edits for that reason. Content is
+   * then read-only while sync continues; access and Trash actions are
+   * unaffected. Stamps only grow, so it never reopens. */
+  schemaGate = SCHEMA_GATE_INITIAL;
   /** The session's phase (see session-machine.mjs). Every lifecycle flag
    * below derives from it, and effects run from its transitions. */
   phase$ = new Store(viewerSessionMachine.initial);
@@ -196,6 +272,8 @@ export class PageSession {
    * signing key, or a pause after repeated admission refusals. `retryTimer`
    * is pending exactly while it is `waiting`. */
   reconnect$ = new Store(viewerReconnectMachine.initial);
+  // Opening the comments document (comments-open-machine.mjs).
+  commentsOpen$ = new Store(commentsOpenMachine.initial);
   /** What the status line says about receipts and the connection (see
    * sync-status-machine.mjs). `status` renders it with the phase's pauses. */
   sync$ = new Store(viewerSyncStatusMachine.initial);
@@ -239,9 +317,12 @@ export class PageSession {
       scheduler = asyncScheduler,
       random = Math.random,
       now = monotonicNow,
+      buildFeatures = BUILD_FEATURES,
     } = {},
   ) {
     this.pageId = pageId;
+    // The schema features this viewer can edit. Tests inject their own.
+    this.buildFeatures = buildFeatures;
     this.refreshSession = refreshSession;
     this.authentication = authentication;
     this.scheduler = scheduler;
@@ -250,9 +331,43 @@ export class PageSession {
     // receipt outages, reconnect stability, and presence and agent-progress
     // lifetimes. Readers of `peers` and `agentProgress` use it too.
     this.now = now;
+    // When local edits and the caret go out (outbound-sync-machine.mjs): a
+    // run of keystrokes shares one native sync round instead of one each.
+    // Every backend this session opens schedules its local rounds here.
+    this.outbound = new OutboundSync({
+      scheduler,
+      onError: (error) => {
+        this.problem = error instanceof Error ? error.message : String(error);
+        this.emit();
+      },
+    });
   }
   get doc() {
     return this.handle?.doc();
+  }
+  /** The Page's comments document (model/comments-doc.mjs), once open. */
+  get commentsDoc() {
+    return this.commentsHandle?.doc();
+  }
+  /** The comments document readers use: the Page's once its comments have
+   * moved there (model/comments.mjs threadsOf). Before that the Page's own
+   * legacy threads show, read-only. */
+  get commentsView() {
+    const doc = this.doc;
+    return doc && commentsMigrated(doc) ? this.commentsDoc : undefined;
+  }
+  /** Every thread as stored, by id. */
+  get commentThreads() {
+    return threadsOf(this.doc, this.commentsView);
+  }
+  /** One stored message, for rich rendering, or undefined. */
+  commentMessage(threadId, messageId) {
+    const thread = Object.hasOwn(this.commentThreads, threadId)
+      ? this.commentThreads[threadId]
+      : undefined;
+    return thread?.messages && Object.hasOwn(thread.messages, messageId)
+      ? thread.messages[messageId]
+      : undefined;
   }
   get alive() {
     return isLive(this.phase$.snapshot());
@@ -280,7 +395,7 @@ export class PageSession {
    * reload, a stalled save retries like the Retry button, anything else is
    * still saving. */
   get saveState() {
-    return saveStateOf(this.status);
+    return saveStateOf(this.statusId);
   }
   /** The host refused this tab's signing key; only an explicit attempt
    * retries. */
@@ -382,7 +497,7 @@ export class PageSession {
     const settled = () => {
       const phase = this.phase$.snapshot();
       if (phase.name !== "draining" || phase.reason) return true;
-      return this.#saved() || !drainingStatus(this.status);
+      return this.#saved() || !drainingStatus(this.statusId);
     };
     const changes$ = merge(
       this.phase$.state$,
@@ -424,9 +539,14 @@ export class PageSession {
     ).then(() => this.#released);
   }
   #stop() {
+    // Anything still waiting goes out before the backend is released; a
+    // store after this point starts its round at once.
+    this.outbound.close();
+    this.unwatchPageLifecycle();
     this.clearPresence();
     this.cancelReceiptRetry();
     clearTimeout(this.savedTimer);
+    clearTimeout(this.slowSaveTimer);
     this.reconnect({ type: "halt" });
     clearInterval(this.presenceTimer);
     globalThis.removeEventListener?.("online", this.onlineListener);
@@ -455,7 +575,7 @@ export class PageSession {
         }
         await this.persistLocal(
           {
-            pending: this.status !== "Saved",
+            pending: this.statusId !== "saved",
             ...(retire && { localEdits: retireReplica(edits, this.replicaId) }),
           },
           { allowClosed: true },
@@ -466,7 +586,7 @@ export class PageSession {
       if (error.code === "LOCAL_PAGE_DELETED") deleted = true;
       else if (error.code !== "LOCAL_PAGE_ACCESS_CHANGED") {
         this.problem = error.message;
-        this.status = "Local save failed";
+        this.showStatus(overlayStatus("localFailed"));
       }
     }
     if (this.phase$.snapshot().name !== "checkpointing") return this.#whenReleased();
@@ -474,7 +594,7 @@ export class PageSession {
     return this.dispatch(event, () => {
       if (!deleted) return;
       this.canWrite = false;
-      this.status = "Deleted";
+      this.showStatus(overlayStatus("deleted"));
       this.problem = "This Page was deleted.";
     }).done;
   }
@@ -487,12 +607,13 @@ export class PageSession {
     };
     try {
       await this.repo.flush();
+      this.outbound.flush();
       await this.persistLocal({ pending: this.recoveryPending });
       await prepareLocalPageReload(
         this.identity,
         this.localPage,
         this.access,
-        replicaKey(this.access, this.credentialCanWrite && this.access.canWrite),
+        replicaKey(this.access, this.credentialCanWrite),
       );
       this.closedRecovery = this.exportRecovery();
     } catch (error) {
@@ -505,6 +626,7 @@ export class PageSession {
   #release() {
     this.#stop();
     this.checkpointSnapshot = this.checkpointHeads = undefined;
+    this.commentsCheckpointSnapshot = this.commentsCheckpointHeads = undefined;
     return this.releaseLocal();
   }
   /** The forget effect: drop the local copy of a deleted Page, then close. */
@@ -543,8 +665,58 @@ export class PageSession {
   emit() {
     this.notify(this.listeners);
   }
+  /** Re-derive the schema gate from the replica. Runs before observers see a
+   * change, so an editor never applies a local edit over content it can't
+   * express. */
+  /** The reload gate's view of a schema hold (reload-gate-machine.mjs):
+   * undefined unless the schema gate holds edits the host won't accept;
+   * otherwise `refused` until a checkpoint for the reload is written, then
+   * `writing`, `written` or `failed`. */
+  get schemaHold() {
+    if (this.schemaGate.editable || !this.recoveryPending) return undefined;
+    return this.schemaCheckpoint ?? "refused";
+  }
+  /** Write every local edit to this browser's store so a reload can go ahead
+   * without the host's receipt. The schema gate keeps the replica read-only,
+   * so no later local edit can escape the checkpoint. */
+  checkpointForSchema() {
+    if (this.schemaCheckpoint === "writing") return this.schemaCheckpointing;
+    this.schemaCheckpoint = "writing";
+    this.emit();
+    this.schemaCheckpointing = (async () => {
+      let written = false;
+      try {
+        await this.repo?.flush();
+        await this.persistLocal({ pending: true });
+        written = !!this.localPage && !!this.handle;
+      } catch {
+        // Reported as failed below; the edits stay in this tab.
+      }
+      if (!this.alive) return;
+      this.schemaCheckpoint = written ? "written" : "failed";
+      this.emit();
+    })();
+    return this.schemaCheckpointing;
+  }
+  /** Both documents gate edits: the Page's stamp, and the comments
+   * document's stamp for the rich content comments carry. */
+  observeSchema() {
+    this.stepSchema({ type: "observe", doc: this.doc });
+    if (this.commentsDoc) this.stepSchema({ type: "observe", doc: this.commentsDoc });
+  }
+  stepSchema(event) {
+    const { gate } = schemaGateStep(this.schemaGate, event, this.buildFeatures);
+    if (gate === this.schemaGate) return;
+    const editable = this.schemaGate.editable;
+    this.schemaGate = gate;
+    if (gate.editable !== editable) this.updateCapabilities();
+    this.emit();
+  }
   receiveChange(event) {
     if (!this.alive) return;
+    this.observeSchema();
+    // The Page's stamp says whether its comments moved yet.
+    this.updateCapabilities();
     this.resolveToolHints();
     const change = { ...event, remote: this.localDepth === 0 };
     if (this.composing && change.remote) this.deferredBefore ??= event.patchInfo.before;
@@ -552,8 +724,16 @@ export class PageSession {
     if (change.remote) this.queueSaved();
     this.emit();
   }
+  /** A change to the comments document. Comments render from snapshot(),
+   * so listeners are enough; editor observers only follow the Page. */
+  receiveCommentsChange() {
+    if (!this.alive) return;
+    this.observeSchema();
+    if (this.localDepth === 0) this.queueSaved();
+    this.emit();
+  }
   snapshot() {
-    return this.doc ? projectPage(this.doc) : null;
+    return this.doc ? projectPage(this.doc, this.commentsView) : null;
   }
   requireSignIn(message = "Sign in again to sync this Page. Keep it open while you sign in.") {
     const { rejected } = this.dispatch({ type: "signIn", ok: false }, () => {
@@ -564,7 +744,7 @@ export class PageSession {
         this.problem = this.localProblem;
       this.receiptRevision = (this.receiptRevision ?? 0) + 1;
       this.authProblem = message;
-      this.status = "Sign in to sync";
+      this.showStatus(overlayStatus("authRequired"));
       this.reconnect({ type: "halt" });
     });
     if (!rejected) this.emit();
@@ -593,7 +773,7 @@ export class PageSession {
       this.access &&
       this.replicaKey &&
       !this.accessDenied &&
-      this.replicaKey !== replicaKey(this.access, this.credentialCanWrite && this.access.canWrite)
+      this.replicaKey !== replicaKey(this.access, this.credentialCanWrite)
     )
       this.pauseForAccess(
         "Your permissions changed. Reload the current Page; unsynced edits remain available as a local draft.",
@@ -604,8 +784,13 @@ export class PageSession {
   }
   updateCapabilities() {
     const enabled = !this.accessDenied && !this.accessReloadRequired && !this.editsPaused;
-    this.canWrite = enabled && !!this.credentialCanWrite && !!this.access?.canWrite;
-    this.canComment = enabled && !!this.credentialCanWrite && !!this.access?.canComment;
+    // Content and comments are document writes; the schema gate holds both.
+    const content = enabled && this.schemaGate.editable && !this.converting;
+    this.canWrite = content && !!this.credentialCanWrite && !!this.access?.canWrite;
+    // Comments are written to the comments document, so they wait for it and
+    // for the Page's stamp saying the comments moved there.
+    this.canComment =
+      content && !!this.credentialCanWrite && !!this.access?.canComment && !!this.commentsView;
     this.canManageAccess = enabled && !!this.credentialCanWrite && !!this.access?.canManageAccess;
     this.canDelete = enabled && !!this.credentialCanWrite && !!this.access?.canDelete;
     this.canRestore = enabled && !!this.credentialCanWrite && !!this.access?.canRestore;
@@ -616,7 +801,9 @@ export class PageSession {
     if (this.replicaKey?.endsWith(READER_REPLICA)) return false;
     return (
       !!this.localPage?.pending ||
-      (!!this.doc && !A.getHeads(this.doc).every((head) => this.savedHeads.includes(head)))
+      (!!this.doc && !A.getHeads(this.doc).every((head) => this.savedHeads.includes(head))) ||
+      (!!this.commentsDoc &&
+        !A.getHeads(this.commentsDoc).every((head) => this.savedCommentHeads.includes(head)))
     );
   }
   disconnectSockets() {
@@ -739,7 +926,7 @@ export class PageSession {
       this.cancelReceiptRetry();
       this.receiptRevision = (this.receiptRevision ?? 0) + 1;
       this.reconnect({ type: "halt" });
-      this.status = denied || trashed ? "Access removed" : "Access changed";
+      this.showStatus(overlayStatus(denied || trashed ? "accessDenied" : "accessReloadRequired"));
     });
     if (!rejected) this.emit();
   }
@@ -757,7 +944,7 @@ export class PageSession {
   async acceptPageAccess(access) {
     if (
       !access ||
-      !["owner", "editor", "viewer", "none"].includes(access.role) ||
+      !["owner", "editor", "commenter", "viewer", "none"].includes(access.role) ||
       !Number.isSafeInteger(access.generation) ||
       access.generation < 0 ||
       !Number.isSafeInteger(access.revision) ||
@@ -765,7 +952,7 @@ export class PageSession {
     )
       throw Error("Invalid Page access response");
     this.access = { ...access };
-    const nextKey = replicaKey(access, this.credentialCanWrite && access.canWrite);
+    const nextKey = replicaKey(access, this.credentialCanWrite);
     if (!access.canRead) {
       this.pauseForAccess(
         "You no longer have access to this Page. Your local copy is kept on this device.",
@@ -800,24 +987,56 @@ export class PageSession {
     if (!record && this.closedRecovery) return { ...this.closedRecovery };
     const doc = record ? A.load(decodeSnapshot(record.snapshot)) : this.doc;
     if (!doc) throw Error("No local Page to export");
+    // An archived record carries its own comments checkpoint.
+    const recordComments =
+      record?.comments_snapshot && A.load(decodeSnapshot(record.comments_snapshot));
     try {
-      const page = projectPage(doc);
+      const comments = record
+        ? recordComments && commentsMigrated(doc)
+          ? recordComments
+          : undefined
+        : this.commentsView;
+      const page = projectPage(doc, comments);
       // Comments are part of the draft: list the ones the host never
       // acknowledged. An archived record has no receipt, so it lists them all.
       let saved = null;
-      if (!record && this.savedHeads.length)
+      if (!record && (this.savedHeads.length || this.savedCommentHeads.length))
         try {
-          saved = projectPage(A.view(doc, this.savedHeads));
+          saved = projectPage(
+            this.savedHeads.length ? A.view(doc, this.savedHeads) : doc,
+            comments &&
+              (this.savedCommentHeads.length
+                ? A.view(comments, this.savedCommentHeads)
+                : { threads: {} }),
+          );
         } catch {}
       return {
         title: page.title,
         markdown: `# ${page.title}\n\n${page.blocks.map((block) => block.markdown).join("\n\n")}\n${unsentCommentsMarkdown(page, saved)}`,
         snapshot: record?.snapshot ?? encodeSnapshot(A.save(doc)),
         heads: A.getHeads(doc),
+        ...(comments && {
+          comments_snapshot: record?.comments_snapshot ?? encodeSnapshot(A.save(comments)),
+          comment_heads: A.getHeads(comments),
+        }),
         page_id: this.pageId,
       };
     } finally {
       if (record) A.free(doc);
+      if (recordComments) A.free(recordComments);
+    }
+  }
+  /** Store a record's comments checkpoint in this replica's native storage,
+   * before the comments document is looked up, so an offline reopen still
+   * holds comments the host never acknowledged. */
+  async restoreCommentsCheckpoint(record) {
+    if (!record?.comments_snapshot || !record.comments_document_id || !this.backend) return;
+    const checkpoint = A.load(decodeSnapshot(record.comments_snapshot));
+    try {
+      const id = documentIdToBinary(record.comments_document_id);
+      await this.backend.storeSnapshot(id, await checkpointRecords(this.backend, id, checkpoint));
+    } finally {
+      A.free(checkpoint);
     }
   }
   /** Archive this reload-required replica, release it and open the
@@ -855,7 +1074,7 @@ export class PageSession {
       this.localPage?.access ?? (creation || this.localPage ? ownerAccess() : undefined);
     this.updateCapabilities();
     await this.initializeLocal(
-      this.localPage?.replicaKey ?? replicaKey(this.access, this.canWrite),
+      this.localPage?.replicaKey ?? replicaKey(this.access, this.credentialCanWrite),
     );
     // Whether this replica opens with edits of its own the host hasn't
     // confirmed (local-edits.mjs). Only that, never a receipt that was merely
@@ -912,13 +1131,18 @@ export class PageSession {
       } finally {
         A.free(checkpoint);
       }
+      await this.restoreCommentsCheckpoint(this.localPage);
       this.handle = await this.repo.find(this.localPage.document_id);
       this.canWrite = !!this.canWrite && !!this.localPage.canWrite;
       // Native storage can hold an edit the checkpoint never saw, so decide
       // from the restored document. A record without localEdits predates
       // them; its receipt flag is all there is.
-      const edits = readLocalEdits(this.localPage.localEdits);
+      let edits = readLocalEdits(this.localPage.localEdits);
       unconfirmed = edits ? hasUnconfirmedLocalEdits(this.doc, edits) : !!this.localPage.pending;
+      if (unconfirmed && (await this.recoverPreservedBlockEdits(edits))) {
+        edits = readLocalEdits(this.localPage.localEdits);
+        unconfirmed = edits ? hasUnconfirmedLocalEdits(this.doc, edits) : false;
+      }
       // Without unconfirmed local edits, every change here is acknowledged or
       // came from the host.
       if (!unconfirmed) this.savedHeads = A.getHeads(this.doc);
@@ -981,8 +1205,10 @@ export class PageSession {
       await writeLocalPage(this.identity, this.localPage, { replica: this.replicaId });
       unconfirmed = false;
     }
+    this.observeSchema();
     this.handle.on("change", (event) => this.receiveChange(event));
     this.handle.on("ephemeral-message", (event) => this.ephemeral(event));
+    this.openComments();
     if (this.accessDenied)
       this.accessProblem =
         "You no longer have access to this Page. Your local copy is kept on this device.";
@@ -995,6 +1221,7 @@ export class PageSession {
       if (this.presenceValue) this.publishPresence(this.presenceValue);
     }, 10000);
     this.watchOnline();
+    this.watchPageLifecycle();
     if (this.connection) this.queueSaved();
     else {
       // Reopening a denied local copy must check the host once: the owner may
@@ -1010,7 +1237,102 @@ export class PageSession {
     this.onlineListener = () => void this.retryConnection();
     globalThis.addEventListener?.("online", this.onlineListener);
   }
-  async initializeLocal(key = replicaKey(this.access, this.canWrite)) {
+  /** Send waiting edits and the caret at once when the person may be about
+   * to stop looking. Blur and `beforeunload` flush; a hidden tab or
+   * `pagehide` also stops batching until the tab shows again, because a
+   * hidden tab's timers may be throttled or frozen while saves still finish.
+   * Delivery before an unload is best effort: the round starts, and the
+   * browser decides whether it completes. Closing the session removes the
+   * listeners. Tests pass their own window and document. */
+  watchPageLifecycle({ page = globalThis, document = globalThis.document } = {}) {
+    this.unwatchPageLifecycle();
+    const flush = () => this.outbound.flush();
+    const hide = () => this.outbound.hide();
+    const show = () => this.outbound.show();
+    const visibility = () => (document?.visibilityState === "hidden" ? hide() : show());
+    const listeners = [
+      [page, "blur", flush],
+      [page, "beforeunload", flush],
+      [page, "pagehide", hide],
+      [page, "pageshow", visibility],
+      [document, "visibilitychange", visibility],
+    ];
+    for (const [target, type, listener] of listeners) target?.addEventListener?.(type, listener);
+    this.lifecycleListeners = listeners;
+    if (document?.visibilityState === "hidden") hide();
+  }
+  unwatchPageLifecycle() {
+    for (const [target, type, listener] of this.lifecycleListeners ?? [])
+      target?.removeEventListener?.(type, listener);
+    this.lifecycleListeners = undefined;
+  }
+  /**
+   * Set aside unconfirmed history that rewrote a preserved Markdown block,
+   * before this replica connects. Only a build from before the conversion
+   * could make them (its Edit table action). The host converts every
+   * preserved block itself, and Automerge keeps both conversions, so
+   * publishing them would duplicate the block's content. Native admission
+   * can't refuse them by content: it sees only the signing keys.
+   *
+   * The whole replica becomes a recovery record (Download previous local
+   * draft), and this session reopens on a fresh native replica holding only
+   * history the host already has. Returns whether it did.
+   */
+  async recoverPreservedBlockEdits(edits) {
+    // Without a record of acknowledged heads, the whole history is read.
+    const found = preservedBlockEdits(this.doc, edits ? acknowledgedHeads(this.doc, edits) : []);
+    if (!found) return false;
+    const base = A.clone(A.view(this.doc, found.baseHeads));
+    try {
+      const canWrite = this.localPage.canWrite;
+      const retired = this.replicaId;
+      this.localPage = await prepareLocalPageReload(
+        this.identity,
+        { ...this.localPage, snapshot: encodeSnapshot(A.save(this.doc)) },
+        this.access,
+        this.replicaKey,
+      );
+      this.handle = undefined;
+      const database = this.databaseName;
+      await this.releaseLocal();
+      try {
+        globalThis.indexedDB?.deleteDatabase(database);
+      } catch {}
+      await this.initializeLocal(this.replicaKey, { fresh: true });
+      const id = documentIdToBinary(this.localPage.document_id);
+      await this.backend.storeSnapshot(id, await checkpointRecords(this.backend, id, base));
+      // Comments can't rewrite a preserved block: they move to the fresh
+      // replica whole.
+      await this.restoreCommentsCheckpoint(this.localPage);
+      this.handle = await this.repo.find(this.localPage.document_id);
+      this.localPage = await writeLocalPage(
+        this.identity,
+        {
+          ...this.localPage,
+          resetReplica: undefined,
+          canWrite,
+          pending: false,
+          snapshot: encodeSnapshot(A.save(base)),
+          // Other replicas keep their entries, so a tab that holds the same
+          // edits sets them aside when it reopens too.
+          localEdits: {
+            ...(edits ? retireReplica(edits, retired) : emptyLocalEdits()),
+            unattributed: false,
+          },
+        },
+        { replica: this.replicaId },
+      );
+    } finally {
+      A.free(base);
+    }
+    this.recoveredPreservedEdits = true;
+    this.problem = PRESERVED_EDITS_RECOVERED;
+    return true;
+  }
+  async initializeLocal(
+    key = replicaKey(this.access, this.credentialCanWrite),
+    { fresh = false } = {},
+  ) {
     this.replicaKey = key;
     const scope = hex(
       new Uint8Array(
@@ -1022,7 +1344,7 @@ export class PageSession {
         ),
       ),
     );
-    this.local = await exclusiveIdentity(scope);
+    this.local = await exclusiveIdentity(scope, { fresh });
     // Names this native replica in localEdits without exposing its seed.
     this.replicaId = hex(
       new Uint8Array(
@@ -1036,14 +1358,14 @@ export class PageSession {
     const peer = this.signer.peerId();
     this.senderId = peer.toString();
     peer.free();
-    this.storage = new IndexedDBByteStore({
-      database: `pages-native-${scope}-${this.local.seed.slice(0, 16)}`,
-    });
+    this.databaseName = `pages-native-${scope}-${this.local.seed.slice(0, 16)}`;
+    this.storage = new IndexedDBByteStore({ database: this.databaseName });
     this.backend = new SubductionBackend({
       signer: this.signer,
       storage: this.storage,
       syncTimeoutMilliseconds: 1000,
       ...BACKEND_LIMITS,
+      scheduleLocalSync: this.outbound.scheduleLocalSync,
     });
     this.repo = new Repo({ backend: this.backend });
   }
@@ -1083,10 +1405,22 @@ export class PageSession {
       this.checkpointSnapshot = encodeSnapshot(A.save(this.doc));
       this.checkpointHeads = heads;
     }
+    // The comments document checkpoints beside the Page, with its own heads,
+    // so a comment typed offline survives a reload or a recovery archive.
+    const comments = this.commentsDoc;
+    const commentHeads = comments ? A.getHeads(comments).join(",") : "";
+    if (comments && this.commentsCheckpointHeads !== commentHeads) {
+      this.commentsCheckpointSnapshot = encodeSnapshot(A.save(comments));
+      this.commentsCheckpointHeads = commentHeads;
+    }
     const value = {
       title: this.doc.title,
       updated_at: new Date().toISOString(),
       snapshot: this.checkpointSnapshot,
+      ...(comments && {
+        comments_snapshot: this.commentsCheckpointSnapshot,
+        comments_document_id: this.commentsHandle.documentId,
+      }),
       access: this.access,
       replicaKey: this.replicaKey,
       ...patch,
@@ -1220,7 +1554,7 @@ export class PageSession {
   async markDeleted() {
     const { rejected, done } = this.dispatch({ type: "accessChanged", grant: "deleted" }, () => {
       this.canWrite = false;
-      this.status = "Deleted";
+      this.showStatus(overlayStatus("deleted"));
       this.problem = "This Page was deleted.";
       this.cancelReceiptRetry();
     });
@@ -1255,9 +1589,9 @@ export class PageSession {
     )
       return;
     try {
-      const connection = await request(`/api/connect?page=${encodeURIComponent(this.pageId)}`, {
-        headers: admissionHeaders,
-      });
+      // The first discovery for this Page takes the head script's request
+      // (early-session.mjs), which started beside the session check.
+      const connection = await requestConnect(this.pageId, request);
       if (!this.alive) return;
       if (
         !this.acceptAuthentication({
@@ -1275,6 +1609,18 @@ export class PageSession {
       this.trash = connection.trash ?? null;
       if (connection.recovery?.code === "page_recovery_blocked")
         this.problem = connection.recovery.message;
+      // The host is converting Markdown an older build saved: read-only
+      // until it finishes. Access is unchanged, so the writer key stays; the
+      // host closes the socket when it's done and the next discovery clears
+      // this.
+      const converting = connection.converting?.code === "preserved_markdown_converting";
+      if (converting !== !!this.converting) {
+        if (converting)
+          this.problem = this.convertingNotice = String(connection.converting.message);
+        else if (this.problem === this.convertingNotice) this.problem = "";
+        this.converting = converting;
+        this.updateCapabilities();
+      }
       if (this.localPage && !this.localPage.resetReplica)
         await this.persistLocal({ canWrite: this.canWrite });
       if (this.accessDenied || this.accessReloadRequired) return;
@@ -1293,15 +1639,23 @@ export class PageSession {
     }
     if (!this.alive) return;
     this.replacePeerProfiles(this.connection.peerProfiles);
+    this.receiveActorProfiles(this.connection, { replace: true });
     this.presencePaused = false;
     this.receiveActivity(this.connection.activity, { initial: true });
     const expected = new N.PeerId(bytes(this.connection.serverPeerId));
     // Pin admission to the host snapshot we just discovered. If that host
     // restarts before the upgrade, reconnect must discover its new epoch.
-    const address = pageSyncAddress(this.pageId, location.href, this.activityEpoch);
+    const address = pageSyncAddress(
+      this.pageId,
+      location.href,
+      this.activityEpoch,
+      this.buildFeatures,
+      { converting: this.converting },
+    );
     // Keep the browser socket itself: toTransport consumes the native wrapper,
     // whereas the raw socket remains cancellable when account/page access changes.
-    const socket = new WebSocket(address);
+    // Subduction sends on this socket itself; no send leaves unless it is OPEN.
+    const socket = guardSocketSend(new WebSocket(address));
     socket.binaryType = "arraybuffer";
     // Registered before the native wrapper's own listener, so the host's
     // admission outcome is known when the disconnect callback runs.
@@ -1341,6 +1695,10 @@ export class PageSession {
       )
         return;
       this.socketAdmittedAt.set(socket, this.now());
+      if (this.handle) {
+        this.openComments();
+        this.commentsOpen({ type: "reconnected" });
+      }
       this.clearConnectionProblem();
       this.syncStatus({ type: "admitted" });
       // A receipt that outlasted its transient retries starts over now that
@@ -1461,9 +1819,18 @@ export class PageSession {
   change(fn) {
     if (!this.alive) throw Error("Page closed");
     if (!this.canWrite) throw Error("This Page is read only");
+    return this.#write(this.handle, fn);
+  }
+  /** One local change to `handle`, with its receipt. */
+  #write(handle, fn) {
     this.localDepth++;
     try {
-      const stored = this.handle.change(fn);
+      const stored = handle.change((doc) => {
+        fn(doc);
+        // Every local write repairs a stamp left incomplete by concurrent
+        // first stamps, in the same change.
+        stampFeatures(doc);
+      });
       this.queueSaved({ edit: true });
       const receipt = this.receiptState;
       Promise.resolve(stored).catch((error) => {
@@ -1483,8 +1850,123 @@ export class PageSession {
       this.localDepth--;
     }
   }
+  /** Write one comment action to the comments document. The Page is never
+   * written; anchors resolve against it as this replica holds it now. */
   comment(input, nativeSpans) {
-    return this.change((doc) => applyComment(doc, input, this.identity, nativeSpans));
+    if (!this.alive) throw Error("Page closed");
+    if (!this.canComment) throw Error("Commenting is not available on this Page right now");
+    const page = this.doc;
+    // The reader's own draft: Markdown it can't represent stays as text.
+    return this.#write(this.commentsHandle, (doc) =>
+      applyComment(doc, input, this.identity, nativeSpans, {
+        literal: true,
+        page,
+        role: this.access?.role,
+      }),
+    );
+  }
+  /**
+   * Open the Page's comments document on this replica: the comments-open
+   * machine (comments-open-machine.mjs) drives lookups, retries and failure.
+   * It syncs over the same socket as the Page. The document ID comes from
+   * discovery, or from the local record once a discovery named it, so an
+   * offline reopen finds the copy this browser stored.
+   */
+  openComments(
+    documentId = this.connection?.commentsDocumentId ?? this.localPage?.comments_document_id,
+  ) {
+    if (!documentId || !this.repo) return;
+    this.commentsOpen({ type: "open", id: documentId });
+  }
+  /** How long one comments lookup may take before it counts as failed. */
+  commentsLookupTimeout = 15000;
+  /** Step the comments-open machine and run its effects at the edge. */
+  commentsOpen(event) {
+    const result = commentsOpenMachine.step(this.commentsOpen$.snapshot(), event);
+    if (result.rejected) return result;
+    const before = this.commentsOpen$.snapshot();
+    this.commentsOpen$.update(() => result.state);
+    for (const effect of result.effects) {
+      switch (effect.type) {
+        case "lookup":
+          this.lookupComments(effect.attempt, effect.id);
+          break;
+        case "cancel":
+          this.commentsLookup?.abort();
+          this.commentsLookup = undefined;
+          break;
+        case "schedule":
+          clearTimeout(this.commentsTimer);
+          this.commentsTimer = setTimeout(() => {
+            this.commentsTimer = undefined;
+            this.commentsOpen({ type: "timer", attempt: effect.attempt });
+          }, effect.delay);
+          break;
+        case "clearTimer":
+          clearTimeout(this.commentsTimer);
+          this.commentsTimer = undefined;
+          break;
+        case "install":
+          void this.installComments(this.commentsFound);
+          break;
+      }
+    }
+    // A replaced or closed document is no longer this replica's.
+    if (before.name === "ready" && result.state.name !== "ready") this.commentsHandle = undefined;
+    if (result.state.name !== before.name) {
+      this.updateCapabilities();
+      this.emit();
+    }
+    return result;
+  }
+  /** One lookup in this replica's repo. Its result reaches the machine only
+   * as an event naming its attempt, so a cancelled lookup can't install. */
+  lookupComments(attempt, documentId) {
+    const repo = this.repo;
+    const controller = new AbortController();
+    this.commentsLookup = controller;
+    const signal = AbortSignal.any([
+      controller.signal,
+      AbortSignal.timeout(this.commentsLookupTimeout),
+    ]);
+    Promise.resolve()
+      .then(() => repo.find(documentId, { signal }))
+      .then(
+        (handle) => {
+          if (this.repo !== repo || controller.signal.aborted) return;
+          this.commentsFound = handle;
+          this.commentsOpen({ type: "opened", attempt });
+        },
+        () => {
+          if (this.repo !== repo || controller.signal.aborted) return;
+          this.commentsOpen({ type: "lookupFailed", attempt });
+        },
+      );
+  }
+  /** Adopt the comments document a lookup found. */
+  async installComments(handle) {
+    this.commentsFound = undefined;
+    if (!handle || !this.alive) return;
+    this.commentsHandle = handle;
+    this.savedCommentHeads = this.localPage?.comment_saved_heads ?? [];
+    handle.on("change", () => {
+      if (this.commentsHandle === handle) this.receiveCommentsChange();
+    });
+    if (this.localPage && this.localPage.comments_document_id !== handle.documentId)
+      await this.persistLocal({ comments_document_id: handle.documentId });
+    if (!this.alive || this.commentsHandle !== handle) return;
+    this.observeSchema();
+    this.updateCapabilities();
+    this.queueSaved();
+    this.emit();
+  }
+  /** Whether the comments document failed to open; the Page says so. */
+  get commentsUnavailable() {
+    return this.commentsOpen$.snapshot().name === "failed";
+  }
+  /** Try opening the comments document again, after a visible failure. */
+  retryComments() {
+    return this.commentsOpen({ type: "retry" });
   }
   actorDisplayName(actor) {
     return this.actorNames.get(actor) ?? "Collaborator";
@@ -1492,12 +1974,72 @@ export class PageSession {
   changeIdentity(hash) {
     return this.changeIdentities.get(hash) ?? null;
   }
+  actorIdentity(actor) {
+    return this.actorProfiles.get(actor) ?? null;
+  }
+  /** The actor the host attested for this change hash, or null. */
+  attestedActor(hash) {
+    return this.attestedChanges.get(hash) ?? null;
+  }
+  /** Apply host-attested `actorProfiles` and `attestedChanges`. A snapshot
+   * (the connect response, or a host message with `snapshot: true`) replaces
+   * both maps; a delta adds entries, and a null profile retracts its actor and
+   * every hash attested to it. A hash names only the profile it was attested
+   * under: a profile that changes, or leaves the capped map, drops its actor's
+   * earlier hashes. Malformed entries are dropped one by one. */
+  receiveActorProfiles({ actorProfiles, attestedChanges } = {}, { replace = false } = {}) {
+    const profiles = replace ? new Map() : this.actorProfiles;
+    const changes = replace ? new Map() : this.attestedChanges;
+    const retracted = new Set();
+    const dropped = new Set();
+    if (plainObject(actorProfiles))
+      for (const [actor, value] of Object.entries(actorProfiles)) {
+        const profile = actorProfile(value);
+        if (!ACTOR_ID.test(actor) || profile === undefined) continue;
+        const previous = profiles.get(actor);
+        profiles.delete(actor);
+        if (profile) profiles.set(actor, profile);
+        else retracted.add(actor);
+        if (
+          !profile ||
+          (previous &&
+            (previous.principal !== profile.principal ||
+              previous.displayName !== profile.displayName ||
+              previous.driver !== profile.driver))
+        )
+          dropped.add(actor);
+        if (profiles.size > MAX_ACTOR_PROFILES) {
+          const oldest = profiles.keys().next().value;
+          profiles.delete(oldest);
+          dropped.add(oldest);
+        }
+      }
+    if (dropped.size)
+      for (const [hash, actor] of changes) if (dropped.has(actor)) changes.delete(hash);
+    if (plainObject(attestedChanges))
+      for (const [hash, actor] of Object.entries(attestedChanges)) {
+        if (!CHANGE_HASH.test(hash) || typeof actor !== "string" || !ACTOR_ID.test(actor)) continue;
+        if (retracted.has(actor)) continue;
+        changes.delete(hash);
+        changes.set(hash, actor);
+        if (changes.size > MAX_ATTESTED_CHANGES) changes.delete(changes.keys().next().value);
+      }
+    this.actorProfiles = profiles;
+    this.attestedChanges = changes;
+    this.notify(this.presenceObservers);
+  }
   watchPresence(fn) {
     this.presenceObservers.add(fn);
     return () => this.presenceObservers.delete(fn);
   }
+  /** Share this tab's caret. It goes out with the next outbound send, after
+   * the edits waiting with it, and only the newest value goes. */
   publishPresence(value) {
     this.presenceValue = value;
+    this.outbound.publish(() => this.broadcastPresence());
+  }
+  broadcastPresence() {
+    const value = this.presenceValue;
     if (
       this.handle &&
       this.alive &&
@@ -1590,6 +2132,14 @@ export class PageSession {
       typeof message !== "object"
     )
       return;
+    // The sender id is the peer id the native backend reports for the
+    // message. The host's id names the signing key this session's transport
+    // handshake verified against the connect response's serverPeerId, and a
+    // message sent directly over that transport carries it. Relayed messages
+    // keep the publishing peer's id, but whether native authenticates the
+    // origin of each relayed message is not shown here; it rests on the
+    // native ephemeral guarantee, which the memo still lists as untested for
+    // multi-hop presence.
     if (senderId === this.connection?.serverSenderId) {
       if (message.kind === "page-activity") {
         this.receiveActivity(message);
@@ -1597,6 +2147,10 @@ export class PageSession {
       }
       if (message.kind === "identity-profiles") {
         this.replacePeerProfiles(message.peerProfiles);
+        return;
+      }
+      if (message.kind === "actor-profiles") {
+        this.receiveActorProfiles(message, { replace: message.snapshot === true });
         return;
       }
       if (message.kind === "tool-edit" && Array.isArray(message.heads)) {
@@ -1625,7 +2179,7 @@ export class PageSession {
       this.peers.set(senderId, {
         value,
         at: this.now(),
-        displayName: [profile.displayName, profile.driver].filter(Boolean).join(" · "),
+        displayName: presenceLabel(profile),
         profile: {
           principal: profile.principal,
           displayName: profile.displayName,
@@ -1651,6 +2205,11 @@ export class PageSession {
               displayName: message.identity?.displayName,
               driver: message.identity?.driver,
               agent: typeof message.identity?.agent === "string" ? message.identity.agent : null,
+              session:
+                typeof message.identity?.session === "string" &&
+                /^[0-9a-f]{16}$/.test(message.identity.session)
+                  ? message.identity.session
+                  : null,
             };
             this.changeIdentities.set(head, who);
             if (this.changeIdentities.size > 512)
@@ -1668,6 +2227,7 @@ export class PageSession {
   queueSaved({ restart = false, edit = false } = {}) {
     if (!this.alive || this.deleted) return;
     const heads = this.handle ? A.getHeads(this.doc) : [];
+    const commentHeads = this.commentsHandle ? A.getHeads(this.commentsDoc) : [];
     const blocked = !!(this.authRequired || this.accessDenied || this.accessReloadRequired);
     // Native reconnects and duplicate change events don't create new edits.
     // Keep their in-flight HTTP receipt and bounded retry budget intact.
@@ -1677,7 +2237,8 @@ export class PageSession {
       this.receiptState.revision === this.receiptRevision &&
       this.receiptState.blocked === blocked &&
       !(this.receiptState.localOnly && this.connection) &&
-      this.sameReceiptHeads(this.receiptState.heads, heads)
+      this.sameReceiptHeads(this.receiptState.heads, heads) &&
+      this.sameReceiptHeads(this.receiptState.commentHeads ?? [], commentHeads)
     ) {
       this.showReceiptState();
       return;
@@ -1694,6 +2255,7 @@ export class PageSession {
     this.receiptState = {
       revision: this.receiptRevision,
       heads,
+      commentHeads,
       blocked,
       problem: outage ? SERVER_UNREACHABLE : "",
       outage,
@@ -1708,22 +2270,45 @@ export class PageSession {
   sameReceiptHeads(left, right) {
     return left.length === right.length && left.every((head) => right.includes(head));
   }
-  /** Step the sync-status machine. A rejected event changes nothing. */
+  /** Step the sync-status machine and run its slow-save timer effects. A
+   * rejected event changes nothing. */
   syncStatus(event) {
     const result = viewerSyncStatusMachine.step(this.sync$.snapshot(), event);
-    if (!result.rejected) this.sync$.update(() => result.state);
+    if (result.rejected) return result;
+    this.sync$.update(() => result.state);
+    for (const effect of result.effects) {
+      clearTimeout(this.slowSaveTimer);
+      this.slowSaveTimer = undefined;
+      if (effect.type === "startTimer")
+        this.slowSaveTimer = setTimeout(() => {
+          this.slowSaveTimer = undefined;
+          if (!this.alive) return;
+          if (this.syncStatus({ type: "elapsed", revision: effect.revision }).rejected) return;
+          this.renderStatus();
+          this.emit();
+        }, effect.ms);
+    }
     return result;
+  }
+  /** Show a `{ label, key, id, retry }` status from sync-status-machine.mjs. */
+  showStatus({ label, key, id, retry = false }) {
+    this.status = label;
+    this.statusKey = key;
+    this.statusId = id;
+    this.statusRetry = retry;
   }
   /** Render `status` from the sync-status machine and the phase's pauses. */
   renderStatus() {
-    this.status = statusLabel(this.sync$.snapshot(), {
-      deleted: this.deleted,
-      accessDenied: this.accessDenied,
-      accessReloadRequired: this.accessReloadRequired,
-      authRequired: this.authRequired,
-      localFailed: !!this.localProblem,
-      localCopy: !!this.localPage,
-    });
+    this.showStatus(
+      fullStatus(this.sync$.snapshot(), {
+        deleted: this.deleted,
+        accessDenied: this.accessDenied,
+        accessReloadRequired: this.accessReloadRequired,
+        authRequired: this.authRequired,
+        localFailed: !!this.localProblem,
+        localCopy: !!this.localPage,
+      }),
+    );
   }
   showReceiptState() {
     this.renderStatus();
@@ -1785,6 +2370,16 @@ export class PageSession {
       }
     }
   }
+  /** Whether `state` names both documents' current heads. */
+  receiptCurrent(state) {
+    return (
+      this.sameReceiptHeads(state.heads, A.getHeads(this.doc)) &&
+      this.sameReceiptHeads(
+        state.commentHeads ?? [],
+        this.commentsHandle ? A.getHeads(this.commentsDoc) : [],
+      )
+    );
+  }
   saveReceipt(options = {}) {
     if (!this.alive || !this.handle) return Promise.resolve();
     const heads = A.getHeads(this.doc);
@@ -1792,11 +2387,12 @@ export class PageSession {
       this.receiptState = {
         revision: this.receiptRevision,
         heads,
+        commentHeads: this.commentsHandle ? A.getHeads(this.commentsDoc) : [],
         blocked: !!(this.authRequired || this.accessDenied || this.accessReloadRequired),
         problem: "",
       };
       this.syncStatus({ type: "queued", revision: this.receiptRevision ?? 0, edit: false });
-    } else if (!this.sameReceiptHeads(this.receiptState.heads, heads)) {
+    } else if (!this.receiptCurrent(this.receiptState)) {
       this.queueSaved();
       return Promise.resolve();
     }
@@ -1823,7 +2419,7 @@ export class PageSession {
         state !== this.receiptState
       )
         return false;
-      if (!this.sameReceiptHeads(state.heads, A.getHeads(this.doc))) {
+      if (!this.receiptCurrent(state)) {
         // A change can reach the handle before its notification reaches us.
         this.queueSaved();
         return false;
@@ -1832,6 +2428,9 @@ export class PageSession {
     };
     try {
       await this.repo.flush();
+      // Every store the flush waited for has asked to be sent. The host can
+      // only acknowledge heads it has, so start their rounds now.
+      this.outbound.flush();
       await this.persistLocal({ pending: true });
       if (!isCurrent()) return;
       if (this.problem === this.localProblem) this.problem = "";
@@ -1865,18 +2464,21 @@ export class PageSession {
         // A native request can time out while its WebSocket stays open. Re-arm
         // catch-up on that authenticated connection without replacing the live
         // document or resetting this receipt's bounded retry budget.
-        const native = this.backend.open(documentIdToBinary(this.handle.documentId));
-        try {
-          await native.synchronize();
-          if (!isCurrent()) return;
-        } finally {
-          await native.close();
+        for (const handle of [this.handle, this.commentsHandle].filter(Boolean)) {
+          const native = this.backend.open(documentIdToBinary(handle.documentId));
+          try {
+            await native.synchronize();
+            if (!isCurrent()) return;
+          } finally {
+            await native.close();
+          }
         }
         if (!isCurrent()) return;
       }
       // Native catch-up is not a durability receipt; the host must still
       // acknowledge these exact heads after its storage barrier.
       const heads = state.heads;
+      const commentHeads = state.commentHeads ?? [];
       const result = await this.requestWithRenewal(
         `/api/saved?page=${encodeURIComponent(this.pageId)}`,
         {
@@ -1885,7 +2487,13 @@ export class PageSession {
           signal: AbortSignal.timeout(30_000),
           method: "POST",
           headers: { "Content-Type": "application/json", ...admissionHeaders },
-          body: JSON.stringify({ heads }),
+          // The host refuses a receipt for edits it won't accept because this
+          // build lacks a feature the Page is stamped with.
+          body: JSON.stringify({
+            heads,
+            ...(commentHeads.length && { comment_heads: commentHeads }),
+            schema_features: this.buildFeatures,
+          }),
         },
       );
       if (!isCurrent()) return;
@@ -1901,6 +2509,7 @@ export class PageSession {
       // The host frontier may already descend from them, so exact membership
       // in its newer durableHeads cannot decide whether this client is saved.
       this.savedHeads = heads;
+      this.savedCommentHeads = commentHeads;
       if (this.problem === state.problem) this.problem = "";
       state.problem = "";
       state.outage = false;
@@ -1910,6 +2519,7 @@ export class PageSession {
       this.receiptRetryAttempts = 0;
       await this.persistLocal({
         pending: false,
+        ...(commentHeads.length && { comment_saved_heads: commentHeads }),
         localEdits: afterAcknowledgement(this.doc, this.localEditsWithActor(), heads, {
           replica: this.replicaId,
           actor: this.actor(),
@@ -1921,6 +2531,15 @@ export class PageSession {
       if (isCurrent()) {
         if (error.code === "LOCAL_PAGE_DELETED") {
           await this.markDeleted();
+          return;
+        }
+        if (error.code === "schema_unsupported") {
+          // Retrying can't help: these edits need a build with the feature.
+          // The schema notice explains it; no second banner.
+          this.stepSchema({ type: "refused" });
+          this.syncStatus({ type: "stalled", revision: receipt, localCopy: !!this.localPage });
+          this.renderStatus();
+          this.showReceiptState();
           return;
         }
         if (error.status === 401) this.requireSignIn();
@@ -1979,6 +2598,7 @@ export class PageSession {
    * receipt or CLOSE_DRAIN_MS; otherwise it writes its final checkpoint at
    * once. Either way it then releases the backend. Returns closeSettled(). */
   leave({ drain = true } = {}) {
+    this.outbound.flush();
     const phase = this.phase$.snapshot();
     // An access reload owns this close: it ends after archiving and the
     // replacement open. If archiving fails, the replica is live again, so
@@ -2011,6 +2631,7 @@ export class PageSession {
   restore() {
     const phase = this.phase$.snapshot().name;
     if (phase !== "open" && phase !== "paused") return undefined;
+    this.outbound.flush();
     const { rejected, done } = this.dispatch({ type: "restore" });
     if (rejected) return undefined;
     this.#closing = done;
@@ -2031,7 +2652,10 @@ export class PageSession {
         this.signer?.free();
       } finally {
         this.local?.release();
+        // The replica goes, and with it any comments lookup.
+        this.commentsOpen({ type: "close" });
         this.repo = this.backend = this.storage = this.signer = this.local = undefined;
+        this.commentsHandle = undefined;
       }
     }
   }

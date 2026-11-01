@@ -44,9 +44,28 @@ export function patchRecordCodec(root) {
   source = `import { encodeRecordFrame, decodeRecordFrame } from "./record-codec.js"\n${source}`;
   const codecPath = "packages/automerge-repo-subduction/src/record-codec.ts";
   const codec = CODEC_SOURCE;
+  // The package entry exports the frame reader, so hosts that observe saved
+  // records (Pages' authorship) decode them with this codec, not a copy.
+  const indexPath = "packages/automerge-repo-subduction/src/index.ts";
+  let index = readFileSync(`${root}/${indexPath}`, "utf8");
+  const indexBefore = hash(index);
+  const indexAnchor = 'export { MemoryByteStore } from "./MemoryByteStore.js"\n';
+  if (index.split(indexAnchor).length !== 2)
+    throw new Error("Unexpected upstream backend export source");
+  index = index.replace(
+    indexAnchor,
+    `export { decodeRecordFrame, RECORD_HEADER_BYTES } from "./record-codec.js"\n${indexAnchor}`,
+  );
   writeFileSync(`${root}/${path}`, source);
   writeFileSync(`${root}/${codecPath}`, codec);
-  return { path, before, after: hash(source), codec: { path: codecPath, sha256: hash(codec) } };
+  writeFileSync(`${root}/${indexPath}`, index);
+  return {
+    path,
+    before,
+    after: hash(source),
+    codec: { path: codecPath, sha256: hash(codec) },
+    index: { path: indexPath, before: indexBefore, after: hash(index) },
+  };
 }
 
 const CODEC_SOURCE = String.raw`/** Persisted compound-record format only; native signed/wire bytes are opaque.
