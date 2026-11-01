@@ -7,6 +7,7 @@ const VOLATILE = new Set([
   "created_at",
   "updated_at",
   "createdAt",
+  "recordedAt",
   "expires_at",
   "trashed_at",
   "restored_at",

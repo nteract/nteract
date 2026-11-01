@@ -1,4 +1,5 @@
 import * as N from "@automerge/subduction";
+import { isTokenedRequest } from "../model/retry-key.mjs";
 import * as A from "@automerge/automerge";
 import {
   Repo,
@@ -550,22 +551,33 @@ async function quotaFields(env, identity, operation) {
   return { page_limit: (await resolvePageQuota(env, identity)).limit };
 }
 
+const READ_OPERATIONS = [
+  "list_pages",
+  "read_page",
+  "read_page_changes",
+  "list_page_comments",
+  "read_page_presence",
+  "list_spaces",
+  "get_space",
+];
+
+/** Whether repeating `operation` after a lost answer is safe: a read, a
+ * progress renewal or clear (the lease names its session), or a write whose
+ * retry_token holds its receipt. A progress creation is not: a repeat mints a
+ * second session and the first one's lease is lost, so it gets lease advice. */
+const safeToRepeat = (operation, args) => {
+  if (operation === "report_page_progress")
+    return typeof args?.progress_id === "string" && typeof args?.lease_token === "string"
+      ? true
+      : "lease";
+  return READ_OPERATIONS.includes(operation) || isTokenedRequest(args);
+};
+
 async function invoke(request, env, operation, args = {}) {
   if (!operations.has(operation) || !args || typeof args !== "object" || Array.isArray(args))
     throw new HttpError(400, "Unknown operation or invalid arguments");
   const identity = await authenticate(request, env);
-  if (
-    ![
-      "list_pages",
-      "read_page",
-      "read_page_changes",
-      "list_page_comments",
-      "read_page_presence",
-      "list_spaces",
-      "get_space",
-    ].includes(operation)
-  )
-    requireWrite(identity);
+  if (!READ_OPERATIONS.includes(operation)) requireWrite(identity);
   if (["get_space", "update_space"].includes(operation)) requireSpaceIdArgument(args.space_id);
   if (
     ["list_pages", "create_page", ...Object.keys(lifecycleRoutes), ...spaceOperations].includes(
@@ -573,17 +585,19 @@ async function invoke(request, env, operation, args = {}) {
     )
   ) {
     const body = { operation, arguments: args, ...(await quotaFields(env, identity, operation)) };
-    return withinToolDeadline(async (signal) =>
-      bufferedResponse(
-        await untilAborted(
-          env.CATALOGS.getByName(identity.principal).fetch(
-            forwarded(request, "/internal/catalog", body),
-            { signal },
+    return withinToolDeadline(
+      async (signal) =>
+        bufferedResponse(
+          await untilAborted(
+            env.CATALOGS.getByName(identity.principal).fetch(
+              forwarded(request, "/internal/catalog", body),
+              { signal },
+            ),
+            signal,
           ),
           signal,
         ),
-        signal,
-      ),
+      { safe: safeToRepeat(operation, args) },
     );
   }
   requirePageIdArgument(args.page_id);
@@ -599,19 +613,22 @@ async function invoke(request, env, operation, args = {}) {
   }
   // One deadline covers the Page fetch, its body and read_page's location
   // view, so a timeout never returns an unfiltered body.
-  return withinToolDeadline(async (signal) => {
-    const response = await untilAborted(
-      env.PAGES.getByName(args.page_id).fetch(
-        forwarded(request, "/internal/tool", { operation, arguments: args }),
-        { signal },
-      ),
-      signal,
-    );
-    if (operation !== "read_page" || !response.ok) return bufferedResponse(response, signal);
-    const body = await readResponseJson(response, signal);
-    await locationView(request, env, body, signal);
-    return json(body, response.status);
-  });
+  return withinToolDeadline(
+    async (signal) => {
+      const response = await untilAborted(
+        env.PAGES.getByName(args.page_id).fetch(
+          forwarded(request, "/internal/tool", { operation, arguments: args }),
+          { signal },
+        ),
+        signal,
+      );
+      if (operation !== "read_page" || !response.ok) return bufferedResponse(response, signal);
+      const body = await readResponseJson(response, signal);
+      await locationView(request, env, body, signal);
+      return json(body, response.status);
+    },
+    { safe: safeToRepeat(operation, args) },
+  );
 }
 
 /**
