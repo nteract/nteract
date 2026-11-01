@@ -667,9 +667,10 @@ on it either.
 Refusals have a work budget. An identical refused record (same path and signed
 envelope) is refused again without decoding for 30 s, until something new is
 admitted. Each refusal of a peer's record charges its principal; 8 in a minute
-throttle that principal for a minute: its records are refused unread and the
-submitting connection closes with `temporarily_unavailable` (close 4503), so the
-client backs off and reconnects. The key isn't blocked, so a record refused for
+throttle that principal for a minute: its records are refused unread, and every
+submission while throttled closes the submitting connection with
+`temporarily_unavailable` (close 4503). That covers a reconnect and the
+principal's other keys, so each client backs off and reconnects. The key isn't blocked, so a record refused for
 a missing dependency is admitted once the dependency arrives.
 
 Admission costs one Automerge clone per checked batch, plus the per-op check.

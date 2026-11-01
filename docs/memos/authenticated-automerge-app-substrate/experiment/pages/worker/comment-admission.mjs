@@ -167,7 +167,9 @@ export class CommentAdmission {
    * @param {(key: string, reason: object) => void} [options.onRefused] called,
    *   not awaited, when the signer broke a rule; it must not throw
    * @param {(key: string) => void} [options.onThrottled] called, not awaited,
-   *   when the signer's principal spends its refusal budget; it must not throw
+   *   when a record's signer spends its principal's refusal budget, and for
+   *   every record submitted while that principal is throttled; it must not
+   *   throw. The caller closes that signer's connection retryably.
    * @param {number} [options.maxRecordBytes] the backend's record limit
    * @param {() => number} [options.now] the clock
    */
@@ -226,8 +228,8 @@ export class CommentAdmission {
     return cached;
   }
 
-  /** Charge a refusal to the signer's principal; returns whether that
-   * spent its budget. Bounded: the oldest principals are forgotten first. */
+  /** Charge a refusal to the signer's principal. Bounded: the oldest
+   * principals are forgotten first. */
   charge(principal) {
     const { entry, exceeded } = chargeRefusal(this.budgets.get(principal), this.now());
     this.budgets.delete(principal);
@@ -259,7 +261,8 @@ export class CommentAdmission {
    * record was refused for the current admission document within the TTL,
    * or when its signer's principal is throttled. Every refusal of a peer's
    * record charges its principal's budget; spending it throttles the
-   * principal for a window and closes the submitting connection, retryably.
+   * principal for a window. The submitting connection closes, retryably,
+   * for that record and for every record submitted while throttled.
    */
   check(entries) {
     const tree = this.tree()?.padEnd(64, "0");
@@ -351,8 +354,14 @@ export class CommentAdmission {
       this.remember(frame.key, code);
     const cached = this.refusals.get(frame.key);
     if (cached) Object.assign(cached, { issuer: frame.issuer, principal: frame.principal });
-    if (code === THROTTLED || !frame.principal) return;
-    if (this.charge(frame.principal)) this.onThrottled(frame.issuer);
+    if (!frame.principal) return;
+    // Every submission from a throttled principal closes its connection
+    // retryably, not just the one that spent the budget: a reconnect or
+    // another key of the same principal would otherwise stay open while its
+    // comments are refused, with nothing telling it to back off.
+    // That covers a refusal served from the cache too.
+    if (code !== THROTTLED) this.charge(frame.principal);
+    if (throttled(this.budgets.get(frame.principal), this.now())) this.onThrottled(frame.issuer);
   }
 
   /** Admit decoded frames in causal order onto a clone of the admission

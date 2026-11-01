@@ -25,9 +25,12 @@ const SERVER = "f".repeat(64);
 const ALICE_KEY = "a1".repeat(32);
 const BOB_KEY = "b2".repeat(32);
 const VIEWER_KEY = "e3".repeat(32);
+// Bob's second tab: another signing key of the same principal.
+const BOB_OTHER_KEY = "b4".repeat(32);
 const SIGNERS = {
   [ALICE_KEY]: { principal: "account:alice", role: "editor" },
   [BOB_KEY]: { principal: "account:bob", role: "commenter" },
+  [BOB_OTHER_KEY]: { principal: "account:bob", role: "commenter" },
   [VIEWER_KEY]: { principal: "account:carol", role: "viewer" },
 };
 const page = A.from({ blocks: { b1: { id: "b1", markdown: "One" } } });
@@ -409,18 +412,57 @@ test("a burst of bad records: bounded work, then the connection closes, then a v
   const { checked, cached, throttled: refusedUnread } = fresh.admission.stats;
   assert.ok(checked <= REFUSAL_BUDGET, `decoded ${checked} records, budget ${REFUSAL_BUDGET}`);
   assert.ok(cached + refusedUnread >= 60 - REFUSAL_BUDGET);
-  assert.deepEqual(fresh.throttledKeys, [BOB_KEY], "one retryable close, for the submitter");
+  // The record that spent the budget closes the submitter, and so does every
+  // record after it, cached resends included.
+  const crossing = 60 - fresh.throttledKeys.length;
+  assert.ok(crossing <= REFUSAL_BUDGET, `the budget was spent by refusal ${crossing}`);
+  assert.ok(fresh.throttledKeys.every((key) => key === BOB_KEY));
   assert.deepEqual(fresh.refused, [], "a missing dependency never blocks the key");
-  // Still throttled within the window, even for a valid record.
+  // Still throttled within the window, even for a valid record, and that
+  // submission closes its connection too.
+  const closes = fresh.throttledKeys.length;
   await assert.rejects(
     fresh.store.save(...frame(first, BOB_KEY)),
     (e) => e.reason.code === "comment_admission_throttled",
   );
+  assert.equal(fresh.throttledKeys.length, closes + 1);
   // After backing off, the missing dependency arrives and both are admitted.
   fresh.clock.now += REFUSAL_WINDOW_MS;
   await fresh.store.save(...frame(first, BOB_KEY));
   await fresh.store.save(...frame(orphans[0], BOB_KEY));
   assert.equal(fresh.saved.length, 2);
+  assert.equal(fresh.throttledKeys.length, closes + 1, "no close once the window has passed");
+});
+
+test("a reconnect or another key of a throttled principal gets the retryable close too", async () => {
+  const h = harness();
+  h.write(bob, { block_id: "b1", body: "First" });
+  const threadId = Object.keys(h.comments().threads)[0];
+  const orphan = () => h.write(bob, { action: "reply", thread_id: threadId, body: "R" });
+  const fresh = harness();
+  for (let i = 0; i < REFUSAL_BUDGET; i++)
+    await assert.rejects(fresh.store.save(...frame(orphan(), BOB_KEY)));
+  assert.deepEqual(fresh.throttledKeys, [BOB_KEY], "the budget closes the submitter");
+  // The same key after reconnecting: its next submission is refused unread
+  // and closed again, so the client keeps backing off.
+  await assert.rejects(
+    fresh.store.save(...frame(orphan(), BOB_KEY)),
+    (e) => e.reason.code === "comment_admission_throttled",
+  );
+  // Bob's other tab, a different key of the same principal: the same.
+  const valid = fresh.write(bob, { block_id: "b1", body: "From the other tab" }, false);
+  await assert.rejects(
+    fresh.store.save(...frame(valid, BOB_OTHER_KEY)),
+    (e) => e.reason.code === "comment_admission_throttled",
+  );
+  assert.deepEqual(fresh.throttledKeys, [BOB_KEY, BOB_KEY, BOB_OTHER_KEY]);
+  const checked = fresh.admission.stats.checked;
+  assert.equal(checked, REFUSAL_BUDGET, "throttled submissions are never decoded");
+  // After the window, the other tab's valid comment lands and nothing closes.
+  fresh.clock.now += REFUSAL_WINDOW_MS;
+  await fresh.store.save(...frame(valid, BOB_OTHER_KEY));
+  assert.equal(fresh.saved.length, 1);
+  assert.equal(fresh.throttledKeys.length, 3);
 });
 
 test("other principals keep their budget while one is throttled", async () => {

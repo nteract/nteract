@@ -133,11 +133,12 @@ test("a burst of forged changes costs a bounded number of checks, and the owner 
       s.attackerDoc.change((draft) =>
         A.updateText(draft, ["threads", threadId, "messages", messageId, "body"], `Forged ${i}`),
       );
-    await settled(() => s.throttledKeys.length === 1);
+    await settled(() => s.throttledKeys.length >= 1);
     await new Promise((resolve) => setTimeout(resolve, 300));
     const checks = s.admission.stats.checked - before;
     assert.ok(checks <= REFUSAL_BUDGET, `${checks} checks for 30 forged changes`);
-    assert.deepEqual(s.throttledKeys, [s.attacker.keyId]);
+    // Every throttled submission closes the attacker's connection; nobody else's.
+    assert.ok(s.throttledKeys.every((key) => key === s.attacker.keyId));
     s.comment(s.ownerDoc, owner, { action: "reply", thread_id: threadId, body: "Still here" });
     await settled(() => Object.keys(s.hostDoc.doc().threads[threadId].messages).length === 2);
     assert.equal(
