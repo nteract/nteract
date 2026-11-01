@@ -7,7 +7,9 @@ import worker, { Catalog, Page, Space, lifecycleBounds } from "./index.mjs";
 import { DocumentPolicy } from "./policy.mjs";
 import { pageState, proposeAccessUpdate } from "./access.mjs";
 import { CATALOG_MIGRATIONS, migrateCatalogIndex, reportPageIndex } from "./catalog-index.mjs";
-import { MAX_DEPTH, validSpaceId } from "./spaces.mjs";
+import { validSpaceId } from "./spaces.mjs";
+import { MAX_DEPTH, deriveLocation } from "../model/location.mjs";
+import { locationEntries } from "./catalog-location.mjs";
 import { tools } from "../mcp.mjs";
 
 /** Object state for direct index calls; the test awaits each one. */
@@ -488,16 +490,23 @@ test("create_page places Pages in a Project, under a parent, and enforces depth 
   });
   assert.equal(matching.status, 200);
 
-  // Depth: a top-level Page is at depth 1; the chain may reach MAX_DEPTH.
+  // Depth comes from the model: a root is at depth 1. Until Project top-level
+  // Pages move under the home Page, they are roots, so a Project's chain
+  // starts at depth 1 there too.
+  assert.equal(MAX_DEPTH, 9);
   let parent = top.body.page_id;
   for (let depth = 2; depth <= MAX_DEPTH; depth++) {
     const nested = await w.createPage({ title: `Depth ${depth}`, parent_id: parent });
     assert.equal(nested.status, 200, `depth ${depth}`);
     parent = nested.body.page_id;
   }
-  const tooDeep = await w.createPage({ title: "Too deep", parent_id: parent });
+  const deepest = deriveLocation(await locationEntries(w.catalogStorage()), parent);
+  assert.equal(deepest.depth, 9, "the model puts the last Page at depth 9");
+  assert.equal(deepest.space_id, project.project_id);
+  const tooDeep = await w.createPage({ title: "Depth 10", parent_id: parent });
   assert.equal(tooDeep.status, 400);
   assert.equal(tooDeep.body.code, "nesting_depth_exceeded");
+  assert.match(tooDeep.body.error, /at most 9 levels/);
 
   // Your items can nest too; they have no Project.
   const loose = await w.createPage({ title: "Loose" });
@@ -1158,27 +1167,18 @@ test("rollback: storage written here stays readable by older builds", async (t) 
   assert.equal(latest, 4);
   assert.equal(await migrateCatalogIndex(w.db), latest);
   assert.equal(await migrateCatalogIndex(w.db, CATALOG_MIGRATIONS.slice(0, 3)), latest);
-  // A row an older build inserted has no placement until a report supplies it.
-  const legacyPage = crypto.randomUUID();
-  await w.db
-    .prepare(
-      `INSERT INTO pages_catalog_pages
-        (page_id, owner, title, title_search, state, created_at, updated_at)
-      VALUES (?, ?, 'Old', 'old', 'active', ?, ?)`,
-    )
-    .bind(legacyPage, w.owner, "2026-01-01T00:00:00.000Z", "2026-01-01T00:00:00.000Z")
-    .run();
+  // Page reports write no D1 location: the owner's Catalog records it.
+  const reported = crypto.randomUUID();
   await reportPageIndex(w.env, testCtx, {
-    metadata: { pageId: legacyPage, owner: w.owner, deleted: false },
-    title: "Old",
+    metadata: { pageId: reported, owner: w.owner, deleted: false },
+    title: "Reported",
     observedAt: "2026-01-02T00:00:00.000Z",
   });
-  const [legacy] = w.db.rows(
-    "SELECT space_id, placement_epoch FROM pages_catalog_pages WHERE page_id = ?",
-    legacyPage,
+  const [row] = w.db.rows(
+    "SELECT space_id, parent_id, placement_epoch FROM pages_catalog_pages WHERE page_id = ?",
+    reported,
   );
-  assert.equal(legacy.space_id, null);
-  assert.equal(legacy.placement_epoch, 0);
+  assert.deepEqual({ ...row }, { space_id: null, parent_id: null, placement_epoch: null });
 
   // A Page record from a build without Projects reads as Your items.
   const plain = (await w.createPage({ title: "Plain" })).body.page_id;
@@ -1558,30 +1558,41 @@ test("list_pages by Project lists every descendant; by parent, direct children, 
     assert.equal(mismatch.body.code, "placement_mismatch");
   }
 
-  // A viewer of B and C lists B's children: the owner's Catalog names them,
-  // and each one is checked with the viewer's access. C2 isn't shared.
-  for (const pageId of [b, c]) {
-    await grant(w, pageId);
-    await w.catalogStorage(w.member).put(`shared/${pageId}`, {
-      page_id: pageId,
-      title: pageId === b ? "B" : "C",
-      created_at: new Date().toISOString(),
-      updated_at: new Date().toISOString(),
-      shared: true,
-    });
-  }
+  // A viewer of B lists B's children with an empty discovery cache: the
+  // owner's Catalog names them, and each is checked with the viewer's
+  // credentials. C is readable; C2 is not, so its title never shows.
+  await grant(w, b);
+  await grant(w, c);
+  const viewerStorage = w.catalogStorage(w.member);
+  assert.equal((await viewerStorage.list({ prefix: "shared/" })).size, 0, "nothing discovered");
   const calls = spy(w);
   const shared = await w.call("member", "list_pages", { parent_id: b });
   assert.equal(shared.status, 200, JSON.stringify(shared.body));
   assert.deepEqual(ids(shared), [c]);
+  assert.equal(shared.body.pages[0].title, "C");
   assert.equal(shared.body.pages[0].parent_id, b);
+  assert.equal(shared.body.pages[0].shared, true);
   assert.equal(shared.body.pages[0].project_id, undefined);
+  assert.equal(JSON.stringify(shared.body).includes("C2"), false);
   assert.deepEqual(
     calls
       .filter((call) => call.path === "/internal/location")
       .map(({ name, body }) => ({ name, body })),
     [{ name: w.owner, body: { children_of: b } }],
   );
+  // Both children were checked with the viewer's credentials.
+  assert.deepEqual(
+    calls
+      .filter((call) => call.binding === "PAGES" && call.path === "/internal/catalog")
+      .map((call) => call.name)
+      .filter((name) => name !== b)
+      .sort(),
+    [c, c2].sort(),
+  );
+  // Granting C2 later shows it, though the viewer never discovered it.
+  await grant(w, c2);
+  assert.equal(await viewerStorage.get(`shared/${c2}`), undefined);
+  assert.deepEqual(ids(await w.call("member", "list_pages", { parent_id: b })), [c, c2].sort());
   // A shared Page with no children lists none.
   assert.deepEqual(ids(await w.call("member", "list_pages", { parent_id: c })), []);
   // A, unreadable, can't be listed.

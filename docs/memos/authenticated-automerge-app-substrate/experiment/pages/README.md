@@ -1150,7 +1150,7 @@ sub-page's Project is derived by walking parents to its root with
 into the pending Catalog entry in the same put as its journal intent, so a
 retry finds its parent there, and the Page learns only its content. Results
 call `space_id` `project_id`. A parent implies its Project; a different
-`project_id` is `placement_mismatch`. Pages nest at most 8 levels (`nesting_depth_exceeded`), and
+`project_id` is `placement_mismatch`. Pages nest at most 9 levels (`nesting_depth_exceeded`), and
 only Pages the caller owns can hold sub-pages in this build. Project and Page IDs
 have different shapes, so a swapped ID is a structural error
 (`project_id_as_page_id`, `page_id_as_project_id`) that names the right tool and

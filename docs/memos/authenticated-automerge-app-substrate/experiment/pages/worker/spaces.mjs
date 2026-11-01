@@ -8,10 +8,8 @@
  * and a Space's Pages are readable by its owner plus anyone holding a direct
  * grant on a Page.
  *
- * The owner's Catalog records where each Page is (catalog-location.mjs).
- * Page records carry no location. The placement helpers below read a Page
- * record's `metadata.placement`, which Page creation no longer writes, for
- * the Page's restore path and the D1 index report.
+ * The owner's Catalog records where each Page is (catalog-location.mjs), with
+ * the nesting limit from model/location.mjs. Page records carry no location.
  *
  * Callers see Projects; project-api.mjs maps the API onto this module.
  * Storage keeps the Space name so a rollback build reads the same records.
@@ -26,8 +24,6 @@ import { NO_ACTOR_CHAIN, decide, heldRelation, principalOf, projectObject } from
 import { serialQueue } from "./serial-queue.mjs";
 
 export const SPACE_LIMIT = 50;
-/** Deepest allowed nesting; a top-level Page is at depth 1. */
-export const MAX_DEPTH = 8;
 export const SPACE_TITLE_LIMIT = 200;
 export const SPACE_DESCRIPTION_LIMIT = 2000;
 const RECEIPT_LIMIT = 64;
@@ -100,56 +96,6 @@ export function validateSpaceInput(args, { creating }) {
 export function homePageMarkdown(description) {
   const lead = description?.trim() ? description.trim() : "Describe what this Project is for.";
   return `${lead}\n\n## Guidance\n\nThis is the Project's home Page. Keep current priorities and notes for people and agents working in this Project here.`;
-}
-
-/** A Page record's placement, or Your items at the top level. */
-export function pagePlacement(metadata) {
-  const placement = metadata?.placement;
-  return {
-    space_id: placement?.space_id ?? null,
-    parent_id: placement?.parent_id ?? null,
-    position: placement?.position ?? null,
-    placement_epoch: placement?.placement_epoch ?? 0,
-    home: placement?.home === true,
-  };
-}
-/** Placement fields copied into the owner's Catalog entries. */
-export function placementEntry(placement) {
-  if (!placement) return {};
-  return {
-    space_id: placement.space_id ?? null,
-    parent_id: placement.parent_id ?? null,
-    position: placement.position ?? null,
-    placement_epoch: placement.placement_epoch ?? 0,
-    ...(placement.home && { home: true }),
-  };
-}
-/** The same view over a Catalog entry. Entries from before Spaces have none. */
-export const entryPlacement = (entry) => pagePlacement({ placement: entry });
-
-/** Shape check for a placement the host supplies on creation or restore. */
-export function validatePlacement(placement) {
-  if (
-    !placement ||
-    typeof placement !== "object" ||
-    Array.isArray(placement) ||
-    !(placement.space_id === null || validSpaceId(placement.space_id)) ||
-    !(placement.parent_id === null || validPageId(placement.parent_id)) ||
-    typeof placement.position !== "string" ||
-    !/^[0-9A-Za-z]{1,64}$/.test(placement.position) ||
-    !Number.isSafeInteger(placement.placement_epoch) ||
-    placement.placement_epoch < 0 ||
-    (placement.home !== undefined && placement.home !== true) ||
-    (placement.home && (placement.space_id === null || placement.parent_id !== null))
-  )
-    throw new HttpError(400, "Invalid placement");
-  return {
-    space_id: placement.space_id,
-    parent_id: placement.parent_id,
-    position: placement.position,
-    placement_epoch: placement.placement_epoch,
-    ...(placement.home && { home: true }),
-  };
 }
 
 export function publicSpace(record) {

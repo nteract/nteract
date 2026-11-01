@@ -33,7 +33,7 @@ test("the page-lifecycle table covers every pair and case and drives the Page ho
   const summary = await runTable(pageLifecycleSpec, s.table, {
     drive: async (state, event) => (await drive(s, state, event)).result,
   });
-  assert.deepEqual(summary, { rows: s.table.rows.length, pairs: 45, unreachable: 27, cases: 42 });
+  assert.deepEqual(summary, { rows: s.table.rows.length, pairs: 45, unreachable: 27, cases: 40 });
 });
 
 test("a request or tombstone in a pending phase settles it first, then runs as in the settled state", async (t) => {
@@ -231,13 +231,13 @@ test("every mutation the lifecycle makes can reject before or after it applies, 
   assert.deepEqual(
     { cuts, runs, ...tally },
     {
-      cuts: 150,
-      runs: 560,
+      cuts: 140,
+      runs: 520,
       indexRetirement: 14,
-      titleProjection: 21,
-      bindingRetirement: 30,
-      prune: 22,
-      index: 16,
+      titleProjection: 14,
+      bindingRetirement: 24,
+      prune: 20,
+      index: 12,
     },
   );
 });

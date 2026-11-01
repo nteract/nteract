@@ -24,13 +24,7 @@ import { catalogTitle } from "./catalog.mjs";
 import { configuredDomainView } from "./domain-access.mjs";
 import { validPageId } from "./registration.mjs";
 import { holdUntilSettled } from "./request-hold.mjs";
-import {
-  pagePlacement,
-  entryPlacement,
-  requirePageIdArgument,
-  requireSpaceIdArgument,
-  validSpaceId,
-} from "./spaces.mjs";
+import { requirePageIdArgument, requireSpaceIdArgument, validSpaceId } from "./spaces.mjs";
 
 export const CATALOG_MIGRATIONS = Object.freeze([
   Object.freeze({
@@ -89,10 +83,9 @@ export const CATALOG_MIGRATIONS = Object.freeze([
       "ALTER TABLE pages_catalog_pages ADD COLUMN lifecycle_revision INTEGER NOT NULL DEFAULT 0",
     ]),
   }),
-  // Placement in a Space and under a parent Page. NULL placement_epoch means
-  // a build without Spaces wrote the row; placement then reads as Your items
-  // until a report or reconcile supplies it. Spaces get their own rows, keyed
-  // by owner: only the owner lists a Space in this build.
+  // Spaces get their own rows, keyed by owner: only the owner lists a Space
+  // in this build. The page placement columns stay in the schema; nothing
+  // writes or reads them, because location lives in the owner's Catalog.
   Object.freeze({
     version: 4,
     name: "spaces",
@@ -300,8 +293,7 @@ const lifecycleGuard = (pageId) =>
 
 /** Title follows the latest observation time. Lifecycle state follows the
  * newest lifecycle revision, then observation time within one revision.
- * Placement follows the newest placement epoch; a write without one (from a
- * caller that does not know the placement) leaves it unchanged. The ACL and
+ * Location lives in the owner's Catalog, and these rows don't carry it. The ACL and
  * lifecycle revisions only move forward. A deleted tombstone never changes
  * again. */
 function pageUpsert(db, page) {
@@ -309,24 +301,13 @@ function pageUpsert(db, page) {
   const newerState = `excluded.lifecycle_revision > pages_catalog_pages.lifecycle_revision
     OR (excluded.lifecycle_revision = pages_catalog_pages.lifecycle_revision
       AND excluded.updated_at >= pages_catalog_pages.updated_at)`;
-  const newerPlacement = `excluded.placement_epoch IS NOT NULL
-    AND excluded.placement_epoch >= coalesce(pages_catalog_pages.placement_epoch, -1)`;
-  const placement = page.placement;
   return db
     .prepare(
       `INSERT INTO pages_catalog_pages
         (page_id, owner, title, title_search, state, created_at, updated_at, trashed_at,
-          acl_revision, lifecycle_revision, space_id, parent_id, position, placement_epoch)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          acl_revision, lifecycle_revision)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT (page_id) DO UPDATE SET
-        space_id = CASE WHEN ${newerPlacement}
-          THEN excluded.space_id ELSE pages_catalog_pages.space_id END,
-        parent_id = CASE WHEN ${newerPlacement}
-          THEN excluded.parent_id ELSE pages_catalog_pages.parent_id END,
-        position = CASE WHEN ${newerPlacement}
-          THEN excluded.position ELSE pages_catalog_pages.position END,
-        placement_epoch = CASE WHEN ${newerPlacement}
-          THEN excluded.placement_epoch ELSE pages_catalog_pages.placement_epoch END,
         title = CASE WHEN excluded.updated_at >= pages_catalog_pages.updated_at
           THEN excluded.title ELSE pages_catalog_pages.title END,
         title_search = CASE WHEN excluded.updated_at >= pages_catalog_pages.updated_at
@@ -351,10 +332,6 @@ function pageUpsert(db, page) {
       page.trashed_at ?? null,
       page.revision ?? 0,
       page.lifecycle ?? 0,
-      placement?.space_id ?? null,
-      placement?.parent_id ?? null,
-      placement?.position ?? null,
-      placement ? (placement.placement_epoch ?? 0) : null,
     );
 }
 
@@ -492,7 +469,6 @@ export async function reportPageIndex(
       trashed_at: state === "trashed" ? trashedAt(metadata) : null,
       revision,
       lifecycle,
-      placement: pagePlacement(metadata),
     }),
     deleteUnlisted(db, pageId, listed, revision, lifecycle),
     deleteDomainReaders(
@@ -783,13 +759,8 @@ const newestFirst = (a, b) =>
   sortKey(a) === sortKey(b) ? (a.page_id < b.page_id ? 1 : -1) : sortKey(a) < sortKey(b) ? 1 : -1;
 
 /** Up to `count` candidate rows from D1 after `after`, newest first. */
-export async function queryCatalogIndex(
-  db,
-  { principal, domain, inTrash, needle, after, count, spaceId = null, parentId },
-) {
+export async function queryCatalogIndex(db, { principal, domain, inTrash, needle, after, count }) {
   const pattern = needle ? `%${escapeLike(needle)}%` : null;
-  // 0: any parent, 1: top level, 2: children of parentId.
-  const parentMode = parentId === undefined ? 0 : parentId === null ? 1 : 2;
   const result = await db
     .prepare(
       `SELECT a.page_id, a.source, a.updated_at, a.updated_revision, a.title,
@@ -801,8 +772,6 @@ export async function queryCatalogIndex(
           ELSE a.source != 'owner' OR p.state = 'active' END
         AND (a.source != 'domain_opened' OR a.domain = ?)
         AND (? IS NULL OR a.title_search LIKE ? ESCAPE '\\')
-        AND (? IS NULL OR p.space_id = ?)
-        AND (? = 0 OR (? = 1 AND p.parent_id IS NULL) OR (? = 2 AND p.parent_id = ?))
         AND (? IS NULL OR a.updated_at < ? OR (a.updated_at = ? AND a.page_id < ?))
       ORDER BY a.updated_at DESC, a.page_id DESC
       LIMIT ?`,
@@ -813,12 +782,6 @@ export async function queryCatalogIndex(
       domain ?? null,
       pattern,
       pattern,
-      spaceId,
-      spaceId,
-      parentMode,
-      parentMode,
-      parentMode,
-      parentMode === 2 ? parentId : null,
       after?.updated_at ?? null,
       after?.updated_at ?? null,
       after?.updated_at ?? null,
@@ -871,6 +834,18 @@ export async function catalogSource(
   return { next: async (after, count) => rows.filter((row) => before(row, after)).slice(0, count) };
 }
 
+/** Candidate source over the child IDs a shared parent's owner Catalog
+ * returned. The caller's discovery cache doesn't decide which children are
+ * candidates: each one is checked with the caller's credentials before its
+ * title is shown. IDs carry no time, so rows order by Page ID alone. */
+export function childIdSource(pageIds) {
+  const rows = [...new Set(pageIds)]
+    .filter(validPageId)
+    .map((pageId) => ({ page_id: pageId, updated_at: "", owned: false }))
+    .sort(newestFirst);
+  return { next: async (after, count) => rows.filter((row) => before(row, after)).slice(0, count) };
+}
+
 export class CatalogIndexUnavailable extends Error {}
 
 /** Candidate source over D1. Its errors are marked so the listing can fall
@@ -905,9 +880,6 @@ function sharedStatements(db, principal, pageId, page, fallbackAt, createdAt) {
       updated_at: observed,
       revision: page.revision ?? 0,
       lifecycle: page.lifecycle_revision ?? 0,
-      ...(Number.isSafeInteger(page.placement_epoch) && {
-        placement: pagePlacement({ placement: page }),
-      }),
     }),
     upsertAccess(
       db,
@@ -1058,9 +1030,6 @@ export async function reconcileAccountIndex({
             updated_at: updatedAt,
             trashed_at: state === "trashed" ? (entry.trashed_at ?? null) : null,
             lifecycle: entry.lifecycle_revision ?? 0,
-            // The owner's Catalog copied this Page's placement when it was
-            // created or restored; entries from before Spaces are Your items.
-            placement: entryPlacement(entry),
           }),
           upsertAccess(
             db,

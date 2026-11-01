@@ -119,6 +119,7 @@ import {
   catalogIndexEpoch,
   catalogIndexTimeouts,
   catalogSource,
+  childIdSource,
   indexSource,
   indexedState,
   listScope,
@@ -152,17 +153,14 @@ import {
   rekeyedEntries,
   restoreTarget,
 } from "./catalog-location.mjs";
-import { deriveLocation } from "../model/location.mjs";
+import { MAX_DEPTH, deriveLocation } from "../model/location.mjs";
 import {
-  MAX_DEPTH,
   SPACE_LIMIT,
   homePageMarkdown,
   newSpaceId,
-  pagePlacement,
   requirePageIdArgument,
   requireSpaceIdArgument,
   spaceNotFound,
-  validatePlacement,
   validateSpaceInput,
 } from "./spaces.mjs";
 // The class name is the storage identity for Projects; see spaces.mjs.
@@ -320,12 +318,10 @@ const sameHeads = (left, right) =>
   left.length === right.length && [...left].sort().join() === [...right].sort().join();
 const publicIdentity = ({ principal, displayName, driver }) => ({ principal, displayName, driver });
 /** Lifecycle arguments as the caller sent them. The Catalog alone sets the
- * compare-and-set and placement controls it forwards to a Page. */
+ * compare-and-set controls it forwards to a Page. */
 const callerLifecycleArguments = ({
   expected_revision: _expected,
   replay_only: _replay,
-  restore_position: _position,
-  placement: _placement,
   ...requested
 }) => requested;
 
@@ -1370,7 +1366,11 @@ export class Catalog {
           "parent_id is not in that Project. Omit project_id: a parent implies its Project.",
           "placement_mismatch",
         );
-      // A root is at depth 1; the new Page sits one below its parent.
+      // Depth is the model's: a root is at depth 1, and the new Page sits one
+      // below its parent. Project top-level Pages are roots until they move
+      // under the home Page, so today a Project chain also starts at depth 1;
+      // once the home Page is the Project's root, its top-level Pages are at
+      // depth 2 and that chain holds one level fewer.
       if (parent.depth + 1 > MAX_DEPTH)
         throw new HttpError(
           400,
@@ -1891,7 +1891,7 @@ export class Catalog {
       );
       if (!response.ok) throw Error(`Owner location read failed: ${response.status}`);
       const { children } = await response.json();
-      return new Set(Array.isArray(children) ? children : []);
+      return Array.isArray(children) ? children.filter(validPageId) : [];
     } catch (error) {
       logFailure(error, "catalog-location");
       throw new HttpError(503, "Shared Pages are temporarily unavailable");
@@ -2011,14 +2011,18 @@ export class Catalog {
       ...(await this.scanCandidates(
         request,
         identity,
-        await catalogSource(storage, {
-          inTrash: options.inTrash,
-          needle: options.needle,
-          owned: (entry) => located(entry.page_id),
-          // Shared Pages are never in a Project here, and never under a
-          // parent this account owns.
-          shared: !options.spaceId && (options.parentId === undefined || !!sharedChildren),
-        }),
+        // Children of a shared parent are the IDs its owner's Catalog
+        // returned, whether or not this account has discovered them.
+        sharedChildren
+          ? childIdSource(sharedChildren)
+          : await catalogSource(storage, {
+              inTrash: options.inTrash,
+              needle: options.needle,
+              owned: (entry) => located(entry.page_id),
+              // Shared Pages are never in a Project here, and never under a
+              // parent this account owns.
+              shared: !options.spaceId && options.parentId === undefined,
+            }),
         options,
         scope,
         after,
@@ -2076,7 +2080,8 @@ export class Catalog {
       // Pages hold sub-pages: a shared Page is listed under a parent only
       // when that parent's owner lists it as a child.
       if (options.inTrash || options.spaceId) return null;
-      if (options.parentId !== undefined && !scope.sharedChildren?.has(row.page_id)) return null;
+      if (options.parentId !== undefined && !scope.sharedChildren?.includes(row.page_id))
+        return null;
       const result = await this.verifyShared(request, row.page_id);
       if (result.status === "unavailable")
         throw new HttpError(503, "Shared Pages are temporarily unavailable");
@@ -2094,11 +2099,14 @@ export class Catalog {
       if (!titleMatches(title, options.needle)) return null;
       // A shared Page's parent shows only under a parent the caller can
       // already read; its Project never shows.
+      // A child found through its parent's owner has no discovery time; the
+      // host's title observation stands in.
+      const observed = row.updated_at || result.page.title_observed_at;
       return {
         page_id: row.page_id,
         title,
-        created_at: row.created_at,
-        updated_at: row.updated_at,
+        created_at: row.created_at ?? observed,
+        updated_at: observed,
         shared: true,
         ...(options.parentId !== undefined && { parent_id: options.parentId }),
       };
@@ -3036,13 +3044,7 @@ export class Page {
     if (type !== "purgePreview") {
       const key = mutationKey(args);
       // The Catalog adds compare-and-set controls; they never change identity.
-      // restore_position depends on where the parent is at each attempt.
-      const {
-        expected_revision: _expected,
-        replay_only: _replay,
-        restore_position: _position,
-        ...requested
-      } = args;
+      const { expected_revision: _expected, replay_only: _replay, ...requested } = args;
       const digest = await fingerprint(LIFECYCLE_OPERATIONS[route], requested, identity);
       const recorded = await this.ctx.storage.get(lifecycleReceiptKey(key));
       Object.assign(context, { key, digest, recorded });
@@ -3056,7 +3058,6 @@ export class Page {
         else event.replayOnly = true;
       }
       if (args.replay_only === true) event.replayOnly = true;
-      if (type === "restore" && args.restore_position !== undefined) event.position = "top-level";
       if (
         type === "purgeConfirm" &&
         pageState(this.metadata) === "deleted" &&
@@ -3106,7 +3107,7 @@ export class Page {
    * and the pending commit that `begin` installs.
    */
   prepareLifecycle(type, state, context) {
-    const { key, digest, identity, args } = context;
+    const { key, digest, identity } = context;
     const metadata = this.metadata;
     const pageId = metadata.pageId;
     const revision = metadata.lifecycleRevision ?? 0;
@@ -3159,28 +3160,14 @@ export class Page {
       }
       const { trash: _trash, deletion: _deletion, ...rest } = metadata;
       const next = { ...rest, deleted: false, lifecycleRevision: revision + 1 };
-      // The Catalog supplies a position when this Page's parent is gone; the
-      // Page then returns to the top level of its Space (or Your items).
-      if (args.restore_position !== undefined && metadata.placement) {
-        const current = pagePlacement(metadata);
-        next.placement = validatePlacement({
-          space_id: current.space_id,
-          parent_id: null,
-          position: args.restore_position,
-          placement_epoch: current.placement_epoch + 1,
-          ...(current.home && { home: true }),
-        });
-      }
+      // Where the Page returns is the owner's Catalog's decision; it adds the
+      // location to this receipt.
       const receipt = {
         page_id: pageId,
         state: "active",
         restored: true,
         title,
         restored_at: new Date().toISOString(),
-        ...(next.placement && {
-          space_id: next.placement.space_id,
-          parent_id: next.placement.parent_id,
-        }),
       };
       context.pending = {
         operation: "restore_page",

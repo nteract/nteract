@@ -25,15 +25,6 @@ const lifecycles = {
   deletedBeforeTrash: { deleted: true },
   purged: { deleted: true, trash: { trashedAt: "2026-10-01T00:00:00Z" }, purged: true },
 };
-const placements = {
-  personal: undefined,
-  space: {
-    space_id: "sp_8f62cd68-a040-4ac0-ad23-c0afb5c0a2f2",
-    parent_id: null,
-    position: "a0",
-    placement_epoch: 0,
-  },
-};
 const domainViews = {
   absent: undefined,
   restricted: null,
@@ -71,7 +62,8 @@ const evidence = {
   otherNamespace: { domain: "anaconda.com", namespace: "other", expiresAt: now + 500 },
 };
 
-function record(lifecycle, placement, domainView, row) {
+// Page records hold no location; the owner's Catalog records it.
+function record(lifecycle, domainView, row) {
   if (lifecycles[lifecycle] === null) return undefined;
   const members = {
     // Bystanders: another grant and another tombstone on the same Page.
@@ -88,39 +80,36 @@ function record(lifecycle, placement, domainView, row) {
       ...(domainViews[domainView] !== undefined && { domainView: domainViews[domainView] }),
     },
     ...lifecycles[lifecycle],
-    ...(placements[placement] && { placement: placements[placement] }),
   };
 }
 
 function* matrix() {
   for (const lifecycle of Object.keys(lifecycles))
-    for (const placement of Object.keys(placements))
-      for (const domainView of Object.keys(domainViews))
-        for (const row of Object.keys(rows))
-          for (const expiry of Object.keys(expiries))
-            for (const canWrite of [true, false])
-              for (const namespace of Object.keys(namespaces))
-                for (const proof of Object.keys(evidence))
-                  yield {
-                    label: {
-                      lifecycle,
-                      placement,
-                      domainView,
-                      row,
-                      expiry,
-                      canWrite,
-                      namespace,
-                      proof,
-                    },
-                    metadata: record(lifecycle, placement, domainView, row),
-                    identity: {
-                      principal,
-                      canWrite,
-                      expiresAt: expiries[expiry],
-                      namespace: namespaces[namespace],
-                      ...(evidence[proof] && { domainAccess: evidence[proof] }),
-                    },
-                  };
+    for (const domainView of Object.keys(domainViews))
+      for (const row of Object.keys(rows))
+        for (const expiry of Object.keys(expiries))
+          for (const canWrite of [true, false])
+            for (const namespace of Object.keys(namespaces))
+              for (const proof of Object.keys(evidence))
+                yield {
+                  label: {
+                    lifecycle,
+                    domainView,
+                    row,
+                    expiry,
+                    canWrite,
+                    namespace,
+                    proof,
+                  },
+                  metadata: record(lifecycle, domainView, row),
+                  identity: {
+                    principal,
+                    canWrite,
+                    expiresAt: expiries[expiry],
+                    namespace: namespaces[namespace],
+                    ...(evidence[proof] && { domainAccess: evidence[proof] }),
+                  },
+                };
 }
 
 test("decide() reproduces pageAccess, pageGrant, the lease bound and disclosure on every combination", (t) => {
@@ -151,9 +140,9 @@ test("decide() reproduces pageAccess, pageGrant, the lease bound and disclosure 
       assert.equal(relation === "owner", metadata.owner === principal, message);
     }
   }
-  // 5 lifecycles × 2 placements × 5 domain settings × 9 rows × 5 expiries ×
-  // 2 write scopes × 2 namespaces × 7 proofs.
-  assert.equal(cases, 63_000);
+  // 5 lifecycles × 5 domain settings × 9 rows × 5 expiries × 2 write scopes ×
+  // 2 namespaces × 7 proofs.
+  assert.equal(cases, 31_500);
   t.diagnostic(`equivalence matrix: ${cases} combinations, ${readable} readable`);
 });
 
@@ -187,7 +176,7 @@ test("decide() reproduces the owner-only Space checks for authenticated callers"
 // reads the request body and its record before it checks, against a fresh
 // clock (spaces.test.mjs pins that route).
 test("decide() refuses an identity without a principal, which company view used to admit", () => {
-  const metadata = record("active", "personal", "company", "stranger");
+  const metadata = record("active", "company", "stranger");
   const identity = {
     canWrite: false,
     expiresAt: now + 10,

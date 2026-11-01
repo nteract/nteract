@@ -103,19 +103,17 @@ a document or its assets between targets is separate from deployment; publishing
 does not migrate another environment's data.
 
 Projects add a Durable Object class (`Space`, binding `PROJECTS`, migration
-tag `v3`), `space/<id>` Catalog entries, a `placement` field on Page records and
-matching fields on owned Catalog entries, and catalog-index migration 4
-(placement columns on `pages_catalog_pages` and a `pages_catalog_spaces`
-table). Storage additions are additive. A build from before Spaces ignores the
+tag `v3`), `space/<id>` Catalog entries, location fields on owned Catalog
+entries (Page records carry none), and catalog-index migration 4 (placement
+columns on `pages_catalog_pages`, which nothing writes or reads now, and a
+`pages_catalog_spaces` table). Storage additions are additive. A build from before Spaces ignores the
 new fields, keys and tables: the owner lists and opens every Page in a Project
 as an ordinary Page, collaborators keep their direct grants, and Project
 records wait for a roll forward. Such a build does not refuse to trash a Page
 with sub-pages and does not protect home Pages. After rolling forward, a Page
 whose parent is in Trash shows at the top level of the Project view, a resumed
 creation under such a parent answers `parent_unavailable`, and a trashed home
-Page can be restored normally. Index rows an older build inserts have no
-placement until the Page reports again or its owner's account reconciles;
-changing `PAGES_CATALOG_INDEX` after rolling forward repairs them at once. At
+Page can be restored normally. At
 startup a build without the `Space` class logs `celld runtime start failed for
 Space:<id>: no Worker exports Durable Object class Space` once per Project cell
 celld resumes, then serves normally. On Cloudflare, removing a Durable Object
