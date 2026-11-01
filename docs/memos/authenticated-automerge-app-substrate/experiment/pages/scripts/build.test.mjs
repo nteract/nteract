@@ -36,6 +36,7 @@ import {
 } from "./viewer-chunks.mjs";
 import { FAVICON_HREF } from "../shared/favicon.mjs";
 import { createHash } from "node:crypto";
+import { crc32 } from "node:zlib";
 
 const app = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const require = createRequire(import.meta.url);
@@ -499,9 +500,33 @@ test("index.html names every shell asset by its hashed file", () => {
   assert.throws(() => withHashedAssets(html, assets), /reference [/]theme[.]js exactly once/);
 });
 
+test("the inlined tab icon is a complete 32x32 PNG", () => {
+  const prefix = "data:image/png;base64,";
+  assert.ok(FAVICON_HREF.startsWith(prefix));
+  const base64 = FAVICON_HREF.slice(prefix.length);
+  const png = Buffer.from(base64, "base64");
+  assert.equal(png.toString("base64"), base64, "canonical base64");
+  assert.deepEqual([...png.subarray(0, 8)], [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+  // Walk every chunk and check its CRC, so a truncated or edited string fails.
+  const chunks = [];
+  for (let at = 8; at < png.length; ) {
+    const length = png.readUInt32BE(at);
+    const typeAndData = png.subarray(at + 4, at + 8 + length);
+    assert.equal(png.readUInt32BE(at + 8 + length), crc32(typeAndData), `chunk at ${at}`);
+    chunks.push({
+      type: typeAndData.subarray(0, 4).toString("latin1"),
+      data: typeAndData.subarray(4),
+    });
+    at += 12 + length;
+  }
+  assert.equal(chunks[0].type, "IHDR");
+  assert.equal(chunks[0].data.readUInt32BE(0), 32, "width");
+  assert.equal(chunks[0].data.readUInt32BE(4), 32, "height");
+  assert.ok(chunks.some(({ type }) => type === "IDAT"));
+  assert.equal(chunks.at(-1).type, "IEND");
+});
+
 test("index.html inlines the nteract app icon as its tab icon", () => {
-  const icon = readFileSync(path.join(app, "../../../../../crates/notebook/icons/32x32.png"));
-  assert.equal(FAVICON_HREF, "data:image/png;base64," + icon.toString("base64"));
   const source = readFileSync(path.join(app, "viewer/index.html"), "utf8");
   const html = withInlineFavicon(source);
   assert.equal(
