@@ -137,6 +137,10 @@ test("a permanent deletion from Trash moves this browser's copy to the recovery 
   const dialog = host.querySelector('[role="alertdialog"]');
   assert.ok(dialog, "the confirmation shows");
   await click(button(host, "Delete permanently", dialog));
+  // The purge awaits IndexedDB writes (archive, then marker) before onPurged,
+  // so wait for that outcome rather than a fixed number of ticks.
+  for (let i = 0; i < 200 && !purged.length; i++) await settle();
+  // Then let the listing refresh, which is where an archive failure surfaces.
   for (let i = 0; i < 5; i++) await settle();
   assert.deepEqual(
     calls.filter(([name]) => name === "purge_page"),
