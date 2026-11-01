@@ -231,13 +231,21 @@ references; it does not publish the Page or change asset access.
     reopens.
   - Fence: [`worker/preserved-conversion.mjs`](worker/preserved-conversion.mjs)
     is the conversion's state machine (`unchecked`, `clear`, `held`,
-    `converting`, `failed`). In `held`, `converting` and `failed`, the host
-    refuses native connections to an active Page (`temporarily_unavailable`,
-    so clients back off), refuses native puts, and answers HTTP edits with
-    `503 preserved_markdown_converting` after one more attempt. A trashed
-    Page is `held`, so the fence is up before restore installs the active
-    record. A failed run keeps the fence and retries with backoff, and on
-    every refused connection or edit. The conversion journals in its own
+    `converting`, `failed`, `stuck`). In `held`, `converting` and `failed`,
+    on an active Page the host refuses every native put, relayed or
+    self-authored, and answers HTTP edits with
+    `503 preserved_markdown_converting` after one more attempt. Peers still
+    connect and sync down: discovery reports `converting`, and the viewer
+    shows the Page read-only without retiring its writer key. When the fence
+    drops, the host closes their sockets with `temporarily_unavailable`, so
+    they rediscover and edit. Refusing puts is what keeps an old tab's
+    competing conversion out, so admitting the connection reopens nothing.
+    A trashed Page is `held`, so the fence is up before restore installs the
+    active record. A failed run keeps the fence and retries with backoff,
+    and on every connection or refused edit. If startup's journal recovery
+    can't finish a pending conversion (its records still can't be stored),
+    startup completes anyway and hands that entry to the retry loop, so the
+    Page stays readable. The conversion journals in its own
     key space (`host/operation/internal:`), so full client receipt budgets
     can't block it, and a run that applied but didn't finish replays under its
     own key until the journal entry is terminal before the fence clears.

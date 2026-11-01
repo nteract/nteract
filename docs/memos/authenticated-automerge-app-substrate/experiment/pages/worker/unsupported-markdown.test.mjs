@@ -261,52 +261,20 @@ test("a preserved block whose source would lose content converts to literal text
   });
 });
 
-// Cloudflare's socket globals, enough for connect() to refuse with a close.
-function socketGlobals(t) {
-  const closed = [];
-  class Socket {
-    accept() {}
-    close(code, reason) {
-      closed.push({ code, reason });
-    }
-  }
-  const globals = {
-    WebSocketPair: class {
-      constructor() {
-        this[0] = new Socket();
-        this[1] = new Socket();
-      }
-    },
-    // Node's Response refuses status 101; keep its statics for the fixture.
-    Response: class extends globalThis.Response {
-      constructor(body, options) {
-        if (options?.status === 101) {
-          super(null, { status: 200 });
-          Object.defineProperty(this, "status", { value: 101 });
-        } else super(body, options);
-      }
-    },
-  };
-  for (const [name, value] of Object.entries(globals)) {
-    const descriptor = Object.getOwnPropertyDescriptor(globalThis, name);
-    Object.defineProperty(globalThis, name, { configurable: true, writable: true, value });
-    t.after(() => {
-      if (descriptor) Object.defineProperty(globalThis, name, descriptor);
-      else delete globalThis[name];
-    });
-  }
-  return closed;
-}
-const connectAs = (f, principal) =>
-  f.page.connect(
-    new Request("http://localhost/api/sync?page=fixture", { headers: { upgrade: "websocket" } }),
-    { ...f.identity(principal), driver: "fixture-browser", credentialKind: "oidc" },
-  );
 const settle = async (predicate) => {
   for (let i = 0; i < 200 && !predicate(); i++) await new Promise((r) => setImmediate(r));
   assert.ok(predicate(), "condition reached");
 };
 
+// Discovery while fenced: readable, a `converting` notice, and the grant
+// unchanged so the viewer keeps its writer key.
+async function assertConverting(f) {
+  const discovery = await f.pageCall("owner", `/api/connect?page=${pageId}`, undefined, "GET");
+  assert.equal(discovery.status, 200, JSON.stringify(discovery.body));
+  assert.equal(discovery.body.converting?.code, "preserved_markdown_converting");
+  assert.equal(discovery.body.access.canWrite, true);
+  return discovery.body;
+}
 async function trashedPreservedPage(t) {
   const plain = await fixture(t);
   const stored = preservedPage();
@@ -319,7 +287,6 @@ async function trashedPreservedPage(t) {
 }
 
 test("restore keeps native writes fenced until the conversion finishes", async (t) => {
-  const closed = socketGlobals(t);
   const f = await trashedPreservedPage(t);
   let release;
   const gate = new Promise((resolve) => (release = resolve));
@@ -331,10 +298,8 @@ test("restore keeps native writes fenced until the conversion finishes", async (
   // The active record is installed and the conversion is running.
   await settle(() => f.page.conversion.name === "converting");
   assert.equal(f.page.metadata.trash, undefined, "the record is active");
-  // A native peer can't join...
-  connectAs(f, f.owner);
-  assert.deepEqual(closed.at(-1), { code: 4503, reason: "temporarily_unavailable" });
-  // ...and a key already admitted can't write.
+  // No key can write. (Discovery waits behind the restore in the request
+  // queue; the failed-conversion test below reads it while fenced.)
   const key = "ab".repeat(32);
   await f.bind(key, f.owner);
   await assert.rejects(f.page.policy.put(key, key, f.page.metadata.tree), {
@@ -352,7 +317,6 @@ test("restore keeps native writes fenced until the conversion finishes", async (
 });
 
 test("a failed conversion keeps the fence after restore, and an edit retries it", async (t) => {
-  const closed = socketGlobals(t);
   const f = await trashedPreservedPage(t);
   f.hooks.flush = () => {
     throw Error("storage unavailable");
@@ -364,9 +328,9 @@ test("a failed conversion keeps the fence after restore, and an edit retries it"
   assert.equal(restored.status, 200, JSON.stringify(restored.body));
   assert.equal(f.page.conversion.name, "failed");
   assert.ok(hasPreservedBlocks(f.doc()), "nothing half-written");
-  // Read-only: no native peer, and HTTP edits refuse after one more try.
-  connectAs(f, f.owner);
-  assert.deepEqual(closed.at(-1), { code: 4503, reason: "temporarily_unavailable" });
+  // Read-only: discovery reports the hold, and HTTP edits refuse after one
+  // more try.
+  await assertConverting(f);
   let edits = 0;
   const edit = () =>
     f.tool("owner", "edit_page", {
@@ -629,4 +593,77 @@ test("a restart during the retry loop resumes the same intent and finishes it on
   const heads = f.heads();
   await f.crashRestart();
   assert.deepEqual(f.heads(), heads);
+});
+
+test("a restart before capacity recovers keeps the Page readable and retrying", async (t) => {
+  const f = await preservedFixture(t);
+  t.mock.method(console, "error", () => {});
+  const refuse = () => {
+    if (!hasPreservedBlocks(f.doc()))
+      throw Object.assign(Error("record capacity"), { status: 413 });
+  };
+  f.hooks.flush = refuse;
+  await f.page.convertPreservedMarkdown();
+  const [[key]] = await internalEntries(f);
+  // The process dies and starts again while capacity is still unavailable:
+  // journal recovery's flush fails too. Startup must still finish.
+  await f.crashRestart();
+  assert.equal(f.page.conversion.name, "failed", "fenced, retry scheduled");
+  assert.ok(f.page.conversionWriteFence());
+  const read = await f.tool("owner", "read_page", { page_id: pageId, comments: "none" });
+  assert.equal(read.status, 200, JSON.stringify(read.body));
+  await assertConverting(f);
+  const refused = await f.tool("owner", "edit_page", {
+    base_heads: f.heads(),
+    idempotency_key: "while-restarted",
+    operations: [{ op: "insert_markdown", markdown: "Next." }],
+  });
+  assert.equal(refused.body.code, "preserved_markdown_converting");
+  // Capacity returns: the next retry finishes the same entry.
+  f.hooks.flush = undefined;
+  await f.page.convertPreservedMarkdown();
+  assert.equal(f.page.conversion.name, "clear");
+  const entries = await internalEntries(f);
+  assert.deepEqual(
+    entries.map(([name]) => name),
+    [key],
+    "no second run",
+  );
+  assert.equal(entries[0][1].pending, false);
+  const markdown = exportMarkdown(richDoc(f.doc().blocks[orderedBlockIds(f.doc())[0]]));
+  assert.equal(markdown.split("drop").length, 2, "converted once");
+  const discovery = await f.pageCall("owner", `/api/connect?page=${pageId}`, undefined, "GET");
+  assert.equal(discovery.body.converting, undefined);
+});
+
+// While fenced, peers connect and sync down; every put is refused, which is
+// what keeps a competing conversion out. When the fence drops, connected
+// peers are closed with a transient code so they rediscover and edit.
+test("a fenced Page admits connections, refuses every put, and closes them when the fence drops", async (t) => {
+  const f = await preservedFixture(t);
+  t.mock.method(console, "error", () => {});
+  f.hooks.flush = () => {
+    if (!hasPreservedBlocks(f.doc()))
+      throw Object.assign(Error("record capacity"), { status: 413 });
+  };
+  await f.page.convertPreservedMarkdown();
+  assert.ok(f.page.conversionWriteFence());
+  const closed = [];
+  const reader = {
+    disconnect: async (code, reason) => closed.push({ code, reason }),
+  };
+  f.page.wires.add(reader);
+  // A connected key, even the old tab's, can't put.
+  for (const key of ["cd".repeat(32), "ef".repeat(32)]) {
+    await f.bind(key, f.owner);
+    await assert.rejects(f.page.policy.put(key, key, f.page.metadata.tree), {
+      code: "preserved_markdown_converting",
+    });
+  }
+  assert.deepEqual(closed, [], "readers stay connected while fenced");
+  f.hooks.flush = undefined;
+  await f.page.convertPreservedMarkdown();
+  assert.equal(f.page.conversion.name, "clear");
+  assert.deepEqual(closed, [{ code: 4503, reason: "temporarily_unavailable" }]);
+  f.page.wires.delete(reader);
 });

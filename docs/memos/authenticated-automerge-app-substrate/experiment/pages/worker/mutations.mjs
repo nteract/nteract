@@ -210,6 +210,27 @@ export async function documentMutation({
   return entry.receipt;
 }
 
+/** Finish one recorded, still-pending journal entry by its key: apply its
+ * recorded changes (a no-op where the handle holds them), flush, and record
+ * the receipt as terminal. The host uses it to keep retrying an internal
+ * migration whose recovery at startup failed. A missing or terminal entry
+ * only releases the key. */
+export async function replayRecordedMutation({ storage, handle, key, flush, admission }) {
+  const entry = await storage.get(key);
+  if (entry?.pending && entry.changes) {
+    if (admission) await admission.replay(key, entry, handle);
+    else await handle.update((doc) => A.applyChanges(doc, entry.changes)[0]);
+    if (!A.hasHeads(handle.doc(), entry.receipt.heads))
+      throw new Error("Recorded edit dependencies are unavailable");
+    await flush();
+    const completed = { ...entry, pending: false };
+    delete completed.changes;
+    await storage.put(key, completed);
+    await storage.sync();
+  }
+  await admission?.release(key);
+}
+
 export async function recoverDocumentMutations(storage, handle, flush, admission) {
   const pending = [...(await listOperationEntries(storage))].filter(
     ([, entry]) => entry.pending && entry.changes,

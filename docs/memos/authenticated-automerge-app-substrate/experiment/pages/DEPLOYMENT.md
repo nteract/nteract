@@ -281,8 +281,11 @@ There is no repair tool. To repair a Page:
 Older builds stored Markdown they couldn't import as one read-only preserved
 block. The Page host converts each one when it loads, creates, registers or
 restores a Page (README, "Preserved blocks"). While it converts, the Page is
-read-only: native connections get `temporarily_unavailable` and back off, and
-HTTP edits get `503 preserved_markdown_converting`.
+read-only: viewers connect and sync it down, discovery reports `converting`
+and the viewer shows a read-only notice, native puts are refused, and HTTP
+edits get `503 preserved_markdown_converting`. A restart while records still
+can't be stored doesn't stop the Page from starting; it stays readable and
+keeps retrying.
 
 The conversion journals in its own key space (`host/operation/internal:`),
 outside the client receipt budgets, so a full legacy receipt store can't

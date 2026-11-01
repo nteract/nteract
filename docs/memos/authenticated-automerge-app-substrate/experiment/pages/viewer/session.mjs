@@ -684,7 +684,7 @@ export class PageSession {
   updateCapabilities() {
     const enabled = !this.accessDenied && !this.accessReloadRequired && !this.editsPaused;
     // Content and comments are document writes; the schema gate holds both.
-    const content = enabled && this.schemaGate.editable;
+    const content = enabled && this.schemaGate.editable && !this.converting;
     this.canWrite = content && !!this.credentialCanWrite && !!this.access?.canWrite;
     this.canComment = content && !!this.credentialCanWrite && !!this.access?.canComment;
     this.canManageAccess = enabled && !!this.credentialCanWrite && !!this.access?.canManageAccess;
@@ -1420,6 +1420,18 @@ export class PageSession {
       this.trash = connection.trash ?? null;
       if (connection.recovery?.code === "page_recovery_blocked")
         this.problem = connection.recovery.message;
+      // The host is converting Markdown an older build saved: read-only
+      // until it finishes. Access is unchanged, so the writer key stays; the
+      // host closes the socket when it's done and the next discovery clears
+      // this.
+      const converting = connection.converting?.code === "preserved_markdown_converting";
+      if (converting !== !!this.converting) {
+        if (converting)
+          this.problem = this.convertingNotice = String(connection.converting.message);
+        else if (this.problem === this.convertingNotice) this.problem = "";
+        this.converting = converting;
+        this.updateCapabilities();
+      }
       if (this.localPage && !this.localPage.resetReplica)
         await this.persistLocal({ canWrite: this.canWrite });
       if (this.accessDenied || this.accessReloadRequired) return;

@@ -905,7 +905,8 @@ succeeds. Every error has a stable code. Branch on code, not on the error messag
   "table-cells", "empty-link", "definition" or "unrepresentable"), line,
   column and excerpt.
 - preserved_markdown_converting (503): Pages is converting Markdown an older
-  version saved on this Page. Wait a few seconds, read_page again, retry.
+  version saved on this Page. read_page still works. Wait, read_page again,
+  retry; if it persists, the Page needs an operator.
   Rewrite that part as code, escaped text or plain Markdown and retry with a
   new key.
 - idempotency_conflict: the key was used for a different request. Use a new key.

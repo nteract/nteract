@@ -7,9 +7,11 @@ import { defineMachine, reject } from "../shared/machine.mjs";
  * writes until the host has converted them (model/raw-migration.mjs). A peer
  * edit that lands first can be a competing conversion, which Automerge keeps
  * beside the host's, or it can move the heads the conversion journaled. So
- * `held`, `converting` and `failed` are fenced: the host refuses native
- * connections to an active Page, refuses native puts, and refuses HTTP edits
- * after one more attempt to convert.
+ * `held`, `converting` and `failed` are fenced: on an active Page the host
+ * refuses every native put and refuses HTTP edits after one more attempt to
+ * convert. Peers still connect and sync down read-only; discovery reports
+ * `converting`, and the host closes their sockets when the fence drops so
+ * they rediscover.
  *
  * The work is done when no preserved block remains and no journaled
  * conversion is unfinished. An unfinished one (applied, but its flush or
@@ -198,6 +200,16 @@ export function permanentFailure(error, { isHistoryCapacityError = () => false }
   if (error?.conversion || isHistoryCapacityError(error)) return true;
   const status = error?.status;
   return Number.isInteger(status) && status >= 400 && status < 500 && ![409, 429].includes(status);
+}
+
+/** What discovery reports while the fence is up, for the viewer's
+ * read-only notice. */
+export function conversionNotice() {
+  return {
+    code: "preserved_markdown_converting",
+    message:
+      "Pages is converting Markdown saved by an older version. This Page is read-only until that finishes.",
+  };
 }
 
 /** The refusal while the fence is up. */

@@ -32,6 +32,7 @@ import { convertPreservedBlocks, hasPreservedBlocks } from "../model/raw-migrati
 import {
   conversionFenceError,
   conversionFenced,
+  conversionNotice,
   conversionRetryDelay,
   permanentFailure,
   preservedConversionMachine,
@@ -69,6 +70,7 @@ import {
 } from "./history-admission.mjs";
 import {
   INTERNAL_PREFIX,
+  listOperationEntries,
   issueRetryToken,
   inspectOperation,
   reserveOperation,
@@ -109,6 +111,7 @@ const unifiedMissing = (request) =>
 import {
   documentMutation,
   recoverDocumentMutations,
+  replayRecordedMutation,
   mutationKey,
   fingerprint,
   requireHeads,
@@ -2376,15 +2379,29 @@ export class Page {
         this.admission,
       );
     } catch (error) {
-      if (!isHistoryCapacityError(error)) throw error;
-      // Capacity is checked on a clone before any pending edit reaches the
-      // serving handle. Preserve accepted history and the unresolved intent.
-      this.recoveryBlocked = {
-        code: "page_recovery_blocked",
-        pending: true,
-        message:
-          "A pending edit exceeds this Page's history capacity. Accepted content is available read-only.",
-      };
+      if (isHistoryCapacityError(error)) {
+        // Capacity is checked on a clone before any pending edit reaches the
+        // serving handle. Preserve accepted history and the unresolved intent.
+        this.recoveryBlocked = {
+          code: "page_recovery_blocked",
+          pending: true,
+          message:
+            "A pending edit exceeds this Page's history capacity. Accepted content is available read-only.",
+        };
+      } else {
+        // A pending host migration whose records still can't be stored (a
+        // 413 on record capacity, say) mustn't stop the Page from starting:
+        // it stays readable, fenced, and the conversion machine retries the
+        // same journal entries with backoff. A pending client edit still
+        // rejects startup, as before.
+        const pending = [...(await listOperationEntries(this.ctx.storage))]
+          .filter(([, entry]) => entry.pending && entry.changes)
+          .map(([key]) => key);
+        if (!pending.length || !pending.every((key) => key.startsWith(INTERNAL_PREFIX)))
+          throw error;
+        logFailure(error, "preserved-markdown-recovery");
+        this.conversionIntent = { replayKeys: pending };
+      }
     }
     // Before native connections open, so peers sync the converted content.
     await this.convertPreservedMarkdown();
@@ -2438,8 +2455,20 @@ export class Page {
   }
 
   conversionEvent(event) {
+    const wasFenced = this.conversionFenced();
     const result = preservedConversionMachine.step(this.conversion, event);
     this.conversionState = result.state;
+    // Peers connected read-only while fenced. Once the fence drops, close
+    // their sockets with a transient code: they reconnect, discovery no
+    // longer reports `converting`, and editing resumes.
+    if (wasFenced && !this.conversionFenced() && this.wires?.size) {
+      const done = withAdmissionReason(
+        Object.assign(Error("Preserved Markdown converted"), { status: 503 }),
+        "preserved_markdown_converting",
+      );
+      for (const wire of this.wires)
+        void wire.disconnect(admissionCloseCode(done), admissionCode(done));
+    }
     for (const effect of result.effects) {
       if (effect.type === "observe") this.observeConversion();
       else if (effect.type === "scheduleRetry") {
@@ -2489,6 +2518,19 @@ export class Page {
    * finish replays under the same key, so its reservation completes. Throws
    * on failure; an error from the conversion itself carries `conversion`. */
   async convertPreservedOnce(mode) {
+    if (this.conversionIntent?.replayKeys) {
+      // Entries startup recovery couldn't finish: replay them as recorded.
+      for (const key of this.conversionIntent.replayKeys)
+        await replayRecordedMutation({
+          storage: this.ctx.storage,
+          handle: this.handle,
+          key,
+          flush: () => this.flush(),
+          admission: this.admission,
+        });
+      this.conversionIntent = undefined;
+      return;
+    }
     if (!this.conversionIntent) {
       const heads = A.getHeads(this.handle.doc()).sort();
       const digest = hex(
@@ -3140,12 +3182,15 @@ export class Page {
           serverPeerId: this.serverKey,
           serverSenderId: this.serverSenderId,
           identity: publicIdentity(identity),
+          // Access is the grant; `converting` is a temporary hold the viewer
+          // shows as read-only without retiring its writer key.
           canWrite: !this.recoveryBlocked && pageAccess(this.metadata, identity).canWrite,
           access: {
             ...pageAccess(this.metadata, identity),
             ...(this.recoveryBlocked && { canWrite: false, canComment: false }),
           },
           ...(this.recoveryBlocked && { recovery: this.recoveryBlocked }),
+          ...(this.conversionWriteFence() && { converting: conversionNotice() }),
           ...(incompleteHistory(this.handle.doc()) && {
             historyIncomplete: incompleteHistory(this.handle.doc()),
           }),
@@ -3914,16 +3959,12 @@ export class Page {
     const declared = new URL(request.url).searchParams.getAll("schema_features");
     const features = declared.length > 1 ? null : parseDeclaredFeatures(declared[0]);
     if (!features) throw new HttpError(400, "Invalid schema_features");
-    // No native peer joins an active Page before its preserved blocks are
-    // converted. The refusal is transient: clients back off and reconnect,
-    // and each attempt retries a failed conversion. A trashed Page keeps its
-    // own rules (the owner reads it read-only).
+    // While the preserved-block conversion holds the fence, peers still
+    // connect and sync down, read-only: the policy refuses every put, relayed
+    // or self-authored, so no competing conversion lands. Discovery tells the
+    // viewer it's converting. Each connection retries a failed conversion.
     if (this.conversion.name === "unchecked") this.observeConversion();
-    const fenced = this.conversionWriteFence();
-    if (fenced) {
-      void this.convertPreservedMarkdown();
-      return refuseSocket(fenced, identity);
-    }
+    if (this.conversionFenced()) void this.convertPreservedMarkdown();
     const capacity = this.connectionCapacity(identity);
     if (capacity) return refuseSocket(capacity, identity);
     const pair = new WebSocketPair();
