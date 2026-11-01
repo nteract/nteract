@@ -146,6 +146,7 @@ export async function fixture(t, { env: extraEnv = {}, auth: shared, docBytes } 
       metadata,
       handle,
       wires: new Set(),
+      wirePrincipals: new Map(),
       serverKey,
       serverSenderId: "server-sender",
       repo: {

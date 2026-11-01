@@ -32,8 +32,8 @@ import { defineMachine, reject } from "../shared/machine.mjs";
  *   fallback when a native run fails for a reason that won't pass.
  * - failed { mode, attempt }: the last run failed transiently (storage, a
  *   pending edit), or failed after its journal entry was reserved. Fenced; a
- *   retry is scheduled (5 s doubling to 5 minutes), and every refused
- *   connection or edit observes again. A reserved run retries its exact
+ *   retry is scheduled (5 s doubling to 5 minutes); only the timer starts
+ *   it, never a nudge. A reserved run retries its exact
  *   intent indefinitely, whatever the failure: it is never reauthored,
  *   abandoned or unfenced, because its change may already be in the serving
  *   document. Every STUCK_LOG_EVERY failures it is logged for an operator.
@@ -44,9 +44,14 @@ import { defineMachine, reject } from "../shared/machine.mjs";
  *   DEPLOYMENT.md describes the recovery.
  *
  * Events:
- * - observe { preserved, unfinished, eligible }: what the host sees now.
+ * - observe { preserved, unfinished, eligible, due }: what the host sees now.
  *   `preserved`: the document holds a preserved block. `unfinished`: a
  *   journaled conversion hasn't finished. `eligible`: the host may convert.
+ *   `due`: a retry may start now. The host's own triggers (load, creation,
+ *   restore, the retry timer) are due. A nudge from a connection or an HTTP
+ *   edit is not: in `failed` it can clear or hold the fence but never starts
+ *   a run before the timer, so many peers can't skip the backoff, and
+ *   repeated nudges coalesce to nothing.
  * - succeeded; failed { permanent, unfinished, reason }: the run's outcome.
  *   `unfinished`: its journal entry is still reserved after the failure.
  *
@@ -108,8 +113,8 @@ export const preservedConversionMachine = defineMachine({
     },
     events: {
       observe: (event) => {
-        only(event, ["type", "preserved", "unfinished", "eligible"]);
-        for (const key of ["preserved", "unfinished", "eligible"])
+        only(event, ["type", "preserved", "unfinished", "eligible", "due"]);
+        for (const key of ["preserved", "unfinished", "eligible", "due"])
           check(typeof event[key] === "boolean", `${key} is a boolean`);
       },
       succeeded: (event) => only(event, ["type"]),
@@ -147,6 +152,8 @@ export const preservedConversionMachine = defineMachine({
         // (a stuck run never reserved).
         if (state.name === "stuck") return reject(state, "stuck until the next load");
         if (!event.eligible) return { state: { name: "held" }, effects: [] };
+        if (state.name === "failed" && !event.due)
+          return reject(state, "the next retry waits for its backoff");
         const mode = state.name === "failed" ? state.mode : "native";
         const attempt = state.name === "failed" ? state.attempt + 1 : 1;
         return {

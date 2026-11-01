@@ -238,11 +238,15 @@ references; it does not publish the Page or change asset access.
     connect and sync down: discovery reports `converting`, and the viewer
     shows the Page read-only without retiring its writer key. When the fence
     drops, the host closes their sockets with `temporarily_unavailable`, so
-    they rediscover and edit. Refusing puts is what keeps an old tab's
+    they rediscover and edit. A tab that discovered `converting` says so on
+    its upgrade (`converting=1`); if the fence dropped in between, the host
+    refuses that upgrade the same way, so no tab misses the completion. Refusing puts is what keeps an old tab's
     competing conversion out, so admitting the connection reopens nothing.
     A trashed Page is `held`, so the fence is up before restore installs the
-    active record. A failed run keeps the fence and retries with backoff,
-    and on every connection or refused edit. If startup's journal recovery
+    active record. A failed run keeps the fence and retries with backoff.
+    Connections (after their capacity check) and edits only nudge the
+    machine: a nudge can clear the fence, but never starts a retry before
+    its timer. If startup's journal recovery
     can't finish a pending conversion (its records still can't be stored),
     startup completes anyway and hands that entry to the retry loop, so the
     Page stays readable. The conversion journals in its own

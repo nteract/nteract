@@ -290,8 +290,8 @@ keeps retrying.
 The conversion journals in its own key space (`host/operation/internal:`),
 outside the client receipt budgets, so a full legacy receipt store can't
 block it. A run that fails for a reason that passes (storage, a pending edit)
-retries with backoff, 5 seconds doubling to 5 minutes, and on every refused
-connection or edit.
+retries with backoff, 5 seconds doubling to 5 minutes. Connections and edits
+don't start retries early.
 
 Once a run's journal entry is reserved, the host retries that exact intent,
 indefinitely, whatever the failure, and the Page stays fenced and read-only.

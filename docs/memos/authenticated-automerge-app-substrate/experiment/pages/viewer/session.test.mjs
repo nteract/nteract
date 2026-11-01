@@ -31,6 +31,13 @@ test("native admission pins the freshly discovered activity epoch without changi
   const legacy = pageSyncAddress("fixture", "http://localhost:8910/", null);
   assert.equal(legacy.protocol, "ws:");
   assert.equal(legacy.searchParams.has("activity_epoch"), false);
+  assert.equal(legacy.searchParams.has("converting"), false);
+  // A tab that discovered the conversion says so, so a host that finished it
+  // meanwhile sends the tab back to discovery.
+  const converting = pageSyncAddress("fixture", "http://localhost:8910/", null, [], {
+    converting: true,
+  });
+  assert.equal(converting.searchParams.get("converting"), "1");
 });
 
 test("a rejected stale-epoch upgrade retires the discovered activity before retry", async (t) => {

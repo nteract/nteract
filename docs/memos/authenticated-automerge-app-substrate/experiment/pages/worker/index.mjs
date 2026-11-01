@@ -2413,7 +2413,7 @@ export class Page {
    * Resolves when no run is in flight. A failed run leaves the Page fenced,
    * read-only, with a scheduled retry. */
   async convertPreservedMarkdown() {
-    this.observeConversion();
+    this.observeConversion({ due: true });
     while (this.conversionRun) await this.conversionRun;
   }
 
@@ -2437,13 +2437,14 @@ export class Page {
 
   /** Feed what the host sees now into the conversion machine. Without a
    * document there is nothing to observe, and the state stays as it is. */
-  observeConversion() {
+  observeConversion({ due = false } = {}) {
     const doc = typeof this.handle?.doc === "function" ? this.handle.doc() : undefined;
     if (!doc) return;
     const preserved = hasPreservedBlocks(doc);
     const unfinished = !!this.conversionIntent;
     this.conversionEvent({
       type: "observe",
+      due,
       preserved,
       unfinished,
       eligible:
@@ -2470,11 +2471,11 @@ export class Page {
         void wire.disconnect(admissionCloseCode(done), admissionCode(done));
     }
     for (const effect of result.effects) {
-      if (effect.type === "observe") this.observeConversion();
+      if (effect.type === "observe") this.observeConversion({ due: true });
       else if (effect.type === "scheduleRetry") {
         clearTimeout(this.conversionRetry);
         this.conversionRetry = setTimeout(
-          () => this.observeConversion(),
+          () => this.observeConversion({ due: true }),
           conversionRetryDelay(effect.attempt),
         );
         // Node keeps no process alive for it; a Durable Object stays resident.
@@ -2506,8 +2507,12 @@ export class Page {
   /** Before an HTTP edit: while fenced, try the conversion once more, then
    * refuse with `preserved_markdown_converting` if the fence stays. */
   async requireConverted() {
-    if (!this.conversionFenced() && this.conversion.name !== "unchecked") return;
-    await this.convertPreservedMarkdown();
+    if (this.conversion.name === "unchecked") await this.convertPreservedMarkdown();
+    else if (this.conversionFenced()) {
+      // A nudge: it may clear the fence, but a retry waits for its backoff.
+      this.observeConversion();
+      while (this.conversionRun) await this.conversionRun;
+    }
     if (this.conversionFenced()) throw conversionFenceError();
   }
 
@@ -3963,10 +3968,23 @@ export class Page {
     // connect and sync down, read-only: the policy refuses every put, relayed
     // or self-authored, so no competing conversion lands. Discovery tells the
     // viewer it's converting. Each connection retries a failed conversion.
-    if (this.conversion.name === "unchecked") this.observeConversion();
-    if (this.conversionFenced()) void this.convertPreservedMarkdown();
     const capacity = this.connectionCapacity(identity);
     if (capacity) return refuseSocket(capacity, identity);
+    // A first observation is due; afterwards a connection only nudges, which
+    // never starts a retry before its backoff.
+    this.observeConversion({ due: this.conversion.name === "unchecked" });
+    // The viewer discovered `converting` but the fence dropped before this
+    // upgrade, so it would miss the completion close: send it back to
+    // discovery. Synchronous with the wire's registration below, so the
+    // fence can't drop between this check and the socket joining `wires`.
+    if (new URL(request.url).searchParams.get("converting") === "1" && !this.conversionWriteFence())
+      return refuseSocket(
+        withAdmissionReason(
+          Object.assign(Error("Preserved Markdown converted"), { status: 503 }),
+          "preserved_markdown_converting",
+        ),
+        identity,
+      );
     const pair = new WebSocketPair();
     const client = pair[0],
       socket = pair[1];

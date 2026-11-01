@@ -20,17 +20,23 @@ const STATES = {
   failedLiteral: { name: "failed", mode: "literal", attempt: 1 },
   stuck: { name: "stuck", reason: "history_capacity" },
 };
-const observe = (preserved, unfinished, eligible) => ({
+const observe = (preserved, unfinished, eligible, due = true) => ({
   type: "observe",
   preserved,
   unfinished,
   eligible,
+  due,
 });
 const EVENTS = {
   none: observe(false, false, false),
   held: observe(true, false, false),
   convert: observe(true, false, true),
   unfinished: observe(false, true, true),
+  // Nudges from a connection or an HTTP edit: not due.
+  nudgeNone: observe(false, false, false, false),
+  nudgeHeld: observe(true, false, false, false),
+  nudgeConvert: observe(true, false, true, false),
+  nudgeUnfinished: observe(false, true, true, false),
   succeeded: { type: "succeeded" },
   transient: { type: "failed", permanent: false, unfinished: false, reason: "storage_or_runtime" },
   permanent: { type: "failed", permanent: true, unfinished: false, reason: "history_capacity" },
@@ -53,12 +59,28 @@ const idle = {
   convert: converting("native", 1),
   // An unfinished journal entry is work even with no preserved block left.
   unfinished: converting("native", 1),
+  // Outside `failed`, nothing is waiting on a backoff: a nudge acts.
+  nudgeNone: [{ name: "clear" }, []],
+  nudgeHeld: [{ name: "held" }, []],
+  nudgeConvert: converting("native", 1),
+  nudgeUnfinished: converting("native", 1),
+};
+// In `failed`, a nudge clears or holds the fence but never starts a run.
+const waiting = {
+  nudgeNone: [{ name: "clear" }, []],
+  nudgeHeld: [{ name: "held" }, []],
+  nudgeConvert: "rejected",
+  nudgeUnfinished: "rejected",
 };
 const running = (mode, attempt) => ({
   none: "rejected",
   held: "rejected",
   convert: "rejected",
   unfinished: "rejected",
+  nudgeNone: "rejected",
+  nudgeHeld: "rejected",
+  nudgeConvert: "rejected",
+  nudgeUnfinished: "rejected",
   succeeded: [{ name: "unchecked" }, [{ type: "observe" }]],
   transient: [{ name: "failed", mode, attempt }, [{ type: "scheduleRetry", attempt }]],
   // A reserved run retries its own intent; no fallback while it's reserved.
@@ -97,9 +119,15 @@ const TABLE = {
   converting: running("native", 2),
   convertingLast: running("native", STUCK_LOG_EVERY),
   convertingLiteral: running("literal", 1),
-  failed: { ...idle, convert: converting("native", 3), unfinished: converting("native", 3) },
+  failed: {
+    ...idle,
+    ...waiting,
+    convert: converting("native", 3),
+    unfinished: converting("native", 3),
+  },
   failedLiteral: {
     ...idle,
+    ...waiting,
     convert: converting("literal", 2),
     unfinished: converting("literal", 2),
   },
@@ -108,6 +136,10 @@ const TABLE = {
     held: "rejected",
     convert: "rejected",
     unfinished: "rejected",
+    nudgeNone: [{ name: "clear" }, []],
+    nudgeHeld: "rejected",
+    nudgeConvert: "rejected",
+    nudgeUnfinished: "rejected",
   },
 };
 

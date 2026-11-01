@@ -132,10 +132,13 @@ export const signingKeyRefused = (admission, cause) =>
 /** `features` is this build's schema features. The host refuses native edits
  * from a tab whose build lacks an id the Page is stamped with; no parameter
  * means the baseline, as for builds from before the stamp. */
-export function pageSyncAddress(pageId, href, activityEpoch, features = []) {
+export function pageSyncAddress(pageId, href, activityEpoch, features = [], { converting } = {}) {
   const address = new URL(`/api/sync?page=${encodeURIComponent(pageId)}`, href);
   address.protocol = address.protocol === "https:" ? "wss:" : "ws:";
   if (activityEpoch) address.searchParams.set("activity_epoch", activityEpoch);
+  // Discovery reported the preserved-block conversion. If it finished before
+  // this upgrade, the host refuses the socket so the tab rediscovers.
+  if (converting) address.searchParams.set("converting", "1");
   if (features.length) address.searchParams.set("schema_features", [...features].sort().join(","));
   return address;
 }
@@ -1460,6 +1463,7 @@ export class PageSession {
       location.href,
       this.activityEpoch,
       this.buildFeatures,
+      { converting: this.converting },
     );
     // Keep the browser socket itself: toTransport consumes the native wrapper,
     // whereas the raw socket remains cancellable when account/page access changes.

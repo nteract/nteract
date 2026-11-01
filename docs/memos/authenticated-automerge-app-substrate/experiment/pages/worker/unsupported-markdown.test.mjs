@@ -316,7 +316,7 @@ test("restore keeps native writes fenced until the conversion finishes", async (
   await f.page.policy.put(key, key, f.page.metadata.tree);
 });
 
-test("a failed conversion keeps the fence after restore, and an edit retries it", async (t) => {
+test("a failed conversion keeps the fence after restore; edits wait for the retry", async (t) => {
   const f = await trashedPreservedPage(t);
   f.hooks.flush = () => {
     throw Error("storage unavailable");
@@ -328,8 +328,8 @@ test("a failed conversion keeps the fence after restore, and an edit retries it"
   assert.equal(restored.status, 200, JSON.stringify(restored.body));
   assert.equal(f.page.conversion.name, "failed");
   assert.ok(hasPreservedBlocks(f.doc()), "nothing half-written");
-  // Read-only: discovery reports the hold, and HTTP edits refuse after one
-  // more try.
+  // Read-only: discovery reports the hold, and HTTP edits are refused
+  // without starting a retry before its backoff.
   await assertConverting(f);
   let edits = 0;
   const edit = () =>
@@ -341,13 +341,11 @@ test("a failed conversion keeps the fence after restore, and an edit retries it"
   const refused = await edit();
   assert.equal(refused.status, 503, JSON.stringify(refused.body));
   assert.equal(refused.body.code, "preserved_markdown_converting");
-  assert.equal(f.page.conversion.name, "failed");
-  assert.equal(f.page.conversion.attempt, 2);
-  // Storage recovers: the next edit converts first. The conversion moved the
-  // heads, so that edit asks for a fresh read; the retry lands.
+  assert.deepEqual(f.page.conversion, { name: "failed", mode: "native", attempt: 1 });
+  // Storage recovers and the retry timer fires: the same run finishes, and
+  // the next edit lands.
   f.hooks.flush = undefined;
-  const stale = await edit();
-  assert.equal(stale.body.code, "stale_heads", JSON.stringify(stale.body));
+  await f.page.convertPreservedMarkdown();
   assert.equal(f.page.conversion.name, "clear");
   const accepted = await edit();
   assert.equal(accepted.status, 200, JSON.stringify(accepted.body));
@@ -666,4 +664,95 @@ test("a fenced Page admits connections, refuses every put, and closes them when 
   assert.equal(f.page.conversion.name, "clear");
   assert.deepEqual(closed, [{ code: 4503, reason: "temporarily_unavailable" }]);
   f.page.wires.delete(reader);
+});
+
+// Many connections and edits after a failure start no extra attempts before
+// the retry deadline; the timer's retry is the only one.
+test("connections and edits after a failure don't skip the backoff", async (t) => {
+  const f = await preservedFixture(t);
+  t.mock.method(console, "error", () => {});
+  let flushes = 0;
+  f.hooks.flush = () => {
+    flushes++;
+    throw Error("storage unavailable");
+  };
+  await f.page.convertPreservedMarkdown();
+  assert.deepEqual(f.page.conversion, { name: "failed", mode: "native", attempt: 1 });
+  const before = flushes;
+  // Each nudge runs as a connection would, after its capacity check.
+  for (let n = 0; n < 50; n++) f.page.observeConversion();
+  for (let n = 0; n < 5; n++)
+    await f.tool("owner", "edit_page", {
+      base_heads: f.heads(),
+      idempotency_key: `nudge-edit-${n}`,
+      operations: [{ op: "insert_markdown", markdown: "x" }],
+    });
+  assert.equal(f.page.conversionRun, undefined, "nothing started");
+  assert.equal(flushes, before, "no run touched storage");
+  assert.deepEqual(f.page.conversion, { name: "failed", mode: "native", attempt: 1 });
+  // The timer is the retry.
+  f.hooks.flush = undefined;
+  await f.page.convertPreservedMarkdown();
+  assert.equal(f.page.conversion.name, "clear");
+});
+
+// Cloudflare's socket globals, enough for connect() to answer an upgrade.
+function socketGlobals(t) {
+  const closed = [];
+  const globals = {
+    WebSocketPair: class {
+      constructor() {
+        const socket = () => ({
+          accept() {},
+          close: (code, reason) => closed.push({ code, reason }),
+          addEventListener() {},
+          send() {},
+        });
+        this[0] = socket();
+        this[1] = socket();
+      }
+    },
+  };
+  for (const [name, value] of Object.entries(globals)) {
+    const descriptor = Object.getOwnPropertyDescriptor(globalThis, name);
+    Object.defineProperty(globalThis, name, { configurable: true, writable: true, value });
+    t.after(() => {
+      if (descriptor) Object.defineProperty(globalThis, name, descriptor);
+      else delete globalThis[name];
+    });
+  }
+  // Node's Response refuses status 101.
+  t.mock.method(globalThis, "Response", function (body, options) {
+    return { status: options?.status, webSocket: options?.webSocket };
+  });
+  return closed;
+}
+
+// Discovery reports `converting`, the conversion finishes, then the viewer's
+// upgrade arrives. It never joined `wires`, so it missed the completion
+// close: the host refuses the upgrade so the tab rediscovers.
+test("an upgrade from a tab that discovered converting, after completion, is sent back", async (t) => {
+  const f = await preservedFixture(t);
+  t.mock.method(console, "error", () => {});
+  t.mock.method(console, "warn", () => {});
+  f.hooks.flush = () => {
+    if (!hasPreservedBlocks(f.doc())) throw Error("storage unavailable");
+  };
+  await f.page.convertPreservedMarkdown();
+  await assertConverting(f);
+  f.hooks.flush = undefined;
+  await f.page.convertPreservedMarkdown();
+  assert.equal(f.page.conversion.name, "clear");
+  const closed = socketGlobals(t);
+  const upgrade = (query) =>
+    f.page.connect(
+      new Request(`http://localhost/api/sync?page=${pageId}${query}`, {
+        headers: { upgrade: "websocket" },
+      }),
+      { ...f.identity(f.owner), credentialKind: "oidc" },
+    );
+  const response = upgrade("&converting=1");
+  assert.equal(response.status, 101);
+  assert.deepEqual(closed, [{ code: 4503, reason: "temporarily_unavailable" }]);
+  assert.equal(f.page.wires.size, 0, "never admitted");
 });
