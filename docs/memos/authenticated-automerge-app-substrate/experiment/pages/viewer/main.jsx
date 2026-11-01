@@ -1096,6 +1096,7 @@ function App() {
                   aria-label="Page title"
                   title={page.title || "Untitled"}
                   placeholder="Untitled"
+                  maxLength={editor.module?.TITLE_MAX_LENGTH}
                   value={titleComposing ?? page.title}
                   readOnly={!session.canWrite}
                   onSelect={(event) => rememberTitleSelection(event.currentTarget)}

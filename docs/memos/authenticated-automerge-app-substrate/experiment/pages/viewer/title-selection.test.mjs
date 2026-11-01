@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import * as A from "@automerge/automerge";
 import {
   TITLE_IDLE,
+  TITLE_MAX_LENGTH,
   captureTitleSelection,
   composingTitle,
   resolveTitleSelection,
@@ -141,7 +142,7 @@ test("a keystroke typed before React shows a peer's title change keeps both", ()
 
 test("without a usable base the edit reads against the current title", () => {
   const doc = writer("Plan");
-  const expected = { edits: [{ index: 4, remove: 0, insert: "s" }], caret: 5 };
+  const expected = { edits: [{ index: 4, remove: 0, insert: "s" }], caret: 5, work: 0 };
   assert.deepEqual(titleChange(doc, null, "Plans", 5), expected);
   assert.deepEqual(
     titleChange(doc, { value: "Other", heads: A.getHeads(doc) }, "Plans", 5),
@@ -413,6 +414,13 @@ test("random stale edits keep every peer insertion and every typed character", (
         1,
         `${label}: peer ${c} -> "${after.doc.title}"`,
       );
+    // Without the peer's characters, the title is exactly what the writer
+    // typed, in the writer's order.
+    assert.equal(
+      after.doc.title.replace(/[XYZ]/g, ""),
+      valueText,
+      `${label} -> "${after.doc.title}"`,
+    );
     const count = (text, c) => Array.from(text).filter((x) => x === c).length;
     for (const c of ["q", "日"])
       assert.equal(count(after.doc.title, c), count(valueText, c), `${label}: typed ${c}`);
@@ -428,4 +436,48 @@ test("random stale edits keep every peer insertion and every typed character", (
         `${label}: caret ${caret} -> ${after.caret} in "${after.doc.title}"`,
       );
   }
+});
+
+test("a peer deleting the characters between runs collapses their anchors in order", () => {
+  for (const peer of PEERS) {
+    // The writer typed "1", "2" and "3" between the input's "abcd"; the
+    // caret is after "2".
+    const shown = writer("abcd");
+    const base = snapshot(shown, 4);
+    // The peer deleted "bc", the anchors of "2" and "3".
+    const middle = commit(peerRemove(shown, peer, 1, 2), base, "a1b2c3d", 4);
+    assert.equal(middle.doc.title, "a123d");
+    assert.equal(middle.caret, 3);
+    // The peer deleted every character: all three runs land at the start.
+    const all = commit(peerRemove(shown, peer, 0, 4), base, "a1b2c3d", 4);
+    assert.equal(all.doc.title, "123");
+    assert.equal(all.caret, 2);
+    // The writer also deleted "d" while the peer deleted "bc".
+    const both = commit(peerRemove(shown, peer, 1, 2), base, "a1b2c3", 4);
+    assert.equal(both.doc.title, "a123");
+    assert.equal(both.caret, 3);
+  }
+});
+
+test("two long unrelated titles skip the quadratic diff", () => {
+  for (const peer of PEERS) {
+    const length = 10_000;
+    const fromText = "ab".repeat(length / 2),
+      valueText = "xy".repeat(length / 2);
+    const shown = writer(fromText);
+    // A peer prepends while the input still shows the old title.
+    const doc = peerType(shown, peer, 0, "P");
+    const started = performance.now();
+    const plan = titleChange(doc, snapshot(shown, 0), valueText, 3);
+    const elapsed = performance.now() - started;
+    assert.equal(plan.work, 0, "no diff table");
+    const after = commit(doc, snapshot(shown, 0), valueText, 3);
+    assert.equal(after.doc.title, "P" + valueText);
+    assert.equal(after.caret, 4);
+    assert.ok(elapsed < 2000, `${elapsed} ms`);
+  }
+  // At the title limit, unrelated titles still get the full diff.
+  const near = writer("ab".repeat(TITLE_MAX_LENGTH / 2));
+  const plan = titleChange(near, null, "ba".repeat(TITLE_MAX_LENGTH / 2), 1);
+  assert.ok(plan.work > 0 && plan.work <= TITLE_MAX_LENGTH * TITLE_MAX_LENGTH, `${plan.work}`);
 });

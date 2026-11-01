@@ -17,6 +17,7 @@ export { SaveStatus } from "./SaveStatus.jsx";
 export { PageControls } from "./PageControls.jsx";
 export {
   TITLE_IDLE,
+  TITLE_MAX_LENGTH,
   composingTitle,
   resolveTitleSelection,
   titleChange,

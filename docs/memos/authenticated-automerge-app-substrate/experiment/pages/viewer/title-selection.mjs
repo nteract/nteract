@@ -89,17 +89,23 @@ export function titleSplice(previous, next, caret) {
   return { index, remove: end - index, insert: next.slice(index, caret) };
 }
 
-// The longest the LCS diff below compares, in code points multiplied. Titles
-// are short; past this the diff keeps only the common prefix and suffix.
-const LCS_LIMIT = 4_000_000;
+/** The longest Page title the host accepts (worker/index.mjs and
+ * worker/registration.mjs refuse longer ones). The title input stops there. */
+export const TITLE_MAX_LENGTH = 500;
+
+// The most cells the LCS diff below fills: two unrelated titles at the
+// length limit. A longer middle becomes one replacement instead.
+const LCS_BUDGET = TITLE_MAX_LENGTH * TITLE_MAX_LENGTH;
 
 /** `from` turned into `next` as deletions of `from`'s code points and
  * insertion runs at gaps between them (UTF-16 offsets into `from`). The
  * caret's single splice is preferred: it places an edit inside repeated
- * characters where a diff can't. Otherwise a longest-common-subsequence diff
- * over code points keeps every character the two share, as updateText does.
- * `at` describes the caret: inside an insertion run (`run`, `into`), or at a
- * gap between kept characters (`gap`). */
+ * characters where a diff can't. Otherwise the common prefix and suffix are
+ * kept, and a longest-common-subsequence diff over the middle's code points
+ * keeps every character the two share, as updateText does. A middle larger
+ * than LCS_BUDGET is replaced whole. `at` describes the caret: inside an
+ * insertion run (`run`, `into`), or at a gap between kept characters
+ * (`gap`). `work` counts the diff cells filled. */
 function titleOps(from, next, caret) {
   const splice = titleSplice(from, next, caret);
   if (splice) {
@@ -114,69 +120,74 @@ function titleOps(from, next, caret) {
       deleted,
       runs,
       at: runs.length ? { run: runs[0], into: splice.insert.length } : { gap: splice.index },
+      work: 0,
     };
   }
   const a = Array.from(from),
-    b = Array.from(next),
-    width = (value) => value.length;
-  let keepStart = 0,
-    keepEnd = 0;
-  if (a.length * b.length > LCS_LIMIT) {
-    while (keepStart < a.length && keepStart < b.length && a[keepStart] === b[keepStart])
-      keepStart++;
-    while (
-      keepEnd < a.length - keepStart &&
-      keepEnd < b.length - keepStart &&
-      a[a.length - 1 - keepEnd] === b[b.length - 1 - keepEnd]
-    )
-      keepEnd++;
-  }
-  const n = a.length - keepEnd,
-    m = b.length - keepEnd;
-  // Suffix LCS lengths for a[i..n) and b[j..m), past the shared prefix.
-  const rows = n - keepStart + 1,
-    cols = m - keepStart + 1,
-    table = new Uint32Array(rows * cols);
-  for (let i = n - 1; i >= keepStart; i--)
-    for (let j = m - 1; j >= keepStart; j--) {
-      const at = (i - keepStart) * cols + (j - keepStart);
-      table[at] =
-        a[i] === b[j] ? table[at + cols + 1] + 1 : Math.max(table[at + cols], table[at + 1]);
-    }
-  const lcs = (i, j) => table[(i - keepStart) * cols + (j - keepStart)];
+    b = Array.from(next);
+  let start = 0,
+    tail = 0;
+  while (start < a.length && start < b.length && a[start] === b[start]) start++;
+  while (
+    tail < a.length - start &&
+    tail < b.length - start &&
+    a[a.length - 1 - tail] === b[b.length - 1 - tail]
+  )
+    tail++;
+  const n = a.length - tail,
+    m = b.length - tail;
   const deleted = [],
     runs = [];
-  let offset = a.slice(0, keepStart).reduce((sum, c) => sum + width(c), 0),
+  let offset = a.slice(0, start).reduce((sum, c) => sum + c.length, 0),
     valueAt = offset,
-    // A caret inside a shared prefix the diff skipped sits at that gap.
-    at = keepStart && caret < offset ? { gap: caret } : null,
-    i = keepStart,
-    j = keepStart;
-  const insert = (text) => {
-    const last = runs.at(-1);
-    let run = last;
-    if (last?.gap === offset && last.end === runs.length) last.text += text;
-    else runs.push((run = { gap: offset, text, end: runs.length + 1 }));
-    if (!at && caret >= valueAt && caret <= valueAt + width(text))
-      at = { run, into: run.text.length - width(text) + caret - valueAt };
-    valueAt += width(text);
+    // A caret inside the common prefix sits at that gap.
+    at = caret < offset ? { gap: caret } : null;
+  const keep = (c) => {
+    if (!at && caret === valueAt) at = { gap: offset };
+    offset += c.length;
+    valueAt += c.length;
   };
-  while (i < n || j < m) {
-    if (i < n && j < m && a[i] === b[j]) {
-      if (!at && caret === valueAt) at = { gap: offset };
-      offset += width(a[i]);
-      valueAt += width(a[i]);
-      i++;
-      j++;
-    } else if (j >= m || (i < n && lcs(i + 1, j) >= lcs(i, j + 1))) {
-      deleted.push({ offset, width: width(a[i]) });
-      offset += width(a[i]);
-      i++;
-    } else insert(b[j++]);
+  const remove = (c) => {
+    deleted.push({ offset, width: c.length });
+    offset += c.length;
+  };
+  const insert = (c) => {
+    let run = runs.at(-1);
+    if (run?.gap === offset) run.text += c;
+    else runs.push((run = { gap: offset, text: c }));
+    if (!at && caret >= valueAt && caret <= valueAt + c.length)
+      at = { run, into: run.text.length - c.length + caret - valueAt };
+    valueAt += c.length;
+  };
+  const cells = (n - start) * (m - start);
+  if (cells > LCS_BUDGET) {
+    for (let i = start; i < n; i++) remove(a[i]);
+    for (let j = start; j < m; j++) insert(b[j]);
+  } else {
+    // Suffix LCS lengths for a[i..n) and b[j..m) within the middle.
+    const cols = m - start + 1,
+      table = new Uint32Array((n - start + 1) * cols);
+    for (let i = n - 1; i >= start; i--)
+      for (let j = m - 1; j >= start; j--) {
+        const cell = (i - start) * cols + (j - start);
+        table[cell] =
+          a[i] === b[j]
+            ? table[cell + cols + 1] + 1
+            : Math.max(table[cell + cols], table[cell + 1]);
+      }
+    const lcs = (i, j) => table[(i - start) * cols + (j - start)];
+    let i = start,
+      j = start;
+    while (i < n || j < m) {
+      if (i < n && j < m && a[i] === b[j]) {
+        keep(a[i++]);
+        j++;
+      } else if (j >= m || (i < n && lcs(i + 1, j) >= lcs(i, j + 1))) remove(a[i++]);
+      else insert(b[j++]);
+    }
   }
   if (!at) at = { gap: caret - valueAt + offset };
-  for (const run of runs) delete run.end;
-  return { deleted, runs, at };
+  return { deleted, runs, at, work: cells > LCS_BUDGET ? 0 : cells };
 }
 
 /** A title input's edit, as splices on the current document, and where the
@@ -187,8 +198,8 @@ function titleOps(from, next, caret) {
  * only characters the input showed that still exist, and each inserted run
  * goes after the code point that preceded it in the input (a run at the start
  * goes before the first one). A peer's unseen text is never deleted, and
- * every step is an ordinary change on the current document. Returns null when
- * the document has no title. */
+ * every step is an ordinary change on the current document. `work` counts
+ * the diff cells filled. Returns null when the document has no title. */
 export function titleChange(doc, base, next, caret) {
   const current = doc?.title;
   if (typeof current !== "string") return null;
@@ -196,13 +207,16 @@ export function titleChange(doc, base, next, caret) {
   if (base && typeof base.value === "string" && Array.isArray(base.heads)) {
     try {
       const view = A.view(doc, base.heads);
-      if (view.title === base.value) shown = view;
+      // A cursor lookup on a view walks the text at those heads each time;
+      // a clone of the view is a document at them, with the same cursor ids,
+      // built once. It is only read, never written.
+      if (view.title === base.value) shown = view.title === current ? doc : A.clone(view);
     } catch {
       /* Unknown heads: read against the current title. */
     }
   }
   const from = shown.title;
-  const { deleted, runs, at } = titleOps(from, next, caret);
+  const { deleted, runs, at, work } = titleOps(from, next, caret);
   // Where a shown character is now, and whether it is still there.
   const locate = (offset) => {
     const cursor = A.getCursor(shown, path, offset);
@@ -221,12 +235,24 @@ export function titleChange(doc, base, next, caret) {
       return stickyCaretPosition(doc, path, current, stickyCaret(shown, path, from, gap));
     return from.length ? locate(0).position : 0;
   };
-  const removals = deleted
-    .map(({ offset, width }) => ({ ...locate(offset), width }))
-    .filter(({ alive }) => alive);
   const inserts = runs.map((run) => ({ run, position: place(run.gap) }));
+  const insertAt = new Set(inserts.map((r) => r.position));
+  // Characters that are still there, merged into ranges where they are
+  // adjacent now. A range never spans an insertion point.
+  const removals = [];
+  for (const { offset, width } of deleted) {
+    const { position, alive } = locate(offset);
+    if (!alive) continue;
+    const last = removals.at(-1);
+    if (last && last.position + last.width === position && !insertAt.has(position))
+      last.width += width;
+    else removals.push({ position, width });
+  }
   const removedBefore = (position) =>
-    removals.reduce((sum, r) => (r.position < position ? sum + r.width : sum), 0);
+    removals.reduce(
+      (sum, r) => (r.position < position ? sum + Math.min(r.width, position - r.position) : sum),
+      0,
+    );
   const insertedBefore = (position, gap) =>
     inserts.reduce(
       (sum, r) =>
@@ -262,7 +288,7 @@ export function titleChange(doc, base, next, caret) {
     const position = place(at.gap);
     landed = position - removedBefore(position) + insertedBefore(position, at.gap);
   }
-  return { edits, caret: landed };
+  return { edits, caret: landed, work };
 }
 
 /** Apply titleChange's splices inside a change callback. */
