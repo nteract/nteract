@@ -12,6 +12,7 @@ import { lifecycleSlot, lifecycleSlotKey } from "./catalog.mjs";
 import { fingerprint } from "./mutations.mjs";
 import { RETRY_LIFETIME_MS } from "./operation-journal.mjs";
 import { operationIntent, operationIntentAlphabet } from "./operation-intent.mjs";
+import { quotaRefusal } from "./page-quota.mjs";
 import { CrashStorage, assertProjected, describe, normalize } from "./operation-intent-fixture.mjs";
 
 const TABLE = new URL("../test/fixtures/machines/operation-intent.json", import.meta.url);
@@ -378,7 +379,10 @@ class Drive {
       if (mutation.key === this.slotKey) return { type: "release_slot" };
       return { type: "unexpected", op: "delete", key: mutation.key };
     }
-    const names = Object.keys(mutation.entries);
+    // The Catalog's key counts ride along with the writes that change them,
+    // and a delete writes them right after; neither is a machine effect.
+    const names = Object.keys(mutation.entries).filter((name) => !name.startsWith("host/count/"));
+    if (!names.length) return undefined;
     if (names.includes("host/index/dirty")) {
       this.endProjection();
       this.inProject = true;
@@ -530,10 +534,23 @@ class Drive {
       new Request("https://pages.invalid/internal/catalog", {
         method: "POST",
         headers: { authorization: `Bearer ${token}`, "x-pages-driver": "ChatGPT" },
-        body: JSON.stringify({ operation: this.operation, arguments: argsFor[this.operation] }),
+        body: JSON.stringify({
+          operation: this.operation,
+          arguments: argsFor[this.operation],
+          page_limit: LIMIT,
+        }),
       }),
     );
     const body = await response.json();
+    if (["trash_capacity", "page_quota_exceeded"].includes(body.code)) {
+      // The machine names the code; the Catalog adds what its count found.
+      const { status, body: refusal } = quotaRefusal(destinationPrefix[this.operation], {
+        limit: LIMIT,
+        count: LIMIT,
+      });
+      assert.deepEqual({ status: response.status, body }, { status, body: refusal });
+      return { status: response.status, body: { code: body.code } };
+    }
     if (
       this.mode === "reply" &&
       !this.event.unavailable &&
@@ -601,8 +618,10 @@ async function drive(state, event) {
 }
 
 const SUMMARY = { rows: 70, pairs: 22, unreachable: 20, cases: 46 };
-/** Every storage write the table's rows make, and the projections among them. */
-const SWEEP = { points: 126, projections: 24 };
+/** Every storage write the table's rows make, and the projections among them.
+ * Points include the key-count writes: one after each counted delete, and one
+ * when a capacity check first stores or rebuilds the counts. */
+const SWEEP = { points: 142, projections: 24 };
 
 test("the operation-intent machine gives every row's result", async () => {
   assert.deepEqual(await runTable(operationIntent, loadTable(TABLE)), SUMMARY);
@@ -695,6 +714,7 @@ test("a retargeted Trash keeps its slot, so its lost reply can't overfill Trash"
         body: JSON.stringify({
           operation: "delete_page",
           arguments: { page_id: id, base_heads: ["a".repeat(64)], idempotency_key: idempotency },
+          page_limit: LIMIT,
         }),
       }),
     );
@@ -704,5 +724,5 @@ test("a retargeted Trash keeps its slot, so its lost reply can't overfill Trash"
   // Trash is full while that request may have applied.
   const other = await trash(otherId, "other-trash-0001");
   assert.equal(other.status, 409);
-  assert.equal((await other.json()).code, "trash_capacity");
+  assert.deepEqual(await other.json(), quotaRefusal("trash/", { limit: LIMIT, count: LIMIT }).body);
 });

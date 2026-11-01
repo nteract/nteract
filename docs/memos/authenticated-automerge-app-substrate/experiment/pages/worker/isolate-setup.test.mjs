@@ -4,7 +4,13 @@ import { test } from "node:test";
 import { randomSecret, SERVER_SESSION_COOKIE } from "@cloud/oidc-session-store.ts";
 import { createAuthFixture } from "../../auth-fixtures.mjs";
 import { authenticate } from "./auth.mjs";
-import { isolateSetup, isolateSetupTimeouts, isolateSingleFlight } from "./isolate-setup.mjs";
+import {
+  isolateSetup,
+  isolateSetupTimeouts,
+  isolateSingleFlight,
+  setupAction,
+  setupTransition,
+} from "./isolate-setup.mjs";
 import worker from "./index.mjs";
 
 // Real I/O turns. Tests mock only setTimeout, so these still advance.
@@ -19,6 +25,26 @@ function deferred() {
     reject = rej;
   });
   return { promise, resolve, reject };
+}
+
+/**
+ * Resolves when code under test schedules a mocked timer of `ms`, such as a
+ * waiter's poll. Tests that go through real async work (WebCrypto, request
+ * parsing) await this instead of counting turns: a request has reached its
+ * wait exactly when it schedules the timer. Call after enabling mock timers;
+ * resetting them restores the original setTimeout.
+ */
+function timerScheduled(ms) {
+  const mocked = globalThis.setTimeout;
+  return new Promise((resolve) => {
+    globalThis.setTimeout = function (callback, delay, ...rest) {
+      if (delay === ms) {
+        globalThis.setTimeout = mocked;
+        resolve();
+      }
+      return mocked.call(this, callback, delay, ...rest);
+    };
+  });
 }
 
 function track(promise) {
@@ -71,7 +97,9 @@ test("a waiter gives up with a retryable 503 when the setup never settles", asyn
   t.mock.timers.enable({ apis: ["setTimeout", "Date"] });
   const ready = isolateSetup(() => new Promise(() => {}));
   const key = {};
-  void ready(key);
+  // The starter awaits its own attempt until the attempt's deadline.
+  const owner = ready(key);
+  const owning = track(owner);
   const waiter = ready(key);
   const waiting = track(waiter);
   for (
@@ -89,6 +117,99 @@ test("a waiter gives up with a retryable 503 when the setup never settles", asyn
     assert.equal(error.reason, "credential_unverified");
     return true;
   });
+  assert.equal(owning.settled, false, "the starter outlasts a waiter");
+  // At the attempt's deadline the starter gets the same refusal.
+  t.mock.timers.tick(isolateSetupTimeouts.attempt);
+  await assert.rejects(owner, (error) => {
+    assert.equal(error.status, 503);
+    assert.equal(error.code, "request_timeout");
+    return true;
+  });
+});
+
+test("a starter waits out a slow setup instead of timing out", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout", "Date"] });
+  const slow = deferred();
+  const ready = isolateSetup(() => slow.promise);
+  const owner = ready({});
+  const owning = track(owner);
+  // Slower than any waiter would wait, but inside the attempt's deadline.
+  t.mock.timers.tick(isolateSetupTimeouts.attempt - 1);
+  await turns();
+  assert.equal(owning.settled, false);
+  slow.resolve();
+  await owner;
+});
+
+test("an abandoned attempt frees its key, and its late result changes nothing", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout", "Date"] });
+  const attempts = [deferred(), deferred()];
+  let runs = 0;
+  const ready = isolateSetup(() => attempts[runs++].promise);
+  const key = {};
+  const first = ready(key).catch((error) => error.message);
+  await turns();
+  // Inside the attempt's lifetime the key is still held.
+  t.mock.timers.tick(isolateSetupTimeouts.attempt - 1);
+  const blocked = ready(key).catch((error) => error);
+  await turns();
+  assert.equal(runs, 1, "the waiter waits on the abandoned attempt");
+  // At the attempt's deadline the starter gives up and the attempt expires,
+  // so the waiter starts the second attempt itself.
+  t.mock.timers.tick(isolateSetupTimeouts.poll);
+  assert.equal(await first, "Pages is starting. Try again.");
+  await turns();
+  assert.equal(runs, 2);
+  // The abandoned attempt fails late. It names an old generation, so the
+  // second attempt keeps the key.
+  attempts[0].reject(new Error("late failure"));
+  await turns();
+  const third = ready(key);
+  await turns();
+  assert.equal(runs, 2, "the late failure did not free the key");
+  attempts[1].resolve();
+  assert.equal(await blocked, undefined);
+  t.mock.timers.tick(isolateSetupTimeouts.poll);
+  await third;
+  assert.equal(runs, 2);
+});
+
+test("the setup machine accepts only its own attempt's results", () => {
+  const idle = { name: "idle" };
+  const running = { name: "running", generation: 2, deadline: 100 };
+  const ready = { name: "ready" };
+  const start = (now) => ({ type: "start", generation: 3, now, deadline: now + 50 });
+  const cases = [
+    [idle, start(0), { name: "running", generation: 3, deadline: 50 }],
+    [running, start(99), "an attempt holds the key"],
+    [running, start(100), { name: "running", generation: 3, deadline: 150 }],
+    [ready, start(0), "setup is ready"],
+    [running, { type: "succeed", generation: 2 }, ready],
+    [running, { type: "succeed", generation: 1 }, "not the running attempt"],
+    [running, { type: "fail", generation: 2 }, idle],
+    [running, { type: "fail", generation: 1 }, "not the running attempt"],
+    [idle, { type: "succeed", generation: 2 }, "not the running attempt"],
+    [idle, { type: "fail", generation: 2 }, "not the running attempt"],
+    [ready, { type: "succeed", generation: 2 }, "not the running attempt"],
+    [ready, { type: "fail", generation: 2 }, "not the running attempt"],
+    [running, { type: "expire", generation: 2, now: 100 }, idle],
+    [running, { type: "expire", generation: 2, now: 99 }, "the attempt has time left"],
+    [running, { type: "expire", generation: 1, now: 100 }, "not the running attempt"],
+    [idle, { type: "expire", generation: 2, now: 100 }, "not the running attempt"],
+    [ready, { type: "expire", generation: 2, now: 100 }, "not the running attempt"],
+    [idle, { type: "other" }, "unknown event"],
+  ];
+  for (const [state, event, expected] of cases) {
+    const result = setupTransition(state, event);
+    if (typeof expected === "string") {
+      assert.equal(result.rejected, expected, JSON.stringify([state, event]));
+      assert.equal(result.state, state);
+    } else assert.deepEqual(result, { state: expected }, JSON.stringify([state, event]));
+  }
+  assert.equal(setupAction(ready, 0), "ready");
+  assert.equal(setupAction(idle, 0), "start");
+  assert.equal(setupAction(running, 99), "wait");
+  assert.equal(setupAction(running, 100), "start");
 });
 
 test("each key has its own setup", async () => {
@@ -124,12 +245,15 @@ test("concurrent requests with one API key do not share a pending provider looku
   const fixture = await createAuthFixture();
   const lookup = deferred();
   let lookups = 0;
+  const looked = deferred();
   t.mock.method(globalThis, "fetch", async (url, options) => {
     lookups++;
+    looked.resolve();
     await lookup.promise;
     return fixture.fetch(url, options);
   });
   t.mock.timers.enable({ apis: ["setTimeout"] });
+  const secondWaits = timerScheduled(isolateSetupTimeouts.poll);
   const token = fixture.apiKey();
   const request = () =>
     new Request("https://pages.invalid/api/connect?page=test", {
@@ -138,7 +262,9 @@ test("concurrent requests with one API key do not share a pending provider looku
   const first = authenticate(request(), fixture.env);
   const second = authenticate(request(), fixture.env);
   const waiting = track(second);
-  await turns();
+  // The first request is looking up and the second waits on its own timer.
+  await looked.promise;
+  await secondWaits;
   assert.equal(lookups, 1);
   lookup.resolve();
   await first;
@@ -198,9 +324,10 @@ test("concurrent first gateway requests do not await one another's session schem
   t.mock.timers.enable({ apis: ["setTimeout"] });
   const first = worker.fetch(withSessionCookie("/api/auth/session"), env);
   await held;
+  const secondWaits = timerScheduled(isolateSetupTimeouts.poll);
   const second = worker.fetch(withSessionCookie("/api/auth/session"), env);
   const waiting = track(second);
-  await turns();
+  await secondWaits;
   release();
   assert.equal((await first).status, 200);
   await turns();
@@ -214,6 +341,72 @@ test("concurrent first gateway requests do not await one another's session schem
   assert.equal(schema.length, 1, "the session schema is set up once");
 });
 
+test(
+  "a session schema setup that hangs is abandoned, and sign-in recovers without a restart",
+  { timeout: 20_000 },
+  async (t) => {
+    // The first session-schema statement never answers; later ones do.
+    const sqlite = new DatabaseSync(":memory:");
+    t.after(() => sqlite.close());
+    let hung = 0;
+    const holding = deferred();
+    const DB = {
+      prepare(sql) {
+        const statement = sqlite.prepare(sql);
+        let bindings = [];
+        return {
+          bind(...values) {
+            bindings = values;
+            return this;
+          },
+          async first() {
+            return statement.get(...bindings) ?? null;
+          },
+          async run() {
+            if (sql.startsWith("CREATE TABLE IF NOT EXISTS oidc_login_transactions") && !hung++) {
+              holding.resolve();
+              return new Promise(() => {});
+            }
+            statement.run(...bindings);
+            return { success: true };
+          },
+        };
+      },
+    };
+    const env = { DB, NOTEBOOK_CLOUD_APP_SESSION_SECRET: "fixture-only-session-secret-".repeat(2) };
+    t.mock.method(console, "error", () => {});
+    t.mock.method(console, "warn", () => {});
+    t.mock.timers.enable({ apis: ["setTimeout", "Date"] });
+    const first = worker.fetch(withSessionCookie("/api/auth/login"), env);
+    const starting = track(first);
+    // The attempt and its deadline timer exist once the statement hangs.
+    await holding.promise;
+    assert.equal(hung, 1);
+    t.mock.timers.tick(isolateSetupTimeouts.attempt - 1);
+    await turns();
+    assert.equal(starting.settled, false, "a slow setup keeps its request until the deadline");
+    // At the attempt's deadline the hung request gets a retryable refusal.
+    t.mock.timers.tick(1);
+    const refused = await first;
+    assert.equal(refused.status, 503);
+    assert.deepEqual(await refused.json(), {
+      error: "Pages is starting. Try again.",
+      code: "request_timeout",
+      retryable: true,
+    });
+    // The next request starts a new attempt and runs the schema again. No
+    // mocked time passes, so it settles only if it never waits: a waiter would
+    // schedule a poll timer, and a retry that awaited the hung statement would
+    // never settle (the test's timeout reports that).
+    const waits = timerScheduled(isolateSetupTimeouts.poll).then(() => "waited");
+    const next = worker.fetch(withSessionCookie("/api/auth/session"), env);
+    const outcome = await Promise.race([next.then(() => "settled"), waits]);
+    assert.equal(outcome, "settled", "the new attempt did not wait on the hung one");
+    assert.equal((await next).status, 200);
+    assert.equal(hung, 2);
+  },
+);
+
 test("an admission request waiting on a stalled session schema gets a retryable refusal", async (t) => {
   const { env, held } = sessionDatabase(t);
   t.mock.method(console, "error", () => {});
@@ -222,16 +415,15 @@ test("an admission request waiting on a stalled session schema gets a retryable 
   void worker.fetch(withSessionCookie("/api/auth/session"), env);
   await held;
   const pageId = "33333333-3333-4333-8333-333333333333";
+  const connectWaits = timerScheduled(isolateSetupTimeouts.poll);
   const connect = worker.fetch(withSessionCookie(`/api/connect?page=${pageId}`), env);
   const waiting = track(connect);
-  for (
-    let elapsed = 0;
-    elapsed <= isolateSetupTimeouts.wait;
-    elapsed += isolateSetupTimeouts.poll
-  ) {
+  // Its 10-second wait starts once it reaches the setup.
+  await connectWaits;
+  t.mock.timers.tick(isolateSetupTimeouts.wait);
+  for (let step = 0; !waiting.settled && step < 1000; step++) {
     t.mock.timers.tick(isolateSetupTimeouts.poll);
     await turns(2);
-    if (waiting.settled) break;
   }
   const response = await connect;
   assert.equal(response.status, 503);
@@ -242,12 +434,15 @@ test("an API key's lookups share one flight whatever the scheme's case", async (
   const fixture = await createAuthFixture();
   const lookup = deferred();
   let lookups = 0;
+  const looked = deferred();
   t.mock.method(globalThis, "fetch", async (url, options) => {
     lookups++;
+    looked.resolve();
     await lookup.promise;
     return fixture.fetch(url, options);
   });
   t.mock.timers.enable({ apis: ["setTimeout"] });
+  const secondWaits = timerScheduled(isolateSetupTimeouts.poll);
   const token = fixture.apiKey();
   const request = (scheme) =>
     new Request("https://pages.invalid/api/connect?page=test", {
@@ -256,7 +451,9 @@ test("an API key's lookups share one flight whatever the scheme's case", async (
   const first = authenticate(request("Bearer"), fixture.env);
   const second = authenticate(request("bearer"), fixture.env);
   const waiting = track(second);
-  await turns();
+  // The first request is looking up and the second waits on its own timer.
+  await looked.promise;
+  await secondWaits;
   assert.equal(lookups, 1);
   lookup.resolve();
   await first;

@@ -52,6 +52,7 @@ import { IndexNav, PagesIndex, ProjectsIndex } from "./IndexViews.jsx";
 import { listProjects, pageBreadcrumbs } from "./projects.mjs";
 import { closeTrashedSessions, restorePage } from "./trash.mjs";
 import { listAllPages, matchingPages } from "./page-list.mjs";
+import { quotaNotice } from "./quota.mjs";
 import { AppearanceControls } from "./AppearanceControls.jsx";
 import { retryKey } from "../model/retry-key.mjs";
 import "./style.css";
@@ -110,6 +111,8 @@ function App() {
     [libraryQuery, setLibraryQuery] = useState(""),
     [trashOpen, setTrashOpen] = useState(false),
     [projects, setProjects] = useState([]),
+    // list_pages' `quota` for the signed-in account, or null.
+    [quota, setQuota] = useState(null),
     [projectOpen, setProjectOpen] = useState(null),
     // An index route: { kind: "projects" | "pages", query, visit, principal }
     // or null. `visit` remounts the listing for each navigation, Back
@@ -218,8 +221,10 @@ function App() {
         .catch(() => {});
     const remote = await remoteRequest;
     if (!stillCurrent()) return [];
-    if (remote.value)
+    if (remote.value) {
       lastRemote.current = { principal: identity.principal, pages: remote.value.pages ?? [] };
+      setQuota(remote.value.quota ?? null);
+    }
     const result = listing.remote(remote.value?.pages ?? null);
     setPages(result);
     if (remote.error && !result.length) throw remote.error;
@@ -484,6 +489,7 @@ function App() {
           host.navigate();
           catalogRevision.current++;
           setPages([]);
+          setQuota(null);
           setOpening(false);
         }
         authentication.current = result;
@@ -752,6 +758,7 @@ function App() {
     item.page_id === page?.page_id ? { ...item, title: page.title } : item,
   );
   const libraryPages = matchingPages(listedPages, libraryQuery);
+  const usage = quotaNotice(quota);
   const openComments = threads.filter((thread) => thread.state === "open").length;
   // The page menu: Document actions on desktop, the ⋯ menu on phones.
   const pageActions = session
@@ -1142,6 +1149,11 @@ function App() {
                   type="search"
                 />
               </label>
+              {usage && (
+                <p className="muted quota-notice" role="status">
+                  {usage}
+                </p>
+              )}
               {!pages.length && <p className="muted">Start a page and write together.</p>}
               {!!pages.length && !libraryPages.length && (
                 <p className="muted">No matching pages.</p>

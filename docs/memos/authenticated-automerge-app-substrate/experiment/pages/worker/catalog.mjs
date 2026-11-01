@@ -6,7 +6,9 @@
  * tombstones permanent deletions. Owned entries are the only record of each
  * Page's location (catalog-location.mjs). Trashed entries use a
  * separate prefix so they never consume active listing or quota slots, and so
- * builds that predate Trash do not list them.
+ * builds that predate Trash do not list them. `host/count/active` and
+ * `host/count/trash` count the keys under `page/` and `trash/`
+ * (catalog-counts.mjs).
  *
  * Callers see Projects. Storage keeps the Space name so a rollback build reads
  * the same records: `space/<id>` entries, `space_id` placement fields and the
@@ -17,8 +19,21 @@ import { RETRY_LIFETIME_MS } from "./operation-journal.mjs";
 import { operationIntent } from "./operation-intent.mjs";
 import { locationEntries, projectOf, rekeyedEntries, restoreTarget } from "./catalog-location.mjs";
 
-export const CATALOG_LIMIT = 100;
-export const TRASH_LIMIT = 100;
+/** Every entry under `prefix`, read in pages. An account's limit is set per
+ * account (page-quota.mjs), so no fixed page size covers a whole prefix. */
+export async function listAll(storage, prefix, pageSize = 500) {
+  const all = new Map();
+  let startAfter;
+  for (;;) {
+    const page = await storage.list({ prefix, limit: pageSize, ...(startAfter && { startAfter }) });
+    for (const [key, value] of page) all.set(key, value);
+    if (page.size < pageSize) return all;
+    const last = [...page.keys()].at(-1);
+    if (startAfter !== undefined && !(last > startAfter))
+      throw new Error("Catalog storage did not advance past startAfter");
+    startAfter = last;
+  }
+}
 
 export function catalogTitle(title) {
   return typeof title === "string" ? title.slice(0, 500) : "Untitled";
@@ -33,7 +48,7 @@ export const trashFields = (entry) => ({
  * owner's tombstone but leaves the `trash/` entry; drop such entries before
  * listing Trash. */
 export async function pruneTombstonedTrash(storage) {
-  const trash = await storage.list({ prefix: "trash/", limit: TRASH_LIMIT });
+  const trash = await listAll(storage, "trash/");
   for (const [key, entry] of trash)
     if (await storage.get(`host/deleted/${entry.page_id}`)) await storage.delete(key);
 }
@@ -156,8 +171,23 @@ export async function runSlot(storage, slotKey, entry, event, read) {
  * settles it into the real entry or releases it. `current(pageId)` reads that
  * state; without an answer the slot keeps counting.
  */
+/** Count the reservation slot at `slotKey`, if there is one, as countCapacity
+ * would: a stale one is released, and a forwarded one past its lifetime is
+ * read against its Page. Capacity checks read stored counts and leave other
+ * Pages' slots alone, so a caller that would act on a slot counts it first. */
+export async function countSlot(storage, slotKey, { now = Date.now(), current } = {}) {
+  const entry = await storage.get(slotKey);
+  if (!entry?.reservation) return;
+  await runSlot(
+    storage,
+    slotKey,
+    entry,
+    { type: "count", expired: !(entry.expires_at > now) },
+    current,
+  );
+}
 export async function countCapacity(storage, prefix, { now = Date.now(), current } = {}) {
-  const entries = await storage.list({ prefix, limit: CATALOG_LIMIT });
+  const entries = await listAll(storage, prefix);
   let count = 0;
   for (const [key, entry] of entries) {
     if (!entry.reservation) {
@@ -169,6 +199,29 @@ export async function countCapacity(storage, prefix, { now = Date.now(), current
     if (response.counted) count++;
   }
   return count;
+}
+/**
+ * Whether `prefix` has room for one more entry within `limit`, and the count
+ * that decided it. `storage` is countedStorage (catalog-counts.mjs). Its stored count covers every
+ * key, reservations included, so a count below the limit answers at once. At
+ * or above the limit, or before the count is first stored, countCapacity
+ * counts exactly (removing stale reservations as it goes) and the stored
+ * counts are rebuilt from what remains. `slotKey` names the caller's own
+ * reservation slot; it is counted first, as a full count would, so a stale
+ * one never reads as taken.
+ */
+export async function capacityFor(
+  storage,
+  prefix,
+  limit,
+  { now = Date.now(), current, slotKey } = {},
+) {
+  if (slotKey) await countSlot(storage, slotKey, { now, current });
+  const stored = await storage.counts();
+  if (stored && stored[prefix] < limit) return { room: true, count: stored[prefix] };
+  const count = await countCapacity(storage, prefix, { now, current });
+  await storage.rebuildCounts();
+  return { room: count < limit, count };
 }
 export async function releaseLifecycleSlot(storage, operation, pageId, intentKey) {
   const key = lifecycleSlotKey(operation, pageId);
@@ -258,11 +311,10 @@ async function projectEntries(storage, pageId, current) {
 }
 
 /** Owned entries under `prefix` by Page ID, without reservations or pending
- * creations. An account holds at most CATALOG_LIMIT active and TRASH_LIMIT
- * trashed Pages, plus their reservation slots. */
+ * creations. */
 export async function catalogEntries(storage, prefix) {
   const entries = new Map();
-  for (const entry of (await storage.list({ prefix, limit: 1000 })).values())
+  for (const entry of (await listAll(storage, prefix)).values())
     if (entry?.page_id && !entry.pending && !entry.reservation) entries.set(entry.page_id, entry);
   return entries;
 }

@@ -95,6 +95,7 @@ function PopoverSurface({ composer, session, containerRef, state, current, body 
   const [position, setPosition] = useState(null);
   const [sheetPlace, setSheetPlace] = useState(null);
   const [draftError, setDraftError] = useState("");
+  const [uploading, setUploading] = useState(false);
   const sending = state.name === "sending";
   const blockId = current.draft.blockId;
 
@@ -193,7 +194,7 @@ function PopoverSurface({ composer, session, containerRef, state, current, body 
     draftProblem = error.message;
   }
   const disabled = sending || !session.canWrite;
-  const canSend = !disabled && !draftProblem && !draftError && hasDraftText(body);
+  const canSend = !disabled && !uploading && !draftProblem && !draftError && hasDraftText(body);
   const markdown = body?.markdown ?? body;
   // A draft whose passage went away can't be sent: comment-draft.mjs asks the
   // writer to choose a passage again rather than reattach or detach it.
@@ -263,6 +264,8 @@ function PopoverSurface({ composer, session, containerRef, state, current, body 
           onChange={(text, spans) => composer.change(spans ? { markdown: text, spans } : text)}
           onError={setDraftError}
           disabled={disabled}
+          images={{ pageId: session.pageId, canUpload: session.canWrite }}
+          onUploadingChange={setUploading}
         />
         {error && (
           <p className="error" role="alert">

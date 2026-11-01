@@ -21,20 +21,8 @@
 .save-status--error {
   color: var(--destructive);
 }
-.save-status--working svg {
-  animation: save-status-spin 1s linear infinite;
-}
-@keyframes save-status-spin {
-  to {
-    transform: rotate(360deg);
-  }
-}
-@media (prefers-reduced-motion: reduce) {
-  .save-status--working svg {
-    animation: none;
-  }
-}
-/* Compact status on phones (StatusDot in SaveStatus.jsx). */
+/* The status dot (StatusDot in SaveStatus.jsx): every status on phones, sync
+   in progress on desktop. */
 .save-status--dot {
   width: 24px;
   height: 24px;
@@ -75,8 +63,16 @@
     transform: scale(0.6);
   }
 }
+/* Reduced motion: a still dot. The selector matches the pulse's own, so it
+   wins on order rather than losing on specificity. */
 @media (prefers-reduced-motion: reduce) {
-  .status-dot.is-pulsing {
+  .save-status--working .status-dot.is-pulsing {
     animation: none;
   }
+}
+/* A quiet save keeps the saved indicator's footprint, so the header doesn't
+   shift when Saved or the status dot replaces it. */
+.save-status--quiet {
+  width: 24px;
+  min-height: 24px;
 }

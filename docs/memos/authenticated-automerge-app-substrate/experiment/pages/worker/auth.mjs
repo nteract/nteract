@@ -337,6 +337,7 @@ export function errorResponse(error, stage = "request") {
         "page_trashed",
         "page_not_in_trash",
         "trash_capacity",
+        "page_quota_exceeded",
         "purge_preview_required",
         "purge_preview_invalid",
         "invalid_idempotency_key",
@@ -380,6 +381,12 @@ export function errorResponse(error, stage = "request") {
             column: Number(error.details.unsupported.column) || 1,
             excerpt: String(error.details.unsupported.excerpt ?? "").slice(0, 80),
           },
+        }),
+      ...(["page_quota_exceeded", "trash_capacity"].includes(error?.code) &&
+        Number.isSafeInteger(error.details?.limit) &&
+        Number.isSafeInteger(error.details?.count) && {
+          limit: error.details.limit,
+          count: error.details.count,
         }),
       ...(error?.code === "unsupported_schema_feature" &&
         Array.isArray(error.details?.features) && {

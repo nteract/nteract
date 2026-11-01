@@ -276,6 +276,59 @@ There is no repair tool. To repair a Page:
    the receipts. Restore it from a backup, or ask the owner to grant access
    again.
 
+## Page quotas
+
+Each account may hold a limited number of active Pages and, separately, the
+same number in Trash. The profile's `pageQuota` sets the target's default, which
+the installer writes as `PAGES_DEFAULT_PAGE_QUOTA`; Page10's is 250. Without the
+variable the Worker uses 250. Changing the default needs a new install.
+
+Rules in D1 override the default for one account or one email domain:
+
+```sql
+CREATE TABLE pages_quota_rules (
+  match_kind TEXT NOT NULL CHECK (match_kind IN ('email', 'domain')),
+  match_value TEXT NOT NULL,
+  page_limit INTEGER NOT NULL CHECK (page_limit >= 0),
+  note TEXT,
+  updated_at INTEGER NOT NULL,
+  PRIMARY KEY (match_kind, match_value)
+);
+```
+
+| Precedence | Rule | Example |
+| --- | --- | --- |
+| 1 | `email` equal to the account's server-verified email | `('email', 'rgbkrk@gmail.com', 1000)` |
+| 2 | `domain` equal to that email's domain, lowercased | `('domain', 'anaconda.com', 500)` |
+| 3 | the target default | `PAGES_DEFAULT_PAGE_QUOTA` |
+
+A rule replaces the default: it can be lower. `0` pauses the account: it can't
+create, restore or add sub-pages or Projects, but it can still move Pages to
+Trash, and its Pages stay readable. Store emails lowercased and
+trimmed, and domains lowercased with no `@`; the resolver normalizes them the
+same way, and a value that can't match is ignored. An account with no verified
+email always gets the default. The Worker creates the table on first use (its
+own `pages_quota_schema` version table) and reads it once per isolate every five
+minutes, so a change takes up to five minutes to apply. If D1 fails, accounts get
+the default and the Worker logs a `page-quota` failure. A failed read is retried
+after 30 seconds; a schema setup that hangs is abandoned after 30 seconds, so a
+recovered D1 applies the rules again without a restart.
+
+This release ships no write path for rules. celld's internal listener answers
+only celld's own routes, so a host-only Worker route there isn't reachable, and
+`celld d1 execute` hasn't been qualified against a running fleet. With no rules,
+every account gets the default.
+
+A listing that finds a Catalog's stored Page counts wrong rewrites them and logs
+one line without the account:
+
+```json
+{"service":"nteract-pages-native","event":"catalog.count_repaired","active":3,"trash":0,"timestamp":"…"}
+```
+
+Expect it after a rollback build has written Catalog entries. Without a rollback,
+it points at a write path that skips the counts.
+
 ## Tunnel and DNS provisioning
 
 This is first-publication setup for a new target, not a step to repeat for each

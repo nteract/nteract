@@ -305,6 +305,7 @@ test("late closes from intentionally retired sockets cannot reconnect their repl
   await session.disconnectSockets();
   session.sockets.add(current);
   session.status = "Connected";
+  session.statusId = "connected";
   session.socketDisconnected(previous);
   assert.equal(closes, 1);
   assert.equal(attempts, 0);

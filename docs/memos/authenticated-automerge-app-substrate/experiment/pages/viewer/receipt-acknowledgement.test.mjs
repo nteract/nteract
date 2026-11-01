@@ -9,7 +9,7 @@ function fixture(t, doc, respond) {
   session.handle = { doc: () => doc };
   session.repo = { flush: async () => {} };
   session.receiptRevision = 1;
-  session.status = "Saving";
+  session.statusId = "saving";
   let requests = 0;
   globalThis.fetch = async (_url, options) => {
     requests++;
@@ -54,7 +54,8 @@ for (const receipt of [
       Response.json(receipt),
     );
     await session.saveReceipt();
-    assert.equal(session.status, "Unsaved");
+    assert.equal(session.status, "Not saved");
+    assert.equal(session.statusId, "unsaved");
     assert.equal(session.statusRetry, true);
     assert.deepEqual(session.savedHeads, []);
     assert.equal(session.problem, "Invalid durability receipt");
@@ -67,7 +68,7 @@ test("a failed receipt never acknowledges the requested heads", async (t) => {
     Response.json({ error: "missing" }, { status: 409 }),
   );
   await session.saveReceipt();
-  assert.equal(session.status, "Unsaved");
+  assert.equal(session.status, "Not saved");
   assert.deepEqual(session.savedHeads, []);
   assert.ok(session.receiptRetryTimer);
 });
@@ -97,7 +98,7 @@ test("a stalled durability response times out without acknowledging edits", asyn
   await requested;
   controller.abort(new DOMException("Durability receipt timed out", "TimeoutError"));
   await saving;
-  assert.equal(session.status, "Unsaved");
+  assert.equal(session.status, "Not saved");
   assert.deepEqual(session.savedHeads, []);
   assert.ok(session.receiptRetryTimer);
 });
