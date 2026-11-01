@@ -18,10 +18,10 @@ const TABLE = new URL("../test/fixtures/machines/outbound-sync.json", import.met
 
 test("the outbound-sync table runs through the pure machine", async () => {
   assert.deepEqual(await runTable(outboundSyncMachine, loadTable(TABLE)), {
-    rows: 14,
-    pairs: 12,
+    rows: 27,
+    pairs: 24,
     unreachable: 0,
-    cases: 3,
+    cases: 5,
   });
 });
 
@@ -46,17 +46,60 @@ test("a pause in typing sends the run one debounce after the last keystroke", ()
   assert.deepEqual(sent, [[20 + OUTBOUND_DEBOUNCE_MS, "page"]]);
 });
 
-test("continuous typing still sends at least every maximum wait", () => {
+test("continuous typing sends every maximum wait", () => {
   const { scheduler, sent, at, store } = harness();
   // A key every 20 ms for 400 ms never pauses long enough to debounce.
   for (let time = 0; time < 400; time += 20) at(time, () => store("page"));
   scheduler.flush();
   assert.equal(OUTBOUND_MAX_WAIT_MS, 100);
+  // Twenty stores, four rounds, each MAX_WAIT_MS after the one before.
   assert.deepEqual(
     sent.map(([time]) => time),
-    [100, 220, 340, 410],
+    [100, 200, 300, 400],
   );
-  // Twenty stores, four rounds; the last waits only for the pause after it.
+});
+
+test("an edit long after the last send starts a fresh run", () => {
+  const { scheduler, sent, at, store } = harness();
+  at(0, () => store("page"));
+  at(500, () => store("page"));
+  at(520, () => store("page"));
+  scheduler.flush();
+  assert.deepEqual(
+    sent.map(([time]) => time),
+    [30, 550],
+  );
+});
+
+test("a save that finishes after the tab hid goes out at once, without a timer", () => {
+  const { scheduler, outbound, sent, at, store } = harness();
+  at(0, () => store("page"));
+  at(10, () => outbound.hide());
+  // The IndexedDB write that was in flight when the tab hid.
+  at(25, () => store("page"));
+  at(26, () => store("comments"));
+  scheduler.flush();
+  assert.deepEqual(sent, [
+    [10, "page"],
+    [25, "page"],
+    [26, "comments"],
+  ]);
+  assert.equal(outbound.state.name, "background");
+});
+
+test("showing the tab again resumes batching", () => {
+  const { scheduler, outbound, sent, at, store } = harness();
+  at(0, () => outbound.hide());
+  at(5, () => store("page"));
+  at(10, () => outbound.show());
+  at(20, () => store("page"));
+  at(30, () => store("page"));
+  scheduler.flush();
+  assert.deepEqual(
+    sent.map(([time]) => time),
+    [5, 30 + OUTBOUND_DEBOUNCE_MS],
+  );
+  assert.equal(outbound.state.name, "idle");
 });
 
 test("a flush sends what waits at once and leaves no timer armed", () => {
@@ -128,7 +171,7 @@ function sessionHarness(t) {
   return { scheduler, session, page, document, sent, store };
 }
 
-for (const type of ["blur", "pagehide", "beforeunload"])
+for (const type of ["blur", "beforeunload", "pagehide"])
   test(`a ${type} sends waiting edits without waiting for the debounce`, (t) => {
     const { scheduler, page, sent, store } = sessionHarness(t);
     scheduler.schedule(store, 0);
@@ -137,16 +180,44 @@ for (const type of ["blur", "pagehide", "beforeunload"])
     assert.deepEqual(sent, [5]);
   });
 
-test("hiding the tab sends waiting edits; showing it doesn't", (t) => {
+test("hiding the tab sends waiting edits and later saves at once; showing it batches again", (t) => {
   const { scheduler, document, sent, store } = sessionHarness(t);
-  scheduler.schedule(store, 0);
-  scheduler.schedule(() => document.dispatchEvent(new Event("visibilitychange")), 5);
-  scheduler.schedule(() => {
-    document.visibilityState = "hidden";
+  const visibility = (state) => () => {
+    document.visibilityState = state;
     document.dispatchEvent(new Event("visibilitychange"));
-  }, 10);
+  };
+  scheduler.schedule(store, 0);
+  scheduler.schedule(visibility("hidden"), 10);
+  scheduler.schedule(store, 20);
+  scheduler.schedule(visibility("visible"), 40);
+  scheduler.schedule(store, 50);
   scheduler.flush();
-  assert.deepEqual(sent, [10]);
+  assert.deepEqual(sent, [10, 20, 50 + OUTBOUND_DEBOUNCE_MS]);
+});
+
+test("pagehide stops batching and pageshow resumes it", (t) => {
+  const { scheduler, page, sent, store } = sessionHarness(t);
+  scheduler.schedule(() => page.dispatchEvent(new Event("pagehide")), 0);
+  scheduler.schedule(store, 10);
+  scheduler.schedule(() => page.dispatchEvent(new Event("pageshow")), 20);
+  scheduler.schedule(store, 30);
+  scheduler.flush();
+  assert.deepEqual(sent, [10, 30 + OUTBOUND_DEBOUNCE_MS]);
+});
+
+test("a session opened in a hidden tab starts unbatched", (t) => {
+  const scheduler = new VirtualTimeScheduler();
+  const session = new PageSession("outbound-fixture", { scheduler });
+  const document = Object.assign(new EventTarget(), { visibilityState: "hidden" });
+  session.watchPageLifecycle({ page: new EventTarget(), document });
+  t.after(() => session.unwatchPageLifecycle());
+  const sent = [];
+  scheduler.schedule(
+    () => session.outbound.scheduleLocalSync("page", () => sent.push(scheduler.now())),
+    5,
+  );
+  scheduler.flush();
+  assert.deepEqual(sent, [5]);
 });
 
 test("closing the session's listeners stops lifecycle flushes", (t) => {

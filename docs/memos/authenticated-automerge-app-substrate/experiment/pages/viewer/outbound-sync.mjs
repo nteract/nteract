@@ -26,7 +26,7 @@ export class OutboundSync {
     this.#onError = onError;
     this.#timer = this.#arm$
       .pipe(switchMap((ms) => (ms === null ? EMPTY : timer(ms, scheduler))))
-      .subscribe(() => this.#dispatch({ type: "timer" }));
+      .subscribe(() => this.#dispatch({ type: "timer", at: scheduler.now() }));
   }
 
   /** The machine's state, for tests and diagnostics. */
@@ -49,7 +49,18 @@ export class OutboundSync {
 
   /** Send whatever is waiting now. */
   flush() {
-    this.#dispatch({ type: "flush" });
+    this.#dispatch({ type: "flush", at: this.#scheduler.now() });
+  }
+
+  /** The tab is hidden: send whatever is waiting, then send each later
+   * request at once, since a hidden tab's timers may be throttled or frozen. */
+  hide() {
+    this.#dispatch({ type: "hide" });
+  }
+
+  /** The tab is visible again: batch again. */
+  show() {
+    this.#dispatch({ type: "show" });
   }
 
   /** Send whatever is waiting and stop batching: later requests go out at

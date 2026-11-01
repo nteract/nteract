@@ -1144,23 +1144,28 @@ export class PageSession {
     globalThis.addEventListener?.("online", this.onlineListener);
   }
   /** Send waiting edits and the caret at once when the person may be about
-   * to stop looking: the window loses focus, the tab is hidden, or the page
-   * is unloading. Closing the session removes the listeners. Tests pass
-   * their own window and document. */
+   * to stop looking. Blur and `beforeunload` flush; a hidden tab or
+   * `pagehide` also stops batching until the tab shows again, because a
+   * hidden tab's timers may be throttled or frozen while saves still finish.
+   * Delivery before an unload is best effort: the round starts, and the
+   * browser decides whether it completes. Closing the session removes the
+   * listeners. Tests pass their own window and document. */
   watchPageLifecycle({ page = globalThis, document = globalThis.document } = {}) {
     this.unwatchPageLifecycle();
     const flush = () => this.outbound.flush();
-    const hidden = () => {
-      if (document?.visibilityState === "hidden") flush();
-    };
+    const hide = () => this.outbound.hide();
+    const show = () => this.outbound.show();
+    const visibility = () => (document?.visibilityState === "hidden" ? hide() : show());
     const listeners = [
       [page, "blur", flush],
-      [page, "pagehide", flush],
       [page, "beforeunload", flush],
-      [document, "visibilitychange", hidden],
+      [page, "pagehide", hide],
+      [page, "pageshow", visibility],
+      [document, "visibilitychange", visibility],
     ];
     for (const [target, type, listener] of listeners) target?.addEventListener?.(type, listener);
     this.lifecycleListeners = listeners;
+    if (document?.visibilityState === "hidden") hide();
   }
   unwatchPageLifecycle() {
     for (const [target, type, listener] of this.lifecycleListeners ?? [])
