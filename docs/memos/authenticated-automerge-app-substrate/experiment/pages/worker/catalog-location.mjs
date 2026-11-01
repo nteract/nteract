@@ -18,17 +18,28 @@
  * the Catalog's serial queue; these helpers read storage and never write.
  */
 import { deriveLocation, positionAmong, siblingsOf, validPositionKey } from "../model/location.mjs";
+import { listAll } from "./catalog.mjs";
 
 /** Location entries by Page ID, for model/location.mjs. Reservation slots
  * are placeholders for a pending Trash or restore and are skipped: the Page's
  * real entry stays where it is until the Page applies the request. */
 export async function locationEntries(storage) {
+  return (await locationScan(storage)).entries;
+}
+
+/** Location entries, plus the number of keys under each prefix that the
+ * scan read: `{ entries, counts }`. A Page listing uses the counts to check
+ * the Catalog's stored counts (catalog.mjs countedStorage). */
+export async function locationScan(storage) {
   const entries = new Map();
+  const counts = {};
   for (const [prefix, state] of [
     ["page/", "active"],
     ["trash/", "trashed"],
-  ])
-    for (const entry of (await storage.list({ prefix, limit: 1000 })).values()) {
+  ]) {
+    const listed = await listAll(storage, prefix);
+    counts[prefix] = listed.size;
+    for (const entry of listed.values()) {
       if (!entry?.page_id || entry.reservation) continue;
       entries.set(entry.page_id, {
         page_id: entry.page_id,
@@ -40,7 +51,8 @@ export async function locationEntries(storage) {
         ...(entry.restore_space_id && { restore_space_id: entry.restore_space_id }),
       });
     }
-  return entries;
+  }
+  return { entries, counts };
 }
 
 /** The Project a Page is in, or null for Your items. A trashed Page whose

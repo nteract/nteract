@@ -29,11 +29,14 @@ function applied(result) {
   return result;
 }
 
+/** list_pages requests that cover the largest Trash an account can have
+ * (10,000 Pages, page-quota.mjs MAX_PAGE_QUOTA), at 100 per request. */
+const TRASH_REQUESTS = 100;
+
 export async function listTrash(tool) {
   const pages = [];
   let cursor;
-  // Trash holds at most 100 Pages; two pages of results cover it.
-  for (let request = 0; request < 2; request++) {
+  for (let request = 0; request < TRASH_REQUESTS; request++) {
     const result = await tool("list_pages", {
       in_trash: true,
       limit: 100,

@@ -737,6 +737,45 @@ are source-checked and regression-tested; a passing storage probe alone does not
 qualify ephemeral presence. Diagnostics exclude provider messages, credentials,
 request bodies, and document content.
 
+### Page quotas
+
+Each account has one Page limit. It bounds the account's active Pages and,
+separately, its Pages in Trash. [page-quota.mjs](worker/page-quota.mjs) resolves
+it from the first match of:
+
+| Rule | Matches |
+| --- | --- |
+| `email` | the account's server-verified email, normalized as invites normalize it |
+| `domain` | that email's domain, lowercased; subdomains don't match |
+| default | `PAGES_DEFAULT_PAGE_QUOTA` for the deploy target, 250 when unset |
+
+A matching rule replaces the default, so it can lower it, and `0` turns creation
+off. A quota never deletes or hides existing Pages. Only server-verified email
+counts: an API key's whoami email, or the HMAC bindings a browser session or
+OAuth grant carries. An identity without one gets the default without reading
+D1. Rules live in D1's `pages_quota_rules` table, which the gateway reads whole
+(at most 1,000 rows) once per isolate every five minutes. A failed or slow read
+gives every account the default for 30 seconds and logs the failure; it never
+lifts a limit.
+
+The gateway forwards the resolved limit as `page_limit`, beside the caller's
+arguments, on Catalog calls that can add a Page to either listing
+(`create_page`, `register_page`, `create_space`, `delete_page`, `restore_page`)
+and on `list_pages`. The Catalog stays the authority for the count. It keeps
+`host/count/active` and `host/count/trash` equal to the number of `page/` and
+`trash/` keys, reservations and pending creations included, and writes them in
+the same storage batch as each change, inside its serial queue. Below the limit
+a check reads only the stored count. At the limit, or before the counts exist,
+it counts every entry, releasing stale reservations, and rebuilds them. Every
+`list_pages` reads every owned entry for location anyway and rewrites counts
+that disagree, logging `catalog.count_repaired`; a rollback build that writes
+entries without counts leaves that to repair.
+
+At the limit, creating or restoring returns `409 page_quota_exceeded` and moving
+to Trash returns `409 trash_capacity`, each with `limit` and `count`.
+`list_pages` returns `quota: {limit, count, trash_count}` for the caller's own
+account, whatever the listing's filters. Home shows usage from 90% of the limit.
+
 ## Build updates
 
 Each build has a 12-character id: the start of its source fingerprint, also
@@ -994,7 +1033,8 @@ where they're raised: a stale exact-head guard is `409 stale_heads`, malformed
 `base_heads` and an edit batch that can't apply (zero or multiple matches, an
 unknown block, operation or mark) are `400 invalid_edit_selector`, and a comment
 action on a missing thread, message or block is `400 invalid_comment_selector`.
-An MCP result has no HTTP status, so [mcp.mjs](mcp.mjs) names any refusal the
+A full account is `409 page_quota_exceeded` and a full Trash `409 trash_capacity`;
+both carry `limit` and `count` (see Page quotas). An MCP result has no HTTP status, so [mcp.mjs](mcp.mjs) names any refusal the
 Worker left uncoded by its status (`access_denied`, `not_found`, `conflict` and
 so on). It adds `retryable: true` to `stale_heads`, whose retry is a new request
 built from a fresh read. The HTTP API keeps `retryable` for transient failures
@@ -1078,7 +1118,8 @@ reader key, so restore reloads onto the writer replica. An upload authorized
 before trashing can still store its bytes before the final authorization check
 rejects it; those bytes are unreferenced and are not cleaned up. Reads of a trashed Page carry a `trash` object
 and no edit retry authority. The owner's catalog moves the entry from `page/` to
-`trash/`, so trashed Pages leave default listings and the 100-Page quota.
+`trash/`, so trashed Pages leave default listings and the account's active Page
+quota (see Page quotas).
 `list_pages({in_trash:true})` lists them.
 
 Each transition increments the record's `lifecycleRevision`. The Catalog

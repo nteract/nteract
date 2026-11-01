@@ -966,16 +966,19 @@ test("a resumed parent trash that lost its slot runs the leaf guard again", asyn
   assert.ok((await w.call("owner", "delete_page", args)).status >= 500);
   const intent = await storage.get("host/operation/resumed-trash");
   assert.equal(intent.forwarded, true);
-  // The slot expires; counting Trash capacity finds the Page unchanged and
-  // releases it.
+  // The slot expires. Another Trash leaves it alone: a capacity check below
+  // the limit reads the stored count, not the slots.
   const slot = await storage.get(`trash/${parent}`);
   await storage.put(`trash/${parent}`, { ...slot, expires_at: Date.now() - 1 });
   const other = (await w.createPage({ title: "Other", project_id: project.project_id })).body
     .page_id;
   assert.equal((await trash(other)).status, 200);
-  assert.equal(await storage.get(`trash/${parent}`), undefined, "the slot was released");
+  assert.equal((await storage.get(`trash/${parent}`)).intent, "host/operation/resumed-trash");
+  // A child under the parent counts the parent's slot, finds the Page
+  // unchanged and releases it.
   const late = await w.createPage({ title: "Late child", parent_id: parent });
   assert.equal(late.status, 200);
+  assert.equal(await storage.get(`trash/${parent}`), undefined, "the slot was released");
 
   const retried = await w.call("owner", "delete_page", args);
   assert.equal(retried.status, 409);
@@ -1759,7 +1762,13 @@ test("a shared parent's hidden children never show through pagination", async (t
 
   // Every child denied: the same answer as a parent with no children.
   const none = await list(empty);
-  assert.deepEqual(none, { pages: [], limit: 1, next_cursor: null });
+  // `quota` is the member's own account, which owns no Pages.
+  assert.deepEqual(none, {
+    pages: [],
+    limit: 1,
+    next_cursor: null,
+    quota: { limit: 250, count: 0, trash_count: 0 },
+  });
   assert.deepEqual(await list(parent), none);
 
   // Readable children past the bound: only they show, with a cursor exactly

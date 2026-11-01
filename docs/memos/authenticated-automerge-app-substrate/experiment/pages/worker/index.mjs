@@ -97,11 +97,13 @@ import { claimInvitation, proposeSharingMutation, sharingProjection } from "./sh
 import { pageAccess, pageRelation, pageState, restrictAccessDuringCommit } from "./access.mjs";
 
 import {
-  CATALOG_LIMIT,
-  TRASH_LIMIT,
+  capacityFor,
   catalogTitle,
   countCapacity,
+  countedStorage,
+  countSlot,
   intentState,
+  listAll,
   knownRevision,
   lifecycleSlot,
   lifecycleSlotKey,
@@ -148,6 +150,7 @@ import {
   childrenOf,
   locationAnswer,
   locationEntries,
+  locationScan,
   projectOf,
   publicLocation,
   receiptLocation,
@@ -168,6 +171,7 @@ import {
 export { Space } from "./spaces.mjs";
 import { spaceCreationEffect, spaceCreationTransition } from "./space-lifecycle.mjs";
 import { handleImportPageImage } from "./import-image.mjs";
+import { forwardedPageLimit, quotaError, quotaRefusal, resolvePageQuota } from "./page-quota.mjs";
 import { serialQueue, serialQueueBounds } from "./serial-queue.mjs";
 import { holdUntilSettled } from "./request-hold.mjs";
 import { readTool } from "./tool-reads.mjs";
@@ -246,6 +250,10 @@ function refuseSocket(error, identity) {
   socket.close(admissionCloseCode(error), admissionCode(error));
   return new Response(null, { status: 101, webSocket: pair[0] });
 }
+/** The most children of one shared parent a listing checks. Each is a Page
+ * host read made while the caller's Catalog queue waits, so this stays fixed
+ * whatever the owner's Page limit is. */
+const SHARED_CHILDREN_LIMIT = 100;
 /** Budgets for reading Page lifecycles while the Catalog queue waits. */
 export const lifecycleBounds = { readMs: 2000, passMs: 5000, concurrency: 4 };
 const lifecycleUnsettled = () =>
@@ -298,6 +306,20 @@ function logCreationIntentConflict(intent, installed) {
       event: "page.creation_intent_conflict",
       page_id: installed.pageId,
       fields,
+      timestamp: new Date().toISOString(),
+    }),
+  );
+}
+/** One structured line when a listing finds a Catalog's stored Page counts
+ * wrong and rewrites them. Expected after a rollback build wrote Catalog
+ * entries; anything else points at a write path that skips countedStorage. */
+function logCountRepair(counts) {
+  console.warn(
+    JSON.stringify({
+      service: "nteract-pages-native",
+      event: "catalog.count_repaired",
+      active: counts["page/"],
+      trash: counts["trash/"],
       timestamp: new Date().toISOString(),
     }),
   );
@@ -415,6 +437,23 @@ function authorizeImage(request, env, pageId, write) {
   return env.PAGES.getByName(pageId).fetch(internal);
 }
 
+/** Catalog operations that apply the account's Page limit, or report it. */
+const QUOTA_OPERATIONS = new Set([
+  "list_pages",
+  "create_page",
+  "register_page",
+  "create_space",
+  "delete_page",
+  "restore_page",
+]);
+/** The resolved Page limit for a Catalog forward (page-quota.mjs). It sits
+ * beside `arguments`, never inside them, so a caller can't set it, and
+ * /internal/catalog is reachable only through the host. */
+async function quotaFields(env, identity, operation) {
+  if (!QUOTA_OPERATIONS.has(operation)) return {};
+  return { page_limit: (await resolvePageQuota(env, identity)).limit };
+}
+
 async function invoke(request, env, operation, args = {}) {
   if (!operations.has(operation) || !args || typeof args !== "object" || Array.isArray(args))
     throw new HttpError(400, "Unknown operation or invalid arguments");
@@ -437,11 +476,12 @@ async function invoke(request, env, operation, args = {}) {
       operation,
     )
   ) {
+    const body = { operation, arguments: args, ...(await quotaFields(env, identity, operation)) };
     return withinToolDeadline(async (signal) =>
       bufferedResponse(
         await untilAborted(
           env.CATALOGS.getByName(identity.principal).fetch(
-            forwarded(request, "/internal/catalog", { operation, arguments: args }),
+            forwarded(request, "/internal/catalog", body),
             { signal },
           ),
           signal,
@@ -671,6 +711,7 @@ const gateway = {
         const identity = await authenticate(request, env);
         requireWrite(identity);
         const args = await readJson(request);
+        const quota = await quotaFields(env, identity, "register_page");
         return await withinToolDeadline(async (signal) =>
           bufferedResponse(
             await untilAborted(
@@ -678,6 +719,7 @@ const gateway = {
                 forwarded(request, "/internal/catalog", {
                   operation: "register_page",
                   arguments: args,
+                  ...quota,
                 }),
                 { signal },
               ),
@@ -754,6 +796,10 @@ export class Catalog {
     this.env = env;
     this.queue = serialQueue(ctx, "catalog-queue");
   }
+  /** Storage that keeps the `page/` and `trash/` key counts (catalog.mjs). */
+  get storage() {
+    return (this.counted ??= countedStorage(this.ctx.storage));
+  }
   fetch(request) {
     // Location reads write nothing, so they never wait behind the queue. A
     // Catalog listing a shared parent asks the owner's Catalog from inside
@@ -777,7 +823,7 @@ export class Catalog {
           throw new HttpError(403, "Account access denied");
       }
       const query = await readJson(request);
-      const entries = await locationEntries(this.ctx.storage);
+      const entries = await locationEntries(this.storage);
       if (query?.children_of !== undefined) {
         if (!validPageId(query.children_of)) throw new HttpError(400, "Invalid children_of");
         return json({ children: childrenOf(entries, query.children_of) });
@@ -791,9 +837,23 @@ export class Catalog {
     }
   }
   async countEntries(prefix) {
-    return countCapacity(this.ctx.storage, prefix, {
+    return countCapacity(this.storage, prefix, {
       current: (pageId) => this.pageLifecycle(pageId),
     });
+  }
+  /** Room for one more entry under `prefix` within `limit`: `{ room, count }`.
+   * `slotKey` names the caller's own reservation slot, which is counted (and
+   * released when stale) first, as a full count would. */
+  async capacity(prefix, limit, slotKey) {
+    return capacityFor(this.storage, prefix, limit, {
+      slotKey,
+      current: (pageId) => this.pageLifecycle(pageId),
+    });
+  }
+  /** Refuse a new Page when the account is at its limit. */
+  async requirePageRoom(limit) {
+    const { room, count } = await this.capacity("page/", limit);
+    if (!room) throw quotaError("page/", { limit, count });
   }
   /** Read a Page's current lifecycle state. The Catalog may call its Pages;
    * a Page never calls its owner's Catalog.
@@ -880,18 +940,18 @@ export class Catalog {
         const value = await readJson(request);
         if (!validPageId(value.page_id)) throw new HttpError(400, "Invalid page_id");
         const key = `${value.shared ? "shared/" : "page/"}${value.page_id}`;
-        const previous = await this.ctx.storage.get(key);
-        if (value.remove) await this.ctx.storage.delete(key);
+        const previous = await this.storage.get(key);
+        if (value.remove) await this.storage.delete(key);
         else if (
           !previous?.pending &&
-          !(await this.ctx.storage.get(`host/deleted/${value.page_id}`)) &&
+          !(await this.storage.get(`host/deleted/${value.page_id}`)) &&
           // A projection observed before trashing must not relist the Page.
-          (value.shared || !(await this.ctx.storage.get(`trash/${value.page_id}`))) &&
+          (value.shared || !(await this.storage.get(`trash/${value.page_id}`))) &&
           (!previous?.updated_at || previous.updated_at <= value.observed_at)
         ) {
           // A new discovery entry may not have reached D1; reconcile on next listing.
-          if (!previous) await markCatalogIndexDirty(this.ctx.storage);
-          await this.ctx.storage.put(key, {
+          if (!previous) await markCatalogIndexDirty(this.storage);
+          await this.storage.put(key, {
             ...previous,
             page_id: value.page_id,
             title: catalogTitle(value.title),
@@ -915,15 +975,18 @@ export class Catalog {
           !Number.isFinite(Date.parse(body.observed_at))
         )
           throw new HttpError(400, "Invalid title projection");
-        await refreshCatalogTitle(this.ctx.storage, body);
+        await refreshCatalogTitle(this.storage, body);
         return json({ ok: true });
       }
       const args = body.arguments ?? {};
-      if (body.operation === "list_pages") return await this.listPages(request, identity, args);
+      const limit = forwardedPageLimit(body.page_limit, this.env);
+      if (body.operation === "list_pages")
+        return await this.listPages(request, identity, args, limit);
       if (body.operation === "list_spaces") return await this.listSpaces(request, identity, args);
       if (body.operation === "get_space") return await this.getSpace(request, args);
       requireWrite(identity);
-      if (body.operation === "create_space") return await this.createSpace(request, identity, args);
+      if (body.operation === "create_space")
+        return await this.createSpace(request, identity, args, limit);
       if (body.operation === "update_space") return await this.updateSpace(request, identity, args);
       const lifecycle = lifecycleRoutes[body.operation];
       if (!["create_page", "register_page"].includes(body.operation) && !lifecycle)
@@ -942,8 +1005,8 @@ export class Catalog {
           throw new HttpError(400, "action must be preview or confirm");
         // A preview is an owner read of the trashed Page; it reserves nothing.
         if (args.action === "preview") {
-          if (await this.ctx.storage.get(`host/deleted/${args.page_id}`)) {
-            await this.ctx.storage.delete(`trash/${args.page_id}`);
+          if (await this.storage.get(`host/deleted/${args.page_id}`)) {
+            await this.storage.delete(`trash/${args.page_id}`);
             await this.notifyTombstone(args.page_id);
             throw new HttpError(404, "Page not found");
           }
@@ -962,7 +1025,7 @@ export class Catalog {
         A.free(readRegistration(args).doc);
         // The browser knows its UUID before the Page host has an intent. A
         // successful deletion must also cancel retries of that local creation.
-        if (await this.ctx.storage.get(`host/deleted/${args.page_id}`))
+        if (await this.storage.get(`host/deleted/${args.page_id}`))
           throw new HttpError(409, "Page was deleted");
       }
       const key = mutationKey(args);
@@ -971,7 +1034,7 @@ export class Catalog {
         args,
         identity,
       );
-      const inspected = await inspectOperation(this.ctx.storage, {
+      const inspected = await inspectOperation(this.storage, {
         key,
         digest,
         retryToken: args.retry_token,
@@ -979,20 +1042,24 @@ export class Catalog {
         principal: identity.principal,
       });
       if (lifecycle)
-        return await this.runLifecycle(request, body.operation, args, { key, digest, inspected });
+        return await this.runLifecycle(request, body.operation, args, {
+          key,
+          digest,
+          inspected,
+          limit,
+        });
       let intent = inspected.entry;
       if (intent && !intent.pending) {
         // A previous attempt may have stored its receipt before sync failed.
-        await this.ctx.storage.sync();
+        await this.storage.sync();
         return json(intent.receipt);
       }
       if (!intent) {
-        if ((await this.countEntries("page/")) >= CATALOG_LIMIT)
-          throw new HttpError(409, "This prototype permits 100 pages per account");
+        await this.requirePageRoom(limit);
         if (
           registering &&
-          ((await this.ctx.storage.get(`page/${args.page_id}`)) ||
-            (await this.ctx.storage.get(`trash/${args.page_id}`)))
+          ((await this.storage.get(`page/${args.page_id}`)) ||
+            (await this.storage.get(`trash/${args.page_id}`)))
         )
           throw new HttpError(409, "Page already has another creation request");
         const { location, rekeyed } = await this.resolveLocation(request, registering ? {} : args);
@@ -1002,15 +1069,15 @@ export class Catalog {
           pageId: body.operation === "create_page" ? crypto.randomUUID() : args.page_id,
           createdAt: new Date().toISOString(),
         };
-        intent = await reserveOperation(this.ctx.storage, {
+        intent = await reserveOperation(this.storage, {
           key,
           entry: intent,
           retry: inspected.retry,
         });
         // The intent and the pending entry, which alone records the new
         // Page's location, commit together. A retry reads the location back.
-        await this.ctx.storage.put({
-          ...(await rekeyedEntries(this.ctx.storage, rekeyed)),
+        await this.storage.put({
+          ...(await rekeyedEntries(this.storage, rekeyed)),
           [key]: intent,
           [`page/${intent.pageId}`]: {
             page_id: intent.pageId,
@@ -1023,7 +1090,7 @@ export class Catalog {
         });
       }
       const pageId = intent.pageId;
-      const pending = await this.ctx.storage.get(`page/${pageId}`);
+      const pending = await this.storage.get(`page/${pageId}`);
       if (!pending) throw new Error("A pending creation has no Catalog entry");
       // A resumed creation checks its parent again: the parent may have
       // moved to Trash since the intent was reserved. The intent stays
@@ -1042,24 +1109,24 @@ export class Catalog {
       if (!response.ok && response.headers.get("x-pages-create-rejected") === "before-intent") {
         // Only this explicit pre-intent rejection proves there is no Page
         // creation to recover. Ambiguous failures retain their reservation.
-        await this.ctx.storage.delete(`page/${pageId}`);
-        await this.ctx.storage.delete(key);
-        await this.ctx.storage.sync();
+        await this.storage.delete(`page/${pageId}`);
+        await this.storage.delete(key);
+        await this.storage.sync();
       }
       if (!response.ok) return response;
       // The receipt reports the location this Catalog recorded.
       intent.receipt = {
         ...(await response.json()),
-        ...receiptLocation(await locationEntries(this.ctx.storage), pageId),
+        ...receiptLocation(await locationEntries(this.storage), pageId),
       };
       intent.pending = false;
       const { pending: _pending, ...created } = pending;
-      await markCatalogIndexDirty(this.ctx.storage);
-      await this.ctx.storage.put({
+      await markCatalogIndexDirty(this.storage);
+      await this.storage.put({
         [key]: intent,
         [`page/${pageId}`]: { ...created, title: catalogTitle(intent.receipt.title) },
       });
-      await this.ctx.storage.sync();
+      await this.storage.sync();
       return json(intent.receipt);
     } catch (error) {
       return errorResponse(error, "catalog");
@@ -1073,10 +1140,10 @@ export class Catalog {
    * Page in order, and feeds the Page's answers back in until it replies.
    * Requests reach it one at a time through this Catalog's queue.
    */
-  async runLifecycle(request, operation, args, { key, digest, inspected }) {
-    const storage = this.ctx.storage;
+  async runLifecycle(request, operation, args, { key, digest, inspected, limit }) {
+    const storage = this.storage;
     const pageId = args.page_id;
-    const run = { request, operation, args, pageId, key, digest, retry: inspected.retry };
+    const run = { request, operation, args, pageId, key, digest, retry: inspected.retry, limit };
     run.row = inspected.entry;
     let state = await intentState(storage, key, operation, pageId);
     let outcome;
@@ -1093,7 +1160,7 @@ export class Catalog {
       state = outcome.state;
     }
     if (state.name === "absent") {
-      outcome = await this.stepIntent(run, state, await this.newIntentFacts(operation, pageId));
+      outcome = await this.stepIntent(run, state, await this.newIntentFacts(run));
       if (outcome.reply) return outcome.reply;
       state = outcome.state;
     }
@@ -1126,12 +1193,24 @@ export class Catalog {
           ? undefined
           : response.source === "page"
             ? run.reply
-            : json(response.body, response.status),
+            : this.intentReply(run, response),
     };
   }
 
+  /** A reply the machine gave. A full destination's reply names its code
+   * only; the message, limit and count come from the capacity check. */
+  intentReply(run, response) {
+    if ([replies.trashFull.body.code, replies.pageQuota.body.code].includes(response.body?.code)) {
+      const prefix = slotPrefix[run.operation];
+      // Every path to a full reply runs a capacity check first.
+      const { status, body } = quotaRefusal(prefix, run.capacity);
+      return json(body, status);
+    }
+    return json(response.body, response.status);
+  }
+
   async runIntentEffect(run, effect) {
-    const storage = this.ctx.storage;
+    const storage = this.storage;
     const { operation, pageId, key } = run;
     switch (effect.type) {
       case "persist":
@@ -1262,14 +1341,14 @@ export class Catalog {
     // A restore's receipt reports where this Catalog's projection, the next
     // effect, puts the Page.
     if (operation === "restore_page" && receipt?.restored === true && current?.state === "active") {
-      const { location } = await restoreTarget(this.ctx.storage, pageId);
+      const { location } = await restoreTarget(this.storage, pageId);
       const spaceId = location.parent_id
-        ? projectOf(await locationEntries(this.ctx.storage), location.parent_id)
+        ? projectOf(await locationEntries(this.storage), location.parent_id)
         : (location.space_id ?? null);
       if (spaceId || location.parent_id)
         Object.assign(receipt, { space_id: spaceId, parent_id: location.parent_id });
     }
-    const known = await knownRevision(this.ctx.storage, pageId);
+    const known = await knownRevision(this.storage, pageId);
     return {
       type: "page_reply",
       status: response.status,
@@ -1282,17 +1361,24 @@ export class Catalog {
   /** What a new lifecycle request needs before it is reserved: the leaf
    * guard for Trash, room at its destination, and the lifecycle revision
    * this account last observed for the Page. */
-  async newIntentFacts(operation, pageId) {
-    const storage = this.ctx.storage;
+  async newIntentFacts(run) {
+    const { operation, pageId } = run;
+    const storage = this.storage;
     if (operation === "delete_page") await this.requireLeafPage(pageId);
     const slotKey = lifecycleSlotKey(operation, pageId);
     let destination = "none";
     if (slotKey) {
-      const limit = operation === "delete_page" ? TRASH_LIMIT : CATALOG_LIMIT;
-      // Counting first removes stale reservations, including this Page's.
-      const full = (await this.countEntries(slotPrefix[operation])) >= limit;
+      // The check counts this Page's own slot first, removing it when stale.
+      run.capacity = await this.capacity(slotPrefix[operation], run.limit, slotKey);
+      run.capacity.limit = run.limit;
       const entry = await storage.get(slotKey);
-      destination = !entry ? (full ? "full" : "room") : entry.reservation ? "taken" : "entry";
+      destination = !entry
+        ? run.capacity.room
+          ? "room"
+          : "full"
+        : entry.reservation
+          ? "taken"
+          : "entry";
     }
     const revision = await observedLifecycleRevision(storage, pageId);
     return { type: "request", operation, pageId, destination, revision };
@@ -1301,13 +1387,15 @@ export class Catalog {
   /** What a pending request needs before it continues. Capacity, and for
    * Trash the leaf guard, are read only when it no longer holds its slot. */
   async pendingIntentFacts(run, state) {
-    const storage = this.ctx.storage;
+    const storage = this.storage;
     const { operation, pageId, key } = run;
     const entry = state.slot === "live" ? await storage.get(slotPrefix[operation] + pageId) : null;
     const event = { type: "request", expired: entry ? !(entry.expires_at > Date.now()) : false };
     if (holdsSlot(state, event.expired)) return { event, state };
-    const limit = operation === "delete_page" ? TRASH_LIMIT : CATALOG_LIMIT;
-    event.capacity = (await this.countEntries(slotPrefix[operation])) < limit;
+    const slotKey = lifecycleSlotKey(operation, pageId);
+    run.capacity = await this.capacity(slotPrefix[operation], run.limit, slotKey);
+    run.capacity.limit = run.limit;
+    event.capacity = run.capacity.room;
     // Counting may have removed this intent's own expired slot.
     state = { ...state, slot: (await intentState(storage, key, operation, pageId)).slot };
     // A trash that lost its slot never applied (an applied one leaves a real
@@ -1347,7 +1435,7 @@ export class Catalog {
    * sibling order, and the Project record confirms the Project.
    */
   async resolveLocation(request, args) {
-    const storage = this.ctx.storage;
+    const storage = this.storage;
     const spaceArg =
       args.space_id === undefined || args.space_id === null
         ? null
@@ -1404,9 +1492,13 @@ export class Catalog {
 
   /** The parent's Catalog entry when it can take a new child: owned, created
    * and not in Trash. A trash slot (even one still being reserved) counts as
-   * Trash, so a child is never created under a Page that is leaving. */
+   * Trash, so a child is never created under a Page that is leaving. The slot
+   * is counted first, so one that went stale no longer holds the parent. */
   async activeParent(parentId) {
-    const storage = this.ctx.storage;
+    const storage = this.storage;
+    await countSlot(storage, `trash/${parentId}`, {
+      current: (pageId) => this.pageLifecycle(pageId),
+    });
     if (await storage.get(`trash/${parentId}`))
       throw new HttpError(
         409,
@@ -1434,7 +1526,7 @@ export class Catalog {
    * still unapplied afterwards is not a child: once this Page is in Trash,
    * that restore returns to the top level. */
   async requireLeafPage(pageId) {
-    const storage = this.ctx.storage;
+    const storage = this.storage;
     const entry = await storage.get(`page/${pageId}`);
     if (!entry) return;
     if (entry.home)
@@ -1444,7 +1536,7 @@ export class Catalog {
         "home_page_protected",
       );
     const unsettled = [];
-    for (const child of (await storage.list({ prefix: "page/", limit: 1000 })).values()) {
+    for (const child of (await listAll(storage, "page/")).values()) {
       if (!child?.page_id || child.page_id === pageId) continue;
       const trashed = await storage.get(`trash/${child.page_id}`);
       const parent =
@@ -1490,7 +1582,7 @@ export class Catalog {
    * can't answer, the caller is refused rather than left to guess. Each
    * reservation is a `settle` event for its operation intent. */
   async settleReservation(pageId, deadline = Date.now() + lifecycleBounds.passMs) {
-    const storage = this.ctx.storage;
+    const storage = this.storage;
     for (const key of [`page/${pageId}`, `trash/${pageId}`]) {
       const entry = await storage.get(key);
       if (!entry?.reservation) continue;
@@ -1517,7 +1609,7 @@ export class Catalog {
    * Project) its Trash entry records. */
   async slotPlacement(operation, pageId) {
     if (operation !== "restore_page") return undefined;
-    const entry = await this.ctx.storage.get(`trash/${pageId}`);
+    const entry = await this.storage.get(`trash/${pageId}`);
     return entry && !entry.reservation
       ? { space_id: entry.space_id ?? null, parent_id: entry.parent_id ?? null }
       : undefined;
@@ -1527,14 +1619,14 @@ export class Catalog {
    * already applied is projected before this restore's projection decides
    * whether the parent can still hold it. */
   async settleRestoreParent(pageId) {
-    const storage = this.ctx.storage;
+    const storage = this.storage;
     const parentId = (await storage.get(`trash/${pageId}`))?.parent_id;
     if (parentId && (await storage.get(`trash/${parentId}`))?.reservation)
       await this.settleReservation(parentId);
   }
 
-  async createSpace(request, identity, args) {
-    const storage = this.ctx.storage;
+  async createSpace(request, identity, args, limit) {
+    const storage = this.storage;
     const { title, description } = validateSpaceInput(args, { creating: true });
     const key = mutationKey(args);
     const digest = await fingerprint("create_space", args, identity);
@@ -1558,8 +1650,7 @@ export class Catalog {
           `This prototype permits ${SPACE_LIMIT} Projects per account`,
           "project_capacity",
         );
-      if ((await this.countEntries("page/")) >= CATALOG_LIMIT)
-        throw new HttpError(409, "This prototype permits 100 pages per account");
+      await this.requirePageRoom(limit);
       const createdAt = new Date().toISOString();
       intent = await reserveOperation(storage, {
         key,
@@ -1605,7 +1696,7 @@ export class Catalog {
    * idempotent; its outcome is persisted with the next state before the
    * following effect starts, so a retry resumes where the last one stopped. */
   async completeSpaceCreation(request, key, intent) {
-    const storage = this.ctx.storage;
+    const storage = this.storage;
     intent.phase ??= "reserved";
     for (let effect = spaceCreationEffect(intent.phase); effect; ) {
       let event;
@@ -1665,7 +1756,7 @@ export class Catalog {
   }
 
   async updateSpace(request, identity, args) {
-    const storage = this.ctx.storage;
+    const storage = this.storage;
     validateSpaceInput(args, { creating: false });
     const key = mutationKey(args);
     const digest = await fingerprint("update_space", args, identity);
@@ -1753,7 +1844,7 @@ export class Catalog {
     const spaceId = requireSpaceIdArgument(args.space_id);
     if (Object.keys(args).some((name) => name !== "space_id"))
       throw new HttpError(400, "get_project takes only project_id");
-    const entry = await this.ctx.storage.get(`space/${spaceId}`);
+    const entry = await this.storage.get(`space/${spaceId}`);
     if (entry?.pending)
       throw new HttpError(
         409,
@@ -1766,13 +1857,13 @@ export class Catalog {
     if (!response.ok) return response;
     const space = await response.json();
     if (entry && entry.updated_at < space.updated_at) {
-      await this.ctx.storage.put(`space/${spaceId}`, {
+      await this.storage.put(`space/${spaceId}`, {
         ...entry,
         title: space.title,
         description: space.description,
         updated_at: space.updated_at,
       });
-      await markSpaceIndexDirty(this.ctx.storage);
+      await markSpaceIndexDirty(this.storage);
     }
     return json(space);
   }
@@ -1781,7 +1872,7 @@ export class Catalog {
    * candidates; each must match this account's own `space/` entry, which
    * supplies what is returned. */
   async listSpaces(request, identity, args) {
-    const storage = this.ctx.storage;
+    const storage = this.storage;
     if (!args || typeof args !== "object" || Array.isArray(args))
       throw new HttpError(400, "Invalid list arguments", "invalid_list_arguments");
     let limit = 50;
@@ -1897,9 +1988,11 @@ export class Catalog {
       );
       if (!response.ok) throw Error(`Owner location read failed: ${response.status}`);
       const { children } = await response.json();
-      // An owner's Catalog holds at most CATALOG_LIMIT active Pages, which
-      // bounds the checks an exhaustive child listing makes.
-      return Array.isArray(children) ? children.filter(validPageId).slice(0, CATALOG_LIMIT) : [];
+      // An exhaustive child listing checks each child with its Page host, so
+      // it reads at most SHARED_CHILDREN_LIMIT of them.
+      return Array.isArray(children)
+        ? children.filter(validPageId).slice(0, SHARED_CHILDREN_LIMIT)
+        : [];
     } catch (error) {
       logFailure(error, "catalog-location");
       throw new HttpError(503, "Shared Pages are temporarily unavailable");
@@ -1917,9 +2010,9 @@ export class Catalog {
    * The cursor is sealed to the caller, query and in_trash, and rejected rows
    * are pruned on encounter.
    */
-  async listPages(request, identity, args) {
+  async listPages(request, identity, args, limit) {
     const options = parseListArguments(args);
-    const storage = this.ctx.storage;
+    const storage = this.storage;
     if (options.inTrash) await pruneTombstonedTrash(storage);
     if (options.spaceId) {
       // Only the owner can see a Space in this build, and the owner's own
@@ -1928,8 +2021,12 @@ export class Catalog {
       if (!space || space.pending) throw spaceNotFound();
     }
     // This account's entries record where each owned Page is, and its
-    // Project is derived from them. A listing builds the map once.
-    const locations = await locationEntries(storage);
+    // Project is derived from them. A listing builds the map once. The same
+    // scan counts every key, which checks the stored counts: a build that
+    // wrote keys without them leaves them wrong until this repairs them.
+    const { entries: locations, counts } = await locationScan(storage);
+    if (await storage.verifyCounts(counts)) logCountRepair(counts);
+    const quota = { limit, count: counts["page/"], trash_count: counts["trash/"] };
     // Child IDs of a shared parent, from its owner's Catalog.
     let sharedChildren;
     if (typeof options.parentId === "string") {
@@ -1972,6 +2069,7 @@ export class Catalog {
         pages: [],
         limit: options.limit,
         next_cursor: null,
+        quota,
         ...(await issueRetryToken(storage, {
           scope: `catalog:${identity.principal}`,
           principal: identity.principal,
@@ -2045,6 +2143,7 @@ export class Catalog {
       pages: result.pages,
       limit: options.limit,
       next_cursor: result.next ? await sealCursor(this.env, context, result.next) : null,
+      quota,
       ...(await issueRetryToken(storage, {
         scope: `catalog:${identity.principal}`,
         principal: identity.principal,
@@ -2055,7 +2154,7 @@ export class Catalog {
   }
 
   async scanCandidates(request, identity, source, options, scope, after, db) {
-    const storage = this.ctx.storage;
+    const storage = this.storage;
     const pruned = [];
     let stale = false;
     const check = async (row) => {

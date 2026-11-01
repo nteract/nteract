@@ -20,6 +20,16 @@ import {
   trashArgs,
 } from "./trash-fixture.mjs";
 
+/** The Page limit these tests set for the account. */
+const LIMIT = 100;
+/** `count` placeholder entries under `prefix`, written as a Catalog would. */
+async function fill(storage, prefix, count) {
+  for (let index = 0; index < count; index++)
+    await storage.put(`${prefix}fill-${String(index).padStart(3, "0")}`, {
+      page_id: `fill-${index}`,
+    });
+}
+
 test("delete_page moves a Page to Trash and keeps its document, comments and ACL", async (t) => {
   const f = await fixture(t);
   const before = structuredClone(f.page.metadata);
@@ -481,22 +491,31 @@ test("trashed records stay unavailable to builds that predate Trash", async (t) 
 });
 
 test("Trash and restore respect their capacity limits", async (t) => {
-  const f = await fixture(t);
-  const owned = f.catalogOf(f.owner).storage;
-  for (let index = 0; index < 100; index++)
-    await owned.put(`trash/fill-${String(index).padStart(3, "0")}`, { page_id: `fill-${index}` });
+  const f = await fixture(t, { env: { PAGES_DEFAULT_PAGE_QUOTA: String(LIMIT) } });
+  const owned = f.catalogOf(f.owner).catalog.storage;
+  await fill(owned, "trash/", LIMIT);
   const full = await f.catalogCall("owner", "delete_page", trashArgs(f));
   assert.equal(full.status, 409);
-  assert.equal(full.body.code, "trash_capacity");
+  assert.deepEqual(full.body, {
+    error: `This alpha release allows ${LIMIT} Pages in Trash per account. Permanently delete Pages from Trash before moving more Pages there.`,
+    code: "trash_capacity",
+    limit: LIMIT,
+    count: LIMIT,
+  });
   await owned.delete("trash/fill-000");
   assert.equal((await f.catalogCall("owner", "delete_page", trashArgs(f))).status, 200);
-  for (let index = 0; index < 100; index++)
-    await owned.put(`page/fill-${String(index).padStart(3, "0")}`, { page_id: `fill-${index}` });
+  await fill(owned, "page/", LIMIT);
   const quota = await f.catalogCall("owner", "restore_page", {
     page_id: pageId,
     idempotency_key: "restore-full",
   });
   assert.equal(quota.status, 409);
+  assert.deepEqual(quota.body, {
+    error: `This alpha release allows ${LIMIT} Pages per account.`,
+    code: "page_quota_exceeded",
+    limit: LIMIT,
+    count: LIMIT,
+  });
   assert.equal(pageState(f.page.metadata), "trashed");
 });
 
@@ -622,11 +641,12 @@ test("purge rechecks the live document after verifying its preview", async (t) =
 });
 
 test("pending trash and restore requests hold their destination slot", async (t) => {
-  const f = await fixture(t);
+  const f = await fixture(t, { env: { PAGES_DEFAULT_PAGE_QUOTA: String(LIMIT) } });
+  // Writes through the Catalog's storage keep its key counts.
+  const counted = f.catalogOf(f.owner).catalog.storage;
   const owned = f.catalogOf(f.owner).storage;
   await f.catalogCall("owner", "delete_page", trashArgs(f));
-  for (let index = 0; index < 99; index++)
-    await owned.put(`page/fill-${String(index).padStart(3, "0")}`, { page_id: `fill-${index}` });
+  await fill(counted, "page/", LIMIT - 1);
   const restore = { page_id: pageId, idempotency_key: "reserved-restore" };
   const original = f.page.fetch.bind(f.page);
   f.page.fetch = async () => Response.json({ error: "Page unavailable" }, { status: 503 });
@@ -792,11 +812,12 @@ test("a retried trash superseded by a restore never applies, even after its rece
 });
 
 test("a forwarded restore keeps its slot past expiry until the Page state reconciles it", async (t) => {
-  const f = await fixture(t);
+  const f = await fixture(t, { env: { PAGES_DEFAULT_PAGE_QUOTA: String(LIMIT) } });
+  // Writes through the Catalog's storage keep its key counts.
+  const counted = f.catalogOf(f.owner).catalog.storage;
   const owned = f.catalogOf(f.owner).storage;
   await f.catalogCall("owner", "delete_page", trashArgs(f));
-  for (let index = 0; index < 99; index++)
-    await owned.put(`page/fill-${String(index).padStart(3, "0")}`, { page_id: `fill-${index}` });
+  await fill(counted, "page/", LIMIT - 1);
   const restore = { page_id: pageId, idempotency_key: "applied-restore" };
   f.network.lost = 1;
   assert.equal((await f.catalogCall("owner", "restore_page", restore)).status, 500);
@@ -822,14 +843,15 @@ test("a forwarded restore keeps its slot past expiry until the Page state reconc
 });
 
 test("only never-forwarded slots expire, and a resume without room only replays", async (t) => {
-  const f = await fixture(t);
+  const f = await fixture(t, { env: { PAGES_DEFAULT_PAGE_QUOTA: String(LIMIT) } });
+  // Writes through the Catalog's storage keep its key counts.
+  const counted = f.catalogOf(f.owner).catalog.storage;
   const owned = f.catalogOf(f.owner).storage;
   await f.catalogCall("owner", "delete_page", trashArgs(f));
-  for (let index = 0; index < 99; index++)
-    await owned.put(`page/fill-${String(index).padStart(3, "0")}`, { page_id: `fill-${index}` });
+  await fill(counted, "page/", LIMIT - 1);
   // A crash after the intent and slot commit, before the forwarded mark.
   const key = "host/operation/stranded-restore";
-  await owned.put({
+  await counted.put({
     [key]: {
       fingerprint: await fingerprint(
         "restore_page",
@@ -848,7 +870,7 @@ test("only never-forwarded slots expire, and a resume without room only replays"
   t.mock.method(Date, "now", () => now + 8 * 24 * 60 * 60 * 1000);
   assert.equal(await countCapacity(owned, "page/"), 99);
   assert.equal(await owned.get(`page/${pageId}`), undefined);
-  await owned.put("page/fill-099", { page_id: "fill-099" });
+  await counted.put("page/fill-099", { page_id: "fill-099" });
   const resumed = await f.catalogCall("owner", "restore_page", {
     page_id: pageId,
     idempotency_key: "stranded-restore",
@@ -944,11 +966,12 @@ test("a resumed lifecycle request checks the tombstone and completes as deleted"
 });
 
 test("an expired slot for a restore whose barrier failed never lets the quota pass 100", async (t) => {
-  const f = await fixture(t);
+  const f = await fixture(t, { env: { PAGES_DEFAULT_PAGE_QUOTA: String(LIMIT) } });
+  // Writes through the Catalog's storage keep its key counts.
+  const counted = f.catalogOf(f.owner).catalog.storage;
   const owned = f.catalogOf(f.owner).storage;
   await f.catalogCall("owner", "delete_page", trashArgs(f));
-  for (let index = 0; index < 99; index++)
-    await owned.put(`page/fill-${String(index).padStart(3, "0")}`, { page_id: `fill-${index}` });
+  await fill(counted, "page/", LIMIT - 1);
   const sync = f.storage.sync.bind(f.storage);
   let failures = 2;
   f.storage.sync = async () => {

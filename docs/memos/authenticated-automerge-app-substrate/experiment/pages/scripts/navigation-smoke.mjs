@@ -136,11 +136,18 @@ try {
     route.fulfill({
       status: 409,
       contentType: "application/json",
-      body: JSON.stringify({ error: "This prototype permits 100 pages per account" }),
+      body: JSON.stringify({
+        error: "This alpha release allows 250 Pages per account.",
+        code: "page_quota_exceeded",
+        limit: 250,
+        count: 250,
+      }),
     }),
   );
   await page.getByRole("button", { name: "New Page", exact: true }).click();
   await expect(titleInput(page)).toBeFocused();
+  // The refusal says why the draft stays on this device.
+  await expect(page.getByText("This alpha release allows 250 Pages per account.")).toBeVisible();
   const rejectedId = new URL(page.url()).pathname.split("/")[2];
   await page.getByLabel("Document actions", { exact: true }).click();
   page.once("dialog", (dialog) => dialog.accept());

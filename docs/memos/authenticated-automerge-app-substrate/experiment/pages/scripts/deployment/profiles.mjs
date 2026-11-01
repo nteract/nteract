@@ -286,6 +286,9 @@ const targets = Object.freeze({
     compactRecords: true,
     companyViewDomains: "anaconda.com",
     catalogIndex: "1",
+    // Each account's Page limit when no quota rule matches it
+    // (worker/page-quota.mjs). It also bounds that account's Trash.
+    pageQuota: "250",
     // The Cloudflare edge forwards an unsampled traceparent, and celld's
     // default parent-based sampler then drops every request-scoped log line.
     otelTracesSampler: "always_on",

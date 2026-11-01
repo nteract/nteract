@@ -468,7 +468,9 @@ purge_page). Browser link: ${origin}/p/<page_id>.
 list_pages accepts optional query (title substring), limit (1-100, default 50) and cursor.
 Pass next_cursor back as cursor, with the same query, until it is null. Pagination is not a
 snapshot: concurrent title or sharing changes can move Pages across the cursor. A short or
-empty result does not prove a Page is absent.
+empty result does not prove a Page is absent. Its quota object is your own account's Page
+limit: {limit, count, trash_count}. At the limit, create_page and restore_page return
+page_quota_exceeded with limit and count; tell the person rather than retrying.
 
 - create_page: title, optional markdown, optional project_id or parent_id, and idempotency_key.
 - read_page: page_id, optional block_ids, section/section_occurrence, search/context_nodes,
@@ -560,9 +562,10 @@ do; do not treat it as success.
   Only trashed Pages can be purged (otherwise page_not_in_trash).
 
 Trash has no automatic expiry: Pages stay there until restored or purged. Trash
-holds up to 100 Pages (trash_capacity when full). Restoring needs a free slot in
-the 100-Page limit. Purging makes the Page's private images unavailable, but
-their stored bytes are not erased.
+holds up to your account's Page limit (trash_capacity when full). Restoring
+needs a free slot under that limit (page_quota_exceeded otherwise). Purging
+makes the Page's private images unavailable, but their stored bytes are not
+erased.
 
 ### One title, with the body left intact
 
@@ -866,6 +869,9 @@ succeeds. Every error has a stable code. Branch on code, not on the error messag
 - edit_conflict, resync_required: see Guarded edits above.
 - idempotency_conflict: the key was used for a different request. Use a new key.
 - invalid_idempotency_key: the key doesn't match the format above.
+- page_quota_exceeded, trash_capacity: the account has reached its Page limit,
+  or its Trash has. Both carry limit and count. Retrying won't help; tell the
+  person.
 - read_failed: no answer to a read (retryable:true). Retry it.
 - outcome_unknown: no answer to a write. With retryable:true, retry the exact
   request with the same key; the receipt replays without a second edit.
