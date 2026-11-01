@@ -40,14 +40,17 @@ import { normalizeInviteEmail } from "@cloud/sharing.ts";
 import { HttpError, logFailure } from "./auth.mjs";
 import { migrateSchema, withTimeout } from "./catalog-index.mjs";
 import { isolateSetup } from "./isolate-setup.mjs";
+import {
+  MAX_PAGE_QUOTA,
+  QUOTA_RULE_LIMIT,
+  emailDomain,
+  normalizeRuleMatch,
+  validPageLimit,
+} from "./quota-rule-match.mjs";
+
+export { MAX_PAGE_QUOTA, QUOTA_RULE_LIMIT, normalizeRuleMatch, validPageLimit };
 
 export const DEFAULT_PAGE_QUOTA = 250;
-/** The largest limit any rule or default can set. Catalog scans that read
- * every entry stay bounded by it. */
-export const MAX_PAGE_QUOTA = 10_000;
-/** The most rules one snapshot reads. A larger table resolves every account
- * to the default until it is trimmed. */
-export const QUOTA_RULE_LIMIT = 1000;
 
 /** Mutable so tests can shorten them. `rulesMs` is how long a rule snapshot
  * serves, `failureMs` how long a failed read serves the default, and `readMs`
@@ -75,10 +78,6 @@ export function migrateQuotaRules(db, now) {
   return migrateSchema(db, { table: "pages_quota_schema", migrations: QUOTA_MIGRATIONS, now });
 }
 
-export function validPageLimit(value) {
-  return Number.isSafeInteger(value) && value >= 0 && value <= MAX_PAGE_QUOTA;
-}
-
 /** The deploy target's default limit. A malformed value falls back to 250. */
 export function defaultPageQuota(env) {
   const raw = env?.PAGES_DEFAULT_PAGE_QUOTA;
@@ -92,34 +91,6 @@ export function defaultPageQuota(env) {
  * default when the forward carries none (a gateway from an earlier build). */
 export function forwardedPageLimit(value, env) {
   return validPageLimit(value) ? value : defaultPageQuota(env);
-}
-
-const DOMAIN = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*$/;
-const validDomain = (domain) => domain.length <= 253 && DOMAIN.test(domain);
-
-function emailDomain(email) {
-  const domain = email.slice(email.lastIndexOf("@") + 1);
-  return validDomain(domain) ? domain : null;
-}
-
-/** A rule's match value in the form the resolver compares, or null when it
- * can never match: emails as invite emails normalize them, domains lowercased
- * ASCII. */
-export function normalizeRuleMatch(kind, value) {
-  if (typeof value !== "string") return null;
-  if (kind === "email") {
-    try {
-      const email = normalizeInviteEmail(value);
-      return emailDomain(email) ? email : null;
-    } catch {
-      return null;
-    }
-  }
-  if (kind === "domain") {
-    const domain = value.trim().toLowerCase();
-    return validDomain(domain) ? domain : null;
-  }
-  return null;
 }
 
 /** Rows as two lookup maps. Values are normalized again, so a row written by
