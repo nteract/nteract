@@ -35,8 +35,12 @@
  * and `halt` (the phase stopped sync, so a pending retry is dropped).
  *
  * Effects: `armHandshake` starts the handshake timer for `ms`,
- * `disarmHandshake` clears it, `abandonHandshake` closes the socket whose
- * handshake is pending (its attempt then fails like any closed socket),
+ * `disarmHandshake` clears it, `abandonHandshake` ends the pending handshake
+ * and closes its socket, with the `reason` the interpreter answers the
+ * attempt with (`timeout`: a transient failure that takes the backoff;
+ * `resume`: the new attempt replaces it; `halt`: the phase stopped sync, so
+ * nothing follows). The attempt always settles, so a stalled setup can't
+ * hold the session's one in-flight connect past the state that abandoned it,
  * `schedule` starts the backoff timer for `step` ms (the interpreter applies
  * reconnectDelay's jitter), `cancel` clears it, `pauseSync` tells the person
  * sync stopped and Retry resumes it, and `reportOutage` tells the person the
@@ -70,6 +74,7 @@ export const OUTAGE_MS = 20_000;
 // host restart or a proxy that holds the socket without answering shows up
 // as a silent open socket; past this the attempt fails and backs off.
 export const HANDSHAKE_TIMEOUT_MS = 10_000;
+export const ABANDON_REASONS = Object.freeze(["timeout", "resume", "halt"]);
 
 /** The backoff step before jitter for a retry after `attempts` earlier ones:
  * 0.5 s doubling to a 60 s cap. */
@@ -160,7 +165,10 @@ export const viewerReconnectSpec = Object.freeze({
         check(effect.ms === HANDSHAKE_TIMEOUT_MS, "the handshake timer is fixed");
       },
       disarmHandshake: typed([]),
-      abandonHandshake: typed([]),
+      abandonHandshake(effect) {
+        only(effect, ["type", "reason"]);
+        check(ABANDON_REASONS.includes(effect.reason), "reason names what ended the handshake");
+      },
       schedule(effect) {
         only(effect, ["type", "step"]);
         check(
@@ -212,7 +220,11 @@ function transition(state, event) {
   if (event.type === "resume") {
     if (state.name === "waiting") return ok(fresh(), { type: "cancel" });
     if (state.name === "handshaking")
-      return ok(fresh(), { type: "disarmHandshake" }, { type: "abandonHandshake" });
+      return ok(
+        fresh(),
+        { type: "disarmHandshake" },
+        { type: "abandonHandshake", reason: "resume" },
+      );
     return ok(fresh());
   }
   switch (state.name) {
@@ -246,7 +258,7 @@ function transition(state, event) {
         case "handshakeTimeout":
           // The timer fired, so nothing is left to disarm. Closing the socket
           // ends the attempt; its failure finds the retry already scheduled.
-          return fail(state, false, [{ type: "abandonHandshake" }]);
+          return fail(state, false, [{ type: "abandonHandshake", reason: "timeout" }]);
         case "failed":
           return fail(state, event.refused, [{ type: "disarmHandshake" }]);
         case "keyRefused":
@@ -256,7 +268,13 @@ function transition(state, event) {
         case "timer":
           return reject(state, REJECT.noTimer);
         case "halt":
-          return ok(keep("ready", state), { type: "disarmHandshake" });
+          // Closing the sockets alone may leave the setup pending; the attempt
+          // must settle so the session can connect again after sign-in.
+          return ok(
+            keep("ready", state),
+            { type: "disarmHandshake" },
+            { type: "abandonHandshake", reason: "halt" },
+          );
       }
       break;
     case "waiting":

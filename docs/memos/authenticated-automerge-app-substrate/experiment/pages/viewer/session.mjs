@@ -869,11 +869,11 @@ export class PageSession {
           this.handshakeTimer = undefined;
           break;
         case "abandonHandshake": {
-          // Ends the pending connect() with a transient failure and closes
-          // the socket; a late handshake result on it is freed, not used.
+          // Ends the pending connect() and closes the socket; a late handshake
+          // result on it is freed, not used.
           const handshake = this.handshake;
           this.handshake = undefined;
-          handshake?.abandon();
+          handshake?.abandon(effect.reason);
           break;
         }
         case "pauseSync":
@@ -1761,13 +1761,21 @@ export class PageSession {
     const deadline = new Promise((_, reject) => {
       this.handshake = {
         socket,
-        abandon: () => {
+        // A timeout is a transient failure, so the attempt takes the backoff.
+        // Resume and halt already decided what follows, so the attempt only
+        // settles (HANDSHAKE_ABANDONED) and schedules nothing.
+        abandon: (reason) => {
           abandoned = true;
           reject(
-            Object.assign(Error("The sync connection didn't answer. Retrying."), {
-              code: "NETWORK_ERROR",
-              reason: "handshake_timeout",
-            }),
+            reason === "timeout"
+              ? Object.assign(Error("The sync connection didn't answer. Retrying."), {
+                  code: "NETWORK_ERROR",
+                  reason: "handshake_timeout",
+                })
+              : Object.assign(Error(`The sync handshake was abandoned (${reason})`), {
+                  code: "HANDSHAKE_ABANDONED",
+                  reason,
+                }),
           );
           socket.close();
         },
@@ -1801,9 +1809,12 @@ export class PageSession {
     return this.reconnect$.snapshot().name;
   }
   /** An explicit Retry, an online event, a re-authentication or a first
-   * open: clear the backoff and any refusal or pause, then attempt now. */
-  retryConnection(options) {
+   * open: clear the backoff and any refusal or pause, then attempt now. A
+   * stalled handshake is abandoned first, and the new attempt waits for that
+   * connect() to settle so it gets its own socket rather than the stuck one. */
+  async retryConnection(options) {
     this.reconnect({ type: "resume" });
+    if (this.connecting) await this.connecting.catch(() => {});
     return this.attemptConnection(options);
   }
   /** One connection attempt. A failure that may pass schedules the next. */
@@ -1813,6 +1824,8 @@ export class PageSession {
     } catch (error) {
       if (!this.alive || this.accessReloadRequired || this.accessDenied) return;
       if (error.code === "PAGE_ACCESS_CHANGED") return;
+      // Resume or halt ended this attempt; what follows was decided there.
+      if (error.code === "HANDSHAKE_ABANDONED") return;
       if (error.admission?.retry === "stop") {
         this.refuseNative(error.admission);
         return;

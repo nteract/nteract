@@ -854,7 +854,8 @@
         },
         "effects": [
           {
-            "type": "abandonHandshake"
+            "type": "abandonHandshake",
+            "reason": "timeout"
           },
           {
             "type": "schedule",
@@ -882,7 +883,8 @@
         },
         "effects": [
           {
-            "type": "abandonHandshake"
+            "type": "abandonHandshake",
+            "reason": "timeout"
           },
           {
             "type": "schedule",
@@ -1091,13 +1093,14 @@
             "type": "disarmHandshake"
           },
           {
-            "type": "abandonHandshake"
+            "type": "abandonHandshake",
+            "reason": "resume"
           }
         ]
       }
     },
     {
-      "label": "sign-in, an access pause or a close drops the handshake deadline",
+      "label": "sign-in, an access pause or a close drops the deadline and settles the attempt",
       "state": {
         "name": "handshaking",
         "attempts": 3,
@@ -1115,6 +1118,10 @@
         "effects": [
           {
             "type": "disarmHandshake"
+          },
+          {
+            "type": "abandonHandshake",
+            "reason": "halt"
           }
         ]
       }

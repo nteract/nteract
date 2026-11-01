@@ -644,7 +644,7 @@ test("a slow handshake that answers within the deadline connects without a retry
   assert.equal(f.session.reconnect$.snapshot().name, "ready");
 });
 
-test("Retry during a stalled handshake abandons it and the next attempt connects", async (t) => {
+test("Retry during a stalled handshake abandons it and the next attempt connects at once", async (t) => {
   const f = fixture(t, { random: () => 0 });
   await f.start();
   f.hooks.setup = () => new Promise(() => {});
@@ -657,12 +657,123 @@ test("Retry during a stalled handshake abandons it and the next attempt connects
   await f.advance(0);
   assert.ok(socket.closed > 0, "Retry gives up on the silent socket");
   await Promise.all([stalled, retried]);
+  // The abandoned attempt schedules nothing; Retry's own attempt connected.
   assert.equal(f.session.handshakeTimer, undefined);
-  // The abandoned attempt's failure schedules the first backoff step.
-  assert.deepEqual(f.session.reconnect$.snapshot(), { name: "waiting", attempts: 1, refusals: 0 });
-  await f.advance(backoffStep(0) / 2);
-  assert.equal(f.session.reconnect$.snapshot().name, "ready");
+  assert.equal(f.session.retryTimer, undefined);
+  assert.deepEqual(f.session.reconnect$.snapshot(), { name: "ready", attempts: 0, refusals: 0 });
   assert.equal(f.counts().added, 2);
+  assert.equal(f.session.connecting, undefined);
+  assert.notEqual(f.session.status, "Offline");
+});
+
+test("sign-in loss during a stalled handshake settles the attempt, and Retry after sign-in connects", async (t) => {
+  const f = fixture(t);
+  await f.start();
+  f.hooks.setup = () => new Promise(() => {});
+  const stalled = f.session.retryConnection();
+  await f.advance(1000);
+  assert.equal(f.session.reconnect$.snapshot().name, "handshaking");
+  const socket = f.sockets.at(-1);
+  // The session's phase stops sync: the deadline is dropped and the pending
+  // attempt ends, so connecting is free for the attempt after sign-in.
+  f.session.requireSignIn();
+  await stalled;
+  assert.equal(f.session.authRequired, true);
+  assert.equal(f.session.status, "Sign in to sync");
+  assert.ok(socket.closed > 0);
+  assert.equal(f.session.handshakeTimer, undefined);
+  assert.equal(f.session.connecting, undefined, "the stalled attempt no longer holds connect()");
+  assert.deepEqual(f.session.reconnect$.snapshot(), { name: "ready", attempts: 0, refusals: 0 });
+  await f.advance(HANDSHAKE_TIMEOUT_MS * 2);
+  assert.equal(f.sockets.length, 2, "nothing retries while sign-in is required");
+  // Signing in again (the fixture's refreshSession answers) and Retry connect.
+  f.hooks.setup = undefined;
+  await f.session.retryConnection();
+  assert.equal(f.session.authRequired, false);
+  assert.equal(f.counts().added, 2);
+  assert.equal(f.session.reconnect$.snapshot().name, "ready");
+  assert.equal(f.sockets.length, 3);
+});
+
+test("a handshake that answers after its timeout is disposed while the successor keeps its own deadline", async (t) => {
+  const f = fixture(t, { random: () => 0 });
+  await f.start();
+  const late = deferred();
+  f.hooks.setup = () => late.promise;
+  const attempt = f.session.retryConnection();
+  await f.advance(0);
+  assert.equal(f.session.reconnect$.snapshot().name, "handshaking");
+  await f.advance(HANDSHAKE_TIMEOUT_MS);
+  await attempt;
+  assert.deepEqual(f.session.reconnect$.snapshot(), { name: "waiting", attempts: 1, refusals: 0 });
+  const successor = deferred();
+  f.hooks.setup = () => successor.promise;
+  await f.advance(backoffStep(0) / 2);
+  assert.equal(f.session.reconnect$.snapshot().name, "handshaking");
+  const deadline = f.session.handshakeTimer;
+  assert.ok(deadline);
+  const freedBefore = f.counts().freed;
+  // The abandoned socket's handshake finishes now.
+  late.resolve();
+  await drain();
+  assert.equal(f.counts().freed, freedBefore + 1, "the late wrapper is freed");
+  assert.equal(f.counts().added, 1, "it installs nothing");
+  assert.equal(f.session.reconnect$.snapshot().name, "handshaking", "the successor is untouched");
+  assert.equal(f.session.handshakeTimer, deadline, "its deadline is intact");
+  successor.resolve();
+  await drain();
+  assert.deepEqual(f.session.reconnect$.snapshot(), { name: "ready", attempts: 1, refusals: 0 });
+  assert.equal(f.counts().added, 2);
+  assert.equal(f.session.connecting, undefined);
+  await f.advance(HANDSHAKE_TIMEOUT_MS * 2);
+  assert.equal(f.sockets.length, 3, "no deadline fires after admission");
+});
+
+test("at the deadline, whichever of the handshake and the timer lands first wins alone", async (t) => {
+  for (const order of ["handshake-then-timer", "timer-then-handshake"]) {
+    await t.test(order, async (t) => {
+      const f = fixture(t, { random: () => 0 });
+      await f.start();
+      const transitions = [];
+      f.session.reconnect$.select((state) => state).subscribe((state) => transitions.push(state));
+      const setup = deferred();
+      f.hooks.setup = () => setup.promise;
+      const attempt = f.session.retryConnection();
+      await f.advance(0);
+      await f.advance(HANDSHAKE_TIMEOUT_MS - 1);
+      assert.equal(f.session.reconnect$.snapshot().name, "handshaking");
+      transitions.length = 0;
+      if (order === "handshake-then-timer") {
+        setup.resolve();
+        await drain();
+        await f.advance(1);
+      } else {
+        await f.advance(1);
+        setup.resolve();
+        await drain();
+      }
+      await attempt;
+      assert.equal(f.session.connecting, undefined, "connect() is released");
+      if (order === "handshake-then-timer") {
+        assert.deepEqual(transitions, [{ name: "ready", attempts: 0, refusals: 0 }]);
+        assert.equal(f.session.retryTimer, undefined, "no retry");
+        assert.equal(f.counts().added, 2);
+        assert.equal(f.counts().freed, 0);
+      } else {
+        assert.deepEqual(transitions, [{ name: "waiting", attempts: 1, refusals: 0 }]);
+        assert.ok(f.session.retryTimer, "exactly one retry is pending");
+        assert.equal(f.counts().added, 1, "the late handshake installs nothing");
+        assert.equal(f.counts().freed, 1, "and is disposed");
+        f.hooks.setup = undefined;
+        await f.advance(backoffStep(0) / 2);
+        assert.deepEqual(transitions.at(-1), { name: "ready", attempts: 1, refusals: 0 });
+        assert.equal(f.counts().added, 2);
+      }
+      assert.equal(f.session.handshakeTimer, undefined);
+      await f.advance(HANDSHAKE_TIMEOUT_MS * 2);
+      assert.equal(f.sockets.length, order === "handshake-then-timer" ? 2 : 3);
+    });
+  }
 });
 
 test("a socket closed before its handshake retries on the first backoff step", async (t) => {
