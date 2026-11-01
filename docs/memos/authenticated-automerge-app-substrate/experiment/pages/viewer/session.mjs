@@ -326,9 +326,12 @@ export class PageSession {
   /** The session's phase (see session-machine.mjs). Every lifecycle flag
    * below derives from it, and effects run from its transitions. */
   phase$ = new Store(viewerSessionMachine.initial);
-  /** Automatic reconnects (see reconnect-machine.mjs): backoff, a refused
-   * signing key, or a pause after repeated admission refusals. `retryTimer`
-   * is pending exactly while it is `waiting`. */
+  /** Automatic reconnects (see reconnect-machine.mjs): a deadline on each
+   * socket's handshake, backoff, a refused signing key, or a pause after
+   * repeated admission refusals. `retryTimer` is pending exactly while it is
+   * `waiting`; `handshakeTimer` and `handshake` (the socket whose handshake
+   * is pending, with the function that abandons it) exactly while it is
+   * `handshaking`. */
   reconnect$ = new Store(viewerReconnectMachine.initial);
   // Opening the comments document (comments-open-machine.mjs).
   commentsOpen$ = new Store(commentsOpenMachine.initial);
@@ -1120,6 +1123,24 @@ export class PageSession {
           clearTimeout(this.retryTimer);
           this.retryTimer = undefined;
           break;
+        case "armHandshake":
+          this.handshakeTimer = setTimeout(() => {
+            this.handshakeTimer = undefined;
+            this.reconnect({ type: "handshakeTimeout" });
+          }, effect.ms);
+          break;
+        case "disarmHandshake":
+          clearTimeout(this.handshakeTimer);
+          this.handshakeTimer = undefined;
+          break;
+        case "abandonHandshake": {
+          // Ends the pending connect() and closes the socket; a late handshake
+          // result on it is freed, not used.
+          const handshake = this.handshake;
+          this.handshake = undefined;
+          handshake?.abandon(effect.reason);
+          break;
+        }
         case "pauseSync":
           this.showConnectionProblem(SYNC_PAUSED);
           break;
@@ -2093,9 +2114,7 @@ export class PageSession {
     });
     this.sockets.add(socket);
     try {
-      const authenticated = await N.SubductionWebSocket.setup(socket, this.signer, expected, () => {
-        this.socketDisconnected(socket);
-      });
+      const authenticated = await this.handshakeWithDeadline(socket, expected);
       if (
         !this.alive ||
         this.authRequired ||
@@ -2106,8 +2125,12 @@ export class PageSession {
         authenticated.free();
         socket.close();
         this.sockets.delete(socket);
+        this.reconnect({ type: "handshakeEnded" });
         return;
       }
+      // The host admitted this socket in time. Joining the backend can still
+      // fail; that is a failed attempt on the ready path.
+      this.reconnect({ type: "admitted" });
       const transport = authenticated.toTransport();
       try {
         await this.backend.addConnection(transport);
@@ -2152,6 +2175,59 @@ export class PageSession {
       expected.free();
     }
   }
+  /** The authenticated handshake on `socket`, under the reconnect machine's
+   * deadline. The machine's `abandonHandshake` effect (a timeout, or Retry
+   * during the handshake) rejects this with a transient failure and closes
+   * the socket, so the attempt ends like one whose socket closed. A
+   * handshake that finishes after that is freed and never used. Any other
+   * failure ends the handshake state here; the caller classifies it. */
+  handshakeWithDeadline(socket, expected) {
+    let abandoned = false;
+    const setup = N.SubductionWebSocket.setup(socket, this.signer, expected, () => {
+      this.socketDisconnected(socket);
+    });
+    const deadline = new Promise((_, reject) => {
+      this.handshake = {
+        socket,
+        // A timeout is a transient failure, so the attempt takes the backoff.
+        // Resume, halt and a socket outcome already decided what follows, so
+        // the attempt only settles (HANDSHAKE_ABANDONED) and schedules nothing.
+        abandon: (reason) => {
+          abandoned = true;
+          reject(
+            reason === "timeout"
+              ? Object.assign(Error("The sync connection didn't answer. Retrying."), {
+                  code: "NETWORK_ERROR",
+                  reason: "handshake_timeout",
+                })
+              : Object.assign(Error(`The sync handshake was abandoned (${reason})`), {
+                  code: "HANDSHAKE_ABANDONED",
+                  reason,
+                }),
+          );
+          socket.close();
+        },
+      };
+    });
+    this.reconnect({ type: "handshake" });
+    return Promise.race([
+      setup.then((authenticated) => {
+        if (abandoned) authenticated.free();
+        return authenticated;
+      }),
+      deadline,
+    ]).then(
+      (authenticated) => {
+        if (this.handshake?.socket === socket) this.handshake = undefined;
+        return authenticated;
+      },
+      (error) => {
+        if (this.handshake?.socket === socket) this.handshake = undefined;
+        if (!abandoned) this.reconnect({ type: "handshakeEnded" });
+        throw error;
+      },
+    );
+  }
   /** Retry after a failed attempt or socket, unless the phase stops sync.
    * `refused` says the host's admission closed a socket that never proved
    * stable. Returns the reconnect state's name. */
@@ -2161,9 +2237,12 @@ export class PageSession {
     return this.reconnect$.snapshot().name;
   }
   /** An explicit Retry, an online event, a re-authentication or a first
-   * open: clear the backoff and any refusal or pause, then attempt now. */
-  retryConnection(options) {
+   * open: clear the backoff and any refusal or pause, then attempt now. A
+   * stalled handshake is abandoned first, and the new attempt waits for that
+   * connect() to settle so it gets its own socket rather than the stuck one. */
+  async retryConnection(options) {
     this.reconnect({ type: "resume" });
+    if (this.connecting) await this.connecting.catch(() => {});
     return this.attemptConnection(options);
   }
   /** One connection attempt. A failure that may pass schedules the next. */
@@ -2173,6 +2252,8 @@ export class PageSession {
     } catch (error) {
       if (!this.alive || this.accessReloadRequired || this.accessDenied) return;
       if (error.code === "PAGE_ACCESS_CHANGED") return;
+      // Resume or halt ended this attempt; what follows was decided there.
+      if (error.code === "HANDSHAKE_ABANDONED") return;
       if (error.admission?.code === "page_deleted") {
         await this.markDeleted();
         return;

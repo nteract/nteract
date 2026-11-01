@@ -27,7 +27,8 @@ import { pageState } from "./access.mjs";
  * `commitOk` requests another settlement attempt; `commitFailed` reports its
  * failure. Request events carry what the host observed: who asked
  * (`actor`), whether the idempotency key has a receipt (`key`, with its
- * summary in `recorded`), whether `base_heads` match, the Catalog's
+ * summary in `recorded`), how `base_heads` compare when a trash sends them
+ * (`heads`: match, mismatch, invalid, or absent when omitted), the Catalog's
  * `expected` revision and `replayOnly` flag, the preview token's check, and a
  * deleted record's `deletion` receipt. `children` is the owner Catalog's leaf check, which runs before it
  * forwards a trash.
@@ -83,6 +84,7 @@ const unreachable = [
 const cases = {
   "active/trash": [
     "owner",
+    "heads-absent",
     "non-owner",
     "heads-mismatch",
     "stale-revision",
@@ -159,7 +161,7 @@ function request(allowed) {
     if ("recorded" in event) receiptSummary(event.recorded, "recorded");
     if ("expected" in event) count(event.expected, "expected");
     flag(event.replayOnly, "replayOnly");
-    if ("heads" in event) oneOf(event.heads, ["match", "mismatch", "invalid"], "heads");
+    if ("heads" in event) oneOf(event.heads, ["match", "mismatch", "invalid", "absent"], "heads");
     flag(event.children, "children");
     // The host checks a preview token only where the transition reads it.
     if ("preview" in event)
@@ -265,7 +267,7 @@ const KEY_CONFLICT = refused(
 );
 const HEADS_INVALID = refused(
   400,
-  "base_heads from read_page are required",
+  "base_heads, when given, must be the heads from read_page",
   "invalid_edit_selector",
 );
 const HEADS_CHANGED = refused(409, "Page changed; read_page again before editing", "stale_heads");
@@ -435,8 +437,11 @@ function trash(state, event) {
       effects: [put(true, false), effectOf("sync")],
       response: receiptReply("receipt", trashed, state),
     };
+  // Trash is reversible, so base_heads is an optional guard: the catalog
+  // retry_token alone authorizes it, as it does restore and purge. Heads the
+  // caller does send must match; malformed ones are refused.
   if (event.heads === "mismatch") return reject(state, "stale_heads", { response: HEADS_CHANGED });
-  if (event.heads !== "match")
+  if (event.heads !== "match" && event.heads !== "absent")
     return reject(state, "invalid_edit_selector", { response: HEADS_INVALID });
   const next = keep(state, { name: "trashed", revision: state.revision + 1 });
   return {

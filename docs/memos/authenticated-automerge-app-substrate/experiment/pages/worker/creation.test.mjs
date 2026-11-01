@@ -87,7 +87,12 @@ for (const fault of ["metadata", "flush", "final-sync"]) {
     storage.fault = undefined;
     const retry = await page.run(request());
     assert.equal(retry.status, 200);
-    assert.deepEqual(await retry.json(), receipt);
+    // The recorded receipt is unchanged; edit authority rides beside it.
+    const { retry_token, retry_key_prefix, retry_until, ...replayed } = await retry.json();
+    assert.deepEqual(replayed, receipt);
+    assert.equal(typeof retry_token, "string");
+    assert.match(retry_key_prefix, /^v1_[a-f0-9]{64}_$/);
+    assert.ok(Number.isFinite(Date.parse(retry_until)));
     assert.ok(A.hasHeads(doc, receipt.heads));
     assert.equal(doc.concurrentNote, "Keep this edit");
     assert.equal(doc.title, "Changed title");

@@ -25,9 +25,13 @@ test("guarded writes refuse a stale or malformed revision with a code, not just 
       idempotency_key: `stale-${operation}`,
     });
     assert.equal(stale.status, 409, operation);
+    // The refusal names both live revisions, so the next attempt needs no
+    // read_page round trip.
     assert.deepEqual(stale.body, {
       error: "Page changed; read_page again before editing",
       code: "stale_heads",
+      current_heads: [...f.heads()].sort(),
+      comment_heads: f.commentHeads(),
     });
     const missing = await f.tool("owner", operation, {
       ...args,
@@ -50,6 +54,8 @@ test("guarded writes refuse a stale or malformed revision with a code, not just 
   });
   assert.equal(trash.status, 409);
   assert.equal(trash.body.code, "stale_heads");
+  assert.deepEqual(trash.body.current_heads, f.heads());
+  assert.deepEqual(trash.body.comment_heads, f.commentHeads());
 });
 
 test("an edit batch that cannot apply names the selector, and nothing is written", async (t) => {
