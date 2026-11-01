@@ -27,7 +27,8 @@
  * yet, and nothing may compare it for ordering.
  *
  * `basis` explains the decision for nteract's own labels: the strongest
- * relation that survived the lifecycle overlay (owner, editor, viewer) and the
+ * relation that survived the lifecycle overlay (owner, editor, commenter,
+ * viewer) and the
  * path that supplied it (direct, project, organization, group). It names the
  * role a credential holds even when the ceiling removed every write.
  */
@@ -86,6 +87,7 @@ const GRANTS = {
   page: {
     owner: PAGE_CAPABILITIES,
     editor: ["read", "comment", "edit"],
+    commenter: ["read", "comment"],
     viewer: ["read"],
   },
   project: {
@@ -105,7 +107,7 @@ const INHERITED = {
 
 /** A trashed item keeps these, for principals who may restore it. */
 const TRASHED_KEEP = new Set(["read", "administer", "restore", "purge"]);
-const RANK = { owner: 3, editor: 2, viewer: 1 };
+const RANK = { owner: 4, editor: 3, commenter: 2, viewer: 1 };
 const VIA_PREFERENCE = { direct: 0, project: 1, group: 2, organization: 3 };
 const NO_BASIS = Object.freeze({ relation: null, via: null });
 
@@ -172,6 +174,7 @@ function relationPaths(principal, object, now) {
   );
   add("owner", GRANTS.page.owner, reach(principal, relations.owner, now));
   add("editor", GRANTS.page.editor, reach(principal, relations.editor, now));
+  add("commenter", GRANTS.page.commenter, reach(principal, relations.commenter, now));
   add("viewer", GRANTS.page.viewer, reach(principal, relations.viewer, now, { exclude: removed }));
   const container = placed ? containerFor(object, now) : null;
   if (container) {
@@ -301,7 +304,7 @@ export function pageState(metadata) {
   return metadata.trash && !metadata.purged ? "trashed" : "deleted";
 }
 
-const roles = new Set(["viewer", "editor", "none"]);
+const roles = new Set(["viewer", "commenter", "editor", "none"]);
 
 function readRow(member) {
   if (
@@ -335,7 +338,8 @@ const companyOrganization = (namespace, domain) =>
  *
  * The relations hold the owner, company view, and only the principal's own
  * member row, so building one costs a single member lookup however many
- * grants and tombstones the ACL has collected. A viewer or editor row grants.
+ * grants and tombstones the ACL has collected. A viewer, commenter or editor
+ * row grants.
  * Any other row (a removal tombstone or an unreadable row) becomes `removed`,
  * which blocks company view. A Page record holds no location, so it never has
  * the `project` relation: Projects are owner-only in this build and grant a
@@ -345,12 +349,14 @@ const companyOrganization = (namespace, domain) =>
 export function pageObject(metadata, principal) {
   const lifecycle = pageState(metadata);
   const editor = [];
+  const commenter = [];
   const viewer = [];
   const removed = [];
   const members = metadata?.acl?.members;
   if (typeof principal === "string" && members && Object.hasOwn(members, principal)) {
     const row = readRow(members[principal]);
     if (row?.role === "editor") editor.push(user(principal));
+    else if (row?.role === "commenter") commenter.push(user(principal));
     else if (row?.role === "viewer") viewer.push(user(principal));
     else removed.push(user(principal));
   }
@@ -366,6 +372,7 @@ export function pageObject(metadata, principal) {
       owner: [user(metadata?.owner)],
       project: [],
       editor,
+      commenter,
       viewer,
       removed,
     },

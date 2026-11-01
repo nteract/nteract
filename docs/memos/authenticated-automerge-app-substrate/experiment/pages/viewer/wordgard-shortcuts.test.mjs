@@ -8,7 +8,8 @@ import { history, undo } from "wordgard/history";
 import { blockquote, bulletList, code, codeBlock, heading, orderedList } from "wordgard/schema";
 import { textPath, blockMarkdown, validateRich } from "../model/richtext.mjs";
 import { createPageData, initializePage, orderedBlockIds } from "../model/page.mjs";
-import { applyComment, projectComments } from "../model/comments.mjs";
+import { projectComments } from "../model/comments.mjs";
+import { comment as addComment, newCommentsDoc } from "../model/comments-test-support.mjs";
 import {
   schema,
   decode,
@@ -53,14 +54,15 @@ function fixture(markdown, { comment } = {}) {
   let doc = A.from(createPageData({ pageId: "page_fixture", title: "Shortcuts" }));
   doc = A.change(doc, (d) => initializePage(d, markdown));
   const id = orderedBlockIds(doc)[0];
-  if (comment)
-    doc = A.change(doc, (d) =>
-      applyComment(
-        d,
+  // Comments live beside the Page; anchors resolve against it.
+  const comments = comment
+    ? addComment(
+        doc,
+        newCommentsDoc(),
         { action: "add", block_id: id, selected_text: comment, body: "About this" },
         { principal: "account:one", displayName: "Kyle", driver: "Browser" },
-      ),
-    );
+      ).comments
+    : newCommentsDoc();
   const path = textPath(id);
   const replica = {
     get doc() {
@@ -108,7 +110,7 @@ function fixture(markdown, { comment } = {}) {
   };
   // Every Automerge character of the block text, by its current offset.
   const markdownOf = () => blockMarkdown(doc.blocks[id]);
-  return { binding, editor, id, path, replica, markdownOf };
+  return { binding, editor, id, path, replica, markdownOf, comments };
 }
 
 function countBreaks(doc) {
@@ -273,7 +275,7 @@ test("a block shortcut after a hard break splits out only that line", () => {
       prefix,
     );
     assertSameCharacters(f, before);
-    const [thread] = projectComments(f.replica.doc);
+    const [thread] = projectComments(f.replica.doc, f.comments);
     assert.equal(thread.selectionContext.status, "attached", prefix);
     assert.equal(thread.selectionContext.text, "omega", prefix);
     f.binding.destroy();
@@ -293,7 +295,7 @@ test("a heading shortcut typed into Kyle's double-break layout converts the line
     ["Paragraph", "more text"],
   ]);
   assertSameCharacters(f, before);
-  assert.equal(projectComments(f.replica.doc)[0].selectionContext.status, "attached");
+  assert.equal(projectComments(f.replica.doc, f.comments)[0].selectionContext.status, "attached");
   // The first undo removes the heading text; the second restores the typed
   // prefix and the hard breaks.
   f.editor.run(undo);
@@ -346,7 +348,7 @@ test("a block command on one line of a hard-break paragraph converts only that l
   ]);
   assert.equal(f.markdownOf(), "first\n\n# second\n\nthird");
   assertSameCharacters(f, before);
-  const [thread] = projectComments(f.replica.doc);
+  const [thread] = projectComments(f.replica.doc, f.comments);
   assert.equal(thread.selectionContext.status, "attached");
   assert.equal(thread.selectionContext.text, "second");
   // One undo puts the line back into the paragraph.

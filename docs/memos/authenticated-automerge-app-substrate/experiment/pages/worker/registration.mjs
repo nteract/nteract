@@ -13,7 +13,8 @@ const map = (value) => value && typeof value === "object" && !Array.isArray(valu
 
 /** Validate the immutable bootstrap, never a replacement for an existing Page.
  * Authorization and ownership are host metadata outside this document. A fresh
- * bootstrap has no comments; later edits and comments arrive through native sync.
+ * bootstrap has no comments; later edits arrive through native sync, and comments
+ * through the Page's comments document.
  */
 export function readRegistration(args) {
   requireRegistrationAccount(args);
@@ -49,8 +50,9 @@ export function readRegistration(args) {
       doc.page_id !== args.page_id ||
       doc.title !== args.title ||
       !map(doc.blocks) ||
-      !map(doc.comments) ||
-      Object.keys(doc.comments).length
+      // A bootstrap from before the comments document carries an empty map;
+      // a current one carries none.
+      (doc.comments !== undefined && (!map(doc.comments) || Object.keys(doc.comments).length))
     )
       throw Error("Invalid Page bootstrap");
     // A draft from a newer build can use features this host can't express.

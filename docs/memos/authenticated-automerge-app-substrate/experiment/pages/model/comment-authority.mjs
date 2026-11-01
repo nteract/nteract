@@ -1,48 +1,48 @@
 import * as A from "@automerge/automerge/slim";
-import { validateRichSpans } from "./richtext.mjs";
+import { RICH_FORMAT, validateRichSpans } from "./richtext.mjs";
 import { COMMENT_MAX_BYTES, COMMENT_MAX_LENGTH } from "./comment-content.mjs";
 import {
+  MESSAGE_EDITABLE,
   MESSAGE_FIELDS,
-  REACTION_FIELDS,
   THREAD_FIELDS,
-  THREAD_REACTION_TARGET,
   THREAD_STATUSES,
 } from "./comments-doc.mjs";
+import { COMMENTING_ROLES, commentDecision } from "./comment-rules.mjs";
+import { BUILD_FEATURES, documentFeatures } from "./schema-features.mjs";
 
 /** Per-author admission for a comments document (shape in comments-doc.mjs).
  *
- * `admitCommentChanges(admitted, changes, principal)` decides whether one
- * incoming batch of Automerge changes is acceptable from one authenticated
- * principal. The caller has already granted that principal the `comment`
- * capability and attributes every new change in the batch to it. The record
- * signer is the attribution source: Automerge actor IDs are not authenticated.
+ * `admitCommentChanges(admitted, changes, principal, { role })` decides
+ * whether one incoming batch of Automerge changes is acceptable from one
+ * authenticated principal holding one Page role. The caller has already
+ * granted that principal the `comment` capability and attributes every new
+ * change in the batch to it. The record signer is the attribution source:
+ * Automerge actor IDs are not authenticated. What each role may do is
+ * comment-rules.mjs's table; this module maps every operation onto it.
  *
  * `admitted` is the admission document: every change accepted before this
  * batch, and nothing else. The caller runs each check inside its serialized
- * storage transaction, after every earlier batch has been decided, never in a
+ * storage write, after every earlier batch has been decided, never in a
  * preparation step that can run ahead of the queue. On acceptance it persists
  * the batch, then adopts `next` as the admission document and frees the old
- * one. If persistence fails, it frees `next`. A write that failed before
- * reaching storage leaves `admitted` current. An ambiguous failure may have
- * landed, so the caller rebuilds the admission document from storage before
- * deciding another batch, as the storage bridge already re-reads its record
- * index. Two batches checked against one stale document could both create the
- * same absent ID.
+ * one. If persistence fails, it frees `next` and rebuilds the admission
+ * document from what storage holds before deciding another batch: an
+ * ambiguous failure may have landed, and two batches checked against one
+ * stale document could both create the same absent ID.
  *
  * The batch is applied to a clone (Automerge's fork) of `admitted`. Every
  * operation in every new change is checked against the path it writes,
- * resolved with `objInfo` on the clone. An object that is no longer visible (a
- * conflict loser or a removed reaction) resolves at that change's own heads,
- * so a latent write is checked where its author put it. Then each entity the
- * batch created or touched is validated in the merged state.
+ * resolved with `objInfo` on the clone. An object that is no longer visible
+ * (a deleted thread) resolves at that change's own heads, so a latent write is
+ * checked where its author put it. Then each entity the batch created or
+ * touched is validated in the merged state. A write that lands only in an
+ * object nobody can see, such as a reply racing its thread's deletion, has no
+ * visible effect and is admitted.
  *
- * Cost per batch. Constant in document size: one cached `objInfo` lookup and at
- * most one pre-batch read per operation, plus one bounded validation per
- * touched entity. An edited message re-validates only its own body, which
- * comment limits cap at 64 KiB; a new thread validates only itself; nothing
- * walks the threads map. Linear in document size: `A.clone` copies the
- * document's backing memory, and `applyChanges` runs on that copy. Adopting
- * `next` as the admission document keeps that to one clone per batch.
+ * Cost per batch: constant in document size per operation (one cached
+ * `objInfo` lookup and at most one pre-batch read), plus one bounded
+ * validation per touched entity. `A.clone` and `applyChanges` are linear in
+ * document size; adopting `next` keeps that to one clone per batch.
  *
  * One rejected change rejects the batch. `admitted` is never modified.
  */
@@ -53,29 +53,24 @@ export const REJECTION = Object.freeze({
   MISSING_DEPENDENCIES: "missing_dependencies",
   ACTOR_CLAIMED: "actor_claimed",
   UNRESOLVED_OBJECT: "unresolved_object",
-  ORIGIN_IMMUTABLE: "origin_immutable",
   UNKNOWN_PATH: "unknown_path",
   IMMUTABLE_FIELD: "immutable_field",
-  THREAD_DELETE: "thread_delete",
   THREAD_REPLACE: "thread_replace",
+  NOT_ALLOWED: "not_allowed",
   MESSAGE_DELETE: "message_delete",
   MESSAGE_REPLACE: "message_replace",
   INVALID_CREATE: "invalid_create",
   CONFLICTING_CREATE: "conflicting_create",
-  CREATED_BY_MISMATCH: "created_by_mismatch",
   AUTHOR_MISMATCH: "author_mismatch",
-  REACTION_PRINCIPAL_MISMATCH: "reaction_principal_mismatch",
-  NOT_THREAD_CREATOR: "not_thread_creator",
+  NOT_THREAD_AUTHOR: "not_thread_author",
   NOT_MESSAGE_AUTHOR: "not_message_author",
-  NOT_REACTION_OWNER: "not_reaction_owner",
   INVALID_VALUE: "invalid_value",
   INVALID_ID: "invalid_id",
-  INVALID_TARGET: "invalid_target",
+  UNSUPPORTED_FEATURE: "unsupported_feature",
 });
 
 const MAX_ID_LENGTH = 128;
 const MAX_FIELD_LENGTH = 512;
-const MAX_EMOJI_LENGTH = 32;
 
 class Rejection extends Error {
   constructor(code, message, details = {}) {
@@ -102,9 +97,9 @@ const isMap = (value) =>
   !(value instanceof Date) &&
   !(value instanceof Uint8Array);
 const own = (object, key) => isMap(object) && Object.hasOwn(object, key);
-/** Thread, message and reaction IDs: the writers' UUIDs, or any short
- * base64url-style key. No separators or control characters, so an ID never
- * reads as two. Every ID is checked before it is used as a lookup key. */
+/** Thread and message IDs: the writers' UUIDs, or any short base64url-style
+ * key. No separators or control characters, so an ID never reads as two.
+ * Every ID is checked before it is used as a lookup key. */
 const ID_PATTERN = new RegExp(`^[A-Za-z0-9_-]{1,${MAX_ID_LENGTH}}$`);
 const safeId = (id) => typeof id === "string" && ID_PATTERN.test(id);
 const boundedString = (value, max = MAX_FIELD_LENGTH) => {
@@ -145,12 +140,54 @@ function validateAnchor(anchor) {
   return false;
 }
 
+function validateAuthor(author, principal, where) {
+  if (
+    !isMap(author) ||
+    Object.keys(author).some((k) => !["principal", "displayName", "driver"].includes(k))
+  )
+    reject(REJECTION.INVALID_VALUE, "author must be { principal, displayName, driver }", where);
+  if (scalar(author.principal) !== principal)
+    reject(REJECTION.AUTHOR_MISMATCH, "A new entry's author must be the acting principal", where);
+  for (const key of ["displayName", "driver"])
+    if (own(author, key) && scalar(author[key]) === undefined)
+      reject(REJECTION.INVALID_VALUE, `author.${key} must be a string`, where);
+  if (!boundedString(author.displayName ?? "-", 256) || !boundedString(author.driver ?? "-", 128))
+    reject(REJECTION.INVALID_VALUE, "author labels are too long", where);
+}
+
+function validateStatus(status) {
+  return (
+    isMap(status) &&
+    Object.keys(status).every((k) => ["value", "at"].includes(k)) &&
+    THREAD_STATUSES.includes(scalar(status.value)) &&
+    timestamp(status.at)
+  );
+}
+
+/** A message's current content: the literal body, and native spans once the
+ * message is rich. */
 function validateBody(message, where) {
+  const format = own(message, "format") ? scalar(message.format) : undefined;
+  if (own(message, "format") && format !== RICH_FORMAT)
+    reject(REJECTION.INVALID_VALUE, "Unsupported message format", where);
+  const body = scalar(message.body);
+  if (body === undefined) reject(REJECTION.INVALID_VALUE, "Message body must be text", where);
+  if (format !== RICH_FORMAT) {
+    if (own(message, "richText"))
+      reject(REJECTION.INVALID_VALUE, "richText needs the rich format", where);
+    if (!body.trim() || body.length > COMMENT_MAX_LENGTH)
+      reject(
+        REJECTION.INVALID_VALUE,
+        `Comment must contain 1–${COMMENT_MAX_LENGTH} characters`,
+        where,
+      );
+    return;
+  }
   let spans;
   try {
-    spans = A.spans(message, ["body"]);
+    spans = A.spans(message, ["richText"]);
   } catch {
-    reject(REJECTION.INVALID_VALUE, "Message body must be rich text", where);
+    reject(REJECTION.INVALID_VALUE, "richText must be rich text", where);
   }
   const text = spans
     .filter((span) => span.type === "text")
@@ -173,10 +210,9 @@ function validateBody(message, where) {
 function validateMessageEdits(message, where) {
   if (!isMap(message)) reject(REJECTION.INVALID_VALUE, "Message must be a map", where);
   validateBody(message, where);
-  if (own(message, "edited_at") && !timestamp(message.edited_at))
-    reject(REJECTION.INVALID_VALUE, "edited_at must be a timestamp", where);
-  if (own(message, "deleted") && typeof message.deleted !== "boolean")
-    reject(REJECTION.INVALID_VALUE, "deleted must be a boolean", where);
+  const deleted = message.deletedAt;
+  if (deleted !== null && deleted !== undefined && !timestamp(deleted))
+    reject(REJECTION.INVALID_VALUE, "deletedAt must be null or a timestamp", where);
 }
 
 function validateNewMessage(message, principal, where) {
@@ -184,40 +220,10 @@ function validateNewMessage(message, principal, where) {
   for (const key of Object.keys(message))
     if (!MESSAGE_FIELDS.includes(key))
       reject(REJECTION.UNKNOWN_PATH, "Unknown message field", { ...where, field: key });
-  if (scalar(message.author) !== principal)
-    reject(REJECTION.AUTHOR_MISMATCH, "A new message's author must be the acting principal", where);
-  if (!timestamp(message.created_at))
-    reject(REJECTION.INVALID_VALUE, "created_at must be a timestamp", where);
+  validateAuthor(message.author, principal, where);
+  if (!timestamp(message.createdAt))
+    reject(REJECTION.INVALID_VALUE, "createdAt must be a timestamp", where);
   validateMessageEdits(message, where);
-}
-
-function validateNewReaction(reaction, thread, principal, where) {
-  if (!isMap(reaction)) reject(REJECTION.INVALID_VALUE, "Reaction must be a map", where);
-  for (const key of Object.keys(reaction))
-    if (!REACTION_FIELDS.includes(key))
-      reject(REJECTION.UNKNOWN_PATH, "Unknown reaction field", { ...where, field: key });
-  if (scalar(reaction.principal) !== principal)
-    reject(
-      REJECTION.REACTION_PRINCIPAL_MISMATCH,
-      "A new reaction's principal must be the acting principal",
-      where,
-    );
-  const emoji = scalar(reaction.emoji);
-  if (!emoji?.trim() || emoji.length > MAX_EMOJI_LENGTH)
-    reject(REJECTION.INVALID_VALUE, "Reaction emoji must be 1–32 characters", where);
-  // The target is read as a string and checked as an ID before it keys a
-  // lookup: a missing target must not become the key "undefined".
-  const target = scalar(reaction.target);
-  if (target === THREAD_REACTION_TARGET) return;
-  if (target === undefined)
-    reject(REJECTION.INVALID_TARGET, "Reaction target must be a string", where);
-  if (!safeId(target)) reject(REJECTION.INVALID_TARGET, "Reaction target is not a valid ID", where);
-  if (!own(thread.messages, target))
-    reject(
-      REJECTION.INVALID_TARGET,
-      "Reaction target must be the thread or one of its messages",
-      where,
-    );
 }
 
 /** Entity IDs grouped by thread. Nested maps keep every (thread, ID) pair
@@ -237,16 +243,10 @@ export class EntitySet {
   }
 }
 
-/** The thread, message and reaction IDs a write path names, checked before
- * any of them keys a lookup. `thread` is reserved as a message ID because it
- * is the reaction target for the thread itself. */
 function requireSafeIds(full, where) {
   if (!safeId(full[1])) reject(REJECTION.INVALID_ID, "Invalid thread ID", where);
-  if (full.length < 4) return;
-  if (full[2] === "messages" && (!safeId(full[3]) || full[3] === THREAD_REACTION_TARGET))
+  if (full.length >= 4 && full[2] === "messages" && !safeId(full[3]))
     reject(REJECTION.INVALID_ID, "Invalid message ID", where);
-  if (full[2] === "reactions" && !safeId(full[3]))
-    reject(REJECTION.INVALID_ID, "Invalid reaction ID", where);
 }
 
 function singleCreate(container, key, where) {
@@ -262,38 +262,46 @@ function validateNewThread(threads, threadId, principal) {
   for (const key of Object.keys(thread))
     if (!THREAD_FIELDS.includes(key))
       reject(REJECTION.UNKNOWN_PATH, "Unknown thread field", { ...where, field: key });
-  if (scalar(thread.created_by) !== principal)
-    reject(
-      REJECTION.CREATED_BY_MISMATCH,
-      "A new thread's created_by must be the acting principal",
-      where,
-    );
-  if (!THREAD_STATUSES.includes(scalar(thread.status)))
+  validateAuthor(thread.author, principal, where);
+  if (!timestamp(thread.createdAt))
+    reject(REJECTION.INVALID_VALUE, "createdAt must be a timestamp", where);
+  if (!validateStatus(thread.status))
     reject(REJECTION.INVALID_VALUE, "Thread status must be open or resolved", where);
-  if (!validateAnchor(thread.anchor))
+  if (!validateAnchor(thread.target))
     reject(REJECTION.INVALID_VALUE, "Invalid thread anchor", where);
-  if (!isMap(thread.messages) || !isMap(thread.reactions))
-    reject(REJECTION.INVALID_VALUE, "A new thread needs messages and reactions maps", where);
+  if (!isMap(thread.messages))
+    reject(REJECTION.INVALID_VALUE, "A new thread needs a messages map", where);
   const messageIds = Object.keys(thread.messages);
   if (!messageIds.length)
     reject(REJECTION.INVALID_VALUE, "A new thread needs its first message", where);
   for (const id of messageIds) {
+    if (!safeId(id)) reject(REJECTION.INVALID_ID, "Invalid message ID", { ...where, message: id });
     singleCreate(thread.messages, id, { ...where, message: id });
     validateNewMessage(thread.messages[id], principal, { ...where, message: id });
   }
-  for (const id of Object.keys(thread.reactions)) {
-    singleCreate(thread.reactions, id, { ...where, reaction: id });
-    validateNewReaction(thread.reactions[id], thread, principal, { ...where, reaction: id });
-  }
+}
+
+function allowed(ctx, action, thread, message, code, where) {
+  const decision = commentDecision({
+    action,
+    role: ctx.role,
+    principal: ctx.principal,
+    thread,
+    message,
+  });
+  if (!decision.allowed) reject(code ?? REJECTION.NOT_ALLOWED, decision.message, where);
 }
 
 /** Decide one operation against the admission document. `full` is the
  * path the op writes: the object's path, plus the key for a map operation.
  * Returns nothing; records touched entities in `plan`. */
 function checkOperation(op, full, ctx) {
-  const { principal, plan } = ctx;
+  const { plan } = ctx;
   const where = { path: full };
-  if (full[0] === "origin") reject(REJECTION.ORIGIN_IMMUTABLE, "origin is immutable", where);
+  if (full[0] === "schema") {
+    plan.schema = true;
+    return;
+  }
   if (full[0] !== "threads") reject(REJECTION.UNKNOWN_PATH, "Unknown path", where);
   if (full.length === 1) reject(REJECTION.IMMUTABLE_FIELD, "threads cannot be replaced", where);
   requireSafeIds(full, where);
@@ -301,18 +309,21 @@ function checkOperation(op, full, ctx) {
   const before = ctx.thread(threadId);
   const isCreate = op.action === "makeMap" && op.pred.length === 0;
   if (full.length === 2) {
-    if (before)
-      reject(
-        op.action === "del" ? REJECTION.THREAD_DELETE : REJECTION.THREAD_REPLACE,
-        "An existing thread cannot be deleted or replaced",
-        where,
-      );
+    if (before) {
+      if (op.action !== "del")
+        reject(REJECTION.THREAD_REPLACE, "An existing thread cannot be replaced", where);
+      allowed(ctx, "delete_thread", before, undefined, REJECTION.NOT_THREAD_AUTHOR, where);
+      plan.deletedThreads.add(threadId);
+      return;
+    }
+    // Deleting a thread that is already gone changes nothing visible.
+    if (op.action === "del") return;
     if (!isCreate) reject(REJECTION.INVALID_CREATE, "A thread is created as a new map", where);
     plan.newThreads.add(threadId);
     return;
   }
   // Everything under a thread the batch is creating is checked as a whole
-  // in validateNewThread once the batch is merged.
+  // once the batch is merged.
   if (!before) {
     plan.newThreads.add(threadId);
     return;
@@ -320,23 +331,18 @@ function checkOperation(op, full, ctx) {
   const field = full[2];
   switch (field) {
     case "status":
+      // Any commenter resolves or reopens; the stored value is checked after.
       plan.status.add(threadId);
       return;
-    case "anchor":
-      if (scalar(before.created_by) !== principal)
-        reject(
-          REJECTION.NOT_THREAD_CREATOR,
-          "Only the thread's creator can move its anchor",
-          where,
-        );
+    case "target":
+      allowed(ctx, "move_anchor", before, undefined, REJECTION.NOT_THREAD_AUTHOR, where);
       plan.anchors.add(threadId);
       return;
-    case "created_by":
-      return reject(REJECTION.IMMUTABLE_FIELD, "created_by is immutable", where);
+    case "author":
+    case "createdAt":
+      return reject(REJECTION.IMMUTABLE_FIELD, `${field} is immutable`, where);
     case "messages":
       return checkMessageOperation(op, full, ctx, threadId, before, isCreate, where);
-    case "reactions":
-      return checkReactionOperation(op, full, ctx, threadId, before, isCreate, where);
     default:
       reject(REJECTION.UNKNOWN_PATH, "Unknown thread field", where);
   }
@@ -350,9 +356,10 @@ function checkMessageOperation(op, full, ctx, threadId, thread, isCreate, where)
     if (before)
       reject(
         op.action === "del" ? REJECTION.MESSAGE_DELETE : REJECTION.MESSAGE_REPLACE,
-        "An existing message cannot be removed or replaced; set deleted instead",
+        "An existing message cannot be removed or replaced; set deletedAt instead",
         where,
       );
+    if (op.action === "del") return;
     if (!isCreate) reject(REJECTION.INVALID_CREATE, "A message is created as a new map", where);
     ctx.plan.newMessages.add(threadId, messageId);
     return;
@@ -362,80 +369,55 @@ function checkMessageOperation(op, full, ctx, threadId, thread, isCreate, where)
     return;
   }
   const field = full[4];
-  if (field === "author" || field === "created_at")
+  if (field === "author" || field === "createdAt")
     reject(REJECTION.IMMUTABLE_FIELD, `${field} is immutable`, where);
-  if (!["body", "edited_at", "deleted"].includes(field))
+  if (!MESSAGE_EDITABLE.includes(field))
     reject(REJECTION.UNKNOWN_PATH, "Unknown message field", where);
-  if (scalar(before.author) !== ctx.principal)
-    reject(REJECTION.NOT_MESSAGE_AUTHOR, "Only a message's author can edit or delete it", where);
+  allowed(ctx, "edit", thread, before, REJECTION.NOT_MESSAGE_AUTHOR, where);
   ctx.plan.editedMessages.add(threadId, messageId);
 }
 
-function checkReactionOperation(op, full, ctx, threadId, thread, isCreate, where) {
-  if (full.length === 3) reject(REJECTION.IMMUTABLE_FIELD, "reactions cannot be replaced", where);
-  const reactionId = full[3];
-  const before = ctx.read(thread.reactions, reactionId);
-  if (before) {
-    const owner = scalar(before.principal) === ctx.principal;
-    if (!owner)
-      reject(REJECTION.NOT_REACTION_OWNER, "Only a reaction's principal can remove it", where);
-    if (full.length !== 4 || op.action !== "del")
-      reject(REJECTION.IMMUTABLE_FIELD, "A reaction can be added or removed, not changed", where);
-    ctx.plan.removedReactions.add(threadId, reactionId);
-    return;
-  }
-  if (full.length === 4 && op.action === "del") {
-    // Two sessions removing the same reaction: the second delete is a no-op.
-    ctx.plan.removedReactions.add(threadId, reactionId);
-    return;
-  }
-  if (full.length === 4 && !isCreate)
-    reject(REJECTION.INVALID_CREATE, "A reaction is created as a new map", where);
-  ctx.plan.newReactions.add(threadId, reactionId);
-}
-
-function finalize(after, plan, principal) {
+function finalize(after, plan, ctx) {
+  const { principal } = ctx;
   const threads = after.threads;
-  for (const threadId of plan.newThreads) validateNewThread(threads, threadId, principal);
+  if (!isMap(threads)) reject(REJECTION.INVALID_VALUE, "threads must be a map");
+  for (const threadId of plan.newThreads)
+    if (own(threads, threadId)) validateNewThread(threads, threadId, principal);
   for (const [threadId, messageId] of plan.newMessages) {
-    if (plan.newThreads.has(threadId)) continue;
+    if (plan.newThreads.has(threadId) || !own(threads, threadId)) continue;
+    const thread = threads[threadId];
+    if (!own(thread.messages, messageId)) continue;
     const where = { thread: threadId, message: messageId };
-    singleCreate(threads[threadId].messages, messageId, where);
-    validateNewMessage(threads[threadId].messages[messageId], principal, where);
+    singleCreate(thread.messages, messageId, where);
+    validateNewMessage(thread.messages[messageId], principal, where);
   }
-  for (const [threadId, messageId] of plan.editedMessages)
-    validateMessageEdits(threads[threadId].messages[messageId], {
-      thread: threadId,
-      message: messageId,
-    });
+  for (const [threadId, messageId] of plan.editedMessages) {
+    const thread = own(threads, threadId) ? threads[threadId] : undefined;
+    if (!thread || !own(thread.messages, messageId)) continue;
+    validateMessageEdits(thread.messages[messageId], { thread: threadId, message: messageId });
+  }
   for (const threadId of plan.status) {
+    if (!own(threads, threadId)) continue;
     // Any commenter may write status, so every stored value must be valid:
     // a losing value could surface later under someone else's change.
     const values = conflictValues(threads[threadId], "status");
-    if (!values.length || values.some((value) => !THREAD_STATUSES.includes(scalar(value))))
+    if (!values.length || values.some((value) => !validateStatus(value)))
       reject(REJECTION.INVALID_VALUE, "Thread status must be open or resolved", {
         thread: threadId,
       });
   }
   for (const threadId of plan.anchors)
-    if (!validateAnchor(threads[threadId].anchor))
+    if (own(threads, threadId) && !validateAnchor(threads[threadId].target))
       reject(REJECTION.INVALID_VALUE, "Invalid thread anchor", { thread: threadId });
-  for (const [threadId, reactionId] of plan.newReactions) {
-    if (plan.newThreads.has(threadId)) continue;
-    const where = { thread: threadId, reaction: reactionId };
-    const thread = threads[threadId];
-    singleCreate(thread.reactions, reactionId, where);
-    validateNewReaction(thread.reactions[reactionId], thread, principal, where);
-  }
-  for (const [threadId, reactionId] of plan.removedReactions)
-    if (
-      !plan.newReactions.has(threadId, reactionId) &&
-      own(threads[threadId].reactions, reactionId)
-    )
-      reject(REJECTION.INVALID_VALUE, "A removed reaction is still present", {
-        thread: threadId,
-        reaction: reactionId,
+  if (plan.schema) {
+    // A stamp only names features this host's build knows: an unknown id
+    // would make every reader's comments read-only.
+    const unknown = documentFeatures(after).filter((id) => !ctx.features.includes(id));
+    if (unknown.length)
+      reject(REJECTION.UNSUPPORTED_FEATURE, "The schema stamp names an unknown feature", {
+        features: unknown,
       });
+  }
 }
 
 /** Decide one batch against the admission document.
@@ -443,14 +425,15 @@ function finalize(after, plan, principal) {
  * @param {A.Doc<unknown>} admitted every change accepted so far; never modified
  * @param {Uint8Array[]} changes encoded Automerge changes from one signer
  * @param {string} principal the signer's authenticated principal
- * @param {{ actorPrincipal?: (actor: string) => string | undefined }} [options]
- *   `actorPrincipal` returns the principal that first wrote with an Automerge
- *   actor ID, so one account cannot write under another's actor.
+ * @param {{ role?: string, actorPrincipal?: (actor: string) => string | undefined,
+ *   features?: readonly string[] }} [options]
+ *   `role` is the principal's Page role (comment-rules.mjs). `actorPrincipal`
+ *   returns the principal that first wrote with an Automerge actor ID, so one
+ *   account cannot write under another's actor. `features` are the schema
+ *   features a stamp may name; this build's by default.
  * @returns {{ ok: true, next: A.Doc<unknown>, actors: string[], stats: object }
  *   | { ok: false, reason: { code: string, message: string, change?: string, details?: object }, stats: object }}
- *   `next` is `admitted` plus the batch, owned by the caller. It becomes the
- *   admission document once the batch is persisted. `actors` lists the
- *   Automerge actors this batch wrote with.
+ *   `next` is `admitted` plus the batch, owned by the caller.
  */
 export function admitCommentChanges(admitted, changes, principal, options = {}) {
   const stats = { changes: 0, ops: 0, pathLookups: 0, entityReads: 0 };
@@ -458,6 +441,12 @@ export function admitCommentChanges(admitted, changes, principal, options = {}) 
     return {
       ok: false,
       reason: { code: REJECTION.INVALID_PRINCIPAL, message: "A principal is required" },
+      stats,
+    };
+  if (!COMMENTING_ROLES.includes(options.role))
+    return {
+      ok: false,
+      reason: { code: REJECTION.NOT_ALLOWED, message: "Commenting needs comment access" },
       stats,
     };
   let candidate;
@@ -471,8 +460,8 @@ export function admitCommentChanges(admitted, changes, principal, options = {}) 
         reject(REJECTION.MALFORMED_CHANGE, "Change could not be decoded");
       }
     }
-    // Changes the admission document already holds were accepted before. Applying
-    // them again is a no-op, so only new changes are attributed here.
+    // Changes the admission document already holds were accepted before.
+    // Applying them again is a no-op, so only new changes are attributed.
     const fresh = decoded.filter((change) => !A.hasHeads(admitted, [change.hash]));
     const actors = new Set();
     for (const change of fresh) {
@@ -518,6 +507,8 @@ export function admitCommentChanges(admitted, changes, principal, options = {}) 
     };
     const ctx = {
       principal,
+      role: options.role,
+      features: options.features ?? BUILD_FEATURES,
       read,
       thread: (threadId) => {
         if (!reads.has(threadId)) reads.set(threadId, read(admitted.threads, threadId));
@@ -525,12 +516,12 @@ export function admitCommentChanges(admitted, changes, principal, options = {}) 
       },
       plan: {
         newThreads: new Set(),
+        deletedThreads: new Set(),
         newMessages: new EntitySet(),
         editedMessages: new EntitySet(),
-        newReactions: new EntitySet(),
-        removedReactions: new EntitySet(),
         status: new Set(),
         anchors: new Set(),
+        schema: false,
       },
     };
     for (const change of fresh) {
@@ -544,7 +535,7 @@ export function admitCommentChanges(admitted, changes, principal, options = {}) 
       }
     }
     current = undefined;
-    finalize(candidate, ctx.plan, principal);
+    finalize(candidate, ctx.plan, ctx);
     return { ok: true, next: candidate, actors: [...actors], stats };
   } catch (error) {
     if (candidate) A.free(candidate);

@@ -139,11 +139,12 @@ export function observeRecordSaves(store, onSaved) {
   });
 }
 
+// A commenter's key authors comments-document changes, attested the same way.
 const attestable = (binding) =>
   !!binding &&
   typeof binding.principal === "string" &&
   !binding.pending &&
-  !!binding.writer &&
+  (!!binding.writer || !!binding.commenter) &&
   !binding.revoked;
 const publishable = (binding) => !!binding && !binding.revoked;
 const conflicted = (now) => ({ conflict: true, lastSeen: now });

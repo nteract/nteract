@@ -916,7 +916,9 @@ test("duplicated tabs open a shared checkpoint larger than an ordinary native ed
     Object.assign(draft, data),
   );
   doc = A.change(doc, { time: 0 }, initializePage);
-  for (let i = 0; i < 600; i++)
+  // Fragment boundaries follow change hashes, so the count that exceeds the
+  // batch limit depends on the fixture's exact history.
+  for (let i = 0; i < 1200; i++)
     doc = A.change(doc, { time: 0 }, (draft) => {
       draft.title = `Cached history ${i % 2}`;
     });

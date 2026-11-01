@@ -6,6 +6,7 @@ import { PageSession } from "./session.mjs";
 import { SessionHost } from "./session-host.mjs";
 import { createPageData, initializePage } from "../model/page.mjs";
 import { applyComment } from "../model/comments.mjs";
+import { newCommentsDoc } from "../model/comments-test-support.mjs";
 import {
   decodeSnapshot,
   encodeSnapshot,
@@ -104,19 +105,22 @@ test("a forbidden connection keeps the draft and closes its transport without si
 
 test("the recovery Markdown lists comments and replies the host never acknowledged", () => {
   const { session } = fixture();
-  let doc = session.doc;
+  const doc = session.doc;
+  let comments = newCommentsDoc();
   const blockId = Object.keys(doc.blocks)[0];
   const author = { principal: session.identity.principal, displayName: "Writer" };
+  // Comments live in the comments document, acknowledged by their own heads.
+  session.commentsHandle = { doc: () => comments };
   const comment = (input) => {
     let result;
-    doc = A.change(doc, (d) => {
-      result = applyComment(d, input, author);
+    comments = A.change(comments, (d) => {
+      result = applyComment(d, input, author, undefined, { page: doc, role: "owner" });
     });
-    session.handle = { doc: () => doc };
     return result;
   };
   const sent = comment({ block_id: blockId, body: "Already on the server" });
   session.savedHeads = A.getHeads(doc);
+  session.savedCommentHeads = A.getHeads(comments);
   comment({ action: "reply", thread_id: sent.thread_id, body: "Reply typed offline" });
   comment({ block_id: blockId, body: "New thread typed offline" });
   const { markdown, heads } = session.exportRecovery();
@@ -128,7 +132,7 @@ test("the recovery Markdown lists comments and replies the host never acknowledg
   assert.match(unsent, /\*\*Writer\*\* · comment · .*\n\n> New thread typed offline/);
   assert.doesNotMatch(unsent, /Already on the server/, "acknowledged comments are not repeated");
   // Once the host acknowledges everything, the section disappears.
-  session.savedHeads = A.getHeads(doc);
+  session.savedCommentHeads = A.getHeads(comments);
   assert.doesNotMatch(session.exportRecovery().markdown, /Unsent comments/);
 });
 

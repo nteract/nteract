@@ -18,7 +18,7 @@ const invalid = (message) => {
 export async function readChangesTool(
   doc,
   args,
-  { issueAuthority, recovery, historyIncomplete } = {},
+  { issueAuthority, recovery, historyIncomplete, commentsDoc } = {},
 ) {
   const heads = A.getHeads(doc);
   let maxBytes = DEFAULT_BYTES,
@@ -29,7 +29,8 @@ export async function readChangesTool(
       invalid("Change-read arguments must be an object");
     if (
       Object.keys(args).some(
-        (key) => !["page_id", "since_heads", "comments", "max_bytes"].includes(key),
+        (key) =>
+          !["page_id", "since_heads", "since_comment_heads", "comments", "max_bytes"].includes(key),
       )
     )
       invalid("Unknown change-read argument");
@@ -39,11 +40,18 @@ export async function readChangesTool(
     )
       invalid("max_bytes must be an integer from 4096 to 262144");
     maxBytes = args.max_bytes ?? DEFAULT_BYTES;
-    payload = projectReadChanges(doc, {
-      since_heads: args.since_heads,
-      comments: args.comments,
-      max_bytes: maxBytes,
-    });
+    payload = projectReadChanges(
+      doc,
+      {
+        since_heads: args.since_heads,
+        ...(args.since_comment_heads !== undefined && {
+          since_comment_heads: args.since_comment_heads,
+        }),
+        comments: args.comments,
+        max_bytes: maxBytes,
+      },
+      commentsDoc,
+    );
   } catch (error) {
     if (!knownErrors.has(error.code)) throw error;
     status = error.status;
@@ -60,6 +68,7 @@ export async function readChangesTool(
   const authority = await issueAuthority();
   const common = {
     heads,
+    ...(commentsDoc && { comment_heads: A.getHeads(commentsDoc) }),
     ...authority,
     ...(recovery && { recovery }),
     ...(historyIncomplete && { history_incomplete: historyIncomplete }),

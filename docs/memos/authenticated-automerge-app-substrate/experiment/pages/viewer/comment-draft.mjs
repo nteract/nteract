@@ -93,12 +93,12 @@ export async function sendCommentDraft(session, draft, body) {
   const markdown = body?.markdown ?? body;
   if (typeof markdown !== "string" || !markdown.trim()) throw Error("Write a comment first");
   const target = resolveCommentDraft(session.doc, draft);
-  const before = new Set(Object.keys(session.doc.comments ?? {}));
+  const before = new Set(Object.keys(session.commentThreads ?? {}));
   const stored = session.comment(
     { ...target, action: "add", body: markdown, body_format: "markdown" },
     body?.spans,
   );
-  const threadId = Object.keys(session.doc.comments ?? {}).find((id) => !before.has(id)) ?? null;
+  const threadId = Object.keys(session.commentThreads ?? {}).find((id) => !before.has(id)) ?? null;
   await stored;
   return threadId;
 }

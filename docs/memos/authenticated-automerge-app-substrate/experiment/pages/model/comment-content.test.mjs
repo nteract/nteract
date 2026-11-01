@@ -1,9 +1,21 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import * as A from "@automerge/automerge";
-import { applyComment, projectComments } from "./comments.mjs";
-import { projectReadComments } from "./read-comments.mjs";
-import { projectReadChanges } from "./read-changes.mjs";
+import {
+  applyComment as applyCommentTo,
+  projectComments as projectCommentsOf,
+} from "./comments.mjs";
+import { projectReadComments as projectReadCommentsOf } from "./read-comments.mjs";
+import { projectReadChanges as projectReadChangesOf } from "./read-changes.mjs";
+
+// Comment content, isolated from document separation: one document plays
+// both roles, holding the blocks anchors resolve against and the threads.
+const applyComment = (d, input, identity, spans) =>
+  applyCommentTo(d, input, identity, spans, { page: d, role: "editor" });
+const projectComments = (doc) => projectCommentsOf(doc, doc);
+const projectReadComments = (doc, options) => projectReadCommentsOf(doc, options, doc);
+const projectReadChanges = (doc, args) =>
+  projectReadChangesOf(doc, { ...args, since_comment_heads: args.since_heads }, doc);
 import {
   commentMarkdown,
   validateCommentContent,
@@ -16,7 +28,7 @@ const fixture = () =>
     page_id: "comments",
     title: "Test",
     blocks: { one: { markdown: "A passage", position: "a0" } },
-    comments: {},
+    threads: {},
   });
 const table =
   "**Decision**\n\n| Option | Result |\n| --- | --- |\n| Native | **Editable** |\n| Markdown | `Portable` |";
@@ -36,7 +48,7 @@ function add(doc, body = table, extra = {}) {
       identity,
     );
   });
-  return { doc, ids, path: ["comments", ids.thread_id, "messages", ids.message_id] };
+  return { doc, ids, path: ["threads", ids.thread_id, "messages", ids.message_id] };
 }
 const messageAt = (doc, path) => path.reduce((value, key) => value[key], doc);
 
@@ -73,7 +85,7 @@ test("legacy comments remain literal and explicit Markdown conversion keeps IDs 
       identity,
     ),
   );
-  assert.deepEqual(after.comments[ids.thread_id].target, before.comments[ids.thread_id].target);
+  assert.deepEqual(after.threads[ids.thread_id].target, before.threads[ids.thread_id].target);
   assert.equal(projectComments(after)[0].messages[0].id, ids.message_id);
   assert.equal(commentMarkdown(messageAt(after, path)), "**Rich now**");
   assert.equal(
@@ -106,7 +118,7 @@ test("formatting-only comment changes are visible in both change-feed modes", ()
   const after = A.change(before, (d) =>
     A.mark(d, [...path, "richText"], { start, end: start + 6, expand: "both" }, "strong", true),
   );
-  assert.equal(JSON.stringify(before.comments), JSON.stringify(after.comments));
+  assert.equal(JSON.stringify(before.threads), JSON.stringify(after.threads));
   for (const comments of ["summary", "all"]) {
     const result = projectReadChanges(after, { since_heads: A.getHeads(before), comments });
     assert.equal(result.comments.length, 1);
@@ -172,7 +184,7 @@ test("browser submission preserves native marks without a Markdown round trip", 
     );
   });
   const saved = A.load(A.save(doc));
-  const message = saved.comments[ids.thread_id].messages[ids.message_id];
+  const message = saved.threads[ids.thread_id].messages[ids.message_id];
   const normalize = (items) => items.map((s) => ({ ...s, marks: s.marks ?? {} }));
   assert.deepEqual(normalize(A.spans(message, ["richText"])), normalize(spans));
   assert.equal(message.body, "Import provenance");

@@ -14,7 +14,8 @@ import { reloadGate } from "./build-freshness.mjs";
 
 export { imageFiles };
 
-export const NEEDS_EDIT_ACCESS = "You need edit access to add images.";
+/** Shown when this replica can't comment, so can't upload a comment image. */
+export const NEEDS_EDIT_ACCESS = "You need comment access to add images.";
 export const ONE_AT_A_TIME = "Add one image at a time.";
 
 /**

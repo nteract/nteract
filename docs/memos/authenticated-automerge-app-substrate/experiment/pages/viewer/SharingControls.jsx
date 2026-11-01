@@ -1,6 +1,30 @@
 import React, { useEffect, useId, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { Copy, Share2 } from "lucide-react";
-import { SharingPanel } from "../../../../../../src/components/sharing/SharingPanel.tsx";
+import {
+  SharingPanel,
+  nativePrimitives,
+} from "../../../../../../src/components/sharing/SharingPanel.tsx";
+
+/** Grantable Page roles and their labels, weakest first. */
+export const ROLE_LABELS = Object.freeze({
+  viewer: "Can view",
+  commenter: "Can comment",
+  editor: "Can edit",
+});
+const roleLabel = (role) => ROLE_LABELS[role] ?? ROLE_LABELS.viewer;
+// Pages adds Can comment to the shared panel's invite roles.
+const primitives = {
+  ...nativePrimitives,
+  ScopeSelect: ({ id, value, onValueChange }) => (
+    <select id={id} value={value} onChange={(event) => onValueChange(event.target.value)}>
+      {Object.entries(ROLE_LABELS).map(([role, label]) => (
+        <option key={role} value={role}>
+          {label}
+        </option>
+      ))}
+    </select>
+  ),
+};
 import "./sharing-panel.css";
 import { createSharingAccess, sharingAvailable, SHARING_FRESH_MS } from "./sharing-access.mjs";
 import { domainSharingProjection } from "./sharing-projection.mjs";
@@ -33,7 +57,7 @@ function projection(value, manage) {
         principal: member.principal,
         label: member.displayName || member.email || "Collaborator",
         detail: member.email || "",
-        badge: member.role === "editor" ? "Can edit" : "Can view",
+        badge: roleLabel(member.role),
         removable: manage,
       }),
     );
@@ -43,7 +67,7 @@ function projection(value, manage) {
         id: invite.id,
         kind: "invite",
         label: invite.email,
-        badge: invite.role === "editor" ? "Can edit" : "Can view",
+        badge: roleLabel(invite.role),
         stateLabel: "Pending",
         stateTone: "pending",
         removable: manage,
@@ -241,7 +265,9 @@ function PageSharing({ session, trigger = true, open: requested, onOpenChange, r
                 ? "Invite by email, then share the link."
                 : session.access?.role === "viewer"
                   ? "You can view this Page. Only the owner can invite people."
-                  : "Only the owner can invite people."
+                  : session.access?.role === "commenter"
+                    ? "You can view and comment on this Page. Only the owner can invite people."
+                    : "Only the owner can invite people."
             }
             sections={{
               publicAccess: false,
@@ -282,6 +308,7 @@ function PageSharing({ session, trigger = true, open: requested, onOpenChange, r
             publicBusy={false}
             publicEnabled={false}
             showInitialAccessLoading={loading}
+            primitives={primitives}
           />
           {state.error && available && (
             <button

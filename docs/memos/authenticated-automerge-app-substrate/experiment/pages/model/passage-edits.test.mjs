@@ -8,7 +8,8 @@ import {
   projectPage,
   applyPageOperation,
 } from "./page.mjs";
-import { applyComment, projectComments } from "./comments.mjs";
+import { projectComments } from "./comments.mjs";
+import { comment, newCommentsDoc } from "./comments-test-support.mjs";
 import { textPath, richDoc } from "./richtext.mjs";
 import { guardPassageEdits } from "./passage-edits.mjs";
 
@@ -85,12 +86,11 @@ test("node-scoped matching supports list/table/code nodes but never crosses nati
 
 test("unrelated edits in the same rich block preserve both contributions, marks and comment anchors", () => {
   let { doc, id } = fixture();
-  doc = A.change(doc, (draft) =>
-    applyComment(
-      draft,
-      { action: "add", block_id: id, selected_text: "Last passage.", body: "Keep this" },
-      { principal: "human", displayName: "Human", driver: "Browser" },
-    ),
+  const { comments } = comment(
+    doc,
+    newCommentsDoc(),
+    { action: "add", block_id: id, selected_text: "Last passage.", body: "Keep this" },
+    { principal: "human", displayName: "Human", driver: "Browser" },
   );
   const heads = A.getHeads(doc),
     path = textPath(id);
@@ -103,8 +103,8 @@ test("unrelated edits in the same rich block preserve both contributions, marks 
   assert.match(projectPage(after).blocks[0].markdown, /New First passage/);
   assert.match(projectPage(after).blocks[0].markdown, /\*\*result\*\*/);
   assert.match(projectPage(after).blocks[0].markdown, /Still Last passage/);
-  assert.equal(projectComments(after)[0].selectionContext.text, "Last passage.");
-  assert.equal(projectComments(after)[0].selectionContext.status, "attached");
+  assert.equal(projectComments(after, comments)[0].selectionContext.text, "Last passage.");
+  assert.equal(projectComments(after, comments)[0].selectionContext.status, "attached");
 });
 
 test("native cursors map a scoped node past an inserted paragraph without selecting duplicate text", () => {

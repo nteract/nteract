@@ -87,7 +87,9 @@ export interface SharingPanelProps<Row extends SharingAccessRow = SharingAccessR
 function NativeButton({ variant, size, ...props }: ComponentProps<SharingPrimitives["Button"]>) {
   return <button data-variant={variant} data-size={size} {...props} />;
 }
-const nativePrimitives: SharingPrimitives = {
+/** Plain HTML primitives. A host that needs one different control, such as
+ * its own invite roles, spreads these and replaces that one. */
+export const nativePrimitives: SharingPrimitives = {
   Button: NativeButton,
   Input: (props) => <input {...props} />,
   Label: (props) => <label {...props} />,

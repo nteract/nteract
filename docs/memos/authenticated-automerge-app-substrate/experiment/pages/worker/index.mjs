@@ -24,11 +24,22 @@ import {
   documentFeatures,
   missingFeatures,
   parseDeclaredFeatures,
+  requireSupportedSchema,
   schemaUnsupported,
   unsupportedFeatures,
 } from "../model/schema-features.mjs";
 import { unsupportedMarkdown, unsupportedMarkdownError } from "../model/richtext.mjs";
 import { convertPreservedBlocks, hasPreservedBlocks } from "../model/raw-migration.mjs";
+import { commentsGenesis } from "../model/comments-doc.mjs";
+import { applyComment, commentsMigrated } from "../model/comments.mjs";
+import { guardCommentIntent } from "../model/comment-guard.mjs";
+import {
+  copyLegacyThreads,
+  detachLegacyComments,
+  needsCommentsMigration,
+} from "../model/comments-migration.mjs";
+import { CommentAdmission } from "./comment-admission.mjs";
+import { commentsDocUuid, commentsDocumentId, commentsTreeOf } from "./comments-store.mjs";
 import {
   conversionFenceError,
   conversionFenced,
@@ -88,6 +99,7 @@ import {
 } from "./actor-authorship.mjs";
 export { PageRecords } from "./record-persistence.mjs";
 import {
+  COMMENTS_SCOPE,
   DocumentPolicy,
   PermissionDenied,
   admissionCancelled,
@@ -118,6 +130,8 @@ import {
 const unifiedMissing = (request) =>
   request.headers.get(ADMISSION_CAPABILITY.header) === ADMISSION_CAPABILITY.value;
 import {
+  COMMENTS_DOC,
+  PAGE_DOC,
   documentMutation,
   recoverDocumentMutations,
   replayRecordedMutation,
@@ -296,6 +310,25 @@ function logPreservedStuck(pageId, reason) {
       timestamp: new Date().toISOString(),
     }),
   );
+}
+/** One structured line when the native per-author check refuses a comment
+ * change: the Page, the rule it broke, never content. */
+function logCommentRefused(pageId, reason) {
+  console.error(
+    JSON.stringify({
+      service: "nteract-pages-native",
+      event: "page.comment_change_refused",
+      page_id: pageId,
+      code: reason?.code,
+      timestamp: new Date().toISOString(),
+    }),
+  );
+}
+/** Keys of journal entries for document `doc` still pending with changes. */
+async function pendingEntryKeys(storage, doc) {
+  return [...(await listOperationEntries(storage))]
+    .filter(([, entry]) => entry.pending && entry.changes && (entry.doc ?? PAGE_DOC) === doc)
+    .map(([key]) => key);
 }
 function refuseSocket(error, identity) {
   logAdmissionDenied(error, { stage: "page", identity });
@@ -2403,17 +2436,61 @@ export class Page {
         // it stays readable, fenced, and the conversion machine retries the
         // same journal entries with backoff. A pending client edit still
         // rejects startup, as before.
-        const pending = [...(await listOperationEntries(this.ctx.storage))]
-          .filter(([, entry]) => entry.pending && entry.changes)
-          .map(([key]) => key);
+        const pending = await pendingEntryKeys(this.ctx.storage, PAGE_DOC);
         if (!pending.length || !pending.every((key) => key.startsWith(INTERNAL_PREFIX)))
           throw error;
         logFailure(error, "preserved-markdown-recovery");
-        this.conversionIntent = { replayKeys: pending };
+        this.conversionIntent = { replayKeys: pending.map((key) => ({ key, doc: PAGE_DOC })) };
       }
     }
+    await this.loadComments();
     // Before native connections open, so peers sync the converted content.
     await this.convertPreservedMarkdown();
+  }
+
+  /** Open the Page's comments document (model/comments-doc.mjs) and finish
+   * any journaled write to it. Importing its deterministic genesis is a
+   * no-op once it exists, so this also creates it the first time. */
+  async loadComments(metadata = this.metadata) {
+    if (this.commentsHandle || !this.commentsUuid) return;
+    const documentId = commentsDocumentId(this.commentsUuid);
+    this.commentsHandle = await this.repo.import(A.save(commentsGenesis(this.commentsUuid)), {
+      docId: documentId,
+    });
+    this.commentAdmission?.reset();
+    try {
+      await recoverDocumentMutations(
+        this.ctx.storage,
+        this.commentsHandle,
+        () => this.flush(),
+        this.commentsAdmission,
+        COMMENTS_DOC,
+      );
+    } catch (error) {
+      // As for the Page document: a pending host migration retries under the
+      // conversion machine; a pending client comment stops startup.
+      const pending = await pendingEntryKeys(this.ctx.storage, COMMENTS_DOC);
+      if (!pending.length || !pending.every((key) => key.startsWith(INTERNAL_PREFIX))) throw error;
+      logFailure(error, "comments-migration-recovery");
+      this.conversionIntent = {
+        replayKeys: [
+          ...(this.conversionIntent?.replayKeys ?? []),
+          ...pending.map((key) => ({ key, doc: COMMENTS_DOC })),
+        ],
+      };
+    }
+    // The Page record names its comments document. Derivation gives the same
+    // ID, so a record written without it loses nothing.
+    if (
+      metadata &&
+      metadata === this.metadata &&
+      !metadata.comments_doc &&
+      !this.pendingAccess &&
+      !this.pendingLifecycle
+    ) {
+      this.metadata = { ...metadata, comments_doc: this.commentsUuid };
+      await this.ctx.storage.put("host/document", this.metadata);
+    }
   }
 
   /** Replace the Page's preserved Markdown blocks with native rich text, and
@@ -2449,7 +2526,10 @@ export class Page {
   observeConversion({ due = false } = {}) {
     const doc = typeof this.handle?.doc === "function" ? this.handle.doc() : undefined;
     if (!doc) return;
-    const preserved = hasPreservedBlocks(doc);
+    // The host's migrations share one fence: preserved blocks to rich text,
+    // then legacy comments into the comments document.
+    const preserved =
+      hasPreservedBlocks(doc) || (!!this.commentsHandle && needsCommentsMigration(doc));
     const unfinished = !!this.conversionIntent;
     this.conversionEvent({
       type: "observe",
@@ -2534,17 +2614,24 @@ export class Page {
   async convertPreservedOnce(mode) {
     if (this.conversionIntent?.replayKeys) {
       // Entries startup recovery couldn't finish: replay them as recorded.
-      for (const key of this.conversionIntent.replayKeys)
+      for (const { key, doc } of this.conversionIntent.replayKeys) {
+        const comments = doc === COMMENTS_DOC;
         await replayRecordedMutation({
           storage: this.ctx.storage,
-          handle: this.handle,
+          handle: comments ? this.commentsHandle : this.handle,
           key,
           flush: () => this.flush(),
-          admission: this.admission,
+          admission: comments ? this.commentsAdmission : this.admission,
         });
+      }
       this.conversionIntent = undefined;
       return;
     }
+    // Preserved blocks convert first; legacy comments move once they're done.
+    // A conversion run past its first step finishes before comments move.
+    const converting = !!this.conversionIntent && !this.conversionIntent.comments;
+    if (this.conversionIntent?.comments || (!converting && !hasPreservedBlocks(this.handle.doc())))
+      return this.migrateCommentsOnce(mode === "literal" ? "drop" : "copy");
     if (!this.conversionIntent) {
       const heads = A.getHeads(this.handle.doc()).sort();
       const digest = hex(
@@ -2592,6 +2679,91 @@ export class Page {
     }
   }
 
+  /**
+   * Move legacy comments out of the Page document (model/comments-migration.mjs),
+   * as two journaled host intents under the conversion fence:
+   *
+   * 1. copy: every legacy thread into the comments document, keyed by the
+   *    Page heads it read. Threads already there are skipped.
+   * 2. detach: drop the Page's legacy map and stamp `comments-doc`, at
+   *    exactly those heads.
+   *
+   * The fence holds peer writes, so the heads can't move between the steps.
+   * If they do anyway, detach fails with stale heads and the next run copies
+   * again from the new heads. A run that fails after reserving its entry
+   * replays that entry. `mode` is `copy`, or `drop` after a copy keeps
+   * failing for good: then no thread moves and the Page still detaches.
+   */
+  async migrateCommentsOnce(mode) {
+    if (!this.conversionIntent?.comments) {
+      const heads = A.getHeads(this.handle.doc()).sort();
+      const digest = hex(
+        new Uint8Array(
+          await crypto.subtle.digest("SHA-256", new TextEncoder().encode(heads.join(","))),
+        ),
+      ).slice(0, 32);
+      this.conversionIntent = { comments: { mode, heads, digest, step: "copy" } };
+    }
+    const intent = this.conversionIntent.comments;
+    const identity = { principal: "service:pages", driver: "API" };
+    try {
+      if (intent.step === "copy") {
+        const page = this.handle.doc();
+        await documentMutation({
+          storage: this.ctx.storage,
+          admission: this.commentsAdmission,
+          handle: this.commentsHandle,
+          doc: COMMENTS_DOC,
+          pageId: this.metadata.pageId,
+          operation: "migrate_comments_copy",
+          args: {
+            idempotency_key: `comments_copy_${intent.mode}_${intent.digest}`,
+            base_heads: intent.heads,
+          },
+          identity,
+          internal: true,
+          // The copy reads the Page at the heads it names, never later.
+          guard: (args) => {
+            requireHeads(this.handle.doc(), intent.heads);
+            return args;
+          },
+          apply: (draft) => {
+            try {
+              return copyLegacyThreads(draft, page, { mode: intent.mode });
+            } catch (error) {
+              throw Object.assign(error, { conversion: true });
+            }
+          },
+          flush: () => this.flush(),
+        });
+        intent.step = "detach";
+      }
+      await documentMutation({
+        storage: this.ctx.storage,
+        admission: this.admission,
+        handle: this.handle,
+        operation: "migrate_comments_detach",
+        args: {
+          idempotency_key: `comments_detach_${intent.mode}_${intent.digest}`,
+          base_heads: intent.heads,
+        },
+        identity,
+        internal: true,
+        apply: (draft) => detachLegacyComments(draft),
+        flush: () => this.flush(),
+      });
+      this.conversionIntent = undefined;
+    } catch (error) {
+      // Keep the intent while its journal entry is pending: the next run
+      // replays it. Without one, the next run starts over from current heads.
+      const key = `${INTERNAL_PREFIX}comments_${intent.step}_${intent.mode}_${intent.digest}`;
+      const admission = intent.step === "copy" ? this.commentsAdmission : this.admission;
+      const entry = await this.ctx.storage.get(key).catch(() => ({ pending: true }));
+      if (!entry?.pending && !admission?.pending(key)) this.conversionIntent = undefined;
+      throw error;
+    }
+  }
+
   initializeRepo(metadata = this.metadata) {
     if (this.repo) return Promise.resolve();
     if (this.initializing) return this.initializing;
@@ -2604,6 +2776,12 @@ export class Page {
           throw Error("Unsupported Page record storage mode");
         signer = N.MemorySigner.fromBytes(await persistentSeed(ctx.storage));
         const serverKey = hex(signer.verifyingKey());
+        // The comments document is named before any peer can connect, so the
+        // policy serves its tree from the first frame.
+        const commentsUuid = metadata?.pageId
+          ? (metadata.comments_doc ?? (await commentsDocUuid(metadata.pageId)))
+          : undefined;
+        const commentsTree = commentsUuid && commentsTreeOf(commentsUuid);
         const peer = signer.peerId();
         let serverSenderId;
         try {
@@ -2618,11 +2796,27 @@ export class Page {
               ? { ...(this.policyMetadata ?? this.metadata), recoveryBlocked: true }
               : (this.policyMetadata ?? this.metadata),
           serverKey,
-          schemaFeatures: () => (this.handle ? documentFeatures(this.handle.doc()) : []),
-          // Peer puts wait for the preserved-block conversion.
+          schemaFeatures: (scope) => {
+            const handle = scope === COMMENTS_SCOPE ? this.commentsHandle : this.handle;
+            return handle ? documentFeatures(handle.doc()) : [];
+          },
+          // Peer puts wait for the host's own migrations.
           writeFence: () => this.conversionWriteFence(),
+          commentsTree: () => commentsTree,
         });
         await policy.load();
+        // The comments document's per-author check, at the byte store: the
+        // one place that sees each record's signer and its change.
+        const commentAdmission = new CommentAdmission({
+          tree: () => commentsTree,
+          serverKey,
+          signer: (key) => policy.signer(key),
+          seed: () => this.commentsHandle?.doc(),
+          onRefused: async (key, reason) => {
+            logCommentRefused(metadata?.pageId, reason);
+            await policy.blockComments(key);
+          },
+        });
         const recordStore =
           metadata?.recordStorage === "buffered"
             ? new BufferedRecordStore(
@@ -2654,8 +2848,10 @@ export class Page {
           signer,
           // Only the backend's saves attest authors; maintenance and flushes
           // use recordStore itself.
-          storage: observeRecordSaves(recordStore, (key, value) =>
-            this.recordSaved(actorAuthorship, key, value, actorPersistence),
+          storage: commentAdmission.guard(
+            observeRecordSaves(recordStore, (key, value) =>
+              this.recordSaved(actorAuthorship, key, value, actorPersistence),
+            ),
           ),
           policy: policy.native(),
           ephemeralPolicy: policy.ephemeral(),
@@ -2671,6 +2867,14 @@ export class Page {
           ...(metadata?.documentId && {
             admission: new DocumentAdmission(backend, documentIdToBinary(metadata.documentId)),
           }),
+          ...(commentsUuid && {
+            commentsUuid,
+            commentsAdmission: new DocumentAdmission(
+              backend,
+              documentIdToBinary(commentsDocumentId(commentsUuid)),
+            ),
+          }),
+          commentAdmission,
           repo,
           recordStore,
           actorAuthorship,
@@ -2880,7 +3084,7 @@ export class Page {
       : [
           this.metadata.owner,
           ...Object.entries(this.metadata.acl?.members ?? {})
-            .filter(([, value]) => ["viewer", "editor"].includes(value.role))
+            .filter(([, value]) => ["viewer", "commenter", "editor"].includes(value.role))
             .map(([principal]) => principal),
           ...(observedReader ? [observedReader] : []),
         ];
@@ -3057,8 +3261,26 @@ export class Page {
     );
   }
 
+  /** The comments document readers use: the Page's once its comments have
+   * moved there. Before that, readers fall back to the Page's legacy map
+   * (model/comments.mjs threadsOf) and comment writes wait. */
+  commentsView() {
+    return this.commentsHandle && this.handle && commentsMigrated(this.handle.doc())
+      ? this.commentsHandle.doc()
+      : undefined;
+  }
+
+  /** The repo document IDs this Page host holds: the Page and, once open,
+   * its comments document. */
+  documentIds() {
+    return [
+      this.metadata.documentId,
+      ...(this.commentsHandle ? [commentsDocumentId(this.commentsUuid)] : []),
+    ];
+  }
+
   async flush() {
-    await this.repo.flush([this.metadata.documentId]);
+    await this.repo.flush(this.documentIds());
     await this.backend.flush();
     await this.recordStore?.flush?.();
     await this.ctx.storage.sync();
@@ -3159,6 +3381,8 @@ export class Page {
               ownerName: identity.displayName,
               documentId,
               tree: logicalId(documentIdToBinary(documentId)),
+              // The Page's comments document, by its deployment-relative id.
+              comments_doc: await commentsDocUuid(args.page_id),
               deleted: false,
               // Location lives in the owner's Catalog; the receipt there adds it.
               createdReceipt: {
@@ -3240,7 +3464,10 @@ export class Page {
         const args = await readJson(request);
         if (args.page_id !== this.metadata.pageId || typeof args.write !== "boolean")
           throw new HttpError(400, "Invalid image access request");
-        this.policy.account(identity, args.write);
+        // An upload stores an image for this Page; it changes no document.
+        // Commenters may attach images to comments, so it needs `comment`.
+        // Placing an image in the Page itself is an edit (edit_page).
+        this.policy.account(identity, args.write && "comment");
         return json({ page_id: this.metadata.pageId });
       }
       if (url.pathname === "/internal/catalog") {
@@ -3291,6 +3518,8 @@ export class Page {
         return json({
           page_id: this.metadata.pageId,
           documentId: this.metadata.documentId,
+          // The comments document syncs on the same socket.
+          ...(this.commentsHandle && { commentsDocumentId: commentsDocumentId(this.commentsUuid) }),
           serverPeerId: this.serverKey,
           serverSenderId: this.serverSenderId,
           identity: publicIdentity(identity),
@@ -3315,13 +3544,17 @@ export class Page {
       if (url.pathname === "/api/sync" && request.method === "GET")
         return this.connect(request, identity);
       if (url.pathname === "/api/saved" && request.method === "POST") {
-        const { heads, schema_features } = await readJson(request);
+        const { heads, comment_heads, schema_features } = await readJson(request);
         await this.waitForHeads(heads, schema_features);
+        // A viewer that wrote comments waits for those heads too.
+        if (comment_heads !== undefined && this.commentsHandle)
+          await this.waitForHeads(comment_heads, schema_features, this.commentsHandle);
         this.policy.account(await authenticate(request, this.env));
         const durableHeads = A.getHeads(this.handle.doc());
+        const durableCommentHeads = this.commentsHandle && A.getHeads(this.commentsHandle.doc());
         await this.flush();
         this.cacheTitle();
-        return json({ durableHeads });
+        return json({ durableHeads, ...(durableCommentHeads && { durableCommentHeads }) });
       }
       if (url.pathname === "/internal/tool") {
         const body = await readJson(request);
@@ -3343,6 +3576,7 @@ export class Page {
             recovery: this.recoveryBlocked,
             historyIncomplete: incompleteHistory(this.handle.doc()),
             getPresence: (doc) => this.activityState().read(doc),
+            commentsDoc: this.commentsView(),
             // A trashed Page cannot be edited, so it issues no edit authority.
             issueAuthority: () =>
               state === "trashed"
@@ -3380,14 +3614,12 @@ export class Page {
             result.body._owner = this.metadata.owner;
           return json(result.body, result.status);
         }
+        if (["manage_page_comment", "reply_page_comment"].includes(body.operation))
+          return json(await this.writeComment(request, identity, body));
         this.policy.account(identity, true);
         if (body.operation === "report_page_progress")
           return json(this.activityState().report(this.handle.doc(), identity, body.arguments));
-        if (
-          !["edit_page", "patch_page", "manage_page_comment", "reply_page_comment"].includes(
-            body.operation,
-          )
-        )
+        if (!["edit_page", "patch_page"].includes(body.operation))
           throw new HttpError(400, "Unknown document operation");
         const images = Array.isArray(body.arguments?.operations)
           ? body.arguments.operations.filter((op) => (op?.op ?? op?.type) === "insert_image")
@@ -3443,18 +3675,10 @@ export class Page {
               }
               return result;
             } catch (error) {
-              // The batch cannot apply as written: zero or multiple matches, an
-              // unknown block, operation or mark, or an invalid comment target.
-              // details carries what the refusal names, such as unknown thread IDs.
+              // The batch cannot apply as written: zero or multiple matches, or
+              // an unknown block, operation or mark.
               throw Object.assign(
-                new HttpError(
-                  400,
-                  error.message,
-                  error.code ??
-                    (body.operation === "edit_page" || body.operation === "patch_page"
-                      ? "invalid_edit_selector"
-                      : "invalid_comment_selector"),
-                ),
+                new HttpError(400, error.message, error.code ?? "invalid_edit_selector"),
                 error.details && { details: error.details },
               );
             }
@@ -3485,6 +3709,86 @@ export class Page {
       if ((error.status ?? 500) >= 500) logFailure(error, "page");
       return admissionErrorResponse(error, { stage: "page", identity });
     }
+  }
+
+  /**
+   * One manage_page_comment or reply_page_comment call, written to the
+   * comments document. It needs `comment`, never `edit`, and never changes
+   * the Page document or its heads. The receipt's `comment_heads` are the
+   * comments document's revision after the write.
+   */
+  async writeComment(request, identity, body) {
+    this.policy.account(identity, "comment");
+    // The Page's stamp gates both documents, as the native gate does.
+    requireSupportedSchema(this.handle.doc());
+    await this.requireConverted();
+    if (!this.commentsView())
+      throw new HttpError(
+        503,
+        "This Page's comments are moving to their own document; try again shortly",
+        "comments_migrating",
+      );
+    const role = pageAccess(this.metadata, identity).role;
+    const operation = body.operation;
+    const args = body.arguments ?? {};
+    // The Page snapshot a new comment anchors in. The guard captures it and
+    // the edit uses it, with no await between them.
+    let page;
+    const receipt = await documentMutation({
+      storage: this.ctx.storage,
+      admission: this.commentsAdmission,
+      handle: this.commentsHandle,
+      doc: COMMENTS_DOC,
+      pageId: this.metadata.pageId,
+      operation,
+      args,
+      identity,
+      // Receipts carry no image prerequisites; this only re-checks access
+      // after the journal inspection awaited storage.
+      prepare: async () => {
+        this.policy.account(await authenticate(request, this.env), "comment");
+      },
+      guard: (input) => {
+        page = this.handle.doc();
+        return guardCommentIntent(page, operation, input);
+      },
+      apply: (draft, effectiveArgs) => {
+        try {
+          return applyComment(
+            draft,
+            operation === "reply_page_comment"
+              ? { ...effectiveArgs, action: "reply" }
+              : effectiveArgs,
+            publicIdentity(identity),
+            undefined,
+            { page, role },
+          );
+        } catch (error) {
+          throw Object.assign(
+            new HttpError(
+              error.status ?? 400,
+              error.message,
+              error.code ?? "invalid_comment_selector",
+            ),
+            error.details && { details: error.details },
+          );
+        }
+      },
+      flush: () => this.flush(),
+    });
+    this.commentsHandle.broadcast({
+      kind: "tool-edit",
+      identity: {
+        ...publicIdentity(identity),
+        ...(identity.agent && { agent: identity.agent }),
+        ...(identity.session && { session: identity.session }),
+      },
+      heads: receipt.heads,
+      comments: true,
+    });
+    // `heads` stay the Page's: a comment never moves them, so an agent can
+    // keep editing from the revision it read.
+    return { ...receipt, heads: A.getHeads(this.handle.doc()), comment_heads: receipt.heads };
   }
 
   /** Owner or a valid viewer/editor grant on the deleted metadata. A role
@@ -3778,12 +4082,16 @@ export class Page {
         for (const wire of this.wires) await wire.disconnect();
         return;
       case "deleteDocument":
+        // Both documents go together: the Page and its comments.
         await this.repo.delete(this.metadata.documentId);
+        if (this.commentsUuid) {
+          this.commentAdmission?.reset();
+          await this.repo.delete(commentsDocumentId(this.commentsUuid));
+        }
         return;
       case "flush":
         // A deleted document has nothing left in the repo to flush.
-        if (pageState(this.metadata) !== "deleted")
-          await this.repo.flush([this.metadata.documentId]);
+        if (pageState(this.metadata) !== "deleted") await this.repo.flush(this.documentIds());
         await this.backend.flush();
         await this.recordStore?.flush?.();
         return;
@@ -3793,6 +4101,8 @@ export class Page {
         return;
       case "dropDocument":
         this.handle = undefined;
+        this.commentsHandle = undefined;
+        this.commentAdmission?.reset();
         return;
       case "loadDocument":
         await this.loadDocument();
@@ -3801,6 +4111,7 @@ export class Page {
         this.handle = await this.repo.import(context.intent.bytes, {
           docId: context.intent.metadata.documentId,
         });
+        await this.loadComments(context.intent.metadata);
         // Not active yet: preserved blocks are held, fenced, until
         // finishCreation observes again after the record is installed.
         this.observeConversion();
@@ -3853,7 +4164,7 @@ export class Page {
         return json({
           page_id: this.metadata.pageId,
           ...publicTrash(this.metadata),
-          ...purgeImpact(this.metadata, doc),
+          ...purgeImpact(this.metadata, doc, this.commentsView()),
           heads: A.getHeads(doc),
           ...(await issuePurgePreview(
             this.ctx.storage,
@@ -3953,6 +4264,7 @@ export class Page {
             ownerName: identity.displayName,
             documentId: args.document_id,
             tree: logicalId(documentIdToBinary(args.document_id)),
+            comments_doc: await commentsDocUuid(args.page_id),
             deleted: false,
             registration: digest,
             createdReceipt: {
@@ -3988,7 +4300,7 @@ export class Page {
    * heads are missing and that build lacks a stamped id, the native gate has
    * refused, or will refuse, those edits: answer `schema_unsupported` rather
    * than wait for heads that can't arrive. */
-  async waitForHeads(heads, declared) {
+  async waitForHeads(heads, declared, handle = this.handle) {
     if (
       !Array.isArray(heads) ||
       heads.length < 1 ||
@@ -3996,7 +4308,7 @@ export class Page {
       heads.some((head) => typeof head !== "string" || !/^[0-9a-f]{64}$/.test(head))
     )
       throw new HttpError(400, "Invalid heads");
-    if (A.hasHeads(this.handle.doc(), heads)) return;
+    if (A.hasHeads(handle.doc(), heads)) return;
     const features =
       declared === undefined
         ? []
@@ -4005,6 +4317,7 @@ export class Page {
           : null;
     if (!features) throw new HttpError(400, "Invalid schema_features");
     const refusal = () => {
+      // The Page's stamp gates both documents.
       const missing = missingFeatures(documentFeatures(this.handle.doc()), features);
       return missing.length
         ? withAdmissionReason(schemaUnsupported(missing), "schema_unsupported")
@@ -4014,20 +4327,20 @@ export class Page {
     if (refused) throw refused;
     await new Promise((resolve, reject) => {
       const changed = () => {
-        if (A.hasHeads(this.handle.doc(), heads)) {
+        if (A.hasHeads(handle.doc(), heads)) {
           clearTimeout(timer);
-          this.handle.off("heads-changed", changed);
+          handle.off("heads-changed", changed);
           resolve();
         }
       };
       const timer = setTimeout(() => {
-        this.handle.off("heads-changed", changed);
+        handle.off("heads-changed", changed);
         reject(
           refusal() ??
             withAdmissionReason(new HttpError(409, MISSING_EDITS_MESSAGE), "receipt_heads_missing"),
         );
       }, 10_000);
-      this.handle.on("heads-changed", changed);
+      handle.on("heads-changed", changed);
       changed();
     });
   }
