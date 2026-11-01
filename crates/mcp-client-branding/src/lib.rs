@@ -59,6 +59,7 @@ pub const CLIENT_DISPLAY_NAME_MAPPINGS: &[(&str, &str)] = &[
         "JetBrains-JBC-copilot-intellij",
         "JetBrains AI Assistant with GitHub Copilot",
     ),
+    ("kilo", "Kilo"),
     ("Kilo-Code", "Kilo Code"),
     ("lobehub-mcp-client", "LobeHub"),
     ("make-app-mcp-client", "Make MCP Client"),
@@ -149,6 +150,9 @@ mod tests {
             Some("Visual Studio Code")
         );
         assert_eq!(canonical_display_name("zed"), Some("Zed"));
+        // Kilo Desktop and the kilo CLI (7.x) send `{"name":"kilo"}` with no title.
+        assert_eq!(canonical_display_name("kilo"), Some("Kilo"));
+        assert_eq!(canonical_display_name("Kilo-Code"), Some("Kilo Code"));
         assert_eq!(canonical_display_name("unknown-client"), None);
     }
 
