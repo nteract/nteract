@@ -383,8 +383,12 @@ try {
   await expect.poll(draftPassage).toBe(paragraphText.slice(0, 4));
   await sheet.getByRole("button", { name: "Cancel", exact: true }).tap();
   await expect(sheet).toHaveCount(0);
-  await mobile.getByRole("textbox", { name: "Page title" }).evaluate((title) => title.focus());
-  await expect(bar).toHaveCount(0);
+  // Cancel hands focus back to the editor on its own schedule. Move focus to
+  // the title until that refocus has happened, so the bar goes away for good.
+  await expect(async () => {
+    await mobile.getByRole("textbox", { name: "Page title" }).evaluate((title) => title.focus());
+    await expect(bar).toHaveCount(0, { timeout: 1500 });
+  }).toPass({ timeout: 15000 });
 
   // On a phone the header status is a dot with its label for screen readers.
   const phoneStatus = mobile.locator(".document-status [role=status]");
