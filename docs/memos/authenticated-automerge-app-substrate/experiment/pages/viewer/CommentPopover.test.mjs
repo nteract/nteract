@@ -124,7 +124,7 @@ const setSheet = (value) =>
     for (const listener of mediaListeners) listener();
   });
 
-async function fixture(t, { canWrite = true, send = () => "thread-1", draft = {} } = {}) {
+async function fixture(t, { canComment = true, send = () => "thread-1", draft = {} } = {}) {
   const container = document.body.appendChild(document.createElement("div"));
   const article = document.body.appendChild(document.createElement("article"));
   const root = createRoot(container);
@@ -137,7 +137,7 @@ async function fixture(t, { canWrite = true, send = () => "thread-1", draft = {}
     returnFocus: () => calls.push(["returnFocus"]),
     flash: (id) => calls.push(["flash", id]),
   });
-  const session = { doc: {}, canWrite };
+  const session = { doc: {}, canComment, commentMessage: () => undefined };
   await act(() =>
     root.render(
       createElement(CommentPopover, { composer, session, containerRef: { current: article } }),
@@ -385,7 +385,8 @@ test("a send that fails after the window narrows stays usable above the thread s
   });
   const session = {
     doc: { blocks: { block: {} } },
-    canWrite: true,
+    canComment: true,
+    commentMessage: () => undefined,
     comment: async () => {},
   };
   const render = () =>
@@ -446,7 +447,12 @@ test("a composer closed with text while the sheet waits shows as the kept draft"
   const container = document.body.appendChild(document.createElement("div"));
   const root = createRoot(container);
   const composer = new CommentComposer({ send: () => null });
-  const session = { doc: { blocks: { block: {} } }, canWrite: true, comment: async () => {} };
+  const session = {
+    doc: { blocks: { block: {} } },
+    canComment: true,
+    commentMessage: () => undefined,
+    comment: async () => {},
+  };
   await act(() =>
     root.render(
       createElement(
@@ -494,7 +500,12 @@ async function surfaces(t) {
     send: () => null,
     focusComposer: () => calls.push("focusComposer"),
   });
-  const session = { doc: { blocks: { block: {} } }, canWrite: true, comment: async () => {} };
+  const session = {
+    doc: { blocks: { block: {} } },
+    canComment: true,
+    commentMessage: () => undefined,
+    comment: async () => {},
+  };
   await act(() =>
     root.render(
       createElement(

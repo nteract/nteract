@@ -1,6 +1,7 @@
 import type { AuthenticatedConnection } from "./identity.ts";
 import type { D1PreparedStatement, Env } from "./cloudflare-types.ts";
 import { NOTEBOOK_HOME_SCHEMA } from "./notebook-home-schema.ts";
+import { createSettledLookup } from "./settled-lookup.ts";
 
 export interface NotebookCatalog {
   notebook: NotebookRow;
@@ -239,6 +240,15 @@ const WORKSTATION_ATTACH_JOBS_ACTIVE_UNIQUE_INDEX = `CREATE UNIQUE INDEX IF NOT 
     ON workstation_attach_jobs(notebook_id, owner_principal)
     WHERE status IN ('pending', 'accepted', 'running')`;
 
+// One row per one-time data backfill. `applied` ran the backfill; `skipped`
+// recorded it without inserting because the data already existed. `pending`
+// exists only inside the batch that decides, never after it commits.
+const CATALOG_BACKFILLS_TABLE = `CREATE TABLE IF NOT EXISTS catalog_backfills (
+    id TEXT PRIMARY KEY,
+    outcome TEXT NOT NULL CHECK (outcome IN ('pending', 'applied', 'skipped')),
+    recorded_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+  )`;
+
 const SCHEMA_STATEMENTS = [
   `CREATE TABLE IF NOT EXISTS notebooks (
     id TEXT PRIMARY KEY,
@@ -292,7 +302,8 @@ const SCHEMA_STATEMENTS = [
     CHECK (subject_kind != 'public' OR (subject = 'anonymous' AND scope = 'viewer'))
   )`,
   `CREATE INDEX IF NOT EXISTS notebook_acl_subject_idx
-    ON notebook_acl (subject_kind, subject, notebook_id)`,
+     ON notebook_acl (subject_kind, subject, notebook_id)`,
+  CATALOG_BACKFILLS_TABLE,
   `CREATE TABLE IF NOT EXISTS principal_profiles (
     principal TEXT PRIMARY KEY,
     provider TEXT NOT NULL,
@@ -520,9 +531,17 @@ const SCHEMA_MIGRATIONS = [
   },
 ];
 
-// Prototype-local schema memo. The Worker binds every room to the same D1
-// database; production multi-binding hosts should scope this per binding.
-const schemaReady = new WeakMap<object, Promise<void>>();
+/** One catalog schema attempt, including migrations and the ACL backfill. */
+export const CATALOG_SCHEMA_ATTEMPT_MS = 30_000;
+
+// Schema readiness per D1 binding, shared by gateway requests and rooms in the
+// isolate. Holds settled readiness only; see settled-lookup.ts.
+const schemaReady = createSettledLookup<object, true>({
+  attemptMs: CATALOG_SCHEMA_ATTEMPT_MS,
+  waitMs: CATALOG_SCHEMA_ATTEMPT_MS,
+  weakKeys: true,
+  timeoutError: () => new Error("D1 catalog schema setup timed out"),
+});
 
 export function snapshotKey(notebookId: string, headsHash: string): string {
   return `n/${encodePathComponent(notebookId)}/snapshots/${encodePathComponent(headsHash)}.am`;
@@ -553,15 +572,10 @@ export async function ensureCatalogSchema(env: Pick<Env, "DB">): Promise<void> {
     return;
   }
 
-  let ready = schemaReady.get(env.DB);
-  if (!ready) {
-    ready = initializeCatalogSchema(env).catch((error: unknown) => {
-      schemaReady.delete(env.DB!);
-      throw error;
-    });
-    schemaReady.set(env.DB, ready);
-  }
-  await ready;
+  await schemaReady.get(env.DB, async () => {
+    await initializeCatalogSchema(env);
+    return { value: true, expiresAt: Infinity };
+  });
 }
 
 async function initializeCatalogSchema(env: Pick<Env, "DB">): Promise<void> {
@@ -593,32 +607,47 @@ async function tableHasColumn(
   return result.results?.some((row) => row.name === column) ?? false;
 }
 
-async function backfillNotebookAcl(env: Pick<Env, "DB">): Promise<void> {
-  await env
-    .DB!.prepare(
-      `INSERT OR IGNORE INTO notebook_acl (
-       notebook_id,
-       subject_kind,
-       subject,
-       scope,
-       created_at,
-       updated_at,
-       created_by_actor_label
-     )
-     SELECT id,
-            'principal',
-            owner_principal,
-            'owner',
-            created_at,
-            updated_at,
-            'system/schema:notebook-cloud-owner-acl-backfill'
-       FROM notebooks`,
-    )
-    .run();
+export const NOTEBOOK_ACL_PUBLIC_BACKFILL = "notebook-acl-public-v1";
 
-  await env
-    .DB!.prepare(
-      `INSERT OR IGNORE INTO notebook_acl (
+/**
+ * Bring `notebook_acl` in line with notebooks from before it existed.
+ *
+ * Public viewer rows for published notebooks are a one-time backfill. It must
+ * never run again: an owner can revoke public access, and a re-run would grant
+ * it back. The decision and the insert share one D1 batch (a transaction),
+ * recorded in `catalog_backfills`:
+ *
+ * 1. Insert the marker if it is missing. Its outcome is `pending` when
+ *    `notebook_acl` is empty, and `skipped` otherwise.
+ * 2. Insert public rows only while the marker is `pending`.
+ * 3. Mark a `pending` marker `applied`.
+ *
+ * A database with ACL rows but no marker already ran the public backfill:
+ * every schema initialization ran it unconditionally, and migration 0003 ran
+ * it once. Publish writes its own public row. Re-running there could only
+ * re-grant revoked access, so it records `skipped`. Whichever batch commits
+ * first records the marker, so a concurrent or abandoned attempt inserts
+ * nothing.
+ *
+ * Owner rows are a repair that runs on every setup, last in the batch so the
+ * public decision reads `notebook_acl` before it. It gives `owner_principal`
+ * the owner row only for notebooks with no principal owner at all, because
+ * authorization reads owners from `notebook_acl` alone. It never brings back a
+ * removed owner: `revokeNotebookAclRow` keeps at least one owner per notebook,
+ * so a transferred notebook always has its new owner row.
+ */
+async function backfillNotebookAcl(env: Pick<Env, "DB">): Promise<void> {
+  const db = env.DB!;
+  await db.batch([
+    db
+      .prepare(
+        `INSERT OR IGNORE INTO catalog_backfills (id, outcome)
+         SELECT ?, CASE WHEN EXISTS (SELECT 1 FROM notebook_acl) THEN 'skipped' ELSE 'pending' END`,
+      )
+      .bind(NOTEBOOK_ACL_PUBLIC_BACKFILL),
+    db
+      .prepare(
+        `INSERT OR IGNORE INTO notebook_acl (
        notebook_id,
        subject_kind,
        subject,
@@ -635,9 +664,48 @@ async function backfillNotebookAcl(env: Pick<Env, "DB">): Promise<void> {
             updated_at,
             'system/schema:notebook-cloud-public-acl-backfill'
        FROM notebooks
-       WHERE latest_revision_id IS NOT NULL`,
-    )
-    .run();
+      WHERE latest_revision_id IS NOT NULL
+        AND EXISTS (
+          SELECT 1
+            FROM catalog_backfills AS backfill
+           WHERE backfill.id = ? AND backfill.outcome = 'pending'
+        )`,
+      )
+      .bind(NOTEBOOK_ACL_PUBLIC_BACKFILL),
+    db
+      .prepare(
+        `UPDATE catalog_backfills
+            SET outcome = 'applied'
+          WHERE id = ? AND outcome = 'pending'`,
+      )
+      .bind(NOTEBOOK_ACL_PUBLIC_BACKFILL),
+    db.prepare(
+      `INSERT OR IGNORE INTO notebook_acl (
+       notebook_id,
+       subject_kind,
+       subject,
+       scope,
+       created_at,
+       updated_at,
+       created_by_actor_label
+     )
+     SELECT id,
+            'principal',
+            owner_principal,
+            'owner',
+            created_at,
+            updated_at,
+            'system/schema:notebook-cloud-owner-acl-backfill'
+       FROM notebooks
+      WHERE NOT EXISTS (
+        SELECT 1
+          FROM notebook_acl AS owner_acl
+         WHERE owner_acl.notebook_id = notebooks.id
+           AND owner_acl.subject_kind = 'principal'
+           AND owner_acl.scope = 'owner'
+      )`,
+    ),
+  ]);
 }
 
 export async function getNotebookRow(env: Env, notebookId: string): Promise<NotebookRow | null> {

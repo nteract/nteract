@@ -2,7 +2,10 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import * as A from "@automerge/automerge";
 import { Decoration } from "wordgard/editor";
-import { applyComment, projectComments } from "../model/comments.mjs";
+import {
+  applyComment as applyCommentTo,
+  projectComments as projectCommentsOf,
+} from "../model/comments.mjs";
 import { createProgressTargets } from "../model/presence.mjs";
 import { enableRich, textPath } from "../model/richtext.mjs";
 import { captureCommentDraft, resolveCommentDraft } from "./comment-draft.mjs";
@@ -15,8 +18,13 @@ import {
   wordgardCommentSelection,
 } from "./wordgard-collaboration.mjs";
 
+// One document plays both roles here: it holds the blocks anchors resolve
+// against and the comments document's `threads`.
+const applyComment = (d, input) =>
+  applyCommentTo(d, input, undefined, undefined, { page: d, role: "editor" });
+const projectComments = (doc) => projectCommentsOf(doc, doc);
 function fixture(source = "Same passage here and same passage again 😀.") {
-  let doc = A.from({ blocks: {}, comments: {} });
+  let doc = A.from({ blocks: {}, threads: {} });
   doc = A.change(doc, (d) => {
     for (const [id, position] of [
       ["first", "a0"],

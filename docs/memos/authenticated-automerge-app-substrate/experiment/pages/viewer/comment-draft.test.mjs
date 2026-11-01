@@ -7,7 +7,8 @@ import {
   applyPageOperation,
   orderedBlockIds,
 } from "../model/page.mjs";
-import { applyComment, projectComments } from "../model/comments.mjs";
+import { projectComments } from "../model/comments.mjs";
+import { comment as addComment, newCommentsDoc } from "../model/comments-test-support.mjs";
 import { captureCommentDraft, resolveCommentDraft, sendCommentDraft } from "./comment-draft.mjs";
 
 function page(markdown = "echo first / echo last") {
@@ -29,10 +30,13 @@ test("drafts keep their passage through concurrent duplicate text insertions", (
   let merged = A.merge(left, right);
   const input = resolveCommentDraft(merged, draft);
   assert.deepEqual(input, { block_id: id, selected_text: "echo", occurrence: 4 });
-  merged = A.change(merged, (d) =>
-    applyComment(d, { ...input, body: "This original echo" }, identity),
+  const { comments } = addComment(
+    merged,
+    newCommentsDoc(),
+    { ...input, body: "This original echo" },
+    identity,
   );
-  const comment = projectComments(merged)[0];
+  const comment = projectComments(merged, comments)[0];
   assert.deepEqual(comment.target, draft.target, "submission anchors the original characters");
   assert.equal(
     comment.selectionContext.start.offsetUtf16,
@@ -149,9 +153,14 @@ test("a surviving Unicode passage includes edits inside its anchors and submits 
     input.selected_text.includes("\ufffc"),
     "semantic comment input uses the raw text object",
   );
-  doc = A.change(doc, (d) => applyComment(d, { ...input, body: "Across paragraphs" }, identity));
-  assert.equal(projectComments(doc)[0].selectionContext.status, "attached");
-  assert.deepEqual(projectComments(doc)[0].target, draft.target);
+  const { comments } = addComment(
+    doc,
+    newCommentsDoc(),
+    { ...input, body: "Across paragraphs" },
+    identity,
+  );
+  assert.equal(projectComments(doc, comments)[0].selectionContext.status, "attached");
+  assert.deepEqual(projectComments(doc, comments)[0].target, draft.target);
 });
 
 test("capture rejects a stale passage rather than creating a block-only comment", () => {
@@ -168,14 +177,19 @@ test("capture rejects a stale passage rather than creating a block-only comment"
   assert.throws(() => captureCommentDraft(doc, "missing", null), /Comment block was removed/);
 });
 
+/** A session whose comments document sits beside its Page, as PageSession's. */
 function fakeSession(doc) {
   const calls = [];
   return {
     doc,
+    commentsDoc: newCommentsDoc(),
+    get commentThreads() {
+      return this.commentsDoc.threads;
+    },
     calls,
     comment(input, spans) {
       calls.push({ input, spans });
-      this.doc = A.change(this.doc, (d) => applyComment(d, input, identity, spans));
+      this.commentsDoc = addComment(this.doc, this.commentsDoc, input, identity).comments;
       return Promise.resolve();
     },
   };
@@ -203,7 +217,7 @@ test("sending a draft adds one thread anchored to the captured characters", asyn
       spans: undefined,
     },
   ]);
-  const [thread] = projectComments(session.doc);
+  const [thread] = projectComments(session.doc, session.commentsDoc);
   assert.equal(thread.id, threadId);
   assert.deepEqual(thread.target, draft.target);
   assert.equal(thread.selectionContext.text, "echo");

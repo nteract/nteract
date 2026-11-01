@@ -253,7 +253,12 @@ export function requireWrite(identity) {
 
 /** Server failures whose fixed message tells the caller to retry the same
  * request. Every other 5xx keeps the generic message. */
-const RETRYABLE_SERVER_CODES = ["record_persistence_timeout", "request_timeout"];
+const RETRYABLE_SERVER_CODES = [
+  "record_persistence_timeout",
+  "request_timeout",
+  // The host is moving a Page's comments to their own document.
+  "comments_migrating",
+];
 
 const LOGGED_ERROR_TYPES = [
   "Error",
@@ -382,6 +387,9 @@ export function errorResponse(error, stage = "request") {
         "unsupported_schema_feature",
         "unsupported_markdown",
         "preserved_markdown_converting",
+        "comment_not_author",
+        "comment_access_denied",
+        "operation_pending",
       ].includes(error?.code) && { code: error.code }),
       ...(error?.code === "unsupported_markdown" &&
         error.details?.unsupported && {

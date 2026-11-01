@@ -4,6 +4,8 @@ import * as A from "@automerge/automerge";
 import featureFile from "./features.json" with { type: "json" };
 import { MARK_REGISTRY } from "./marks.mjs";
 import { applyPageOperation, createPageData, initializePage, orderedBlockIds } from "./page.mjs";
+import { applyComment } from "./comments.mjs";
+import { newCommentsDoc } from "./comments-test-support.mjs";
 import {
   BUILD_FEATURES,
   FEATURE_REGISTRY,
@@ -46,11 +48,20 @@ function withFixture(t) {
 }
 
 const identity = { principal: "account:one", displayName: "One", driver: "Browser" };
+/** A Page as a build before any non-baseline feature wrote it: unstamped.
+ * A new Page carries the comments-doc stamp; that case is tested below. */
 function page(markdown = "We ship on Friday.") {
-  return A.change(A.from(createPageData({ pageId: "page_fixture", title: "Plan" })), (draft) =>
-    initializePage(draft, markdown),
-  );
+  return A.change(A.from(createPageData({ pageId: "page_fixture", title: "Plan" })), (draft) => {
+    initializePage(draft, markdown);
+    const rest = documentFeatures(draft).filter((id) => id !== "comments-doc");
+    if (rest.length) draft.schema = { features: rest };
+    else delete draft.schema;
+  });
 }
+/** A comment written to a comments document anchored in `anchor`. The stamp
+ * its content needs lands in the comments document. */
+const commentOn = (anchor, input) => (draft) =>
+  applyComment(draft, input, identity, undefined, { page: anchor, role: "editor" });
 function edit(doc, operations) {
   return A.change(doc, (draft) =>
     applyPageOperation(draft, { operation: "edit_page", arguments: { operations } }),
@@ -67,7 +78,12 @@ const stamped = (features) =>
   });
 
 test("today's registry: strikethrough, horizontal rules and the preserved-block conversion", () => {
-  assert.deepEqual(BUILD_FEATURES, ["horizontal-rule", "preserved-markdown-converted", "strike"]);
+  assert.deepEqual(BUILD_FEATURES, [
+    "comments-doc",
+    "horizontal-rule",
+    "preserved-markdown-converted",
+    "strike",
+  ]);
   assert.deepEqual(
     MARK_REGISTRY.marks.filter((mark) => mark.feature).map((mark) => [mark.name, mark.feature]),
     [["strike", "strike"]],
@@ -79,8 +95,10 @@ test("today's registry: strikethrough, horizontal rules and the preserved-block 
 // A build from before these features opens such a Page read-only, rather than
 // dropping marks or blocks it can't read.
 test("strikethrough and horizontal rules stamp their features in the same change", () => {
+  const anchor = page();
   const cases = [
-    ["create", (draft) => initializePage(draft, "Old ~~plan~~."), ["strike"]],
+    // A new Page also says its comments live in their own document.
+    ["create", (draft) => initializePage(draft, "Old ~~plan~~."), ["comments-doc", "strike"]],
     [
       "insert_markdown",
       (draft) =>
@@ -110,22 +128,22 @@ test("strikethrough and horizontal rules stamp their features in the same change
     ],
     [
       "comment",
-      (draft) =>
-        applyPageOperation(draft, {
-          operation: "manage_page_comment",
-          arguments: {
-            action: "add",
-            block_id: orderedBlockIds(draft)[0],
-            body: "Drop ~~this~~.",
-            body_format: "markdown",
-          },
-          identity,
-        }),
+      commentOn(anchor, {
+        action: "add",
+        block_id: orderedBlockIds(anchor)[0],
+        body: "Drop ~~this~~.",
+        body_format: "markdown",
+      }),
       ["strike"],
     ],
   ];
   for (const [name, write, expected] of cases) {
-    const before = name === "create" ? A.from(createPageData({ pageId: "p", title: "x" })) : page();
+    const before =
+      name === "create"
+        ? A.from(createPageData({ pageId: "p", title: "x" }))
+        : name === "comment"
+          ? newCommentsDoc()
+          : page();
     const after = A.change(before, write);
     const changes = A.getChanges(before, after);
     assert.equal(changes.length, 1, name);
@@ -240,24 +258,28 @@ test("baseline content never writes a stamp", (t) => {
   let doc = page("Some **bold** and *em* text with [a link](https://example.org).");
   const id = orderedBlockIds(doc)[0];
   doc = patch(doc, [{ op: "format_match", block_id: id, match_text: "text", add: { code: true } }]);
-  doc = A.change(doc, (draft) =>
-    applyPageOperation(draft, {
-      operation: "manage_page_comment",
-      arguments: { action: "add", block_id: id, body: "**Looks** good", body_format: "markdown" },
-      identity,
+  const comments = A.change(
+    newCommentsDoc(),
+    commentOn(doc, {
+      action: "add",
+      block_id: id,
+      body: "**Looks** good",
+      body_format: "markdown",
     }),
   );
   assert.equal(doc.schema, undefined);
+  assert.equal(comments.schema, undefined);
 });
 
 test("a writer stamps a feature in the same change as the content needing it", (t) => {
   withFixture(t);
+  const anchor = page();
   const cases = [
     [
       "create",
       () => A.from(createPageData({ pageId: "page_fixture", title: "Plan" })),
       (draft) => initializePage(draft, "A <mark>flagged</mark> idea."),
-      ["test-highlight"],
+      ["comments-doc", "test-highlight"],
     ],
     [
       "insert_markdown",
@@ -290,18 +312,13 @@ test("a writer stamps a feature in the same change as the content needing it", (
     ],
     [
       "comment",
-      () => page(),
-      (draft) =>
-        applyPageOperation(draft, {
-          operation: "manage_page_comment",
-          arguments: {
-            action: "add",
-            block_id: orderedBlockIds(draft)[0],
-            body: "Is <mark>this</mark> final?",
-            body_format: "markdown",
-          },
-          identity,
-        }),
+      () => newCommentsDoc(),
+      commentOn(anchor, {
+        action: "add",
+        block_id: orderedBlockIds(anchor)[0],
+        body: "Is <mark>this</mark> final?",
+        body_format: "markdown",
+      }),
       ["test-highlight"],
     ],
   ];

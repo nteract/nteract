@@ -231,8 +231,9 @@ test("every mutation the lifecycle makes can reject before or after it applies, 
   assert.deepEqual(
     { cuts, runs, ...tally },
     {
-      cuts: 140,
-      runs: 520,
+      // The comments document's import and delete are cut points too.
+      cuts: 148,
+      runs: 552,
       indexRetirement: 14,
       titleProjection: 14,
       bindingRetirement: 24,

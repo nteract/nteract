@@ -257,6 +257,14 @@ export function CommentsPanel({
             {problem}
           </p>
         )}
+        {session.commentsUnavailable && (
+          <p role="alert" className="error comments-unavailable">
+            Comments couldn't load. You can still read the Page.{" "}
+            <button type="button" className="subtle-button" onClick={() => session.retryComments()}>
+              Try again
+            </button>
+          </p>
+        )}
         {keptDraft && (
           <section className="comment-kept-draft" aria-label="Unsent comment">
             <p className="muted comment-kept-draft-label">Unsent comment</p>
@@ -268,7 +276,7 @@ export function CommentsPanel({
             )}
             <p className="comment-kept-draft-text">{keptDraft.body?.markdown ?? keptDraft.body}</p>
             <div className="comment-form-actions">
-              {session.canWrite && !draftProblem && (
+              {session.canComment && !draftProblem && (
                 <button type="button" className="primary" onClick={continueDraft}>
                   Continue
                 </button>
@@ -283,7 +291,7 @@ export function CommentsPanel({
           <p className="muted comments-empty">
             {threads.length
               ? "All caught up."
-              : session.canWrite
+              : session.canComment
                 ? "No comments yet. Select text to add one."
                 : "No comments yet."}
           </p>
@@ -328,14 +336,14 @@ function CommentThread({
   const blockId =
     thread.target.kind === "selection" ? thread.target.anchor.blockId : thread.target.blockId;
   const blockSurvives = Object.hasOwn(session.doc.blocks, blockId);
-  const canReply = session.canWrite && thread.state === "open";
+  const canReply = session.canComment && thread.state === "open";
   // A typed reply that can't be sent (edits paused, access lost, or the
   // thread resolved) stays visible, read-only, so it can be copied or
   // discarded. Reload counts it until then.
   const keptDraft = !canReply && hasDraft(value);
   useEffect(() => {
-    if (!session.canWrite) setPending(false);
-  }, [session.canWrite]);
+    if (!session.canComment) setPending(false);
+  }, [session.canComment]);
   useEffect(() => {
     if (!replying) return;
     const frame = requestAnimationFrame(() =>
@@ -394,7 +402,7 @@ function CommentThread({
       )}
       <div className="thread-heading">
         {first && <CommentAuthor author={first.author} />}
-        {session.canWrite && (
+        {session.canComment && (
           <button
             className="icon-button thread-state-action"
             aria-label={thread.state === "open" ? "Resolve" : "Reopen"}
@@ -412,10 +420,7 @@ function CommentThread({
       </div>
       {first && (
         <div className="message">
-          <CommentContent
-            message={first}
-            source={session.doc.comments?.[thread.id]?.messages[first.id]}
-          />
+          <CommentContent message={first} source={session.commentMessage(thread.id, first.id)} />
         </div>
       )}
       <div className="thread-conversation-actions">
@@ -453,7 +458,7 @@ function CommentThread({
             {repliesExpanded && (
               <CommentContent
                 message={message}
-                source={session.doc.comments?.[thread.id]?.messages[message.id]}
+                source={session.commentMessage(thread.id, message.id)}
               />
             )}
           </div>
@@ -468,7 +473,7 @@ function CommentThread({
             value={value}
             onChange={onChange}
             disabled={!canReply}
-            images={{ pageId: session.pageId, canUpload: session.canWrite }}
+            images={{ pageId: session.pageId, canUpload: session.canComment && session.canWrite }}
             onDiscard={() => {
               onChange("");
               hideReply(!keptDraft);

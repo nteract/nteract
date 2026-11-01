@@ -46,7 +46,8 @@ test("highlighting writes nothing: code spans stay unmarked and comments stay at
   const { GardState, GardSelection } = await import("wordgard/state");
   const { Command, insertText } = await import("wordgard/command");
   const { createPageData, initializePage, orderedBlockIds } = await import("../model/page.mjs");
-  const { applyComment, projectComments } = await import("../model/comments.mjs");
+  const { projectComments } = await import("../model/comments.mjs");
+  const { comment, newCommentsDoc } = await import("../model/comments-test-support.mjs");
   const { textPath } = await import("../model/richtext.mjs");
   const { schema } = await import("./wordgard-model.mjs");
   const { createWordgardBinding, wordgardCodeNewlines } = await import("./wordgard-binding.mjs");
@@ -57,12 +58,11 @@ test("highlighting writes nothing: code spans stay unmarked and comments stay at
     initializePage(d, "```python\ndef count(text):\n    return len(text)\n```"),
   );
   const id = orderedBlockIds(doc)[0];
-  doc = A.change(doc, (d) =>
-    applyComment(
-      d,
-      { action: "add", block_id: id, selected_text: "count", body: "Rename?" },
-      { principal: "account:one", displayName: "Kyle", driver: "Browser" },
-    ),
+  const { comments } = comment(
+    doc,
+    newCommentsDoc(),
+    { action: "add", block_id: id, selected_text: "count", body: "Rename?" },
+    { principal: "account:one", displayName: "Kyle", driver: "Browser" },
   );
   const replica = {
     get doc() {
@@ -99,7 +99,7 @@ test("highlighting writes nothing: code spans stay unmarked and comments stay at
     spans.map(() => ({})),
   );
   assert.match(spans.map((span) => span.value).join(""), /# done$/);
-  const [thread] = projectComments(doc);
+  const [thread] = projectComments(doc, comments);
   assert.equal(thread.selectionContext.status, "attached");
   assert.equal(thread.selectionContext.text, "count");
   binding.destroy();

@@ -11,7 +11,7 @@ import {
   richDoc,
   unsupportedMarkdown,
 } from "./richtext.mjs";
-import { applyComment } from "./comments.mjs";
+import { comment } from "./comments-test-support.mjs";
 import { commentMarkdown, markdownCommentSpans } from "./comment-content.mjs";
 import {
   applyPageOperation,
@@ -75,27 +75,24 @@ test("the diagnosis body's Markdown export reimports to the same document", () =
 });
 
 test("manage_page_comment add with body_format markdown stores the diagnosis as native rich text", () => {
-  let doc = A.from({
+  const page = A.from({
     page_id: "comments",
     title: "Test",
     blocks: { one: { markdown: "A passage", position: "a0" } },
-    comments: {},
   });
-  let ids;
-  doc = A.change(doc, (d) => {
-    ids = applyComment(
-      d,
-      {
-        action: "add",
-        block_id: "one",
-        selected_text: "passage",
-        body: BODY,
-        body_format: "markdown",
-      },
-      { principal: "fixture", displayName: "Agent", driver: "MCP" },
-    );
-  });
-  const message = doc.comments[ids.thread_id].messages[ids.message_id];
+  const { comments, result: ids } = comment(
+    page,
+    A.from({ threads: {} }),
+    {
+      action: "add",
+      block_id: "one",
+      selected_text: "passage",
+      body: BODY,
+      body_format: "markdown",
+    },
+    { principal: "fixture", displayName: "Agent", driver: "MCP" },
+  );
+  const message = comments.threads[ids.thread_id].messages[ids.message_id];
   const stored = richDoc(message);
   assertDiagnosisStructure(stored);
   assert.ok(pmDocFromSpans(adapter, markdownCommentSpans(BODY)).eq(stored));

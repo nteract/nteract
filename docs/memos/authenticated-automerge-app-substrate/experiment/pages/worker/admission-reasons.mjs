@@ -39,6 +39,12 @@ export const ADMISSION_REASONS = Object.freeze({
   native_binding_persistence_failed: "temporarily_unavailable",
   native_connection_failed: "temporarily_unavailable",
   native_access_changed: "access_changed",
+  // The native per-author check refused a comment record (comment-admission.mjs).
+  // The key's comment authority is gone; discovery reports what remains.
+  comment_change_refused: "access_changed",
+  // The signer's principal spent its refusal budget; it may reconnect after
+  // backing off, and its keys keep their authority.
+  comment_admission_budget: "temporarily_unavailable",
   native_acl_committing: "access_changed",
   // Byte-transport refusals of native input, before or after admission.
   native_frame_unsupported: "request_rejected",

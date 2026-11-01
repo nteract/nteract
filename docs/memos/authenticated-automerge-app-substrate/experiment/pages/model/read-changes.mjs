@@ -35,26 +35,34 @@ function options(args) {
     invalid("Change arguments must be an object");
   if (
     Object.keys(args).some(
-      (key) => !["page_id", "since_heads", "comments", "max_bytes"].includes(key),
+      (key) =>
+        !["page_id", "since_heads", "since_comment_heads", "comments", "max_bytes"].includes(key),
     )
   )
     invalid("Unknown change argument");
   const heads = args.since_heads;
-  if (
-    !Array.isArray(heads) ||
-    heads.length < 1 ||
-    heads.length > 128 ||
-    Array.from(heads).some((head) => typeof head !== "string" || !/^[a-f0-9]{64}$/.test(head)) ||
-    new Set(heads).size !== heads.length
-  )
-    invalid("since_heads must contain 1 to 128 unique Automerge heads");
+  const validHeads = (value) =>
+    Array.isArray(value) &&
+    value.length >= 1 &&
+    value.length <= 128 &&
+    !Array.from(value).some((head) => typeof head !== "string" || !/^[a-f0-9]{64}$/.test(head)) &&
+    new Set(value).size === value.length;
+  if (!validHeads(heads)) invalid("since_heads must contain 1 to 128 unique Automerge heads");
+  const commentHeads = args.since_comment_heads;
+  if (commentHeads !== undefined && !validHeads(commentHeads))
+    invalid("since_comment_heads must contain 1 to 128 unique Automerge heads");
   const comments = args.comments === undefined ? "summary" : args.comments;
   if (!["none", "summary", "all"].includes(comments))
     invalid("comments must be none, summary or all");
   const maxBytes = args.max_bytes === undefined ? CHANGE_READ_DEFAULT_BYTES : args.max_bytes;
   if (!Number.isSafeInteger(maxBytes) || maxBytes < 4096 || maxBytes > 262144)
     invalid("max_bytes must be an integer from 4096 to 262144");
-  return { heads: [...heads], comments, maxBytes };
+  return {
+    heads: [...heads],
+    commentHeads: commentHeads && [...commentHeads],
+    comments,
+    maxBytes,
+  };
 }
 
 // Positions returned to callers are revision-bound indexes, never durable IDs.
@@ -211,11 +219,11 @@ function contentChanges(before, after) {
   return changes;
 }
 
-function commentChanges(before, after, mode) {
+/** Thread changes between two thread maps. `project(id, messages)` reads the
+ * current projection of one thread. */
+function commentChanges(prior, current, mode, project) {
   if (mode === "none") return [];
-  const prior = before.comments ?? {},
-    current = after.comments ?? {},
-    changes = [];
+  const changes = [];
   for (const id of Object.keys(prior))
     if (!Object.hasOwn(current, id)) changes.push({ thread_id: id, change: "deleted" });
   for (const id of Object.keys(current)) {
@@ -224,10 +232,7 @@ function commentChanges(before, after, mode) {
       canonical(commentThreadState(prior[id])) === canonical(commentThreadState(current[id]))
     )
       continue;
-    const [thread] = projectReadComments(after, {
-      thread_ids: [id],
-      include_messages: mode === "all",
-    });
+    const thread = project(id, mode === "all");
     if (mode === "all" && Object.hasOwn(prior, id)) {
       // Return only new/changed *current* messages. Removed/tombstoned messages
       // never expose old body or author values from the historical view.
@@ -250,11 +255,83 @@ function commentChanges(before, after, mode) {
   return changes;
 }
 
+/** An owned historical view of `doc` at `heads`, or null when it can't be
+ * opened. Free `owned` when done. */
+function historical(doc, heads) {
+  let owned;
+  try {
+    // In the pinned SDK, rich-text paths and getObjectId(prop) resolve map fields
+    // against the underlying handle before applying a view's heads. An owned fork
+    // at the baseline also handles deleted/replaced objects correctly. Never free
+    // the shared A.view itself; only this separate clone belongs to the projector.
+    owned = A.clone(A.view(doc, heads));
+    // clone applies patches onto the supplied view and can retain its nested
+    // objects' original-handle metadata. Rematerialize against the owned fork.
+    return { owned, view: A.view(owned, A.getHeads(owned)) };
+  } catch {
+    if (owned) A.free(owned);
+    return null;
+  }
+}
+
+const sameHeads = (a, b) => canonical([...a].sort()) === canonical([...b].sort());
+
+/** Comment changes from the comments document since `since`, its own heads.
+ * Comments have their own history, so Page heads can't serve as their
+ * baseline. Without `since` the delta is unknown: the result is a snapshot of
+ * every current thread with `comments_snapshot: true`. */
+function commentsDocChanges(page, commentsDoc, since, mode) {
+  if (mode === "none") return { comments: [] };
+  // No comments baseline: a client from before the comments document, or one
+  // that never kept comment_heads. Every current thread, flagged as a
+  // snapshot, so it keeps seeing comments and can tell it must replace what
+  // it holds rather than merge a delta. Deleted threads can't be listed.
+  if (!since)
+    return {
+      comments: projectReadComments(
+        page,
+        { state: "all", include_messages: mode === "all" },
+        commentsDoc,
+      ).map((thread) => ({ thread_id: thread.id, change: "snapshot", ...thread })),
+      comments_snapshot: true,
+    };
+  if (!A.hasHeads(commentsDoc, since))
+    fail(
+      409,
+      "resync_required",
+      "The comments baseline is unavailable. Read the Page or list_page_comments to establish a new comment_heads baseline.",
+    );
+  if (sameHeads(since, A.getHeads(commentsDoc))) return { comments: [] };
+  const before = historical(commentsDoc, since);
+  if (!before)
+    fail(
+      409,
+      "resync_required",
+      "The comments baseline cannot be opened. Read the Page or list_page_comments to establish a new comment_heads baseline.",
+    );
+  try {
+    const project = (id, messages) =>
+      projectReadComments(page, { thread_ids: [id], include_messages: messages }, commentsDoc)[0];
+    return {
+      comments: commentChanges(before.view.threads ?? {}, commentsDoc.threads ?? {}, mode, project),
+    };
+  } catch (error) {
+    if (error.code === "resync_required") throw error;
+    fail(
+      409,
+      "resync_required",
+      'Comment changes cannot be projected from this baseline. Retry with comments: "none" for content-only changes, then read current comments. No partial delta was returned.',
+    );
+  } finally {
+    A.free(before.owned);
+  }
+}
+
 /** Bounded net changes between one known historical view and one captured
  * current revision. No actor/display-name inference or historical body export.
  * The caller checks current access and adds retry authority to these same heads.
  */
-export function projectReadChanges(doc, args) {
+export function projectReadChanges(doc, args, commentsDoc) {
   const settings = options(args),
     heads = A.getHeads(doc);
   // Pinned Automerge diff tolerates unknown heads and may return root-to-tip
@@ -273,32 +350,27 @@ export function projectReadChanges(doc, args) {
     changes: [],
     comments: [],
     comments_mode: settings.comments,
+    ...(commentsDoc && { comment_heads: A.getHeads(commentsDoc) }),
     attribution: "unavailable",
   };
+  if (commentsDoc)
+    payload = {
+      ...payload,
+      ...commentsDocChanges(doc, commentsDoc, settings.commentHeads, settings.comments),
+    };
   // The common polling case needs no historical backend or content projection.
-  if (canonical([...settings.heads].sort()) !== canonical([...heads].sort())) {
-    let before, owned;
-    // In the pinned SDK, rich-text paths and getObjectId(prop) resolve map fields
-    // against the underlying handle before applying a view's heads. An owned fork
-    // at the baseline also handles deleted/replaced objects correctly. Never free
-    // the shared A.view itself; only this separate clone belongs to the projector.
-    try {
-      owned = A.clone(A.view(doc, settings.heads));
-      // clone applies patches onto the supplied view and can retain its nested
-      // objects' original-handle metadata. Rematerialize against the owned fork.
-      before = A.view(owned, A.getHeads(owned));
-    } catch {
-      if (owned) A.free(owned);
+  if (!sameHeads(settings.heads, heads)) {
+    const before = historical(doc, settings.heads);
+    if (!before)
       fail(
         409,
         "resync_required",
         "The baseline revision cannot be opened. Read the current Page or outline to establish a new baseline.",
       );
-    }
     try {
-      let changes, comments;
+      let changes;
       try {
-        changes = contentChanges(before, doc);
+        changes = contentChanges(before.view, doc);
       } catch {
         fail(
           409,
@@ -306,24 +378,34 @@ export function projectReadChanges(doc, args) {
           "Content changes cannot be projected from this baseline. Read the current Page or outline to establish a new baseline. No partial delta was returned.",
         );
       }
-      try {
-        comments = commentChanges(before, doc, settings.comments);
-      } catch {
-        fail(
-          409,
-          "resync_required",
-          'Comment changes cannot be projected from this baseline. Retry the same since_heads with comments: "none" for content-only changes, then read current comments; or read the current Page to establish a new baseline. No partial delta was returned.',
-        );
+      // A Page that hasn't migrated still holds its threads; diff them here.
+      let comments = payload.comments;
+      if (!commentsDoc) {
+        try {
+          comments = commentChanges(
+            before.view.comments ?? {},
+            doc.comments ?? {},
+            settings.comments,
+            (id, messages) =>
+              projectReadComments(doc, { thread_ids: [id], include_messages: messages })[0],
+          );
+        } catch {
+          fail(
+            409,
+            "resync_required",
+            'Comment changes cannot be projected from this baseline. Retry the same since_heads with comments: "none" for content-only changes, then read current comments; or read the current Page to establish a new baseline. No partial delta was returned.',
+          );
+        }
       }
       payload = {
         ...payload,
-        title_changed: before.title !== doc.title,
-        ...(before.title !== doc.title ? { title: doc.title } : {}),
+        title_changed: before.view.title !== doc.title,
+        ...(before.view.title !== doc.title ? { title: doc.title } : {}),
         changes,
         comments,
       };
     } finally {
-      A.free(owned);
+      A.free(before.owned);
     }
   }
   const size = encoder.encode(JSON.stringify(payload)).byteLength;

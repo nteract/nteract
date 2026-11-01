@@ -247,9 +247,12 @@ function watchDatabase(db, cuts) {
 
 const handleOf = (doc) => ({ doc: () => doc, broadcast() {}, on() {}, off() {} });
 
-/** The document store's side of a repo: load, import and delete by id. */
+/** The document store's side of a repo: load, import and delete by id.
+ * The Page's comments document rides along with each Page document effect,
+ * so only the Page document's calls are traced; both are cut points. */
 function documentRepo(h) {
   const { documents, trace, cuts } = h;
+  const traced = (id) => id === h.f.initial.documentId;
   return {
     async find(documentId) {
       if (!documents.has(documentId)) throw Error(`Document ${documentId} is unavailable`);
@@ -258,16 +261,17 @@ function documentRepo(h) {
     },
     async import(bytes, { docId }) {
       await cuts.mutate("documents", `import ${docId}`, async () => {
-        documents.set(docId, bytes);
+        const stored = documents.get(docId);
+        documents.set(docId, stored ? A.save(A.merge(A.load(stored), A.load(bytes))) : bytes);
       });
-      trace.record({ type: "importDocument" });
-      return handleOf(A.load(bytes));
+      if (traced(docId)) trace.record({ type: "importDocument" });
+      return handleOf(A.load(documents.get(docId) ?? bytes));
     },
     async delete(documentId) {
       await cuts.mutate("documents", `delete ${documentId}`, async () => {
         documents.delete(documentId);
       });
-      trace.record({ type: "deleteDocument" });
+      if (traced(documentId)) trace.record({ type: "deleteDocument" });
     },
     async flush() {
       trace.record({ type: "flush" });
