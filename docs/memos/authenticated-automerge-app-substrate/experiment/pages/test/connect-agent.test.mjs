@@ -3,7 +3,13 @@ import { test } from "node:test";
 import { JSDOM } from "jsdom";
 import worker from "../worker/index.mjs";
 import { agentConnectionSetup } from "../connect-agent.mjs";
-import { codexConfig, kiloConfig, setupPrompt } from "../agent-client-setup.mjs";
+import {
+  codexConfig,
+  kiloApiKeyConfig,
+  kiloConfig,
+  pagesAgentEnvrc,
+  setupPrompt,
+} from "../agent-client-setup.mjs";
 const origin = "https://page5.runtimed.run";
 const env = {
   NOTEBOOK_CLOUD_PUBLIC_ORIGIN: origin,
@@ -61,11 +67,42 @@ test("setup is public, uses configured destinations, and never reflects credenti
     "https://anaconda.com/app/profile/api-keys",
   );
   assert.equal(dom.querySelectorAll("input, textarea, form").length, 0);
-  assert.equal(dom.querySelectorAll("[data-copy][hidden]").length, 10);
+  assert.equal(dom.querySelectorAll("[data-copy][hidden]").length, 11);
   assert.equal(dom.getElementById("oauth-endpoint").textContent, origin + "/mcp");
   assert.equal(dom.getElementById("kilo-config").textContent, kiloConfig(origin));
+  assert.equal(dom.getElementById("kilo-api-key-config").textContent, kiloApiKeyConfig(origin));
   assert.equal(dom.getElementById("codex-config").textContent, codexConfig(origin));
   assert.equal(dom.getElementById("setup-prompt").textContent, setupPrompt(origin));
+  assert.equal(dom.getElementById("pages-agent-envrc").textContent, pagesAgentEnvrc);
+});
+
+test("setup leads with API keys and keeps OAuth for interactive clients", async () => {
+  const response = await worker.fetch(new Request(origin + "/connect"), env);
+  const dom = new JSDOM(await response.text()).window.document;
+  const order = [...dom.querySelectorAll("main h2")].map((heading) => heading.id);
+  assert.ok(order.indexOf("setup-api-key-clients") < order.indexOf("setup-key"));
+  assert.ok(order.indexOf("setup-try") < order.indexOf("setup-oauth"));
+  assert.equal(order[0], "setup-api-key-clients");
+  // Kilo's primary recipe is the API key; its OAuth recipe sits under OAuth.
+  const kilo = dom.getElementById("kilo");
+  assert.ok(kilo.contains(dom.getElementById("kilo-api-key-config")));
+  const oauth = dom.querySelector('section[aria-labelledby="setup-oauth"]');
+  assert.ok(oauth.contains(dom.getElementById("kilo-oauth")));
+  assert.ok(oauth.contains(dom.getElementById("kilo-config")));
+  const oauthText = oauth.textContent.replace(/\s+/g, " ");
+  for (const fact of [
+    "Access tokens last 10 minutes",
+    "Each refresh token works once and is replaced on use",
+    "nothing has to run in the background",
+    "30 days after you approve it",
+    "revokes the whole connection",
+    "use an API key",
+  ])
+    assert.ok(oauthText.includes(fact), fact);
+  const labels = dom.getElementById("session-labels").textContent.replace(/\s+/g, " ");
+  for (const fact of ["X-Pages-Driver", "X-Pages-Agent", "at most 80 characters", "Mcp-Session-Id"])
+    assert.ok(labels.includes(fact), fact);
+  assert.ok(labels.includes('"X-Pages-Agent": "{env:PAGES_AGENT}"'));
 });
 
 test("setup supports HEAD and refuses mutation methods", async () => {

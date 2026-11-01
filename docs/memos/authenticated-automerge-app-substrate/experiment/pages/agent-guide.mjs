@@ -4,6 +4,7 @@ import {
   keyFile,
   kiloConfig,
   kiloApiKeyConfig,
+  pagesAgentEnvrc,
   saveKeyCommand,
 } from "./agent-client-setup.mjs";
 
@@ -28,83 +29,22 @@ export function agentGuide(env) {
 ## Start here: connect your agent
 
 MCP endpoint: ${origin}/mcp. Human setup: ${origin}/connect.
-Choose the client section below before investigating authentication:
+Choose by how the client runs before investigating authentication:
 
-- ChatGPT / cloud clients using the ChatGPT OAuth client: add the endpoint and
-  complete browser authorization. No API key is needed for this flow.
-- Kilo Desktop / CLI: use the OAuth recipe below and ask the human to complete
-  browser sign-in. No API key is needed.
-- Codex Desktop / CLI: use the local API-key recipe below.
+- Coding agents, CLIs, scripts, and anything long-running or headless (Kilo,
+  Claude Code, Codex, cron jobs): use an Anaconda API key. The recipes come
+  first below. A key works until its chosen expiration, any number of processes
+  can share it, and nothing has to refresh it.
+- ChatGPT and other interactive cloud clients using the ChatGPT OAuth client:
+  add the endpoint and complete browser authorization. No API key is needed.
+- Kilo can also use OAuth, but only for one Kilo process at a time. See the
+  shared-token warning in the OAuth section.
 - Other clients: use an Anaconda API key if they support bearer headers. This
   prototype accepts the ChatGPT and configured Kilo OAuth clients; arbitrary registration
   is not enabled. Ask for client support instead of trying unrelated login flows.
 
 Ask the human for their step early, and prepare non-secret configuration in
 parallel. Only a successful list_pages call proves the connection works.
-
-### ChatGPT / cloud connection (OAuth)
-
-Add a custom MCP server in the client's connection or plugin settings:
-
-- Server URL: ${origin}/mcp
-- Authentication: OAuth with discovery / client metadata (CIMD)
-- Permissions: pages:read; add pages:write for editing. Each Page's current
-  sharing permissions still apply. The consent screen also explains that the
-  connection can remain active for up to 30 days.
-
-The human follows the client's authorization link, signs in to Pages with
-Anaconda, checks the account and requested permissions, and approves. Pages
-issues credentials for this deployment's MCP endpoint; the client never receives
-an Anaconda API key or provider refresh token. Do not copy browser cookies.
-
-Discovery: ${origin}/.well-known/oauth-protected-resource/mcp and
-${origin}/.well-known/oauth-authorization-server. The supported ChatGPT client ID
-is https://chatgpt.com/oauth/client.json, with callback
-https://chatgpt.com/connector_platform_oauth_redirect. The predefined public
-client pages-chatgpt uses that same callback when a client ID is requested.
-PKCE S256 is required; no client secret is used. Do not invent a callback URL.
-If the client shows a different callback or registration error, report it for
-deployment configuration rather than asking the human for an API key it can't use.
-
-Newly approved connections receive rotating refresh tokens, including clients
-that do not request offline_access. The original 30-day deadline never extends
-on refresh; reconnect when requested. Connections approved before this change
-without offline_access need one new authorization to enable renewal.
-OAuth credentials work on /mcp only, not the JSON API, sharing API, or native sync.
-After authorization, call list_pages from the actual connected chat. Dot's
-availability depends on its connection UI; a configured plugin alone isn't proof.
-
-### Kilo Desktop / CLI (OAuth, recommended)
-
-Ask the human early to complete browser authorization. Meanwhile, merge this
-non-secret configuration into GLOBAL ~/.config/kilo/kilo.jsonc (respect
-XDG_CONFIG_HOME if customized). Preserve all other servers and settings. This
-is the Desktop/CLI format, not the older VS Code extension's mcpServers format.
-
-\`\`\`json
-${kiloConfig(origin)}
-\`\`\`
-
-If migrating the existing Pages entry, remove its Authorization header and
-replace oauth: false with the oauth object above. Keep X-Pages-Driver and any
-unrelated headers/settings. Do not delete the old key file: removing the header
-is enough to stop this connection using it, and other clients may still need it.
-
-Run kilo mcp auth pages. The human follows the browser link, signs in, checks the
-account and permissions, and approves. If no browser opens, give the human the
-link Kilo prints; do not retrieve browser cookies or search for credentials.
-Reload the Pages server or restart Kilo Desktop, then call list_pages from the
-actual chat. kilo mcp list is a diagnostic, not proof of authenticated tool use.
-If authorization reports a callback mismatch, report the URL without tokens;
-do not substitute a guessed client ID or silently fall back to an old key.
-
-This deployment's public client is pages-kilo, with exact callback
-http://127.0.0.1:19876/mcp/oauth/callback, PKCE S256, and no client secret.
-The explicit clientId is required; dynamic registration is not enabled. Request
-pages:read pages:write offline_access for editing and reconnect after expiry.
-Configuration and the OAuth exchange were checked with Kilo CLI 7.4.21 and
-Desktop's bundled CLI 7.8.17. Do not inspect binaries to set up this recipe.
-Official configuration: https://kilo.ai/docs/automate/mcp/using-in-cli
 
 ### API-key connection: first ask the human
 
@@ -135,8 +75,8 @@ For clients using the API-key recipes, follow this order:
 
 Do not paste keys into chat, print resolved config/headers, or put credentials in
 URLs. For 401, check key presence, expiry, and provider environment once, then ask
-the human to replace the key through /connect. For Kilo, use the separate OAuth migration recipe above if switching methods. For
-403, check User Resources scopes and Page sharing permissions. Do not retry in a loop.
+the human to replace the key through /connect. For 403, check User Resources
+scopes and Page sharing permissions. Do not retry in a loop.
 
 ### Save the key privately (human step, macOS/Linux)
 
@@ -151,7 +91,7 @@ file and enter the key yourself; no CLI installation is required.
 ${saveKeyCommand}
 \`\`\`
 
-### Kilo Desktop / CLI (API-key fallback)
+### Kilo Desktop / CLI (API key, recommended)
 
 Once the key file is nonempty, merge this into the GLOBAL
 ~/.config/kilo/kilo.jsonc (respect XDG_CONFIG_HOME if customized). This is the
@@ -163,6 +103,11 @@ authentication; kilo mcp auth is not the setup path for this recipe.
 \`\`\`json
 ${kiloApiKeyConfig(origin)}
 \`\`\`
+
+If the existing Pages entry uses OAuth, replace its oauth object with
+oauth: false and add the Authorization header. Keep X-Pages-Driver and any
+unrelated headers/settings. X-Pages-Agent is optional; see "Name each session"
+below. One shared entry serves every worktree.
 
 Reload the Pages server in Kilo or restart the desktop app. kilo mcp list is a
 connection diagnostic; also call list_pages from the actual session using it.
@@ -199,7 +144,122 @@ For an older Codex, use the supported bearer_token_env_var = "ANACONDA_API_KEY"
 option only when that variable is actually available to the running client, or
 ask the human to update. Never put the key value in config. Restart/reload MCP,
 then call list_pages. codex mcp get/list checks config only, not authentication.
+To label sessions, add env_http_headers = { "X-Pages-Agent" = "PAGES_AGENT" };
+Codex reads the label from that environment variable.
 Official configuration: https://developers.openai.com/codex/mcp
+
+### Claude Code and other clients (API key)
+
+Add a Streamable HTTP server at ${origin}/mcp with the headers under "Configure
+the client" below. Keep the key in the client's secret or header-helper
+settings, never as a literal in a shared or project config.
+
+### Name each session
+
+Two optional headers name the agent in a Page:
+
+- X-Pages-Driver: the harness, such as Kilo, Codex or Claude Code.
+- X-Pages-Agent: a short session label, such as "release agent", at most 80
+  characters. A blank value means no label.
+
+A caret then reads "Kyle's Kilo · release agent". Both labels are
+self-declared. Pages always shows them under the account the credential
+authenticates; they never change who made an edit or what it can access.
+
+For Kilo, keep one shared config entry with
+"X-Pages-Agent": "{env:PAGES_AGENT}", as in the recipe above. Kilo substitutes
+environment variables when it loads config, and sends an empty header when the
+variable is unset, which Pages treats as no label. Each worktree sets its own
+label, for example in its .envrc:
+
+\`\`\`sh
+${pagesAgentEnvrc}
+\`\`\`
+
+The Kilo process must start with that variable in its environment, such as
+from a shell where direnv loaded the .envrc. Labels are optional: each MCP
+session already gets its own caret through Mcp-Session-Id, so two unlabeled
+sessions on one key still show separately.
+
+### ChatGPT / cloud connection (OAuth)
+
+Add a custom MCP server in the client's connection or plugin settings:
+
+- Server URL: ${origin}/mcp
+- Authentication: OAuth with discovery / client metadata (CIMD)
+- Permissions: pages:read; add pages:write for editing. Each Page's current
+  sharing permissions still apply. The consent screen also explains that the
+  connection can remain active for up to 30 days.
+
+The human follows the client's authorization link, signs in to Pages with
+Anaconda, checks the account and requested permissions, and approves. Pages
+issues credentials for this deployment's MCP endpoint; the client never receives
+an Anaconda API key or provider refresh token. Do not copy browser cookies.
+
+Discovery: ${origin}/.well-known/oauth-protected-resource/mcp and
+${origin}/.well-known/oauth-authorization-server. The supported ChatGPT client ID
+is https://chatgpt.com/oauth/client.json, with callback
+https://chatgpt.com/connector_platform_oauth_redirect. The predefined public
+client pages-chatgpt uses that same callback when a client ID is requested.
+PKCE S256 is required; no client secret is used. Do not invent a callback URL.
+If the client shows a different callback or registration error, report it for
+deployment configuration rather than asking the human for an API key it can't use.
+
+How an OAuth connection lasts: access tokens expire after 10 minutes. Refresh
+tokens rotate: each one works once and is replaced on use. Newly approved
+connections receive them, including clients that do not request offline_access.
+The grant expires 30 days after authorization, however often it refreshes.
+Nothing needs to run in the background: the client refreshes on its next use
+within those 30 days. After 30 days, authorize again. Connections approved
+before rotating refresh without offline_access need one new authorization to
+enable renewal.
+
+Do not share one OAuth token set between processes. If two processes store
+the same tokens and refresh concurrently, Pages treats the second use of the
+refresh token as replay and revokes the whole grant. Do not use OAuth for
+several concurrent agents or CLI runs; use an API key there.
+
+OAuth credentials work on /mcp only, not the JSON API, sharing API, or native sync.
+After authorization, call list_pages from the actual connected chat. Dot's
+availability depends on its connection UI; a configured plugin alone isn't proof.
+
+### Kilo Desktop / CLI (OAuth, one process at a time)
+
+Use this only for a single Kilo process. Kilo processes share one stored token
+set, so Kilo Desktop plus the CLI, or several worktrees running at once, can
+refresh concurrently and revoke the grant. Use the API-key recipe above for
+those setups.
+
+Ask the human early to complete browser authorization. Meanwhile, merge this
+non-secret configuration into GLOBAL ~/.config/kilo/kilo.jsonc (respect
+XDG_CONFIG_HOME if customized). Preserve all other servers and settings. This
+is the Desktop/CLI format, not the older VS Code extension's mcpServers format.
+
+\`\`\`json
+${kiloConfig(origin)}
+\`\`\`
+
+If migrating the existing Pages entry, remove its Authorization header and
+replace oauth: false with the oauth object above. Keep X-Pages-Driver and any
+unrelated headers/settings. Do not delete the old key file: removing the header
+is enough to stop this connection using it, and other clients may still need it.
+
+Run kilo mcp auth pages. The human follows the browser link, signs in, checks the
+account and permissions, and approves. If no browser opens, give the human the
+link Kilo prints; do not retrieve browser cookies or search for credentials.
+Reload the Pages server or restart Kilo Desktop, then call list_pages from the
+actual chat. kilo mcp list is a diagnostic, not proof of authenticated tool use.
+If authorization reports a callback mismatch, report the URL without tokens;
+do not substitute a guessed client ID or silently fall back to an old key.
+If the grant was revoked or expired, run kilo mcp auth pages again.
+
+This deployment's public client is pages-kilo, with exact callback
+http://127.0.0.1:19876/mcp/oauth/callback, PKCE S256, and no client secret.
+The explicit clientId is required; dynamic registration is not enabled. Request
+pages:read pages:write offline_access for editing and reconnect after expiry.
+Configuration and the OAuth exchange were checked with Kilo CLI 7.4.21 and
+Desktop's bundled CLI 7.8.17. Do not inspect binaries to set up this recipe.
+Official configuration: https://kilo.ai/docs/automate/mcp/using-in-cli
 
 ## Documents and permissions
 
@@ -217,9 +277,9 @@ further limits the account's Page permissions.
 ## Authentication
 
 Browser: ${origin}/ — choose Sign In, or open ${origin}/api/auth/login.
-Agents can authorize supported OAuth clients as described above, or use an
-Anaconda API key for the same provider environment as browser
-Sign In. Production and staging keys are not interchangeable. Browser sign-in
+Coding agents and scripts use an Anaconda API key for the same provider
+environment as browser Sign In. Supported interactive clients can authorize
+with OAuth as described above. Production and staging keys are not interchangeable. Browser sign-in
 cookies and API keys are separate credentials; an OIDC access token is not an
 API key.
 
@@ -270,13 +330,16 @@ Send these headers on API and MCP requests:
 
 \`\`\`http
 Authorization: Bearer <ANACONDA_API_KEY>
-X-Pages-Driver: ChatGPT
+X-Pages-Driver: Kilo
+X-Pages-Agent: release agent
 Content-Type: application/json
 \`\`\`
 
 Use your application's name for X-Pages-Driver (for example Codex or Kilo).
-The verified key supplies the account and author name; the driver is a client
-label, not proof of a vendor or a permission grant. Keys need cloud:read for
+X-Pages-Agent is an optional session label; omit it or send it blank for no
+label. See "Name each session" above. The verified key supplies the account and
+author name; driver and agent labels are self-declared, not proof of a vendor
+or a permission grant. Keys need cloud:read for
 reading or cloud:write for reading and editing. API clients can omit Origin;
 a foreign Origin is rejected. Browser cookie writes require this site's Origin.
 
@@ -814,8 +877,8 @@ succeeds. Every error has a stable code. Branch on code, not on the error messag
 retryable:true means a retry can succeed; the code says whether to read first.
 Tool annotations mark reads readOnlyHint, keyed writes idempotentHint, and
 delete_page and purge_page destructiveHint. resources/list returns document
-links and resources/read reads those URLs. Supported OAuth clients use a Pages
-access token; other clients use an Anaconda API key. Both authenticate with
+links and resources/read reads those URLs. API-key clients send an Anaconda API
+key; supported OAuth clients send a Pages access token. Both authenticate with
 Authorization: Bearer, using the connection instructions above.
 
 Tool edits sync into the browser editor and carry the account/driver label.
@@ -827,9 +890,9 @@ node_range or block_ids shows where you are reading; whole-page and outline read
 show nothing. This presence is derived from your calls; you publish nothing extra. People see
 it as your account and client, such as "Kyle's Kilo". If several sessions share one
 account and client, each MCP session already gets its own caret: Pages hands out
-an Mcp-Session-Id on initialize, and your client echoes it. Send an X-Pages-Agent
-header with a short session label (at most 80 characters), such as "release
-agent", to name the session. A blank header means no label. Use report_page_progress for temporary
+an Mcp-Session-Id on initialize, and your client echoes it. An X-Pages-Agent
+label names the session ("Kyle's Kilo · release agent"); see "Name each
+session" above. Use report_page_progress for temporary
 agent activity and read_page_presence for recent selections. Use these tools for document work; /api/sync is a binary native client protocol,
 not a JSON editing endpoint.
 `;
