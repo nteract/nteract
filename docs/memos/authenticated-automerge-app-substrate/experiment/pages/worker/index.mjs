@@ -2288,11 +2288,7 @@ export class Page {
         });
         // Before the backend can save or anything is published, rebuild
         // bindings and conflicts the persisted entries may lack.
-        actorPersistence.enqueue(
-          actorAuthorship.replay(
-            await loadCommitAuthors(recordStore, (key, value) => commitAuthor(key, value)),
-          ),
-        );
+        actorPersistence.enqueue(actorAuthorship.replay(await loadCommitAuthors(recordStore)));
         backend = new SubductionBackend({
           signer,
           // Only the backend's saves attest authors; maintenance and flushes

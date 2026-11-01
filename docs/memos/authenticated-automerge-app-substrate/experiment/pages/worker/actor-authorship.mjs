@@ -49,6 +49,39 @@ export function commitFrame(value) {
   };
 }
 
+// An uncompressed Automerge change chunk: magic, the first 4 bytes of the
+// change hash, chunk type 1, a LEB128 body length, then the body, which opens
+// with the dependency hashes and the actor. The change hash is the SHA-256 of
+// everything after the checksum.
+const CHANGE_MAGIC = [0x85, 0x6f, 0x4a, 0x83];
+const CHANGE_CHUNK = 1;
+
+function uleb(bytes, at) {
+  let value = 0;
+  for (let shift = 0; shift < 35 && at < bytes.length; shift += 7) {
+    const byte = bytes[at++];
+    value += (byte & 0x7f) * 2 ** shift;
+    if (!(byte & 0x80)) return Number.isSafeInteger(value) ? { value, at } : null;
+  }
+  return null;
+}
+
+/** The actor named in an uncompressed change chunk's header, or null. The
+ * caller checks the chunk's hash; this only reads the layout. */
+export function changeHeaderActor(blob) {
+  if (!(blob instanceof Uint8Array) || blob.length < 12) return null;
+  if (!CHANGE_MAGIC.every((byte, i) => blob[i] === byte) || blob[8] !== CHANGE_CHUNK) return null;
+  const length = uleb(blob, 9);
+  if (!length || length.at + length.value !== blob.length) return null;
+  const deps = uleb(blob, length.at);
+  if (!deps) return null;
+  const actorLength = uleb(blob, deps.at + deps.value * 32);
+  if (!actorLength || actorLength.value < 1 || actorLength.value > 64) return null;
+  const end = actorLength.at + actorLength.value;
+  if (end > blob.length) return null;
+  return hex(blob.subarray(actorLength.at, end));
+}
+
 /** The issuer key of a native signed envelope, or null if it isn't one. */
 export function signedIssuer(signed) {
   if (!(signed instanceof Uint8Array) || signed.length < MIN_SIGNED_BYTES) return null;
@@ -330,9 +363,13 @@ export class ActorAuthorship {
       if (keys.size > 1) conflicts.push(actor);
       else if (!current) bindings.push([actor, [...keys][0]]);
     }
+    const conflicting = new Set(conflicts);
     for (const actor of conflicts) {
       if (!this.actors.has(actor) && this.actors.size >= this.max) {
-        const victim = [...this.actors].find(([, entry]) => !entry.conflict)?.[0];
+        // An actor about to become a conflict is never the one evicted.
+        const victim = [...this.actors].find(
+          ([other, entry]) => !entry.conflict && !conflicting.has(other),
+        )?.[0];
         if (victim === undefined) continue;
         this.actors.delete(victim);
         this.forgetChanges(victim);
@@ -362,7 +399,11 @@ export class ActorAuthorship {
       this.actors.set(actor, entry);
       put.push([actor, stored(entry)]);
     }
-    return { put, remove };
+    // The writes describe the final map: no actor is both put and removed.
+    return {
+      put: put.filter(([actor]) => this.actors.has(actor)),
+      remove: remove.filter((actor) => !this.actors.has(actor)),
+    };
   }
 
   /** Attested change hashes seen within FRESH_MS whose actor is published. */
@@ -374,15 +415,37 @@ export class ActorAuthorship {
   }
 }
 
+/** The signer and actor of a stored commit record, for replay, or null.
+ * It agrees with commitAuthor on every record: the change hash (SHA-256 of
+ * the chunk after its checksum) must equal the storage path's commit id and
+ * the frame's key, and the actor is read from that verified chunk's header.
+ * A full decode of a large change costs tens of milliseconds, so this reads
+ * only the header; a compressed or unusual chunk falls back to commitAuthor. */
+export async function replayAuthor(path, value) {
+  const match = typeof path === "string" ? COMMIT_PATH.exec(path) : null;
+  if (!match) return null;
+  const frame = commitFrame(value);
+  if (!frame || frame.key !== match[1]) return null;
+  const key = signedIssuer(frame.signed);
+  if (!key) return null;
+  const actor = changeHeaderActor(frame.blob);
+  if (!actor || !ACTOR.test(actor)) {
+    const author = commitAuthor(path, value);
+    return author && { key: author.key, actor: author.actor };
+  }
+  const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", frame.blob.subarray(8)));
+  return hex(digest) === frame.key ? { key, actor } : null;
+}
+
 /** The signer and actor of every stored commit record in a byte store.
- * `authorOf(key, value)` decodes one record (commitAuthor). The store holds
- * at most the backend's record and byte limits per document, the same
- * records the host already reads to load the document at startup. */
-export async function loadCommitAuthors(store, authorOf) {
+ * `authorOf(key, value)` reads one record (replayAuthor). The store holds at
+ * most the backend's record and byte limits per document, the same records
+ * the host already reads to load the document at startup. */
+export async function loadCommitAuthors(store, authorOf = replayAuthor) {
   const authors = [];
   for (const key of await store.list("")) {
     if (!COMMIT_PATH.test(key)) continue;
-    const author = authorOf(key, await store.load(key));
+    const author = await authorOf(key, await store.load(key));
     if (author) authors.push(author);
   }
   return authors;
@@ -405,28 +468,39 @@ export async function loadActorEntries(storage) {
 }
 
 /** Merge one effect into pending actor writes: value to put, or null to
- * delete. A later effect for an actor wins, except that a pending conflict is
- * never replaced by a put of a non-conflict entry. */
+ * delete. Each actor keeps one pending write, and a later effect replaces an
+ * earlier one: a put cancels a pending delete, and a delete cancels a pending
+ * put. A pending conflict is never replaced by a put of a non-conflict entry.
+ * Within one effect a put outranks a delete of the same actor: effects
+ * describe the final map, and an actor put there is in it. */
 export function mergeActorEffects(pending, { put = [], remove = [] }) {
+  const kept = new Set(put.map(([actor]) => actor));
+  for (const actor of remove) if (!kept.has(actor)) pending.set(actor, null);
   for (const [actor, value] of put)
     if (!(pending.get(actor)?.conflict && !value.conflict)) pending.set(actor, value);
-  for (const actor of remove) pending.set(actor, null);
   return pending;
 }
 
-/** One storage step for a batch of actor writes. In a transaction the puts
- * and deletes commit together. Without one they are issued back to back with
- * no await between them, so Durable Object storage coalesces them into one
+// Durable Object storage takes at most 128 keys per put or delete call.
+export const STORAGE_KEYS_PER_CALL = 128;
+
+/** One storage step for a batch of actor writes. Puts go out in objects of at
+ * most STORAGE_KEYS_PER_CALL keys, deletes one key per call. In a transaction
+ * they all commit together. Without one they are issued back to back with no
+ * await between them, so Durable Object storage coalesces them into one
  * atomic write. */
 export function writeActorBatch(storage, batch) {
   const apply = (target) => {
-    const puts = {};
+    const puts = [];
     const deletes = [];
     for (const [actor, value] of batch)
       if (value === null) deletes.push(ACTOR_PREFIX + actor);
-      else puts[ACTOR_PREFIX + actor] = value;
+      else puts.push([ACTOR_PREFIX + actor, value]);
+    const chunks = [];
+    for (let at = 0; at < puts.length; at += STORAGE_KEYS_PER_CALL)
+      chunks.push(Object.fromEntries(puts.slice(at, at + STORAGE_KEYS_PER_CALL)));
     return Promise.all([
-      ...(Object.keys(puts).length ? [target.put(puts)] : []),
+      ...chunks.map((entries) => target.put(entries)),
       ...deletes.map((key) => target.delete(key)),
     ]);
   };

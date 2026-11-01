@@ -9,6 +9,7 @@ import {
   ACTOR_PREFIX,
   ActorAuthorship,
   ActorPersistence,
+  STORAGE_KEYS_PER_CALL,
   actorRetryDelay,
   persistenceTransition,
   FRESH_MS,
@@ -19,6 +20,7 @@ import {
   loadCommitAuthors,
   mergeActorEffects,
   observeRecordSaves,
+  replayAuthor,
   signedIssuer,
 } from "./actor-authorship.mjs";
 import { Page } from "./index.mjs";
@@ -406,6 +408,48 @@ test("pending actor writes merge: later wins, but a conflict outlives a later bi
   assert.equal(pending.get(ACTOR), null);
   mergeActorEffects(pending, { put: [[ACTOR, { host: true }]] });
   assert.deepEqual(pending.get(ACTOR), { host: true });
+});
+
+/** Storage that refuses a put or delete call naming more keys than Durable
+ * Object storage accepts, inside or outside a transaction. */
+class LimitedStorage extends Storage {
+  calls = [];
+  check(key) {
+    const count = Array.isArray(key)
+      ? key.length
+      : typeof key === "object"
+        ? Object.keys(key).length
+        : 1;
+    this.calls.push(count);
+    if (count > STORAGE_KEYS_PER_CALL) throw Error(`${count} keys exceed the per-call limit`);
+  }
+  async put(key, value) {
+    this.check(key);
+    return super.put(key, value);
+  }
+  async delete(key) {
+    this.check(key);
+    return super.delete(key);
+  }
+  async transaction(callback) {
+    return callback(this);
+  }
+}
+
+test("pending writes keep one per actor: the later effect wins either way", () => {
+  const binding = { key: ANA_KEY, ...ANA, firstSeen: 0 };
+  const pending = new Map();
+  mergeActorEffects(pending, { remove: [ACTOR] });
+  mergeActorEffects(pending, { put: [[ACTOR, { conflict: true }]] });
+  assert.deepEqual(pending.get(ACTOR), { conflict: true }, "a put cancels a pending delete");
+  mergeActorEffects(pending, { remove: [ACTOR] });
+  assert.equal(pending.get(ACTOR), null, "a delete cancels a pending put");
+  // One effect that both evicts and reinserts an actor keeps the actor.
+  mergeActorEffects(pending, { put: [[ACTOR, binding]], remove: [ACTOR] });
+  assert.deepEqual(pending.get(ACTOR), binding);
+  mergeActorEffects(pending, { put: [[ACTOR, { conflict: true }]], remove: [ACTOR] });
+  mergeActorEffects(pending, { put: [[ACTOR, binding]] });
+  assert.deepEqual(pending.get(ACTOR), { conflict: true }, "a conflict is never downgraded");
 });
 
 class FlakyStorage extends Storage {
@@ -816,6 +860,112 @@ test("replay places conflicts within the cap, evicting idle bindings first", () 
   ]);
   assert.deepEqual(effects, { put: [[nth(4), { conflict: true }]], remove: [nth(1)] });
   assert.deepEqual([...state.actors.keys()], [nth(2), nth(4)]);
+});
+
+test("replay reads the same signer and actor as a full decode, and fails closed", async () => {
+  const [first, second] = actorChain(ACTOR, ["one", "x".repeat(20_000)]);
+  const records = [
+    await signedCommit(71, first),
+    await signedCommit(71, second, undefined, { history: [first] }),
+  ];
+  for (const record of records) {
+    const full = commitAuthor(record.path, record.value);
+    assert.deepEqual(await replayAuthor(record.path, record.value), {
+      key: full.key,
+      actor: full.actor,
+    });
+  }
+  const [record] = records;
+  const frame = record.value;
+  const tampered = (offset) => {
+    const copy = frame.slice();
+    copy[copy.length - offset] ^= 1;
+    return copy;
+  };
+  // A changed blob byte, a path naming another commit, or a fragment path
+  // attest nothing.
+  assert.equal(await replayAuthor(record.path, tampered(1)), null);
+  assert.equal(
+    await replayAuthor(record.path.replace(/[0-9a-f]{64}$/, "0".repeat(64)), frame),
+    null,
+  );
+  assert.equal(await replayAuthor(record.path.replace("/commits/", "/fragments/"), frame), null);
+  assert.equal(await replayAuthor(record.path, frame.subarray(0, 120)), null);
+  // A blob whose header doesn't parse falls back to the full decode, which
+  // also refuses it.
+  const badHeader = frame.slice();
+  const blobStart = frame.length - first.length;
+  badHeader[blobStart + 8] = 9;
+  assert.equal(await replayAuthor(record.path, badHeader), null);
+});
+
+test("consecutive restarts on a full map keep a conflict replay rebuilt", async () => {
+  const storage = new LimitedStorage();
+  const bindings = { [ANA_KEY]: writer(ANA), [BEN_KEY]: writer(BEN) };
+  const [x, a, b] = [nth(1), nth(2), nth(3)];
+  // Storage holds Ana's bindings for a and b; the map holds two actors.
+  await storage.put({
+    [`${ACTOR_PREFIX}${a}`]: { key: ANA_KEY, ...ANA, firstSeen: 0 },
+    [`${ACTOR_PREFIX}${b}`]: { key: ANA_KEY, ...ANA, firstSeen: 0 },
+  });
+  // The records: x has two signers, and Ben signed a commit on a's actor.
+  // x's conflict is placed first, while a is still the oldest binding.
+  const authors = [
+    { key: ANA_KEY, actor: x },
+    { key: BEN_KEY, actor: x },
+    { key: BEN_KEY, actor: a },
+  ];
+  const restart = async () => {
+    const { state } = authorship(bindings, { max: 2, entries: await loadActorEntries(storage) });
+    const persistence = new ActorPersistence(storage);
+    const effects = state.replay(authors);
+    const removed = new Set(effects.remove);
+    for (const [actor] of effects.put) assert.equal(removed.has(actor), false, "disjoint");
+    persistence.enqueue(effects);
+    await persistence.durable();
+    return state;
+  };
+  for (let n = 0; n < 3; n++) {
+    const state = await restart();
+    assert.equal(state.actors.get(a)?.conflict, true, `restart ${n}: a stays a conflict`);
+    const stored = Object.fromEntries(await loadActorEntries(storage));
+    assert.deepEqual(stored[a], { conflict: true }, `restart ${n}: a's conflict is durable`);
+    assert.deepEqual(stored[x], { conflict: true });
+    assert.equal(state.observe({ key: BEN_KEY, actor: a, now: FRESH_MS + 1 }).delta, null);
+  }
+});
+
+test("a replay of more actors than one storage call takes is written in chunks", async () => {
+  const storage = new LimitedStorage();
+  const persistence = new ActorPersistence(storage, { sleep: () => new Promise(() => {}) });
+  const { state } = authorship({ [ANA_KEY]: writer(ANA) });
+  const actors = Array.from({ length: 300 }, (_, n) => n.toString(16).padStart(32, "0"));
+  const effects = state.replay(actors.map((actor) => ({ key: ANA_KEY, actor })));
+  assert.equal(effects.put.length, 300);
+  persistence.enqueue(effects);
+  await persistence.durable();
+  assert.equal(persistence.state.phase, "idle");
+  assert.equal(Math.max(...storage.calls), STORAGE_KEYS_PER_CALL);
+  assert.equal((await loadActorEntries(storage)).length, 300);
+  // So is a batch of evictions and new bindings at the cap.
+  const { state: full } = authorship(
+    { [ANA_KEY]: writer(ANA) },
+    { max: 300, entries: await loadActorEntries(storage) },
+  );
+  storage.calls = [];
+  for (let n = 0; n < 200; n++)
+    persistence.enqueue(
+      full.observe({
+        key: ANA_KEY,
+        actor: (1000 + n).toString(16).padStart(32, "0"),
+        now: FRESH_MS + 1 + n,
+      }),
+    );
+  await persistence.durable();
+  assert.ok(storage.calls.length > 2, "evictions and bindings were written");
+  assert.ok(storage.calls.some((count) => count === STORAGE_KEYS_PER_CALL));
+  assert.ok(storage.calls.every((count) => count <= STORAGE_KEYS_PER_CALL));
+  assert.equal((await loadActorEntries(storage)).length, 300);
 });
 
 test("compaction waits until pending actor writes are stored", async () => {
