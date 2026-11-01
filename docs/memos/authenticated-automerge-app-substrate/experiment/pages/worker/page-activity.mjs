@@ -189,7 +189,10 @@ export class PageActivity {
       candidate.delete(oldest(mine)[0]);
     }
     // Over the Page-wide cap, the account that just grew gives up its own
-    // least recent session when it has more than one; otherwise the oldest goes.
+    // least recent session when it has more than one, so an account varying
+    // its session id never pushes out others. A new single-session account
+    // evicts the globally least recent entry: plain LRU across accounts,
+    // since otherwise a ninth agent could never appear.
     while (candidate.size > AGENT_PRESENCE.agents) {
       const mine = [...candidate].filter(
         ([, entry]) => entry.identity.principal === identity.principal,

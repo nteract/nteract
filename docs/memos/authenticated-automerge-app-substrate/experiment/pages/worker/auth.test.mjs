@@ -136,8 +136,9 @@ test("API-key invitation identity comes from provider whoami and configured name
 test("an MCP session id becomes an account-scoped presence tag, never the raw id", async (t) => {
   const fixture = await createAuthFixture();
   t.mock.method(globalThis, "fetch", fixture.fetch);
-  const request = (session) =>
-    new Request("https://pages.invalid/api/connect?page=test", {
+  const request = (session, path = "/mcp") =>
+    new Request(`https://pages.invalid${path}`, {
+      method: "POST",
       headers: {
         authorization: `Bearer ${fixture.apiKey()}`,
         ...(session !== undefined && { "mcp-session-id": session }),
@@ -154,6 +155,17 @@ test("an MCP session id becomes an account-scoped presence tag, never the raw id
   assert.equal(none.session, undefined);
   for (const bad of ["short", "has space here!", "x".repeat(200)])
     await assert.rejects(authenticate(request(bad), fixture.env), /Invalid MCP session id/);
+  // Internal forwards from /mcp keep the session.
+  const forwarded = await authenticate(
+    request("11111111-2222-4333-8444-555555555555", "/internal/tool"),
+    fixture.env,
+  );
+  assert.equal(forwarded.session, a.session);
+  // Other public routes ignore the header, even a malformed one.
+  for (const path of ["/api/tools", "/api/connect?page=test"]) {
+    const ignored = await authenticate(request("not valid!", path), fixture.env);
+    assert.equal(ignored.session, undefined, path);
+  }
 });
 
 test("cookie writes and WebSocket upgrades require same-origin, API keys never permit foreign Origin", () => {

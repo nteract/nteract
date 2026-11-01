@@ -340,17 +340,13 @@ function forwarded(request, path, body) {
   url.pathname = path;
   url.search = "";
   const headers = new Headers();
-  for (const name of [
-    "authorization",
-    "cookie",
-    "origin",
-    "sec-fetch-site",
-    "x-pages-driver",
-    "mcp-session-id",
-  ]) {
+  for (const name of ["authorization", "cookie", "origin", "sec-fetch-site", "x-pages-driver"]) {
     const value = request.headers.get(name);
     if (value) headers.set(name, value);
   }
+  // The MCP session travels only from /mcp; internal routes trust their forwards.
+  if (new URL(request.url).pathname === "/mcp" && request.headers.has("mcp-session-id"))
+    headers.set("mcp-session-id", request.headers.get("mcp-session-id"));
   if (request.headers.has("x-pages-driver") || new URL(request.url).searchParams.has("driver"))
     headers.set("x-pages-driver", driverLabel(request));
   const agent = agentLabel(request);

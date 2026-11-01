@@ -48,6 +48,10 @@ export function agentLabel(request) {
  * credential show as two agents. The tag is a digest scoped to the account,
  * so the raw session id never reaches other participants. */
 export async function sessionTag(request, principal) {
+  // Only the MCP endpoint, and the worker's own forwards from it to internal
+  // routes, carry a session. Elsewhere the header is ignored, never rejected.
+  const path = new URL(request.url).pathname;
+  if (path !== "/mcp" && !path.startsWith("/internal/")) return undefined;
   const value = request.headers.get("mcp-session-id");
   if (value === null) return undefined;
   if (!/^[A-Za-z0-9._-]{8,128}$/.test(value)) throw new HttpError(400, "Invalid MCP session id");

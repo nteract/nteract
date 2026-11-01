@@ -71,6 +71,8 @@ async function fixture(t, driver = "Kilo", agent) {
     flush: async () => {},
   });
   page.policy = new DocumentPolicy({ storage, metadata: () => page.metadata });
+  // The MCP endpoint builds absolute URLs from the configured public origin.
+  auth.env.NOTEBOOK_CLOUD_PUBLIC_ORIGIN ??= "https://pages.invalid";
   const call = async (operation, args = {}, session) => {
     const response = await worker.fetch(
       new Request("https://pages.invalid/api/tools", {
@@ -88,6 +90,32 @@ async function fixture(t, driver = "Kilo", agent) {
     const body = await response.json();
     assert.equal(response.status, 200, JSON.stringify(body));
     return body;
+  };
+  // The same tool through the MCP endpoint, as an MCP client sends it.
+  const mcp = async (operation, args = {}, session) => {
+    const response = await worker.fetch(
+      new Request("https://pages.invalid/mcp", {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${token}`,
+          "x-pages-driver": driver,
+          accept: "application/json, text/event-stream",
+          "content-type": "application/json",
+          ...(session && { "mcp-session-id": session }),
+        },
+        body: JSON.stringify({
+          jsonrpc: "2.0",
+          id: 1,
+          method: "tools/call",
+          params: { name: operation, arguments: { page_id: pageId, ...args } },
+        }),
+      }),
+      auth.env,
+    );
+    assert.equal(response.status, 200);
+    const body = await response.json();
+    assert.ok(!body.result?.isError, JSON.stringify(body));
+    return body.result.structuredContent;
   };
   // The fixture's caller owns the Page.
   const identity = await authenticate(
@@ -113,6 +141,7 @@ async function fixture(t, driver = "Kilo", agent) {
     });
   };
   return {
+    mcp,
     page,
     handle,
     storage,
@@ -223,15 +252,23 @@ test("reading markers name what the agent read, even if text lands during the re
   assert.ok(range.start_utf16 > "A fade first. ".length, "the original hit, carried forward");
 });
 
-test("two MCP sessions on one key show as two agents", async (t) => {
+test("/api/tools ignores an MCP session header, even a malformed one", async (t) => {
   const f = await fixture(t);
   await f.call("read_page", { search: ["fade"] }, "11111111-2222-4333-8444-555555555555");
-  await f.call("read_page", { search: ["fade"] }, "66666666-7777-4888-9999-000000000000");
+  await f.call("read_page", { search: ["fade"] }, "not a valid id!");
+  const agents = f.agents();
+  assert.equal(agents.length, 1, "no session minted outside /mcp");
+  assert.equal(agents[0].session, null);
+});
+
+test("two MCP sessions on one key show as two agents through /mcp", async (t) => {
+  const f = await fixture(t);
+  await f.mcp("read_page", { search: ["fade"] }, "11111111-2222-4333-8444-555555555555");
+  await f.mcp("read_page", { search: ["fade"] }, "66666666-7777-4888-9999-000000000000");
   const agents = f.agents();
   assert.equal(agents.length, 2);
   assert.notEqual(agents[0].session, agents[1].session);
   for (const agent of agents) assert.match(agent.session, /^[0-9a-f]{16}$/);
-  // The same session again updates its own record.
-  await f.call("read_page", { search: ["Monday"] }, "11111111-2222-4333-8444-555555555555");
+  await f.mcp("read_page", { search: ["Monday"] }, "11111111-2222-4333-8444-555555555555");
   assert.equal(f.agents().length, 2);
 });

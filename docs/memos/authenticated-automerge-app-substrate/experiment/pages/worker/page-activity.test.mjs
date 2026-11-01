@@ -431,3 +431,20 @@ test("with room on the Page, one account keeps at most eight sessions", (t) => {
     [4, 5, 6, 7, 8, 9, 10, 11],
   );
 });
+
+test("a ninth single-session account evicts the least recent agent: plain LRU", (t) => {
+  const f = fixture(t);
+  for (let i = 0; i < 9; i++) {
+    const principal = `user:account-${i}`;
+    f.metadata.acl.members[principal] = { role: "editor", generation: 1 };
+    t.mock.timers.tick(10);
+    assert.equal(
+      f.activity.agentEvent(agentIdentity({ principal }), "write", blockTarget(f)),
+      true,
+    );
+  }
+  const principals = f.broadcasts.at(-1).agents.map((a) => a.principal);
+  assert.equal(principals.length, 8);
+  assert.ok(!principals.includes("user:account-0"), "the oldest went");
+  assert.ok(principals.includes("user:account-8"), "the newest appears");
+});
