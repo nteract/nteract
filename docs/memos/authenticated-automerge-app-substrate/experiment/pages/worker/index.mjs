@@ -417,8 +417,10 @@ function logCountRepair(counts) {
 }
 /** Journal operation names for the Catalog's lifecycle routes. */
 const LIFECYCLE_OPERATIONS = { trash: "trash_page", restore: "restore_page", purge: "purge_page" };
-/** A request's base_heads as requireHeads judges them. */
+/** A request's base_heads as requireHeads judges them, or `absent` when the
+ * request omitted them. The lifecycle machine decides what absence means. */
 function headsCheck(doc, heads) {
+  if (heads === undefined) return "absent";
   try {
     requireHeads(doc, heads);
     return "match";

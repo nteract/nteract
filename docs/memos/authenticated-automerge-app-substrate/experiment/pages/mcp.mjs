@@ -132,7 +132,7 @@ const guard = {
     type: "array",
     items: string,
     description:
-      "Observed heads from read_page or read_page_changes. edit_page, patch_page and delete_page require exact current heads by default; patch_page conflict_scope:target accepts older heads for unchanged replace_match and format_match targets. A stale_heads refusal carries current_heads (and comment_heads), so reconsider the edit and resend with those heads and a new key, without another read. manage_page_comment add with selected_text resolves its passage at these heads; other comment actions ignore them.",
+      "Observed heads from read_page or read_page_changes. edit_page and patch_page require exact current heads by default; patch_page conflict_scope:target accepts older heads for unchanged replace_match and format_match targets. delete_page checks them only when given. A stale_heads refusal carries current_heads (and comment_heads), so reconsider the edit and resend with those heads and a new key, without another read. manage_page_comment add with selected_text resolves its passage at these heads; other comment actions ignore them.",
   },
   retry_token: {
     ...string,
@@ -649,9 +649,16 @@ export const tools = [
   ),
   tool(
     "delete_page",
-    "Move a Page you own to Trash. Content, comments and sharing are kept, and restore_page brings the Page back with the same ID. Trash a Page's sub-pages first (page_has_children otherwise); subtree Trash is not available yet. A Project's home Page cannot be trashed. While in Trash, collaborators lose access and the Page leaves default listings; you can still read it, but not edit, comment or share. Use list_pages with in_trash:true to find trashed Pages. Deleting permanently is a separate purge_page call. A result with superseded:true and applied:false means this request was not applied; read the Page's current state (list_pages with in_trash, or read_page) before deciding what to do.",
-    guard,
-    ["page_id", "base_heads", "idempotency_key"],
+    "Move a Page you own to Trash. Content, comments and sharing are kept, and restore_page brings the Page back with the same ID. Needs only page_id, idempotency_key and the list_pages retry_token, like restore_page: no read_page first. base_heads is an optional guard; when given, they must be the Page's current heads (stale_heads otherwise). Trash a Page's sub-pages first (page_has_children otherwise); subtree Trash is not available yet. A Project's home Page cannot be trashed. While in Trash, collaborators lose access and the Page leaves default listings; you can still read it, but not edit, comment or share. Use list_pages with in_trash:true to find trashed Pages. Deleting permanently is a separate purge_page call. A result with superseded:true and applied:false means this request was not applied; read the Page's current state (list_pages with in_trash, or read_page) before deciding what to do.",
+    {
+      ...guard,
+      base_heads: {
+        ...guard.base_heads,
+        description:
+          "Optional. Heads from a read of this Page; when given, the trash is refused with stale_heads unless they are current. Omit to trash on the catalog retry_token alone.",
+      },
+    },
+    ["page_id", "idempotency_key"],
     DESTRUCTIVE,
   ),
   tool(

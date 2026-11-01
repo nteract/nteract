@@ -493,7 +493,8 @@ page_quota_exceeded with limit and count; tell the person rather than retrying.
   reopen also take thread_ids to change up to 100 threads in one call. See Comments below.
 - import_page_image: page_id and a ChatGPT-supplied file descriptor; returns a
   private asset_id and asset_url for a subsequent insert_image edit. See Images above.
-- delete_page: move a Page you own to Trash. See Trash below.
+- delete_page: page_id, idempotency_key and the list_pages retry_token move a Page
+  you own to Trash; base_heads is an optional guard. See Trash below.
 - restore_page: page_id, idempotency_key and the list_pages retry_token.
 - purge_page: permanently delete a trashed Page in two calls. See Trash below.
 - create_project, list_projects, get_project, update_project: Projects. See Projects below.
@@ -542,7 +543,10 @@ retry the same request shortly.
 ### Trash
 
 delete_page is recoverable. It moves the Page to Trash with its content, comments
-and sharing intact, and hides it from default listings. Collaborators lose access
+and sharing intact, and hides it from default listings. It needs only page_id,
+idempotency_key and the list_pages retry_token, so trashing several Pages takes
+one call each with no read_page first. Send base_heads only when the trash should
+fail if the Page changed since your read (stale_heads). Collaborators lose access
 while it is in Trash. The owner can still read it (read_page, read_page_changes,
 list_page_comments), but cannot edit, comment, report progress or change sharing
 until it is restored; those calls return code page_trashed. Reads of a trashed
@@ -721,8 +725,9 @@ Pages preserves supplied body content; it does not silently delete headings.
 
 ### Guarded edits
 
-Read before editing. Document edits, passage comments and deletion require page_id,
-base_heads from a read, and idempotency_key. Include retry_token
+Read before editing. Document edits and passage comments require page_id,
+base_heads from a read, and idempotency_key; delete_page takes base_heads as an
+optional guard. Include retry_token
 from read_page or read_page_changes for edits/comments; use the list_pages token for
 create, delete, restore and purge.
 Append a new UUID to retry_key_prefix from the same result for
