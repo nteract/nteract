@@ -656,13 +656,16 @@ test("many changes from one actor in one batch each find their own author", asyn
     h,
     agents.map((_, i) => [
       host,
-      (d, path) => A.splice(d, path, d.blocks.first.richText.length, 0, ` w${String(i).padStart(2, "0")}`),
+      (d, path) =>
+        A.splice(d, path, d.blocks.first.richText.length, 0, ` w${String(i).padStart(2, "0")}`),
     ]),
   );
   hashes.forEach((hash, i) => h.changeIdentities.set(hash, agents[i]));
   const styles = marks(h).map((m) => m.style);
   assert.deepEqual(
     styles,
-    agents.map((who) => `--peer-color: ${presenceColor(who.principal, who.driver, who.agent).background}`),
+    agents.map(
+      (who) => `--peer-color: ${presenceColor(who.principal, who.driver, who.agent).background}`,
+    ),
   );
 });
