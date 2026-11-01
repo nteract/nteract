@@ -183,7 +183,7 @@ export function createWordgardCollaboration({
           .join(" · "),
         tag: "agent",
         title: agent.agent ? `${identity.label} (${agent.agent})` : identity.label,
-        color: presenceColor(agent.principal, agent.driver),
+        color: presenceColor(agent.principal, agent.driver, agent.agent),
         idle: agent.state === "idle",
         message,
       };
@@ -211,6 +211,21 @@ export function createWordgardCollaboration({
     return marks;
   }
 
+  // The change that wrote the character a cursor names: cursors read
+  // "counter@actor", and each change covers ops startOp..maxOp of its actor.
+  // `byActor` indexes the batch's changes by actor, so each lookup scans only
+  // that actor's changes.
+  function writtenBy(cursor, byActor) {
+    const at = typeof cursor === "string" ? cursor.indexOf("@") : -1;
+    if (at < 1) return null;
+    const counter = Number(cursor.slice(0, at));
+    return (
+      byActor
+        .get(cursor.slice(at + 1))
+        ?.find((change) => change.startOp <= counter && counter <= change.maxOp)?.hash ?? null
+    );
+  }
+
   function observeChange(event) {
     if (event.remote === false || !event.actors?.length || !event.changes) return;
     const doc = event.nativeAfter;
@@ -218,22 +233,50 @@ export function createWordgardCollaboration({
     const object = textObject(doc, id);
     const map = event.after?.map ?? getCurrent()?.map;
     if (typeof source !== "string" || !object || !map) return;
+    const byActor = new Map();
+    for (const change of event.changeOps ?? []) {
+      if (!byActor.has(change.actor)) byActor.set(change.actor, []);
+      byActor.get(change.actor).push(change);
+    }
     event.changes.iterChangedRanges((_oldFrom, _oldTo, newFrom, newTo) => {
       const from = mapped(map.wgToAm, newFrom);
       const to = mapped(map.wgToAm, newTo);
       if (from === null || to === null || from >= to || to > source.length) return;
       const text = source.slice(from, to);
       if (!text.replaceAll("\ufffc", "").trim()) return;
-      // Anchor the final character, not the next character after the range:
-      // deleting the received text must not illuminate unrelated surviving text.
-      const last = to - Array.from(text).at(-1).length;
-      illumination.push({
-        object,
-        first: A.getCursor(doc, pathFor(id), from, "after"),
-        last: A.getCursor(doc, pathFor(id), last, "before"),
-        actors: [...new Set(event.actors)],
-        until: now() + illuminationTTL,
-      });
+      // One mark per run of characters written by the same change, so adjacent
+      // inserts from two authors in one batch keep their own colors. Characters
+      // no change in this batch wrote (formatting on old text) have no known
+      // author: they get a mark with no hash, drawn in the neutral color.
+      const path = pathFor(id);
+      let start = from,
+        owner;
+      for (let at = from; at <= to; ) {
+        const point = at < to ? source.codePointAt(at) : undefined;
+        const width = point > 0xffff ? 2 : 1;
+        const next = at < to ? writtenBy(A.getCursor(doc, path, at, "after"), byActor) : Symbol();
+        if (at === from) owner = next;
+        else if (next !== owner) {
+          const run = source.slice(start, at);
+          if (run.replaceAll("\ufffc", "").trim()) {
+            // Anchor the final character, not the next character after the run:
+            // deleting the received text must not illuminate surviving text.
+            const last = at - Array.from(run).at(-1).length;
+            illumination.push({
+              object,
+              first: A.getCursor(doc, path, start, "after"),
+              last: A.getCursor(doc, path, last, "before"),
+              actors: [...new Set(event.actors)],
+              hash: owner,
+              until: now() + illuminationTTL,
+            });
+          }
+          start = at;
+          owner = next;
+        }
+        if (at === to) break;
+        at += width;
+      }
     });
     illumination = illumination.filter((mark) => mark.until > now()).slice(-128);
   }
@@ -307,9 +350,21 @@ export function createWordgardCollaboration({
         const from = mapped(current?.map.amToWg, A.getCursorPosition(doc, path, mark.first));
         const to = mapped(current?.map.amToWg, last + (point > 0xffff ? 2 : 1));
         if (from === null || to === null) continue;
+        // The underline takes the editor's own caret color when we know who
+        // they are; otherwise the neutral edit color.
+        // Only a host-attested change identity names an author. Anything
+        // else, including the host's shared actor, stays neutral.
+        const who = mark.hash ? replica.changeIdentity?.(mark.hash) : null;
         add(from, to, {
           class: "remote-edit",
-          title: `Edited by ${[...new Set(mark.actors.map((actor) => replica.actorDisplayName(actor)))].join(", ")}`,
+          // An unattested range never borrows a name: the host's actor would
+          // name whichever agent edited last.
+          title: who
+            ? `Edited by ${[who.displayName, who.driver, who.agent].filter(Boolean).join(" · ")}`
+            : "Edited by a collaborator",
+          ...(who?.principal && {
+            style: `--peer-color: ${presenceColor(who.principal, who.driver, who.agent).background}`,
+          }),
         });
       } catch {
         // The native text object or selected characters no longer exist.

@@ -160,6 +160,10 @@ export class PageSession {
   presencePaused = false;
   profiles = {};
   actorNames = new Map();
+  // Who made a change, by hash, from the host's tool-edit hints. The host
+  // writes every API agent's edits, so a change hash, not an actor, names the
+  // author. Browser edits have no host-attested author yet and stay neutral.
+  changeIdentities = new Map();
   toolHints = [];
   composing = 0;
   localDepth = 0;
@@ -1485,6 +1489,9 @@ export class PageSession {
   actorDisplayName(actor) {
     return this.actorNames.get(actor) ?? "Collaborator";
   }
+  changeIdentity(hash) {
+    return this.changeIdentities.get(hash) ?? null;
+  }
   watchPresence(fn) {
     this.presenceObservers.add(fn);
     return () => this.presenceObservers.delete(fn);
@@ -1637,8 +1644,18 @@ export class PageSession {
       for (const head of message.heads) {
         try {
           const meta = A.inspectChange(this.doc, head);
-          if (meta && display) this.actorNames.set(meta.actor, display);
-          else pending = true;
+          if (meta && display) {
+            this.actorNames.set(meta.actor, display);
+            const who = {
+              principal: message.identity?.principal,
+              displayName: message.identity?.displayName,
+              driver: message.identity?.driver,
+              agent: typeof message.identity?.agent === "string" ? message.identity.agent : null,
+            };
+            this.changeIdentities.set(head, who);
+            if (this.changeIdentities.size > 512)
+              this.changeIdentities.delete(this.changeIdentities.keys().next().value);
+          } else pending = true;
         } catch {
           pending = true;
         }

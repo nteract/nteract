@@ -464,7 +464,7 @@
 }
 .wordgard-document .remote-edit {
   text-decoration: underline;
-  text-decoration-color: #b79551;
+  text-decoration-color: var(--peer-color, #b79551);
   text-decoration-thickness: 2px;
   text-underline-offset: 4px;
 }

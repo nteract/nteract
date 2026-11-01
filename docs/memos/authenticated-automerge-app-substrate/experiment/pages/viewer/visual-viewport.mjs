@@ -38,7 +38,9 @@ export function trackVisualViewport(win = window, root = win.document.documentEl
     });
     root.style.setProperty("--vv-top", `${top}px`);
     root.style.setProperty("--vv-bottom", `${bottom}px`);
-    if (height) root.style.setProperty("--vv-height", `${height}px`);
+    // Without a visual viewport nothing would keep this current, so leave it
+    // unset and let CSS fall back to 100dvh.
+    if (viewport && height) root.style.setProperty("--vv-height", `${height}px`);
   };
   apply();
   if (!viewport) return () => {};

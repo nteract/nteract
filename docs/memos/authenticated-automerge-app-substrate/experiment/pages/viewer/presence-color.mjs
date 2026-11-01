@@ -5,7 +5,10 @@ import {
   readableForegroundForColor,
 } from "../../../../../../packages/runtimed/src/notebook-actor-color.ts";
 
-export function presenceColor(principal, driver) {
-  const background = peerColor(`${principal ?? ""}/${(driver ?? "").toLowerCase()}`);
+// The session label joins the key when present, so two labeled sessions of one
+// account and harness get different colors; unlabeled keys are unchanged.
+export function presenceColor(principal, driver, agent) {
+  const base = `${principal ?? ""}/${(driver ?? "").toLowerCase()}`;
+  const background = peerColor(agent ? `${base}/${agent}` : base);
   return { background, foreground: readableForegroundForColor(background) };
 }

@@ -212,6 +212,47 @@ test("only signed host profile hints name edits, including hints arriving before
   assert.equal(session.toolHints.length, 0);
   assert.equal(session.actorDisplayName(A.getActorId(later)), "Kyle Kelley · ChatGPT");
 });
+test("host tool-edit hints name each change by hash, with the session label", () => {
+  let doc = A.from({ text: "one" });
+  const agentChange = A.change(A.clone(doc), (d) => A.updateText(d, ["text"], "two"));
+  const session = new PageSession("fixture");
+  session.handle = { doc: () => doc };
+  session.connection = { serverSenderId: "verified-host" };
+  session.ephemeral({
+    senderId: "verified-host",
+    message: {
+      kind: "tool-edit",
+      heads: A.getHeads(agentChange),
+      identity: {
+        principal: "user:kyle",
+        displayName: "Kyle Kelley",
+        driver: "Kilo",
+        agent: "rich text",
+      },
+    },
+  });
+  doc = agentChange;
+  session.resolveToolHints();
+  assert.deepEqual(session.changeIdentity(A.getHeads(agentChange)[0]), {
+    principal: "user:kyle",
+    displayName: "Kyle Kelley",
+    driver: "Kilo",
+    agent: "rich text",
+  });
+  // A browser can't attest an author: a selection's claimed actor is ignored,
+  // and selections carry no actor at all.
+  session.profiles = { peer: { principal: "user:ana", displayName: "Ana", driver: "Browser" } };
+  session.ephemeral({
+    senderId: "peer",
+    message: {
+      kind: "selection",
+      value: { block_id: "b", start: "s", end: "e", heads: [], actor: A.getActorId(agentChange) },
+    },
+  });
+  assert.equal(session.changeIdentity(A.getHeads(agentChange)[0]).principal, "user:kyle");
+  assert.equal(typeof session.actorIdentity, "undefined");
+});
+
 test("presence rejects malformed causal heads and ignores claimed display identity", () => {
   const session = new PageSession("fixture");
   session.connection = { serverSenderId: "verified-host" };

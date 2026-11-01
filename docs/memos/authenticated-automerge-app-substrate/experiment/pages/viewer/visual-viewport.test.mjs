@@ -63,3 +63,18 @@ test("the tracker keeps CSS variables current and cleans up", async () => {
   assert.equal(props.has("--vv-bottom"), false);
   assert.equal(props.has("--vv-height"), false);
 });
+
+test("without a visual viewport the height falls back to CSS", () => {
+  const props = new Map();
+  const root = {
+    clientHeight: 844,
+    style: {
+      setProperty: (name, value) => props.set(name, value),
+      removeProperty: (name) => props.delete(name),
+    },
+  };
+  const stop = trackVisualViewport({ visualViewport: undefined, document: {} }, root);
+  assert.equal(props.has("--vv-height"), false);
+  assert.equal(props.get("--vv-bottom"), "0px");
+  stop();
+});

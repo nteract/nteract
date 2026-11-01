@@ -1012,7 +1012,7 @@ dialog::backdrop {
   border-bottom: 1px dotted color-mix(in srgb, var(--primary) 45%, transparent);
 }
 .remote-edit {
-  border-bottom: 2px solid var(--warning);
+  border-bottom: 2px solid var(--peer-color, var(--warning));
   animation: illumination 2s ease-out;
 }
 /* A comment anchor is a translucent orange fill with an underline. Over a
@@ -1048,7 +1048,7 @@ dialog::backdrop {
 }
 @keyframes illumination {
   from {
-    background: color-mix(in srgb, var(--warning) 24%, transparent);
+    background: color-mix(in srgb, var(--peer-color, var(--warning)) 18%, transparent);
   }
   to {
     background: transparent;

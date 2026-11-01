@@ -2977,7 +2977,10 @@ export class Page {
         this.cacheTitle();
         this.handle.broadcast({
           kind: "tool-edit",
-          identity: publicIdentity(identity),
+          identity: {
+            ...publicIdentity(identity),
+            ...(identity.agent && { agent: identity.agent }),
+          },
           heads: receipt.heads,
         });
         if (caret)

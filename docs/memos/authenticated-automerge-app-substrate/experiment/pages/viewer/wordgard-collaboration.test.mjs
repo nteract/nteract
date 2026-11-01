@@ -48,12 +48,14 @@ function harness(doc) {
   const scrolls = [];
   const publications = [];
   const names = new Map();
+  const changeIdentities = new Map();
   const replica = {
     doc,
     peers: new Map(),
     canWrite: true,
     publishPresence: (value) => publications.push(value),
     actorDisplayName: (actor) => names.get(actor) ?? "Collaborator",
+    changeIdentity: (hash) => changeIdentities.get(hash) ?? null,
   };
   const editor = {
     hasFocus: true,
@@ -80,6 +82,7 @@ function harness(doc) {
     now: () => time,
   });
   return {
+    changeIdentities,
     replica,
     editor,
     collaboration,
@@ -308,12 +311,13 @@ test("remote illumination follows native cursors, refreshes trusted names, and e
     remote: true,
   });
   assert.ok(entries(h.collaboration.ranges()).length > 0);
+  // No host-attested change: never borrow the actor's name.
   h.names.set(A.getActorId(after), "Kyle Kelley · Codex");
   const mark = entries(h.collaboration.ranges())[0];
   assert.ok(
     mark.value.eq(
       Decoration.Range.wrapper("span", {
-        attributes: { class: "remote-edit", title: "Edited by Kyle Kelley · Codex" },
+        attributes: { class: "remote-edit", title: "Edited by a collaborator" },
       }),
     ),
   );
@@ -525,4 +529,115 @@ test("an agent's newest progress message rides on its caret", () => {
   assert.equal(dot.title, "Kilo on behalf of Kyle Kelley (release agent): Fixing the table");
   h.replica.agentProgress = new Map();
   assert.equal(h.collaboration.carets()[0].message, "");
+});
+
+// Insert text into the first block as one or more changes by fresh actors,
+// then feed the viewer one sync event carrying all of them.
+function batch(h, edits) {
+  const before = h.replica.doc;
+  const heads = A.getHeads(before);
+  let doc = before;
+  for (const [actor, apply] of edits)
+    doc = A.change(A.clone(doc, { actor }), (d) => apply(d, textPath("first")));
+  const metas = A.getChangesMetaSince(doc, heads);
+  h.replica.doc = doc;
+  h.collaboration.observeChange({
+    nativeBefore: before,
+    nativeAfter: doc,
+    before: current(before),
+    after: current(doc),
+    changes: projectChanges(current(before).doc, current(doc).doc),
+    actors: [...new Set(metas.map((m) => m.actor))],
+    hashes: metas.map((m) => m.hash),
+    changeOps: metas.map(({ hash, actor, startOp, maxOp }) => ({ hash, actor, startOp, maxOp })),
+    remote: true,
+  });
+  return metas.map((m) => m.hash);
+}
+const marks = (h) =>
+  entries(h.collaboration.ranges()).map((e) => {
+    const attrs = e.value.elt.attrs;
+    const at = attrs.indexOf("style");
+    return {
+      from: e.from,
+      to: e.to,
+      style: at < 0 ? null : attrs[at + 1],
+      title: attrs[attrs.indexOf("title") + 1],
+    };
+  });
+
+test("the edit underline takes the editor's caret color only from a host-attested change", async () => {
+  const { presenceColor } = await import("./presence-color.mjs");
+  const h = harness(fixture("Hello world"));
+  const at = h.replica.doc.blocks.first.richText.indexOf("world");
+  const [hash] = batch(h, [["a1".repeat(16), (d, path) => A.splice(d, path, at, 0, "new ")]]);
+  assert.equal(marks(h)[0].style, null, "unknown author: neutral");
+  h.changeIdentities.set(hash, {
+    principal: "user:kyle",
+    displayName: "Kyle Kelley",
+    driver: "Kilo",
+    agent: "rich text",
+  });
+  const [mark] = marks(h);
+  assert.equal(
+    mark.style,
+    `--peer-color: ${presenceColor("user:kyle", "Kilo", "rich text").background}`,
+  );
+  assert.equal(mark.title, "Edited by Kyle Kelley · Kilo · rich text");
+});
+
+test("adjacent and interleaved inserts from two agents in one batch keep their own colors", async () => {
+  const { presenceColor } = await import("./presence-color.mjs");
+  const ALPHA = { principal: "user:kyle", driver: "Kilo", agent: "release agent" };
+  const OMEGA = { principal: "user:kyle", driver: "Kilo", agent: "rich text" };
+  const color = (who) =>
+    `--peer-color: ${presenceColor(who.principal, who.driver, who.agent).background}`;
+  // Adjacent: B types right after A's text, so the projection merges them.
+  {
+    const h = harness(fixture("one two"));
+    const [a, b] = batch(h, [
+      ["a2".repeat(16), (d, path) => A.splice(d, path, 0, 0, "AAAA")],
+      ["b2".repeat(16), (d, path) => A.splice(d, path, 4, 0, "BBBB")],
+    ]);
+    h.changeIdentities.set(a, ALPHA);
+    h.changeIdentities.set(b, OMEGA);
+    assert.deepEqual(
+      marks(h).map((m) => m.style),
+      [color(ALPHA), color(OMEGA)],
+    );
+  }
+  // Interleaved: B inserts inside A's fresh text.
+  {
+    const h = harness(fixture("one two"));
+    const [a, b] = batch(h, [
+      ["a3".repeat(16), (d, path) => A.splice(d, path, 0, 0, "AAAAAA")],
+      ["b3".repeat(16), (d, path) => A.splice(d, path, 3, 0, "BB")],
+    ]);
+    h.changeIdentities.set(a, ALPHA);
+    h.changeIdentities.set(b, OMEGA);
+    assert.deepEqual(
+      marks(h).map((m) => m.style),
+      [color(ALPHA), color(OMEGA), color(ALPHA)],
+    );
+  }
+});
+
+test("formatting-only changes and unknown changes stay neutral", () => {
+  const h = harness(fixture("Hello world"));
+  // Bold existing text: no character in the range was written by this batch.
+  const [hash] = batch(h, [
+    [
+      "a4".repeat(16),
+      (d, path) => A.mark(d, path, { start: 1, end: 6, expand: "none" }, "strong", true),
+    ],
+  ]);
+  h.changeIdentities.set(hash, { principal: "user:kyle", driver: "Kilo", agent: "rich text" });
+  // The host actor names whichever agent edited last; it must not leak.
+  h.names.set("a4".repeat(16), "Kyle Kelley · Kilo · release agent");
+  const found = marks(h);
+  assert.ok(found.length > 0, "the formatting change is illuminated");
+  for (const mark of found) {
+    assert.equal(mark.style, null);
+    assert.equal(mark.title, "Edited by a collaborator");
+  }
 });
