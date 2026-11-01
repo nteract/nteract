@@ -123,6 +123,11 @@ const editConfig = (editable) => [
   ...(editable ? wordgardCodeLanguages(CODE_LANGUAGES) : []),
 ];
 
+// A pending upload is on screen when the editor draws its inline preview.
+// The preview clears itself when its insertion point is deleted; the status
+// row, with Cancel, then shows again.
+const previewShown = (editor) => !!editor?.state.field(uploadPreview, false);
+
 export function WordgardEditor(props) {
   const {
     replica,
@@ -152,8 +157,7 @@ export function WordgardEditor(props) {
     [remoteCarets, setRemoteCarets] = useState([]),
     [link, setLink] = useState(null),
     [editingLink, setEditingLink] = useState(false),
-    [imageStatus, setImageStatus] = useState(null),
-    [imagePreviewShown, setImagePreviewShown] = useState(false);
+    [imageStatus, setImageStatus] = useState(null);
   const [generation, reset] = useState(0);
   const pendingLink = useRef(null),
     refresh = useRef(() => {}),
@@ -419,7 +423,6 @@ export function WordgardEditor(props) {
             effects: setUploadPreview.of(preview),
             annotations: Transaction.addToHistory.of(false),
           });
-        setImagePreviewShown(!!preview);
       },
     });
     imageUploader.current = uploader;
@@ -531,6 +534,9 @@ export function WordgardEditor(props) {
         editor.dispatch({
           changes: projectChanges(editor.state.doc, event.after.doc),
           selection,
+          // The native cursor can move even when the rendered text is equal
+          // (a peer deletes one "a" and adds another), so re-resolve always.
+          effects: editor.state.field(uploadPreview) ? resolveUploadPreview.of(null) : [],
           annotations: [...remoteAnnotations(), history.isolate.of(true)],
         });
       } catch (error) {
@@ -615,6 +621,7 @@ export function WordgardEditor(props) {
       const highlight = selectionHighlight(state);
       snapshot.highlight = highlight.color;
       snapshot.highlightPresent = highlight.colors.length > 0;
+      snapshot.uploadPreview = previewShown(editor);
       for (const [name, mark] of Object.entries(marks))
         snapshot[name] = selection.empty
           ? !!mark.isInSet(state.sel.activeMarks)
@@ -999,7 +1006,7 @@ export function WordgardEditor(props) {
           if (files.length && target) imageUploader.current?.start(files, target);
         }}
       />
-      {imageStatus && !(imageStatus.pending && imagePreviewShown) && (
+      {imageStatus && !(imageStatus.pending && format?.uploadPreview) && (
         <div className="image-upload-status" role="status" aria-live="polite">
           <span>{imageStatus.message}</span>
           {imageStatus.retryable && editable && (

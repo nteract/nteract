@@ -70,6 +70,7 @@ function fixture(markdown) {
     if (event.remote)
       state = state.update({
         changes: projectChanges(state.doc, event.after.doc),
+        effects: state.field(uploadPreview) ? resolveUploadPreview.of(null) : [],
         annotations: [Transaction.remote.of(true), Transaction.addToHistory.of(false)],
       }).state;
   });
@@ -138,4 +139,17 @@ test("clearing removes the preview", () => {
   f.startUpload(2);
   f.editor.dispatch({ effects: setUploadPreview.of(null) });
   assert.equal(f.preview(), null);
+});
+
+test("a remote change that leaves the text equal still moves the preview with its cursor", () => {
+  const f = fixture("aaaa");
+  const target = f.startUpload(1 + 2);
+  // One peer change deletes the first "a" and appends one: the rendered text is
+  // unchanged, so the projection is empty, but the native cursor moved left.
+  f.remote((d) => {
+    A.splice(d, textPath("one"), 0, 1);
+    A.splice(d, textPath("one"), d.blocks.one.richText.length, 0, "a");
+  });
+  assert.equal(f.landing(target), 1 + 1);
+  assert.equal(f.preview(), f.landing(target));
 });
