@@ -27,6 +27,7 @@ import {
   encode,
 } from "./wordgard-model.mjs";
 import { MARK_REGISTRY } from "../model/marks.mjs";
+import FEATURE_FILE from "../model/features.json" with { type: "json" };
 import {
   documentFeatures,
   featureRegistry,
@@ -790,7 +791,10 @@ test("editor writes stamp the schema features their content needs in the same ch
   t.after(
     installFeatureRegistryForTests(
       featureRegistry(
-        { version: 1, features: [{ id: "test-highlight", description: "For tests." }] },
+        {
+          version: 1,
+          features: [...FEATURE_FILE.features, { id: "test-highlight", description: "For tests." }],
+        },
         {
           marks: MARK_REGISTRY.marks.map((mark) =>
             mark.name === "highlight" ? { ...mark, feature: "test-highlight" } : mark,

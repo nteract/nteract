@@ -15,9 +15,13 @@ import {
   BulletList,
   Code,
   CodeBlock,
+  Emphasis,
   Heading,
+  HorizontalRule,
   LineBreak,
   Paragraph,
+  Strikethrough,
+  Strong,
   TaskList,
 } from "./wordgard-model.mjs";
 import {
@@ -27,7 +31,7 @@ import {
   wordgardListStarts,
 } from "./wordgard-binding.mjs";
 import { taskLists } from "./wordgard-task-lists.mjs";
-import { markdownShortcuts } from "./wordgard-shortcuts.mjs";
+import { delimitedSpan, markdownShortcuts } from "./wordgard-shortcuts.mjs";
 
 // The editor configuration WordgardEditor installs, minus the DOM.
 const editorConfig = () => [
@@ -437,7 +441,8 @@ test("backticks stay literal in code, empty spans, fences, and across breaks; $ 
     ["", "` `", "\\` \\`"],
     ["", "```", "\\`\\`\\`"],
     ["", "spent $30 and $25", "spent $30 and $25"],
-    ["", "$x$", "$x$"],
+    // Literal math text: the projection escapes it, so an agent may write it back.
+    ["", "$x$", "\\$x\\$"],
   ]) {
     const f = fixture(markdown);
     f.editor.select(1);
@@ -520,4 +525,189 @@ test("long runs cost one linear pass per keystroke", () => {
     assert.ok(ms < 50, `${name}: ${ms.toFixed(1)} ms`);
     assert.equal(codeText(state.doc).join("").length, coded, name);
   }
+});
+
+// Text runs of the first textblock, as [text, mark names].
+const markedRuns = (doc) => {
+  const runs = [];
+  doc.iterate((node) => {
+    if (node.isText)
+      runs.push([
+        node.param,
+        node.marks
+          .map((mark) =>
+            mark.type === Strong.type
+              ? "strong"
+              : mark.type === Emphasis.type
+                ? "em"
+                : mark.type === Strikethrough.type
+                  ? "strike"
+                  : mark.type === Code.type
+                    ? "code"
+                    : "other",
+          )
+          .sort(),
+      ]);
+  });
+  return runs;
+};
+
+test("typing a closing delimiter marks the span: *em*, _em_, **strong**, ~~strike~~", () => {
+  for (const [typed, runs, markdown] of [
+    [
+      "say *this*",
+      [
+        ["say ", []],
+        ["this", ["em"]],
+      ],
+      "say *this*",
+    ],
+    [
+      "say _this_",
+      [
+        ["say ", []],
+        ["this", ["em"]],
+      ],
+      "say *this*",
+    ],
+    [
+      "say **this**",
+      [
+        ["say ", []],
+        ["this", ["strong"]],
+      ],
+      "say **this**",
+    ],
+    [
+      "say ~~this~~",
+      [
+        ["say ", []],
+        ["this", ["strike"]],
+      ],
+      "say ~~this~~",
+    ],
+    [
+      "(*a b*)",
+      [
+        ["(", []],
+        ["a b", ["em"]],
+        [")", []],
+      ],
+      "(*a b*)",
+    ],
+    [
+      "*one* and *two*",
+      [
+        ["one", ["em"]],
+        [" and ", []],
+        ["two", ["em"]],
+      ],
+      "*one* and *two*",
+    ],
+  ]) {
+    const f = fixture("");
+    f.editor.select(1);
+    f.editor.type(typed);
+    assert.deepEqual(markedRuns(f.editor.state.doc), runs, typed);
+    assert.equal(f.markdownOf(), markdown, typed);
+    f.binding.destroy();
+  }
+});
+
+test("text typed after a converted span is not marked", () => {
+  const f = fixture("");
+  f.editor.select(1);
+  f.editor.type("**bold** plain");
+  assert.deepEqual(markedRuns(f.editor.state.doc), [
+    ["bold", ["strong"]],
+    [" plain", []],
+  ]);
+  f.binding.destroy();
+});
+
+test("delimiters inside words, code, escapes and unbalanced runs stay literal", () => {
+  for (const typed of [
+    "snake_case_name",
+    "a_b_",
+    "2*3*4",
+    "x**y**",
+    "* not em*",
+    "*not em *",
+    "**",
+    "~~~a~~~",
+    "~one~",
+    "\\*lit*",
+    "*a **b*",
+    "word*em*",
+  ]) {
+    const f = fixture("");
+    f.editor.select(1);
+    f.editor.type(typed);
+    assert.ok(
+      markedRuns(f.editor.state.doc).every(([, marks]) => marks.length === 0),
+      `${typed}: ${JSON.stringify(markedRuns(f.editor.state.doc))}`,
+    );
+    f.binding.destroy();
+  }
+  // Inside a code block, nothing converts.
+  const g = fixture("```\nlet\n```");
+  g.editor.select(at(g.editor.state, "let", 3));
+  g.editor.type(" *a* **b** ~~c~~ _d_");
+  assert.equal(g.markdownOf(), "```\nlet *a* **b** ~~c~~ _d_\n```");
+  g.binding.destroy();
+  // A span that holds inline code does not convert either.
+  const h = fixture("");
+  h.editor.select(1);
+  h.editor.type("*`x`*");
+  assert.ok(markedRuns(h.editor.state.doc).some(([, marks]) => marks.includes("code")));
+  assert.ok(!markedRuns(h.editor.state.doc).some(([, marks]) => marks.includes("em")));
+  h.binding.destroy();
+});
+
+test("undo after a delimiter conversion restores the typed delimiters", () => {
+  const f = fixture("");
+  f.editor.select(1);
+  f.editor.type("~~gone~~");
+  assert.equal(f.markdownOf(), "~~gone~~");
+  assert.ok(markedRuns(f.editor.state.doc).some(([, marks]) => marks.includes("strike")));
+  f.editor.run(undo);
+  assert.deepEqual(markedRuns(f.editor.state.doc), [["~~gone~~", []]]);
+  f.binding.destroy();
+});
+
+test("the delimiter scan finds the nearest exact opener and refuses word-internal runs", () => {
+  for (const [text, delimiter, expected] of [
+    ["a **b**", "**", { open: 2, close: 5 }],
+    ["**b*", "*", null],
+    ["snake_case_", "_", null],
+    ["x _y_", "_", { open: 2, close: 4 }],
+    ["2*3*", "*", null],
+    ["a ~~~b~~~", "~~", null],
+    ["a * b*", "*", null],
+    ["\\*x*", "*", null],
+    ["\\\\*x*", "*", { open: 2, close: 4 }],
+    ["***b**", "**", null],
+    ["a **b** **c**", "**", { open: 8, close: 11 }],
+  ])
+    assert.deepEqual(delimitedSpan(text, delimiter), expected, `${text} ${delimiter}`);
+  // A long line with no opener is one backward pass.
+  const long = `${"x ".repeat(100_000)}y*`;
+  const started = performance.now();
+  assert.equal(delimitedSpan(long, "*"), null);
+  assert.ok(performance.now() - started < 200);
+});
+
+test("--- alone in a paragraph becomes a horizontal rule and round trips", () => {
+  const f = fixture("");
+  f.editor.select(1);
+  f.editor.type("---");
+  assert.ok(f.editor.state.doc.content.some((node) => node.type === HorizontalRule.type));
+  assert.match(f.markdownOf(), /^---/);
+  f.binding.destroy();
+  // Not inside other text.
+  const g = fixture("");
+  g.editor.select(1);
+  g.editor.type("a ---");
+  assert.ok(!g.editor.state.doc.content.some((node) => node.type === HorizontalRule.type));
+  g.binding.destroy();
 });

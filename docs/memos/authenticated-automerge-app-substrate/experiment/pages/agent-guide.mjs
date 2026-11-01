@@ -787,7 +787,7 @@ node_index) and changes only its marks:
 }
 \`\`\`
 
-add maps mark names to values: strong, em and code take true; highlight takes
+add maps mark names to values: strong, em, strike and code take true; highlight takes
 yellow, green, blue, pink or a #rrggbb color; link takes {"href": "...",
 "title": "..."} with an http, https, mailto, tel or relative destination.
 Adding a mark the text already has replaces its value across the range, so
@@ -798,7 +798,13 @@ refuses text inside one.
 
 Markdown is a projection of the rich text, not its storage. Highlights read as
 <mark data-color="green">text</mark>; insert_markdown, replace_block_markdown and
-create_page accept that tag. Other HTML stays literal text.
+create_page accept that tag. ~~text~~ is strikethrough, --- on its own line is a
+horizontal rule, and reference links ([text][ref] with a [ref]: definition)
+become ordinary links. Pages has no math and no other HTML: a write with
+$...$, $$...$$ or any other tag outside code fails with code
+unsupported_markdown, naming the construct, line and column. Put it in a code
+span or code block, or escape $ as \\$ and < as \\<, then retry. Reads escape
+literal $ and < the same way, so Markdown you read is always writable.
 
 To restructure a block (headings, lists, tables), replace it with
 edit_page replace_block_markdown, or insert, move and delete whole blocks.
@@ -887,6 +893,9 @@ succeeds. Every error has a stable code. Branch on code, not on the error messag
 - edit_conflict, resync_required: see Guarded edits above.
 - unsupported_schema_feature: the Page uses features this version of Pages
   can't edit (listed in unsupported_features). Read it; don't retry the edit.
+- unsupported_markdown: the Markdown has math or HTML Pages can't represent.
+  unsupported gives construct ("math" or "html"), line, column and excerpt.
+  Rewrite that part as code or escaped text and retry with a new key.
 - idempotency_conflict: the key was used for a different request. Use a new key.
 - invalid_idempotency_key: the key doesn't match the format above.
 - read_failed: no answer to a read (retryable:true). Retry it.

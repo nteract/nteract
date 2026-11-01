@@ -9,37 +9,37 @@ as ordered lists starting at one.
 
 The corpus covers marks, links, Unicode, images, code/Mermaid, headings,
 paragraphs, nested lists and quotes, tasks, native tables and alignment, empty
-cells, ragged rows, pipes, and table hard breaks. Unsupported HTML, math,
-reference links, strikethrough, and non-Markdown input retain opaque source and
-import provenance. General GFM support is not the Pages compatibility profile:
-bare URLs remain prose, for example. A `$$` pair anywhere on a line is
-preserved, with or without surrounding spaces. Single-dollar math follows
-Pandoc's dollar rule, so currency such as "$30 and $25" stays prose. Both
-codecs treat only ASCII whitespace as a space in that rule; fixtures with
-U+0085, U+FEFF, U+00A0 and U+2028 pin the shared set. A `$$` at a line
-start also stays opaque. Its prefix may contain any character either codec's
-`\s` matched that does not start a line, so doubtful source stays preserved.
-A line starts at the start of input or after LF, CR, CRLF, U+2028 or U+2029.
-Fixtures cover each line start, U+00A0, U+FEFF (including a leading BOM) and the other Unicode spaces
-before `$$`, and a zero-width space that is content. Code spans keep
-backslashes, nested backticks, and trailing spaces literal.
+cells, ragged rows, pipes, and table hard breaks, strikethrough, horizontal
+rules, and reference links resolved against their definitions. Math, HTML and
+links to unsafe destinations stay literal text, and non-Markdown input is
+literal text in paragraphs. General GFM support is not the Pages compatibility
+profile: bare URLs remain prose, for example. Code spans, fenced and indented
+code, escaped characters and link destinations and titles never count as math
+or HTML. A `$$` pair anywhere on a line is math, with or without surrounding
+spaces. Single-dollar math follows Pandoc's dollar rule, so currency such as
+"$30 and $25" stays prose. Both codecs treat only ASCII whitespace as a space
+in that rule; fixtures with U+0085, U+FEFF, U+00A0 and U+2028 pin the shared
+set. A `$$` at a line start opens display math, which keeps its lines as hard
+breaks. Its prefix may contain any character either codec's `\s` matched that
+does not start a line. A line starts at the start of input or after LF, CR,
+CRLF, U+2028 or U+2029. Fixtures cover each line start, U+00A0, U+FEFF
+(including a leading BOM) and the other Unicode spaces before `$$`, and a
+zero-width space that is content. Code spans keep backslashes, nested
+backticks, and trailing spaces literal.
 
 Highlights project as `<mark data-color="…">` tags. Fixtures cover marks around
 and inside the tag, palette and hex colors, bare `<mark>` at a line start, table
 cells, tags that cross emphasis boundaries, and nested, unbalanced, escaped, or
-invalid-color tags that stay literal text. `<marker>` at a line start remains
-opaque. Both codecs read mark names and value rules from the Pages
+invalid-color tags that stay literal text. `<marker>` is literal text. Both codecs read mark names and value rules from the Pages
 `model/marks.json` registry.
 
 Structural-only sibling list items retain explicit parent markers even when
 their first content is another list. Bullet, ordered, mixed, task, and quoted
 variants ensure that adjacent items cannot collapse into one container.
 
-`divergences` explicitly records intentional differences from the old codec:
-thematic breaks must be preserved rather than dropped, and unsafe destinations
-are preserved as opaque source; the legacy parser literalizes a rejected link
-and accepts a data image that later Pages validation rejects. Each includes observed
-legacy spans and the exact required Rust result. There is no blanket exception
+`divergences` explicitly records intentional differences from the JavaScript
+codec. Each includes observed JavaScript spans and the exact required Rust
+result. There is no blanket exception
 for parser differences.
 
 Linked, emphasized, or highlighted images also retain the whole original source as opaque

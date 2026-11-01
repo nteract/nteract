@@ -22,6 +22,7 @@ import {
   richDoc,
   schema,
   textPath,
+  unsupportedMarkdown,
   validateRich,
 } from "./richtext.mjs";
 import { expand } from "../viewer/wordgard-model.mjs";
@@ -50,7 +51,7 @@ const textMarks = (doc, id) =>
     .map((span) => [span.value, span.marks ?? {}]);
 
 test("every consumer derives its mark list from the registry", () => {
-  assert.deepEqual(MARK_NAMES, ["link", "em", "strong", "highlight", "code"]);
+  assert.deepEqual(MARK_NAMES, ["link", "em", "strong", "strike", "highlight", "code"]);
   assert.deepEqual(HIGHLIGHT_COLORS, ["yellow", "green", "blue", "pink"]);
   assert.deepEqual(Object.keys(schema.marks), [...MARK_NAMES, "unknownMark"]);
   assert.deepEqual(updateSpansConfig, {
@@ -145,11 +146,51 @@ test("bold that crosses a highlight boundary exports Markdown that reads back th
   }
 });
 
-test("other HTML at the start of a line still opens a preserved block", () => {
-  assert.equal(parseMarkdown("<marker>x</marker>").firstChild.type.name, "raw");
-  assert.equal(parseMarkdown("<mark:x>").firstChild.type.name, "raw");
-  assert.equal(parseMarkdown("<mark\u00a0>x</mark>").firstChild.type.name, "raw");
-  assert.equal(parseMarkdown("<div>x</div>").firstChild.type.name, "raw");
+test("other HTML is refused for agents and literal text otherwise", () => {
+  for (const [source, excerpt] of [
+    ["<marker>x</marker>", "<marker>"],
+    ["<div>x</div>", "<div>"],
+  ]) {
+    assert.deepEqual(unsupportedMarkdown(source), {
+      construct: "html",
+      line: 1,
+      column: 1,
+      excerpt,
+    });
+    const doc = parseMarkdown(source);
+    assert.equal(doc.firstChild.type.name, "paragraph");
+    assert.equal(doc.textContent, source);
+  }
+  // Markdown reads `<mark:x>` as ordinary text, so an agent may write it.
+  // `<mark\u00a0>` is a tag to Markdown-it (its `\s` includes U+00A0) but not
+  // a highlight, so it is refused like any other tag.
+  assert.equal(unsupportedMarkdown("<mark:x>"), null);
+  assert.equal(parseMarkdown("<mark:x>").textContent, "<mark:x>");
+  assert.equal(unsupportedMarkdown("<mark\u00a0>x</mark>")?.construct, "html");
+  assert.equal(parseMarkdown("<mark\u00a0>x</mark>").textContent, "<mark\u00a0>x</mark>");
+});
+
+test("strikethrough round trips through Markdown and native spans", () => {
+  for (const source of ["~~gone~~", "a ~~b **c**~~ d", "| A |\n| --- |\n| ~~x~~ |", "> ~~q~~"]) {
+    const { doc, id } = fixture(source);
+    assert.ok(
+      textMarks(doc, id).some(([, marks]) => marks.strike === true),
+      source,
+    );
+    assert.equal(blockMarkdown(doc.blocks[id]), source);
+    assert.ok(markdownReproduces(doc.blocks[id]), source);
+  }
+  // A single tilde, a code span and an escape are not strikethrough.
+  for (const source of ["~one~", "`~~x~~`", "\\~~x~~"]) {
+    const { doc, id } = fixture(source);
+    assert.ok(!textMarks(doc, id).some(([, marks]) => marks.strike), source);
+  }
+  // format_match adds and removes it like any flag mark.
+  const { doc, id } = fixture("plain words");
+  const { after } = apply(doc, [
+    { op: "format_match", block_id: id, match_text: "words", add: { strike: true } },
+  ]);
+  assert.equal(blockMarkdown(after.blocks[id]), "plain ~~words~~");
 });
 
 test("highlights inside table cells round trip", () => {

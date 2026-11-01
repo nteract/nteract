@@ -82,6 +82,7 @@ function validateSelectors(doc, args) {
 }
 
 function visibleText(node) {
+  // A preserved block the Page host has not converted yet reads as its source.
   if (node.type.name === "raw") return node.attrs.source;
   if (node.type.name === "image") return node.attrs.alt ?? "";
   if (node.type.name === "hard_break") return "\n";
@@ -103,7 +104,7 @@ function indexNodes(doc) {
     const block = doc.blocks[blockId],
       tree = isRich(block)
         ? richDoc(block)
-        : parseMarkdown(block.markdown ?? "", blockId, block.kind ?? "markdown");
+        : parseMarkdown(block.markdown ?? "", { kind: block.kind ?? "markdown" });
     trees.set(blockId, tree);
     tree.forEach((node, _offset, nodeIndex) => {
       const entry = { blockId, nodeIndex, node };

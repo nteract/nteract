@@ -173,6 +173,26 @@ references; it does not publish the Page or change asset access.
   Palette names resolve to theme tokens; agents can also set `#rrggbb`. Markdown
   projects highlights as `<mark data-color="…">…</mark>`. Comment anchors keep
   their own tint and underline; where they overlap a highlight, both tints show.
+- **Markdown import:** every construct Markdown-it reads has a native mapping,
+  except math and HTML other than highlight tags (and `<br>` in a table cell).
+  Strikethrough (`~~x~~`) is the `strike` mark, `---` a horizontal rule, and
+  reference links resolve to ordinary links at import. Code spans, fenced and
+  indented code, escaped characters, and link destinations and titles never
+  count as math or HTML.
+  - Agent writes (create, insert/replace Markdown, comments with
+    `body_format: "markdown"`) refuse math and HTML with
+    `400 unsupported_markdown` and `unsupported: { construct, line, column,
+    excerpt }`, before anything is written. The column counts code points.
+  - Stored source, browser drafts and paste keep them as literal, editable
+    text. Export escapes literal `$` and `<`, so a read is always writable.
+  - Nothing writes a preserved block (`raw`, `pages-opaque`). The schema keeps
+    it read-only so older Pages open; the Page host converts each stored one
+    on load (see Preserved blocks below).
+- **Typing shortcuts:** `*x*` and `_x_` italicize, `**x**` bolds, `~~x~~`
+  strikes through when the closing delimiter is typed. A delimiter touching a
+  letter or digit (`snake_case_name`, `2*3*4`), an escaped one, and one inside
+  code stay literal; undo restores the typed delimiters. `---` alone in a
+  paragraph inserts a horizontal rule. Cmd/Ctrl+Shift+X toggles strikethrough.
 - **Mark registry:** [`model/marks.json`](model/marks.json) lists every inline
   mark with its value shape, expand rule, and Markdown projection. Validation,
   the Wordgard binding, Markdown import/export, the MCP `format_match` schema,
@@ -180,6 +200,26 @@ references; it does not publish the Page or change asset access.
   plain text and survive edits. Agents edit existing text through
   `replace_match` and `format_match`, which work on native spans; Markdown is
   for reading and for writing whole blocks.
+- **Preserved blocks:** older builds stored Markdown they couldn't import as one
+  read-only `pages-opaque` block holding its source. The Page host replaces
+  each with what its source imports as today, in
+  [`model/raw-migration.mjs`](model/raw-migration.mjs):
+  - Where: in place, under the block's own parents, in block bodies and
+    comment messages. Text around it keeps its identity, so anchors survive.
+  - Who: only the host, the Page's single serialized writer. Two peers that
+    each replaced the same marker would each insert a copy, and Automerge keeps
+    both. Browsers show the block read-only with a notice until the host's
+    change syncs.
+  - When: on load, before native connections open, and after creating or
+    registering a Page. Runs are serialized, and each is a journaled host
+    intent keyed by the heads it converted, so a restart replays the recorded
+    change instead of converting again. A Page with nothing to convert gets
+    no change.
+  - Fence: the change stamps `preserved-markdown-converted`, so a build that
+    could still write or convert one opens the Page read-only and the host
+    refuses its writes. Viewer protocol 2 retires those builds everywhere.
+  - Remove `nodes.raw`, `OpaqueBlock` and the conversion once no stored Page
+    can hold a preserved block.
 - **Schema features:** every mark and block type that existed when Page10
   launched is baseline. A later one names a feature id: a mark in
   `marks.json`, a block type in [`model/features.json`](model/features.json).
@@ -214,9 +254,7 @@ references; it does not publish the Page or change asset access.
 - **Tables:** native row/cell markers live in the same rich-text field as prose.
   Insert table chooses dimensions; Table options changes rows and columns. Tab
   moves between cells and appends a row at the end. The first row is the header.
-  Preserved Markdown tables convert only through an explicit, undoable Edit
-  table action; unsupported syntax stays preserved. Column resizing/moving and
-  merged cells are not implemented.
+  Column resizing/moving and merged cells are not implemented.
 - **Task lists:** use Task list or type `- [ ] ` / `- [x] `. Enter creates an
   unchecked item; an empty item returns to prose. Native list-item markers store
   checked state independently of the text, so checkbox and text edits can merge.

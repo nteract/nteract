@@ -199,7 +199,7 @@ mod tests {
     fn registry_order_matches_markdown_nesting() {
         assert_eq!(
             mark_names().ok(),
-            Some(vec!["link", "em", "strong", "highlight", "code"])
+            Some(vec!["link", "em", "strong", "strike", "highlight", "code"])
         );
         assert_eq!(expand("link"), "none");
         assert_eq!(expand("strong"), "both");

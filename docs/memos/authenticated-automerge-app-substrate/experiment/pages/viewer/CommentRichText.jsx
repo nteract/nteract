@@ -18,13 +18,22 @@ import {
   orderedList,
   blockquote,
 } from "wordgard/schema";
-import { Bold, Italic, Code as CodeIcon, List, ListTodo, Link as LinkIcon } from "lucide-react";
+import {
+  Bold,
+  Italic,
+  Strikethrough as StrikethroughIcon,
+  Code as CodeIcon,
+  List,
+  ListTodo,
+  Link as LinkIcon,
+} from "lucide-react";
 import {
   decode,
   encode,
   elements,
   Strong,
   Emphasis,
+  Strikethrough,
   Code,
   BulletList,
   TaskList,
@@ -59,6 +68,7 @@ const quiet = () => [Transaction.remote.of(true), Transaction.addToHistory.of(fa
 const controls = [
   ["Bold", Bold, toggleMark, Strong],
   ["Italic", Italic, toggleMark, Emphasis],
+  ["Strikethrough", StrikethroughIcon, toggleMark, Strikethrough],
   ["Inline code", CodeIcon, toggleMark, Code],
   ["Bulleted list", List, toggleList, BulletList],
   ["Task list", ListTodo, toggleList, TaskList],
@@ -142,7 +152,9 @@ export function CommentRichText({ value, nativeSpans, onChange, onError, disable
     }
     const editor = Wordgard.create({
       parent: mount.current,
-      doc: decode(latest.current.nativeSpans ?? markdownCommentSpans(latest.current.value)).doc,
+      doc: decode(
+        latest.current.nativeSpans ?? markdownCommentSpans(latest.current.value, { literal: true }),
+      ).doc,
       config: [
         ...nativeConfig(),
         history(),
@@ -205,7 +217,7 @@ export function CommentRichText({ value, nativeSpans, onChange, onError, disable
     view.current.dispatch({
       changes: projectChanges(
         view.current.state.doc,
-        decode(nativeSpans ?? markdownCommentSpans(value)).doc,
+        decode(nativeSpans ?? markdownCommentSpans(value, { literal: true })).doc,
       ),
       annotations: quiet(),
     });

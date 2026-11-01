@@ -1566,7 +1566,10 @@ export class PageSession {
     }
   }
   comment(input, nativeSpans) {
-    return this.change((doc) => applyComment(doc, input, this.identity, nativeSpans));
+    // The reader's own draft: Markdown it can't represent stays as text.
+    return this.change((doc) =>
+      applyComment(doc, input, this.identity, nativeSpans, { literal: true }),
+    );
   }
   actorDisplayName(actor) {
     return this.actorNames.get(actor) ?? "Collaborator";

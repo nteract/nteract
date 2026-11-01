@@ -111,6 +111,14 @@
   text-underline-offset: 3px;
   cursor: pointer;
 }
+.wordgard-document wg-content s {
+  text-decoration-thickness: 1px;
+}
+.wordgard-document wg-content hr {
+  border: 0;
+  border-top: 1px solid var(--border);
+  margin: 1.5em 0;
+}
 .wordgard-document wg-content pre {
   font:
     14px/1.6 ui-monospace,
@@ -457,10 +465,6 @@
     system-ui,
     sans-serif;
   white-space: normal;
-}
-.wordgard-document .preserved-table,
-.wordgard-document .preserved-table .markdown-table-scroll {
-  margin: 0;
 }
 .wordgard-document .remote-edit {
   text-decoration: underline;

@@ -14,6 +14,7 @@ pub(crate) const BLOCKS: &[&str] = &[
     "task-list-item",
     "aside",
     "pages-opaque",
+    "horizontal-rule",
     "table",
     "table-row",
     "table-cell",
@@ -68,7 +69,10 @@ pub fn validate_spans(spans: &[Span]) -> Result<()> {
                     || block.parents.len() > MAX_DEPTH
                     || block.parents.iter().any(|p| {
                         !BLOCKS.contains(&p.as_str())
-                            || matches!(p.as_str(), "image" | "hard-break" | "pages-opaque")
+                            || matches!(
+                                p.as_str(),
+                                "image" | "hard-break" | "pages-opaque" | "horizontal-rule"
+                            )
                     })
                 {
                     return Err(CodecError("Unsupported rich block or parent".into()));

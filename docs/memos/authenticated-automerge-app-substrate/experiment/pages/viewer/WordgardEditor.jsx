@@ -48,6 +48,7 @@ import {
   Heading,
   Strong,
   Emphasis,
+  Strikethrough,
   Code,
   CodeBlock,
   BulletList,
@@ -56,6 +57,7 @@ import {
 import {
   Bold,
   Italic,
+  Strikethrough as StrikethroughIcon,
   Code as CodeIcon,
   List,
   ListOrdered,
@@ -109,6 +111,7 @@ const controls = [
   ["redo", "Redo", Redo2],
   ["bold", "Bold", Bold],
   ["italic", "Italic", Italic],
+  ["strike", "Strikethrough", StrikethroughIcon],
   ["code", "Inline code", CodeIcon],
   ["bullet", "Bulleted list", List],
   ["ordered", "Numbered list", ListOrdered],
@@ -116,7 +119,7 @@ const controls = [
   ["link", "Link", LinkIcon],
   ["comment", "Comment on selection", MessageSquare],
 ];
-const marks = { bold: Strong, italic: Emphasis, code: Code };
+const marks = { bold: Strong, italic: Emphasis, strike: Strikethrough, code: Code };
 const remoteAnnotations = () => [Transaction.remote.of(true), Transaction.addToHistory.of(false)];
 const editConfig = (editable) => [
   GardState.readOnly.of(!editable),

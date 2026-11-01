@@ -5,6 +5,7 @@ import {
   adapter,
   RICH_FORMAT,
   isRich,
+  parseAgentMarkdown,
   parseMarkdown,
   exportMarkdown,
   richDoc,
@@ -36,8 +37,11 @@ export function commentBodyProjection(message) {
   }
 }
 
-export function markdownCommentSpans(source) {
-  return pmNodeToSpans(adapter, parseMarkdown(source));
+/** Comment Markdown as native spans, with the Page body's policy: an agent's
+ * Markdown refuses math and HTML with `unsupported_markdown`; `literal: true`
+ * (browser drafts, stored source) keeps them as text. */
+export function markdownCommentSpans(source, { literal = false } = {}) {
+  return pmNodeToSpans(adapter, literal ? parseMarkdown(source) : parseAgentMarkdown(source));
 }
 
 export function commentSpansMarkdown(spans) {
@@ -54,7 +58,7 @@ export function validateCommentContent(message) {
 }
 
 /** The native body is authoritative; body retains literal import provenance for old readers. */
-export function setCommentContent(doc, path, input, nativeSpans) {
+export function setCommentContent(doc, path, input, nativeSpans, { literal = false } = {}) {
   const message = path.reduce((value, key) => value[key], doc);
   const body = String(input.body ?? "");
   const format = input.body_format ?? (isRich(message) ? "markdown" : "plain");
@@ -68,7 +72,7 @@ export function setCommentContent(doc, path, input, nativeSpans) {
   const spans =
     nativeSpans ??
     (format === "markdown"
-      ? markdownCommentSpans(body)
+      ? markdownCommentSpans(body, { literal })
       : pmNodeToSpans(
           adapter,
           schema.node("doc", null, [schema.node("paragraph", null, [schema.text(body)])]),

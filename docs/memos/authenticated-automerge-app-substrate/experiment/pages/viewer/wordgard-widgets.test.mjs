@@ -1,6 +1,5 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { registerHooks } from "node:module";
 import { JSDOM } from "jsdom";
 import { Leaf } from "wordgard/doc";
 import { GardState, GardSelection, Transaction } from "wordgard/state";
@@ -9,17 +8,8 @@ import { schema, CodeBlock, CodeBlockLanguage } from "./wordgard-model.mjs";
 
 // These tests exercise native editor transactions; styles and SVG mounting
 // are qualified separately by the real-browser Wordgard smoke.
-const stylesheet = new URL("./table-fragment.css", import.meta.url).href;
-const css = registerHooks({
-  load(url, context, next) {
-    return url === stylesheet
-      ? { format: "module", source: "", shortCircuit: true }
-      : next(url, context);
-  },
-});
 const { wordgardWidgets, selectCodeLanguage, diagramFrame } =
   await import("./wordgard-widgets.mjs");
-css.deregister();
 
 function withDocument(run) {
   const { window } = new JSDOM("<!doctype html><body></body>");

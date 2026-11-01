@@ -14,6 +14,7 @@ import {
   MessageSquarePlus,
   MoreHorizontal,
   Redo2,
+  Strikethrough,
   Table,
   Undo2,
 } from "lucide-react";
@@ -25,6 +26,7 @@ const MORE = [
   ["redo", "Redo", Redo2],
   ["ordered", "Numbered list", ListOrdered],
   ["task", "Task list", ListTodo],
+  ["strike", "Strikethrough", Strikethrough],
   ["code", "Inline code", CodeIcon],
   ["table", "Insert table", Table],
   ["link", "Link", LinkIcon],

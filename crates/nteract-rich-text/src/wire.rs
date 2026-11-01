@@ -98,13 +98,28 @@ mod tests {
         let registry: serde_json::Value =
             serde_json::from_str(&process_json(br#"{"op":"registry"}"#)).unwrap();
         assert_eq!(
-            registry,
-            json!({"ok":true,"features":[],"marks":{},"blocks":{}})
+            registry["features"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|feature| feature["id"].as_str().unwrap())
+                .collect::<Vec<_>>(),
+            vec!["strike", "horizontal-rule", "preserved-markdown-converted"]
+        );
+        assert_eq!(registry["marks"], json!({"strike":"strike"}));
+        assert_eq!(
+            registry["blocks"],
+            json!({"horizontal-rule":"horizontal-rule"})
         );
         let features: serde_json::Value = serde_json::from_str(&process_json(
             br#"{"op":"features","spans":[{"type":"text","value":"x","marks":{"strong":true}}]}"#,
         ))
         .unwrap();
         assert_eq!(features, json!({"ok":true,"features":[]}));
+        let features: serde_json::Value = serde_json::from_str(&process_json(
+            br#"{"op":"features","spans":[{"type":"text","value":"x","marks":{"strike":true}}]}"#,
+        ))
+        .unwrap();
+        assert_eq!(features, json!({"ok":true,"features":["strike"]}));
     }
 }

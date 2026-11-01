@@ -25,7 +25,10 @@ import {
   missingFeatures,
   parseDeclaredFeatures,
   schemaUnsupported,
+  unsupportedFeatures,
 } from "../model/schema-features.mjs";
+import { unsupportedMarkdown, unsupportedMarkdownError } from "../model/richtext.mjs";
+import { convertPreservedBlocks, hasPreservedBlocks } from "../model/raw-migration.mjs";
 import { readTargets, writeTargets } from "../model/agent-presence.mjs";
 import { BACKEND_LIMITS, assertDocumentLimits, assertIntentSize } from "../model/limits.mjs";
 import { handleMcp } from "../mcp.mjs";
@@ -339,6 +342,9 @@ function validateCreateInput(args) {
     throw new HttpError(400, "Invalid title");
   if (args.markdown !== undefined && typeof args.markdown !== "string")
     throw new HttpError(400, "Invalid markdown");
+  // Refused before any reservation, so the agent can rewrite and retry.
+  const unsupported = args.markdown && unsupportedMarkdown(args.markdown);
+  if (unsupported) throw unsupportedMarkdownError(unsupported);
 }
 
 function forwarded(request, path, body) {
@@ -2229,6 +2235,58 @@ export class Page {
           "A pending edit exceeds this Page's history capacity. Accepted content is available read-only.",
       };
     }
+    // Before native connections open, so peers sync the converted content.
+    await this.convertPreservedMarkdown();
+  }
+
+  /** Replace the Page's preserved Markdown blocks with native rich text. The
+   * host is the only writer of this conversion (see model/raw-migration.mjs).
+   * Runs one at a time: each run reads the document after the previous one
+   * applied, so two triggers never convert the same block twice. Each run is
+   * a journaled host intent keyed by the heads it converted, so a restart
+   * replays the recorded change instead of converting again. A failure leaves
+   * the blocks read-only until the next load. */
+  convertPreservedMarkdown() {
+    const run = (this.preservedConversion ?? Promise.resolve()).then(() =>
+      this.convertPreservedOnce(),
+    );
+    this.preservedConversion = run;
+    return run;
+  }
+
+  async convertPreservedOnce() {
+    const doc = this.handle?.doc();
+    if (
+      !doc ||
+      this.recoveryBlocked ||
+      pageState(this.metadata) !== "active" ||
+      unsupportedFeatures(doc).length ||
+      !hasPreservedBlocks(doc)
+    )
+      return;
+    const heads = A.getHeads(doc).sort();
+    const digest = hex(
+      new Uint8Array(
+        await crypto.subtle.digest("SHA-256", new TextEncoder().encode(heads.join(","))),
+      ),
+    );
+    try {
+      await documentMutation({
+        storage: this.ctx.storage,
+        admission: this.admission,
+        handle: this.handle,
+        operation: "convert_preserved_markdown",
+        args: {
+          idempotency_key: `pages_preserved_markdown_${digest.slice(0, 32)}`,
+          base_heads: heads,
+        },
+        identity: { principal: "service:pages", driver: "API" },
+        apply: (draft) => ({ converted: convertPreservedBlocks(draft) }),
+        flush: () => this.flush(),
+      });
+    } catch (error) {
+      logFailure(error, "preserved-markdown");
+    }
   }
 
   initializeRepo(metadata = this.metadata) {
@@ -2337,6 +2395,8 @@ export class Page {
    * a replay never undoes a later Trash, restore or ACL change. */
   async finishCreation(intent) {
     await this.applyLifecycle(this.metadata ? CREATION_REPLAY : CREATION_COMMIT, { intent });
+    // A registered draft from an older build can hold preserved blocks.
+    await this.convertPreservedMarkdown();
   }
 
   profiles() {
@@ -2709,6 +2769,11 @@ export class Page {
             intent = { metadata, bytes: A.save(doc) };
             assertIntentSize("host/creation", [intent.bytes], { metadata });
           } catch (error) {
+            if (error.code === "unsupported_markdown") {
+              const response = errorResponse(error, "page-create");
+              response.headers.set("x-pages-create-rejected", "before-intent");
+              return response;
+            }
             if (error.status !== 413) throw error;
             const response = json({ error: error.message }, 413);
             response.headers.set("x-pages-create-rejected", "before-intent");

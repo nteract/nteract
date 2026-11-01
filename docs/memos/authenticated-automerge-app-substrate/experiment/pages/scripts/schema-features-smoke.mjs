@@ -7,11 +7,21 @@
 // the stamp, and the browser opens it read-only with the reload notice. An
 // unstamped Page stays editable.
 //
+// Then the Markdown cutover: a strikethrough or horizontal rule write stamps
+// its feature, so a baseline build's native edits are refused; agent writes
+// with math get unsupported_markdown; and a draft that holds a preserved block
+// from an older build is converted by the host on registration.
+//
 //   PAGES_ORIGIN=http://localhost:9894 node scripts/schema-features-smoke.mjs
 import assert from "node:assert/strict";
 import { mkdir, writeFile } from "node:fs/promises";
 import * as A from "@automerge/automerge";
 import * as N from "@automerge/subduction";
+import { pmNodeToSpans } from "@automerge/prosemirror";
+import { generateAutomergeUrl, interpretAsDocumentId } from "@automerge/automerge-repo";
+import { createPageData, initializePage, orderedBlockIds } from "../model/page.mjs";
+import { adapter, schema, textPath } from "../model/richtext.mjs";
+import { retryKey } from "../model/retry-key.mjs";
 import { chromium, expect } from "@playwright/test";
 import { closePeers, createPeer, eventually } from "../../backend.mjs";
 
@@ -232,6 +242,100 @@ try {
   // This build still lacks the feature, so the Page opens read-only again.
   await expect(notice()).toBeVisible();
   checkpoint("Reload goes ahead from a read-only Page");
+
+  stage = "strikethrough and rules stamp their features";
+  const struck = await create("Struck " + Date.now(), "Old ~~plan~~.\n\n---\n\nNew plan.");
+  const struckRead = await tool("read_page", { page_id: struck, comments: "none" });
+  assert.deepEqual(struckRead.body.schema_features, ["horizontal-rule", "strike"]);
+  assert.equal(struckRead.body.blocks[0].markdown, "Old ~~plan~~.\n\n---\n\nNew plan.");
+  const baselinePeer = await nativePeer(cookie, struck, []);
+  const baselineEdit = await baselinePeer.change((doc) => {
+    doc.staleEdit = "should not land";
+  });
+  assert.equal(baselineEdit.status, 409, JSON.stringify(baselineEdit.body));
+  assert.equal(baselineEdit.body.code, "schema_unsupported");
+  await baselinePeer.close();
+  await page.goto(origin + "/p/" + struck);
+  await expect(content().first().locator("s")).toHaveText("plan");
+  await expect(content().first().locator("hr")).toHaveCount(1);
+  await expect(notice()).toHaveCount(0);
+  await expect(content().first()).toHaveAttribute("contenteditable", "true");
+  checkpoint("strike and horizontal-rule stamp; a baseline build's native edit is refused");
+
+  stage = "agent Markdown with math is refused with its position";
+  const math = await tool("create_page", {
+    title: "Math " + Date.now(),
+    markdown: "Intro\n\nArea: $\\pi r^2$ and `$kept$`.",
+    idempotency_key: crypto.randomUUID(),
+  });
+  assert.equal(math.status, 400, JSON.stringify(math.body));
+  assert.equal(math.body.code, "unsupported_markdown");
+  assert.deepEqual(math.body.unsupported, {
+    construct: "math",
+    line: 3,
+    column: 7,
+    excerpt: "$\\pi r^2$",
+  });
+  checkpoint("create_page refuses math with unsupported_markdown, line and column");
+
+  stage = "the host converts a registered draft's preserved block";
+  const draftId = crypto.randomUUID();
+  const draftTitle = "Draft " + Date.now();
+  let draft = A.change(A.from(createPageData({ pageId: draftId, title: draftTitle })), (doc) =>
+    initializePage(doc, ""),
+  );
+  const draftBlock = orderedBlockIds(draft)[0];
+  draft = A.change(draft, (doc) =>
+    A.updateSpans(
+      doc,
+      textPath(draftBlock),
+      pmNodeToSpans(
+        adapter,
+        schema.node("doc", null, [
+          schema.node("raw", {
+            source: "Keep `~~x~~` and ~~drop~~.\n\nThe value is $x$.",
+            importId: "",
+            kind: "markdown",
+          }),
+        ]),
+      ),
+      adapter.updateSpansConfig(),
+    ),
+  );
+  const prepared = await tool("list_pages", {});
+  const session = await page.evaluate(() =>
+    fetch("/api/auth/session").then((response) => response.json()),
+  );
+  const registered = await page.evaluate(
+    (body) =>
+      fetch("/api/pages/register", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      }).then(async (response) => ({ status: response.status, body: await response.json() })),
+    {
+      expected_principal: session.identity.principal,
+      page_id: draftId,
+      document_id: interpretAsDocumentId(generateAutomergeUrl()),
+      initial_snapshot_base64: Buffer.from(A.save(draft)).toString("base64"),
+      title: draftTitle,
+      retry_token: prepared.body.retry_token,
+      idempotency_key: await retryKey(prepared.body.retry_token),
+    },
+  );
+  assert.equal(registered.status, 200, JSON.stringify(registered.body));
+  const converted = await tool("read_page", { page_id: draftId, comments: "none" });
+  assert.equal(converted.status, 200, JSON.stringify(converted.body));
+  assert.equal(
+    converted.body.blocks[0].markdown,
+    "Keep `~~x~~` and ~~drop~~.\n\nThe value is \\$x\\$.",
+  );
+  assert.ok(converted.body.schema_features.includes("preserved-markdown-converted"));
+  await page.goto(origin + "/p/" + draftId);
+  await expect(content().first().locator("s")).toHaveText("drop");
+  await expect(page.locator("[data-pages-opaque]")).toHaveCount(0);
+  await expect(content().first()).toHaveAttribute("contenteditable", "true");
+  checkpoint("registration converts a preserved block to native, editable text");
 
   stage = "navigating back to the unstamped Page";
   await page.goto(origin + "/p/" + baseline);

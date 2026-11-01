@@ -150,7 +150,10 @@ function applyThreadStatuses(doc, action, ids, now) {
   return { threads };
 }
 
-export function applyComment(doc, input, identity, nativeSpans) {
+/** `literal: true` keeps Markdown math and HTML in a body as text, for the
+ * browser's own drafts; agent writes leave it false and get
+ * `unsupported_markdown` instead. */
+export function applyComment(doc, input, identity, nativeSpans, { literal = false } = {}) {
   const action = input.action ?? "add",
     now = new Date().toISOString();
   const batch = threadBatch(input, action);
@@ -182,13 +185,17 @@ export function applyComment(doc, input, identity, nativeSpans) {
       status: { value: "open", at: now },
       messages: { [messageId]: { body, author, createdAt: now, deletedAt: null } },
     };
-    setCommentContent(doc, ["comments", threadId, "messages", messageId], input, nativeSpans);
+    setCommentContent(doc, ["comments", threadId, "messages", messageId], input, nativeSpans, {
+      literal,
+    });
   } else {
     const thread = Object.hasOwn(doc.comments, threadId) && doc.comments[threadId];
     if (!thread) throw Error("Comment not found");
     if (action === "reply") {
       thread.messages[messageId] = { body, author, createdAt: now, deletedAt: null };
-      setCommentContent(doc, ["comments", threadId, "messages", messageId], input, nativeSpans);
+      setCommentContent(doc, ["comments", threadId, "messages", messageId], input, nativeSpans, {
+        literal,
+      });
     } else if (action === "resolve" || action === "reopen")
       thread.status = { value: action === "resolve" ? "resolved" : "open", at: now };
     else if (action === "edit" || action === "delete_message") {
@@ -197,7 +204,9 @@ export function applyComment(doc, input, identity, nativeSpans) {
       // Generic Page writers can change comments. These labels are document
       // content, not an authorization or audit mechanism.
       if (action === "edit")
-        setCommentContent(doc, ["comments", threadId, "messages", messageId], input, nativeSpans);
+        setCommentContent(doc, ["comments", threadId, "messages", messageId], input, nativeSpans, {
+          literal,
+        });
       else message.deletedAt = now;
     } else throw Error("Unsupported comment action");
   }

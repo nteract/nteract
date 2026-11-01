@@ -23,8 +23,9 @@ const diagram = `graph TD
   F --> G[Dashboard]
   E --> G`;
 const table =
-  // Unsupported inline syntax intentionally keeps this a preserved-preview fixture.
-  "| Name | Status |\n| --- | --- |\n| Pages | **Ready** |\n| Notes | [Guide](/llms.txt) |\n\n~~Preserved extension~~";
+  // A native table, then a strikethrough paragraph.
+  "| Name | Status |\n| --- | --- |\n| Pages | **Ready** |\n| Notes | [Guide](/llms.txt) |\n\n~~Struck extension~~";
+const nativeTable = (page) => content(page).locator("table").first();
 // Document blocks only; comment drafts are Wordgard editors too.
 const content = (page) => page.locator(".page-block wg-content");
 const saved = (page) =>
@@ -293,7 +294,11 @@ async function assertStableSelectionToolbar(page) {
         const range = getSelection().getRangeAt(0).getBoundingClientRect();
         return { width: box.width, gap: Math.max(range.top - box.bottom, box.top - range.bottom) };
       });
-      assert.ok(placement.width <= 420, "selection controls remain compact at half-window widths");
+      // Style, bold, italic, strikethrough, code, highlight, link and comment.
+      assert.ok(
+        placement.width <= 460,
+        `selection controls remain compact at half-window widths (${placement.width}px)`,
+      );
       assert.ok(
         placement.gap >= 8 && placement.gap <= 12,
         "formatting stays beside the selected passage",
@@ -992,7 +997,7 @@ try {
   await saved(a);
   checkpoint(stage);
 
-  stage = "empty-code clipboard paste, inactive Mermaid, and preserved table";
+  stage = "empty-code clipboard paste, inactive Mermaid, and native table with strikethrough";
   let current = await call(a, "read_page", { page_id: code.page_id });
   await call(a, "patch_page", {
     page_id: code.page_id,
@@ -1046,17 +1051,19 @@ try {
   await content(a).first().getByRole("button", { name: "Edit diagram", exact: true }).focus();
   for (const page of [a, b]) {
     await expect(page.locator(".wordgard-diagram svg.pele")).toHaveCount(2, { timeout: 30000 });
-    await expect(page.locator(".preserved-table table")).toBeVisible();
-    await expect(page.locator(".preserved-table table")).toContainText("Ready");
+    await expect(nativeTable(page)).toBeVisible();
+    await expect(nativeTable(page)).toContainText("Ready");
+    await expect(content(page).locator("s")).toHaveText("Struck extension");
+    await expect(page.locator("[data-pages-opaque]")).toHaveCount(0);
   }
-  await expect(
-    a.getByRole("button", { name: "Show table Markdown source", exact: true }),
-  ).toHaveCount(0);
-  await expect(a.locator(".preserved-table-toolbar,.preserved-table-source")).toHaveCount(0);
   current = await call(a, "read_page", { page_id: code.page_id });
   assert.ok(
-    current.blocks.some((block) => block.markdown.includes(table)),
-    "MCP round-trip preserves table source",
+    current.blocks.some(
+      (block) =>
+        block.markdown.includes("| Pages | **Ready** |") &&
+        block.markdown.includes("~~Struck extension~~"),
+    ),
+    "MCP reads the table and strikethrough back as Markdown",
   );
   checkpoint(stage);
 
@@ -1077,7 +1084,7 @@ try {
   await expect(content(a).first().locator("pre:visible")).toHaveCount(1);
   await expect(a.locator("wg-cursor.wg-cursor-v:visible")).toHaveCount(1);
   await previewDiagram(a);
-  await a.locator(".preserved-table th").first().click();
+  await nativeTable(a).locator("th").first().click();
   await expect(a.locator("wg-cursor.wg-cursor-h:visible")).toHaveCount(0);
   await editDiagram(a);
   await expect(a.locator("wg-cursor.wg-cursor-v:visible")).toHaveCount(1);
@@ -1087,7 +1094,7 @@ try {
   assert.deepEqual(afterPreviewFocus.blocks, beforePreviewFocus.blocks);
   checkpoint(stage);
 
-  stage = "mobile preview toggle and table without a source-header gap";
+  stage = "mobile preview toggle and native table";
   await a.setViewportSize({ width: 390, height: 844 });
   const beforeMobileControls = await call(a, "read_page", { page_id: code.page_id });
   const mobilePreview = await diagramControls(a, "preview");
@@ -1108,12 +1115,7 @@ try {
     beforeMobileControls.heads,
     "mobile diagram controls do not edit the document",
   );
-  const tableGap = await a.locator(".preserved-table").evaluate((element) => {
-    const preview = element.querySelector(".markdown-table-scroll");
-    return preview.getBoundingClientRect().top - element.getBoundingClientRect().top;
-  });
-  assert.ok(tableGap <= 16, `table has no reserved source-toolbar space (${tableGap}px)`);
-  report.mobileTableTopGap = tableGap;
+  await expect(nativeTable(a)).toBeVisible();
   assert.equal(
     await a.evaluate(() => document.documentElement.scrollWidth <= innerWidth),
     true,
@@ -1181,7 +1183,7 @@ try {
   await saved(b);
   await b.reload();
   await expect(b.locator(".wordgard-diagram svg.pele")).toHaveCount(2, { timeout: 30000 });
-  await expect(b.locator(".preserved-table table")).toBeVisible();
+  await expect(nativeTable(b)).toBeVisible();
   await saved(b);
   await selectText(a, "Dashboard");
   await a.keyboard.insertText("Overview");
@@ -1213,7 +1215,7 @@ try {
   await reader.goto(origin + "/p/" + code.page_id);
   await expect(content(reader).first()).toHaveAttribute("contenteditable", "false");
   await expect(reader.locator(".wordgard-diagram svg.pele")).toHaveCount(2, { timeout: 30000 });
-  await expect(reader.locator(".preserved-table table")).toBeVisible();
+  await expect(nativeTable(reader)).toBeVisible();
   await expect(reader.getByRole("toolbar", { name: "Text formatting" })).toHaveCount(0);
   await expect(reader.locator(".rich-toolbar")).toBeHidden();
   await expect(reader.locator("select.wg-code-language:enabled")).toHaveCount(0);

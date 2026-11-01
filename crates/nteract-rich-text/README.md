@@ -69,9 +69,10 @@ block types without a feature are baseline and need no document stamp.
 
 The `pages-markdown-v1` compatibility profile uses the same `markdown` Rust
 parser crate as `nteract-markdown-engine`. The renderer's GFM profile and this
-interchange profile serve different contracts: bare URLs stay prose, tables
-and bullet tasks become native structure, and unsupported syntax is preserved
-as an opaque block with its original source and import provenance. Existing
+interchange profile serve different contracts: bare URLs stay prose; tables,
+bullet tasks, strikethrough, horizontal rules and reference links become native
+structure; math and HTML outside code stay literal text, character for
+character; and content whose kind is not Markdown is all literal text. Existing
 Pages immutable source provenance remains the caller's responsibility; exports
 are canonical projections, not a byte-for-byte reconstruction of Markdown.
 
@@ -84,10 +85,10 @@ marks or independent alignment per table cell. Export reports unsupported
 content instead of silently stripping it; a semantic reimport check verifies
 representability at this explicit export boundary. Callers must retain the
 native document and surface that limitation. Re-import is not an editor migration.
-An isolated opaque block exports its original source. A mixture of opaque
-blocks and rich prose currently returns an export error: the conservative
-import profile would otherwise turn the whole result into one opaque block.
-The original rich document remains intact in both cases.
+Import writes no opaque block except for those wrapped images. An isolated
+opaque block, which older Pages builds also stored, exports its original
+source. A mixture of opaque blocks and rich prose returns an export error. The
+original rich document remains intact in both cases.
 
 Ordered-list starts currently normalize to one because the existing span
 contract does not carry them. Ragged tables export with padding to retain every

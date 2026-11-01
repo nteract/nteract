@@ -5,6 +5,7 @@
 import assert from "node:assert/strict";
 import { mkdir, writeFile } from "node:fs/promises";
 import { chromium, expect } from "@playwright/test";
+import { MIN_VIEWER_PROTOCOL } from "../shared/build-identity.mjs";
 
 const origin = process.env.PAGES_ORIGIN || "http://localhost:9894";
 assert.equal(new URL(origin).hostname, "localhost");
@@ -160,10 +161,10 @@ try {
   const buildA = health.body.build;
   assert.match(buildA, /^[0-9a-f]{12}$/);
   assert.equal(health.build, buildA);
-  assert.equal(health.body.minViewerProtocol, 1);
+  assert.equal(health.body.minViewerProtocol, MIN_VIEWER_PROTOCOL);
   const session = await api(owner, "/api/auth/session");
   assert.equal(session.build, buildA);
-  assert.equal(session.minViewerProtocol, "1");
+  assert.equal(session.minViewerProtocol, String(MIN_VIEWER_PROTOCOL));
   // The build id lives in app.js or one of the chunks it imports.
   const { source: entry } = await viewerEntry();
   const viewerSources = [

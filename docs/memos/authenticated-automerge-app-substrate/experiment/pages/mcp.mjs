@@ -202,7 +202,7 @@ const formatMatchOperation = {
     node_index: nodeIndex,
     add: {
       ...formatAddSchema(),
-      description: `Marks to apply over the whole match, by name. Flags (strong, em, code) take true. highlight takes ${HIGHLIGHT_COLORS.join(", ")} or a #rrggbb color. link takes {href, title?}. Adding a mark the text already has replaces its value in the range.`,
+      description: `Marks to apply over the whole match, by name. Flags (strong, em, strike, code) take true. highlight takes ${HIGHLIGHT_COLORS.join(", ")} or a #rrggbb color. link takes {href, title?}. Adding a mark the text already has replaces its value in the range.`,
     },
     remove: {
       type: "array",

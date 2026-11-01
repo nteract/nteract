@@ -491,14 +491,15 @@ The bundle is JSON for review before import:
 `pages` is in tree order: the home Page first, then each subtree depth first,
 siblings by source position, so parents always come before children.
 `markdown` is the body: the Page's blocks joined by a blank line. `blocks`
-appears only when a Page has more than one block. Markdown import preserves a
-whole block verbatim when any of it is unsupported syntax, so the importer
-writes each block separately to keep one Preserved Markdown block from
-swallowing its neighbours. If you edit a Page's `markdown`, edit `blocks` to
-match or delete it; import refuses a mismatch.
+appears only when a Page has more than one block. Each block is written
+separately. A Page10 target refuses math and HTML with `unsupported_markdown`,
+so import writes such a block as the literal text it reads as, the same text
+the target's own conversion of a preserved block produces. If you edit a Page's
+`markdown`, edit `blocks` to match or delete it; import refuses a mismatch.
 
-The report lists Pages with `preserved_markdown` (carried verbatim; check that
-they render as intended), Pages with `private_images` (their
+The report lists Pages with `preserved_markdown` (the source stored preserved
+blocks or non-Markdown blocks; check that they read as intended),
+Pages with `private_images` (their
 `/api/pages/<id>/assets/<sha256>` references point at the source Page's assets
 and will not load on the target), comment threads that stay behind, and links to
 source Pages outside the Project.

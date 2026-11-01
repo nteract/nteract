@@ -108,7 +108,8 @@ for (const [index, fixture] of exportFixtures.entries()) {
     assert.equal(result.markdown, fixture.spans[0].value.attrs.source, `${fixture.id}: opaque source changed`);
   } else {
     equalSpans(
-      importLegacy(result.markdown, fixture.import_id, fixture.kind),
+      // Export is Markdown, whatever the source kind was.
+      importLegacy(result.markdown),
       // A declared legacy exporter limitation has an exact recorded result;
       // native and Wordgard round trips below still require preserved structure.
       fixture.legacy_export_spans ?? fixture.expected_spans,
@@ -122,7 +123,8 @@ const roundTrips = runBoth(
     op: "import",
     markdown: result.markdown,
     import_id: exportFixtures[index].import_id ?? "",
-    kind: exportFixtures[index].kind ?? "markdown",
+    // Export is Markdown, whatever the source kind was.
+    kind: "markdown",
   })),
 );
 for (const [index, fixture] of exportFixtures.entries()) {
@@ -149,7 +151,7 @@ const wordgardImports = runBoth(
     op: "import",
     markdown: result.markdown,
     import_id: wordgardCases[index].fixture.import_id ?? "",
-    kind: wordgardCases[index].fixture.kind ?? "markdown",
+    kind: "markdown",
   })),
 );
 for (const [index, { fixture, doc }] of wordgardCases.entries()) {
