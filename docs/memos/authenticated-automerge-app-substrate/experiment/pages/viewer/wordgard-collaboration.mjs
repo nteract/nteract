@@ -183,7 +183,7 @@ export function createWordgardCollaboration({
           .join(" · "),
         tag: "agent",
         title: agent.agent ? `${identity.label} (${agent.agent})` : identity.label,
-        color: presenceColor(agent.principal, agent.driver, agent.agent),
+        color: presenceColor(agent.principal, agent.driver, agent.agent, agent.session),
         idle: agent.state === "idle",
         message,
       };
@@ -373,7 +373,7 @@ export function createWordgardCollaboration({
             ? `Edited by ${[who.displayName, who.driver, who.agent].filter(Boolean).join(" · ")}`
             : "Edited by a collaborator",
           ...(who?.principal && {
-            style: `--peer-color: ${presenceColor(who.principal, who.driver, who.agent).background}`,
+            style: `--peer-color: ${presenceColor(who.principal, who.driver, who.agent, who.session).background}`,
           }),
         });
       } catch {

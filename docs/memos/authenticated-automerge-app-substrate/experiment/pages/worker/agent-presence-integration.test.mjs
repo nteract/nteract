@@ -71,7 +71,7 @@ async function fixture(t, driver = "Kilo", agent) {
     flush: async () => {},
   });
   page.policy = new DocumentPolicy({ storage, metadata: () => page.metadata });
-  const call = async (operation, args = {}) => {
+  const call = async (operation, args = {}, session) => {
     const response = await worker.fetch(
       new Request("https://pages.invalid/api/tools", {
         method: "POST",
@@ -79,6 +79,7 @@ async function fixture(t, driver = "Kilo", agent) {
           authorization: `Bearer ${token}`,
           "x-pages-driver": driver,
           ...(agent && { "x-pages-agent": agent }),
+          ...(session && { "mcp-session-id": session }),
         },
         body: JSON.stringify({ operation, arguments: { page_id: pageId, ...args } }),
       }),
@@ -220,4 +221,17 @@ test("reading markers name what the agent read, even if text lands during the re
   const range = resolvePeerSelection(f.doc(), agent.targets[0]);
   assert.equal(range.quote, "fade");
   assert.ok(range.start_utf16 > "A fade first. ".length, "the original hit, carried forward");
+});
+
+test("two MCP sessions on one key show as two agents", async (t) => {
+  const f = await fixture(t);
+  await f.call("read_page", { search: ["fade"] }, "11111111-2222-4333-8444-555555555555");
+  await f.call("read_page", { search: ["fade"] }, "66666666-7777-4888-9999-000000000000");
+  const agents = f.agents();
+  assert.equal(agents.length, 2);
+  assert.notEqual(agents[0].session, agents[1].session);
+  for (const agent of agents) assert.match(agent.session, /^[0-9a-f]{16}$/);
+  // The same session again updates its own record.
+  await f.call("read_page", { search: ["Monday"] }, "11111111-2222-4333-8444-555555555555");
+  assert.equal(f.agents().length, 2);
 });

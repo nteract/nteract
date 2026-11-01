@@ -880,6 +880,12 @@ export async function handleMcp(request, invoke, env) {
     enableJsonResponse: true,
   });
   await server.connect(transport);
+  let initialize = false;
+  try {
+    initialize = isInitialize(await request.clone().json());
+  } catch {
+    // The transport reports malformed bodies itself.
+  }
   try {
     const response = await transport.handleRequest(request);
     if (oversizedChangeRequestId) {
@@ -897,8 +903,18 @@ export async function handleMcp(request, invoke, env) {
     }
     response.headers.set("Cache-Control", "no-store");
     response.headers.set("X-Content-Type-Options", "nosniff");
+    // Presence session: the transport stays stateless (every request is
+    // independent), but initialize hands the client an Mcp-Session-Id. Clients
+    // echo it, and Pages uses it only to tell agent sessions apart in presence.
+    if (initialize && response.ok) response.headers.set("Mcp-Session-Id", crypto.randomUUID());
     return response;
   } finally {
     await server.close();
   }
+}
+
+/** Whether a JSON-RPC body (single or batch) contains an initialize request. */
+function isInitialize(body) {
+  const messages = Array.isArray(body) ? body : [body];
+  return messages.some((message) => message?.method === "initialize");
 }

@@ -1019,7 +1019,11 @@ nothing, since that person's editor shows their own caret. A caret reads
 "Kyle's Kilo · release agent": the account, the `x-pages-driver` harness and an
 optional `x-pages-agent` session label. Labels sit under the authenticated
 account and are trusted as such. Records key by account, harness and session
-label, so two sessions of one account keep separate carets. A reading marker's
+label, so two sessions of one account keep separate carets. MCP `initialize`
+responses also carry an `Mcp-Session-Id`, and clients echo it; the transport
+stays stateless. The worker turns the id into an account-scoped SHA-256 tag
+(`identity.session`), so two unlabeled sessions on one credential still get two
+carets and two colors, and the raw id never leaves the worker. A reading marker's
 targets are captured on the revision the read returned.
 Each participant's color comes from nteract's cursor palette, keyed by
 principal and driver.

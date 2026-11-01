@@ -23,6 +23,7 @@ const publicProgress = ({ progress_id, identity, message, targets, updatedAt, ex
   progress_id,
   ...identityView(identity),
   agent: identity.agent ?? null,
+  session: identity.session ?? null,
   message,
   targets,
   updated_at: iso(updatedAt),
@@ -35,6 +36,7 @@ const publicAgent = ({ agent_id, identity, record }) => ({
   displayName: identity.displayName,
   driver: identity.driver,
   agent: identity.agent ?? null,
+  session: identity.session ?? null,
   state: record.state,
   seq: record.seq,
   targets: record.targets,
@@ -141,6 +143,7 @@ export class PageActivity {
       (typeof identity.agent !== "string" || !identity.agent || identity.agent.length > 128)
     )
       return false;
+    if (identity.session !== undefined && !/^[0-9a-f]{16}$/.test(identity.session)) return false;
     let generation;
     try {
       const access = this.readAccess(identity);
@@ -152,7 +155,14 @@ export class PageActivity {
     this.prune();
     const now = this.now();
     // One record per account, harness and session label.
-    const key = [identity.principal, identity.driver, identity.agent ?? ""].join("\u0000");
+    // One record per account, harness, session label and MCP session, so two
+    // sessions on one credential keep separate carets.
+    const key = [
+      identity.principal,
+      identity.driver,
+      identity.agent ?? "",
+      identity.session ?? "",
+    ].join("\u0000");
     const previous = this.agents.get(key);
     const record = transition(previous?.record ?? null, {
       type,

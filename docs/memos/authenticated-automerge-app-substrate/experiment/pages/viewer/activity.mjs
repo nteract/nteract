@@ -13,6 +13,9 @@ const sessionNow = (session) => session.now?.() ?? monotonicNow();
 
 const bounded = (value, max) =>
   typeof value === "string" && value.length > 0 && value.length <= max;
+// The host's MCP session tag: 16 hex digits, or null when the agent has none.
+const sessionTagOf = (value) =>
+  typeof value === "string" && /^[0-9a-f]{16}$/.test(value) ? value : null;
 const endpoint = (value, blockId) =>
   value &&
   value.blockId === blockId &&
@@ -86,6 +89,7 @@ export function activitySnapshot(message, now = monotonicNow()) {
         displayName: item.displayName,
         driver: item.driver,
         agent: bounded(item.agent, 128) ? item.agent : null,
+        session: sessionTagOf(item.session),
         message: item.message,
         targets,
         until: now + remaining,
@@ -145,6 +149,7 @@ function agentSnapshot(agents, observedAt, now) {
           : bounded(item.agent, 128)
             ? item.agent
             : null,
+      session: sessionTagOf(item.session),
       state: item.state,
       seq: item.seq,
       targets,
@@ -179,10 +184,11 @@ export const newestProgressFirst = (a, b) =>
   b.updated - a.updated ||
   (a.progress_id < b.progress_id ? 1 : a.progress_id > b.progress_id ? -1 : 0);
 
-/** One key per agent session: account, harness and optional session label.
+/** One key per agent session: account, harness, optional session label and
+ * the host's MCP session tag.
  * A caret and a progress lease with the same key are one participant. */
 export const agentKey = (item) =>
-  [item.principal ?? "", item.driver ?? "", item.agent ?? ""].join("\u0000");
+  [item.principal ?? "", item.driver ?? "", item.agent ?? "", item.session ?? ""].join("\u0000");
 
 /** Agents in this Page, merged: each has its caret or reading marker (if any)
  * and its live progress leases, newest first. */
@@ -197,6 +203,7 @@ export function agentParticipants(session, now = sessionNow(session)) {
         displayName: item.displayName,
         driver: item.driver,
         agent: item.agent ?? null,
+        session: item.session ?? null,
         presence: null,
         progress: [],
       });

@@ -344,3 +344,31 @@ test("progress carries the agent's session label so it merges with its caret", (
     ],
   );
 });
+
+test("two MCP sessions on one credential keep separate records", (t) => {
+  const f = fixture(t);
+  f.activity.agentEvent(
+    agentIdentity({ driver: "Kilo", session: "aaaaaaaaaaaaaaaa" }),
+    "write",
+    blockTarget(f),
+  );
+  f.activity.agentEvent(
+    agentIdentity({ driver: "Kilo", session: "bbbbbbbbbbbbbbbb" }),
+    "write",
+    blockTarget(f),
+  );
+  const agents = f.broadcasts.at(-1).agents;
+  assert.deepEqual(
+    agents.map((a) => a.session),
+    ["aaaaaaaaaaaaaaaa", "bbbbbbbbbbbbbbbb"],
+  );
+  // A malformed session tag is refused, not silently merged.
+  assert.equal(
+    f.activity.agentEvent(
+      agentIdentity({ driver: "Kilo", session: "NOT-HEX" }),
+      "write",
+      blockTarget(f),
+    ),
+    false,
+  );
+});

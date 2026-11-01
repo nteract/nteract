@@ -340,7 +340,14 @@ function forwarded(request, path, body) {
   url.pathname = path;
   url.search = "";
   const headers = new Headers();
-  for (const name of ["authorization", "cookie", "origin", "sec-fetch-site", "x-pages-driver"]) {
+  for (const name of [
+    "authorization",
+    "cookie",
+    "origin",
+    "sec-fetch-site",
+    "x-pages-driver",
+    "mcp-session-id",
+  ]) {
     const value = request.headers.get(name);
     if (value) headers.set(name, value);
   }
@@ -2980,6 +2987,7 @@ export class Page {
           identity: {
             ...publicIdentity(identity),
             ...(identity.agent && { agent: identity.agent }),
+            ...(identity.session && { session: identity.session }),
           },
           heads: receipt.heads,
         });
