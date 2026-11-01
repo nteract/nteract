@@ -22,6 +22,7 @@ import {
   completeServerOidcLogin,
   deleteServerOidcSession,
   serverOidcSessionStatus,
+  ServerOidcIdentityRejected,
 } from "../src/server-oidc.ts";
 import { SERVER_SESSION_COOKIE } from "../src/oidc-session-store.ts";
 import { AuthError } from "../src/identity.ts";
@@ -688,6 +689,102 @@ describe("server OIDC with SQLite persistence", { concurrency: false }, () => {
     assert.equal((await f.finish(callback, started.cookie)).status, 400);
     assert.equal(f.calls.length, 0);
     assert.equal(f.countRows(), 0);
+  });
+
+  it("renders a refused callback as an HTML page and logs only its coded reason", async (t) => {
+    const f = await fixture(t);
+    const records: Record<string, unknown>[] = [];
+    t.mock.method(console, "warn", (_prefix: unknown, record: Record<string, unknown>) => {
+      records.push(record);
+    });
+    const started = await f.start();
+    const callback = await f.authorize(started.authorizationUrl);
+    const providerError = new URL(callback);
+    providerError.searchParams.set("error", "access_denied");
+    const malformed = new URL(callback);
+    malformed.searchParams.delete("code");
+    for (const [url, cookie, reason] of [
+      [providerError, started.cookie, "provider_error"],
+      [malformed, started.cookie, "callback_malformed"],
+      // Sign-in started in another browser context, such as an in-app browser.
+      [callback, undefined, "login_binding_missing"],
+      [callback, `${LOGIN_COOKIE}=${"b".repeat(43)}`, "login_transaction_missing"],
+    ] as const) {
+      const response = await f.finish(url, cookie);
+      assert.equal(response.status, 400);
+      assert.equal(response.headers.get("Content-Type"), "text/html; charset=utf-8");
+      assert.equal(response.headers.get("Content-Disposition"), null);
+      assert.equal(response.headers.get("Cache-Control"), "no-store");
+      assert.equal(hasSessionCookie(response), false);
+      const body = await response.text();
+      assert.match(body, /^<!doctype html>/);
+      assert.match(body, /<a href="\/api\/auth\/oidc\/login">Sign in again<\/a>/);
+      assert.match(body, /<a href="\/">Return to the notebook site<\/a>/);
+      for (const secret of [reason, callback.searchParams.get("state")!, "access_denied"])
+        assert.equal(body.includes(secret), false, `the page must not reveal ${secret}`);
+      assert.deepEqual(
+        {
+          phase: records.at(-1)!.phase,
+          kind: records.at(-1)!.kind,
+          reason: records.at(-1)!.reason,
+        },
+        { phase: "callback_transaction", kind: "callback_rejected", reason },
+      );
+    }
+    assert.equal(f.calls.length, 0, "refused callbacks never reach token exchange");
+    const custom = await completeServerOidcLogin(new Request(callback), f.env, noopProfile, {
+      failurePage: ({ status, accountRejected }) =>
+        new Response(`custom ${accountRejected}`, { status }),
+    });
+    assert.equal(custom.status, 400);
+    assert.equal(await custom.text(), "custom false");
+    assert.match(custom.headers.getSetCookie().join("\n"), /Max-Age=0/);
+    assert.equal(
+      (await f.finish(callback, started.cookie)).status,
+      303,
+      "refusals that never matched the transaction leave it usable",
+    );
+    const denied = await f.start();
+    const deniedResponse = await completeServerOidcLogin(
+      new Request(await f.authorize(denied.authorizationUrl), {
+        headers: { Cookie: denied.cookie },
+      }),
+      f.env,
+      async () => {
+        throw new ServerOidcIdentityRejected();
+      },
+    );
+    assert.equal(deniedResponse.status, 403);
+    assert.equal(deniedResponse.headers.get("Content-Type"), "text/html; charset=utf-8");
+    assert.match(await deniedResponse.text(), /cannot access this application/);
+  });
+
+  it("sends an already signed-in browser home when a used callback arrives again", async (t) => {
+    const f = await fixture(t);
+    const login = await f.login();
+    const replay = (cookie: string, homePath?: string) =>
+      completeServerOidcLogin(
+        new Request(login.callback, { headers: { Cookie: cookie } }),
+        f.env,
+        noopProfile,
+        homePath ? { homePath } : {},
+      );
+    for (const [cookie, homePath, location] of [
+      [`${login.cookie}; ${login.sessionCookie}`, undefined, "/"],
+      [login.sessionCookie, "/pages", "/pages"],
+      [login.sessionCookie, "https://attacker.example/", "/"],
+    ] as const) {
+      const response = await replay(cookie, homePath);
+      assert.equal(response.status, 303);
+      assert.equal(response.headers.get("Location"), location);
+      assert.equal(hasSessionCookie(response), false, "a replay never mints a session");
+    }
+    assert.equal(f.calls.length, 1);
+    assert.equal(f.countRows(), 1);
+    // Without a live session the same replay is a failure, not a redirect.
+    assert.equal((await replay(login.cookie)).status, 400);
+    await deleteServerOidcSession(f.request(undefined, login.sessionCookie), f.env);
+    assert.equal((await replay(login.sessionCookie)).status, 400);
   });
 
   it("enforces provider PKCE and signed ID-token nonce rather than trusting the callback", async (t) => {

@@ -328,3 +328,18 @@ test("unverified email and non-OIDC identity cannot pass the login hook", async 
     }),
   );
 });
+test("a refused sign-in callback renders an HTML page that links back into the operator app", async (t) => {
+  const f = await fixture(t);
+  const response = await f.request(`/oidc?state=${"s".repeat(43)}&code=stale`, {
+    headers: {
+      "Sec-Fetch-Site": "cross-site",
+      "Sec-Fetch-Mode": "navigate",
+      "Sec-Fetch-Dest": "document",
+    },
+  });
+  assert.equal(response.status, 400);
+  assert.equal(response.headers.get("Content-Type"), "text/html; charset=utf-8");
+  const body = await response.text();
+  assert.match(body, /<a href="\/api\/auth\/oidc\/login">Sign in again<\/a>/);
+  assert.match(body, /<a href="\/operator\/">Return to the operator app<\/a>/);
+});
