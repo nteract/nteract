@@ -207,7 +207,12 @@ import {
   rekeyedEntries,
   restoreTarget,
 } from "./catalog-location.mjs";
-import { MIGRATION_REQUIRED, migrateLocationShape } from "./location-shape.mjs";
+import {
+  LOCATION_SHAPE_KEY,
+  MIGRATION_REQUIRED,
+  migrateLocationShape,
+  shapeState,
+} from "./location-shape.mjs";
 import { MAX_DEPTH, deriveLocation } from "../model/location.mjs";
 import {
   SPACE_LIMIT,
@@ -1055,13 +1060,25 @@ export class Catalog {
     return migrateLocationShape(this.storage);
   }
   /** Refuse a location write while this Catalog isn't in the current shape.
-   * The pass that found the obstacle logged it; the next write tries again. */
+   * A blocked pass names the Project and Page in its way, in the message and
+   * as `reason`, `page_id` and `space_id`; the next write tries again. */
   static requireMigrated(shape) {
     if (shape.name === "migrated") return;
-    throw new HttpError(
-      503,
-      "This account's Pages are being reorganized; retry shortly. If this persists, a Project is still being created or a Page nests too deep to move under its Project's home Page.",
-      MIGRATION_REQUIRED,
+    const detail =
+      shape.name === "blocked"
+        ? shape.reason === "home_pending"
+          ? ` Project ${shape.space_id} is still being created; retry create_project with its original idempotency_key, then retry this. Page ${shape.page_id} waits on it.`
+          : ` Page ${shape.page_id} in Project ${shape.space_id} nests too deep to sit under the Project's home Page; trash and purge its deepest sub-page, then retry.`
+        : " Retry shortly.";
+    throw Object.assign(
+      new HttpError(
+        503,
+        `This account's Pages are being reorganized into their Projects.${detail}`,
+        MIGRATION_REQUIRED,
+      ),
+      shape.name === "blocked" && {
+        details: { reason: shape.reason, page_id: shape.page_id, space_id: shape.space_id },
+      },
     );
   }
   async run(request) {
@@ -2162,6 +2179,21 @@ export class Catalog {
     const { entries: locations, counts } = await locationScan(storage);
     if (await storage.verifyCounts(counts)) logCountRepair(counts);
     const quota = { limit, count: counts["page/"], trash_count: counts["trash/"] };
+    // A listing is a read and runs in either shape. A blocked pass shows
+    // here, so a caller refused `location_migration_required` can see what
+    // stands in the way without another write.
+    const shape = shapeState(await storage.get(LOCATION_SHAPE_KEY));
+    const migration =
+      shape.name === "blocked"
+        ? {
+            location_migration: {
+              state: "blocked",
+              reason: shape.reason,
+              page_id: shape.page_id,
+              space_id: shape.space_id,
+            },
+          }
+        : {};
     // Child IDs of a shared parent, from its owner's Catalog.
     let sharedChildren;
     if (typeof options.parentId === "string") {
@@ -2295,6 +2327,7 @@ export class Catalog {
       limit: options.limit,
       next_cursor: result.next ? await sealCursor(this.env, context, result.next) : null,
       quota,
+      ...migration,
       ...(await issueRetryToken(storage, {
         scope: `catalog:${identity.principal}`,
         principal: identity.principal,

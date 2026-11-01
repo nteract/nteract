@@ -76,6 +76,7 @@ export function toProjectBody(operation, body) {
     else if (key === "space") out.project = project(value);
     else if (key === "spaces" && Array.isArray(value)) out.projects = value.map(project);
     else if (key === "pages" && Array.isArray(value)) out.pages = value.map(placement);
+    else if (key === "location_migration") out.location_migration = placement(value);
     else if (key === "breadcrumbs" && Array.isArray(value)) out.breadcrumbs = value.map(breadcrumb);
     else out[key] = value;
   }

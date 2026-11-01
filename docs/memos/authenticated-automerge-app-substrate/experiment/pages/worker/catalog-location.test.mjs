@@ -22,7 +22,13 @@ import {
   shapeState,
 } from "./location-shape.mjs";
 import { STORAGE_KEYS_PER_CALL } from "./actor-authorship.mjs";
-import { checkInvariants } from "../model/location.mjs";
+import {
+  MAX_DEPTH,
+  MAX_TREE_DEPTH,
+  checkInvariants,
+  deriveLocation,
+  planMove,
+} from "../model/location.mjs";
 
 /** Durable Object storage in memory. `puts` records the key count of every
  * multi-key put; `transactions` counts transaction runs. A put over the
@@ -308,7 +314,7 @@ test("locationShape: every state takes exactly the events a pass can send", () =
   });
   assert.ok(locationShape(states.migrating, { type: "block", reason: "other" }).rejected);
   assert.ok(locationShape(states.migrating, { type: "nope" }).rejected);
-  assert.deepEqual(SHAPE_BLOCKS, ["home_pending", "home_missing", "nesting_depth_exceeded"]);
+  assert.deepEqual(SHAPE_BLOCKS, ["home_pending", "nesting_depth_exceeded"]);
   // Stored records: absent, another version, or an unknown state all read as
   // unmigrated; a blocked record keeps its reason.
   assert.deepEqual(shapeState(undefined), { name: "unmigrated" });
@@ -499,89 +505,200 @@ test("migration: a pending Project leaves the Catalog unmigrated; finishing it c
   await assertCurrentShape(storage);
 });
 
-test("migration: a chain that would pass MAX_DEPTH blocks, and trashing its leaf unblocks", async () => {
-  // top's chain is nine deep as roots: top (1) … leaf (9). Under the home
-  // Page it would reach 10.
-  const chain = {};
-  let parent = top;
-  const leaves = [];
-  for (let depth = 2; depth <= 9; depth++) {
-    const pageId = `${String(depth).repeat(8)}-${String(depth).repeat(4)}-4000-8000-00000000000${depth}`;
-    chain[`page/${pageId}`] = entry(pageId, { parent_id: parent, position: "a0" });
+/** A chain of `length` Pages below `root`, each the only child of the one
+ * before. Returns the chain's IDs, deepest last. */
+function chainBelow(values, root, length, tag) {
+  const ids = [];
+  let parent = root;
+  for (let depth = 1; depth <= length; depth++) {
+    const digit = String(depth % 10);
+    const pageId = `${tag}${digit.repeat(7)}-${digit.repeat(4)}-4000-8000-${String(depth).padStart(12, "0")}`;
+    values[`page/${pageId}`] = entry(pageId, { parent_id: parent, position: "a0" });
     parent = pageId;
-    leaves.push(pageId);
+    ids.push(pageId);
   }
+  return ids;
+}
+
+test("migration: the deepest chain the older shape allowed lands one level lower and holds", async () => {
+  // top is a root at depth 1 with eight Pages below it: depth 9, MAX_DEPTH,
+  // the most a Project held before the home Page was its root.
+  const chain = {};
+  const leaves = chainBelow(chain, top, MAX_DEPTH - 1, "d");
   const storage = mixed(chain);
   storage.values.delete(`page/${child}`);
   storage.values.delete(`page/${grandchild}`);
-  const state = await migrateLocationShape(storage);
-  assert.deepEqual(state, {
+  assert.deepEqual(await migrateLocationShape(storage), { name: "migrated" });
+  const entries = await assertCurrentShape(storage);
+  const deepest = deriveLocation(entries, leaves.at(-1));
+  assert.equal(deepest.ok, true, "the chain still reads");
+  assert.equal(deepest.depth, MAX_TREE_DEPTH, "one level lower than before");
+  assert.equal(deepest.space_id, PROJECT);
+  assert.equal(projectOf(entries, leaves.at(-1)), PROJECT);
+  // New placement stays bounded: nothing goes under the deepest Page, and the
+  // model refuses to move the chain anywhere it still exceeds MAX_DEPTH.
+  const state = { revision: 0, entries };
+  assert.equal(planMove(state, loose, { parent_id: leaves.at(-1) }).code, "nesting_depth_exceeded");
+  assert.equal(planMove(state, top, { parent_id: loose }).code, "nesting_depth_exceeded");
+  assert.equal(planMove(state, top, { project_id: null }).ok, true, "a root at depth 1 fits");
+});
+
+test("migration: a chain already past the depth the model holds blocks, naming the Project and Page", async () => {
+  // Corrupt data: ten Pages below a root, which no build placed. The block
+  // names the root and its Project, and nothing moves.
+  const chain = {};
+  chainBelow(chain, top, MAX_DEPTH, "e");
+  const storage = mixed(chain);
+  storage.values.delete(`page/${child}`);
+  storage.values.delete(`page/${grandchild}`);
+  const before = new Map(storage.values);
+  assert.deepEqual(await migrateLocationShape(storage), {
     name: "blocked",
     reason: "nesting_depth_exceeded",
     page_id: top,
     space_id: PROJECT,
   });
-  assert.equal((await storage.get(`page/${otherTop}`)).space_id, OTHER, "nothing moved");
+  for (const [key, value] of before)
+    if (key !== LOCATION_SHAPE_KEY) assert.deepEqual(storage.values.get(key), value, key);
   // A trashed leaf still counts: a restore would put it back without a depth
-  // check, so the chain must leave room for it.
-  const leaf = leaves.at(-1);
+  // check. Purged, the chain fits.
+  const leaf = Object.keys(chain).at(-1).slice("page/".length);
   const leafEntry = storage.values.get(`page/${leaf}`);
   storage.values.delete(`page/${leaf}`);
   storage.values.set(`trash/${leaf}`, { ...leafEntry, state: "trashed" });
   assert.equal((await migrateLocationShape(storage)).name, "blocked");
-  // Purged, the chain fits.
   storage.values.delete(`trash/${leaf}`);
   assert.deepEqual(await migrateLocationShape(storage), { name: "migrated" });
-  const entries = await assertCurrentShape(storage);
-  assert.equal(entries.get(leaves.at(-2)).parent_id, leaves.at(-3));
+  await assertCurrentShape(storage);
 });
 
-test("planLocationShape: a trashed root whose Project is gone goes to Your items; an active one blocks", async () => {
+test("migration: a pass cut between batches finishes the sibling repair on its rerun", async () => {
+  // 130 legacy roots, one of which ("a1") ties with guide, already under
+  // home. The repair of that tie is in the second batch. The first batch
+  // commits; the second fails; the rerun finds no root left to move and must
+  // still repair the tie before it declares migrated.
+  const values = {
+    [`space/${PROJECT}`]: { space_id: PROJECT, home_page_id: home },
+    [`page/${home}`]: entry(home, {
+      parent_id: null,
+      position: "a0",
+      space_id: PROJECT,
+      home: true,
+    }),
+    [`page/${guide}`]: entry(guide, { parent_id: home, position: "a1" }),
+  };
+  const keys = ["a1", ...generateNKeysBetween("a1", null, 129)];
+  for (let i = 0; i < 130; i++) {
+    const pageId = `${String(i).padStart(8, "0")}-0000-4000-8000-000000000000`;
+    values[`page/${pageId}`] = entry(pageId, {
+      parent_id: null,
+      position: keys[i],
+      space_id: PROJECT,
+    });
+  }
+  const storage = new Storage(values);
+  let puts = 0;
+  const put = storage.put.bind(storage);
+  storage.put = async (key, value) => {
+    if (typeof key === "object" && ++puts === 2) throw new Error("injected storage failure");
+    return put(key, value);
+  };
+  await assert.rejects(migrateLocationShape(storage), /injected/);
+  assert.deepEqual(await shapeOf(storage), { name: "migrating" });
+  const moved = [...storage.values.values()].filter(
+    (value) => value.parent_id === home && value.page_id !== guide,
+  ).length;
+  assert.equal(moved, 127, "the first batch committed");
+  // Both guide and the tied root hold "a1" under home right now.
+  const tied = [...storage.values.values()].filter(
+    (value) => value.parent_id === home && value.position === "a1",
+  );
+  assert.equal(tied.length, 2);
+  storage.put = put;
+  assert.deepEqual(await migrateLocationShape(storage), { name: "migrated" });
+  const entries = await assertCurrentShape(storage);
+  assert.equal(childrenOf(entries, home).length, 131);
+  const other = tied.find((value) => value.page_id !== guide).page_id;
+  assert.notEqual(entries.get(guide).position, entries.get(other).position);
+});
+
+test("migration: a home Page the Project record names but didn't flag is the root, and gains the flag", async () => {
+  const storage = mixed();
+  const flagged = storage.values.get(`page/${home}`);
+  const { home: _home, ...unflagged } = flagged;
+  storage.values.set(`page/${home}`, unflagged);
+  assert.deepEqual(await migrateLocationShape(storage), { name: "migrated" });
+  const entries = await assertCurrentShape(storage);
+  const root = await storage.get(`page/${home}`);
+  assert.equal(root.home, true, "the flag is written");
+  assert.equal(root.parent_id, null);
+  assert.equal(root.space_id, PROJECT);
+  assert.deepEqual(childrenOf(entries, home), [top, guide], "its roots moved under it, no cycle");
+  assert.equal(deriveLocation(entries, grandchild).root, home);
+  assert.equal(homeEntry(entries, PROJECT).page_id, home);
+  // A second flagged root for the same Project is a duplicate home; the one
+  // the record names stays the root and the other becomes its child.
+  const twice = mixed();
+  const dup = id(5).replace(/5/g, "3");
+  twice.values.set(
+    `page/${dup}`,
+    entry(dup, { parent_id: null, position: "a3", space_id: PROJECT, home: true }),
+  );
+  assert.deepEqual(await migrateLocationShape(twice), { name: "migrated" });
+  const after = await assertCurrentShape(twice);
+  assert.equal(after.get(dup).parent_id, home);
+  assert.equal(after.get(dup).home, undefined);
+  assert.equal((await twice.get(`page/${dup}`)).home, undefined);
+});
+
+test("migration: a root whose Project has no home Page anywhere goes to Your items", async () => {
   const gone = `prj_${"3".repeat(8)}-3333-4333-8333-${"3".repeat(12)}`;
   const orphan = id(5).replace(/5/g, "4");
-  const entries = await locationEntries(
-    mixed({
-      [`trash/${orphan}`]: entry(orphan, {
-        parent_id: null,
-        position: "a0",
-        space_id: gone,
-        state: "trashed",
-      }),
+  const trashedOrphan = id(5).replace(/5/g, "6");
+  const storage = mixed({
+    [`page/${orphan}`]: entry(orphan, { parent_id: null, position: "a0", space_id: gone }),
+    [`trash/${trashedOrphan}`]: entry(trashedOrphan, {
+      parent_id: null,
+      position: "a0",
+      space_id: gone,
+      state: "trashed",
     }),
-  );
-  const spaces = new Map([
-    [PROJECT, { home_page_id: home }],
-    [OTHER, { home_page_id: otherHome }],
-  ]);
-  const plan = planLocationShape(entries, spaces);
-  assert.equal(plan.ok, true, JSON.stringify(plan));
-  const moved = plan.writes.find((write) => write.page_id === orphan);
-  assert.deepEqual(moved, {
-    page_id: orphan,
-    state: "trashed",
-    parent_id: null,
-    position: "a0",
-    space_id: null,
-    restore_space_id: gone,
   });
-  // The same root active is a Project with no home Page: it can't be placed.
-  entries.set(orphan, { ...entries.get(orphan), state: "active" });
-  assert.deepEqual(planLocationShape(entries, spaces), {
-    ok: false,
-    reason: "home_missing",
-    page_id: orphan,
-    space_id: gone,
-  });
-  // A home known only from the Project record, without its flag, still counts.
-  const unflagged = await locationEntries(mixed());
-  unflagged.set(home, { ...unflagged.get(home), home: undefined });
-  delete unflagged.get(home).home;
-  const viaRecord = planLocationShape(unflagged, spaces);
-  assert.equal(viaRecord.ok, true);
-  assert.equal(viaRecord.writes.find((write) => write.page_id === top).parent_id, home);
-  // Already current: nothing to write.
+  assert.deepEqual(await migrateLocationShape(storage), { name: "migrated" });
+  const entries = await assertCurrentShape(storage);
+  // The active one is a Your items root; its key tied with loose and was
+  // repaired, so the two sort apart.
+  assert.equal(entries.get(orphan).parent_id, null);
+  assert.equal(entries.get(orphan).space_id, undefined);
+  assert.equal(projectOf(entries, orphan), null);
+  assert.notEqual(entries.get(orphan).position, entries.get(loose).position);
+  assert.deepEqual(appendPosition(entries, null).position > entries.get(orphan).position, true);
+  // The trashed one remembers the Project for a restore, which will fall
+  // through to Your items while the Project stays gone.
+  const trashed = await storage.get(`trash/${trashedOrphan}`);
+  assert.equal(trashed.parent_id, null);
+  assert.equal(trashed.space_id, undefined);
+  assert.equal(trashed.restore_space_id, gone);
+  assert.equal((await restoreTarget(storage, trashedOrphan)).location.parent_id, null);
+});
+
+test("planLocationShape: nothing to do on a current Catalog; a tie under a home is repaired on its own", async () => {
+  const spaces = new Map([[PROJECT, { home_page_id: home }]]);
   assert.deepEqual(planLocationShape(await locationEntries(tree()), spaces), {
     ok: true,
     writes: [],
   });
+  // Two children of home with one key, as concurrent writers in older data
+  // left them: the pass repairs it, moving nothing.
+  const tied = await locationEntries(
+    tree({ [`page/${guide}`]: entry(guide, { parent_id: home, position: "a0" }) }),
+  );
+  const plan = planLocationShape(tied, spaces);
+  assert.equal(plan.ok, true);
+  assert.deepEqual(
+    plan.writes.map((write) => [write.page_id, write.parent_id]),
+    [[guide, home]],
+    "top sorts first by page_id and keeps a0; guide is rekeyed",
+  );
+  assert.ok(plan.writes[0].position > "a0");
 });

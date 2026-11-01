@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
   MAX_DEPTH,
+  MAX_TREE_DEPTH,
   MAX_KEY_LENGTH,
   REBALANCE_KEY_LENGTH,
   MOVE_REFUSALS,
@@ -191,19 +192,34 @@ test("deriveLocation reports cycles, missing parents and depth; it never loops",
   assert.equal(result.problem, "too_deep");
 });
 
-test("depth: exactly MAX_DEPTH resolves, one more is too deep", () => {
+test("depth: the model holds one level past MAX_DEPTH; a move can't produce it", () => {
+  assert.equal(MAX_TREE_DEPTH, MAX_DEPTH + 1);
   const chain = (length) =>
     stateOf(...Array.from({ length }, (_, i) => entry(`d${i + 1}`, i ? `d${i}` : null)));
   const fits = deriveLocation(chain(MAX_DEPTH).entries, `d${MAX_DEPTH}`);
   assert.equal(fits.ok, true);
   assert.equal(fits.depth, MAX_DEPTH);
-  const deep = deriveLocation(chain(MAX_DEPTH + 1).entries, `d${MAX_DEPTH + 1}`);
+  // A Project chain of MAX_DEPTH from before the home Page was its root sits
+  // at MAX_TREE_DEPTH once it is under the home Page. It reads and holds.
+  const held = deriveLocation(chain(MAX_TREE_DEPTH).entries, `d${MAX_TREE_DEPTH}`);
+  assert.equal(held.ok, true);
+  assert.equal(held.depth, MAX_TREE_DEPTH);
+  assert.deepEqual(checkInvariants(chain(MAX_TREE_DEPTH)), []);
+  const deep = deriveLocation(chain(MAX_TREE_DEPTH + 1).entries, `d${MAX_TREE_DEPTH + 1}`);
   assert.deepEqual(deep, { ok: false, problem: "too_deep", page_id: "d1" });
-  assert.deepEqual(checkInvariants(chain(MAX_DEPTH)), []);
   assert.deepEqual(
-    checkInvariants(chain(MAX_DEPTH + 1)).map((v) => [v.code, v.page_id]),
-    [["nesting_depth_exceeded", `d${MAX_DEPTH + 1}`]],
+    checkInvariants(chain(MAX_TREE_DEPTH + 1)).map((v) => [v.code, v.page_id]),
+    [["nesting_depth_exceeded", `d${MAX_TREE_DEPTH + 1}`]],
   );
+  // New placement stays at MAX_DEPTH: the held chain can't grow or be moved
+  // where it still exceeds it, only to where it fits.
+  const s = stateOf(
+    ...chain(MAX_TREE_DEPTH).entries.values(),
+    entry("other", null, { position: "a1" }),
+  );
+  assert.equal(planMove(s, "other", { parent_id: `d${MAX_DEPTH}` }).code, "nesting_depth_exceeded");
+  assert.equal(planMove(s, "d1", { parent_id: "other" }).code, "nesting_depth_exceeded");
+  assert.equal(planMove(s, "d2", { project_id: null }).ok, true);
 });
 
 test("subtreeOf and subtreeSpaceIds list a Page's descendants top-down", () => {
@@ -317,9 +333,9 @@ test("depth at the boundary: a subtree fits only where its deepest Page stays wi
 });
 
 test("corrupt input: an over-deep chain is enumerated whole, never truncated", () => {
-  // Ten Pages in one chain: one level past MAX_DEPTH, as old or imported data
-  // might be.
-  const length = MAX_DEPTH + 1;
+  // Eleven Pages in one chain: one level past MAX_TREE_DEPTH, as corrupt or
+  // imported data might be.
+  const length = MAX_TREE_DEPTH + 1;
   const s = stateOf(
     ...Array.from({ length }, (_, i) => entry(`d${i + 1}`, i ? `d${i}` : null)),
     entry("other", null, { position: "a1" }),
@@ -333,11 +349,13 @@ test("corrupt input: an over-deep chain is enumerated whole, never truncated", (
   // Moving the whole chain anywhere is refused, even to where it already is.
   assert.equal(planMove(s, "d1", { project_id: null }).code, "nesting_depth_exceeded");
   assert.equal(planMove(s, "d1", { parent_id: "other" }).code, "nesting_depth_exceeded");
-  // Cutting it below the root repairs it, and the projection names all nine
-  // moved Pages, d10 included.
-  const cut = planMove(s, "d2", { project_id: null });
+  // Cutting it to a chain that fits MAX_DEPTH repairs it, and the projection
+  // names all nine moved Pages, d11 included. One level higher is still too
+  // deep for a move, though the model would hold it.
+  assert.equal(planMove(s, "d2", { project_id: null }).code, "nesting_depth_exceeded");
+  const cut = planMove(s, "d3", { project_id: null });
   assert.equal(cut.ok, true, JSON.stringify(cut));
-  assert.equal(cut.projection.length, length - 1);
+  assert.equal(cut.projection.length, length - 2);
   assert.equal(cut.projection.at(-1).page_id, `d${length}`);
   assert.deepEqual(checkInvariants(applyWrite(s, cut)), []);
   // A Page inside a cycle has no root, but listing below it still ends.

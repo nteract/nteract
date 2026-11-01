@@ -34,10 +34,16 @@
  */
 import { BASE_62_DIGITS, generateKeyBetween, generateNKeysBetween } from "fractional-indexing";
 
-/** Deepest nesting allowed; a root is at depth 1, so a Project's top-level
- * Pages are at depth 2. The design's open question 2 picks the final value;
- * 9 keeps today's eight levels below a Project's home Page. */
+/** Deepest nesting a create or move may produce; a root is at depth 1, so a
+ * Project's top-level Pages are at depth 2. The design's open question 2
+ * picks the final value; 9 keeps eight levels below a Project's home Page. */
 export const MAX_DEPTH = 9;
+/** Deepest chain the model holds. Before the home Page was a Project's only
+ * root, a Project's chain started at depth 1 and could reach MAX_DEPTH; under
+ * the home Page the same chain sits one level lower. Such a chain is read and
+ * kept whole; it can't grow (MAX_DEPTH bounds new placements), and a move can
+ * only take it somewhere it fits. */
+export const MAX_TREE_DEPTH = MAX_DEPTH + 1;
 
 export const ENTRY_STATES = Object.freeze(["active", "pending", "trashed"]);
 
@@ -123,8 +129,8 @@ const asMap = (entries) =>
   entries instanceof Map ? entries : new Map(Object.entries(entries ?? {}));
 
 /**
- * Walk from `pageId` to its root. Bounded: it stops after MAX_DEPTH + 1 steps
- * and never revisits an entry, so a corrupt map can't make it loop.
+ * Walk from `pageId` to its root. Bounded: it stops after MAX_TREE_DEPTH
+ * steps and never revisits an entry, so a corrupt map can't make it loop.
  *
  * Returns `{ ok: true, root, space_id, depth, ancestors }`, with `ancestors`
  * nearest first, or `{ ok: false, problem, page_id }` where `problem` is
@@ -138,7 +144,7 @@ export function deriveLocation(entries, pageId) {
   const seen = new Set([pageId]);
   let current = map.get(pageId);
   for (let depth = 1; ; depth++) {
-    if (depth > MAX_DEPTH) return { ok: false, problem: "too_deep", page_id: current.page_id };
+    if (depth > MAX_TREE_DEPTH) return { ok: false, problem: "too_deep", page_id: current.page_id };
     if (current.parent_id === null)
       return {
         ok: true,
@@ -449,7 +455,7 @@ export function applyWrite(state, write) {
  * - an active or pending entry's parent is an active owned entry
  *   (`missing_parent`, `inactive_parent`). A trashed entry's parent is a
  *   restore hint and may be in any state or gone, so it isn't checked;
- * - no cycles (`placement_cycle`) and no entry deeper than MAX_DEPTH
+ * - no cycles (`placement_cycle`) and no entry deeper than MAX_TREE_DEPTH
  *   (`nesting_depth_exceeded`);
  * - siblings that aren't in Trash have distinct position keys
  *   (`duplicate_position`, reported for each sibling after the first). Roots

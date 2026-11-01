@@ -2071,6 +2071,13 @@ test("a blocked migration refuses location writes with 503 location_migration_re
   const refused = await w.createPage({ title: "B", project_id: project.project_id });
   assert.equal(refused.status, 503);
   assert.equal(refused.body.code, "location_migration_required");
+  // The refusal names what stands in the way, in the API's names.
+  assert.equal(refused.body.reason, "home_pending");
+  assert.equal(refused.body.page_id, stray);
+  assert.equal(refused.body.project_id, intent.spaceId);
+  assert.equal(refused.body.space_id, undefined);
+  assert.match(refused.body.error, new RegExp(`Project ${intent.spaceId}`));
+  assert.match(refused.body.error, new RegExp(`Page ${stray}`));
   assert.deepEqual(await shapeOf(storage), {
     name: "blocked",
     reason: "home_pending",
@@ -2094,11 +2101,18 @@ test("a blocked migration refuses location writes with 503 location_migration_re
     "location_migration_required",
     "Your items too: the Catalog is one shape or the other",
   );
-  // Reads keep working in the older shape.
-  assert.deepEqual(
-    ids(await w.call("owner", "list_pages", { project_id: project.project_id, parent_id: null })),
-    [project.home_page_id, a].sort(),
-  );
+  // Reads keep working in the older shape, and a listing shows the block.
+  const listing = await w.call("owner", "list_pages", {
+    project_id: project.project_id,
+    parent_id: null,
+  });
+  assert.deepEqual(ids(listing), [project.home_page_id, a].sort());
+  assert.deepEqual(listing.body.location_migration, {
+    state: "blocked",
+    reason: "home_pending",
+    page_id: stray,
+    project_id: intent.spaceId,
+  });
   const read = await w.call("owner", "read_page", { page_id: a, include_content: false });
   assert.equal(read.status, 200);
   assert.equal(read.body.project_id, project.project_id);
@@ -2116,4 +2130,101 @@ test("a blocked migration refuses location writes with 503 location_migration_re
   assert.equal(entries.get(stray).parent_id, finished.body.home_page_id);
   assert.equal(entries.get(a).parent_id, project.home_page_id);
   assert.deepEqual(checkInvariants({ revision: 0, entries }), []);
+  assert.equal(
+    (await w.call("owner", "list_pages", { project_id: project.project_id })).body
+      .location_migration,
+    undefined,
+    "a migrated Catalog reports nothing",
+  );
+});
+
+test("the deepest Project chain the older shape allowed migrates whole and reads; it just can't grow", async (t) => {
+  const w = await world(t);
+  const project = await w.createProject("Deep");
+  // Eight Pages below the top-level one: depth 9 in the current shape, so
+  // the API allows it. In the older shape the same chain started one level
+  // higher, at the root; one more Page below it was allowed there.
+  let parent = (await w.createPage({ title: "Top", project_id: project.project_id })).body.page_id;
+  const top = parent;
+  for (let depth = 3; depth <= MAX_DEPTH; depth++)
+    parent = (await w.createPage({ title: `Depth ${depth}`, parent_id: parent })).body.page_id;
+  const storage = w.catalogStorage();
+  await unmigrate(storage);
+  const extra = crypto.randomUUID();
+  await storage.put(`page/${extra}`, {
+    page_id: extra,
+    title: "Depth 9, older shape",
+    created_at: new Date().toISOString(),
+    updated_at: new Date().toISOString(),
+    parent_id: parent,
+    position: "a0",
+  });
+  assert.equal(deriveLocation(await locationEntries(storage), extra).depth, MAX_DEPTH);
+
+  // The first write migrates: the chain sits one level lower and still reads.
+  const loose = await w.createPage({ title: "Loose" });
+  assert.equal(loose.status, 200, JSON.stringify(loose.body));
+  assert.deepEqual(await shapeOf(storage), { name: "migrated" });
+  const entries = await locationEntries(storage);
+  assert.equal(entries.get(top).parent_id, project.home_page_id);
+  const deepest = deriveLocation(entries, extra);
+  assert.equal(deepest.ok, true);
+  assert.equal(deepest.depth, MAX_DEPTH + 1);
+  assert.equal(deepest.space_id, project.project_id);
+  assert.deepEqual(checkInvariants({ revision: 0, entries }), []);
+  // The owner's Catalog answers its full chain: eight Pages and the home.
+  const located = await w.catalog().fetch(
+    new Request("https://pages.internal/internal/location", {
+      method: "POST",
+      body: JSON.stringify({ page_id: extra }),
+    }),
+  );
+  const answer = await located.json();
+  assert.equal(answer.complete, true);
+  assert.equal(answer.ancestors.length, MAX_DEPTH);
+  assert.equal(answer.ancestors.at(-1), project.home_page_id);
+  assert.equal(answer.space_id, project.project_id);
+  assert.ok(
+    ids(await w.call("owner", "list_pages", { project_id: project.project_id })).includes(extra),
+  );
+  // Nothing nests below it, and the rest of the Project keeps working.
+  const deeper = await w.createPage({ title: "Too deep", parent_id: extra });
+  assert.equal(deeper.status, 400);
+  assert.equal(deeper.body.code, "nesting_depth_exceeded");
+  const sibling = await w.createPage({ title: "Sibling", project_id: project.project_id });
+  assert.equal(sibling.status, 200, JSON.stringify(sibling.body));
+  const trashed = await w.call("owner", "delete_page", {
+    page_id: sibling.body.page_id,
+    base_heads: w.heads(sibling.body.page_id),
+    idempotency_key: w.key(),
+  });
+  assert.equal(trashed.status, 200, JSON.stringify(trashed.body));
+});
+
+test("a Project's top level lists in either shape, and in a mix of both", async (t) => {
+  const w = await world(t);
+  const project = await w.createProject("Mixed");
+  const a = (await w.createPage({ title: "A", project_id: project.project_id })).body.page_id;
+  const b = (await w.createPage({ title: "B", project_id: project.project_id })).body.page_id;
+  const storage = w.catalogStorage();
+  const topLevel = () =>
+    w.call("owner", "list_pages", { project_id: project.project_id, parent_id: null });
+  const expected = [project.home_page_id, a, b].sort();
+  assert.deepEqual(ids(await topLevel()), expected, "current shape");
+  await unmigrate(storage);
+  assert.deepEqual(ids(await topLevel()), expected, "older shape");
+  // Half way: a pass cut between batches leaves one root moved and one not.
+  const moved = await storage.get(`page/${a}`);
+  const { space_id: _space, ...rest } = moved;
+  await storage.put(`page/${a}`, { ...rest, parent_id: project.home_page_id });
+  assert.equal((await storage.get(`page/${b}`)).space_id, project.project_id);
+  assert.deepEqual(ids(await topLevel()), expected, "mixed");
+  assert.deepEqual(
+    ids(await w.call("owner", "list_pages", { project_id: project.project_id })),
+    expected,
+  );
+  assert.equal(
+    (await w.call("owner", "read_page", { page_id: b, include_content: false })).body.project_id,
+    project.project_id,
+  );
 });
