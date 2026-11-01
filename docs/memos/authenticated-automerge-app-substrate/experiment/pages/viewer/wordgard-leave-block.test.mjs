@@ -44,7 +44,8 @@ function fixture(markdown) {
   const editor = {
     // Vertical motion needs layout; tests say where ArrowDown would land.
     nextLine: null,
-    moveVertically() {
+    moveVertically(start) {
+      this.lastStart = start;
       return this.nextLine === null ? null : GardSelection.cursor(this.nextLine);
     },
     get state() {
@@ -138,6 +139,26 @@ test("ArrowDown moves as usual when there is another line, or outside the final 
   prose.editor.select(3);
   assert.equal(prose.editor.run(leaveFinalBlock), false);
   assert.equal(prose.changes(), 0);
+});
+
+test("ArrowDown from a selected image adds a paragraph only when nothing is below it", () => {
+  // Several images in one final paragraph, wrapped across lines.
+  const f = fixture(`${image} ${image} ${image}`);
+  const doc = f.editor.state.doc;
+  const firstImage = 1;
+  f.editor.dispatch({
+    selection: GardSelection.node(firstImage, doc.content[0].content[0]),
+  });
+  assert.ok(f.editor.state.selection instanceof GardSelection.Node);
+  // Layout puts a later image on the next line: ArrowDown moves there.
+  f.editor.nextLine = doc.length - 2;
+  assert.equal(f.editor.run(leaveFinalBlock), false);
+  assert.equal(f.changes(), 0);
+  // On the last line, nothing is below inside the block: add a paragraph.
+  f.editor.nextLine = null;
+  assert.equal(f.editor.run(leaveFinalBlock), true);
+  assert.equal(f.types().at(-1), Paragraph.type.name);
+  assert.equal(f.editor.state.doc.content.length, 2);
 });
 
 test("ArrowDown from the added line doesn't add another", () => {

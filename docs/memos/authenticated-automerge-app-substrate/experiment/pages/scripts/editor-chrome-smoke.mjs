@@ -259,6 +259,27 @@ try {
         shotTaken = true;
       }
     }
+  // A final paragraph of images on separate lines: ArrowDown from a selected
+  // image moves to the next line, and adds a paragraph only from the last.
+  const figure = (n) => `![Figure ${n}](https://example.invalid/figure-${n}.png)`;
+  const figures = `${figure(1)}\\\n${figure(2)}\\\n${figure(3)}`;
+  const figuresId = await create(a, "Image lines", `Intro\n\n${figures}`);
+  const figuresBefore = await read(a, figuresId);
+  await openPage(a, figuresId, "Intro");
+  const firstFigure = content(a).first().locator("img").first();
+  await firstFigure.click();
+  await expect(firstFigure).toHaveClass(/wg-selected-node/);
+  await a.keyboard.press("ArrowDown");
+  await a.keyboard.press("ArrowDown");
+  assert.deepEqual(await blockTypes(a), ["Paragraph", "Paragraph"]);
+  await a.waitForTimeout(300);
+  assert.deepEqual((await read(a, figuresId)).heads, figuresBefore.heads, "moved, not written");
+  await a.keyboard.press("ArrowDown");
+  await expect.poll(() => blockTypes(a)).toEqual(["Paragraph", "Paragraph", "Paragraph"]);
+  await a.keyboard.insertText("Below the figures.");
+  await expect
+    .poll(async () => markdownOf(await read(a, figuresId)), { timeout: 20000 })
+    .toBe(`Intro\n\n${figures}\n\nBelow the figures.`);
   // ArrowDown elsewhere in a code block moves as usual.
   const linesId = await create(a, "Code lines", "```py\nprint(1)\nprint(2)\n```");
   await openPage(a, linesId, "print(2)");

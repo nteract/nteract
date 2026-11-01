@@ -34,26 +34,32 @@ function inFinal(state, final) {
 }
 
 /** ArrowDown. Only when vertical motion has nowhere left to go in the final
- * node: the last line of a code block or a paragraph ending in an image, the
- * last table row, or a selected image or preserved block. Otherwise ArrowDown
- * moves as usual. */
+ * node: the last line of a code block or of a paragraph holding images, the
+ * last table row, or a selected preserved block. Otherwise ArrowDown moves as
+ * usual. A selected image moves down from its own end, like Wordgard's
+ * moveByLine, so an image on an earlier line reaches the lines below it. */
 export function leaveFinalBlock(target) {
   const { state } = target;
   const final = finalBlock(state.doc);
   if (state.readOnly || !inFinal(state, final)) return false;
   const { selection } = state;
-  if (selection instanceof GardSelection.Text) {
-    if (!selection.empty) return false;
-    const moved = target.moveVertically?.(selection, true);
-    if (
-      moved instanceof GardSelection.Text &&
-      moved.head !== selection.head &&
-      moved.head < final.to &&
-      state.doc.resolve(moved.head).parent.node.inlineContent
-    )
-      return false;
-  }
+  const text = selection instanceof GardSelection.Text;
+  if (text && !selection.empty) return false;
+  const start = text ? selection : GardSelection.cursor(selection.to);
+  if (start.head < final.to && belowInside(target, start, final)) return false;
   return addLine(final.to);
+}
+
+/** Whether moving down from `start` lands somewhere else inside `final`. */
+function belowInside(target, start, final) {
+  const moved = target.moveVertically?.(start, true, undefined, true);
+  if (!moved) return false;
+  if (moved instanceof GardSelection.Node) return moved.from >= start.head && moved.from < final.to;
+  return (
+    moved.head !== start.head &&
+    moved.head < final.to &&
+    target.state.doc.resolve(moved.head).parent.node.inlineContent
+  );
 }
 
 /** Mod-Enter. In any code block, put the caret on the line after it: the next
