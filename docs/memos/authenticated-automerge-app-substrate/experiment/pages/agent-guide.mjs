@@ -926,6 +926,9 @@ succeeds. Every error has a stable code. Branch on code, not on the error messag
 - page_quota_exceeded, trash_capacity: the account has reached its Page limit,
   or its Trash has. Both carry limit and count. Retrying won't help; tell the
   person.
+- page_busy (503, retryable:true): the Page is answering as many requests as
+  it can and did not run this one. retry_after_ms and Retry-After say when to
+  retry; send the same request, including its key and token.
 - read_failed: no answer to a read (retryable:true). Retry it.
 - outcome_unknown: no answer to a write. With retryable:true, retry the exact
   request with the same key; the receipt replays without a second edit.

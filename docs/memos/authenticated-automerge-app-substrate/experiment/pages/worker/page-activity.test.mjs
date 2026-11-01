@@ -124,6 +124,9 @@ test("server expiry clears broadcasts and credential expiry can shorten the leas
     [second.progress_id],
   );
   t.mock.timers.tick(59_000);
+  // Expiry is applied when the roster is next read, not by a host timer.
+  assert.deepEqual(f.broadcasts.at(-1).progress.length, 1);
+  f.activity.prune();
   assert.deepEqual(f.broadcasts.at(-1).progress, []);
   assert.throws(() => report(f, lease(second)), { status: 404 });
 });
@@ -231,23 +234,40 @@ const blockTarget = (f) => [{ kind: "block", block_id: f.blockId }];
 // An API-key agent session.
 const agentIdentity = (extra = {}) => identity({ credentialKind: "api-key", ...extra });
 
-test("agent presence follows its lifetime on the host's timer", (t) => {
+test("agent presence publishes its fade and expiry and follows them without a host timer", (t) => {
   const f = fixture(t);
+  const timers = t.mock.method(globalThis, "setTimeout");
   assert.equal(f.activity.agentEvent(agentIdentity(), "write", blockTarget(f)), true);
   let [agent] = f.broadcasts.at(-1).agents;
   assert.equal(agent.state, "active");
   assert.equal(agent.driver, "ChatGPT");
-  assert.equal(agent.expires_at, new Date(1000 + 15_000).toISOString());
+  // The caret fades 15 s after the write and leaves 60 s after the last call.
+  assert.equal(agent.idle_at, new Date(1000 + 15_000).toISOString());
+  assert.equal(agent.expires_at, new Date(1000 + 60_000).toISOString());
   t.mock.timers.tick(15_000);
-  [agent] = f.broadcasts.at(-1).agents;
+  // Nothing is announced on its own; the next read of the roster applies it.
+  assert.equal(f.broadcasts.at(-1).agents[0].state, "active");
+  [agent] = f.activity.snapshot().agents;
   assert.equal(agent.state, "idle");
+  assert.equal(agent.idle_at, new Date(1000 + 15_000).toISOString());
+  assert.equal(agent.expires_at, new Date(1000 + 60_000).toISOString());
+  assert.equal(f.broadcasts.at(-1).agents[0].state, "idle");
   t.mock.timers.tick(45_000);
+  assert.deepEqual(f.activity.snapshot().agents, []);
   assert.deepEqual(f.broadcasts.at(-1).agents, []);
 
   f.activity.agentEvent(agentIdentity(), "read", blockTarget(f));
-  assert.equal(f.broadcasts.at(-1).agents[0].state, "reading");
+  [agent] = f.broadcasts.at(-1).agents;
+  assert.equal(agent.state, "reading");
+  assert.equal(agent.idle_at, null);
+  assert.equal(agent.expires_at, new Date(61_000 + 10_000).toISOString());
   t.mock.timers.tick(10_000);
-  assert.deepEqual(f.broadcasts.at(-1).agents, []);
+  assert.deepEqual(f.activity.read(f.doc).agents, []);
+  // Under celld a timer keeps the request that set it in flight; presence
+  // sets none, so an edit's request ends when its response does.
+  report(f);
+  f.activity.receive({ senderId: "nobody", message: { kind: "selection", value: null } });
+  assert.equal(timers.mock.callCount(), 0);
 });
 
 test("agent presence needs an agent driver, current read access and a live credential", (t) => {
@@ -413,6 +433,7 @@ test("an idle session drops out on the normal timeout", (t) => {
     blockTarget(f),
   );
   t.mock.timers.tick(60_000);
+  assert.deepEqual(f.activity.snapshot().agents, []);
   assert.deepEqual(f.broadcasts.at(-1).agents, []);
 });
 

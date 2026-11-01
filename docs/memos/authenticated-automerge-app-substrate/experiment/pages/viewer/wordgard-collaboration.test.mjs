@@ -419,6 +419,7 @@ const agent = (doc, targets, extra = {}) => ({
   seq: 1,
   targets,
   until: 1_000_000,
+  fadesAt: null,
   ...extra,
 });
 const textAt = (doc, kind, from, to) => ({ kind, ...presence(doc, from, to) });
@@ -453,7 +454,14 @@ test("an agent write fills the changed text, then collapses to a labeled caret",
   [caret] = h.collaboration.carets();
   assert.equal(caret.type, "caret");
 
-  // Idle: still placed, faded, no fill.
+  // The host publishes when the caret fades; this clock applies it.
+  h.replica.agentPresence.get("agent-1").fadesAt = 2000;
+  [caret] = h.collaboration.carets();
+  assert.equal(caret.idle, false);
+  h.setTime(2000);
+  [caret] = h.collaboration.carets();
+  assert.equal(caret.idle, true, "faded on the viewer's clock");
+  // Idle from the host: still placed, faded, no fill.
   h.replica.agentPresence.get("agent-1").state = "idle";
   [caret] = h.collaboration.carets();
   assert.equal(caret.idle, true);

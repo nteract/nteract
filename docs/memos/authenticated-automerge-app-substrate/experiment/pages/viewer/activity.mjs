@@ -129,6 +129,13 @@ function agentSnapshot(agents, observedAt, now) {
     const remaining = Date.parse(item.expires_at) - observedAt;
     if (!Number.isFinite(remaining) || remaining > AGENT_PRESENCE.idleMs || remaining <= 0)
       continue;
+    // When the caret fades, on this clock. The host announces no transitions
+    // on its own; an entry carries its fade and expiry and the viewer applies
+    // them. A host without idle_at fades nothing; its entries still expire.
+    const fading =
+      item.idle_at === undefined || item.idle_at === null
+        ? null
+        : Date.parse(item.idle_at) - observedAt;
     const targets = [];
     for (const target of item.targets) {
       if (target?.kind === "block" && bounded(target.block_id, 128))
@@ -154,10 +161,15 @@ function agentSnapshot(agents, observedAt, now) {
       seq: item.seq,
       targets,
       until: now + remaining,
+      fadesAt: Number.isFinite(fading) ? now + fading : null,
     });
   }
   return result;
 }
+
+/** An agent entry's state at `now`: idle once its fade time has passed. */
+export const agentStateAt = (item, now) =>
+  item.state === "active" && item.fadesAt !== null && item.fadesAt <= now ? "idle" : item.state;
 
 export function activityIdentity(identity) {
   const name = identity?.displayName?.trim() || "Collaborator";
@@ -218,7 +230,7 @@ export function agentParticipants(session, now = sessionNow(session)) {
     return participants.get(key);
   };
   for (const item of session.agentPresence?.values() ?? [])
-    if (item.until > now) entry(item).presence = item;
+    if (item.until > now) entry(item).presence = { ...item, state: agentStateAt(item, now) };
   for (const item of session.agentProgress?.values() ?? [])
     if (item.until > now) entry(item).progress.push(item);
   for (const participant of participants.values()) participant.progress.sort(newestProgressFirst);

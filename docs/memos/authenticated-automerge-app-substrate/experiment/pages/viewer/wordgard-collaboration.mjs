@@ -2,7 +2,13 @@ import * as A from "@automerge/automerge/slim";
 import { Decoration } from "wordgard/editor";
 import { selectionContext } from "../model/comments.mjs";
 import { resolvePeerSelection } from "../model/presence.mjs";
-import { activityIdentity, agentKey, newestProgressFirst, progressPassages } from "./activity.mjs";
+import {
+  activityIdentity,
+  agentKey,
+  agentStateAt,
+  newestProgressFirst,
+  progressPassages,
+} from "./activity.mjs";
 import { monotonicNow } from "./monotonic.mjs";
 import { presenceColor } from "./presence-color.mjs";
 
@@ -196,7 +202,7 @@ export function createWordgardCollaboration({
         tag: "agent",
         title: agent.agent ? `${identity.label} (${agent.agent})` : identity.label,
         color: presenceColor(agent.principal, agent.driver, agent.agent, agent.session),
-        idle: agent.state === "idle",
+        idle: agentStateAt(agent, at) === "idle",
         message,
       };
       for (const target of agent.targets) {

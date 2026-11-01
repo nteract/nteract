@@ -3,8 +3,10 @@ import assert from "node:assert/strict";
 import * as A from "@automerge/automerge";
 import {
   AGENT_PRESENCE as P,
-  deadline,
+  expiry,
+  idleAt,
   readTargets,
+  stateAt,
   transition,
   writeTargets,
 } from "./agent-presence.mjs";
@@ -56,16 +58,35 @@ test("transition covers every state and event", () => {
   assert.throws(() => transition(null, { type: "mystery", at: 0 }), /Unknown/);
 });
 
-test("deadlines follow the state and a virtual clock walks the whole lifetime", () => {
-  let record = transition(null, write(0));
+test("fade and expiry follow the state, and stateAt applies them to a published record", () => {
+  const active = transition(null, write(0));
+  assert.equal(idleAt(active), P.activeMs);
+  assert.equal(expiry(active), P.idleMs);
+  // Ticking at the published times walks the same lifetime the host sees.
+  let record = active;
   const seen = [record.state];
-  for (let now = 0; record; now = deadline(record)) {
+  for (const now of [idleAt(active), expiry(active)]) {
     record = transition(record, tick(now));
     if (record && record.state !== seen.at(-1)) seen.push(record.state);
   }
   assert.deepEqual(seen, ["active", "idle"]);
-  assert.equal(deadline(null), Infinity);
-  assert.equal(deadline(transition(null, read(5))), 5 + P.readingMs);
+  assert.equal(record, null);
+  // A reader with the record and a clock derives the state without the host.
+  assert.equal(stateAt(active, P.activeMs - 1), "active");
+  assert.equal(stateAt(active, P.activeMs), "idle");
+  assert.equal(stateAt(active, P.idleMs - 1), "idle");
+  assert.equal(stateAt(active, P.idleMs), null);
+  const idle = transition(active, tick(P.activeMs));
+  assert.equal(idleAt(idle), P.activeMs);
+  assert.equal(expiry(idle), P.idleMs);
+  const reading = transition(null, read(5));
+  assert.equal(idleAt(reading), null);
+  assert.equal(expiry(reading), 5 + P.readingMs);
+  assert.equal(stateAt(reading, 5 + P.readingMs - 1), "reading");
+  assert.equal(stateAt(reading, 5 + P.readingMs), null);
+  assert.equal(expiry(null), Infinity);
+  assert.equal(idleAt(null), null);
+  assert.equal(stateAt(null, 0), null);
 });
 
 function fixture(markdown) {

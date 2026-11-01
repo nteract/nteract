@@ -28,7 +28,7 @@ export const STATES = Object.freeze(["reading", "active", "idle"]);
  * The one transition function. Events:
  * - `{ type: "read", at, targets }` from a targeted read with at least one target
  * - `{ type: "write", at, targets }` from a committed write batch
- * - `{ type: "tick", at }` from the host's timer
+ * - `{ type: "tick", at }` from the host, before it reads or publishes the roster
  * Returns the next record, or null for hidden. Records are plain data.
  */
 export function transition(record, event) {
@@ -65,12 +65,26 @@ export function transition(record, event) {
   throw Error(`Unknown agent presence event: ${event.type}`);
 }
 
-/** When the record next changes state on its own. */
-export function deadline(record) {
+/** When the record leaves the roster on its own. */
+export function expiry(record) {
   if (!record) return Infinity;
   if (record.state === "reading") return record.since + AGENT_PRESENCE.readingMs;
-  if (record.state === "active") return record.lastCall + AGENT_PRESENCE.activeMs;
   return record.lastCall + AGENT_PRESENCE.idleMs;
+}
+
+/** When a caret fades: the active record becomes idle. A reading marker never
+ * fades, and an idle record already has. */
+export function idleAt(record) {
+  if (!record || record.state === "reading") return null;
+  return record.lastCall + AGENT_PRESENCE.activeMs;
+}
+
+/** The state a published record shows at `at`, applying its own fade and
+ * expiry. For readers that hold a snapshot and no host timer. */
+export function stateAt(record, at) {
+  if (!record || at >= expiry(record)) return null;
+  const fades = idleAt(record);
+  return fades !== null && at >= fades ? "idle" : record.state;
 }
 
 // Same endpoint affinity a browser uses for its own selection.

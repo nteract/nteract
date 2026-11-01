@@ -213,6 +213,8 @@ export class PageSession {
   agentPresence = new Map();
   activityEpoch = null;
   activityRevision = -1;
+  // The clock reading at the last expiry pass, so a fade is announced once.
+  activityFadedAt = -Infinity;
   presencePaused = false;
   profiles = {};
   actorNames = new Map();
@@ -2103,10 +2105,22 @@ export class PageSession {
           removed = true;
         }
       }
-    if (removed) this.notify(this.presenceObservers);
-    const pending = [...this.agentProgress.values(), ...this.agentPresence.values()];
+    // A caret that has just faded changes how it renders, with nothing removed.
+    const faded = [...this.agentPresence.values()].some(
+      (item) => item.fadesAt !== null && item.fadesAt <= now && item.fadesAt > this.activityFadedAt,
+    );
+    this.activityFadedAt = now;
+    if (removed || faded) this.notify(this.presenceObservers);
+    // The host announces no time-based transitions; this timer applies each
+    // entry's fade and expiry on this session's clock.
+    const pending = [
+      ...[...this.agentProgress.values()].map((item) => item.until),
+      ...[...this.agentPresence.values()].flatMap((item) =>
+        item.fadesAt !== null && item.fadesAt > now ? [item.until, item.fadesAt] : [item.until],
+      ),
+    ];
     if (pending.length) {
-      const next = Math.min(...pending.map((item) => item.until));
+      const next = Math.min(...pending);
       this.activityTimer = setTimeout(() => this.expireActivity(), Math.max(1, next - now));
       this.activityTimer.unref?.();
     }
