@@ -212,7 +212,7 @@ test("only signed host profile hints name edits, including hints arriving before
   assert.equal(session.toolHints.length, 0);
   assert.equal(session.actorDisplayName(A.getActorId(later)), "Kyle Kelley · ChatGPT");
 });
-test("edits know who made them: host hints for agents, a peer's own selection for people", () => {
+test("host tool-edit hints name each change by hash, with the session label", () => {
   let doc = A.from({ text: "one" });
   const agentChange = A.change(A.clone(doc), (d) => A.updateText(d, ["text"], "two"));
   const session = new PageSession("fixture");
@@ -233,32 +233,24 @@ test("edits know who made them: host hints for agents, a peer's own selection fo
   });
   doc = agentChange;
   session.resolveToolHints();
-  const agentActor = A.getActorId(agentChange);
-  assert.equal(session.changeIdentity(A.getHeads(agentChange)[0]).agent, "rich text");
-  assert.deepEqual(session.actorIdentity(agentActor), {
+  assert.deepEqual(session.changeIdentity(A.getHeads(agentChange)[0]), {
     principal: "user:kyle",
     displayName: "Kyle Kelley",
     driver: "Kilo",
     agent: "rich text",
   });
-  // A browser peer names its own actor; the host vouches for its profile.
+  // A browser can't attest an author: a selection's claimed actor is ignored,
+  // and selections carry no actor at all.
   session.profiles = { peer: { principal: "user:ana", displayName: "Ana", driver: "Browser" } };
-  const select = (actor) =>
-    session.ephemeral({
-      senderId: "peer",
-      message: {
-        kind: "selection",
-        value: { block_id: "b", start: "s", end: "e", heads: [], actor },
-      },
-    });
-  select("abc123");
-  assert.equal(session.actorIdentity("abc123").principal, "user:ana");
-  // It can't take over an actor the host already attributed.
-  select(agentActor);
-  assert.equal(session.actorIdentity(agentActor).principal, "user:kyle");
-  // Malformed actors are ignored.
-  select("not hex!");
-  assert.equal(session.actorIdentity("not hex!"), null);
+  session.ephemeral({
+    senderId: "peer",
+    message: {
+      kind: "selection",
+      value: { block_id: "b", start: "s", end: "e", heads: [], actor: A.getActorId(agentChange) },
+    },
+  });
+  assert.equal(session.changeIdentity(A.getHeads(agentChange)[0]).principal, "user:kyle");
+  assert.equal(typeof session.actorIdentity, "undefined");
 });
 
 test("presence rejects malformed causal heads and ignores claimed display identity", () => {

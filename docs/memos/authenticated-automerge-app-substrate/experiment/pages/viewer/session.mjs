@@ -160,12 +160,9 @@ export class PageSession {
   presencePaused = false;
   profiles = {};
   actorNames = new Map();
-  // Who an Automerge actor is: from the host's tool-edit hints for agents, and
-  // from each browser peer's own selection for people. Colors their edits.
-  actorIdentities = new Map();
   // Who made a change, by hash, from the host's tool-edit hints. The host
-  // writes every API agent's edits with one actor, so this is what tells two
-  // agents apart; actorIdentities covers browser peers.
+  // writes every API agent's edits, so a change hash, not an actor, names the
+  // author. Browser edits have no host-attested author yet and stay neutral.
   changeIdentities = new Map();
   toolHints = [];
   composing = 0;
@@ -1492,9 +1489,6 @@ export class PageSession {
   actorDisplayName(actor) {
     return this.actorNames.get(actor) ?? "Collaborator";
   }
-  actorIdentity(actor) {
-    return this.actorIdentities.get(actor) ?? null;
-  }
   changeIdentity(hash) {
     return this.changeIdentities.get(hash) ?? null;
   }
@@ -1513,10 +1507,7 @@ export class PageSession {
       !this.accessReloadRequired
     )
       try {
-        this.handle.broadcast({
-          kind: "selection",
-          value: value && { ...value, actor: this.actor() },
-        });
+        this.handle.broadcast({ kind: "selection", value });
       } catch (error) {
         this.problem = error.message;
         this.emit();
@@ -1631,19 +1622,6 @@ export class PageSession {
       value.heads.length <= 100 &&
       value.heads.every((head) => typeof head === "string" && /^[0-9a-f]{64}$/.test(head))
     ) {
-      // A peer names its own actor; the host vouches for its profile. A host
-      // tool-edit hint for the same actor wins.
-      if (
-        typeof value.actor === "string" &&
-        /^[0-9a-f]{1,128}$/.test(value.actor) &&
-        !this.actorNames.has(value.actor)
-      )
-        this.actorIdentities.set(value.actor, {
-          principal: profile.principal,
-          displayName: profile.displayName,
-          driver: profile.driver,
-          agent: null,
-        });
       this.peers.set(senderId, {
         value,
         at: this.now(),
@@ -1674,7 +1652,6 @@ export class PageSession {
               driver: message.identity?.driver,
               agent: typeof message.identity?.agent === "string" ? message.identity.agent : null,
             };
-            this.actorIdentities.set(meta.actor, who);
             this.changeIdentities.set(head, who);
             if (this.changeIdentities.size > 512)
               this.changeIdentities.delete(this.changeIdentities.keys().next().value);

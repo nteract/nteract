@@ -238,21 +238,40 @@ export function createWordgardCollaboration({
       if (from === null || to === null || from >= to || to > source.length) return;
       const text = source.slice(from, to);
       if (!text.replaceAll("\ufffc", "").trim()) return;
-      // Anchor the final character, not the next character after the range:
-      // deleting the received text must not illuminate unrelated surviving text.
-      const last = to - Array.from(text).at(-1).length;
-      const first = A.getCursor(doc, pathFor(id), from, "after");
-      // Inserted text names the change that wrote it; formatting keeps old
-      // characters, so it falls back to every change in the batch.
-      const written = writtenBy(first, event.changeOps);
-      illumination.push({
-        object,
-        first,
-        last: A.getCursor(doc, pathFor(id), last, "before"),
-        actors: [...new Set(event.actors)],
-        hashes: written ? [written] : (event.hashes ?? []),
-        until: now() + illuminationTTL,
-      });
+      // One mark per run of characters written by the same change, so adjacent
+      // inserts from two authors in one batch keep their own colors. Characters
+      // no change in this batch wrote (formatting on old text) have no known
+      // author: they get a mark with no hash, drawn in the neutral color.
+      const path = pathFor(id);
+      let start = from,
+        owner;
+      for (let at = from; at <= to; ) {
+        const point = at < to ? source.codePointAt(at) : undefined;
+        const width = point > 0xffff ? 2 : 1;
+        const next =
+          at < to ? writtenBy(A.getCursor(doc, path, at, "after"), event.changeOps) : Symbol();
+        if (at === from) owner = next;
+        else if (next !== owner) {
+          const run = source.slice(start, at);
+          if (run.replaceAll("\ufffc", "").trim()) {
+            // Anchor the final character, not the next character after the run:
+            // deleting the received text must not illuminate surviving text.
+            const last = at - Array.from(run).at(-1).length;
+            illumination.push({
+              object,
+              first: A.getCursor(doc, path, start, "after"),
+              last: A.getCursor(doc, path, last, "before"),
+              actors: [...new Set(event.actors)],
+              hash: owner,
+              until: now() + illuminationTTL,
+            });
+          }
+          start = at;
+          owner = next;
+        }
+        if (at === to) break;
+        at += width;
+      }
     });
     illumination = illumination.filter((mark) => mark.until > now()).slice(-128);
   }
@@ -328,12 +347,16 @@ export function createWordgardCollaboration({
         if (from === null || to === null) continue;
         // The underline takes the editor's own caret color when we know who
         // they are; otherwise the neutral edit color.
-        const who =
-          mark.hashes.map((hash) => replica.changeIdentity?.(hash)).find(Boolean) ??
-          mark.actors.map((actor) => replica.actorIdentity?.(actor)).find(Boolean);
+        // Only a host-attested change identity names an author. Anything
+        // else, including the host's shared actor, stays neutral.
+        const who = mark.hash ? replica.changeIdentity?.(mark.hash) : null;
         add(from, to, {
           class: "remote-edit",
-          title: `Edited by ${[...new Set(mark.actors.map((actor) => replica.actorDisplayName(actor)))].join(", ")}`,
+          title: `Edited by ${
+            who
+              ? [who.displayName, who.driver, who.agent].filter(Boolean).join(" · ")
+              : [...new Set(mark.actors.map((actor) => replica.actorDisplayName(actor)))].join(", ")
+          }`,
           ...(who?.principal && {
             style: `--peer-color: ${presenceColor(who.principal, who.driver, who.agent).background}`,
           }),
