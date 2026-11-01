@@ -135,6 +135,7 @@ try {
   });
   assert.equal(plan.project_id, project.project_id);
   assert.equal(plan.parent_id, roadmap.page_id);
+  assert.equal(roadmap.parent_id, project.home_page_id, "a Project's top level is under its home");
   complete("MCP created a Project with its home Page and a nested Page");
 
   const projects = await ok("owner", "list_projects");
@@ -149,10 +150,25 @@ try {
     children.pages.map((page) => page.page_id),
     [plan.page_id],
   );
+  // The chain runs through the home Page, flagged so viewers fold it into the
+  // Project crumb; both carry the Project's title.
   const read = await ok("owner", "read_page", { page_id: plan.page_id, include_content: false });
   assert.deepEqual(
-    read.breadcrumbs.map((crumb) => crumb.title),
-    [title, "Roadmap"],
+    read.breadcrumbs.map((crumb) => [crumb.title, crumb.home === true]),
+    [
+      [title, false],
+      [title, true],
+      ["Roadmap", false],
+    ],
+  );
+  const topLevel = await ok("owner", "list_pages", {
+    project_id: project.project_id,
+    parent_id: null,
+  });
+  assert.deepEqual(
+    topLevel.pages.map((page) => page.page_id).sort(),
+    [project.home_page_id, roadmap.page_id].sort(),
+    "the Project's top level is its home Page and the home Page's children",
   );
   const home = await ok("owner", "get_project", { project_id: project.project_id });
   assert.equal(home.home_page_id, project.home_page_id);
@@ -544,7 +560,11 @@ try {
     retry_token: authority.retry_token,
     idempotency_key: restoreKey(),
   });
-  assert.equal(planBack.parent_id, null, "its parent is in Trash, so it returns to the top level");
+  assert.equal(
+    planBack.parent_id,
+    project.home_page_id,
+    "its parent is in Trash, so it returns to the Project's top level, under the home Page",
+  );
   const roadmapBack = await ok("owner", "restore_page", {
     page_id: roadmap.page_id,
     retry_token: authority.retry_token,

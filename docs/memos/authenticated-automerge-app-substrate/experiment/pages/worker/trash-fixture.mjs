@@ -10,6 +10,7 @@ import { BUILD_FEATURES, documentFeatures } from "../model/schema-features.mjs";
 import { Catalog, Page } from "./index.mjs";
 import { DocumentPolicy } from "./policy.mjs";
 import { proposeAccessUpdate } from "./access.mjs";
+import { LOCATION_SHAPE_KEY, shapeRecord } from "./location-shape.mjs";
 
 /** Durable Object storage in memory. `sync()` records what a crash would keep
  * under the strictest reading: writes after the last successful sync may be
@@ -228,6 +229,10 @@ export async function fixture(
     updated_at: "2026-10-01T00:00:00.000Z",
     shared: true,
   });
+  // Both Catalogs are in the current location shape, so a cut run and its
+  // reference write the same keys.
+  for (const principal of [owner, member])
+    await catalogOf(principal).storage.put(LOCATION_SHAPE_KEY, shapeRecord({ name: "migrated" }));
   const request = (token, path, body, method = body === undefined ? "GET" : "POST", extra = {}) =>
     new Request(`https://pages.invalid${path}`, {
       method,

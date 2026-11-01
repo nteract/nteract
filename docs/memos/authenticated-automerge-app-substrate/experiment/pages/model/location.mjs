@@ -15,9 +15,11 @@
  * - `page_id`: its own key.
  * - `state`: "active", "pending" (its Page object is still being created) or
  *   "trashed".
- * - `parent_id`: an active owned Page, or null for a root. A trashed entry's
- *   parent is null or another trashed entry; it has left the active tree.
- * - `position`: a fractional key among its siblings.
+ * - `parent_id`: an active owned Page, or null for a root. On a trashed
+ *   entry it is a restore hint, not tree membership: the Page has left the
+ *   active tree, and the parent it names may be active, trashed, or gone.
+ * - `position`: a fractional key among its siblings. Roots without
+ *   `space_id` are siblings in Your items; a root with `space_id` is alone.
  * - `space_id`: only on a root that is a Project's home Page.
  * - `restore_parent_id`, `restore_space_id`: only on a trashed entry. Where a
  *   restore returns it: under that parent while it is active, otherwise at
@@ -32,10 +34,16 @@
  */
 import { BASE_62_DIGITS, generateKeyBetween, generateNKeysBetween } from "fractional-indexing";
 
-/** Deepest nesting allowed; a root is at depth 1, so a Project's top-level
- * Pages are at depth 2. The design's open question 2 picks the final value;
- * 9 keeps today's eight levels below a Project's home Page. */
+/** Deepest nesting a create or move may produce; a root is at depth 1, so a
+ * Project's top-level Pages are at depth 2. The design's open question 2
+ * picks the final value; 9 keeps eight levels below a Project's home Page. */
 export const MAX_DEPTH = 9;
+/** Deepest chain the model holds. Before the home Page was a Project's only
+ * root, a Project's chain started at depth 1 and could reach MAX_DEPTH; under
+ * the home Page the same chain sits one level lower. Such a chain is read and
+ * kept whole; it can't grow (MAX_DEPTH bounds new placements), and a move can
+ * only take it somewhere it fits. */
+export const MAX_TREE_DEPTH = MAX_DEPTH + 1;
 
 export const ENTRY_STATES = Object.freeze(["active", "pending", "trashed"]);
 
@@ -121,8 +129,8 @@ const asMap = (entries) =>
   entries instanceof Map ? entries : new Map(Object.entries(entries ?? {}));
 
 /**
- * Walk from `pageId` to its root. Bounded: it stops after MAX_DEPTH + 1 steps
- * and never revisits an entry, so a corrupt map can't make it loop.
+ * Walk from `pageId` to its root. Bounded: it stops after MAX_TREE_DEPTH
+ * steps and never revisits an entry, so a corrupt map can't make it loop.
  *
  * Returns `{ ok: true, root, space_id, depth, ancestors }`, with `ancestors`
  * nearest first, or `{ ok: false, problem, page_id }` where `problem` is
@@ -136,7 +144,7 @@ export function deriveLocation(entries, pageId) {
   const seen = new Set([pageId]);
   let current = map.get(pageId);
   for (let depth = 1; ; depth++) {
-    if (depth > MAX_DEPTH) return { ok: false, problem: "too_deep", page_id: current.page_id };
+    if (depth > MAX_TREE_DEPTH) return { ok: false, problem: "too_deep", page_id: current.page_id };
     if (current.parent_id === null)
       return {
         ok: true,
@@ -154,11 +162,13 @@ export function deriveLocation(entries, pageId) {
   }
 }
 
-/** Child IDs by parent ID, in sibling order. Trashed entries count only
- * under trashed parents, which keeps them out of the active tree. */
-function childrenByParent(map) {
+/** Child entries by parent ID, in sibling order, for every entry with a
+ * parent. Trashed entries are included under whatever parent they record.
+ * One pass over the Catalog; a caller that walks many subtrees builds it once
+ * and hands it to `subtreeOf`. */
+export function childIndex(entries) {
   const children = new Map();
-  for (const entry of map.values()) {
+  for (const entry of asMap(entries).values()) {
     if (entry.parent_id === null) continue;
     if (!children.has(entry.parent_id)) children.set(entry.parent_id, []);
     children.get(entry.parent_id).push(entry);
@@ -172,11 +182,11 @@ const siblingOrder = (a, b) => compare(a.position, b.position) || compare(a.page
 /** The Page and every descendant, top-down, each with its depth below the
  * Page (the Page is 0). It follows every child link, however deep, and visits
  * each entry once, so it ends on corrupt input too: an over-deep chain comes
- * back whole and the caller's depth check sees it. */
-export function subtreeOf(entries, pageId) {
+ * back whole and the caller's depth check sees it. `children` is a
+ * `childIndex` of `entries`, built here when the caller has none. */
+export function subtreeOf(entries, pageId, children = childIndex(entries)) {
   const map = asMap(entries);
   if (!map.has(pageId)) return [];
-  const children = childrenByParent(map);
   const members = [];
   const seen = new Set();
   let level = [pageId];
@@ -203,13 +213,18 @@ export function subtreeSpaceIds(entries, pageId) {
   return subtreeOf(map, pageId).map(({ page_id }) => ({ page_id, space_id: location.space_id }));
 }
 
-/** Siblings under `parentId` (null for roots) in order, without trashed
- * entries and without `excludeId`. */
+/** Siblings under `parentId` in order, without trashed entries and without
+ * `excludeId`. `parentId` null means the roots of Your items: a root with
+ * `space_id` is a Project's home Page, alone at the top of its Project, so it
+ * is nobody's sibling. */
 export function siblingsOf(entries, parentId, excludeId) {
   return [...asMap(entries).values()]
     .filter(
       (entry) =>
-        entry.parent_id === parentId && entry.state !== "trashed" && entry.page_id !== excludeId,
+        entry.parent_id === parentId &&
+        entry.state !== "trashed" &&
+        entry.page_id !== excludeId &&
+        (parentId !== null || !("space_id" in entry)),
     )
     .sort(siblingOrder);
 }
@@ -440,12 +455,13 @@ export function applyWrite(state, write) {
  * detail? }`. Empty when the location model holds:
  * - every entry has a valid shape (`invalid_entry`);
  * - an active or pending entry's parent is an active owned entry
- *   (`missing_parent`, `inactive_parent`);
- * - a trashed entry's parent is null or trashed (`trashed_parent_active`);
- * - no cycles (`placement_cycle`) and no entry deeper than MAX_DEPTH
+ *   (`missing_parent`, `inactive_parent`). A trashed entry's parent is a
+ *   restore hint and may be in any state or gone, so it isn't checked;
+ * - no cycles (`placement_cycle`) and no entry deeper than MAX_TREE_DEPTH
  *   (`nesting_depth_exceeded`);
  * - siblings that aren't in Trash have distinct position keys
- *   (`duplicate_position`, reported for each sibling after the first);
+ *   (`duplicate_position`, reported for each sibling after the first). Roots
+ *   with `space_id` are each alone, so only Your items roots are compared;
  * - at most one live home Page per Project (`duplicate_home`), and a home Page
  *   stays a root, which entryProblems checks.
  *
@@ -465,15 +481,10 @@ export function checkInvariants(state, { projects } = {}) {
   if (violations.length) return violations;
 
   for (const entry of map.values()) {
-    if (entry.parent_id !== null) {
+    if (entry.parent_id !== null && entry.state !== "trashed") {
       const parent = map.get(entry.parent_id);
       if (!parent) add("missing_parent", entry.page_id, entry.parent_id);
-      else if (entry.state === "trashed" ? parent.state !== "trashed" : parent.state !== "active")
-        add(
-          entry.state === "trashed" ? "trashed_parent_active" : "inactive_parent",
-          entry.page_id,
-          entry.parent_id,
-        );
+      else if (parent.state !== "active") add("inactive_parent", entry.page_id, entry.parent_id);
     }
     const location = deriveLocation(map, entry.page_id);
     if (!location.ok && location.problem === "cycle") add("placement_cycle", entry.page_id);
@@ -483,7 +494,7 @@ export function checkInvariants(state, { projects } = {}) {
 
   const keysByParent = new Map();
   for (const entry of [...map.values()].sort(siblingOrder)) {
-    if (entry.state === "trashed") continue;
+    if (entry.state === "trashed" || (entry.parent_id === null && "space_id" in entry)) continue;
     const keys = keysByParent.get(entry.parent_id) ?? new Set();
     keysByParent.set(entry.parent_id, keys);
     if (keys.has(entry.position)) add("duplicate_position", entry.page_id, entry.position);

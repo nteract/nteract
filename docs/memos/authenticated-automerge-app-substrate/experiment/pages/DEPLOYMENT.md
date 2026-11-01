@@ -135,6 +135,36 @@ celld resumes, then serves normally. On Cloudflare, removing a Durable Object
 class takes a `deleted_classes` migration that erases its storage, so a
 Cloudflare rollback must keep exporting `Space` and its binding instead.
 
+A Project's home Page is its only root: `create_page {project_id}` makes a
+child of the home Page, and `list_pages {project_id, parent_id: null}` lists
+the home Page and its children. Builds before this one made every Project
+top-level Page a root with `space_id`. Each Catalog migrates itself lazily
+(`worker/location-shape.mjs`): the first queued write after deploy moves every
+such root under its Project's home Page, in batches of 128 keys, and records
+`host/location/shape` as `migrated`. Reads work in both shapes, because a
+Page's Project is derived from its root either way, and `list_pages
+{project_id, parent_id: null}` lists a Project's top level in either shape or a
+mix of the two. A chain that was nine deep under a Project root sits ten deep
+under the home Page; the model holds that depth (`MAX_TREE_DEPTH`) and refuses
+to nest below it or move it anywhere it still exceeds nine. A root whose Project
+record and home Page are both gone becomes a Your items root. Only two things
+block a pass, both defensive: a home Page still pending (the older shape never
+placed a Page in a pending Project) and a chain already past the depth the
+model holds (corrupt data). A blocked Catalog logs
+`catalog.location_migration_blocked`, records `blocked` with `reason`, `page_id`
+and `space_id`, answers `503 location_migration_required` with those three
+fields to create, trash and restore, and reports them as `location_migration`
+on every `list_pages` until a later write clears it. Listings and reads keep
+working.
+
+Rollback. A build before this one reads the migrated shape (it derives the
+Project from the root), but its `list_pages {project_id, parent_id: null}`
+lists only the home Page, because it takes "top level" to mean roots; the
+Pages themselves show in the full Project listing and under `parent_id:
+<home_page_id>`, and its viewer's Project view nests them from the full listing.
+It also writes the older shape for new Pages; a roll forward after such writes
+must bump `LOCATION_SHAPE_VERSION` so every Catalog runs the pass again.
+
 ### Projects and their storage identity
 
 Projects were called Spaces through 3548b9750, which Page8 runs. Callers now see

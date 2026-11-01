@@ -258,6 +258,9 @@ const RETRYABLE_SERVER_CODES = [
   "request_timeout",
   // The host is moving a Page's comments to their own document.
   "comments_migrating",
+  // The owner's Catalog isn't in the current location shape yet
+  // (location-shape.mjs); the next write tries the pass again.
+  "location_migration_required",
 ];
 
 const LOGGED_ERROR_TYPES = [
@@ -409,6 +412,14 @@ export function errorResponse(error, stage = "request") {
         Number.isSafeInteger(error.details?.count) && {
           limit: error.details.limit,
           count: error.details.count,
+        }),
+      // A blocked location pass names what stands in its way; the gateway
+      // renames space_id to project_id.
+      ...(error?.code === "location_migration_required" &&
+        typeof error.details?.reason === "string" && {
+          reason: error.details.reason.slice(0, 64),
+          page_id: String(error.details.page_id ?? "").slice(0, 64) || null,
+          space_id: String(error.details.space_id ?? "").slice(0, 64) || null,
         }),
       ...(error?.code === "unsupported_schema_feature" &&
         Array.isArray(error.details?.features) && {

@@ -12,6 +12,7 @@ import { proposeAccessUpdate, pageState } from "./access.mjs";
 import { countCapacity, lifecycleSlot, projectLifecycle } from "./catalog.mjs";
 import { Catalog, Page, lifecycleBounds } from "./index.mjs";
 import { CrashStorage, describe, normalize, scrubbed } from "./operation-intent-fixture.mjs";
+import { LOCATION_SHAPE_KEY, shapeRecord } from "./location-shape.mjs";
 import { DocumentPolicy } from "./policy.mjs";
 
 const auth = await createAuthFixture();
@@ -122,6 +123,8 @@ async function world({ location } = {}) {
     // Only the owner's Catalog records location.
     ...location,
   });
+  // The Catalog is in the current location shape: the pass writes nothing.
+  storage.values.set(LOCATION_SHAPE_KEY, shapeRecord({ name: "migrated" }));
   const catalog = () => new Catalog({ id: { name: owner }, storage }, env);
   const call = async (target, operation, args) => {
     const response = await target.fetch(

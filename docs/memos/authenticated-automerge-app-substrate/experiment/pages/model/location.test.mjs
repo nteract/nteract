@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
   MAX_DEPTH,
+  MAX_TREE_DEPTH,
   MAX_KEY_LENGTH,
   REBALANCE_KEY_LENGTH,
   MOVE_REFUSALS,
@@ -191,19 +192,34 @@ test("deriveLocation reports cycles, missing parents and depth; it never loops",
   assert.equal(result.problem, "too_deep");
 });
 
-test("depth: exactly MAX_DEPTH resolves, one more is too deep", () => {
+test("depth: the model holds one level past MAX_DEPTH; a move can't produce it", () => {
+  assert.equal(MAX_TREE_DEPTH, MAX_DEPTH + 1);
   const chain = (length) =>
     stateOf(...Array.from({ length }, (_, i) => entry(`d${i + 1}`, i ? `d${i}` : null)));
   const fits = deriveLocation(chain(MAX_DEPTH).entries, `d${MAX_DEPTH}`);
   assert.equal(fits.ok, true);
   assert.equal(fits.depth, MAX_DEPTH);
-  const deep = deriveLocation(chain(MAX_DEPTH + 1).entries, `d${MAX_DEPTH + 1}`);
+  // A Project chain of MAX_DEPTH from before the home Page was its root sits
+  // at MAX_TREE_DEPTH once it is under the home Page. It reads and holds.
+  const held = deriveLocation(chain(MAX_TREE_DEPTH).entries, `d${MAX_TREE_DEPTH}`);
+  assert.equal(held.ok, true);
+  assert.equal(held.depth, MAX_TREE_DEPTH);
+  assert.deepEqual(checkInvariants(chain(MAX_TREE_DEPTH)), []);
+  const deep = deriveLocation(chain(MAX_TREE_DEPTH + 1).entries, `d${MAX_TREE_DEPTH + 1}`);
   assert.deepEqual(deep, { ok: false, problem: "too_deep", page_id: "d1" });
-  assert.deepEqual(checkInvariants(chain(MAX_DEPTH)), []);
   assert.deepEqual(
-    checkInvariants(chain(MAX_DEPTH + 1)).map((v) => [v.code, v.page_id]),
-    [["nesting_depth_exceeded", `d${MAX_DEPTH + 1}`]],
+    checkInvariants(chain(MAX_TREE_DEPTH + 1)).map((v) => [v.code, v.page_id]),
+    [["nesting_depth_exceeded", `d${MAX_TREE_DEPTH + 1}`]],
   );
+  // New placement stays at MAX_DEPTH: the held chain can't grow or be moved
+  // where it still exceeds it, only to where it fits.
+  const s = stateOf(
+    ...chain(MAX_TREE_DEPTH).entries.values(),
+    entry("other", null, { position: "a1" }),
+  );
+  assert.equal(planMove(s, "other", { parent_id: `d${MAX_DEPTH}` }).code, "nesting_depth_exceeded");
+  assert.equal(planMove(s, "d1", { parent_id: "other" }).code, "nesting_depth_exceeded");
+  assert.equal(planMove(s, "d2", { project_id: null }).ok, true);
 });
 
 test("subtreeOf and subtreeSpaceIds list a Page's descendants top-down", () => {
@@ -226,6 +242,26 @@ test("subtreeOf and subtreeSpaceIds list a Page's descendants top-down", () => {
     { page_id: "idea", space_id: null },
   ]);
   assert.deepEqual(subtreeSpaceIds(entries, "nope"), []);
+});
+
+test("roots: home Pages are each alone, Your items roots are siblings", () => {
+  const s = world();
+  // launch and archive are home Pages (roots with space_id); loose and
+  // drafts are the Your items roots. gone is in Trash.
+  assert.deepEqual(ordered(s, null), ["loose", "drafts"]);
+  assert.deepEqual(ordered(s, "launch"), ["plan", "notes"], "a Project's top level");
+  // A move to Your items places among Your items roots only, so a home's
+  // key never constrains it.
+  const toRoot = planMove(s, "plan", { project_id: null }, "first");
+  assert.equal(toRoot.ok, true, JSON.stringify(toRoot));
+  assert.ok(toRoot.moved.position < "a2", "before loose");
+  const after = applyWrite(s, toRoot);
+  assert.deepEqual(ordered(after, null), ["plan", "loose", "drafts"]);
+  assert.deepEqual(checkInvariants(after), []);
+  // A move to a Project's top level lands under its home Page.
+  const toProject = planMove(s, "loose", { project_id: OTHER });
+  assert.equal(toProject.moved.parent_id, "archive");
+  assert.deepEqual(ordered(applyWrite(s, toProject), "archive"), ["old", "loose"]);
 });
 
 test("every refusal code has a case, and refusals carry a message", () => {
@@ -297,9 +333,9 @@ test("depth at the boundary: a subtree fits only where its deepest Page stays wi
 });
 
 test("corrupt input: an over-deep chain is enumerated whole, never truncated", () => {
-  // Ten Pages in one chain: one level past MAX_DEPTH, as old or imported data
-  // might be.
-  const length = MAX_DEPTH + 1;
+  // Eleven Pages in one chain: one level past MAX_TREE_DEPTH, as corrupt or
+  // imported data might be.
+  const length = MAX_TREE_DEPTH + 1;
   const s = stateOf(
     ...Array.from({ length }, (_, i) => entry(`d${i + 1}`, i ? `d${i}` : null)),
     entry("other", null, { position: "a1" }),
@@ -313,11 +349,13 @@ test("corrupt input: an over-deep chain is enumerated whole, never truncated", (
   // Moving the whole chain anywhere is refused, even to where it already is.
   assert.equal(planMove(s, "d1", { project_id: null }).code, "nesting_depth_exceeded");
   assert.equal(planMove(s, "d1", { parent_id: "other" }).code, "nesting_depth_exceeded");
-  // Cutting it below the root repairs it, and the projection names all nine
-  // moved Pages, d10 included.
-  const cut = planMove(s, "d2", { project_id: null });
+  // Cutting it to a chain that fits MAX_DEPTH repairs it, and the projection
+  // names all nine moved Pages, d11 included. One level higher is still too
+  // deep for a move, though the model would hold it.
+  assert.equal(planMove(s, "d2", { project_id: null }).code, "nesting_depth_exceeded");
+  const cut = planMove(s, "d3", { project_id: null });
   assert.equal(cut.ok, true, JSON.stringify(cut));
-  assert.equal(cut.projection.length, length - 1);
+  assert.equal(cut.projection.length, length - 2);
   assert.equal(cut.projection.at(-1).page_id, `d${length}`);
   assert.deepEqual(checkInvariants(applyWrite(s, cut)), []);
   // A Page inside a cycle has no root, but listing below it still ends.
@@ -566,13 +604,22 @@ test("checkInvariants finds each kind of violation", () => {
   assert.deepEqual(codes(stateOf(entry("p", null, { state: "trashed" }), entry("a", "p"))), [
     "inactive_parent",
   ]);
-  assert.deepEqual(codes(stateOf(entry("p"), entry("t", "p", { state: "trashed" }))), [
-    "trashed_parent_active",
-  ]);
+  // A trashed entry's parent_id is the restore hint the adapter keeps. The
+  // parent may be active, trashed, or purged; none of those is a violation.
+  assert.deepEqual(
+    codes(stateOf(entry("p"), entry("t", "p", { state: "trashed" }))),
+    [],
+    "a trashed entry under an active parent",
+  );
   assert.deepEqual(
     codes(stateOf(entry("p", null, { state: "trashed" }), entry("t", "p", { state: "trashed" }))),
     [],
     "a trashed subtree can keep its shape",
+  );
+  assert.deepEqual(
+    codes(stateOf(entry("t", "purged", { state: "trashed" }))),
+    [],
+    "a trashed entry whose parent was purged",
   );
   assert.deepEqual(codes(stateOf(entry("a", "b"), entry("b", "a"))), [
     "placement_cycle",
@@ -592,6 +639,24 @@ test("checkInvariants finds each kind of violation", () => {
       stateOf(entry("p"), entry("x", "p"), entry("y", "p"), entry("q", null, { position: "a1" })),
     ),
     [{ code: "duplicate_position", page_id: "y", detail: "a0" }],
+  );
+  assert.deepEqual(
+    codes(
+      stateOf(
+        entry("h1", null, { space_id: PRJ, position: "a0" }),
+        entry("h2", null, { space_id: OTHER, position: "a0" }),
+        entry("loose", null, { position: "a0" }),
+      ),
+    ),
+    [],
+    "home Pages are each alone: their keys never tie with each other or Your items",
+  );
+  assert.deepEqual(
+    checkInvariants(
+      stateOf(entry("a", null, { position: "a0" }), entry("b", null, { position: "a0" })),
+    ),
+    [{ code: "duplicate_position", page_id: "b", detail: "a0" }],
+    "Your items roots are siblings",
   );
   assert.deepEqual(
     codes(
