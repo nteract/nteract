@@ -30,6 +30,15 @@ export function driverLabel(request) {
   return value.trim();
 }
 
+/** "Browser" means a person in the Pages web app, signed in with a cookie;
+ * viewers show such a session by name alone (viewer/activity.mjs). A request
+ * that carries a bearer credential (API key or Pages OAuth token) is a
+ * client acting for the account, so a "Browser" label from it reads as "API".
+ * Other labels pass through. */
+export function bearerDriver(driver) {
+  return driver.toLowerCase() === "browser" ? "API" : driver;
+}
+
 /** An agent's optional session label, such as "release agent", so two
  * sessions of one account and harness show and key as separate agents. It is
  * trusted like the driver: it always sits under the authenticated account.
@@ -140,7 +149,7 @@ export async function authenticate(request, env) {
           displayName: grant.identity.displayName || grant.identity.principal,
           driver:
             request.headers.has("x-pages-driver") || new URL(request.url).searchParams.has("driver")
-              ? driver
+              ? bearerDriver(driver)
               : ["pages-chatgpt", "https://chatgpt.com/oauth/client.json"].includes(grant.clientId)
                 ? "ChatGPT"
                 : grant.clientId === "pages-kilo"
@@ -192,7 +201,7 @@ export async function authenticate(request, env) {
       {
         principal: identity.principal,
         displayName: identity.metadata.displayName || identity.principal,
-        driver,
+        driver: bearerDriver(driver),
         ...(agent && { agent }),
         ...(await mcpSession(request, identity.principal)),
         canWrite: identity.scope === "editor",

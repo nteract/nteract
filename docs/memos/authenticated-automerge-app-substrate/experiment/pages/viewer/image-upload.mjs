@@ -1,5 +1,6 @@
 import * as A from "@automerge/automerge/slim";
 import { history } from "wordgard/history";
+import { GardSelection } from "wordgard/state";
 import { PagesImage } from "./wordgard-model.mjs";
 import {
   IMAGE_MAX_BYTES,
@@ -42,6 +43,35 @@ export function validateImageFile(file) {
     throw Error("Choose an image smaller than 5 MiB.");
 }
 
+/** A native position that sticks to the character before it: text typed at the
+ * position lands after the anchor, so whatever is placed there later stays
+ * where it was chosen. `null` stands for the start of the text.
+ *
+ * Offsets are UTF-16 units. The anchor is the first unit of the character
+ * before, so an astral character (a surrogate pair) is never split. */
+function anchorBefore(doc, path, offset) {
+  if (offset <= 0) return null;
+  const text = textAt(doc, path);
+  const low = text.charCodeAt(offset - 1);
+  const pair =
+    offset >= 2 && low >= 0xdc00 && low <= 0xdfff && text.codePointAt(offset - 2) > 0xffff;
+  return A.getCursor(doc, path, offset - (pair ? 2 : 1), "after");
+}
+/** The current offset just after an `anchorBefore` anchor's character, or
+ * null once that character is gone. */
+function resolveAnchor(doc, path, anchor) {
+  if (anchor === null) return 0;
+  try {
+    const before = A.getCursorPosition(doc, path, anchor);
+    if (A.getCursor(doc, path, before, "after") !== anchor) return null;
+    const point = textAt(doc, path).codePointAt(before);
+    return point === undefined ? null : before + (point > 0xffff ? 2 : 1);
+  } catch {
+    return null;
+  }
+}
+const textAt = (doc, path) => doc.blocks[path[1]].richText;
+
 /** Alt text for an uploaded file: its name without the extension. */
 export const imageAlt = (file) =>
   String(file?.name ?? "Image")
@@ -50,6 +80,10 @@ export const imageAlt = (file) =>
 
 // Capture a native cursor before opening a picker or starting a network request.
 // Screen coordinates and editor offsets are not stable while peers keep editing.
+//
+// The insertion point and the person's selection are both anchored to the
+// character before them. Typing at the paste point then goes after the pending
+// image, and the uploader can tell whether the selection moved while it waited.
 export function captureImageInsertion(
   replica,
   id,
@@ -73,7 +107,26 @@ export function captureImageInsertion(
     offset > doc.blocks[id].richText.length
   )
     throw unavailable();
-  return { pageId, id, object, cursor: A.getCursor(doc, pathFor(id), offset, "after") };
+  const path = pathFor(id),
+    { anchor, head } = editor.state.selection,
+    native = (pos) => {
+      const at = map.wgToAm[pos];
+      return Number.isSafeInteger(at) ? anchorBefore(doc, path, at) : undefined;
+    };
+  return {
+    pageId,
+    id,
+    object,
+    anchor: anchorBefore(doc, path, offset),
+    selection: { anchor: native(anchor), head: native(head) },
+  };
+}
+
+function resolvePosition(doc, target, anchor, map) {
+  const offset = resolveAnchor(doc, pathFor(target.id), anchor);
+  if (offset === null) return null;
+  const position = map?.amToWg[offset];
+  return Number.isSafeInteger(position) ? position : null;
 }
 
 export function resolveImageInsertion(replica, target, map) {
@@ -88,14 +141,26 @@ export function resolveImageInsertion(replica, target, map) {
     A.getObjectId(block, "richText") !== target.object
   )
     throw unavailable();
-  const offset = A.getCursorPosition(doc, pathFor(target.id), target.cursor),
-    position = map?.amToWg[offset];
-  if (
-    A.getCursor(doc, pathFor(target.id), offset, "after") !== target.cursor ||
-    !Number.isSafeInteger(position)
-  )
-    throw unavailable();
+  const position = resolvePosition(doc, target, target.anchor, map);
+  if (position === null) throw unavailable();
   return position;
+}
+
+/** Where the caret goes once a pending image is inserted at `position`.
+ *
+ * If the person's selection is where it was when they pasted, dropped or
+ * picked the image, the caret moves to just after the image, so the next
+ * keystroke follows it. If they typed or moved the caret while it uploaded,
+ * the selection is theirs: return null and let the editor map it through the
+ * insertion. */
+export function caretAfterImage(replica, target, map, selection, position) {
+  const captured = target.selection;
+  if (captured?.anchor === undefined || captured?.head === undefined) return null;
+  const doc = replica.doc,
+    anchor = resolvePosition(doc, target, captured.anchor, map),
+    head = resolvePosition(doc, target, captured.head, map);
+  if (anchor === null || anchor !== selection.anchor || head !== selection.head) return null;
+  return (_cx, changes) => GardSelection.cursor(changes.mapPos(position, 1));
 }
 
 export async function uploadPageImage(pageId, file, signal, request = fetch) {
@@ -202,6 +267,9 @@ export function createImageUploader({
           insert: [PagesImage.of({ src: asset.url, alt, title: null })],
           fit: true,
         },
+        selection:
+          caretAfterImage(replica, attempt.target, getMap(), editor.state.selection, position) ??
+          undefined,
         userEvent: "input.image",
         annotations: history.isolate.of(true),
       });
