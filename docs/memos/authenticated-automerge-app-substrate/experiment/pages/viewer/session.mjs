@@ -46,6 +46,14 @@ import {
   viewerReconnectMachine,
 } from "./reconnect-machine.mjs";
 import { statusLabel, viewerSyncStatusMachine } from "./sync-status-machine.mjs";
+import {
+  acknowledgedHeads,
+  afterAcknowledgement,
+  emptyLocalEdits,
+  hasUnconfirmedLocalEdits,
+  readLocalEdits,
+  withActor,
+} from "./local-edits.mjs";
 export { request, tool } from "./request.mjs";
 const hex = (bytes) => Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
 const ownerAccess = () => ({
@@ -825,6 +833,10 @@ export class PageSession {
     await this.initializeLocal(
       this.localPage?.replicaKey ?? replicaKey(this.access, this.canWrite),
     );
+    // Whether this replica opens with edits of its own the host hasn't
+    // confirmed (local-edits.mjs). Only that, never a receipt that was merely
+    // outstanding, makes the status say Saving.
+    let unconfirmed;
     if (creation) {
       const doc = A.change(
         A.from(createPageData({ pageId: this.pageId, title: creation.title })),
@@ -848,6 +860,8 @@ export class PageSession {
         pending: true,
         snapshot,
         registrationProtocol: 1,
+        // The bootstrap and everything after it are this browser's own edits.
+        localEdits: withActor(withActor(emptyLocalEdits(), A.getActorId(doc)), this.actor()),
         registration: {
           expected_principal: this.identity.principal,
           page_id: this.pageId,
@@ -858,6 +872,7 @@ export class PageSession {
         },
       };
       await writeLocalPage(this.identity, this.localPage);
+      unconfirmed = true;
     } else if (this.localPage && !this.localPage.resetReplica) {
       // A checkpoint can contain more history than an ordinary edit batch.
       // Merge its bounded complete record set before exposing a handle; this
@@ -871,7 +886,16 @@ export class PageSession {
       }
       this.handle = await this.repo.find(this.localPage.document_id);
       this.canWrite = !!this.canWrite && !!this.localPage.canWrite;
-      if (!this.localPage.pending) this.savedHeads = A.getHeads(this.doc);
+      // Native storage can hold an edit the checkpoint never saw, so decide
+      // from the restored document. A record without localEdits predates
+      // them; its receipt flag is all there is.
+      const edits = readLocalEdits(this.localPage.localEdits);
+      unconfirmed = edits ? hasUnconfirmedLocalEdits(this.doc, edits) : !!this.localPage.pending;
+      // Without unconfirmed local edits, every change here is acknowledged or
+      // came from the host.
+      if (!unconfirmed) this.savedHeads = A.getHeads(this.doc);
+      else if (edits) this.savedHeads = acknowledgedHeads(this.doc, edits);
+      await this.recordActor(edits ?? { ...emptyLocalEdits(), unattributed: unconfirmed });
     } else {
       await this.connect(false);
       if (this.nativeRefused) throw signingKeyRefused(this.refusal);
@@ -924,17 +948,17 @@ export class PageSession {
         registered: true,
         pending: false,
         snapshot: encodeSnapshot(A.save(this.doc)),
+        localEdits: withActor(emptyLocalEdits(), this.actor()),
       };
       await writeLocalPage(this.identity, this.localPage);
+      unconfirmed = false;
     }
     this.handle.on("change", (event) => this.receiveChange(event));
     this.handle.on("ephemeral-message", (event) => this.ephemeral(event));
     if (this.accessDenied)
       this.accessProblem =
         "You no longer have access to this Page. Your local copy is kept on this device.";
-    // A checkpoint written before its receipt may hold edits the host never
-    // acknowledged; until a receipt lands, its status says Saving.
-    this.syncStatus({ type: "opened", pending: !!this.localPage?.pending });
+    this.syncStatus({ type: "opened", pending: unconfirmed });
     this.renderStatus();
     // A pause while opening has already failed start().
     if (this.phase$.snapshot().name === "opening")
@@ -985,6 +1009,20 @@ export class PageSession {
       ...BACKEND_LIMITS,
     });
     this.repo = new Repo({ backend: this.backend });
+  }
+  /** This session's Automerge actor: every local edit it makes carries it. */
+  actor() {
+    return A.getActorId(this.doc);
+  }
+  /** Record this session's actor in the checkpoint before it can edit, so a
+   * crash before the debounced checkpoint still reads its edits as local. */
+  async recordActor(edits) {
+    const recorded = withActor(edits, this.actor());
+    if (recorded === edits && this.localPage.localEdits) return;
+    this.localPage = await writeLocalPage(this.identity, {
+      ...this.localPage,
+      localEdits: recorded,
+    });
   }
   persistLocal(patch = {}, { allowClosed = false } = {}) {
     if (this.deleted || (!this.alive && !allowClosed) || !this.localPage || !this.handle)
@@ -1804,7 +1842,14 @@ export class PageSession {
       this.syncStatus({ type: "acknowledged", revision: receipt });
       this.cancelReceiptRetry();
       this.receiptRetryAttempts = 0;
-      await this.persistLocal({ pending: false });
+      await this.persistLocal({
+        pending: false,
+        localEdits: afterAcknowledgement(
+          this.doc,
+          withActor(readLocalEdits(this.localPage?.localEdits) ?? emptyLocalEdits(), this.actor()),
+          heads,
+        ),
+      });
       if (!isCurrent()) return;
       this.showReceiptState();
     } catch (error) {

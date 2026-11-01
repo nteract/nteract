@@ -435,8 +435,18 @@ The status line separates syncing from saving. Every head change asks the host
 for a receipt, but only a local edit marks the replica as holding unacknowledged
 work. Catching up on other peers' changes after a reopen says "Syncing"; a
 local edit says "Saving" until a receipt for heads that include it lands, even
-if remote changes arrive in between. A checkpoint written before its receipt
-reopens as Saving, because it may hold such an edit.
+if remote changes arrive in between.
+
+A reopen decides from the restored replica, not from the checkpoint's `pending`
+flag, which only says a receipt was outstanding. The checkpoint's `localEdits`
+records every Automerge actor this browser authored with (each session records
+its fresh actor before it accepts an edit) and the heads the host last
+acknowledged. The replica has unconfirmed work exactly when it holds a change by
+one of those actors outside the acknowledged history. Native storage persists
+an edit before the debounced checkpoint, so a tab that dies in between still
+reopens Saving, and its edit is not claimed as saved. Checkpoints from before
+`localEdits` keep their `pending` flag as unattributed local work until a receipt
+covers them. [local-edits.mjs](viewer/local-edits.mjs) holds these rules.
 [sync-status-machine.mjs](viewer/sync-status-machine.mjs) holds these
 transitions and the label each state renders; a phase pause (sign-in, access,
 deletion) or a failed local save outranks it.

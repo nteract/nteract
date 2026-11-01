@@ -1,4 +1,5 @@
 import * as A from "@automerge/automerge";
+import { mergeLocalEdits } from "./local-edits.mjs";
 import { decoder, encoder, key, store } from "./local-catalog.mjs";
 export { forgetLocalPage, listLocalPages } from "./local-catalog.mjs";
 
@@ -146,10 +147,12 @@ export async function writeLocalPage(identity, page) {
               previous.access?.role === "none")
           )
             next = { ...next, access: previous.access, canWrite: false };
+          let diverged = false;
           if (!previous.resetReplica && previous.snapshot !== page.snapshot) {
             const incoming = A.load(decodeSnapshot(page.snapshot));
             const existing = A.load(decodeSnapshot(previous.snapshot));
             if (!A.hasHeads(incoming, A.getHeads(existing))) {
+              diverged = true;
               const merged = A.merge(incoming, existing);
               next = {
                 ...next,
@@ -159,6 +162,10 @@ export async function writeLocalPage(identity, page) {
               };
             }
           }
+          // Which edits are this browser's own survives every checkpoint
+          // write, including a slower tab's (local-edits.mjs).
+          const localEdits = mergeLocalEdits(previous.localEdits, page.localEdits, { diverged });
+          if (localEdits) next = { ...next, localEdits };
         }
         // The compare-and-swap authority is only for this checkpoint write;
         // stale tabs must explicitly reconcile before replacing another token.
