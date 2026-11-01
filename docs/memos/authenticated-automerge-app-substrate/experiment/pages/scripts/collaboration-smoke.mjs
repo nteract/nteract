@@ -145,6 +145,25 @@ async function selectText(page, text, collapse = false) {
     .poll(() => page.evaluate(() => getSelection().toString()))
     .toBe(collapse ? "" : text);
 }
+// Two writers type one character at a time, in turn, at their own carets.
+// Each keystroke waits until the other writer shows the same text, so every
+// keystroke provably crosses a peer's edit that arrived after the caret was
+// placed. `read` returns what a writer's screen shows.
+async function typeInTurns(read, [first, firstText], [second, secondText]) {
+  const [one, two] = [Array.from(firstText), Array.from(secondText)];
+  const turns = [];
+  for (let i = 0; i < Math.max(one.length, two.length); i++) {
+    if (i < one.length) turns.push([first, one[i]]);
+    if (i < two.length) turns.push([second, two[i]]);
+  }
+  for (const [page, character] of turns) {
+    const before = await read(page);
+    await page.keyboard.type(character);
+    await expect.poll(() => read(page)).not.toBe(before);
+    const shown = await read(page);
+    for (const other of [first, second]) await expect.poll(() => read(other)).toBe(shown);
+  }
+}
 async function paste(page, html, plain) {
   await content(page).evaluate(
     (element, { html, plain }) => {
@@ -194,15 +213,14 @@ try {
   stage = "two writers typing at one caret keep unbroken runs";
   await selectText(a, "Meeting notes:", true);
   await selectText(b, "Meeting notes:", true);
-  // Human speed with offset starts: every keystroke crosses a peer's.
-  await Promise.all([
-    a.keyboard.type(" Alpha writes first", { delay: 110 }),
-    b.waitForTimeout(50).then(() => b.keyboard.type(" Beta replies", { delay: 130 })),
-  ]);
-  for (const page of [a, b]) {
-    await expect.poll(() => textOf(page)).toContain(" Alpha writes first");
-    await expect.poll(() => textOf(page)).toContain(" Beta replies");
-  }
+  // Both carets sit after "notes:". A caret sticks to the character before
+  // it, so B's run stays before A's and neither interleaves.
+  // Emoji take two UTF-16 units; a caret after one stays after the whole emoji.
+  await typeInTurns(textOf, [a, " Alpha 🌊"], [b, " Beta 🌍"]);
+  assert.ok(
+    (await textOf(a)).startsWith("Meeting notes: Beta 🌍 Alpha 🌊 and more."),
+    await textOf(a),
+  );
   assert.equal(await textOf(a), await textOf(b));
   complete(stage);
 
@@ -211,14 +229,9 @@ try {
     await title(page).click();
     await title(page).press("End");
   }
-  await Promise.all([
-    a.keyboard.type(" Alpha", { delay: 90 }),
-    b.waitForTimeout(40).then(() => b.keyboard.type(" Beta", { delay: 100 })),
-  ]);
-  for (const page of [a, b]) {
-    await expect.poll(() => title(page).inputValue()).toContain(" Alpha");
-    await expect.poll(() => title(page).inputValue()).toContain(" Beta");
-  }
+  const titleOf = (page) => title(page).inputValue();
+  await typeInTurns(titleOf, [a, " Alpha"], [b, " Beta"]);
+  assert.equal(await titleOf(a), "Notes: Beta Alpha");
   // A peer's edit before the caret leaves the caret after the same text.
   await title(a).press("End");
   await title(b).press("Home");
@@ -317,15 +330,21 @@ try {
   await saved(a);
   // Hold A's delete request until B's edit reaches the host, so the heads A
   // sends are behind the Page.
-  let release;
+  let release, intercepted;
   const held = new Promise((resolve) => (release = resolve));
+  const deleting = new Promise((resolve) => (intercepted = resolve));
   await a.route("**/api/tools", async (route) => {
-    if (route.request().postDataJSON()?.operation === "delete_page") await held;
+    if (route.request().postDataJSON()?.operation === "delete_page") {
+      intercepted();
+      await held;
+    }
     await route.continue();
   });
   a.once("dialog", (dialog) => dialog.accept());
   await a.getByLabel("Document actions").click();
   await a.getByRole("button", { name: /Move to Trash/ }).click();
+  // A's delete_page, with the heads A has seen, is parked in the route.
+  await deleting;
   await selectText(b, "Offline line.", true);
   await b.keyboard.type(" Peer edit.");
   await expect.poll(markdown).toContain("Peer edit.");
@@ -349,12 +368,16 @@ try {
         await a.goto(`${origin}/p/${page}`);
         await selectText(a, "Tail.", true);
         const typing = a.keyboard.type(" person keeps typing", { delay: 60 });
+        let shown = (await textOf(a)).length;
         for (const [from, to] of [
           ["aaaa", "bbbb"],
           ["bbbb", "cccc"],
           ["cccc", "dddd"],
         ]) {
-          await a.waitForTimeout(300);
+          // Each agent edit lands while the typist is mid-word: after a few
+          // more of their characters reach the screen.
+          await expect.poll(async () => (await textOf(a)).length).toBeGreaterThanOrEqual(shown + 3);
+          shown = (await textOf(a)).length;
           const current = await tool(a, "read_page", { page_id: page });
           const authority = current;
           await tool(a, "patch_page", {
