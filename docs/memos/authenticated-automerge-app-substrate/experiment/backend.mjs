@@ -172,6 +172,7 @@ export function createPeer({
   ephemeralPolicy,
   storage = new MemoryByteStore(),
   seed,
+  scheduleLocalSync,
 } = {}) {
   const signer = seed ? N.MemorySigner.fromBytes(seed) : N.MemorySigner.generate();
   const nativeId = signer.peerId();
@@ -184,6 +185,7 @@ export function createPeer({
     signer,
     storage,
     syncTimeoutMilliseconds: 500,
+    ...(scheduleLocalSync && { scheduleLocalSync }),
     ...(policy && { policy: nativePolicy(policy, policyEvents) }),
     ...(ephemeralPolicy && {
       ephemeralPolicy: nativeEphemeralPolicy(ephemeralPolicy, presencePolicyEvents),

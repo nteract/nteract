@@ -784,6 +784,24 @@ batches to cross the configured durability barrier before acknowledging heads.
 The browser retains pending state through bounded receipt retries; sign-in failure
 pauses them until renewal. A client timeout does not cancel or reorder persistence.
 
+### Outbound edits
+
+Every editor transaction is one Automerge change, and the browser stores it in
+IndexedDB at once. Sending is grouped: the backend's `scheduleLocalSync` hook
+(see [UPSTREAM.md](../UPSTREAM.md)) hands each local store's native sync round
+to [outbound-sync-machine.mjs](viewer/outbound-sync-machine.mjs). A round and
+the newest caret go out 30 ms after typing pauses, and every 100 ms while it
+doesn't. The window losing focus, `beforeunload`, a save receipt and leaving
+the Page send at once. A hidden tab or `pagehide` sends what waits and stops
+batching until the tab shows again: a browser may throttle or freeze a hidden
+tab's timers while saves still finish. Delivery before an unload is best
+effort; the round starts and the browser decides whether it completes. A
+closing session sends anything waiting and then stops batching. Native framing still
+carries one commit per frame, so the grouping removes per-keystroke sync rounds
+and caret frames, not commit frames. `scripts/typing-batch-smoke.mjs` (the
+`typing` E2E suite) types 200 characters at 60–100 ms and at 20 ms per key and
+reports changes, frames, bytes and the other writer's main-thread time.
+
 With `PAGES_ASYNC_PERSISTENCE=true`, the live Page keeps a bounded in-memory record
 replica and sends batches to a separate `PageRecords` object, normally after one
 second or on a receipt request. Its output gate does not block ordinary outgoing
