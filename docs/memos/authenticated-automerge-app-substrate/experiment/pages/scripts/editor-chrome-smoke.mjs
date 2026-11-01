@@ -231,8 +231,42 @@ try {
   await a.keyboard.press("Alt+F10");
   const style = a.locator("#page-formatting select[aria-label='Text style']");
   await expect(style.locator("option", { hasText: "Code block" })).toHaveCount(1);
+  // Common controls first, insert actions at the far end, Comment last.
+  const order = await a
+    .locator("#page-formatting .rich-toolbar.is-pinned")
+    .evaluate((bar) =>
+      [...bar.querySelectorAll("button,select")].map((control) =>
+        control.getAttribute("aria-label"),
+      ),
+    );
+  assert.deepEqual(
+    order,
+    [
+      "Undo",
+      "Redo",
+      "Text style",
+      "Bold",
+      "Italic",
+      "Link",
+      "Inline code",
+      "Highlight",
+      "Bulleted list",
+      "Numbered list",
+      "Task list",
+      "Insert table",
+      "Insert image",
+      "Comment on selection",
+    ],
+    JSON.stringify(order),
+  );
+  await a.locator("#page-formatting .rich-toolbar.is-pinned").screenshot({
+    path: `${output}/toolbar-order.png`,
+  });
+  report.screenshots.push(`${output}/toolbar-order.png`);
   await a.keyboard.press("Alt+F10");
-  complete("ArrowDown and Mod-Enter leave a final code block; opening writes nothing");
+  complete(
+    "ArrowDown and Mod-Enter leave a final code block; opening writes nothing; toolbar order",
+  );
 
   stage = "task-list checkbox indent";
   const tasksId = await create(
