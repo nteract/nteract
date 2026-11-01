@@ -90,12 +90,13 @@ const bytes = (value) => Uint8Array.from(value.match(/../g), (v) => parseInt(v, 
 export const STABLE_CONNECTION_MS = 15_000;
 // A Page being left keeps syncing this long for its receipt before closing.
 export const CLOSE_DRAIN_MS = 10_000;
-// Receipt states in which a Page being left may still save.
-const DRAINING_STATES = new Set(["Connecting", "Reconnecting", "Syncing", "Saving"]);
-const STALLED_STATES = new Set(["Unsaved", "Offline", "Saved locally"]);
-/** A receipt status as the reload gate reads it. */
-export const saveStateOf = (status) =>
-  status === "Local save failed" ? "failed" : STALLED_STATES.has(status) ? "stalled" : "saving";
+// Status ids (STATUS_IDS in sync-status-machine.mjs) in which a Page being
+// left may still save. These read ids, never labels.
+const DRAINING_STATES = new Set(["connecting", "reconnecting", "syncing", "saving"]);
+const STALLED_STATES = new Set(["unsaved", "offline", "saved-locally"]);
+/** A status id as the reload gate reads it. */
+export const saveStateOf = (id) =>
+  id === "local-failed" ? "failed" : STALLED_STATES.has(id) ? "stalled" : "saving";
 /** Settles once every promise has settled, then rejects with the first
  * failure. Later work never starts before earlier work finishes. */
 const allSettledThen = (...promises) =>
@@ -103,8 +104,8 @@ const allSettledThen = (...promises) =>
     const failed = results.find((result) => result.status === "rejected");
     if (failed) throw failed.reason;
   });
-/** Whether a Page being left may still save in this receipt state. */
-export const drainingStatus = (status) => DRAINING_STATES.has(status);
+/** Whether a Page being left may still save with this status id. */
+export const drainingStatus = (id) => DRAINING_STATES.has(id);
 const SIGNING_KEY_REFUSED =
   "This Page refused this tab's signing key. Your edits stay on this device. Retry, or open the Page in a new tab.";
 const SYNC_PAUSED =
@@ -178,6 +179,7 @@ export class PageSession {
   composing = 0;
   localDepth = 0;
   status = "Connecting";
+  statusId = "connecting";
   // How `status` is drawn (STATUS_KEYS in sync-status-machine.mjs). Set only
   // with `status`, through showStatus.
   statusKey = "connecting";
@@ -302,7 +304,7 @@ export class PageSession {
    * reload, a stalled save retries like the Retry button, anything else is
    * still saving. */
   get saveState() {
-    return saveStateOf(this.status);
+    return saveStateOf(this.statusId);
   }
   /** The host refused this tab's signing key; only an explicit attempt
    * retries. */
@@ -404,7 +406,7 @@ export class PageSession {
     const settled = () => {
       const phase = this.phase$.snapshot();
       if (phase.name !== "draining" || phase.reason) return true;
-      return this.#saved() || !drainingStatus(this.status);
+      return this.#saved() || !drainingStatus(this.statusId);
     };
     const changes$ = merge(
       this.phase$.state$,
@@ -478,7 +480,7 @@ export class PageSession {
         }
         await this.persistLocal(
           {
-            pending: this.status !== "Saved",
+            pending: this.statusId !== "saved",
             ...(retire && { localEdits: retireReplica(edits, this.replicaId) }),
           },
           { allowClosed: true },
@@ -1814,10 +1816,11 @@ export class PageSession {
     }
     return result;
   }
-  /** Show a `{ label, key }` status from sync-status-machine.mjs. */
-  showStatus({ label, key }) {
+  /** Show a `{ label, key, id }` status from sync-status-machine.mjs. */
+  showStatus({ label, key, id }) {
     this.status = label;
     this.statusKey = key;
+    this.statusId = id;
   }
   /** Render `status` from the sync-status machine and the phase's pauses. */
   renderStatus() {

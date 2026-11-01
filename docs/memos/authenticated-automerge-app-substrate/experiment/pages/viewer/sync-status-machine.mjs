@@ -260,14 +260,21 @@ export const viewerSyncStatusMachine = defineMachine({
 /**
  * Presentation keys. Each status is a `{ label, key }` pair: the label is
  * the English text people read, and the key is what presentation branches
- * on, so rewording a label never changes how it is drawn.
+ * on, so rewording a label never changes how it is drawn. Each status also
+ * carries an `id` (one of STATUS_IDS): the stable value PageSession, the
+ * reload gate and the close drain read. Labels are free to change; ids are
+ * not.
  * - connecting: no admitted socket yet, or reconnecting after one closed.
  * - connected: a socket is admitted and no receipt has started.
  * - syncing: a receipt for remote changes is outstanding.
  * - quiet: a receipt for this person's own edits started under SLOW_SAVE_MS
- *   ago. Its label stays Saving, since PageSession and the reload gate read
- *   the label, but it is drawn as nothing.
+ *   ago. Drawn as nothing; its id is still `saving`, so the reload gate
+ *   waits for it.
  * - saving: a receipt for this person's own edits is still outstanding.
+ *
+ * People see "Syncing" for both remote catch-up and their own edits. The
+ * #4607 split survives in the key and id: `syncing` is catch-up, drawn as a
+ * still dot; `saving` is this person's edits, drawn as a pulsing dot.
  * - saved: the host acknowledged the current receipt.
  * - attention: sync is paused or local-only; the edits are not lost.
  * - failed: edits may be lost.
@@ -282,7 +289,29 @@ export const STATUS_KEYS = Object.freeze([
   "attention",
   "failed",
 ]);
-const status = (label, key) => ({ label, key });
+/**
+ * Stable status ids. The reload gate and close drain branch on these, never
+ * on labels.
+ */
+export const STATUS_IDS = Object.freeze([
+  "connecting",
+  "reconnecting",
+  "connected",
+  "syncing",
+  "saving",
+  "saved",
+  "saved-locally",
+  "offline",
+  "unsaved",
+  "deleted",
+  "access-removed",
+  "access-changed",
+  "sign-in",
+  "local-failed",
+]);
+/** Status ids whose problem the header's Retry button retries. */
+export const RETRYABLE_STATUS = Object.freeze(["unsaved", "offline", "saved-locally"]);
+const status = (label, key, id) => ({ label, key, id });
 
 /**
  * The statuses that outrank the receipt, in rank order. Each flag is a fact
@@ -290,11 +319,11 @@ const status = (label, key) => ({ label, key });
  * fact changes, through `overlayStatus`.
  */
 const OVERLAYS = Object.freeze({
-  deleted: status("Deleted", "attention"),
-  accessDenied: status("Access removed", "attention"),
-  accessReloadRequired: status("Access changed", "attention"),
-  authRequired: status("Sign in to sync", "attention"),
-  localFailed: status("Local save failed", "failed"),
+  deleted: status("Deleted", "attention", "deleted"),
+  accessDenied: status("Access removed", "attention", "access-removed"),
+  accessReloadRequired: status("Access changed", "attention", "access-changed"),
+  authRequired: status("Sign in to sync", "attention", "sign-in"),
+  localFailed: status("Local save failed", "failed", "local-failed"),
 });
 
 export const OVERLAY_FLAGS = Object.freeze(Object.keys(OVERLAYS));
@@ -320,26 +349,26 @@ export function syncStatus(state, { localCopy = false } = {}) {
   const { name, link } = state;
   if (link === "offline")
     return name === "local" || (name === "idle" && localCopy)
-      ? status("Saved locally", "attention")
-      : status("Offline", "attention");
-  if (name === "quiet") return status("Saving", "quiet");
-  if (name === "saving") return status("Saving", "saving");
-  if (link === "reconnecting") return status("Reconnecting", "connecting");
+      ? status("Saved locally", "attention", "saved-locally")
+      : status("Offline", "attention", "offline");
+  if (name === "quiet") return status("Syncing", "quiet", "saving");
+  if (name === "saving") return status("Syncing", "saving", "saving");
+  if (link === "reconnecting") return status("Reconnecting", "connecting", "reconnecting");
   switch (name) {
     case "idle":
       return link === "connected"
-        ? status("Connected", "connected")
+        ? status("Connected", "connected", "connected")
         : localCopy
-          ? status("Saved locally", "attention")
-          : status("Connecting", "connecting");
+          ? status("Saved locally", "attention", "saved-locally")
+          : status("Connecting", "connecting", "connecting");
     case "syncing":
-      return status("Syncing", "syncing");
+      return status("Syncing", "syncing", "syncing");
     case "saved":
-      return status("Saved", "saved");
+      return status("Saved", "saved", "saved");
     case "local":
-      return status("Saved locally", "attention");
+      return status("Saved locally", "attention", "saved-locally");
     case "unsaved":
-      return status("Unsaved", "failed");
+      return status("Not saved", "failed", "unsaved");
   }
   throw new Error(`unknown state ${name}`);
 }

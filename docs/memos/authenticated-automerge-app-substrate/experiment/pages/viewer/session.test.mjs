@@ -281,6 +281,7 @@ test("a local write requests durability even when its handle emits no visible pa
   const session = new PageSession("fixture");
   session.canWrite = true;
   session.status = "Saved";
+  session.statusId = "saved";
   const doc = A.from({ text: "unchanged" });
   session.handle = {
     doc: () => doc,
@@ -290,7 +291,7 @@ test("a local write requests durability even when its handle emits no visible pa
     },
   };
   session.change(() => {});
-  assert.equal(session.status, "Saving");
+  assert.equal(session.statusId, "saving");
   assert.ok(session.savedTimer);
   t.after(() => clearTimeout(session.savedTimer));
 });

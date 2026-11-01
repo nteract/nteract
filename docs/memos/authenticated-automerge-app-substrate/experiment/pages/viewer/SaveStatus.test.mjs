@@ -43,10 +43,10 @@ function render({ label, key }, compact = false) {
   return JSDOM.fragment(renderToStaticMarkup(element)).querySelector('[role="status"]');
 }
 
-// Every status the machine and its overlays render, by label. A quiet save
-// shares the Saving label, so it is listed as "Saving (quiet)".
+// Every status the machine and its overlays render, by "label (key)". Syncing
+// covers remote catch-up, a quiet save and a slow save, told apart by key.
 const STATUSES = new Map();
-const named = (status) => (status.key === "quiet" ? `${status.label} (quiet)` : status.label);
+const named = (status) => `${status.label} (${status.key})`;
 for (const name of viewerSyncStatusMachine.states)
   for (const link of LINKS)
     for (const localCopy of [false, true]) {
@@ -61,39 +61,66 @@ for (const name of viewerSyncStatusMachine.states)
       const status = syncStatus(state, { localCopy });
       STATUSES.set(named(status), status);
     }
-for (const flag of OVERLAY_FLAGS) STATUSES.set(overlayStatus(flag).label, overlayStatus(flag));
+for (const flag of OVERLAY_FLAGS) STATUSES.set(named(overlayStatus(flag)), overlayStatus(flag));
 
-// How each status is drawn: its class, its icon on desktop, and on phones
+// How each status is drawn: its class, whether desktop shows text (sync in
+// progress is the dot alone, with no spinner), its desktop icon, and on both
 // whether the dot is shown and whether it pulses.
+const DOT = { icon: false, text: false, dot: true };
 const DRAWN = {
-  Connecting: { kind: "working", icon: true, dot: true, pulse: false },
-  Reconnecting: { kind: "working", icon: true, dot: true, pulse: false },
-  Connected: { kind: "plain", icon: false, dot: true, pulse: false },
-  Syncing: { kind: "working", icon: true, dot: true, pulse: false },
-  "Saving (quiet)": { kind: "quiet" },
-  Saving: { kind: "working", icon: true, dot: true, pulse: true },
-  Saved: { kind: "saved", icon: true, dot: false, pulse: false },
-  "Saved locally": { kind: "attention", icon: true, dot: true, pulse: false },
-  Offline: { kind: "attention", icon: true, dot: true, pulse: false },
-  Deleted: { kind: "attention", icon: true, dot: true, pulse: false },
-  "Access removed": { kind: "attention", icon: true, dot: true, pulse: false },
-  "Access changed": { kind: "attention", icon: true, dot: true, pulse: false },
-  "Sign in to sync": { kind: "attention", icon: true, dot: true, pulse: false },
-  Unsaved: { kind: "error", icon: true, dot: true, pulse: false },
-  "Local save failed": { kind: "error", icon: true, dot: true, pulse: false },
+  "Connecting (connecting)": { kind: "working", ...DOT, pulse: false },
+  "Reconnecting (connecting)": { kind: "working", ...DOT, pulse: false },
+  "Connected (connected)": { kind: "plain", ...DOT, pulse: false },
+  "Syncing (syncing)": { kind: "working", ...DOT, pulse: false },
+  "Syncing (quiet)": { kind: "quiet" },
+  "Syncing (saving)": { kind: "working", ...DOT, pulse: true },
+  "Saved (saved)": { kind: "saved", icon: true, text: false, dot: false, pulse: false },
+  "Saved locally (attention)": {
+    kind: "attention",
+    icon: true,
+    text: true,
+    dot: true,
+    pulse: false,
+  },
+  "Offline (attention)": { kind: "attention", icon: true, text: true, dot: true, pulse: false },
+  "Deleted (attention)": { kind: "attention", icon: true, text: true, dot: true, pulse: false },
+  "Access removed (attention)": {
+    kind: "attention",
+    icon: true,
+    text: true,
+    dot: true,
+    pulse: false,
+  },
+  "Access changed (attention)": {
+    kind: "attention",
+    icon: true,
+    text: true,
+    dot: true,
+    pulse: false,
+  },
+  "Sign in to sync (attention)": {
+    kind: "attention",
+    icon: true,
+    text: true,
+    dot: true,
+    pulse: false,
+  },
+  "Not saved (failed)": { kind: "error", icon: true, text: true, dot: true, pulse: false },
+  "Local save failed (failed)": { kind: "error", icon: true, text: true, dot: true, pulse: false },
 };
 
 test("the table covers every status the machine renders", () => {
   assert.deepEqual([...STATUSES.keys()].sort(), Object.keys(DRAWN).sort());
 });
 
-for (const [label, status] of STATUSES) {
-  const drawn = DRAWN[label];
+for (const [name, status] of STATUSES) {
+  const drawn = DRAWN[name];
+  const { label } = status;
   const saved = drawn.kind === "saved";
   if (drawn.kind === "quiet") {
     // Nothing to see or hear, in the same live region the next status uses.
     for (const compact of [false, true])
-      test(`${compact ? "phone" : "desktop"}: ${label}`, () => {
+      test(`${compact ? "phone" : "desktop"}: ${name}`, () => {
         const element = render(status, compact);
         assert.ok(element.classList.contains("save-status--quiet"));
         assert.equal(element.classList.contains("save-status--dot"), compact);
@@ -107,9 +134,23 @@ for (const [label, status] of STATUSES) {
     continue;
   }
 
-  test(`desktop: ${label}`, () => {
+  test(`desktop: ${name}`, () => {
     const element = render(status);
     assert.ok(element.classList.contains(`save-status--${drawn.kind}`));
+    if (!drawn.text && !saved) {
+      // Sync in progress: the dot alone, the label for screen readers and in
+      // the tooltip. No spinner, no visible text.
+      assert.ok(element.classList.contains("save-status--dot"));
+      assert.equal(element.querySelector("svg"), null);
+      assert.equal(element.querySelector(".save-status-label"), null);
+      assert.equal(element.querySelector(".sr-only").textContent, label);
+      assert.equal(element.title, label);
+      assert.equal(
+        element.querySelector(".status-dot").classList.contains("is-pulsing"),
+        drawn.pulse,
+      );
+      return;
+    }
     assert.equal(element.getAttribute("aria-live"), "polite");
     assert.equal(element.getAttribute("aria-atomic"), "true");
     assert.equal(!!element.querySelector("svg"), drawn.icon);
@@ -129,7 +170,7 @@ for (const [label, status] of STATUSES) {
     }
   });
 
-  test(`phone: ${label}`, () => {
+  test(`phone: ${name}`, () => {
     const element = render(status, true);
     assert.ok(element.classList.contains("save-status--dot"));
     assert.ok(element.classList.contains(`save-status--${drawn.kind}`));
@@ -151,14 +192,14 @@ for (const [label, status] of STATUSES) {
 }
 
 test("the key, not the label, decides how a status is drawn", () => {
-  // A reworded Saving label still pulses.
-  const reworded = render({ label: "Saving your edits", key: "saving" }, true);
-  assert.ok(reworded.querySelector(".status-dot.is-pulsing"));
-  // The Saving label with another key does not.
-  assert.equal(
-    render({ label: "Saving", key: "syncing" }, true).querySelector(".is-pulsing"),
-    null,
-  );
+  // The same Syncing label pulses only for this person's own edits.
+  for (const compact of [false, true]) {
+    assert.ok(render({ label: "Syncing", key: "saving" }, compact).querySelector(".is-pulsing"));
+    assert.equal(
+      render({ label: "Syncing", key: "syncing" }, compact).querySelector(".is-pulsing"),
+      null,
+    );
+  }
   // A Saved label without the saved key is not quiet.
   assert.ok(!render({ label: "Saved", key: "connected" }).classList.contains("save-status--saved"));
 });
@@ -178,6 +219,23 @@ test("a status without a known key is drawn plain and never as saved", () => {
     assert.equal(render(status).querySelector(".save-status-label").textContent, status.label);
     assert.equal(render(status).querySelector("svg"), null);
   }
+});
+
+test("the pulse is a still dot under reduced motion, and nothing spins", async () => {
+  const { readFile } = await import("node:fs/promises");
+  const css = await readFile(new URL("./save-status.css", import.meta.url), "utf8");
+  const reduced = css.match(/@media \(prefers-reduced-motion: reduce\) \{([\s\S]*?)\n\}/);
+  assert.ok(reduced);
+  // The reduced-motion rule needs the pulse rule's exact selector; a shorter
+  // one loses on specificity and the dot keeps pulsing.
+  const pulsing = css.match(
+    /([^{}\n]*\.status-dot\.is-pulsing)\s*\{[^}]*animation: save-status-pulse/,
+  );
+  assert.ok(pulsing);
+  assert.ok(reduced[1].includes(`${pulsing[1].trim()} {\n    animation: none;`), reduced[1]);
+  assert.doesNotMatch(css, /spin/);
+  const source = await readFile(new URL("./SaveStatus.jsx", import.meta.url), "utf8");
+  assert.doesNotMatch(source, /LoaderCircle/);
 });
 
 test("the saving pulse changes size, never opacity", async () => {

@@ -64,6 +64,7 @@ import { SchemaNotice } from "./SchemaNotice.jsx";
 import { reloadGate } from "./build-freshness.mjs";
 import { EditorLoader } from "./editor-loader.mjs";
 import { SessionHost } from "./session-host.mjs";
+import { RETRYABLE_STATUS } from "./sync-status-machine.mjs";
 import { useStore } from "./store.mjs";
 import { CommentComposer } from "./comment-composer.mjs";
 import { focusReturnTarget } from "./focus-return.mjs";
@@ -794,7 +795,7 @@ function App() {
                   statusKey={session.statusKey}
                   compact={compactStatus}
                 />
-                {["Unsaved", "Offline", "Saved locally"].includes(session.status) && (
+                {RETRYABLE_STATUS.includes(session.statusId) && (
                   <button
                     className="subtle-button"
                     onClick={() => session.retryConnection({ retryReceipt: true })}
