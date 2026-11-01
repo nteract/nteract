@@ -2,7 +2,7 @@
 // its credentials on the host. Default is inspection. --apply creates only an
 // absent tunnel; it never adopts, rotates or overwrites one.
 //
-//   CLOUDFLARE_API_TOKEN=... node scripts/deployment/tunnel.mjs --target page9 [--apply]
+//   CLOUDFLARE_API_TOKEN=... node scripts/deployment/tunnel.mjs --target page10 [--apply]
 //
 // Cloudflare returns a tunnel's secret only to the request that sets it, so
 // creation and credential installation happen in one run:
@@ -15,6 +15,7 @@
 //
 // A tunnel that already exists passes only when the host's receipt names it.
 // Run this after `deploy.mjs install` and before `deploy.mjs publish`.
+// `deploy.mjs provision` runs it, then the DNS step, in one command.
 import { execFileSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { pathToFileURL } from "node:url";

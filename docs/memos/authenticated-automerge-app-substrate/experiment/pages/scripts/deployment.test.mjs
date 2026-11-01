@@ -498,14 +498,14 @@ function installFixture(
 function historicalInstallFixture(t, options = {}) {
   return installFixture(t, {
     ...options,
-    ...(options.target !== "page9" && { qualify: profiles.deploymentProfile }),
+    ...(options.target !== "page10" && { qualify: profiles.deploymentProfile }),
   });
 }
 
-for (const target of ["pages-next", "page3", "page4", "page5", "page6", "page7", "page8"])
+for (const target of ["pages-next", "page3", "page4", "page5", "page6", "page7", "page8", "page9"])
   test(`current installer refuses frozen ${target} before host commands or release writes`, (t) => {
     const fixture = installFixture(t, { target });
-    assert.throws(fixture.execute, /qualified only for page9/);
+    assert.throws(fixture.execute, /qualified only for page10/);
     assert.deepEqual(fixture.calls, []);
     assert.equal(fs.existsSync(fixture.local(fixture.release)), false);
     assert.equal(fs.existsSync(fixture.local(fixture.audit)), false);
@@ -1239,8 +1239,9 @@ const frozenBy = {
   page7: ["pages-next", "page3", "page4", "page5", "page6"],
   page8: ["pages-next", "page3", "page4", "page5", "page6", "page7"],
   page9: ["page7", "page8"],
+  page10: ["page7", "page8", "page9"],
 };
-for (const target of ["page7", "page8", "page9"])
+for (const target of ["page7", "page8", "page9", "page10"])
   test(`${target} rejects frozen manifests, DNS ownership and occupied resources`, async (t) => {
     const profile = profiles.deploymentProfile(target);
     assert.deepEqual(profile.frozenTargets, frozenBy[target]);
@@ -1304,8 +1305,8 @@ for (const target of ["page7", "page8", "page9"])
     }
   });
 
-test("compaction maintenance and company viewing are enabled for Page7 through Page9", (t) => {
-  for (const target of ["page6", "page7", "page8", "page9"]) {
+test("compaction maintenance and company viewing are enabled for Page7 through Page10", (t) => {
+  for (const target of ["page6", "page7", "page8", "page9", "page10"]) {
     const f = historicalInstallFixture(t, { target });
     f.execute();
     const config = JSON.parse(f.read(f.release + "/wrangler.json"));
@@ -1317,40 +1318,47 @@ test("compaction maintenance and company viewing are enabled for Page7 through P
     );
     assert.equal(
       config.vars.PAGES_CATALOG_INDEX,
-      ["page8", "page9"].includes(target) ? "1" : undefined,
+      ["page8", "page9", "page10"].includes(target) ? "1" : undefined,
     );
   }
 });
 
-test("fresh Page9 installation owns its origin, storage, runtime and service", (t) => {
-  const target = "page9";
+test("fresh Page10 installation owns its origin, storage, runtime and service", (t) => {
+  const target = "page10";
   const profile = profiles.deploymentProfile(target);
   assert.deepEqual(profiles.selectTarget(["--target", target, "plan"]), { target, args: ["plan"] });
   assert.doesNotThrow(() => profiles.assertQualifiedDeploymentTarget(target));
   const f = installFixture(t, { target, fresh: true });
   f.execute();
   const config = JSON.parse(f.read(f.release + "/wrangler.json"));
-  assert.equal(config.vars.NOTEBOOK_CLOUD_PUBLIC_ORIGIN, "https://page9.runtimed.run");
-  assert.equal(config.vars.NOTEBOOK_CLOUD_OIDC_REDIRECT_URI, "https://page9.runtimed.run/oidc");
+  assert.equal(config.vars.NOTEBOOK_CLOUD_PUBLIC_ORIGIN, "https://page10.runtimed.run");
+  assert.equal(config.vars.NOTEBOOK_CLOUD_OIDC_REDIRECT_URI, "https://page10.runtimed.run/oidc");
   assert.equal(config.vars.PAGES_EDITOR, "wordgard");
   assert.equal(config.vars.PAGES_ASYNC_PERSISTENCE, "true");
   assert.equal(config.vars.PAGES_COMPACT_RECORDS, "true");
   assert.equal(config.vars.PAGES_COMPANY_VIEW_DOMAINS, "anaconda.com");
   assert.equal(config.vars.PAGES_CATALOG_INDEX, "1");
-  const unit = f.read("/etc/systemd/system/nteract-page9.service");
+  const unit = f.read("/etc/systemd/system/nteract-page10.service");
   assert.match(unit, /Environment=OTEL_TRACES_SAMPLER=always_on\n/);
-  assert.match(unit, /User=nteract-page9\n/);
-  assert.match(unit, /WorkingDirectory=\/var\/lib\/nteract-page9\n/);
+  assert.match(unit, /User=nteract-page10\n/);
+  assert.match(unit, /WorkingDirectory=\/var\/lib\/nteract-page10\n/);
   assert.match(
     unit,
-    /ExecStart=\/opt\/nteract-page9\/celld --bucket s3:\/\/[^ ]+\/standalone\/page9 /,
+    /ExecStart=\/opt\/nteract-page10\/celld --bucket s3:\/\/[^ ]+\/standalone\/page10 /,
   );
-  assert.match(unit, /--listen 127[.]0[.]0[.]1:9479 --internal-listen 127[.]0[.]0[.]1:19479/);
-  assert.match(unit, /firewall[.]mjs --target page9/);
+  assert.match(unit, /--listen 127[.]0[.]0[.]1:9480 --internal-listen 127[.]0[.]0[.]1:19480/);
+  // Each service starts from its own installed copy of the firewall helper and
+  // profiles, so frozen Page9 keeps the copy that qualified it.
+  assert.match(
+    unit,
+    /ExecStartPre=\+\/usr\/bin\/node \/opt\/nteract-page10\/firewall[.]mjs --target page10\n/,
+  );
+  assert.equal(f.read("/opt/nteract-page10/firewall.mjs"), "fixture firewall");
+  assert.equal(f.read("/opt/nteract-page10/profiles.mjs"), "fixture profiles");
   const prefixCheck = f.calls.find(
     ({ command, args }) => command === "/usr/local/bin/aws" && args.includes("--prefix"),
   );
-  assert.equal(prefixCheck.args[prefixCheck.args.indexOf("--prefix") + 1], "standalone/page9/");
+  assert.equal(prefixCheck.args[prefixCheck.args.indexOf("--prefix") + 1], "standalone/page10/");
   assert.ok(
     f.calls
       .filter(
