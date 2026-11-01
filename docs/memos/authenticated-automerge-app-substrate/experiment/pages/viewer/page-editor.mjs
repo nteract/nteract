@@ -20,14 +20,11 @@ export {
   caretAfterTitleChange,
   composingTitle,
   resolveTitleSelection,
-  spliceTitle,
   titleChange,
   titleInput,
   titleSnapshot,
+  writeTitle,
 } from "./title-selection.mjs";
 
 /** The heads a Trash move compares with the host's copy. */
 export const pageHeads = (doc) => A.getHeads(doc);
-
-/** Replace a Page title inside `session.change`. */
-export const setPageTitle = (doc, title) => A.updateText(doc, ["title"], title);

@@ -89,14 +89,16 @@ export function titleSplice(previous, next, caret) {
   return { index, remove: end - index, insert: next.slice(index, caret) };
 }
 
-/** A title input's edit as a splice at the revision the input showed.
- * `base` is the snapshot of what the input showed before the keystroke. A
- * peer's change can reach the document before React shows it, so the input
- * can be behind. The splice is read against the input's revision and applied
- * there (`changeAt` with `heads`), and Automerge merges it with everything
- * since: it can only delete characters the input showed, never a peer's
- * unseen text. `heads` is null when the input shows the current title.
- * Returns null when the input's value doesn't fit a single splice. */
+/** A title input's edit, written at the revision the input showed. `base`
+ * is the snapshot of what the input showed before the keystroke. A peer's
+ * change can reach the document before React shows it, so the input can be
+ * behind. The edit is read against the input's revision and applied there
+ * (`changeAt` with `heads`), and Automerge merges it with everything since:
+ * it can only delete characters the input showed, never a peer's unseen
+ * text. `heads` is null when the input shows the current title or its
+ * revision is unknown. `edit` is one splice placed by the caret, or null
+ * when the value doesn't fit one splice; the caller then diffs the shown
+ * title into the value with updateText, still at `heads`. */
 export function titleChange(doc, base, next, caret) {
   if (typeof doc?.title !== "string") return null;
   let shown = null;
@@ -108,24 +110,24 @@ export function titleChange(doc, base, next, caret) {
       /* Unknown heads: read against the current title. */
     }
   }
-  const edit = titleSplice((shown ?? doc).title, next, caret);
-  return edit && { heads: shown ? base.heads : null, edit };
+  return { heads: shown ? base.heads : null, edit: titleSplice((shown ?? doc).title, next, caret) };
 }
 
-/** Apply a titleChange splice inside a change callback. */
-export function spliceTitle(doc, edit) {
-  if (edit.remove || edit.insert) A.splice(doc, path, edit.index, edit.remove, edit.insert);
+/** Apply a titleChange inside a change callback: its splice, or a diff of
+ * the title into `value`. */
+export function writeTitle(doc, edit, value) {
+  if (!edit) A.updateText(doc, path, value);
+  else if (edit.remove || edit.insert) A.splice(doc, path, edit.index, edit.remove, edit.insert);
 }
 
-/** The caret after a title splice, in `doc`, which contains the change that
- * produced `changeHeads`. The caret sticks to the last inserted code point,
- * or for a deletion to the code point before it, wherever peers' merged text
- * put it. */
-export function caretAfterTitleChange(doc, changeHeads, edit) {
-  const end = edit.index + edit.insert.length;
-  if (end === 0) return 0;
+/** The input's caret after a title change, in `doc`, which contains the
+ * change that produced `changeHeads`. In that change's own revision the
+ * title is exactly what the input shows, so `caret` sticks to the code point
+ * before it there, and lands after it wherever peers' merged text put it. */
+export function caretAfterTitleChange(doc, changeHeads, caret) {
+  if (caret <= 0) return 0;
   const view = A.view(doc, changeHeads);
-  return stickyCaretPosition(doc, path, doc.title, stickyCaret(view, path, view.title, end));
+  return stickyCaretPosition(doc, path, doc.title, stickyCaret(view, path, view.title, caret));
 }
 
 // The title input's event lifecycle, as one transition function. An IME owns

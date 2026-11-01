@@ -7,11 +7,11 @@ import {
   caretAfterTitleChange,
   composingTitle,
   resolveTitleSelection,
-  spliceTitle,
   titleChange,
   titleInput,
   titleSnapshot,
   titleSplice,
+  writeTitle,
 } from "./title-selection.mjs";
 
 const type = (doc, at, text) => A.change(doc, (d) => A.splice(d, ["title"], at, 0, text));
@@ -21,17 +21,17 @@ const remove = (doc, at, count) => A.change(doc, (d) => A.splice(d, ["title"], a
 // the caret after it in the merged document.
 function commit(doc, base, value, caret) {
   const plan = titleChange(doc, base, value, caret);
-  assert.ok(plan, "the value fits one splice");
+  assert.ok(plan);
   let made, next;
   if (plan.heads) {
-    const result = A.changeAt(doc, plan.heads, (d) => spliceTitle(d, plan.edit));
+    const result = A.changeAt(doc, plan.heads, (d) => writeTitle(d, plan.edit, value));
     next = result.newDoc;
     made = result.newHeads;
   } else {
-    next = A.change(doc, (d) => spliceTitle(d, plan.edit));
+    next = A.change(doc, (d) => writeTitle(d, plan.edit, value));
     made = A.getHeads(next);
   }
-  return { doc: next, caret: caretAfterTitleChange(next, made, plan.edit), plan };
+  return { doc: next, caret: caretAfterTitleChange(next, made, caret), plan };
 }
 const snapshot = (doc, caret) => titleSnapshot(doc, null, doc.title, caret);
 
@@ -142,7 +142,9 @@ test("without a usable base the edit reads against the current title", () => {
     titleChange(doc, { value: "Plan", heads: ["0".repeat(64)] }, "Plans", 5),
     expected,
   );
-  assert.equal(titleChange(doc, null, "xyz", 1), null);
+  // A value that doesn't fit one splice is a whole-title diff.
+  assert.deepEqual(titleChange(doc, null, "xyz", 1), { heads: null, edit: null });
+  assert.equal(titleChange({}, null, "xyz", 1), null);
 });
 
 test("a replacement never deletes a peer's unseen text", () => {
@@ -163,6 +165,25 @@ test("a replacement never deletes a peer's unseen text", () => {
   const append = commit(type(A.clone(shown), 2, "!"), base, "日B", 1);
   assert.equal(append.doc.title, "日B!");
   assert.equal(append.caret, 1);
+});
+
+test("an edit that fits no splice still never deletes a peer's unseen text", () => {
+  // The input shows "AB". A composition with no compositionend makes it
+  // "A日B"; a peer prepends "X"; the writer presses Home and types "Q". The
+  // next plain input commits "QA日B" with the caret at 1, which no single
+  // splice from "AB" produces.
+  const shown = A.from({ title: "AB" });
+  const base = snapshot(shown, 1);
+  const doc = type(A.clone(shown), 0, "X");
+  const plan = titleChange(doc, base, "QA日B", 1);
+  assert.equal(plan.edit, null);
+  assert.deepEqual(plan.heads, base.heads);
+  const after = commit(A.clone(doc), base, "QA日B", 1);
+  assert.ok(after.doc.title === "XQA日B" || after.doc.title === "QXA日B", after.doc.title);
+  assert.equal(after.doc.title[after.caret - 1], "Q");
+  // With unknown heads the diff runs against the current title.
+  const unknown = commit(A.clone(doc), { value: "AB", heads: ["0".repeat(64)] }, "QA日B", 1);
+  assert.equal(unknown.doc.title, "QA日B");
 });
 
 test("a stale title splice next to an emoji keeps the peer's emoji whole", () => {

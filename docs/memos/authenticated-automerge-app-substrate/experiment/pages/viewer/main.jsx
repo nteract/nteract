@@ -596,20 +596,18 @@ function App() {
   // splice, so it matches a revision again.
   function commitTitle(input, base) {
     const module = editor.module;
-    const value = input.value;
-    const plan = module.titleChange(session.doc, base, value, input.selectionStart);
-    if (!plan) {
-      session.change((doc) => module.setPageTitle(doc, value));
-    } else {
-      const made = plan.heads
-        ? session.changeAt(plan.heads, (doc) => module.spliceTitle(doc, plan.edit))
-        : (session.change((doc) => module.spliceTitle(doc, plan.edit)),
-          module.pageHeads(session.doc));
-      if (made && session.doc.title !== value) {
-        const at = module.caretAfterTitleChange(session.doc, made, plan.edit);
-        input.value = session.doc.title;
-        input.setSelectionRange(at, at);
-      }
+    const value = input.value,
+      caret = input.selectionStart;
+    const plan = module.titleChange(session.doc, base, value, caret);
+    if (!plan) return;
+    const write = (doc) => module.writeTitle(doc, plan.edit, value);
+    const made = plan.heads
+      ? session.changeAt(plan.heads, write)
+      : (session.change(write), module.pageHeads(session.doc));
+    if (made && session.doc.title !== value) {
+      const at = module.caretAfterTitleChange(session.doc, made, caret);
+      input.value = session.doc.title;
+      input.setSelectionRange(at, at);
     }
     rememberTitleSelection(input);
   }
