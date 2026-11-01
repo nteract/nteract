@@ -8,13 +8,14 @@ import { createAuthFixture } from "../../auth-fixtures.mjs";
 import {
   ACTOR_PREFIX,
   ActorAuthorship,
+  ActorPersistence,
   FRESH_MS,
   actorTransition,
   commitAuthor,
   commitFrame,
   loadActorEntries,
+  mergeActorEffects,
   observeRecordSaves,
-  persistActorEffects,
   signedIssuer,
 } from "./actor-authorship.mjs";
 import { Page } from "./index.mjs";
@@ -255,6 +256,7 @@ test("observe ignores any profile the caller supplies and reads only the issuer'
 
 test("persisted entries restore bindings and conflicts as stale until seen again", async () => {
   const storage = new Storage();
+  const persistence = new ActorPersistence(storage);
   const { state } = authorship({ [ANA_KEY]: writer(ANA), [BEN_KEY]: writer(BEN) });
   const host = "11".repeat(16),
     conflicted = "22".repeat(16);
@@ -264,7 +266,7 @@ test("persisted entries restore bindings and conflicts as stale until seen again
     [ANA_KEY, conflicted],
     [BEN_KEY, conflicted],
   ])
-    await persistActorEffects(storage, state.observe({ key, actor, now: 5 }));
+    await persistence.enqueue(state.observe({ key, actor, now: 5 }));
   await storage.put(`${ACTOR_PREFIX}${"33".repeat(16)}`, { key: "not a key" });
   await storage.put(`${ACTOR_PREFIX}NOT-HEX`, { host: true });
   const entries = await loadActorEntries(storage);
@@ -284,7 +286,7 @@ test("persisted entries restore bindings and conflicts as stale until seen again
   ]);
   assert.equal(restored.observe({ key: ANA_KEY, actor: conflicted, now: 1 }).delta, null);
   // Eviction deletes the persisted entry.
-  await persistActorEffects(storage, { put: [], remove: [ACTOR] });
+  await persistence.enqueue({ put: [], remove: [ACTOR] });
   assert.equal(await storage.get(`${ACTOR_PREFIX}${ACTOR}`), undefined);
 });
 
@@ -329,6 +331,147 @@ class Storage {
   async sync() {}
 }
 
+const H = (n) => n.toString(16).padStart(2, "0").repeat(32);
+
+test("change hashes are attested only from the attested signer's own commits", () => {
+  const { state, bindings } = authorship({
+    [ANA_KEY]: writer(ANA),
+    [BEN_KEY]: writer(BEN),
+    reader: writer(BEN, { writer: false }),
+  });
+  const first = state.observe({ key: ANA_KEY, actor: ACTOR, hash: H(1), now: 0 });
+  assert.deepEqual(first.attested, { [H(1)]: ACTOR });
+  assert.deepEqual(state.observe({ key: ANA_KEY, actor: ACTOR, hash: H(2), now: 1 }).attested, {
+    [H(2)]: ACTOR,
+  });
+  assert.equal(
+    state.observe({ key: ANA_KEY, actor: ACTOR, hash: H(2), now: 2 }).attested,
+    undefined,
+    "a fresh hash is announced once",
+  );
+  // Host-signed, unattested and other actors' hashes are never attested.
+  assert.equal(
+    state.observe({ key: SERVER, actor: "11".repeat(16), hash: H(3), now: 2 }).attested,
+    undefined,
+  );
+  assert.equal(
+    state.observe({ key: "reader", actor: "22".repeat(16), hash: H(4), now: 2 }).attested,
+    undefined,
+  );
+  state.observe({ key: BEN_KEY, actor: "33".repeat(16), hash: H(5), now: 2 });
+  assert.deepEqual(state.attestedChanges(2), {
+    [H(1)]: ACTOR,
+    [H(2)]: ACTOR,
+    [H(5)]: "33".repeat(16),
+  });
+  // Stale hashes and revoked signers are not served.
+  assert.deepEqual(Object.keys(state.attestedChanges(FRESH_MS + 1)), [H(2), H(5)]);
+  bindings.set(BEN_KEY, writer(BEN, { revoked: true }));
+  assert.deepEqual(state.attestedChanges(2), { [H(1)]: ACTOR, [H(2)]: ACTOR });
+  // A conflict drops every hash attested to the actor and attests nothing.
+  const conflict = state.observe({ key: SERVER, actor: ACTOR, hash: H(6), now: 3 });
+  assert.deepEqual(conflict.delta, { [ACTOR]: null });
+  assert.equal(conflict.attested, undefined);
+  assert.equal(
+    [...state.changes.values()].some((change) => change.actor === ACTOR),
+    false,
+  );
+  assert.deepEqual(state.attestedChanges(3), {});
+});
+
+test("attested hashes keep the newest maxChanges and leave with an evicted actor", () => {
+  const { state } = authorship({ [ANA_KEY]: writer(ANA) }, { max: 2, maxChanges: 3 });
+  for (let n = 1; n <= 4; n++) state.observe({ key: ANA_KEY, actor: nth(1), hash: H(n), now: n });
+  assert.deepEqual([...state.changes.keys()], [H(2), H(3), H(4)]);
+  state.observe({ key: ANA_KEY, actor: nth(2), hash: H(9), now: 5 });
+  // nth(1) goes idle and gives way to nth(3); its hashes go with it.
+  const effects = state.observe({ key: ANA_KEY, actor: nth(3), now: FRESH_MS + 5 });
+  assert.deepEqual(effects.remove, [nth(1)]);
+  assert.deepEqual([...state.changes.keys()], [H(9)]);
+});
+
+test("pending actor writes merge: later wins, but a conflict outlives a later binding", () => {
+  const pending = new Map();
+  mergeActorEffects(pending, { put: [[ACTOR, { conflict: true }]] });
+  mergeActorEffects(pending, { put: [[ACTOR, { key: ANA_KEY, ...ANA, firstSeen: 1 }]] });
+  assert.deepEqual(pending.get(ACTOR), { conflict: true });
+  mergeActorEffects(pending, { remove: [ACTOR] });
+  assert.equal(pending.get(ACTOR), null);
+  mergeActorEffects(pending, { put: [[ACTOR, { host: true }]] });
+  assert.deepEqual(pending.get(ACTOR), { host: true });
+});
+
+class FlakyStorage extends Storage {
+  failures = 0;
+  transactions = [];
+  async transaction(callback) {
+    const writes = [];
+    const txn = {
+      put: async (entries) => writes.push(["put", Object.keys(entries).sort()]),
+      delete: async (key) => writes.push(["delete", key]),
+    };
+    await callback(txn);
+    if (this.failures > 0) {
+      this.failures--;
+      throw Error("storage unavailable");
+    }
+    this.transactions.push(writes);
+    // Commit only after the whole callback succeeded.
+    const real = new Storage();
+    real.values = this.values;
+    await callback(real);
+  }
+}
+
+test("a failed actor write stays pending, retries with the next one, and commits atomically", async () => {
+  const storage = new FlakyStorage();
+  const persistence = new ActorPersistence(storage);
+  const { state } = authorship({ [ANA_KEY]: writer(ANA), [BEN_KEY]: writer(BEN) }, { max: 1 });
+  storage.failures = 1;
+  state.observe({ key: ANA_KEY, actor: nth(1), now: 0 });
+  // The conflict write fails: it must not be lost.
+  const conflict = state.observe({ key: BEN_KEY, actor: nth(1), now: 1 });
+  await assert.rejects(persistence.enqueue(conflict), /storage unavailable/);
+  assert.deepEqual(persistence.pending.get(nth(1)), { conflict: true });
+  assert.deepEqual(await loadActorEntries(storage), []);
+  // An eviction's put and remove land in one transaction with the retry.
+  const eviction = state.observe({ key: ANA_KEY, actor: nth(2), now: FRESH_MS + 2 });
+  assert.deepEqual(eviction.remove, [nth(1)]);
+  await persistence.enqueue(eviction);
+  assert.deepEqual(storage.transactions, [
+    [
+      ["put", [`${ACTOR_PREFIX}${nth(2)}`]],
+      ["delete", `${ACTOR_PREFIX}${nth(1)}`],
+    ],
+  ]);
+  assert.equal(persistence.pending.size, 0);
+  assert.deepEqual(
+    (await loadActorEntries(storage)).map(([actor]) => actor),
+    [nth(2)],
+  );
+});
+
+test("a restart after a conflict whose first write failed restores the conflict", async () => {
+  const storage = new FlakyStorage();
+  const persistence = new ActorPersistence(storage);
+  const { state } = authorship({ [ANA_KEY]: writer(ANA), [BEN_KEY]: writer(BEN) });
+  await persistence.enqueue(state.observe({ key: ANA_KEY, actor: ACTOR, now: 0 }));
+  storage.failures = 1;
+  await assert.rejects(
+    persistence.enqueue(state.observe({ key: BEN_KEY, actor: ACTOR, now: 1 })),
+    /storage unavailable/,
+  );
+  // Any later write carries the pending conflict.
+  await persistence.enqueue(state.observe({ key: ANA_KEY, actor: nth(9), now: 2 }));
+  const { state: restored } = authorship(
+    { [ANA_KEY]: writer(ANA), [BEN_KEY]: writer(BEN) },
+    { entries: await loadActorEntries(storage) },
+  );
+  assert.equal(restored.actors.get(ACTOR).conflict, true);
+  assert.equal(restored.observe({ key: ANA_KEY, actor: ACTOR, now: FRESH_MS + 3 }).delta, null);
+  assert.deepEqual(restored.profiles(FRESH_MS + 3), {});
+});
+
 /** A real native commit record for one Automerge change, signed by `seed`:
  * a peer imports the change and saves it through its own storage bridge. */
 async function signedCommit(seed, change, store = new MemoryByteStore()) {
@@ -360,6 +503,7 @@ test("a stored commit record names its signer key and Automerge actor", async ()
   assert.deepEqual(commitAuthor(record.path, record.value), {
     key: record.key,
     actor: ACTOR,
+    hash: A.decodeChange(rootChange(ACTOR)).hash,
   });
   const frame = commitFrame(record.value);
   assert.equal(frame.key, A.decodeChange(rootChange(ACTOR)).hash);
@@ -421,19 +565,24 @@ test("an observed store reports saves after they resolve and never fails them", 
       if (author) authors.push(author);
     }),
   );
-  assert.deepEqual(authors, [{ key: record.key, actor: ACTOR }]);
+  assert.deepEqual(authors, [
+    { key: record.key, actor: ACTOR, hash: A.decodeChange(rootChange(ACTOR)).hash },
+  ]);
 });
 
-test("a browser writer's synced change is attested; the host's own edit is not", async () => {
+test("a browser writer's synced commits are attested by hash; fragments and host edits are not", async () => {
   const bindings = new Map();
   const deltas = [];
+  const announced = {};
   let state;
+  const serverStore = new MemoryByteStore();
   const server = createPeer({
     seed: new Uint8Array(32).fill(51),
-    storage: observeRecordSaves(new MemoryByteStore(), (key, value) => {
+    storage: observeRecordSaves(serverStore, (key, value) => {
       const author = commitAuthor(key, value);
       const effects = author && state.observe({ ...author, now: Date.now() });
       if (effects?.delta) deltas.push(effects.delta);
+      Object.assign(announced, effects?.attested);
     }),
   });
   const browser = createPeer({ seed: new Uint8Array(32).fill(52) });
@@ -460,6 +609,27 @@ test("a browser writer's synced change is attested; the host's own edit is not",
     await eventually(() => state.actors.has(browserActor));
     assert.deepEqual(deltas[0], { [browserActor]: ANA });
     assert.deepEqual(state.profiles(Date.now()), { [browserActor]: ANA });
+    await eventually(() => A.getHeads(hosted.doc()).join() === A.getHeads(local.doc()).join());
+    // Every browser change the host stored as its own commit record is
+    // attested by hash, and only those.
+    const keys = await serverStore.list("");
+    const browserHashes = A.getAllChanges(local.doc())
+      .map((change) => A.decodeChange(change))
+      .filter((change) => change.actor === browserActor)
+      .map((change) => change.hash);
+    const committed = browserHashes.filter((hash) =>
+      keys.some((k) => k.endsWith(`/commits/${hash}`)),
+    );
+    assert.ok(committed.length > 0);
+    assert.deepEqual(
+      Object.keys(announced).sort(),
+      [...committed].sort(),
+      "announced hashes are exactly the stored commits",
+    );
+    assert.deepEqual(
+      state.attestedChanges(Date.now()),
+      Object.fromEntries(committed.map((hash) => [hash, browserActor])),
+    );
     // The browser claims to be Ben over the ephemeral channel. The host
     // receives the claims, but attestation reads only the policy binding of
     // the key that signed each commit record: ANA's admission.
@@ -485,6 +655,31 @@ test("a browser writer's synced change is attested; the host's own edit is not",
     assert.deepEqual(state.profiles(Date.now()), { [browserActor]: ANA });
     assert.equal(state.actors.get(browserActor).key, browser.keyId);
     assert.equal(JSON.stringify(deltas).includes(BEN.principal), false);
+
+    // A change whose hash starts with a zero byte heads a fragment. It reaches
+    // the host only inside that fragment, so it is never attested by hash,
+    // even under an attested actor.
+    let fragment;
+    for (let time = 1_790_000_000; !fragment; time++) {
+      const next = A.change(A.clone(local.doc(), { actor: browserActor }), { time }, (doc) => {
+        doc.text = "inside a fragment";
+      });
+      const [head] = A.getHeads(next);
+      if (head.startsWith("00")) fragment = { hash: head, bytes: A.getLastLocalChange(next) };
+      A.free(next);
+    }
+    local.update((doc) => A.applyChanges(doc, [fragment.bytes])[0]);
+    await eventually(() => A.hasHeads(hosted.doc(), [fragment.hash]));
+    const afterFragment = await serverStore.list("");
+    assert.ok(afterFragment.some((key) => key.endsWith(`/fragments/${fragment.hash}`)));
+    assert.equal(
+      afterFragment.some((key) => key.endsWith(`/commits/${fragment.hash}`)),
+      false,
+    );
+    assert.equal(state.changes.has(fragment.hash), false);
+    assert.equal(Object.hasOwn(announced, fragment.hash), false);
+    assert.equal(Object.hasOwn(state.attestedChanges(Date.now()), fragment.hash), false);
+
     for (let n = 0; n < 3; n++)
       hosted.change((doc) => {
         doc.host = `tool ${n}`;
@@ -494,6 +689,11 @@ test("a browser writer's synced change is attested; the host's own edit is not",
     assert.equal(state.actors.get("0f".repeat(16)).host, true, "the imported base is host-signed");
     assert.deepEqual(state.profiles(Date.now()), { [browserActor]: ANA });
     assert.equal(deltas.length, 1);
+    assert.equal(
+      [...state.changes.values()].some((change) => change.actor !== browserActor),
+      false,
+      "host-signed changes are never attested",
+    );
   } finally {
     assert.deepEqual(await closePeers(peers, wires), []);
   }
@@ -558,22 +758,50 @@ test("a Page host persists, broadcasts and serves attested actors but never its 
   }
   await eventually(() => page.actorAuthorship.actors.get(hostActor)?.host === true);
   await eventually(async () => (await storage.get(`${ACTOR_PREFIX}${hostActor}`))?.host === true);
-  assert.deepEqual((await connect(page)).actorProfiles, {});
+  assert.deepEqual(
+    await connect(page).then(({ actorProfiles, attestedChanges }) => ({
+      actorProfiles,
+      attestedChanges,
+    })),
+    {
+      actorProfiles: {},
+      attestedChanges: {},
+    },
+  );
 
-  // A browser writer's commit record, as the backend would save it.
-  const anaActor = "a0".repeat(16);
+  // Browser writers' commit records, as the backend would save them. Saves in
+  // one tick go out as one broadcast.
+  const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
+  const anaActor = "a0".repeat(16),
+    benActor = "b0".repeat(16);
   const record = await signedCommit(61, rootChange(anaActor));
+  const benRecord = await signedCommit(62, rootChange(benActor));
+  const anaHash = A.decodeChange(rootChange(anaActor)).hash,
+    benHash = A.decodeChange(rootChange(benActor)).hash;
   page.policy.bindings.set(record.key, writer(ANA, { generation: 0 }));
+  page.policy.bindings.set(benRecord.key, writer(BEN, { generation: 0 }));
   const broadcasts = [];
   t.mock.method(page.handle, "broadcast", (message) => broadcasts.push(message));
   page.recordSaved(page.actorAuthorship, record.path, record.value);
-  assert.deepEqual(broadcasts, [{ kind: "actor-profiles", actorProfiles: { [anaActor]: ANA } }]);
-  assert.deepEqual((await connect(page)).actorProfiles, { [anaActor]: ANA });
+  page.recordSaved(page.actorAuthorship, benRecord.path, benRecord.value);
+  assert.deepEqual(broadcasts, [], "deltas wait for the tick");
+  await tick();
+  assert.deepEqual(broadcasts, [
+    {
+      kind: "actor-profiles",
+      actorProfiles: { [anaActor]: ANA, [benActor]: BEN },
+      attestedChanges: { [anaHash]: anaActor, [benHash]: benActor },
+    },
+  ]);
+  const snapshot = await connect(page);
+  assert.deepEqual(snapshot.actorProfiles, { [anaActor]: ANA, [benActor]: BEN });
+  assert.deepEqual(snapshot.attestedChanges, { [anaHash]: anaActor, [benHash]: benActor });
   await eventually(
     async () => (await storage.get(`${ACTOR_PREFIX}${anaActor}`))?.key === record.key,
   );
   // The same record again, while fresh, publishes nothing new.
   page.recordSaved(page.actorAuthorship, record.path, record.value);
+  await tick();
   assert.equal(broadcasts.length, 1);
   // Ephemeral claims from her browser naming Ben reach the Page's handle but
   // never change the attested profile, which comes from her key's binding.
@@ -592,16 +820,34 @@ test("a Page host persists, broadcasts and serves attested actors but never its 
     page.handle.emit("ephemeral-message", { senderId: "sender", message });
   assert.deepEqual(delivered, ["actor-profiles", "selection"]);
   page.recordSaved(page.actorAuthorship, record.path, record.value);
-  assert.deepEqual((await connect(page)).actorProfiles, { [anaActor]: ANA });
-  assert.equal(JSON.stringify(broadcasts).includes(BEN.principal), false);
-  assert.deepEqual(
-    broadcasts.filter((message) => message.kind === "actor-profiles"),
-    [{ kind: "actor-profiles", actorProfiles: { [anaActor]: ANA } }],
+  await tick();
+  assert.deepEqual((await connect(page)).actorProfiles[anaActor], ANA);
+  assert.equal(broadcasts.length, 1, "the claims publish nothing");
+
+  // A second signer on Ben's actor conflicts it: one message retracts the
+  // actor, and the snapshot drops his attested hash.
+  const forged = await signedCommit(61, rootChange(benActor));
+  page.recordSaved(page.actorAuthorship, forged.path, forged.value);
+  await tick();
+  assert.deepEqual(broadcasts.at(-1), {
+    kind: "actor-profiles",
+    actorProfiles: { [benActor]: null },
+    attestedChanges: {},
+  });
+  const afterConflict = await connect(page);
+  assert.deepEqual(afterConflict.actorProfiles, { [anaActor]: ANA });
+  assert.deepEqual(afterConflict.attestedChanges, { [anaHash]: anaActor });
+  await eventually(
+    async () => (await storage.get(`${ACTOR_PREFIX}${benActor}`))?.conflict === true,
   );
 
-  // After a restart, both bindings are restored but nothing is fresh.
+  // After a restart, bindings and the conflict are restored but nothing is
+  // fresh, and no attested hash survives.
   const restarted = await open();
   assert.equal(restarted.actorAuthorship.actors.get(hostActor).host, true);
   assert.equal(restarted.actorAuthorship.actors.get(anaActor).key, record.key);
-  assert.deepEqual((await connect(restarted)).actorProfiles, {});
+  assert.equal(restarted.actorAuthorship.actors.get(benActor).conflict, true);
+  const cold = await connect(restarted);
+  assert.deepEqual(cold.actorProfiles, {});
+  assert.deepEqual(cold.attestedChanges, {});
 });

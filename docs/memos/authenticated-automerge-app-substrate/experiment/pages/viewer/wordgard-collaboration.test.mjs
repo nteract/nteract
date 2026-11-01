@@ -50,6 +50,7 @@ function harness(doc) {
   const names = new Map();
   const changeIdentities = new Map();
   const actorProfiles = new Map();
+  const attestedChanges = new Map();
   const replica = {
     doc,
     peers: new Map(),
@@ -58,6 +59,7 @@ function harness(doc) {
     actorDisplayName: (actor) => names.get(actor) ?? "Collaborator",
     changeIdentity: (hash) => changeIdentities.get(hash) ?? null,
     actorIdentity: (actor) => actorProfiles.get(actor) ?? null,
+    attestedActor: (hash) => attestedChanges.get(hash) ?? null,
   };
   const editor = {
     hasFocus: true,
@@ -86,6 +88,7 @@ function harness(doc) {
   return {
     changeIdentities,
     actorProfiles,
+    attestedChanges,
     replica,
     editor,
     collaboration,
@@ -589,27 +592,32 @@ test("the edit underline takes the editor's caret color only from a host-atteste
   assert.equal(mark.title, "Edited by Kyle Kelley · Kilo · rich text");
 });
 
-test("a person's edit takes their caret color from the host-attested actor profile", async () => {
+test("a person's edit is named only for a change hash the host attested to its actor", async () => {
   const { presenceColor } = await import("./presence-color.mjs");
   const h = harness(fixture("Hello world"));
   const actor = "d1".repeat(16);
-  batch(h, [[actor, (d, path) => A.splice(d, path, 0, 0, "Ana says ")]]);
-  assert.deepEqual(
-    marks(h).map(({ style, title }) => ({ style, title })),
-    [{ style: null, title: "Edited by a collaborator" }],
-    "unattested actor: neutral",
-  );
+  const [hash] = batch(h, [[actor, (d, path) => A.splice(d, path, 0, 0, "Ana says ")]]);
+  const seen = () => marks(h).map(({ style, title }) => ({ style, title }));
+  const neutral = [{ style: null, title: "Edited by a collaborator" }];
+  assert.deepEqual(seen(), neutral, "unattested actor: neutral");
+  // A profile alone names nothing: this change could have reached the host
+  // inside a fragment, unchecked, under someone else's actor.
   h.actorProfiles.set(actor, { principal: "user:ana", displayName: "Ana", driver: "Browser" });
+  assert.deepEqual(seen(), neutral, "attested actor, unattested hash: neutral");
+  h.attestedChanges.set(hash, "d2".repeat(16));
+  assert.deepEqual(seen(), neutral, "a hash attested to another actor: neutral");
+  h.attestedChanges.set(hash, actor);
   // The same key as the caret: presenceColor(principal, driver).
-  assert.deepEqual(
-    marks(h).map(({ style, title }) => ({ style, title })),
-    [
-      {
-        style: `--peer-color: ${presenceColor("user:ana", "Browser").background}`,
-        title: "Edited by Ana · Browser",
-      },
-    ],
-  );
+  assert.deepEqual(seen(), [
+    {
+      style: `--peer-color: ${presenceColor("user:ana", "Browser").background}`,
+      title: "Edited by Ana · Browser",
+    },
+  ]);
+  // A retraction removes the profile and the actor's hashes.
+  h.actorProfiles.delete(actor);
+  h.attestedChanges.delete(hash);
+  assert.deepEqual(seen(), neutral);
 });
 
 test("a tool edit's change identity wins over an actor profile; the host actor stays neutral", async () => {
@@ -630,7 +638,9 @@ test("a tool edit's change identity wins over an actor profile; the host actor s
     driver: "Browser",
   });
   h.changeIdentities.set(agentEdit, { principal: "user:kyle", driver: "Kilo", agent: "rich text" });
+  h.attestedChanges.set(agentEdit, host);
   h.actorProfiles.set(person, { principal: "user:ana", displayName: "Ana", driver: "Browser" });
+  h.attestedChanges.set(personEdit, person);
   const found = marks(h);
   assert.equal(found.length, 3);
   assert.equal(
@@ -638,8 +648,9 @@ test("a tool edit's change identity wins over an actor profile; the host actor s
     `--peer-color: ${presenceColor("user:kyle", "Kilo", "rich text").background}`,
   );
   assert.equal(found[2].style, `--peer-color: ${presenceColor("user:ana", "Browser").background}`);
-  // The host never publishes its own actor: without that profile, the
+  // The host never attests its own actor's changes: even with a profile, the
   // unhinted host change is neutral.
+  assert.equal(found[1].style, null);
   h.actorProfiles.delete(host);
   const [, neutral] = marks(h);
   assert.equal(neutral.style, null);

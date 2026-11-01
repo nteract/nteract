@@ -8,6 +8,7 @@ import * as A from "@automerge/automerge";
 // An attested actor is published while its signer wrote within this window.
 export const FRESH_MS = 15 * 60 * 1000;
 export const MAX_ACTORS = 1024;
+export const MAX_ATTESTED_CHANGES = 4096;
 export const ACTOR_PREFIX = "host/actor/";
 
 // Native signed envelope: "STC\0", the issuer's Ed25519 verifying key,
@@ -55,7 +56,7 @@ export function signedIssuer(signed) {
   return hex(signed.subarray(ISSUER_START, ISSUER_END));
 }
 
-/** The signer and Automerge actor of a stored commit record, or null. Every
+/** The signer, Automerge actor and change hash of a stored commit record, or null. Every
  * part must agree: the storage path's commit id, the frame's key, and the
  * change's own hash. Anything undecodable yields no attestation. */
 export function commitAuthor(path, value) {
@@ -69,7 +70,7 @@ export function commitAuthor(path, value) {
     const change = A.decodeChange(frame.blob);
     if (change.hash !== frame.key || typeof change.actor !== "string" || !ACTOR.test(change.actor))
       return null;
-    return { key, actor: change.actor };
+    return { key, actor: change.actor, hash: change.hash };
   } catch {
     return null;
   }
@@ -184,6 +185,14 @@ function restored(value) {
 /** Actor attestations for one Page host. It performs no I/O: `observe`
  * returns the broadcast delta and the storage writes for the caller to apply.
  *
+ * A viewer names a person only for a change hash listed here: one this host
+ * read from that change's own signed commit record while its actor was
+ * attested to the record's signer. Changes that reach the host only inside
+ * fragments are never observed, so they are never listed. The recent set
+ * holds at most `maxChanges` hashes in memory, serves only those observed
+ * within FRESH_MS, and drops an actor's hashes when the actor conflicts or is
+ * evicted.
+ *
  * The map holds at most `max` actors. An entry is evictable only once it is
  * idle: its last observed record is older than FRESH_MS. Restored entries
  * load with lastSeen 0, so they start idle. A new actor takes the least
@@ -195,11 +204,20 @@ function restored(value) {
  * published profile comes from that signer's own admitted binding in
  * DocumentPolicy, never from the record or the browser. */
 export class ActorAuthorship {
-  constructor({ serverKey, binding, entries = [], max = MAX_ACTORS }) {
+  constructor({
+    serverKey,
+    binding,
+    entries = [],
+    max = MAX_ACTORS,
+    maxChanges = MAX_ATTESTED_CHANGES,
+  }) {
     this.serverKey = serverKey;
     this.binding = binding;
     this.max = max;
+    this.maxChanges = maxChanges;
     this.actors = new Map();
+    // Change hash -> { actor, seenAt }, oldest first.
+    this.changes = new Map();
     for (const [actor, value] of entries) {
       if (this.actors.size >= this.max) break;
       const entry = ACTOR.test(actor) ? restored(value) : null;
@@ -214,7 +232,15 @@ export class ActorAuthorship {
     return undefined;
   }
 
-  observe({ key, actor, now }) {
+  forgetChanges(actor) {
+    for (const [hash, change] of this.changes)
+      if (change.actor === actor) this.changes.delete(hash);
+  }
+
+  /** One stored commit record's signer `key`, change `actor` and change
+   * `hash`. Profiles are never an input: they come from `binding(key)`. When
+   * the change is newly attested, `attested` is `{ [hash]: actor }`. */
+  observe({ key, actor, hash, now }) {
     const current = this.actors.get(actor);
     const { entry, delta, persist } = actorTransition(current, {
       key,
@@ -231,11 +257,26 @@ export class ActorAuthorship {
       // unbind a live actor.
       if (idle === undefined) return unchanged;
       this.actors.delete(idle);
+      this.forgetChanges(idle);
       remove.push(idle);
     }
     // Reinsertion keeps Map order least-recently-seen first.
     this.actors.delete(actor);
     this.actors.set(actor, entry);
+    if (entry.conflict) this.forgetChanges(actor);
+    const recorded =
+      typeof hash === "string" && !entry.conflict && !entry.host && entry.key === key;
+    const known = recorded ? this.changes.get(hash) : undefined;
+    const repeated = known?.actor === actor && now - known.seenAt <= FRESH_MS;
+    if (recorded) {
+      this.changes.delete(hash);
+      this.changes.set(hash, { actor, seenAt: now });
+      while (this.changes.size > this.maxChanges)
+        this.changes.delete(this.changes.keys().next().value);
+    }
+    // A hash is announced once while fresh. A revoked signer's changes stay
+    // recorded but are not announced.
+    const attested = recorded && !repeated && publishable(this.binding(key));
     return {
       delta:
         delta === "publish"
@@ -245,6 +286,7 @@ export class ActorAuthorship {
             : null,
       put: persist ? [[actor, stored(entry)]] : [],
       remove,
+      ...(attested && { attested: { [hash]: actor } }),
     };
   }
 
@@ -256,6 +298,14 @@ export class ActorAuthorship {
       if (!publishable(this.binding(entry.key))) continue;
       result[actor] = profileOf(entry);
     }
+    return result;
+  }
+
+  /** Attested change hashes seen within FRESH_MS whose actor is published. */
+  attestedChanges(now, profiles = this.profiles(now)) {
+    const result = {};
+    for (const [hash, { actor, seenAt }] of this.changes)
+      if (now - seenAt <= FRESH_MS && Object.hasOwn(profiles, actor)) result[hash] = actor;
     return result;
   }
 }
@@ -276,11 +326,59 @@ export async function loadActorEntries(storage) {
   return entries;
 }
 
-/** Apply `observe`'s storage writes. */
-export async function persistActorEffects(storage, { put, remove }) {
-  if (put.length)
-    await storage.put(
-      Object.fromEntries(put.map(([actor, value]) => [ACTOR_PREFIX + actor, value])),
-    );
-  for (const actor of remove) await storage.delete(ACTOR_PREFIX + actor);
+/** Merge one effect into pending actor writes: value to put, or null to
+ * delete. A later effect for an actor wins, except that a pending conflict is
+ * never replaced by a put of a non-conflict entry. */
+export function mergeActorEffects(pending, { put = [], remove = [] }) {
+  for (const [actor, value] of put)
+    if (!(pending.get(actor)?.conflict && !value.conflict)) pending.set(actor, value);
+  for (const actor of remove) pending.set(actor, null);
+  return pending;
+}
+
+/** One storage step for a batch of actor writes. In a transaction the puts
+ * and deletes commit together. Without one they are issued back to back with
+ * no await between them, so Durable Object storage coalesces them into one
+ * atomic write. */
+export function writeActorBatch(storage, batch) {
+  const apply = (target) => {
+    const puts = {};
+    const deletes = [];
+    for (const [actor, value] of batch)
+      if (value === null) deletes.push(ACTOR_PREFIX + actor);
+      else puts[ACTOR_PREFIX + actor] = value;
+    return Promise.all([
+      ...(Object.keys(puts).length ? [target.put(puts)] : []),
+      ...deletes.map((key) => target.delete(key)),
+    ]);
+  };
+  if (typeof storage.transaction === "function") return storage.transaction(apply);
+  return apply(storage);
+}
+
+/** Serialized actor persistence. Each `enqueue` merges its effects into the
+ * pending set and queues one write of everything pending. A failed write
+ * leaves its entries pending, so the next write retries them. */
+export class ActorPersistence {
+  constructor(storage) {
+    this.storage = storage;
+    this.pending = new Map();
+    this.tail = Promise.resolve();
+  }
+
+  enqueue(effects) {
+    mergeActorEffects(this.pending, effects);
+    const run = this.tail.then(() => this.write());
+    this.tail = run.catch(() => {});
+    return run;
+  }
+
+  async write() {
+    if (!this.pending.size) return;
+    const batch = new Map(this.pending);
+    await writeActorBatch(this.storage, batch);
+    // Entries merged while this write ran stay pending for the next one.
+    for (const [actor, value] of batch)
+      if (this.pending.get(actor) === value) this.pending.delete(actor);
+  }
 }

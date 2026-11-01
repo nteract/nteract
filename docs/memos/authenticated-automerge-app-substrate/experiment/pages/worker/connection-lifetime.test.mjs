@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import * as N from "@automerge/subduction";
+import { ActorAuthorship } from "./actor-authorship.mjs";
 import { Page } from "./index.mjs";
 import { DocumentPolicy, PermissionDenied } from "./policy.mjs";
 
@@ -487,6 +488,34 @@ test("twenty member wires preserve four owner connections under the global cap",
   await Promise.all(f.backgrounds);
   assert.equal(f.page.wires.size, 0);
   assert.equal(f.page.wirePrincipals.size, 0);
+});
+
+test("a subscribed socket receives the actor snapshot, with attestations after discovery", async (t) => {
+  const f = fixture(t);
+  // /api/connect already answered; this socket is not yet subscribed.
+  const ana = { principal: "user:ana", displayName: "Ana", driver: "Browser" };
+  const actor = "a0".repeat(16),
+    hash = "c1".repeat(32);
+  f.page.actorAuthorship = new ActorAuthorship({
+    serverKey: "5e".repeat(32),
+    binding: () => ({ ...ana, writer: true, pending: false, revoked: false }),
+  });
+  f.page.actorAuthorship.observe({ key: "a1".repeat(32), actor, hash, now: Date.now() });
+  await drain();
+  assert.deepEqual(f.events, [
+    "peer.free",
+    "bind",
+    "admitted",
+    "broadcast",
+    "broadcast",
+    "transport.free",
+  ]);
+  assert.deepEqual(f.broadcasts.at(-1), {
+    kind: "actor-profiles",
+    actorProfiles: { [actor]: ana },
+    attestedChanges: { [hash]: actor },
+    snapshot: true,
+  });
 });
 
 test("disconnect broadcasts the remaining presence roster after releasing its lease", async (t) => {

@@ -364,12 +364,18 @@ export function createWordgardCollaboration({
         if (from === null || to === null) continue;
         // The underline takes the editor's own caret color when the host
         // attests who they are; otherwise the neutral edit color. A tool
-        // edit's change hash names its agent. A person's actor names them
-        // through the host's actor profiles, colored like their caret. The
-        // host never publishes its own shared actor, so agents' edits are
+        // edit's change hash names its agent. A person is named only for a
+        // change hash the host attested from that change's own signed commit
+        // record, to the actor that change carries; their profile is colored
+        // like their caret. A change that reached the host only inside a
+        // fragment has no attested hash and stays neutral, whatever its actor.
+        // The host never publishes its own shared actor, so agents' edits are
         // never named by actor.
         const tool = mark.hash ? replica.changeIdentity?.(mark.hash) : null;
-        const person = !tool && mark.actor ? replica.actorIdentity?.(mark.actor) : null;
+        const person =
+          !tool && mark.hash && mark.actor && replica.attestedActor?.(mark.hash) === mark.actor
+            ? replica.actorIdentity?.(mark.actor)
+            : null;
         const who = tool ?? person;
         const color = tool
           ? presenceColor(tool.principal, tool.driver, tool.agent, tool.session)

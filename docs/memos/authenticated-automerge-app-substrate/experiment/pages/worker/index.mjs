@@ -59,7 +59,7 @@ import {
   commitAuthor,
   loadActorEntries,
   observeRecordSaves,
-  persistActorEffects,
+  ActorPersistence,
 } from "./actor-authorship.mjs";
 export { PageRecords } from "./record-persistence.mjs";
 import {
@@ -2278,12 +2278,13 @@ export class Page {
           binding: (key) => policy.bindings.get(key),
           entries: await loadActorEntries(ctx.storage),
         });
+        const actorPersistence = new ActorPersistence(ctx.storage);
         backend = new SubductionBackend({
           signer,
           // Only the backend's saves attest authors; maintenance and flushes
           // use recordStore itself.
           storage: observeRecordSaves(recordStore, (key, value) =>
-            this.recordSaved(actorAuthorship, key, value),
+            this.recordSaved(actorAuthorship, key, value, actorPersistence),
           ),
           policy: policy.native(),
           ephemeralPolicy: policy.ephemeral(),
@@ -2302,6 +2303,7 @@ export class Page {
           repo,
           recordStore,
           actorAuthorship,
+          actorPersistence,
         });
         this.recordMaintenance = new RecordMaintenance({
           enabled:
@@ -2414,18 +2416,68 @@ export class Page {
   }
 
   /** Attest the author of a commit record the backend just stored. Storage
-   * and broadcast run after the save and never fail it. */
-  recordSaved(actorAuthorship, key, value) {
+   * and broadcast run after the save and never fail it. Actor writes go
+   * through one serialized queue, held past the request that triggered them. */
+  recordSaved(actorAuthorship, key, value, persistence = this.actorPersistence) {
     const author = commitAuthor(key, value);
     if (!author) return;
     const effects = actorAuthorship.observe({ ...author, now: Date.now() });
-    if (effects.put.length || effects.remove.length)
-      persistActorEffects(this.ctx.storage, effects).catch((error) =>
-        logFailure(error, "actor-authorship"),
-      );
-    if (!effects.delta || !this.handle) return;
+    if (persistence && (effects.put.length || effects.remove.length)) {
+      const work = persistence.enqueue(effects);
+      holdUntilSettled(this.ctx, work);
+      work.catch((error) => logFailure(error, "actor-authorship"));
+    }
+    if (effects.delta || effects.attested)
+      this.queueActorDelta(effects.delta ?? {}, effects.attested ?? {});
+  }
+
+  /** Coalesce actor deltas into one broadcast per microtask, so a batch of
+   * saves reported together goes out once. It uses no timer: under celld a
+   * timer set from a native save callback did not fire. A retraction drops
+   * that actor's pending hashes, so no hash outlives its actor's retraction. */
+  queueActorDelta(actorProfiles, attestedChanges) {
+    const pending = (this.actorDelta ??= { actorProfiles: {}, attestedChanges: {} });
+    for (const [actor, profile] of Object.entries(actorProfiles)) {
+      pending.actorProfiles[actor] = profile;
+      if (profile === null)
+        for (const [hash, owner] of Object.entries(pending.attestedChanges))
+          if (owner === actor) delete pending.attestedChanges[hash];
+    }
+    Object.assign(pending.attestedChanges, attestedChanges);
+    if (this.actorDeltaQueued) return;
+    this.actorDeltaQueued = true;
+    queueMicrotask(() => this.flushActorDelta());
+  }
+
+  flushActorDelta() {
+    this.actorDeltaQueued = false;
+    const delta = this.actorDelta;
+    this.actorDelta = undefined;
+    if (!delta || !this.handle) return;
     try {
-      this.handle.broadcast({ kind: "actor-profiles", actorProfiles: effects.delta });
+      this.handle.broadcast({ kind: "actor-profiles", ...delta });
+    } catch (error) {
+      logFailure(error, "actor-profiles");
+    }
+  }
+
+  /** Attested actors and their recent attested change hashes, now. */
+  actorSnapshot() {
+    const now = Date.now();
+    const actorProfiles = this.actorAuthorship?.profiles(now) ?? {};
+    return {
+      actorProfiles,
+      attestedChanges: this.actorAuthorship?.attestedChanges(now, actorProfiles) ?? {},
+    };
+  }
+
+  /** Resend the whole snapshot once a socket subscribes: an attestation made
+   * after its /api/connect response reached only earlier subscribers. */
+  broadcastActorSnapshot() {
+    if (!this.handle || !this.actorAuthorship) return;
+    this.flushActorDelta();
+    try {
+      this.handle.broadcast({ kind: "actor-profiles", ...this.actorSnapshot(), snapshot: true });
     } catch (error) {
       logFailure(error, "actor-profiles");
     }
@@ -2865,7 +2917,7 @@ export class Page {
           }),
           ...(state === "trashed" && { trash: publicTrash(this.metadata) }),
           peerProfiles: this.profiles(),
-          actorProfiles: this.actorAuthorship?.profiles(Date.now()) ?? {},
+          ...this.actorSnapshot(),
           activity: this.activityState().snapshot(),
         });
       }
@@ -3699,6 +3751,7 @@ export class Page {
           }
           this.broadcastProfiles();
           this.broadcastActivity();
+          this.broadcastActorSnapshot();
         } finally {
           transport.free();
         }

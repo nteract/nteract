@@ -319,17 +319,18 @@ test("actor profiles keep the newest 1024 actors", () => {
   const actorProfiles = Object.fromEntries(
     Array.from({ length: 1030 }, (_, i) => [i.toString(16).padStart(8, "0"), ANA]),
   );
-  session.receiveActorProfiles(actorProfiles, { replace: true });
+  session.receiveActorProfiles({ actorProfiles }, { replace: true });
   assert.equal(session.actorProfiles.size, 1024);
   assert.equal(session.actorIdentity("00000000"), null);
   assert.deepEqual(session.actorIdentity((1029).toString(16).padStart(8, "0")), ANA);
 });
 
-test("each connect response replaces the actor profiles", async (t) => {
+test("each connect response replaces the actor profiles and attested changes", async (t) => {
   const session = new PageSession("fixture");
   session.credentialCanWrite = true;
   session.replicaKey = "0:writer";
   session.actorProfiles = new Map([["ee".repeat(16), ANA]]);
+  session.attestedChanges = new Map([["e1".repeat(32), "ee".repeat(16)]]);
   const locationBefore = Object.getOwnPropertyDescriptor(globalThis, "location");
   Object.defineProperty(globalThis, "location", {
     configurable: true,
@@ -350,6 +351,7 @@ test("each connect response replaces the actor profiles", async (t) => {
       serverSenderId: "host",
       peerProfiles: {},
       actorProfiles: { [actor]: ANA, ["cd".repeat(16)]: { principal: 1 } },
+      attestedChanges: { ["a1".repeat(32)]: actor, ["bad"]: actor },
       activity: activityMessage(),
     }),
   );
@@ -365,6 +367,63 @@ test("each connect response replaces the actor profiles", async (t) => {
   await assert.rejects(session.openConnection(false), { status: 409 });
   assert.deepEqual([...session.actorProfiles.keys()], [actor]);
   assert.deepEqual(session.actorIdentity(actor), ANA);
+  assert.deepEqual([...session.attestedChanges], [["a1".repeat(32), actor]]);
+});
+
+test("attested changes come only from the host; snapshots replace and retractions clear them", () => {
+  const session = new PageSession("fixture");
+  session.connection = { serverSenderId: "verified-host" };
+  const actor = "ab".repeat(16),
+    other = "cd".repeat(16);
+  const hash = "a1".repeat(32),
+    later = "a2".repeat(32),
+    otherHash = "c1".repeat(32);
+  const send = (message, senderId = "verified-host") =>
+    session.ephemeral({ senderId, message: { kind: "actor-profiles", ...message } });
+  send({ actorProfiles: { [actor]: ANA }, attestedChanges: { [hash]: actor } }, "peer");
+  assert.equal(session.attestedActor(hash), null, "a peer cannot attest a change");
+  send({
+    actorProfiles: { [actor]: ANA, [other]: ANA },
+    attestedChanges: {
+      [hash]: actor,
+      [otherHash]: other,
+      ["A1".repeat(32)]: actor,
+      ["a1".repeat(31)]: actor,
+      ["a3".repeat(32)]: "NOT-HEX",
+      ["a4".repeat(32)]: 7,
+    },
+  });
+  assert.equal(session.attestedActor(hash), actor);
+  assert.equal(session.attestedChanges.size, 2);
+  // A retraction removes the actor and every hash attested to it, even one
+  // arriving in the same message.
+  send({ actorProfiles: { [actor]: null }, attestedChanges: { [later]: actor } });
+  assert.equal(session.actorIdentity(actor), null);
+  assert.equal(session.attestedActor(hash), null);
+  assert.equal(session.attestedActor(later), null);
+  assert.equal(session.attestedActor(otherHash), other);
+  // A host snapshot after subscription replaces both maps; a peer's can't.
+  const snapshot = {
+    actorProfiles: { [actor]: ANA },
+    attestedChanges: { [later]: actor },
+    snapshot: true,
+  };
+  send(snapshot, "peer");
+  assert.equal(session.attestedActor(otherHash), other);
+  send(snapshot);
+  assert.deepEqual([...session.actorProfiles.keys()], [actor]);
+  assert.deepEqual([...session.attestedChanges], [[later, actor]]);
+});
+
+test("attested changes keep the newest 4096 hashes", () => {
+  const session = new PageSession("fixture");
+  const attestedChanges = Object.fromEntries(
+    Array.from({ length: 4100 }, (_, i) => [i.toString(16).padStart(64, "0"), "ab"]),
+  );
+  session.receiveActorProfiles({ attestedChanges }, { replace: true });
+  assert.equal(session.attestedChanges.size, 4096);
+  assert.equal(session.attestedActor("0".repeat(64)), null);
+  assert.equal(session.attestedActor((4099).toString(16).padStart(64, "0")), "ab");
 });
 
 test("presence rejects malformed causal heads and ignores claimed display identity", () => {
