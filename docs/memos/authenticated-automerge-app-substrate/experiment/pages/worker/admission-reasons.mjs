@@ -27,6 +27,8 @@ export const ADMISSION_REASONS = Object.freeze({
   // A receipt for edits the native gate refused: the tab's declared build
   // lacks a feature the Page is stamped with.
   schema_unsupported: "schema_unsupported",
+  // The host is converting the Page's preserved Markdown blocks.
+  preserved_markdown_converting: "temporarily_unavailable",
   // Native signing-key admission after the WebSocket upgrade.
   native_handshake_failed: "temporarily_unavailable",
   native_admission_cancelled: "temporarily_unavailable",

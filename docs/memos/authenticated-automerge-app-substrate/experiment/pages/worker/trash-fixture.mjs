@@ -166,6 +166,7 @@ export async function fixture(t, { env: extraEnv = {}, auth: shared, docBytes } 
       storage,
       metadata: () => instance.metadata,
       serverKey,
+      writeFence: () => instance.conversionWriteFence(),
     });
     return instance;
   };

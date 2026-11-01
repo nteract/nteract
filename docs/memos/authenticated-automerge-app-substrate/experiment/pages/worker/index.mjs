@@ -29,6 +29,12 @@ import {
 } from "../model/schema-features.mjs";
 import { unsupportedMarkdown, unsupportedMarkdownError } from "../model/richtext.mjs";
 import { convertPreservedBlocks, hasPreservedBlocks } from "../model/raw-migration.mjs";
+import {
+  conversionFenceError,
+  conversionFenced,
+  conversionRetryDelay,
+  preservedConversionMachine,
+} from "./preserved-conversion.mjs";
 import { readTargets, writeTargets } from "../model/agent-presence.mjs";
 import { BACKEND_LIMITS, assertDocumentLimits, assertIntentSize } from "../model/limits.mjs";
 import { handleMcp } from "../mcp.mjs";
@@ -2356,54 +2362,112 @@ export class Page {
     await this.convertPreservedMarkdown();
   }
 
-  /** Replace the Page's preserved Markdown blocks with native rich text. The
-   * host is the only writer of this conversion (see model/raw-migration.mjs).
-   * Runs one at a time: each run reads the document after the previous one
-   * applied, so two triggers never convert the same block twice. Each run is
-   * a journaled host intent keyed by the heads it converted, so a restart
-   * replays the recorded change instead of converting again. A failure leaves
-   * the blocks read-only until the next load. */
-  convertPreservedMarkdown() {
-    const run = (this.preservedConversion ?? Promise.resolve()).then(() =>
-      this.convertPreservedOnce(),
-    );
-    this.preservedConversion = run;
-    return run;
+  /** Replace the Page's preserved Markdown blocks with native rich text, and
+   * hold the write fence until that's done (worker/preserved-conversion.mjs).
+   * The host is the only writer of this conversion (model/raw-migration.mjs).
+   * Resolves when no run is in flight. A failed run leaves the Page fenced,
+   * read-only, with a scheduled retry. */
+  async convertPreservedMarkdown() {
+    this.observeConversion();
+    while (this.conversionRun) await this.conversionRun;
   }
 
+  /** The conversion machine's state; fenced until the first observation. */
+  get conversion() {
+    return this.conversionState ?? preservedConversionMachine.initial;
+  }
+
+  /** Whether peer writes are refused now. */
+  conversionFenced() {
+    return conversionFenced(this.conversion);
+  }
+
+  /** The refusal for a native put or connection while the fence is up on an
+   * active Page, or undefined. A trashed Page keeps its own rules. */
+  conversionWriteFence() {
+    return this.conversionFenced() && pageState(this.metadata) === "active"
+      ? withAdmissionReason(conversionFenceError(), "preserved_markdown_converting")
+      : undefined;
+  }
+
+  /** Feed what the host sees now into the conversion machine. Without a
+   * document there is nothing to observe, and the state stays as it is. */
+  observeConversion() {
+    const doc = typeof this.handle?.doc === "function" ? this.handle.doc() : undefined;
+    if (!doc) return;
+    const preserved = hasPreservedBlocks(doc);
+    this.conversionEvent({
+      type: "observe",
+      preserved,
+      eligible:
+        preserved &&
+        !this.recoveryBlocked &&
+        pageState(this.metadata) === "active" &&
+        !unsupportedFeatures(doc).length,
+    });
+  }
+
+  conversionEvent(event) {
+    const result = preservedConversionMachine.step(this.conversion, event);
+    this.conversionState = result.state;
+    for (const effect of result.effects) {
+      if (effect.type === "observe") this.observeConversion();
+      else if (effect.type === "scheduleRetry") {
+        clearTimeout(this.conversionRetry);
+        this.conversionRetry = setTimeout(
+          () => this.observeConversion(),
+          conversionRetryDelay(effect.attempt),
+        );
+        // Node keeps no process alive for it; a Durable Object stays resident.
+        this.conversionRetry?.unref?.();
+      } else if (effect.type === "convert") {
+        const run = this.convertPreservedOnce().then(
+          () => "succeeded",
+          (error) => {
+            logFailure(error, "preserved-markdown");
+            return "failed";
+          },
+        );
+        this.conversionRun = run.then((outcome) => {
+          this.conversionRun = undefined;
+          this.conversionEvent({ type: outcome });
+        });
+      }
+    }
+  }
+
+  /** Before an HTTP edit: while fenced, try the conversion once more, then
+   * refuse with `preserved_markdown_converting` if the fence stays. */
+  async requireConverted() {
+    if (!this.conversionFenced() && this.conversion.name !== "unchecked") return;
+    await this.convertPreservedMarkdown();
+    if (this.conversionFenced()) throw conversionFenceError();
+  }
+
+  /** One journaled conversion run. Each run is a host intent keyed by the
+   * heads it converted, so a restart replays the recorded change instead of
+   * converting again. Throws on failure. */
   async convertPreservedOnce() {
-    const doc = this.handle?.doc();
-    if (
-      !doc ||
-      this.recoveryBlocked ||
-      pageState(this.metadata) !== "active" ||
-      unsupportedFeatures(doc).length ||
-      !hasPreservedBlocks(doc)
-    )
-      return;
+    const doc = this.handle.doc();
     const heads = A.getHeads(doc).sort();
     const digest = hex(
       new Uint8Array(
         await crypto.subtle.digest("SHA-256", new TextEncoder().encode(heads.join(","))),
       ),
     );
-    try {
-      await documentMutation({
-        storage: this.ctx.storage,
-        admission: this.admission,
-        handle: this.handle,
-        operation: "convert_preserved_markdown",
-        args: {
-          idempotency_key: `pages_preserved_markdown_${digest.slice(0, 32)}`,
-          base_heads: heads,
-        },
-        identity: { principal: "service:pages", driver: "API" },
-        apply: (draft) => ({ converted: convertPreservedBlocks(draft) }),
-        flush: () => this.flush(),
-      });
-    } catch (error) {
-      logFailure(error, "preserved-markdown");
-    }
+    await documentMutation({
+      storage: this.ctx.storage,
+      admission: this.admission,
+      handle: this.handle,
+      operation: "convert_preserved_markdown",
+      args: {
+        idempotency_key: `pages_preserved_markdown_${digest.slice(0, 32)}`,
+        base_heads: heads,
+      },
+      identity: { principal: "service:pages", driver: "API" },
+      apply: (draft) => ({ converted: convertPreservedBlocks(draft) }),
+      flush: () => this.flush(),
+    });
   }
 
   initializeRepo(metadata = this.metadata) {
@@ -2433,6 +2497,8 @@ export class Page {
               : (this.policyMetadata ?? this.metadata),
           serverKey,
           schemaFeatures: () => (this.handle ? documentFeatures(this.handle.doc()) : []),
+          // Peer puts wait for the preserved-block conversion.
+          writeFence: () => this.conversionWriteFence(),
         });
         await policy.load();
         const recordStore =
@@ -3105,6 +3171,7 @@ export class Page {
         // Where this batch landed, captured inside the change so the cursors
         // name the characters it wrote. A replayed receipt has no caret.
         let caret = null;
+        await this.requireConverted();
         const receipt = await documentMutation({
           storage: this.ctx.storage,
           admission: this.admission,
@@ -3510,6 +3577,9 @@ export class Page {
         this.handle = await this.repo.import(context.intent.bytes, {
           docId: context.intent.metadata.documentId,
         });
+        // Not active yet: preserved blocks are held, fenced, until
+        // finishCreation observes again after the record is installed.
+        this.observeConversion();
         // Before its record is installed, `install` starts presence instead.
         if (this.metadata) this.observeActivity();
         return;
@@ -3778,6 +3848,16 @@ export class Page {
     const declared = new URL(request.url).searchParams.getAll("schema_features");
     const features = declared.length > 1 ? null : parseDeclaredFeatures(declared[0]);
     if (!features) throw new HttpError(400, "Invalid schema_features");
+    // No native peer joins an active Page before its preserved blocks are
+    // converted. The refusal is transient: clients back off and reconnect,
+    // and each attempt retries a failed conversion. A trashed Page keeps its
+    // own rules (the owner reads it read-only).
+    if (this.conversion.name === "unchecked") this.observeConversion();
+    const fenced = this.conversionWriteFence();
+    if (fenced) {
+      void this.convertPreservedMarkdown();
+      return refuseSocket(fenced, identity);
+    }
     const capacity = this.connectionCapacity(identity);
     if (capacity) return refuseSocket(capacity, identity);
     const pair = new WebSocketPair();

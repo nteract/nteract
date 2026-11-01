@@ -372,6 +372,7 @@ export function errorResponse(error, stage = "request") {
         "lifecycle_unsettled",
         "unsupported_schema_feature",
         "unsupported_markdown",
+        "preserved_markdown_converting",
       ].includes(error?.code) && { code: error.code }),
       ...(error?.code === "unsupported_markdown" &&
         error.details?.unsupported && {

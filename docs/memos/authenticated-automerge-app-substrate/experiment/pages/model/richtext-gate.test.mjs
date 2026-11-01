@@ -4,11 +4,13 @@ import * as A from "@automerge/automerge";
 import {
   enableRich,
   exportMarkdown,
+  nativeImportLoss,
   parseAgentMarkdown,
   parseMarkdown,
   richDoc,
   unsupportedMarkdown,
 } from "./richtext.mjs";
+import compatibility from "../../../../../../crates/nteract-rich-text/fixtures/compatibility.json" with { type: "json" };
 
 const nodeNames = (doc) => {
   const names = [];
@@ -374,4 +376,65 @@ test("a table break tag with an attribute stays literal through import and expor
   const reimported = parseAgentMarkdown(exported);
   assert.ok(!nodeNames(reimported).includes("hard_break"));
   assert.ok(reimported.eq(imported), exported);
+});
+
+test("a closed highlight doesn't make a later image count as wrapped", () => {
+  for (const source of [
+    "<mark>x</mark> ![p](i.png)",
+    '<mark data-color="pink">x</mark> and ![p](i.png)',
+    "**b** *e* ~~s~~ [l](https://x.test) ![p](i.png)",
+  ]) {
+    assert.equal(unsupportedMarkdown(source), null, source);
+    assert.ok(nodeNames(parseAgentMarkdown(source)).includes("image"), source);
+  }
+  assert.equal(unsupportedMarkdown("<mark>a ![p](i.png)</mark>")?.construct, "wrapped-image");
+});
+
+test("a link whose only content is a line break is unrepresentable", () => {
+  const source = "| a |\n| - |\n| [<br>](https://example.org) |";
+  assert.throws(
+    () => parseAgentMarkdown(source),
+    (error) => {
+      assert.equal(error.code, "unsupported_markdown");
+      assert.equal(error.details.unsupported.construct, "unrepresentable");
+      assert.equal(error.details.unsupported.line, 3);
+      return true;
+    },
+  );
+  assert.match(parseMarkdown(source).textContent, /\[<br>\]\(https:\/\/example\.org\)/);
+});
+
+// Never silent loss: over every compatibility fixture, and each one wrapped
+// in a link, a table cell and formatting, an import either keeps every link
+// destination, image and visible character natively, or keeps the whole
+// source as literal text. An agent write is refused exactly when the native
+// parse would lose something or names math or HTML.
+test("import preserves or literalizes every compatibility fixture and its wrappings", () => {
+  const squash = (text) => text.replace(/\s+/g, "");
+  const wrappings = [
+    (source) => source,
+    (source) => `[${source.replace(/\n/g, " ")}](https://example.org/w)`,
+    (source) => `| h |\n| - |\n| ${source.replace(/\n/g, "<br>").replace(/\|/g, "\\|")} |`,
+    (source) => `**${source.replace(/\n/g, " ")}**`,
+    (source) => `<mark>${source.replace(/\n/g, " ")}</mark> ![after](a.png)`,
+  ];
+  let checked = 0,
+    literal = 0;
+  for (const fixture of compatibility.fixtures) {
+    if ((fixture.kind ?? "markdown") !== "markdown") continue;
+    for (const wrap of wrappings) {
+      const source = wrap(fixture.markdown);
+      const label = `${fixture.id}: ${JSON.stringify(source).slice(0, 80)}`;
+      const loss = nativeImportLoss(source);
+      const doc = parseMarkdown(source);
+      assert.ok(!nodeNames(doc).includes("raw"), label);
+      if (loss) {
+        literal++;
+        assert.equal(squash(doc.textContent), squash(source.replace(/\r/g, "")), label);
+        assert.throws(() => parseAgentMarkdown(source), { code: "unsupported_markdown" }, label);
+      } else if (!unsupportedMarkdown(source)) assert.ok(parseAgentMarkdown(source).eq(doc), label);
+      checked++;
+    }
+  }
+  assert.ok(checked > 500 && literal > 0, `${checked} checked, ${literal} literal`);
 });

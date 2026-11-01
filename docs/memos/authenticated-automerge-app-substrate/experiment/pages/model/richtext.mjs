@@ -532,8 +532,9 @@ tokenizer.core.ruler.after("inline", "pages_lossy", (state) => {
     let depth = 0;
     const children = token.children ?? [];
     children.forEach((child, index) => {
+      // Highlight tokens have nesting 0, so each close is matched by name.
       if (marks.has(child.type)) depth++;
-      else if (child.nesting === -1 && marks.has(child.type.replace(/_close$/, "_open"))) depth--;
+      else if (marks.has(child.type.replace(/_close$/, "_open"))) depth--;
       if (child.type === "image" && depth > 0) lossy(env, "wrapped-image", find("!["));
       if (child.type === "link_open" && children[index + 1]?.type === "link_close")
         lossy(env, "empty-link", find("[]"));
@@ -1108,6 +1109,11 @@ const CONSTRUCTS = {
     name: "A link with no text",
     advice: "Give the link text, as in [text](url).",
   },
+  unrepresentable: {
+    name: "Markdown that Pages would store with content missing",
+    advice:
+      "Simplify it: give every link visible text, and keep images out of links, formatting and table line breaks.",
+  },
   math: {
     name: "Math",
     advice:
@@ -1237,7 +1243,64 @@ export function parseMarkdown(source, { kind = "markdown" } = {}) {
   const scan = scanMarkdown(text, tokens);
   if (scan.found.length) tokens = tokenizer.parse(literalize(text, scan), (env = {}));
   // Markdown that would parse to less than it says stays literal, all of it.
-  return env.pagesLossy?.length ? literalDoc(source) : parseTokens(tokens);
+  if (env.pagesLossy?.length) return literalDoc(source);
+  const doc = parseTokens(tokens);
+  return lostContent(tokens, doc) ? literalDoc(source) : doc;
+}
+
+/** What the native parse of `source` would lose, before parseMarkdown
+ * falls back to literal text: `lostContent` of that parse, or null. For
+ * tests and diagnostics. */
+export function nativeImportLoss(source) {
+  const text = normalizeSource(source);
+  let env = {};
+  let tokens = tokenizer.parse(text, env);
+  const scan = scanMarkdown(text, tokens);
+  if (scan.found.length) tokens = tokenizer.parse(literalize(text, scan), (env = {}));
+  if (env.pagesLossy?.length) return { kind: "lossy-rule" };
+  return lostContent(tokens, parseTokens(tokens));
+}
+
+/**
+ * The general preservation check, behind the specific lossy rules: what the
+ * parsed Markdown carried that the native spans don't. Compares every link
+ * href, every image src and alt, and all visible text with whitespace
+ * removed. Returns `{ kind, value }` for the first loss, or null.
+ *
+ * The specific rules name a construct for the error; this catches whatever
+ * they miss, such as a link whose only content is a line break.
+ */
+export function lostContent(tokens, doc) {
+  const carried = { text: [], links: new Set(), images: new Set() };
+  const walk = (list) => {
+    for (const token of list) {
+      if (token.type === "inline") walk(token.children ?? []);
+      else if (["text", "code_inline", "fence", "code_block"].includes(token.type))
+        carried.text.push(token.content);
+      else if (token.type === "link_open") carried.links.add(token.attrGet("href"));
+      else if (token.type === "image")
+        carried.images.add(JSON.stringify([token.attrGet("src"), imageAlt(token.children) ?? ""]));
+    }
+  };
+  walk(tokens);
+  const produced = { text: [], links: new Set(), images: new Set() };
+  for (const span of pmNodeToSpans(adapter, doc)) {
+    if (span.type === "text") {
+      produced.text.push(span.value);
+      const link = span.marks?.link;
+      if (link) produced.links.add(JSON.parse(String(link)).href);
+    } else if (String(span.value.type) === "image") {
+      const attrs = span.value.attrs ?? {};
+      produced.images.add(JSON.stringify([String(attrs.src), String(attrs.alt ?? "")]));
+    }
+  }
+  const squash = (parts) => parts.join("").replace(/\s+/g, "");
+  if (squash(carried.text) !== squash(produced.text)) return { kind: "text" };
+  for (const href of carried.links)
+    if (!produced.links.has(href)) return { kind: "link", value: href };
+  for (const image of carried.images)
+    if (!produced.images.has(image)) return { kind: "image", value: JSON.parse(image)[0] };
+  return null;
 }
 
 /** Markdown an agent wrote, as native rich text. Throws a 400
@@ -1249,7 +1312,16 @@ export function parseAgentMarkdown(source) {
   const tokens = tokenizer.parse(text, env);
   const found = firstUnsupported(text, tokens, env);
   if (found) throw unsupportedMarkdownError(found);
-  return parseTokens(tokens);
+  const doc = parseTokens(tokens);
+  const lost = lostContent(tokens, doc);
+  if (lost) {
+    // Point at the lost destination when there is one; otherwise the start.
+    const at = lost.value ? Math.max(0, text.indexOf(lost.value)) : 0;
+    throw unsupportedMarkdownError(
+      locate(text, { construct: "unrepresentable", start: at, end: at + 40 }),
+    );
+  }
+  return doc;
 }
 // The parser over tokens this module already read, so one import tokenizes
 // its source once. Synchronous: nothing else can use the parser meanwhile.

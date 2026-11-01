@@ -178,6 +178,9 @@ references; it does not publish the Page or change asset access.
   Markdown that would parse to less than it says is unsupported too: an image
   inside a link or mark, a table row with more cells than its header, a link
   with no text, and a reference definition no link uses (or a repeated label).
+  Behind those named cases is a general check: after parsing, every link href,
+  image src and alt, and all visible text (whitespace aside) must be in the
+  native spans. Anything else is `unrepresentable`.
   Strikethrough (`~~x~~`) is the `strike` mark, `---` a horizontal rule, and
   reference links resolve to ordinary links at import. Code spans, fenced and
   indented code, escaped characters, and link destinations and titles never
@@ -219,11 +222,20 @@ references; it does not publish the Page or change asset access.
     change syncs.
   - When: on load, before native connections open, after creating or
     registering a Page, and when restoring one from Trash, before access
-    reopens. Runs are serialized, and each is a journaled host
+    reopens.
+  - Fence: [`worker/preserved-conversion.mjs`](worker/preserved-conversion.mjs)
+    is the conversion's state machine (`unchecked`, `clear`, `held`,
+    `converting`, `failed`). In `held`, `converting` and `failed`, the host
+    refuses native connections to an active Page (`temporarily_unavailable`,
+    so clients back off), refuses native puts, and answers HTTP edits with
+    `503 preserved_markdown_converting` after one more attempt. A trashed
+    Page is `held`, so the fence is up before restore installs the active
+    record. A failed run keeps the fence and retries with backoff, and on
+    every refused connection or edit. Runs are serialized, and each is a journaled host
     intent keyed by the heads it converted, so a restart replays the recorded
     change instead of converting again. A Page with nothing to convert gets
     no change.
-  - Fence: the change stamps `preserved-markdown-converted`, so a build that
+  - Stamp: the change stamps `preserved-markdown-converted`, so a build that
     could still write or convert one opens the Page read-only and the host
     refuses its writes. Viewer protocol 2 retires those builds everywhere.
   - Reload: native admission sees signing keys, not records, and a reloaded
@@ -233,6 +245,10 @@ references; it does not publish the Page or change asset access.
     If it finds any, the whole replica becomes a recovery record (Download
     previous local draft), and the tab reopens on a fresh replica holding
     only history the host has. The block syncs once.
+  - Limits: the reload check runs in the browser, so it guards honest older
+    tabs, not hostile clients. An authorized writer can already delete or
+    rewrite content; the host's fence and stamp bound what a client of an
+    older build writes, not what a malicious one does.
   - Remove `nodes.raw`, `OpaqueBlock` and the conversion once no stored Page
     can hold a preserved block.
 - **Schema features:** every mark and block type that existed when Page10

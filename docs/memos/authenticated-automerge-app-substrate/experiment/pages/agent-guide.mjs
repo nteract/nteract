@@ -807,8 +807,9 @@ become ordinary links. Pages has no math and no other HTML: a write with
 $...$, $$...$$ or any other tag outside code fails with code
 unsupported_markdown, naming the construct, line and column. So does Markdown
 that would lose content: an image inside a link or formatting, a table row with
-more cells than its header, a link with no text, or a reference definition no
-link uses. Put it in a code
+more cells than its header, a link with no text, a reference definition no
+link uses, or anything else that would drop a link, image or text
+("unrepresentable"). Put it in a code
 span or code block, or escape $ as \\$ and < as \\<, then retry. Reads escape
 literal $ and < the same way, so Markdown you read is always writable.
 
@@ -901,7 +902,10 @@ succeeds. Every error has a stable code. Branch on code, not on the error messag
   can't edit (listed in unsupported_features). Read it; don't retry the edit.
 - unsupported_markdown: the Markdown has something Pages can't represent.
   unsupported gives construct ("math", "html", "wrapped-image",
-  "table-cells", "empty-link" or "definition"), line, column and excerpt.
+  "table-cells", "empty-link", "definition" or "unrepresentable"), line,
+  column and excerpt.
+- preserved_markdown_converting (503): Pages is converting Markdown an older
+  version saved on this Page. Wait a few seconds, read_page again, retry.
   Rewrite that part as code, escaped text or plain Markdown and retry with a
   new key.
 - idempotency_conflict: the key was used for a different request. Use a new key.

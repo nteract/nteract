@@ -73,12 +73,19 @@ pub fn markdown_to_spans(source: &str, options: &ImportOptions<'_>) -> Result<Ve
         next_tag: 0,
         highlight: None,
         highlighted_image: false,
+        carried: Carried::default(),
     };
     for node in &root.children {
         builder.block(node, &[], root.children.len() == 1)?;
     }
     // An image marker cannot carry a highlight, as with links and emphasis.
     if builder.highlighted_image {
+        return literal_document(original);
+    }
+    // The general check behind the specific ones: anything the Markdown
+    // carried that the spans lost keeps the whole source literal, as the
+    // JavaScript `lostContent` does.
+    if !builder.carried.preserved_in(&Carried::from_spans(&builder.spans)) {
         return literal_document(original);
     }
     validate_spans(&builder.spans)?;
@@ -671,6 +678,55 @@ struct Builder<'a> {
     /// The open highlight color while walking the current inline container.
     highlight: Option<String>,
     highlighted_image: bool,
+    /// What the visited Markdown carried, for the preservation check.
+    carried: Carried,
+}
+
+/// Visible text, link destinations and images, as read from the tree or
+/// from the produced spans.
+#[derive(Default)]
+struct Carried {
+    text: String,
+    links: std::collections::BTreeSet<String>,
+    images: std::collections::BTreeSet<(String, String)>,
+}
+
+impl Carried {
+    fn from_spans(spans: &[Span]) -> Self {
+        let mut produced = Self::default();
+        for span in spans {
+            match span {
+                Span::Text { value, marks } => {
+                    produced.text.push_str(value);
+                    if let Some(href) = marks
+                        .get("link")
+                        .and_then(Value::as_str)
+                        .and_then(|link| serde_json::from_str::<Value>(link).ok())
+                        .and_then(|link| link.get("href").and_then(Value::as_str).map(str::to_owned))
+                    {
+                        produced.links.insert(href);
+                    }
+                }
+                Span::Block { value } if value.kind == "image" => {
+                    let attr = |key: &str| {
+                        value.attrs.get(key).and_then(Value::as_str).unwrap_or("").to_owned()
+                    };
+                    produced.images.insert((attr("src"), attr("alt")));
+                }
+                Span::Block { .. } => {}
+            }
+        }
+        produced
+    }
+
+    /// Whether `produced` holds everything this carried: all visible text
+    /// with whitespace removed, every link destination and every image.
+    fn preserved_in(&self, produced: &Self) -> bool {
+        let squash = |text: &str| text.chars().filter(|c| !c.is_whitespace()).collect::<String>();
+        squash(&self.text) == squash(&produced.text)
+            && self.links.is_subset(&produced.links)
+            && self.images.is_subset(&produced.images)
+    }
 }
 
 impl Builder<'_> {
@@ -739,6 +795,7 @@ impl Builder<'_> {
                     Attributes::from([("params".into(), json!(params))]),
                     false,
                 );
+                self.carried.text.push_str(&code.value);
                 self.text(&code.value, &Marks::new());
             }
             Node::Blockquote(quote) => {
@@ -982,6 +1039,7 @@ impl Builder<'_> {
         for node in children {
             match node {
                 Node::Text(text) => {
+                    self.carried.text.push_str(&text.value);
                     let marks = self.text_marks(marks);
                     self.text(
                         &text.value.replace("\r\n", "\n").replace(['\n', '\r'], " "),
@@ -989,6 +1047,7 @@ impl Builder<'_> {
                     );
                 }
                 Node::InlineCode(code) => {
+                    self.carried.text.push_str(&code.value);
                     let mut nested = self.text_marks(marks);
                     nested.insert("code".into(), Value::Bool(true));
                     self.text(&code.value, &nested);
@@ -1024,6 +1083,7 @@ impl Builder<'_> {
                 }
                 Node::ImageReference(reference) => {
                     let (url, title) = self.definition(&reference.identifier)?;
+                    self.carried.images.insert((url.clone(), reference.alt.clone()));
                     self.highlighted_image |= self.highlight.is_some();
                     self.marker(
                         "image",
@@ -1038,12 +1098,14 @@ impl Builder<'_> {
                 }
                 Node::Image(image) => {
                     self.highlighted_image |= self.highlight.is_some();
+                    let alt = self.image_alt(image)?;
+                    self.carried.images.insert((image.url.clone(), alt.clone()));
                     self.marker(
                         "image",
                         parents,
                         Attributes::from([
                             ("src".into(), json!(image.url)),
-                            ("alt".into(), json!(self.image_alt(image)?)),
+                            ("alt".into(), json!(alt)),
                             ("title".into(), json!(image.title)),
                         ]),
                         true,
@@ -1060,6 +1122,7 @@ impl Builder<'_> {
                             self.marker("hard-break", parents, Attributes::new(), true);
                         }
                         _ => {
+                            self.carried.text.push_str(&html.value);
                             let marks = self.text_marks(marks);
                             self.text(&html.value, &marks);
                         }
@@ -1093,6 +1156,7 @@ impl Builder<'_> {
         marks: &Marks,
         in_table: bool,
     ) -> Result<()> {
+        self.carried.links.insert(url.to_owned());
         let mut nested = marks.clone();
         let value = format!("{{\"href\":{},\"title\":{}}}", json!(url), json!(title));
         nested.insert("link".into(), Value::String(value));
@@ -1239,6 +1303,75 @@ mod tests {
         ] {
             assert!(!opaque(&import(source)), "{source}");
         }
+    }
+
+    // Never silent loss: every compatibility fixture, and each one wrapped in
+    // a link, a table cell and formatting, imports with all its visible text,
+    // link destinations and images, or as the whole source in literal text.
+    #[test]
+    fn import_preserves_or_literalizes_every_fixture_and_its_wrappings() {
+        let corpus: Value =
+            serde_json::from_str(include_str!("../fixtures/compatibility.json")).unwrap();
+        let wrappings: [fn(&str) -> String; 5] = [
+            |source| source.to_owned(),
+            |source| format!("[{}](https://example.org/w)", source.replace('\n', " ")),
+            |source| {
+                format!(
+                    "| h |\n| - |\n| {} |",
+                    source.replace('\n', "<br>").replace('|', "\\|")
+                )
+            },
+            |source| format!("**{}**", source.replace('\n', " ")),
+            |source| format!("<mark>{}</mark> ![after](a.png)", source.replace('\n', " ")),
+        ];
+        let (mut checked, mut literal) = (0, 0);
+        for fixture in corpus["fixtures"].as_array().unwrap() {
+            if fixture["kind"].as_str().unwrap_or("markdown") != "markdown" {
+                continue;
+            }
+            for wrap in wrappings {
+                let source = wrap(fixture["markdown"].as_str().unwrap());
+                let spans = import(&source);
+                assert!(
+                    !spans.iter().any(|span| matches!(span, Span::Block { value } if value.kind == "pages-opaque")),
+                    "{source}"
+                );
+                if spans == literal_document(&source).unwrap() {
+                    literal += 1;
+                } else {
+                    // Independently of the builder: every inline link and
+                    // image destination the parser saw is in the spans.
+                    fn destinations(node: &Node, found: &mut Vec<String>) {
+                        match node {
+                            Node::Link(link) => found.push(link.url.clone()),
+                            Node::Image(image) => found.push(image.url.clone()),
+                            _ => {}
+                        }
+                        for child in node.children().into_iter().flatten() {
+                            destinations(child, found);
+                        }
+                    }
+                    let tree = markdown::to_mdast(&normalize(&source), &parse_options()).unwrap();
+                    let mut seen = Vec::new();
+                    destinations(&tree, &mut seen);
+                    let produced = Carried::from_spans(&spans);
+                    // A destination inside literal math stays as its text.
+                    for url in seen.iter().filter(|url| safe_url(url)) {
+                        assert!(
+                            produced.links.contains(url)
+                                || produced.images.iter().any(|(src, _)| src == url)
+                                || produced.text.contains(url.as_str()),
+                            "{source}: lost {url}"
+                        );
+                    }
+                }
+                checked += 1;
+            }
+        }
+        assert!(checked > 500 && literal > 0, "{checked} checked, {literal} literal");
+        // The case the specific rules missed.
+        let source = "| a |\n| - |\n| [<br>](https://example.org) |";
+        assert_eq!(import(source), literal_document(source).unwrap());
     }
 
     #[test]

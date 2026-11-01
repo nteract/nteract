@@ -141,6 +141,10 @@ const cases = [
     ["not-a-tag-nbsp", "<mark\u00a0>x</mark>"],
     ["not-a-tag-unspaced-attribute", "<a b='x'c>"],
     ["literal-definition-then-setext", "[r]: x\n==="],
+    ["literal-link-holding-only-a-break", "| a |\n| - |\n| [<br>](https://example.org) |"],
+    ["literal-link-holding-break-and-image", "| a |\n| - |\n| [<br>![p](i.png)](https://example.org) |"],
+    ["image-after-closed-highlight", "<mark>x</mark> ![p](i.png)"],
+    ["image-after-closed-marks", "**b** *e* ~~s~~ [l](u) ![p](i.png)"],
   ].map(([id, markdown]) => ({ id, markdown })),
   { id: "destinations-are-not-syntax", markdown: '[a](<x> "<b> $t$") and ![p](</$y$/i.png>) then $z$\n\n[r]: <x>' },
 ];

@@ -260,3 +260,134 @@ test("a preserved block whose source would lose content converts to literal text
     assert.ok(!["image", "table", "raw"].includes(node.type.name), node.type.name);
   });
 });
+
+// Cloudflare's socket globals, enough for connect() to refuse with a close.
+function socketGlobals(t) {
+  const closed = [];
+  class Socket {
+    accept() {}
+    close(code, reason) {
+      closed.push({ code, reason });
+    }
+  }
+  const globals = {
+    WebSocketPair: class {
+      constructor() {
+        this[0] = new Socket();
+        this[1] = new Socket();
+      }
+    },
+    // Node's Response refuses status 101; keep its statics for the fixture.
+    Response: class extends globalThis.Response {
+      constructor(body, options) {
+        if (options?.status === 101) {
+          super(null, { status: 200 });
+          Object.defineProperty(this, "status", { value: 101 });
+        } else super(body, options);
+      }
+    },
+  };
+  for (const [name, value] of Object.entries(globals)) {
+    const descriptor = Object.getOwnPropertyDescriptor(globalThis, name);
+    Object.defineProperty(globalThis, name, { configurable: true, writable: true, value });
+    t.after(() => {
+      if (descriptor) Object.defineProperty(globalThis, name, descriptor);
+      else delete globalThis[name];
+    });
+  }
+  return closed;
+}
+const connectAs = (f, principal) =>
+  f.page.connect(
+    new Request("http://localhost/api/sync?page=fixture", { headers: { upgrade: "websocket" } }),
+    { ...f.identity(principal), driver: "fixture-browser", credentialKind: "oidc" },
+  );
+const settle = async (predicate) => {
+  for (let i = 0; i < 200 && !predicate(); i++) await new Promise((r) => setImmediate(r));
+  assert.ok(predicate(), "condition reached");
+};
+
+async function trashedPreservedPage(t) {
+  const plain = await fixture(t);
+  const stored = preservedPage();
+  const f = await fixture(t, { auth: plain.auth, docBytes: A.save(stored) });
+  A.free(stored);
+  assert.equal((await f.catalogCall("owner", "delete_page", trashArgs(f))).status, 200);
+  await f.page.convertPreservedMarkdown();
+  assert.equal(f.page.conversion.name, "held");
+  return f;
+}
+
+test("restore keeps native writes fenced until the conversion finishes", async (t) => {
+  const closed = socketGlobals(t);
+  const f = await trashedPreservedPage(t);
+  let release;
+  const gate = new Promise((resolve) => (release = resolve));
+  f.hooks.flush = () => gate;
+  const restoring = f.catalogCall("owner", "restore_page", {
+    page_id: pageId,
+    idempotency_key: "restore-fenced",
+  });
+  // The active record is installed and the conversion is running.
+  await settle(() => f.page.conversion.name === "converting");
+  assert.equal(f.page.metadata.trash, undefined, "the record is active");
+  // A native peer can't join...
+  connectAs(f, f.owner);
+  assert.deepEqual(closed.at(-1), { code: 4503, reason: "temporarily_unavailable" });
+  // ...and a key already admitted can't write.
+  const key = "ab".repeat(32);
+  await f.bind(key, f.owner);
+  await assert.rejects(f.page.policy.put(key, key, f.page.metadata.tree), {
+    code: "preserved_markdown_converting",
+  });
+  assert.ok(hasPreservedBlocks(f.doc()));
+  release();
+  f.hooks.flush = undefined;
+  assert.equal((await restoring).status, 200);
+  assert.equal(f.page.conversion.name, "clear");
+  assert.equal(hasPreservedBlocks(f.doc()), false);
+  assert.equal(f.page.conversionWriteFence(), undefined);
+  // The fence is down: the same put is admitted.
+  await f.page.policy.put(key, key, f.page.metadata.tree);
+});
+
+test("a failed conversion keeps the fence after restore, and an edit retries it", async (t) => {
+  const closed = socketGlobals(t);
+  const f = await trashedPreservedPage(t);
+  f.hooks.flush = () => {
+    throw Error("storage unavailable");
+  };
+  const restored = await f.catalogCall("owner", "restore_page", {
+    page_id: pageId,
+    idempotency_key: "restore-failing",
+  });
+  assert.equal(restored.status, 200, JSON.stringify(restored.body));
+  assert.equal(f.page.conversion.name, "failed");
+  assert.ok(hasPreservedBlocks(f.doc()), "nothing half-written");
+  // Read-only: no native peer, and HTTP edits refuse after one more try.
+  connectAs(f, f.owner);
+  assert.deepEqual(closed.at(-1), { code: 4503, reason: "temporarily_unavailable" });
+  let edits = 0;
+  const edit = () =>
+    f.tool("owner", "edit_page", {
+      base_heads: f.heads(),
+      idempotency_key: `after-restore-${++edits}`,
+      operations: [{ op: "insert_markdown", markdown: "Added after restore." }],
+    });
+  const refused = await edit();
+  assert.equal(refused.status, 503, JSON.stringify(refused.body));
+  assert.equal(refused.body.code, "preserved_markdown_converting");
+  assert.equal(f.page.conversion.name, "failed");
+  assert.equal(f.page.conversion.attempt, 2);
+  // Storage recovers: the next edit converts first. The conversion moved the
+  // heads, so that edit asks for a fresh read; the retry lands.
+  f.hooks.flush = undefined;
+  const stale = await edit();
+  assert.equal(stale.body.code, "stale_heads", JSON.stringify(stale.body));
+  assert.equal(f.page.conversion.name, "clear");
+  const accepted = await edit();
+  assert.equal(accepted.status, 200, JSON.stringify(accepted.body));
+  assert.equal(hasPreservedBlocks(f.doc()), false);
+  const markdown = exportMarkdown(richDoc(f.doc().blocks[orderedBlockIds(f.doc())[0]]));
+  assert.equal(markdown.split("drop").length, 2, "converted once");
+});

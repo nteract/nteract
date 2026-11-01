@@ -5662,6 +5662,198 @@
       "canonical_markdown": "\\[r\\]: x\\\n\\==="
     },
     {
+      "id": "literal-link-holding-only-a-break",
+      "markdown": "| a |\n| - |\n| [<br>](https://example.org) |",
+      "expected_spans": [
+        {
+          "type": "text",
+          "value": "| a |",
+          "marks": {}
+        },
+        {
+          "type": "block",
+          "value": {
+            "type": "hard-break",
+            "parents": [
+              "paragraph"
+            ],
+            "attrs": {},
+            "isEmbed": true
+          }
+        },
+        {
+          "type": "text",
+          "value": "| - |",
+          "marks": {}
+        },
+        {
+          "type": "block",
+          "value": {
+            "type": "hard-break",
+            "parents": [
+              "paragraph"
+            ],
+            "attrs": {},
+            "isEmbed": true
+          }
+        },
+        {
+          "type": "text",
+          "value": "| [<br>](https://example.org) |",
+          "marks": {}
+        }
+      ],
+      "canonical_markdown": "| a |\\\n| - |\\\n| \\[\\<br>\\](https://example.org) |"
+    },
+    {
+      "id": "literal-link-holding-break-and-image",
+      "markdown": "| a |\n| - |\n| [<br>![p](i.png)](https://example.org) |",
+      "expected_spans": [
+        {
+          "type": "text",
+          "value": "| a |",
+          "marks": {}
+        },
+        {
+          "type": "block",
+          "value": {
+            "type": "hard-break",
+            "parents": [
+              "paragraph"
+            ],
+            "attrs": {},
+            "isEmbed": true
+          }
+        },
+        {
+          "type": "text",
+          "value": "| - |",
+          "marks": {}
+        },
+        {
+          "type": "block",
+          "value": {
+            "type": "hard-break",
+            "parents": [
+              "paragraph"
+            ],
+            "attrs": {},
+            "isEmbed": true
+          }
+        },
+        {
+          "type": "text",
+          "value": "| [<br>![p](i.png)](https://example.org) |",
+          "marks": {}
+        }
+      ],
+      "canonical_markdown": "| a |\\\n| - |\\\n| \\[\\<br>!\\[p\\](i.png)\\](https://example.org) |"
+    },
+    {
+      "id": "image-after-closed-highlight",
+      "markdown": "<mark>x</mark> ![p](i.png)",
+      "expected_spans": [
+        {
+          "type": "text",
+          "value": "x",
+          "marks": {
+            "highlight": "yellow"
+          }
+        },
+        {
+          "type": "text",
+          "value": " ",
+          "marks": {}
+        },
+        {
+          "type": "block",
+          "value": {
+            "type": "image",
+            "parents": [
+              "paragraph"
+            ],
+            "attrs": {
+              "src": "i.png",
+              "alt": "p",
+              "title": null
+            },
+            "isEmbed": true
+          }
+        }
+      ],
+      "canonical_markdown": "<mark data-color=\"yellow\">x</mark> ![p](i.png)"
+    },
+    {
+      "id": "image-after-closed-marks",
+      "markdown": "**b** *e* ~~s~~ [l](u) ![p](i.png)",
+      "expected_spans": [
+        {
+          "type": "text",
+          "value": "b",
+          "marks": {
+            "strong": true
+          }
+        },
+        {
+          "type": "text",
+          "value": " ",
+          "marks": {}
+        },
+        {
+          "type": "text",
+          "value": "e",
+          "marks": {
+            "em": true
+          }
+        },
+        {
+          "type": "text",
+          "value": " ",
+          "marks": {}
+        },
+        {
+          "type": "text",
+          "value": "s",
+          "marks": {
+            "strike": true
+          }
+        },
+        {
+          "type": "text",
+          "value": " ",
+          "marks": {}
+        },
+        {
+          "type": "text",
+          "value": "l",
+          "marks": {
+            "link": "{\"href\":\"u\",\"title\":null}"
+          }
+        },
+        {
+          "type": "text",
+          "value": " ",
+          "marks": {}
+        },
+        {
+          "type": "block",
+          "value": {
+            "type": "image",
+            "parents": [
+              "paragraph"
+            ],
+            "attrs": {
+              "src": "i.png",
+              "alt": "p",
+              "title": null
+            },
+            "isEmbed": true
+          }
+        }
+      ],
+      "canonical_markdown": "**b** *e* ~~s~~ [l](u) ![p](i.png)"
+    },
+    {
       "id": "destinations-are-not-syntax",
       "markdown": "[a](<x> \"<b> $t$\") and ![p](</$y$/i.png>) then $z$\n\n[r]: <x>",
       "expected_spans": [
