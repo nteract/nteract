@@ -251,7 +251,120 @@ test("host tool-edit hints name each change by hash, with the session label", ()
     },
   });
   assert.equal(session.changeIdentity(A.getHeads(agentChange)[0]).principal, "user:kyle");
-  assert.equal(typeof session.actorIdentity, "undefined");
+  assert.equal(session.actorIdentity(A.getActorId(agentChange)), null);
+});
+
+const ANA = { principal: "user:ana", displayName: "Ana", driver: "Browser" };
+test("actor profiles come only from the host, one valid entry at a time", () => {
+  const session = new PageSession("fixture");
+  session.connection = { serverSenderId: "verified-host" };
+  const actor = "ab".repeat(16);
+  const message = { kind: "actor-profiles", actorProfiles: { [actor]: ANA } };
+  // A peer's broadcast, or a selection claiming an actor, never names one.
+  session.ephemeral({ senderId: "peer", message });
+  session.profiles = { peer: ANA };
+  session.ephemeral({
+    senderId: "peer",
+    message: {
+      kind: "selection",
+      value: { block_id: "b", start: "s", end: "e", heads: [], actor },
+    },
+  });
+  assert.equal(session.actorIdentity(actor), null);
+  assert.equal(session.actorProfiles.size, 0);
+  const invalid = [
+    ["AB".repeat(16), ANA],
+    ["a".repeat(129), ANA],
+    ["not-hex", ANA],
+    ["cd".repeat(16), { ...ANA, principal: 7 }],
+    ["cd".repeat(16), { ...ANA, principal: "p".repeat(257) }],
+    ["cd".repeat(16), { ...ANA, displayName: "d".repeat(257) }],
+    ["cd".repeat(16), { ...ANA, driver: "d".repeat(65) }],
+    ["cd".repeat(16), { principal: "user:ana", displayName: "Ana" }],
+    ["cd".repeat(16), "user:ana"],
+    ["cd".repeat(16), []],
+  ];
+  for (const [key, profile] of invalid)
+    session.ephemeral({
+      senderId: "verified-host",
+      message: { kind: "actor-profiles", actorProfiles: { [key]: profile } },
+    });
+  session.ephemeral({ senderId: "verified-host", message: { kind: "actor-profiles" } });
+  session.ephemeral({
+    senderId: "verified-host",
+    message: { kind: "actor-profiles", actorProfiles: [ANA] },
+  });
+  assert.equal(session.actorProfiles.size, 0);
+  session.ephemeral({
+    senderId: "verified-host",
+    message: { ...message, actorProfiles: { ...message.actorProfiles, ["zz"]: ANA } },
+  });
+  assert.deepEqual(session.actorIdentity(actor), ANA);
+  assert.equal(session.actorProfiles.size, 1);
+  // A host removal withdraws the actor.
+  session.ephemeral({
+    senderId: "peer",
+    message: { kind: "actor-profiles", actorProfiles: { [actor]: null } },
+  });
+  assert.deepEqual(session.actorIdentity(actor), ANA);
+  session.ephemeral({
+    senderId: "verified-host",
+    message: { kind: "actor-profiles", actorProfiles: { [actor]: null } },
+  });
+  assert.equal(session.actorIdentity(actor), null);
+});
+
+test("actor profiles keep the newest 1024 actors", () => {
+  const session = new PageSession("fixture");
+  const actorProfiles = Object.fromEntries(
+    Array.from({ length: 1030 }, (_, i) => [i.toString(16).padStart(8, "0"), ANA]),
+  );
+  session.receiveActorProfiles(actorProfiles, { replace: true });
+  assert.equal(session.actorProfiles.size, 1024);
+  assert.equal(session.actorIdentity("00000000"), null);
+  assert.deepEqual(session.actorIdentity((1029).toString(16).padStart(8, "0")), ANA);
+});
+
+test("each connect response replaces the actor profiles", async (t) => {
+  const session = new PageSession("fixture");
+  session.credentialCanWrite = true;
+  session.replicaKey = "0:writer";
+  session.actorProfiles = new Map([["ee".repeat(16), ANA]]);
+  const locationBefore = Object.getOwnPropertyDescriptor(globalThis, "location");
+  Object.defineProperty(globalThis, "location", {
+    configurable: true,
+    value: { href: "https://page8.runtimed.run/" },
+  });
+  t.after(() => {
+    if (locationBefore) Object.defineProperty(globalThis, "location", locationBefore);
+    else delete globalThis.location;
+    session.clearPresence();
+  });
+  t.mock.method(session, "registerDraft", async () => {});
+  const actor = "ab".repeat(16);
+  t.mock.method(globalThis, "fetch", async () =>
+    Response.json({
+      identity: { principal: "account", displayName: "Kyle Kelley" },
+      access: { role: "owner", generation: 0, revision: 0, canRead: true, canWrite: true },
+      serverPeerId: "00".repeat(32),
+      serverSenderId: "host",
+      peerProfiles: {},
+      actorProfiles: { [actor]: ANA, ["cd".repeat(16)]: { principal: 1 } },
+      activity: activityMessage(),
+    }),
+  );
+  t.mock.method(globalThis, "WebSocket", function (address) {
+    Object.defineProperty(this, "binaryType", { value: "blob", writable: true });
+    this.address = address;
+    this.addEventListener = () => {};
+    this.close = () => {};
+  });
+  t.mock.method(N.SubductionWebSocket, "setup", async () => {
+    throw Object.assign(Error("stop after discovery"), { status: 409 });
+  });
+  await assert.rejects(session.openConnection(false), { status: 409 });
+  assert.deepEqual([...session.actorProfiles.keys()], [actor]);
+  assert.deepEqual(session.actorIdentity(actor), ANA);
 });
 
 test("presence rejects malformed causal heads and ignores claimed display identity", () => {

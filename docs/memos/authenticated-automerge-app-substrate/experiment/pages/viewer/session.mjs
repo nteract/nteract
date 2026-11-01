@@ -148,6 +148,24 @@ async function exclusiveIdentity(scope) {
   sessionStorage.setItem(key, seed);
   return { seed, release, reloadRecovery: !!navigator.locks };
 }
+const ACTOR_ID = /^[0-9a-f]{1,128}$/;
+const MAX_ACTOR_PROFILES = 1024;
+/** A host actor profile, null for a removal, or undefined when malformed. */
+function actorProfile(value) {
+  if (value === null) return null;
+  if (!value || typeof value !== "object") return undefined;
+  const { principal, displayName, driver } = value;
+  if (
+    typeof principal !== "string" ||
+    principal.length > 256 ||
+    typeof displayName !== "string" ||
+    displayName.length > 256 ||
+    typeof driver !== "string" ||
+    driver.length > 64
+  )
+    return undefined;
+  return { principal, displayName, driver };
+}
 export class PageSession {
   listeners = new Set();
   observers = new Set();
@@ -162,8 +180,12 @@ export class PageSession {
   actorNames = new Map();
   // Who made a change, by hash, from the host's tool-edit hints. The host
   // writes every API agent's edits, so a change hash, not an actor, names the
-  // author. Browser edits have no host-attested author yet and stay neutral.
+  // author.
   changeIdentities = new Map();
+  // Who wrote a browser's changes, by Automerge actor. The host attests each
+  // actor from the signer of its commit records; only the host's connect
+  // response and its actor-profiles messages fill this map.
+  actorProfiles = new Map();
   toolHints = [];
   composing = 0;
   localDepth = 0;
@@ -1296,6 +1318,7 @@ export class PageSession {
     }
     if (!this.alive) return;
     this.replacePeerProfiles(this.connection.peerProfiles);
+    this.receiveActorProfiles(this.connection.actorProfiles, { replace: true });
     this.presencePaused = false;
     this.receiveActivity(this.connection.activity, { initial: true });
     const expected = new N.PeerId(bytes(this.connection.serverPeerId));
@@ -1495,6 +1518,25 @@ export class PageSession {
   changeIdentity(hash) {
     return this.changeIdentities.get(hash) ?? null;
   }
+  actorIdentity(actor) {
+    return this.actorProfiles.get(actor) ?? null;
+  }
+  /** Apply host-attested actor profiles: a connect snapshot replaces the map,
+   * a broadcast delta adds entries or removes them with null. Malformed
+   * entries are dropped one by one. */
+  receiveActorProfiles(profiles, { replace = false } = {}) {
+    const next = replace ? new Map() : this.actorProfiles;
+    if (profiles && typeof profiles === "object" && !Array.isArray(profiles))
+      for (const [actor, value] of Object.entries(profiles)) {
+        const profile = actorProfile(value);
+        if (!ACTOR_ID.test(actor) || profile === undefined) continue;
+        next.delete(actor);
+        if (profile) next.set(actor, profile);
+        if (next.size > MAX_ACTOR_PROFILES) next.delete(next.keys().next().value);
+      }
+    this.actorProfiles = next;
+    this.notify(this.presenceObservers);
+  }
   watchPresence(fn) {
     this.presenceObservers.add(fn);
     return () => this.presenceObservers.delete(fn);
@@ -1600,6 +1642,10 @@ export class PageSession {
       }
       if (message.kind === "identity-profiles") {
         this.replacePeerProfiles(message.peerProfiles);
+        return;
+      }
+      if (message.kind === "actor-profiles") {
+        this.receiveActorProfiles(message.actorProfiles);
         return;
       }
       if (message.kind === "tool-edit" && Array.isArray(message.heads)) {

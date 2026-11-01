@@ -54,6 +54,13 @@ import {
 import { issueRetryToken, inspectOperation, reserveOperation } from "./operation-journal.mjs";
 import { BufferedRecordStore, RemoteRecordSink } from "./record-persistence.mjs";
 import { RecordMaintenance } from "./record-maintenance.mjs";
+import {
+  ActorAuthorship,
+  commitAuthor,
+  loadActorEntries,
+  observeRecordSaves,
+  persistActorEffects,
+} from "./actor-authorship.mjs";
 export { PageRecords } from "./record-persistence.mjs";
 import {
   DocumentPolicy,
@@ -2266,9 +2273,18 @@ export class Page {
               )
             : new DurableByteStore(ctx.storage);
         if (recordStore.ready) await recordStore.ready;
+        const actorAuthorship = new ActorAuthorship({
+          serverKey,
+          binding: (key) => policy.bindings.get(key),
+          entries: await loadActorEntries(ctx.storage),
+        });
         backend = new SubductionBackend({
           signer,
-          storage: recordStore,
+          // Only the backend's saves attest authors; maintenance and flushes
+          // use recordStore itself.
+          storage: observeRecordSaves(recordStore, (key, value) =>
+            this.recordSaved(actorAuthorship, key, value),
+          ),
           policy: policy.native(),
           ephemeralPolicy: policy.ephemeral(),
           ...BACKEND_LIMITS,
@@ -2285,6 +2301,7 @@ export class Page {
           }),
           repo,
           recordStore,
+          actorAuthorship,
         });
         this.recordMaintenance = new RecordMaintenance({
           enabled:
@@ -2393,6 +2410,24 @@ export class Page {
     } catch (error) {
       // Cleanup must still release socket capacity if the document is closing.
       logFailure(error, "presence-profiles");
+    }
+  }
+
+  /** Attest the author of a commit record the backend just stored. Storage
+   * and broadcast run after the save and never fail it. */
+  recordSaved(actorAuthorship, key, value) {
+    const author = commitAuthor(key, value);
+    if (!author) return;
+    const effects = actorAuthorship.observe({ ...author, now: Date.now() });
+    if (effects.put.length || effects.remove.length)
+      persistActorEffects(this.ctx.storage, effects).catch((error) =>
+        logFailure(error, "actor-authorship"),
+      );
+    if (!effects.delta || !this.handle) return;
+    try {
+      this.handle.broadcast({ kind: "actor-profiles", actorProfiles: effects.delta });
+    } catch (error) {
+      logFailure(error, "actor-profiles");
     }
   }
 
@@ -2830,6 +2865,7 @@ export class Page {
           }),
           ...(state === "trashed" && { trash: publicTrash(this.metadata) }),
           peerProfiles: this.profiles(),
+          actorProfiles: this.actorAuthorship?.profiles(Date.now()) ?? {},
           activity: this.activityState().snapshot(),
         });
       }

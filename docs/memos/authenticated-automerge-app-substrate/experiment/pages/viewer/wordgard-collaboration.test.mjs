@@ -49,6 +49,7 @@ function harness(doc) {
   const publications = [];
   const names = new Map();
   const changeIdentities = new Map();
+  const actorProfiles = new Map();
   const replica = {
     doc,
     peers: new Map(),
@@ -56,6 +57,7 @@ function harness(doc) {
     publishPresence: (value) => publications.push(value),
     actorDisplayName: (actor) => names.get(actor) ?? "Collaborator",
     changeIdentity: (hash) => changeIdentities.get(hash) ?? null,
+    actorIdentity: (actor) => actorProfiles.get(actor) ?? null,
   };
   const editor = {
     hasFocus: true,
@@ -83,6 +85,7 @@ function harness(doc) {
   });
   return {
     changeIdentities,
+    actorProfiles,
     replica,
     editor,
     collaboration,
@@ -584,6 +587,63 @@ test("the edit underline takes the editor's caret color only from a host-atteste
     `--peer-color: ${presenceColor("user:kyle", "Kilo", "rich text").background}`,
   );
   assert.equal(mark.title, "Edited by Kyle Kelley · Kilo · rich text");
+});
+
+test("a person's edit takes their caret color from the host-attested actor profile", async () => {
+  const { presenceColor } = await import("./presence-color.mjs");
+  const h = harness(fixture("Hello world"));
+  const actor = "d1".repeat(16);
+  batch(h, [[actor, (d, path) => A.splice(d, path, 0, 0, "Ana says ")]]);
+  assert.deepEqual(
+    marks(h).map(({ style, title }) => ({ style, title })),
+    [{ style: null, title: "Edited by a collaborator" }],
+    "unattested actor: neutral",
+  );
+  h.actorProfiles.set(actor, { principal: "user:ana", displayName: "Ana", driver: "Browser" });
+  // The same key as the caret: presenceColor(principal, driver).
+  assert.deepEqual(
+    marks(h).map(({ style, title }) => ({ style, title })),
+    [
+      {
+        style: `--peer-color: ${presenceColor("user:ana", "Browser").background}`,
+        title: "Edited by Ana · Browser",
+      },
+    ],
+  );
+});
+
+test("a tool edit's change identity wins over an actor profile; the host actor stays neutral", async () => {
+  const { presenceColor } = await import("./presence-color.mjs");
+  const host = "e1".repeat(16);
+  const person = "e2".repeat(16);
+  const h = harness(fixture("one two"));
+  const [agentEdit, unhinted, personEdit] = batch(h, [
+    [host, (d, path) => A.splice(d, path, 0, 0, "AAAA")],
+    [host, (d, path) => A.splice(d, path, 4, 0, "HHHH")],
+    [person, (d, path) => A.splice(d, path, 8, 0, "PPPP")],
+  ]);
+  assert.ok(unhinted && personEdit);
+  // Even if a profile named the host actor, a tool hint names its own change.
+  h.actorProfiles.set(host, {
+    principal: "user:mallory",
+    displayName: "Mallory",
+    driver: "Browser",
+  });
+  h.changeIdentities.set(agentEdit, { principal: "user:kyle", driver: "Kilo", agent: "rich text" });
+  h.actorProfiles.set(person, { principal: "user:ana", displayName: "Ana", driver: "Browser" });
+  const found = marks(h);
+  assert.equal(found.length, 3);
+  assert.equal(
+    found[0].style,
+    `--peer-color: ${presenceColor("user:kyle", "Kilo", "rich text").background}`,
+  );
+  assert.equal(found[2].style, `--peer-color: ${presenceColor("user:ana", "Browser").background}`);
+  // The host never publishes its own actor: without that profile, the
+  // unhinted host change is neutral.
+  h.actorProfiles.delete(host);
+  const [, neutral] = marks(h);
+  assert.equal(neutral.style, null);
+  assert.equal(neutral.title, "Edited by a collaborator");
 });
 
 test("adjacent and interleaved inserts from two agents in one batch keep their own colors", async () => {
