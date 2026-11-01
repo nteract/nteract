@@ -55,6 +55,8 @@ for (const receipt of [
     );
     await session.saveReceipt();
     assert.equal(session.status, "Not saved");
+    assert.equal(session.statusId, "unsaved");
+    assert.equal(session.statusRetry, true);
     assert.deepEqual(session.savedHeads, []);
     assert.equal(session.problem, "Invalid durability receipt");
     assert.ok(session.receiptRetryTimer);

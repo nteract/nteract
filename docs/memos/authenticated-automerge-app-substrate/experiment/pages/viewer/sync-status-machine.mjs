@@ -309,9 +309,11 @@ export const STATUS_IDS = Object.freeze([
   "sign-in",
   "local-failed",
 ]);
-/** Status ids whose problem the header's Retry button retries. */
-export const RETRYABLE_STATUS = Object.freeze(["unsaved", "offline", "saved-locally"]);
-const status = (label, key, id) => ({ label, key, id });
+// `retry` marks a stalled receipt that a manual reconnect and receipt retry
+// can move: offline, saved only locally, or unsaved. The presentation key
+// can't say this, because "attention" also covers deletion and access
+// changes, which a retry doesn't fix.
+const status = (label, key, id, retry = false) => ({ label, key, id, retry });
 
 /**
  * The statuses that outrank the receipt, in rank order. Each flag is a fact
@@ -349,8 +351,8 @@ export function syncStatus(state, { localCopy = false } = {}) {
   const { name, link } = state;
   if (link === "offline")
     return name === "local" || (name === "idle" && localCopy)
-      ? status("Saved locally", "attention", "saved-locally")
-      : status("Offline", "attention", "offline");
+      ? status("Saved locally", "attention", "saved-locally", true)
+      : status("Offline", "attention", "offline", true);
   if (name === "quiet") return status("Syncing", "quiet", "saving");
   if (name === "saving") return status("Syncing", "saving", "saving");
   if (link === "reconnecting") return status("Reconnecting", "connecting", "reconnecting");
@@ -359,16 +361,16 @@ export function syncStatus(state, { localCopy = false } = {}) {
       return link === "connected"
         ? status("Connected", "connected", "connected")
         : localCopy
-          ? status("Saved locally", "attention", "saved-locally")
+          ? status("Saved locally", "attention", "saved-locally", true)
           : status("Connecting", "connecting", "connecting");
     case "syncing":
       return status("Syncing", "syncing", "syncing");
     case "saved":
       return status("Saved", "saved", "saved");
     case "local":
-      return status("Saved locally", "attention", "saved-locally");
+      return status("Saved locally", "attention", "saved-locally", true);
     case "unsaved":
-      return status("Not saved", "failed", "unsaved");
+      return status("Not saved", "failed", "unsaved", true);
   }
   throw new Error(`unknown state ${name}`);
 }

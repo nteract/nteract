@@ -712,3 +712,58 @@ test("initialize hands out a presence session id; other calls don't, and stay st
   assert.equal(list.status, 200);
   assert.equal(list.headers.get("mcp-session-id"), null);
 });
+
+test("MCP advertises thread_ids for batch resolve and keeps the refusal's named IDs", async () => {
+  const descriptor = tools.find((tool) => tool.name === "manage_page_comment");
+  const { thread_id, thread_ids } = descriptor.inputSchema.properties;
+  assert.equal(thread_id.type, "string");
+  assert.deepEqual(
+    {
+      type: thread_ids.type,
+      minItems: thread_ids.minItems,
+      maxItems: thread_ids.maxItems,
+      uniqueItems: thread_ids.uniqueItems,
+      items: thread_ids.items,
+    },
+    {
+      type: "array",
+      minItems: 1,
+      maxItems: 100,
+      uniqueItems: true,
+      items: { type: "string", minLength: 1, maxLength: 256 },
+    },
+  );
+  assert.deepEqual(descriptor.inputSchema.required, ["page_id", "idempotency_key", "action"]);
+  assert.match(descriptor.description, /thread_ids/);
+  assert.match(descriptor.description, /not_found_thread_ids/);
+  // Resolving keeps every message; a status change is not destructive.
+  assert.equal(descriptor.annotations.destructiveHint, false);
+  assert.equal(descriptor.annotations.idempotentHint, true);
+
+  const calls = [];
+  const refusal = {
+    error:
+      "1 of 2 comment threads not found; nothing was changed. not_found_thread_ids names them.",
+    code: "invalid_comment_selector",
+    not_found_thread_ids: ["gone"],
+  };
+  const response = await handleMcp(
+    request("tools/call", {
+      name: "manage_page_comment",
+      arguments: {
+        page_id: "page_x",
+        idempotency_key: "batch-1234",
+        action: "resolve",
+        thread_ids: ["kept", "gone"],
+      },
+    }),
+    async (op, args) => {
+      calls.push({ op, args });
+      return Response.json(refusal, { status: 400 });
+    },
+  );
+  const result = (await response.json()).result;
+  assert.equal(result.isError, true);
+  assert.deepEqual(result.structuredContent, refusal);
+  assert.deepEqual(calls[0].args.thread_ids, ["kept", "gone"]);
+});

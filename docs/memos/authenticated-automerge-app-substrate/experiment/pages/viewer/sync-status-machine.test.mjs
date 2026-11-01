@@ -6,7 +6,6 @@ import { loadTable, runTable } from "../shared/machine-test.mjs";
 import {
   LINKS,
   STATUS_IDS,
-  RETRYABLE_STATUS,
   OVERLAY_FLAGS,
   STATUS_KEYS,
   fullStatus,
@@ -231,10 +230,37 @@ test("every rendered status carries a stable id, and local edits keep the saving
   assert.deepEqual([...seen].sort(), [...STATUS_IDS].sort());
 });
 
-test("the header's Retry reads status ids from this module, not labels", async () => {
+// Retry belongs to a stalled receipt only. Deletion and access changes share
+// the "attention" key, and a failed local save shares "failed", but a manual
+// reconnect fixes none of them, so they never offer Retry.
+// Keyed by status id, never by label.
+const RETRY = new Set(["offline", "saved-locally", "unsaved"]);
+
+test("only a stalled receipt offers Retry, whatever the presentation key", () => {
+  const offered = new Set();
+  for (const name of viewerSyncStatusMachine.states)
+    for (const link of LINKS)
+      for (const localCopy of [false, true]) {
+        const status = syncStatus(example(name, link), { localCopy });
+        assert.equal(status.retry, RETRY.has(status.id), `${name} / ${link} / ${localCopy}`);
+        if (status.retry) offered.add(status.id);
+      }
+  assert.deepEqual([...offered].sort(), [...RETRY].sort());
+  const saving = example("saving", "connected");
+  const quiet = example("quiet", "connected");
+  for (const flag of OVERLAY_FLAGS) {
+    assert.equal(overlayStatus(flag).retry, false, flag);
+    // An overlay hides Retry even while the receipt underneath is stalled.
+    const offline = { name: "unsaved", revision: 1, pending: false, link: "offline" };
+    assert.equal(fullStatus(offline, { [flag]: true }).retry, false, `${flag} over offline`);
+    assert.equal(fullStatus(saving, { [flag]: true }).retry, false, flag);
+    assert.equal(fullStatus(quiet, { [flag]: true }).retry, false, flag);
+  }
+});
+
+test("the header's Retry reads the retry projection, never a label or id list", async () => {
   const { readFile } = await import("node:fs/promises");
   const main = await readFile(new URL("./main.jsx", import.meta.url), "utf8");
-  assert.match(main, /import \{ RETRYABLE_STATUS \} from "\.\/sync-status-machine\.mjs";/);
-  assert.match(main, /RETRYABLE_STATUS\.includes\(session\.statusId\)/);
-  for (const id of RETRYABLE_STATUS) assert.ok(STATUS_IDS.includes(id), id);
+  assert.match(main, /\{session\.statusRetry && \(/);
+  assert.doesNotMatch(main, /session\.status\)|includes\(session\.status(Id)?\)/);
 });

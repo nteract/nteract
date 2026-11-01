@@ -377,6 +377,13 @@ export function errorResponse(error, stage = "request") {
             .slice(0, 32)
             .map((id) => String(id).slice(0, 64)),
         }),
+      // A thread batch is bounded to 100 IDs of at most 256 bytes each.
+      ...(error?.code === "invalid_comment_selector" &&
+        Array.isArray(error.details?.not_found_thread_ids) && {
+          not_found_thread_ids: error.details.not_found_thread_ids
+            .slice(0, 100)
+            .map((id) => String(id).slice(0, 256)),
+        }),
       ...(["edit_conflict", "resync_required"].includes(error?.code) && {
         ...(Array.isArray(error.details?.conflicts) && {
           conflicts: error.details.conflicts.slice(0, 10).map((conflict) => ({

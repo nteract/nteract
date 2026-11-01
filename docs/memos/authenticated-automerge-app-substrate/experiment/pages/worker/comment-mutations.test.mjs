@@ -277,3 +277,160 @@ test("an exact retry replays its receipt after the passage is later deleted", as
   assert.equal(f.comments().length, 1);
   assert.equal(f.comments()[0].messages.length, 2);
 });
+
+/** Open `count` block comments, each in its own native change. */
+function openThreads(f, count) {
+  const ids = [];
+  for (let n = 0; n < count; n++)
+    f.native((draft) => {
+      ids.push(
+        applyPageOperation(draft, {
+          operation: "manage_page_comment",
+          arguments: { action: "add", block_id: f.id, body: `Note ${n}` },
+          identity: { principal: "user:reviewer", displayName: "Reviewer", driver: "Browser" },
+        }).thread_id,
+      );
+    });
+  return ids;
+}
+const states = (f) => Object.fromEntries(f.comments().map((thread) => [thread.id, thread.state]));
+const changeCount = (f) => A.getAllChanges(f.handle.doc()).length;
+
+test("a thread_ids batch resolves every thread in one change and one receipt", async (t) => {
+  const f = fixture(t);
+  const ids = openThreads(f, 13);
+  const before = changeCount(f);
+  const receipt = await documentMutation(f.context(f.args({ action: "resolve", thread_ids: ids })));
+  assert.equal(changeCount(f) - before, 1, "one Automerge change for the whole batch");
+  assert.equal(f.applications(), 1);
+  assert.equal(operationEntries(f).length, 1, "one journal entry under one key");
+  assert.deepEqual(receipt.heads, A.getHeads(f.handle.doc()));
+  assert.equal(receipt.heads.length, 1);
+  assert.deepEqual(
+    receipt.result.threads,
+    ids.map((thread_id) => ({ thread_id, outcome: "resolved" })),
+  );
+  assert.ok(Object.values(states(f)).every((state) => state === "resolved"));
+});
+
+test("a batch skips threads already resolved and changes the rest", async (t) => {
+  const f = fixture(t);
+  const [open, done, other] = openThreads(f, 3);
+  await documentMutation(f.context(f.args({ action: "resolve", thread_id: done })));
+  const resolvedAt = f.handle.doc().comments[done].status.at;
+  const before = changeCount(f);
+  const receipt = await documentMutation(
+    f.context(f.args({ action: "resolve", thread_ids: [open, done, other] })),
+  );
+  assert.equal(changeCount(f) - before, 1);
+  assert.deepEqual(receipt.result.threads, [
+    { thread_id: open, outcome: "resolved" },
+    { thread_id: done, outcome: "already_resolved" },
+    { thread_id: other, outcome: "resolved" },
+  ]);
+  assert.equal(f.handle.doc().comments[done].status.at, resolvedAt, "a no-op keeps its time");
+  assert.deepEqual(states(f), { [open]: "resolved", [done]: "resolved", [other]: "resolved" });
+});
+
+test("a batch of threads all in the target state writes nothing and reports each", async (t) => {
+  const f = fixture(t);
+  const ids = openThreads(f, 2);
+  const heads = A.getHeads(f.handle.doc());
+  const receipt = await documentMutation(f.context(f.args({ action: "reopen", thread_ids: ids })));
+  assert.deepEqual(receipt.heads, heads);
+  assert.deepEqual(A.getHeads(f.handle.doc()), heads);
+  assert.deepEqual(
+    receipt.result.threads,
+    ids.map((thread_id) => ({ thread_id, outcome: "already_open" })),
+  );
+});
+
+test("reopen works as a batch", async (t) => {
+  const f = fixture(t);
+  const ids = openThreads(f, 3);
+  await documentMutation(f.context(f.args({ action: "resolve", thread_ids: ids.slice(0, 2) })));
+  const before = changeCount(f);
+  const receipt = await documentMutation(f.context(f.args({ action: "reopen", thread_ids: ids })));
+  assert.equal(changeCount(f) - before, 1);
+  assert.deepEqual(receipt.result.threads, [
+    { thread_id: ids[0], outcome: "reopened" },
+    { thread_id: ids[1], outcome: "reopened" },
+    { thread_id: ids[2], outcome: "already_open" },
+  ]);
+  assert.ok(Object.values(states(f)).every((state) => state === "open"));
+});
+
+test("an unknown thread rejects the whole batch, names it, and changes nothing", async (t) => {
+  const f = fixture(t);
+  const ids = openThreads(f, 2);
+  const bytes = A.save(f.handle.doc());
+  await assert.rejects(
+    documentMutation(
+      f.context(
+        f.args({ action: "resolve", thread_ids: [ids[0], "missing-a", ids[1], "__proto__"] }),
+      ),
+    ),
+    (error) => {
+      assert.equal(error.status, 400);
+      assert.equal(error.code, "invalid_comment_selector");
+      assert.deepEqual(error.details.not_found_thread_ids, ["missing-a", "__proto__"]);
+      assert.match(error.message, /2 of 4 comment threads not found; nothing was changed/);
+      return true;
+    },
+  );
+  assert.deepEqual(A.save(f.handle.doc()), bytes);
+  assert.equal(operationEntries(f).length, 0);
+  assert.ok(Object.values(states(f)).every((state) => state === "open"));
+});
+
+test("a batch retried with its key and payload replays the original receipt", async (t) => {
+  const f = fixture(t);
+  const ids = openThreads(f, 3);
+  const args = f.args({ action: "resolve", thread_ids: ids });
+  const receipt = await documentMutation(f.context(args));
+  // Someone reopens a thread; the retry must not resolve it again.
+  await documentMutation(f.context(f.args({ action: "reopen", thread_id: ids[1] })));
+  const heads = A.getHeads(f.handle.doc());
+  assert.deepEqual(await documentMutation(f.context(args)), receipt);
+  assert.deepEqual(A.getHeads(f.handle.doc()), heads);
+  assert.equal(states(f)[ids[1]], "open");
+  assert.equal(f.applications(), 2, "the replay never applies the batch again");
+  // The same key with a different payload is a conflict, not a second batch.
+  await assert.rejects(
+    documentMutation(f.context({ ...args, thread_ids: ids.slice(0, 2) })),
+    rejectsWith(409, "idempotency_conflict"),
+  );
+});
+
+test("thread_ids shape errors are refused before any thread is read", async (t) => {
+  const f = fixture(t);
+  const [id] = openThreads(f, 1);
+  const many = Array.from({ length: 101 }, (_, n) => `t-${n}`);
+  for (const [name, args] of [
+    ["both fields", { action: "resolve", thread_id: id, thread_ids: [id] }],
+    ["neither field", { action: "resolve" }],
+    ["neither field on reopen", { action: "reopen" }],
+    ["an empty list", { action: "resolve", thread_ids: [] }],
+    ["more than 100 IDs", { action: "resolve", thread_ids: many }],
+    ["duplicate IDs", { action: "resolve", thread_ids: [id, id] }],
+    ["a non-array", { action: "resolve", thread_ids: id }],
+    ["an empty ID", { action: "resolve", thread_ids: [""] }],
+    ["a non-string ID", { action: "resolve", thread_ids: [7] }],
+    ["an ID over 256 bytes", { action: "resolve", thread_ids: ["🌊".repeat(65)] }],
+    ["another action", { action: "reply", thread_ids: [id], body: "Hi" }],
+  ])
+    await assert.rejects(
+      documentMutation(f.context(f.args(args))),
+      (error) => {
+        assert.equal(error.status, 400, name);
+        assert.equal(error.code, "invalid_comment_selector", name);
+        return true;
+      },
+      name,
+    );
+  assert.equal(f.applications(), 0, "the guard refuses before the edit is built");
+  assert.equal(operationEntries(f).length, 0);
+  // The single-thread form keeps working beside the batch form.
+  const single = await documentMutation(f.context(f.args({ action: "resolve", thread_id: id })));
+  assert.deepEqual(single.result, { thread_id: id, message_id: null });
+});
