@@ -132,11 +132,42 @@ export function findUniqueVisibleRange(doc, id, input) {
   return { path, start, end };
 }
 
-/** Replace one visible text range, preserving every untouched CRDT character. */
+/** At most this many partial-mark ranges are named in a marks_dropped warning. */
+const MAX_DROPPED_RANGES = 32;
+
+/** The advisory a replace_match receipt carries when a mark covered part of
+ * the match but not all of it. The replacement keeps only marks shared by the
+ * whole match, so these no longer cover it; the caller decides whether to
+ * reapply them with format_match. `ranges` are offsets into match_text. */
+function marksDroppedWarning(partial, start, end) {
+  const ranges = partial
+    .map((mark) => ({
+      mark: mark.name,
+      start: Math.max(mark.start, start) - start,
+      end: Math.min(mark.end, end) - start,
+    }))
+    .sort((a, b) => a.start - b.start || a.end - b.end || (a.mark < b.mark ? -1 : 1));
+  return {
+    code: "marks_dropped",
+    marks: [...new Set(ranges.map((range) => range.mark))],
+    ranges: ranges.slice(0, MAX_DROPPED_RANGES),
+    ...(ranges.length > MAX_DROPPED_RANGES && { ranges_truncated: true }),
+    suggested_action:
+      "The replacement is plain where these marks covered only part of the match. If it should keep them, apply format_match over the right ranges of the new text.",
+  };
+}
+
+/** Replace one visible text range, preserving every untouched CRDT character.
+ * The result reports `matched: 1`, and a `marks_dropped` warning when a mark
+ * covered part of the match without covering all of it. */
 export function replaceMatch(doc, id, input, trace) {
   const replacement = replacementLiteral(input.replacement, "replacement");
   const { path, start, end } = findUniqueVisibleRange(doc, id, input);
-  const commonMarks = A.marks(doc, path).filter((mark) => mark.start <= start && mark.end >= end);
+  const overlapping = A.marks(doc, path).filter((mark) => mark.start < end && mark.end > start);
+  const covers = (mark) => mark.start <= start && mark.end >= end;
+  const commonMarks = overlapping.filter(covers);
+  // Reported, never kept: partial formatting must not spread (see below).
+  const partialMarks = replacement.length ? overlapping.filter((mark) => !covers(mark)) : [];
   A.splice(doc, path, start, end - start, replacement);
   if (replacement.length) {
     const range = { start, end: start + replacement.length };
@@ -166,7 +197,12 @@ export function replaceMatch(doc, id, input, trace) {
       commonMarks.map((mark) => mark.name),
     );
   trace?.push({ type: "text", block_id: id, start, end: start + replacement.length });
-  return { op: "replace_match", block_id: id, matched: 1 };
+  return {
+    op: "replace_match",
+    block_id: id,
+    matched: 1,
+    ...(partialMarks.length ? { warnings: [marksDroppedWarning(partialMarks, start, end)] } : {}),
+  };
 }
 
 /** Normalize format_match `add` input into stored Automerge mark values. */
