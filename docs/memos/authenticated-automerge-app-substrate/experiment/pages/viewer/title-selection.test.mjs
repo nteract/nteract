@@ -5,6 +5,7 @@ import {
   captureTitleSelection,
   resolveTitleSelection,
   titleEdit,
+  titleSnapshot,
   titleSplice,
 } from "./title-selection.mjs";
 
@@ -108,4 +109,52 @@ test("without a usable base the edit reads against the current title", () => {
     remove: 0,
     insert: "s",
   });
+});
+
+test("a title caret next to an emoji stays on a code point boundary", () => {
+  const doc = A.from({ title: "Wave 🌊" });
+  // Caret after the emoji (UTF-16 offset 7) sticks to the whole emoji.
+  const caret = captureTitleSelection(doc, 7);
+  assert.deepEqual(resolveTitleSelection(type(A.clone(doc), 7, "x"), caret), { start: 7, end: 7 });
+  assert.deepEqual(resolveTitleSelection(type(A.clone(doc), 0, "🌍"), caret), { start: 9, end: 9 });
+  // The emoji is deleted: the caret stays where the emoji started.
+  assert.deepEqual(resolveTitleSelection(remove(A.clone(doc), 5, 2), caret), { start: 5, end: 5 });
+});
+
+test("a stale title splice next to an emoji keeps the peer's emoji whole", () => {
+  const shown = A.from({ title: "Go 🌊" });
+  const base = { value: shown.title, heads: A.getHeads(shown) };
+  // A peer appended another emoji that the input hasn't shown yet.
+  const doc = type(A.clone(shown), 5, "🌍");
+  const edit = titleEdit(doc, base, "Go 🌊!", 6);
+  const next = apply(doc, edit);
+  assert.equal(next.title, "Go 🌊!🌍");
+  assert.equal(next.title.length, [..."Go 🌊!🌍"].join("").length);
+  // Replacing one emoji with another that shares its high surrogate.
+  assert.deepEqual(titleSplice("a🌊", "a🌍", 3), { index: 1, remove: 2, insert: "🌍" });
+});
+
+test("the caret follows the applied splice when a stale edit kept a peer's text", () => {
+  const shown = A.from({ title: "Plan" });
+  const base = titleSnapshot(shown, null, "Plan", 4);
+  // The peer's "My " reached the document; the input still shows "Plan".
+  const doc = type(A.clone(shown), 0, "My ");
+  // The input lags, so a selection change captures against what it shows.
+  const lagging = titleSnapshot(doc, base, "Plan", 4);
+  assert.deepEqual(lagging.heads, base.heads);
+  assert.deepEqual(resolveTitleSelection(doc, lagging.cursors), { start: 7, end: 7 });
+  // The keystroke: the input reads "Plans" with its caret at 5.
+  const edit = titleEdit(doc, lagging, "Plans", 5);
+  const next = apply(doc, edit);
+  assert.equal(next.title, "My Plans");
+  // main.jsx shows the merged title with the caret after the applied splice.
+  const at = edit.index + edit.insert.length;
+  assert.equal(at, 8);
+  const after = titleSnapshot(next, lagging, next.title, at);
+  assert.deepEqual(resolveTitleSelection(type(A.clone(next), 8, "!"), after.cursors), {
+    start: 8,
+    end: 8,
+  });
+  // An input value that matches no known revision keeps the last snapshot.
+  assert.equal(titleSnapshot(next, after, "unrelated", 2), after);
 });

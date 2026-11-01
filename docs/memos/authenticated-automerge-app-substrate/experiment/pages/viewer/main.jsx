@@ -558,17 +558,16 @@ function App() {
   function rememberTitleSelection(input = titleInput.current) {
     const module = editor.module;
     if (!input || !session || !module) return;
-    // The heads name the document the input's value came from, while React
-    // shows it; a peer's change can land before React renders it.
-    const shown = input.value === session.doc.title;
-    titleSelection.current = {
-      input,
-      session,
-      value: input.value,
-      heads: shown ? module.pageHeads(session.doc) : titleSelection.current?.heads,
-      direction: input.selectionDirection,
-      cursors: module.captureTitleSelection(session.doc, input.selectionStart, input.selectionEnd),
-    };
+    const previous = titleSelection.current;
+    const snapshot = module.titleSnapshot(
+      session.doc,
+      previous?.input === input && previous.session === session ? previous : null,
+      input.value,
+      input.selectionStart,
+      input.selectionEnd,
+    );
+    if (snapshot)
+      titleSelection.current = { ...snapshot, input, session, direction: input.selectionDirection };
   }
   useLayoutEffect(() => {
     const input = titleInput.current,
@@ -578,6 +577,7 @@ function App() {
       seen?.input === input &&
       seen.session === session &&
       seen.value !== shownTitle &&
+      session.doc.title === shownTitle &&
       document.activeElement === input
     ) {
       const next = editor.module?.resolveTitleSelection(session.doc, seen.cursors);
@@ -1055,8 +1055,16 @@ function App() {
                       session.change((doc) =>
                         editor.module.setPageTitle(doc, event.target.value, edit),
                       );
-                      // This tab's own edit: the input already shows it.
-                      rememberTitleSelection(event.currentTarget);
+                      // A peer's change React hadn't shown yet was kept. Show
+                      // the merged title now, with the caret after the
+                      // applied splice, so the input matches a revision again.
+                      const input = event.currentTarget;
+                      if (edit && input.value !== session.doc.title) {
+                        const at = edit.index + edit.insert.length;
+                        input.value = session.doc.title;
+                        input.setSelectionRange(at, at);
+                      }
+                      rememberTitleSelection(input);
                     } catch (error) {
                       showError(error);
                     }

@@ -901,3 +901,26 @@ test("a caret whose preceding character a peer deletes stays in place", () => {
   assert.equal(remoteEditorPosition(events.at(-1), path, 2, { caret: true }), 1);
   binding.destroy();
 });
+
+test("a caret after an emoji keeps its side of a peer's insertion", () => {
+  const replica = fixture("Wave 🌊 end"),
+    binding = createWordgardBinding(replica, "one"),
+    events = [];
+  binding.observe((event) => events.push(event));
+  const path = textPath("one");
+  const raw = () => replica.doc.blocks.one.richText;
+  // The caret sits right after the emoji.
+  const caret = binding.current.map.amToWg[raw().indexOf(" end")];
+  replica.receive(
+    A.change(A.clone(replica.doc), (d) => A.splice(d, path, raw().indexOf(" end"), 0, "XY")),
+  );
+  const at = remoteEditorPosition(events.at(-1), path, caret, { caret: true });
+  // Still right after the emoji, before the peer's text.
+  assert.equal(at, binding.current.map.amToWg[raw().indexOf("XY")]);
+  // A peer's emoji typed before the caret moves it by one whole code point.
+  const before = binding.current.map.amToWg[raw().indexOf("XY")];
+  replica.receive(A.change(A.clone(replica.doc), (d) => A.splice(d, path, 0, 0, "🌍")));
+  const moved = remoteEditorPosition(events.at(-1), path, before, { caret: true });
+  assert.equal(moved, binding.current.map.amToWg[raw().indexOf("XY")]);
+  binding.destroy();
+});

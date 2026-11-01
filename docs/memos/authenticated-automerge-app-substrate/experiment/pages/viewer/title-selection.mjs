@@ -1,31 +1,27 @@
 import * as A from "@automerge/automerge/slim";
+import { stickyCaret, stickyCaretPosition } from "../model/sticky-caret.mjs";
 
 const path = ["title"];
+const isHigh = (unit) => unit >= 0xd800 && unit <= 0xdbff;
 
-// One end of the title input's selection as a native cursor. A caret sticks to
-// the character before it, so a peer typing at the same spot lands after the
-// caret and each person keeps an unbroken run. A selection end, and a caret at
-// the start of the title, stick to the character after them.
+// The title input's selection as native cursors. A caret sticks to the code
+// point before it, so a peer typing at the same spot lands after the caret and
+// each person keeps an unbroken run. A selection end, and a caret at the start
+// of the title, stick to the character after them.
 function capture(doc, offset, caret) {
-  const length = doc.title?.length ?? 0;
-  if (caret && offset > 0) return { cursor: A.getCursor(doc, path, offset - 1), before: true };
-  return { cursor: A.getCursor(doc, path, offset >= length ? "end" : offset), before: false };
+  const text = doc.title;
+  if (caret && offset > 0) return { cursor: stickyCaret(doc, path, text, offset), before: true };
+  return { cursor: A.getCursor(doc, path, offset >= text.length ? "end" : offset), before: false };
 }
 
 function resolve(doc, { cursor, before }) {
-  const at = A.getCursorPosition(doc, path, cursor);
-  if (!before) return at;
-  // The character a caret sticks to can be deleted; the caret then stays put.
-  let alive = false;
-  try {
-    alive = at < (doc.title?.length ?? 0) && A.getCursor(doc, path, at) === cursor;
-  } catch {
-    /* The title text object was replaced. */
-  }
-  return alive ? at + 1 : at;
+  return before
+    ? stickyCaretPosition(doc, path, doc.title, cursor)
+    : A.getCursorPosition(doc, path, cursor);
 }
 
-/** Capture the title input's selection against the document it shows. */
+/** Capture a selection against `doc`, the revision whose title the input
+ * shows. Offsets are UTF-16, as the input reports them. */
 export function captureTitleSelection(doc, start, end = start) {
   if (typeof doc?.title !== "string" || end > doc.title.length) return null;
   const caret = start === end;
@@ -48,12 +44,39 @@ export function resolveTitleSelection(doc, captured) {
   }
 }
 
+/** What the title input shows, as a revision: its value, the heads of a
+ * revision with that title, and its selection captured against that
+ * revision. The input can lag the document by a peer's change React hasn't
+ * rendered yet, so the current document is used only when its title is what
+ * the input shows; otherwise the last remembered revision is reused if it
+ * still matches. With neither, the previous snapshot stands. */
+export function titleSnapshot(doc, previous, value, start, end = start) {
+  let shown = null,
+    heads = null;
+  if (doc?.title === value) {
+    shown = doc;
+    heads = A.getHeads(doc);
+  } else if (previous?.value === value && Array.isArray(previous.heads)) {
+    try {
+      const view = A.view(doc, previous.heads);
+      if (view.title === value) {
+        shown = view;
+        heads = previous.heads;
+      }
+    } catch {
+      /* Unknown heads. */
+    }
+  }
+  if (!shown) return previous ?? null;
+  return { value, heads, cursors: captureTitleSelection(shown, start, end) };
+}
+
 /** The splice that turns `previous` into `next`, given where the input's
  * caret sits after the edit. A text diff alone can't place an edit inside a
  * run of repeated characters: typing a space after "Notes: " reads the same
  * as typing it before. The caret ends the inserted text, so the edit keeps
- * the position the person typed at. Returns null when the caret doesn't fit
- * a single splice. */
+ * the position the person typed at. The splice never starts inside a
+ * surrogate pair. Returns null when the caret doesn't fit a single splice. */
 export function titleSplice(previous, next, caret) {
   if (!Number.isInteger(caret) || caret < 0 || caret > next.length) return null;
   const after = next.slice(caret);
@@ -61,15 +84,17 @@ export function titleSplice(previous, next, caret) {
   const end = previous.length - after.length;
   let index = 0;
   while (index < end && index < caret && previous[index] === next[index]) index++;
+  // A shared high surrogate before a differing low one: start at the pair.
+  if (index > 0 && isHigh(previous.charCodeAt(index - 1))) index--;
   return { index, remove: end - index, insert: next.slice(index, caret) };
 }
 
 /** The splice for a title input's edit, in the current document. `base` is
- * the value the input showed before the keystroke and the heads it came from.
- * A peer's change can reach the document before React shows it, so the input
- * can be behind: diffing against the current title would undo the peer's
- * text. The edit is read against `base` and its ends are carried to the
- * current document through native cursors. */
+ * the snapshot of what the input showed before the keystroke. A peer's change
+ * can reach the document before React shows it, so the input can be behind:
+ * diffing against the current title would undo the peer's text. The edit is
+ * read against `base`, and its ends are carried to the current document as
+ * sticky carets. */
 export function titleEdit(doc, base, next, caret) {
   const current = doc.title;
   if (typeof current !== "string") return null;
@@ -85,20 +110,11 @@ export function titleEdit(doc, base, next, caret) {
   if (!shown || shown.title === current) return titleSplice(current, next, caret);
   const edit = titleSplice(shown.title, next, caret);
   if (!edit) return null;
-  // The position just after a character of the shown title, now. A character
-  // a peer deleted leaves the position where the character was.
-  const after = (offset) => {
-    const cursor = A.getCursor(shown, path, offset);
-    const at = A.getCursorPosition(doc, path, cursor);
-    let alive = false;
-    try {
-      alive = at < current.length && A.getCursor(doc, path, at) === cursor;
-    } catch {
-      /* past the end */
-    }
-    return alive ? at + 1 : at;
-  };
-  const from = edit.index ? after(edit.index - 1) : 0;
-  const to = edit.remove ? after(edit.index + edit.remove - 1) : from;
+  const carry = (offset) =>
+    offset > 0
+      ? stickyCaretPosition(doc, path, current, stickyCaret(shown, path, shown.title, offset))
+      : 0;
+  const from = carry(edit.index);
+  const to = edit.remove ? carry(edit.index + edit.remove) : from;
   return { index: from, remove: Math.max(0, to - from), insert: edit.insert };
 }
