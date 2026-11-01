@@ -937,9 +937,10 @@ on their own clocks (see Agent carets). Before this, every `patch_page` and
 was already near the limit refused every request for a minute after one edit
 ([#4654](https://github.com/nteract/nteract/issues/4654)).
 [comments-scale.test.mjs](worker/comments-scale.test.mjs) builds a Page with
-200 threads and 1,000 messages and checks that a `patch_page` leaves no timer
-behind, that its background work settles within budget, and that reads during
-that window succeed.
+200 threads and 1,000 messages over a buffered record store and checks that a
+`patch_page` holds only the one-second flush timer, leaves no timer behind
+(tracking through the background work, so a timer a callback sets is seen),
+that the work settles within budget, and that reads during that window succeed.
 
 ### Outbound edits
 
