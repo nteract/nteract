@@ -42,9 +42,10 @@ const CANCEL = Object.freeze({ type: "cancel" });
  * Returns `{ state, effect }`. Effects are data, run by the caller after the
  * transition:
  * - `{ type: "glide", anchor, from, to, interrupts }` move the caret from
- *   `from` to `to` and leave a ghost at `from`. `interrupts` says a glide is
- *   still running; the caller starts from where that glide has drawn the
- *   caret, which only it knows.
+ *   `from` to `to` and leave a ghost at `from`. `from` is the previous
+ *   target; `interrupts` says the caret was gliding to it. Only the caller
+ *   knows where the caret is drawn (partway along a running glide, or short
+ *   of targets that never rendered), so it starts from there.
  * - `{ type: "cancel" }` stop the caret's motion so it sits at its anchor,
  *   and remove its ghosts.
  */
@@ -294,9 +295,26 @@ export function createGlideRunner({
     flush() {
       const batches = pending;
       pending = [];
-      for (const { effects, offset } of batches) runner.run(effects.filter(isCurrent), offset);
+      // Glides that coalesced before this commit were never drawn. The first
+      // one's start is where the caret still is, so the glide that runs
+      // starts there, not at an intermediate target.
+      const drawnAt = new Map();
+      for (const { effects, offset } of batches) {
+        const current = [];
+        for (const effect of effects) {
+          if (isCurrent(effect)) current.push(effect);
+          else if (effect.type === "glide" && !drawnAt.has(effect.session))
+            drawnAt.set(effect.session, {
+              x: effect.from.x - offset.x,
+              y: effect.from.y - offset.y,
+              height: effect.from.height,
+            });
+        }
+        runner.run(current, offset, drawnAt);
+      }
     },
-    run(effects, offset = { x: 0, y: 0 }) {
+    /** `drawnAt`: where coalesced glides left each caret, in layer coordinates. */
+    run(effects, offset = { x: 0, y: 0 }, drawnAt = new Map()) {
       for (const effect of effects) {
         const { session } = effect;
         if (effect.type !== "glide") {
@@ -304,19 +322,25 @@ export function createGlideRunner({
             ...batch,
             effects: batch.effects.filter((queued) => queued.session !== session),
           }));
+          drawnAt.delete(session);
           stop(session);
           removeGhosts(session);
           continue;
         }
+        // Start where the caret is drawn: partway along a running glide, else
+        // where coalesced glides left it, else the previous position.
         const previous = running.get(session);
-        const from =
-          effect.interrupts && previous
-            ? drawn(previous)
-            : { x: effect.from.x - offset.x, y: effect.from.y - offset.y };
+        const start = drawnAt.get(session) ?? {
+          x: effect.from.x - offset.x,
+          y: effect.from.y - offset.y,
+          height: effect.from.height,
+        };
+        drawnAt.delete(session);
+        const from = previous ? drawn(previous) : start;
         stop(session);
         const caret = caretFor(session);
         if (caret && settings.ghostFadeMs > 0 && ghostLayer)
-          addGhost(session, caret, from, effect.from.height);
+          addGhost(session, caret, from, start.height);
         if (!caret?.animate || settings.durationMs <= 0) {
           onSettled(session, effect.anchor);
           continue;

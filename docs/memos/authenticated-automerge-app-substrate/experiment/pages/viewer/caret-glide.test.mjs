@@ -455,7 +455,7 @@ test("reduced motion turned on before React commits drops the queued glide", () 
   });
 });
 
-test("a queued glide that a newer write replaced before the commit does not run", () => {
+test("glides that coalesce before a commit start from where the caret is drawn", () => {
   const h = block(settings(), new BehaviorSubject(false));
   h.measure([caret("a1", 15, 30)]);
   h.commit();
@@ -464,7 +464,51 @@ test("a queued glide that a newer write replaced before the commit does not run"
   h.commit();
   const glides = h.glides();
   assert.equal(glides.length, 1, "only the newest write glides");
-  assert.deepEqual(glides[0].keyframes[0], { transform: "translate(200px, -200px)" });
+  // From a1, drawn at layer (10, 20), to a3 at (10, 320). a2's target never rendered.
+  assert.deepEqual(glides[0].keyframes[0], { transform: "translate(0px, -300px)" });
+  const ghosts = [...h.ghosts.querySelectorAll(".agent-caret-ghost")];
+  assert.equal(ghosts.length, 1);
+  assert.equal(ghosts[0].style.left, "10px");
+  assert.equal(ghosts[0].style.top, "20px");
+});
+
+test("two writes queued during a running glide start from its eased progress", () => {
+  const h = block(settings(), new BehaviorSubject(false));
+  h.measure([caret("a1", 15, 30)]);
+  h.commit();
+  h.measure([caret("a2", 215, 130)]);
+  h.commit();
+  // Halfway along layer (10, 20) -> (210, 120): drawn at (110, 70).
+  h.glides()[0].progress = 0.5;
+  h.measure([caret("a3", 15, 330)]);
+  h.measure([caret("a4", 415, 230)]);
+  h.commit();
+  const glides = h.glides();
+  assert.equal(glides.length, 2, "one glide for the two queued writes");
+  assert.equal(glides[0].playState, "idle");
+  // To a4 at layer (410, 220) from the drawn (110, 70).
+  assert.deepEqual(glides[1].keyframes[0], { transform: "translate(-300px, -150px)" });
+  const ghost = [...h.ghosts.querySelectorAll(".agent-caret-ghost")].at(-1);
+  assert.equal(ghost.style.left, "110px");
+  assert.equal(ghost.style.top, "70px");
+});
+
+test("writes queued as a running glide finishes start from that glide's end", async () => {
+  const h = block(settings(), new BehaviorSubject(false));
+  h.measure([caret("a1", 15, 30)]);
+  h.commit();
+  h.measure([caret("a2", 215, 130)]);
+  h.commit();
+  h.measure([caret("a3", 15, 330)]);
+  h.measure([caret("a4", 415, 230)]);
+  // The a2 glide ends before React commits: the caret is drawn at its target.
+  h.glides()[0].finish();
+  await flush();
+  h.commit();
+  const glides = h.glides();
+  assert.equal(glides.length, 2);
+  // To a4 at layer (410, 220) from a2's target (210, 120), not a3's (10, 320).
+  assert.deepEqual(glides[1].keyframes[0], { transform: "translate(-200px, -100px)" });
 });
 
 test("the reduced-motion stream reads the preference when subscribed, not when created", () => {
