@@ -1,5 +1,6 @@
 import { pageAccess, pageDecision, pageGrant, pageState } from "./access.mjs";
 import { withAdmissionReason } from "./admission-reasons.mjs";
+import { missingFeatures, schemaUnsupported } from "../model/schema-features.mjs";
 
 export const hex = (bytes) => [...bytes].map((byte) => byte.toString(16).padStart(2, "0")).join("");
 export const logicalId = (bytes) => {
@@ -48,11 +49,14 @@ export function admissionCancelled(code = "native_admission_cancelled") {
  * Host-owned grants and credential ceilings apply together. The CRDT never grants access.
  */
 export class DocumentPolicy {
-  constructor({ storage, metadata, serverKey, now = Date.now }) {
+  /** `schemaFeatures` reads the document's current schema stamp
+   * (model/schema-features.mjs) for the native schema gate in put(). */
+  constructor({ storage, metadata, serverKey, now = Date.now, schemaFeatures = () => [] }) {
     this.storage = storage;
     this.metadata = metadata;
     this.serverKey = serverKey;
     this.now = now;
+    this.schemaFeatures = schemaFeatures;
     this.bindings = new Map();
     this.sessions = new Map();
     this.admissions = new Map();
@@ -251,7 +255,14 @@ export class DocumentPolicy {
     key,
     senderId,
     identity,
-    { reauthenticate, disconnect, onRenewal = () => {}, signal, waitUntil = () => {} },
+    {
+      reauthenticate,
+      disconnect,
+      onRenewal = () => {},
+      signal,
+      waitUntil = () => {},
+      features = [],
+    },
   ) {
     const access = this.account(identity);
     if (this.closed || signal?.aborted) throw signal?.reason ?? admissionCancelled();
@@ -379,6 +390,10 @@ export class DocumentPolicy {
         onRenewal,
         checkedAt: this.now(),
         checking: undefined,
+        // The schema features this connection's build declared. They live on
+        // the session, not the persisted binding: a tab keeps its signing key
+        // across a reload, and the reloaded build declares its own features.
+        features: Object.freeze([...features]),
       };
       this.sessions.set(key, session);
       return () => {
@@ -475,6 +490,25 @@ export class DocumentPolicy {
     // credential expiry is not retroactive deletion; a reader's key or revoked
     // key never gains write authority through relay.
     if (!this.authorAllowed(binding)) throw new PermissionDenied("Unknown document author");
+    // The native schema gate. A peer's own edits arrive with itself as the
+    // author; refuse them while its build lacks an id in the current stamp.
+    // Records signed by another key are relayed history: the relay rule above
+    // governs them, and the gate does not apply. Peers sync only with this
+    // host, so such a record is one the host already accepted or one its
+    // author published while admitted. Refusing every self-authored put is
+    // acceptable: edits a stale tab made before the stamp stay in its local
+    // store and sync after it reloads, because a reload keeps the tab's key
+    // and the new build declares the feature.
+    if (requestor === author) this.requireSchemaSupport(author);
+  }
+
+  /** Throw `schema_unsupported` when the document's stamp names an id the
+   * build connected as `key` didn't declare. A declaration is the client's
+   * claim: this stops stale clients from writing what they can't express, not
+   * hostile ones, whose edits write authority already bounds. */
+  requireSchemaSupport(key) {
+    const missing = missingFeatures(this.schemaFeatures(), this.sessions.get(key)?.features ?? []);
+    if (missing.length) throw withAdmissionReason(schemaUnsupported(missing), "schema_unsupported");
   }
 
   profiles() {

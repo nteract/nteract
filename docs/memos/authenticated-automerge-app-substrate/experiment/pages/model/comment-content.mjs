@@ -12,6 +12,7 @@ import {
   schema,
   validateRich,
 } from "./richtext.mjs";
+import { stampSpans } from "./schema-features.mjs";
 
 export const COMMENT_MAX_LENGTH = 16000;
 export const COMMENT_MAX_BYTES = 65536;
@@ -79,6 +80,8 @@ export function setCommentContent(doc, path, input, nativeSpans) {
     message.richText = "";
   }
   A.updateSpans(doc, [...path, "richText"], spans, adapter.updateSpansConfig());
+  // Comments share the Page's mark and block registry, so they share its stamp.
+  stampSpans(doc, spans);
   validateCommentContent(message);
 }
 

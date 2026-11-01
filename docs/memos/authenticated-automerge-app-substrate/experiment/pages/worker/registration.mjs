@@ -3,6 +3,7 @@ import { documentIdToBinary } from "@automerge/automerge-repo";
 import { generateKeyBetween } from "fractional-indexing";
 import { assertDocumentLimits } from "../model/limits.mjs";
 import { RICH_FORMAT, validateRich } from "../model/richtext.mjs";
+import { requireSupportedSchema } from "../model/schema-features.mjs";
 import { HttpError } from "./auth.mjs";
 
 export const validPageId = (id) =>
@@ -52,6 +53,10 @@ export function readRegistration(args) {
       Object.keys(doc.comments).length
     )
       throw Error("Invalid Page bootstrap");
+    // A draft from a newer build can use features this host can't express.
+    // Check the stamp before validating content against this build's schema,
+    // so a future mark is refused as a feature, not as a malformed snapshot.
+    requireSupportedSchema(doc);
     for (const [id, block] of Object.entries(doc.blocks)) {
       if (
         !validPageId(id) ||
@@ -75,6 +80,10 @@ export function readRegistration(args) {
   } catch (error) {
     if (doc) A.free(doc);
     if (error.status === 413) throw error;
+    if (error.code === "unsupported_schema_feature")
+      throw Object.assign(new HttpError(409, error.message, error.code), {
+        details: error.details,
+      });
     throw new HttpError(400, "Invalid initial Page snapshot");
   }
 }

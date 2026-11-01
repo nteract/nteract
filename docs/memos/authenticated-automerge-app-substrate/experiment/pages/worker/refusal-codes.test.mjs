@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import * as A from "@automerge/automerge";
 import { fixture, trashArgs } from "./trash-fixture.mjs";
 
 const staleHeads = ["0".repeat(64)];
@@ -83,4 +84,77 @@ test("an edit batch that cannot apply names the selector, and nothing is written
   assert.equal(comment.status, 400);
   assert.equal(comment.body.code, "invalid_comment_selector");
   assert.deepEqual(f.heads(), heads);
+});
+
+test("the host refuses every write to a Page stamped with a feature it lacks, and reads report the stamp", async (t) => {
+  const plain = await fixture(t);
+  const unstamped = await plain.tool("owner", "read_page", { comments: "none" });
+  assert.deepEqual(unstamped.body.schema_features, []);
+  const legacy = await plain.tool("owner", "read_page");
+  assert.deepEqual(legacy.body.schema_features, []);
+
+  const doc = A.change(A.load(A.save(plain.doc())), (draft) => {
+    draft.schema = { features: ["future-feature"] };
+  });
+  const f = await fixture(t, { auth: plain.auth, docBytes: A.save(doc) });
+  A.free(doc);
+  const read = await f.tool("owner", "read_page", { comments: "none" });
+  assert.equal(read.status, 200);
+  assert.deepEqual(read.body.schema_features, ["future-feature"]);
+  const heads = f.heads();
+  for (const [operation, args] of [
+    ["edit_page", { operations: [{ op: "set_title", title: "Changed" }] }],
+    [
+      "patch_page",
+      {
+        operations: [
+          { op: "replace_match", block_id: f.blockId, match_text: "Friday", replacement: "Monday" },
+        ],
+      },
+    ],
+    [
+      "patch_page",
+      {
+        conflict_scope: "target",
+        operations: [
+          { op: "format_match", block_id: f.blockId, match_text: "Friday", add: { strong: true } },
+        ],
+      },
+    ],
+    ["manage_page_comment", { action: "add", block_id: f.blockId, body: "Hello" }],
+  ]) {
+    const refused = await f.tool("owner", operation, {
+      ...args,
+      base_heads: heads,
+      idempotency_key: `schema-${operation}-${args.conflict_scope ?? "page"}`,
+    });
+    assert.equal(refused.status, 409, operation);
+    assert.equal(refused.body.code, "unsupported_schema_feature", operation);
+    assert.deepEqual(refused.body.unsupported_features, ["future-feature"], operation);
+    assert.match(refused.body.error, /future-feature/);
+  }
+  assert.deepEqual(f.heads(), heads, "nothing is written");
+});
+
+test("a receipt for edits the native gate refused answers schema_unsupported at once", async (t) => {
+  const plain = await fixture(t);
+  const doc = A.change(A.load(A.save(plain.doc())), (draft) => {
+    draft.schema = { features: ["future-feature"] };
+  });
+  const f = await fixture(t, { auth: plain.auth, docBytes: A.save(doc) });
+  A.free(doc);
+  const missing = ["e".repeat(64)];
+  for (const body of [{ heads: missing }, { heads: missing, schema_features: ["other"] }]) {
+    const refused = await f.pageCall("owner", "/api/saved", body);
+    assert.equal(refused.status, 409);
+    assert.deepEqual(refused.body, {
+      error: "This Page uses features this version doesn't support. Reload to update.",
+      code: "schema_unsupported",
+    });
+  }
+  const malformed = await f.pageCall("owner", "/api/saved", {
+    heads: missing,
+    schema_features: ["Not An Id"],
+  });
+  assert.equal(malformed.status, 400);
 });

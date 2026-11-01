@@ -8,6 +8,7 @@ import {
   markSpec,
   normalizeHighlight,
 } from "./marks.mjs";
+import { stampMarks } from "./schema-features.mjs";
 
 const MAX_TEXT_LENGTH = 262144;
 const MAX_MATCHES = 10000;
@@ -158,6 +159,12 @@ export function replaceMatch(doc, id, input, trace) {
       )
         A.mark(doc, path, { ...range, expand: markExpand(mark.name) }, mark.name, mark.value);
   }
+  // The replacement carries the marks shared by the whole match.
+  if (replacement.length)
+    stampMarks(
+      doc,
+      commonMarks.map((mark) => mark.name),
+    );
   trace?.push({ type: "text", block_id: id, start, end: start + replacement.length });
   return { op: "replace_match", block_id: id, matched: 1 };
 }
@@ -197,6 +204,7 @@ export function formatMatch(doc, id, input, trace) {
   for (const name of remove) A.unmark(doc, path, { start, end, expand: "both" }, name);
   for (const [name, value] of Object.entries(add))
     A.mark(doc, path, { start, end, expand: markExpand(name) }, name, value);
+  stampMarks(doc, Object.keys(add));
   trace?.push({ type: "text", block_id: id, start, end });
   return { op: "format_match", block_id: id, matched: 1 };
 }

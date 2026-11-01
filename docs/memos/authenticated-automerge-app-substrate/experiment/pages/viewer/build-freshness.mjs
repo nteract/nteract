@@ -138,6 +138,9 @@ function summarize(id, session) {
   };
   const reason = pauseReason(phase);
   if (reason) entry.reason = reason;
+  // A held session's schema hold: its edits wait on a local checkpoint.
+  const schema = entry.phase === "held" ? session.schemaHold : undefined;
+  if (schema) Object.assign(entry, { schema, title: session.doc?.title ?? "" });
   return entry;
 }
 
@@ -302,6 +305,10 @@ export class ReloadGate {
         else session?.queueSaved();
         return;
       }
+      case "checkpoint":
+        // The session reports `writing`, then `written` or `failed`.
+        void this.#byId.get(effect.id)?.checkpointForSchema?.();
+        return;
       case "startTimer":
         this.#timer?.unsubscribe();
         this.#timer = timer(effect.ms, this.scheduler).subscribe(() => {

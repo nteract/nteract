@@ -21,6 +21,7 @@ import {
   updateSpansConfig,
   validateMarkValue,
 } from "./marks.mjs";
+import { FEATURE_REGISTRY, stampSpans } from "./schema-features.mjs";
 
 export { safeUrl } from "./marks.mjs";
 
@@ -214,6 +215,9 @@ const imageDOM = nodes.image.toDOM;
 nodes.image.toDOM = (node) =>
   safeUrl(node.attrs.src) ? imageDOM(node) : ["span", {}, "Image omitted"];
 export const adapter = new SchemaAdapter({ nodes, marks });
+for (const block of FEATURE_REGISTRY.blocks.keys())
+  if (!adapter.nodeMappings.some((mapping) => mapping.blockName === block))
+    throw Error(`The ProseMirror schema has no block type ${block} for its schema feature`);
 // The upstream adapter currently installs attrParsers only for direct mappings,
 // not `within` mappings. Task items need both their list wrapper and checked
 // attribute; install the parser on that one resolved mapping explicitly.
@@ -705,20 +709,20 @@ export function enableRich(doc, id) {
   block.richText = "";
   setRichMarkdown(doc, id, block.markdown);
 }
+// Rich writers stamp the schema features their spans need in the same change.
 export function setRichMarkdown(doc, id, source) {
-  A.updateSpans(
-    doc,
-    textPath(id),
-    pmNodeToSpans(adapter, parseMarkdown(source)),
-    updateSpansConfig,
-  );
+  const spans = pmNodeToSpans(adapter, parseMarkdown(source));
+  A.updateSpans(doc, textPath(id), spans, updateSpansConfig);
+  stampSpans(doc, spans);
 }
 export function setRichImage(doc, id, { src, alt }) {
   // Construct the embed directly: alt text is content, never Markdown syntax.
   const tree = schema.node("doc", null, [
     schema.node("paragraph", null, [schema.node("image", { src, alt, title: null })]),
   ]);
-  A.updateSpans(doc, textPath(id), pmNodeToSpans(adapter, tree), updateSpansConfig);
+  const spans = pmNodeToSpans(adapter, tree);
+  A.updateSpans(doc, textPath(id), spans, updateSpansConfig);
+  stampSpans(doc, spans);
 }
 export function projectedBlock(block) {
   const { richText: _rich, ...result } = block;

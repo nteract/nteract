@@ -24,6 +24,9 @@ export const ADMISSION_REASONS = Object.freeze({
   activity_epoch_changed: "temporarily_unavailable",
   connection_capacity: "temporarily_unavailable",
   receipt_heads_missing: "temporarily_unavailable",
+  // A receipt for edits the native gate refused: the tab's declared build
+  // lacks a feature the Page is stamped with.
+  schema_unsupported: "schema_unsupported",
   // Native signing-key admission after the WebSocket upgrade.
   native_handshake_failed: "temporarily_unavailable",
   native_admission_cancelled: "temporarily_unavailable",

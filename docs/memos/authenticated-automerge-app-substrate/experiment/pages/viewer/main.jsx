@@ -61,6 +61,7 @@ import "./style.css";
 import "./formatting-toolbar.css";
 import { focusCreatedPageTitle, titleHandsOffToBody } from "./title-navigation.mjs";
 import { BuildUpdate, buildMonitor } from "./BuildUpdate.jsx";
+import { SchemaNotice } from "./SchemaNotice.jsx";
 import { reloadGate } from "./build-freshness.mjs";
 import { EditorLoader } from "./editor-loader.mjs";
 import { SessionHost } from "./session-host.mjs";
@@ -1000,6 +1001,12 @@ function App() {
                     <button onClick={showTrash}>Open Trash</button>
                   </div>
                 )}
+                {/* Edits the host refuses can only wait in this browser's checkpoint;
+                    the notice's Reload accepts that. */}
+                <SchemaNotice
+                  gate={session.schemaGate}
+                  reload={() => reloadGate.reload({ acceptCheckpoints: true })}
+                />
                 <input
                   ref={titleInput}
                   className="document-title"

@@ -18,6 +18,12 @@ import { applyComment } from "../model/comments.mjs";
 import { createPageData, initializePage, projectPage } from "../model/page.mjs";
 import { unsentCommentsMarkdown } from "../model/markdown-export.mjs";
 import {
+  BUILD_FEATURES,
+  SCHEMA_GATE_INITIAL,
+  schemaGateStep,
+  stampFeatures,
+} from "../model/schema-features.mjs";
+import {
   decodeSnapshot,
   encodeSnapshot,
   forgetLocalPage,
@@ -121,10 +127,14 @@ export const signingKeyRefused = (admission, cause) =>
     code: "SIGNING_KEY_REFUSED",
     admission,
   });
-export function pageSyncAddress(pageId, href, activityEpoch) {
+/** `features` is this build's schema features. The host refuses native edits
+ * from a tab whose build lacks an id the Page is stamped with; no parameter
+ * means the baseline, as for builds from before the stamp. */
+export function pageSyncAddress(pageId, href, activityEpoch, features = []) {
   const address = new URL(`/api/sync?page=${encodeURIComponent(pageId)}`, href);
   address.protocol = address.protocol === "https:" ? "wss:" : "ws:";
   if (activityEpoch) address.searchParams.set("activity_epoch", activityEpoch);
+  if (features.length) address.searchParams.set("schema_features", [...features].sort().join(","));
   return address;
 }
 async function exclusiveIdentity(scope) {
@@ -192,6 +202,12 @@ export class PageSession {
   // Reasons edits are held while the session keeps syncing: the reload gate's
   // "reload" and the build floor's "protocol". They are not lifecycle phases.
   editPauses = new Set();
+  /** The schema gate (schemaGateStep in model/schema-features.mjs):
+   * `editable: false` when the Page is stamped with a feature this build
+   * lacks, or the host refused this tab's edits for that reason. Content is
+   * then read-only while sync continues; access and Trash actions are
+   * unaffected. Stamps only grow, so it never reopens. */
+  schemaGate = SCHEMA_GATE_INITIAL;
   /** The session's phase (see session-machine.mjs). Every lifecycle flag
    * below derives from it, and effects run from its transitions. */
   phase$ = new Store(viewerSessionMachine.initial);
@@ -242,9 +258,12 @@ export class PageSession {
       scheduler = asyncScheduler,
       random = Math.random,
       now = monotonicNow,
+      buildFeatures = BUILD_FEATURES,
     } = {},
   ) {
     this.pageId = pageId;
+    // The schema features this viewer can edit. Tests inject their own.
+    this.buildFeatures = buildFeatures;
     this.refreshSession = refreshSession;
     this.authentication = authentication;
     this.scheduler = scheduler;
@@ -546,8 +565,53 @@ export class PageSession {
   emit() {
     this.notify(this.listeners);
   }
+  /** Re-derive the schema gate from the replica. Runs before observers see a
+   * change, so an editor never applies a local edit over content it can't
+   * express. */
+  /** The reload gate's view of a schema hold (reload-gate-machine.mjs):
+   * undefined unless the schema gate holds edits the host won't accept;
+   * otherwise `refused` until a checkpoint for the reload is written, then
+   * `writing`, `written` or `failed`. */
+  get schemaHold() {
+    if (this.schemaGate.editable || !this.recoveryPending) return undefined;
+    return this.schemaCheckpoint ?? "refused";
+  }
+  /** Write every local edit to this browser's store so a reload can go ahead
+   * without the host's receipt. The schema gate keeps the replica read-only,
+   * so no later local edit can escape the checkpoint. */
+  checkpointForSchema() {
+    if (this.schemaCheckpoint === "writing") return this.schemaCheckpointing;
+    this.schemaCheckpoint = "writing";
+    this.emit();
+    this.schemaCheckpointing = (async () => {
+      let written = false;
+      try {
+        await this.repo?.flush();
+        await this.persistLocal({ pending: true });
+        written = !!this.localPage && !!this.handle;
+      } catch {
+        // Reported as failed below; the edits stay in this tab.
+      }
+      if (!this.alive) return;
+      this.schemaCheckpoint = written ? "written" : "failed";
+      this.emit();
+    })();
+    return this.schemaCheckpointing;
+  }
+  observeSchema() {
+    this.stepSchema({ type: "observe", doc: this.doc });
+  }
+  stepSchema(event) {
+    const { gate } = schemaGateStep(this.schemaGate, event, this.buildFeatures);
+    if (gate === this.schemaGate) return;
+    const editable = this.schemaGate.editable;
+    this.schemaGate = gate;
+    if (gate.editable !== editable) this.updateCapabilities();
+    this.emit();
+  }
   receiveChange(event) {
     if (!this.alive) return;
+    this.observeSchema();
     this.resolveToolHints();
     const change = { ...event, remote: this.localDepth === 0 };
     if (this.composing && change.remote) this.deferredBefore ??= event.patchInfo.before;
@@ -607,8 +671,10 @@ export class PageSession {
   }
   updateCapabilities() {
     const enabled = !this.accessDenied && !this.accessReloadRequired && !this.editsPaused;
-    this.canWrite = enabled && !!this.credentialCanWrite && !!this.access?.canWrite;
-    this.canComment = enabled && !!this.credentialCanWrite && !!this.access?.canComment;
+    // Content and comments are document writes; the schema gate holds both.
+    const content = enabled && this.schemaGate.editable;
+    this.canWrite = content && !!this.credentialCanWrite && !!this.access?.canWrite;
+    this.canComment = content && !!this.credentialCanWrite && !!this.access?.canComment;
     this.canManageAccess = enabled && !!this.credentialCanWrite && !!this.access?.canManageAccess;
     this.canDelete = enabled && !!this.credentialCanWrite && !!this.access?.canDelete;
     this.canRestore = enabled && !!this.credentialCanWrite && !!this.access?.canRestore;
@@ -984,6 +1050,7 @@ export class PageSession {
       await writeLocalPage(this.identity, this.localPage, { replica: this.replicaId });
       unconfirmed = false;
     }
+    this.observeSchema();
     this.handle.on("change", (event) => this.receiveChange(event));
     this.handle.on("ephemeral-message", (event) => this.ephemeral(event));
     if (this.accessDenied)
@@ -1301,7 +1368,12 @@ export class PageSession {
     const expected = new N.PeerId(bytes(this.connection.serverPeerId));
     // Pin admission to the host snapshot we just discovered. If that host
     // restarts before the upgrade, reconnect must discover its new epoch.
-    const address = pageSyncAddress(this.pageId, location.href, this.activityEpoch);
+    const address = pageSyncAddress(
+      this.pageId,
+      location.href,
+      this.activityEpoch,
+      this.buildFeatures,
+    );
     // Keep the browser socket itself: toTransport consumes the native wrapper,
     // whereas the raw socket remains cancellable when account/page access changes.
     const socket = new WebSocket(address);
@@ -1466,7 +1538,12 @@ export class PageSession {
     if (!this.canWrite) throw Error("This Page is read only");
     this.localDepth++;
     try {
-      const stored = this.handle.change(fn);
+      const stored = this.handle.change((doc) => {
+        fn(doc);
+        // Every local write repairs a stamp left incomplete by concurrent
+        // first stamps, in the same change.
+        stampFeatures(doc);
+      });
       this.queueSaved({ edit: true });
       const receipt = this.receiptState;
       Promise.resolve(stored).catch((error) => {
@@ -1900,7 +1977,9 @@ export class PageSession {
           signal: AbortSignal.timeout(30_000),
           method: "POST",
           headers: { "Content-Type": "application/json", ...admissionHeaders },
-          body: JSON.stringify({ heads }),
+          // The host refuses a receipt for edits it won't accept because this
+          // build lacks a feature the Page is stamped with.
+          body: JSON.stringify({ heads, schema_features: this.buildFeatures }),
         },
       );
       if (!isCurrent()) return;
@@ -1936,6 +2015,15 @@ export class PageSession {
       if (isCurrent()) {
         if (error.code === "LOCAL_PAGE_DELETED") {
           await this.markDeleted();
+          return;
+        }
+        if (error.code === "schema_unsupported") {
+          // Retrying can't help: these edits need a build with the feature.
+          // The schema notice explains it; no second banner.
+          this.stepSchema({ type: "refused" });
+          this.syncStatus({ type: "stalled", revision: receipt, localCopy: !!this.localPage });
+          this.renderStatus();
+          this.showReceiptState();
           return;
         }
         if (error.status === 401) this.requireSignIn();

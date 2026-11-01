@@ -370,12 +370,19 @@ export function errorResponse(error, stage = "request") {
         "home_page_protected",
         "page_has_children",
         "lifecycle_unsettled",
+        "unsupported_schema_feature",
       ].includes(error?.code) && { code: error.code }),
       ...(["page_quota_exceeded", "trash_capacity"].includes(error?.code) &&
         Number.isSafeInteger(error.details?.limit) &&
         Number.isSafeInteger(error.details?.count) && {
           limit: error.details.limit,
           count: error.details.count,
+        }),
+      ...(error?.code === "unsupported_schema_feature" &&
+        Array.isArray(error.details?.features) && {
+          unsupported_features: error.details.features
+            .slice(0, 32)
+            .map((id) => String(id).slice(0, 64)),
         }),
       ...(["edit_conflict", "resync_required"].includes(error?.code) && {
         ...(Array.isArray(error.details?.conflicts) && {

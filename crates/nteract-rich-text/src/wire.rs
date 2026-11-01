@@ -1,4 +1,4 @@
-use crate::{markdown_to_spans, spans_to_markdown, ImportOptions, Span, MAX_INPUT_BYTES};
+use crate::{features, markdown_to_spans, spans_to_markdown, ImportOptions, Span, MAX_INPUT_BYTES};
 use serde::Deserialize;
 use serde_json::json;
 
@@ -15,6 +15,12 @@ enum Request {
     Export {
         spans: Vec<Span>,
     },
+    /// The schema features these spans need.
+    Features {
+        spans: Vec<Span>,
+    },
+    /// The compiled feature registry, for parity checks with JavaScript.
+    Registry {},
 }
 
 fn markdown_kind() -> String {
@@ -46,6 +52,16 @@ pub fn process_json(bytes: &[u8]) -> String {
                     .map(|spans| json!({"ok":true,"spans":spans})),
                     Request::Export { spans } => spans_to_markdown(&spans)
                         .map(|markdown| json!({"ok":true,"markdown":markdown})),
+                    Request::Features { spans } => features::span_features(&spans)
+                        .map(|features| json!({"ok":true,"features":features})),
+                    Request::Registry {} => features::registry().map(|registry| {
+                        json!({
+                            "ok": true,
+                            "features": registry.features(),
+                            "marks": registry.mark_features(),
+                            "blocks": registry.block_features(),
+                        })
+                    }),
                 }
                 .map_err(|e| e.to_string())
             })
@@ -69,9 +85,26 @@ mod tests {
             br#"{"op":"other"}"#,
             br#"{"op":"import","markdown":"x","ignored":true}"#,
             br#"{"op":"export","spans":[{"type":"unknown","value":"x"}]}"#,
+            br#"{"op":"registry","extra":true}"#,
+            br#"{"op":"features"}"#,
         ] {
             let result: serde_json::Value = serde_json::from_str(&process_json(input)).unwrap();
             assert_eq!(result["ok"], false);
         }
+    }
+
+    #[test]
+    fn feature_requests_report_the_compiled_registry() {
+        let registry: serde_json::Value =
+            serde_json::from_str(&process_json(br#"{"op":"registry"}"#)).unwrap();
+        assert_eq!(
+            registry,
+            json!({"ok":true,"features":[],"marks":{},"blocks":{}})
+        );
+        let features: serde_json::Value = serde_json::from_str(&process_json(
+            br#"{"op":"features","spans":[{"type":"text","value":"x","marks":{"strong":true}}]}"#,
+        ))
+        .unwrap();
+        assert_eq!(features, json!({"ok":true,"features":[]}));
     }
 }

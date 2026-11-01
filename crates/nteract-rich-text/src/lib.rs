@@ -5,6 +5,7 @@
 //! objects or run Markdown conversion for each keystroke.
 
 mod export;
+pub mod features;
 mod import;
 pub mod marks;
 #[cfg(feature = "automerge")]

@@ -32,6 +32,10 @@ pub struct MarkSpec {
     pub expand: String,
     /// Markdown projection: `native` syntax or one fixed `html` tag.
     pub markdown: String,
+    /// The schema feature (an id from `features.json`) a document that uses
+    /// this mark is stamped with. `None` is baseline.
+    #[serde(default)]
+    pub feature: Option<String>,
 }
 
 /// The stored Automerge shape of one mark value.

@@ -20,6 +20,9 @@ export const ADMISSION_OUTCOMES = Object.freeze({
   temporarily_unavailable: Object.freeze({ status: 503, close: 4503, retry: "backoff" }),
   // Malformed request or native input. A newer client build may succeed.
   request_rejected: Object.freeze({ status: 400, close: 4400, retry: "backoff" }),
+  // The Page is stamped with a schema feature this client's build lacks. Its
+  // edits are refused until it reloads into a build that has the feature.
+  schema_unsupported: Object.freeze({ status: 409, close: 4426, retry: "stop" }),
 });
 
 /** Sent by viewers that understand the unified missing/unreadable response.
