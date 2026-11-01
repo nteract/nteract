@@ -378,3 +378,128 @@ resource, auth, persistence, memory, and recovery qualification, plus configurat
 of the current editor/persistence profile; this staging configuration does not
 select Page9's flags. Do not repoint the existing preview domain as part of a
 Page9 release.
+
+## Copying a Project to a new target
+
+Deployment never copies data. When a new target needs a Project from an older
+one, [project-transfer.mjs](scripts/project-transfer.mjs) copies it through the
+public `/mcp` endpoint of each target, from outside the Worker. It copies each
+Page's title and Markdown body, the Page tree and sibling order. It does not
+copy comments, sharing, Trash, history or private image bytes.
+
+### Credentials
+
+Each step reads a bearer token from the environment and sends it only in the
+`Authorization` header. Nothing prints it.
+
+| Step | Variable | Needs |
+| --- | --- | --- |
+| export | `PAGES_SOURCE_TOKEN` or `PAGES_SOURCE_TOKEN_FILE` | read access to the source Project (`cloud:read`) |
+| import | `PAGES_TARGET_TOKEN` or `PAGES_TARGET_TOKEN_FILE` | write access on the target (`cloud:read` + `cloud:write`) |
+
+Use an Anaconda API key from the provider environment the target verifies
+against (production for Page9 and later). Create it at
+https://anaconda.com/app/profile/api-keys, linked from each target's `/connect`
+page: User Resources read-only for export, read and write for import, Platform
+Channels no access. Save it with the `/connect` instructions, which write
+`~/.config/pages/anaconda-api-key`, and point `*_FILE` at that file so the key
+stays out of shell history. A Pages OAuth access token (`pages_…`) also works on
+`/mcp`, but it expires after ten minutes. Only the source Project's owner can
+list it. The target Project belongs to the account that imports it.
+
+### Export
+
+```sh
+PAGES_SOURCE_TOKEN_FILE=~/.config/pages/anaconda-api-key \
+  node scripts/project-transfer.mjs export \
+  --source https://page9.runtimed.run \
+  --project prj_797f9475-6855-4ce5-8203-9f66cfc417c1 \
+  --out guide.bundle.json
+```
+
+The bundle is JSON for review before import:
+
+```json
+{
+  "format": "nteract-pages-project-bundle",
+  "version": 1,
+  "bundle_id": "<uuid>",
+  "source": { "origin": "https://page9.runtimed.run", "project_id": "prj_…", "home_page_id": "…" },
+  "exported_at": "2026-11-01T00:00:00.000Z",
+  "project": { "title": "…", "description": "…" },
+  "pages": [
+    {
+      "source_page_id": "…",
+      "parent_source_id": null,
+      "position": "a0",
+      "home": true,
+      "title": "…",
+      "markdown": "…",
+      "blocks": ["…", "…"],
+      "preserved_markdown": false,
+      "private_images": [],
+      "comment_threads": 0
+    }
+  ]
+}
+```
+
+`pages` is in tree order: the home Page first, then each subtree depth first,
+siblings by source position, so parents always come before children.
+`markdown` is the body: the Page's blocks joined by a blank line. `blocks`
+appears only when a Page has more than one block. Markdown import preserves a
+whole block verbatim when any of it is unsupported syntax, so the importer
+writes each block separately to keep one Preserved Markdown block from
+swallowing its neighbours. If you edit a Page's `markdown`, edit `blocks` to
+match or delete it; import refuses a mismatch.
+
+The report lists Pages with `preserved_markdown` (carried verbatim; check that
+they render as intended), Pages with `private_images` (their
+`/api/pages/<id>/assets/<sha256>` references point at the source Page's assets
+and will not load on the target), comment threads that stay behind, and links to
+source Pages outside the Project.
+
+### Import
+
+```sh
+node scripts/project-transfer.mjs import --bundle guide.bundle.json --dry-run
+PAGES_TARGET_TOKEN_FILE=~/.config/pages/anaconda-api-key \
+  node scripts/project-transfer.mjs import \
+  --target https://page10.runtimed.run \
+  --bundle guide.bundle.json
+```
+
+`--dry-run` checks the bundle and prints where each Page lands without a
+network call. Import refuses the bundle's own source origin. It runs in this
+order:
+
+1. `create_project` with the bundle's title and description. Its home Page is
+   the source home Page's counterpart: import fills it in and never creates a
+   sibling for it.
+2. `create_page` for every other Page in bundle order, by `parent_id`. A Page at
+   the source Project's top level goes under the target home Page, because a
+   Project is its home Page on Page10 and later. `targetPlacement` is the only
+   function that decides this. New Pages append after their siblings, so bundle
+   order is sibling order.
+3. After every Page exists, one guarded `edit_page` per Page that needs it: the
+   home Page's title and body, the remaining blocks of a multi-block Page, and
+   internal links. Source links `/p/<id>`, `/?page=<id>`, `/project/<id>` and
+   `/s/<id>`, and root-relative `](/p/<id>` destinations, point at the new IDs.
+   Links to Pages outside the bundle stay as they are and are reported.
+4. A listing of the target Project checks that every Page is under its expected
+   parent, in source order. Import exits 1 if not.
+
+Every write uses the repository's retry contract. Creates use the catalog
+`retry_token` from `list_pages` with a key of its `retry_key_prefix` plus a
+nonce hashed from `(bundle_id, source_page_id)`. Edits use the `read_page`
+token the same way. The state file (`<bundle>.state.json` by default, or
+`--state`, mode 0600) records the source-to-target ID map, finished steps,
+the catalog token, and the exact arguments of the request in flight before it
+is sent. A failed or interrupted import resumes when you rerun the same command:
+an uncertain request is resent with the identical token, key and payload, which
+replays its receipt rather than creating a second Page. A finished import sends
+no writes on rerun. Keep the state file until the import reports success. If it
+is lost, a fresh import refuses a target that already has a Project with the
+bundle's title; delete the partial Project or pass `--allow-existing-title`.
+Retry tokens last seven days: a request still uncertain after that answers
+`retry_expired`, and the importer stops so you can check the target first.
