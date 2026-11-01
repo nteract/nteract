@@ -1,7 +1,14 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { createAuthFixture } from "../../auth-fixtures.mjs";
-import { authenticate, requireSameOrigin, readJson, errorResponse, logFailure } from "./auth.mjs";
+import {
+  agentLabel,
+  authenticate,
+  requireSameOrigin,
+  readJson,
+  errorResponse,
+  logFailure,
+} from "./auth.mjs";
 import worker from "./index.mjs";
 import { recordPersistenceTimeout } from "./record-persistence.mjs";
 
@@ -166,6 +173,19 @@ test("an MCP session id becomes an account-scoped presence tag, never the raw id
     const ignored = await authenticate(request("not valid!", path), fixture.env);
     assert.equal(ignored.session, undefined, path);
   }
+});
+
+test("a blank agent label means no label, so an unset {env:...} template still connects", () => {
+  const request = (value) =>
+    new Request("https://pages.test/mcp", {
+      headers: value === undefined ? {} : { "x-pages-agent": value },
+    });
+  assert.equal(agentLabel(request()), undefined);
+  assert.equal(agentLabel(request("")), undefined);
+  assert.equal(agentLabel(request("   ")), undefined);
+  assert.equal(agentLabel(request(" release agent ")), "release agent");
+  assert.throws(() => agentLabel(request("x".repeat(81))), /Invalid agent label/);
+  assert.throws(() => agentLabel(request("a\tb")), /Invalid agent label/);
 });
 
 test("cookie writes and WebSocket upgrades require same-origin, API keys never permit foreign Origin", () => {
