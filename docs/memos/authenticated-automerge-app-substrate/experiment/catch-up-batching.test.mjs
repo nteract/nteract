@@ -8,7 +8,7 @@ import {
   getRecordMetadata,
   recordMetadataKey,
 } from "@automerge/automerge-repo/sedimentree/automerge";
-import { sedimentreeId } from "@automerge/automerge-repo/sedimentree";
+import { recordBytes, sedimentreeId } from "@automerge/automerge-repo/sedimentree";
 import { MemoryByteStore } from "@automerge/automerge-repo-subduction";
 import {
   StorageBridge,
@@ -48,12 +48,16 @@ class Store {
   }
 }
 
-/** n loose commits on one actor, fixed timestamps. */
-function looseCommits(n) {
+/** Loose commits on one actor, fixed timestamps. `payloads[i]`, when given,
+ * is the size of incompressible bytes change i stores, to set record sizes. */
+function looseCommits(n, payloads = []) {
   let doc = A.init({ actor: "0e".repeat(16) });
+  let state = 7;
+  const noise = (size) =>
+    Uint8Array.from({ length: size }, () => (state = (state * 1103515245 + 12345) >>> 0) >>> 24);
   for (let i = 0; i < n; i++)
     doc = A.change(doc, { time: TIME + i }, (draft) => {
-      draft[`k${i}`] = i;
+      draft[`k${i}`] = payloads[i] ? noise(payloads[i]) : i;
     });
   return A.getAllChanges(doc).map((blob) => {
     const change = A.decodeChange(blob);
@@ -61,11 +65,11 @@ function looseCommits(n) {
   });
 }
 
-async function storeBatch(store, records, events) {
+async function storeBatch(store, records, events, bounds = limits) {
   const signer = N.MemorySigner.fromBytes(new Uint8Array(32).fill(44));
   const bridge = new StorageBridge(
     store,
-    limits,
+    bounds,
     (_id, batch) => events.push({ type: "notify", keys: batch.map(recordKey) }),
     () => events.push({ type: "failed" }),
   );
@@ -103,6 +107,35 @@ test("a native batch notifies every saved record once, in save order, in bounded
     events.map((event) => event.keys.length),
     [128, 128, 44],
   );
+});
+
+test("a chunk never crosses the byte bound; a record over it is notified alone", async () => {
+  // One actor's chain, so dependencies fix the save order to the input order.
+  const records = looseCommits(7, [400, 400, 400, 4000, 400, 400, 400]);
+  const sizes = new Map(records.map((record) => [recordKey(record), recordBytes(record)]));
+  const small = Math.max(...[0, 1, 2, 4, 5, 6].map((i) => recordBytes(records[i])));
+  const batchBytes = Math.floor(small * 2.5);
+  assert.ok(recordBytes(records[3]) > batchBytes, "fixture needs one record over the bound");
+  assert.ok(
+    Math.min(...[0, 1, 2].map((i) => recordBytes(records[i]))) * 3 > batchBytes,
+    "fixture needs three small records to cross the bound",
+  );
+  const store = new Store();
+  const events = [];
+  await storeBatch(store, records, events, { ...limits, batchBytes });
+  assert.deepEqual(
+    events.flatMap((event) => event.keys),
+    records.map(recordKey),
+  );
+  // Two small records fit; the third would cross and starts a chunk; that
+  // partial chunk is sent before the oversized record, which goes alone.
+  assert.deepEqual(
+    events.map((event) => event.keys.length),
+    [2, 1, 1, 2, 1],
+  );
+  for (const { keys } of events)
+    if (keys.length > 1)
+      assert.ok(keys.reduce((total, key) => total + sizes.get(key), 0) <= batchBytes);
 });
 
 test("a failed native batch notifies its resolved prefix before reporting the failure", async () => {

@@ -76,21 +76,21 @@ type PendingNotification = {
   /** A resolved save. Outside a native batch it notifies now. Inside one it
    * joins the batch's next notification, sent when a chunk fills or the batch
    * ends, so a consumer applies a catch-up in a few loads instead of one per
-   * record. */
+   * record. A chunk never crosses the byte bound: a record that would cross it
+   * starts the next chunk, and a record larger than the bound goes alone. */
   private saved(sid: SedimentreeId, record: SedimentreeRecord): void {
     const batch = this.notifying
     if (!batch) {
       this.notify(sid, [record])
       return
     }
-    if (batch.sid !== sid) this.release(batch)
+    const maxBytes = this.limits.batchBytes ?? 1024 * 1024
+    const bytes = recordBytes(record)
+    if (batch.sid !== sid || batch.bytes + bytes > maxBytes) this.release(batch)
     batch.sid = sid
     batch.records.push(record)
-    batch.bytes += recordBytes(record)
-    if (
-      batch.records.length >= (this.limits.batchRecords ?? 128) ||
-      batch.bytes >= (this.limits.batchBytes ?? 1024 * 1024)
-    )
+    batch.bytes += bytes
+    if (batch.records.length >= (this.limits.batchRecords ?? 128) || batch.bytes >= maxBytes)
       this.release(batch)
   }
 

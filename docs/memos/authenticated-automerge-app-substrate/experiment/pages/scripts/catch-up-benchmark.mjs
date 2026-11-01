@@ -10,8 +10,13 @@
 // host's heads. Each run checks that the receiver ends with the host's heads,
 // changes and document. Medians are printed per workload; LAT=<ms> adds one-way
 // wire latency.
+//
+// These are Node numbers with MemoryByteStore. The browser also pays an
+// IndexedDB transaction per saved record and editor/React work per change
+// event; this script measures neither.
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import * as A from "@automerge/automerge";
 import * as N from "@automerge/subduction";
@@ -112,8 +117,9 @@ const words = "the quick brown fox jumps over a lazy dog while agents edit pages
 const actors = ["aa", "bb", "cc", "dd"].map((x) => x.repeat(16));
 
 // Change hashes decide where sedimentree fragment boundaries fall, and so how
-// many records a catch-up carries. Fixed actors, block ID and timestamps make
-// each seed one reproducible history; seeds vary the layout between runs.
+// many records a catch-up carries. Fixed actors, block ID and timestamps, root
+// change included, make each seed one reproducible history; seeds vary the
+// layout between runs. Native batching and generated keys still vary per run.
 function edit(doc, i, seed) {
   if (i % 50 === 0) doc = A.clone(doc, actors[(i / 50) % 4]);
   return A.change(doc, { time: seed * 1_000_000 + i }, (d) => {
@@ -122,17 +128,30 @@ function edit(doc, i, seed) {
   });
 }
 
-async function run(base, behind, seed, latency) {
+function history(base, behind, seed) {
   const data = createPageData({ pageId: "bench", title: "Bench" });
   const blockId = "00000000-0000-4000-8000-000000000000";
   data.blocks = { [blockId]: { ...Object.values(data.blocks)[0], id: blockId } };
-  let doc = A.change(A.from(data, { actor: "ee".repeat(16) }), { time: seed * 1_000_000 }, (d) =>
-    initializePage(d),
-  );
+  let doc = A.change(A.init({ actor: "ee".repeat(16) }), { time: seed * 1_000_000 }, (d) => {
+    Object.assign(d, data);
+    initializePage(d);
+  });
   for (let i = 0; i < base; i++) doc = edit(doc, i, seed);
   const baseDoc = A.clone(doc);
   for (let i = base; i < base + behind; i++) doc = edit(doc, i, seed);
-  const report = { base, behind, seed, latency };
+  return { doc, baseDoc };
+}
+
+const headsId = (doc) =>
+  createHash("sha256").update(A.getHeads(doc).sort().join()).digest("hex").slice(0, 12);
+
+async function run(base, behind, seed, latency) {
+  const { doc, baseDoc } = history(base, behind, seed);
+  // One seed must name one history, or runs on different builds don't compare.
+  const again = history(base, behind, seed);
+  assert.equal(headsId(again.doc), headsId(doc), "history is not reproducible");
+  assert.equal(headsId(again.baseDoc), headsId(baseDoc), "base history is not reproducible");
+  const report = { base, behind, seed, latency, heads: headsId(doc), baseHeads: headsId(baseDoc) };
 
   const id = interpretAsDocumentId(generateAutomergeUrl());
   const tree = documentIdToBinary(id);

@@ -213,7 +213,9 @@ formed that a consumer could merge, in Node or with IndexedDB.
 
 A native batch now notifies its resolved saves in chunks bounded by the
 backend's `batchRecords` and `batchBytes`, the same bounds as initial replay.
-The bridge queue runs one mutation at a time, so one pending notification
+As in initial replay, a record that would cross the byte bound starts the next
+chunk, and a record larger than the bound is notified alone, so no notification
+exceeds the watch's replay byte budget on its own account. The bridge queue runs one mutation at a time, so one pending notification
 suffices. Each resolved save notifies exactly once, in save order, before the
 batch's transaction ends. A failed batch notifies its resolved prefix before
 the owner sees the failure. Single commit and fragment saves notify alone, as
@@ -224,12 +226,13 @@ heads name. Records already held, or queued behind a missing dependency, leave
 it unchanged. Native also saves some catch-up records one call at a time; most
 of those hold history the replica already applied, and they now skip the rescan.
 
-`catch-up-batching.test.mjs` covers chunked notification in save order, the
-notified prefix of a failed batch, and a real catch-up with listener and timer
+`catch-up-batching.test.mjs` covers chunked notification in save order, byte
+crossings and an oversized record, the notified prefix of a failed batch, and a real catch-up with listener and timer
 edits interleaved: both peers converge, change events form one unbroken chain
 of heads from the cached copy to the final document, and local edits submit
 exactly the records a whole-document rescan before each edit would select.
-`pages/scripts/catch-up-benchmark.mjs` measures the client path. Stored keys,
+`pages/scripts/catch-up-benchmark.mjs` measures the client path in Node with
+`MemoryByteStore`; it does not measure IndexedDB or editor work. Stored keys,
 frames, signatures and wire messages are unchanged. The upstream fix belongs in
 `StorageBridge.saveBatchAll` and the delegate's `records` handling.
 

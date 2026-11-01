@@ -74,7 +74,7 @@
       {
         "path": "packages/automerge-repo-subduction/src/storage.ts",
         "before": "3a335064a7741c16677f374b67957b5033479a7a6168631c54cbea2f1a9005ec",
-        "after": "8bc908e3ec93c4ff2df335e3a6c8de753144470aaf7479288b75e629202615de"
+        "after": "c13da8f677672ba78161336729e5f9f092559d8dcfc60dacb17aa53651115e27"
       },
       {
         "path": "packages/automerge-repo-subduction/src/index.ts",
