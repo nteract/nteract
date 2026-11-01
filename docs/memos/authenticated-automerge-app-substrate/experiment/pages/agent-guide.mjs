@@ -790,7 +790,7 @@ node_index) and changes only its marks:
 }
 \`\`\`
 
-add maps mark names to values: strong, em and code take true; highlight takes
+add maps mark names to values: strong, em, strike and code take true; highlight takes
 yellow, green, blue, pink or a #rrggbb color; link takes {"href": "...",
 "title": "..."} with an http, https, mailto, tel or relative destination.
 Adding a mark the text already has replaces its value across the range, so
@@ -801,7 +801,17 @@ refuses text inside one.
 
 Markdown is a projection of the rich text, not its storage. Highlights read as
 <mark data-color="green">text</mark>; insert_markdown, replace_block_markdown and
-create_page accept that tag. Other HTML stays literal text.
+create_page accept that tag. ~~text~~ is strikethrough, --- on its own line is a
+horizontal rule, and reference links ([text][ref] with a [ref]: definition)
+become ordinary links. Pages has no math and no other HTML: a write with
+$...$, $$...$$ or any other tag outside code fails with code
+unsupported_markdown, naming the construct, line and column. So does Markdown
+that would lose content: an image inside a link or formatting, a table row with
+more cells than its header, a link with no text, a reference definition no
+link uses, or anything else that would drop a link, image or text
+("unrepresentable"). Put it in a code
+span or code block, or escape $ as \\$ and < as \\<, then retry. Reads escape
+literal $ and < the same way, so Markdown you read is always writable.
 
 To restructure a block (headings, lists, tables), replace it with
 edit_page replace_block_markdown, or insert, move and delete whole blocks.
@@ -890,6 +900,15 @@ succeeds. Every error has a stable code. Branch on code, not on the error messag
 - edit_conflict, resync_required: see Guarded edits above.
 - unsupported_schema_feature: the Page uses features this version of Pages
   can't edit (listed in unsupported_features). Read it; don't retry the edit.
+- unsupported_markdown: the Markdown has something Pages can't represent.
+  unsupported gives construct ("math", "html", "wrapped-image",
+  "table-cells", "empty-link", "definition" or "unrepresentable"), line,
+  column and excerpt.
+- preserved_markdown_converting (503): Pages is converting Markdown an older
+  version saved on this Page. read_page still works. Wait, read_page again,
+  retry; if it persists, the Page needs an operator.
+  Rewrite that part as code, escaped text or plain Markdown and retry with a
+  new key.
 - idempotency_conflict: the key was used for a different request. Use a new key.
 - invalid_idempotency_key: the key doesn't match the format above.
 - page_quota_exceeded, trash_capacity: the account has reached its Page limit,

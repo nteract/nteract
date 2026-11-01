@@ -56,9 +56,24 @@ test("Pages headings, nested lists, quotes, hard breaks, code params and links r
     assert.equal(blockMarkdown(rewritten.blocks.one), blockMarkdown(native.blocks.one), source);
   }
 });
-test("preserved unsupported Markdown and instruction nodes retain exact source and kind", () => {
+// Older builds stored preserved blocks; this build only reads them.
+const preserved = (source) =>
+  A.change(A.from({ blocks: { one: { id: "one", kind: "markdown", markdown: source } } }), (d) => {
+    enableRich(d, "one");
+    A.updateSpans(
+      d,
+      textPath("one"),
+      encode(schema.doc([OpaqueBlock.of({ source, importId: "", kind: "markdown" })])),
+    );
+  });
+test("stored preserved Markdown and instruction nodes retain exact source and kind", () => {
   const source = "<div>preserved unsupported markup</div>";
-  const doc = fixture(source),
+  // Import never writes one: this HTML is literal text in a paragraph.
+  assert.equal(
+    decode(A.spans(fixture(source), textPath("one"))).doc.content[0].type,
+    Paragraph.type,
+  );
+  const doc = preserved(source),
     tree = decode(A.spans(doc, textPath("one"))).doc;
   assert.equal(tree.content[0].type, OpaqueBlock);
   assert.equal(tree.content[0].param.source, source);
@@ -77,7 +92,7 @@ test("native positions preserve paragraph ends and opaque leaf endpoints", () =>
     assert.equal(map.amToWg[map.wgToAm[end]], end);
     pos += block.length;
   }
-  const table = decode(A.spans(fixture("<div>preserved markup</div>"), textPath("one")));
+  const table = decode(A.spans(preserved("<div>preserved markup</div>"), textPath("one")));
   assert.deepEqual(table.map.wgToAm, [0, 1]);
   assert.deepEqual(table.map.amToWg, [0, 1]);
 });

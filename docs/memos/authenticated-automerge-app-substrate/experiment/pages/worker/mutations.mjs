@@ -4,7 +4,12 @@ import { openingTitleWarning } from "../model/title-warning.mjs";
 import { guardPassageEdits } from "../model/passage-edits.mjs";
 import { guardCommentIntent } from "../model/comment-guard.mjs";
 import { requireSupportedSchema } from "../model/schema-features.mjs";
-import { inspectOperation, reserveOperation, listOperationEntries } from "./operation-journal.mjs";
+import {
+  INTERNAL_PREFIX,
+  inspectOperation,
+  reserveOperation,
+  listOperationEntries,
+} from "./operation-journal.mjs";
 
 const COMMENT_OPERATIONS = ["manage_page_comment", "reply_page_comment"];
 
@@ -63,8 +68,13 @@ export async function documentMutation({
   apply,
   flush,
   admission,
+  // The host's own migration: its key is in the reserved internal key space,
+  // with its own journal capacity (operation-journal.mjs).
+  internal = false,
 }) {
-  const key = mutationKey(args);
+  const key = internal
+    ? `${INTERNAL_PREFIX}${mutationKey(args).slice("host/operation/".length)}`
+    : mutationKey(args);
   const digest = await fingerprint(operation, args, identity);
   const inspected = await inspectOperation(storage, {
     key,
@@ -198,6 +208,27 @@ export async function documentMutation({
   }
   await admission?.release(key);
   return entry.receipt;
+}
+
+/** Finish one recorded, still-pending journal entry by its key: apply its
+ * recorded changes (a no-op where the handle holds them), flush, and record
+ * the receipt as terminal. The host uses it to keep retrying an internal
+ * migration whose recovery at startup failed. A missing or terminal entry
+ * only releases the key. */
+export async function replayRecordedMutation({ storage, handle, key, flush, admission }) {
+  const entry = await storage.get(key);
+  if (entry?.pending && entry.changes) {
+    if (admission) await admission.replay(key, entry, handle);
+    else await handle.update((doc) => A.applyChanges(doc, entry.changes)[0]);
+    if (!A.hasHeads(handle.doc(), entry.receipt.heads))
+      throw new Error("Recorded edit dependencies are unavailable");
+    await flush();
+    const completed = { ...entry, pending: false };
+    delete completed.changes;
+    await storage.put(key, completed);
+    await storage.sync();
+  }
+  await admission?.release(key);
 }
 
 export async function recoverDocumentMutations(storage, handle, flush, admission) {

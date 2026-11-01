@@ -27,6 +27,13 @@
       "markdown": "native"
     },
     {
+      "name": "strike",
+      "value": { "type": "flag" },
+      "expand": "both",
+      "markdown": "native",
+      "feature": "strike"
+    },
+    {
       "name": "highlight",
       "value": {
         "type": "string",

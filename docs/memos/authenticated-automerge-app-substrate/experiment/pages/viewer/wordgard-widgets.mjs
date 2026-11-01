@@ -1,11 +1,8 @@
 import { Decoration, Widget, KeyBinding } from "wordgard/editor";
 import { GardState, GardSelection, Transaction } from "wordgard/state";
 import { Elt } from "wordgard/doc";
-import { OpaqueBlock, CodeBlock, CodeBlockLanguage, decode } from "./wordgard-model.mjs";
-import { nativeTableSpans } from "../model/richtext.mjs";
-import { tablePreviewFragment } from "./table-fragment.mjs";
+import { CodeBlock, CodeBlockLanguage } from "./wordgard-model.mjs";
 import { mermaidTitle } from "./mermaid-title.mjs";
-import "./table-fragment.css";
 
 // The renderer is a separate content-hashed file (scripts/browser-mermaid.mjs).
 // A deploy retires this tab's copy, so a failed import usually means the
@@ -19,52 +16,6 @@ export function onRendererUnavailable(listener) {
 }
 const mounted = new WeakMap();
 let diagramId = 0;
-const table = Widget.define({
-  eq: (a, b) => a.source === b.source && a.kind === b.kind && a.editable === b.editable,
-  render(value, editor) {
-    const dom = document.createElement("section");
-    dom.className = "wordgard-widget preserved-table";
-    // A click on rendered content must not focus an insertion point in the
-    // surrounding editor. Keep native text selection and child controls usable.
-    dom.tabIndex = -1;
-    const source = document.createElement("pre");
-    source.className = "preserved-table-source";
-    source.textContent = value.source;
-    const fragment = value.kind === "markdown" ? tablePreviewFragment(value.source) : null;
-    if (!fragment) {
-      dom.classList.add("opaque");
-      dom.append(source);
-      return dom;
-    }
-    dom.append(fragment);
-    if (value.editable && nativeTableSpans(value.source)) {
-      const edit = dom.appendChild(document.createElement("button"));
-      edit.type = "button";
-      edit.className = "wordgard-table-convert";
-      edit.textContent = "Edit table";
-      edit.onclick = () => {
-        if (!editor.editable) return;
-        const current = editor.nodeFromDOM(dom);
-        if (!current || current.node.type !== OpaqueBlock) return;
-        const spans = nativeTableSpans(current.node.param.source);
-        if (!spans) return;
-        const next = decode(spans).doc;
-        editor.dispatch({
-          changes: {
-            from: current.pos,
-            to: current.pos + current.node.length,
-            insert: next.content,
-          },
-          selection: (cx) => GardSelection.near(cx, current.pos + 3, 1),
-          userEvent: "input.table",
-        });
-        editor.focus();
-      };
-    }
-    return dom;
-  },
-  propagateEvent: false,
-});
 const isMermaid = (node) =>
   node?.type === CodeBlock.type && node.mark(CodeBlockLanguage)?.trim().toLowerCase() === "mermaid";
 const codeSource = (node) =>
@@ -397,10 +348,6 @@ export function wordgardWidgets() {
   return [
     editingDiagrams,
     visibleDiagramSelection,
-    Decoration.Tag.shape.derived(OpaqueBlock, (state) => {
-      const editable = !state.readOnly;
-      return (node) => table.of({ ...node.param, editable });
-    }),
     Decoration.Point.source.of((state) => {
       const entries = [];
       state.doc.iterate((node, pos) => {

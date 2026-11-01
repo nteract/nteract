@@ -771,7 +771,7 @@ details.document-actions > div button {
 .toolbar-select:hover {
   background: var(--accent);
 }
-/* Preserved Markdown is also displayed by Wordgard's opaque widget. */
+/* A preserved Markdown block waiting for the host's conversion. */
 .opaque pre {
   background: var(--muted);
   border: 1px solid var(--border);
@@ -1103,8 +1103,12 @@ dialog::backdrop {
     background: color-mix(in srgb, var(--warning) 48%, transparent);
   }
 }
-.opaque small {
+.opaque::before {
+  content: attr(data-pages-notice);
+  display: block;
+  margin-bottom: 0.35rem;
   color: var(--muted-foreground);
+  font-size: 0.82rem;
 }
 @keyframes illumination {
   from {

@@ -326,6 +326,7 @@ try {
       "Text style",
       "Bold",
       "Italic",
+      "Strikethrough",
       "Link",
       "Inline code",
       "Highlight",

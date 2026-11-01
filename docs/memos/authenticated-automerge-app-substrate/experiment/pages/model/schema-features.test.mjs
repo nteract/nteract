@@ -23,11 +23,13 @@ import {
   unsupportedFeatures,
 } from "./schema-features.mjs";
 
-// A test-only registry: highlight and native tables become non-baseline.
+// A test-only registry: highlight and native tables become non-baseline, on
+// top of the real features.
 const FIXTURE = featureRegistry(
   {
     version: 1,
     features: [
+      ...featureFile.features,
       { id: "test-highlight", description: "Highlights, for tests." },
       { id: "test-tables", description: "Native tables, for tests.", blocks: ["table"] },
     ],
@@ -64,14 +66,78 @@ const stamped = (features) =>
     draft.schema = { features };
   });
 
-test("today's registry is all baseline", () => {
-  assert.deepEqual(featureFile.features, []);
-  assert.deepEqual(BUILD_FEATURES, []);
-  assert.equal(
-    MARK_REGISTRY.marks.some((mark) => mark.feature !== undefined),
-    false,
+test("today's registry: strikethrough, horizontal rules and the preserved-block conversion", () => {
+  assert.deepEqual(BUILD_FEATURES, ["horizontal-rule", "preserved-markdown-converted", "strike"]);
+  assert.deepEqual(
+    MARK_REGISTRY.marks.filter((mark) => mark.feature).map((mark) => [mark.name, mark.feature]),
+    [["strike", "strike"]],
   );
-  assert.equal(FEATURE_REGISTRY.marks.size + FEATURE_REGISTRY.blocks.size, 0);
+  assert.deepEqual([...FEATURE_REGISTRY.marks], [["strike", "strike"]]);
+  assert.deepEqual([...FEATURE_REGISTRY.blocks], [["horizontal-rule", "horizontal-rule"]]);
+});
+
+// A build from before these features opens such a Page read-only, rather than
+// dropping marks or blocks it can't read.
+test("strikethrough and horizontal rules stamp their features in the same change", () => {
+  const cases = [
+    ["create", (draft) => initializePage(draft, "Old ~~plan~~."), ["strike"]],
+    [
+      "insert_markdown",
+      (draft) =>
+        applyPageOperation(draft, {
+          operation: "edit_page",
+          arguments: { operations: [{ op: "insert_markdown", markdown: "Above\n\n---\n\nBelow" }] },
+        }),
+      ["horizontal-rule"],
+    ],
+    [
+      "format_match",
+      (draft) =>
+        applyPageOperation(draft, {
+          operation: "patch_page",
+          arguments: {
+            operations: [
+              {
+                op: "format_match",
+                block_id: orderedBlockIds(draft)[0],
+                match_text: "Friday",
+                add: { strike: true },
+              },
+            ],
+          },
+        }),
+      ["strike"],
+    ],
+    [
+      "comment",
+      (draft) =>
+        applyPageOperation(draft, {
+          operation: "manage_page_comment",
+          arguments: {
+            action: "add",
+            block_id: orderedBlockIds(draft)[0],
+            body: "Drop ~~this~~.",
+            body_format: "markdown",
+          },
+          identity,
+        }),
+      ["strike"],
+    ],
+  ];
+  for (const [name, write, expected] of cases) {
+    const before = name === "create" ? A.from(createPageData({ pageId: "p", title: "x" })) : page();
+    const after = A.change(before, write);
+    const changes = A.getChanges(before, after);
+    assert.equal(changes.length, 1, name);
+    const [applied] = A.applyChanges(A.load(A.save(before)), changes);
+    assert.deepEqual(documentFeatures(applied), expected, name);
+    // A build without the feature reads the Page as read-only.
+    assert.deepEqual(unsupportedFeatures(applied, []), expected, name);
+    assert.equal(schemaGate(applied, []).editable, false, name);
+    assert.throws(() => requireSupportedSchema(applied, []), {
+      code: "unsupported_schema_feature",
+    });
+  }
 });
 
 test("the registry refuses ids and references that don't line up", () => {
@@ -102,7 +168,7 @@ test("the registry refuses ids and references that don't line up", () => {
     [{ features: [] }, { marks: [{ name: "em", feature: "nope" }] }, /unknown schema feature/],
   ])
     assert.throws(() => featureRegistry(features, markFile), message);
-  assert.deepEqual(FIXTURE.ids, ["test-highlight", "test-tables"]);
+  assert.deepEqual(FIXTURE.ids, [...BUILD_FEATURES, "test-highlight", "test-tables"].sort());
 });
 
 test("an unstamped document is editable and reports no features", () => {

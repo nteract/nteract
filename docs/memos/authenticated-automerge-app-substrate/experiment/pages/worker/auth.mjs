@@ -380,7 +380,18 @@ export function errorResponse(error, stage = "request") {
         "page_has_children",
         "lifecycle_unsettled",
         "unsupported_schema_feature",
+        "unsupported_markdown",
+        "preserved_markdown_converting",
       ].includes(error?.code) && { code: error.code }),
+      ...(error?.code === "unsupported_markdown" &&
+        error.details?.unsupported && {
+          unsupported: {
+            construct: String(error.details.unsupported.construct).slice(0, 32),
+            line: Number(error.details.unsupported.line) || 1,
+            column: Number(error.details.unsupported.column) || 1,
+            excerpt: String(error.details.unsupported.excerpt ?? "").slice(0, 80),
+          },
+        }),
       ...(["page_quota_exceeded", "trash_capacity"].includes(error?.code) &&
         Number.isSafeInteger(error.details?.limit) &&
         Number.isSafeInteger(error.details?.count) && {

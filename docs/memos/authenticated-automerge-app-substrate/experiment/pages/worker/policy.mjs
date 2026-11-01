@@ -51,12 +51,21 @@ export function admissionCancelled(code = "native_admission_cancelled") {
 export class DocumentPolicy {
   /** `schemaFeatures` reads the document's current schema stamp
    * (model/schema-features.mjs) for the native schema gate in put(). */
-  constructor({ storage, metadata, serverKey, now = Date.now, schemaFeatures = () => [] }) {
+  constructor({
+    storage,
+    metadata,
+    serverKey,
+    now = Date.now,
+    schemaFeatures = () => [],
+    writeFence = () => undefined,
+  }) {
     this.storage = storage;
     this.metadata = metadata;
     this.serverKey = serverKey;
     this.now = now;
     this.schemaFeatures = schemaFeatures;
+    // Returns the refusal while the host holds peer writes, or undefined.
+    this.writeFence = writeFence;
     this.bindings = new Map();
     this.sessions = new Map();
     this.admissions = new Map();
@@ -490,6 +499,10 @@ export class DocumentPolicy {
     // credential expiry is not retroactive deletion; a reader's key or revoked
     // key never gains write authority through relay.
     if (!this.authorAllowed(binding)) throw new PermissionDenied("Unknown document author");
+    // While the host converts preserved Markdown blocks, no peer record lands,
+    // relayed or self-authored: either could be a competing conversion.
+    const fence = this.writeFence();
+    if (fence) throw fence;
     // The native schema gate. A peer's own edits arrive with itself as the
     // author; refuse them while its build lacks an id in the current stamp.
     // Records signed by another key are relayed history: the relay rule above
@@ -498,7 +511,10 @@ export class DocumentPolicy {
     // author published while admitted. Refusing every self-authored put is
     // acceptable: edits a stale tab made before the stamp stay in its local
     // store and sync after it reloads, because a reload keeps the tab's key
-    // and the new build declares the feature.
+    // and the new build declares the feature. The one exception is an edit
+    // to a preserved Markdown block, which the host converts itself. This
+    // gate sees keys, not records, so the reloaded viewer sets such edits
+    // aside before it connects (PageSession.recoverPreservedBlockEdits).
     if (requestor === author) this.requireSchemaSupport(author);
   }
 

@@ -124,7 +124,7 @@ try {
     await expect(cell(page, 2, 2).locator("a")).toHaveText("Guide");
     await expect(cell(page, 2, 2).locator("code")).toHaveText("code");
     await expect(table(page).locator('[contenteditable="false"]')).toHaveCount(0);
-    await expect(page.locator(".preserved-table")).toHaveCount(0);
+    await expect(page.locator("[data-pages-opaque]")).toHaveCount(0);
     for (const row of [0, 1, 2]) {
       assert.equal(
         await cell(page, row, 1).evaluate((el) => getComputedStyle(el).textAlign),

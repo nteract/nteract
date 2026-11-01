@@ -276,6 +276,58 @@ There is no repair tool. To repair a Page:
    the receipts. Restore it from a backup, or ask the owner to grant access
    again.
 
+### Preserved Markdown conversion
+
+Older builds stored Markdown they couldn't import as one read-only preserved
+block. The Page host converts each one when it loads, creates, registers or
+restores a Page (README, "Preserved blocks"). While it converts, the Page is
+read-only: viewers connect and sync it down, discovery reports `converting`
+and the viewer shows a read-only notice, native puts are refused, and HTTP
+edits get `503 preserved_markdown_converting`. A restart while records still
+can't be stored doesn't stop the Page from starting; it stays readable and
+keeps retrying.
+
+The conversion journals in its own key space (`host/operation/internal:`),
+outside the client receipt budgets, so a full legacy receipt store can't
+block it. A run that fails for a reason that passes (storage, a pending edit)
+retries with backoff, 5 seconds doubling to 5 minutes. Connections and edits
+don't start retries early.
+
+Once a run's journal entry is reserved, the host retries that exact intent,
+indefinitely, whatever the failure, and the Page stays fenced and read-only.
+It never reauthors or abandons the run, because its change may already be in
+the serving document. A restart replays the same journal entry. Every five
+failures it logs `page.preserved_markdown_stuck` (below). Such a Page usually
+can't store records at all, for example a `413` on record capacity, so it
+couldn't take writes anyway. An operator frees storage or record capacity
+(see Page quotas); the host's next retry then finishes the same intent on its
+own, and the fence clears.
+
+A run that fails before anything is reserved, for a reason that won't pass
+(the change is too large, the conversion throws, or a request-shaped
+refusal), retries once converting each source as plain text. If that fails
+too, the host logs one line:
+
+```json
+{"service":"nteract-pages-native","event":"page.preserved_markdown_stuck","page_id":"…","reason":"history_capacity","timestamp":"…"}
+```
+
+`reason` is a bounded code (`history_capacity`, `conversion_error`, an error
+code, or `status_<n>`); the line carries no content. After a deploy, search the
+target's logs for `page.preserved_markdown_stuck`. If the Page is still
+fenced (reads work, edits get `preserved_markdown_converting`), it is retrying
+a reserved run: free storage or capacity as above. Otherwise the Page is stuck
+and not fenced: it edits normally, and its preserved blocks stay read-only with a notice. The next
+load tries again. To recover a Page now, as its owner or with an agent:
+
+1. `read_page` the Page. A preserved block reads as the Markdown it would
+   convert to.
+2. `edit_page` with `replace_block_markdown` on that block, passing the
+   Markdown from step 1. If it's refused with `unsupported_markdown` or for
+   size, simplify or split the Markdown and retry.
+
+The replacement removes the preserved block, so nothing is left to convert.
+
 ## Page quotas
 
 Each account may hold a limited number of active Pages and, separately, the
@@ -629,14 +681,15 @@ The bundle is JSON for review before import:
 `pages` is in tree order: the home Page first, then each subtree depth first,
 siblings by source position, so parents always come before children.
 `markdown` is the body: the Page's blocks joined by a blank line. `blocks`
-appears only when a Page has more than one block. Markdown import preserves a
-whole block verbatim when any of it is unsupported syntax, so the importer
-writes each block separately to keep one Preserved Markdown block from
-swallowing its neighbours. If you edit a Page's `markdown`, edit `blocks` to
-match or delete it; import refuses a mismatch.
+appears only when a Page has more than one block. Each block is written
+separately. A Page10 target refuses math and HTML with `unsupported_markdown`,
+so import writes such a block as the literal text it reads as, the same text
+the target's own conversion of a preserved block produces. If you edit a Page's
+`markdown`, edit `blocks` to match or delete it; import refuses a mismatch.
 
-The report lists Pages with `preserved_markdown` (carried verbatim; check that
-they render as intended), Pages with `private_images` (their
+The report lists Pages with `preserved_markdown` (the source stored preserved
+blocks or non-Markdown blocks; check that they read as intended),
+Pages with `private_images` (their
 `/api/pages/<id>/assets/<sha256>` references point at the source Page's assets
 and will not load on the target), comment threads that stay behind, and links to
 source Pages outside the Project.

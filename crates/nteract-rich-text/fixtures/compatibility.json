@@ -2165,192 +2165,60 @@
       "markdown": "| A | B | C |\n| --- | --- | --- |\n| only |\n| x | y | z | extra |",
       "expected_spans": [
         {
-          "type": "block",
-          "value": {
-            "type": "table",
-            "parents": [],
-            "attrs": {},
-            "isEmbed": false
-          }
-        },
-        {
-          "type": "block",
-          "value": {
-            "type": "table-row",
-            "parents": [
-              "table"
-            ],
-            "attrs": {},
-            "isEmbed": false
-          }
-        },
-        {
-          "type": "block",
-          "value": {
-            "type": "table-header",
-            "parents": [
-              "table",
-              "table-row"
-            ],
-            "attrs": {},
-            "isEmbed": false
-          }
-        },
-        {
           "type": "text",
-          "value": "A",
+          "value": "| A | B | C |",
           "marks": {}
         },
         {
           "type": "block",
           "value": {
-            "type": "table-header",
+            "type": "hard-break",
             "parents": [
-              "table",
-              "table-row"
+              "paragraph"
             ],
             "attrs": {},
-            "isEmbed": false
+            "isEmbed": true
           }
         },
         {
           "type": "text",
-          "value": "B",
+          "value": "| --- | --- | --- |",
           "marks": {}
         },
         {
           "type": "block",
           "value": {
-            "type": "table-header",
+            "type": "hard-break",
             "parents": [
-              "table",
-              "table-row"
+              "paragraph"
             ],
             "attrs": {},
-            "isEmbed": false
+            "isEmbed": true
           }
         },
         {
           "type": "text",
-          "value": "C",
+          "value": "| only |",
           "marks": {}
         },
         {
           "type": "block",
           "value": {
-            "type": "table-row",
+            "type": "hard-break",
             "parents": [
-              "table"
+              "paragraph"
             ],
             "attrs": {},
-            "isEmbed": false
-          }
-        },
-        {
-          "type": "block",
-          "value": {
-            "type": "table-cell",
-            "parents": [
-              "table",
-              "table-row"
-            ],
-            "attrs": {},
-            "isEmbed": false
+            "isEmbed": true
           }
         },
         {
           "type": "text",
-          "value": "only",
-          "marks": {}
-        },
-        {
-          "type": "block",
-          "value": {
-            "type": "table-cell",
-            "parents": [
-              "table",
-              "table-row"
-            ],
-            "attrs": {},
-            "isEmbed": false
-          }
-        },
-        {
-          "type": "block",
-          "value": {
-            "type": "table-cell",
-            "parents": [
-              "table",
-              "table-row"
-            ],
-            "attrs": {},
-            "isEmbed": false
-          }
-        },
-        {
-          "type": "block",
-          "value": {
-            "type": "table-row",
-            "parents": [
-              "table"
-            ],
-            "attrs": {},
-            "isEmbed": false
-          }
-        },
-        {
-          "type": "block",
-          "value": {
-            "type": "table-cell",
-            "parents": [
-              "table",
-              "table-row"
-            ],
-            "attrs": {},
-            "isEmbed": false
-          }
-        },
-        {
-          "type": "text",
-          "value": "x",
-          "marks": {}
-        },
-        {
-          "type": "block",
-          "value": {
-            "type": "table-cell",
-            "parents": [
-              "table",
-              "table-row"
-            ],
-            "attrs": {},
-            "isEmbed": false
-          }
-        },
-        {
-          "type": "text",
-          "value": "y",
-          "marks": {}
-        },
-        {
-          "type": "block",
-          "value": {
-            "type": "table-cell",
-            "parents": [
-              "table",
-              "table-row"
-            ],
-            "attrs": {},
-            "isEmbed": false
-          }
-        },
-        {
-          "type": "text",
-          "value": "z",
+          "value": "| x | y | z | extra |",
           "marks": {}
         }
       ],
-      "canonical_markdown": "| A | B | C |\n| --- | --- | --- |\n| only |  |  |\n| x | y | z |"
+      "canonical_markdown": "| A | B | C |\\\n| --- | --- | --- |\\\n| only |\\\n| x | y | z | extra |"
     },
     {
       "id": "table-pipes",
@@ -3145,7 +3013,7 @@
           "marks": {}
         }
       ],
-      "canonical_markdown": "Literal <b>text</b> stays visible."
+      "canonical_markdown": "Literal \\<b>text\\</b> stays visible."
     },
     {
       "id": "highlight-strong",
@@ -3540,403 +3408,503 @@
       "canonical_markdown": "![x y](cat.png)"
     },
     {
-      "id": "opaque-marker-html",
+      "id": "literal-marker-html",
       "markdown": "<marker>not a highlight</marker>",
       "import_id": "marker-import",
       "expected_spans": [
         {
-          "type": "block",
-          "value": {
-            "type": "pages-opaque",
-            "parents": [],
-            "attrs": {
-              "source": "<marker>not a highlight</marker>",
-              "importId": "marker-import",
-              "kind": "markdown"
-            },
-            "isEmbed": false
-          }
+          "type": "text",
+          "value": "<marker>not a highlight</marker>",
+          "marks": {}
         }
       ],
-      "canonical_markdown": "<marker>not a highlight</marker>"
+      "canonical_markdown": "\\<marker>not a highlight\\</marker>"
     },
     {
-      "id": "opaque-mark-autolink",
+      "id": "literal-mark-autolink",
       "markdown": "<mark:x>",
       "import_id": "mark-autolink-import",
       "expected_spans": [
         {
-          "type": "block",
-          "value": {
-            "type": "pages-opaque",
-            "parents": [],
-            "attrs": {
-              "source": "<mark:x>",
-              "importId": "mark-autolink-import",
-              "kind": "markdown"
-            },
-            "isEmbed": false
-          }
+          "type": "text",
+          "value": "<mark:x>",
+          "marks": {}
         }
       ],
-      "canonical_markdown": "<mark:x>"
+      "canonical_markdown": "\\<mark:x>"
     },
     {
-      "id": "opaque-mark-nbsp",
+      "id": "literal-mark-nbsp",
       "markdown": "<mark >x</mark>",
       "import_id": "mark-nbsp-import",
       "expected_spans": [
         {
-          "type": "block",
-          "value": {
-            "type": "pages-opaque",
-            "parents": [],
-            "attrs": {
-              "source": "<mark >x</mark>",
-              "importId": "mark-nbsp-import",
-              "kind": "markdown"
-            },
-            "isEmbed": false
-          }
+          "type": "text",
+          "value": "<mark >x</mark>",
+          "marks": {}
         }
       ],
-      "canonical_markdown": "<mark >x</mark>"
+      "canonical_markdown": "\\<mark >x\\</mark>"
     },
     {
-      "id": "opaque-html",
+      "id": "literal-html",
       "markdown": "<section>Preserve this</section>",
       "import_id": "html-import",
       "expected_spans": [
         {
-          "type": "block",
-          "value": {
-            "type": "pages-opaque",
-            "parents": [],
-            "attrs": {
-              "source": "<section>Preserve this</section>",
-              "importId": "html-import",
-              "kind": "markdown"
-            },
-            "isEmbed": false
-          }
+          "type": "text",
+          "value": "<section>Preserve this</section>",
+          "marks": {}
         }
       ],
-      "canonical_markdown": "<section>Preserve this</section>"
+      "canonical_markdown": "\\<section>Preserve this\\</section>"
     },
     {
-      "id": "opaque-math",
+      "id": "literal-math",
       "markdown": "The value is $x + 1$.",
       "import_id": "math-import",
       "expected_spans": [
         {
-          "type": "block",
-          "value": {
-            "type": "pages-opaque",
-            "parents": [],
-            "attrs": {
-              "source": "The value is $x + 1$.",
-              "importId": "math-import",
-              "kind": "markdown"
-            },
-            "isEmbed": false
-          }
+          "type": "text",
+          "value": "The value is $x + 1$.",
+          "marks": {}
         }
       ],
-      "canonical_markdown": "The value is $x + 1$."
+      "canonical_markdown": "The value is \\$x + 1\\$."
     },
     {
-      "id": "opaque-display-math-spaced",
+      "id": "literal-display-math-spaced",
       "markdown": "Before $$ \\{x\\} $$ after.",
       "import_id": "display-spaced-import",
       "expected_spans": [
         {
-          "type": "block",
-          "value": {
-            "type": "pages-opaque",
-            "parents": [],
-            "attrs": {
-              "source": "Before $$ \\{x\\} $$ after.",
-              "importId": "display-spaced-import",
-              "kind": "markdown"
-            },
-            "isEmbed": false
-          }
+          "type": "text",
+          "value": "Before $$ \\{x\\} $$ after.",
+          "marks": {}
         }
       ],
-      "canonical_markdown": "Before $$ \\{x\\} $$ after."
+      "canonical_markdown": "Before \\$\\$ \\\\{x\\\\} \\$\\$ after."
     },
     {
-      "id": "opaque-display-math-inline",
+      "id": "literal-display-math-inline",
       "markdown": "Inline $$x$$ math.",
       "import_id": "display-inline-import",
       "expected_spans": [
         {
-          "type": "block",
-          "value": {
-            "type": "pages-opaque",
-            "parents": [],
-            "attrs": {
-              "source": "Inline $$x$$ math.",
-              "importId": "display-inline-import",
-              "kind": "markdown"
-            },
-            "isEmbed": false
-          }
+          "type": "text",
+          "value": "Inline $$x$$ math.",
+          "marks": {}
         }
       ],
-      "canonical_markdown": "Inline $$x$$ math."
+      "canonical_markdown": "Inline \\$\\$x\\$\\$ math."
     },
     {
-      "id": "opaque-display-math-block",
+      "id": "literal-display-math-block",
       "markdown": "Before\n\n$$\n\\{x\\}\n$$\n\nAfter",
       "import_id": "display-block-import",
       "expected_spans": [
         {
           "type": "block",
           "value": {
-            "type": "pages-opaque",
+            "type": "paragraph",
             "parents": [],
-            "attrs": {
-              "source": "Before\n\n$$\n\\{x\\}\n$$\n\nAfter",
-              "importId": "display-block-import",
-              "kind": "markdown"
-            },
+            "attrs": {},
             "isEmbed": false
           }
+        },
+        {
+          "type": "text",
+          "value": "Before",
+          "marks": {}
+        },
+        {
+          "type": "block",
+          "value": {
+            "type": "paragraph",
+            "parents": [],
+            "attrs": {},
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "text",
+          "value": "$$",
+          "marks": {}
+        },
+        {
+          "type": "block",
+          "value": {
+            "type": "hard-break",
+            "parents": [
+              "paragraph"
+            ],
+            "attrs": {},
+            "isEmbed": true
+          }
+        },
+        {
+          "type": "text",
+          "value": "\\{x\\}",
+          "marks": {}
+        },
+        {
+          "type": "block",
+          "value": {
+            "type": "hard-break",
+            "parents": [
+              "paragraph"
+            ],
+            "attrs": {},
+            "isEmbed": true
+          }
+        },
+        {
+          "type": "text",
+          "value": "$$",
+          "marks": {}
+        },
+        {
+          "type": "block",
+          "value": {
+            "type": "paragraph",
+            "parents": [],
+            "attrs": {},
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "text",
+          "value": "After",
+          "marks": {}
         }
       ],
-      "canonical_markdown": "Before\n\n$$\n\\{x\\}\n$$\n\nAfter"
+      "canonical_markdown": "Before\n\n\\$\\$\\\n\\\\{x\\\\}\\\n\\$\\$\n\nAfter"
     },
     {
-      "id": "opaque-display-math-escapes",
+      "id": "literal-display-math-escapes",
       "markdown": "Escapes $$\\frac{a}{b} \\_ \\{x\\}$$ stay.",
       "import_id": "display-escapes-import",
       "expected_spans": [
         {
-          "type": "block",
-          "value": {
-            "type": "pages-opaque",
-            "parents": [],
-            "attrs": {
-              "source": "Escapes $$\\frac{a}{b} \\_ \\{x\\}$$ stay.",
-              "importId": "display-escapes-import",
-              "kind": "markdown"
-            },
-            "isEmbed": false
-          }
+          "type": "text",
+          "value": "Escapes $$\\frac{a}{b} \\_ \\{x\\}$$ stay.",
+          "marks": {}
         }
       ],
-      "canonical_markdown": "Escapes $$\\frac{a}{b} \\_ \\{x\\}$$ stay."
+      "canonical_markdown": "Escapes \\$\\$\\\\frac{a}{b} \\\\\\_ \\\\{x\\\\}\\$\\$ stay."
     },
     {
-      "id": "opaque-display-opener-lf",
+      "id": "literal-display-opener-lf",
       "markdown": "Before\n$$\n\\{x\\}",
       "import_id": "opener-lf-import",
       "expected_spans": [
         {
+          "type": "text",
+          "value": "Before $$",
+          "marks": {}
+        },
+        {
           "type": "block",
           "value": {
-            "type": "pages-opaque",
-            "parents": [],
-            "attrs": {
-              "source": "Before\n$$\n\\{x\\}",
-              "importId": "opener-lf-import",
-              "kind": "markdown"
-            },
-            "isEmbed": false
+            "type": "hard-break",
+            "parents": [
+              "paragraph"
+            ],
+            "attrs": {},
+            "isEmbed": true
           }
+        },
+        {
+          "type": "text",
+          "value": "\\{x\\}",
+          "marks": {}
         }
       ],
-      "canonical_markdown": "Before\n$$\n\\{x\\}"
+      "canonical_markdown": "Before $$\\\n\\\\{x\\\\}"
     },
     {
-      "id": "opaque-display-opener-cr",
+      "id": "literal-display-opener-cr",
       "markdown": "Before\r$$\n\\{x\\}",
       "import_id": "opener-cr-import",
       "expected_spans": [
         {
+          "type": "text",
+          "value": "Before $$",
+          "marks": {}
+        },
+        {
           "type": "block",
           "value": {
-            "type": "pages-opaque",
-            "parents": [],
-            "attrs": {
-              "source": "Before\r$$\n\\{x\\}",
-              "importId": "opener-cr-import",
-              "kind": "markdown"
-            },
-            "isEmbed": false
+            "type": "hard-break",
+            "parents": [
+              "paragraph"
+            ],
+            "attrs": {},
+            "isEmbed": true
           }
+        },
+        {
+          "type": "text",
+          "value": "\\{x\\}",
+          "marks": {}
         }
       ],
-      "canonical_markdown": "Before\r$$\n\\{x\\}"
+      "canonical_markdown": "Before $$\\\n\\\\{x\\\\}"
     },
     {
-      "id": "opaque-display-opener-crlf",
+      "id": "literal-display-opener-crlf",
       "markdown": "Before\r\n$$\r\n\\{x\\}",
       "import_id": "opener-crlf-import",
       "expected_spans": [
         {
+          "type": "text",
+          "value": "Before $$",
+          "marks": {}
+        },
+        {
           "type": "block",
           "value": {
-            "type": "pages-opaque",
-            "parents": [],
-            "attrs": {
-              "source": "Before\r\n$$\r\n\\{x\\}",
-              "importId": "opener-crlf-import",
-              "kind": "markdown"
-            },
-            "isEmbed": false
+            "type": "hard-break",
+            "parents": [
+              "paragraph"
+            ],
+            "attrs": {},
+            "isEmbed": true
           }
+        },
+        {
+          "type": "text",
+          "value": "\\{x\\}",
+          "marks": {}
         }
       ],
-      "canonical_markdown": "Before\r\n$$\r\n\\{x\\}"
+      "canonical_markdown": "Before $$\\\n\\\\{x\\\\}"
     },
     {
-      "id": "opaque-display-opener-cr-indented",
+      "id": "literal-display-opener-cr-indented",
       "markdown": "Before\r\r \t$$\r\\{x\\}",
       "import_id": "opener-cr-indented-import",
       "expected_spans": [
         {
           "type": "block",
           "value": {
-            "type": "pages-opaque",
+            "type": "paragraph",
+            "parents": [],
+            "attrs": {},
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "text",
+          "value": "Before",
+          "marks": {}
+        },
+        {
+          "type": "block",
+          "value": {
+            "type": "code-block",
             "parents": [],
             "attrs": {
-              "source": "Before\r\r \t$$\r\\{x\\}",
-              "importId": "opener-cr-indented-import",
-              "kind": "markdown"
+              "params": ""
             },
             "isEmbed": false
           }
+        },
+        {
+          "type": "text",
+          "value": "$$",
+          "marks": {}
+        },
+        {
+          "type": "block",
+          "value": {
+            "type": "paragraph",
+            "parents": [],
+            "attrs": {},
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "text",
+          "value": "{x}",
+          "marks": {}
         }
       ],
-      "canonical_markdown": "Before\r\r \t$$\r\\{x\\}"
+      "canonical_markdown": "Before\n\n```\n$$\n```\n\n{x}"
     },
     {
-      "id": "opaque-display-opener-feff",
+      "id": "literal-display-opener-feff",
       "markdown": "Before\n﻿$$\n\\{x\\}",
       "import_id": "opener-feff-import",
       "expected_spans": [
         {
+          "type": "text",
+          "value": "Before ﻿$$",
+          "marks": {}
+        },
+        {
           "type": "block",
           "value": {
-            "type": "pages-opaque",
-            "parents": [],
-            "attrs": {
-              "source": "Before\n﻿$$\n\\{x\\}",
-              "importId": "opener-feff-import",
-              "kind": "markdown"
-            },
-            "isEmbed": false
+            "type": "hard-break",
+            "parents": [
+              "paragraph"
+            ],
+            "attrs": {},
+            "isEmbed": true
           }
+        },
+        {
+          "type": "text",
+          "value": "\\{x\\}",
+          "marks": {}
         }
       ],
-      "canonical_markdown": "Before\n﻿$$\n\\{x\\}"
+      "canonical_markdown": "Before ﻿$$\\\n\\\\{x\\\\}"
     },
     {
-      "id": "opaque-display-opener-leading-bom",
+      "id": "literal-display-opener-leading-bom",
       "markdown": "﻿$$\n\\{x\\}",
       "import_id": "opener-leading-bom-import",
       "expected_spans": [
         {
+          "type": "text",
+          "value": "﻿$$",
+          "marks": {}
+        },
+        {
           "type": "block",
           "value": {
-            "type": "pages-opaque",
-            "parents": [],
-            "attrs": {
-              "source": "﻿$$\n\\{x\\}",
-              "importId": "opener-leading-bom-import",
-              "kind": "markdown"
-            },
-            "isEmbed": false
+            "type": "hard-break",
+            "parents": [
+              "paragraph"
+            ],
+            "attrs": {},
+            "isEmbed": true
           }
+        },
+        {
+          "type": "text",
+          "value": "\\{x\\}",
+          "marks": {}
         }
       ],
-      "canonical_markdown": "﻿$$\n\\{x\\}"
+      "canonical_markdown": "﻿\\$\\$\\\n\\\\{x\\\\}"
     },
     {
-      "id": "opaque-display-opener-nbsp",
+      "id": "literal-display-opener-nbsp",
       "markdown": "Before\r $$\n\\{x\\}",
       "import_id": "opener-nbsp-import",
       "expected_spans": [
         {
+          "type": "text",
+          "value": "Before  $$",
+          "marks": {}
+        },
+        {
           "type": "block",
           "value": {
-            "type": "pages-opaque",
-            "parents": [],
-            "attrs": {
-              "source": "Before\r $$\n\\{x\\}",
-              "importId": "opener-nbsp-import",
-              "kind": "markdown"
-            },
-            "isEmbed": false
+            "type": "hard-break",
+            "parents": [
+              "paragraph"
+            ],
+            "attrs": {},
+            "isEmbed": true
           }
+        },
+        {
+          "type": "text",
+          "value": "\\{x\\}",
+          "marks": {}
         }
       ],
-      "canonical_markdown": "Before\r $$\n\\{x\\}"
+      "canonical_markdown": "Before  $$\\\n\\\\{x\\\\}"
     },
     {
-      "id": "opaque-display-opener-line-separator",
+      "id": "literal-display-opener-line-separator",
       "markdown": "Before $$\n\\{x\\}",
       "import_id": "opener-line-separator-import",
       "expected_spans": [
         {
+          "type": "text",
+          "value": "Before $$",
+          "marks": {}
+        },
+        {
           "type": "block",
           "value": {
-            "type": "pages-opaque",
-            "parents": [],
-            "attrs": {
-              "source": "Before $$\n\\{x\\}",
-              "importId": "opener-line-separator-import",
-              "kind": "markdown"
-            },
-            "isEmbed": false
+            "type": "hard-break",
+            "parents": [
+              "paragraph"
+            ],
+            "attrs": {},
+            "isEmbed": true
           }
+        },
+        {
+          "type": "text",
+          "value": "\\{x\\}",
+          "marks": {}
         }
       ],
-      "canonical_markdown": "Before $$\n\\{x\\}"
+      "canonical_markdown": "Before \\$\\$\\\n\\\\{x\\\\}"
     },
     {
-      "id": "opaque-display-opener-paragraph-separator",
+      "id": "literal-display-opener-paragraph-separator",
       "markdown": "Before $$\n\\{x\\}",
       "import_id": "opener-paragraph-separator-import",
       "expected_spans": [
         {
+          "type": "text",
+          "value": "Before $$",
+          "marks": {}
+        },
+        {
           "type": "block",
           "value": {
-            "type": "pages-opaque",
-            "parents": [],
-            "attrs": {
-              "source": "Before $$\n\\{x\\}",
-              "importId": "opener-paragraph-separator-import",
-              "kind": "markdown"
-            },
-            "isEmbed": false
+            "type": "hard-break",
+            "parents": [
+              "paragraph"
+            ],
+            "attrs": {},
+            "isEmbed": true
           }
+        },
+        {
+          "type": "text",
+          "value": "\\{x\\}",
+          "marks": {}
         }
       ],
-      "canonical_markdown": "Before $$\n\\{x\\}"
+      "canonical_markdown": "Before \\$\\$\\\n\\\\{x\\\\}"
     },
     {
-      "id": "opaque-display-opener-unicode-spaces",
+      "id": "literal-display-opener-unicode-spaces",
       "markdown": "Before\r\n        　$$\n\\{x\\}",
       "import_id": "opener-unicode-spaces-import",
       "expected_spans": [
         {
+          "type": "text",
+          "value": "Before        　$$",
+          "marks": {}
+        },
+        {
           "type": "block",
           "value": {
-            "type": "pages-opaque",
-            "parents": [],
-            "attrs": {
-              "source": "Before\r\n        　$$\n\\{x\\}",
-              "importId": "opener-unicode-spaces-import",
-              "kind": "markdown"
-            },
-            "isEmbed": false
+            "type": "hard-break",
+            "parents": [
+              "paragraph"
+            ],
+            "attrs": {},
+            "isEmbed": true
           }
+        },
+        {
+          "type": "text",
+          "value": "\\{x\\}",
+          "marks": {}
         }
       ],
-      "canonical_markdown": "Before\r\n        　$$\n\\{x\\}"
+      "canonical_markdown": "Before        　\\$\\$\\\n\\\\{x\\\\}"
     },
     {
       "id": "display-opener-zero-width-space-is-content",
@@ -3951,109 +3919,69 @@
       "canonical_markdown": "Before ​$$ {x}"
     },
     {
-      "id": "opaque-currency-beside-math",
+      "id": "literal-currency-beside-math",
       "markdown": "$5 and $$x$$",
       "import_id": "currency-math-import",
       "expected_spans": [
         {
-          "type": "block",
-          "value": {
-            "type": "pages-opaque",
-            "parents": [],
-            "attrs": {
-              "source": "$5 and $$x$$",
-              "importId": "currency-math-import",
-              "kind": "markdown"
-            },
-            "isEmbed": false
-          }
+          "type": "text",
+          "value": "$5 and $$x$$",
+          "marks": {}
         }
       ],
-      "canonical_markdown": "$5 and $$x$$"
+      "canonical_markdown": "$5 and \\$\\$x\\$\\$"
     },
     {
-      "id": "opaque-math-nel",
+      "id": "literal-math-nel",
       "markdown": "$x$",
       "import_id": "math-nel-import",
       "expected_spans": [
         {
-          "type": "block",
-          "value": {
-            "type": "pages-opaque",
-            "parents": [],
-            "attrs": {
-              "source": "$x$",
-              "importId": "math-nel-import",
-              "kind": "markdown"
-            },
-            "isEmbed": false
-          }
+          "type": "text",
+          "value": "$x$",
+          "marks": {}
         }
       ],
-      "canonical_markdown": "$x$"
+      "canonical_markdown": "\\$x\\$"
     },
     {
-      "id": "opaque-math-bom",
+      "id": "literal-math-bom",
       "markdown": "$﻿x$",
       "import_id": "math-bom-import",
       "expected_spans": [
         {
-          "type": "block",
-          "value": {
-            "type": "pages-opaque",
-            "parents": [],
-            "attrs": {
-              "source": "$﻿x$",
-              "importId": "math-bom-import",
-              "kind": "markdown"
-            },
-            "isEmbed": false
-          }
+          "type": "text",
+          "value": "$﻿x$",
+          "marks": {}
         }
       ],
-      "canonical_markdown": "$﻿x$"
+      "canonical_markdown": "\\$﻿x\\$"
     },
     {
-      "id": "opaque-math-nbsp",
+      "id": "literal-math-nbsp",
       "markdown": "$ x$",
       "import_id": "math-nbsp-import",
       "expected_spans": [
         {
-          "type": "block",
-          "value": {
-            "type": "pages-opaque",
-            "parents": [],
-            "attrs": {
-              "source": "$ x$",
-              "importId": "math-nbsp-import",
-              "kind": "markdown"
-            },
-            "isEmbed": false
-          }
+          "type": "text",
+          "value": "$ x$",
+          "marks": {}
         }
       ],
-      "canonical_markdown": "$ x$"
+      "canonical_markdown": "\\$ x\\$"
     },
     {
-      "id": "opaque-math-line-separator",
+      "id": "literal-math-line-separator",
       "markdown": "$ x$",
       "import_id": "math-line-separator-import",
       "expected_spans": [
         {
-          "type": "block",
-          "value": {
-            "type": "pages-opaque",
-            "parents": [],
-            "attrs": {
-              "source": "$ x$",
-              "importId": "math-line-separator-import",
-              "kind": "markdown"
-            },
-            "isEmbed": false
-          }
+          "type": "text",
+          "value": "$ x$",
+          "marks": {}
         }
       ],
-      "canonical_markdown": "$ x$"
+      "canonical_markdown": "\\$ x\\$"
     },
     {
       "id": "prose-currency-ascii-spaces",
@@ -4205,330 +4133,50 @@
       "canonical_markdown": "Ends with `\\`, then `` `code` ``, `` x`y `` and `## `.\n\n* `- `, `1. `, `> `\n\n* `` ` ``"
     },
     {
-      "id": "opaque-reference",
+      "id": "native-reference",
       "markdown": "[Guide][ref]\n\n[ref]: https://example.org",
       "import_id": "reference-import",
       "expected_spans": [
         {
-          "type": "block",
-          "value": {
-            "type": "pages-opaque",
-            "parents": [],
-            "attrs": {
-              "source": "[Guide][ref]\n\n[ref]: https://example.org",
-              "importId": "reference-import",
-              "kind": "markdown"
-            },
-            "isEmbed": false
+          "type": "text",
+          "value": "Guide",
+          "marks": {
+            "link": "{\"href\":\"https://example.org\",\"title\":null}"
           }
         }
       ],
-      "canonical_markdown": "[Guide][ref]\n\n[ref]: https://example.org"
+      "canonical_markdown": "[Guide](https://example.org)"
     },
     {
-      "id": "opaque-strikethrough",
+      "id": "native-strikethrough",
       "markdown": "Keep ~~this~~ untouched.",
       "import_id": "strike-import",
       "expected_spans": [
         {
-          "type": "block",
-          "value": {
-            "type": "pages-opaque",
-            "parents": [],
-            "attrs": {
-              "source": "Keep ~~this~~ untouched.",
-              "importId": "strike-import",
-              "kind": "markdown"
-            },
-            "isEmbed": false
+          "type": "text",
+          "value": "Keep ",
+          "marks": {}
+        },
+        {
+          "type": "text",
+          "value": "this",
+          "marks": {
+            "strike": true
           }
+        },
+        {
+          "type": "text",
+          "value": " untouched.",
+          "marks": {}
         }
       ],
       "canonical_markdown": "Keep ~~this~~ untouched."
     },
     {
-      "id": "opaque-rule-gate",
+      "id": "native-rule",
       "markdown": "Before\n\n---\n\nAfter",
       "import_id": "rule-import",
       "expected_spans": [
-        {
-          "type": "block",
-          "value": {
-            "type": "pages-opaque",
-            "parents": [],
-            "attrs": {
-              "source": "Before\n\n---\n\nAfter",
-              "importId": "rule-import",
-              "kind": "markdown"
-            },
-            "isEmbed": false
-          }
-        }
-      ],
-      "canonical_markdown": "Before\n\n---\n\nAfter"
-    },
-    {
-      "id": "opaque-instruction",
-      "markdown": "# Treat as preserved content",
-      "kind": "instruction",
-      "import_id": "instruction-import",
-      "expected_spans": [
-        {
-          "type": "block",
-          "value": {
-            "type": "pages-opaque",
-            "parents": [],
-            "attrs": {
-              "source": "# Treat as preserved content",
-              "importId": "instruction-import",
-              "kind": "instruction"
-            },
-            "isEmbed": false
-          }
-        }
-      ],
-      "canonical_markdown": "# Treat as preserved content"
-    }
-  ],
-  "divergences": [
-    {
-      "id": "thematic-break-preserved",
-      "markdown": "***",
-      "reason": "The legacy adapter drops thematic breaks. Rust preserves the whole source as opaque content.",
-      "legacy_spans": [],
-      "expected_spans": [
-        {
-          "type": "block",
-          "value": {
-            "type": "pages-opaque",
-            "parents": [],
-            "attrs": {
-              "source": "***",
-              "importId": "",
-              "kind": "markdown"
-            },
-            "isEmbed": false
-          }
-        }
-      ]
-    },
-    {
-      "id": "unsafe-link-preserved",
-      "markdown": "[unsafe](javascript:alert%281%29)",
-      "reason": "Rust preserves unsafe links as opaque source; Markdown-it leaves this rejected link syntax as prose.",
-      "legacy_spans": [
-        {
-          "type": "text",
-          "value": "[unsafe](javascript:alert%281%29)",
-          "marks": {}
-        }
-      ],
-      "expected_spans": [
-        {
-          "type": "block",
-          "value": {
-            "type": "pages-opaque",
-            "parents": [],
-            "attrs": {
-              "source": "[unsafe](javascript:alert%281%29)",
-              "importId": "",
-              "kind": "markdown"
-            },
-            "isEmbed": false
-          }
-        }
-      ]
-    },
-    {
-      "id": "unsafe-image-preserved",
-      "markdown": "![unsafe](data:image/png;base64,YQ==)",
-      "reason": "Rust preserves unsafe images as opaque source; the legacy parser accepts a data image that Pages validation later rejects.",
-      "legacy_spans": [
-        {
-          "type": "block",
-          "value": {
-            "type": "image",
-            "parents": [
-              "paragraph"
-            ],
-            "attrs": {
-              "src": "data:image/png;base64,YQ==",
-              "alt": "unsafe",
-              "title": null
-            },
-            "isEmbed": true
-          }
-        }
-      ],
-      "expected_spans": [
-        {
-          "type": "block",
-          "value": {
-            "type": "pages-opaque",
-            "parents": [],
-            "attrs": {
-              "source": "![unsafe](data:image/png;base64,YQ==)",
-              "importId": "",
-              "kind": "markdown"
-            },
-            "isEmbed": false
-          }
-        }
-      ]
-    },
-    {
-      "id": "linked-image-preserved",
-      "markdown": "[![caption](image.png)](https://example.org)",
-      "reason": "Image markers cannot carry enclosing links or marks. The legacy adapter drops those wrappers; Rust preserves the whole source as opaque content.",
-      "legacy_spans": [
-        {
-          "type": "block",
-          "value": {
-            "type": "image",
-            "parents": [
-              "paragraph"
-            ],
-            "attrs": {
-              "src": "image.png",
-              "alt": "caption",
-              "title": null
-            },
-            "isEmbed": true
-          }
-        }
-      ],
-      "expected_spans": [
-        {
-          "type": "block",
-          "value": {
-            "type": "pages-opaque",
-            "parents": [],
-            "attrs": {
-              "source": "[![caption](image.png)](https://example.org)",
-              "importId": "",
-              "kind": "markdown"
-            },
-            "isEmbed": false
-          }
-        }
-      ]
-    },
-    {
-      "id": "strong-image-preserved",
-      "markdown": "**![caption](image.png)**",
-      "reason": "Image markers cannot carry enclosing links or marks. The legacy adapter drops those wrappers; Rust preserves the whole source as opaque content.",
-      "legacy_spans": [
-        {
-          "type": "block",
-          "value": {
-            "type": "image",
-            "parents": [
-              "paragraph"
-            ],
-            "attrs": {
-              "src": "image.png",
-              "alt": "caption",
-              "title": null
-            },
-            "isEmbed": true
-          }
-        }
-      ],
-      "expected_spans": [
-        {
-          "type": "block",
-          "value": {
-            "type": "pages-opaque",
-            "parents": [],
-            "attrs": {
-              "source": "**![caption](image.png)**",
-              "importId": "",
-              "kind": "markdown"
-            },
-            "isEmbed": false
-          }
-        }
-      ]
-    },
-    {
-      "id": "emphasized-image-preserved",
-      "markdown": "*![caption](image.png)*",
-      "reason": "Image markers cannot carry enclosing links or marks. The legacy adapter drops those wrappers; Rust preserves the whole source as opaque content.",
-      "legacy_spans": [
-        {
-          "type": "block",
-          "value": {
-            "type": "image",
-            "parents": [
-              "paragraph"
-            ],
-            "attrs": {
-              "src": "image.png",
-              "alt": "caption",
-              "title": null
-            },
-            "isEmbed": true
-          }
-        }
-      ],
-      "expected_spans": [
-        {
-          "type": "block",
-          "value": {
-            "type": "pages-opaque",
-            "parents": [],
-            "attrs": {
-              "source": "*![caption](image.png)*",
-              "importId": "",
-              "kind": "markdown"
-            },
-            "isEmbed": false
-          }
-        }
-      ]
-    },
-    {
-      "id": "nested-image-marks-preserved",
-      "markdown": "[***![caption](image.png)***](https://example.org)",
-      "reason": "Image markers cannot carry enclosing links or marks. The legacy adapter drops those wrappers; Rust preserves the whole source as opaque content.",
-      "legacy_spans": [
-        {
-          "type": "block",
-          "value": {
-            "type": "image",
-            "parents": [
-              "paragraph"
-            ],
-            "attrs": {
-              "src": "image.png",
-              "alt": "caption",
-              "title": null
-            },
-            "isEmbed": true
-          }
-        }
-      ],
-      "expected_spans": [
-        {
-          "type": "block",
-          "value": {
-            "type": "pages-opaque",
-            "parents": [],
-            "attrs": {
-              "source": "[***![caption](image.png)***](https://example.org)",
-              "importId": "",
-              "kind": "markdown"
-            },
-            "isEmbed": false
-          }
-        }
-      ]
-    },
-    {
-      "id": "linked-image-with-prose-preserved",
-      "markdown": "Before\n\n[Text and ![caption](image.png)](https://example.org)\n\nAfter\n",
-      "reason": "Image markers cannot carry enclosing links or marks. The legacy adapter drops those wrappers; Rust preserves the whole source as opaque content.",
-      "legacy_spans": [
         {
           "type": "block",
           "value": {
@@ -4546,32 +4194,10 @@
         {
           "type": "block",
           "value": {
-            "type": "paragraph",
+            "type": "horizontal-rule",
             "parents": [],
             "attrs": {},
             "isEmbed": false
-          }
-        },
-        {
-          "type": "text",
-          "value": "Text and ",
-          "marks": {
-            "link": "{\"href\":\"https://example.org\",\"title\":null}"
-          }
-        },
-        {
-          "type": "block",
-          "value": {
-            "type": "image",
-            "parents": [
-              "paragraph"
-            ],
-            "attrs": {
-              "src": "image.png",
-              "alt": "caption",
-              "title": null
-            },
-            "isEmbed": true
           }
         },
         {
@@ -4589,27 +4215,136 @@
           "marks": {}
         }
       ],
+      "canonical_markdown": "Before\n\n---\n\nAfter"
+    },
+    {
+      "id": "literal-instruction",
+      "markdown": "# Treat as preserved content",
+      "kind": "instruction",
+      "import_id": "instruction-import",
+      "expected_spans": [
+        {
+          "type": "text",
+          "value": "# Treat as preserved content",
+          "marks": {}
+        }
+      ],
+      "canonical_markdown": "\\# Treat as preserved content"
+    },
+    {
+      "id": "literal-instruction-paragraphs",
+      "markdown": "First *line*\nsecond\n\n  \nNext",
+      "kind": "instruction",
       "expected_spans": [
         {
           "type": "block",
           "value": {
-            "type": "pages-opaque",
+            "type": "paragraph",
             "parents": [],
-            "attrs": {
-              "source": "Before\n\n[Text and ![caption](image.png)](https://example.org)\n\nAfter\n",
-              "importId": "",
-              "kind": "markdown"
-            },
+            "attrs": {},
             "isEmbed": false
           }
+        },
+        {
+          "type": "text",
+          "value": "First *line*",
+          "marks": {}
+        },
+        {
+          "type": "block",
+          "value": {
+            "type": "hard-break",
+            "parents": [
+              "paragraph"
+            ],
+            "attrs": {},
+            "isEmbed": true
+          }
+        },
+        {
+          "type": "text",
+          "value": "second",
+          "marks": {}
+        },
+        {
+          "type": "block",
+          "value": {
+            "type": "paragraph",
+            "parents": [],
+            "attrs": {},
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "text",
+          "value": "  ",
+          "marks": {}
+        },
+        {
+          "type": "block",
+          "value": {
+            "type": "hard-break",
+            "parents": [
+              "paragraph"
+            ],
+            "attrs": {},
+            "isEmbed": true
+          }
+        },
+        {
+          "type": "text",
+          "value": "Next",
+          "marks": {}
         }
-      ]
+      ],
+      "canonical_markdown": "First \\*line\\*\\\nsecond\n\n  \\\nNext"
     },
     {
-      "id": "marked-table-image-preserved",
-      "markdown": "| A |\n| --- |\n| **![caption](image.png)** |",
-      "reason": "Image markers cannot carry enclosing links or marks. The legacy adapter drops those wrappers; Rust preserves the whole source as opaque content.",
-      "legacy_spans": [
+      "id": "native-strikethrough-nested",
+      "markdown": "~~a **b** c~~ and **~~d~~**",
+      "expected_spans": [
+        {
+          "type": "text",
+          "value": "a ",
+          "marks": {
+            "strike": true
+          }
+        },
+        {
+          "type": "text",
+          "value": "b",
+          "marks": {
+            "strong": true,
+            "strike": true
+          }
+        },
+        {
+          "type": "text",
+          "value": " c",
+          "marks": {
+            "strike": true
+          }
+        },
+        {
+          "type": "text",
+          "value": " and ",
+          "marks": {}
+        },
+        {
+          "type": "text",
+          "value": "d",
+          "marks": {
+            "strong": true,
+            "strike": true
+          }
+        }
+      ],
+      "canonical_markdown": "~~a **b** c~~ and **~~d~~**"
+    },
+    {
+      "id": "native-strikethrough-table",
+      "markdown": "| A |\n| --- |\n| ~~x~~ |",
+      "expected_spans": [
         {
           "type": "block",
           "value": {
@@ -4671,98 +4406,69 @@
           }
         },
         {
-          "type": "block",
-          "value": {
-            "type": "image",
-            "parents": [
-              "table",
-              "table-row",
-              "table-cell"
-            ],
-            "attrs": {
-              "src": "image.png",
-              "alt": "caption",
-              "title": null
-            },
-            "isEmbed": true
+          "type": "text",
+          "value": "x",
+          "marks": {
+            "strike": true
           }
         }
       ],
+      "canonical_markdown": "| A |\n| --- |\n| ~~x~~ |"
+    },
+    {
+      "id": "strikethrough-single-tilde-prose",
+      "markdown": "Approx ~5 and ~one~ stay prose.",
+      "expected_spans": [
+        {
+          "type": "text",
+          "value": "Approx ~5 and ~one~ stay prose.",
+          "marks": {}
+        }
+      ],
+      "canonical_markdown": "Approx \\~5 and \\~one\\~ stay prose."
+    },
+    {
+      "id": "native-rule-variants",
+      "markdown": "***\n\n___\n\n- item\n\n  ---\n\n> ---",
       "expected_spans": [
         {
           "type": "block",
           "value": {
-            "type": "pages-opaque",
+            "type": "horizontal-rule",
             "parents": [],
-            "attrs": {
-              "source": "| A |\n| --- |\n| **![caption](image.png)** |",
-              "importId": "",
-              "kind": "markdown"
-            },
-            "isEmbed": false
-          }
-        }
-      ]
-    },
-    {
-      "id": "linked-heading-image-preserved",
-      "markdown": "# [![caption](image.png)](https://example.org)",
-      "reason": "Image markers cannot carry enclosing links or marks. The legacy adapter drops those wrappers; Rust preserves the whole source as opaque content.",
-      "legacy_spans": [
-        {
-          "type": "block",
-          "value": {
-            "type": "heading",
-            "parents": [],
-            "attrs": {
-              "level": 1
-            },
+            "attrs": {},
             "isEmbed": false
           }
         },
         {
           "type": "block",
           "value": {
-            "type": "image",
-            "parents": [
-              "heading"
-            ],
-            "attrs": {
-              "src": "image.png",
-              "alt": "caption",
-              "title": null
-            },
-            "isEmbed": true
-          }
-        }
-      ],
-      "expected_spans": [
-        {
-          "type": "block",
-          "value": {
-            "type": "pages-opaque",
+            "type": "horizontal-rule",
             "parents": [],
-            "attrs": {
-              "source": "# [![caption](image.png)](https://example.org)",
-              "importId": "",
-              "kind": "markdown"
-            },
+            "attrs": {},
             "isEmbed": false
           }
-        }
-      ]
-    },
-    {
-      "id": "marked-nested-list-image-preserved",
-      "markdown": "> - *![caption](image.png)*",
-      "reason": "Image markers cannot carry enclosing links or marks. The legacy adapter drops those wrappers; Rust preserves the whole source as opaque content.",
-      "legacy_spans": [
+        },
         {
           "type": "block",
           "value": {
             "type": "unordered-list-item",
+            "parents": [],
+            "attrs": {},
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "text",
+          "value": "item",
+          "marks": {}
+        },
+        {
+          "type": "block",
+          "value": {
+            "type": "horizontal-rule",
             "parents": [
-              "blockquote"
+              "unordered-list-item"
             ],
             "attrs": {},
             "isEmbed": false
@@ -4771,42 +4477,57 @@
         {
           "type": "block",
           "value": {
-            "type": "image",
+            "type": "horizontal-rule",
             "parents": [
-              "blockquote",
-              "unordered-list-item",
-              "paragraph"
+              "blockquote"
             ],
-            "attrs": {
-              "src": "image.png",
-              "alt": "caption",
-              "title": null
-            },
-            "isEmbed": true
-          }
-        }
-      ],
-      "expected_spans": [
-        {
-          "type": "block",
-          "value": {
-            "type": "pages-opaque",
-            "parents": [],
-            "attrs": {
-              "source": "> - *![caption](image.png)*",
-              "importId": "",
-              "kind": "markdown"
-            },
+            "attrs": {},
             "isEmbed": false
           }
         }
-      ]
+      ],
+      "canonical_markdown": "---\n\n---\n\n* item\n\n  ---\n\n> ---"
     },
     {
-      "id": "highlighted-image-preserved",
-      "markdown": "<mark>![caption](image.png)</mark>",
-      "reason": "Image markers cannot carry enclosing links or marks. The legacy adapter drops those wrappers; Rust preserves the whole source as opaque content.",
-      "legacy_spans": [
+      "id": "native-reference-forms",
+      "markdown": "[Full][g], [collapsed][], [shortcut] and ![pic][img].\n\n[g]: https://example.org/g \"Guide\"\n[collapsed]: /c\n[shortcut]: /s\n[img]: /image.png",
+      "expected_spans": [
+        {
+          "type": "text",
+          "value": "Full",
+          "marks": {
+            "link": "{\"href\":\"https://example.org/g\",\"title\":\"Guide\"}"
+          }
+        },
+        {
+          "type": "text",
+          "value": ", ",
+          "marks": {}
+        },
+        {
+          "type": "text",
+          "value": "collapsed",
+          "marks": {
+            "link": "{\"href\":\"/c\",\"title\":null}"
+          }
+        },
+        {
+          "type": "text",
+          "value": ", ",
+          "marks": {}
+        },
+        {
+          "type": "text",
+          "value": "shortcut",
+          "marks": {
+            "link": "{\"href\":\"/s\",\"title\":null}"
+          }
+        },
+        {
+          "type": "text",
+          "value": " and ",
+          "marks": {}
+        },
         {
           "type": "block",
           "value": {
@@ -4815,30 +4536,1460 @@
               "paragraph"
             ],
             "attrs": {
-              "src": "image.png",
-              "alt": "caption",
+              "src": "/image.png",
+              "alt": "pic",
+              "title": null
+            },
+            "isEmbed": true
+          }
+        },
+        {
+          "type": "text",
+          "value": ".",
+          "marks": {}
+        }
+      ],
+      "canonical_markdown": "[Full](https://example.org/g \"Guide\"), [collapsed](/c), [shortcut](/s) and ![pic](/image.png)."
+    },
+    {
+      "id": "reference-undefined-prose",
+      "markdown": "[a][b] and [c] stay prose.",
+      "expected_spans": [
+        {
+          "type": "text",
+          "value": "[a][b] and [c] stay prose.",
+          "marks": {}
+        }
+      ],
+      "canonical_markdown": "\\[a\\]\\[b\\] and \\[c\\] stay prose."
+    },
+    {
+      "id": "literal-unsafe-link",
+      "markdown": "[unsafe](javascript:alert%281%29) and *after*",
+      "expected_spans": [
+        {
+          "type": "text",
+          "value": "[unsafe](javascript:alert%281%29) and ",
+          "marks": {}
+        },
+        {
+          "type": "text",
+          "value": "after",
+          "marks": {
+            "em": true
+          }
+        }
+      ],
+      "canonical_markdown": "\\[unsafe\\](javascript:alert%281%29) and *after*"
+    },
+    {
+      "id": "literal-unsafe-image",
+      "markdown": "![unsafe](data:image/png;base64,YQ==)",
+      "expected_spans": [
+        {
+          "type": "text",
+          "value": "![unsafe](data:image/png;base64,YQ==)",
+          "marks": {}
+        }
+      ],
+      "canonical_markdown": "!\\[unsafe\\](data:image/png;base64,YQ==)"
+    },
+    {
+      "id": "literal-unsafe-reference",
+      "markdown": "[x][r]\n\n[r]: javascript:alert(1)",
+      "expected_spans": [
+        {
+          "type": "block",
+          "value": {
+            "type": "paragraph",
+            "parents": [],
+            "attrs": {},
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "text",
+          "value": "[x][r]",
+          "marks": {}
+        },
+        {
+          "type": "block",
+          "value": {
+            "type": "paragraph",
+            "parents": [],
+            "attrs": {},
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "text",
+          "value": "[r]: javascript:alert(1)",
+          "marks": {}
+        }
+      ],
+      "canonical_markdown": "\\[x\\]\\[r\\]\n\n\\[r\\]: javascript:alert(1)"
+    },
+    {
+      "id": "code-hides-syntax",
+      "markdown": "Keep `~~x~~`, `$x$` and `<div>`.\n\n```\n$$\n<section>\n```\n\n    $y$ <b>",
+      "expected_spans": [
+        {
+          "type": "block",
+          "value": {
+            "type": "paragraph",
+            "parents": [],
+            "attrs": {},
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "text",
+          "value": "Keep ",
+          "marks": {}
+        },
+        {
+          "type": "text",
+          "value": "~~x~~",
+          "marks": {
+            "code": true
+          }
+        },
+        {
+          "type": "text",
+          "value": ", ",
+          "marks": {}
+        },
+        {
+          "type": "text",
+          "value": "$x$",
+          "marks": {
+            "code": true
+          }
+        },
+        {
+          "type": "text",
+          "value": " and ",
+          "marks": {}
+        },
+        {
+          "type": "text",
+          "value": "<div>",
+          "marks": {
+            "code": true
+          }
+        },
+        {
+          "type": "text",
+          "value": ".",
+          "marks": {}
+        },
+        {
+          "type": "block",
+          "value": {
+            "type": "code-block",
+            "parents": [],
+            "attrs": {
+              "params": ""
+            },
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "text",
+          "value": "$$\n<section>",
+          "marks": {}
+        },
+        {
+          "type": "block",
+          "value": {
+            "type": "code-block",
+            "parents": [],
+            "attrs": {
+              "params": ""
+            },
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "text",
+          "value": "$y$ <b>",
+          "marks": {}
+        }
+      ],
+      "canonical_markdown": "Keep `~~x~~`, `$x$` and `<div>`.\n\n```\n$$\n<section>\n```\n\n```\n$y$ <b>\n```"
+    },
+    {
+      "id": "literal-comment-around-math",
+      "markdown": "<!-- $x$ --> after",
+      "expected_spans": [
+        {
+          "type": "text",
+          "value": "<!-- $x$ --> after",
+          "marks": {}
+        }
+      ],
+      "canonical_markdown": "\\<!-- \\$x\\$ --> after"
+    },
+    {
+      "id": "literal-escaped-math",
+      "markdown": "Escaped \\$x\\$ and $a \\$ b$.",
+      "expected_spans": [
+        {
+          "type": "text",
+          "value": "Escaped $x$ and $a \\$ b$.",
+          "marks": {}
+        }
+      ],
+      "canonical_markdown": "Escaped \\$x\\$ and \\$a \\\\\\$ b$."
+    },
+    {
+      "id": "literal-linked-image",
+      "markdown": "[![caption](image.png)](https://example.org)",
+      "expected_spans": [
+        {
+          "type": "text",
+          "value": "[![caption](image.png)](https://example.org)",
+          "marks": {}
+        }
+      ],
+      "canonical_markdown": "\\[!\\[caption\\](image.png)\\](https://example.org)"
+    },
+    {
+      "id": "literal-strong-image",
+      "markdown": "**![caption](image.png)**",
+      "expected_spans": [
+        {
+          "type": "text",
+          "value": "**![caption](image.png)**",
+          "marks": {}
+        }
+      ],
+      "canonical_markdown": "\\*\\*!\\[caption\\](image.png)\\*\\*"
+    },
+    {
+      "id": "literal-emphasized-image",
+      "markdown": "*![caption](image.png)*",
+      "expected_spans": [
+        {
+          "type": "text",
+          "value": "*![caption](image.png)*",
+          "marks": {}
+        }
+      ],
+      "canonical_markdown": "\\*!\\[caption\\](image.png)\\*"
+    },
+    {
+      "id": "literal-nested-image-marks",
+      "markdown": "[***![caption](image.png)***](https://example.org)",
+      "expected_spans": [
+        {
+          "type": "text",
+          "value": "[***![caption](image.png)***](https://example.org)",
+          "marks": {}
+        }
+      ],
+      "canonical_markdown": "\\[\\*\\*\\*!\\[caption\\](image.png)\\*\\*\\*\\](https://example.org)"
+    },
+    {
+      "id": "literal-linked-image-with-prose",
+      "markdown": "Before\n\n[Text and ![caption](image.png)](https://example.org)\n\nAfter\n",
+      "expected_spans": [
+        {
+          "type": "block",
+          "value": {
+            "type": "paragraph",
+            "parents": [],
+            "attrs": {},
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "text",
+          "value": "Before",
+          "marks": {}
+        },
+        {
+          "type": "block",
+          "value": {
+            "type": "paragraph",
+            "parents": [],
+            "attrs": {},
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "text",
+          "value": "[Text and ![caption](image.png)](https://example.org)",
+          "marks": {}
+        },
+        {
+          "type": "block",
+          "value": {
+            "type": "paragraph",
+            "parents": [],
+            "attrs": {},
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "text",
+          "value": "After",
+          "marks": {}
+        }
+      ],
+      "canonical_markdown": "Before\n\n\\[Text and !\\[caption\\](image.png)\\](https://example.org)\n\nAfter"
+    },
+    {
+      "id": "literal-marked-table-image",
+      "markdown": "| A |\n| --- |\n| **![caption](image.png)** |",
+      "expected_spans": [
+        {
+          "type": "text",
+          "value": "| A |",
+          "marks": {}
+        },
+        {
+          "type": "block",
+          "value": {
+            "type": "hard-break",
+            "parents": [
+              "paragraph"
+            ],
+            "attrs": {},
+            "isEmbed": true
+          }
+        },
+        {
+          "type": "text",
+          "value": "| --- |",
+          "marks": {}
+        },
+        {
+          "type": "block",
+          "value": {
+            "type": "hard-break",
+            "parents": [
+              "paragraph"
+            ],
+            "attrs": {},
+            "isEmbed": true
+          }
+        },
+        {
+          "type": "text",
+          "value": "| **![caption](image.png)** |",
+          "marks": {}
+        }
+      ],
+      "canonical_markdown": "| A |\\\n| --- |\\\n| \\*\\*!\\[caption\\](image.png)\\*\\* |"
+    },
+    {
+      "id": "literal-linked-heading-image",
+      "markdown": "# [![caption](image.png)](https://example.org)",
+      "expected_spans": [
+        {
+          "type": "text",
+          "value": "# [![caption](image.png)](https://example.org)",
+          "marks": {}
+        }
+      ],
+      "canonical_markdown": "\\# \\[!\\[caption\\](image.png)\\](https://example.org)"
+    },
+    {
+      "id": "literal-marked-nested-list-image",
+      "markdown": "> - *![caption](image.png)*",
+      "expected_spans": [
+        {
+          "type": "text",
+          "value": "> - *![caption](image.png)*",
+          "marks": {}
+        }
+      ],
+      "canonical_markdown": "\\> - \\*!\\[caption\\](image.png)\\*"
+    },
+    {
+      "id": "literal-highlighted-image",
+      "markdown": "<mark>![caption](image.png)</mark>",
+      "expected_spans": [
+        {
+          "type": "text",
+          "value": "<mark>![caption](image.png)</mark>",
+          "marks": {}
+        }
+      ],
+      "canonical_markdown": "\\<mark>!\\[caption\\](image.png)\\</mark>"
+    },
+    {
+      "id": "literal-extra-table-cells",
+      "markdown": "| A |\n| --- |\n| b | c |",
+      "expected_spans": [
+        {
+          "type": "text",
+          "value": "| A |",
+          "marks": {}
+        },
+        {
+          "type": "block",
+          "value": {
+            "type": "hard-break",
+            "parents": [
+              "paragraph"
+            ],
+            "attrs": {},
+            "isEmbed": true
+          }
+        },
+        {
+          "type": "text",
+          "value": "| --- |",
+          "marks": {}
+        },
+        {
+          "type": "block",
+          "value": {
+            "type": "hard-break",
+            "parents": [
+              "paragraph"
+            ],
+            "attrs": {},
+            "isEmbed": true
+          }
+        },
+        {
+          "type": "text",
+          "value": "| b | c |",
+          "marks": {}
+        }
+      ],
+      "canonical_markdown": "| A |\\\n| --- |\\\n| b | c |"
+    },
+    {
+      "id": "literal-extra-table-cells-quoted",
+      "markdown": "> | A | B |\n> | --- | --- |\n> | 1 | 2 | 3 |",
+      "expected_spans": [
+        {
+          "type": "text",
+          "value": "> | A | B |",
+          "marks": {}
+        },
+        {
+          "type": "block",
+          "value": {
+            "type": "hard-break",
+            "parents": [
+              "paragraph"
+            ],
+            "attrs": {},
+            "isEmbed": true
+          }
+        },
+        {
+          "type": "text",
+          "value": "> | --- | --- |",
+          "marks": {}
+        },
+        {
+          "type": "block",
+          "value": {
+            "type": "hard-break",
+            "parents": [
+              "paragraph"
+            ],
+            "attrs": {},
+            "isEmbed": true
+          }
+        },
+        {
+          "type": "text",
+          "value": "> | 1 | 2 | 3 |",
+          "marks": {}
+        }
+      ],
+      "canonical_markdown": "\\> | A | B |\\\n\\> | --- | --- |\\\n\\> | 1 | 2 | 3 |"
+    },
+    {
+      "id": "literal-empty-link",
+      "markdown": "Before [](https://example.org) after",
+      "expected_spans": [
+        {
+          "type": "text",
+          "value": "Before [](https://example.org) after",
+          "marks": {}
+        }
+      ],
+      "canonical_markdown": "Before \\[\\](https://example.org) after"
+    },
+    {
+      "id": "literal-unused-definition",
+      "markdown": "Prose.\n\n[unused]: https://example.org",
+      "expected_spans": [
+        {
+          "type": "block",
+          "value": {
+            "type": "paragraph",
+            "parents": [],
+            "attrs": {},
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "text",
+          "value": "Prose.",
+          "marks": {}
+        },
+        {
+          "type": "block",
+          "value": {
+            "type": "paragraph",
+            "parents": [],
+            "attrs": {},
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "text",
+          "value": "[unused]: https://example.org",
+          "marks": {}
+        }
+      ],
+      "canonical_markdown": "Prose.\n\n\\[unused\\]: https://example.org"
+    },
+    {
+      "id": "literal-repeated-definition",
+      "markdown": "[a][r]\n\n[r]: /one\n[r]: /two",
+      "expected_spans": [
+        {
+          "type": "block",
+          "value": {
+            "type": "paragraph",
+            "parents": [],
+            "attrs": {},
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "text",
+          "value": "[a][r]",
+          "marks": {}
+        },
+        {
+          "type": "block",
+          "value": {
+            "type": "paragraph",
+            "parents": [],
+            "attrs": {},
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "text",
+          "value": "[r]: /one",
+          "marks": {}
+        },
+        {
+          "type": "block",
+          "value": {
+            "type": "hard-break",
+            "parents": [
+              "paragraph"
+            ],
+            "attrs": {},
+            "isEmbed": true
+          }
+        },
+        {
+          "type": "text",
+          "value": "[r]: /two",
+          "marks": {}
+        }
+      ],
+      "canonical_markdown": "\\[a\\]\\[r\\]\n\n\\[r\\]: /one\\\n\\[r\\]: /two"
+    },
+    {
+      "id": "escaped-pipe-cell-is-native",
+      "markdown": "| A |\n| --- |\n| b \\| c |",
+      "expected_spans": [
+        {
+          "type": "block",
+          "value": {
+            "type": "table",
+            "parents": [],
+            "attrs": {},
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "block",
+          "value": {
+            "type": "table-row",
+            "parents": [
+              "table"
+            ],
+            "attrs": {},
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "block",
+          "value": {
+            "type": "table-header",
+            "parents": [
+              "table",
+              "table-row"
+            ],
+            "attrs": {},
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "text",
+          "value": "A",
+          "marks": {}
+        },
+        {
+          "type": "block",
+          "value": {
+            "type": "table-row",
+            "parents": [
+              "table"
+            ],
+            "attrs": {},
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "block",
+          "value": {
+            "type": "table-cell",
+            "parents": [
+              "table",
+              "table-row"
+            ],
+            "attrs": {},
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "text",
+          "value": "b | c",
+          "marks": {}
+        }
+      ],
+      "canonical_markdown": "| A |\n| --- |\n| b \\| c |"
+    },
+    {
+      "id": "short-row-is-native",
+      "markdown": "| A | B |\n| --- | --- |\n| c |",
+      "expected_spans": [
+        {
+          "type": "block",
+          "value": {
+            "type": "table",
+            "parents": [],
+            "attrs": {},
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "block",
+          "value": {
+            "type": "table-row",
+            "parents": [
+              "table"
+            ],
+            "attrs": {},
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "block",
+          "value": {
+            "type": "table-header",
+            "parents": [
+              "table",
+              "table-row"
+            ],
+            "attrs": {},
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "text",
+          "value": "A",
+          "marks": {}
+        },
+        {
+          "type": "block",
+          "value": {
+            "type": "table-header",
+            "parents": [
+              "table",
+              "table-row"
+            ],
+            "attrs": {},
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "text",
+          "value": "B",
+          "marks": {}
+        },
+        {
+          "type": "block",
+          "value": {
+            "type": "table-row",
+            "parents": [
+              "table"
+            ],
+            "attrs": {},
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "block",
+          "value": {
+            "type": "table-cell",
+            "parents": [
+              "table",
+              "table-row"
+            ],
+            "attrs": {},
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "text",
+          "value": "c",
+          "marks": {}
+        },
+        {
+          "type": "block",
+          "value": {
+            "type": "table-cell",
+            "parents": [
+              "table",
+              "table-row"
+            ],
+            "attrs": {},
+            "isEmbed": false
+          }
+        }
+      ],
+      "canonical_markdown": "| A | B |\n| --- | --- |\n| c |  |"
+    },
+    {
+      "id": "literal-math-across-cells",
+      "markdown": "| a | b |\n| - | - |\n| `$x | y$` |",
+      "expected_spans": [
+        {
+          "type": "block",
+          "value": {
+            "type": "table",
+            "parents": [],
+            "attrs": {},
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "block",
+          "value": {
+            "type": "table-row",
+            "parents": [
+              "table"
+            ],
+            "attrs": {},
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "block",
+          "value": {
+            "type": "table-header",
+            "parents": [
+              "table",
+              "table-row"
+            ],
+            "attrs": {},
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "text",
+          "value": "a",
+          "marks": {}
+        },
+        {
+          "type": "block",
+          "value": {
+            "type": "table-header",
+            "parents": [
+              "table",
+              "table-row"
+            ],
+            "attrs": {},
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "text",
+          "value": "b",
+          "marks": {}
+        },
+        {
+          "type": "block",
+          "value": {
+            "type": "table-row",
+            "parents": [
+              "table"
+            ],
+            "attrs": {},
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "block",
+          "value": {
+            "type": "table-cell",
+            "parents": [
+              "table",
+              "table-row"
+            ],
+            "attrs": {},
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "text",
+          "value": "\\$x | y\\$",
+          "marks": {
+            "code": true
+          }
+        },
+        {
+          "type": "block",
+          "value": {
+            "type": "table-cell",
+            "parents": [
+              "table",
+              "table-row"
+            ],
+            "attrs": {},
+            "isEmbed": false
+          }
+        }
+      ],
+      "canonical_markdown": "| a | b |\n| --- | --- |\n| `\\$x \\| y\\$` |  |"
+    },
+    {
+      "id": "literal-html-across-cells",
+      "markdown": "| a | b |\n| - | - |\n| `<i> | </i>` |",
+      "expected_spans": [
+        {
+          "type": "block",
+          "value": {
+            "type": "table",
+            "parents": [],
+            "attrs": {},
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "block",
+          "value": {
+            "type": "table-row",
+            "parents": [
+              "table"
+            ],
+            "attrs": {},
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "block",
+          "value": {
+            "type": "table-header",
+            "parents": [
+              "table",
+              "table-row"
+            ],
+            "attrs": {},
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "text",
+          "value": "a",
+          "marks": {}
+        },
+        {
+          "type": "block",
+          "value": {
+            "type": "table-header",
+            "parents": [
+              "table",
+              "table-row"
+            ],
+            "attrs": {},
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "text",
+          "value": "b",
+          "marks": {}
+        },
+        {
+          "type": "block",
+          "value": {
+            "type": "table-row",
+            "parents": [
+              "table"
+            ],
+            "attrs": {},
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "block",
+          "value": {
+            "type": "table-cell",
+            "parents": [
+              "table",
+              "table-row"
+            ],
+            "attrs": {},
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "text",
+          "value": "`<i>",
+          "marks": {}
+        },
+        {
+          "type": "block",
+          "value": {
+            "type": "table-cell",
+            "parents": [
+              "table",
+              "table-row"
+            ],
+            "attrs": {},
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "text",
+          "value": "</i>`",
+          "marks": {}
+        }
+      ],
+      "canonical_markdown": "| a | b |\n| --- | --- |\n| \\`\\<i> | \\</i>\\` |"
+    },
+    {
+      "id": "code-within-one-cell",
+      "markdown": "| a |\n| - |\n| `$x$ <i>` |",
+      "expected_spans": [
+        {
+          "type": "block",
+          "value": {
+            "type": "table",
+            "parents": [],
+            "attrs": {},
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "block",
+          "value": {
+            "type": "table-row",
+            "parents": [
+              "table"
+            ],
+            "attrs": {},
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "block",
+          "value": {
+            "type": "table-header",
+            "parents": [
+              "table",
+              "table-row"
+            ],
+            "attrs": {},
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "text",
+          "value": "a",
+          "marks": {}
+        },
+        {
+          "type": "block",
+          "value": {
+            "type": "table-row",
+            "parents": [
+              "table"
+            ],
+            "attrs": {},
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "block",
+          "value": {
+            "type": "table-cell",
+            "parents": [
+              "table",
+              "table-row"
+            ],
+            "attrs": {},
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "text",
+          "value": "$x$ <i>",
+          "marks": {
+            "code": true
+          }
+        }
+      ],
+      "canonical_markdown": "| a |\n| --- |\n| `$x$ <i>` |"
+    },
+    {
+      "id": "literal-long-tag",
+      "markdown": "<a title=\"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\">t</a>",
+      "expected_spans": [
+        {
+          "type": "text",
+          "value": "<a title=\"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\">t</a>",
+          "marks": {}
+        }
+      ],
+      "canonical_markdown": "\\<a title=\"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\">t\\</a>"
+    },
+    {
+      "id": "literal-quoted-gt-tag",
+      "markdown": "<a href=\"x>y\">t</a> and <b c='>'>d",
+      "expected_spans": [
+        {
+          "type": "text",
+          "value": "<a href=\"x>y\">t</a> and <b c='>'>d",
+          "marks": {}
+        }
+      ],
+      "canonical_markdown": "\\<a href=\"x>y\">t\\</a> and \\<b c='>'>d"
+    },
+    {
+      "id": "literal-comment-with-gt",
+      "markdown": "<!-- a > b --> and <?php x > y ?>",
+      "expected_spans": [
+        {
+          "type": "text",
+          "value": "<!-- a > b --> and <?php x > y ?>",
+          "marks": {}
+        }
+      ],
+      "canonical_markdown": "\\<!-- a > b --> and \\<?php x > y ?>"
+    },
+    {
+      "id": "literal-multiline-tag",
+      "markdown": "text <a\nb=\"c\">",
+      "expected_spans": [
+        {
+          "type": "text",
+          "value": "text <a b=\"c\">",
+          "marks": {}
+        }
+      ],
+      "canonical_markdown": "text \\<a b=\"c\">"
+    },
+    {
+      "id": "not-a-tag-nbsp",
+      "markdown": "<mark >x</mark>",
+      "expected_spans": [
+        {
+          "type": "text",
+          "value": "<mark >x</mark>",
+          "marks": {}
+        }
+      ],
+      "canonical_markdown": "\\<mark >x\\</mark>"
+    },
+    {
+      "id": "not-a-tag-unspaced-attribute",
+      "markdown": "<a b='x'c>",
+      "expected_spans": [
+        {
+          "type": "text",
+          "value": "<a b='x'c>",
+          "marks": {}
+        }
+      ],
+      "canonical_markdown": "<a b='x'c>"
+    },
+    {
+      "id": "literal-definition-then-setext",
+      "markdown": "[r]: x\n===",
+      "expected_spans": [
+        {
+          "type": "text",
+          "value": "[r]: x",
+          "marks": {}
+        },
+        {
+          "type": "block",
+          "value": {
+            "type": "hard-break",
+            "parents": [
+              "paragraph"
+            ],
+            "attrs": {},
+            "isEmbed": true
+          }
+        },
+        {
+          "type": "text",
+          "value": "===",
+          "marks": {}
+        }
+      ],
+      "canonical_markdown": "\\[r\\]: x\\\n\\==="
+    },
+    {
+      "id": "literal-link-holding-only-a-break",
+      "markdown": "| a |\n| - |\n| [<br>](https://example.org) |",
+      "expected_spans": [
+        {
+          "type": "text",
+          "value": "| a |",
+          "marks": {}
+        },
+        {
+          "type": "block",
+          "value": {
+            "type": "hard-break",
+            "parents": [
+              "paragraph"
+            ],
+            "attrs": {},
+            "isEmbed": true
+          }
+        },
+        {
+          "type": "text",
+          "value": "| - |",
+          "marks": {}
+        },
+        {
+          "type": "block",
+          "value": {
+            "type": "hard-break",
+            "parents": [
+              "paragraph"
+            ],
+            "attrs": {},
+            "isEmbed": true
+          }
+        },
+        {
+          "type": "text",
+          "value": "| [<br>](https://example.org) |",
+          "marks": {}
+        }
+      ],
+      "canonical_markdown": "| a |\\\n| - |\\\n| \\[\\<br>\\](https://example.org) |"
+    },
+    {
+      "id": "literal-link-holding-break-and-image",
+      "markdown": "| a |\n| - |\n| [<br>![p](i.png)](https://example.org) |",
+      "expected_spans": [
+        {
+          "type": "text",
+          "value": "| a |",
+          "marks": {}
+        },
+        {
+          "type": "block",
+          "value": {
+            "type": "hard-break",
+            "parents": [
+              "paragraph"
+            ],
+            "attrs": {},
+            "isEmbed": true
+          }
+        },
+        {
+          "type": "text",
+          "value": "| - |",
+          "marks": {}
+        },
+        {
+          "type": "block",
+          "value": {
+            "type": "hard-break",
+            "parents": [
+              "paragraph"
+            ],
+            "attrs": {},
+            "isEmbed": true
+          }
+        },
+        {
+          "type": "text",
+          "value": "| [<br>![p](i.png)](https://example.org) |",
+          "marks": {}
+        }
+      ],
+      "canonical_markdown": "| a |\\\n| - |\\\n| \\[\\<br>!\\[p\\](i.png)\\](https://example.org) |"
+    },
+    {
+      "id": "image-after-closed-highlight",
+      "markdown": "<mark>x</mark> ![p](i.png)",
+      "expected_spans": [
+        {
+          "type": "text",
+          "value": "x",
+          "marks": {
+            "highlight": "yellow"
+          }
+        },
+        {
+          "type": "text",
+          "value": " ",
+          "marks": {}
+        },
+        {
+          "type": "block",
+          "value": {
+            "type": "image",
+            "parents": [
+              "paragraph"
+            ],
+            "attrs": {
+              "src": "i.png",
+              "alt": "p",
               "title": null
             },
             "isEmbed": true
           }
         }
       ],
+      "canonical_markdown": "<mark data-color=\"yellow\">x</mark> ![p](i.png)"
+    },
+    {
+      "id": "literal-bare-link-sharing-a-destination",
+      "markdown": "| a |\n| - |\n| [ok](https://example.org) [<br>](https://example.org) |",
+      "expected_spans": [
+        {
+          "type": "text",
+          "value": "| a |",
+          "marks": {}
+        },
+        {
+          "type": "block",
+          "value": {
+            "type": "hard-break",
+            "parents": [
+              "paragraph"
+            ],
+            "attrs": {},
+            "isEmbed": true
+          }
+        },
+        {
+          "type": "text",
+          "value": "| - |",
+          "marks": {}
+        },
+        {
+          "type": "block",
+          "value": {
+            "type": "hard-break",
+            "parents": [
+              "paragraph"
+            ],
+            "attrs": {},
+            "isEmbed": true
+          }
+        },
+        {
+          "type": "text",
+          "value": "| [ok](https://example.org) [<br>](https://example.org) |",
+          "marks": {}
+        }
+      ],
+      "canonical_markdown": "| a |\\\n| - |\\\n| \\[ok\\](https://example.org) \\[\\<br>\\](https://example.org) |"
+    },
+    {
+      "id": "repeated-image-is-native",
+      "markdown": "![p](i.png) and ![p](i.png)",
       "expected_spans": [
         {
           "type": "block",
           "value": {
-            "type": "pages-opaque",
-            "parents": [],
+            "type": "image",
+            "parents": [
+              "paragraph"
+            ],
             "attrs": {
-              "source": "<mark>![caption](image.png)</mark>",
-              "importId": "",
-              "kind": "markdown"
+              "src": "i.png",
+              "alt": "p",
+              "title": null
             },
-            "isEmbed": false
+            "isEmbed": true
+          }
+        },
+        {
+          "type": "text",
+          "value": " and ",
+          "marks": {}
+        },
+        {
+          "type": "block",
+          "value": {
+            "type": "image",
+            "parents": [
+              "paragraph"
+            ],
+            "attrs": {
+              "src": "i.png",
+              "alt": "p",
+              "title": null
+            },
+            "isEmbed": true
           }
         }
-      ]
+      ],
+      "canonical_markdown": "![p](i.png) and ![p](i.png)"
     },
+    {
+      "id": "adjacent-links-sharing-a-destination",
+      "markdown": "[a](https://x.test)[b](https://x.test)",
+      "expected_spans": [
+        {
+          "type": "text",
+          "value": "ab",
+          "marks": {
+            "link": "{\"href\":\"https://x.test\",\"title\":null}"
+          }
+        }
+      ],
+      "canonical_markdown": "[ab](https://x.test)"
+    },
+    {
+      "id": "image-after-closed-marks",
+      "markdown": "**b** *e* ~~s~~ [l](u) ![p](i.png)",
+      "expected_spans": [
+        {
+          "type": "text",
+          "value": "b",
+          "marks": {
+            "strong": true
+          }
+        },
+        {
+          "type": "text",
+          "value": " ",
+          "marks": {}
+        },
+        {
+          "type": "text",
+          "value": "e",
+          "marks": {
+            "em": true
+          }
+        },
+        {
+          "type": "text",
+          "value": " ",
+          "marks": {}
+        },
+        {
+          "type": "text",
+          "value": "s",
+          "marks": {
+            "strike": true
+          }
+        },
+        {
+          "type": "text",
+          "value": " ",
+          "marks": {}
+        },
+        {
+          "type": "text",
+          "value": "l",
+          "marks": {
+            "link": "{\"href\":\"u\",\"title\":null}"
+          }
+        },
+        {
+          "type": "text",
+          "value": " ",
+          "marks": {}
+        },
+        {
+          "type": "block",
+          "value": {
+            "type": "image",
+            "parents": [
+              "paragraph"
+            ],
+            "attrs": {
+              "src": "i.png",
+              "alt": "p",
+              "title": null
+            },
+            "isEmbed": true
+          }
+        }
+      ],
+      "canonical_markdown": "**b** *e* ~~s~~ [l](u) ![p](i.png)"
+    },
+    {
+      "id": "destinations-are-not-syntax",
+      "markdown": "[a](<x> \"<b> $t$\") and ![p](</$y$/i.png>) then $z$\n\n[r]: <x>",
+      "expected_spans": [
+        {
+          "type": "block",
+          "value": {
+            "type": "paragraph",
+            "parents": [],
+            "attrs": {},
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "text",
+          "value": "[a](<x> \"<b> $t$\") and ![p](</$y$/i.png>) then $z$",
+          "marks": {}
+        },
+        {
+          "type": "block",
+          "value": {
+            "type": "paragraph",
+            "parents": [],
+            "attrs": {},
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "text",
+          "value": "[r]: <x>",
+          "marks": {}
+        }
+      ],
+      "canonical_markdown": "\\[a\\](\\<x> \"\\<b> \\$t\\$\") and !\\[p\\](</\\$y\\$/i.png>) then \\$z\\$\n\n\\[r\\]: \\<x>"
+    }
+  ],
+  "divergences": [
     {
       "id": "nested-quote-siblings-preserved",
       "markdown": "> > a\n\n> > b",

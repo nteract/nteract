@@ -219,7 +219,8 @@ fn decode(spans: &[Span]) -> Result<Vec<Node>> {
                     parent,
                     Node::new(&value.kind, value.attrs.clone()),
                 );
-                if value.kind != "pages-opaque" {
+                // Leaf blocks hold no content of their own.
+                if !matches!(value.kind.as_str(), "pages-opaque" | "horizontal-rule") {
                     stack.push(id);
                 }
             }
@@ -355,6 +356,7 @@ fn render_node(nodes: &[Node], id: usize, ordered_index: usize) -> Result<String
             Ok(format!("{fence}{params}\n{content}\n{fence}"))
         }
         "table" => render_table(nodes, node),
+        "horizontal-rule" => Ok("---".into()),
         "pages-opaque" => Ok(string_attr(node, "source").to_owned()),
         other => Err(CodecError(format!(
             "Cannot export {other} as Markdown at this position"
@@ -547,6 +549,7 @@ fn marks_for(marks: &Marks) -> Result<Vec<Mark>> {
             }
             "em" => result.push(Mark::delimiter("*", "*".into())),
             "strong" => result.push(Mark::delimiter("**", "**".into())),
+            "strike" => result.push(Mark::delimiter("~~", "~~".into())),
             "highlight" => {
                 let color = value
                     .as_str()
@@ -872,15 +875,37 @@ mod tests {
             ]),
             json!([{"type":"text","value":"literal\nnewline","marks":{}}]),
             json!([{"type":"text","value":"literal\rcarriage return","marks":{}}]),
-            json!([
-                {"type":"block","value":{"type":"code-block","parents":[],"attrs":{"params":"text"},"isEmbed":false}},
-                {"type":"text","value":"~~code, not strikethrough~~","marks":{}}
-            ]),
         ] {
             let value = spans(native);
             let before = value.clone();
             assert!(spans_to_markdown(&value).is_err(), "{value:?}");
             assert_eq!(value, before);
+        }
+    }
+
+    #[test]
+    fn code_block_syntax_and_horizontal_rules_round_trip() {
+        for native in [
+            json!([
+                {"type":"block","value":{"type":"code-block","parents":[],"attrs":{"params":"text"},"isEmbed":false}},
+                {"type":"text","value":"~~code, not strikethrough~~ $x$ <b>","marks":{}}
+            ]),
+            json!([
+                {"type":"block","value":{"type":"paragraph","parents":[],"attrs":{},"isEmbed":false}},
+                {"type":"text","value":"above","marks":{"strike":true}},
+                {"type":"block","value":{"type":"horizontal-rule","parents":[],"attrs":{},"isEmbed":false}},
+                {"type":"block","value":{"type":"paragraph","parents":[],"attrs":{},"isEmbed":false}},
+                {"type":"text","value":"below","marks":{}}
+            ]),
+        ] {
+            let value = spans(native);
+            let markdown = spans_to_markdown(&value).expect("export");
+            assert_eq!(
+                crate::markdown_to_spans(&markdown, &crate::ImportOptions::default())
+                    .expect("import"),
+                value,
+                "{markdown}"
+            );
         }
     }
 

@@ -1,5 +1,19 @@
 {
   "$comment": "Schema features a Pages document can use beyond the baseline. Every mark and block type without a feature is baseline, and a document that uses only baseline carries no stamp. A writer adds a feature's id to the document's schema.features in the same Automerge change that first writes content needing it; a reader whose build lacks an id opens the Page read-only. A mark names its feature in marks.json; a block type is listed under its feature's blocks here. JavaScript (model/schema-features.mjs) and Rust (crates/nteract-rich-text) both read this file. Add features; never remove one or reuse an id.",
   "version": 1,
-  "features": []
+  "features": [
+    {
+      "id": "strike",
+      "description": "Strikethrough text: the strike mark, written ~~text~~ in Markdown."
+    },
+    {
+      "id": "horizontal-rule",
+      "description": "Horizontal rules between blocks, written --- in Markdown.",
+      "blocks": ["horizontal-rule"]
+    },
+    {
+      "id": "preserved-markdown-converted",
+      "description": "The Page host converted the Page's preserved Markdown blocks to native rich text. A build without this feature may still write or convert preserved blocks, so it opens the Page read-only."
+    }
+  ]
 }

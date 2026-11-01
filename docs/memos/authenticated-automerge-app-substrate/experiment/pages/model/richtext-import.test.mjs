@@ -2,7 +2,15 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import * as A from "@automerge/automerge";
 import { pmDocFromSpans, pmNodeToSpans } from "@automerge/prosemirror";
-import { MATH_SYNTAX, adapter, exportMarkdown, parseMarkdown, richDoc } from "./richtext.mjs";
+import {
+  MATH_SYNTAX,
+  adapter,
+  exportMarkdown,
+  parseAgentMarkdown,
+  parseMarkdown,
+  richDoc,
+  unsupportedMarkdown,
+} from "./richtext.mjs";
 import { applyComment } from "./comments.mjs";
 import { commentMarkdown, markdownCommentSpans } from "./comment-content.mjs";
 import {
@@ -130,6 +138,19 @@ for (const [label, source] of [
   });
 }
 
+// Math is found: an agent write naming it is refused, and a literal import
+// keeps it as text whose export an agent may write back unchanged.
+function assertLiteralMath(source) {
+  assert.equal(unsupportedMarkdown(source)?.construct, "math");
+  assert.throws(() => parseAgentMarkdown(source), { code: "unsupported_markdown" });
+  const doc = parseMarkdown(source);
+  doc.descendants((node) => assert.notEqual(node.type.name, "raw"));
+  for (const part of source.split(/\r\n?|\n/)) assert.ok(doc.textContent.includes(part.trim()));
+  const exported = exportMarkdown(doc);
+  assert.equal(unsupportedMarkdown(exported), null, exported);
+  assert.ok(parseAgentMarkdown(exported).eq(doc), exported);
+}
+
 for (const source of [
   "The value is $x + 1$.",
   "$x$",
@@ -159,10 +180,8 @@ for (const source of [
   "$\u2028x$",
   "$x\u00a0$",
 ]) {
-  test(`math source stays opaque: ${JSON.stringify(source)}`, () => {
-    const doc = parseMarkdown(source);
-    assert.equal(doc.firstChild.type.name, "raw");
-    assert.equal(doc.firstChild.attrs.source, source);
+  test(`math is found and stays literal text: ${JSON.stringify(source)}`, () => {
+    assertLiteralMath(source);
   });
 }
 
@@ -182,11 +201,14 @@ for (const space of [
   "\ufeff",
   " \t\v\f\u00a0\ufeff",
 ]) {
-  for (const source of [`${space}$$\n\\{x\\}`, `Before\r${space}$$\n\\{x\\}`]) {
+  // A space and a tab at the start of a block indent four columns, which
+  // makes an indented code block; only the continuation line is prose there.
+  const sources = space.startsWith(" \t")
+    ? [`Before\r${space}$$\n\\{x\\}`]
+    : [`${space}$$\n\\{x\\}`, `Before\r${space}$$\n\\{x\\}`];
+  for (const source of sources) {
     test(`a Unicode space before $$ opens display math: ${JSON.stringify(source)}`, () => {
-      const doc = parseMarkdown(source);
-      assert.equal(doc.firstChild.type.name, "raw");
-      assert.equal(doc.firstChild.attrs.source, source);
+      assertLiteralMath(source);
     });
   }
 }

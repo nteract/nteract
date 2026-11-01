@@ -179,6 +179,36 @@ references; it does not publish the Page or change asset access.
   Palette names resolve to theme tokens; agents can also set `#rrggbb`. Markdown
   projects highlights as `<mark data-color="…">…</mark>`. Comment anchors keep
   their own tint and underline; where they overlap a highlight, both tints show.
+- **Markdown import:** every construct Markdown-it reads has a native mapping,
+  except math and HTML other than highlight tags (and `<br>` in a table cell).
+  Markdown that would parse to less than it says is unsupported too: an image
+  inside a link or mark, a table row with more cells than its header, a link
+  with no text, and a reference definition no link uses (or a repeated label).
+  Behind those named cases is a general check: after parsing, every link href,
+  image src and alt, and all visible text (whitespace aside) must be in the
+  native spans. Anything else is `unrepresentable`.
+  Strikethrough (`~~x~~`) is the `strike` mark, `---` a horizontal rule, and
+  reference links resolve to ordinary links at import. Code spans, fenced and
+  indented code, escaped characters, and link destinations and titles never
+  count as math or HTML.
+  - Agent writes (create, insert/replace Markdown, comments with
+    `body_format: "markdown"`) refuse these with
+    `400 unsupported_markdown` and `unsupported: { construct, line, column,
+    excerpt }`, before anything is written. The column counts code points.
+  - Stored source, browser drafts and paste keep math and HTML as literal,
+    editable text. Lossy source is literal text in full, so nothing is lost.
+    Export escapes literal `$` and `<`, so a read is always writable.
+  - The scan masks code per table cell, as Markdown-it splits cells first,
+    and recognizes a tag of any length, with `>` inside quoted values, in
+    linear time.
+  - Nothing writes a preserved block (`raw`, `pages-opaque`). The schema keeps
+    it read-only so older Pages open; the Page host converts each stored one
+    on load (see Preserved blocks below).
+- **Typing shortcuts:** `*x*` and `_x_` italicize, `**x**` bolds, `~~x~~`
+  strikes through when the closing delimiter is typed. A delimiter touching a
+  letter or digit (`snake_case_name`, `2*3*4`), an escaped one, and one inside
+  code stay literal; undo restores the typed delimiters. `---` alone in a
+  paragraph inserts a horizontal rule. Cmd/Ctrl+Shift+X toggles strikethrough.
 - **Mark registry:** [`model/marks.json`](model/marks.json) lists every inline
   mark with its value shape, expand rule, and Markdown projection. Validation,
   the Wordgard binding, Markdown import/export, the MCP `format_match` schema,
@@ -186,6 +216,71 @@ references; it does not publish the Page or change asset access.
   plain text and survive edits. Agents edit existing text through
   `replace_match` and `format_match`, which work on native spans; Markdown is
   for reading and for writing whole blocks.
+- **Preserved blocks:** older builds stored Markdown they couldn't import as one
+  read-only `pages-opaque` block holding its source. The Page host replaces
+  each with what its source imports as today, in
+  [`model/raw-migration.mjs`](model/raw-migration.mjs):
+  - Where: in place, under the block's own parents, in block bodies and
+    comment messages. Text around it keeps its identity, so anchors survive.
+  - Who: only the host, the Page's single serialized writer. Two peers that
+    each replaced the same marker would each insert a copy, and Automerge keeps
+    both. Browsers show the block read-only with a notice until the host's
+    change syncs.
+  - When: on load, before native connections open, after creating or
+    registering a Page, and when restoring one from Trash, before access
+    reopens.
+  - Fence: [`worker/preserved-conversion.mjs`](worker/preserved-conversion.mjs)
+    is the conversion's state machine (`unchecked`, `clear`, `held`,
+    `converting`, `failed`, `stuck`). In `held`, `converting` and `failed`,
+    on an active Page the host refuses every native put, relayed or
+    self-authored, and answers HTTP edits with
+    `503 preserved_markdown_converting` after one more attempt. Peers still
+    connect and sync down: discovery reports `converting`, and the viewer
+    shows the Page read-only without retiring its writer key. When the fence
+    drops, the host closes their sockets with `temporarily_unavailable`, so
+    they rediscover and edit. A tab that discovered `converting` says so on
+    its upgrade (`converting=1`); if the fence dropped in between, the host
+    refuses that upgrade the same way, so no tab misses the completion. Refusing puts is what keeps an old tab's
+    competing conversion out, so admitting the connection reopens nothing.
+    A trashed Page is `held`, so the fence is up before restore installs the
+    active record. A failed run keeps the fence and retries with backoff.
+    Connections (after their capacity check) and edits only nudge the
+    machine: a nudge can clear the fence, but never starts a retry before
+    its timer. If startup's journal recovery
+    can't finish a pending conversion (its records still can't be stored),
+    startup completes anyway and hands that entry to the retry loop, so the
+    Page stays readable. The conversion journals in its own
+    key space (`host/operation/internal:`), so full client receipt budgets
+    can't block it, and a run that applied but didn't finish replays under its
+    own key until the journal entry is terminal before the fence clears.
+  - Reserved runs: once a run's journal entry is reserved, it keeps the
+    fence and retries that exact intent with capped backoff, indefinitely,
+    whatever the failure. It is never reauthored, abandoned or unfenced; it
+    logs `page.preserved_markdown_stuck` every five failures.
+  - Permanent failure before anything was reserved: the run falls back to
+    converting each source as plain text. If that fails too, the Page is
+    `stuck`: logged (`page.preserved_markdown_stuck`), unfenced, and its
+    preserved blocks stay read-only until an edit replaces them
+    (DEPLOYMENT.md, "Preserved Markdown conversion"). Runs are serialized, and each is a journaled host
+    intent keyed by the heads it converted, so a restart replays the recorded
+    change instead of converting again. A Page with nothing to convert gets
+    no change.
+  - Stamp: the change stamps `preserved-markdown-converted`, so a build that
+    could still write or convert one opens the Page read-only and the host
+    refuses its writes. Viewer protocol 2 retires those builds everywhere.
+  - Reload: native admission sees signing keys, not records, and a reloaded
+    tab keeps its key. So before connecting, a reopened Page checks its
+    unconfirmed history for edits to a preserved block that aren't the
+    host's stamped conversion (an old build's Edit table, or a deletion).
+    If it finds any, the whole replica becomes a recovery record (Download
+    previous local draft), and the tab reopens on a fresh replica holding
+    only history the host has. The block syncs once.
+  - Limits: the reload check runs in the browser, so it guards honest older
+    tabs, not hostile clients. An authorized writer can already delete or
+    rewrite content; the host's fence and stamp bound what a client of an
+    older build writes, not what a malicious one does.
+  - Remove `nodes.raw`, `OpaqueBlock` and the conversion once no stored Page
+    can hold a preserved block.
 - **Schema features:** every mark and block type that existed when Page10
   launched is baseline. A later one names a feature id: a mark in
   `marks.json`, a block type in [`model/features.json`](model/features.json).
@@ -220,9 +315,7 @@ references; it does not publish the Page or change asset access.
 - **Tables:** native row/cell markers live in the same rich-text field as prose.
   Insert table chooses dimensions; Table options changes rows and columns. Tab
   moves between cells and appends a row at the end. The first row is the header.
-  Preserved Markdown tables convert only through an explicit, undoable Edit
-  table action; unsupported syntax stays preserved. Column resizing/moving and
-  merged cells are not implemented.
+  Column resizing/moving and merged cells are not implemented.
 - **Task lists:** use Task list or type `- [ ] ` / `- [x] `. Enter creates an
   unchecked item; an empty item returns to prose. Native list-item markers store
   checked state independently of the text, so checkbox and text edits can merge.

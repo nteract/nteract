@@ -508,10 +508,12 @@ test("MCP advertises visible-text replacement separately from Markdown replaceme
     "link",
     "em",
     "strong",
+    "strike",
     "highlight",
     "code",
   ]);
   assert.equal(variants[1].properties.add.properties.strong.const, true);
+  assert.equal(variants[1].properties.add.properties.strike.const, true);
   assert.deepEqual(variants[0].required, ["op", "block_id", "match_text", "replacement"]);
   assert.equal(variants[0].properties.context_before.type, "string");
   assert.equal(variants[0].properties.context_after.type, "string");

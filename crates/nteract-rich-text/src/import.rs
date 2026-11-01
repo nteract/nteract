@@ -8,44 +8,88 @@ use crate::{
     MAX_DEPTH, MAX_INPUT_BYTES,
 };
 
-/// Import the conservative `pages-markdown-v1` profile into native span data.
-/// Unsupported syntax within admission bounds is retained as one opaque block,
-/// never silently removed. Both source and resulting serialized spans must fit.
+/// Import the `pages-markdown-v1` profile into native span data, as the
+/// JavaScript `parseMarkdown` in `pages/model/richtext.mjs` does. Math and
+/// HTML Pages can't represent stay literal text (see `scan`); content whose
+/// kind is not Markdown is all literal text, and so is Markdown that would
+/// parse to less than it says (see `lossy`). Import never writes a preserved
+/// block. Both source and resulting serialized spans must fit.
 pub fn markdown_to_spans(source: &str, options: &ImportOptions<'_>) -> Result<Vec<Span>> {
     if source.len() > MAX_INPUT_BYTES {
         return Err(CodecError("Markdown exceeds the input byte limit".into()));
     }
-    if options.kind != "markdown" || unsupported_syntax(source)? {
-        return opaque(source, options);
+    if options.kind != "markdown" {
+        return literal_document(source);
     }
     guard_container_prefixes(source)?;
+    let original = source;
 
     // This is deliberately not Constructs::gfm(): Pages keeps bare URLs as
-    // text, recognizes tasks only in bullet lists, and preserves extensions
-    // without a native representation instead of interpreting them differently.
-    let tree = markdown::to_mdast(source, &parse_options())
-        .map_err(|error| CodecError(error.to_string()))?;
+    // text, recognizes tasks only in bullet lists, and has no footnotes.
+    let parse = |text: &str| {
+        markdown::to_mdast(text, &parse_options()).map_err(|error| CodecError(error.to_string()))
+    };
+    let normalized = normalize(source);
+    // The parser drops a leading byte order mark, which Markdown-it keeps as
+    // text. The scan reads it as U+3000, a space of the same length in the
+    // same line-start class, and the parser reads it as an entity.
+    let bom = normalized.starts_with('\u{feff}');
+    let scanned = if bom {
+        normalized.replacen('\u{feff}', "\u{3000}", 1)
+    } else {
+        normalized.clone()
+    };
+    let tree = parse(&scanned)?;
+    let mut text = literalize(&normalized, &scan(&scanned, &tree)?);
+    if bom {
+        let body = text.as_deref().unwrap_or(&normalized);
+        text = Some(format!("&#xFEFF;{}", &body['\u{feff}'.len_utf8()..]));
+    }
+    let (source, tree) = match text {
+        Some(text) => {
+            let tree = parse(&text)?;
+            (std::borrow::Cow::Owned(text), tree)
+        }
+        None => (std::borrow::Cow::Owned(normalized), tree),
+    };
+    let source: &str = &source;
 
-    if needs_opaque(&tree, 0, false)? {
-        return opaque(source, options);
+    if lossy(&tree, 0, false)? {
+        return literal_document(original);
+    }
+    let mut tree = tree;
+    let mut definitions = Definitions::new();
+    if collect_definitions(&mut tree, &mut definitions) || !all_used(&tree, &definitions) {
+        return literal_document(original);
     }
     let Node::Root(root) = tree else {
         return Err(CodecError("Markdown parser did not return a root".into()));
     };
     let mut builder = Builder {
         source,
+        definitions,
         spans: Vec::new(),
         tags: Vec::new(),
         next_tag: 0,
         highlight: None,
         highlighted_image: false,
+        carried: Carried::default(),
     };
     for node in &root.children {
         builder.block(node, &[], root.children.len() == 1)?;
     }
     // An image marker cannot carry a highlight, as with links and emphasis.
     if builder.highlighted_image {
-        return opaque(source, options);
+        return literal_document(original);
+    }
+    // The general check behind the specific ones: anything the Markdown
+    // carried that the spans lost keeps the whole source literal, as the
+    // JavaScript `lostContent` does.
+    if !builder
+        .carried
+        .preserved_in(&Carried::from_spans(&builder.spans))
+    {
+        return literal_document(original);
     }
     validate_spans(&builder.spans)?;
     Ok(builder.spans)
@@ -64,12 +108,15 @@ fn parse_options() -> ParseOptions {
     ParseOptions {
         constructs: Constructs {
             gfm_table: true,
+            gfm_strikethrough: true,
             html_flow: false,
             // HTML tokens let table-only <br> remain distinct from escaped
             // or entity-encoded text. Other HTML tokens stay literal text.
             html_text: true,
             ..Constructs::default()
         },
+        // Markdown-it's strikethrough needs two tildes.
+        gfm_strikethrough_single_tilde: false,
         ..ParseOptions::default()
     }
 }
@@ -171,17 +218,17 @@ fn list_prefix_len(source: &str) -> usize {
     }
 }
 
-// Math is preserved, as in the JavaScript `MATH_SYNTAX` gate in
-// `pages/model/richtext.mjs`, which has the same pattern text. The
-// `math_pattern_matches_pages` test compares the two:
+// Math has no node in Pages, so its source stays literal text. These rules,
+// the JavaScript `MATH_SYNTAX` in `pages/model/richtext.mjs`, decide what
+// counts as math. The two have the same pattern text, which the
+// `math_pattern_matches_pages` test compares:
 // - A `$$` at a line start, after optional spaces, opens display math.
 // - A `$$` pair on one line is display math, with or without spaces.
 // - A `$` pair follows Pandoc's dollar rule: the opening `$` is followed
 //   by a non-space, the closing `$` follows a non-space and is not
 //   followed by a digit. "$30 and $25" stays prose.
-// When unsure, the source stays preserved. Unicode `\s` here and
-// JavaScript `\s` disagree on U+0085 and U+FEFF, so each rule spells out
-// its spaces:
+// When unsure, the text counts as math. Unicode `\s` here and JavaScript
+// `\s` disagree on U+0085 and U+FEFF, so each rule spells out its spaces:
 // - The dollar rule's spaces are ASCII whitespace, [ \t\n\v\f\r].
 // - Before a line-start `$$`, a space is any character either codec's
 //   `\s` matched that does not start a line.
@@ -193,75 +240,334 @@ fn list_prefix_len(source: &str) -> usize {
 // `\uXXXX` names the same code point here as in the JavaScript pattern.
 const MATH_PATTERN: &str = r"(?:^|\r\n?|[\n\u2028\u2029])[ \t\v\f\u00a0\u0085\u1680\u2000-\u200a\u202f\u205f\u3000\ufeff]*\$\$|\$\$(?:[^\n$]|\$[^\n$])*\$\$|\$[^ \t\n\v\f\r$](?:[^ \t\n\v\f\r$]|[ \t\v\f\r]+[^ \t\n\v\f\r$])*\$(?:[^0-9]|$)";
 
-fn unsupported_syntax(source: &str) -> Result<bool> {
-    static TASK_PREFIX: OnceLock<Regex> = OnceLock::new();
-    static MATH: OnceLock<Regex> = OnceLock::new();
-    static UNSUPPORTED: OnceLock<Regex> = OnceLock::new();
-    static LINE_HTML: OnceLock<Regex> = OnceLock::new();
-    // Omit bullet task prefixes before checking for reference links. Unlike
-    // scanning decoded text, this keeps escaped brackets literal.
-    let task = expression(
-        &TASK_PREFIX,
-        r"(?m)^(\s*(?:>\s*)*[-+*][ \t]+)\[[ xX]\]([ \t]+|$)",
-    )?;
-    let syntax = task.replace_all(source, "${1}${2}");
-    if expression(&MATH, MATH_PATTERN)?.is_match(&syntax)
-        || expression(
-            &UNSUPPORTED,
-            r"(?m)(^|\n)\s*(---\s*$)|!?\[[^\]]*\]\s*\[|^\s*\[[^\]]+\]:|~~",
-        )?
-        .is_match(&syntax)
-    {
-        return Ok(true);
+/// Markdown-it reads CRLF and CR as LF and NUL as U+FFFD; the JavaScript scan
+/// reads the same text, so this one does too.
+fn normalize(source: &str) -> String {
+    if !source.contains(['\r', '\0']) {
+        return source.to_owned();
     }
-    // A line that starts with HTML is opaque, except a highlight tag. The
-    // JavaScript gate is `<(?!\/?mark[ \t\r\n>])`: the tag name must be
-    // followed by ASCII whitespace or `>`, so `<marker>`, `<mark:x>` and
-    // `<mark\u{a0}>` stay opaque. Any line-start `<` without that tag matches.
-    Ok(
-        expression(&LINE_HTML, r"(?m)(?:^|\n)\s*<(?i:(/?mark)[ \t\r\n>])?")?
-            .captures_iter(&syntax)
-            .any(|captures| captures.get(1).is_none()),
-    )
+    source
+        .replace("\r\n", "\n")
+        .replace('\r', "\n")
+        .replace('\0', "\u{fffd}")
 }
 
-fn opaque(source: &str, options: &ImportOptions<'_>) -> Result<Vec<Span>> {
-    let spans = vec![Span::Block {
-        value: Block {
-            kind: "pages-opaque".into(),
-            parents: Vec::new(),
-            attrs: Attributes::from([
-                ("source".into(), json!(source)),
-                ("importId".into(), json!(options.import_id)),
-                ("kind".into(), json!(options.kind)),
-            ]),
-            is_embed: false,
-        },
-    }];
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Construct {
+    Math,
+    Html,
+    /// The opening bracket of a link, image or definition whose destination
+    /// Pages refuses. Escaping it leaves the syntax as text, as Markdown-it
+    /// does when its link validation fails.
+    Unsafe,
+}
+
+#[derive(Debug)]
+struct Scan {
+    /// Byte ranges into the normalized source, ordered and not overlapping.
+    found: Vec<(Construct, usize, usize)>,
+    /// Code and backslash-escaped bytes, which are never syntax.
+    masked: Vec<bool>,
+}
+
+/// Math, HTML and unsafe destinations outside code in `source`, the same
+/// ranges the JavaScript `scanMarkdown` finds. Code positions come from the
+/// parsed tree; a backslash escapes the ASCII punctuation after it.
+fn scan(source: &str, tree: &Node) -> Result<Scan> {
+    fn walk(
+        node: &Node,
+        source: &str,
+        in_table: bool,
+        masked: &mut [bool],
+        found: &mut Vec<(Construct, usize, usize)>,
+    ) -> Result<()> {
+        let range = node.position().map(|p| (p.start.offset, p.end.offset));
+        match node {
+            Node::Code(_) | Node::InlineCode(_) => {
+                if let Some((start, end)) = range {
+                    masked[start..end].fill(true);
+                }
+                return Ok(());
+            }
+            Node::Html(html) => {
+                let allowed = highlight_tag(&html.value)? != Tag::Literal
+                    || (in_table && table_break(&html.value)?);
+                if let (false, Some((start, end))) = (allowed, range) {
+                    found.push((Construct::Html, start, end));
+                }
+                return Ok(());
+            }
+            Node::Link(markdown::mdast::Link { url, .. })
+            | Node::Definition(markdown::mdast::Definition { url, .. })
+                if !safe_url(url) =>
+            {
+                // An autolink opens with `<`; other links and definitions
+                // with `[`.
+                if let Some(at) = range.and_then(|(start, end)| {
+                    source[start..end]
+                        .find(['[', '<'])
+                        .map(|offset| start + offset)
+                }) {
+                    found.push((Construct::Unsafe, at, at + 1));
+                }
+            }
+            Node::Image(image) if !safe_url(&image.url) => {
+                if let Some((start, _)) = range {
+                    found.push((Construct::Unsafe, start + 1, start + 2));
+                }
+            }
+            _ => {}
+        }
+        let in_table = in_table || matches!(node, Node::Table(_));
+        if let Some(children) = node.children() {
+            for child in children {
+                walk(child, source, in_table, masked, found)?;
+            }
+        }
+        Ok(())
+    }
+    static MATH: OnceLock<Regex> = OnceLock::new();
+    static BLANK: OnceLock<Regex> = OnceLock::new();
+    let bytes = source.as_bytes();
+    let mut masked = vec![false; bytes.len()];
+    let mut others = Vec::new();
+    walk(tree, source, false, &mut masked, &mut others)?;
+    let mut index = 0;
+    while index + 1 < bytes.len() {
+        if !masked[index] && bytes[index] == b'\\' && bytes[index + 1].is_ascii_punctuation() {
+            masked[index + 1] = true;
+            index += 2;
+        } else {
+            index += 1;
+        }
+    }
+    // Masked bytes read as NUL; line breaks stay for the line-start rules.
+    let text: String = String::from_utf8(
+        bytes
+            .iter()
+            .zip(&masked)
+            .map(|(byte, masked)| if *masked && *byte != b'\n' { 0 } else { *byte })
+            .collect(),
+    )
+    .map_err(|error| CodecError(error.to_string()))?;
+    let math = expression(&MATH, MATH_PATTERN)?;
+    let blank = expression(&BLANK, r"\n[ \t]*\n")?;
+    let mut found = Vec::new();
+    let mut at = 0;
+    // The end of the paragraph the last display math opened in. Reused until
+    // a match passes it, so a run of `$$` lines searches for it once.
+    let mut paragraph_end = 0;
+    while let Some(matched) = math.find_at(&text, at) {
+        let first = matched.start() + matched.as_str().find('$').unwrap_or(0);
+        let end = if matched.end() - first == 2 {
+            // A line-start `$$` opens display math. It runs to the next `$$`
+            // before a blank line, or to that blank line.
+            if paragraph_end < matched.end() {
+                paragraph_end = blank
+                    .find_at(&text, matched.end())
+                    .map_or(text.len(), |blank| blank.start());
+            }
+            match text[matched.end()..].find("$$") {
+                Some(close) if matched.end() + close < paragraph_end => matched.end() + close + 2,
+                _ => paragraph_end,
+            }
+        } else if text.as_bytes()[first + 1] == b'$' {
+            matched.end()
+        } else {
+            // The dollar rule's body holds no `$`; its match may read one
+            // character past the closing `$`.
+            text[first + 1..]
+                .find('$')
+                .map_or(matched.end(), |close| first + close + 2)
+        };
+        found.push((Construct::Math, first, end));
+        at = end.max(matched.start() + 1);
+    }
+    // HTML inside math is part of the math.
+    for range in others {
+        if !found.iter().any(|(construct, start, end)| {
+            *construct == Construct::Math && range.1 >= *start && range.1 < *end
+        }) {
+            found.push(range);
+        }
+    }
+    found.sort_by_key(|(_, start, _)| *start);
+    // An HTML comment or instruction can span a math range. Overlapping
+    // ranges merge, and the first one names the construct.
+    let mut merged: Vec<(Construct, usize, usize)> = Vec::new();
+    for range in found {
+        match merged.last_mut() {
+            Some(last) if range.1 < last.2 => last.2 = last.2.max(range.2),
+            _ => merged.push(range),
+        }
+    }
+    Ok(Scan {
+        found: merged,
+        masked,
+    })
+}
+
+/// The source with every ASCII punctuation character in each range, outside
+/// code, backslash-escaped, so the parser reads the range as its literal
+/// characters; None when nothing needs it. A line break between two lines of
+/// display math becomes a hard break, so it keeps its lines.
+fn literalize(source: &str, scan: &Scan) -> Option<String> {
+    if scan.found.is_empty() {
+        return None;
+    }
+    let bytes = source.as_bytes();
+    let mut result = Vec::with_capacity(bytes.len() + 16);
+    let mut copied = 0;
+    for &(construct, start, end) in &scan.found {
+        result.extend_from_slice(&bytes[copied..start]);
+        for index in start..end {
+            let byte = bytes[index];
+            let hard_break = construct == Construct::Math
+                && byte == b'\n'
+                && index > start
+                && index + 1 < end
+                && bytes[index - 1] != b'\n'
+                && bytes[index + 1] != b'\n'
+                && !scan.masked[index + 1];
+            if !scan.masked[index] && (hard_break || byte.is_ascii_punctuation()) {
+                result.push(b'\\');
+            }
+            result.push(byte);
+        }
+        copied = end;
+    }
+    result.extend_from_slice(&bytes[copied..]);
+    String::from_utf8(result).ok()
+}
+
+/// Non-Markdown content as text: one paragraph per run of lines, each line
+/// break a hard break.
+fn literal_document(source: &str) -> Result<Vec<Span>> {
+    static BLANK: OnceLock<Regex> = OnceLock::new();
+    let normalized = normalize(source);
+    let paragraphs: Vec<&str> = expression(&BLANK, r"\n[ \t]*\n")?
+        .split(&normalized)
+        .filter(|part| !part.trim().is_empty())
+        .collect();
+    let mut spans = Vec::new();
+    for part in &paragraphs {
+        if paragraphs.len() > 1 {
+            spans.push(Span::Block {
+                value: Block {
+                    kind: "paragraph".into(),
+                    parents: Vec::new(),
+                    attrs: Attributes::new(),
+                    is_embed: false,
+                },
+            });
+        }
+        // Line breaks at a paragraph's edges separate it; they aren't content.
+        for (index, line) in part.trim_matches('\n').split('\n').enumerate() {
+            if index > 0 {
+                spans.push(Span::Block {
+                    value: Block {
+                        kind: "hard-break".into(),
+                        parents: vec!["paragraph".into()],
+                        attrs: Attributes::new(),
+                        is_embed: true,
+                    },
+                });
+            }
+            if !line.is_empty() {
+                spans.push(Span::Text {
+                    value: line.into(),
+                    marks: Marks::new(),
+                });
+            }
+        }
+    }
     validate_spans(&spans)?;
     Ok(spans)
 }
 
-fn needs_opaque(node: &Node, depth: usize, inside_marks: bool) -> Result<bool> {
+fn table_break(html: &str) -> Result<bool> {
+    static TABLE_BREAK: OnceLock<Regex> = OnceLock::new();
+    Ok(expression(&TABLE_BREAK, r"(?i)^<br\s*/?\s*>$")?.is_match(html))
+}
+
+/// Reference definitions by identifier. The first definition of an
+/// identifier wins, as in CommonMark.
+type Definitions = std::collections::HashMap<String, (String, Option<String>)>;
+
+/// Move every definition out of the tree into `definitions`. Like
+/// Markdown-it, a definition leaves no block behind, so the blocks around it
+/// are siblings. Returns whether a label was defined twice: the second
+/// destination would be dropped.
+fn collect_definitions(node: &mut Node, definitions: &mut Definitions) -> bool {
+    let Some(children) = node.children_mut() else {
+        return false;
+    };
+    let mut repeated = false;
+    children.retain(|child| {
+        let Node::Definition(definition) = child else {
+            return true;
+        };
+        match definitions.entry(definition.identifier.clone()) {
+            std::collections::hash_map::Entry::Occupied(_) => repeated = true,
+            std::collections::hash_map::Entry::Vacant(entry) => {
+                entry.insert((definition.url.clone(), definition.title.clone()));
+            }
+        }
+        false
+    });
+    for child in children {
+        repeated |= collect_definitions(child, definitions);
+    }
+    repeated
+}
+
+/// Whether some reference uses every definition; an unused one's destination
+/// would be dropped.
+fn all_used(tree: &Node, definitions: &Definitions) -> bool {
+    fn walk(node: &Node, used: &mut std::collections::HashSet<String>) {
+        match node {
+            Node::LinkReference(reference) => {
+                used.insert(reference.identifier.clone());
+            }
+            Node::ImageReference(reference) => {
+                used.insert(reference.identifier.clone());
+            }
+            _ => {}
+        }
+        if let Some(children) = node.children() {
+            for child in children {
+                walk(child, used);
+            }
+        }
+    }
+    if definitions.is_empty() {
+        return true;
+    }
+    let mut used = std::collections::HashSet::new();
+    walk(tree, &mut used);
+    definitions.keys().all(|label| used.contains(label))
+}
+
+/// Markdown that would parse to less than it says, which import keeps as
+/// literal text, as the JavaScript `pages_lossy` rules do: an image inside a
+/// link or mark (an image marker can't carry one), a link with no text, and a
+/// table body row with more cells than its header. Constructs this profile
+/// doesn't enable count too, so a parser change can't drop content.
+fn lossy(node: &Node, depth: usize, inside_marks: bool) -> Result<bool> {
     if depth > MAX_DEPTH {
         return Err(CodecError(
             "Markdown nesting exceeds the depth limit".into(),
         ));
     }
+    // Neither construct is enabled; this keeps a parser change from dropping
+    // content.
     if matches!(
         node,
-        Node::ThematicBreak(_)
-            | Node::Definition(_)
-            | Node::LinkReference(_)
-            | Node::ImageReference(_)
-            | Node::FootnoteDefinition(_)
+        Node::FootnoteDefinition(_)
             | Node::FootnoteReference(_)
-            | Node::Delete(_)
             | Node::Math(_)
             | Node::InlineMath(_)
     ) {
-        // The current JS adapter drops thematic breaks because it has no block
-        // mapping. Retaining their source is an intentional compatibility fix.
         return Ok(true);
     }
     if matches!(node, Node::Link(link) if !safe_url(&link.url))
@@ -269,17 +575,37 @@ fn needs_opaque(node: &Node, depth: usize, inside_marks: bool) -> Result<bool> {
     {
         return Ok(true);
     }
-    // Marks live on text spans; an image marker cannot carry its enclosing
-    // link or emphasis. Preserve the entire source before building any spans
-    // instead of accepting an image with those semantics silently removed.
-    if inside_marks && matches!(node, Node::Image(_)) {
+    if inside_marks && matches!(node, Node::Image(_) | Node::ImageReference(_)) {
         return Ok(true);
     }
-    let inside_marks =
-        inside_marks || matches!(node, Node::Link(_) | Node::Strong(_) | Node::Emphasis(_));
+    match node {
+        Node::Link(markdown::mdast::Link { children, .. })
+        | Node::LinkReference(markdown::mdast::LinkReference { children, .. })
+            if children.is_empty() =>
+        {
+            return Ok(true)
+        }
+        Node::Table(table)
+            if table.children.iter().skip(1).any(
+                |row| matches!(row, Node::TableRow(row) if row.children.len() > table.align.len()),
+            ) =>
+        {
+            return Ok(true)
+        }
+        _ => {}
+    }
+    let inside_marks = inside_marks
+        || matches!(
+            node,
+            Node::Link(_)
+                | Node::LinkReference(_)
+                | Node::Strong(_)
+                | Node::Emphasis(_)
+                | Node::Delete(_)
+        );
     if let Some(children) = node.children() {
         for child in children {
-            if needs_opaque(child, depth + 1, inside_marks)? {
+            if lossy(child, depth + 1, inside_marks)? {
                 return Ok(true);
             }
         }
@@ -352,6 +678,7 @@ fn highlight_tags(children: &[Node]) -> Result<Vec<Tag>> {
 
 struct Builder<'a> {
     source: &'a str,
+    definitions: Definitions,
     spans: Vec<Span>,
     /// Highlight roles of the current inline container's HTML nodes.
     tags: Vec<Tag>,
@@ -359,6 +686,79 @@ struct Builder<'a> {
     /// The open highlight color while walking the current inline container.
     highlight: Option<String>,
     highlighted_image: bool,
+    /// What the visited Markdown carried, for the preservation check.
+    carried: Carried,
+}
+
+/// Visible text, link destinations and images, as read from the tree or
+/// from the produced spans.
+#[derive(Default)]
+struct Carried {
+    text: String,
+    links: std::collections::BTreeSet<String>,
+    /// Every image occurrence: images are embeds, one marker each.
+    images: Vec<(String, String)>,
+    /// A link that held no visible text of its own: links are marks on
+    /// text, so its href has nowhere to live, whatever other links share it.
+    bare_link: bool,
+}
+
+impl Carried {
+    fn from_spans(spans: &[Span]) -> Self {
+        let mut produced = Self::default();
+        for span in spans {
+            match span {
+                Span::Text { value, marks } => {
+                    produced.text.push_str(value);
+                    if let Some(href) = marks
+                        .get("link")
+                        .and_then(Value::as_str)
+                        .and_then(|link| serde_json::from_str::<Value>(link).ok())
+                        .and_then(|link| {
+                            link.get("href").and_then(Value::as_str).map(str::to_owned)
+                        })
+                    {
+                        produced.links.insert(href);
+                    }
+                }
+                Span::Block { value } if value.kind == "image" => {
+                    let attr = |key: &str| {
+                        value
+                            .attrs
+                            .get(key)
+                            .and_then(Value::as_str)
+                            .unwrap_or("")
+                            .to_owned()
+                    };
+                    produced.images.push((attr("src"), attr("alt")));
+                }
+                Span::Block { .. } => {}
+            }
+        }
+        produced
+    }
+
+    /// Whether `produced` holds everything this carried: all visible text
+    /// with whitespace removed, every link destination and every image.
+    fn preserved_in(&self, produced: &Self) -> bool {
+        let squash = |text: &str| {
+            text.chars()
+                .filter(|c| !c.is_whitespace())
+                .collect::<String>()
+        };
+        let mut remaining = produced.images.clone();
+        let images = self.images.iter().all(|image| {
+            remaining
+                .iter()
+                .position(|candidate| candidate == image)
+                .map(|at| remaining.swap_remove(at))
+                .is_some()
+        });
+        !self.bare_link
+            && squash(&self.text) == squash(&produced.text)
+            && self.links.is_subset(&produced.links)
+            && images
+    }
 }
 
 impl Builder<'_> {
@@ -427,6 +827,7 @@ impl Builder<'_> {
                     Attributes::from([("params".into(), json!(params))]),
                     false,
                 );
+                self.carried.text.push_str(&code.value);
                 self.text(&code.value, &Marks::new());
             }
             Node::Blockquote(quote) => {
@@ -455,6 +856,9 @@ impl Builder<'_> {
                     });
                     self.container(kind, parents, &children, attrs)?;
                 }
+            }
+            Node::ThematicBreak(_) => {
+                self.marker("horizontal-rule", parents, Attributes::new(), false);
             }
             Node::Table(table) => {
                 self.marker("table", parents, Attributes::new(), false);
@@ -664,10 +1068,10 @@ impl Builder<'_> {
         marks: &Marks,
         in_table: bool,
     ) -> Result<()> {
-        static TABLE_BREAK: OnceLock<Regex> = OnceLock::new();
         for node in children {
             match node {
                 Node::Text(text) => {
+                    self.carried.text.push_str(&text.value);
                     let marks = self.text_marks(marks);
                     self.text(
                         &text.value.replace("\r\n", "\n").replace(['\n', '\r'], " "),
@@ -675,6 +1079,7 @@ impl Builder<'_> {
                     );
                 }
                 Node::InlineCode(code) => {
+                    self.carried.text.push_str(&code.value);
                     let mut nested = self.text_marks(marks);
                     nested.insert("code".into(), Value::Bool(true));
                     self.text(&code.value, &nested);
@@ -689,24 +1094,52 @@ impl Builder<'_> {
                     nested.insert("em".into(), Value::Bool(true));
                     self.inlines(&emphasis.children, parents, &nested, in_table)?;
                 }
-                Node::Link(link) => {
+                Node::Delete(delete) => {
                     let mut nested = marks.clone();
-                    let value = format!(
-                        "{{\"href\":{},\"title\":{}}}",
-                        json!(link.url),
-                        json!(link.title)
-                    );
-                    nested.insert("link".into(), Value::String(value));
-                    self.inlines(&link.children, parents, &nested, in_table)?;
+                    nested.insert("strike".into(), Value::Bool(true));
+                    self.inlines(&delete.children, parents, &nested, in_table)?;
                 }
-                Node::Image(image) => {
+                Node::Link(link) => {
+                    self.link(
+                        &link.url,
+                        &link.title,
+                        &link.children,
+                        parents,
+                        marks,
+                        in_table,
+                    )?;
+                }
+                Node::LinkReference(reference) => {
+                    let (url, title) = self.definition(&reference.identifier)?;
+                    self.link(&url, &title, &reference.children, parents, marks, in_table)?;
+                }
+                Node::ImageReference(reference) => {
+                    let (url, title) = self.definition(&reference.identifier)?;
+                    self.carried
+                        .images
+                        .push((url.clone(), reference.alt.clone()));
                     self.highlighted_image |= self.highlight.is_some();
                     self.marker(
                         "image",
                         parents,
                         Attributes::from([
+                            ("src".into(), json!(url)),
+                            ("alt".into(), json!(reference.alt)),
+                            ("title".into(), json!(title)),
+                        ]),
+                        true,
+                    );
+                }
+                Node::Image(image) => {
+                    self.highlighted_image |= self.highlight.is_some();
+                    let alt = self.image_alt(image)?;
+                    self.carried.images.push((image.url.clone(), alt.clone()));
+                    self.marker(
+                        "image",
+                        parents,
+                        Attributes::from([
                             ("src".into(), json!(image.url)),
-                            ("alt".into(), json!(self.image_alt(image)?)),
+                            ("alt".into(), json!(alt)),
                             ("title".into(), json!(image.title)),
                         ]),
                         true,
@@ -719,13 +1152,11 @@ impl Builder<'_> {
                     match tag {
                         Some(Tag::Open(color)) => self.highlight = Some(color),
                         Some(Tag::Close) => self.highlight = None,
-                        _ if in_table
-                            && expression(&TABLE_BREAK, r"(?i)^<br\s*/?\s*>$")?
-                                .is_match(&html.value) =>
-                        {
+                        _ if in_table && table_break(&html.value)? => {
                             self.marker("hard-break", parents, Attributes::new(), true);
                         }
                         _ => {
+                            self.carried.text.push_str(&html.value);
                             let marks = self.text_marks(marks);
                             self.text(&html.value, &marks);
                         }
@@ -738,6 +1169,34 @@ impl Builder<'_> {
                 }
             }
         }
+        Ok(())
+    }
+}
+
+impl Builder<'_> {
+    fn definition(&self, identifier: &str) -> Result<(String, Option<String>)> {
+        self.definitions
+            .get(identifier)
+            .cloned()
+            .ok_or_else(|| CodecError("A Markdown reference has no definition".into()))
+    }
+
+    fn link(
+        &mut self,
+        url: &str,
+        title: &Option<String>,
+        children: &[Node],
+        parents: &[String],
+        marks: &Marks,
+        in_table: bool,
+    ) -> Result<()> {
+        self.carried.links.insert(url.to_owned());
+        let mut nested = marks.clone();
+        let value = format!("{{\"href\":{},\"title\":{}}}", json!(url), json!(title));
+        nested.insert("link".into(), Value::String(value));
+        let before = self.carried.text.len();
+        self.inlines(children, parents, &nested, in_table)?;
+        self.carried.bare_link |= self.carried.text.len() == before;
         Ok(())
     }
 }
@@ -838,26 +1297,157 @@ mod tests {
     }
 
     #[test]
-    fn unsupported_content_retains_source_and_provenance() {
+    fn former_preserved_constructs_import_natively_or_as_text() {
+        let opaque = |spans: &[Span]| {
+            spans
+                .iter()
+                .any(|span| matches!(span, Span::Block { value } if value.kind == "pages-opaque"))
+        };
+        assert_eq!(
+            import("***"),
+            vec![Span::Block {
+                value: Block {
+                    kind: "horizontal-rule".into(),
+                    parents: vec![],
+                    attrs: Attributes::new(),
+                    is_embed: false,
+                },
+            }]
+        );
+        assert_eq!(
+            import("~~deleted~~"),
+            vec![text("deleted", json!({"strike": true}))]
+        );
+        assert_eq!(import("<b>html</b>"), vec![text("<b>html</b>", json!({}))]);
+        assert_eq!(
+            import("[link][ref]\n\n[ref]: /x"),
+            vec![text(
+                "link",
+                json!({"link": "{\"href\":\"/x\",\"title\":null}"})
+            )]
+        );
+        assert_eq!(
+            import("[bad](javascript:alert(1))"),
+            vec![text("[bad](javascript:alert(1))", json!({}))]
+        );
+        assert_eq!(import("$x$ and `$y$`")[0], text("$x$ and ", json!({})));
         for source in [
             "***",
             "~~deleted~~",
             "<b>html</b>",
-            "[link][ref]\n\n[ref]: /x",
-            "[bad](javascript:alert(1))",
+            "$x$",
+            "[bad](javascript:x)",
         ] {
-            let spans = markdown_to_spans(
-                source,
-                &ImportOptions {
-                    import_id: "import-1",
-                    kind: "markdown",
-                },
-            )
-            .unwrap();
-            assert!(
-                matches!(&spans[..], [Span::Block { value }] if value.kind == "pages-opaque" && value.attrs.get("source") == Some(&json!(source)) && value.attrs.get("importId") == Some(&json!("import-1")))
+            assert!(!opaque(&import(source)), "{source}");
+        }
+    }
+
+    // Never silent loss: every compatibility fixture, and each one wrapped in
+    // a link, a table cell and formatting, imports with all its visible text,
+    // link destinations and images, or as the whole source in literal text.
+    #[test]
+    fn import_preserves_or_literalizes_every_fixture_and_its_wrappings() {
+        let corpus: Value =
+            serde_json::from_str(include_str!("../fixtures/compatibility.json")).unwrap();
+        let wrappings: [fn(&str) -> String; 5] = [
+            |source| source.to_owned(),
+            |source| format!("[{}](https://example.org/w)", source.replace('\n', " ")),
+            |source| {
+                format!(
+                    "| h |\n| - |\n| {} |",
+                    source.replace('\n', "<br>").replace('|', "\\|")
+                )
+            },
+            |source| format!("**{}**", source.replace('\n', " ")),
+            |source| format!("<mark>{}</mark> ![after](a.png)", source.replace('\n', " ")),
+        ];
+        let (mut checked, mut literal) = (0, 0);
+        for fixture in corpus["fixtures"].as_array().unwrap() {
+            if fixture["kind"].as_str().unwrap_or("markdown") != "markdown" {
+                continue;
+            }
+            for wrap in wrappings {
+                let source = wrap(fixture["markdown"].as_str().unwrap());
+                let spans = import(&source);
+                assert!(
+                    !spans.iter().any(
+                        |span| matches!(span, Span::Block { value } if value.kind == "pages-opaque")
+                    ),
+                    "{source}"
+                );
+                if spans == literal_document(&source).unwrap() {
+                    literal += 1;
+                } else {
+                    // Independently of the builder: every inline link and
+                    // image destination the parser saw is in the spans.
+                    fn destinations(node: &Node, found: &mut Vec<String>) {
+                        match node {
+                            Node::Link(link) => found.push(link.url.clone()),
+                            Node::Image(image) => found.push(image.url.clone()),
+                            _ => {}
+                        }
+                        for child in node.children().into_iter().flatten() {
+                            destinations(child, found);
+                        }
+                    }
+                    let tree = markdown::to_mdast(&normalize(&source), &parse_options()).unwrap();
+                    let mut seen = Vec::new();
+                    destinations(&tree, &mut seen);
+                    let produced = Carried::from_spans(&spans);
+                    // A destination inside literal math stays as its text.
+                    for url in seen.iter().filter(|url| safe_url(url)) {
+                        assert!(
+                            produced.links.contains(url)
+                                || produced.images.iter().any(|(src, _)| src == url)
+                                || produced.text.contains(url.as_str()),
+                            "{source}: lost {url}"
+                        );
+                    }
+                }
+                checked += 1;
+            }
+        }
+        assert!(
+            checked > 500 && literal > 0,
+            "{checked} checked, {literal} literal"
+        );
+        // The cases the specific rules missed: a link with only a break,
+        // alone or beside another link to the same destination.
+        for source in [
+            "| a |\n| - |\n| [<br>](https://example.org) |",
+            "| a |\n| - |\n| [ok](https://example.org) [<br>](https://example.org) |",
+        ] {
+            assert_eq!(
+                import(source),
+                literal_document(source).unwrap(),
+                "{source}"
             );
         }
+        assert_ne!(
+            import("![p](i.png) and ![p](i.png)"),
+            literal_document("![p](i.png) and ![p](i.png)").unwrap()
+        );
+    }
+
+    #[test]
+    fn code_spans_and_fences_hide_math_and_html() {
+        for source in [
+            "`~~x~~` and `$x$` and `<div>`",
+            "```\n$$\n<div>\n```",
+            "    $x$ <b>",
+            "> ```\n> $y$\n> ```",
+            "Escaped \\$x\\$ text",
+        ] {
+            let normalized = normalize(source);
+            let tree = markdown::to_mdast(&normalized, &parse_options()).unwrap();
+            assert!(
+                scan(&normalized, &tree).unwrap().found.is_empty(),
+                "{source}"
+            );
+        }
+        let tree = markdown::to_mdast("`$a$` then $b$", &parse_options()).unwrap();
+        let found = scan("`$a$` then $b$", &tree).unwrap().found;
+        assert_eq!(found, vec![(Construct::Math, 11, 14)]);
     }
 
     #[test]
@@ -872,7 +1462,7 @@ mod tests {
     }
 
     #[test]
-    fn image_wrappers_preserve_whole_source_and_provenance() {
+    fn lossy_markdown_stays_literal_text() {
         for source in [
             "[![caption](image.png)](https://example.org)",
             "**![caption](image.png)**",
@@ -888,8 +1478,20 @@ mod tests {
                 kind: "markdown",
             };
             let spans = markdown_to_spans(source, &options).unwrap();
-            assert_eq!(spans, opaque(source, &options).unwrap(), "{source}");
-            assert_eq!(crate::spans_to_markdown(&spans).unwrap(), source);
+            assert_eq!(spans, literal_document(source).unwrap(), "{source}");
+        }
+        for source in [
+            "| a |\n| --- |\n| b | c |",
+            "[](https://example.org)",
+            "[r]: /x",
+            "[r]: /a\n[r]: /b\n\n[q][r]",
+            "Text <mark>and ![caption](image.png)</mark>",
+        ] {
+            assert_eq!(
+                import(source),
+                literal_document(source).unwrap(),
+                "{source}"
+            );
         }
     }
 
@@ -933,8 +1535,8 @@ mod tests {
         let source = "a".repeat(MAX_INPUT_BYTES - 1);
         let error = markdown_to_spans(&source, &ImportOptions::default()).unwrap_err();
         assert!(error.0.contains("Rich spans"));
-        // Opaque source is subject to the same bound, including JSON escaping
-        // and provenance. Refuse explicitly rather than truncate its content.
+        // Literal source is subject to the same bound, including JSON
+        // escaping. Refuse explicitly rather than truncate its content.
         let source = "\"".repeat(MAX_INPUT_BYTES / 2);
         let error = markdown_to_spans(
             &source,
@@ -1116,30 +1718,32 @@ mod tests {
     }
 
     #[test]
-    fn line_start_html_gate_admits_only_highlight_tags() {
+    fn html_scan_admits_only_highlight_tags() {
+        let found = |source: &str| {
+            let tree = markdown::to_mdast(source, &parse_options()).unwrap();
+            scan(source, &tree).unwrap().found
+        };
         for source in [
             "<mark>a</mark>",
             "</mark> b",
             "  <MARK>c",
             "<mark data-color=\"blue\">d",
         ] {
-            assert!(!unsupported_syntax(source).unwrap(), "{source}");
+            assert!(found(source).is_empty(), "{source}");
         }
-        for source in [
-            "<marker>x</marker>",
-            "<markä>d",
-            "<mark:x>",
-            "<mark\u{a0}>x</mark>",
-            "<b>y</b>",
-            "text\n<mark_up>",
-            "<span><mark>",
-        ] {
-            assert!(unsupported_syntax(source).unwrap(), "{source}");
+        // An autolink to a scheme Pages refuses stays text: its `<` is escaped.
+        assert_eq!(found("<mark:x>"), vec![(Construct::Unsafe, 0, 1)]);
+        for source in ["<marker>x</marker>", "<b>y</b>", "<span><mark>"] {
+            assert_eq!(
+                found(source).first().map(|range| range.0),
+                Some(Construct::Html),
+                "{source}"
+            );
         }
     }
 
     #[test]
-    fn highlighted_images_preserve_whole_source() {
+    fn highlighted_images_stay_literal_text() {
         let options = ImportOptions {
             import_id: "image-import",
             kind: "markdown",
@@ -1147,7 +1751,7 @@ mod tests {
         let source = "Text <mark>and ![caption](image.png)</mark>";
         assert_eq!(
             markdown_to_spans(source, &options).unwrap(),
-            opaque(source, &options).unwrap()
+            literal_document(source).unwrap()
         );
         // Balanced tags inside alt text are markup, not alt characters.
         let spans = import("![<mark>x</mark> y](cat.png)");

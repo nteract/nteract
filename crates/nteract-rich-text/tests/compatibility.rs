@@ -25,8 +25,9 @@ fn imports_match_legacy_fixtures_and_documented_preservation_differences() {
             serde_json::from_value(fixture["expected_spans"].clone()).unwrap();
         let actual = markdown_to_spans(fixture["markdown"].as_str().unwrap(), &options).unwrap();
         assert_eq!(actual, expected, "{}", fixture["id"]);
+        // Export is Markdown, whatever the source kind was.
         let exported = spans_to_markdown(&actual).unwrap();
-        let reimported = markdown_to_spans(&exported, &options).unwrap();
+        let reimported = markdown_to_spans(&exported, &ImportOptions::default()).unwrap();
         assert_eq!(reimported, actual, "{} export/import", fixture["id"]);
     }
 }

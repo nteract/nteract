@@ -2,7 +2,6 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import * as A from "@automerge/automerge";
 import { Leaf } from "wordgard/doc";
-import { history, undo } from "wordgard/history";
 import { GardState, GardSelection } from "wordgard/state";
 import { addColumn, addRow, deleteColumn, deleteRow, tables } from "wordgard/table";
 import {
@@ -12,8 +11,9 @@ import {
   blockMarkdown,
   parseMarkdown,
   exportMarkdown,
-  nativeTableSpans,
+  adapter,
 } from "../model/richtext.mjs";
+import { pmNodeToSpans } from "@automerge/prosemirror";
 import {
   decode,
   encode,
@@ -24,11 +24,11 @@ import {
   HeaderCell,
   Alignment,
   Strong,
-  OpaqueBlock,
 } from "./wordgard-model.mjs";
 import { createWordgardBinding } from "./wordgard-binding.mjs";
 
 const path = textPath("one");
+const nativeTableSpans = (markdown) => pmNodeToSpans(adapter, parseMarkdown(markdown));
 function fixture(source, initialDoc) {
   let doc =
     initialDoc ??
@@ -105,9 +105,10 @@ test("table export reimports pipes, code, literal slashes, breaks, links and mar
     const tree = parseMarkdown(markdown);
     assert.deepEqual(parseMarkdown(exportMarkdown(tree)).toJSON(), tree.toJSON());
   }
-  assert.equal(nativeTableSpans("| A |\n| --- |\n| ~~unsupported~~ |"), null);
-  assert.equal(nativeTableSpans("prose only"), null);
-  assert.ok(nativeTableSpans(source));
+  // Strikethrough in a cell is native, and round trips.
+  const struck = parseMarkdown("| A |\n| --- |\n| ~~done~~ |");
+  assert.equal(struck.firstChild.type.name, "table");
+  assert.deepEqual(parseMarkdown(exportMarkdown(struck)).toJSON(), struck.toJSON());
 });
 
 test("typing into cells preserves the native text object and unrelated cell cursor", () => {
@@ -218,9 +219,11 @@ test("ragged concurrent table projections do not drop cells on Markdown export",
   assert.equal(parsed.content[1].content[1].content[0].param, "Keep me");
 });
 
-test("HTML-looking text remains literal outside tables and unsupported mixed syntax stays opaque", () => {
+test("HTML-looking text remains literal outside tables and mixed syntax stays native", () => {
   assert.equal(parseMarkdown("text<br>tail").firstChild.textContent, "text<br>tail");
-  assert.equal(parseMarkdown(`${source}\n\n~~unknown~~`).firstChild.type.name, "raw");
+  const mixed = parseMarkdown(`${source}\n\n~~struck~~`);
+  assert.equal(mixed.firstChild.type.name, "table");
+  assert.equal(mixed.lastChild.firstChild.marks[0].type.name, "strike");
 });
 
 test("row and column deletion preserve other cells, and inserting before the header preserves content", () => {
@@ -255,33 +258,6 @@ test("escaped literal br tags survive cell editing and Markdown export", () => {
     assert.equal(parsed.firstChild.child(1).firstChild.textContent, "before<br>after");
     assert.deepEqual(parseMarkdown(exportMarkdown(parsed)).toJSON(), parsed.toJSON());
   }
-});
-
-test("explicit opaque table conversion is one undoable native operation", () => {
-  const replica = fixture(source);
-  const original = schema.doc([OpaqueBlock.of({ source, importId: "fixture", kind: "markdown" })]);
-  replica.change((d) => A.updateSpans(d, path, encode(original)));
-  const binding = createWordgardBinding(replica, "one");
-  let state = GardState.create({
-    doc: binding.current.doc,
-    config: [
-      schema.elements.map((element) => GardState.schemaElement.of(element)),
-      tables({ cellContent: "inline", cellSpanning: false }),
-      history(),
-    ],
-  });
-  const imported = decode(nativeTableSpans(source)).doc;
-  const tr = state.update({
-    changes: { from: 0, to: 1, insert: imported.slice(0, imported.length) },
-  });
-  binding.applyEditorTransaction(tr);
-  state = tr.state;
-  assert.equal(binding.current.doc.content[0].type, Table.type);
-  validateRich(replica.doc.blocks.one);
-  binding.applyEditorTransaction(state.update(undo({ state })));
-  assert.ok(binding.current.doc.eq(original));
-  assert.equal(blockMarkdown(replica.doc.blocks.one), source);
-  binding.destroy();
 });
 
 test("concurrent row insertion before the displayed header does not duplicate cell text", () => {

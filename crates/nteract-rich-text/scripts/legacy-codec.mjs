@@ -18,7 +18,7 @@ const { adapter, parseMarkdown, exportMarkdown } = await import(
 const { ImmutableString } = require("@automerge/automerge/slim");
 
 export function importLegacy(markdown, importId = "", kind = "markdown") {
-  return JSON.parse(JSON.stringify(pmNodeToSpans(adapter, parseMarkdown(markdown, importId, kind))));
+  return JSON.parse(JSON.stringify(pmNodeToSpans(adapter, parseMarkdown(markdown, { kind }))));
 }
 
 export function exportLegacy(spans) {

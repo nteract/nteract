@@ -87,7 +87,12 @@ function setBody(doc, path, body) {
   const source = String(body ?? "");
   if (!source.trim() || source.length > COMMENT_MAX_LENGTH)
     throw Error(`Comment must contain 1–${COMMENT_MAX_LENGTH} characters`);
-  A.updateSpans(doc, [...path, "body"], markdownCommentSpans(source), adapter.updateSpansConfig());
+  A.updateSpans(
+    doc,
+    [...path, "body"],
+    markdownCommentSpans(source, { literal: true }),
+    adapter.updateSpansConfig(),
+  );
 }
 
 /** Writers run inside `A.change` on a comments doc. They are the honest

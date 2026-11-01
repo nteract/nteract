@@ -80,7 +80,7 @@ export function openingTitleWarning(doc) {
       const tree = isRich(block)
         ? richDoc(block)
         : typeof block.markdown === "string"
-          ? parseMarkdown(block.markdown, blockId)
+          ? parseMarkdown(block.markdown)
           : null;
       if (!tree) return null;
       for (let index = 0; index < tree.childCount; index++) {

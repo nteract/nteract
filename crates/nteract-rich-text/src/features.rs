@@ -209,16 +209,28 @@ mod tests {
     ]}"#;
 
     #[test]
-    fn compiled_registry_is_all_baseline() {
+    fn compiled_registry_names_strike_rules_and_the_conversion() {
         let registry = registry().unwrap();
-        assert!(registry.features().is_empty());
-        assert!(registry.ids().is_empty());
-        assert!(registry.mark_features().is_empty());
-        assert!(registry.block_features().is_empty());
-        assert!(crate::marks::mark_specs()
-            .unwrap()
-            .iter()
-            .all(|spec| spec.feature.is_none()));
+        assert_eq!(
+            registry.ids(),
+            vec!["horizontal-rule", "preserved-markdown-converted", "strike"]
+        );
+        assert_eq!(
+            registry.mark_features().iter().collect::<Vec<_>>(),
+            vec![(&"strike".to_owned(), &"strike".to_owned())]
+        );
+        assert_eq!(
+            registry.block_features().iter().collect::<Vec<_>>(),
+            vec![(&"horizontal-rule".to_owned(), &"horizontal-rule".to_owned())]
+        );
+        assert_eq!(
+            crate::marks::mark_specs()
+                .unwrap()
+                .iter()
+                .filter_map(|spec| spec.feature.as_deref())
+                .collect::<Vec<_>>(),
+            vec!["strike"]
+        );
     }
 
     #[test]
@@ -250,6 +262,17 @@ mod tests {
             vec!["test-highlight", "test-tables"]
         );
         assert!(span_features(&spans).unwrap().is_empty());
+        let struck = [Span::Text {
+            value: "x".into(),
+            marks: Marks::from([("strike".into(), json!(true))]),
+        }];
+        assert_eq!(
+            span_features(&struck)
+                .unwrap()
+                .into_iter()
+                .collect::<Vec<_>>(),
+            vec!["strike"]
+        );
     }
 
     #[test]

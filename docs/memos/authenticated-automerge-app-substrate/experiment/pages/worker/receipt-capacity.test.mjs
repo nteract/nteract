@@ -142,3 +142,36 @@ for (const operation of ["create_page", "delete_page"]) {
     assert.equal((await storage.list({ prefix: "host/operation/" })).size, 1000);
   });
 }
+
+test("host migrations reserve in their own key space, past full client budgets", async () => {
+  const { INTERNAL_PREFIX } = await import("./operation-journal.mjs");
+  const storage = new Storage();
+  fill(storage, 1000);
+  const entry = (n) => ({ fingerprint: `migration-${n}`, pending: true, changes: [] });
+  await assert.rejects(
+    reserveOperation(storage, { key: "host/operation/client-new", entry: entry(0) }),
+    { code: "operation_receipt_capacity" },
+  );
+  const key = `${INTERNAL_PREFIX}preserved_markdown_one`;
+  assert.deepEqual(await reserveOperation(storage, { key, entry: entry(1) }), entry(1));
+  // A finished migration receipt is dropped when the next one reserves.
+  storage.values.set(key, { ...entry(1), pending: false });
+  await reserveOperation(storage, {
+    key: `${INTERNAL_PREFIX}preserved_markdown_two`,
+    entry: entry(2),
+  });
+  assert.equal(storage.values.has(key), false);
+  // Client keys can't name the internal space.
+  await assert.rejects(
+    documentMutation({
+      storage,
+      handle: { doc: () => A.from({ page_id: "p" }) },
+      operation: "edit_page",
+      args: { idempotency_key: "internal:preserved_markdown_two", base_heads: [] },
+      identity: { principal: "user:one", driver: "API" },
+      apply: () => {},
+      flush: async () => {},
+    }),
+    { code: "invalid_idempotency_key" },
+  );
+});

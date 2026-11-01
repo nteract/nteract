@@ -41,7 +41,6 @@ import { requestSession } from "./early-session.mjs";
 import { openPageWithRetry } from "./page-open.mjs";
 // app.css carries the editor's styles too, ahead of style.css so the cascade
 // matches the editor modules' own import order.
-import "./table-fragment.css";
 import "./link-popover.css";
 import "./wordgard.css";
 import "./sharing-panel.css";

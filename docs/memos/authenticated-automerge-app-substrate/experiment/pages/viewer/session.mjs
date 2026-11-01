@@ -42,6 +42,7 @@ import { SERVER_UNREACHABLE } from "./alerts.mjs";
 import { monotonicNow } from "./monotonic.mjs";
 import { activitySnapshot, presenceLabel } from "./activity.mjs";
 import { checkpointRecords } from "./checkpoint-records.mjs";
+import { preservedBlockEdits } from "../model/raw-migration.mjs";
 import { Store } from "./store.mjs";
 import { REJECT, isLive, pauseOf, viewerSessionMachine } from "./session-machine.mjs";
 import {
@@ -131,16 +132,25 @@ export const signingKeyRefused = (admission, cause) =>
 /** `features` is this build's schema features. The host refuses native edits
  * from a tab whose build lacks an id the Page is stamped with; no parameter
  * means the baseline, as for builds from before the stamp. */
-export function pageSyncAddress(pageId, href, activityEpoch, features = []) {
+export function pageSyncAddress(pageId, href, activityEpoch, features = [], { converting } = {}) {
   const address = new URL(`/api/sync?page=${encodeURIComponent(pageId)}`, href);
   address.protocol = address.protocol === "https:" ? "wss:" : "ws:";
   if (activityEpoch) address.searchParams.set("activity_epoch", activityEpoch);
+  // Discovery reported the preserved-block conversion. If it finished before
+  // this upgrade, the host refuses the socket so the tab rediscovers.
+  if (converting) address.searchParams.set("converting", "1");
   if (features.length) address.searchParams.set("schema_features", [...features].sort().join(","));
   return address;
 }
-async function exclusiveIdentity(scope) {
+/** Shown when reopening set aside edits an older build made to a preserved
+ * Markdown block (recoverPreservedBlockEdits). */
+export const PRESERVED_EDITS_RECOVERED =
+  "Edits this browser made with an older version of Pages changed a block Pages has since converted. They weren't synced, so the block isn't duplicated. Download them from the Page menu: Download previous local draft.";
+/** `fresh` starts a new native replica instead of reopening this tab's. */
+async function exclusiveIdentity(scope, { fresh = false } = {}) {
   const key = `pages-native:${scope}`;
-  let seed = sessionStorage.getItem(key) || hex(crypto.getRandomValues(new Uint8Array(32)));
+  let seed =
+    (!fresh && sessionStorage.getItem(key)) || hex(crypto.getRandomValues(new Uint8Array(32)));
   let release = () => {};
   if (navigator.locks) {
     for (;;) {
@@ -704,7 +714,7 @@ export class PageSession {
   updateCapabilities() {
     const enabled = !this.accessDenied && !this.accessReloadRequired && !this.editsPaused;
     // Content and comments are document writes; the schema gate holds both.
-    const content = enabled && this.schemaGate.editable;
+    const content = enabled && this.schemaGate.editable && !this.converting;
     this.canWrite = content && !!this.credentialCanWrite && !!this.access?.canWrite;
     this.canComment = content && !!this.credentialCanWrite && !!this.access?.canComment;
     this.canManageAccess = enabled && !!this.credentialCanWrite && !!this.access?.canManageAccess;
@@ -1018,8 +1028,12 @@ export class PageSession {
       // Native storage can hold an edit the checkpoint never saw, so decide
       // from the restored document. A record without localEdits predates
       // them; its receipt flag is all there is.
-      const edits = readLocalEdits(this.localPage.localEdits);
+      let edits = readLocalEdits(this.localPage.localEdits);
       unconfirmed = edits ? hasUnconfirmedLocalEdits(this.doc, edits) : !!this.localPage.pending;
+      if (unconfirmed && (await this.recoverPreservedBlockEdits(edits))) {
+        edits = readLocalEdits(this.localPage.localEdits);
+        unconfirmed = edits ? hasUnconfirmedLocalEdits(this.doc, edits) : false;
+      }
       // Without unconfirmed local edits, every change here is acknowledged or
       // came from the host.
       if (!unconfirmed) this.savedHeads = A.getHeads(this.doc);
@@ -1112,7 +1126,67 @@ export class PageSession {
     this.onlineListener = () => void this.retryConnection();
     globalThis.addEventListener?.("online", this.onlineListener);
   }
-  async initializeLocal(key = replicaKey(this.access, this.canWrite)) {
+  /**
+   * Set aside unconfirmed history that rewrote a preserved Markdown block,
+   * before this replica connects. Only a build from before the conversion
+   * could make them (its Edit table action). The host converts every
+   * preserved block itself, and Automerge keeps both conversions, so
+   * publishing them would duplicate the block's content. Native admission
+   * can't refuse them by content: it sees only the signing keys.
+   *
+   * The whole replica becomes a recovery record (Download previous local
+   * draft), and this session reopens on a fresh native replica holding only
+   * history the host already has. Returns whether it did.
+   */
+  async recoverPreservedBlockEdits(edits) {
+    // Without a record of acknowledged heads, the whole history is read.
+    const found = preservedBlockEdits(this.doc, edits ? acknowledgedHeads(this.doc, edits) : []);
+    if (!found) return false;
+    const base = A.clone(A.view(this.doc, found.baseHeads));
+    try {
+      const canWrite = this.localPage.canWrite;
+      const retired = this.replicaId;
+      this.localPage = await prepareLocalPageReload(
+        this.identity,
+        { ...this.localPage, snapshot: encodeSnapshot(A.save(this.doc)) },
+        this.access,
+        this.replicaKey,
+      );
+      this.handle = undefined;
+      const database = this.databaseName;
+      await this.releaseLocal();
+      try {
+        globalThis.indexedDB?.deleteDatabase(database);
+      } catch {}
+      await this.initializeLocal(this.replicaKey, { fresh: true });
+      const id = documentIdToBinary(this.localPage.document_id);
+      await this.backend.storeSnapshot(id, await checkpointRecords(this.backend, id, base));
+      this.handle = await this.repo.find(this.localPage.document_id);
+      this.localPage = await writeLocalPage(
+        this.identity,
+        {
+          ...this.localPage,
+          resetReplica: undefined,
+          canWrite,
+          pending: false,
+          snapshot: encodeSnapshot(A.save(base)),
+          // Other replicas keep their entries, so a tab that holds the same
+          // edits sets them aside when it reopens too.
+          localEdits: {
+            ...(edits ? retireReplica(edits, retired) : emptyLocalEdits()),
+            unattributed: false,
+          },
+        },
+        { replica: this.replicaId },
+      );
+    } finally {
+      A.free(base);
+    }
+    this.recoveredPreservedEdits = true;
+    this.problem = PRESERVED_EDITS_RECOVERED;
+    return true;
+  }
+  async initializeLocal(key = replicaKey(this.access, this.canWrite), { fresh = false } = {}) {
     this.replicaKey = key;
     const scope = hex(
       new Uint8Array(
@@ -1124,7 +1198,7 @@ export class PageSession {
         ),
       ),
     );
-    this.local = await exclusiveIdentity(scope);
+    this.local = await exclusiveIdentity(scope, { fresh });
     // Names this native replica in localEdits without exposing its seed.
     this.replicaId = hex(
       new Uint8Array(
@@ -1138,9 +1212,8 @@ export class PageSession {
     const peer = this.signer.peerId();
     this.senderId = peer.toString();
     peer.free();
-    this.storage = new IndexedDBByteStore({
-      database: `pages-native-${scope}-${this.local.seed.slice(0, 16)}`,
-    });
+    this.databaseName = `pages-native-${scope}-${this.local.seed.slice(0, 16)}`;
+    this.storage = new IndexedDBByteStore({ database: this.databaseName });
     this.backend = new SubductionBackend({
       signer: this.signer,
       storage: this.storage,
@@ -1377,6 +1450,18 @@ export class PageSession {
       this.trash = connection.trash ?? null;
       if (connection.recovery?.code === "page_recovery_blocked")
         this.problem = connection.recovery.message;
+      // The host is converting Markdown an older build saved: read-only
+      // until it finishes. Access is unchanged, so the writer key stays; the
+      // host closes the socket when it's done and the next discovery clears
+      // this.
+      const converting = connection.converting?.code === "preserved_markdown_converting";
+      if (converting !== !!this.converting) {
+        if (converting)
+          this.problem = this.convertingNotice = String(connection.converting.message);
+        else if (this.problem === this.convertingNotice) this.problem = "";
+        this.converting = converting;
+        this.updateCapabilities();
+      }
       if (this.localPage && !this.localPage.resetReplica)
         await this.persistLocal({ canWrite: this.canWrite });
       if (this.accessDenied || this.accessReloadRequired) return;
@@ -1406,6 +1491,7 @@ export class PageSession {
       location.href,
       this.activityEpoch,
       this.buildFeatures,
+      { converting: this.converting },
     );
     // Keep the browser socket itself: toTransport consumes the native wrapper,
     // whereas the raw socket remains cancellable when account/page access changes.
@@ -1597,7 +1683,10 @@ export class PageSession {
     }
   }
   comment(input, nativeSpans) {
-    return this.change((doc) => applyComment(doc, input, this.identity, nativeSpans));
+    // The reader's own draft: Markdown it can't represent stays as text.
+    return this.change((doc) =>
+      applyComment(doc, input, this.identity, nativeSpans, { literal: true }),
+    );
   }
   actorDisplayName(actor) {
     return this.actorNames.get(actor) ?? "Collaborator";

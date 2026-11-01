@@ -48,6 +48,7 @@ import {
   Heading,
   Strong,
   Emphasis,
+  Strikethrough,
   Code,
   CodeBlock,
   BulletList,
@@ -56,6 +57,7 @@ import {
 import {
   Bold,
   Italic,
+  Strikethrough as StrikethroughIcon,
   Code as CodeIcon,
   List,
   ListOrdered,
@@ -119,6 +121,7 @@ const historyControls = [
 const markControls = [
   ["bold", "Bold", Bold],
   ["italic", "Italic", Italic],
+  ["strike", "Strikethrough", StrikethroughIcon],
   ["link", "Link", LinkIcon],
   ["code", "Inline code", CodeIcon],
 ];
@@ -130,7 +133,7 @@ const listControls = [
 const commentControl = ["comment", "Comment on selection", MessageSquare];
 // Link and Comment act on a selection; they aren't toggles.
 const actions = new Set(["link", "comment"]);
-const marks = { bold: Strong, italic: Emphasis, code: Code };
+const marks = { bold: Strong, italic: Emphasis, strike: Strikethrough, code: Code };
 const remoteAnnotations = () => [Transaction.remote.of(true), Transaction.addToHistory.of(false)];
 const editConfig = (editable) => [
   GardState.readOnly.of(!editable),
