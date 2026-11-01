@@ -233,7 +233,7 @@ test("the blocking theme asset applies preferences without loading the editor", 
     Object.keys(result.metafile.inputs)
       .map((file) => path.basename(file))
       .sort(),
-    ["early-session.mjs", "routes.mjs", "theme-bootstrap.mjs", "theme.mjs"],
+    ["admission.mjs", "early-session.mjs", "routes.mjs", "theme-bootstrap.mjs", "theme.mjs"],
   );
   const classes = new Set();
   const root = {
@@ -257,6 +257,19 @@ test("the blocking theme asset applies preferences without loading the editor", 
   // The viewer's first session refresh takes this request (early-session.mjs).
   assert.deepEqual(fetches, [["/api/auth/session", ["signal"]]]);
   assert.ok(window.__pagesEarlySession);
+  // On a Page route the head script also starts that Page's discovery.
+  fetches.length = 0;
+  const pageId = "5f0c4a5e-6c1e-4b0e-9a8f-0d0d4c5e6f70";
+  vm.runInNewContext(output, {
+    window: { ...window, location: { href: `https://pages.example/p/${pageId}` } },
+    URL,
+    AbortController,
+    performance,
+  });
+  assert.deepEqual(fetches, [
+    ["/api/auth/session", ["signal"]],
+    [`/api/connect?page=${pageId}&preview=1`, ["headers", "signal"]],
+  ]);
   assert.equal(root.dataset.theme, "dark");
   assert.equal(root.dataset.colorTheme, undefined);
   assert.equal(root.style.colorScheme, "dark");

@@ -2,10 +2,17 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { maintainBrowserSession } from "./browser-session.mjs";
 import {
+  CONNECT_HEADERS,
+  EARLY_CONNECT,
+  EARLY_CONNECT_MAX_AGE_MS,
   EARLY_SESSION,
   EARLY_SESSION_MAX_AGE_MS,
   SESSION_URL,
+  connectUrl,
+  earlyPreview,
+  requestConnect,
   requestSession,
+  startEarlyConnect,
   startEarlySession,
   takeEarlySession,
 } from "./early-session.mjs";
@@ -343,4 +350,186 @@ test("an early 401 is the first refresh's answer, through normal error handling"
   assert.deepEqual(f.errors, []);
   // browser-session.mjs stops renewing after an authentication refusal.
   assert.equal(f.timers.length, 0);
+});
+
+const PAGE = "5f0c4a5e-6c1e-4b0e-9a8f-0d0d4c5e6f70";
+const OTHER = "6a1d5b6f-7d2f-4c1f-8b9a-1e1e5d6f7a81";
+const connection = { documentId: "doc", serverPeerId: "00".repeat(32) };
+
+test("the head script starts a Page's connection discovery on its route only", () => {
+  for (const [pathname, pageId] of [
+    [`/p/${PAGE}`, PAGE],
+    [`/?page=${PAGE}`, PAGE],
+    ["/", null],
+    ["/projects", null],
+    [`/project/prj_${PAGE}`, null],
+    ["/p/not-a-page", null],
+    ["/connect", null],
+  ]) {
+    const { win, calls } = browser(pathname, () => new Promise(() => {}));
+    startEarlyConnect(win);
+    if (!pageId) {
+      assert.equal(calls.length, 0, pathname);
+      assert.equal(EARLY_CONNECT in win, false, pathname);
+      continue;
+    }
+    // The same request openConnection makes: a GET with the admission header.
+    assert.equal(calls.length, 1, pathname);
+    const [url, init] = calls[0];
+    // Plus the preview the shell shows while the editor loads.
+    assert.equal(url, `${connectUrl(pageId)}&preview=1`);
+    assert.deepEqual(Object.keys(init), ["headers", "signal"]);
+    assert.deepEqual(init.headers, CONNECT_HEADERS);
+    assert.deepEqual(CONNECT_HEADERS, { "X-Pages-Admission": "1" });
+  }
+});
+
+test("the first discovery for the routed Page adopts the early request; later ones fetch", async (t) => {
+  const { win } = browser(`/p/${PAGE}`, () =>
+    Promise.resolve(sessionResponse(connection, { build: "early" })),
+  );
+  startEarlyConnect(win);
+  const fetched = stubFetch(t, () => sessionResponse(connection, { build: "later" }));
+  const seen = [];
+  const stop = observeResponses((headers) => seen.push(headers.get("x-probe-build")));
+  try {
+    assert.deepEqual(await requestConnect(PAGE, request, { win }), connection);
+    assert.equal(fetched.length, 0);
+    assert.equal(EARLY_CONNECT in win, false);
+    assert.deepEqual(await requestConnect(PAGE, request, { win }), connection);
+    assert.equal(fetched.length, 1);
+    assert.equal(fetched[0][0], connectUrl(PAGE));
+    assert.deepEqual(fetched[0][1].headers, CONNECT_HEADERS);
+    assert.deepEqual(seen, ["early", "later"]);
+  } finally {
+    stop();
+  }
+});
+
+test("a discovery for another Page drops the early request and fetches its own", async (t) => {
+  const { win, listening } = browser(`/p/${PAGE}`, () => new Promise(() => {}));
+  startEarlyConnect(win);
+  const { controller } = win[EARLY_CONNECT];
+  const fetched = stubFetch(t, () => sessionResponse(connection));
+  assert.deepEqual(await requestConnect(OTHER, request, { win }), connection);
+  assert.equal(controller.signal.aborted, true);
+  assert.equal(EARLY_CONNECT in win, false);
+  assert.equal(listening(), 0);
+  assert.deepEqual(
+    fetched.map(([url]) => url),
+    [connectUrl(OTHER)],
+  );
+});
+
+test("an early discovery follows its own age bound and the session slot's visibility and failure rules", async (t) => {
+  // Older than the bound: dropped for a normal fetch.
+  let clock = 1_000;
+  const now = () => clock;
+  {
+    const { win } = browser(`/p/${PAGE}`, () => Promise.resolve(sessionResponse(connection)));
+    startEarlyConnect(win, now);
+    const { controller } = win[EARLY_CONNECT];
+    // Within the connect bound, past the session bound: adopted.
+    assert.ok(EARLY_CONNECT_MAX_AGE_MS > EARLY_SESSION_MAX_AGE_MS);
+    clock += EARLY_CONNECT_MAX_AGE_MS + 1;
+    const fetched = stubFetch(t, () => sessionResponse(connection));
+    await requestConnect(PAGE, request, { win, now });
+    assert.equal(fetched.length, 1);
+    assert.equal(controller.signal.aborted, true);
+    t.mock.restoreAll();
+  }
+  {
+    const { win } = browser(`/p/${PAGE}`, () => Promise.resolve(sessionResponse(connection)));
+    startEarlyConnect(win, now);
+    clock += EARLY_CONNECT_MAX_AGE_MS;
+    const fetched = stubFetch(t, () => sessionResponse(connection));
+    await requestConnect(PAGE, request, { win, now });
+    assert.equal(fetched.length, 0);
+    t.mock.restoreAll();
+  }
+  // Becoming visible before the viewer asks: the answer may predate a sign-in.
+  {
+    const { win } = browser(`/p/${PAGE}`, () => Promise.resolve(sessionResponse(connection)));
+    startEarlyConnect(win);
+    win.document.visibilityState = "visible";
+    win.document.dispatch("visibilitychange");
+    assert.equal(EARLY_CONNECT in win, false);
+    const fetched = stubFetch(t, () => sessionResponse(connection));
+    await requestConnect(PAGE, request, { win });
+    assert.equal(fetched.length, 1);
+    t.mock.restoreAll();
+  }
+  // A 503 or a refusal falls back to one normal request: the Page may have
+  // been registered, or access granted, since the head script asked.
+  {
+    const { win } = browser(`/p/${PAGE}`, () =>
+      Promise.resolve(sessionResponse({ error: "Unavailable" }, { status: 503 })),
+    );
+    startEarlyConnect(win);
+    const fetched = stubFetch(t, () => sessionResponse(connection));
+    assert.deepEqual(await requestConnect(PAGE, request, { win }), connection);
+    assert.equal(fetched.length, 1);
+    t.mock.restoreAll();
+  }
+  {
+    const { win } = browser(`/p/${PAGE}`, () =>
+      Promise.resolve(
+        sessionResponse({ error: "No access", code: "page_access_denied" }, { status: 403 }),
+      ),
+    );
+    startEarlyConnect(win);
+    const fetched = stubFetch(t, () => sessionResponse(connection));
+    assert.deepEqual(await requestConnect(PAGE, request, { win }), connection);
+    assert.equal(fetched.length, 1);
+    assert.deepEqual(fetched[0][1].headers, CONNECT_HEADERS);
+    t.mock.restoreAll();
+  }
+  // The fresh answer is the answer, refusal included.
+  {
+    const { win } = browser(`/p/${PAGE}`, () =>
+      Promise.resolve(sessionResponse({ error: "Sign in" }, { status: 401 })),
+    );
+    startEarlyConnect(win);
+    stubFetch(t, () =>
+      sessionResponse({ error: "No access", code: "page_access_denied" }, { status: 403 }),
+    );
+    await assert.rejects(requestConnect(PAGE, request, { win }), {
+      status: 403,
+      code: "page_access_denied",
+    });
+  }
+});
+
+test("the session and connect slots are independent", async (t) => {
+  const { win } = browser(`/p/${PAGE}`, () => Promise.resolve(sessionResponse(connection)));
+  startEarlySession(win);
+  startEarlyConnect(win);
+  assert.ok(takeEarlySession(win));
+  assert.ok(win[EARLY_CONNECT]);
+  const fetched = stubFetch(t, () => sessionResponse(connection));
+  await requestConnect(PAGE, request, { win });
+  assert.equal(fetched.length, 0);
+});
+
+test("the early discovery's preview is readable without taking the request", async (t) => {
+  const preview = { title: "Roadmap", blocks: [], truncated: false };
+  const { win } = browser(`/p/${PAGE}`, () =>
+    Promise.resolve(sessionResponse({ ...connection, preview })),
+  );
+  startEarlyConnect(win);
+  assert.deepEqual(await earlyPreview(PAGE, win), preview);
+  assert.equal(await earlyPreview(OTHER, win), null);
+  assert.ok(win[EARLY_CONNECT], "reading the preview leaves the request for the session");
+  const fetched = stubFetch(t, () => sessionResponse(connection));
+  assert.deepEqual(await requestConnect(PAGE, request, { win }), { ...connection, preview });
+  assert.equal(fetched.length, 0);
+  assert.equal(await earlyPreview(PAGE, win), null);
+});
+
+test("a refused early discovery has no preview", async () => {
+  const { win } = browser(`/p/${PAGE}`, () =>
+    Promise.resolve(sessionResponse({ error: "Sign in" }, { status: 401 })),
+  );
+  startEarlyConnect(win);
+  assert.equal(await earlyPreview(PAGE, win), null);
 });

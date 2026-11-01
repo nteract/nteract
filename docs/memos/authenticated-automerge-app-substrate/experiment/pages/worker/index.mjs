@@ -49,6 +49,7 @@ import { localOidcStore } from "./local-oidc-store.mjs";
 import { WebSocketByteTransport } from "../shared/byte-transport.mjs";
 import { MISSING_EDITS_MESSAGE } from "../shared/receipts.mjs";
 import { openingTitleWarning } from "../model/title-warning.mjs";
+import { pagePreview } from "../model/page-preview.mjs";
 import {
   authenticate,
   agentLabel,
@@ -3317,6 +3318,11 @@ export class Page {
           peerProfiles: this.profiles(),
           ...this.actorSnapshot(),
           activity: this.activityState().snapshot(),
+          // The head script asks for this on a Page route, so the viewer can
+          // show the Page read-only before its runtimes load and it syncs.
+          ...(url.searchParams.get("preview") === "1" && {
+            preview: pagePreview(this.handle.doc()),
+          }),
         });
       }
       if (url.pathname === "/api/sync" && request.method === "GET")

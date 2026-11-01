@@ -38,12 +38,13 @@ import { retryKey } from "../model/retry-key.mjs";
 import { MISSING_EDITS_MESSAGE } from "../shared/receipts.mjs";
 import { ADMISSION_CAPABILITY, admissionCloseOutcome } from "../shared/admission.mjs";
 import { isTransientFailure, request } from "./request.mjs";
+import { requestConnect } from "./early-session.mjs";
 import { SERVER_UNREACHABLE } from "./alerts.mjs";
 import { monotonicNow } from "./monotonic.mjs";
 import { activitySnapshot, presenceLabel } from "./activity.mjs";
 import { checkpointRecords } from "./checkpoint-records.mjs";
-import { preservedBlockEdits } from "../model/raw-migration.mjs";
 import { guardSocketSend } from "./socket-send.mjs";
+import { preservedBlockEdits } from "../model/raw-migration.mjs";
 import { Store } from "./store.mjs";
 import { OutboundSync } from "./outbound-sync.mjs";
 import { REJECT, isLive, pauseOf, viewerSessionMachine } from "./session-machine.mjs";
@@ -1478,9 +1479,9 @@ export class PageSession {
     )
       return;
     try {
-      const connection = await request(`/api/connect?page=${encodeURIComponent(this.pageId)}`, {
-        headers: admissionHeaders,
-      });
+      // The first discovery for this Page takes the head script's request
+      // (early-session.mjs), which started beside the session check.
+      const connection = await requestConnect(this.pageId, request);
       if (!this.alive) return;
       if (
         !this.acceptAuthentication({

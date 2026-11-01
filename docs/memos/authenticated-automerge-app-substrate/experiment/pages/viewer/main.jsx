@@ -37,7 +37,8 @@ import {
   pageListing,
 } from "../shared/routes.mjs";
 import { maintainBrowserSession } from "./browser-session.mjs";
-import { requestSession } from "./early-session.mjs";
+import { earlyPreview, requestSession } from "./early-session.mjs";
+import { PagePreview, isPagePreview } from "./PagePreview.jsx";
 import { openPageWithRetry } from "./page-open.mjs";
 // app.css carries the editor's styles too, ahead of style.css so the cascade
 // matches the editor modules' own import order.
@@ -90,6 +91,10 @@ const editor = new EditorLoader({
   checkBuild: () => buildMonitor.check(),
 });
 if (!isIndexRoute(readPageRoute(location.href))) editor.start();
+// The routed Page's read-only preview from the head script's discovery
+// (early-session.mjs). Read at boot, before a session can take that request.
+const bootRoute = readPageRoute(location.href);
+const bootPreview = bootRoute.kind === "page" ? earlyPreview(bootRoute.pageId) : null;
 // A pointer going down on a Page row is a strong hint a Page opens next.
 const warmEditor = () => editor.start();
 // How long a new thread's passage stays emphasized after the inline composer
@@ -136,7 +141,9 @@ function App() {
     [opening, setOpening] = useState(false),
     [focusBlock, setFocusBlock] = useState(null),
     [titleFocusRequest, setTitleFocusRequest] = useState(null),
-    [localRecoveries, setLocalRecoveries] = useState([]);
+    [localRecoveries, setLocalRecoveries] = useState([]),
+    // { pageId, data } for PagePreview, until that Page's session renders.
+    [preview, setPreview] = useState(null);
   const session = useStore(host.store, installedSession);
   const editorUnavailable = useStore(editor.store, editorFailed);
   // Rendered only beside a session; handlers read editor.module when they run.
@@ -548,6 +555,24 @@ function App() {
   }, []);
   const page = session?.snapshot(),
     threads = page?.comments ?? [];
+  useEffect(() => {
+    let live = true;
+    void bootPreview?.then((data) => {
+      if (live && isPagePreview(data)) setPreview({ pageId: bootRoute.pageId, data });
+    });
+    return () => {
+      live = false;
+    };
+  }, []);
+  // The preview stands in for one load only; a later visit opens the replica.
+  const showingPage = !!page;
+  useEffect(() => {
+    if (showingPage) setPreview(null);
+  }, [showingPage]);
+  const shownPreview =
+    !page && preview && readPageRoute(location.href).pageId === preview.pageId
+      ? preview.data
+      : null;
   // The screen's one banner region (screenBanners). The sign-in prompt and
   // access notice beside the Page show their own messages with their actions.
   const banners = screenBanners({ error, sessionNotice, page: page ? session : null });
@@ -1020,9 +1045,13 @@ function App() {
         </p>
       )}
       {account === undefined ? (
-        <main className="welcome">
-          <p role="status">Connecting…</p>
-        </main>
+        shownPreview ? (
+          <PagePreview preview={shownPreview} />
+        ) : (
+          <main className="welcome">
+            <p role="status">Connecting…</p>
+          </main>
+        )
       ) : !account ? (
         <main className="welcome">
           <h1>A place to write together.</h1>
@@ -1209,9 +1238,13 @@ function App() {
               />
             </main>
           ) : opening ? (
-            <main className="welcome">
-              <p role="status">Opening…</p>
-            </main>
+            shownPreview ? (
+              <PagePreview preview={shownPreview} />
+            ) : (
+              <main className="welcome">
+                <p role="status">Opening…</p>
+              </main>
+            )
           ) : projectOpen ? (
             <ProjectView
               key={projectOpen}
