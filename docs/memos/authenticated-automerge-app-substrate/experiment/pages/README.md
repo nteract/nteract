@@ -358,6 +358,9 @@ label. The Kilo recipe uses one shared entry with
 `"X-Pages-Agent": "{env:PAGES_AGENT}"`, and each worktree sets `PAGES_AGENT` in
 its `.envrc`. Both labels are self-declared descriptions shown under the
 authenticated account, not verified vendor identity or a permission grant.
+`Browser` is the one driver a bearer credential can't claim: viewers show a
+browser session by the person's name alone, so on a request with an API key or
+OAuth token the server reads `X-Pages-Driver: Browser` (any case) as `API`.
 
 A Page starts private. Its immutable owner manages access, Trash, and permanent
 deletion, editors write/comment, and viewers read. Each operation intersects the Page role with

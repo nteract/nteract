@@ -289,6 +289,19 @@ test("Pages-issued tokens authenticate MCP and each host-only forwarding hop loc
   );
   assert.equal(identities.at(-1).identity.driver, "Dot demo");
   assert.equal(identities.at(-1).identity.principal, person.principal);
+  // An MCP session can't present itself as a person in the browser, on /mcp
+  // or on the internal hop it forwards to.
+  await call(f, "read_page", { page_id: pageId }, { "X-Pages-Driver": "Browser" });
+  assert.equal(identities.at(-1).identity.driver, "API");
+  assert.equal(
+    (
+      await authenticate(
+        request("/mcp", f.tokens.access_token, { "X-Pages-Driver": " browser " }),
+        f.env,
+      )
+    ).driver,
+    "API",
+  );
 });
 
 test("read-only OAuth scope rejects every mutating MCP tool before forwarding", async (t) => {
