@@ -24,7 +24,7 @@ const browser = await chromium.launch({
     "--host-resolver-rules=MAP * ~NOTFOUND, EXCLUDE localhost, EXCLUDE 127.0.0.1",
   ],
 });
-const report = { origin, completed: [], errors: [] };
+const report = { origin, completed: [], todo: [], errors: [] };
 let a,
   b,
   pageId,
@@ -37,6 +37,23 @@ const saved = (page) =>
 function complete(name) {
   report.completed.push(name);
   console.log("PASS " + name);
+}
+// Known bugs, named after their QA findings. They run with PAGES_E2E_TODO=1
+// and never fail the suite; one that starts passing says so.
+async function todo(name, run) {
+  if (process.env.PAGES_E2E_TODO !== "1") {
+    report.todo.push({ name, result: "skipped" });
+    console.log("TODO (skipped) " + name);
+    return;
+  }
+  try {
+    await run();
+    report.todo.push({ name, result: "passes" });
+    console.log("TODO now passes, promote it: " + name);
+  } catch (error) {
+    report.todo.push({ name, result: "fails", error: String(error.message).slice(0, 500) });
+    console.log("TODO still fails: " + name);
+  }
 }
 
 async function signIn() {
@@ -319,6 +336,68 @@ try {
   await a.unroute("**/api/tools");
   assert.equal((await read()).blocks.length > 0, true, "the Page is still active");
   complete(stage);
+
+  await todo(
+    "an agent's same-length edit earlier in a paragraph moves a typist's caret",
+    async () => {
+      // Wordgard reads the typist's pending DOM input against the agent's newer
+      // text and inserts it at the agent's edit (wordgard 0.6.2 addDOMChange).
+      const page = (
+        await mutate("create_page", { title: "Caret race", markdown: "Status: aaaa. Tail." })
+      ).page_id;
+      try {
+        await a.goto(`${origin}/p/${page}`);
+        await selectText(a, "Tail.", true);
+        const typing = a.keyboard.type(" person keeps typing", { delay: 60 });
+        for (const [from, to] of [
+          ["aaaa", "bbbb"],
+          ["bbbb", "cccc"],
+          ["cccc", "dddd"],
+        ]) {
+          await a.waitForTimeout(300);
+          const current = await tool(a, "read_page", { page_id: page });
+          const authority = current;
+          await tool(a, "patch_page", {
+            page_id: page,
+            base_heads: current.heads,
+            conflict_scope: "target",
+            retry_token: authority.retry_token,
+            idempotency_key: authority.retry_key_prefix + crypto.randomUUID(),
+            operations: [
+              {
+                op: "replace_match",
+                block_id: current.blocks[0].id,
+                match_text: from,
+                replacement: to,
+              },
+            ],
+          });
+        }
+        await typing;
+        await expect.poll(() => textOf(a)).toBe("Status: dddd. Tail. person keeps typing");
+      } finally {
+        const current = await tool(a, "read_page", { page_id: page });
+        const authority = await tool(a, "list_pages");
+        await tool(a, "delete_page", {
+          page_id: page,
+          base_heads: current.heads,
+          retry_token: authority.retry_token,
+          idempotency_key: authority.retry_key_prefix + crypto.randomUUID(),
+        });
+        await purgeTrashedFixture(
+          (name, args) => tool(a, name, args),
+          page,
+          async () => {
+            const fresh = await tool(a, "list_pages");
+            return {
+              retry_token: fresh.retry_token,
+              idempotency_key: fresh.retry_key_prefix + crypto.randomUUID(),
+            };
+          },
+        );
+      }
+    },
+  );
 
   assert.deepEqual(report.errors, [], "no unhandled browser errors");
   report.result = "pass";
