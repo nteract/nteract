@@ -8,7 +8,7 @@ import { build } from "esbuild";
 import { JSDOM } from "jsdom";
 import * as A from "@automerge/automerge";
 import { createPageData, initializePage } from "../model/page.mjs";
-import { PageSession } from "./session.mjs";
+import { PageSession, pageSyncAddress } from "./session.mjs";
 
 const owner = {
   role: "owner",
@@ -60,7 +60,7 @@ function session(t, doc, options) {
 
 test("an unstamped Page is editable", (t) => {
   const { session: s } = session(t, unstamped(), { buildFeatures: [] });
-  assert.deepEqual(s.schemaGate, { editable: true, unsupported: [] });
+  assert.deepEqual(s.schemaGate, { editable: true, unsupported: [], refused: false });
   assert.equal(s.canWrite, true);
   assert.equal(s.canComment, true);
   assert.doesNotThrow(() => s.change((draft) => A.updateText(draft, ["title"], "Renamed")));
@@ -76,7 +76,7 @@ test("a Page opened with an unknown feature is read-only", (t) => {
   const { session: s } = session(t, stamp(unstamped(), ["known", "future"]), {
     buildFeatures: ["known"],
   });
-  assert.deepEqual(s.schemaGate, { editable: false, unsupported: ["future"] });
+  assert.deepEqual(s.schemaGate, { editable: false, unsupported: ["future"], refused: false });
   assert.equal(s.canWrite, false);
   assert.equal(s.canComment, false);
   // Access and Trash are host actions, not document writes.
@@ -150,4 +150,52 @@ test("the notice shows only while the schema gate holds the Page", () => {
     "This Page uses features this version doesn't support. Reload to update.",
   );
   assert.match(notice.querySelector("button").textContent, /Reload/);
+});
+
+test("the sync address declares this build's features; none means the baseline", () => {
+  const plain = pageSyncAddress("p", "http://localhost:9894/", null);
+  assert.equal(plain.searchParams.has("schema_features"), false);
+  const declared = pageSyncAddress("p", "http://localhost:9894/", null, ["b", "a"]);
+  assert.equal(declared.searchParams.get("schema_features"), "a,b");
+});
+
+test("a receipt refused for an unsupported feature makes the Page read-only without retrying", async (t) => {
+  const { session: s } = session(t, unstamped(), { buildFeatures: [] });
+  s.repo = { flush: async () => {} };
+  s.persistLocal = async () => {};
+  s.connection = { documentId: "doc" };
+  let sent;
+  s.requestWithRenewal = async (_url, request) => {
+    sent = JSON.parse(request.body);
+    throw Object.assign(
+      Error("This Page uses features this version doesn't support. Reload to update."),
+      {
+        status: 409,
+        code: "schema_unsupported",
+      },
+    );
+  };
+  let retries = 0;
+  s.scheduleReceiptRetry = () => retries++;
+  await s.saveReceipt();
+  assert.deepEqual(sent.schema_features, []);
+  assert.deepEqual(s.schemaGate, { editable: false, unsupported: [], refused: true });
+  assert.equal(s.canWrite, false);
+  assert.equal(retries, 0);
+  assert.notEqual(
+    s.problem,
+    "This Page uses features this version doesn't support. Reload to update.",
+  );
+});
+
+test("every local change repairs an incomplete stamp in the same change", (t) => {
+  const base = unstamped();
+  const left = stamp(A.clone(base), ["alpha"]);
+  const right = stamp(A.clone(base), ["beta"]);
+  const { session: s, doc } = session(t, A.merge(left, right), {
+    buildFeatures: ["alpha", "beta"],
+  });
+  assert.equal(doc().schema.features.length, 1);
+  s.change((draft) => A.updateText(draft, ["title"], "Renamed"));
+  assert.deepEqual([...doc().schema.features], ["alpha", "beta"]);
 });

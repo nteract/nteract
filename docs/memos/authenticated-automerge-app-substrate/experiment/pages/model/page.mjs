@@ -4,6 +4,7 @@ import { imageAssetUrl, validAssetId } from "../shared/image-assets.mjs";
 import { applyComment, projectComments } from "./comments.mjs";
 import { orderedBlockIds, positionForInsertion } from "./order.mjs";
 import { formatMatch, replaceMatch } from "./replace-match.mjs";
+import { stampFeatures } from "./schema-features.mjs";
 export { orderedBlockIds } from "./order.mjs";
 const block = (id = crypto.randomUUID(), position = positionForInsertion()) => ({
   id,
@@ -96,7 +97,13 @@ function applyEdit(doc, op, trace) {
     delete doc.blocks[id];
   } else throw Error("Unsupported edit operation");
 }
-export function applyPageOperation(doc, { operation, arguments: args = {}, identity, trace }) {
+export function applyPageOperation(doc, options) {
+  const result = applyOperation(doc, options);
+  // Every write repairs a stamp left incomplete by concurrent first stamps.
+  stampFeatures(doc);
+  return result;
+}
+function applyOperation(doc, { operation, arguments: args = {}, identity, trace }) {
   if (operation === "manage_page_comment" || operation === "reply_page_comment")
     return applyComment(
       doc,

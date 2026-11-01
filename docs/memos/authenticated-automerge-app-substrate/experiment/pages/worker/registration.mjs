@@ -53,6 +53,10 @@ export function readRegistration(args) {
       Object.keys(doc.comments).length
     )
       throw Error("Invalid Page bootstrap");
+    // A draft from a newer build can use features this host can't express.
+    // Check the stamp before validating content against this build's schema,
+    // so a future mark is refused as a feature, not as a malformed snapshot.
+    requireSupportedSchema(doc);
     for (const [id, block] of Object.entries(doc.blocks)) {
       if (
         !validPageId(id) ||
@@ -72,8 +76,6 @@ export function readRegistration(args) {
     }
     if (!Object.keys(doc.blocks).length) throw Error("Page bootstrap needs a block");
     assertDocumentLimits(doc);
-    // A draft from a newer build can use features this host can't express.
-    requireSupportedSchema(doc);
     return { doc, bytes };
   } catch (error) {
     if (doc) A.free(doc);

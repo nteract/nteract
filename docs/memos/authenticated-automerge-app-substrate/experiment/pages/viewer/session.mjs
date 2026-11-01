@@ -17,7 +17,12 @@ import { SubductionBackend, IndexedDBByteStore } from "@automerge/automerge-repo
 import { applyComment } from "../model/comments.mjs";
 import { createPageData, initializePage, projectPage } from "../model/page.mjs";
 import { unsentCommentsMarkdown } from "../model/markdown-export.mjs";
-import { BUILD_FEATURES, schemaGate as deriveSchemaGate } from "../model/schema-features.mjs";
+import {
+  BUILD_FEATURES,
+  SCHEMA_GATE_INITIAL,
+  schemaGateStep,
+  stampFeatures,
+} from "../model/schema-features.mjs";
 import {
   decodeSnapshot,
   encodeSnapshot,
@@ -122,10 +127,14 @@ export const signingKeyRefused = (admission, cause) =>
     code: "SIGNING_KEY_REFUSED",
     admission,
   });
-export function pageSyncAddress(pageId, href, activityEpoch) {
+/** `features` is this build's schema features. The host refuses native edits
+ * from a tab whose build lacks an id the Page is stamped with; no parameter
+ * means the baseline, as for builds from before the stamp. */
+export function pageSyncAddress(pageId, href, activityEpoch, features = []) {
   const address = new URL(`/api/sync?page=${encodeURIComponent(pageId)}`, href);
   address.protocol = address.protocol === "https:" ? "wss:" : "ws:";
   if (activityEpoch) address.searchParams.set("activity_epoch", activityEpoch);
+  if (features.length) address.searchParams.set("schema_features", [...features].sort().join(","));
   return address;
 }
 async function exclusiveIdentity(scope) {
@@ -193,11 +202,12 @@ export class PageSession {
   // Reasons edits are held while the session keeps syncing: the reload gate's
   // "reload" and the build floor's "protocol". They are not lifecycle phases.
   editPauses = new Set();
-  /** The schema gate (model/schema-features.mjs), derived from the replica:
+  /** The schema gate (schemaGateStep in model/schema-features.mjs):
    * `editable: false` when the Page is stamped with a feature this build
-   * lacks. Its content is then read-only while sync continues; access and
-   * Trash actions are unaffected. Stamps only grow, so it never reopens. */
-  schemaGate = deriveSchemaGate(undefined);
+   * lacks, or the host refused this tab's edits for that reason. Content is
+   * then read-only while sync continues; access and Trash actions are
+   * unaffected. Stamps only grow, so it never reopens. */
+  schemaGate = SCHEMA_GATE_INITIAL;
   /** The session's phase (see session-machine.mjs). Every lifecycle flag
    * below derives from it, and effects run from its transitions. */
   phase$ = new Store(viewerSessionMachine.initial);
@@ -559,10 +569,15 @@ export class PageSession {
    * change, so an editor never applies a local edit over content it can't
    * express. */
   observeSchema() {
-    const gate = deriveSchemaGate(this.doc, this.buildFeatures);
-    if (gate.editable === this.schemaGate.editable) return;
+    this.stepSchema({ type: "observe", doc: this.doc });
+  }
+  stepSchema(event) {
+    const { gate } = schemaGateStep(this.schemaGate, event, this.buildFeatures);
+    if (gate === this.schemaGate) return;
+    const editable = this.schemaGate.editable;
     this.schemaGate = gate;
-    this.updateCapabilities();
+    if (gate.editable !== editable) this.updateCapabilities();
+    this.emit();
   }
   receiveChange(event) {
     if (!this.alive) return;
@@ -1323,7 +1338,12 @@ export class PageSession {
     const expected = new N.PeerId(bytes(this.connection.serverPeerId));
     // Pin admission to the host snapshot we just discovered. If that host
     // restarts before the upgrade, reconnect must discover its new epoch.
-    const address = pageSyncAddress(this.pageId, location.href, this.activityEpoch);
+    const address = pageSyncAddress(
+      this.pageId,
+      location.href,
+      this.activityEpoch,
+      this.buildFeatures,
+    );
     // Keep the browser socket itself: toTransport consumes the native wrapper,
     // whereas the raw socket remains cancellable when account/page access changes.
     const socket = new WebSocket(address);
@@ -1488,7 +1508,12 @@ export class PageSession {
     if (!this.canWrite) throw Error("This Page is read only");
     this.localDepth++;
     try {
-      const stored = this.handle.change(fn);
+      const stored = this.handle.change((doc) => {
+        fn(doc);
+        // Every local write repairs a stamp left incomplete by concurrent
+        // first stamps, in the same change.
+        stampFeatures(doc);
+      });
       this.queueSaved({ edit: true });
       const receipt = this.receiptState;
       Promise.resolve(stored).catch((error) => {
@@ -1922,7 +1947,9 @@ export class PageSession {
           signal: AbortSignal.timeout(30_000),
           method: "POST",
           headers: { "Content-Type": "application/json", ...admissionHeaders },
-          body: JSON.stringify({ heads }),
+          // The host refuses a receipt for edits it won't accept because this
+          // build lacks a feature the Page is stamped with.
+          body: JSON.stringify({ heads, schema_features: this.buildFeatures }),
         },
       );
       if (!isCurrent()) return;
@@ -1958,6 +1985,15 @@ export class PageSession {
       if (isCurrent()) {
         if (error.code === "LOCAL_PAGE_DELETED") {
           await this.markDeleted();
+          return;
+        }
+        if (error.code === "schema_unsupported") {
+          // Retrying can't help: these edits need a build with the feature.
+          // The schema notice explains it; no second banner.
+          this.stepSchema({ type: "refused" });
+          this.syncStatus({ type: "stalled", revision: receipt, localCopy: !!this.localPage });
+          this.renderStatus();
+          this.showReceiptState();
           return;
         }
         if (error.status === 401) this.requireSignIn();

@@ -135,3 +135,26 @@ test("the host refuses every write to a Page stamped with a feature it lacks, an
   }
   assert.deepEqual(f.heads(), heads, "nothing is written");
 });
+
+test("a receipt for edits the native gate refused answers schema_unsupported at once", async (t) => {
+  const plain = await fixture(t);
+  const doc = A.change(A.load(A.save(plain.doc())), (draft) => {
+    draft.schema = { features: ["future-feature"] };
+  });
+  const f = await fixture(t, { auth: plain.auth, docBytes: A.save(doc) });
+  A.free(doc);
+  const missing = ["e".repeat(64)];
+  for (const body of [{ heads: missing }, { heads: missing, schema_features: ["other"] }]) {
+    const refused = await f.pageCall("owner", "/api/saved", body);
+    assert.equal(refused.status, 409);
+    assert.deepEqual(refused.body, {
+      error: "This Page uses features this version doesn't support. Reload to update.",
+      code: "schema_unsupported",
+    });
+  }
+  const malformed = await f.pageCall("owner", "/api/saved", {
+    heads: missing,
+    schema_features: ["Not An Id"],
+  });
+  assert.equal(malformed.status, 400);
+});

@@ -8,12 +8,16 @@ import {
   BUILD_FEATURES,
   FEATURE_REGISTRY,
   MALFORMED_FEATURE,
+  SCHEMA_GATE_INITIAL,
   documentFeatures,
   featureRegistry,
   installFeatureRegistryForTests,
   markFeatures,
+  missingFeatures,
+  parseDeclaredFeatures,
   requireSupportedSchema,
   schemaGate,
+  schemaGateStep,
   spanFeatures,
   stampFeatures,
   unsupportedFeatures,
@@ -106,7 +110,7 @@ test("an unstamped document is editable and reports no features", () => {
   assert.equal(doc.schema, undefined);
   assert.deepEqual(documentFeatures(doc), []);
   assert.deepEqual(unsupportedFeatures(doc), []);
-  assert.deepEqual(schemaGate(doc), { editable: true, unsupported: [] });
+  assert.deepEqual(schemaGate(doc), { editable: true, unsupported: [], refused: false });
   assert.doesNotThrow(() => requireSupportedSchema(doc));
 });
 
@@ -119,6 +123,7 @@ test("the reader gate is the stamp minus the build's features", () => {
   assert.deepEqual(schemaGate(doc, ["test-tables"]), {
     editable: false,
     unsupported: ["future-feature"],
+    refused: false,
   });
   assert.equal(schemaGate(doc, ["future-feature", "test-tables"]).editable, true);
   // Other keys under schema are ignored; only feature ids gate.
@@ -301,4 +306,112 @@ test("concurrent features lists under one schema both survive", () => {
   const left = A.change(A.clone(base), (draft) => stampFeatures(draft, ["left"]));
   const right = A.change(A.clone(base), (draft) => stampFeatures(draft, ["right"]));
   assert.deepEqual(documentFeatures(A.merge(left, right)), ["left", "right"]);
+});
+
+test("any write repairs concurrent first stamps in its own change, without a new feature", (t) => {
+  withFixture(t);
+  const base = page();
+  const left = A.change(A.clone(base), (draft) => stampFeatures(draft, ["test-tables"]));
+  const right = A.change(A.clone(base), (draft) => stampFeatures(draft, ["test-highlight"]));
+  const merged = A.merge(left, right);
+  assert.ok(A.getConflicts(merged, "schema"));
+  assert.equal(merged.schema.features.length, 1, "the visible list is incomplete");
+  // A baseline host write: a title change touches no rich text.
+  const repaired = edit(A.clone(merged), [{ op: "set_title", title: "Renamed" }]);
+  assert.equal(A.getChanges(merged, repaired).length, 1);
+  assert.deepEqual([...repaired.schema.features], ["test-highlight", "test-tables"]);
+  assert.deepEqual(documentFeatures(repaired), ["test-highlight", "test-tables"]);
+  // A write with nothing to repair leaves the stamp alone.
+  const heads = A.getHeads(repaired);
+  const later = edit(repaired, [{ op: "set_title", title: "Again" }]);
+  assert.deepEqual(
+    A.diff(later, heads, A.getHeads(later)).filter((patch) => patch.path[0] === "schema"),
+    [],
+  );
+  // The repair alone, with no ids, as the browser runs it after every change.
+  const direct = A.change(merged, (draft) => assert.deepEqual(stampFeatures(draft), []));
+  assert.deepEqual([...direct.schema.features], ["test-highlight", "test-tables"]);
+  // Unstamped documents get no stamp from a baseline write.
+  assert.equal(edit(page(), [{ op: "set_title", title: "x" }]).schema, undefined);
+});
+
+test("declared build features parse strictly", () => {
+  assert.deepEqual(parseDeclaredFeatures(undefined), []);
+  assert.deepEqual(parseDeclaredFeatures(null), []);
+  assert.deepEqual(parseDeclaredFeatures(""), []);
+  assert.deepEqual(parseDeclaredFeatures("b,a,b"), ["a", "b"]);
+  for (const bad of ["A", "a,,b", "a b", ",", Array(65).fill("a").join(",")])
+    assert.equal(parseDeclaredFeatures(bad), null, bad);
+  assert.deepEqual(missingFeatures(["b", "a", "a"], ["b"]), ["a"]);
+});
+
+// States × events for the viewer's schema gate (schemaGateStep).
+test("schema gate: every state and event", () => {
+  const unstamped = page();
+  const stampedDoc = stamped(["future"]);
+  const moreDoc = stamped(["future", "later"]);
+  const build = ["known"];
+  const editable = SCHEMA_GATE_INITIAL;
+  const readOnly = schemaGateStep(editable, { type: "observe", doc: stampedDoc }, build).gate;
+  const refusedGate = schemaGateStep(editable, { type: "refused" }, build).gate;
+  const states = {
+    editable,
+    "read-only (stamp)": readOnly,
+    "read-only (host refused)": refusedGate,
+  };
+  const events = {
+    "open or change with no unknown stamp": { type: "observe", doc: unstamped },
+    "open with an unknown stamp": { type: "observe", doc: stampedDoc },
+    "remote stamp adds another id": { type: "observe", doc: moreDoc },
+    "host refuses a receipt": { type: "refused" },
+    "local edit attempted": { type: "edit" },
+    reload: { type: "reload" },
+  };
+  // [editable after, unsupported after, refused after, edit allowed]
+  const expected = {
+    editable: {
+      "open or change with no unknown stamp": [true, [], false, true],
+      "open with an unknown stamp": [false, ["future"], false, false],
+      "remote stamp adds another id": [false, ["future", "later"], false, false],
+      "host refuses a receipt": [false, [], true, false],
+      "local edit attempted": [true, [], false, true],
+      reload: [true, [], false, true],
+    },
+    "read-only (stamp)": {
+      "open or change with no unknown stamp": [false, ["future"], false, false],
+      "open with an unknown stamp": [false, ["future"], false, false],
+      "remote stamp adds another id": [false, ["future", "later"], false, false],
+      "host refuses a receipt": [false, ["future"], true, false],
+      "local edit attempted": [false, ["future"], false, false],
+      reload: [true, [], false, true],
+    },
+    "read-only (host refused)": {
+      "open or change with no unknown stamp": [false, [], true, false],
+      "open with an unknown stamp": [false, ["future"], true, false],
+      "remote stamp adds another id": [false, ["future", "later"], true, false],
+      "host refuses a receipt": [false, [], true, false],
+      "local edit attempted": [false, [], true, false],
+      reload: [true, [], false, true],
+    },
+  };
+  for (const [stateName, state] of Object.entries(states))
+    for (const [eventName, event] of Object.entries(events)) {
+      const { gate, allowed } = schemaGateStep(state, event, build);
+      assert.deepEqual(
+        [gate.editable, [...gate.unsupported], gate.refused, allowed],
+        expected[stateName][eventName],
+        `${stateName} × ${eventName}`,
+      );
+    }
+  // An unchanged gate keeps its identity, so the session emits nothing.
+  assert.equal(
+    schemaGateStep(readOnly, { type: "observe", doc: stampedDoc }, build).gate,
+    readOnly,
+  );
+  assert.throws(() => schemaGateStep(editable, { type: "nope" }), /Unknown schema gate event/);
+  // A build that has every stamped id stays editable.
+  assert.equal(
+    schemaGateStep(editable, { type: "observe", doc: moreDoc }, ["future", "later"]).gate,
+    editable,
+  );
 });

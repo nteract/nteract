@@ -1,9 +1,11 @@
 // The schema-feature gate against a running local Wordgard fixture.
 //
 // A Node native peer stamps one Page with a feature id no build knows, the way
-// a newer build would. The host then refuses tool writes to it with
-// unsupported_schema_feature, read_page reports the stamp, and the browser opens
-// it read-only with the reload notice. An unstamped Page stays editable.
+// a newer build would. The host then refuses that peer's next native edit
+// (its build declared no features) and accepts one from a peer that declares
+// the feature. Tool writes get unsupported_schema_feature, read_page reports
+// the stamp, and the browser opens it read-only with the reload notice. An
+// unstamped Page stays editable.
 //
 //   PAGES_ORIGIN=http://localhost:9894 node scripts/schema-features-smoke.mjs
 import assert from "node:assert/strict";
@@ -56,9 +58,9 @@ async function create(title, markdown) {
   return result.body.page_id;
 }
 
-/** Stamp `features` on a Page through native sync, as a newer build's
- * browser would, and wait until the host has it durably. */
-async function stampNatively(cookie, pageId, features) {
+/** A raw native peer on a Page, admitted with `declared` as its build's
+ * schema features (none: the baseline, like a build from before the stamp). */
+async function nativePeer(cookie, pageId, declared) {
   const headers = { cookie, origin, "X-Pages-Admission": "1" };
   const discovery = await fetch(`${origin}/api/connect?page=${pageId}`, { headers }).then(
     (response) => response.json(),
@@ -69,6 +71,7 @@ async function stampNatively(cookie, pageId, features) {
   address.protocol = "ws:";
   if (discovery.activity?.epoch)
     address.searchParams.set("activity_epoch", discovery.activity.epoch);
+  if (declared.length) address.searchParams.set("schema_features", declared.join(","));
   const socket = new WebSocket(address, { headers: { cookie, origin } });
   socket.binaryType = "arraybuffer";
   const expected = new N.PeerId(bytes(discovery.serverPeerId));
@@ -85,24 +88,34 @@ async function stampNatively(cookie, pageId, features) {
     } finally {
       transport.free();
     }
-    const handle = await peer.repo.find(discovery.documentId);
-    handle.change((doc) => {
-      doc.schema = { features };
-    });
-    const heads = A.getHeads(handle.doc());
-    await eventually(async () => {
-      const response = await fetch(`${origin}/api/saved?page=${pageId}`, {
-        method: "POST",
-        headers: { ...headers, "Content-Type": "application/json" },
-        body: JSON.stringify({ heads }),
-      });
-      return response.ok;
-    }, 20_000);
   } finally {
     expected.free();
-    socket.close();
-    await closePeers([peer]);
   }
+  const handle = await peer.repo.find(discovery.documentId);
+  return {
+    handle,
+    /** Change the document, then ask the host for a receipt as the viewer does. */
+    async change(fn) {
+      handle.change(fn);
+      await peer.repo.flush();
+      const heads = A.getHeads(handle.doc());
+      let last;
+      await eventually(async () => {
+        const response = await fetch(`${origin}/api/saved?page=${pageId}`, {
+          method: "POST",
+          headers: { ...headers, "Content-Type": "application/json" },
+          body: JSON.stringify({ heads, schema_features: declared }),
+        });
+        last = { status: response.status, body: await response.json() };
+        return response.ok || last.body.code === "schema_unsupported";
+      }, 20_000);
+      return last;
+    },
+    async close() {
+      socket.close();
+      await closePeers([peer]);
+    },
+  };
 }
 
 const content = () => page.locator(".page-block wg-content");
@@ -133,11 +146,41 @@ try {
 
   stage = "a native peer stamps an unknown feature";
   const future = await create("Future " + Date.now(), "Words from a newer build.");
-  await stampNatively(cookie, future, [FUTURE]);
-  const futureRead = await tool("read_page", { page_id: future, comments: "none" });
-  assert.equal(futureRead.status, 200);
-  assert.deepEqual(futureRead.body.schema_features, [FUTURE]);
+  // A peer admitted with the baseline may stamp an unstamped Page.
+  const stale = await nativePeer(cookie, future, []);
+  const stamping = await stale.change((doc) => {
+    doc.schema = { features: [FUTURE] };
+  });
+  assert.equal(stamping.status, 200, JSON.stringify(stamping.body));
+  const stampedRead = await tool("read_page", { page_id: future, comments: "none" });
+  assert.equal(stampedRead.status, 200);
+  assert.deepEqual(stampedRead.body.schema_features, [FUTURE]);
   checkpoint("read_page reports the stamp");
+
+  stage = "the host refuses native edits from a build without the feature";
+  const staleEdit = await stale.change((doc) => {
+    doc.staleEdit = "should not land";
+  });
+  assert.equal(staleEdit.status, 409, JSON.stringify(staleEdit.body));
+  assert.equal(staleEdit.body.code, "schema_unsupported");
+  // The receipt answers as soon as the heads are missing; give the refused
+  // native put time to reach the host before checking nothing landed.
+  await new Promise((resolve) => setTimeout(resolve, 1500));
+  await stale.close();
+  const afterStale = await tool("read_page", { page_id: future, comments: "none" });
+  assert.deepEqual([...afterStale.body.heads].sort(), [...stampedRead.body.heads].sort());
+  checkpoint("a stale build's native edit is refused and the Page is unchanged");
+
+  stage = "the host accepts native edits from a build with the feature";
+  const fresh = await nativePeer(cookie, future, [FUTURE]);
+  const freshEdit = await fresh.change((doc) => {
+    doc.freshEdit = "lands";
+  });
+  assert.equal(freshEdit.status, 200, JSON.stringify(freshEdit.body));
+  await fresh.close();
+  const futureRead = await tool("read_page", { page_id: future, comments: "none" });
+  assert.notDeepEqual([...futureRead.body.heads].sort(), [...stampedRead.body.heads].sort());
+  checkpoint("a current build's native edit is accepted");
 
   stage = "the host refuses writes it can't express";
   const refused = await tool("patch_page", {

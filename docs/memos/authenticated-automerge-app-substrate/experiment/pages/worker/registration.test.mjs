@@ -536,9 +536,26 @@ test("a changed account cannot cancel an unknown local draft in the wrong catalo
 test("registration refuses a draft stamped with a schema feature this host lacks", async (t) => {
   const f = await fixture(t),
     { args, doc } = registration();
+  // A newer build's draft: a mark this host's registry doesn't know, and the
+  // stamp for it. The stamp decides before content validation would reject it.
   const stamped = A.change(A.clone(doc), (draft) => {
+    const id = Object.keys(draft.blocks)[0];
+    A.mark(draft, ["blocks", id, "richText"], { start: 0, end: 4, expand: "none" }, "future", true);
     draft.schema = { features: ["future-feature"] };
   });
+  const unstamped = A.change(A.clone(doc), (draft) => {
+    const id = Object.keys(draft.blocks)[0];
+    A.mark(draft, ["blocks", id, "richText"], { start: 0, end: 4, expand: "none" }, "future", true);
+  });
+  assert.throws(
+    () =>
+      readRegistration({
+        ...args,
+        initial_snapshot_base64: Buffer.from(A.save(unstamped)).toString("base64"),
+      }),
+    { status: 400, message: "Invalid initial Page snapshot" },
+    "without a stamp, an unknown mark is a malformed draft",
+  );
   const request = {
     ...args,
     initial_snapshot_base64: Buffer.from(A.save(stamped)).toString("base64"),

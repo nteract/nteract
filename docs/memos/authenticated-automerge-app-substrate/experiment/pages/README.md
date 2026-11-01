@@ -192,13 +192,16 @@ references; it does not publish the Page or change asset access.
   | --- | --- |
   | Writer (host tools, import, Wordgard binding, comments) | Adds a feature's id in the same Automerge change that first writes content needing it. Never removes an id. |
   | Viewer | `unsupported = stamp − BUILD_FEATURES`. Non-empty opens the Page read-only with a Reload notice; sync continues. |
-  | Host | Refuses tool writes and draft registration with `409 unsupported_schema_feature` and `unsupported_features`. Replays of recorded receipts still answer. |
+  | Host, tools | Refuses tool writes and draft registration with `409 unsupported_schema_feature` and `unsupported_features`. Replays of recorded receipts still answer. |
+  | Host, native sync | The viewer declares its build's features on `/api/sync` (`schema_features`; none means the baseline). The policy refuses a put authored by the requesting key while its build lacks a stamped id, and the matching `/api/saved` receipt answers `409 schema_unsupported`, which the viewer shows as the read-only notice. Relayed history signed by another key is not gated. |
   | Agents | `read_page` returns `schema_features`, an empty array when unstamped. |
 
   Concurrent first stamps can conflict on `schema`; readers union every
   conflicting value and the next writer folds them into the visible list. The
   stamp is per document; the minimum viewer protocol in [Build updates](#build-updates)
-  is per build and is still what stops an old tab's native sync.
+  is per build. A declaration is the client's own claim: the native gate stops
+  stale clients from writing what they can't express, not hostile ones, whose
+  edits write authority already bounds.
 - **Links:** click for Open, Edit, and Remove; Cmd/Ctrl-click opens directly and
   Cmd/Ctrl+K edits. Incoming edits update or dismiss the link control, and URL
   policy applies both to stored content and navigation.

@@ -109,11 +109,27 @@ export function documentFeatures(doc) {
   return [...ids].sort();
 }
 
+/** Stamped ids a build lacks. Pure; the reader and native gates share it. */
+export function missingFeatures(stamp, build) {
+  const known = new Set(build);
+  return [...new Set(stamp)].filter((id) => !known.has(id)).sort();
+}
+
 /** The reader gate: the document's features this build doesn't have. A
  * non-empty result means read-only. */
 export function unsupportedFeatures(doc, build = BUILD_FEATURES) {
-  const known = new Set(build);
-  return documentFeatures(doc).filter((id) => !known.has(id));
+  return missingFeatures(documentFeatures(doc), build);
+}
+
+const MAX_DECLARED = 64;
+/** A client's declared build features, from a comma-separated query value.
+ * Absent means a build from before the stamp: the baseline. Returns null for
+ * a malformed value. */
+export function parseDeclaredFeatures(value) {
+  if (value === null || value === undefined || value === "") return [];
+  const ids = String(value).split(",");
+  if (ids.length > MAX_DECLARED || ids.some((id) => !FEATURE_ID.test(id))) return null;
+  return [...new Set(ids)].sort();
 }
 
 /** Features that native rich-text spans need: their marks, block types and
@@ -143,20 +159,30 @@ export function markFeatures(names, registry = active) {
   return [...needed].sort();
 }
 
-/** Add ids to the stamp inside an Automerge change, keeping the list sorted.
- * Returns the ids it added. Never removes or rewrites an id. */
-export function stampFeatures(doc, ids) {
-  if (!ids.length) return [];
-  const present = new Set(documentFeatures(doc));
-  if (present.has(MALFORMED_FEATURE)) throw Error("This Page's schema stamp is malformed");
-  const missing = [...new Set(ids)].filter((id) => !present.has(id)).sort();
-  if (!missing.length) return [];
+/** Add ids to the stamp inside an Automerge change, keeping the visible list
+ * sorted. Returns the ids it added. Never removes or rewrites an id.
+ *
+ * It also repairs concurrent first stamps: when the visible list lacks an id
+ * that only a conflicting `schema` or `features` value holds, it copies the id
+ * in. Every writer calls this in its own change, with no ids for baseline
+ * content, so the list converges on the next write of any kind. */
+export function stampFeatures(doc, ids = []) {
+  const present = documentFeatures(doc);
+  if (present.includes(MALFORMED_FEATURE)) {
+    // Readers already hold a malformed stamp read-only; never guess at it.
+    if (ids.length) throw Error("This Page's schema stamp is malformed");
+    return [];
+  }
+  const missing = [...new Set(ids)].filter((id) => !present.includes(id)).sort();
+  const wanted = [...new Set([...present, ...missing])].sort();
+  if (!wanted.length) return [];
+  const shown = isMap(doc.schema) && Array.isArray(doc.schema.features) ? doc.schema.features : [];
+  const visible = new Set(Array.from(shown, String));
+  if (wanted.every((id) => visible.has(id))) return missing;
   if (doc.schema === undefined) doc.schema = {};
   if (doc.schema.features === undefined) doc.schema.features = [];
   const list = doc.schema.features;
-  // Ids only a conflicting value holds join the visible list too.
-  const visible = new Set(Array.from(list, String));
-  for (const id of [...new Set([...present, ...missing])].sort()) {
+  for (const id of wanted) {
     if (visible.has(id)) continue;
     let at = list.length;
     while (at > 0 && String(list[at - 1]) > id) at--;
@@ -182,10 +208,71 @@ export function requireSupportedSchema(doc, build = BUILD_FEATURES) {
   );
 }
 
-const EDITABLE = Object.freeze({ editable: true, unsupported: Object.freeze([]) });
-/** The viewer's schema gate: whether this build may edit the document, and
- * which stamped features it lacks. Pure; the session stores the result. */
+/**
+ * The viewer's schema gate as a state machine.
+ *
+ * States: `editable` (`editable: true`) and read-only (`editable: false`).
+ * `unsupported` lists the stamped ids this build lacks; `refused` says the
+ * host refused this tab's edits for the same reason before the stamp reached
+ * the replica.
+ *
+ * Events:
+ * - `observe`: the replica opened or changed. The gate re-derives from its
+ *   stamp. Stamps only grow, so read-only never reopens; ids accumulate.
+ * - `refused`: the host answered a receipt with `schema_unsupported`.
+ * - `edit`: a local edit was attempted. The state is unchanged; `allowed`
+ *   says whether it may reach the document.
+ * - `reload`: the tab reloads into another build. Its new session starts
+ *   editable and re-derives on its first `observe`.
+ *
+ * Pure: the session stores the state and runs effects from `editable`.
+ */
+export const SCHEMA_GATE_INITIAL = Object.freeze({
+  editable: true,
+  unsupported: Object.freeze([]),
+  refused: false,
+});
+
+const gateState = (unsupported, refused) =>
+  !unsupported.length && !refused
+    ? SCHEMA_GATE_INITIAL
+    : Object.freeze({ editable: false, unsupported: Object.freeze(unsupported), refused });
+
+export function schemaGateStep(gate, event, build = BUILD_FEATURES) {
+  switch (event.type) {
+    case "observe": {
+      const unsupported = [
+        ...new Set([...gate.unsupported, ...unsupportedFeatures(event.doc, build)]),
+      ].sort();
+      const next =
+        unsupported.length === gate.unsupported.length
+          ? gate
+          : gateState(unsupported, gate.refused);
+      return { gate: next, allowed: next.editable };
+    }
+    case "refused": {
+      const next = gate.refused ? gate : gateState([...gate.unsupported], true);
+      return { gate: next, allowed: false };
+    }
+    case "edit":
+      return { gate, allowed: gate.editable };
+    case "reload":
+      return { gate: SCHEMA_GATE_INITIAL, allowed: true };
+  }
+  throw Error(`Unknown schema gate event ${event?.type}`);
+}
+
+/** The gate a fresh session derives from `doc`. */
 export function schemaGate(doc, build = BUILD_FEATURES) {
-  const unsupported = unsupportedFeatures(doc, build);
-  return unsupported.length ? Object.freeze({ editable: false, unsupported }) : EDITABLE;
+  return schemaGateStep(SCHEMA_GATE_INITIAL, { type: "observe", doc }, build).gate;
+}
+
+/** The native and receipt refusal for a peer whose build lacks a stamped id.
+ * Its message is the viewer's notice, so a build from before the stamp shows
+ * it as a save problem. */
+export function schemaUnsupported(features) {
+  return Object.assign(
+    Error("This Page uses features this version doesn't support. Reload to update."),
+    { status: 409, code: "schema_unsupported", details: { features } },
+  );
 }
