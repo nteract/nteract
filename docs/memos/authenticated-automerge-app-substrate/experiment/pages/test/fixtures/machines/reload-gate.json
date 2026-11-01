@@ -1662,7 +1662,7 @@
           "records": [],
           "drafts": false,
           "outcome": {
-            "message": "Your latest edits couldn't be saved on this device, so Pages won't reload."
+            "message": "Your latest edits couldn't be saved on this device, so this tab won't reload."
           }
         },
         "effects": [{ "type": "resumeEdits", "ids": ["a"] }]
@@ -2527,7 +2527,7 @@
           "records": [],
           "drafts": false,
           "outcome": {
-            "message": "Your latest edits haven't saved yet, so Pages won't reload. Check your connection and try again."
+            "message": "Your latest edits haven't saved yet, so this tab won't reload. Check your connection and try again."
           }
         },
         "effects": [{ "type": "resumeEdits", "ids": ["a"] }]
@@ -2599,7 +2599,7 @@
               {
                 "id": "a",
                 "key": "dev:page-a",
-                "result": "Your latest edits haven't saved yet, so Pages won't reload. Check your connection and try again.",
+                "result": "Your latest edits haven't saved yet, so this tab won't reload. Check your connection and try again.",
                 "savedHeads": []
               }
             ],
@@ -3412,7 +3412,7 @@
           "records": [],
           "drafts": false,
           "outcome": {
-            "message": "Your edits on this Page couldn't be saved in this browser, so Pages won't reload. Keep this tab open and try Reload again."
+            "message": "Your edits on this Page couldn't be saved in this browser, so this tab won't reload. Keep this tab open and try Reload again."
           }
         },
         "effects": [{ "type": "resumeEdits", "ids": ["a"] }]
@@ -3464,7 +3464,7 @@
           "records": [],
           "drafts": false,
           "outcome": {
-            "message": "Your latest edits haven't saved yet, so Pages won't reload. Check your connection and try again."
+            "message": "Your latest edits haven't saved yet, so this tab won't reload. Check your connection and try again."
           }
         },
         "effects": [{ "type": "resumeEdits", "ids": ["a"] }]

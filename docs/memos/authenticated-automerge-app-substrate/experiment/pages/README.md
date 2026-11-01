@@ -113,6 +113,7 @@ was a caret race in the smoke; the editor side is
 | Schema-feature gate: a Page stamped with an unknown feature opens read-only and refuses tool writes | `PAGES_ORIGIN=http://localhost:9894 node scripts/schema-features-smoke.mjs` | Uses the running Wordgard fixture |
 | Native table editing | `PAGES_ORIGIN=http://localhost:9894 npm run smoke:tables` | Uses the running Wordgard fixture |
 | Passage edits and revision deltas | `PAGES_ORIGIN=http://localhost:9894 node scripts/passages-changes-smoke.mjs` | Uses the running Wordgard fixture |
+| Reload banner placement, browser presence labels, leaving a final code block, checkbox indent | `PAGES_ORIGIN=http://localhost:9894 node scripts/editor-chrome-smoke.mjs` | Uses the running Wordgard fixture |
 | Local creation and navigation | `PAGES_ORIGIN=http://localhost:9894 node scripts/navigation-smoke.mjs` | Uses the running Wordgard fixture |
 | Editing, comments, links, diagrams, and recovery | `PAGES_ORIGIN=http://localhost:9894 npm run smoke:editor` | Uses the running Wordgard fixture |
 | History growth and typing latency | `PAGES_ORIGIN=http://localhost:9894 node scripts/latency-smoke.mjs` | Uses the running Wordgard fixture with buffered persistence |
@@ -142,6 +143,11 @@ browser editor is simplified; replacing it requires a separate compatibility
 pass. Each Pages block has its own continuous editor. Moves update fractional positions without recreating the block or its
 text object, preserving comment and selection anchors. Concurrent positions use
 block IDs as deterministic ties. Cross-Pages-block selections remain unsupported.
+When a block ends in a code block, table, preserved block or an image, ArrowDown
+on its last line, Mod-Enter, or a click below it adds an empty paragraph and puts
+the caret there. Mod-Enter also leaves a code block anywhere else. The paragraph
+is an ordinary edit, written only when someone asks for it, so opening a Page
+writes nothing.
 The binding's upstream attribution is in [WORDGARD-NOTICE](viewer/WORDGARD-NOTICE).
 
 The interface keeps navigation and account actions outside the document, with
@@ -422,6 +428,9 @@ label. The Kilo recipe uses one shared entry with
 `"X-Pages-Agent": "{env:PAGES_AGENT}"`, and each worktree sets `PAGES_AGENT` in
 its `.envrc`. Both labels are self-declared descriptions shown under the
 authenticated account, not verified vendor identity or a permission grant.
+`Browser` is the one driver a bearer credential can't claim: viewers show a
+browser session by the person's name alone, so on a request with an API key or
+OAuth token the server reads `X-Pages-Driver: Browser` (any case) as `API`.
 
 A Page starts private. Its immutable owner manages access, Trash, and permanent
 deletion, editors write/comment, and viewers read. Each operation intersects the Page role with
@@ -705,7 +714,11 @@ uploads; they do not consume the document history budget.
 Uploads check current edit permission before transfer and again before returning
 the asset. Transfer does not hold the Page mutation queue. Browser insertion
 captures a CRDT cursor and refuses to redirect a completed upload into a replaced
-block or revoked editor. `GET`/`HEAD /api/pages/:pageId/assets/:sha256` check current
+block or revoked editor. The cursor sticks to the character before the insertion
+point, so text typed while the image uploads goes after it. When the upload
+lands and the selection hasn't moved since the paste, drop or pick, the caret
+moves to just after the image; otherwise the selection stays where the person
+put it. `GET`/`HEAD /api/pages/:pageId/assets/:sha256` check current
 read access before lookup, then return verified raster MIME, `nosniff`, and
 `Cache-Control: private, no-store`. No public bucket, persistent presigned URL,
 or cross-Page hash lookup is exposed.
@@ -895,10 +908,14 @@ visible. It never polls while hidden and never reloads by itself.
 | Server advertises | Viewer shows | Editing |
 | --- | --- | --- |
 | Same build | Nothing | Unchanged |
-| Different build (newer or a rollback), floor at or below this viewer | "Pages changed on the server. Reload to use the current version." | Unchanged |
-| Floor above this viewer's protocol | "Pages changed on the server. This tab can't edit until you reload." | Paused; accepted edits keep saving |
-| Editor chunk failed to load, server on another build | "Pages changed on the server. This tab can't edit until you reload." | No Page opens until reload |
-| Editor chunk failed to load, same build | "Pages couldn't load the editor. Reload to try again." | No Page opens until reload |
+| Different build (newer or a rollback), floor at or below this viewer | "App updated. Reload to use the latest version." | Unchanged |
+| Floor above this viewer's protocol | "App updated. This tab can't edit until you reload." | Paused; accepted edits keep saving |
+| Editor chunk failed to load, server on another build | "App updated. This tab can't edit until you reload." | No Page opens until reload |
+| Editor chunk failed to load, same build | "The editor didn't load. Reload to try again." | No Page opens until reload |
+
+The banner sticks below the header, and below the formatting toolbar when it's
+pinned, so it stays in view while the Page scrolls. It names the app, not
+"Pages", which is also what people call their documents.
 
 The viewer is `app.js`, which renders the shell (header, account, sign-in and
 the Page list), plus content-hashed files under `/chunks/`. `app.js` imports the

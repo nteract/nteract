@@ -69,6 +69,12 @@
 .wordgard-document wg-content li > p {
   margin: 0.15em 0;
 }
+/* A checkbox starts where a bullet's disc starts (about 0.45em in from the
+   text edge), and the item text follows it, so a task list reads as indented
+   as a bulleted list instead of hanging the box on the paragraph edge. */
+.wordgard-document wg-content ul[data-task-list] {
+  padding-inline-start: 1.9em;
+}
 .wordgard-document wg-content .wordgard-task-item {
   list-style: none;
   position: relative;
@@ -78,13 +84,14 @@
 }
 .wordgard-task-control {
   position: absolute;
-  inset-inline-start: -1.7em;
+  inset-inline-start: -1.9em;
   top: 0;
   display: flex;
   align-items: center;
-  justify-content: center;
-  width: 1.7em;
+  justify-content: flex-start;
+  width: 1.9em;
   height: 1.7em;
+  padding-inline-start: 0.45em;
   cursor: pointer;
 }
 .wordgard-task-control input[type="checkbox"] {
@@ -108,8 +115,10 @@
     min-height: 44px;
   }
   .wordgard-task-control {
+    justify-content: center;
     width: 44px;
     height: 44px;
+    padding: 0;
     inset-inline-start: -36px;
     top: -8px;
   }

@@ -40,7 +40,7 @@ import { ADMISSION_CAPABILITY, admissionCloseOutcome } from "../shared/admission
 import { isTransientFailure, request } from "./request.mjs";
 import { SERVER_UNREACHABLE } from "./alerts.mjs";
 import { monotonicNow } from "./monotonic.mjs";
-import { activitySnapshot } from "./activity.mjs";
+import { activitySnapshot, presenceLabel } from "./activity.mjs";
 import { checkpointRecords } from "./checkpoint-records.mjs";
 import { preservedBlockEdits } from "../model/raw-migration.mjs";
 import { Store } from "./store.mjs";
@@ -1783,7 +1783,7 @@ export class PageSession {
       this.peers.set(senderId, {
         value,
         at: this.now(),
-        displayName: [profile.displayName, profile.driver].filter(Boolean).join(" · "),
+        displayName: presenceLabel(profile),
         profile: {
           principal: profile.principal,
           displayName: profile.displayName,

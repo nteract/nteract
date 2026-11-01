@@ -166,6 +166,14 @@ export function activityIdentity(identity) {
   return { name, driver, delegated, label: delegated ? `${driver} on behalf of ${name}` : name };
 }
 
+/** The short name on a peer's caret: the person's name when they're in the
+ * browser, otherwise their name and the client that holds the session
+ * ("Kyle Kelley · Mobile"). The driver on the wire is unchanged. */
+export function presenceLabel(identity) {
+  const { name, driver, delegated } = activityIdentity(identity);
+  return delegated ? `${name} · ${driver}` : name;
+}
+
 export function progressPassages(session, now = sessionNow(session)) {
   const result = [];
   for (const progress of session.agentProgress?.values() ?? []) {

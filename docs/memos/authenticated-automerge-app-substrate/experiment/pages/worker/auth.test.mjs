@@ -4,6 +4,7 @@ import { createAuthFixture } from "../../auth-fixtures.mjs";
 import {
   agentLabel,
   authenticate,
+  bearerDriver,
   requireSameOrigin,
   readJson,
   errorResponse,
@@ -58,6 +59,31 @@ test("API keys use production scope checks and ignore claimed account/operator h
     authenticate(request(fixture.apiKey({ scopes: [] })), fixture.env),
     /scopes do not allow/,
   );
+});
+
+test("an API key can't present itself as a person in the browser", async (t) => {
+  const fixture = await createAuthFixture();
+  t.mock.method(globalThis, "fetch", fixture.fetch);
+  const token = fixture.apiKey();
+  const as = (headers, query = "") =>
+    authenticate(
+      new Request(`https://pages.invalid/api/connect?page=test${query}`, {
+        headers: { authorization: `Bearer ${token}`, ...headers },
+      }),
+      fixture.env,
+    );
+  for (const label of ["Browser", " browser ", "BROWSER"])
+    assert.equal((await as({ "x-pages-driver": label })).driver, "API", label);
+  assert.equal((await as({}, "&driver=Browser")).driver, "API");
+  assert.equal((await as({})).driver, "API");
+  assert.equal((await as({ "x-pages-driver": "Kilo" })).driver, "Kilo");
+  assert.equal((await as({ "x-pages-driver": "Browser extension" })).driver, "Browser extension");
+  // The agent label is a separate field and doesn't change the driver.
+  const agent = await as({ "x-pages-driver": "Browser", "x-pages-agent": "release agent" });
+  assert.equal(agent.driver, "API");
+  assert.equal(agent.agent, "release agent");
+  assert.equal(bearerDriver("Browser"), "API");
+  assert.equal(bearerDriver("Mobile"), "Mobile");
 });
 
 test("API-key invitation identity comes from provider whoami and configured namespace, never caller claims", async (t) => {

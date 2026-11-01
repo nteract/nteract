@@ -42,6 +42,7 @@ const SUITES = Object.freeze([
   { name: "navigation", script: "scripts/navigation-smoke.mjs", timeout: 3 * minute },
   { name: "passages", script: "scripts/passages-changes-smoke.mjs", timeout: 3 * minute },
   { name: "presence", script: "scripts/presence-smoke.mjs", timeout: 3 * minute },
+  { name: "editor-chrome", script: "scripts/editor-chrome-smoke.mjs", timeout: 3 * minute },
   { name: "title-warning", script: "scripts/title-warning-smoke.mjs", timeout: 2 * minute },
   { name: "native", script: "scripts/smoke.mjs", timeout: 2 * minute },
   { name: "schema-features", script: "scripts/schema-features-smoke.mjs", timeout: 3 * minute },
