@@ -760,9 +760,11 @@ Exactly one match is required; zero or multiple matches reject the entire batch.
 Successful receipts include result.edits with matched: 1 for each replace_match.
 Only the words that differ between match_text and replacement are written: words
 and whitespace both share stay in place, and a changed word is narrowed to the
-letters that differ. So a comment anchored on words the replacement keeps stays
+letters that differ, in whole characters (an accented letter, an emoji sequence or
+a flag changes as one). So a comment anchored on words the replacement keeps stays
 attached, a replacement equal to its match changes nothing, and an anchor ending
-in a word you changed detaches. Inserted text keeps formatting shared by the
+in a word you changed detaches. A replacement that rewrites too much at once to
+diff is refused with replace_match_too_large rather than applied coarsely. Inserted text keeps formatting shared by the
 entire matched range, including link destinations and titles. Formatting present
 on only part of the match does not spread across the insertion; untouched
 characters keep their own marks and CRDT identities.
@@ -910,6 +912,10 @@ succeeds. Every error has a stable code. Branch on code, not on the error messag
 - invalid_edit_selector: the request can't apply as written: missing or
   malformed base_heads, zero or multiple matches, an unknown block, operation or
   mark. Fix the request; repeating it unchanged fails again.
+- replace_match_too_large: one replace_match changes more text than it can diff
+  while keeping comment anchors on the words it leaves alone. Split it into
+  smaller replace_match operations, or use replace_block_markdown if the block
+  has no comments to keep.
 - invalid_comment_selector: the comment's thread, message, block or selected_text
   wasn't found, or thread_id/thread_ids is malformed. A thread_ids batch with
   unknown IDs lists them in not_found_thread_ids.

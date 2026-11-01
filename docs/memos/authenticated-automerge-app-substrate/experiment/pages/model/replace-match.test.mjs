@@ -131,7 +131,7 @@ test("a typo fix inside a commented word keeps the anchor on the characters it h
   assert.equal(spelling.context.text, "oak table legs");
 });
 
-test("textSplices keeps shared words, never splits a surrogate pair, and spans the changed words", () => {
+test("textSplices keeps shared words, never splits a grapheme, and spans the changed words", () => {
   const splices = (before, after) => textSplices(before, after).splices;
   assert.deepEqual(textSplices("same", "same"), { splices: [], changed: null });
   assert.deepEqual(textSplices("oak table legs in it", "oak table legs and chairs in it"), {
@@ -159,17 +159,71 @@ test("textSplices keeps shared words, never splits a surrogate pair, and spans t
   assert.deepEqual(splices("a 😀 b", "a 😁 b"), [{ at: 2, remove: 2, insert: "😁" }]);
   assert.deepEqual(splices("🌊", "🌋"), [{ at: 0, remove: 2, insert: "🌋" }]);
   assert.deepEqual(splices("x🌊", "y🌊"), [{ at: 0, remove: 1, insert: "y" }]);
+  // A decomposed accent is part of its letter's cluster: the cluster changes whole.
+  assert.deepEqual(splices("caf\u0065\u0301 au lait", "caf\u006f\u0301 au lait"), [
+    { at: 3, remove: 2, insert: "o\u0301" },
+  ]);
+  // A ZWJ family and a flag pair are one cluster each, even when they share code points.
+  assert.deepEqual(splices("hi 👨‍👩‍👧!", "hi 👨‍👩‍👦!"), [{ at: 3, remove: 8, insert: "👨‍👩‍👦" }]);
+  assert.deepEqual(splices("from 🇺🇸", "from 🇺🇦"), [{ at: 5, remove: 4, insert: "🇺🇦" }]);
   for (const [before, after] of [
     ["a 😀 b", "a 😁 b"],
     ["🌊 Keep 🌳 target", "🌊 Keep 🪴 garden"],
+    ["caf\u0065\u0301", "caf\u006f\u0301"],
+    ["👨‍👩‍👧 🇺🇸", "👨‍👩‍👦 🇺🇦"],
     ["x".repeat(5000), "y".repeat(5000)],
-    ["w ".repeat(3000), "v ".repeat(3000)],
   ]) {
     let text = before;
     for (const splice of splices(before, after).reverse())
       text = text.slice(0, splice.at) + splice.insert + text.slice(splice.at + splice.remove);
     assert.equal(text, after);
   }
+});
+
+test("a comment on an accented letter detaches when the letter changes, instead of clinging to the accent", () => {
+  const { context } = anchorAfter("Order a caf\u0065\u0301 au lait.", "caf\u0065\u0301", {
+    match_text: "caf\u0065\u0301 au lait",
+    replacement: "caf\u006f\u0301 au lait",
+  });
+  assert.equal(context.status, "detached");
+  const kept = anchorAfter("Order a caf\u0065\u0301 au lait.", "caf\u0065\u0301", {
+    match_text: "caf\u0065\u0301 au lait",
+    replacement: "caf\u0065\u0301 con leche",
+  });
+  assert.equal(kept.context.status, "attached");
+  assert.equal(kept.context.text, "caf\u0065\u0301");
+});
+
+test("an edit past the diff budget is split at words unique to both sides, so interior anchors survive", () => {
+  const before = `${"old ".repeat(501)}KEEP ${"old ".repeat(500)}`.trim();
+  const after = `${"new ".repeat(501)}KEEP ${"new ".repeat(500)}`.trim();
+  const { splices, changed } = textSplices(before, after);
+  assert.equal(splices.length, 1001, "one splice per changed word");
+  assert.ok(splices.every((splice) => splice.remove === 3 && splice.insert === "new"));
+  assert.deepEqual(changed, { start: 0, end: after.length });
+  const { after: doc, context } = anchorAfter(before, "KEEP", {
+    match_text: before,
+    replacement: after,
+  });
+  assert.equal(context.status, "attached");
+  assert.equal(context.text, "KEEP");
+  assert.equal(projectPage(doc).blocks[0].markdown, after);
+});
+
+test("an edit past the diff budget with nothing unique to split on is refused, and the batch rolls back", () => {
+  const before = "w ".repeat(3000).trim();
+  const after = "v ".repeat(3000).trim();
+  assert.throws(() => textSplices(before, after), {
+    code: "replace_match_too_large",
+    status: 400,
+    message: /smaller replace_match operations/,
+  });
+  const { doc, id } = fixture(before);
+  const heads = A.getHeads(doc);
+  assert.throws(() => replace(doc, id, { match_text: before, replacement: after }), {
+    code: "replace_match_too_large",
+  });
+  assert.deepEqual(A.getHeads(doc), heads);
 });
 
 test("unchanged words inside the match keep their own marks; inserted text gets the shared ones", () => {

@@ -133,14 +133,91 @@ export function findUniqueVisibleRange(doc, id, input) {
   return { path, start, end };
 }
 
-// Diff tokens: a run of letters, digits and underscores, a run of whitespace,
-// or one other code point. The `u` flag keeps a surrogate pair in one token.
-const TOKEN = /[\p{L}\p{N}_]+|\s+|[\s\S]/gu;
-// Past this many token edits the diff falls back to one changed run.
+// Diff tokens are built from grapheme clusters, so a combining accent, a ZWJ
+// emoji sequence or a flag pair is never split: a run of word clusters
+// (letters, digits, marks, underscore), a run of whitespace, or one other
+// cluster.
+const graphemeSegmenter = new Intl.Segmenter("und", { granularity: "grapheme" });
+const graphemes = (text) => Array.from(graphemeSegmenter.segment(text), (part) => part.segment);
+const WORD = /^[\p{L}\p{N}\p{M}_]/u;
+const SPACE = /^\s/u;
+function tokenize(text) {
+  const tokens = [];
+  let kind;
+  for (const cluster of graphemes(text)) {
+    const next = WORD.test(cluster) ? "word" : SPACE.test(cluster) ? "space" : "other";
+    if (next !== "other" && next === kind) tokens[tokens.length - 1] += cluster;
+    else tokens.push(cluster);
+    kind = next;
+  }
+  return tokens;
+}
+
+// Myers is O((N + M) D). Past this many token edits, one diff is refused and
+// the texts are split at tokens unique to both; a chunk with no such token
+// that is still over budget refuses the whole edit rather than fall back to a
+// coarse splice that would detach anchors on words it kept.
 const MAX_TOKEN_EDITS = 2000;
-const isHighSurrogate = (unit) => unit >= 0xd800 && unit <= 0xdbff;
-const isLowSurrogate = (unit) => unit >= 0xdc00 && unit <= 0xdfff;
-const tokenize = (text) => text.match(TOKEN) ?? [];
+const tooLarge = () =>
+  Object.assign(
+    Error(
+      "replace_match changes too much text at once to keep comment anchors on the words it leaves alone. Split it into smaller replace_match operations, or use replace_block_markdown if the block has no comments to keep.",
+    ),
+    { status: 400, code: "replace_match_too_large" },
+  );
+
+/** The longest run of `pairs` ([i, j], ascending in i) whose j also ascends. */
+function increasing(pairs) {
+  const tails = [],
+    links = [];
+  for (let n = 0; n < pairs.length; n++) {
+    let low = 0,
+      high = tails.length;
+    while (low < high) {
+      const mid = (low + high) >> 1;
+      if (pairs[tails[mid]][1] < pairs[n][1]) low = mid + 1;
+      else high = mid;
+    }
+    links[n] = low ? tails[low - 1] : -1;
+    tails[low] = n;
+  }
+  const result = [];
+  for (let n = tails.at(-1) ?? -1; n >= 0; n = links[n]) result.unshift(pairs[n]);
+  return result;
+}
+
+/** jsdiff change parts for `before` → `after`, each within the edit budget.
+ * Over budget, the sequences are split at tokens that occur exactly once in
+ * both (in a common order) and each piece is diffed on its own. */
+function diffTokens(before, after) {
+  const direct = diffArrays(before, after, { maxEditLength: MAX_TOKEN_EDITS });
+  if (direct) return direct;
+  const count = (tokens) => {
+    const counts = new Map();
+    for (const token of tokens) counts.set(token, (counts.get(token) ?? 0) + 1);
+    return counts;
+  };
+  const inBefore = count(before),
+    inAfter = count(after);
+  const afterIndex = new Map(after.map((token, index) => [token, index]));
+  const pairs = [];
+  before.forEach((token, index) => {
+    if (inBefore.get(token) === 1 && inAfter.get(token) === 1)
+      pairs.push([index, afterIndex.get(token)]);
+  });
+  const anchors = increasing(pairs);
+  if (!anchors.length) throw tooLarge();
+  const parts = [];
+  let from = 0,
+    to = 0;
+  for (const [i, j] of [...anchors, [before.length, after.length]]) {
+    if (i > from || j > to) parts.push(...diffTokens(before.slice(from, i), after.slice(to, j)));
+    if (i < before.length) parts.push({ value: [before[i]] });
+    from = i + 1;
+    to = j + 1;
+  }
+  return parts;
+}
 
 /** How to turn `before` into `after`: `splices`, each `{ at, remove, insert }`
  * with `at` an offset into `before`, in ascending order, and `changed`, the
@@ -148,20 +225,15 @@ const tokenize = (text) => text.match(TOKEN) ?? [];
  *
  * Words and whitespace the two texts share stay in place, so a comment anchor
  * on an unchanged word keeps its characters. A changed run is narrowed by its
- * common prefix and suffix, so fixing a typo inside a word keeps the rest of
- * that word. A word that changes beyond that is replaced whole: an anchor
- * ending in it detaches, and one starting in it shrinks to the words that
- * remain. A character-level LCS (what `A.updateText` runs) would instead keep
- * stray letters, leaving an anchor on "table" attached to the "e" of "desk".
+ * common prefix and suffix, in whole grapheme clusters, so fixing a typo
+ * inside a word keeps the rest of that word. A word that changes beyond that
+ * is replaced whole: an anchor ending in it detaches, and one starting in it
+ * shrinks to the words that remain. A character-level LCS (what
+ * `A.updateText` runs) would instead keep stray letters, leaving an anchor on
+ * "table" attached to the "e" of "desk".
  */
 export function textSplices(before, after) {
   if (before === after) return { splices: [], changed: null };
-  const parts = diffArrays(tokenize(before), tokenize(after), {
-    maxEditLength: MAX_TOKEN_EDITS,
-  }) ?? [
-    { removed: true, value: [before] },
-    { added: true, value: [after] },
-  ];
   const splices = [];
   let at = 0,
     atAfter = 0,
@@ -170,26 +242,23 @@ export function textSplices(before, after) {
     changed = null;
   const flush = () => {
     if (removed || added) {
+      const gone = graphemes(removed),
+        came = graphemes(added);
       let prefix = 0;
-      while (
-        prefix < removed.length &&
-        prefix < added.length &&
-        removed.charCodeAt(prefix) === added.charCodeAt(prefix)
-      )
+      while (prefix < gone.length && prefix < came.length && gone[prefix] === came[prefix])
         prefix++;
-      if (prefix && isHighSurrogate(removed.charCodeAt(prefix - 1))) prefix--;
       let suffix = 0;
       while (
-        suffix < removed.length - prefix &&
-        suffix < added.length - prefix &&
-        removed.charCodeAt(removed.length - 1 - suffix) ===
-          added.charCodeAt(added.length - 1 - suffix)
+        suffix < gone.length - prefix &&
+        suffix < came.length - prefix &&
+        gone[gone.length - 1 - suffix] === came[came.length - 1 - suffix]
       )
         suffix++;
-      if (suffix && isLowSurrogate(removed.charCodeAt(removed.length - suffix))) suffix--;
-      const remove = removed.length - prefix - suffix;
-      const insert = added.slice(prefix, added.length - suffix);
-      if (remove || insert) splices.push({ at: at + prefix, remove, insert });
+      const prefixLength = gone.slice(0, prefix).join("").length;
+      const suffixLength = suffix ? gone.slice(-suffix).join("").length : 0;
+      const remove = removed.length - prefixLength - suffixLength;
+      const insert = added.slice(prefixLength, added.length - suffixLength);
+      if (remove || insert) splices.push({ at: at + prefixLength, remove, insert });
       changed = { start: changed?.start ?? atAfter, end: atAfter + added.length };
       at += removed.length;
       atAfter += added.length;
@@ -197,7 +266,7 @@ export function textSplices(before, after) {
       added = "";
     }
   };
-  for (const part of parts) {
+  for (const part of diffTokens(tokenize(before), tokenize(after))) {
     const text = part.value.join("");
     if (part.removed) removed += text;
     else if (part.added) added += text;

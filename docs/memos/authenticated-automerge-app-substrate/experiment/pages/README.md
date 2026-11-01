@@ -1319,17 +1319,23 @@ Guards check the preparation snapshot; native changes can still merge during
 persistence. Tool mutations do not simulate typing or lock out peers.
 
 `replace_match` writes only the words that differ between the match and its
-replacement ([`textSplices`](model/replace-match.mjs)): a word-token diff, with
-each changed run narrowed by its common prefix and suffix at code-point
-boundaries. Shared words keep their characters, so comment anchors on them stay
-attached and a replacement equal to its match writes nothing. A word that
-changes beyond a prefix or suffix is replaced whole, so an anchor ending in it
-detaches and one starting in it shrinks to the words that remain. This is
-deliberately not the character-level LCS `replace_block_markdown` gets from
-`updateSpans`, which keeps stray letters and leaves an anchor on "table"
-attached to the "e" of "desk". Inserted text carries the marks shared by the
-whole match; untouched characters keep their own. The agent caret covers the
-changed words.
+replacement ([`textSplices`](model/replace-match.mjs)): a word-token diff over
+grapheme clusters (`Intl.Segmenter`), with each changed run narrowed by its
+common prefix and suffix in whole clusters, so a combining accent, a ZWJ emoji
+sequence or a flag pair is never split and never left as an anchor on its own.
+Shared words keep their characters, so comment anchors on them stay attached
+and a replacement equal to its match writes nothing. A word that changes
+beyond a prefix or suffix is replaced whole, so an anchor ending in it detaches
+and one starting in it shrinks to the words that remain. This is deliberately
+not the character-level LCS `replace_block_markdown` gets from `updateSpans`,
+which keeps stray letters and leaves an anchor on "table" attached to the "e"
+of "desk". The diff has a budget of 2,000 token edits; past it the texts are
+split at words unique to both sides and each piece is diffed alone, and a
+piece that is still over budget refuses the edit with
+`400 replace_match_too_large` instead of a coarse splice that would detach
+anchors on words it kept. Inserted text carries the marks shared by the whole
+match; untouched characters keep their own. The agent caret covers the changed
+words.
 
 ### Refusal codes and tool hints
 
@@ -1337,7 +1343,9 @@ Every MCP refusal carries a stable `code`, in `structuredContent` and in the JSO
 text, so agents never branch on message text. The Worker codes specific refusals
 where they're raised: a stale exact-head guard is `409 stale_heads`, malformed
 `base_heads` and an edit batch that can't apply (zero or multiple matches, an
-unknown block, operation or mark) are `400 invalid_edit_selector`, and a comment
+unknown block, operation or mark) are `400 invalid_edit_selector`, a
+`replace_match` whose change is past the diff budget with nothing to split it
+on is `400 replace_match_too_large`, and a comment
 action on a missing thread, message or block is `400 invalid_comment_selector`
 (a `thread_ids` batch adds `not_found_thread_ids`). A full account is
 `409 page_quota_exceeded` and a full Trash `409 trash_capacity`; both carry
