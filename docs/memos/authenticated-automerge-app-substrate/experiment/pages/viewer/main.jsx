@@ -51,7 +51,7 @@ import { TrashView } from "./TrashView.jsx";
 import { Breadcrumbs, ProjectView } from "./ProjectView.jsx";
 import { IndexNav, PagesIndex, ProjectsIndex } from "./IndexViews.jsx";
 import { listProjects, pageBreadcrumbs } from "./projects.mjs";
-import { closeTrashedSessions, restorePage } from "./trash.mjs";
+import { closeTrashedSessions, moveToTrashError, restorePage } from "./trash.mjs";
 import { listAllPages, matchingPages } from "./page-list.mjs";
 import { AppearanceControls } from "./AppearanceControls.jsx";
 import { retryKey } from "../model/retry-key.mjs";
@@ -675,6 +675,8 @@ function App() {
         retry_token: prepared.retry_token,
         base_heads: editor.module.pageHeads(deleting.doc),
         idempotency_key: await retryKey(prepared.retry_token),
+      }).catch((error) => {
+        throw moveToTrashError(error);
       });
       if (trashed?.superseded)
         throw Error("This Page changed before it could move to Trash. Try again.");

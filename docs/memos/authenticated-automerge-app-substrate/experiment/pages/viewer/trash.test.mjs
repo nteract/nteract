@@ -1,6 +1,13 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { confirmPurge, listTrash, previewPurge, purgeSummary, restorePage } from "./trash.mjs";
+import {
+  confirmPurge,
+  listTrash,
+  moveToTrashError,
+  previewPurge,
+  purgeSummary,
+  restorePage,
+} from "./trash.mjs";
 
 const pageId = "33333333-3333-4333-8333-333333333333";
 function recorder() {
@@ -70,4 +77,17 @@ test("a superseded restore or purge is reported as not applied", async () => {
     confirmPurge(tool, { page_id: pageId, preview_token: "pp1.token" }, "user:owner"),
     /changed/,
   );
+});
+
+test("a peer's edit that beats Move to Trash gets a message a person can act on", () => {
+  const stale = Object.assign(Error("Page changed; read_page again before editing"), {
+    status: 409,
+    code: "stale_heads",
+  });
+  const mapped = moveToTrashError(stale);
+  assert.equal(mapped.message, "Someone edited this Page while it was moving to Trash. Try again.");
+  assert.equal(mapped.code, "stale_heads");
+  assert.equal(mapped.status, 409);
+  const other = Object.assign(Error("Forbidden"), { status: 403, code: "forbidden" });
+  assert.equal(moveToTrashError(other), other);
 });
