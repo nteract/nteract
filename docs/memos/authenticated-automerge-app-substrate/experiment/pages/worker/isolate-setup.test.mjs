@@ -341,67 +341,71 @@ test("concurrent first gateway requests do not await one another's session schem
   assert.equal(schema.length, 1, "the session schema is set up once");
 });
 
-test("a session schema setup that hangs is abandoned, and sign-in recovers without a restart", { timeout: 20_000 }, async (t) => {
-  // The first session-schema statement never answers; later ones do.
-  const sqlite = new DatabaseSync(":memory:");
-  t.after(() => sqlite.close());
-  let hung = 0;
-  const holding = deferred();
-  const DB = {
-    prepare(sql) {
-      const statement = sqlite.prepare(sql);
-      let bindings = [];
-      return {
-        bind(...values) {
-          bindings = values;
-          return this;
-        },
-        async first() {
-          return statement.get(...bindings) ?? null;
-        },
-        async run() {
-          if (sql.startsWith("CREATE TABLE IF NOT EXISTS oidc_login_transactions") && !hung++) {
-            holding.resolve();
-            return new Promise(() => {});
-          }
-          statement.run(...bindings);
-          return { success: true };
-        },
-      };
-    },
-  };
-  const env = { DB, NOTEBOOK_CLOUD_APP_SESSION_SECRET: "fixture-only-session-secret-".repeat(2) };
-  t.mock.method(console, "error", () => {});
-  t.mock.method(console, "warn", () => {});
-  t.mock.timers.enable({ apis: ["setTimeout", "Date"] });
-  const first = worker.fetch(withSessionCookie("/api/auth/login"), env);
-  const starting = track(first);
-  // The attempt and its deadline timer exist once the statement hangs.
-  await holding.promise;
-  assert.equal(hung, 1);
-  t.mock.timers.tick(isolateSetupTimeouts.attempt - 1);
-  await turns();
-  assert.equal(starting.settled, false, "a slow setup keeps its request until the deadline");
-  // At the attempt's deadline the hung request gets a retryable refusal.
-  t.mock.timers.tick(1);
-  const refused = await first;
-  assert.equal(refused.status, 503);
-  assert.deepEqual(await refused.json(), {
-    error: "Pages is starting. Try again.",
-    code: "request_timeout",
-    retryable: true,
-  });
-  // The next request starts a new attempt and runs the schema again. No
-  // mocked time passes, so it settles only if it never waits: a waiter would
-  // schedule a poll timer, and a retry that awaited the hung statement would
-  // never settle (the test's timeout reports that).
-  const waits = timerScheduled(isolateSetupTimeouts.poll).then(() => "waited");
-  const next = worker.fetch(withSessionCookie("/api/auth/session"), env);
-  const outcome = await Promise.race([next.then(() => "settled"), waits]);
-  assert.equal(outcome, "settled", "the new attempt did not wait on the hung one");
-  assert.equal((await next).status, 200);
-  assert.equal(hung, 2);
-});
+test(
+  "a session schema setup that hangs is abandoned, and sign-in recovers without a restart",
+  { timeout: 20_000 },
+  async (t) => {
+    // The first session-schema statement never answers; later ones do.
+    const sqlite = new DatabaseSync(":memory:");
+    t.after(() => sqlite.close());
+    let hung = 0;
+    const holding = deferred();
+    const DB = {
+      prepare(sql) {
+        const statement = sqlite.prepare(sql);
+        let bindings = [];
+        return {
+          bind(...values) {
+            bindings = values;
+            return this;
+          },
+          async first() {
+            return statement.get(...bindings) ?? null;
+          },
+          async run() {
+            if (sql.startsWith("CREATE TABLE IF NOT EXISTS oidc_login_transactions") && !hung++) {
+              holding.resolve();
+              return new Promise(() => {});
+            }
+            statement.run(...bindings);
+            return { success: true };
+          },
+        };
+      },
+    };
+    const env = { DB, NOTEBOOK_CLOUD_APP_SESSION_SECRET: "fixture-only-session-secret-".repeat(2) };
+    t.mock.method(console, "error", () => {});
+    t.mock.method(console, "warn", () => {});
+    t.mock.timers.enable({ apis: ["setTimeout", "Date"] });
+    const first = worker.fetch(withSessionCookie("/api/auth/login"), env);
+    const starting = track(first);
+    // The attempt and its deadline timer exist once the statement hangs.
+    await holding.promise;
+    assert.equal(hung, 1);
+    t.mock.timers.tick(isolateSetupTimeouts.attempt - 1);
+    await turns();
+    assert.equal(starting.settled, false, "a slow setup keeps its request until the deadline");
+    // At the attempt's deadline the hung request gets a retryable refusal.
+    t.mock.timers.tick(1);
+    const refused = await first;
+    assert.equal(refused.status, 503);
+    assert.deepEqual(await refused.json(), {
+      error: "Pages is starting. Try again.",
+      code: "request_timeout",
+      retryable: true,
+    });
+    // The next request starts a new attempt and runs the schema again. No
+    // mocked time passes, so it settles only if it never waits: a waiter would
+    // schedule a poll timer, and a retry that awaited the hung statement would
+    // never settle (the test's timeout reports that).
+    const waits = timerScheduled(isolateSetupTimeouts.poll).then(() => "waited");
+    const next = worker.fetch(withSessionCookie("/api/auth/session"), env);
+    const outcome = await Promise.race([next.then(() => "settled"), waits]);
+    assert.equal(outcome, "settled", "the new attempt did not wait on the hung one");
+    assert.equal((await next).status, 200);
+    assert.equal(hung, 2);
+  },
+);
 
 test("an admission request waiting on a stalled session schema gets a retryable refusal", async (t) => {
   const { env, held } = sessionDatabase(t);
