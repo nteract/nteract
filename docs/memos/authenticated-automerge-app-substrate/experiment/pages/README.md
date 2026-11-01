@@ -371,8 +371,11 @@ the access boundary, and hiding a refused copy is a courtesy on top of it.
 Capturing the live copy is part of the retirement. The raw snapshots of both
 documents must serialize; their Markdown is a projection that may fall back
 to a note. If a snapshot fails, nothing is archived, closed or released: the
-session holds its backend, both documents, the comments lookup and the draft
-sources (`retireFailed` with `held`), and Try again captures again. The
+session holds its backend, both documents and the comments lookup
+(`retireFailed` with `held`), and Try again captures again. The drafts the
+first capture read stay with the session after the hidden Page resets the
+composer and unmounts the panel; every retry merges them, without
+duplicates, with any drafts the UI still holds. The
 notice and the reload gate get the Markdown the replica still projects, with
 the drafts. Leaving a held copy releases its backend; the reload gate keeps
 that Markdown as an unsaved Page.
@@ -398,7 +401,9 @@ restores from a marker: a reopen asks the host first, and a hidden session
 never opens its comments document. Every comments install reads the stored
 entry before it adopts the document: a marker retires this tab too, with the
 found document's unsent comments in the archive, and another grant's entry (a
-different replica key, or a greater grant revision) installs nothing. A
+different replica key, or a greater grant revision) installs nothing. While
+that read runs, the found document waits where a retirement's capture reads
+it, so a refusal in this tab archives it too; nothing renders from it. A
 comments restore checks the stored entry against the record's grant, and the
 session's own lifecycle fence, at its start and again right before the native
 write; a retirement, release or replacement in between stores nothing.

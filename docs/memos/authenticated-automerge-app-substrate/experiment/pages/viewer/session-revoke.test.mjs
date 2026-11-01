@@ -1272,6 +1272,78 @@ test("leaving a failed capture releases the backend and keeps its best-effort co
   assert.match(session.retainedCopy.markdown, new RegExp(UNSENT));
 });
 
+test("Try again keeps the drafts the first capture read after the UI resets", async (t) => {
+  const copy = await openCopy();
+  const { session, auth, pageId } = copy;
+  t.after(() => session.close());
+  // The inline composer keeps its draft in state; a hidden Page resets it.
+  let composer = [{ kind: "comment", body: "Composer draft.", quote: "Only the collaborator's" }];
+  session.watchCommentDrafts(() => composer);
+  // The comments panel unmounts on a hidden Page and removes its source.
+  const panel = [{ kind: "reply", thread_id: "thread-1", body: "Panel reply." }];
+  const unwatchPanel = session.watchCommentDrafts(() => panel);
+  // A panel that mounts again later still holds the same reply.
+  let remounted;
+  session.subscribe(() => {
+    if (!session.hidden || remounted) return;
+    composer = [];
+    unwatchPanel();
+    remounted = session.watchCommentDrafts(() => panel);
+  });
+  const handle = session.commentsHandle;
+  const real = handle.doc;
+  let broken = true;
+  handle.doc = () => (broken ? JSON.parse(JSON.stringify(real())) : real());
+  t.mock.method(session, "releaseLocal", async () => {});
+  await session.revoke();
+  assert.equal(session.phase$.snapshot().held, true);
+  assert.ok(remounted, "the UI reset between the failed capture and Try again");
+  assert.match(session.exportRecoveries([]).copies[0].markdown, /Composer draft\./);
+  broken = false;
+  await session.retryRetirement();
+  assert.equal(session.recoveryArchived, true);
+  const records = await listLocalRecoveries(auth.identity, pageId);
+  const live = records.at(-1);
+  assert.deepEqual(live.comment_drafts, [
+    { kind: "comment", body: "Composer draft.", quote: "Only the collaborator's" },
+    { kind: "reply", body: "Panel reply.", thread_id: "thread-1" },
+  ]);
+  const download = session.exportRecoveries(records);
+  const markdown = download.copies.at(-1).markdown;
+  assert.match(markdown, /Composer draft\./);
+  assert.equal(markdown.split("Panel reply.").length - 1, 1, "a draft read twice is listed once");
+});
+
+test("a same-tab retirement during a comments install archives the found document", async (t) => {
+  const copy = await openCopy();
+  const { session, auth, pageId, commentsDocumentId } = copy;
+  t.after(() => session.close());
+  const { handle, found } = pendingLookup(session);
+  session.openComments(commentsDocumentId);
+  await tick();
+  // A comment that exists only in the document the lookup finds.
+  typeUnsentComment({ ...copy, session: { commentsHandle: handle } });
+  let rendered = false;
+  session.subscribe(() => {
+    if (Object.keys(session.commentThreads).length) rendered = true;
+  });
+  found.resolve();
+  // The install starts at once and then waits on its stored-entry read.
+  for (let turn = 0; turn < 50 && session.pendingComments !== handle; turn++)
+    await Promise.resolve();
+  assert.equal(session.pendingComments, handle, "the install's stored-entry read is pending");
+  assert.equal(session.commentsHandle, undefined, "nothing is adopted yet");
+  await session.revoke();
+  await turnsUntil(() => false, 20);
+  assert.equal(session.recoveryArchived, true);
+  assert.equal(rendered, false, "the found document never renders");
+  assert.equal(session.commentsHandle, undefined);
+  const records = await listLocalRecoveries(auth.identity, pageId);
+  const live = records.at(-1);
+  assert.equal(live.comments_document_id, commentsDocumentId);
+  assert.match(commentsText(live), new RegExp(UNSENT), "the found document's comment is archived");
+});
+
 /** A native backend whose history read waits on `gate` before it reports
  * the replica's records, so a test can act between a restore's check and its
  * write. */
