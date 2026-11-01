@@ -1891,7 +1891,9 @@ export class Catalog {
       );
       if (!response.ok) throw Error(`Owner location read failed: ${response.status}`);
       const { children } = await response.json();
-      return Array.isArray(children) ? children.filter(validPageId) : [];
+      // An owner's Catalog holds at most CATALOG_LIMIT active Pages, which
+      // bounds the checks an exhaustive child listing makes.
+      return Array.isArray(children) ? children.filter(validPageId).slice(0, CATALOG_LIMIT) : [];
     } catch (error) {
       logFailure(error, "catalog-location");
       throw new HttpError(503, "Shared Pages are temporarily unavailable");
@@ -1948,7 +1950,10 @@ export class Catalog {
       return true;
     };
     const filtered = options.spaceId !== null || options.parentId !== undefined;
-    const scope = { locations, located, sharedChildren };
+    // Children of a shared parent come from its owner's Catalog, so a
+    // rejected one may be a Page the caller can't see at all. That listing
+    // checks every child before it paginates; see scanCandidates.
+    const scope = { locations, located, sharedChildren, exhaustive: !!sharedChildren };
     const context = {
       principal: identity.principal,
       needle: options.needle,
@@ -2112,7 +2117,13 @@ export class Catalog {
       };
     };
     const limit = options.limit;
-    const scanBound = limit * 2 + 16;
+    // A bounded scan may stop on rejected candidates and return a cursor
+    // over them. That is safe only when every candidate is already disclosed
+    // to the caller: its own entries, or Pages it discovered. Candidates from
+    // another account's Catalog are not, so an exhaustive scan checks them
+    // all (at most one owner's Catalog limit, 8 at a time) and returns a
+    // cursor only when another authorized result follows the page.
+    const scanBound = scope.exhaustive ? Infinity : limit * 2 + 16;
     const verified = [];
     let position = after;
     let scanned = 0;

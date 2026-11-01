@@ -1728,3 +1728,58 @@ test("the Catalog location route is host-only and answers only its own account",
     .fetch(new Request("https://pages.internal/internal/location", { method: "POST", body }));
   assert.equal(elsewhere.status, 404);
 });
+
+test("a shared parent's hidden children never show through pagination", async (t) => {
+  const w = await world(t);
+  const empty = (await w.createPage({ title: "Empty" })).body.page_id;
+  const parent = (await w.createPage({ title: "Parent" })).body.page_id;
+  await grant(w, empty);
+  await grant(w, parent);
+  // More hidden children than a bounded scan for limit 1 reads (2 * 1 + 16).
+  const children = [];
+  for (let index = 0; index < 20; index++)
+    children.push(
+      (await w.createPage({ title: `Hidden ${index}`, parent_id: parent })).body.page_id,
+    );
+  const list = async (parentId, args = {}) => {
+    const listed = await w.call("member", "list_pages", { parent_id: parentId, limit: 1, ...args });
+    assert.equal(listed.status, 200, JSON.stringify(listed.body));
+    const {
+      retry_token: _token,
+      retry_key_prefix: _prefix,
+      retry_until: _until,
+      ...visible
+    } = listed.body;
+    return visible;
+  };
+
+  // Every child denied: the same answer as a parent with no children.
+  const none = await list(empty);
+  assert.deepEqual(none, { pages: [], limit: 1, next_cursor: null });
+  assert.deepEqual(await list(parent), none);
+
+  // Readable children past the bound: only they show, with a cursor exactly
+  // while another readable child follows. Rows order by Page ID, descending,
+  // so the two smallest IDs sit after every hidden child.
+  const readable = [...children].sort().slice(0, 2);
+  for (const pageId of readable) await grant(w, pageId);
+  const first = await list(parent);
+  assert.deepEqual(
+    first.pages.map((page) => page.page_id),
+    [readable[1]],
+  );
+  assert.equal(typeof first.next_cursor, "string");
+  const second = await list(parent, { cursor: first.next_cursor });
+  assert.deepEqual(
+    second.pages.map((page) => page.page_id),
+    [readable[0]],
+  );
+  assert.equal(second.next_cursor, null);
+  // One page that holds every readable child has no cursor.
+  const whole = await list(parent, { limit: 5 });
+  assert.deepEqual(whole.pages.map((page) => page.page_id).sort(), readable);
+  assert.equal(whole.next_cursor, null);
+  // A query that matches only a hidden child answers like the empty parent.
+  const hidden = children.findIndex((pageId, index) => index >= 10 && !readable.includes(pageId));
+  assert.deepEqual(await list(parent, { query: `Hidden ${hidden}` }), none);
+});
