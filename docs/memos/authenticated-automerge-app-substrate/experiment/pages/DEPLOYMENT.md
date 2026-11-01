@@ -314,10 +314,95 @@ the default and the Worker logs a `page-quota` failure. A failed read is retried
 after 30 seconds; a schema setup that hangs is abandoned after 30 seconds, so a
 recovered D1 applies the rules again without a restart.
 
-This release ships no write path for rules. celld's internal listener answers
-only celld's own routes, so a host-only Worker route there isn't reachable, and
-`celld d1 execute` hasn't been qualified against a running fleet. With no rules,
-every account gets the default.
+With no rules, every account gets the default.
+
+### Changing quota rules
+
+`scripts/quota-rules.mjs` lists, sets and deletes rules from an operator
+machine. It builds the SQL locally and sends it over SSH stdin to one fixed
+command on the target's host. That command runs `celld d1 execute`, which goes
+through the live owner of `pages-next-auth`, under its fence and in one
+transaction. The host, service, binary, bucket and database come from the
+target's deployment profile.
+
+```bash
+node scripts/quota-rules.mjs check                     # tables, schema version, rule count
+node scripts/quota-rules.mjs list
+node scripts/quota-rules.mjs get    email rgbkrk@gmail.com
+node scripts/quota-rules.mjs set    email rgbkrk@gmail.com 1000 --note "design partner"
+node scripts/quota-rules.mjs set    domain anaconda.com 500
+node scripts/quota-rules.mjs set    email someone@example.com 0
+node scripts/quota-rules.mjs delete domain anaconda.com
+```
+
+| Option | Meaning |
+| --- | --- |
+| `--target NAME` | Deployment profile, `page10` by default. Only a profile with `pageQuota` and `d1` is accepted. |
+| `--ssh-host HOST` | SSH destination, the profile's host (`lab1`) by default, for example `root@lab1`. |
+| `--dry-run` | Print the remote script and every SQL step, and write nothing. `delete` runs its read-only preflight to show the stored rows it would remove; every other command sends nothing. |
+| `--create-only` | `set` only: refuse when the rule already exists. |
+| `--note TEXT` | `set` only: a note of at most 200 characters. |
+
+Run it with Node 22.18 or later, which loads `sharing.ts` without a build step.
+The SSH user must be root or able to `sudo -n -u nteract-page10`: the service's
+loopback firewall resets connections from any other uid.
+
+- **Values.** The script never accepts SQL. The kind is `email` or `domain`.
+  Values are normalized as the Worker normalizes them
+  (`worker/quota-rule-match.mjs`, shared by both), and a value no account could
+  match is refused. The limit is a whole number from 0 to 10,000. Values and
+  notes reach the SQL only as `CAST(X'<hex>' AS TEXT)`.
+- **Limit 0** pauses Page creation for the match: the account can't create or
+  restore Pages, or add sub-pages or Projects. It keeps its Pages, can read
+  them, and can still move them to Trash.
+- **`set` writes the whole rule.** Leaving out `--note` clears the note. The
+  script reads the row back in the same transaction and prints it. It refuses a
+  new rule when the table already holds 1,000, because past that the Worker
+  ignores every rule.
+- **Stored spellings.** The Worker normalizes stored values again, so a row
+  written by hand as `Example.COM` still matches `example.com`. `get` and `list`
+  print stored values quoted, and flag a row that isn't canonical or that a
+  newer row for the same match shadows. `delete` removes every stored row the
+  Worker reads as the named rule, however it is spelled. `set` writes the
+  canonical form; an older spelling stays stored but no longer applies.
+- **Guards.** Before it reads any SQL, the remote command checks that the binary
+  is celld 0.6.3 and that the cell `__D1Database:c131e246…` is already in the
+  target's bucket. celld creates an empty database for a `database_id` it
+  hasn't seen, so a wrong id would otherwise write somewhere no Worker reads.
+  Before every write, `set` and `delete` run the `check` query: both
+  `pages_quota_rules` and `pages_quota_schema` must exist, at schema version 1.
+  The script never creates a table. The Worker's migration owns both, so after
+  deploying a quota build, call `list_pages` once before the first rule.
+- **Five-minute cache.** Each Worker isolate reads the rule table at most once
+  every five minutes. A change can take that long to apply, and different
+  isolates can disagree until then. Poll `list_pages` for `quota.limit` rather
+  than expecting it at once.
+
+Never run `celld d1 execute` by hand against `pages-next-auth`. It also holds
+the auth and OIDC tables, and celld reports some errors misleadingly.
+
+#### After a failed write
+
+An error doesn't prove that nothing was written. In qualification, a write
+that returned an error during an owner restart had committed. After any failed
+`set` or `delete`, the script reads the rule back once and never re-sends on
+its own.
+
+- **Requested state observed.** The read-back shows exactly the change asked
+  for: for `set`, the row carrying this run's `updated_at`; for `delete`, no
+  stored row for the rule. The script says the write landed and exits 0.
+- **Requested state not observed.** The script prints the current state and
+  exits 1. That state doesn't show the write failed. The write may have
+  committed, lost its response, and been replaced by a newer change before the
+  read-back; running it again would overwrite that change. Reconcile first:
+  find out who else changed the rule, and decide from the current state.
+- **Read-back failed.** The state is unknown. Run `get` and reconcile before
+  running anything again.
+
+A `delete` also reports "requested state not observed" without any error when
+a row changed between its preflight read and its write. Each row is deleted
+only if its `updated_at` still matches the preflight, so the changed row
+survives and is shown.
 
 A listing that finds a Catalog's stored Page counts wrong rewrites them and logs
 one line without the account:
