@@ -11,6 +11,7 @@ import { createAuthFixture } from "../../auth-fixtures.mjs";
 import { createPageData, initializePage } from "../model/page.mjs";
 import worker, { Catalog, Page } from "./index.mjs";
 import { readRegistration } from "./registration.mjs";
+import { DEFAULT_PAGE_QUOTA } from "./page-quota.mjs";
 
 class Storage {
   values = new Map();
@@ -305,8 +306,17 @@ test("registration obeys account quota, same-origin and credential write gates",
     (await f.send(args, { headers: { origin: "https://foreign.invalid" } })).status,
     403,
   );
-  for (let i = 0; i < 100; i++) await f.catalog().storage.put(`page/${i}`, {});
-  assert.equal((await f.send(args)).status, 409);
+  // Entries a Catalog wrote before it stored key counts: the first capacity
+  // check counts them.
+  for (let i = 0; i < DEFAULT_PAGE_QUOTA; i++) await f.catalog().storage.put(`page/${i}`, {});
+  const refused = await f.send(args);
+  assert.equal(refused.status, 409);
+  assert.deepEqual(await refused.json(), {
+    error: "This alpha release allows 250 Pages per account.",
+    code: "page_quota_exceeded",
+    limit: DEFAULT_PAGE_QUOTA,
+    count: DEFAULT_PAGE_QUOTA,
+  });
   assert.equal(f.pages.size, 0);
   assert.equal((await f.catalog().storage.list({ prefix: "host/operation/" })).size, 0);
 });

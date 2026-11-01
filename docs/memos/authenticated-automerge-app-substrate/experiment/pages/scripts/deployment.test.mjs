@@ -1371,6 +1371,7 @@ test("fresh Page10 installation owns its origin, storage, runtime and service", 
   assert.equal(config.vars.PAGES_COMPACT_RECORDS, "true");
   assert.equal(config.vars.PAGES_COMPANY_VIEW_DOMAINS, "anaconda.com");
   assert.equal(config.vars.PAGES_CATALOG_INDEX, "1");
+  assert.equal(config.vars.PAGES_DEFAULT_PAGE_QUOTA, "250");
   const unit = f.read("/etc/systemd/system/nteract-page10.service");
   assert.match(unit, /Environment=OTEL_TRACES_SAMPLER=always_on\n/);
   assert.match(unit, /User=nteract-page10\n/);
