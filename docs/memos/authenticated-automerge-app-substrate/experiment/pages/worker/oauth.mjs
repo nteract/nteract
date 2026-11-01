@@ -61,7 +61,8 @@ function json(body, status = 200) {
     headers: { "Content-Type": "application/json" },
   });
 }
-function html(title, body, status = 200, consentRedirect) {
+/** A Pages-styled HTML document. `body` is trusted markup; escape any input in it. */
+export function html(title, body, status = 200, consentRedirect) {
   // Chromium checks form-action across a form POST's redirects too. Permit the
   // registered callback for this client only on the consent page, never a
   // caller-supplied URL or an entire external origin. Local fixtures use 'self'.

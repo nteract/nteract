@@ -1001,7 +1001,10 @@ closing session sends anything waiting and then stops batching. Native framing s
 carries one commit per frame, so the grouping removes per-keystroke sync rounds
 and caret frames, not commit frames. `scripts/typing-batch-smoke.mjs` (the
 `typing` E2E suite) types 200 characters at 60–100 ms and at 20 ms per key and
-reports changes, frames, bytes and the other writer's main-thread time.
+reports changes, frames, bytes and the other writer's main-thread time. The
+20 ms run may take one round and one caret per four keys, plus one for each
+100 ms the writer spends past the typing schedule or catching up on saves
+after the last key; a slow runner's store latency sets that catch-up time.
 
 With `PAGES_ASYNC_PERSISTENCE=true`, the live Page keeps a bounded in-memory record
 replica and sends batches to a separate `PageRecords` object, normally after one

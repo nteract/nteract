@@ -81,6 +81,75 @@ class ProviderUnavailable extends Error {
 }
 class InvalidGrant extends Error {}
 
+/**
+ * Why a callback was refused before any provider exchange. These codes are the
+ * only callback detail that reaches logs; the browser sees a generic page.
+ *
+ * - `provider_error`: the provider returned `error=` instead of a code.
+ * - `callback_malformed`: state or code is missing, repeated or badly formed.
+ * - `login_binding_missing`: this browser has no login cookie, so sign-in began
+ *   in another browser context (an in-app browser, another profile) or the
+ *   cookie expired.
+ * - `login_transaction_missing`: no live transaction matches this state, cookie
+ *   and origin. It expired, was already used, or a later sign-in replaced it.
+ */
+type CallbackRejection =
+  | "provider_error"
+  | "callback_malformed"
+  | "login_binding_missing"
+  | "login_transaction_missing";
+class CallbackRejected extends Error {
+  constructor(readonly reason: CallbackRejection) {
+    super("Sign-in callback rejected");
+  }
+}
+
+export interface ServerOidcCallbackFailure {
+  status: 400 | 403;
+  /** The application refused this account. Signing in again with it will fail. */
+  accountRejected: boolean;
+}
+
+export interface ServerOidcCallbackOptions {
+  /**
+   * Same-origin path for a browser that already holds a session when a stale or
+   * repeated callback arrives. Defaults to `/`.
+   */
+  homePath?: string;
+  /** Renders the browser-facing failure. It gets no failure detail, only its class. */
+  failurePage?: (failure: ServerOidcCallbackFailure) => Response;
+}
+
+const escapeHtml = (value: string) =>
+  value.replace(
+    /[&<>"']/g,
+    (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!,
+  );
+
+/**
+ * A self-contained HTML sign-in failure page. Browsers render it in place; a
+ * `text/plain` error on a top-level navigation is offered as a download by
+ * iOS Safari.
+ */
+export function serverOidcCallbackFailurePage(
+  failure: ServerOidcCallbackFailure,
+  links: { siteName?: string; homePath?: string; loginPath?: string } = {},
+): Response {
+  const siteName = links.siteName ?? "the notebook site";
+  const message = failure.accountRejected
+    ? "This account cannot access this application. Sign in with an allowed account."
+    : "Sign-in could not be completed. Start again from this browser.";
+  return privateResponse(
+    `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Sign-in failed</title></head><body><main><h1>Sign-in failed</h1><p>${escapeHtml(message)}</p><p><a href="${escapeHtml(links.loginPath ?? "/api/auth/oidc/login")}">Sign in again</a></p><p><a href="${escapeHtml(links.homePath ?? "/")}">Return to ${escapeHtml(siteName)}</a></p></main></body></html>`,
+    failure.status,
+    {
+      "Content-Type": "text/html; charset=utf-8",
+      "Content-Security-Policy":
+        "default-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
+    },
+  );
+}
+
 /** An application's explicit access rejection, not a retryable profile-write failure. */
 export class ServerOidcIdentityRejected extends AuthError {
   constructor() {
@@ -145,22 +214,26 @@ const VALIDATION_FAILURE_REASONS = new Map<string, string>([
 function logFailure(event: string, phase: string, error: unknown): void {
   // Provider bodies, exception messages, URLs, subjects and tokens never enter logs.
   const reason =
-    error instanceof Error
-      ? (VALIDATION_FAILURE_REASONS.get(error.message) ??
-        (error instanceof AuthError
-          ? "oidc_auth_validation_failed"
-          : error instanceof OidcUserInfoError
-            ? "oidc_userinfo_validation_failed"
-            : undefined))
-      : undefined;
+    error instanceof CallbackRejected
+      ? error.reason
+      : error instanceof Error
+        ? (VALIDATION_FAILURE_REASONS.get(error.message) ??
+          (error instanceof AuthError
+            ? "oidc_auth_validation_failed"
+            : error instanceof OidcUserInfoError
+              ? "oidc_userinfo_validation_failed"
+              : undefined))
+        : undefined;
   cloudLog("warn", event, {
     phase,
     kind:
-      error instanceof InvalidGrant
-        ? "grant_rejected"
-        : error instanceof ProviderUnavailable
-          ? "provider_unavailable"
-          : "validation_or_storage",
+      error instanceof CallbackRejected
+        ? "callback_rejected"
+        : error instanceof InvalidGrant
+          ? "grant_rejected"
+          : error instanceof ProviderUnavailable
+            ? "provider_unavailable"
+            : "validation_or_storage",
     ...(reason ? { reason } : {}),
     ...(error instanceof ProviderUnavailable && error.status
       ? { provider_status: error.status }
@@ -446,27 +519,30 @@ export async function completeServerOidcLogin(
   request: Request,
   env: Env,
   syncProfile: (identity: AuthenticatedConnection) => Promise<void>,
+  options: ServerOidcCallbackOptions = {},
 ): Promise<Response> {
   if (request.method !== "GET") return privateResponse(null, 405);
   let response: Response;
   let phase = "configuration";
+  let origin: string | undefined;
   try {
     const config = configFor(env, request);
+    origin = config.origin;
     phase = "callback_transaction";
     const params = new URL(request.url).searchParams;
     const state = params.get("state"),
       code = params.get("code"),
       binding = cookieValue(request, LOGIN_COOKIE);
+    if (params.has("error")) throw new CallbackRejected("provider_error");
     if (
       !state ||
       !/^[A-Za-z0-9_-]{43}$/.test(state) ||
-      !binding ||
       !code ||
-      params.has("error") ||
       params.getAll("state").length !== 1 ||
       params.getAll("code").length !== 1
     )
-      throw new Error("Invalid callback");
+      throw new CallbackRejected("callback_malformed");
+    if (!binding) throw new CallbackRejected("login_binding_missing");
     const db = await oidcDatabase(env);
     const stateHash = await secretHash(state),
       now = Math.floor(Date.now() / 1000);
@@ -477,7 +553,7 @@ export async function completeServerOidcLogin(
       )
       .bind(stateHash, await secretHash(binding), config.context, now)
       .first<{ sealed: string }>();
-    if (!row) throw new Error("Expired or mismatched callback");
+    if (!row) throw new CallbackRejected("login_transaction_missing");
     const transaction = await openServerSecret<LoginTransaction>(
       env,
       row.sealed,
@@ -535,15 +611,38 @@ export async function completeServerOidcLogin(
     });
   } catch (error) {
     logFailure("auth.server_callback.failed", phase, error);
-    response = privateResponse(
-      error instanceof ServerOidcIdentityRejected
-        ? "This account cannot access this application. Return and sign in with an allowed account."
-        : "Sign-in could not be completed. Return to the notebook site and try signing in again.",
-      error instanceof ServerOidcIdentityRejected ? 403 : 400,
-    );
+    response =
+      (origin && error instanceof CallbackRejected
+        ? await signedInRedirect(request, env, origin, options.homePath)
+        : null) ??
+      (options.failurePage ?? serverOidcCallbackFailurePage)(
+        error instanceof ServerOidcIdentityRejected
+          ? { status: 403, accountRejected: true }
+          : { status: 400, accountRejected: false },
+      );
   }
   response.headers.append("Set-Cookie", loginCookie("", 0));
   return response;
+}
+
+/**
+ * A browser can deliver a callback after its sign-in already finished: a
+ * repeated redirect, a restored tab, or a second tab. If it already holds a
+ * live session here, the refused callback changes nothing, so send it home
+ * instead of reporting a failure for a sign-in that worked.
+ */
+async function signedInRedirect(
+  request: Request,
+  env: Env,
+  origin: string,
+  homePath = "/",
+): Promise<Response | null> {
+  try {
+    if (!(await loadServerSession(env, request, Math.floor(Date.now() / 1000)))) return null;
+  } catch {
+    return null;
+  }
+  return privateResponse(null, 303, { Location: safeReturnTo(homePath, origin) });
 }
 
 export async function serverOidcSessionStatus(

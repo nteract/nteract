@@ -2,6 +2,7 @@ import {
   beginServerOidcLogin,
   completeServerOidcLogin,
   deleteServerOidcSession,
+  serverOidcCallbackFailurePage,
   serverOidcSessionStatus,
 } from "../../notebook-cloud/src/server-oidc.ts";
 import { AuthError } from "../../notebook-cloud/src/identity.ts";
@@ -136,15 +137,16 @@ async function route(
     login.search = "return_to=%2Foperator%2F";
     return beginServerOidcLogin(new Request(login, request), env);
   }
-  if (url.pathname === "/oidc") {
-    const callback = await completeServerOidcLogin(request, env, syncIdentity);
-    return callback.status === 400
-      ? new Response(
-          "Sign-in could not be completed. Return to the operator app and try again.",
-          callback,
-        )
-      : callback;
-  }
+  if (url.pathname === "/oidc")
+    return completeServerOidcLogin(request, env, syncIdentity, {
+      homePath: "/operator/",
+      failurePage: (failure) =>
+        serverOidcCallbackFailurePage(failure, {
+          siteName: "the operator app",
+          homePath: "/operator/",
+          loginPath: "/api/auth/oidc/login",
+        }),
+    });
   if (url.pathname === "/api/operator/session") {
     const refreshed = await serverOidcSessionStatus(request, env, syncIdentity);
     if (refreshed.status !== 200) return refreshed;
