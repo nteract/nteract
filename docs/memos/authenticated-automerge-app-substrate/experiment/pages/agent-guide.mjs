@@ -198,8 +198,11 @@ Branch on code, not on the error message:
   JSON and MCP: invalid_request (400), unauthenticated (401), access_denied
   (403), not_found (404), conflict (409), gone (410), request_too_large (413),
   rate_limited (429), server_error (5xx), or request_refused for any other
-  status. Read the error message to fix the request; retry only a server_error
-  or rate_limited, and only later.
+  status. For a client error, read the message and fix the request. A
+  server_error doesn't prove nothing happened: retry a read later, but treat a
+  write like outcome_unknown (same key, token and payload with retry_token;
+  read back and reconcile without one). For rate_limited, wait (Retry-After
+  when sent), then follow the same rules.
 
 retryable:true means a retry can succeed; the code says whether to read first.
 
