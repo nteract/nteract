@@ -3,6 +3,8 @@ import { GardState, GardSelection, Transaction } from "wordgard/state";
 import { Elt } from "wordgard/doc";
 import { CodeBlock, CodeBlockLanguage } from "./wordgard-model.mjs";
 import { mermaidTitle } from "./mermaid-title.mjs";
+import { diagramIcon } from "./diagram-icons.mjs";
+import { openDiagramViewer } from "./diagram-viewer.mjs";
 
 // The renderer is a separate content-hashed file (scripts/browser-mermaid.mjs).
 // A deploy retires this tab's copy, so a failed import usually means the
@@ -119,38 +121,6 @@ function openDiagram(editor, dom) {
   editor.focus();
 }
 
-// Wordgard owns this DOM. Use the same small stroke icons as the React toolbar
-// without mounting a second React root inside an editor decoration.
-function diagramIcon(kind) {
-  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
-  for (const [name, value] of Object.entries({
-    viewBox: "0 0 24 24",
-    fill: "none",
-    stroke: "currentColor",
-    "stroke-width": "2",
-    "stroke-linecap": "round",
-    "stroke-linejoin": "round",
-    "aria-hidden": "true",
-    focusable: "false",
-  }))
-    svg.setAttribute(name, value);
-  const paths = {
-    code: ["m16 18 6-6-6-6", "m8 6-6 6 6 6"],
-    preview: [
-      "M2.1 12a1 1 0 0 1 0-.7 10.8 10.8 0 0 1 19.8 0 1 1 0 0 1 0 .7 10.8 10.8 0 0 1-19.8 0",
-      "M15 12a3 3 0 1 1-6 0 3 3 0 0 1 6 0",
-    ],
-    copy: ["M9 9h11v11H9z", "M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"],
-    check: ["m20 6-11 11-5-5"],
-  };
-  for (const d of paths[kind]) {
-    const path = document.createElementNS(svg.namespaceURI, "path");
-    path.setAttribute("d", d);
-    svg.append(path);
-  }
-  return svg;
-}
-
 function diagramButton(label, icon, className = "") {
   const button = document.createElement("button");
   button.type = "button";
@@ -161,11 +131,14 @@ function diagramButton(label, icon, className = "") {
   return button;
 }
 
-function diagramActions(editor, dom, toggle) {
+function diagramActions(editor, dom, toggle, extra) {
   const actions = document.createElement("div");
   actions.className = "wordgard-diagram-actions";
   actions.setAttribute("role", "group");
   actions.setAttribute("aria-label", "Diagram actions");
+  // `extra` (Maximize) leads, so Edit/Preview and Copy keep the same corner
+  // positions in the rendered and source views.
+  if (extra) actions.append(extra);
   if (toggle) actions.append(toggle);
   const copy = actions.appendChild(diagramButton("Copy diagram code", "copy"));
   const feedback = actions.appendChild(document.createElement("span"));
@@ -210,6 +183,20 @@ function diagramActions(editor, dom, toggle) {
   return actions;
 }
 
+/** The SVG Pele rendered into `canvas`, if it has rendered one. */
+export const renderedSvg = (canvas) => canvas.querySelector(":scope > svg");
+
+/**
+ * Maximize opens the rendered diagram in the expanded viewer. It stays hidden
+ * until there is a rendered SVG to show.
+ */
+export function maximizeButton() {
+  const button = diagramButton("Maximize diagram", "maximize", "wordgard-diagram-maximize");
+  button.setAttribute("aria-haspopup", "dialog");
+  button.hidden = true;
+  return button;
+}
+
 /**
  * The rendered diagram's container and header. The header holds only the
  * diagram actions: the renderer draws the diagram's own title inside the SVG,
@@ -236,13 +223,33 @@ const diagram = Widget.define({
       edit = diagramButton("Edit diagram", "code", "wordgard-diagram-edit");
       edit.onclick = () => openDiagram(editor, dom);
     }
-    header.append(diagramActions(editor, dom, edit));
+    const maximize = maximizeButton();
+    header.append(diagramActions(editor, dom, edit, maximize));
     const status = dom.appendChild(document.createElement("p"));
     status.textContent = "Rendering diagram…";
     status.setAttribute("role", "status");
     const canvas = dom.appendChild(document.createElement("div"));
     canvas.className = "wordgard-diagram-canvas";
-    mounted.set(dom, { alive: false, source, canvas, status, instance: null, timer: null });
+    const state = {
+      alive: false,
+      source,
+      canvas,
+      status,
+      maximize,
+      instance: null,
+      timer: null,
+      viewer: null,
+    };
+    maximize.onclick = () => {
+      const svg = renderedSvg(canvas);
+      if (!svg) return;
+      state.viewer = openDiagramViewer({
+        svg,
+        label: mermaidTitle(source) ?? "Diagram",
+        opener: maximize,
+      });
+    };
+    mounted.set(dom, state);
     return dom;
   },
   connect(_source, dom) {
@@ -267,9 +274,11 @@ const diagram = Widget.define({
               {
                 onRender: () => {
                   state.status.hidden = true;
+                  state.maximize.hidden = !renderedSvg(state.canvas);
                 },
                 onError: (error) => {
                   state.status.hidden = false;
+                  state.maximize.hidden = true;
                   state.status.textContent =
                     error instanceof Error
                       ? `Diagram unavailable: ${error.message}`
@@ -291,6 +300,10 @@ const diagram = Widget.define({
     clearTimeout(state.timer);
     state.instance?.destroy();
     state.instance = null;
+    // The Page moved on (navigation, or a peer replaced this diagram): an
+    // expanded copy of it must not outlive the editor that showed it.
+    state.viewer?.close();
+    state.viewer = null;
   },
   propagateEvent: false,
 });
