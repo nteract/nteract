@@ -1072,10 +1072,9 @@ test("repeated admission refusals pause sync until Retry or online", async (t) =
 });
 
 test("a busy host's temporarily_unavailable closes back off forever and never pause", async (t) => {
-  // The host kept refusing one tab's reconnects with native_already_connected
-  // (4503) while its old socket held the key; pausing after six turned that
-  // into a stuck tab. A busy host is a transient failure, so the tab keeps
-  // retrying at the capped step and reconnects as soon as the host admits it.
+  // A 4503 temporarily_unavailable close is a transient failure, never a
+  // refusal: however many arrive in a row, the tab keeps retrying at the
+  // capped step without pausing, and reconnects once the host admits it.
   for (const handshake of [false, true]) {
     await t.test(handshake ? "during the handshake" : "after admission", async (t) => {
       const f = fixture(t, { random: () => 0.999_999 });
