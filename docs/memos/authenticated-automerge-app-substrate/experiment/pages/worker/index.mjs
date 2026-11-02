@@ -52,7 +52,7 @@ import {
 import { readTargets, writeTargets } from "../model/agent-presence.mjs";
 import { BACKEND_LIMITS, assertDocumentLimits, assertIntentSize } from "../model/limits.mjs";
 import { handleMcp } from "../mcp.mjs";
-import { invokeProjectApi } from "./project-api.mjs";
+import { invalidArguments, invokeProjectApi, unknownOperation } from "./project-api.mjs";
 import { agentGuideResponse } from "../agent-guide.mjs";
 import { connectAgentResponse } from "../connect-agent.mjs";
 import { handleOAuth, mcpAuthChallenge } from "./oauth.mjs";
@@ -633,8 +633,8 @@ const safeToRepeat = (operation, args) => {
 };
 
 async function invoke(request, env, operation, args = {}) {
-  if (!operations.has(operation) || !args || typeof args !== "object" || Array.isArray(args))
-    throw new HttpError(400, "Unknown operation or invalid arguments");
+  if (!operations.has(operation)) throw unknownOperation(operation, operations);
+  if (!args || typeof args !== "object" || Array.isArray(args)) throw invalidArguments();
   const identity = await authenticate(request, env);
   if (!READ_OPERATIONS.includes(operation)) requireWrite(identity);
   if (["get_space", "update_space"].includes(operation)) requireSpaceIdArgument(args.space_id);
@@ -914,6 +914,7 @@ const gateway = {
           (internal, internalArgs) => invoke(request, env, internal, internalArgs),
           body.operation,
           body.arguments,
+          { env },
         );
       }
       const imageRoute = url.pathname.match(/^\/api\/pages\/([^/]+)\/assets(?:\/([^/]+))?$/);
@@ -928,7 +929,7 @@ const gateway = {
       if (url.pathname === "/api/access") {
         await authenticate(request, env);
         const pageId = url.searchParams.get("page");
-        if (!validPageId(pageId)) throw new HttpError(400, "Invalid page_id");
+        if (!validPageId(pageId)) throw new HttpError(400, "Invalid page_id", "invalid_page_id");
         if (!["GET", "POST"].includes(request.method)) throw new HttpError(405, "Use GET or POST");
         const internal = forwarded(request, "/internal/access", {
           ...(request.method === "POST" ? await readJson(request) : {}),
@@ -1236,7 +1237,7 @@ export class Catalog {
           if (await this.storage.get(`host/deleted/${args.page_id}`)) {
             await this.storage.delete(`trash/${args.page_id}`);
             await this.notifyTombstone(args.page_id);
-            throw new HttpError(404, "Page not found");
+            throw new HttpError(404, "Page not found", "page_not_found");
           }
           return this.env.PAGES.getByName(args.page_id).fetch(forwarded(request, lifecycle, args));
         }
@@ -3785,7 +3786,7 @@ export class Page {
           throw withAdmissionReason(new PermissionDenied(), "page_not_found");
         if (admissionRoute)
           throw withAdmissionReason(new HttpError(404, "Page not found"), "page_not_found_legacy");
-        throw new HttpError(404, "Page not found");
+        throw new HttpError(404, "Page not found", "page_not_found");
       }
       if (pageState(this.metadata) === "trashed" && !this.handle) {
         await this.loadDocument();

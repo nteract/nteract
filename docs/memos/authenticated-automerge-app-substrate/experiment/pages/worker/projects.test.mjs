@@ -121,6 +121,42 @@ test("a Project is created with its home Page, then read, listed and updated", a
   );
 });
 
+test("JSON create_project, create_page and read_page receipts carry browser links", async (t) => {
+  const w = await world(t);
+  const project = await w.createProject("Links");
+  assert.equal(project.url, undefined, "no configured origin, no link");
+  w.env.NOTEBOOK_CLOUD_PUBLIC_ORIGIN = "https://pages.invalid";
+  const linked = await w.createProject("Links");
+  assert.equal(linked.url, `https://pages.invalid/project/${linked.project_id}`);
+  assert.equal(linked.home_page_url, `https://pages.invalid/p/${linked.home_page_id}`);
+  const created = await w.createPage({ title: "Linked", project_id: linked.project_id });
+  assert.equal(created.status, 200);
+  assert.equal(created.body.url, `https://pages.invalid/p/${created.body.page_id}`);
+  const read = await w.call("owner", "read_page", { page_id: created.body.page_id });
+  assert.equal(read.body.url, `https://pages.invalid/p/${created.body.page_id}`);
+  const refused = await w.call("owner", "read_page", { page_id: crypto.randomUUID() });
+  assert.equal(refused.body.url, undefined);
+});
+
+test("a v1_ create key without its token is refused with where to get the token", async (t) => {
+  const w = await world(t);
+  const listed = await w.call("owner", "list_pages");
+  for (const [operation, args] of [
+    ["create_page", { title: "Keyed" }],
+    ["create_project", { title: "Keyed" }],
+  ]) {
+    const refused = await w.call("owner", operation, {
+      ...args,
+      idempotency_key: `${listed.body.retry_key_prefix}${crypto.randomUUID()}`,
+    });
+    assert.equal(refused.status, 400, operation);
+    assert.equal(refused.body.code, "invalid_retry_token", operation);
+    assert.match(refused.body.error, /list_pages for create_page/, operation);
+    assert.match(refused.body.error, /list_projects for create_project/, operation);
+    assert.match(refused.body.error, /plain key/, operation);
+  }
+});
+
 test("create_page returns the new Page's edit authority, so the first edit needs no read", async (t) => {
   const w = await world(t);
   const createKey = w.key();

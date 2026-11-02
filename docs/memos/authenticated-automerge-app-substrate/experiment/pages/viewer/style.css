@@ -492,6 +492,16 @@ details.document-actions > div button {
   color: var(--muted-foreground);
   line-height: 1.6;
 }
+.welcome-actions,
+.setup-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.75rem 1.25rem;
+}
+.welcome-actions {
+  margin-top: 1.75rem;
+}
 .library-heading {
   display: flex;
   align-items: center;
@@ -1763,14 +1773,20 @@ details.account-actions > div a:hover {
   border-color: var(--line);
   padding: 0.35rem 0.65rem;
 }
+/* Config and code keep their lines and indentation; a narrow screen scrolls
+   them sideways. Prose prompts (setup-prose) wrap. */
 .setup-value {
   margin: 0;
   background: var(--muted);
   padding: 1rem;
   border-radius: 0.5rem;
+  white-space: pre;
+  overflow-x: auto;
+  font-size: 0.85rem;
+}
+.setup-value.setup-prose {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
-  font-size: 0.85rem;
 }
 .setup-copy-status {
   min-height: 1.5em;

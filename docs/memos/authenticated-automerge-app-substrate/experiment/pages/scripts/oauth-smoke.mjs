@@ -172,8 +172,8 @@ export async function runOAuthSmoke({ origin, output, restart, ownerKey } = {}) 
     assert.equal(client.data.authorization.searchParams.get("code_challenge_method"), "S256");
     await page.goto(client.data.authorization.href, { waitUntil: "domcontentloaded" });
     if (fresh) {
-      await expect(page.getByRole("link", { name: "Sign In", exact: true })).toBeVisible();
-      await page.getByRole("link", { name: "Sign In", exact: true }).click();
+      await expect(page.getByRole("link", { name: "Sign in", exact: true })).toBeVisible();
+      await page.getByRole("link", { name: "Sign in", exact: true }).click();
     }
     await expect(
       page.getByRole("heading", {

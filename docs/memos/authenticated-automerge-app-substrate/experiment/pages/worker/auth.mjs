@@ -78,6 +78,28 @@ const mcpSession = async (request, principal) => {
   return session ? { session } : {};
 };
 
+/** Where a person gets an API key: absolute from the configured public
+ * origin, or the bare path when none is configured. Never the request URL. */
+function connectLink(env) {
+  try {
+    return `${pagesPublicOrigin(env)}/connect`;
+  } catch {
+    return "/connect";
+  }
+}
+
+/** The refusal for a request that presents no credential at all. It names the
+ * header API clients send and where a person gets a key. */
+export const credentialRequired = (env) =>
+  withAdmissionReason(
+    new HttpError(
+      401,
+      `Send Authorization: Bearer <Anaconda API key>; see ${connectLink(env)}`,
+      "auth_required",
+    ),
+    "credential_missing",
+  );
+
 export function requireSameOrigin(request, env) {
   const origin = new URL(env.NOTEBOOK_CLOUD_PUBLIC_ORIGIN || request.url).origin;
   const supplied = request.headers.get("origin");
@@ -86,19 +108,21 @@ export function requireSameOrigin(request, env) {
   const changesState =
     !["GET", "HEAD", "OPTIONS"].includes(request.method) ||
     request.headers.get("upgrade")?.toLowerCase() === "websocket";
+  const credentialless = !request.headers.has("authorization") && !request.headers.has("cookie");
   // A new MCP client needs a 401 challenge to discover OAuth before it has a
   // credential. This exception never authorizes an operation or a foreign Origin.
-  const discoveringMcp =
-    new URL(request.url).pathname === "/mcp" &&
-    !request.headers.has("authorization") &&
-    !request.headers.has("cookie");
+  const discoveringMcp = new URL(request.url).pathname === "/mcp" && credentialless;
   if (
     changesState &&
     !discoveringMcp &&
     !request.headers.has("authorization") &&
     supplied !== origin
-  )
+  ) {
+    // The Origin check guards the ambient cookie. With no credential at all
+    // there is nothing to forge, and the request can only fail sign-in.
+    if (credentialless) throw credentialRequired(env);
     throw withAdmissionReason(new HttpError(403, "Origin is required"), "origin_rejected");
+  }
 }
 
 async function withDomainAccess(identity, env) {
@@ -195,6 +219,15 @@ export async function authenticate(request, env) {
       const status = error?.status ?? (error?.name === "AuthError" ? 401 : 500);
       if (status >= 500 && error && typeof error === "object")
         withAdmissionReason(error, "credential_unverified");
+      if (status === 401)
+        throw withAdmissionReason(
+          new HttpError(
+            401,
+            `${error.message}. Check that the key is current and from this deployment's Anaconda account, or create a new one at ${connectLink(env)}`,
+            "invalid_api_key",
+          ),
+          "credential_invalid",
+        );
       throw error;
     }
     return withDomainAccess(
@@ -217,9 +250,18 @@ export async function authenticate(request, env) {
     );
   }
   if (!request.headers.has("cookie"))
-    throw withAdmissionReason(new HttpError(401, "Sign in to Pages"), "credential_missing");
+    throw withAdmissionReason(
+      new HttpError(401, "Sign in to Pages", "auth_required"),
+      "credential_missing",
+    );
   const session = await readServerAppSession(env, request, Math.floor(Date.now() / 1000));
-  if (!session) throw new HttpError(401, "Sign in to Pages");
+  // An expired, revoked or unrelated cookie: sign in again. The Origin check
+  // already ran for this request.
+  if (!session)
+    throw withAdmissionReason(
+      new HttpError(401, "Sign in to Pages", "auth_required"),
+      "credential_expired",
+    );
   return withDomainAccess(
     {
       principal: session.principal,
@@ -253,7 +295,74 @@ export function requireWrite(identity) {
 
 /** Server failures whose fixed message tells the caller to retry the same
  * request. Every other 5xx keeps the generic message. */
-const RETRYABLE_SERVER_CODES = [
+/** Codes a refusal below 500 carries to the client as-is. The agent guide
+ * lists every one of these. */
+export const CLIENT_ERROR_CODES = Object.freeze([
+  "auth_required",
+  "invalid_api_key",
+  "unknown_operation",
+  "invalid_arguments",
+  "invalid_page_id",
+  "page_not_found",
+  "oauth_invalid_token",
+  "oauth_insufficient_scope",
+  "retry_expired",
+  "invalid_retry_token",
+  "idempotency_conflict",
+  "operation_receipt_capacity",
+  "pending_operation_capacity",
+  "page_recovery_blocked",
+  "page_trashed",
+  "page_not_in_trash",
+  "trash_capacity",
+  "page_quota_exceeded",
+  "purge_preview_required",
+  "purge_preview_invalid",
+  "invalid_idempotency_key",
+  "invalid_edit_selector",
+  "replace_match_too_large",
+  "invalid_comment_selector",
+  "stale_heads",
+  "edit_conflict",
+  "resync_required",
+  "image_not_found",
+  "invalid_presence_target",
+  "presence_revision_changed",
+  "presence_target_not_found",
+  "progress_session_expired",
+  "progress_capacity_exceeded",
+  "progress_budget_exceeded",
+  "invalid_cursor",
+  "invalid_list_arguments",
+  "company_email_proof_required",
+  "project_id_as_page_id",
+  "page_id_as_project_id",
+  "project_not_found",
+  "project_pending",
+  "project_capacity",
+  "project_revision_conflict",
+  "tool_renamed",
+  "argument_renamed",
+  "placement_mismatch",
+  "parent_unavailable",
+  "nesting_depth_exceeded",
+  "home_page_protected",
+  "page_has_children",
+  "not_page_owner",
+  "placement_cycle",
+  "move_destination_required",
+  "invalid_position",
+  "position_sibling_unknown",
+  "lifecycle_unsettled",
+  "unsupported_schema_feature",
+  "unsupported_markdown",
+  "preserved_markdown_converting",
+  "comment_not_author",
+  "comment_access_denied",
+  "operation_pending",
+]);
+
+export const RETRYABLE_SERVER_CODES = Object.freeze([
   "record_persistence_timeout",
   "request_timeout",
   // The host is moving a Page's comments to their own document.
@@ -261,7 +370,7 @@ const RETRYABLE_SERVER_CODES = [
   // The owner's Catalog isn't in the current location shape yet
   // (location-shape.mjs); the next write tries the pass again.
   "location_migration_required",
-];
+]);
 
 const LOGGED_ERROR_TYPES = [
   "Error",
@@ -300,7 +409,9 @@ function failureShape(error) {
     origin: failureOrigin(error),
     ...(error?.name === "BackendError" &&
       /^[a-z-]{1,32}$/.test(error.operation) &&
-      /^[a-z-]{1,32}$/.test(error.code) && { backend: `${error.operation}/${error.code}` }),
+      /^[a-z-]{1,32}$/.test(error.code) && {
+        backend: `${error.operation}/${error.code}`,
+      }),
   };
 }
 
@@ -345,65 +456,7 @@ export function errorResponse(error, stage = "request") {
     {
       error: status < 500 || coded ? error.message : "Pages request failed",
       ...(coded && { code: error.code, retryable }),
-      ...([
-        "oauth_invalid_token",
-        "oauth_insufficient_scope",
-        "retry_expired",
-        "invalid_retry_token",
-        "idempotency_conflict",
-        "operation_receipt_capacity",
-        "pending_operation_capacity",
-        "page_recovery_blocked",
-        "page_trashed",
-        "page_not_in_trash",
-        "trash_capacity",
-        "page_quota_exceeded",
-        "purge_preview_required",
-        "purge_preview_invalid",
-        "invalid_idempotency_key",
-        "invalid_edit_selector",
-        "replace_match_too_large",
-        "invalid_comment_selector",
-        "stale_heads",
-        "edit_conflict",
-        "resync_required",
-        "image_not_found",
-        "invalid_presence_target",
-        "presence_revision_changed",
-        "presence_target_not_found",
-        "progress_session_expired",
-        "progress_capacity_exceeded",
-        "progress_budget_exceeded",
-        "invalid_cursor",
-        "invalid_list_arguments",
-        "company_email_proof_required",
-        "project_id_as_page_id",
-        "page_id_as_project_id",
-        "project_not_found",
-        "project_pending",
-        "project_capacity",
-        "project_revision_conflict",
-        "tool_renamed",
-        "argument_renamed",
-        "placement_mismatch",
-        "parent_unavailable",
-        "nesting_depth_exceeded",
-        "home_page_protected",
-        "page_has_children",
-        "page_not_found",
-        "not_page_owner",
-        "placement_cycle",
-        "move_destination_required",
-        "invalid_position",
-        "position_sibling_unknown",
-        "lifecycle_unsettled",
-        "unsupported_schema_feature",
-        "unsupported_markdown",
-        "preserved_markdown_converting",
-        "comment_not_author",
-        "comment_access_denied",
-        "operation_pending",
-      ].includes(error?.code) && { code: error.code }),
+      ...(CLIENT_ERROR_CODES.includes(error?.code) && { code: error.code }),
       ...(error?.code === "unsupported_markdown" &&
         error.details?.unsupported && {
           unsupported: {
@@ -447,7 +500,9 @@ export function errorResponse(error, stage = "request") {
         ...(Array.isArray(error.details?.conflicts) && {
           conflicts: error.details.conflicts.slice(0, 10).map((conflict) => ({
             block_id: String(conflict.block_id ?? "").slice(0, 128),
-            ...(Number.isSafeInteger(conflict.node_index) && { node_index: conflict.node_index }),
+            ...(Number.isSafeInteger(conflict.node_index) && {
+              node_index: conflict.node_index,
+            }),
             reason: String(conflict.reason ?? "Target changed").slice(0, 240),
           })),
         }),
@@ -464,7 +519,10 @@ export function errorResponse(error, stage = "request") {
 }
 
 export function json(value, status = 200) {
-  return Response.json(value, { status, headers: { "cache-control": "no-store" } });
+  return Response.json(value, {
+    status,
+    headers: { "cache-control": "no-store" },
+  });
 }
 
 export async function readJson(request) {

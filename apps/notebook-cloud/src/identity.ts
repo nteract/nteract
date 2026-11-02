@@ -504,6 +504,10 @@ async function fetchAnacondaApiKeyUserInfo(
     signal,
   });
   if (!response.ok) {
+    // A rate limit or provider outage says nothing about the key. Those
+    // answer 503, like a validation timeout, so callers don't report a bad key.
+    if (response.status === 429 || response.status >= 500)
+      throw new AuthError("Anaconda API key validation is unavailable", 503);
     throw new AuthError("Anaconda API key validation failed", response.status === 403 ? 403 : 401);
   }
 

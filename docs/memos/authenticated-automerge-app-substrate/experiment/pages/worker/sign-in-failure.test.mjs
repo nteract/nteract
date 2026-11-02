@@ -11,6 +11,7 @@ import {
   SERVER_SESSION_COOKIE,
 } from "@cloud/oidc-session-store.ts";
 import worker from "./index.mjs";
+import { PRODUCT_NAME } from "../shared/product.mjs";
 
 const origin = "https://page10.example";
 const LOGIN_COOKIE = "__Host-nteract_cloud_oidc_login";
@@ -109,7 +110,9 @@ test("a refused sign-in callback is a Pages HTML page with same-origin ways back
     );
     const body = await response.text();
     assert.match(body, /^<!doctype html>/);
-    assert.match(body, /<title>Sign-in didn&#39;t finish · Pages<\/title>/);
+    assert.ok(body.includes(`<title>Sign-in didn&#39;t finish · ${PRODUCT_NAME}</title>`));
+    // The two actions sit in one row with a gap, not touching.
+    assert.match(body, /<p class="setup-actions"><a class="primary setup-action"/);
     assert.match(
       body,
       /<a class="primary setup-action" href="\/api\/auth\/login\?return_to=%2Fpages">Sign in again<\/a>/,
@@ -149,5 +152,24 @@ test("a stale callback in a browser that is already signed in goes to the Pages 
       false,
       "a stale callback never replaces the session",
     );
+  }
+});
+
+test("a same-origin tool call with an expired or unrelated cookie is 401 auth_required", async (t) => {
+  const env = fixture(t);
+  const expired = await signedIn(env);
+  const past = Math.floor(Date.now() / 1000) - 10;
+  await env.DB.prepare("UPDATE oidc_server_sessions SET access_expires_at = ?").bind(past).run();
+  for (const cookie of [expired, "theme=dark"]) {
+    const response = await worker.fetch(
+      new Request(`${origin}/api/tools`, {
+        method: "POST",
+        headers: { cookie, origin, "content-type": "application/json" },
+        body: JSON.stringify({ operation: "list_pages", arguments: {} }),
+      }),
+      env,
+    );
+    assert.equal(response.status, 401, cookie);
+    assert.deepEqual(await response.json(), { error: "Sign in to Pages", code: "auth_required" });
   }
 });

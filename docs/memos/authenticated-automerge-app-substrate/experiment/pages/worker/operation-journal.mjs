@@ -132,6 +132,9 @@ function isRetry(value) {
     /^v1_[a-f0-9]{64}_$/.test(value.keyPrefix)
   );
 }
+/** Where a caller gets the retry_token a v1_ key is built from. */
+const WHERE_TOKENS =
+  "send the retry_token from the same result as retry_key_prefix (read_page for edits; list_pages for create_page, delete, restore and purge; list_projects for create_project), or use a plain key of 8–128 characters without a token";
 function checkRetryKey(key, retry) {
   const prefix = `${PREFIX}${retry.keyPrefix}`;
   if (!key.startsWith(prefix) || !/^[A-Za-z0-9_-]{8,60}$/.test(key.slice(prefix.length)))
@@ -238,12 +241,20 @@ export async function inspectOperation(
     reject(409, "idempotency_conflict", "idempotency_key was used for a different request");
   const versionedKey = key.startsWith(`${PREFIX}v1_`);
   if (retryToken !== undefined && !versionedKey)
-    reject(400, "invalid_retry_token", "Requests with retry_token require a v1_ idempotency_key");
+    reject(
+      400,
+      "invalid_retry_token",
+      "Requests with retry_token require a v1_ idempotency_key: append a new UUID to the retry_key_prefix returned with that token",
+    );
   if (retryToken === undefined) {
     // A forgotten token must not turn an expired versioned request into a fresh
     // legacy request. Existing pre-protocol v1_ receipts still replay exactly.
     if (versionedKey && !entry)
-      reject(400, "invalid_retry_token", "v1_ idempotency keys require the original retry_token");
+      reject(
+        400,
+        "invalid_retry_token",
+        `v1_ idempotency keys require the original retry_token: ${WHERE_TOKENS}`,
+      );
     if (entry?.retry) reject(400, "invalid_retry_token", "Retry the same token, key and payload");
     return { entry, retry: undefined };
   }
@@ -298,7 +309,7 @@ export async function reserveOperation(storage, { key, entry, retry, now = Date.
     reject(
       400,
       "invalid_retry_token",
-      "A v1_ idempotency_key and retry_token must be used together",
+      `A v1_ idempotency_key and retry_token must be used together: ${WHERE_TOKENS}`,
     );
   // Existing legacy clients need no retirement barrier until this resource has
   // issued versioned tokens. Floor zero retains every versioned entry even if

@@ -254,7 +254,10 @@ test("members and strangers lose access and listings while trashed", async (t) =
     },
   );
   assert.equal(memberUnified.body.code, "page_trashed");
-  assert.deepEqual((await f.tool("stranger", "read_page")).body, { error: "Page not found" });
+  assert.deepEqual((await f.tool("stranger", "read_page")).body, {
+    error: "Page not found",
+    code: "page_not_found",
+  });
   assert.equal((await f.catalogCall("member", "list_pages")).body.pages.length, 0);
   assert.equal(await f.catalogOf(f.member).storage.get(`shared/${pageId}`), undefined);
   assert.equal(

@@ -33,8 +33,10 @@ import {
   withHashedAssets,
   withInlineFavicon,
   withModulePreloads,
+  withProductName,
 } from "./viewer-chunks.mjs";
 import { FAVICON_HREF } from "../shared/favicon.mjs";
+import { PRODUCT_NAME } from "../shared/product.mjs";
 import { createHash } from "node:crypto";
 import { crc32 } from "node:zlib";
 
@@ -123,10 +125,8 @@ test("failed rebuild removes the previous receipt before replacing any artifacts
     );
     for (const name of ["browser-wasm.mjs", "viewer-chunks.mjs", "deployment/profiles.mjs"])
       write(`scripts/${name}`, readFileSync(new URL(`./${name}`, import.meta.url), "utf8"));
-    write(
-      "shared/favicon.mjs",
-      readFileSync(new URL("../shared/favicon.mjs", import.meta.url), "utf8"),
-    );
+    for (const name of ["favicon.mjs", "product.mjs"])
+      write(`shared/${name}`, readFileSync(new URL(`../shared/${name}`, import.meta.url), "utf8"));
     write(
       "scripts/source-fingerprint.mjs",
       "export const sourceFingerprint = () => ({sha256:'source-B'}); export const writeBuildReceipt = () => {throw new Error('failed build must not certify outputs');};",
@@ -536,6 +536,16 @@ test("index.html inlines the nteract app icon as its tab icon", () => {
   assert.equal(html.includes("/favicon.png"), false);
   assert.throws(() => withInlineFavicon(html), /reference [/]favicon[.]png exactly once/);
   assert.throws(() => withInlineFavicon(source, "/favicon.ico"), /PNG data URL/);
+});
+
+test("index.html names the product in its tab title and header brand", () => {
+  const source = readFileSync(path.join(app, "viewer/index.html"), "utf8");
+  for (const name of [PRODUCT_NAME, "Renamed Product"]) {
+    const html = withProductName(source, name);
+    assert.ok(html.includes(`<title>${name}</title>`), name);
+    assert.ok(html.includes(`class="brand">${name}</a>`), name);
+  }
+  assert.throws(() => withProductName("<p>no shell</p>"), /one <title> and one brand link/);
 });
 
 test("_headers caches exactly the hashed files as immutable", () => {

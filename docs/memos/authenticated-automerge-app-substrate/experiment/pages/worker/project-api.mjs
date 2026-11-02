@@ -11,6 +11,8 @@
  * Callers that still use the old names are refused before anything runs, so
  * no idempotency key is consumed and a retry with the new names applies once.
  */
+import { pagesPublicOrigin } from "../agent-guide.mjs";
+import { pagePath, projectPath } from "../shared/routes.mjs";
 import { HttpError } from "./auth.mjs";
 
 /** Old tool name → the tool that replaced it. */
@@ -37,6 +39,20 @@ const MAPPED_RESULTS = new Set([
 
 export const renamedTool = (name) =>
   new HttpError(400, `\`${name}\` was renamed \`${RENAMED_TOOLS[name]}\``, "tool_renamed");
+
+/** The refusal for an operation outside `internalOperations`, listing the
+ * valid ones under their API names. */
+export function unknownOperation(name, internalOperations) {
+  const valid = [...internalOperations].map((operation) => RENAMED_TOOLS[operation] ?? operation);
+  const named =
+    typeof name === "string" && name
+      ? `Unknown operation \`${name.slice(0, 64)}\``
+      : "operation is required";
+  return new HttpError(400, `${named}. Valid operations: ${valid.join(", ")}`, "unknown_operation");
+}
+
+export const invalidArguments = () =>
+  new HttpError(400, "arguments must be a JSON object", "invalid_arguments");
 
 const renameKey = (value, from, to) =>
   Object.fromEntries(Object.entries(value).map(([key, item]) => [key === from ? to : key, item]));
@@ -85,13 +101,35 @@ export function toProjectBody(operation, body) {
   return out;
 }
 
-/** Run an API call through `invoke`, which speaks the internal names. */
-export async function invokeProjectApi(invoke, operation, args) {
+/** Add browser links to a successful receipt, as MCP results carry them. The
+ * origin is deployment configuration; without a valid one, no link. */
+function withReceiptUrl(operation, body, env) {
+  if (!body || typeof body !== "object") return body;
+  try {
+    const origin = pagesPublicOrigin(env);
+    if (["create_page", "read_page"].includes(operation) && body.page_id && !body.deleted)
+      return { ...body, url: new URL(pagePath(body.page_id), origin).href };
+    if (operation === "create_project" && body.project_id && body.home_page_id)
+      return {
+        ...body,
+        url: new URL(projectPath(body.project_id), origin).href,
+        home_page_url: new URL(pagePath(body.home_page_id), origin).href,
+      };
+  } catch {
+    // No configured origin or an unexpected ID: the receipt stands as is.
+  }
+  return body;
+}
+
+/** Run an API call through `invoke`, which speaks the internal names. With
+ * `env`, receipts also carry browser links. */
+export async function invokeProjectApi(invoke, operation, args, { env } = {}) {
   const call = toInternalCall(operation, args);
   const response = await invoke(call.operation, call.args);
   if (!MAPPED_RESULTS.has(operation)) return response;
   if (!response.headers.get("content-type")?.includes("application/json")) return response;
-  const body = toProjectBody(operation, JSON.parse(await response.text()));
+  let body = toProjectBody(operation, JSON.parse(await response.text()));
+  if (env && response.ok) body = withReceiptUrl(operation, body, env);
   const headers = new Headers(response.headers);
   headers.delete("content-length");
   return new Response(JSON.stringify(body), { status: response.status, headers });

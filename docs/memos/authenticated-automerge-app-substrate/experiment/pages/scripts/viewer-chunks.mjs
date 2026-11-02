@@ -12,6 +12,7 @@ import path from "node:path";
 import { browserMermaidPlugin } from "./browser-mermaid.mjs";
 import { BROWSER_WASM_URLS, browserWasmPlugin } from "./browser-wasm.mjs";
 import { FAVICON_HREF } from "../shared/favicon.mjs";
+import { PRODUCT_NAME } from "../shared/product.mjs";
 
 export const VIEWER_ENTRY = "public/app.js";
 // esbuild's [hash] is eight base32 characters. Staging and the page9 ingress
@@ -223,6 +224,17 @@ export function withInlineFavicon(html, href = FAVICON_HREF) {
   const parts = html.split(FAVICON_REFERENCE);
   if (parts.length !== 2) throw new Error("index.html must reference /favicon.png exactly once");
   return parts.join(`href="${href}"`);
+}
+
+/** index.html with PRODUCT_NAME as its tab title and header brand, so the
+ * static shell names the product the way the app does. */
+export function withProductName(html, name = PRODUCT_NAME) {
+  const named = html
+    .replace(/<title>[^<]*<\/title>/, `<title>${name}</title>`)
+    .replace(/(class="brand">)[^<]*(<\/a>)/, `$1${name}$2`);
+  if (!named.includes(`<title>${name}</title>`) || !named.includes(`class="brand">${name}</a>`))
+    throw new Error("index.html must have one <title> and one brand link");
+  return named;
 }
 
 /** The _headers file: `security` headers on every response, and immutable

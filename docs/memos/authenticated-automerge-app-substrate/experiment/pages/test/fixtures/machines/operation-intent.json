@@ -387,7 +387,8 @@
         "response": {
           "status": 404,
           "body": {
-            "error": "Page not found"
+            "error": "Page not found",
+            "code": "page_not_found"
           }
         }
       }

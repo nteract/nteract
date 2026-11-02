@@ -1,5 +1,6 @@
 import { pagesPublicOrigin } from "../agent-guide.mjs";
 import { FAVICON_LINK } from "../shared/favicon.mjs";
+import { PRODUCT_NAME, tabTitle } from "../shared/product.mjs";
 import { STYLESHEET, THEME_SCRIPT } from "../shared/shell-assets.mjs";
 import { serverOidcSessionStatus } from "@cloud/server-oidc.ts";
 import { loadServerSession, readServerAppSession } from "@cloud/oidc-session-store.ts";
@@ -71,7 +72,7 @@ export function html(title, body, status = 200, consentRedirect) {
     "'self'" +
     ([CHATGPT_REDIRECT, KILO_REDIRECT].includes(consentRedirect) ? " " + consentRedirect : "");
   return response(
-    `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escape(title)} · Pages</title>${FAVICON_LINK}<script src="${THEME_SCRIPT}"></script><link rel="stylesheet" href="${STYLESHEET}"></head><body><header class="app-header"><a class="brand" href="/">Pages</a></header><main class="agent-setup"><h1>${escape(title)}</h1>${body}</main></body></html>`,
+    `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escape(tabTitle(title))}</title>${FAVICON_LINK}<script src="${THEME_SCRIPT}"></script><link rel="stylesheet" href="${STYLESHEET}"></head><body><header class="app-header"><a class="brand" href="/">${escape(PRODUCT_NAME)}</a></header><main class="agent-setup"><h1>${escape(title)}</h1>${body}</main></body></html>`,
     {
       status,
       headers: {
@@ -425,7 +426,7 @@ async function authorize(request, env, context) {
     const login = "/api/auth/login?" + new URLSearchParams({ return_to: returnTo });
     return html(
       "Connect " + auth.client.name,
-      `<p>Sign in to Pages to review this connection. Your client will receive access only after you approve it.</p><p><a class="primary setup-action" href="${escape(login)}">Sign In</a></p>`,
+      `<p>Sign in to Pages to review this connection. Your client will receive access only after you approve it.</p><p><a class="primary setup-action" href="${escape(login)}">Sign in</a></p>`,
     );
   }
   const binding = { sessionId: current.row.id, principal: current.session.principal };

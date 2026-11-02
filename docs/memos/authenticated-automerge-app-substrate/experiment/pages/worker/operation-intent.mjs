@@ -327,7 +327,7 @@ export const operationIntentAlphabet = defineAlphabet(operationIntentSpec);
  * reply carries its code only: the Catalog adds the message, limit and count
  * from its capacity check (page-quota.mjs quotaRefusal). */
 export const replies = Object.freeze({
-  notFound: { status: 404, body: { error: "Page not found" } },
+  notFound: { status: 404, body: { error: "Page not found", code: "page_not_found" } },
   trashFull: { status: 409, body: { code: "trash_capacity" } },
   pageQuota: { status: 409, body: { code: "page_quota_exceeded" } },
   unsettled: {

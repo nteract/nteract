@@ -242,7 +242,7 @@ test("cross-site authorization first renders a same-origin sign-in link; no auto
     "'self'",
   );
   const text = await result.text();
-  assert.match(text, />Sign In<\/a>/);
+  assert.match(text, />Sign in<\/a>/);
   assert.doesNotMatch(text, /<form/);
   const link = text.match(/href="(\/api\/auth\/login\?[^"]+)"/)[1].replaceAll("&amp;", "&");
   assert.equal(new URL(link, origin).searchParams.get("return_to"), "/oauth/authorize?" + params);
@@ -477,7 +477,7 @@ test("expired sign-in cannot authorize; logout invalidates pending consent", asy
     env,
   );
   assert.equal(result.status, 200);
-  assert.match(await result.text(), />Sign In<\/a>/);
+  assert.match(await result.text(), />Sign in<\/a>/);
   assert.match(result.headers.get("set-cookie"), /Max-Age=0/);
   const login = await session(env),
     screen = await consent(env, login);

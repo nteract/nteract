@@ -878,6 +878,28 @@ describe("Anaconda API key identity", () => {
         /validation failed/.test(error.message),
     );
   });
+
+  it("maps an Anaconda rate limit or outage to 503, not a rejected key", async (t) => {
+    for (const status of [429, 500, 502, 503]) {
+      const token = anacondaApiKeyToken();
+      t.mock.method(globalThis, "fetch", async () => new Response("unavailable", { status }));
+      await assert.rejects(
+        () =>
+          authenticateRequestWithProviders(
+            new Request("https://cloud.test/n/topic-viz/sync", {
+              headers: { Authorization: `Bearer ${token}` },
+            }),
+            anacondaApiKeyEnv(),
+          ),
+        (error) =>
+          error instanceof AuthError &&
+          error.status === 503 &&
+          /validation is unavailable/.test(error.message),
+        String(status),
+      );
+      t.mock.restoreAll();
+    }
+  });
 });
 
 describe("OIDC identity", () => {

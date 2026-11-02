@@ -3,6 +3,9 @@ import { test } from "node:test";
 import worker from "../worker/index.mjs";
 import { agentGuide } from "../agent-guide.mjs";
 import { tools } from "../mcp.mjs";
+import { CLIENT_ERROR_CODES, RETRYABLE_SERVER_CODES } from "../worker/auth.mjs";
+import { MOVE_STATUS } from "../worker/move-page.mjs";
+import { PRODUCT_NAME } from "../shared/product.mjs";
 import {
   codexConfig,
   kiloApiKeyConfig,
@@ -33,7 +36,32 @@ test("GET llms.txt is readable without authentication and explains the supported
   assert.equal(response.headers.get("cache-control"), "public, max-age=300");
   assert.equal(response.headers.get("set-cookie"), null);
   const guide = await response.text();
-  assert.ok(guide.startsWith("# Pages\n"));
+  assert.ok(guide.startsWith(`# ${PRODUCT_NAME}\n`));
+  // A fetch that truncates the guide still gets the quick start and the codes.
+  for (const marker of ["## Quick start", "## Error codes", "auth_required", "invalid_retry_token"])
+    assert.ok(guide.indexOf(marker) < 12_000, marker);
+  // Every code a client can receive is in the error list, ahead of setup.
+  const codeList = guide.slice(
+    guide.indexOf("## Error codes"),
+    guide.indexOf("## Connect your agent"),
+  );
+  for (const code of new Set([
+    ...CLIENT_ERROR_CODES,
+    ...RETRYABLE_SERVER_CODES,
+    ...Object.keys(MOVE_STATUS),
+  ]))
+    assert.match(codeList, new RegExp(`\\b${code}\\b`), code);
+  assert.equal(guide.match(/^### One (document )?title/gm).length, 1, "one title section");
+  for (const stale of [
+    "prototype",
+    "in this pass",
+    "In this build",
+    "Dot's",
+    "checked with",
+    "rotating refresh without",
+    "Sign In",
+  ])
+    assert.equal(guide.includes(stale), false, stale);
   for (const { name } of tools) assert.ok(guide.includes(name), name);
   assert.ok(
     guide.indexOf("Ask the human for their step early") < guide.indexOf("### Kilo Desktop"),
