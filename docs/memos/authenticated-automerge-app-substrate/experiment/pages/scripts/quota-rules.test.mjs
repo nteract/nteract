@@ -7,8 +7,8 @@ import * as pageQuota from "../worker/page-quota.mjs";
 import * as shared from "../worker/quota-rule-match.mjs";
 import { AUTH_D1, deploymentProfile } from "./deployment/profiles.mjs";
 import {
-  DEFAULT_TARGET,
   EXIT_CELL_MISSING,
+  QUOTA_TARGETS,
   QUOTA_SCHEMA_VERSION,
   RULE_CACHE_MINUTES,
   UsageError,
@@ -30,10 +30,15 @@ import {
   sshArgs,
   sshTransport,
   targetConfig,
+  targetLabel,
 } from "./quota-rules.mjs";
 
 const NOW = 1_800_000_000_000;
 const config = targetConfig("page10");
+/** Commands below run against Pages; every command names its target. */
+const TARGET = ["--target", "pages"];
+const pagesConfig = targetConfig("pages");
+const ON = `on pages (s3://nteract-celld-lab-621741996708/standalone/pages-live)`;
 
 /** A migrated quota table in real SQLite. */
 async function quotaDb(t) {
@@ -121,7 +126,7 @@ test("the script stores each value as the Worker's normalization reads it", () =
 test("a rule the script sets is the rule the Worker resolves", async (t) => {
   const db = await quotaDb(t);
   const { transport } = sqliteTransport(db);
-  const run = (argv) => main(argv, { transport, ...capture().io });
+  const run = (argv) => main([...TARGET, ...argv], { transport, ...capture().io });
   assert.equal(await run(["set", "email", "O'Brien+Pages@Example.COM", "251"]), 0);
   assert.equal(await run(["set", "email", "zoë@example.com", "7"]), 0);
   assert.equal(await run(["set", "domain", " Anaconda.COM ", "0"]), 0);
@@ -281,16 +286,19 @@ test("the SQL runs on the real schema: upsert, create-only, the rule cap and del
 // --- Arguments ----------------------------------------------------------------
 
 test("arguments are validated before anything is built", () => {
-  assert.deepEqual(parseArgs(["set", "email", " A@Example.com ", "251", "--note", "hi"]), {
-    command: "set",
-    target: "pages",
-    sshHost: undefined,
-    dryRun: false,
-    rule: { kind: "email", value: "a@example.com" },
-    limit: 251,
-    note: "hi",
-    createOnly: false,
-  });
+  assert.deepEqual(
+    parseArgs([...TARGET, "set", "email", " A@Example.com ", "251", "--note", "hi"]),
+    {
+      command: "set",
+      target: "pages",
+      sshHost: undefined,
+      dryRun: false,
+      rule: { kind: "email", value: "a@example.com" },
+      limit: 251,
+      note: "hi",
+      createOnly: false,
+    },
+  );
   assert.deepEqual(
     parseArgs([
       "--target=page10",
@@ -310,7 +318,7 @@ test("arguments are validated before anything is built", () => {
     },
   );
   assert.equal(
-    parseArgs(["get", "email", "--", "-lead@example.com"]).rule.value,
+    parseArgs([...TARGET, "get", "email", "--", "-lead@example.com"]).rule.value,
     "-lead@example.com",
   );
   assert.equal(parseLimit("0"), 0);
@@ -335,9 +343,10 @@ test("arguments are validated before anything is built", () => {
     ["list", "--dry-run=yes"],
     ["list", "--target"],
   ])
-    assert.throws(() => parseArgs(argv), UsageError, JSON.stringify(argv));
+    assert.throws(() => parseArgs([...TARGET, ...argv]), UsageError, JSON.stringify(argv));
   assert.equal(
-    parseArgs(["set", "email", "a@example.com", "1", "--note", "☕".repeat(200)]).note.length,
+    parseArgs([...TARGET, "set", "email", "a@example.com", "1", "--note", "☕".repeat(200)]).note
+      .length,
     200,
   );
 });
@@ -349,9 +358,8 @@ test("targets and SSH hosts come from the profile or a validated override", asyn
   assert.equal(config.bucket, "s3://nteract-celld-lab-621741996708/standalone/page10");
   assert.equal(config.d1, AUTH_D1);
   assert.equal(deploymentProfile("page10").d1.database_id, "pages-next-auth");
-  // The default target is Pages; Page10 stays reachable with --target.
-  const pages = targetConfig(DEFAULT_TARGET);
-  assert.equal(DEFAULT_TARGET, "pages");
+  assert.deepEqual(QUOTA_TARGETS, ["page10", "pages"]);
+  const pages = pagesConfig;
   assert.equal(pages.service, "nteract-pages-live");
   assert.equal(pages.runtime, "/opt/nteract-pages-live/celld");
   assert.equal(pages.bucket, "s3://nteract-celld-lab-621741996708/standalone/pages-live");
@@ -368,9 +376,35 @@ test("targets and SSH hosts come from the profile or a validated override", asyn
   assert.match(err.join("\n"), /page9 has no Page quotas/);
   assert.equal(await main(["--target", "nope", "list"], { transport: refuse, ...io }), 2);
   assert.equal(
-    await main(["--ssh-host", "-oProxyCommand=x", "list"], { transport: refuse, ...io }),
+    await main([...TARGET, "--ssh-host", "-oProxyCommand=x", "list"], { transport: refuse, ...io }),
     2,
   );
+});
+
+test("every command needs an explicit --target, and nothing is sent without one", async () => {
+  const refuse = async () => {
+    throw new Error("transport must not run");
+  };
+  for (const argv of [
+    ["set", "domain", "anaconda.com", "0"],
+    ["set", "email", "a@example.com", "251", "--note", "x", "--create-only"],
+    ["delete", "domain", "anaconda.com"],
+    ["--dry-run", "set", "domain", "anaconda.com", "0"],
+    ["--dry-run", "delete", "domain", "anaconda.com"],
+    ["--ssh-host", "root@lab1", "delete", "email", "a@example.com"],
+    ["check"],
+    ["list"],
+    ["get", "domain", "anaconda.com"],
+  ]) {
+    const command = argv.find((arg) => ["check", "list", "get", "set", "delete"].includes(arg));
+    const message = `${command} needs --target page10 or pages. There is no default target, so a command can't write to a D1 it didn't name.`;
+    assert.throws(() => parseArgs(argv), { name: "UsageError", message }, JSON.stringify(argv));
+    const { err, io } = capture();
+    assert.equal(await main(argv, { transport: refuse, ...io }), 2, JSON.stringify(argv));
+    assert.equal(err[0], message);
+  }
+  for (const target of QUOTA_TARGETS)
+    assert.equal(parseArgs(["--target", target, "set", "domain", "x.io", "0"]).target, target);
 });
 
 // --- Remote command and dry run -----------------------------------------------
@@ -412,27 +446,34 @@ test("--dry-run prints the remote command and the SQL, and writes nothing", asyn
   const refuse = async () => {
     throw new Error("transport must not run");
   };
-  const argv = ["--dry-run", "set", "email", "O'Brien@Example.com", "251", "--note", "it's ☕"];
+  const argv = [
+    ...TARGET,
+    "--dry-run",
+    "set",
+    "email",
+    "O'Brien@Example.com",
+    "251",
+    "--note",
+    "it's ☕",
+  ];
   assert.equal(await main(argv, { transport: refuse, ...io }), 0);
   const text = out.join("\n");
   const args = parseArgs(argv);
-  // No --target: the default target's profile builds the script.
-  const defaults = targetConfig(DEFAULT_TARGET);
-  assert.equal(text, dryRun(args, defaults, NOW));
-  assert.ok(text.startsWith("Dry run: nothing was sent.\n"));
+  assert.equal(text, dryRun(args, pagesConfig, NOW));
+  assert.ok(text.startsWith(`Dry run: nothing was sent.\nTarget: ${targetLabel(pagesConfig)}\n`));
   assert.ok(
     text.includes(
       'Each step runs `ssh -T -o BatchMode=yes -o ConnectTimeout=20 -- lab1 "bash -c <script>"`',
     ),
   );
-  assert.ok(text.includes(`The remote script:\n\n${remoteScript(defaults)}\n`));
+  assert.ok(text.includes(`The remote script:\n\n${remoteScript(pagesConfig)}\n`));
   assert.ok(text.includes(`-- preflight\n${checkSql(args.rule).trimEnd()}`));
   assert.ok(text.includes(`-- write\n${setSql({ ...args, now: NOW }).trimEnd()}`));
   assert.ok(text.endsWith("The write runs only if the preflight passes."));
   assert.ok(!text.includes("o'brien") && !text.includes("it's"));
 
   const list = capture();
-  assert.equal(await main(["list", "--dry-run"], { transport: refuse, ...list.io }), 0);
+  assert.equal(await main([...TARGET, "list", "--dry-run"], { transport: refuse, ...list.io }), 0);
   assert.ok(list.out.join("\n").endsWith(`-- list\n${listSql().trimEnd()}`));
 
   // A delete reads its rows with the preflight, shows them, and writes nothing.
@@ -443,7 +484,7 @@ test("--dry-run prints the remote command and the SQL, and writes nothing", asyn
   const { transport, calls } = sqliteTransport(db);
   const remove = capture();
   assert.equal(
-    await main(["--dry-run", "delete", "domain", "X.io"], { transport, ...remove.io }),
+    await main([...TARGET, "--dry-run", "delete", "domain", "X.io"], { transport, ...remove.io }),
     0,
   );
   assert.equal(calls.length, 1);
@@ -461,7 +502,7 @@ test("--dry-run prints the remote command and the SQL, and writes nothing", asyn
 
   const nothing = capture();
   assert.equal(
-    await main(["--dry-run", "delete", "domain", "z.io"], { transport, ...nothing.io }),
+    await main([...TARGET, "--dry-run", "delete", "domain", "z.io"], { transport, ...nothing.io }),
     0,
   );
   assert.ok(
@@ -478,25 +519,31 @@ test("set preflights, writes once and reports the rule", async (t) => {
   const { transport, calls } = sqliteTransport(db);
   const { out, io } = capture();
   assert.equal(
-    await main(["set", "email", "Lead@Example.com", "251", "--note", "test"], { transport, ...io }),
+    await main([...TARGET, "set", "email", "Lead@Example.com", "251", "--note", "test"], {
+      transport,
+      ...io,
+    }),
     0,
   );
   assert.equal(calls.length, 2);
   assert.equal(calls[0], checkSql({ kind: "email", value: "lead@example.com" }));
   assert.ok(isWrite(calls[1]));
-  assert.equal(out[0], "Set email rule for lead@example.com: limit 251 (was no rule).");
+  assert.equal(out[0], `Set email rule for lead@example.com ${ON}: limit 251 (was no rule).`);
   assert.match(out.at(-1), /within 5 minutes/);
 
   const paused = capture();
   assert.equal(
-    await main(["set", "email", "lead@example.com", "0"], { transport, ...paused.io }),
+    await main([...TARGET, "set", "email", "lead@example.com", "0"], { transport, ...paused.io }),
     0,
   );
-  assert.equal(paused.out[0], "Set email rule for lead@example.com: limit 0 (was limit 251).");
+  assert.equal(
+    paused.out[0],
+    `Set email rule for lead@example.com ${ON}: limit 0 (was limit 251).`,
+  );
   assert.match(paused.out.at(-1), /Limit 0 pauses Page creation/);
 
   const listed = capture();
-  assert.equal(await main(["list"], { transport, ...listed.io }), 0);
+  assert.equal(await main([...TARGET, "list"], { transport, ...listed.io }), 0);
   assert.deepEqual(listed.out, [
     "kind\tstored value\tlimit\tupdated",
     `email\t"lead@example.com"\t0\t${new Date(NOW).toISOString()}`,
@@ -507,19 +554,22 @@ test("--create-only never replaces a rule", async (t) => {
   const db = await quotaDb(t);
   const { transport, calls } = sqliteTransport(db);
   assert.equal(
-    await main(["set", "email", "a@example.com", "300"], { transport, ...capture().io }),
+    await main([...TARGET, "set", "email", "a@example.com", "300"], { transport, ...capture().io }),
     0,
   );
   const { err, io } = capture();
   const before = calls.length;
   assert.equal(
-    await main(["set", "email", "a@example.com", "251", "--create-only"], { transport, ...io }),
+    await main([...TARGET, "set", "email", "a@example.com", "251", "--create-only"], {
+      transport,
+      ...io,
+    }),
     1,
   );
   assert.equal(calls.length, before + 1, "only the preflight ran");
   assert.match(
     err.join("\n"),
-    /already exists\. --create-only left it unchanged:\nemail\t"a@example\.com"\t300\t/,
+    /already exists on pages \(s3:\/\/[^)]+\/standalone\/pages-live\)\. --create-only left it unchanged:\nemail\t"a@example\.com"\t300\t/,
   );
 
   // A stored row the Worker reads as the same email counts as existing.
@@ -528,7 +578,7 @@ test("--create-only never replaces a rule", async (t) => {
   );
   const other = capture();
   assert.equal(
-    await main(["set", "email", "b@example.com", "251", "--create-only"], {
+    await main([...TARGET, "set", "email", "b@example.com", "251", "--create-only"], {
       transport,
       ...other.io,
     }),
@@ -543,7 +593,10 @@ test("nothing is written when a table or the database cell is missing", async (t
   const empty = sqliteTransport(db);
   const { err, io } = capture();
   assert.equal(
-    await main(["set", "email", "a@example.com", "251"], { transport: empty.transport, ...io }),
+    await main([...TARGET, "set", "email", "a@example.com", "251"], {
+      transport: empty.transport,
+      ...io,
+    }),
     1,
   );
   assert.equal(empty.calls.length, 1);
@@ -557,7 +610,7 @@ test("nothing is written when a table or the database cell is missing", async (t
   });
   const cell = capture();
   assert.equal(
-    await main(["delete", "email", "a@example.com"], { transport: noCell, ...cell.io }),
+    await main([...TARGET, "delete", "email", "a@example.com"], { transport: noCell, ...cell.io }),
     1,
   );
   assert.match(
@@ -575,7 +628,10 @@ test("after a write error the rule is read back, and the write is never re-sent"
   const committed = sqliteTransport(await quotaDb(t), { after: failWrite });
   const landed = capture();
   assert.equal(
-    await main(["set", ...rule, "251"], { transport: committed.transport, ...landed.io }),
+    await main([...TARGET, "set", ...rule, "251"], {
+      transport: committed.transport,
+      ...landed.io,
+    }),
     0,
   );
   assert.equal(committed.calls.length, 3);
@@ -583,7 +639,7 @@ test("after a write error the rule is read back, and the write is never re-sent"
   assert.equal(committed.calls[2], getSql({ kind: "email", value: "a@example.com" }));
   assert.match(
     landed.err.join("\n"),
-    /request timed out[^]*does not prove nothing was written[^]*Requested state observed: the set landed\. Don't run it again\./,
+    /The set on pages \(s3:\/\/nteract-celld-lab-621741996708\/standalone\/pages-live\) failed: [^]*request timed out[^]*does not prove nothing was written[^]*Requested state observed on pages \(s3:\/\/nteract-celld-lab-621741996708\/standalone\/pages-live\): the set landed\. Don't run it again\./,
   );
 
   // The write did not commit. The script still doesn't promise a retry is safe.
@@ -593,16 +649,19 @@ test("after a write error the rule is read back, and the write is never re-sent"
   });
   const notLanded = capture();
   assert.equal(
-    await main(["set", ...rule, "251"], { transport: lost.transport, ...notLanded.io }),
+    await main([...TARGET, "set", ...rule, "251"], { transport: lost.transport, ...notLanded.io }),
     1,
   );
   assert.equal(lost.calls.filter(isWrite).length, 1);
   const lostText = notLanded.err.join("\n");
   assert.match(
     lostText,
-    /Requested state not observed\. Current state:\n {2}no email rule for a@example\.com\n/,
+    /Requested state not observed on pages \(s3:\/\/nteract-celld-lab-621741996708\/standalone\/pages-live\)\. Current state:\n {2}no email rule for a@example\.com\n/,
   );
   assert.match(lostText, /Reconcile before running anything again/);
+  assert.ok(
+    lostText.includes("(`node scripts/quota-rules.mjs --target pages get email a@example.com`)"),
+  );
   assert.doesNotMatch(lostText, /safe/);
 
   // The write committed, lost its response, and a newer change replaced it
@@ -619,19 +678,22 @@ test("after a write error the rule is read back, and the write is never re-sent"
   });
   const replaced = capture();
   assert.equal(
-    await main(["set", ...rule, "251"], { transport: overwritten.transport, ...replaced.io }),
+    await main([...TARGET, "set", ...rule, "251"], {
+      transport: overwritten.transport,
+      ...replaced.io,
+    }),
     1,
   );
   assert.equal(overwritten.calls.filter(isWrite).length, 1);
   assert.match(
     replaced.err.join("\n"),
-    /Requested state not observed\. Current state:\n {2}email\t"a@example\.com"\t900\t[^]*committed and a newer change replaced it[^]*could overwrite their change/,
+    /Requested state not observed on pages [^\n]*\. Current state:\n {2}email\t"a@example\.com"\t900\t[^]*committed and a newer change replaced it[^]*could overwrite their change/,
   );
 
   // A delete that committed, then the read-back itself fails.
   const db = await quotaDb(t);
   const seed = sqliteTransport(db);
-  await main(["set", ...rule, "251"], { transport: seed.transport, ...capture().io });
+  await main([...TARGET, "set", ...rule, "251"], { transport: seed.transport, ...capture().io });
   const blind = sqliteTransport(db, {
     after: (result, sql, n) =>
       n >= 2
@@ -639,11 +701,14 @@ test("after a write error the rule is read back, and the write is never re-sent"
         : undefined,
   });
   const unknown = capture();
-  assert.equal(await main(["delete", ...rule], { transport: blind.transport, ...unknown.io }), 1);
+  assert.equal(
+    await main([...TARGET, "delete", ...rule], { transport: blind.transport, ...unknown.io }),
+    1,
+  );
   assert.equal(blind.calls.filter(isWrite).length, 1);
   assert.match(
     unknown.err.join("\n"),
-    /read-back failed too[^]*state is unknown\. Run `get email a@example.com` and reconcile/,
+    /read-back failed too[^]*state on pages \(s3:\/\/nteract-celld-lab-621741996708\/standalone\/pages-live\) is unknown\. Run `node scripts\/quota-rules\.mjs --target pages get email a@example\.com` and reconcile/,
   );
   assert.deepEqual(db.rows("SELECT * FROM pages_quota_rules"), []);
 });
@@ -652,17 +717,20 @@ test("delete and get report an absent rule without writing", async (t) => {
   const db = await quotaDb(t);
   const { transport, calls } = sqliteTransport(db);
   const gone = capture();
-  assert.equal(await main(["delete", "domain", "x.io"], { transport, ...gone.io }), 0);
-  assert.deepEqual(gone.out, ["No domain rule for x.io. Nothing to delete."]);
+  assert.equal(await main([...TARGET, "delete", "domain", "x.io"], { transport, ...gone.io }), 0);
+  assert.deepEqual(gone.out, [`No domain rule for x.io ${ON}. Nothing to delete.`]);
   assert.equal(calls.filter(isWrite).length, 0);
   const got = capture();
-  assert.equal(await main(["get", "domain", "X.IO"], { transport, ...got.io }), 0);
+  assert.equal(await main([...TARGET, "get", "domain", "X.IO"], { transport, ...got.io }), 0);
   assert.deepEqual(got.out, ["No domain rule for x.io."]);
 
-  await main(["set", "domain", "x.io", "40"], { transport, ...capture().io });
+  await main([...TARGET, "set", "domain", "x.io", "40"], { transport, ...capture().io });
   const removed = capture();
-  assert.equal(await main(["delete", "domain", "x.io"], { transport, ...removed.io }), 0);
-  assert.equal(removed.out[0], "Deleted the domain rule for x.io:");
+  assert.equal(
+    await main([...TARGET, "delete", "domain", "x.io"], { transport, ...removed.io }),
+    0,
+  );
+  assert.equal(removed.out[0], `Deleted the domain rule for x.io ${ON}:`);
   assert.match(removed.out[1], /^ {2}domain\t"x\.io"\t40\t/);
   assert.match(removed.out[2], /fall back to email rules or the default, 250\.$/);
 });
@@ -693,7 +761,10 @@ test("rules stored in a noncanonical form are found, flagged and deleted", async
   pageQuota.resetPageQuotaCache(db);
 
   const got = capture();
-  assert.equal(await main(["get", "domain", "example.com"], { transport, ...got.io }), 0);
+  assert.equal(
+    await main([...TARGET, "get", "domain", "example.com"], { transport, ...got.io }),
+    0,
+  );
   assert.equal(got.out.length, 2);
   assert.match(
     got.out[0],
@@ -705,7 +776,7 @@ test("rules stored in a noncanonical form are found, flagged and deleted", async
   );
 
   const listed = capture();
-  assert.equal(await main(["list"], { transport, ...listed.io }), 0);
+  assert.equal(await main([...TARGET, "list"], { transport, ...listed.io }), 0);
   assert.match(listed.out.join("\n"), /" example\.com "\t7\t.*shadowed by a newer row/);
   assert.match(
     listed.out.join("\n"),
@@ -714,8 +785,11 @@ test("rules stored in a noncanonical form are found, flagged and deleted", async
 
   // The operator can name the rule in any spelling the Worker accepts.
   const removed = capture();
-  assert.equal(await main(["delete", "domain", "Example.COM"], { transport, ...removed.io }), 0);
-  assert.equal(removed.out[0], "Deleted 2 stored rows for the domain rule for example.com:");
+  assert.equal(
+    await main([...TARGET, "delete", "domain", "Example.COM"], { transport, ...removed.io }),
+    0,
+  );
+  assert.equal(removed.out[0], `Deleted 2 stored rows for the domain rule for example.com ${ON}:`);
   assert.equal(calls.filter(isWrite).length, 1);
   assert.deepEqual(
     db.rows("SELECT match_kind, match_value FROM pages_quota_rules ORDER BY match_value"),
@@ -744,10 +818,10 @@ test("a row changed after the preflight survives the delete and is reported", as
     },
   });
   const { err, io } = capture();
-  assert.equal(await main(["delete", "domain", "x.io"], { transport, ...io }), 1);
+  assert.equal(await main([...TARGET, "delete", "domain", "x.io"], { transport, ...io }), 1);
   assert.match(
     err.join("\n"),
-    /Requested state not observed\. Current state:\n {2}domain\t"x\.io"\t80\t[^]*changed after the preflight read it[^]*Reconcile before running anything again/,
+    /Requested state not observed on pages [^\n]*\. Current state:\n {2}domain\t"x\.io"\t80\t[^]*changed after the preflight read it[^]*Reconcile before running anything again/,
   );
   assert.equal(db.rows("SELECT page_limit FROM pages_quota_rules")[0].page_limit, 80);
 });
@@ -759,18 +833,22 @@ test("set reports older rows that match the same rule", async (t) => {
   );
   const { transport } = sqliteTransport(db);
   const { out, io } = capture();
-  assert.equal(await main(["set", "domain", "x.io", "40"], { transport, ...io }), 0);
-  assert.equal(out[0], "Set domain rule for x.io: limit 40 (was limit 3).");
+  assert.equal(await main([...TARGET, "set", "domain", "x.io", "40"], { transport, ...io }), 0);
+  assert.equal(out[0], `Set domain rule for x.io ${ON}: limit 40 (was limit 3).`);
   assert.match(out[1], /^domain\t"X\.IO"\t3\t.*shadowed by a newer row\)$/);
   assert.match(out[2], /^domain\t"x\.io"\t40\t[^(]*$/);
-  assert.match(out[3], /no longer apply\. `delete domain x\.io` removes all of them\./);
+  assert.ok(
+    out[3].includes(
+      "no longer apply. `node scripts/quota-rules.mjs --target pages delete domain x.io` removes all of them.",
+    ),
+  );
 });
 
 test("check reports the tables, schema version and rule count", async (t) => {
   const db = await quotaDb(t);
   const { transport } = sqliteTransport(db);
   const { out, io } = capture();
-  assert.equal(await main(["check"], { transport, ...io }), 0);
+  assert.equal(await main([...TARGET, "check"], { transport, ...io }), 0);
   assert.deepEqual(out.slice(1), [
     `D1 pages-next-auth: ${AUTH_D1.cell}`,
     "Tables: pages_quota_rules, pages_quota_schema (schema version 1)",
@@ -780,7 +858,10 @@ test("check reports the tables, schema version and rule count", async (t) => {
     "INSERT INTO pages_quota_schema (version, name, applied_at) VALUES (2, 'future', 'x')",
   );
   const newer = capture();
-  assert.equal(await main(["set", "email", "a@example.com", "1"], { transport, ...newer.io }), 1);
+  assert.equal(
+    await main([...TARGET, "set", "email", "a@example.com", "1"], { transport, ...newer.io }),
+    1,
+  );
   assert.match(newer.err.join("\n"), /version 2, newer than this script knows/);
 });
 
@@ -790,7 +871,10 @@ test("list flags hand-written values the Worker reads differently", async (t) =>
     .exec(`INSERT INTO pages_quota_rules (match_kind, match_value, page_limit, updated_at) VALUES
     ('domain', 'Example.COM', 3, ${NOW}), ('email', 'not an email', 4, ${NOW})`);
   const { out, io } = capture();
-  assert.equal(await main(["list"], { transport: sqliteTransport(db).transport, ...io }), 0);
+  assert.equal(
+    await main([...TARGET, "list"], { transport: sqliteTransport(db).transport, ...io }),
+    0,
+  );
   assert.match(
     out[1],
     /^domain\t"Example\.COM"\t3\t.*\(not canonical: the Worker reads it as example\.com\)$/,

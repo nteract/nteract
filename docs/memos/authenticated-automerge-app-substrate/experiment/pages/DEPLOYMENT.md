@@ -456,19 +456,23 @@ through the live owner of `pages-next-auth`, under its fence and in one
 transaction. The host, service, binary, bucket and database come from the
 target's deployment profile.
 
+Every command names its target. There is no default, so a command rerun from
+shell history after a new target ships still writes where it said it would.
+A command without `--target` exits 2 before it sends anything.
+
 ```bash
-node scripts/quota-rules.mjs check                     # tables, schema version, rule count
-node scripts/quota-rules.mjs list
-node scripts/quota-rules.mjs get    email rgbkrk@gmail.com
-node scripts/quota-rules.mjs set    email rgbkrk@gmail.com 1000 --note "design partner"
-node scripts/quota-rules.mjs set    domain anaconda.com 500
-node scripts/quota-rules.mjs set    email someone@example.com 0
-node scripts/quota-rules.mjs delete domain anaconda.com
+node scripts/quota-rules.mjs --target pages check      # tables, schema version, rule count
+node scripts/quota-rules.mjs --target pages list
+node scripts/quota-rules.mjs --target pages get    email rgbkrk@gmail.com
+node scripts/quota-rules.mjs --target pages set    email rgbkrk@gmail.com 1000 --note "design partner"
+node scripts/quota-rules.mjs --target pages set    domain anaconda.com 500
+node scripts/quota-rules.mjs --target pages set    email someone@example.com 0
+node scripts/quota-rules.mjs --target page10 delete domain anaconda.com
 ```
 
 | Option | Meaning |
 | --- | --- |
-| `--target NAME` | Deployment profile, `pages` by default; pass `--target page10` for Page10. Only a profile with `pageQuota` and `d1` is accepted. |
+| `--target NAME` | Required for every command: `pages` or `page10`. Only a profile with `pageQuota` and `d1` is accepted. |
 | `--ssh-host HOST` | SSH destination, the profile's host (`lab1`) by default, for example `root@lab1`. |
 | `--dry-run` | Print the remote script and every SQL step, and write nothing. `delete` runs its read-only preflight to show the stored rows it would remove; every other command sends nothing. |
 | `--create-only` | `set` only: refuse when the rule already exists. |
@@ -505,6 +509,12 @@ loopback firewall resets connections from any other uid.
   `pages_quota_rules` and `pages_quota_schema` must exist, at schema version 1.
   The script never creates a table. The Worker's migration owns both, so after
   deploying a quota build, call `list_pages` once before the first rule.
+- **Receipts name the target.** Every `set` and `delete` result, every
+  failure and read-back message, and the dry-run header name the target and
+  its prefix, for example `on pages
+  (s3://nteract-celld-lab-621741996708/standalone/pages-live)`. Commands the
+  script suggests, such as the `get` to reconcile with, carry the same
+  `--target` and `--ssh-host`.
 - **Five-minute cache.** Each Worker isolate reads the rule table at most once
   every five minutes. A change can take that long to apply, and different
   isolates can disagree until then. Poll `list_pages` for `quota.limit` rather
@@ -527,8 +537,11 @@ its own.
   exits 1. That state doesn't show the write failed. The write may have
   committed, lost its response, and been replaced by a newer change before the
   read-back; running it again would overwrite that change. Reconcile first:
-  find out who else changed the rule, and decide from the current state.
-- **Read-back failed.** The state is unknown. Run `get` and reconcile before
+  find out who else changed the rule, and decide from the current state. The
+  message names the target and prints the exact `get` to run, with its
+  `--target`.
+- **Read-back failed.** The state is unknown. Run the printed
+  `node scripts/quota-rules.mjs --target <target> get …` and reconcile before
   running anything again.
 
 A `delete` also reports "requested state not observed" without any error when

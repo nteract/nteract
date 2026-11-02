@@ -15,9 +15,17 @@ import {
   normalizeRuleMatch,
   validPageLimit,
 } from "../worker/quota-rule-match.mjs";
-import { AUTH_D1, deploymentProfile } from "./deployment/profiles.mjs";
+import { AUTH_D1, QUALIFIED_TARGETS, deploymentProfile } from "./deployment/profiles.mjs";
 
-export const DEFAULT_TARGET = "pages";
+/** Qualified targets with Page quotas, which `--target` names. There is no
+ * default: every command names its target, so a rerun from shell history
+ * can't land on a different target's D1. */
+export const QUOTA_TARGETS = Object.freeze(
+  QUALIFIED_TARGETS.filter((target) => {
+    const profile = deploymentProfile(target);
+    return profile.d1 !== undefined && profile.pageQuota !== undefined;
+  }),
+);
 /** The newest `pages_quota_schema` version this script knows: the last entry
  * of QUOTA_MIGRATIONS in worker/page-quota.mjs. A newer schema may change the
  * columns, so the script refuses to write until it is updated. */
@@ -34,14 +42,14 @@ export const EXIT_CELL_MISSING = 3;
 export const EXIT_RUNTIME_MISMATCH = 4;
 
 export const USAGE = `Usage:
-  node scripts/quota-rules.mjs [options] check
-  node scripts/quota-rules.mjs [options] list
-  node scripts/quota-rules.mjs [options] get    email|domain VALUE
-  node scripts/quota-rules.mjs [options] set    email|domain VALUE LIMIT [--note TEXT] [--create-only]
-  node scripts/quota-rules.mjs [options] delete email|domain VALUE
+  node scripts/quota-rules.mjs --target NAME [options] check
+  node scripts/quota-rules.mjs --target NAME [options] list
+  node scripts/quota-rules.mjs --target NAME [options] get    email|domain VALUE
+  node scripts/quota-rules.mjs --target NAME [options] set    email|domain VALUE LIMIT [--note TEXT] [--create-only]
+  node scripts/quota-rules.mjs --target NAME [options] delete email|domain VALUE
 
 Options:
-  --target NAME     Deployment profile (default ${DEFAULT_TARGET})
+  --target NAME     Required. Deployment profile: ${QUOTA_TARGETS.join(" or ")}
   --ssh-host HOST   SSH destination (default: the profile's host)
   --dry-run         Print the remote script and the SQL; write nothing. delete
                     runs its read-only preflight to show the rows it would remove
@@ -105,7 +113,7 @@ export function parseNote(text) {
 }
 
 export function parseArgs(argv) {
-  const options = { target: DEFAULT_TARGET, sshHost: undefined, dryRun: false };
+  const options = { target: undefined, sshHost: undefined, dryRun: false };
   let note;
   let createOnly = false;
   const positional = [];
@@ -147,6 +155,10 @@ export function parseArgs(argv) {
     );
   if (command !== "set" && (note !== undefined || createOnly))
     throw new UsageError("--note and --create-only apply only to set");
+  if (options.target === undefined)
+    throw new UsageError(
+      `${command} needs --target ${QUOTA_TARGETS.join(" or ")}. There is no default target, so a command can't write to a D1 it didn't name.`,
+    );
   const args = { command, ...options };
   if (COMMANDS[command]) args.rule = parseRule(rest[0], rest[1]);
   if (command === "set") {
@@ -455,6 +467,24 @@ const missingTable = (error) =>
 
 const describe = ({ kind, value }) => `${kind} rule for ${value}`;
 
+/** The target and its storage prefix, named in every write's output. */
+export const targetLabel = (config) => `${config.target} (${config.bucket})`;
+
+const SHELL_WORD = /^[A-Za-z0-9@%+=:,./_-]+$/;
+const shellWord = (value) => (SHELL_WORD.test(value) ? value : shellQuote(value));
+
+/** The exact command line that reruns `command` against the same target and
+ * SSH destination. */
+export function commandLine(config, args, command, ...rest) {
+  return [
+    "node scripts/quota-rules.mjs",
+    `--target ${shellWord(config.target)}`,
+    ...(args.sshHost ? [`--ssh-host ${shellWord(args.sshHost)}`] : []),
+    command,
+    ...rest.map(shellWord),
+  ].join(" ");
+}
+
 /** One stored row, flagged when the Worker reads it differently. */
 export function formatRule(row, { shadowed = false } = {}) {
   const note = row.note === null || row.note === undefined ? "" : `  note: ${row.note}`;
@@ -600,7 +630,7 @@ async function get({ transport, config, args, out }) {
  * been replaced since. Only the requested state, observed, ends the run
  * cleanly. Nothing is ever re-sent. */
 async function afterWriteError({ transport, config, args, err, error, landed, command }) {
-  err(`The ${command} failed: ${error.message}`);
+  err(`The ${command} on ${targetLabel(config)} failed: ${error.message}`);
   if (!error.notRun) err("An error does not prove nothing was written. Reading the rule back.");
   let matches;
   try {
@@ -608,30 +638,34 @@ async function afterWriteError({ transport, config, args, err, error, landed, co
   } catch (readError) {
     err(`The read-back failed too: ${readError.message}`);
     err(
-      `The rule's state is unknown. Run \`get ${args.rule.kind} ${args.rule.value}\` and reconcile before running anything again.`,
+      `The rule's state on ${targetLabel(config)} is unknown. Run \`${commandLine(config, args, "get", args.rule.kind, args.rule.value)}\` and reconcile before running anything again.`,
     );
     return 1;
   }
   if (landed(matches)) {
-    err(`Requested state observed: the ${command} landed. Don't run it again.`);
+    err(
+      `Requested state observed on ${targetLabel(config)}: the ${command} landed. Don't run it again.`,
+    );
     for (const line of formatMatches(matches)) err(line);
     return 0;
   }
-  return notObserved(err, args.rule, matches, command);
+  return notObserved({ err, config, args, matches, command });
 }
 
-function notObserved(
+function notObserved({
   err,
-  rule,
+  config,
+  args,
   matches,
   command,
   reason = `The ${command} may not have committed, or it committed and a newer change replaced it.`,
-) {
-  err("Requested state not observed. Current state:");
+}) {
+  const { rule } = args;
+  err(`Requested state not observed on ${targetLabel(config)}. Current state:`);
   if (!matches.length) err(`  no ${describe(rule)}`);
   for (const line of formatMatches(matches)) err(`  ${line}`);
   err(
-    `${reason} Reconcile before running anything again: find out who else changed this rule, and decide from the current state. Running the ${command} again could overwrite their change.`,
+    `${reason} Reconcile before running anything again: find out who else changed this rule, and decide from the current state (\`${commandLine(config, args, "get", rule.kind, rule.value)}\`). Running the ${command} again could overwrite their change.`,
   );
   return 1;
 }
@@ -642,12 +676,12 @@ async function set({ transport, config, args, now, out, err }) {
   const current = effectiveRow(before.matches);
   if (createOnly && before.matches.length)
     throw new QuotaRulesError(
-      `An ${describe(rule)} already exists. --create-only left it unchanged:\n${formatMatches(before.matches).join("\n")}`,
+      `An ${describe(rule)} already exists on ${targetLabel(config)}. --create-only left it unchanged:\n${formatMatches(before.matches).join("\n")}`,
     );
   const canonical = before.matches.some((row) => row.match_value === rule.value);
   if (!canonical && before.count >= QUOTA_RULE_LIMIT)
     throw new QuotaRulesError(
-      `The table already holds ${before.count} rules, the most the Worker reads. Delete one first.`,
+      `The table on ${targetLabel(config)} already holds ${before.count} rules, the most the Worker reads. Delete one first.`,
     );
   const at = now();
   const ours = (row) =>
@@ -665,21 +699,21 @@ async function set({ transport, config, args, now, out, err }) {
   const matches = matchingRows(kindRows(groups), rule);
   if (!matches.some((row) => row.match_value === rule.value))
     throw new QuotaRulesError(
-      `The rule was not added: the table reached ${QUOTA_RULE_LIMIT} rules during the write.`,
+      `The rule was not added to ${targetLabel(config)}: the table reached ${QUOTA_RULE_LIMIT} rules during the write.`,
     );
   if (!landed(matches)) {
     if (createOnly)
       throw new QuotaRulesError(
-        `An ${describe(rule)} was added by someone else first and was left unchanged:\n${formatMatches(matches).join("\n")}`,
+        `An ${describe(rule)} was added to ${targetLabel(config)} by someone else first and was left unchanged:\n${formatMatches(matches).join("\n")}`,
       );
-    return notObserved(err, rule, matches, "set");
+    return notObserved({ err, config, args, matches, command: "set" });
   }
   const was = current ? `limit ${current.page_limit}` : "no rule";
-  out(`Set ${describe(rule)}: limit ${limit} (was ${was}).`);
+  out(`Set ${describe(rule)} on ${targetLabel(config)}: limit ${limit} (was ${was}).`);
   for (const line of formatMatches(matches)) out(line);
   if (matches.length > 1)
     out(
-      `Older rows that match the same ${rule.kind} stay stored but no longer apply. \`delete ${rule.kind} ${rule.value}\` removes all of them.`,
+      `Older rows that match the same ${rule.kind} stay stored but no longer apply. \`${commandLine(config, args, "delete", rule.kind, rule.value)}\` removes all of them.`,
     );
   out(
     `Takes effect within ${RULE_CACHE_MINUTES} minutes: each Worker isolate caches the rules.${limit === 0 ? " Limit 0 pauses Page creation for this match." : ""}`,
@@ -691,7 +725,7 @@ async function remove({ transport, config, args, out, err }) {
   const { rule } = args;
   const before = await preflight(transport, config, rule);
   if (!before.matches.length) {
-    out(`No ${describe(rule)}. Nothing to delete.`);
+    out(`No ${describe(rule)} on ${targetLabel(config)}. Nothing to delete.`);
     return 0;
   }
   const landed = (matches) => matches.length === 0;
@@ -703,18 +737,20 @@ async function remove({ transport, config, args, out, err }) {
   }
   const remaining = matchingRows(kindRows(groups), rule);
   if (!landed(remaining))
-    return notObserved(
+    return notObserved({
       err,
-      rule,
-      remaining,
-      "delete",
-      "A stored row changed after the preflight read it, so the delete left that row in place.",
-    );
+      config,
+      args,
+      matches: remaining,
+      command: "delete",
+      reason:
+        "A stored row changed after the preflight read it, so the delete left that row in place.",
+    });
   const count = before.matches.length;
   out(
     count === 1
-      ? `Deleted the ${describe(rule)}:`
-      : `Deleted ${count} stored rows for the ${describe(rule)}:`,
+      ? `Deleted the ${describe(rule)} on ${targetLabel(config)}:`
+      : `Deleted ${count} stored rows for the ${describe(rule)} on ${targetLabel(config)}:`,
   );
   for (const line of formatMatches(before.matches)) out(`  ${line}`);
   const fallback =
@@ -753,6 +789,7 @@ export function dryRun(args, config, at, matches) {
     args.command === "delete"
       ? "Dry run: only the read-only preflight was sent. Nothing was written."
       : "Dry run: nothing was sent.",
+    `Target: ${targetLabel(config)}`,
     "",
     `Each step runs \`${["ssh", ...sshArgs(config).slice(0, -1)].join(" ")} "bash -c <script>"\``,
     "with the step's SQL on stdin. The remote script:",
