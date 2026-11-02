@@ -300,7 +300,7 @@ function App() {
     host.release({ ...options, onError: showError });
     resetDocumentUI();
   }
-  async function install(next, revision, { focus = false } = {}) {
+  async function install(next, revision, { focus = false, focusEmpty = true } = {}) {
     if (!host.install(next, revision, authentication.current?.identity?.principal)) {
       await next.close();
       return false;
@@ -359,7 +359,15 @@ function App() {
     if (next.accessReloadRequired && !next.recoveryPending) void reloadAccess(next);
     const first = next.doc ? (editor.module.orderedBlockIds(next.doc)[0] ?? null) : null;
     activateBlock(first);
-    if (focus) setFocusBlock(first);
+    // An empty Page opens with the caret in its placeholder paragraph, where
+    // a pointer and keyboard are ready for it. A new Page names itself first,
+    // and a phone keeps its keyboard down until someone taps.
+    const empty =
+      focusEmpty &&
+      next.canWrite &&
+      editor.module.isEmptyPage(next.snapshot()) &&
+      matchMedia("(pointer: fine)").matches;
+    if (focus || empty) setFocusBlock(first);
     return true;
   }
   function reloadAccess(previous = host.current) {
@@ -605,6 +613,7 @@ function App() {
   }, []);
   const page = session?.snapshot(),
     threads = page?.comments ?? [];
+  const emptyPage = !!page && !!editor.module?.isEmptyPage(page);
   const shownPreview = page
     ? null
     : visiblePreview(bootPreviewState, {
@@ -750,7 +759,7 @@ function App() {
       setPickerOpen(false);
       setOpening(false);
       setNotice("");
-      if (await install(next, revision)) setTitleFocusRequest(next);
+      if (await install(next, revision, { focusEmpty: false })) setTitleFocusRequest(next);
       void refresh().catch(() => {});
     } catch (error) {
       if (host.isCurrent(revision) && !bannerShows(error)) {
@@ -1233,7 +1242,7 @@ function App() {
                         ?.focus();
                   }}
                 />
-                {page.blocks.map((block) => (
+                {page.blocks.map((block, index) => (
                   <section className="page-block" data-block-id={block.id} key={block.id}>
                     {block.format === "automerge-rich-text-v1" ? (
                       <WordgardEditor
@@ -1246,6 +1255,11 @@ function App() {
                         onRevealComment={selectComment}
                         toolbarHost={active === block.id ? toolbar : null}
                         toolbarOpen={toolbarOpen}
+                        placeholder={
+                          emptyPage && index === 0 && session.canWrite
+                            ? editor.module.WRITING_PROMPT
+                            : null
+                        }
                         onActivate={() => activateBlock(block.id)}
                         threads={threads}
                         commentTarget={target}
@@ -1262,9 +1276,10 @@ function App() {
                     )}
                   </section>
                 ))}
-                {session.canWrite && (
+                {/* An empty Page shows the prompt inside its paragraph instead. */}
+                {session.canWrite && !emptyPage && (
                   <button type="button" className="writing-continuation" onClick={continueWriting}>
-                    Write something…
+                    {editor.module.WRITING_PROMPT}
                   </button>
                 )}
               </article>

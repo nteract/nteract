@@ -34,6 +34,7 @@ import {
 } from "./local-pages.mjs";
 export { listLocalPages, retireLocalPage } from "./local-pages.mjs";
 import { entryStanding } from "./local-catalog.mjs";
+import { CatchUp } from "./catch-up.mjs";
 import { BACKEND_LIMITS } from "../model/limits.mjs";
 import { retryKey } from "../model/retry-key.mjs";
 import { MISSING_EDITS_MESSAGE } from "../shared/receipts.mjs";
@@ -423,6 +424,17 @@ export class PageSession {
         this.emit();
       },
     });
+    // Whether the status says "Catching up…" after a socket is admitted
+    // (catch-up-machine.mjs). Only receipts and remote changes feed it, so
+    // this person's own typing never shows it.
+    this.catchUp = new CatchUp({
+      scheduler,
+      onChange: () => {
+        if (!this.alive || !this.handle) return;
+        this.renderStatus();
+        this.emit();
+      },
+    });
   }
   get doc() {
     return this.handle?.doc();
@@ -652,6 +664,7 @@ export class PageSession {
     // store after this point starts its round at once. A retiring session
     // disconnected before its archive, so its rounds reach no host.
     this.outbound.close();
+    this.catchUp.close();
     this.unwatchPageLifecycle();
     this.clearPresence();
     this.cancelReceiptRetry();
@@ -987,7 +1000,10 @@ export class PageSession {
     const change = { ...event, remote: this.localDepth === 0 };
     if (this.composing && change.remote) this.deferredBefore ??= event.patchInfo.before;
     else this.notify(this.observers, change);
-    if (change.remote) this.queueSaved();
+    if (change.remote) {
+      this.catchUp.dispatch({ type: "remote" });
+      this.queueSaved();
+    }
     this.emit();
   }
   /** A change to the comments document. Comments render from snapshot(),
@@ -995,7 +1011,10 @@ export class PageSession {
   receiveCommentsChange() {
     if (!this.alive) return;
     this.observeSchema();
-    if (this.localDepth === 0) this.queueSaved();
+    if (this.localDepth === 0) {
+      this.catchUp.dispatch({ type: "remote" });
+      this.queueSaved();
+    }
     this.emit();
   }
   snapshot() {
@@ -1028,7 +1047,10 @@ export class PageSession {
       return false;
     }
     const resuming = this.authRequired && !this.accessDenied && !this.accessReloadRequired;
-    if (resuming) this.syncStatus({ type: "retrying" });
+    if (resuming) {
+      this.syncStatus({ type: "retrying" });
+      this.catchUp.dispatch({ type: "disconnected" });
+    }
     this.dispatch({ type: "signIn", ok: true });
     if (resuming) this.renderStatus();
     this.authProblem = "";
@@ -1084,6 +1106,7 @@ export class PageSession {
     // callback from that retired connection must not reconnect its successor.
     if (!this.sockets.delete(socket)) return;
     this.clearPresence();
+    this.catchUp.dispatch({ type: "disconnected" });
     const admittedAt = this.socketAdmittedAt.get(socket);
     const stable = admittedAt !== undefined && this.now() - admittedAt >= STABLE_CONNECTION_MS;
     if (stable) this.reconnect({ type: "stable" });
@@ -1169,6 +1192,7 @@ export class PageSession {
   }
   showConnectionStatus() {
     this.syncStatus({ type: "unreachable" });
+    this.catchUp.dispatch({ type: "disconnected" });
     if (this.receiptState) this.showReceiptState();
     else {
       this.renderStatus();
@@ -1648,6 +1672,8 @@ export class PageSession {
     if (this.accessDenied && pauseOf(this.phase$.snapshot()).access !== "trash")
       this.accessProblem = DENIED_COPY;
     this.syncStatus({ type: "opened", pending: unconfirmed });
+    // A socket admitted before the handle opened starts catch-up now.
+    if (this.sync$.snapshot().link === "connected") this.catchUp.dispatch({ type: "admitted" });
     this.renderStatus();
     // A pause while opening has already failed start().
     if (this.phase$.snapshot().name === "opening")
@@ -2154,6 +2180,7 @@ export class PageSession {
       }
       this.clearConnectionProblem();
       this.syncStatus({ type: "admitted" });
+      if (this.handle) this.catchUp.dispatch({ type: "admitted" });
       // A receipt that outlasted its transient retries starts over now that
       // the host answers; any other receipt keeps its own retry budget.
       if (this.handle) this.queueSaved({ restart: !!this.receiptState?.outage });
@@ -2838,6 +2865,20 @@ export class PageSession {
       void this.saveReceipt();
     }, 300);
   }
+  /** Whether this replica holds every head the host's receipt answered with:
+   * it has everything the host had when it acknowledged. */
+  holdsFrontier(result) {
+    try {
+      return (
+        A.hasHeads(this.doc, result.durableHeads) &&
+        (!this.commentsDoc ||
+          !Array.isArray(result.durableCommentHeads) ||
+          A.hasHeads(this.commentsDoc, result.durableCommentHeads))
+      );
+    } catch {
+      return false;
+    }
+  }
   sameReceiptHeads(left, right) {
     return left.length === right.length && left.every((head) => right.includes(head));
   }
@@ -2878,6 +2919,7 @@ export class PageSession {
         authRequired: this.authRequired,
         localFailed: !!this.localProblem,
         localCopy: !!this.localPage,
+        catchingUp: this.catchUp.showing,
       }),
     );
   }
@@ -3090,6 +3132,7 @@ export class PageSession {
       state.outage = false;
       this.receiptOutageSince = null;
       this.syncStatus({ type: "acknowledged", revision: receipt });
+      this.catchUp.dispatch({ type: "acknowledged", current: this.holdsFrontier(result) });
       this.cancelReceiptRetry();
       this.receiptRetryAttempts = 0;
       await this.persistLocal({

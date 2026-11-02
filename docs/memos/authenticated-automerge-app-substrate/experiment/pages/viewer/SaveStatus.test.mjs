@@ -9,6 +9,7 @@ import { JSDOM } from "jsdom";
 import {
   LINKS,
   OVERLAY_FLAGS,
+  fullStatus,
   overlayStatus,
   syncStatus,
   viewerSyncStatusMachine,
@@ -245,4 +246,25 @@ test("the saving pulse changes size, never opacity", async () => {
   assert.ok(pulse, "save-status.css defines the pulse");
   assert.match(pulse[1], /transform:/);
   assert.doesNotMatch(pulse[1], /opacity/);
+});
+
+test("Catching up shows its words beside a still dot, on desktop and phones", () => {
+  const status = fullStatus(
+    { name: "saved", revision: 1, pending: false, link: "connected" },
+    { catchingUp: true },
+  );
+  assert.equal(status.key, "catching-up");
+  for (const compact of [false, true]) {
+    const element = render(status, compact);
+    assert.ok(element.classList.contains("save-status--catching-up"));
+    assert.ok(element.classList.contains("save-status--working"));
+    assert.equal(element.getAttribute("aria-live"), "polite");
+    assert.equal(element.getAttribute("aria-atomic"), "true");
+    assert.equal(element.querySelector(".save-status-label").textContent, "Catching up…");
+    assert.equal(element.textContent, "Catching up…");
+    assert.equal(element.querySelector("svg"), null);
+    const dot = element.querySelector(".status-dot");
+    assert.equal(dot.getAttribute("aria-hidden"), "true");
+    assert.equal(dot.classList.contains("is-pulsing"), false);
+  }
 });

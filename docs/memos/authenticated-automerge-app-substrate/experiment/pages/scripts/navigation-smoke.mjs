@@ -111,6 +111,11 @@ try {
   await page.getByRole("link", { name: PRODUCT_NAME, exact: true }).click();
   await page.getByRole("button", { name: "New Page", exact: true }).click();
   await expect(titleInput(page)).toBeFocused();
+  // An empty Page shows its prompt inside its paragraph, not as a button below.
+  const prompt = page.getByRole("button", { name: "Write something…", exact: true });
+  await expect(page.locator("wg-placeholder")).toHaveText("Write something…");
+  await expect(editor(page)).toHaveAttribute("aria-placeholder", "Write something…");
+  await expect(prompt).toHaveCount(0);
   const plainUrl = page.url();
   await titleInput(page).fill("First session saves");
   await titleInput(page).press("Enter");
@@ -128,6 +133,8 @@ try {
   });
   await editor(page).pressSequentially("Written and saved without reopening.");
   await saved(page);
+  await expect(page.locator("wg-placeholder")).toHaveCount(0);
+  await expect(prompt).toBeVisible();
   assert.ok(receiptCalls >= 2, "temporary receipt error retries");
   await page.unroute("**/api/saved?*");
   const plainId = new URL(plainUrl).pathname.split("/")[2];

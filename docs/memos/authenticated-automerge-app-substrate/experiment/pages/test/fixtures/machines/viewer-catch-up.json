@@ -1,0 +1,634 @@
+{
+  "machine": "viewer-catch-up",
+  "description": "Whether one viewer PageSession's status line says Catching up after a socket is admitted. An acknowledged receipt whose host frontier this replica holds ends catch-up. The indicator shows only on evidence that catch-up is still going 300 ms after admission: a receipt said the host was ahead, or remote changes are still arriving. Runs against viewer/catch-up-machine.mjs in viewer/catch-up.test.mjs.",
+  "states": [
+    "detached",
+    "opening",
+    "settling",
+    "catchingUp",
+    "current"
+  ],
+  "events": [
+    "admitted",
+    "disconnected",
+    "elapsed",
+    "remote",
+    "acknowledged"
+  ],
+  "unreachable": [],
+  "cases": {
+    "opening/elapsed": [
+      "behind",
+      "unproven",
+      "stale"
+    ],
+    "opening/acknowledged": [
+      "current",
+      "behind"
+    ],
+    "settling/acknowledged": [
+      "current",
+      "behind"
+    ],
+    "catchingUp/acknowledged": [
+      "current",
+      "behind"
+    ]
+  },
+  "rows": [
+    {
+      "label": "the first admitted socket arms the threshold",
+      "state": {
+        "name": "detached",
+        "attempt": 0
+      },
+      "event": {
+        "type": "admitted"
+      },
+      "expect": {
+        "state": {
+          "name": "opening",
+          "attempt": 1,
+          "behind": false
+        },
+        "effects": [
+          {
+            "type": "startTimer",
+            "attempt": 1,
+            "ms": 300
+          }
+        ]
+      }
+    },
+    {
+      "label": "a socket replaced before the threshold keeps a receipt's evidence and re-arms it",
+      "state": {
+        "name": "opening",
+        "attempt": 2,
+        "behind": true
+      },
+      "event": {
+        "type": "admitted"
+      },
+      "expect": {
+        "state": {
+          "name": "opening",
+          "attempt": 3,
+          "behind": true
+        },
+        "effects": [
+          {
+            "type": "startTimer",
+            "attempt": 3,
+            "ms": 300
+          }
+        ]
+      }
+    },
+    {
+      "label": "a socket replaced while settling starts the threshold again",
+      "state": {
+        "name": "settling",
+        "attempt": 2
+      },
+      "event": {
+        "type": "admitted"
+      },
+      "expect": {
+        "state": {
+          "name": "opening",
+          "attempt": 3,
+          "behind": false
+        },
+        "effects": [
+          {
+            "type": "startTimer",
+            "attempt": 3,
+            "ms": 300
+          }
+        ]
+      }
+    },
+    {
+      "label": "a socket replaced mid catch-up keeps the indicator up",
+      "state": {
+        "name": "catchingUp",
+        "attempt": 2
+      },
+      "event": {
+        "type": "admitted"
+      },
+      "expect": {
+        "state": {
+          "name": "catchingUp",
+          "attempt": 3
+        },
+        "effects": []
+      }
+    },
+    {
+      "label": "a reconnect after catching up checks again",
+      "state": {
+        "name": "current",
+        "attempt": 2
+      },
+      "event": {
+        "type": "admitted"
+      },
+      "expect": {
+        "state": {
+          "name": "opening",
+          "attempt": 3,
+          "behind": false
+        },
+        "effects": [
+          {
+            "type": "startTimer",
+            "attempt": 3,
+            "ms": 300
+          }
+        ]
+      }
+    },
+    {
+      "label": "a disconnect with no socket admitted changes nothing",
+      "state": {
+        "name": "detached",
+        "attempt": 1
+      },
+      "event": {
+        "type": "disconnected"
+      },
+      "expect": {
+        "state": {
+          "name": "detached",
+          "attempt": 1
+        },
+        "effects": [],
+        "rejected": "No socket is admitted"
+      }
+    },
+    {
+      "label": "a disconnect before the threshold disarms it",
+      "state": {
+        "name": "opening",
+        "attempt": 1,
+        "behind": false
+      },
+      "event": {
+        "type": "disconnected"
+      },
+      "expect": {
+        "state": {
+          "name": "detached",
+          "attempt": 1
+        },
+        "effects": [
+          {
+            "type": "cancelTimer"
+          }
+        ]
+      }
+    },
+    {
+      "label": "a disconnect while settling detaches",
+      "state": {
+        "name": "settling",
+        "attempt": 1
+      },
+      "event": {
+        "type": "disconnected"
+      },
+      "expect": {
+        "state": {
+          "name": "detached",
+          "attempt": 1
+        },
+        "effects": []
+      }
+    },
+    {
+      "label": "a disconnect mid catch-up hands the status to the connection",
+      "state": {
+        "name": "catchingUp",
+        "attempt": 1
+      },
+      "event": {
+        "type": "disconnected"
+      },
+      "expect": {
+        "state": {
+          "name": "detached",
+          "attempt": 1
+        },
+        "effects": []
+      }
+    },
+    {
+      "label": "a disconnect after catching up detaches",
+      "state": {
+        "name": "current",
+        "attempt": 1
+      },
+      "event": {
+        "type": "disconnected"
+      },
+      "expect": {
+        "state": {
+          "name": "detached",
+          "attempt": 1
+        },
+        "effects": []
+      }
+    },
+    {
+      "label": "detached has no threshold timer",
+      "state": {
+        "name": "detached",
+        "attempt": 1
+      },
+      "event": {
+        "type": "elapsed",
+        "attempt": 1
+      },
+      "expect": {
+        "state": {
+          "name": "detached",
+          "attempt": 1
+        },
+        "effects": [],
+        "rejected": "No threshold timer is armed"
+      }
+    },
+    {
+      "label": "a receipt already showed the host ahead: show at the threshold",
+      "case": "behind",
+      "state": {
+        "name": "opening",
+        "attempt": 1,
+        "behind": true
+      },
+      "event": {
+        "type": "elapsed",
+        "attempt": 1
+      },
+      "expect": {
+        "state": {
+          "name": "catchingUp",
+          "attempt": 1
+        },
+        "effects": []
+      }
+    },
+    {
+      "label": "no evidence yet at the threshold: settle and show nothing",
+      "case": "unproven",
+      "state": {
+        "name": "opening",
+        "attempt": 1,
+        "behind": false
+      },
+      "event": {
+        "type": "elapsed",
+        "attempt": 1
+      },
+      "expect": {
+        "state": {
+          "name": "settling",
+          "attempt": 1
+        },
+        "effects": []
+      }
+    },
+    {
+      "label": "a timer from an earlier socket is stale",
+      "case": "stale",
+      "state": {
+        "name": "opening",
+        "attempt": 2,
+        "behind": false
+      },
+      "event": {
+        "type": "elapsed",
+        "attempt": 1
+      },
+      "expect": {
+        "state": {
+          "name": "opening",
+          "attempt": 2,
+          "behind": false
+        },
+        "effects": [],
+        "rejected": "The timer is for an earlier socket"
+      }
+    },
+    {
+      "label": "settling has no threshold timer",
+      "state": {
+        "name": "settling",
+        "attempt": 1
+      },
+      "event": {
+        "type": "elapsed",
+        "attempt": 1
+      },
+      "expect": {
+        "state": {
+          "name": "settling",
+          "attempt": 1
+        },
+        "effects": [],
+        "rejected": "No threshold timer is armed"
+      }
+    },
+    {
+      "label": "catching up has no threshold timer",
+      "state": {
+        "name": "catchingUp",
+        "attempt": 1
+      },
+      "event": {
+        "type": "elapsed",
+        "attempt": 1
+      },
+      "expect": {
+        "state": {
+          "name": "catchingUp",
+          "attempt": 1
+        },
+        "effects": [],
+        "rejected": "No threshold timer is armed"
+      }
+    },
+    {
+      "label": "current has no threshold timer",
+      "state": {
+        "name": "current",
+        "attempt": 1
+      },
+      "event": {
+        "type": "elapsed",
+        "attempt": 1
+      },
+      "expect": {
+        "state": {
+          "name": "current",
+          "attempt": 1
+        },
+        "effects": [],
+        "rejected": "No threshold timer is armed"
+      }
+    },
+    {
+      "label": "a remote change with no socket admitted is ignored",
+      "state": {
+        "name": "detached",
+        "attempt": 1
+      },
+      "event": {
+        "type": "remote"
+      },
+      "expect": {
+        "state": {
+          "name": "detached",
+          "attempt": 1
+        },
+        "effects": [],
+        "rejected": "No socket is admitted"
+      }
+    },
+    {
+      "label": "a remote change before the threshold proves nothing",
+      "state": {
+        "name": "opening",
+        "attempt": 1,
+        "behind": false
+      },
+      "event": {
+        "type": "remote"
+      },
+      "expect": {
+        "state": {
+          "name": "opening",
+          "attempt": 1,
+          "behind": false
+        },
+        "effects": [],
+        "rejected": "A remote change before the threshold proves nothing"
+      }
+    },
+    {
+      "label": "remote changes still arriving after the threshold show catch-up",
+      "state": {
+        "name": "settling",
+        "attempt": 1
+      },
+      "event": {
+        "type": "remote"
+      },
+      "expect": {
+        "state": {
+          "name": "catchingUp",
+          "attempt": 1
+        },
+        "effects": []
+      }
+    },
+    {
+      "label": "more remote changes while catching up change nothing",
+      "state": {
+        "name": "catchingUp",
+        "attempt": 1
+      },
+      "event": {
+        "type": "remote"
+      },
+      "expect": {
+        "state": {
+          "name": "catchingUp",
+          "attempt": 1
+        },
+        "effects": [],
+        "rejected": "Catch-up already shows"
+      }
+    },
+    {
+      "label": "a collaborator's change after catching up never shows it again",
+      "state": {
+        "name": "current",
+        "attempt": 1
+      },
+      "event": {
+        "type": "remote"
+      },
+      "expect": {
+        "state": {
+          "name": "current",
+          "attempt": 1
+        },
+        "effects": [],
+        "rejected": "Catch-up already finished"
+      }
+    },
+    {
+      "label": "a receipt with no socket admitted is ignored",
+      "state": {
+        "name": "detached",
+        "attempt": 1
+      },
+      "event": {
+        "type": "acknowledged",
+        "current": true
+      },
+      "expect": {
+        "state": {
+          "name": "detached",
+          "attempt": 1
+        },
+        "effects": [],
+        "rejected": "No socket is admitted"
+      }
+    },
+    {
+      "label": "a receipt at the host's frontier before the threshold: never show",
+      "case": "current",
+      "state": {
+        "name": "opening",
+        "attempt": 1,
+        "behind": false
+      },
+      "event": {
+        "type": "acknowledged",
+        "current": true
+      },
+      "expect": {
+        "state": {
+          "name": "current",
+          "attempt": 1
+        },
+        "effects": [
+          {
+            "type": "cancelTimer"
+          }
+        ]
+      }
+    },
+    {
+      "label": "a receipt behind the host before the threshold is evidence",
+      "case": "behind",
+      "state": {
+        "name": "opening",
+        "attempt": 1,
+        "behind": false
+      },
+      "event": {
+        "type": "acknowledged",
+        "current": false
+      },
+      "expect": {
+        "state": {
+          "name": "opening",
+          "attempt": 1,
+          "behind": true
+        },
+        "effects": []
+      }
+    },
+    {
+      "label": "a receipt at the host's frontier while settling: never show",
+      "case": "current",
+      "state": {
+        "name": "settling",
+        "attempt": 1
+      },
+      "event": {
+        "type": "acknowledged",
+        "current": true
+      },
+      "expect": {
+        "state": {
+          "name": "current",
+          "attempt": 1
+        },
+        "effects": []
+      }
+    },
+    {
+      "label": "a receipt behind the host after the threshold shows catch-up",
+      "case": "behind",
+      "state": {
+        "name": "settling",
+        "attempt": 1
+      },
+      "event": {
+        "type": "acknowledged",
+        "current": false
+      },
+      "expect": {
+        "state": {
+          "name": "catchingUp",
+          "attempt": 1
+        },
+        "effects": []
+      }
+    },
+    {
+      "label": "a receipt at the host's frontier clears catch-up",
+      "case": "current",
+      "state": {
+        "name": "catchingUp",
+        "attempt": 1
+      },
+      "event": {
+        "type": "acknowledged",
+        "current": true
+      },
+      "expect": {
+        "state": {
+          "name": "current",
+          "attempt": 1
+        },
+        "effects": []
+      }
+    },
+    {
+      "label": "a receipt still behind the host keeps catching up",
+      "case": "behind",
+      "state": {
+        "name": "catchingUp",
+        "attempt": 1
+      },
+      "event": {
+        "type": "acknowledged",
+        "current": false
+      },
+      "expect": {
+        "state": {
+          "name": "catchingUp",
+          "attempt": 1
+        },
+        "effects": [],
+        "rejected": "The host is still ahead"
+      }
+    },
+    {
+      "label": "a receipt after catching up changes nothing",
+      "state": {
+        "name": "current",
+        "attempt": 1
+      },
+      "event": {
+        "type": "acknowledged",
+        "current": false
+      },
+      "expect": {
+        "state": {
+          "name": "current",
+          "attempt": 1
+        },
+        "effects": [],
+        "rejected": "Catch-up already finished"
+      }
+    }
+  ]
+}
