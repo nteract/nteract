@@ -2,7 +2,7 @@
 // its credentials on the host. Default is inspection. --apply creates only an
 // absent tunnel; it never adopts, rotates or overwrites one.
 //
-//   CLOUDFLARE_API_TOKEN=... node scripts/deployment/tunnel.mjs --target page10 [--apply]
+//   CLOUDFLARE_API_TOKEN=... node scripts/deployment/tunnel.mjs --target pages [--apply]
 //
 // Cloudflare returns a tunnel's secret only to the request that sets it, so
 // creation and credential installation happen in one run:

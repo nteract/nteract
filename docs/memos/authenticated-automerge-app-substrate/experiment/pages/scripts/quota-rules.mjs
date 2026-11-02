@@ -17,7 +17,7 @@ import {
 } from "../worker/quota-rule-match.mjs";
 import { AUTH_D1, deploymentProfile } from "./deployment/profiles.mjs";
 
-export const DEFAULT_TARGET = "page10";
+export const DEFAULT_TARGET = "pages";
 /** The newest `pages_quota_schema` version this script knows: the last entry
  * of QUOTA_MIGRATIONS in worker/page-quota.mjs. A newer schema may change the
  * columns, so the script refuses to write until it is updated. */

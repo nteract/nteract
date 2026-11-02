@@ -545,6 +545,9 @@ test("index.html names the product in its tab title and header brand", () => {
     assert.ok(html.includes(`<title>${name}</title>`), name);
     assert.ok(html.includes(`class="brand">${name}</a>`), name);
   }
+  const built = withProductName(source);
+  assert.ok(built.includes("<title>Pages</title>"));
+  assert.ok(built.includes('class="brand">Pages</a>'));
   assert.throws(() => withProductName("<p>no shell</p>"), /one <title> and one brand link/);
 });
 

@@ -310,17 +310,71 @@ const targets = Object.freeze({
     tunnelService: "cloudflared-page10.service",
     frozenTargets: Object.freeze(["page7", "page8", "page9"]),
   }),
+  // pages.runtimed.run: the lasting home for Pages. It starts empty, with
+  // Page10's flags and runtime; scripts/project-transfer.mjs copies Projects in.
+  // Its service and prefix carry `-live` because the host still holds a
+  // disabled nteract-pages.service and /etc/nteract-pages from an earlier
+  // prototype, and the installer must never treat those as this target's.
+  pages: Object.freeze({
+    deployment: Object.freeze({
+      host: shared.host,
+      hostname: "pages.runtimed.run",
+      service: "nteract-pages-live",
+      bucket: shared.bucket,
+      prefix: "standalone/pages-live",
+      region: shared.region,
+      listen: "127.0.0.1:9481",
+      internalListen: "127.0.0.1:19481",
+      runtime: shared.runtime,
+      requiredVersion: shared.requiredVersion,
+    }),
+    sharing: true,
+    oauth: true,
+    theme: true,
+    // The viewer loads its editor from content-hashed /chunks/*.js files.
+    viewerChunks: true,
+    // The shell's own files (app.js, app.css, theme.js, mermaid.js and both
+    // WASM runtimes) ship under content-hashed names too.
+    viewerAssets: true,
+    // A Project opens at /project/<id>; older /s/<id> links open it too.
+    projectLinks: true,
+    // The viewer's index routes: /projects and /pages.
+    indexRoutes: true,
+    firewallTable: "nteract_pages_live",
+    firewallMark: "0x00100000",
+    firewallComment: "nteract/preview-infra standalone-pages-live",
+    asyncPersistence: true,
+    compactRecords: true,
+    companyViewDomains: "anaconda.com",
+    catalogIndex: "1",
+    // Each account's Page limit when no quota rule matches it
+    // (worker/page-quota.mjs). It also bounds that account's Trash.
+    pageQuota: "250",
+    // The D1 database holding pages_quota_rules, for scripts/quota-rules.mjs.
+    d1: AUTH_D1,
+    // The Cloudflare edge forwards an unsampled traceparent, and celld's
+    // default parent-based sampler then drops every request-scoped log line.
+    otelTracesSampler: "always_on",
+    editor: "wordgard",
+    tunnelService: "cloudflared-pages-live.service",
+    // Page10 stays deployable, so it is not frozen here.
+    frozenTargets: Object.freeze(["page7", "page8", "page9"]),
+  }),
 });
 export function deploymentProfile(target = "pages-next") {
   if (!Object.hasOwn(targets, target)) throw new Error("Unknown Pages deployment target");
   return targets[target];
 }
-// This release is qualified only for the isolated Page10 prefix.
+// This release is qualified for the isolated Page10 and Pages targets. Page10
+// stays deployable until its Projects are copied to Pages.
 // Historical profiles remain readable for comparison and frozen-release checks.
+export const QUALIFIED_TARGETS = Object.freeze(["page10", "pages"]);
 export function assertQualifiedDeploymentTarget(target) {
   deploymentProfile(target);
-  if (target !== "page10")
-    throw new Error("This build is qualified only for page10; earlier deployments are frozen");
+  if (!QUALIFIED_TARGETS.includes(target))
+    throw new Error(
+      "This build is qualified only for page10 and pages; earlier deployments are frozen",
+    );
 }
 
 export function selectTarget(argv) {

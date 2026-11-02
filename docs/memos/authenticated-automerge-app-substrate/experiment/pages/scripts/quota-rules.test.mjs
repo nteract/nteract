@@ -7,6 +7,7 @@ import * as pageQuota from "../worker/page-quota.mjs";
 import * as shared from "../worker/quota-rule-match.mjs";
 import { AUTH_D1, deploymentProfile } from "./deployment/profiles.mjs";
 import {
+  DEFAULT_TARGET,
   EXIT_CELL_MISSING,
   QUOTA_SCHEMA_VERSION,
   RULE_CACHE_MINUTES,
@@ -282,7 +283,7 @@ test("the SQL runs on the real schema: upsert, create-only, the rule cap and del
 test("arguments are validated before anything is built", () => {
   assert.deepEqual(parseArgs(["set", "email", " A@Example.com ", "251", "--note", "hi"]), {
     command: "set",
-    target: "page10",
+    target: "pages",
     sshHost: undefined,
     dryRun: false,
     rule: { kind: "email", value: "a@example.com" },
@@ -348,6 +349,14 @@ test("targets and SSH hosts come from the profile or a validated override", asyn
   assert.equal(config.bucket, "s3://nteract-celld-lab-621741996708/standalone/page10");
   assert.equal(config.d1, AUTH_D1);
   assert.equal(deploymentProfile("page10").d1.database_id, "pages-next-auth");
+  // The default target is Pages; Page10 stays reachable with --target.
+  const pages = targetConfig(DEFAULT_TARGET);
+  assert.equal(DEFAULT_TARGET, "pages");
+  assert.equal(pages.service, "nteract-pages-live");
+  assert.equal(pages.runtime, "/opt/nteract-pages-live/celld");
+  assert.equal(pages.bucket, "s3://nteract-celld-lab-621741996708/standalone/pages-live");
+  assert.equal(pages.d1, AUTH_D1);
+  assert.equal(pages.defaultLimit, 250);
   assert.equal(targetConfig("page10", "root@lab1").host, "root@lab1");
   for (const host of ["-oProxyCommand=sh", "lab1;id", "lab 1", ""])
     assert.throws(() => targetConfig("page10", host), UsageError, host);
@@ -407,14 +416,16 @@ test("--dry-run prints the remote command and the SQL, and writes nothing", asyn
   assert.equal(await main(argv, { transport: refuse, ...io }), 0);
   const text = out.join("\n");
   const args = parseArgs(argv);
-  assert.equal(text, dryRun(args, config, NOW));
+  // No --target: the default target's profile builds the script.
+  const defaults = targetConfig(DEFAULT_TARGET);
+  assert.equal(text, dryRun(args, defaults, NOW));
   assert.ok(text.startsWith("Dry run: nothing was sent.\n"));
   assert.ok(
     text.includes(
       'Each step runs `ssh -T -o BatchMode=yes -o ConnectTimeout=20 -- lab1 "bash -c <script>"`',
     ),
   );
-  assert.ok(text.includes(`The remote script:\n\n${remoteScript(config)}\n`));
+  assert.ok(text.includes(`The remote script:\n\n${remoteScript(defaults)}\n`));
   assert.ok(text.includes(`-- preflight\n${checkSql(args.rule).trimEnd()}`));
   assert.ok(text.includes(`-- write\n${setSql({ ...args, now: NOW }).trimEnd()}`));
   assert.ok(text.endsWith("The write runs only if the preflight passes."));
@@ -551,7 +562,7 @@ test("nothing is written when a table or the database cell is missing", async (t
   );
   assert.match(
     cell.err.join("\n"),
-    /is not in s3:\/\/nteract-celld-lab-621741996708\/standalone\/page10\. Nothing ran\./,
+    /is not in s3:\/\/nteract-celld-lab-621741996708\/standalone\/pages-live\. Nothing ran\./,
   );
 });
 
