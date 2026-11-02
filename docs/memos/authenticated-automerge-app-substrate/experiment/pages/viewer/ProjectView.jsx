@@ -1,16 +1,48 @@
 import { useEffect, useRef, useState } from "react";
-import { FileText, Home, Plus } from "lucide-react";
+import { Boxes, FileText, Plus } from "lucide-react";
 import { PROJECTS_PATH, pagePath, projectPath, isPlainNavigation } from "../shared/routes.mjs";
-import { createPageInProject, listProjectPages, projectTree, visibleCrumbs } from "./projects.mjs";
+import { listProjectPages, projectTree, visibleCrumbs } from "./projects.mjs";
 
-/** One Project: its home Page, then its Pages as a tree. Owner-only for now.
- * Loading and errors stay local and simple here; the Project view moves to the
- * shared RxJS store pattern when the Pages state-machine tooling lands. */
-export function ProjectView({ tool, projectId, onOpen, onBack, onCreated }) {
+/** Rows under a Project's home Page: the Project's Pages without the home
+ * row, one level shallower since the home Page stands for the Project. */
+export function projectPageRows(pages) {
+  // Without the home row its children have no listed parent, so the tree
+  // puts them at the top level.
+  return projectTree(pages.filter((page) => !page.home));
+}
+
+function PageRows({ rows, onOpen }) {
+  return rows.map(({ page, depth }) => (
+    <li
+      className="page-row"
+      key={page.page_id}
+      style={{ paddingInlineStart: `${0.5 + depth * 1.25}rem` }}
+    >
+      <a
+        className="page-card"
+        href={pagePath(page.page_id)}
+        onClick={(event) => {
+          if (!isPlainNavigation(event)) return;
+          event.preventDefault();
+          void onOpen(page.page_id);
+        }}
+      >
+        <FileText size={19} aria-hidden="true" />
+        <span className="page-card-title">{page.title || "Untitled"}</span>
+      </a>
+    </li>
+  ));
+}
+
+/** One Project: its heading opens the home Page, then its other Pages as a
+ * tree. Owner-only for now. `onCreate()` adds a Page at the top level (the
+ * caller runs it as a cancellable draft). Loading and errors stay local and
+ * simple here; the Project view moves to the shared RxJS store pattern when
+ * the Pages state-machine tooling lands. */
+export function ProjectView({ tool, projectId, onOpen, onBack, onCreate, creating = false }) {
   const [project, setProject] = useState(null);
   const [pages, setPages] = useState(null);
   const [error, setError] = useState("");
-  const [creating, setCreating] = useState(false);
   const generation = useRef(0);
   useEffect(() => {
     const revision = ++generation.current;
@@ -34,33 +66,14 @@ export function ProjectView({ tool, projectId, onOpen, onBack, onCreated }) {
       generation.current++;
     };
   }, [projectId]);
-  async function create() {
-    setCreating(true);
-    setError("");
-    try {
-      const created = await createPageInProject(tool, projectId);
-      onCreated?.();
-      await onOpen(created.page_id);
-    } catch (cause) {
-      setError(cause.message);
-    } finally {
-      setCreating(false);
-    }
-  }
-  const link = (page, children) => (
-    <a
-      className="page-card"
-      href={pagePath(page.page_id)}
-      onClick={(event) => {
-        if (!isPlainNavigation(event)) return;
-        event.preventDefault();
-        void onOpen(page.page_id);
-      }}
-    >
-      {children}
-    </a>
+  const rows = pages ? projectPageRows(pages) : null;
+  const title = project?.title || "Project";
+  const homeId = project?.home_page_id;
+  const newPage = (
+    <button className="primary" onClick={() => onCreate?.()} disabled={creating || !project}>
+      <Plus size={18} aria-hidden="true" /> New Page
+    </button>
   );
-  const tree = pages ? projectTree(pages) : null;
   return (
     <main className="page-library project-view">
       <div className="library-heading">
@@ -76,49 +89,98 @@ export function ProjectView({ tool, projectId, onOpen, onBack, onCreated }) {
           >
             Projects
           </a>
-          <h1>{project?.title ?? "Project"}</h1>
+          <h1>
+            {homeId ? (
+              <a
+                className="project-heading-link"
+                href={pagePath(homeId)}
+                title="Open the Project's home Page"
+                onClick={(event) => {
+                  if (!isPlainNavigation(event)) return;
+                  event.preventDefault();
+                  void onOpen(homeId);
+                }}
+              >
+                {title}
+              </a>
+            ) : (
+              title
+            )}
+          </h1>
           {project?.description && (
             <p className="muted project-description">{project.description}</p>
           )}
         </div>
-        <div className="library-actions">
-          <button className="primary" onClick={create} disabled={creating || !project}>
-            <Plus size={18} aria-hidden="true" /> New Page
-          </button>
-        </div>
+        {rows?.length > 0 && <div className="library-actions">{newPage}</div>}
       </div>
       {error && (
         <p role="alert" className="error">
           {error}
         </p>
       )}
-      {!tree && !error && <p role="status">Loading…</p>}
-      {tree && (
-        <ul className="page-list page-cards" aria-label={`Pages in ${project?.title ?? "Project"}`}>
-          {tree.map(({ page, depth }) => (
-            <li
-              className={page.home ? "page-row project-home" : "page-row"}
-              key={page.page_id}
-              style={{ paddingInlineStart: `${0.5 + depth * 1.25}rem` }}
-            >
-              {link(
-                page,
-                <>
-                  {page.home ? (
-                    <Home size={19} aria-hidden="true" />
-                  ) : (
-                    <FileText size={19} aria-hidden="true" />
-                  )}
-                  <span className="page-card-title">{page.title || "Untitled"}</span>
-                  {page.home && <span className="page-card-meta">Home</span>}
-                </>,
-              )}
-            </li>
-          ))}
-          {tree.length < 2 && <li className="muted project-empty">No other Pages yet.</li>}
+      {!rows && !error && <p role="status">Loading…</p>}
+      {rows && rows.length === 0 && (
+        <div className="project-empty">
+          <p className="muted">No Pages yet</p>
+          {newPage}
+        </div>
+      )}
+      {rows && rows.length > 0 && (
+        <ul className="page-list page-cards" aria-label={`Pages in ${title}`}>
+          <PageRows rows={rows} onOpen={onOpen} />
         </ul>
       )}
     </main>
+  );
+}
+
+/** On a Project's home Page, under the body: the Project's Pages and an
+ * inline "+ New Page" row that adds one at the top level. Owner only; the
+ * caller decides. `pages` are the Project's listed Pages. */
+export function ProjectPages({ title, pages, onOpen, onCreate, creating = false }) {
+  const rows = projectPageRows(pages);
+  return (
+    <section className="project-pages" aria-label={`Pages in ${title || "Project"}`}>
+      <h2 className="project-pages-heading">Pages</h2>
+      <ul className="page-list page-cards">
+        <PageRows rows={rows} onOpen={onOpen} />
+        <li className="page-row project-new-page">
+          <button
+            type="button"
+            className="page-card subtle-button"
+            onClick={() => onCreate()}
+            disabled={creating}
+          >
+            <Plus size={19} aria-hidden="true" />
+            <span className="page-card-title">New Page</span>
+          </button>
+        </li>
+      </ul>
+    </section>
+  );
+}
+
+/** Pages in a Project, counted for its chip: the home Page isn't one. */
+export const projectPageCount = (pages) => pages.filter((page) => !page.home).length;
+
+/** On a Project's home Page, in place of the breadcrumb that repeats the
+ * title: "Project · N Pages", opening the Project view. */
+export function ProjectChip({ projectId, count, onOpenProject }) {
+  return (
+    <nav className="breadcrumbs project-chip-nav" aria-label="Project">
+      <a
+        className="project-chip"
+        href={projectPath(projectId)}
+        onClick={(event) => {
+          if (!isPlainNavigation(event)) return;
+          event.preventDefault();
+          onOpenProject(projectId);
+        }}
+      >
+        <Boxes size={14} aria-hidden="true" />
+        {`Project · ${count} ${count === 1 ? "Page" : "Pages"}`}
+      </a>
+    </nav>
   );
 }
 

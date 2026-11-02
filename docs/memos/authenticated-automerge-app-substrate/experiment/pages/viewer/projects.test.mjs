@@ -4,7 +4,14 @@ import { readPageRoute, projectPath, writePageRoute } from "../shared/routes.mjs
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { createPageInProject, listProjectPages, projectTree } from "./projects.mjs";
-import { Breadcrumbs } from "./ProjectView.jsx";
+import {
+  Breadcrumbs,
+  ProjectChip,
+  ProjectPages,
+  projectPageCount,
+  projectPageRows,
+} from "./ProjectView.jsx";
+import { PagePicker } from "./PagePicker.jsx";
 
 const projectId = "prj_1a160b47-6df1-4983-81eb-489ca5a26812";
 const page = (n) => `0000000${n}-0000-4000-8000-000000000000`;
@@ -106,4 +113,64 @@ test("a Project's home Page folds into the Project crumb; other parents stay", (
   assert.deepEqual(crumbTitles([projectCrumb, parentCrumb]), ["Guide", "Architecture"]);
   // Without its Project crumb, the home crumb is the only way back up.
   assert.deepEqual(crumbTitles([homeCrumb, parentCrumb]), ["Guide", "Architecture"]);
+});
+
+test("a home Page lists its Project's Pages without the home row, then a New Page row", () => {
+  const pages = [
+    { page_id: page(1), title: "Launch", parent_id: null, position: "a0", home: true },
+    { page_id: page(2), title: "Plan", parent_id: page(1), position: "a0" },
+    { page_id: page(3), title: "Detail", parent_id: page(2), position: "a0" },
+    { page_id: page(4), title: "Budget", parent_id: page(1), position: "a1" },
+  ];
+  assert.deepEqual(
+    projectPageRows(pages).map(({ page, depth }) => [page.title, depth]),
+    [
+      ["Plan", 0],
+      ["Detail", 1],
+      ["Budget", 0],
+    ],
+  );
+  assert.equal(projectPageCount(pages), 3);
+  const html = renderToStaticMarkup(
+    createElement(ProjectPages, { title: "Launch", pages, onOpen() {}, onCreate() {} }),
+  );
+  assert.match(html, /aria-label="Pages in Launch"/);
+  assert.doesNotMatch(html, />Launch</, "the home Page isn't a row");
+  assert.match(html, /Plan.*Detail.*Budget.*New Page/s);
+  assert.equal(
+    renderToStaticMarkup(
+      createElement(ProjectPages, { pages: pages.slice(0, 1), onOpen() {}, onCreate() {} }),
+    ).match(/<li/g).length,
+    1,
+    "an empty Project shows only the New Page row",
+  );
+});
+
+test("the Project chip says how many Pages and links to the Project view", () => {
+  for (const [count, text] of [
+    [0, "Project · 0 Pages"],
+    [1, "Project · 1 Page"],
+    [3, "Project · 3 Pages"],
+  ]) {
+    const html = renderToStaticMarkup(
+      createElement(ProjectChip, { projectId, count, onOpenProject() {} }),
+    );
+    assert.match(html, new RegExp(text));
+    assert.match(html, new RegExp(`href="/project/${projectId}"`));
+  }
+});
+
+test("the picker offers New Page in the current Project and in Your items", () => {
+  const props = { open: false, pages: [], onClose() {}, onOpen() {}, onCreate() {} };
+  const plain = renderToStaticMarkup(createElement(PagePicker, props));
+  assert.doesNotMatch(plain, /In Your items/);
+  const split = renderToStaticMarkup(
+    createElement(PagePicker, {
+      ...props,
+      createProject: { project_id: projectId, title: "Launch" },
+      onCreateInProject() {},
+    }),
+  );
+  assert.match(split, /In Launch/);
+  assert.match(split, /In Your items/);
 });

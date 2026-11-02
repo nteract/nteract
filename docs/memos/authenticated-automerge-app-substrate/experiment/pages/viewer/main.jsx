@@ -5,6 +5,7 @@ import { createRoot } from "react-dom/client";
 import {
   ChevronDown,
   FileText,
+  FilePlus,
   FolderInput,
   FolderOpen,
   LogOut,
@@ -55,7 +56,14 @@ import { ProjectCreator } from "./ProjectCreator.jsx";
 import { MoveDialog } from "./MoveDialog.jsx";
 import { moveOrigin } from "./container-dialog-machine.mjs";
 import { TrashView } from "./TrashView.jsx";
-import { Breadcrumbs, ProjectView } from "./ProjectView.jsx";
+import {
+  Breadcrumbs,
+  ProjectChip,
+  ProjectPages,
+  ProjectView,
+  projectPageCount,
+} from "./ProjectView.jsx";
+import { runPageCreation } from "./page-create-machine.mjs";
 import { IndexNav, PagesIndex, ProjectsIndex } from "./IndexViews.jsx";
 import { listProjects, pageLocation } from "./projects.mjs";
 import { closeTrashedSessions, moveToTrashError, restorePage } from "./trash.mjs";
@@ -170,6 +178,9 @@ function App() {
     indexVisits = useRef(0),
     lastRemote = useRef(null),
     creationPending = useRef(false),
+    // The last failed placed create, `{ key, attempt }`: trying the same
+    // placement again replays its request (page-create-machine.mjs).
+    creationAttempt = useRef(null),
     article = useRef(null),
     titleInput = useRef(null),
     // The title value this tab last showed and its selection as native
@@ -779,6 +790,46 @@ function App() {
       setCreating(false);
     }
   }
+  /** New Page in a Project or under a Page (`{ project_id }` or
+   * `{ parent_id }`), then open it. A cancellable draft like create(): a
+   * navigation or account change before create_page writes nothing, and one
+   * during it leaves the new Page closed (page-create-machine.mjs). */
+  async function createIn(placement) {
+    const principal = authentication.current?.identity?.principal;
+    if (creationPending.current || host.current?.authRequired || !principal) return;
+    creationPending.current = true;
+    setCreating(true);
+    setError("");
+    setPickerError("");
+    const revision = host.navigate();
+    const current = () => navigationCurrent(revision, principal);
+    const key = JSON.stringify([principal, placement]);
+    const replay = creationAttempt.current?.key === key ? creationAttempt.current.attempt : null;
+    creationAttempt.current = null;
+    try {
+      const state = await runPageCreation({
+        placement,
+        attempt: replay,
+        call: tool,
+        current,
+        open: async (pageId) => {
+          setPickerOpen(false);
+          await open(pageId);
+        },
+        refresh: () => refresh(),
+      });
+      if (state.name === "failed") {
+        if (state.attempt) creationAttempt.current = { key, attempt: state.attempt };
+        if (current()) {
+          setError(state.error);
+          setPickerError(state.error);
+        }
+      }
+    } finally {
+      creationPending.current = false;
+      setCreating(false);
+    }
+  }
   async function copyLink(pageId = host.current?.pageId) {
     if (!pageId) return;
     try {
@@ -1007,6 +1058,22 @@ function App() {
     item.page_id === page?.page_id ? { ...item, title: page.title } : item,
   );
   const libraryPages = matchingPages(listedPages, libraryQuery);
+  // The open Page's Project, when read_page shows one: Projects are
+  // owner-only in this build, so a visible project_id means this account owns
+  // it. Shared viewers see none and get no create affordances.
+  const ownsProject =
+    !!placement?.project_id &&
+    !!session &&
+    !session.authRequired &&
+    session.pageId === host.current?.pageId &&
+    session.identity?.principal === authentication.current?.identity?.principal;
+  const placementProject = placement?.project_id
+    ? (projects.find((project) => project.project_id === placement.project_id) ??
+      placement.breadcrumbs.find((crumb) => crumb.kind === "project"))
+    : null;
+  const projectPages = placement?.project_id
+    ? listedPages.filter((item) => item.project_id === placement.project_id && !item.shared)
+    : [];
   const usage = quotaNotice(quota);
   const openComments = threads.filter((thread) => thread.state === "open").length;
   // The page menu: Document actions on desktop, the ⋯ menu on phones.
@@ -1045,6 +1112,13 @@ function App() {
             label: "Move to…",
             icon: FolderInput,
             run: startMove,
+          },
+        ownsProject &&
+          !placement.home && {
+            key: "new-sub-page",
+            label: "New sub-page",
+            icon: FilePlus,
+            run: () => createIn({ parent_id: session.pageId }),
           },
         session.canDelete && {
           key: "trash",
@@ -1209,6 +1283,12 @@ function App() {
             onClose={() => setPickerOpen(false)}
             onOpen={open}
             onCreate={create}
+            createProject={
+              ownsProject
+                ? { project_id: placement.project_id, title: placementProject?.title }
+                : null
+            }
+            onCreateInProject={(projectId) => createIn({ project_id: projectId })}
             onTrash={showTrash}
             onOpenIndex={navigateIndex}
             projects={projects}
@@ -1245,11 +1325,19 @@ function App() {
             >
               <article ref={article}>
                 <h1 className="document-print-title sr-only">{page.title || "Untitled"}</h1>
-                <Breadcrumbs
-                  crumbs={placement?.breadcrumbs ?? []}
-                  onOpenProject={(id) => openProject(id)}
-                  onOpenPage={open}
-                />
+                {placement?.home && placement.project_id ? (
+                  <ProjectChip
+                    projectId={placement.project_id}
+                    count={projectPageCount(projectPages)}
+                    onOpenProject={(id) => openProject(id)}
+                  />
+                ) : (
+                  <Breadcrumbs
+                    crumbs={placement?.breadcrumbs ?? []}
+                    onOpenProject={(id) => openProject(id)}
+                    onOpenPage={open}
+                  />
+                )}
                 {session.authRequired && (
                   <p className="error" role="alert">
                     {session.authProblem}{" "}
@@ -1387,6 +1475,15 @@ function App() {
                     {editor.module.WRITING_PROMPT}
                   </button>
                 )}
+                {ownsProject && placement.home && (
+                  <ProjectPages
+                    title={placementProject?.title}
+                    pages={projectPages}
+                    onOpen={open}
+                    onCreate={() => createIn({ project_id: placement.project_id })}
+                    creating={creating}
+                  />
+                )}
               </article>
               <CommentsPanel
                 key={session.pageId}
@@ -1429,7 +1526,8 @@ function App() {
               projectId={projectOpen}
               onOpen={(id) => open(id)}
               onBack={() => navigateIndex("projects")}
-              onCreated={() => void refresh().catch(() => {})}
+              onCreate={() => createIn({ project_id: projectOpen })}
+              creating={creating}
             />
           ) : index?.kind === "projects" ? (
             <ProjectsIndex

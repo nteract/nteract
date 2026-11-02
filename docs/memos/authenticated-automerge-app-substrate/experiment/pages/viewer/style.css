@@ -1894,7 +1894,76 @@ details.account-actions > div a:hover {
   margin: 0.5rem 0 0;
 }
 .project-empty {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.75rem;
   padding: 0.85rem 0.5rem;
+}
+.project-empty p {
+  margin: 0;
+}
+.project-heading-link {
+  color: inherit;
+  text-decoration: none;
+}
+.project-heading-link:hover {
+  text-decoration: underline;
+}
+/* A Project's home Page: its Pages under the body, and the chip that stands
+   in for the breadcrumb repeating the title. */
+.project-pages {
+  margin-top: 2.5rem;
+  padding-top: 1rem;
+  border-top: 1px solid var(--border);
+}
+.project-pages-heading {
+  margin: 0 0 0.5rem;
+  color: var(--muted-foreground);
+  font-size: 0.85rem;
+  font-weight: 600;
+}
+.project-new-page .page-card {
+  width: 100%;
+  min-height: 44px;
+  border: 0;
+  background: none;
+  color: var(--muted-foreground);
+  font: inherit;
+  text-align: start;
+  cursor: pointer;
+}
+.project-new-page .page-card:hover:not(:disabled) {
+  color: var(--foreground);
+}
+.project-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  min-height: 32px;
+  padding: 0.2rem 0.6rem;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--muted-foreground);
+  font-size: 0.8rem;
+  text-decoration: none;
+}
+.project-chip:hover {
+  color: var(--foreground);
+  background: var(--accent);
+}
+.picker-create-choices {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin: 0 1.2rem 1rem;
+}
+.picker-create-choices .picker-create {
+  flex: 1 1 12rem;
+  margin: 0;
+}
+.picker-create-where {
+  font-weight: 400;
 }
 .breadcrumbs ol {
   display: flex;

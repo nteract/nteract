@@ -1,6 +1,7 @@
 // Projects through MCP and the browser on one local OIDC deployment: create a
 // Project and nested Pages over MCP, list them, open them in the browser, follow
-// breadcrumbs, browse /pages and /projects on a phone-sized screen, and trash
+// breadcrumbs, browse /pages and /projects on a phone-sized screen, add Pages
+// from a Project's home Page at the 640px breakpoint, and trash
 // and restore Pages one at a time.
 import assert from "node:assert/strict";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
@@ -198,7 +199,12 @@ try {
   await expect(owner.getByRole("heading", { name: title })).toBeVisible({ timeout: 60000 });
   await expect(owner).toHaveURL(`${origin}/project/${project.project_id}`);
   const list = owner.getByRole("list", { name: `Pages in ${title}` });
-  await expect(list.locator(".project-home")).toContainText("Home");
+  // The home Page isn't a row: the heading opens it.
+  await expect(list.locator(".project-home")).toHaveCount(0);
+  await expect(owner.getByRole("heading", { name: title }).getByRole("link")).toHaveAttribute(
+    "href",
+    `/p/${project.home_page_id}`,
+  );
   await expect(list.getByRole("link", { name: "Roadmap" })).toBeVisible();
   await expect(list.getByRole("link", { name: "Q4 plan" })).toBeVisible();
   await owner.screenshot({ path: `${output}/projects-view.png` });
@@ -397,6 +403,42 @@ try {
   await expect(projectRow).toBeVisible();
   complete(
     "/projects lists the Project with its description, opens it with New Page on one line, and Back returns",
+  );
+
+  // The home Page at the 640px breakpoint: a Project chip instead of a crumb
+  // repeating the title, the Project's Pages under the body, and an inline
+  // New Page row that adds one at the top level and opens it.
+  await phone.setViewportSize({ width: 640, height: 900 });
+  await phone.goto(`${origin}/p/${project.home_page_id}`);
+  const chip = phone.getByRole("navigation", { name: "Project" }).getByRole("link");
+  await expect(chip).toHaveText(/^Project · \d+ Pages?$/, { timeout: 60000 });
+  await expect(chip).toHaveAttribute("href", `/project/${project.project_id}`);
+  await expect(phone.getByRole("navigation", { name: "Breadcrumbs" })).toHaveCount(0);
+  const homePages = phone.getByRole("region", { name: `Pages in ${title}` });
+  await expect(homePages.getByRole("link", { name: "Roadmap" })).toBeVisible();
+  await fitsScreen("the home Page at 640px");
+  await minimumRowHeight(homePages.getByRole("list"));
+  await phone.screenshot({ path: `${output}/project-home-640.png` });
+  const beforeHomeCreate = await ok("owner", "list_pages", { project_id: project.project_id });
+  await homePages.getByRole("button", { name: "New Page" }).tap();
+  await expect(phone).not.toHaveURL(`${origin}/p/${project.home_page_id}`, { timeout: 30000 });
+  await expect(phone.getByLabel("Page title")).toBeVisible({ timeout: 30000 });
+  const afterHomeCreate = await ok("owner", "list_pages", { project_id: project.project_id });
+  assert.equal(afterHomeCreate.pages.length, beforeHomeCreate.pages.length + 1);
+  const homeCreated = afterHomeCreate.pages.find(
+    (entry) => !beforeHomeCreate.pages.some((known) => known.page_id === entry.page_id),
+  );
+  assert.equal(homeCreated.parent_id, project.home_page_id, "New Page lands at the top level");
+  // ⋯ › New sub-page creates under the Page just opened.
+  await phone.locator('button[aria-label="More page actions"]:visible').tap();
+  await phone.getByRole("menuitem", { name: "New sub-page" }).tap();
+  await expect(phone).not.toHaveURL(`${origin}/p/${homeCreated.page_id}`, { timeout: 30000 });
+  const sub = (await ok("owner", "list_pages", { parent_id: homeCreated.page_id })).pages;
+  assert.equal(sub.length, 1, "New sub-page created one Page under the current one");
+  await fitsScreen("a new sub-page at 640px");
+  await phone.setViewportSize({ width: 390, height: 844 });
+  complete(
+    "At 640px the home Page shows a Project chip, its Pages and New Page; ⋯ adds a sub-page",
   );
 
   const fresh = await phoneContext.newPage();
