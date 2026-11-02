@@ -293,12 +293,16 @@ test.describe("embedded notebook presentation", () => {
       await expect(
         output.getByRole("button", { name: "Synthetic output", exact: true }),
       ).toBeVisible();
+      await output.getByRole("button", { name: "Synthetic output", exact: true }).click();
+      const outputButton = output.locator("#layout-action");
+      await expect(outputButton).toHaveText("Clicked output");
 
       for (const width of [1280, 800, 620, 600, 390, 800]) {
         await page.setViewportSize({ width, height: 900 });
         await command(page, "outline");
         await expect(rail).toHaveAttribute("data-collapsed", "false");
         await expect(notebook.getByRole("heading", { name: "Outline", exact: true })).toBeVisible();
+        await expect(outputButton).toHaveText("Clicked output");
         if (width < 600) {
           await expect(scroller).toBeHidden();
         } else {
@@ -345,10 +349,8 @@ test.describe("embedded notebook presentation", () => {
         expect(stage).not.toBeNull();
         expect(closedScroll).not.toBeNull();
         expect(closedScroll!.width).toBeLessThanOrEqual(stage!.width + 1);
-        await output.getByRole("button", { name: /Synthetic output|Clicked output/ }).click();
-        await expect(
-          output.getByRole("button", { name: "Clicked output", exact: true }),
-        ).toBeVisible();
+        await expect(outputButton).toHaveText("Clicked output");
+        await expect(outputButton).toBeVisible();
         const closedOutputBox = await outputIframe.boundingBox();
         expect(closedOutputBox).not.toBeNull();
         expect(closedOutputBox!.width).toBeLessThanOrEqual(closedScroll!.width + 1);
