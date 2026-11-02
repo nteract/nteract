@@ -282,7 +282,7 @@ test("a JSON tool call with no credential at all is 401 auth_required; a cookie 
   // The cookie is the ambient credential the Origin check guards.
   assert.deepEqual(await call({ cookie: "session=x" }), {
     status: 403,
-    body: { error: "Origin is required" },
+    body: { error: "Origin is required", code: "access_denied" },
   });
   assert.equal((await call({ origin: "https://evil.invalid" })).status, 403);
   // A signed-out browser sends Origin and reaches sign-in.
@@ -395,6 +395,27 @@ test("JSON tool refusals carry a code: rejected key, unknown operation, bad argu
   assert.deepEqual(badId, {
     status: 400,
     body: { error: "Invalid page_id", code: "invalid_page_id" },
+  });
+
+  // A refusal without its own code gets one from its HTTP status, as an MCP
+  // result does: a malformed body, and an argument check that names no code.
+  const malformed = await worker.fetch(
+    new Request("https://pages.invalid/api/tools", {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: `Bearer ${fixture.apiKey()}` },
+      body: "{",
+    }),
+    env,
+  );
+  assert.equal(malformed.status, 400);
+  assert.deepEqual(await malformed.json(), { error: "Invalid JSON", code: "invalid_request" });
+  const badImport = await call({
+    operation: "import_page_image",
+    arguments: { page_id: crypto.randomUUID(), file: {}, extra: true },
+  });
+  assert.deepEqual(badImport, {
+    status: 400,
+    body: { error: "Invalid image import arguments", code: "invalid_request" },
   });
 });
 

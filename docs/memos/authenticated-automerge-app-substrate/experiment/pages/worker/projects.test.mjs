@@ -8,6 +8,7 @@ import { MAX_DEPTH, checkInvariants, deriveLocation, planMove } from "../model/l
 import { locationEntries } from "./catalog-location.mjs";
 import { inspectOperation } from "./operation-journal.mjs";
 import { tools } from "../mcp.mjs";
+import { invokeProjectApi } from "./project-api.mjs";
 import { ids, locationOf, shapeOf, unmigrate, world } from "./projects-fixture.mjs";
 
 /** Object state for direct index calls; the test awaits each one. */
@@ -136,6 +137,67 @@ test("JSON create_project, create_page and read_page receipts carry browser link
   assert.equal(read.body.url, `https://pages.invalid/p/${created.body.page_id}`);
   const refused = await w.call("owner", "read_page", { page_id: crypto.randomUUID() });
   assert.equal(refused.body.url, undefined);
+});
+
+test("every JSON result for a live Page carries its url, as MCP results do", async (t) => {
+  const w = await world(t);
+  w.env.NOTEBOOK_CLOUD_PUBLIC_ORIGIN = "https://pages.invalid";
+  const project = await w.createProject("Links");
+  const created = await w.createPage({ title: "Linked", project_id: project.project_id });
+  const pageId = created.body.page_id;
+  const link = `https://pages.invalid/p/${pageId}`;
+  const listed = await w.call("owner", "list_pages", { project_id: project.project_id });
+  assert.equal(listed.body.pages.find((page) => page.page_id === pageId).url, link);
+  const projects = await w.call("owner", "list_projects");
+  assert.equal(
+    projects.body.projects[0].url,
+    `https://pages.invalid/project/${project.project_id}`,
+  );
+  const fetched = await w.call("owner", "get_project", { project_id: project.project_id });
+  assert.equal(fetched.body.home_page_url, `https://pages.invalid/p/${project.home_page_id}`);
+  // The owner can still open a trashed Page, so its receipt keeps the link.
+  const trashed = await w.call("owner", "delete_page", {
+    page_id: pageId,
+    idempotency_key: w.key(),
+  });
+  assert.equal(trashed.status, 200, JSON.stringify(trashed.body));
+  assert.equal(trashed.body.url, link);
+  const restored = await w.call("owner", "restore_page", {
+    page_id: pageId,
+    idempotency_key: w.key(),
+  });
+  assert.equal(restored.status, 200, JSON.stringify(restored.body));
+  assert.equal(restored.body.url, link);
+});
+
+test("the gateway links Page edit receipts, and leaves refusals and unlinked calls alone", async () => {
+  const pageId = crypto.randomUUID();
+  const env = { NOTEBOOK_CLOUD_PUBLIC_ORIGIN: "https://pages.invalid" };
+  const answer = (status, body) => async () =>
+    Response.json(body, { status, headers: { "retry-after": "1" } });
+  const receipt = { page_id: pageId, heads: ["a".repeat(64)], result: { applied: 1 } };
+  for (const operation of ["edit_page", "patch_page", "manage_page_comment", "read_page_changes"]) {
+    const linked = await invokeProjectApi(answer(200, receipt), operation, {}, { env });
+    assert.deepEqual(await linked.json(), {
+      ...receipt,
+      url: `https://pages.invalid/p/${pageId}`,
+    });
+    assert.equal(linked.headers.get("retry-after"), "1", "headers survive");
+  }
+  // MCP calls without env and adds its own links; a refusal never gets one.
+  const plain = await invokeProjectApi(answer(200, receipt), "edit_page", {});
+  assert.deepEqual(await plain.json(), receipt);
+  const refusal = { error: "Page changed", code: "stale_heads", page_id: pageId };
+  const refused = await invokeProjectApi(answer(409, refusal), "edit_page", {}, { env });
+  assert.deepEqual(await refused.json(), refusal);
+  // An unusable origin leaves the receipt as it was.
+  const unconfigured = await invokeProjectApi(
+    answer(200, receipt),
+    "edit_page",
+    {},
+    { env: { NOTEBOOK_CLOUD_PUBLIC_ORIGIN: "http://public.example" } },
+  );
+  assert.deepEqual(await unconfigured.json(), receipt);
 });
 
 test("a v1_ create key without its token is refused with where to get the token", async (t) => {

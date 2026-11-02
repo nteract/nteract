@@ -101,36 +101,99 @@ export function toProjectBody(operation, body) {
   return out;
 }
 
-/** Add browser links to a successful receipt, as MCP results carry them. The
- * origin is deployment configuration; without a valid one, no link. */
-function withReceiptUrl(operation, body, env) {
-  if (!body || typeof body !== "object") return body;
-  try {
-    const origin = pagesPublicOrigin(env);
-    if (["create_page", "read_page"].includes(operation) && body.page_id && !body.deleted)
-      return { ...body, url: new URL(pagePath(body.page_id), origin).href };
-    if (operation === "create_project" && body.project_id && body.home_page_id)
-      return {
-        ...body,
-        url: new URL(projectPath(body.project_id), origin).href,
-        home_page_url: new URL(pagePath(body.home_page_id), origin).href,
-      };
-  } catch {
-    // No configured origin or an unexpected ID: the receipt stands as is.
+/** Browser links for a successful result, the same over JSON and MCP: url for
+ * a Page that still exists (a purge receipt carries `deleted`), url and
+ * home_page_url for a Project, and url on each listed Page or Project. */
+export function withBrowserLinks(body, origin) {
+  if (!body || typeof body !== "object" || Array.isArray(body)) return body;
+  const out = { ...body };
+  if (out.page_id && !out.deleted) out.url = new URL(pagePath(out.page_id), origin).href;
+  else if (out.project_id && out.home_page_id) {
+    out.url = new URL(projectPath(out.project_id), origin).href;
+    out.home_page_url = new URL(pagePath(out.home_page_id), origin).href;
   }
-  return body;
+  if (Array.isArray(out.pages))
+    out.pages = out.pages.map((page) => ({
+      ...page,
+      url: new URL(pagePath(page.page_id), origin).href,
+    }));
+  if (Array.isArray(out.projects))
+    out.projects = out.projects.map((entry) => ({
+      ...entry,
+      url: new URL(projectPath(entry.project_id), origin).href,
+    }));
+  return out;
 }
 
-/** Run an API call through `invoke`, which speaks the internal names. With
- * `env`, receipts also carry browser links. */
-export async function invokeProjectApi(invoke, operation, args, { env } = {}) {
-  const call = toInternalCall(operation, args);
-  const response = await invoke(call.operation, call.args);
-  if (!MAPPED_RESULTS.has(operation)) return response;
-  if (!response.headers.get("content-type")?.includes("application/json")) return response;
-  let body = toProjectBody(operation, JSON.parse(await response.text()));
-  if (env && response.ok) body = withReceiptUrl(operation, body, env);
+/** Links from the configured origin; without a valid one, no links. */
+function withConfiguredLinks(body, env) {
+  try {
+    return withBrowserLinks(body, pagesPublicOrigin(env));
+  } catch {
+    // No configured origin or an unexpected ID: the receipt stands as is.
+    return body;
+  }
+}
+
+/** Codes for refusals the service answered without one, by HTTP status. */
+const STATUS_CODES = Object.freeze({
+  400: "invalid_request",
+  401: "unauthenticated",
+  403: "access_denied",
+  404: "not_found",
+  408: "request_canceled",
+  409: "conflict",
+  410: "gone",
+  413: "request_too_large",
+  415: "unsupported_media_type",
+  429: "rate_limited",
+});
+/** Every code `refusalCode` can return. */
+export const STATUS_FALLBACK_CODES = Object.freeze([
+  ...Object.values(STATUS_CODES),
+  "server_error",
+  "request_refused",
+]);
+
+/** The code for a refusal body: its own, or one from its HTTP status. */
+export const refusalCode = (status, body) =>
+  typeof body?.code === "string" && body.code
+    ? body.code
+    : (STATUS_CODES[status] ?? (status >= 500 ? "server_error" : "request_refused"));
+
+const isJson = (response) =>
+  response.headers.get("content-type")?.includes("application/json") ?? false;
+
+const withBody = (response, body) => {
   const headers = new Headers(response.headers);
   headers.delete("content-length");
   return new Response(JSON.stringify(body), { status: response.status, headers });
+};
+
+/** A JSON refusal with a code, so a JSON caller can branch on it as an MCP
+ * caller does. A body that already has one passes through. */
+export async function withRefusalCode(response) {
+  if (response.ok || !isJson(response)) return response;
+  let body;
+  try {
+    body = JSON.parse(await response.clone().text());
+  } catch {
+    return response;
+  }
+  if (!body || typeof body !== "object" || Array.isArray(body) || body.code) return response;
+  return withBody(response, { ...body, code: refusalCode(response.status, body) });
+}
+
+/** Run an API call through `invoke`, which speaks the internal names. With
+ * `env`, successful results also carry browser links. */
+export async function invokeProjectApi(invoke, operation, args, { env } = {}) {
+  const call = toInternalCall(operation, args);
+  const response = await invoke(call.operation, call.args);
+  const mapped = MAPPED_RESULTS.has(operation);
+  const linked = Boolean(env) && response.ok;
+  if ((!mapped && !linked) || !isJson(response)) return response;
+  let body = JSON.parse(await response.text());
+  if (mapped) body = toProjectBody(operation, body);
+  if (linked) body = withConfiguredLinks(body, env);
+  return withBody(response, body);
 }

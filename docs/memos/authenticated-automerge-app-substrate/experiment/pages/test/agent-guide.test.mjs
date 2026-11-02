@@ -1,10 +1,14 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import worker from "../worker/index.mjs";
 import { agentGuide } from "../agent-guide.mjs";
-import { tools } from "../mcp.mjs";
+import { MCP_ERROR_CODES, tools } from "../mcp.mjs";
 import { CLIENT_ERROR_CODES, RETRYABLE_SERVER_CODES } from "../worker/auth.mjs";
 import { MOVE_STATUS } from "../worker/move-page.mjs";
+import { STATUS_FALLBACK_CODES } from "../worker/project-api.mjs";
+import { READ_ERROR_CODES } from "../worker/tool-reads.mjs";
+import { CHANGE_ERROR_CODES } from "../worker/tool-changes.mjs";
 import { PRODUCT_NAME } from "../shared/product.mjs";
 import {
   codexConfig,
@@ -13,6 +17,18 @@ import {
   pagesAgentEnvrc,
   saveKeyCommand,
 } from "../agent-client-setup.mjs";
+
+/** The `code: "..."` literals in a source file, relative to this test. */
+const codeLiterals = (path) =>
+  [...readFileSync(new URL(path, import.meta.url), "utf8").matchAll(/\bcode: "([a-z_]+)"/g)].map(
+    ([, code]) => code,
+  );
+
+test("MCP_ERROR_CODES lists every code the MCP endpoint writes itself", () => {
+  // A new code literal in mcp.mjs fails here until it is listed, and the
+  // guide test below fails until the guide documents it.
+  assert.deepEqual(new Set(codeLiterals("../mcp.mjs")), new Set(MCP_ERROR_CODES));
+});
 
 const origin = "https://pages-next.runtimed.run";
 const env = {
@@ -50,6 +66,12 @@ test("GET llms.txt is readable without authentication and explains the supported
     ...CLIENT_ERROR_CODES,
     ...RETRYABLE_SERVER_CODES,
     ...Object.keys(MOVE_STATUS),
+    ...MCP_ERROR_CODES,
+    ...STATUS_FALLBACK_CODES,
+    ...READ_ERROR_CODES,
+    ...CHANGE_ERROR_CODES,
+    ...codeLiterals("../worker/tool-reads.mjs"),
+    ...codeLiterals("../worker/tool-changes.mjs"),
   ]))
     assert.match(codeList, new RegExp(`\\b${code}\\b`), code);
   assert.equal(guide.match(/^### One (document )?title/gm).length, 1, "one title section");
