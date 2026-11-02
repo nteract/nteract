@@ -7,8 +7,9 @@
  *
  * States, each carrying `attempts` (retries scheduled since the last stable
  * connection or resume; it picks the backoff step) and `refusals` (attempts
- * in a row that the host's native admission closed with an admission code
- * before the socket proved stable):
+ * in a row that the host's native admission refused before the socket proved
+ * stable; a `temporarily_unavailable` close is transient, not a refusal, see
+ * session.mjs countsAsRefusal):
  * - ready: no retry is pending. The session is discovering, connected, or
  *   stopped by its phase (sign-in, access, closing).
  * - handshaking: a sync socket is open and its authenticated handshake has
@@ -54,7 +55,8 @@
  * as a closed socket and counts toward an outage, never toward refusals.
  *
  * Transient failures (no status, 5xx, a socket close without an admission
- * code) never count as refusals and never clear them: a flaky host between
+ * code or with `temporarily_unavailable`) never count as refusals and never
+ * clear them: a flaky host between
  * refusals has not shown the refusal went away. From the OUTAGE_ATTEMPTS-th
  * failure in a row, a transient failure also reports an outage. A refusal
  * never does: the host answered.

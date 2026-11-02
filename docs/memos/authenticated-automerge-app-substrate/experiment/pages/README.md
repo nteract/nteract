@@ -590,6 +590,17 @@ that code as the reason. Byte-transport refusals (text frames, oversized frames,
 full queues) report a bounded category, log it once, and close with
 `request_rejected` or `temporarily_unavailable`.
 
+A signing key holds one admitted connection per Page
+([native-session-machine.mjs](worker/native-session-machine.mjs)). A tab owns
+its key exclusively, so a new connection for a key already held by the same
+principal and driver is that tab reconnecting: after a reload, or after its old
+socket died without the close reaching the host, which behind the Cloudflare
+tunnel can take minutes. The new connection takes the key, and the host closes
+the old one with `access_changed` and logs `native_session_replaced`. Another
+principal or driver on the key is refused with `signing_key_rejected`. Cloudflare
+also closes a socket that carries no data for about two minutes (its 125 s
+proxy read timeout), so an idle background tab reconnects on that cadence.
+
 A Page holds at most 24 sockets, 4 per account, and 20 across members other than
 the owner. A socket over a quota still completes the upgrade, then closes at once
 with `temporarily_unavailable` and logs `connection_capacity`. A browser reads a
@@ -638,10 +649,10 @@ rejects `setup` at once and takes the same backoff.
 Backoff steps double from 0.5 s to a 60 s cap, with equal jitter: each retry
 waits between half the step and the full step, so tabs dropped by one host
 restart spread out. Transient failures (no status, 5xx, a close without an
-admission code) retry indefinitely. Six admission closes in a row on sockets
-that never proved stable pause automatic reconnects with "Sync paused" and the
-Retry control, since discovery keeps answering while native admission keeps
-refusing. Retry, the `online` event and signing in again clear both counters and
+admission code or with `temporarily_unavailable`) retry indefinitely at the
+capped step. Six other admission closes in a row on sockets that never proved
+stable pause automatic reconnects with "Sync paused" and the Retry control,
+since discovery keeps answering while native admission keeps refusing. Retry, the `online` event and signing in again clear both counters and
 reconnect at once; a stable connection clears them too.
 [reconnect-machine.mjs](viewer/reconnect-machine.mjs) holds these transitions.
 

@@ -35,10 +35,13 @@ export const ADMISSION_REASONS = Object.freeze({
   native_admission_timeout: "temporarily_unavailable",
   native_binding_stalled: "temporarily_unavailable",
   native_binding_pending: "temporarily_unavailable",
-  native_already_connected: "temporarily_unavailable",
   native_binding_persistence_failed: "temporarily_unavailable",
   native_connection_failed: "temporarily_unavailable",
   native_access_changed: "access_changed",
+  // A newer connection with the same signing key replaced this one. Its tab
+  // already moved to the new socket; a tab that somehow still uses this one
+  // rediscovers, and counts the close toward pausing sync.
+  native_session_replaced: "access_changed",
   // The native per-author check refused a comment record (comment-admission.mjs).
   // The key's comment authority is gone; discovery reports what remains.
   comment_change_refused: "access_changed",

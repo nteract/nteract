@@ -3,8 +3,10 @@
 // celld process and restarts it on request over IPC.
 import assert from "node:assert/strict";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
+import * as A from "@automerge/automerge";
 import * as N from "@automerge/subduction";
 import { chromium, expect } from "@playwright/test";
+import { closePeers, createPeer, eventually } from "../../backend.mjs";
 
 const origin = process.env.PAGES_ORIGIN || "http://localhost:9894";
 assert.equal(new URL(origin).hostname, "localhost");
@@ -155,6 +157,68 @@ async function nativeConnect(cookie, seed) {
   };
 }
 
+/** A full native peer with signing key `seed`: syncs the Page document over
+ * its own socket, as a tab does. `features` is its build's schema features. */
+async function nativePeer(cookie, seed, features = ["comments-doc"]) {
+  const headers = { cookie, origin, "X-Pages-Admission": "1" };
+  const discovery = await fetch(`${origin}/api/connect?page=${pageId}`, { headers }).then(
+    (response) => response.json(),
+  );
+  assert.ok(discovery.documentId, JSON.stringify(discovery));
+  const peer = createPeer({ seed });
+  const address = new URL(`/api/sync?page=${pageId}`, origin);
+  address.protocol = "ws:";
+  if (discovery.activity?.epoch)
+    address.searchParams.set("activity_epoch", discovery.activity.epoch);
+  address.searchParams.set("schema_features", features.join(","));
+  const socket = new WebSocket(address, { headers: { cookie, origin } });
+  socket.binaryType = "arraybuffer";
+  const closed = new Promise((resolve) =>
+    socket.addEventListener("close", ({ code, reason }) => resolve({ code, reason })),
+  );
+  const expected = new N.PeerId(bytes(discovery.serverPeerId));
+  try {
+    const authenticated = await N.SubductionWebSocket.setup(
+      socket,
+      peer.signer,
+      expected,
+      () => {},
+    );
+    const transport = authenticated.toTransport();
+    try {
+      await peer.backend.addConnection(transport);
+    } finally {
+      transport.free();
+    }
+  } finally {
+    expected.free();
+  }
+  const handle = await peer.repo.find(discovery.documentId);
+  return {
+    senderId: peer.senderId,
+    handle,
+    closed,
+    /** Change the Page document and wait for the host's receipt. */
+    async change(fn) {
+      handle.change(fn);
+      await peer.repo.flush();
+      const heads = A.getHeads(handle.doc());
+      await eventually(async () => {
+        const response = await fetch(`${origin}/api/saved?page=${pageId}`, {
+          method: "POST",
+          headers: { ...headers, "Content-Type": "application/json" },
+          body: JSON.stringify({ heads, schema_features: features }),
+        });
+        return response.ok;
+      }, 20_000);
+    },
+    async close() {
+      socket.close();
+      await closePeers([peer]);
+    },
+  };
+}
+
 async function admissionLogs() {
   const text = celldLog ? await readFile(celldLog, "utf8") : "";
   return [
@@ -205,7 +269,7 @@ try {
   await setRole(memberPrincipal, "viewer");
   const seed = crypto.getRandomValues(new Uint8Array(32));
   const ownerCookie = await cookieFor(owner);
-  const first = await nativeConnect(ownerCookie, seed);
+  const first = await nativePeer(ownerCookie, seed);
   await expect
     .poll(
       async () =>
@@ -216,13 +280,57 @@ try {
       { timeout: 15000 },
     )
     .toBe(true);
-  const duplicate = await nativeConnect(ownerCookie, seed);
-  report.closes.duplicate = await duplicate.closed;
-  assert.deepEqual(report.closes.duplicate, { code: 4503, reason: "temporarily_unavailable" });
+  // The same key connecting again is the same tab after its old socket died
+  // unseen: the new connection takes the key and the host closes the old one.
+  const replacement = await nativePeer(ownerCookie, seed);
+  report.closes.replaced = await Promise.race([
+    first.closed,
+    new Promise((_, reject) =>
+      setTimeout(() => reject(new Error("the replaced socket stayed open")), 15000),
+    ),
+  ]);
+  assert.deepEqual(report.closes.replaced, { code: 4409, reason: "access_changed" });
+  await expect
+    .poll(
+      async () =>
+        Object.hasOwn(
+          (await api(owner, `/api/connect?page=${pageId}`)).body.peerProfiles,
+          replacement.senderId,
+        ),
+      { timeout: 15000 },
+    )
+    .toBe(true);
+  // The native engine keeps syncing the replacement after the old connection
+  // for the same peer closed: another peer's edit reaches it, and its own
+  // edit reaches the other peer.
+  const other = await nativePeer(ownerCookie, crypto.getRandomValues(new Uint8Array(32)));
+  await other.change((doc) => {
+    doc.afterReplace = "from another peer";
+  });
+  await eventually(
+    () => assert.equal(replacement.handle.doc().afterReplace, "from another peer"),
+    20_000,
+  );
+  await replacement.change((doc) => {
+    doc.fromReplacement = "from the replacement";
+  });
+  await eventually(
+    () => assert.equal(other.handle.doc().fromReplacement, "from the replacement"),
+    20_000,
+  );
+  report.completed.push("Replacement syncs both ways after the old same-key connection closed");
   const reassigned = await nativeConnect(await cookieFor(member), seed);
   report.closes.reassigned = await reassigned.closed;
   assert.deepEqual(report.closes.reassigned, { code: 4422, reason: "signing_key_rejected" });
-  first.close();
+  // The replacement survived both: it still holds the key.
+  assert.equal(
+    await Promise.race([replacement.closed, new Promise((resolve) => setTimeout(resolve, 1000))]),
+    undefined,
+    "the replacement stays connected",
+  );
+  await replacement.close();
+  await other.close();
+  await first.close();
   // A real text frame on the native socket is refused with its own code.
   const textAddress = new URL(`/api/sync?page=${pageId}`, origin);
   textAddress.protocol = "ws:";
@@ -234,7 +342,7 @@ try {
   });
   assert.deepEqual(report.closes.textFrame, { code: 4400, reason: "request_rejected" });
   report.completed.push(
-    "Native admission: duplicate key 4503 temporarily_unavailable; reassigned key 4422 signing_key_rejected; text frame 4400 request_rejected",
+    "Native admission: same key replaces its old socket (4409 access_changed); reassigned key 4422 signing_key_rejected; text frame 4400 request_rejected",
   );
 
   // Over the account's four-socket quota the upgrade still completes and
@@ -386,7 +494,7 @@ try {
     "page_no_grant",
     "page_not_found",
     "origin_rejected",
-    "native_already_connected",
+    "native_session_replaced",
     "native_binding_mismatch",
     "native_frame_unsupported",
     "connection_capacity",

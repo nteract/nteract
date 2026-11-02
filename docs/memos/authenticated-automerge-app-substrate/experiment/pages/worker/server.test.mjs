@@ -106,7 +106,6 @@ test("private owner and credential ceiling are independent of signer display cla
 test("signer binding survives reload and rejects account or driver reassignment", async () => {
   const f = fixture();
   const release = await f.bind(key);
-  await assert.rejects(f.bind(key), /already connected/);
   release();
   const policy = new DocumentPolicy({
     storage: f.storage,
@@ -129,6 +128,56 @@ test("signer binding survives reload and rejects account or driver reassignment"
     displayName: "Kyle",
     driver: "ChatGPT",
   });
+});
+
+test("a reconnect with the same key replaces a session whose socket never reported its close", async () => {
+  const f = fixture();
+  const closes = [];
+  const connect = (name, identity = f.identity) =>
+    f.policy.bind(key, key, identity, {
+      reauthenticate: async () => identity,
+      disconnect: async (error) => {
+        closes.push([name, error.code]);
+      },
+    });
+  // The first socket's close is never delivered, so its cleanup never runs.
+  const releaseStale = await connect("stale");
+  const stale = f.policy.sessions.get(key);
+  const releaseFresh = await connect("fresh");
+  const fresh = f.policy.sessions.get(key);
+  assert.notEqual(fresh, stale, "the reconnect holds the key");
+  assert.deepEqual(closes, [], "the replaced socket closes after admission returns");
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.deepEqual(closes, [["stale", "native_session_replaced"]]);
+  assert.equal(Object.keys(f.policy.profiles()).length, 1, "one live roster entry for the key");
+  await f.policy.access(key, f.metadata.tree, true);
+
+  // The replaced socket's late cleanup leaves the replacement in place.
+  releaseStale();
+  assert.equal(f.policy.sessions.get(key), fresh);
+  await f.policy.put(key, key, f.metadata.tree);
+
+  // Another driver on the same key is still refused while it is connected.
+  await assert.rejects(connect("other", { ...f.identity, driver: "Mobile" }), /another binding/);
+  assert.equal(f.policy.sessions.get(key), fresh);
+  releaseFresh();
+  assert.equal(f.policy.sessions.size, 0);
+  assert.deepEqual(closes, [["stale", "native_session_replaced"]]);
+});
+
+test("host-ended sessions free the key once, and a replaced session's ending is a no-op", async () => {
+  const f = fixture();
+  await f.bind(key);
+  const first = f.policy.sessions.get(key);
+  await f.bind(key);
+  const second = f.policy.sessions.get(key);
+  assert.equal(f.policy.endSession(key, first), false, "the replaced session holds nothing");
+  assert.equal(f.policy.sessions.get(key), second);
+  f.policy.throttleComments(key);
+  assert.equal(f.policy.sessions.size, 0);
+  assert.equal(f.policy.endSession(key, second), false, "a second ending finds the slot free");
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(f.closed(), 2, "the replaced and the throttled sessions closed");
 });
 
 test("expired author history can relay through a current writer but expired requestors cannot", async () => {
