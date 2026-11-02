@@ -743,7 +743,7 @@ test("initialize hands out a presence session id; other calls don't, and stay st
     },
   );
   const id = init.headers.get("mcp-session-id");
-  assert.match(id, /^[0-9a-f-]{36}$/);
+  assert.match(id, /^[0-9a-f-]{36}\.[A-Za-z0-9_-]+$/);
   const again = await handleMcp(
     request("initialize", {
       protocolVersion: "2025-03-26",

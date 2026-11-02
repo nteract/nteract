@@ -52,6 +52,7 @@ import {
 import { readTargets, writeTargets } from "../model/agent-presence.mjs";
 import { BACKEND_LIMITS, assertDocumentLimits, assertIntentSize } from "../model/limits.mjs";
 import { handleMcp } from "../mcp.mjs";
+import { declaredLabels, logUsage, mcpClientLabel, requestClient } from "./usage.mjs";
 import {
   invalidArguments,
   invokeProjectApi,
@@ -637,10 +638,11 @@ const safeToRepeat = (operation, args) => {
   return READ_OPERATIONS.includes(operation) || isTokenedRequest(args);
 };
 
-async function invoke(request, env, operation, args = {}) {
+async function invoke(request, env, operation, args = {}, seen) {
   if (!operations.has(operation)) throw unknownOperation(operation, operations);
   if (!args || typeof args !== "object" || Array.isArray(args)) throw invalidArguments();
   const identity = await authenticate(request, env);
+  if (seen) seen.identity = identity;
   if (!READ_OPERATIONS.includes(operation)) requireWrite(identity);
   if (["get_space", "update_space"].includes(operation)) requireSpaceIdArgument(args.space_id);
   if (
@@ -791,6 +793,48 @@ async function locationView(request, env, body, signal) {
   body.breadcrumbs = chain;
 }
 
+/** Records one usage event for a tool call on `surface` once its response is
+ * known. `seen` collects the identity invoke() authenticated. A successful
+ * create_page also records page.create with the new Page's id. */
+function toolUsage(request, surface, operation, args) {
+  const started = Date.now();
+  const seen = {};
+  const labels = requestClient(request);
+  return {
+    seen,
+    async finish(response) {
+      try {
+        const name = typeof operation === "string" ? operation : "invalid";
+        const length = Number(response.headers.get("content-length"));
+        const common = {
+          surface,
+          identity: seen.identity,
+          labels,
+          operation: name,
+          pageId: typeof args?.page_id === "string" ? args.page_id : undefined,
+          projectId: typeof args?.project_id === "string" ? args.project_id : undefined,
+          status: response.status,
+          outcome: response.ok ? "ok" : `http_${response.status}`,
+          latencyMs: Date.now() - started,
+        };
+        logUsage({ action: "tool.call", ...common, bytes: length || undefined });
+        if (name === "create_page" && response.ok) {
+          const body = await response.clone().json();
+          logUsage({
+            action: "page.create",
+            ...common,
+            pageId: body?.page_id,
+            projectId: body?.project_id ?? common.projectId,
+          });
+        }
+      } catch {
+        // Usage telemetry never fails the request.
+      }
+      return response;
+    },
+  };
+}
+
 export default {
   async fetch(request, env) {
     // celld answers a stub fetch to a saturated object itself, with a plain
@@ -874,21 +918,42 @@ const gateway = {
             env,
           );
         }
-        await authenticate(request, env);
+        const identity = await authenticate(request, env);
         return await handleMcp(
           request,
           async (operation, args) => {
+            const usage = toolUsage(request, "mcp", operation, args);
+            let response;
             try {
-              return await invokeProjectApi(
-                (internal, internalArgs) => invoke(request, env, internal, internalArgs),
+              response = await invokeProjectApi(
+                (internal, internalArgs) =>
+                  invoke(request, env, internal, internalArgs, usage.seen),
                 operation,
                 args,
               );
             } catch (error) {
-              return errorResponse(error, "mcp-operation");
+              response = errorResponse(error, "mcp-operation");
             }
+            return usage.finish(response);
           },
           env,
+          {
+            onInitialize: (params) => {
+              const declared = declaredLabels(request);
+              const mcpClient = mcpClientLabel(params.clientInfo);
+              logUsage({
+                action: "mcp.initialize",
+                surface: "mcp",
+                identity,
+                labels: {
+                  ...declared,
+                  ...(!declared.client && mcpClient && { client: mcpClient }),
+                  ...(mcpClient && { mcp_client: mcpClient }),
+                },
+                protocolVersion: params.protocolVersion,
+              });
+            },
+          },
         );
       }
       if (url.pathname === "/api/pages/register" && request.method === "POST") {
@@ -915,10 +980,12 @@ const gateway = {
       }
       if (url.pathname === "/api/tools" && request.method === "POST") {
         let response;
+        let usage = toolUsage(request, "http-tools");
         try {
           const body = await readJson(request);
+          usage = toolUsage(request, "http-tools", body?.operation, body?.arguments);
           response = await invokeProjectApi(
-            (internal, internalArgs) => invoke(request, env, internal, internalArgs),
+            (internal, internalArgs) => invoke(request, env, internal, internalArgs, usage.seen),
             body.operation,
             body.arguments,
             { env },
@@ -926,7 +993,7 @@ const gateway = {
         } catch (error) {
           response = errorResponse(error, "gateway");
         }
-        return await withRefusalCode(response);
+        return await withRefusalCode(await usage.finish(response));
       }
       const imageRoute = url.pathname.match(/^\/api\/pages\/([^/]+)\/assets(?:\/([^/]+))?$/);
       if (imageRoute) {
@@ -4861,6 +4928,17 @@ export class Page {
       },
     });
     const disconnected = new Promise((resolve) => wire.onDisconnect(resolve));
+    const syncUsage = {
+      surface: "browser-sync",
+      identity,
+      labels: requestClient(request),
+      pageId: this.metadata?.pageId,
+    };
+    const syncOpened = Date.now();
+    logUsage({ action: "sync.open", ...syncUsage });
+    wire.onDisconnect(() =>
+      logUsage({ action: "sync.close", ...syncUsage, latencyMs: Date.now() - syncOpened }),
+    );
     this.wires.add(wire);
     // HTTP authentication already established this principal. Reserve before
     // waiting on the native handshake, so idle handshakes cannot bypass quotas.

@@ -681,6 +681,12 @@ readers as the Page documents and storage beside it. Restrict bucket read access
 accordingly; retention is 30 days. Verify actual Parquet delivery under
 `<fleet-prefix>/telemetry/{traces,logs}`; configuration alone is not evidence of
 delivery. Retention collects dated partitions, not an exact rolling-hour cutoff.
+Usage events are `pages.usage.v1` JSON log lines from
+[worker/usage.mjs](worker/usage.mjs): MCP initialize, tool calls on `/mcp` and
+`/api/tools`, Page creation, and browser sync open/close, with principal,
+surface, driver, agent, client and model. They inherit the 30-day log
+retention. [scripts/usage-report.sql](scripts/usage-report.sql) summarizes
+them with duckdb straight from the log Parquet.
 See the [pinned runtime telemetry contract](https://github.com/denoland/celld/blob/8702f6d186c77698dbfb30cf29e3b1922a88f008/docs/telemetry.md).
 
 ## Cloudflare packaging fixture

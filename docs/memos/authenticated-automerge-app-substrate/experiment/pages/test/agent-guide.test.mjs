@@ -114,6 +114,9 @@ test("GET llms.txt is readable without authentication and explains the supported
     '"X-Pages-Agent": "{env:PAGES_AGENT}"',
     "Mcp-Session-Id",
     "self-declared",
+    "X-Pages-Client: <harness>/<version>",
+    "X-Pages-Model: the model id",
+    "they never affect access",
   ])
     assert.ok(prose.includes(fact), fact);
   assert.ok(guide.includes(pagesAgentEnvrc));

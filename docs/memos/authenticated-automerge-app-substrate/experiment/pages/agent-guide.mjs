@@ -361,6 +361,22 @@ from a shell where direnv loaded the .envrc. Labels are optional: each MCP
 session already gets its own caret through Mcp-Session-Id, so two unlabeled
 sessions on one key still show separately.
 
+### Name your client and model
+
+Two more optional headers tell Pages which harness and model made a request.
+Pages records them in usage telemetry only; they never affect access, and
+nothing else reads them:
+
+- X-Pages-Client: <harness>/<version>, such as kilo-cli/1.4.2,
+  claude-code/2.1.0 or codex/0.50.0.
+- X-Pages-Model: the model id, such as anthropic/claude-opus-5.5 or gpt-5.
+
+Send printable ASCII, at most 120 characters each; Pages drops other
+characters and truncates longer values. Without X-Pages-Client, Pages uses the
+MCP clientInfo name and version from initialize. MCP has no model field, so
+send X-Pages-Model if you know it. For Kilo, add
+"X-Pages-Model": "{env:PAGES_MODEL}" beside X-Pages-Agent.
+
 ### ChatGPT / cloud connection (OAuth)
 
 Add a custom MCP server in the client's connection or plugin settings:
@@ -510,12 +526,15 @@ Send these headers on API and MCP requests:
 Authorization: Bearer <ANACONDA_API_KEY>
 X-Pages-Driver: Kilo
 X-Pages-Agent: release agent
+X-Pages-Client: kilo-cli/1.4.2
+X-Pages-Model: anthropic/claude-opus-5.5
 Content-Type: application/json
 \`\`\`
 
 Use your application's name for X-Pages-Driver (for example Codex or Kilo).
 X-Pages-Agent is an optional session label; omit it or send it blank for no
-label. See "Name each session" above. The verified key supplies the account and
+label. X-Pages-Client and X-Pages-Model are optional usage labels; see "Name
+your client and model" above. The verified key supplies the account and
 author name; driver and agent labels are self-declared, not proof of a vendor
 or a permission grant. Keys need cloud:read for
 reading or cloud:write for reading and editing. API clients can omit Origin;

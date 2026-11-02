@@ -9,6 +9,7 @@ import {
   renamedTool,
   withBrowserLinks,
 } from "./worker/project-api.mjs";
+import { mcpSessionId } from "./worker/usage.mjs";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
 import {
@@ -775,7 +776,7 @@ const failed = (body) => ({
 /** Caller verifies credentials before constructing this request-local server.
  * Every invocation goes through the same authorization and model as HTTP tools.
  */
-export async function handleMcp(request, invoke, env) {
+export async function handleMcp(request, invoke, env, { onInitialize } = {}) {
   if (request.method !== "POST")
     return new Response(null, { status: 405, headers: { Allow: "POST" } });
   // A tunnel may terminate TLS before this request reaches the runtime. Only
@@ -949,9 +950,9 @@ export async function handleMcp(request, invoke, env) {
     enableJsonResponse: true,
   });
   await server.connect(transport);
-  let initialize = false;
+  let initialize;
   try {
-    initialize = isInitialize(await request.clone().json());
+    initialize = initializeParams(await request.clone().json());
   } catch {
     // The transport reports malformed bodies itself.
   }
@@ -975,15 +976,27 @@ export async function handleMcp(request, invoke, env) {
     // Presence session: the transport stays stateless (every request is
     // independent), but initialize hands the client an Mcp-Session-Id. Clients
     // echo it, and Pages uses it only to tell agent sessions apart in presence.
-    if (initialize && response.ok) response.headers.set("Mcp-Session-Id", crypto.randomUUID());
+    // The id also carries clientInfo's name/version (worker/usage.mjs), so
+    // usage events for later tool calls can name the client.
+    if (initialize && response.ok) {
+      response.headers.set("Mcp-Session-Id", mcpSessionId(initialize.clientInfo));
+      try {
+        onInitialize?.(initialize);
+      } catch {
+        // Usage telemetry never fails the request.
+      }
+    }
     return response;
   } finally {
     await server.close();
   }
 }
 
-/** Whether a JSON-RPC body (single or batch) contains an initialize request. */
-function isInitialize(body) {
+/** The params of an initialize request in a JSON-RPC body (single or batch),
+ * or undefined when it has none. */
+function initializeParams(body) {
   const messages = Array.isArray(body) ? body : [body];
-  return messages.some((message) => message?.method === "initialize");
+  const message = messages.find((candidate) => candidate?.method === "initialize");
+  if (!message) return undefined;
+  return message.params && typeof message.params === "object" ? message.params : {};
 }

@@ -105,6 +105,9 @@ test("setup leads with API keys and keeps OAuth for interactive clients", async 
   for (const fact of ["X-Pages-Driver", "X-Pages-Agent", "at most 80 characters", "Mcp-Session-Id"])
     assert.ok(labels.includes(fact), fact);
   assert.ok(labels.includes('"X-Pages-Agent": "{env:PAGES_AGENT}"'));
+  const usage = dom.getElementById("client-model").textContent.replace(/\s+/g, " ");
+  for (const fact of ["X-Pages-Client", "X-Pages-Model", "never affect access", "120 characters"])
+    assert.ok(usage.includes(fact), fact);
 });
 
 test("setup supports HEAD and refuses mutation methods", async () => {
