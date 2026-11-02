@@ -71,7 +71,7 @@ async function openEmbeddedNotebook(page: Page, presentation?: NotebookPresentat
             connectElectronNotebookFrame(iframe.contentWindow, location.origin, {
               port: channel.port2,
               bootstrap: {
-                protocolVersion: 1, outputDocumentUrl: new URL('/isolated-renderer.html',location.href).href,
+                protocolVersion: 1, outputDocumentUrl: new URL('/output-frame.html',location.href).href,
                 presentation: ${JSON.stringify(presentation) ?? "undefined"}
               }
             });
@@ -258,4 +258,103 @@ test.describe("embedded notebook presentation", () => {
         .getByRole("link", { name: "Notebook rail fixture", exact: true }),
     ).toBeVisible();
   });
+
+  for (const side of ["left", "right"] as const) {
+    test(`contains intrinsic-width content beside the ${side} rail when resized`, async ({
+      page,
+    }, testInfo) => {
+      const syntheticNotebook = JSON.parse(fs.readFileSync(fixturePath, "utf8"));
+      const heading = "SyntheticUnbrokenHeading".repeat(12);
+      syntheticNotebook.cells[0].source = [`# ${heading}\n`, "\n", "Synthetic notebook body.\n"];
+      syntheticNotebook.cells[1].outputs = [
+        {
+          output_type: "display_data",
+          metadata: {},
+          data: {
+            "text/html":
+              '<button id="layout-action" onclick="this.textContent=\'Clicked output\'">Synthetic output</button><pre style="width:1400px">Wide synthetic output</pre>',
+          },
+        },
+      ];
+      fs.writeFileSync(
+        path.join(fixtureDirectory, "outline.ipynb"),
+        JSON.stringify(syntheticNotebook),
+      );
+      const notebook = await openEmbeddedNotebook(page, { rail: { side, initialCollapsed: true } });
+      const rail = notebook.getByTestId("notebook-rail");
+      const scroller = notebook.locator("[data-cell-count]");
+      const renderedHeading = scroller.locator("h1").filter({ hasText: heading });
+      await expect(renderedHeading).toBeVisible();
+      await expect(
+        renderedHeading.getByRole("link", { name: `Link to ${heading}`, exact: true }),
+      ).toBeAttached();
+      const outputIframe = notebook.locator('[data-cell-type="code"] [data-slot="isolated-frame"]');
+      const output = notebook.frameLocator('[data-cell-type="code"] [data-slot="isolated-frame"]');
+      await expect(
+        output.getByRole("button", { name: "Synthetic output", exact: true }),
+      ).toBeVisible();
+      await output.getByRole("button", { name: "Synthetic output", exact: true }).click();
+      const outputButton = output.locator("#layout-action");
+      await expect(outputButton).toHaveText("Clicked output");
+
+      for (const width of [1280, 800, 620, 600, 390, 800]) {
+        await page.setViewportSize({ width, height: 900 });
+        await command(page, "outline");
+        await expect(rail).toHaveAttribute("data-collapsed", "false");
+        await expect(notebook.getByRole("heading", { name: "Outline", exact: true })).toBeVisible();
+        await expect(outputButton).toHaveText("Clicked output");
+        if (width < 600) {
+          await expect(scroller).toBeHidden();
+        } else {
+          await expect(scroller).toBeVisible();
+          const content = await notebook
+            .locator('[data-slot="notebook-document-stage-content"]')
+            .boundingBox();
+          const scroll = await scroller.boundingBox();
+          const panel = await notebook.locator('[data-slot="notebook-rail-panel"]').boundingBox();
+          expect(content).not.toBeNull();
+          expect(scroll).not.toBeNull();
+          expect(panel).not.toBeNull();
+          expect(scroll!.x).toBeGreaterThanOrEqual(content!.x - 1);
+          expect(scroll!.x + scroll!.width).toBeLessThanOrEqual(content!.x + content!.width + 1);
+          expect(await scroller.evaluate((node) => node.scrollWidth)).toBeGreaterThan(
+            scroll!.width,
+          );
+          if (side === "right") {
+            expect(scroll!.x + scroll!.width).toBeLessThanOrEqual(panel!.x + 1);
+          } else {
+            expect(scroll!.x).toBeGreaterThanOrEqual(panel!.x + panel!.width - 1);
+          }
+          // Check the paint boundary, not only the correctly allocated grid columns.
+          expect(
+            await notebook.evaluate(
+              ({ x, y }) =>
+                Boolean(
+                  document.elementFromPoint(x, y)?.closest('[data-slot="notebook-rail-panel"]'),
+                ),
+              { x: panel!.x + panel!.width / 2, y: panel!.y + 72 },
+            ),
+          ).toBe(true);
+          const outputBox = await outputIframe.boundingBox();
+          expect(outputBox).not.toBeNull();
+          expect(outputBox!.width).toBeGreaterThan(0);
+          expect(outputBox!.width).toBeLessThanOrEqual(scroll!.width + 1);
+        }
+        await page.screenshot({ path: testInfo.outputPath(`${side}-${width}-open.png`) });
+        await command(page);
+        await expect(rail).toHaveAttribute("data-collapsed", "true");
+        await expect(scroller).toBeVisible();
+        const stage = await notebook.locator('[data-slot="notebook-document-stage"]').boundingBox();
+        const closedScroll = await scroller.boundingBox();
+        expect(stage).not.toBeNull();
+        expect(closedScroll).not.toBeNull();
+        expect(closedScroll!.width).toBeLessThanOrEqual(stage!.width + 1);
+        await expect(outputButton).toHaveText("Clicked output");
+        await expect(outputButton).toBeVisible();
+        const closedOutputBox = await outputIframe.boundingBox();
+        expect(closedOutputBox).not.toBeNull();
+        expect(closedOutputBox!.width).toBeLessThanOrEqual(closedScroll!.width + 1);
+      }
+    });
+  }
 });
