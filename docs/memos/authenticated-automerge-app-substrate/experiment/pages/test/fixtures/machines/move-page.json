@@ -1,0 +1,262 @@
+{
+  "machine": "move-page",
+  "description": "One move_page request through the owner's Catalog: journal inspection, settling the Page's and parent's reservations, planning with model/location.mjs, one put, and the durability barrier. Rows run against the transition and the Catalog interpreter.",
+  "states": ["received", "settling", "planning", "writing", "replied", "refused"],
+  "events": ["inspected", "settled", "planned", "synced"],
+  "unreachable": [
+    ["received", "settled", "nothing settles before the journal is read"],
+    ["received", "planned", "nothing is planned before the journal is read"],
+    ["received", "synced", "nothing is written before the journal is read"],
+    ["settling", "inspected", "the journal is read once"],
+    ["settling", "planned", "the plan runs after the reservations settle"],
+    ["settling", "synced", "nothing is written before the plan"],
+    ["planning", "inspected", "the journal is read once"],
+    ["planning", "settled", "the reservations settle once, before the plan"],
+    ["planning", "synced", "nothing is written before the plan answers"],
+    ["writing", "inspected", "the journal is read once"],
+    ["writing", "settled", "the reservations settle once, before the plan"],
+    ["writing", "planned", "the plan ran once; its write is in storage"],
+    ["replied", "inspected", "the request was answered"],
+    ["replied", "settled", "the request was answered"],
+    ["replied", "planned", "the request was answered"],
+    ["replied", "synced", "the request was answered"],
+    ["refused", "inspected", "the request was answered"],
+    ["refused", "settled", "the request was answered"],
+    ["refused", "planned", "the request was answered"],
+    ["refused", "synced", "the request was answered"]
+  ],
+  "cases": {
+    "received/inspected": ["absent", "completed", "pending", "conflict"],
+    "settling/settled": ["settled", "unsettled"],
+    "planning/planned": ["planned", "refused"],
+    "writing/synced": ["durable", "failed"]
+  },
+  "rows": [
+    {
+      "label": "a new key settles the reservations first",
+      "case": "absent",
+      "state": { "name": "received" },
+      "event": { "type": "inspected", "row": "absent" },
+      "expect": { "state": { "name": "settling" }, "effects": [{ "type": "settle" }] }
+    },
+    {
+      "label": "a completed row replays its receipt once the barrier holds again",
+      "case": "completed",
+      "state": { "name": "received" },
+      "event": {
+        "type": "inspected",
+        "row": "completed",
+        "receipt": {
+          "page_id": "33333333-3333-4333-8333-333333333333",
+          "space_id": "prj_0a3b6b7a-5d3e-4f0e-9c2b-1d2e3f4a5b6c",
+          "parent_id": "22222222-2222-4222-8222-222222222222",
+          "position": "a1",
+          "location_revision": 4,
+          "descendants": 2,
+          "trashed_descendants": 1
+        }
+      },
+      "expect": {
+        "state": {
+          "name": "writing",
+          "receipt": {
+            "page_id": "33333333-3333-4333-8333-333333333333",
+            "space_id": "prj_0a3b6b7a-5d3e-4f0e-9c2b-1d2e3f4a5b6c",
+            "parent_id": "22222222-2222-4222-8222-222222222222",
+            "position": "a1",
+            "location_revision": 4,
+            "descendants": 2,
+            "trashed_descendants": 1
+          }
+        },
+        "effects": [{ "type": "sync" }]
+      }
+    },
+    {
+      "label": "a pending row with this key is refused; a move never leaves one",
+      "case": "pending",
+      "state": { "name": "received" },
+      "event": { "type": "inspected", "row": "pending" },
+      "expect": {
+        "state": { "name": "refused", "code": "operation_pending" },
+        "effects": [],
+        "response": {
+          "status": 409,
+          "body": {
+            "error": "An earlier request with this idempotency_key is still being applied",
+            "code": "operation_pending"
+          }
+        }
+      }
+    },
+    {
+      "label": "a key used for another request is a conflict",
+      "case": "conflict",
+      "state": { "name": "received" },
+      "event": { "type": "inspected", "row": "conflict" },
+      "expect": {
+        "state": { "name": "refused", "code": "idempotency_conflict" },
+        "effects": [],
+        "response": {
+          "status": 409,
+          "body": {
+            "error": "idempotency_key was used for a different request",
+            "code": "idempotency_conflict"
+          }
+        }
+      }
+    },
+    {
+      "label": "settled reservations let the plan run",
+      "case": "settled",
+      "state": { "name": "settling" },
+      "event": { "type": "settled", "ok": true },
+      "expect": { "state": { "name": "planning" }, "effects": [{ "type": "plan" }] }
+    },
+    {
+      "label": "an exhausted settle budget refuses as retryable",
+      "case": "unsettled",
+      "state": { "name": "settling" },
+      "event": { "type": "settled", "ok": false },
+      "expect": {
+        "state": { "name": "refused", "code": "lifecycle_unsettled" },
+        "effects": [],
+        "response": {
+          "status": 409,
+          "body": {
+            "error": "A Trash or restore of this Page or its new parent is still settling; retry the same request shortly",
+            "code": "lifecycle_unsettled"
+          }
+        }
+      }
+    },
+    {
+      "label": "a plan is written in one put, then the barrier runs",
+      "case": "planned",
+      "state": { "name": "planning" },
+      "event": {
+        "type": "planned",
+        "ok": true,
+        "receipt": {
+          "page_id": "33333333-3333-4333-8333-333333333333",
+          "space_id": null,
+          "parent_id": "22222222-2222-4222-8222-222222222222",
+          "position": "a0V",
+          "location_revision": 1,
+          "descendants": 0,
+          "trashed_descendants": 0
+        }
+      },
+      "expect": {
+        "state": {
+          "name": "writing",
+          "receipt": {
+            "page_id": "33333333-3333-4333-8333-333333333333",
+            "space_id": null,
+            "parent_id": "22222222-2222-4222-8222-222222222222",
+            "position": "a0V",
+            "location_revision": 1,
+            "descendants": 0,
+            "trashed_descendants": 0
+          }
+        },
+        "effects": [{ "type": "write" }, { "type": "sync" }]
+      }
+    },
+    {
+      "label": "a refused plan answers with its code and status, writing nothing",
+      "case": "refused",
+      "state": { "name": "planning" },
+      "event": {
+        "type": "planned",
+        "ok": false,
+        "code": "placement_cycle",
+        "message": "A Page can't move under itself or one of its sub-pages"
+      },
+      "expect": {
+        "state": { "name": "refused", "code": "placement_cycle" },
+        "effects": [],
+        "response": {
+          "status": 409,
+          "body": {
+            "error": "A Page can't move under itself or one of its sub-pages",
+            "code": "placement_cycle"
+          }
+        }
+      }
+    },
+    {
+      "label": "a durable write replies with its receipt",
+      "case": "durable",
+      "state": {
+        "name": "writing",
+        "receipt": {
+          "page_id": "33333333-3333-4333-8333-333333333333",
+          "space_id": null,
+          "parent_id": "22222222-2222-4222-8222-222222222222",
+          "position": "a0V",
+          "location_revision": 1,
+          "descendants": 0,
+          "trashed_descendants": 0
+        }
+      },
+      "event": { "type": "synced", "ok": true },
+      "expect": {
+        "state": {
+          "name": "replied",
+          "receipt": {
+            "page_id": "33333333-3333-4333-8333-333333333333",
+            "space_id": null,
+            "parent_id": "22222222-2222-4222-8222-222222222222",
+            "position": "a0V",
+            "location_revision": 1,
+            "descendants": 0,
+            "trashed_descendants": 0
+          }
+        },
+        "effects": [],
+        "response": {
+          "status": 200,
+          "body": {
+            "page_id": "33333333-3333-4333-8333-333333333333",
+            "space_id": null,
+            "parent_id": "22222222-2222-4222-8222-222222222222",
+            "position": "a0V",
+            "location_revision": 1,
+            "descendants": 0,
+            "trashed_descendants": 0
+          }
+        }
+      }
+    },
+    {
+      "label": "a failed barrier is 503; the retry replays or re-plans",
+      "case": "failed",
+      "state": {
+        "name": "writing",
+        "receipt": {
+          "page_id": "33333333-3333-4333-8333-333333333333",
+          "space_id": null,
+          "parent_id": "22222222-2222-4222-8222-222222222222",
+          "position": "a0V",
+          "location_revision": 1,
+          "descendants": 0,
+          "trashed_descendants": 0
+        }
+      },
+      "event": { "type": "synced", "ok": false },
+      "expect": {
+        "state": { "name": "refused", "code": "move_unconfirmed" },
+        "effects": [],
+        "response": {
+          "status": 503,
+          "body": {
+            "error": "The move was written but its durability could not be confirmed; retry the same key, token and payload",
+            "code": "move_unconfirmed",
+            "retryable": true
+          }
+        }
+      }
+    }
+  ]
+}
