@@ -276,6 +276,10 @@ export const viewerSyncStatusMachine = defineMachine({
  * #4607 split survives in the key and id: `syncing` is catch-up, drawn as a
  * still dot; `saving` is this person's edits, drawn as a pulsing dot.
  * - saved: the host acknowledged the current receipt.
+ * - catching-up: an admitted socket is still bringing in changes made
+ *   elsewhere (catch-up-machine.mjs). It replaces only the calm statuses
+ *   (connected, syncing, quiet, saved) and keeps their id, so the reload gate
+ *   and close drain read the receipt as before.
  * - attention: sync is paused or local-only; the edits are not lost.
  * - failed: edits may be lost.
  */
@@ -286,6 +290,7 @@ export const STATUS_KEYS = Object.freeze([
   "quiet",
   "saving",
   "saved",
+  "catching-up",
   "attention",
   "failed",
 ]);
@@ -377,13 +382,21 @@ export function syncStatus(state, { localCopy = false } = {}) {
 
 export const syncStatusLabel = (state, options) => syncStatus(state, options).label;
 
+// The statuses "Catching up…" may replace. Saving, reconnecting, offline and
+// anything that needs attention keep the line.
+const CALM = new Set(["connected", "syncing", "quiet", "saved"]);
+
 /**
  * The whole status line: a phase pause or a failed local save outranks the
- * receipt, in OVERLAYS order.
+ * receipt, in OVERLAYS order. `catchingUp` (catch-up-machine.mjs) replaces a
+ * calm receipt status with "Catching up…", keeping its id.
  */
-export function fullStatus(state, { localCopy = false, ...flags } = {}) {
+export function fullStatus(state, { localCopy = false, catchingUp = false, ...flags } = {}) {
   for (const [flag, value] of Object.entries(OVERLAYS)) if (flags[flag]) return value;
-  return syncStatus(state, { localCopy });
+  const value = syncStatus(state, { localCopy });
+  return catchingUp && CALM.has(value.key)
+    ? status("Catching up…", "catching-up", value.id, value.retry)
+    : value;
 }
 
 export const statusLabel = (state, flags) => fullStatus(state, flags).label;

@@ -154,6 +154,7 @@ const KEYS = {
   Connected: ["connected"],
   Syncing: ["syncing", "quiet", "saving"],
   Saved: ["saved"],
+  "Catching up…": ["catching-up"],
   "Saved locally": ["attention"],
   Offline: ["attention"],
   Deleted: ["attention"],
@@ -177,6 +178,7 @@ test("every rendered status carries its presentation key", () => {
         const state = example(name, link);
         check(syncStatus(state, { localCopy }), `${name} / ${link} / ${localCopy}`);
         assert.deepEqual(fullStatus(state, { localCopy }), syncStatus(state, { localCopy }));
+        check(fullStatus(state, { localCopy, catchingUp: true }), `catching up / ${name}`);
       }
   const saving = { name: "saving", revision: 1, pending: true, link: "connected" };
   for (const flag of OVERLAY_FLAGS) {
@@ -263,4 +265,35 @@ test("the header's Retry reads the retry projection, never a label or id list", 
   const main = await readFile(new URL("./main.jsx", import.meta.url), "utf8");
   assert.match(main, /\{session\.statusRetry && \(/);
   assert.doesNotMatch(main, /session\.status\)|includes\(session\.status(Id)?\)/);
+});
+
+test("Catching up replaces only a calm status and keeps its id and Retry", () => {
+  const calm = new Set(["connected", "syncing", "quiet", "saved"]);
+  for (const name of viewerSyncStatusMachine.states)
+    for (const link of LINKS)
+      for (const localCopy of [false, true]) {
+        const state = example(name, link);
+        const base = syncStatus(state, { localCopy });
+        const shown = fullStatus(state, { localCopy, catchingUp: true });
+        const context = `${name} / ${link} / ${localCopy}`;
+        if (calm.has(base.key)) {
+          assert.deepEqual(
+            shown,
+            { label: "Catching up…", key: "catching-up", id: base.id, retry: base.retry },
+            context,
+          );
+        } else assert.deepEqual(shown, base, context);
+      }
+  // A slow save, reconnecting and offline keep the line.
+  assert.equal(fullStatus(example("saving", "connected"), { catchingUp: true }).label, "Syncing");
+  assert.equal(
+    fullStatus(example("saved", "reconnecting"), { catchingUp: true }).label,
+    "Reconnecting",
+  );
+  // An overlay outranks catching up.
+  for (const flag of OVERLAY_FLAGS)
+    assert.deepEqual(
+      fullStatus(example("saved", "connected"), { catchingUp: true, [flag]: true }),
+      overlayStatus(flag),
+    );
 });

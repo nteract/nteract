@@ -6,6 +6,8 @@ import { PageSession } from "./session.mjs";
 import { createPageData, initializePage } from "../model/page.mjs";
 import { newCommentsDoc } from "../model/comments-test-support.mjs";
 import { stampFeatures } from "../model/schema-features.mjs";
+import { VirtualTimeScheduler } from "rxjs";
+import { CATCH_UP_SHOW_MS } from "./catch-up-machine.mjs";
 
 // PageSession's interpreter for the comments-open machine: lookups with a
 // timeout, retries, a visible failure, and restarts on reconnect or replica
@@ -160,4 +162,111 @@ test("replacing the replica cancels its lookup; the new replica opens its own", 
   await until(() => session.commentsHandle);
   assert.equal(session.commentsOpen$.snapshot().name, "ready");
   assert.equal(session.commentsHandle.documentId, "doc-1");
+});
+
+// Catch-up's frontier names the comments document's heads too. Until the
+// comments replica installs and holds them, the Page isn't caught up.
+function catchUpFixture(t) {
+  const scheduler = new VirtualTimeScheduler();
+  const auth = { identity: { principal: crypto.randomUUID(), displayName: "C" }, canWrite: true };
+  const pageId = crypto.randomUUID();
+  const doc = A.change(A.from(createPageData({ pageId, title: "P" })), (draft) => {
+    initializePage(draft);
+    stampFeatures(draft, ["comments-doc"]);
+  });
+  const session = new PageSession(pageId, {
+    authentication: auth,
+    refreshSession: async () => auth,
+    scheduler,
+  });
+  session.acceptAuthentication(auth);
+  session.access = access;
+  session.replicaKey = "1:commenter";
+  session.handle = { doc: () => doc, on() {} };
+  session.repo = heldRepo();
+  session.queueSaved = () => {};
+  session.updateCapabilities();
+  t.after(() => {
+    session.commentsOpen({ type: "close" });
+    session.close();
+  });
+  // The local comments copy, and the host's with one more change.
+  const local = newCommentsDoc();
+  const host = A.change(A.clone(local), (draft) => {
+    draft.fromElsewhere = true;
+  });
+  /** A comments handle at `start` whose replica the test can advance. */
+  const commentsHandle = (id, start) => {
+    let current = start;
+    const listeners = [];
+    return {
+      documentId: id,
+      doc: () => current,
+      on(type, listener) {
+        if (type === "change") listeners.push(listener);
+      },
+      land(other) {
+        current = A.merge(current, other);
+        for (const listener of listeners) listener({});
+      },
+    };
+  };
+  const until = (ms) => {
+    scheduler.maxFrames = ms;
+    scheduler.flush();
+    scheduler.maxFrames = Infinity;
+  };
+  const answer = (comments) =>
+    session.answerCatchUp(session.catchUp.attempt, {
+      durableHeads: A.getHeads(doc),
+      ...(comments && { durableCommentHeads: A.getHeads(comments) }),
+    });
+  return { session, repo: session.repo, scheduler, local, host, commentsHandle, until, answer };
+}
+
+test("catch-up waits for the comments replica: a fast answer before it installs keeps the label", async (t) => {
+  const f = catchUpFixture(t);
+  f.session.openComments("comments-1");
+  await tick();
+  f.session.catchUp.admitted();
+  // The page replica already holds the host's page heads; comments aren't open.
+  f.answer(f.host);
+  assert.deepEqual(f.session.catchUp.store.snapshot().name, "opening");
+  f.until(CATCH_UP_SHOW_MS);
+  assert.equal(f.session.catchUp.showing, true);
+  // The comments replica installs from local storage, still behind.
+  const handle = f.commentsHandle("comments-1", f.local);
+  f.repo.calls[0].resolve(handle);
+  await until(() => f.session.commentsHandle);
+  assert.equal(f.session.commentsHandle, handle);
+  assert.equal(f.session.catchUp.showing, true, "an install behind the frontier keeps the label");
+  // The delayed comments replay lands.
+  handle.land(f.host);
+  assert.equal(f.session.catchUp.showing, false);
+  assert.equal(f.session.catchUp.store.snapshot().name, "current");
+});
+
+test("comments that install already holding the frontier clear catch-up on install", async (t) => {
+  const f = catchUpFixture(t);
+  f.session.openComments("comments-1");
+  await tick();
+  f.session.catchUp.admitted();
+  f.answer(f.host);
+  f.until(CATCH_UP_SHOW_MS);
+  assert.equal(f.session.catchUp.showing, true);
+  f.repo.calls[0].resolve(f.commentsHandle("comments-1", f.host));
+  await until(() => f.session.commentsHandle);
+  assert.equal(f.session.catchUp.showing, false);
+  assert.equal(f.session.catchUp.store.snapshot().name, "current");
+});
+
+test("a Page without a comments document catches up on its page heads alone", async (t) => {
+  const f = catchUpFixture(t);
+  // No comments document: /api/connect names none and the host sends no
+  // comment heads.
+  f.session.catchUp.admitted();
+  f.answer(null);
+  assert.equal(f.session.catchUp.store.snapshot().name, "current");
+  f.until(CATCH_UP_SHOW_MS);
+  assert.equal(f.session.catchUp.showing, false);
 });
