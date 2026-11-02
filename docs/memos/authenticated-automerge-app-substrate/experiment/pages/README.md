@@ -1701,8 +1701,8 @@ and `/s/<id>` links open `/project/<id>`. See
 [DEPLOYMENT.md](DEPLOYMENT.md#projects-and-their-storage-identity). In this build membership is owner-only: only the owner can open a Project,
 list its Pages or add to it, and nothing inherits access from a Project. A Page in
 a Project is readable by the owner and by anyone with a direct grant on that Page;
-sharing works as before and never reveals the Project. Inherited access, moves and
-a Project change feed come later.
+sharing works as before and never reveals the Project. Inherited access, moves
+between Projects and a Project change feed come later.
 
 The viewer lists them at two index routes. `/projects` shows every Project
 `list_projects` returns, with its description. `/pages` shows every Page
@@ -1722,6 +1722,7 @@ shared Pages, so `/pages` has no filter chips; shared rows say so instead.
 | `create_page` | adds `project_id?`, `parent_id?` | adds `project_id`, `parent_id` |
 | `list_pages` | adds `project_id?`, `parent_id?` (`null` = top level), `kind?` | owned rows add `project_id`, `parent_id`, `position`, `home` |
 | `read_page` | unchanged | adds `kind`, `project_id`, `parent_id`, `home`, `breadcrumbs` |
+| `move_page` | `page_id`, `parent_id`, `position?`, `idempotency_key`, `retry_token` | `page_id`, `project_id`, `parent_id`, `position`, `location_revision`, `descendants`, `trashed_descendants` |
 
 Every Project and item operation goes through the caller's own Catalog, which
 calls the Project and Pages with the caller's credentials. A Project never calls a
@@ -1763,6 +1764,24 @@ ancestor IDs and the root's Project and nothing else. Each ancestor and the
 Project then answer with the caller's credentials, so the trail stops at the
 first Page the caller cannot open and `project_id` appears only when the
 Project is readable.
+
+`move_page` reparents or reorders an owned Page in one Catalog write
+([move-page.mjs](worker/move-page.mjs)): the moved entry's `parent_id` and
+`position`, any destination siblings rekeyed to repair ties or rebalance long
+keys, `host/location/revision`, the completed journal row with its receipt and
+the index's dirty mark go in one transaction (several puts when a rebalance
+passes 128 keys). No Page is called and no heads change; the subtree, trashed
+descendants included, follows its root. The request is a state machine
+(`received`, `settling`, `planning`, `writing`, `replied`, `refused`): it
+replays a completed receipt, settles the Page's and the parent's Trash or
+restore reservations within the lifecycle budget (`lifecycle_unsettled` when
+out of it), runs the shape pass like every queued write, then `planMove`
+([model/location.mjs](model/location.mjs)). This build moves by `parent_id`
+within one Project or within Your items; the Project's top level is its home
+Page. `project_id` destinations, Your items as a destination and moves between
+Projects answer `move_destination_required` until a later slice. A failed
+barrier after the put is `503 move_unconfirmed`; the retry replays the receipt
+or plans again over what is stored and reports where the Page landed.
 
 Trash stays single-Page. `delete_page` on a Page with active sub-pages, or
 sub-pages still being created, returns `page_has_children`; trash the sub-pages

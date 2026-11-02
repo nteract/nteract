@@ -184,6 +184,7 @@ test("MCP tools declare every annotation hint, and each tool's hints are intende
     create_project: write,
     update_project: write,
     restore_page: write,
+    move_page: write,
     report_page_progress: { ...write, idempotentHint: false },
     import_page_image: { ...write, openWorldHint: true },
     delete_page: destructive,
