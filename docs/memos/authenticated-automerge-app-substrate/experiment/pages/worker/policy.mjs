@@ -2,6 +2,7 @@ import { pageAccess, pageDecision, pageGrant, pageState } from "./access.mjs";
 import { withAdmissionReason } from "./admission-reasons.mjs";
 import { missingFeatures, schemaUnsupported } from "../model/schema-features.mjs";
 import { COMMENTING_ROLES } from "../model/comment-rules.mjs";
+import { nativeSessionMachine } from "./native-session-machine.mjs";
 
 /** The two documents a Page host serves. The Page document takes `edit`;
  * its comments document takes `comment`. One ACL governs both. */
@@ -52,6 +53,17 @@ export function admissionCancelled(code = "native_admission_cancelled") {
   return Object.assign(new Error("Native admission ended; reconnect"), { status: 503, code });
 }
 
+/** The close for a connection a newer one with the same signing key replaced. */
+export function sessionReplaced() {
+  return withAdmissionReason(
+    new PermissionDenied(
+      "This signing key connected again on another socket",
+      "native_session_replaced",
+    ),
+    "native_session_replaced",
+  );
+}
+
 /** Durable authorship admission is distinct from a connection's live credential.
  * Host-owned grants and credential ceilings apply together. The CRDT never grants access.
  *
@@ -85,7 +97,10 @@ export class DocumentPolicy {
     // Returns the refusal while the host holds peer writes, or undefined.
     this.writeFence = writeFence;
     this.bindings = new Map();
+    // Each key's admitted connection. Changed only through slot(), which
+    // steps nativeSessionMachine.
     this.sessions = new Map();
+    this.sessionIds = 0;
     this.admissions = new Map();
     this.bindingWrites = new Map();
     this.dirtyBindings = new Set();
@@ -206,7 +221,7 @@ export class DocumentPolicy {
         session.canWrite !== writes.canWrite ||
         session.canComment !== writes.canComment
       ) {
-        this.sessions.delete(key);
+        this.endSession(key, session);
         disconnects.push(() =>
           session.disconnect(
             new PermissionDenied("Page access changed during connection", "native_access_changed"),
@@ -251,6 +266,47 @@ export class DocumentPolicy {
         failures.map((result) => result.reason),
         "Access refresh failed",
       );
+  }
+
+  /** Step `key`'s session slot (native-session-machine.mjs) with `event` and
+   * apply its effects. `session` is the connection an `admit` installs. A
+   * replaced connection closes after this returns, so its own cleanup finds
+   * the replacement in the slot and leaves it. Returns the step's result; a
+   * rejection changes nothing. */
+  slot(key, event, session) {
+    const current = this.sessions.get(key);
+    const state = current
+      ? {
+          name: "held",
+          session: current.id,
+          principal: current.identity.principal,
+          driver: current.identity.driver ?? null,
+        }
+      : nativeSessionMachine.initial;
+    const result = nativeSessionMachine.step(state, event);
+    for (const effect of result.effects) {
+      switch (effect.type) {
+        case "install":
+          this.sessions.set(key, session);
+          break;
+        case "remove":
+          this.sessions.delete(key);
+          break;
+        case "replace":
+          setTimeout(() => {
+            void Promise.resolve()
+              .then(() => current.disconnect(sessionReplaced()))
+              .catch(() => {});
+          }, 0);
+          break;
+      }
+    }
+    return result;
+  }
+
+  /** End `session`'s hold on `key`; a no-op once another connection holds it. */
+  endSession(key, session) {
+    return !this.slot(key, { type: "end", session: session.id }).rejected;
   }
 
   writeBinding(key, binding) {
@@ -338,8 +394,8 @@ export class DocumentPolicy {
         previous.driver !== identity.driver)
     )
       throw new PermissionDenied("Signing key has another binding", "native_binding_mismatch");
-    if (this.sessions.has(key))
-      throw new PermissionDenied("Signing key is already connected", "native_already_connected");
+    // A connection still holding this key doesn't block admission: the same
+    // tab is reconnecting, and admission replaces it (native-session-machine).
     let admission = this.admissions.get(key);
     if (admission?.claim)
       throw new PermissionDenied("Signing key admission is pending", "native_binding_pending");
@@ -446,6 +502,7 @@ export class DocumentPolicy {
           "native_access_changed",
         );
       const session = {
+        id: ++this.sessionIds,
         identity,
         generation: current.generation,
         role: current.role,
@@ -460,10 +517,19 @@ export class DocumentPolicy {
         // across a reload, and the reloaded build declares its own features.
         features: Object.freeze([...features]),
       };
-      this.sessions.set(key, session);
-      return () => {
-        if (this.sessions.get(key) === session) this.sessions.delete(key);
-      };
+      const admitted = this.slot(
+        key,
+        {
+          type: "admit",
+          session: session.id,
+          principal: identity.principal,
+          driver: identity.driver ?? null,
+        },
+        session,
+      );
+      if (admitted.rejected)
+        throw new PermissionDenied("Signing key has another binding", "native_binding_mismatch");
+      return () => this.endSession(key, session);
     } finally {
       signal?.removeEventListener("abort", abort);
       if (admission.claim === claim) admission.claim = null;
@@ -537,7 +603,7 @@ export class DocumentPolicy {
         throw new PermissionDenied("Signing key is read-only; reconnect with a new key");
       return current;
     } catch (error) {
-      if (this.sessions.get(key) === session) this.sessions.delete(key);
+      this.endSession(key, session);
       await session.disconnect(error);
       throw error;
     }
@@ -639,7 +705,7 @@ export class DocumentPolicy {
     }
     const session = this.sessions.get(key);
     if (session) {
-      this.sessions.delete(key);
+      this.endSession(key, session);
       setTimeout(() => {
         void Promise.resolve()
           .then(() =>
@@ -662,7 +728,7 @@ export class DocumentPolicy {
   throttleComments(key) {
     const session = this.sessions.get(key);
     if (!session) return;
-    this.sessions.delete(key);
+    this.endSession(key, session);
     setTimeout(() => {
       void Promise.resolve()
         .then(() =>
@@ -700,7 +766,7 @@ export class DocumentPolicy {
   async close() {
     this.closed = true;
     const sessions = [...this.sessions.values()];
-    this.sessions.clear();
+    for (const [key, session] of this.sessions) this.endSession(key, session);
     for (const admission of this.admissions.values()) {
       const claim = admission.claim;
       if (!claim) continue;

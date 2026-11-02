@@ -1010,7 +1010,7 @@ async function refuseUntilPaused(f, code, reason, { handshake }) {
 test("repeated admission refusals pause sync until Retry or online", async (t) => {
   for (const [code, reason, handshake] of [
     [4409, "access_changed", true],
-    [4503, "temporarily_unavailable", false],
+    [4400, "request_rejected", false],
   ]) {
     await t.test(`${code} ${handshake ? "during the handshake" : "after admission"}`, async (t) => {
       const f = fixture(t);
@@ -1067,6 +1067,63 @@ test("repeated admission refusals pause sync until Retry or online", async (t) =
       assert.equal(f.session.retryTimer, undefined, "the host admitted the new socket");
       assert.equal(f.session.connectionProblem, "");
       assert.doesNotMatch(f.session.problem, /Sync paused/);
+    });
+  }
+});
+
+test("a busy host's temporarily_unavailable closes back off forever and never pause", async (t) => {
+  // The host kept refusing one tab's reconnects with native_already_connected
+  // (4503) while its old socket held the key; pausing after six turned that
+  // into a stuck tab. A busy host is a transient failure, so the tab keeps
+  // retrying at the capped step and reconnects as soon as the host admits it.
+  for (const handshake of [false, true]) {
+    await t.test(handshake ? "during the handshake" : "after admission", async (t) => {
+      const f = fixture(t, { random: () => 0.999_999 });
+      await f.start();
+      if (handshake)
+        f.hooks.setup = () => {
+          hostClose(f.sockets.at(-1), 4503, "temporarily_unavailable");
+          throw Error("Native handshake failed");
+        };
+      const steps = [];
+      const busy = 3 * REFUSAL_LIMIT;
+      for (let refusal = 0; refusal < busy; refusal++) {
+        if (refusal === 0 || !handshake) {
+          const socket = f.sockets.at(-1);
+          hostClose(socket, 4503, "temporarily_unavailable");
+          f.session.socketDisconnected(socket);
+        }
+        const state = f.session.reconnect$.snapshot();
+        assert.equal(state.name, "waiting", `refusal ${refusal + 1} schedules a retry`);
+        assert.equal(state.refusals, 0, "a busy host's close is not a refusal");
+        assert.equal(f.session.syncPaused, false);
+        assert.doesNotMatch(f.session.problem ?? "", /Sync paused/);
+        if (refusal + 1 < OUTAGE_ATTEMPTS)
+          assert.equal(f.session.problem ?? "", "", "no banner while the backoff is short");
+        assert.match(f.session.status, /^(Reconnecting|Offline)$/);
+        const step = backoffStep(state.attempts - 1);
+        steps.push(step);
+        const before = f.sockets.length;
+        await f.advance(step - 1);
+        assert.equal(f.sockets.length, before, `no retry before ${step} ms`);
+        await f.advance(1);
+        assert.equal(f.sockets.length, before + 1, `a retry at ${step} ms`);
+      }
+      assert.deepEqual(steps.slice(0, 8), [500, 1000, 2000, 4000, 8000, 16_000, 32_000, 60_000]);
+      assert.deepEqual(steps.slice(8), Array(busy - 8).fill(60_000), "the step stays capped");
+
+      // The host frees the slot: the next retry is admitted and sync resumes.
+      // The last retry's socket is refused too (a no-op once its handshake
+      // already failed); the one after it is admitted.
+      f.hooks.setup = undefined;
+      const last = f.sockets.at(-1);
+      hostClose(last, 4503, "temporarily_unavailable");
+      f.session.socketDisconnected(last);
+      await f.advance(60_000);
+      await drain();
+      assert.equal(f.session.retryTimer, undefined, "the host admitted the retry");
+      assert.equal(f.session.connectionProblem, "");
+      assert.equal(f.session.syncPaused, false);
     });
   }
 });

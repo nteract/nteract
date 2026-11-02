@@ -435,7 +435,7 @@ export function logFailure(error, stage) {
       "native_binding_pending",
       "native_binding_persistence_failed",
       "native_binding_mismatch",
-      "native_already_connected",
+      "native_session_replaced",
       "native_access_changed",
       "native_acl_committing",
     ].includes(error?.code)

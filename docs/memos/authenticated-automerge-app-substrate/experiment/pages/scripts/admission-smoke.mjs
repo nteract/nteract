@@ -216,13 +216,36 @@ try {
       { timeout: 15000 },
     )
     .toBe(true);
-  const duplicate = await nativeConnect(ownerCookie, seed);
-  report.closes.duplicate = await duplicate.closed;
-  assert.deepEqual(report.closes.duplicate, { code: 4503, reason: "temporarily_unavailable" });
+  // The same key connecting again is the same tab after its old socket died
+  // unseen: the new connection takes the key and the host closes the old one.
+  const replacement = await nativeConnect(ownerCookie, seed);
+  report.closes.replaced = await Promise.race([
+    first.closed,
+    new Promise((_, reject) =>
+      setTimeout(() => reject(new Error("the replaced socket stayed open")), 15000),
+    ),
+  ]);
+  assert.deepEqual(report.closes.replaced, { code: 4409, reason: "access_changed" });
+  await expect
+    .poll(
+      async () =>
+        Object.hasOwn(
+          (await api(owner, `/api/connect?page=${pageId}`)).body.peerProfiles,
+          replacement.senderId,
+        ),
+      { timeout: 15000 },
+    )
+    .toBe(true);
   const reassigned = await nativeConnect(await cookieFor(member), seed);
   report.closes.reassigned = await reassigned.closed;
   assert.deepEqual(report.closes.reassigned, { code: 4422, reason: "signing_key_rejected" });
-  first.close();
+  // The replacement survived both: it still holds the key.
+  assert.equal(
+    await Promise.race([replacement.closed, new Promise((resolve) => setTimeout(resolve, 1000))]),
+    undefined,
+    "the replacement stays connected",
+  );
+  replacement.close();
   // A real text frame on the native socket is refused with its own code.
   const textAddress = new URL(`/api/sync?page=${pageId}`, origin);
   textAddress.protocol = "ws:";
@@ -234,7 +257,7 @@ try {
   });
   assert.deepEqual(report.closes.textFrame, { code: 4400, reason: "request_rejected" });
   report.completed.push(
-    "Native admission: duplicate key 4503 temporarily_unavailable; reassigned key 4422 signing_key_rejected; text frame 4400 request_rejected",
+    "Native admission: same key replaces its old socket (4409 access_changed); reassigned key 4422 signing_key_rejected; text frame 4400 request_rejected",
   );
 
   // Over the account's four-socket quota the upgrade still completes and
@@ -386,7 +409,7 @@ try {
     "page_no_grant",
     "page_not_found",
     "origin_rejected",
-    "native_already_connected",
+    "native_session_replaced",
     "native_binding_mismatch",
     "native_frame_unsupported",
     "connection_capacity",

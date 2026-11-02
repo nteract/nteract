@@ -185,6 +185,14 @@ const SIGNING_KEY_REFUSED =
 const SYNC_PAUSED =
   "Sync paused: the host kept refusing this connection. Your edits stay on this device. Retry to reconnect.";
 const admissionHeaders = { [ADMISSION_CAPABILITY.header]: ADMISSION_CAPABILITY.value };
+/** Whether a native admission close counts toward pausing sync. A
+ * `temporarily_unavailable` close says the host is briefly busy (a handshake
+ * deadline, a full socket quota, a storage stall), so it takes the backoff
+ * like a dropped socket and retries at the capped step for as long as it
+ * lasts. Every other admission code is the host deciding against this
+ * connection, and repeating it pauses. */
+export const countsAsRefusal = (admission) =>
+  !!admission && admission.code !== "temporarily_unavailable";
 // Receipt retries after a failure the host may fix (409 missing edits, 500).
 const RECEIPT_RETRY_DELAYS = [500, 1000, 2000];
 /** The wait before receipt retry `attempt`, or undefined once the retries are
@@ -1126,9 +1134,11 @@ export class PageSession {
       this.refuseNative(outcome);
       return;
     }
-    // The host's admission closes a socket that never proved stable: count it,
-    // so a host that keeps refusing pauses instead of retrying forever.
-    if (this.scheduleReconnect({ refused: !!outcome && !stable }) === "paused") return;
+    // The host's admission closes a socket that never proved stable: count a
+    // refusal, so a host that keeps refusing pauses instead of retrying
+    // forever. A busy host's close only backs off (countsAsRefusal).
+    if (this.scheduleReconnect({ refused: countsAsRefusal(outcome) && !stable }) === "paused")
+      return;
     this.syncStatus({ type: "retrying" });
     this.renderStatus();
     this.emit();
@@ -2302,17 +2312,20 @@ export class PageSession {
       const refusal = classifyRefusal(error, { legacyMissing: false });
       if (refusal) await this.applyRefusal(refusal);
       else if (error.status === 401) this.requireSignIn(this.authProblem || undefined);
-      else if (isTransientFailure(error)) {
-        // The host may be restarting. Retry quietly; the reconnect machine
-        // reports an outage if this lasts.
+      else if (
+        isTransientFailure(error) ||
+        (error.admission && !countsAsRefusal(error.admission))
+      ) {
+        // The host may be restarting or briefly busy. Retry quietly; the
+        // reconnect machine reports an outage if this lasts.
         this.showUnreachable();
-        this.scheduleReconnect({ refused: !!error.admission });
+        this.scheduleReconnect({ refused: countsAsRefusal(error.admission) });
       } else {
         this.showConnectionProblem(error.message);
         // An admission close during the handshake is a refusal; the next
         // attempt's discovery still stops on 401, 403 or 404.
         if (!error.status || error.status >= 500)
-          this.scheduleReconnect({ refused: !!error.admission });
+          this.scheduleReconnect({ refused: countsAsRefusal(error.admission) });
       }
     } finally {
       // HTTP receipts can recover even if native sync still cannot reconnect.

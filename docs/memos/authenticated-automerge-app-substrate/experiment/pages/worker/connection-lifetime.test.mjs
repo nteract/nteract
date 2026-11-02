@@ -718,3 +718,37 @@ test("real policy rechecks delayed API verification every timer period and promp
   assert.deepEqual(f.writes, [], "rechecks do not rewrite durable author bindings");
   assert.deepEqual(await f.page.ctx.storage.get(`host/binding/${"0".repeat(64)}`), persisted);
 });
+
+test("a tab reconnecting while its dead socket still holds the key replaces that session", async (t) => {
+  // Every fixture connection proves the same signing key, as one tab's do.
+  const f = fixture(t, undefined, {
+    credentialKind: "oidc",
+    reauthenticate: async (identity) => identity,
+  });
+  await drain();
+  const key = "0".repeat(64);
+  const stale = f.page.policy.sessions.get(key);
+  assert.ok(stale, "the first socket holds the key");
+  // The browser's end of the first socket is gone, but its close never
+  // reached the host: the socket stays open here and keeps the slot.
+  const reconnect = f.open();
+  await drain();
+  assert.equal(reconnect.socket.closed, undefined, "the reconnect is admitted, not refused");
+  const replacement = f.page.policy.sessions.get(key);
+  assert.ok(replacement && replacement !== stale, "the new connection holds the key");
+  t.mock.timers.tick(0);
+  await drain();
+  assert.deepEqual(f.socket.closed, { code: 4409, reason: "access_changed" });
+  assert.deepEqual(
+    f.admissionLogs.map(({ stage, reason, code }) => ({ stage, reason, code })),
+    [{ stage: "native", reason: "native_session_replaced", code: "access_changed" }],
+  );
+  await f.background;
+  assert.equal(f.page.wires.size, 1, "only the replacement's wire remains");
+  assert.equal(f.page.policy.sessions.get(key), replacement, "the stale cleanup kept it");
+  assert.equal(reconnect.socket.closed, undefined);
+  reconnect.socket.close();
+  await reconnect.background;
+  assert.equal(f.page.policy.sessions.size, 0);
+  assert.equal(f.page.wires.size, 0);
+});

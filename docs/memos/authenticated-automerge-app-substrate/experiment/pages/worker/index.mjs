@@ -4921,7 +4921,13 @@ export class Page {
             signal: admission.signal,
             waitUntil: (promise) => this.ctx.waitUntil(promise),
             reauthenticate: () => authenticate(request, this.env),
-            disconnect: (error) => close(error ?? admissionCancelled()),
+            disconnect: (error) => {
+              // A replaced connection ends without a failure, so nothing
+              // else logs it; log it here so replacements show in the host log.
+              if (admissionReason(error) === "native_session_replaced")
+                logAdmissionDenied(error, { stage: "native", identity });
+              return close(error ?? admissionCancelled());
+            },
             onRenewal: (expiresAt) => {
               if (identity.credentialKind === "api-key") armExpiry(expiresAt);
             },
