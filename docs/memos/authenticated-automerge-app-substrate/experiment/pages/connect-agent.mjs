@@ -10,6 +10,7 @@ import {
   setupPrompt,
 } from "./agent-client-setup.mjs";
 import { FAVICON_LINK } from "./shared/favicon.mjs";
+import { PRODUCT_NAME, tabTitle } from "./shared/product.mjs";
 import { STYLESHEET, THEME_SCRIPT } from "./shared/shell-assets.mjs";
 
 const escapeHtml = (value) =>
@@ -53,14 +54,14 @@ export function connectAgentResponse(request, env) {
       <p class="setup-note">Production and staging credentials are separate. Use a key for this deployment's provider.</p>`;
   const body = `<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Connect an agent · Pages</title>${FAVICON_LINK}<script src="${THEME_SCRIPT}"></script><link rel="stylesheet" href="${STYLESHEET}"><link rel="describedby" type="text/plain" href="/llms.txt"></head>
-<body><header class="app-header"><a class="brand" href="/">Pages</a><a class="setup-guide-link" href="/llms.txt">Agent guide</a></header>
+<title>${escapeHtml(tabTitle("Connect an agent"))}</title>${FAVICON_LINK}<script src="${THEME_SCRIPT}"></script><link rel="stylesheet" href="${STYLESHEET}"><link rel="describedby" type="text/plain" href="/llms.txt"></head>
+<body><header class="app-header"><a class="brand" href="/">${escapeHtml(PRODUCT_NAME)}</a><a class="setup-guide-link" href="/llms.txt">Agent guide</a></header>
 <main class="agent-setup">
   <h1>Connect an agent</h1>
   <p class="setup-intro">Let your agent read, edit, and comment on your Pages.</p>
   <p>Coding agents, CLIs, and scripts connect with an Anaconda API key. ChatGPT and other interactive cloud clients sign in with OAuth. Your agent can prepare the settings while you create a key or authorize access.</p>
   <details class="setup-details"><summary>Give your agent the setup steps</summary>
-    <pre class="setup-value"><code id="setup-prompt">${escapeHtml(setupPrompt(setup.origin))}</code></pre>
+    <pre class="setup-value setup-prose"><code id="setup-prompt">${escapeHtml(setupPrompt(setup.origin))}</code></pre>
     <button type="button" class="setup-copy" data-copy="setup-prompt" data-copy-message="Setup instructions copied. Paste them into your agent chat." hidden>Copy setup instructions</button>
   </details>
   <h2 id="setup-api-key-clients">Coding agents and scripts: use an API key</h2>
@@ -94,7 +95,7 @@ export function connectAgentResponse(request, env) {
       <p>Merge this into <code>~/.codex/config.toml</code> (or your configured CODEX_HOME). Replace both placeholders with absolute paths, using <code>command -v python3</code> to locate Python.</p>
       <pre class="setup-value"><code id="codex-config">${escapeHtml(codexConfig(setup.origin))}</code></pre>
       <button type="button" class="setup-copy" data-copy="codex-config" data-copy-message="Codex config copied. Fill in the two absolute paths before merging it into your config." hidden>Copy Codex config</button>
-      <p>Use a current Codex release with local HTTP header helpers (checked with CLI 0.156.1). Remove any previous <code>bearer_token_env_var</code> or Authorization header for this server; they take precedence. Reload MCP, then ask it to list your Pages.</p>
+      <p>Use a current Codex release with local HTTP header helpers. Remove any previous <code>bearer_token_env_var</code> or Authorization header for this server; they take precedence. Reload MCP, then ask it to list your Pages.</p>
       <p>To label sessions, add <code>env_http_headers = { "X-Pages-Agent" = "PAGES_AGENT" }</code>. Codex reads the label from that environment variable.</p>
       <p class="setup-note">This works without desktop shell environment variables. Remote execution placement needs its own credential setup. <a href="https://developers.openai.com/codex/mcp">Codex configuration reference</a></p>
     </details>

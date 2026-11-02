@@ -78,6 +78,18 @@ const mcpSession = async (request, principal) => {
   return session ? { session } : {};
 };
 
+/** The refusal for a request that presents no credential at all. It names the
+ * header API clients send and where a person gets a key. */
+export const credentialRequired = (request, env) =>
+  withAdmissionReason(
+    new HttpError(
+      401,
+      `Send Authorization: Bearer <Anaconda API key>; see ${new URL("/connect", env.NOTEBOOK_CLOUD_PUBLIC_ORIGIN || request.url).href}`,
+      "auth_required",
+    ),
+    "credential_missing",
+  );
+
 export function requireSameOrigin(request, env) {
   const origin = new URL(env.NOTEBOOK_CLOUD_PUBLIC_ORIGIN || request.url).origin;
   const supplied = request.headers.get("origin");
@@ -86,19 +98,21 @@ export function requireSameOrigin(request, env) {
   const changesState =
     !["GET", "HEAD", "OPTIONS"].includes(request.method) ||
     request.headers.get("upgrade")?.toLowerCase() === "websocket";
+  const credentialless = !request.headers.has("authorization") && !request.headers.has("cookie");
   // A new MCP client needs a 401 challenge to discover OAuth before it has a
   // credential. This exception never authorizes an operation or a foreign Origin.
-  const discoveringMcp =
-    new URL(request.url).pathname === "/mcp" &&
-    !request.headers.has("authorization") &&
-    !request.headers.has("cookie");
+  const discoveringMcp = new URL(request.url).pathname === "/mcp" && credentialless;
   if (
     changesState &&
     !discoveringMcp &&
     !request.headers.has("authorization") &&
     supplied !== origin
-  )
+  ) {
+    // The Origin check guards the ambient cookie. With no credential at all
+    // there is nothing to forge, and the request can only fail sign-in.
+    if (credentialless) throw credentialRequired(request, env);
     throw withAdmissionReason(new HttpError(403, "Origin is required"), "origin_rejected");
+  }
 }
 
 async function withDomainAccess(identity, env) {
@@ -195,6 +209,15 @@ export async function authenticate(request, env) {
       const status = error?.status ?? (error?.name === "AuthError" ? 401 : 500);
       if (status >= 500 && error && typeof error === "object")
         withAdmissionReason(error, "credential_unverified");
+      if (status === 401)
+        throw withAdmissionReason(
+          new HttpError(
+            401,
+            `${error.message}. Check that the key is current and from this deployment's Anaconda account, or create a new one at ${new URL("/connect", env.NOTEBOOK_CLOUD_PUBLIC_ORIGIN || request.url).href}`,
+            "invalid_api_key",
+          ),
+          "credential_invalid",
+        );
       throw error;
     }
     return withDomainAccess(
@@ -217,7 +240,10 @@ export async function authenticate(request, env) {
     );
   }
   if (!request.headers.has("cookie"))
-    throw withAdmissionReason(new HttpError(401, "Sign in to Pages"), "credential_missing");
+    throw withAdmissionReason(
+      new HttpError(401, "Sign in to Pages", "auth_required"),
+      "credential_missing",
+    );
   const session = await readServerAppSession(env, request, Math.floor(Date.now() / 1000));
   if (!session) throw new HttpError(401, "Sign in to Pages");
   return withDomainAccess(
@@ -346,6 +372,12 @@ export function errorResponse(error, stage = "request") {
       error: status < 500 || coded ? error.message : "Pages request failed",
       ...(coded && { code: error.code, retryable }),
       ...([
+        "auth_required",
+        "invalid_api_key",
+        "unknown_operation",
+        "invalid_arguments",
+        "invalid_page_id",
+        "page_not_found",
         "oauth_invalid_token",
         "oauth_insufficient_scope",
         "retry_expired",

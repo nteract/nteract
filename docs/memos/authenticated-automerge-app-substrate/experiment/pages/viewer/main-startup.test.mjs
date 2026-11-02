@@ -8,6 +8,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { build } from "esbuild";
 import { JSDOM } from "jsdom";
 import { SERVER_UNREACHABLE_ACTION } from "./alerts.mjs";
+import { PRODUCT_NAME } from "../shared/product.mjs";
 
 const dom = new JSDOM('<!doctype html><body><div id="root"></div></body>', {
   url: "http://localhost/",
@@ -135,8 +136,37 @@ test("a first visit whose session check answers 401 lands signed out with no ban
   const app = await boot(() => Response.json({ error: "Sign in required" }, { status: 401 }));
   assert.ok(app.requests.includes("/api/auth/session"));
   assert.equal(document.querySelector("h1")?.textContent, "A place to write together.");
-  assert.ok([...document.querySelectorAll("a")].some((link) => link.textContent === "Sign In"));
+  assert.ok([...document.querySelectorAll("a")].some((link) => link.textContent === "Sign in"));
   assert.deepEqual(app.banners(), []);
+  // A first-time visitor learns what this is and where agents start.
+  assert.match(
+    document.querySelector(".welcome p")?.textContent,
+    /people and agents edit together/,
+  );
+  const connect = [...document.querySelectorAll("a")].find(
+    (link) => link.textContent === "Connect an agent",
+  );
+  assert.equal(connect?.getAttribute("href"), "/connect");
+  assert.equal(document.title, PRODUCT_NAME);
+  assert.equal(document.querySelector(".brand")?.textContent, PRODUCT_NAME);
+});
+
+test("a signed-out visit to a Page link asks to sign in to that Page and returns to it", async () => {
+  const pageId = "44444444-4444-4444-8444-444444444444";
+  history.replaceState(null, "", `/p/${pageId}`);
+  try {
+    await boot(() => Response.json({ error: "Sign in required" }, { status: 401 }));
+    assert.equal(document.querySelector("h1")?.textContent, "Sign in to open this Page.");
+    const signIn = [...document.querySelectorAll("a")].find(
+      (link) => link.textContent === "Sign in",
+    );
+    assert.equal(
+      signIn?.getAttribute("href"),
+      `/api/auth/login?return_to=${encodeURIComponent(`/p/${pageId}`)}`,
+    );
+  } finally {
+    history.replaceState(null, "", "/");
+  }
 });
 
 test("a first visit that can't reach the server says so once", async () => {

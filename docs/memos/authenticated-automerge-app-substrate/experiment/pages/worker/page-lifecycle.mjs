@@ -251,7 +251,7 @@ export const pageLifecycleSpec = {
 // ---------------------------------------------------------------------------
 // Transition
 
-const NOT_FOUND = { status: 404, error: "Page not found" };
+const NOT_FOUND = { status: 404, error: "Page not found", code: "page_not_found" };
 /** A refusal before the record changes. The Catalog may release its slot. */
 const refused = (status, error, code) => ({
   status,

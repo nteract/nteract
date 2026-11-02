@@ -52,7 +52,7 @@ export function requirePageIdArgument(value, argument = "page_id") {
         : `${argument} expects a Page ID, but this is a Project ID. Use get_project with project_id to read a Project; its home_page_id is a Page ID for read_page.`,
       "project_id_as_page_id",
     );
-  throw new HttpError(400, `Invalid ${argument}`);
+  throw new HttpError(400, `Invalid ${argument}`, "invalid_page_id");
 }
 export function requireSpaceIdArgument(value, argument = "project_id") {
   if (validSpaceId(value)) return value;

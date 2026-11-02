@@ -2,6 +2,7 @@
 // to prove that editing and navigation do not wait for the host to create a Page.
 import assert from "node:assert/strict";
 import { chromium, expect } from "@playwright/test";
+import { PRODUCT_NAME } from "../shared/product.mjs";
 const origin = process.env.PAGES_ORIGIN || "http://localhost:9894";
 assert.equal(new URL(origin).hostname, "localhost");
 const browser = await chromium.launch({ headless: true });
@@ -56,7 +57,7 @@ try {
   await expect(editor(page)).toHaveText("Written while registration is held.");
   await expect.poll(() => registrations).toBeGreaterThan(0);
   await expect(saveStatus(page)).not.toHaveText("Saved");
-  await page.getByRole("link", { name: "Pages", exact: true }).click();
+  await page.getByRole("link", { name: PRODUCT_NAME, exact: true }).click();
   await expect(page).toHaveURL(origin + "/");
   await expect(page.getByRole("link", { name: new RegExp(title) })).toBeVisible();
   await page.goBack();
@@ -107,7 +108,7 @@ try {
   await editor(peer).pressSequentially(" A second peer joined.");
   await expect(editor(page)).toContainText("A second peer joined.");
   // A new draft must publish edits from its first live session, without a reload.
-  await page.getByRole("link", { name: "Pages", exact: true }).click();
+  await page.getByRole("link", { name: PRODUCT_NAME, exact: true }).click();
   await page.getByRole("button", { name: "New Page", exact: true }).click();
   await expect(titleInput(page)).toBeFocused();
   const plainUrl = page.url();
@@ -135,7 +136,7 @@ try {
     /Written and saved without reopening/,
   );
   // A rejected local draft remains discardable; delayed registration cannot resurrect it.
-  await page.getByRole("link", { name: "Pages", exact: true }).click();
+  await page.getByRole("link", { name: PRODUCT_NAME, exact: true }).click();
   await page.route("**/api/pages/register", (route) =>
     route.fulfill({
       status: 409,
@@ -166,7 +167,7 @@ try {
     }),
   );
   await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
-  await expect(page.getByRole("link", { name: "Sign In", exact: true })).toBeVisible();
+  await expect(page.getByRole("link", { name: "Sign in", exact: true })).toBeVisible();
   await page.unroute("**/api/auth/session");
   await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
   await expect(page.locator('a.page-card[href="/p/' + plainId + '"]')).toBeVisible();
@@ -181,7 +182,7 @@ try {
   await expect(page).toHaveURL(origin + "/");
   // An open tab of the owner learns the Page moved to Trash.
   await expect(peer.getByText("This Page is in Trash.")).toBeVisible({ timeout: 20000 });
-  await peer.getByRole("link", { name: "Pages", exact: true }).click();
+  await peer.getByRole("link", { name: PRODUCT_NAME, exact: true }).click();
   await expect(peer.locator('a.page-card[href="/p/' + plainId + '"]')).toHaveCount(0);
   await page.reload();
   await expect(page.locator('a.page-card[href="/p/' + plainId + '"]')).toHaveCount(0);

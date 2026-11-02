@@ -6,6 +6,7 @@ import assert from "node:assert/strict";
 import { mkdir, writeFile } from "node:fs/promises";
 import { chromium, expect } from "@playwright/test";
 import { MIN_VIEWER_PROTOCOL } from "../shared/build-identity.mjs";
+import { PRODUCT_NAME } from "../shared/product.mjs";
 
 const origin = process.env.PAGES_ORIGIN || "http://localhost:9894";
 assert.equal(new URL(origin).hostname, "localhost");
@@ -225,7 +226,7 @@ try {
   await owner.route("**/api/saved?*", (route) => route.abort());
   await owner.keyboard.insertText(" Checkpointed.");
   await paragraph(owner, "Deploy garden. Before deploy. During deploy. Checkpointed.");
-  await owner.getByRole("link", { name: "Pages", exact: true }).click();
+  await owner.getByRole("link", { name: PRODUCT_NAME, exact: true }).click();
   await expect(owner.getByRole("heading", { name: "Your pages" })).toBeVisible();
   await owner.evaluate(() => {
     window.__pagesBeforeReload = true;
@@ -271,7 +272,7 @@ try {
     owner,
     "Deploy garden. Before deploy. During deploy. Checkpointed. After banner.",
   );
-  await owner.getByRole("link", { name: "Pages", exact: true }).click();
+  await owner.getByRole("link", { name: PRODUCT_NAME, exact: true }).click();
   await expect(owner.getByRole("heading", { name: "Your pages" })).toBeVisible();
   await expect.poll(() => receipts.inFlight, { timeout: 15000 }).toBeGreaterThan(0);
   let loadedAt = 0;
@@ -422,7 +423,7 @@ try {
   const newPage = owner.getByRole("button", { name: "New Page", exact: true });
   await newPage.click();
   await expect(newPage).toBeDisabled();
-  await owner.getByRole("link", { name: "Pages", exact: true }).click();
+  await owner.getByRole("link", { name: PRODUCT_NAME, exact: true }).click();
   releaseEditor();
   await expect(newPage).toBeEnabled({ timeout: 30000 });
   // The editor opens a Page once its chunk lands, so the abandoned create has

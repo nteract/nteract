@@ -11,6 +11,7 @@ import {
   SERVER_SESSION_COOKIE,
 } from "@cloud/oidc-session-store.ts";
 import worker from "./index.mjs";
+import { PRODUCT_NAME } from "../shared/product.mjs";
 
 const origin = "https://page10.example";
 const LOGIN_COOKIE = "__Host-nteract_cloud_oidc_login";
@@ -109,7 +110,9 @@ test("a refused sign-in callback is a Pages HTML page with same-origin ways back
     );
     const body = await response.text();
     assert.match(body, /^<!doctype html>/);
-    assert.match(body, /<title>Sign-in didn&#39;t finish · Pages<\/title>/);
+    assert.ok(body.includes(`<title>Sign-in didn&#39;t finish · ${PRODUCT_NAME}</title>`));
+    // The two actions sit in one row with a gap, not touching.
+    assert.match(body, /<p class="setup-actions"><a class="primary setup-action"/);
     assert.match(
       body,
       /<a class="primary setup-action" href="\/api\/auth\/login\?return_to=%2Fpages">Sign in again<\/a>/,

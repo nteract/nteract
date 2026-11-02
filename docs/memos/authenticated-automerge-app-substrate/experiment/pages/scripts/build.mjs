@@ -15,6 +15,7 @@ import {
   withHashedAssets,
   withInlineFavicon,
   withModulePreloads,
+  withProductName,
 } from "./viewer-chunks.mjs";
 import { build } from "esbuild";
 import { copyFile, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
@@ -146,10 +147,12 @@ await build({
 await copyFile(path.join(app, "viewer/connect-agent.js"), path.join(dist, "public/connect.js"));
 await writeFile(
   path.join(dist, "public/index.html"),
-  withInlineFavicon(
-    withHashedAssets(
-      withModulePreloads(await readFile(path.join(app, "viewer/index.html"), "utf8"), preloads),
-      assets,
+  withProductName(
+    withInlineFavicon(
+      withHashedAssets(
+        withModulePreloads(await readFile(path.join(app, "viewer/index.html"), "utf8"), preloads),
+        assets,
+      ),
     ),
   ),
 );

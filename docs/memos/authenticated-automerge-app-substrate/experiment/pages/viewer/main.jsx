@@ -36,6 +36,7 @@ import {
   isPlainNavigation,
   pageListing,
 } from "../shared/routes.mjs";
+import { PRODUCT_NAME, tabTitle } from "../shared/product.mjs";
 import { maintainBrowserSession } from "./browser-session.mjs";
 import { earlyConnectAnswer, requestSession } from "./early-session.mjs";
 import { PagePreview } from "./PagePreview.jsx";
@@ -911,11 +912,15 @@ function App() {
     element?.scrollIntoView({ block: "center", inline: "nearest" });
   }
   useEffect(() => {
-    document.title = page
-      ? `${page.title || "Untitled"} · Pages`
-      : index && !projectOpen && !trashOpen && !opening
-        ? `${index.kind === "pages" ? "All Pages" : "Projects"} · Pages`
-        : "Pages · nteract";
+    document.title = tabTitle(
+      page
+        ? page.title || "Untitled"
+        : index && !projectOpen && !trashOpen && !opening
+          ? index.kind === "pages"
+            ? "All Pages"
+            : "Projects"
+          : undefined,
+    );
   }, [page?.title, index, projectOpen, trashOpen, opening]);
   const listedPages = pages.map((item) =>
     item.page_id === page?.page_id ? { ...item, title: page.title } : item,
@@ -967,7 +972,7 @@ function App() {
       <header className="app-header">
         <div className="header-navigation">
           <a href="/" className="brand" onClick={account ? home : undefined}>
-            Pages
+            {PRODUCT_NAME}
           </a>
           {account && (
             <button
@@ -1091,13 +1096,21 @@ function App() {
         </main>
       ) : !account ? (
         <main className="welcome">
-          <h1>A place to write together.</h1>
-          <a
-            className="primary"
-            href={`/api/auth/login?return_to=${encodeURIComponent(location.pathname + location.search)}`}
-          >
-            Sign In
-          </a>
+          <h1>
+            {readPageRoute(location.href).kind === "page"
+              ? "Sign in to open this Page."
+              : "A place to write together."}
+          </h1>
+          <p>Shared documents that people and agents edit together. Agents connect over MCP.</p>
+          <div className="welcome-actions">
+            <a
+              className="primary"
+              href={`/api/auth/login?return_to=${encodeURIComponent(location.pathname + location.search)}`}
+            >
+              Sign in
+            </a>
+            <a href="/connect">Connect an agent</a>
+          </div>
         </main>
       ) : (
         <>

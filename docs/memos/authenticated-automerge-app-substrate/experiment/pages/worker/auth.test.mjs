@@ -257,6 +257,87 @@ test("cookie writes and WebSocket upgrades require same-origin, API keys never p
   );
 });
 
+test("a JSON tool call with no credential at all is 401 auth_required; a cookie without Origin stays 403", async (t) => {
+  const fixture = await createAuthFixture();
+  t.mock.method(globalThis, "fetch", fixture.fetch);
+  const env = { ...fixture.env, NOTEBOOK_CLOUD_PUBLIC_ORIGIN: "https://pages.invalid" };
+  const call = async (headers) => {
+    const response = await worker.fetch(
+      new Request("https://pages.invalid/api/tools", {
+        method: "POST",
+        headers: { "content-type": "application/json", ...headers },
+        body: JSON.stringify({ operation: "list_pages", arguments: {} }),
+      }),
+      env,
+    );
+    return { status: response.status, body: await response.json() };
+  };
+  assert.deepEqual(await call({}), {
+    status: 401,
+    body: {
+      error: "Send Authorization: Bearer <Anaconda API key>; see https://pages.invalid/connect",
+      code: "auth_required",
+    },
+  });
+  // The cookie is the ambient credential the Origin check guards.
+  assert.deepEqual(await call({ cookie: "session=x" }), {
+    status: 403,
+    body: { error: "Origin is required" },
+  });
+  assert.equal((await call({ origin: "https://evil.invalid" })).status, 403);
+  // A signed-out browser sends Origin and reaches sign-in.
+  assert.deepEqual(await call({ origin: "https://pages.invalid" }), {
+    status: 401,
+    body: { error: "Sign in to Pages", code: "auth_required" },
+  });
+});
+
+test("JSON tool refusals carry a code: rejected key, unknown operation, bad arguments, bad page_id", async (t) => {
+  const fixture = await createAuthFixture();
+  t.mock.method(globalThis, "fetch", fixture.fetch);
+  const env = { ...fixture.env, NOTEBOOK_CLOUD_PUBLIC_ORIGIN: "https://pages.invalid" };
+  const call = async (body, token = fixture.apiKey()) => {
+    const response = await worker.fetch(
+      new Request("https://pages.invalid/api/tools", {
+        method: "POST",
+        headers: { "content-type": "application/json", authorization: `Bearer ${token}` },
+        body: JSON.stringify(body),
+      }),
+      env,
+    );
+    return { status: response.status, body: await response.json() };
+  };
+  const rejected = await call(
+    { operation: "list_pages", arguments: {} },
+    fixture.apiKey({ status: 401 }),
+  );
+  assert.equal(rejected.status, 401);
+  assert.equal(rejected.body.code, "invalid_api_key");
+  assert.match(rejected.body.error, /^Anaconda API key validation failed\. /);
+  assert.match(rejected.body.error, /https:\/\/pages\.invalid\/connect$/);
+
+  const unknown = await call({ operation: "list_everything", arguments: {} });
+  assert.equal(unknown.status, 400);
+  assert.equal(unknown.body.code, "unknown_operation");
+  assert.match(unknown.body.error, /^Unknown operation `list_everything`\. Valid operations: /);
+  for (const name of ["list_pages", "read_page", "create_page", "create_project", "list_projects"])
+    assert.ok(unknown.body.error.includes(name), name);
+  assert.doesNotMatch(unknown.body.error, /_space/);
+  assert.equal((await call({ arguments: {} })).body.code, "unknown_operation");
+
+  const invalid = await call({ operation: "list_pages", arguments: [] });
+  assert.deepEqual(invalid, {
+    status: 400,
+    body: { error: "arguments must be a JSON object", code: "invalid_arguments" },
+  });
+
+  const badId = await call({ operation: "read_page", arguments: { page_id: "not-a-page" } });
+  assert.deepEqual(badId, {
+    status: 400,
+    body: { error: "Invalid page_id", code: "invalid_page_id" },
+  });
+});
+
 test("JSON API bounds body memory and rejects malformed input", async () => {
   await assert.rejects(
     readJson(new Request("https://pages.invalid/", { method: "POST", body: "x" })),

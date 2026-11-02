@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { handleMcp as handleMcpRequest, tools } from "../mcp.mjs";
+import { PRODUCT_NAME } from "../shared/product.mjs";
 const env = { NOTEBOOK_CLOUD_PUBLIC_ORIGIN: "https://pages.example" };
 const handleMcp = (request, invoke) => handleMcpRequest(request, invoke, env);
 const request = (method, params = {}, id = 1) =>
@@ -346,7 +347,11 @@ test("MCP initialization guides title authoring and successful receipts preserve
       throw Error("Initialization must not invoke a document tool");
     },
   );
-  assert.match((await initialization.json()).result.instructions, /opening_heading_repeats_title/);
+  const initialized = (await initialization.json()).result;
+  assert.equal(initialized.serverInfo.name, PRODUCT_NAME);
+  const [orientation, ...rest] = initialized.instructions.split("\n");
+  assert.match(orientation, /^Start with list_pages/);
+  assert.match(rest.join("\n"), /home Page[\s\S]*url field[\s\S]*opening_heading_repeats_title/);
   const receipt = {
     page_id: pageId,
     heads: ["b".repeat(64)],
@@ -805,4 +810,18 @@ test("MCP advertises thread_ids for batch resolve and keeps the refusal's named 
   assert.equal(result.isError, true);
   assert.deepEqual(result.structuredContent, refusal);
   assert.deepEqual(calls[0].args.thread_ids, ["kept", "gone"]);
+});
+
+test("create_page and create_project say a v1_ key needs the listing's retry_token", () => {
+  for (const [name, listing] of [
+    ["create_page", /retry_token from the list_pages result/],
+    ["create_project", /retry_token from the list_projects or list_pages result/],
+  ]) {
+    const { description } = tools.find((tool) => tool.name === name);
+    assert.match(
+      description,
+      /a plain key of 8–128 letters, digits, underscores or hyphens works alone/,
+    );
+    assert.match(description, listing, name);
+  }
 });
