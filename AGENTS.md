@@ -97,11 +97,11 @@ Use [Conventional Commits](CONTRIBUTING.md#commit-message-format) for commit
 and PR titles.
 
 For reviews started on a developer workstation, use the repository-independent
-Kilo review workflow. Repository-hosted Pullfrog reviews remain supported. Give
-reviewers `.agents/reviewers/nteract-code-review-rubric.md`, define the exact
-review target and mutation boundary, and verify every finding against the
-checkout. Model findings are advisory. After a fix, rerun the relevant checks
-before calling the review clear.
+Kilo review workflow. Give reviewers
+`.agents/reviewers/nteract-code-review-rubric.md`, define the exact review
+target and mutation boundary, and verify every finding against the checkout.
+Model findings are advisory. After a fix, rerun the relevant checks before
+calling the review clear.
 
 ### Kilo review authorization
 
