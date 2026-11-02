@@ -84,19 +84,28 @@
 }
 
 /* The compact bar for narrow touch screens (MobileBar.jsx). It sits on the
-   bottom edge of the visual viewport, so it rides above the iOS keyboard. */
+   bottom edge of the visual viewport, so it rides above the iOS keyboard.
+   --vv-bottom changes every frame while iOS pans the visual viewport, so it
+   moves the bar with a transform the compositor applies, not with `bottom`.
+   The home indicator's inset goes through a variable so the phone smoke can
+   stand in for an iPhone's. */
+:root {
+  --safe-area-bottom: env(safe-area-inset-bottom, 0px);
+}
 .mobile-bar {
   position: fixed;
   left: 0;
   right: 0;
-  bottom: var(--vv-bottom, 0px);
+  bottom: 0;
+  transform: translate3d(0, calc(-1 * var(--vv-bottom, 0px)), 0);
   z-index: 7;
   display: flex;
   align-items: center;
   gap: 2px;
   padding: 4px 6px;
-  /* Only the home indicator needs room when no keyboard is up. */
-  padding-bottom: max(4px, calc(env(safe-area-inset-bottom) - var(--vv-bottom, 0px)));
+  /* Only the home indicator needs room when no keyboard is up. The keyboard
+     height holds still while iOS pans, so the bar's height does too. */
+  padding-bottom: max(4px, calc(var(--safe-area-bottom) - var(--vv-keyboard, 0px)));
   border-top: 1px solid var(--line);
   background: var(--surface);
   box-shadow: 0 -6px 16px #0000000f;
