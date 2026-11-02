@@ -35,6 +35,7 @@ import {
 import { HighlightMenu } from "./HighlightMenu.jsx";
 import { monotonicNow } from "./monotonic.mjs";
 import { selectionHighlight, toggleHighlight } from "./highlight.mjs";
+import { PROSE_ENTRY_ATTRIBUTES } from "./prose-entry.mjs";
 import {
   blockDoc,
   paragraph,
@@ -428,7 +429,7 @@ export function WordgardEditor(props) {
           key: "Mod-Shift-h",
           run: () => latest.current.editable && Command.dispatch(editor, toggleHighlight),
         }),
-        Wordgard.contentAttributes.of({ "aria-label": "Document text", spellcheck: "true" }),
+        Wordgard.contentAttributes.of({ "aria-label": "Document text", ...PROSE_ENTRY_ATTRIBUTES }),
         // On phones the compact bar and the header cover the visual viewport's
         // edges; keep the caret clear of both when scrolling it into view.
         Wordgard.coveredMargins.of(() => {

@@ -53,6 +53,7 @@ import {
 } from "./wordgard-binding.mjs";
 import { projectChanges } from "./wordgard-projection.mjs";
 import { linkDestination } from "./link-destination.mjs";
+import { PROSE_ENTRY_ATTRIBUTES } from "./prose-entry.mjs";
 import {
   markdownCommentSpans,
   commentSpansMarkdown,
@@ -260,7 +261,7 @@ export function CommentRichText({
           "aria-label": label,
           role: "textbox",
           "aria-multiline": "true",
-          spellcheck: "true",
+          ...PROSE_ENTRY_ATTRIBUTES,
         }),
         Wordgard.exceptionSink.of((error) => latest.current.onError(error.message)),
         Wordgard.transactionListener.of((transactions) => {
