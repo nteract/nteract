@@ -1304,7 +1304,7 @@ export class PageSession {
     const nextKey = replicaKey(access, this.credentialCanWrite);
     if (!access.canRead) {
       await this.revoke();
-      throw Object.assign(Error(ACCESS_REVOKED), { status: 403 });
+      throw Object.assign(Error(ACCESS_REVOKED), { code: "page_access_denied", status: 403 });
     }
     if (this.replicaKey !== nextKey) {
       if (this.handle) {
@@ -2023,6 +2023,7 @@ export class PageSession {
       throw Error("Connected Page identity does not match its local document");
     if (!connection.access?.canRead)
       throw Object.assign(Error("This Page is not accessible; your draft is kept locally"), {
+        code: "page_access_denied",
         status: 403,
       });
     return { page_id: this.pageId, document_id: connection.documentId };

@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import "fake-indexeddb/auto";
 import * as A from "@automerge/automerge";
-import { PageSession } from "./session.mjs";
+import { PageSession, classifyRefusal } from "./session.mjs";
 import { SessionHost } from "./session-host.mjs";
 import { createPageData, initializePage } from "../model/page.mjs";
 import { applyComment } from "../model/comments.mjs";
@@ -207,6 +207,13 @@ test("an unrelated collaborator's revision does not retire this principal's key"
   assert.equal(session.accessReloadRequired, false);
   assert.equal(session.replicaKey, "1:writer");
   assert.equal(session.canWrite, true);
+});
+
+test("losing read access throws a refusal classified as access", async (t) => {
+  const { session } = fixture();
+  t.after(() => session.close());
+  const error = await session.acceptPageAccess(access("none", 2, 2)).catch((e) => e);
+  assert.equal(classifyRefusal(error), "access");
 });
 
 test("a reader-admitted key cannot be promoted when the credential ceiling rises", async (t) => {
