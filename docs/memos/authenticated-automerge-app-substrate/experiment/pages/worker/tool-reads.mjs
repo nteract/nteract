@@ -30,7 +30,8 @@ const commentKeys = [
   "max_bytes",
   "expected_heads",
 ];
-const readErrors = new Set([
+/** Read refusals that reach the caller with their own code. */
+export const READ_ERROR_CODES = new Set([
   "invalid_read_selector",
   "read_target_not_found",
   "ambiguous_section",
@@ -153,7 +154,7 @@ export async function readTool(
       };
     }
   } catch (error) {
-    if (!readErrors.has(error.code)) throw error;
+    if (!READ_ERROR_CODES.has(error.code)) throw error;
     if (error.code === "read_revision_changed") settings.offset = 0;
     status = error.status;
     payload = {

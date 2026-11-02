@@ -52,7 +52,12 @@ import {
 import { readTargets, writeTargets } from "../model/agent-presence.mjs";
 import { BACKEND_LIMITS, assertDocumentLimits, assertIntentSize } from "../model/limits.mjs";
 import { handleMcp } from "../mcp.mjs";
-import { invalidArguments, invokeProjectApi, unknownOperation } from "./project-api.mjs";
+import {
+  invalidArguments,
+  invokeProjectApi,
+  unknownOperation,
+  withRefusalCode,
+} from "./project-api.mjs";
 import { agentGuideResponse } from "../agent-guide.mjs";
 import { connectAgentResponse } from "../connect-agent.mjs";
 import { handleOAuth, mcpAuthChallenge } from "./oauth.mjs";
@@ -909,22 +914,31 @@ const gateway = {
         );
       }
       if (url.pathname === "/api/tools" && request.method === "POST") {
-        const body = await readJson(request);
-        return await invokeProjectApi(
-          (internal, internalArgs) => invoke(request, env, internal, internalArgs),
-          body.operation,
-          body.arguments,
-          { env },
-        );
+        let response;
+        try {
+          const body = await readJson(request);
+          response = await invokeProjectApi(
+            (internal, internalArgs) => invoke(request, env, internal, internalArgs),
+            body.operation,
+            body.arguments,
+            { env },
+          );
+        } catch (error) {
+          response = errorResponse(error, "gateway");
+        }
+        return await withRefusalCode(response);
       }
       const imageRoute = url.pathname.match(/^\/api\/pages\/([^/]+)\/assets(?:\/([^/]+))?$/);
       if (imageRoute) {
         const [, pageId, assetId] = imageRoute;
-        return handleImageAssets(request, env, {
-          pageId,
-          assetId,
-          authorize: (write) => authorizeImage(request, env, pageId, write),
-        });
+        // API-key clients upload here too; their refusals get a code as on /api/tools.
+        return await withRefusalCode(
+          await handleImageAssets(request, env, {
+            pageId,
+            assetId,
+            authorize: (write) => authorizeImage(request, env, pageId, write),
+          }),
+        );
       }
       if (url.pathname === "/api/access") {
         await authenticate(request, env);

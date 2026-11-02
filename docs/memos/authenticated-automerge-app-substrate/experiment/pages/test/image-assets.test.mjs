@@ -390,6 +390,11 @@ test("oversized bodies, MIME mismatch and missing storage fail without publishin
     const response = await run(f, options);
     assert.ok([413, 415].includes(response.status));
     privateHeaders(response);
+    // The refusal names its status as a code, as /api/tools refusals do.
+    assert.equal(
+      (await response.json()).code,
+      response.status === 413 ? "request_too_large" : "unsupported_media_type",
+    );
   }
   assert.equal(f.env.PAGES_ASSETS.calls.length, 0);
   delete f.env.PAGES_ASSETS;
@@ -444,7 +449,7 @@ test("ambiguous completed PUT retries the same object instead of losing or dupli
   const failed = await run(f);
   assert.equal(failed.status, 500);
   privateHeaders(failed);
-  assert.deepEqual(await failed.json(), { error: "Pages request failed" });
+  assert.deepEqual(await failed.json(), { error: "Pages request failed", code: "server_error" });
   const retry = await run(f);
   assert.equal(retry.status, 200);
   assert.equal(f.env.PAGES_ASSETS.objects.size, 1);
@@ -519,7 +524,10 @@ test("image insertion and duplicate upload reject inconsistent stored object met
     );
     const response = await run(f);
     assert.equal(response.status, 500);
-    assert.deepEqual(await response.json(), { error: "Pages request failed" });
+    assert.deepEqual(await response.json(), {
+      error: "Pages request failed",
+      code: "server_error",
+    });
   }
   assert.equal(f.env.PAGES_ASSETS.calls.filter(([method]) => method === "put").length, 1);
 });

@@ -3,7 +3,8 @@ import { projectReadChanges } from "../model/read-changes.mjs";
 
 const DEFAULT_BYTES = 128 * 1024;
 const bytes = (value) => new TextEncoder().encode(JSON.stringify(value)).byteLength;
-const knownErrors = new Set([
+/** Change-feed refusals that reach the caller with their own code. */
+export const CHANGE_ERROR_CODES = new Set([
   "invalid_change_selector",
   "resync_required",
   "changes_budget_exceeded",
@@ -53,7 +54,7 @@ export async function readChangesTool(
       commentsDoc,
     );
   } catch (error) {
-    if (!knownErrors.has(error.code)) throw error;
+    if (!CHANGE_ERROR_CODES.has(error.code)) throw error;
     status = error.status;
     payload = {
       page_id: doc.page_id,
