@@ -25,6 +25,7 @@ class NotebookInfo:
     has_runtime: bool = False
     env_source: str | None = None
     had_peers: bool = False
+    notebook_path: str | None = None
 
     @property
     def is_draining(self) -> bool:
@@ -40,10 +41,7 @@ class NotebookInfo:
     @property
     def path(self) -> Path | None:
         """Filesystem path, or None for ephemeral notebooks."""
-        p = Path(self.notebook_id)
-        if p.is_absolute():
-            return p
-        return None
+        return Path(self.notebook_path) if self.notebook_path else None
 
     @property
     def is_ephemeral(self) -> bool:
@@ -65,6 +63,7 @@ class NotebookInfo:
             has_runtime=bool(d.get("has_kernel", False)),
             env_source=d.get("env_source"),
             had_peers=bool(d.get("had_peers", False)),
+            notebook_path=d.get("notebook_path"),
         )
 
     def __repr__(self) -> str:

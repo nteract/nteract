@@ -136,7 +136,8 @@ class TestNotebookInfo:
     def test_from_dict_file_backed(self):
         info = runtimed.NotebookInfo._from_dict(
             {
-                "notebook_id": "/Users/test/notebook.ipynb",
+                "notebook_id": "6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b",
+                "notebook_path": "/Users/test/notebook.ipynb",
                 "active_peers": 2,
                 "has_kernel": True,
                 "kernel_type": "python",
@@ -144,7 +145,7 @@ class TestNotebookInfo:
                 "env_source": "uv:prewarmed",
             }
         )
-        assert info.notebook_id == "/Users/test/notebook.ipynb"
+        assert info.notebook_path == "/Users/test/notebook.ipynb"
         assert info.name == "notebook"
         assert info.path is not None
         assert not info.is_ephemeral
@@ -167,6 +168,7 @@ class TestNotebookInfo:
     def test_repr(self):
         info = runtimed.NotebookInfo(
             notebook_id="/test/gremlins.ipynb",
+            notebook_path="/test/gremlins.ipynb",
             status="idle",
             active_peers=3,
         )

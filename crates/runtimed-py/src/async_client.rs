@@ -24,6 +24,7 @@ struct RoomInfoData {
     kernel_status: Option<String>,
     env_source: Option<String>,
     ephemeral: bool,
+    notebook_path: Option<String>,
 }
 
 /// Async client for the runtimed daemon.
@@ -120,6 +121,7 @@ impl AsyncClient {
                     kernel_status: room.kernel_status,
                     env_source: room.env_source,
                     ephemeral: room.ephemeral,
+                    notebook_path: room.notebook_path,
                 })
                 .collect();
             Ok(result)
