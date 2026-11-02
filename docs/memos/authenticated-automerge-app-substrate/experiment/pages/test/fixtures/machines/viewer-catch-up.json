@@ -1,6 +1,6 @@
 {
   "machine": "viewer-catch-up",
-  "description": "Whether one viewer PageSession's status line says Catching up after a socket is admitted. The host's frontier (durableHeads from /api/saved, asked once per socket and answered by every receipt) ends catch-up when this replica holds it; a kept frontier is rechecked on every remote change. The label shows only on evidence 300 ms after admission and stops quietly 15 s after it. Runs against viewer/catch-up-machine.mjs in viewer/catch-up.test.mjs.",
+  "description": "Whether one viewer PageSession's status line says Catching up after a socket is admitted. The host's frontier (durableHeads and durableCommentHeads from /api/saved, asked once per socket and answered by every receipt) ends catch-up when this replica holds it, comments included; a kept frontier is rechecked on every remote change and when the comments replica installs or fails to open. The label shows only on evidence 300 ms after admission and stops quietly 15 s after it. Runs against viewer/catch-up-machine.mjs in viewer/catch-up.test.mjs.",
   "states": [
     "detached",
     "opening",
@@ -15,6 +15,7 @@
     "elapsed",
     "expired",
     "remote",
+    "recheck",
     "answered"
   ],
   "unreachable": [],
@@ -43,6 +44,16 @@
     "catchingUp/remote": [
       "held",
       "unproven"
+    ],
+    "opening/recheck": [
+      "held",
+      "unheld",
+      "none"
+    ],
+    "catchingUp/recheck": [
+      "held",
+      "unheld",
+      "none"
     ],
     "opening/answered": [
       "held",
@@ -981,6 +992,263 @@
       "event": {
         "type": "remote",
         "held": false
+      },
+      "expect": {
+        "state": {
+          "name": "timedOut",
+          "attempt": 1
+        },
+        "effects": [],
+        "rejected": "Catch-up already stopped showing"
+      }
+    },
+    {
+      "label": "a recheck with no socket admitted is ignored",
+      "state": {
+        "name": "detached",
+        "attempt": 1
+      },
+      "event": {
+        "type": "recheck",
+        "held": false
+      },
+      "expect": {
+        "state": {
+          "name": "detached",
+          "attempt": 1
+        },
+        "effects": [],
+        "rejected": "No socket is admitted"
+      }
+    },
+    {
+      "label": "the comments replica installs holding the kept frontier before the threshold: never show",
+      "case": "held",
+      "state": {
+        "name": "opening",
+        "attempt": 1,
+        "frontier": {
+          "page": [
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          ],
+          "comments": [
+            "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+          ]
+        }
+      },
+      "event": {
+        "type": "recheck",
+        "held": true
+      },
+      "expect": {
+        "state": {
+          "name": "current",
+          "attempt": 1
+        },
+        "effects": [
+          {
+            "type": "cancelTimer"
+          },
+          {
+            "type": "cancelLimit"
+          }
+        ]
+      }
+    },
+    {
+      "label": "the comments replica installs still behind the kept frontier: keep waiting",
+      "case": "unheld",
+      "state": {
+        "name": "opening",
+        "attempt": 1,
+        "frontier": {
+          "page": [
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          ],
+          "comments": [
+            "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+          ]
+        }
+      },
+      "event": {
+        "type": "recheck",
+        "held": false
+      },
+      "expect": {
+        "state": {
+          "name": "opening",
+          "attempt": 1,
+          "frontier": {
+            "page": [
+              "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            ],
+            "comments": [
+              "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+            ]
+          }
+        },
+        "effects": [],
+        "rejected": "The kept frontier is still not held"
+      }
+    },
+    {
+      "label": "a recheck before any frontier answered has nothing to check",
+      "case": "none",
+      "state": {
+        "name": "opening",
+        "attempt": 1,
+        "frontier": null
+      },
+      "event": {
+        "type": "recheck",
+        "held": false
+      },
+      "expect": {
+        "state": {
+          "name": "opening",
+          "attempt": 1,
+          "frontier": null
+        },
+        "effects": [],
+        "rejected": "No frontier is kept"
+      }
+    },
+    {
+      "label": "a recheck while settling has nothing to check",
+      "state": {
+        "name": "settling",
+        "attempt": 1
+      },
+      "event": {
+        "type": "recheck",
+        "held": false
+      },
+      "expect": {
+        "state": {
+          "name": "settling",
+          "attempt": 1
+        },
+        "effects": [],
+        "rejected": "No frontier is kept"
+      }
+    },
+    {
+      "label": "the comments replica installs holding the kept frontier: clear catch-up",
+      "case": "held",
+      "state": {
+        "name": "catchingUp",
+        "attempt": 1,
+        "frontier": {
+          "page": [
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          ],
+          "comments": [
+            "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+          ]
+        }
+      },
+      "event": {
+        "type": "recheck",
+        "held": true
+      },
+      "expect": {
+        "state": {
+          "name": "current",
+          "attempt": 1
+        },
+        "effects": [
+          {
+            "type": "cancelLimit"
+          }
+        ]
+      }
+    },
+    {
+      "label": "the comments replica installs still behind: keep catching up",
+      "case": "unheld",
+      "state": {
+        "name": "catchingUp",
+        "attempt": 1,
+        "frontier": {
+          "page": [
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          ],
+          "comments": [
+            "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+          ]
+        }
+      },
+      "event": {
+        "type": "recheck",
+        "held": false
+      },
+      "expect": {
+        "state": {
+          "name": "catchingUp",
+          "attempt": 1,
+          "frontier": {
+            "page": [
+              "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            ],
+            "comments": [
+              "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+            ]
+          }
+        },
+        "effects": [],
+        "rejected": "The kept frontier is still not held"
+      }
+    },
+    {
+      "label": "a recheck mid catch-up before any frontier answered has nothing to check",
+      "case": "none",
+      "state": {
+        "name": "catchingUp",
+        "attempt": 1,
+        "frontier": null
+      },
+      "event": {
+        "type": "recheck",
+        "held": false
+      },
+      "expect": {
+        "state": {
+          "name": "catchingUp",
+          "attempt": 1,
+          "frontier": null
+        },
+        "effects": [],
+        "rejected": "No frontier is kept"
+      }
+    },
+    {
+      "label": "a recheck after catching up changes nothing",
+      "state": {
+        "name": "current",
+        "attempt": 1
+      },
+      "event": {
+        "type": "recheck",
+        "held": true
+      },
+      "expect": {
+        "state": {
+          "name": "current",
+          "attempt": 1
+        },
+        "effects": [],
+        "rejected": "Catch-up already finished"
+      }
+    },
+    {
+      "label": "a recheck after timing out changes nothing",
+      "state": {
+        "name": "timedOut",
+        "attempt": 1
+      },
+      "event": {
+        "type": "recheck",
+        "held": true
       },
       "expect": {
         "state": {

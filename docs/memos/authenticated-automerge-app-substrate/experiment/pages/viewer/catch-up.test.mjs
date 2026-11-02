@@ -17,10 +17,10 @@ const TABLE = new URL("../test/fixtures/machines/viewer-catch-up.json", import.m
 
 test("the viewer-catch-up table runs through the pure machine", async () => {
   assert.deepEqual(await runTable(viewerCatchUpMachine, loadTable(TABLE)), {
-    rows: 51,
-    pairs: 36,
+    rows: 61,
+    pairs: 42,
     unreachable: 0,
-    cases: 25,
+    cases: 31,
   });
 });
 
@@ -171,6 +171,23 @@ test("a disconnect drops both timers; the next socket starts over", () => {
   assert.deepEqual(shown, []);
   assert.deepEqual(timeouts, []);
   assert.deepEqual(catchUp.store.snapshot(), { name: "detached", attempt: 1 });
+});
+
+test("a recheck clears catch-up once the kept frontier is held, and only then", () => {
+  const { scheduler, catchUp, shown, at, held } = harness();
+  at(0, () => catchUp.admitted());
+  at(50, () => catchUp.recheck());
+  at(100, () => catchUp.answered(1, HOST));
+  at(600, () => catchUp.recheck());
+  at(900, () => {
+    held.add(HOST.page[0]);
+    catchUp.recheck();
+  });
+  scheduler.flush();
+  assert.deepEqual(shown, [
+    [CATCH_UP_SHOW_MS, true],
+    [900, false],
+  ]);
 });
 
 test("a holds check that throws counts as not held", () => {

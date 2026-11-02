@@ -72,6 +72,13 @@ export class CatchUp {
     return this.dispatch({ type: "remote", held: !!frontier && this.#check(frontier) });
   }
 
+  /** Whether the kept frontier is held may have changed without a remote
+   * change: the comments replica installed or failed to open. */
+  recheck() {
+    const frontier = keptFrontier(this.store.snapshot());
+    return this.dispatch({ type: "recheck", held: !!frontier && this.#check(frontier) });
+  }
+
   /** The host answered a request sent during `attempt` with `frontier`. */
   answered(attempt, frontier) {
     return this.dispatch({ type: "answered", attempt, frontier, held: this.#check(frontier) });

@@ -2461,6 +2461,8 @@ export class PageSession {
     }
     // A replaced or closed document is no longer this replica's.
     if (before.name === "ready" && result.state.name !== "ready") this.commentsHandle = undefined;
+    // Comments that can't open no longer hold catch-up open.
+    if (result.state.name === "failed" && before.name !== "failed") this.catchUp.recheck();
     if (result.state.name !== before.name) {
       this.updateCapabilities();
       this.emit();
@@ -2534,6 +2536,8 @@ export class PageSession {
     handle.on("change", () => {
       if (this.commentsHandle === handle) this.receiveCommentsChange();
     });
+    // The comments replica may already hold the host's frontier.
+    this.catchUp.recheck();
     if (this.localPage && this.localPage.comments_document_id !== handle.documentId)
       try {
         await this.persistLocal({ comments_document_id: handle.documentId });
@@ -2911,11 +2915,16 @@ export class PageSession {
     });
   }
   /** Whether this replica holds a `{ page, comments }` frontier: it has
-   * everything the host had when it answered. The comments frontier counts
-   * once the comments document is open. */
+   * everything the host had when it answered. The host names comment heads
+   * whenever it has a comments document, and then /api/connect names that
+   * document too, so this replica opens it. Until it installs, the comments
+   * replica can be behind, so it must exist and hold them. A comments
+   * document that is closed or failed to open renders nothing and has its own
+   * notice; it doesn't hold catch-up open. */
   holdsFrontier({ page, comments }) {
     if (!this.doc || !A.hasHeads(this.doc, page)) return false;
-    return !comments || !this.commentsDoc || A.hasHeads(this.commentsDoc, comments);
+    if (!comments || ["closed", "failed"].includes(this.commentsOpen$.snapshot().name)) return true;
+    return !!this.commentsDoc && A.hasHeads(this.commentsDoc, comments);
   }
   sameReceiptHeads(left, right) {
     return left.length === right.length && left.every((head) => right.includes(head));

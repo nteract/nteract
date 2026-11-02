@@ -44,7 +44,9 @@
  * `disconnected` (the socket closed or the host is unreachable), `elapsed`
  * and `expired` (the threshold and limit timers for `attempt` fired),
  * `remote` (a remote change was applied; `held` when this replica now holds
- * the kept frontier), and `answered` (the host's frontier for a request sent
+ * the kept frontier), `recheck` (the comments replica finished installing or
+ * failed to open, so whether the kept frontier is held may have changed
+ * without a remote change), and `answered` (the host's frontier for a request sent
  * during `attempt`; `held` when this replica holds it).
  *
  * Effects: `startTimer` and `startLimit` arm the threshold and limit timers
@@ -110,7 +112,7 @@ const fenced = (value) => {
 export const viewerCatchUpSpec = Object.freeze({
   name: "viewer-catch-up",
   states: ["detached", "opening", "settling", "catchingUp", "current", "timedOut"],
-  events: ["admitted", "disconnected", "elapsed", "expired", "remote", "answered"],
+  events: ["admitted", "disconnected", "elapsed", "expired", "remote", "recheck", "answered"],
   cases: {
     "opening/elapsed": ["behind", "unproven", "stale"],
     "opening/expired": ["limit", "stale"],
@@ -118,6 +120,8 @@ export const viewerCatchUpSpec = Object.freeze({
     "catchingUp/expired": ["limit", "stale"],
     "opening/remote": ["held", "unproven"],
     "catchingUp/remote": ["held", "unproven"],
+    "opening/recheck": ["held", "unheld", "none"],
+    "catchingUp/recheck": ["held", "unheld", "none"],
     "opening/answered": ["held", "behind", "stale"],
     "settling/answered": ["held", "behind", "stale"],
     "catchingUp/answered": ["held", "behind", "stale"],
@@ -138,6 +142,10 @@ export const viewerCatchUpSpec = Object.freeze({
       elapsed: fenced,
       expired: fenced,
       remote(event) {
+        only(event, ["type", "held"]);
+        check(typeof event.held === "boolean", "held must be a boolean");
+      },
+      recheck(event) {
         only(event, ["type", "held"]);
         check(typeof event.held === "boolean", "held must be a boolean");
       },
@@ -177,6 +185,8 @@ export const REJECT = Object.freeze({
   showing: "Catch-up already shows",
   finished: "Catch-up already finished",
   gaveUp: "Catch-up already stopped showing",
+  unheld: "The kept frontier is still not held",
+  noFrontier: "No frontier is kept",
 });
 
 const ok = (state, effects = []) => ({ state, effects });
@@ -238,6 +248,23 @@ function transition(state, event) {
         case "catchingUp":
           if (state.frontier && event.held) return ok(to("current"), ARMED.catchingUp);
           return reject(state, REJECT.showing);
+        case "current":
+          return reject(state, REJECT.finished);
+        case "timedOut":
+          return reject(state, REJECT.gaveUp);
+      }
+      break;
+    case "recheck":
+      switch (state.name) {
+        case "detached":
+          return reject(state, REJECT.detached);
+        case "opening":
+        case "catchingUp":
+          if (!state.frontier) return reject(state, REJECT.noFrontier);
+          if (event.held) return ok(to("current"), ARMED[state.name]);
+          return reject(state, REJECT.unheld);
+        case "settling":
+          return reject(state, REJECT.noFrontier);
         case "current":
           return reject(state, REJECT.finished);
         case "timedOut":
