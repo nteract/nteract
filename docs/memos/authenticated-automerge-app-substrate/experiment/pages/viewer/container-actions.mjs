@@ -50,15 +50,18 @@ export async function movePage(call, pageId, form, attempt = null) {
 }
 
 /** Destinations for the picker: Your items, then each Project this account
- * owns. list_projects lists only owned Projects in this build. */
-export function moveDestinations(projects) {
-  return [
-    { target: null, title: "Your items" },
-    ...projects.map((project) => ({
-      target: project.project_id,
-      title: project.title || "Untitled",
-    })),
-  ];
+ * owns. list_projects lists only owned Projects in this build. `current`
+ * (`{ project_id, title }`), the Page's own Project, is added when the list
+ * doesn't have it yet, so the picker never shows Your items while the form
+ * holds a Project ID. */
+export function moveDestinations(projects, current = null) {
+  const listed = projects.map((project) => ({
+    target: project.project_id,
+    title: project.title || "Untitled",
+  }));
+  if (current?.project_id && !listed.some((row) => row.target === current.project_id))
+    listed.unshift({ target: current.project_id, title: current.title || "This Project" });
+  return [{ target: null, title: "Your items" }, ...listed];
 }
 
 /**

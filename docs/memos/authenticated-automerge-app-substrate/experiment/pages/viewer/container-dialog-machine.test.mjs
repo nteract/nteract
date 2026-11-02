@@ -6,6 +6,8 @@ import {
   formReady,
   initialCreate,
   initialMove,
+  moveOrigin,
+  moveUnchanged,
   openingEffects,
   transition,
 } from "./container-dialog-machine.mjs";
@@ -20,7 +22,13 @@ const create = (name, extra = {}) => ({
   name,
   ...extra,
 });
-const move = (name, extra = {}) => ({ ...initialMove(PRJ), name, ...extra });
+// A Move form already changed from where the Page is, so submit can run.
+const move = (name, extra = {}) => ({
+  ...initialMove(PRJ),
+  form: { target: PRJ, parent_id: "a" },
+  name,
+  ...extra,
+});
 
 // One event of each type, and the state each starting state should end in.
 const SAMPLE = {
@@ -118,7 +126,8 @@ test("create: submit writes the form; success finishes; failure keeps the attemp
 test("move: opening loads the current container's parents; a new target reloads them", () => {
   let state = initialMove(PRJ);
   assert.deepEqual(openingEffects(state), [{ type: "loadParents", target: PRJ }]);
-  assert.equal(formReady("move", state.form), true, "the top level of the current Project");
+  assert.equal(formReady("move", state.form), true, "without an origin any target is ready");
+  assert.equal(formReady("move", state.form, state.origin), false, "where the Page already is");
   assert.equal(formReady("other", state.form), false);
   // A stale answer for another target changes nothing.
   assert.equal(transition(state, { type: "parentsLoaded", target: OTHER, rows: [] }).state, state);
@@ -130,6 +139,7 @@ test("move: opening loads the current container's parents; a new target reloads 
   state = transition(state, { type: "edit", form: { parent_id: "a" } }).state;
   assert.equal(state.form.parent_id, "a");
   // Choosing Your items clears the parent and loads its Pages.
+  // (This Page started at the Project's top level, so "a" is a change.)
   const result = transition(state, { type: "edit", form: { target: null } });
   assert.deepEqual(result.state.form, { target: null, parent_id: null });
   assert.deepEqual(result.state.parents, { status: "loading", target: null, rows: [] });
@@ -148,4 +158,73 @@ test("move: opening loads the current container's parents; a new target reloads 
   // parents events reach only the Move dialog.
   const creating = create("editing");
   assert.equal(transition(creating, SAMPLE.parentsLoaded).state, creating);
+});
+
+test("move: the form starts where the Page is, and Move stays off until it changes", () => {
+  // A sub-page in a Project: the form starts at its parent.
+  let state = initialMove({ target: PRJ, parent_id: "p" });
+  assert.deepEqual(state.form, { target: PRJ, parent_id: "p" });
+  assert.deepEqual(state.origin, { target: PRJ, parent_id: "p" });
+  assert.equal(formReady("move", state.form, state.origin), false);
+  assert.equal(transition(state, SAMPLE.submit).state, state, "Enter does nothing");
+  // Another parent in the same Project is a change.
+  let edited = transition(state, { type: "edit", form: { parent_id: null } }).state;
+  assert.equal(formReady("move", edited.form, edited.origin), true);
+  assert.equal(transition(edited, SAMPLE.submit).state.name, "submitting");
+  // Choosing it again turns Move back off.
+  edited = transition(edited, { type: "edit", form: { parent_id: "p" } }).state;
+  assert.equal(moveUnchanged(edited.form, edited.origin), true);
+  assert.equal(transition(edited, SAMPLE.submit).state, edited);
+  // Away to another Project and back: the form returns to the Page's parent.
+  edited = transition(state, { type: "edit", form: { target: OTHER } }).state;
+  assert.deepEqual(edited.form, { target: OTHER, parent_id: null });
+  assert.equal(formReady("move", edited.form, edited.origin), true);
+  edited = transition(edited, { type: "edit", form: { target: PRJ } }).state;
+  assert.deepEqual(edited.form, { target: PRJ, parent_id: "p" });
+  assert.equal(transition(edited, SAMPLE.submit).state, edited);
+
+  // A Page at a Project's top level, or in Your items, starts at "Top level".
+  for (const target of [PRJ, null]) {
+    state = initialMove({ target, parent_id: null });
+    assert.deepEqual(state.form, { target, parent_id: null });
+    assert.equal(transition(state, SAMPLE.submit).state, state);
+  }
+  // The older call shape, a bare target, still means its top level.
+  assert.deepEqual(initialMove(PRJ).origin, { target: PRJ, parent_id: null });
+  assert.deepEqual(initialMove().origin, { target: null, parent_id: null });
+});
+
+test("moveOrigin reads read_page's location: the home Page is the top level", () => {
+  const crumbs = [
+    { kind: "project", project_id: PRJ, title: "Launch" },
+    { kind: "page", page_id: "home", title: "Launch", home: true },
+  ];
+  // Top level of a Project: read_page's parent is the home Page.
+  assert.deepEqual(moveOrigin({ project_id: PRJ, parent_id: "home", breadcrumbs: crumbs }), {
+    target: PRJ,
+    parent_id: null,
+  });
+  assert.deepEqual(moveOrigin({ project_id: PRJ, parent_id: "home" }, "home"), {
+    target: PRJ,
+    parent_id: null,
+  });
+  // A sub-page keeps its parent.
+  assert.deepEqual(
+    moveOrigin({
+      project_id: PRJ,
+      parent_id: "p",
+      breadcrumbs: [...crumbs, { kind: "page", page_id: "p", title: "P" }],
+    }),
+    { target: PRJ, parent_id: "p" },
+  );
+  // Your items, at the top level and below.
+  assert.deepEqual(moveOrigin({ project_id: null, parent_id: null }), {
+    target: null,
+    parent_id: null,
+  });
+  assert.deepEqual(moveOrigin({ parent_id: "q", breadcrumbs: [] }), {
+    target: null,
+    parent_id: "q",
+  });
+  assert.deepEqual(moveOrigin(null), { target: null, parent_id: null });
 });

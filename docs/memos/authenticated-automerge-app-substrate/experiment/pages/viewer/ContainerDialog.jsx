@@ -33,15 +33,34 @@ export function useContainerDialog(initial, run) {
 }
 
 /** A modal <dialog> that asks the machine before it closes: Escape and the
- * backdrop dispatch `close`, which a write in flight ignores. */
-export function ContainerDialog({ id, title, className = "", dispatch, children }) {
+ * backdrop dispatch `close`, which a write in flight ignores. If the browser
+ * closes the dialog anyway (the native `close` event) while `busy`, it opens
+ * again so the write's answer, a failure included, stays visible. When the
+ * dialog goes away, focus returns to `returnFocus()`, the control that
+ * opened it, as SharingControls' `returnFocus` does. */
+export function ContainerDialog({
+  id,
+  title,
+  className = "",
+  dispatch,
+  busy = false,
+  returnFocus,
+  children,
+}) {
   const dialog = useRef(null);
+  const leaving = useRef(false);
+  const state = useRef({ busy, dispatch, returnFocus });
+  state.current = { busy, dispatch, returnFocus };
   useEffect(() => {
     const element = dialog.current;
+    leaving.current = false;
     if (!element.open) element.showModal();
     element.querySelector("input, select")?.focus();
     return () => {
+      leaving.current = true;
       if (element.open) element.close();
+      const target = state.current.returnFocus?.();
+      if (target?.isConnected) target.focus();
     };
   }, []);
   return (
@@ -52,6 +71,16 @@ export function ContainerDialog({ id, title, className = "", dispatch, children 
       onCancel={(event) => {
         event.preventDefault();
         dispatch({ type: "close" });
+      }}
+      onClose={() => {
+        if (leaving.current) return;
+        const element = dialog.current;
+        // A write in flight can't be taken back: keep its answer on screen.
+        if (state.current.busy) {
+          if (element && !element.open) element.showModal();
+          return;
+        }
+        state.current.dispatch({ type: "close" });
       }}
       onClick={(event) => {
         if (event.target === dialog.current) dispatch({ type: "close" });

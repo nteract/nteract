@@ -53,10 +53,11 @@ import "./save-status.css";
 import { PagePicker } from "./PagePicker.jsx";
 import { ProjectCreator } from "./ProjectCreator.jsx";
 import { MoveDialog } from "./MoveDialog.jsx";
+import { moveOrigin } from "./container-dialog-machine.mjs";
 import { TrashView } from "./TrashView.jsx";
 import { Breadcrumbs, ProjectView } from "./ProjectView.jsx";
 import { IndexNav, PagesIndex, ProjectsIndex } from "./IndexViews.jsx";
-import { listProjects, pageBreadcrumbs } from "./projects.mjs";
+import { listProjects, pageLocation } from "./projects.mjs";
 import { closeTrashedSessions, moveToTrashError, restorePage } from "./trash.mjs";
 import { listAllPages, matchingPages } from "./page-list.mjs";
 import { quotaNotice } from "./quota.mjs";
@@ -140,7 +141,8 @@ function App() {
     // or null. `visit` remounts the listing for each navigation, Back
     // included; `query` follows the search typed on /pages.
     [index, setIndex] = useState(null),
-    [crumbs, setCrumbs] = useState([]),
+    // read_page's location for the open Page, null until it answers.
+    [placement, setPlacement] = useState(null),
     // The New Project or Move to… dialog: null, { kind: "create" } or
     // { kind: "move", pageId, title, projectId }. Each runs its own machine.
     [containerDialog, setContainerDialog] = useState(null);
@@ -314,11 +316,11 @@ function App() {
     bootPreview.dispatch({ type: "installed" });
     setProjectOpen(null);
     setIndex(null);
-    setCrumbs([]);
+    setPlacement(null);
     // Breadcrumbs show only the Project and parents this account can open.
-    void pageBreadcrumbs(tool, next.pageId).then(
+    void pageLocation(tool, next.pageId).then(
       (value) => {
-        if (host.current === next) setCrumbs(value);
+        if (host.current === next) setPlacement(value);
       },
       () => {},
     );
@@ -791,8 +793,16 @@ function App() {
       );
     }
   }
-  /** Move to…: only the Page's owner, signed in as that account, moves it. */
-  function startMove() {
+  /** The visible "More page actions" button (desktop or phone header),
+   * where focus goes back when the Move dialog closes. */
+  function pageMenuButton() {
+    return [...document.querySelectorAll('button[aria-label="More page actions"]')].find(
+      (button) => button.getClientRects().length > 0,
+    );
+  }
+  /** Move to…: only the Page's owner, signed in as that account, moves it.
+   * The dialog starts where read_page says the Page is. */
+  async function startMove() {
     const moving = host.current;
     if (!moving) return;
     if (
@@ -802,13 +812,26 @@ function App() {
       setError("Sign in with this Page's original account to move it.");
       return;
     }
-    const listed = pages.find((item) => item.page_id === moving.pageId);
-    const projectCrumb = crumbs.find((crumb) => crumb.kind === "project");
+    let where = placement;
+    if (!where) {
+      try {
+        where = await pageLocation(tool, moving.pageId);
+      } catch (error) {
+        showError(error);
+        return;
+      }
+      if (host.current !== moving) return;
+      setPlacement(where);
+    }
+    const projectCrumb = where.breadcrumbs.find((crumb) => crumb.kind === "project");
     setContainerDialog({
       kind: "move",
       pageId: moving.pageId,
       title: page?.title,
-      projectId: listed?.project_id ?? projectCrumb?.project_id ?? null,
+      origin: moveOrigin(where),
+      currentProject: where.project_id
+        ? { project_id: where.project_id, title: projectCrumb?.title }
+        : null,
     });
   }
   /** A move landed: the Page list, Projects and breadcrumbs follow it. */
@@ -821,9 +844,9 @@ function App() {
     void refresh().catch(() => {});
     const current = host.current;
     if (current?.pageId === receipt.page_id)
-      void pageBreadcrumbs(tool, current.pageId).then(
+      void pageLocation(tool, current.pageId).then(
         (value) => {
-          if (host.current === current) setCrumbs(value);
+          if (host.current === current) setPlacement(value);
         },
         () => {},
       );
@@ -1208,7 +1231,9 @@ function App() {
               tool={tool}
               pageId={containerDialog.pageId}
               title={containerDialog.title}
-              currentProjectId={containerDialog.projectId}
+              origin={containerDialog.origin}
+              currentProject={containerDialog.currentProject}
+              returnFocus={pageMenuButton}
               projects={projects}
               onClose={() => setContainerDialog(null)}
               onMoved={moved}
@@ -1221,7 +1246,7 @@ function App() {
               <article ref={article}>
                 <h1 className="document-print-title sr-only">{page.title || "Untitled"}</h1>
                 <Breadcrumbs
-                  crumbs={crumbs}
+                  crumbs={placement?.breadcrumbs ?? []}
                   onOpenProject={(id) => openProject(id)}
                   onOpenPage={open}
                 />

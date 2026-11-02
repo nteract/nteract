@@ -85,6 +85,19 @@ test("destinations list Your items first, then each Project", () => {
     { target: null, title: "Your items" },
     { target: "prj_a", title: "Untitled" },
   ]);
+  // The Page's own Project joins the list until list_projects has it.
+  assert.deepEqual(moveDestinations([], { project_id: "prj_b", title: "Launch" }), [
+    { target: null, title: "Your items" },
+    { target: "prj_b", title: "Launch" },
+  ]);
+  assert.deepEqual(
+    moveDestinations([{ project_id: "prj_b", title: "Launch" }], { project_id: "prj_b" }),
+    [
+      { target: null, title: "Your items" },
+      { target: "prj_b", title: "Launch" },
+    ],
+  );
+  assert.equal(moveDestinations([], { project_id: null }).length, 1);
 });
 
 test("parent choices skip the home Page, shared Pages, and the moved Page's subtree", () => {

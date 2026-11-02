@@ -212,6 +212,7 @@ import {
   projectOf,
   publicLocation,
   receiptLocation,
+  movedTrashEntries,
   rekeyedEntries,
   restoreTarget,
 } from "./catalog-location.mjs";
@@ -1947,7 +1948,7 @@ export class Catalog {
     switch (effect.type) {
       case "settle":
         try {
-          await this.settleReservations([run.pageId, run.parentId].filter(Boolean));
+          await this.settleReservations([...new Set([run.pageId, run.parentId].filter(Boolean))]);
           return { type: "settled", ok: true };
         } catch (error) {
           if (error.code === replies.unsettled.body.code) return { type: "settled", ok: false };
@@ -2027,10 +2028,12 @@ export class Catalog {
     const revision = (await storage.get(LOCATION_REVISION_KEY)) ?? 0;
     const plan = planMove({ revision, entries }, pageId, destination, position);
     if (!plan.ok) return refuse(plan.code, plan.message);
-    const trashed = subtreeOf(entries, pageId).filter(
-      ({ page_id }) => entries.get(page_id).state === "trashed",
-    ).length;
+    const trashedIds = subtreeOf(entries, pageId)
+      .filter(({ page_id }) => entries.get(page_id).state === "trashed")
+      .map(({ page_id }) => page_id);
+    const trashed = trashedIds.length;
     run.plan = plan;
+    run.trashedDescendants = trashedIds;
     run.receipt = {
       page_id: pageId,
       space_id: plan.moved.space_id,
@@ -2051,6 +2054,8 @@ export class Catalog {
    * in with the rest. Storage takes at most STORAGE_KEYS_PER_CALL keys per
    * put, so a large rebalance is several puts inside one transaction; a
    * counted put may add the two count keys to a chunk, so chunks leave room.
+   * Trashed descendants' `trash/` entries are rewritten in the same
+   * transaction and count toward the same per-put limit.
    */
   async writeMove(run) {
     const storage = this.storage;
@@ -2083,6 +2088,10 @@ export class Catalog {
           parent_id: plan.moved.parent_id,
           position: plan.moved.position,
         },
+        // Trashed sub-pages record the Project they would restore to if
+        // their parent is gone by then; after a move that is the
+        // destination's Project, or none for Your items.
+        ...(await movedTrashEntries(target, run.trashedDescendants ?? [], plan.moved.space_id)),
         [LOCATION_REVISION_KEY]: plan.revision,
         [key]: row,
       });
@@ -2169,7 +2178,7 @@ export class Catalog {
   async completeSpaceCreation(request, key, intent) {
     const storage = this.storage;
     intent.phase ??= "reserved";
-    for (let effect = spaceCreationEffect(intent.phase); effect;) {
+    for (let effect = spaceCreationEffect(intent.phase); effect; ) {
       let event;
       if (effect === "create_space_record") {
         const response = await this.env.PROJECTS.getByName(intent.spaceId).fetch(
@@ -2384,7 +2393,7 @@ export class Catalog {
       const spaces = [];
       let position = after;
       // Stale candidates are skipped; an account has at most SPACE_LIMIT.
-      for (let scanned = 0; scanned < SPACE_LIMIT * 4;) {
+      for (let scanned = 0; scanned < SPACE_LIMIT * 4; ) {
         const want = limit + 1 - spaces.length;
         const rows = await candidates.next(position, want);
         scanned += rows.length;

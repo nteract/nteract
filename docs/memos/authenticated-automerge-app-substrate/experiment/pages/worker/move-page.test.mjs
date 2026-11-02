@@ -997,3 +997,100 @@ test("property: checkInvariants holds after every move in a random run, and refu
   assert.equal(restored.status, 200, JSON.stringify(restored.body));
   await s.invariants();
 });
+
+/** Purge a trashed Page through preview and confirm. */
+async function purge(w, pageId) {
+  const preview = await w.call("owner", "purge_page", { page_id: pageId, action: "preview" });
+  assert.equal(preview.status, 200, JSON.stringify(preview.body));
+  const purged = await w.call("owner", "purge_page", {
+    page_id: pageId,
+    action: "confirm",
+    preview_token: preview.body.preview_token,
+    idempotency_key: w.key(),
+  });
+  assert.equal(purged.status, 200, JSON.stringify(purged.body));
+}
+
+for (const destination of ["another Project", "Your items"])
+  test(`a trashed sub-page moved to ${destination} restores there once its parent is purged`, async (t) => {
+    const w = await world(t);
+    const s = await stage(w, "From");
+    const to = destination === "Your items" ? null : await w.createProject("To");
+    const p = await s.page({ title: "P", project_id: s.project.project_id });
+    const child = await s.page({ title: "T", parent_id: p });
+    await s.trash(child);
+    const storage = w.catalogStorage();
+    assert.equal((await storage.get(`trash/${child}`)).restore_space_id, s.project.project_id);
+    const moved = await s.move(p, undefined, undefined, {
+      parent_id: undefined,
+      project_id: to?.project_id ?? null,
+    });
+    assert.equal(moved.status, 200, JSON.stringify(moved.body));
+    assert.equal(moved.body.trashed_descendants, 1);
+    assert.equal((await storage.get(`trash/${child}`)).restore_space_id, to?.project_id);
+    await s.trash(p);
+    await purge(w, p);
+    const restored = await w.call("owner", "restore_page", {
+      page_id: child,
+      idempotency_key: w.key(),
+    });
+    assert.equal(restored.status, 200, JSON.stringify(restored.body));
+    assert.equal(restored.body.project_id ?? null, to?.project_id ?? null);
+    assert.equal(restored.body.parent_id ?? null, to?.home_page_id ?? null);
+    await s.invariants();
+  });
+
+/** What a refused cross-account move must leave alone: the owner's entry for
+ * the Page, its location revision, and which Catalog holds it. */
+async function untouched(w, pageId) {
+  const owner = w.catalogStorage();
+  const member = w.catalogStorage(w.member);
+  return {
+    entry: (await owner.get(`page/${pageId}`)) ?? null,
+    revision: (await owner.get(LOCATION_REVISION_KEY)) ?? null,
+    memberRevision: (await member.get(LOCATION_REVISION_KEY)) ?? null,
+    hostedByMember: !!(await member.get(`page/${pageId}`)),
+  };
+}
+
+test("move_page across accounts: another account's Project, parent or Page is refused and nothing moves", async (t) => {
+  const w = await world(t);
+  const s = await stage(w);
+  const mine = await s.page({ title: "Mine", project_id: s.project.project_id });
+  const theirProject = await w.call("member", "create_project", {
+    title: "Theirs",
+    idempotency_key: w.key(),
+  });
+  assert.equal(theirProject.status, 200, JSON.stringify(theirProject.body));
+  const theirPage = await w.createPage(
+    { title: "Their page", project_id: theirProject.body.project_id },
+    "member",
+  );
+  assert.equal(theirPage.status, 200, JSON.stringify(theirPage.body));
+  const before = await untouched(w, mine);
+
+  const intoProject = await s.move(mine, undefined, undefined, {
+    parent_id: undefined,
+    project_id: theirProject.body.project_id,
+  });
+  assert.equal(intoProject.body.code, "project_not_found", JSON.stringify(intoProject.body));
+  assert.deepEqual(await untouched(w, mine), before);
+
+  const underParent = await s.move(mine, theirPage.body.page_id);
+  assert.equal(underParent.body.code, "parent_unavailable", JSON.stringify(underParent.body));
+  assert.deepEqual(await untouched(w, mine), before);
+
+  const authority = (await w.call("member", "list_pages")).body;
+  const byMember = await w.call("member", "move_page", {
+    page_id: mine,
+    project_id: theirProject.body.project_id,
+    retry_token: authority.retry_token,
+    idempotency_key: authority.retry_key_prefix + crypto.randomUUID(),
+  });
+  assert.ok(
+    ["page_not_found", "not_page_owner"].includes(byMember.body.code),
+    JSON.stringify(byMember.body),
+  );
+  assert.deepEqual(await untouched(w, mine), before);
+  await s.invariants();
+});

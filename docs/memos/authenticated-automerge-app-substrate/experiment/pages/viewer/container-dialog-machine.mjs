@@ -20,7 +20,9 @@
 // A `parentsLoaded` or `parentsFailed` for a destination no longer chosen is
 // stale and changes nothing.
 //
-// State: `{ name, form, attempt, error, parents?, result? }`
+// State: `{ name, form, attempt, error, origin?, parents?, result? }`
+//   origin (move)  { target, parent_id }: where the Page is; a form equal to
+//                  it can't be submitted
 //   form (create)  { title, description }
 //   form (move)    { target, parent_id } where target is a Project ID, or
 //                  null for Your items, and parent_id is null for the top level
@@ -54,11 +56,29 @@ export const EVENTS = Object.freeze([
 const same = (left, right) =>
   Object.keys({ ...left, ...right }).every((key) => left[key] === right[key]);
 
-/** Whether a form can be submitted. */
-export function formReady(kind, form) {
+/** Whether a Move form names where the Page already is (`origin`). */
+export const moveUnchanged = (form, origin) =>
+  !!origin && form.target === origin.target && (form.parent_id ?? null) === origin.parent_id;
+
+/** Whether a form can be submitted. A Move form that matches `origin`, where
+ * the Page already is, can't: moving there would still write. */
+export function formReady(kind, form, origin = null) {
   if (kind === "create") return typeof form.title === "string" && form.title.trim() !== "";
-  if (kind === "move") return form.target !== undefined;
+  if (kind === "move") return form.target !== undefined && !moveUnchanged(form, origin);
   return false;
+}
+
+/**
+ * Where a Page is, from read_page's location fields, as a Move form:
+ * `{ target, parent_id }`. A Project's top-level Pages sit under its home
+ * Page, which the dialog shows as "Top level", so that parent becomes null.
+ * The home Page is the breadcrumb marked `home`, or `homePageId` if given.
+ */
+export function moveOrigin(location, homePageId = null) {
+  const target = location?.project_id ?? null;
+  const home = homePageId ?? location?.breadcrumbs?.find((crumb) => crumb.home)?.page_id ?? null;
+  const parent = location?.parent_id ?? null;
+  return { target, parent_id: parent && parent !== home ? parent : null };
 }
 
 /** The New Project dialog's first state. */
@@ -70,13 +90,21 @@ export const initialCreate = () => ({
   error: "",
 });
 
-/** The Move dialog's first state, opened on the Page's current container:
- * `target` is its Project ID or null for Your items. Its parents load first. */
-export function initialMove(target = null) {
+/** The Move dialog's first state, opened where the Page is: `origin` is
+ * `{ target, parent_id }` (see moveOrigin), or just a target, a Project ID or
+ * null for Your items. The form starts there, and Move stays off until it
+ * changes. Its parents load first. */
+export function initialMove(origin = null) {
+  const start =
+    origin && typeof origin === "object"
+      ? { target: origin.target ?? null, parent_id: origin.parent_id ?? null }
+      : { target: origin ?? null, parent_id: null };
+  const { target } = start;
   return {
     kind: "move",
     name: "editing",
-    form: { target, parent_id: null },
+    origin: start,
+    form: { ...start },
     attempt: null,
     error: "",
     parents: { status: "loading", target, rows: [] },
@@ -101,15 +129,19 @@ export function transition(state, event) {
       let { parents } = state;
       if (state.kind === "move" && form.target !== state.form.target) {
         // A new destination: its parents load, and the old parent choice
-        // can't apply there.
-        form.parent_id = event.form.parent_id ?? null;
+        // can't apply there. Back at the Page's own container, the form
+        // returns to its own parent.
+        form.parent_id =
+          event.form.parent_id ??
+          (state.origin && form.target === state.origin.target ? state.origin.parent_id : null);
         parents = { status: "loading", target: form.target, rows: [] };
         effects.push({ type: "loadParents", target: form.target });
       }
       return { state: { ...state, form, parents, attempt: null, error: "" }, effects };
     }
     case "submit":
-      if (state.name !== "editing" || !formReady(state.kind, state.form)) return stay(state);
+      if (state.name !== "editing" || !formReady(state.kind, state.form, state.origin))
+        return stay(state);
       return {
         state: { ...state, name: "submitting", error: "" },
         effects: [{ type: "write", form: state.form, attempt: state.attempt }],

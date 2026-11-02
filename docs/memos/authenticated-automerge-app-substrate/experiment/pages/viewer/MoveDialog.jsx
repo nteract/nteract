@@ -6,26 +6,37 @@ import { loadParentChoices, moveDestinations, movePage } from "./container-actio
 
 const YOUR_ITEMS = "your-items";
 
-export function MoveDialog({ tool, pageId, title, currentProjectId, projects, onClose, onMoved }) {
-  const [state, dispatch] = useContainerDialog(
-    initialMove(currentProjectId ?? null),
-    (effect, send) => {
-      if (effect.type === "loadParents")
-        loadParentChoices(tool, effect.target, pageId).then(
-          (rows) => send({ type: "parentsLoaded", target: effect.target, rows }),
-          (error) => send({ type: "parentsFailed", target: effect.target, message: error.message }),
-        );
-      else if (effect.type === "write")
-        movePage(tool, pageId, effect.form, effect.attempt).then(
-          (result) => send({ type: "succeeded", result }),
-          (error) => send({ type: "failed", message: error.message, attempt: error.attempt }),
-        );
-      else if (effect.type === "finish") onMoved(effect.result);
-      else if (effect.type === "dismiss") onClose();
-    },
-  );
+/** `origin` is where the Page is (`{ target, parent_id }`, see moveOrigin);
+ * the form starts there and Move stays off until it changes. `currentProject`
+ * (`{ project_id, title }`) names the Page's Project in case `projects`
+ * doesn't list it yet. */
+export function MoveDialog({
+  tool,
+  pageId,
+  title,
+  origin,
+  currentProject,
+  projects,
+  returnFocus,
+  onClose,
+  onMoved,
+}) {
+  const [state, dispatch] = useContainerDialog(initialMove(origin ?? null), (effect, send) => {
+    if (effect.type === "loadParents")
+      loadParentChoices(tool, effect.target, pageId).then(
+        (rows) => send({ type: "parentsLoaded", target: effect.target, rows }),
+        (error) => send({ type: "parentsFailed", target: effect.target, message: error.message }),
+      );
+    else if (effect.type === "write")
+      movePage(tool, pageId, effect.form, effect.attempt).then(
+        (result) => send({ type: "succeeded", result }),
+        (error) => send({ type: "failed", message: error.message, attempt: error.attempt }),
+      );
+    else if (effect.type === "finish") onMoved(effect.result);
+    else if (effect.type === "dismiss") onClose();
+  });
   const submitting = state.name !== "editing";
-  const destinations = moveDestinations(projects);
+  const destinations = moveDestinations(projects, currentProject);
   const { parents } = state;
   return (
     <ContainerDialog
@@ -33,6 +44,8 @@ export function MoveDialog({ tool, pageId, title, currentProjectId, projects, on
       title={`Move “${title || "Untitled"}”`}
       className="move-dialog"
       dispatch={dispatch}
+      busy={state.name === "submitting"}
+      returnFocus={returnFocus}
     >
       <form
         className="container-form"
@@ -75,6 +88,11 @@ export function MoveDialog({ tool, pageId, title, currentProjectId, projects, on
             }
           >
             <option value="">Top level</option>
+            {state.form.parent_id &&
+              !parents.rows.some((row) => row.page_id === state.form.parent_id) && (
+                // The Page's own parent, until its list loads.
+                <option value={state.form.parent_id}>Current parent</option>
+              )}
             {parents.rows.map((row) => (
               <option key={row.page_id} value={row.page_id}>
                 {`${"\u00a0\u00a0".repeat(row.depth)}${row.title}`}
@@ -110,7 +128,7 @@ export function MoveDialog({ tool, pageId, title, currentProjectId, projects, on
           <button
             type="submit"
             className="primary"
-            disabled={submitting || !formReady("move", state.form)}
+            disabled={submitting || !formReady("move", state.form, state.origin)}
           >
             {submitting ? "Moving…" : "Move"}
           </button>
