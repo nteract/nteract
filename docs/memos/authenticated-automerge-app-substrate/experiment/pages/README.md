@@ -1712,8 +1712,9 @@ and `/s/<id>` links open `/project/<id>`. See
 [DEPLOYMENT.md](DEPLOYMENT.md#projects-and-their-storage-identity). In this build membership is owner-only: only the owner can open a Project,
 list its Pages or add to it, and nothing inherits access from a Project. A Page in
 a Project is readable by the owner and by anyone with a direct grant on that Page;
-sharing works as before and never reveals the Project. Inherited access, moves
-between Projects and a Project change feed come later.
+sharing works as before and never reveals the Project. `move_page` moves Pages
+into, out of and between the owner's Projects. Inherited access and a Project
+change feed come later.
 
 The viewer lists them at two index routes. `/projects` shows every Project
 `list_projects` returns, with its description. `/pages` shows every Page
@@ -1787,10 +1788,15 @@ descendants included, follows its root. The request is a state machine
 replays a completed receipt, settles the Page's and the parent's Trash or
 restore reservations within the lifecycle budget (`lifecycle_unsettled` when
 out of it), runs the shape pass like every queued write, then `planMove`
-([model/location.mjs](model/location.mjs)). This build moves by `parent_id`
-within one Project or within Your items; the Project's top level is its home
-Page. `project_id` destinations, Your items as a destination and moves between
-Projects answer `move_destination_required` until a later slice. A failed
+([model/location.mjs](model/location.mjs)). A destination is a
+`parent_id`, a `project_id` (the Project's top level, under its home Page), or
+`project_id: null` (a root in Your items), and a Page moves within its
+container or across them: Your items into a Project, a Project out to Your
+items, or one Project to another. Only a request naming no destination answers
+`move_destination_required`. Because Projects are owner-only and the Catalog
+holds only its owner's Projects, a cross-container move changes no one's
+access; if Project membership ever grants access, the plan must re-check it
+(the guard in `planMoveEvent`). A failed
 barrier after the put is `503 move_unconfirmed`; the retry replays the receipt
 or plans again over what is stored and reports where the Page landed.
 

@@ -5,6 +5,7 @@ import { createRoot } from "react-dom/client";
 import {
   ChevronDown,
   FileText,
+  FolderInput,
   FolderOpen,
   LogOut,
   Link,
@@ -50,6 +51,8 @@ import "./sharing-panel.css";
 import "./comments.css";
 import "./save-status.css";
 import { PagePicker } from "./PagePicker.jsx";
+import { ProjectCreator } from "./ProjectCreator.jsx";
+import { MoveDialog } from "./MoveDialog.jsx";
 import { TrashView } from "./TrashView.jsx";
 import { Breadcrumbs, ProjectView } from "./ProjectView.jsx";
 import { IndexNav, PagesIndex, ProjectsIndex } from "./IndexViews.jsx";
@@ -137,7 +140,10 @@ function App() {
     // or null. `visit` remounts the listing for each navigation, Back
     // included; `query` follows the search typed on /pages.
     [index, setIndex] = useState(null),
-    [crumbs, setCrumbs] = useState([]);
+    [crumbs, setCrumbs] = useState([]),
+    // The New Project or Move to… dialog: null, { kind: "create" } or
+    // { kind: "move", pageId, title, projectId }. Each runs its own machine.
+    [containerDialog, setContainerDialog] = useState(null);
   const [toolbar, setToolbar] = useState(null),
     [toolbarOpen, setToolbarOpen] = useState(false),
     [active, setActive] = useState(null),
@@ -785,6 +791,49 @@ function App() {
       );
     }
   }
+  /** Move to…: only the Page's owner, signed in as that account, moves it. */
+  function startMove() {
+    const moving = host.current;
+    if (!moving) return;
+    if (
+      moving.authRequired ||
+      moving.identity.principal !== authentication.current?.identity?.principal
+    ) {
+      setError("Sign in with this Page's original account to move it.");
+      return;
+    }
+    const listed = pages.find((item) => item.page_id === moving.pageId);
+    const projectCrumb = crumbs.find((crumb) => crumb.kind === "project");
+    setContainerDialog({
+      kind: "move",
+      pageId: moving.pageId,
+      title: page?.title,
+      projectId: listed?.project_id ?? projectCrumb?.project_id ?? null,
+    });
+  }
+  /** A move landed: the Page list, Projects and breadcrumbs follow it. */
+  function moved(receipt) {
+    setContainerDialog(null);
+    const where = receipt.project_id
+      ? projects.find((project) => project.project_id === receipt.project_id)?.title || "Project"
+      : "Your items";
+    setNotice(`Moved to ${where}`);
+    void refresh().catch(() => {});
+    const current = host.current;
+    if (current?.pageId === receipt.page_id)
+      void pageBreadcrumbs(tool, current.pageId).then(
+        (value) => {
+          if (host.current === current) setCrumbs(value);
+        },
+        () => {},
+      );
+  }
+  /** A Project was created: list it and open it. */
+  function projectCreated(projectId) {
+    setContainerDialog(null);
+    void refresh().catch(() => {});
+    openProject(projectId);
+  }
   async function remove() {
     const deleting = host.current;
     if (!deleting) return;
@@ -967,6 +1016,13 @@ function App() {
           icon: RotateCcw,
           run: restoreCurrent,
         },
+        session.canDelete &&
+          !pages.find((item) => item.page_id === page?.page_id)?.home && {
+            key: "move",
+            label: "Move to…",
+            icon: FolderInput,
+            run: startMove,
+          },
         session.canDelete && {
           key: "trash",
           label: "Move to Trash",
@@ -1135,9 +1191,29 @@ function App() {
             projects={projects}
             currentProjectId={projectOpen}
             onOpenProject={(id) => openProject(id)}
+            onCreateProject={() => setContainerDialog({ kind: "create" })}
             creating={creating || !!session?.authRequired}
             error={pickerError}
           />
+          {containerDialog?.kind === "create" && (
+            <ProjectCreator
+              tool={tool}
+              onClose={() => setContainerDialog(null)}
+              onCreated={(receipt) => projectCreated(receipt.project_id)}
+            />
+          )}
+          {containerDialog?.kind === "move" && (
+            <MoveDialog
+              key={containerDialog.pageId}
+              tool={tool}
+              pageId={containerDialog.pageId}
+              title={containerDialog.title}
+              currentProjectId={containerDialog.projectId}
+              projects={projects}
+              onClose={() => setContainerDialog(null)}
+              onMoved={moved}
+            />
+          )}
           {page ? (
             <main
               className={commentsOpen ? "workspace document with-comments" : "workspace document"}
@@ -1336,6 +1412,7 @@ function App() {
               tool={tool}
               onNavigate={navigateIndex}
               onOpenProject={(id) => openProject(id)}
+              onProjectCreated={projectCreated}
               onError={reportListing(index.visit, index.principal)}
               onRetry={retryListing}
             />

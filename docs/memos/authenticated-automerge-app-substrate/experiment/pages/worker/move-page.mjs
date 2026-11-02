@@ -74,7 +74,10 @@ const isObject = (value) => value !== null && typeof value === "object" && !Arra
 const receiptShape = (receipt) => {
   check(isObject(receipt), "receipt must be an object");
   check(typeof receipt.page_id === "string", "receipt names its page_id");
-  check(typeof receipt.parent_id === "string", "receipt names its parent_id");
+  check(
+    receipt.parent_id === null || typeof receipt.parent_id === "string",
+    "receipt names its parent_id, null for a root in Your items",
+  );
   check(typeof receipt.position === "string", "receipt carries the position");
   check(
     Number.isSafeInteger(receipt.location_revision) && receipt.location_revision >= 0,

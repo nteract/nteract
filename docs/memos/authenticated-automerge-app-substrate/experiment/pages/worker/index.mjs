@@ -480,28 +480,40 @@ function validateCreateInput(args) {
 
 /**
  * move_page's arguments as the Catalog runs them: `{ pageId, parentId,
- * position }`. Every refusal here is deterministic input, so it consumes no
- * key and runs no shape pass. This build moves by `parent_id` alone: a
- * Project's top level is its home Page (get_project's home_page_id), and a
- * `project_id` destination (`space_id` once the Project API has mapped it)
- * or an omitted parent is `move_destination_required`. The retry_token is
+ * spaceId, position }`. Every refusal here is deterministic input, so it
+ * consumes no key and runs no shape pass. The destination is any of:
+ * - `parent_id`: under that Page, in whichever container it sits (a Project
+ *   or Your items);
+ * - `space_id` (the API's `project_id`, mapped by the Project API) naming a
+ *   Project: its top level, under its home Page;
+ * - `space_id: null`: a root in Your items.
+ * Both together must agree (`placement_mismatch`). Naming neither is
+ * `move_destination_required`, the one destination this tool can't place.
+ * `spaceId` is undefined when no Project was named. The retry_token is
  * required: a move's lost answer is reconciled by replaying its receipt.
  */
 function validateMoveInput(args) {
   const pageId = requirePageIdArgument(args.page_id);
-  if (args.space_id !== undefined || args.parent_id === undefined || args.parent_id === null)
+  const hasParent = args.parent_id !== undefined && args.parent_id !== null;
+  const hasSpace = Object.hasOwn(args, "space_id") && args.space_id !== undefined;
+  if (!hasParent && !hasSpace)
     throw new HttpError(
       400,
-      "Name parent_id: the Page to move under. To move a Page to its Project's top level, name the Project's home Page (get_project's home_page_id). Destinations by project_id, and Your items, are not available yet.",
+      "Name a destination: parent_id (a Page to move under), project_id (a Project's top level), or project_id: null (Your items).",
       "move_destination_required",
     );
-  if (validSpaceId(args.parent_id))
+  if (hasParent && validSpaceId(args.parent_id))
     throw new HttpError(
       400,
-      "parent_id expects a Page ID, but this is a Project ID. To move a Page to the Project's top level, pass its home Page (get_project's home_page_id) as parent_id.",
+      "parent_id expects a Page ID, but this is a Project ID. To move a Page to the Project's top level, pass it as project_id instead.",
       "project_id_as_page_id",
     );
-  const parentId = requirePageIdArgument(args.parent_id, "parent_id");
+  const parentId = hasParent ? requirePageIdArgument(args.parent_id, "parent_id") : null;
+  const spaceId = !hasSpace
+    ? undefined
+    : args.space_id === null
+      ? null
+      : requireSpaceIdArgument(args.space_id);
   const position = args.position === undefined ? "last" : args.position;
   if (!validPosition(position))
     throw new HttpError(
@@ -515,7 +527,7 @@ function validateMoveInput(args) {
       "move_page needs the retry_token from list_pages and a v1_ idempotency_key built from its retry_key_prefix",
       "invalid_retry_token",
     );
-  return { pageId, parentId, position };
+  return { pageId, parentId, spaceId, position };
 }
 
 function forwarded(request, path, body) {
@@ -1879,13 +1891,14 @@ export class Catalog {
    * Catalog's queue.
    */
   async movePage(identity, args) {
-    const { pageId, parentId, position } = validateMoveInput(args);
+    const { pageId, parentId, spaceId, position } = validateMoveInput(args);
     // Input is sound: the shape pass runs first, as for every queued write.
     Catalog.requireMigrated(await this.locationShape());
     const run = {
       identity,
       pageId,
       parentId,
+      spaceId,
       position,
       key: mutationKey(args),
       digest: await fingerprint("move_page", args, identity),
@@ -1934,7 +1947,7 @@ export class Catalog {
     switch (effect.type) {
       case "settle":
         try {
-          await this.settleReservations([...new Set([run.pageId, run.parentId])]);
+          await this.settleReservations([run.pageId, run.parentId].filter(Boolean));
           return { type: "settled", ok: true };
         } catch (error) {
           if (error.code === replies.unsettled.body.code) return { type: "settled", ok: false };
@@ -1962,14 +1975,21 @@ export class Catalog {
    * this Catalog's location entries; what it can't see is checked here first:
    * a Page this account only has shared (`not_page_owner`), one still being
    * created (`page_not_found`, as listings hide it), a parent leaving for
-   * Trash (its reservation, which the entries skip), and a parent in another
-   * Project, which this build refuses. Trashed descendants move with the
-   * subtree and are reported apart from the active ones.
+   * Trash (its reservation, which the entries skip), and a named Project
+   * this account doesn't own (`project_not_found`). A Page can move between
+   * containers: from Your items into a Project, out of one to Your items, or
+   * from one Project to another. Trashed descendants move with the subtree
+   * and are reported apart from the active ones.
    */
   async planMoveEvent(run) {
     const storage = this.storage;
-    const { pageId, parentId, position } = run;
-    const refuse = (code, message) => ({ type: "planned", ok: false, code, message });
+    const { pageId, parentId, spaceId, position } = run;
+    const refuse = (code, message) => ({
+      type: "planned",
+      ok: false,
+      code,
+      message,
+    });
     const { entries } = await locationScan(storage);
     const entry = entries.get(pageId);
     if (!entry) {
@@ -1981,19 +2001,31 @@ export class Catalog {
       return refuse("page_not_found", "Page not found");
     }
     if (entry.state === "pending") return refuse("page_not_found", "Page not found");
-    if (!(await parentActive(storage, parentId)))
+    if (parentId && !(await parentActive(storage, parentId)))
       return refuse("parent_unavailable", "The parent Page is missing, pending or in Trash");
-    if (entry.state !== "trashed" && !("space_id" in entry)) {
-      const from = deriveLocation(entries, pageId);
-      const to = deriveLocation(entries, parentId);
-      if (from.ok && to.ok && from.space_id !== to.space_id)
-        return refuse(
-          "move_destination_required",
-          "In this build a Page moves within its Project, or within Your items. parent_id names a Page in another Project; moving between Projects is not available yet.",
-        );
+    // Access guard for cross-container moves. Where a Page sits decides
+    // nothing about who can open it today: Projects are owner-only, and this
+    // Catalog holds only its owner's Pages and Projects, so a destination
+    // found here is one the caller owns, and the Page's sharing travels with
+    // it unchanged. If Project membership ever grants access, a move into,
+    // out of or between Projects changes who can open the Page and its
+    // sub-pages, and this guard has to re-check that access before planning.
+    const destinationSpace =
+      typeof spaceId === "string"
+        ? spaceId
+        : parentId
+          ? deriveLocation(entries, parentId).space_id
+          : null;
+    if (typeof destinationSpace === "string") {
+      const record = await storage.get(`space/${destinationSpace}`);
+      if (!record || record.pending) return refuse("project_not_found", "Project not found");
     }
+    const destination = {
+      ...(spaceId !== undefined && { project_id: spaceId }),
+      ...(parentId && { parent_id: parentId }),
+    };
     const revision = (await storage.get(LOCATION_REVISION_KEY)) ?? 0;
-    const plan = planMove({ revision, entries }, pageId, { parent_id: parentId }, position);
+    const plan = planMove({ revision, entries }, pageId, destination, position);
     if (!plan.ok) return refuse(plan.code, plan.message);
     const trashed = subtreeOf(entries, pageId).filter(
       ({ page_id }) => entries.get(page_id).state === "trashed",
@@ -2002,7 +2034,7 @@ export class Catalog {
     run.receipt = {
       page_id: pageId,
       space_id: plan.moved.space_id,
-      parent_id: parentId,
+      parent_id: plan.moved.parent_id,
       position: plan.moved.position,
       location_revision: plan.revision,
       descendants: plan.moved.descendants - trashed,
@@ -2137,7 +2169,7 @@ export class Catalog {
   async completeSpaceCreation(request, key, intent) {
     const storage = this.storage;
     intent.phase ??= "reserved";
-    for (let effect = spaceCreationEffect(intent.phase); effect; ) {
+    for (let effect = spaceCreationEffect(intent.phase); effect;) {
       let event;
       if (effect === "create_space_record") {
         const response = await this.env.PROJECTS.getByName(intent.spaceId).fetch(
@@ -2352,7 +2384,7 @@ export class Catalog {
       const spaces = [];
       let position = after;
       // Stale candidates are skipped; an account has at most SPACE_LIMIT.
-      for (let scanned = 0; scanned < SPACE_LIMIT * 4; ) {
+      for (let scanned = 0; scanned < SPACE_LIMIT * 4;) {
         const want = limit + 1 - spaces.length;
         const rows = await candidates.next(position, want);
         scanned += rows.length;
