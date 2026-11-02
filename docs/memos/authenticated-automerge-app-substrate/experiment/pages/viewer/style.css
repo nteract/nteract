@@ -34,6 +34,10 @@
   --comment-anchor: #ffa156;
   --comment-anchor-line: #e16c10;
   --comment-anchor-fill: 20%;
+  /* Your own text selection. Opaque, so selected text contrast never depends
+     on what is underneath (a highlight, a comment anchor, a peer's selection). */
+  --selection: #b4d5fe;
+  --selection-foreground: var(--foreground);
 }
 :root.dark {
   --warning: #dec179;
@@ -41,6 +45,17 @@
   --comment-anchor: #fb9d59;
   --comment-anchor-line: #f99549;
   --comment-anchor-fill: 18%;
+  --selection: #264f78;
+}
+/* Without this rule each browser paints its own selection. Mobile Chromium
+   flips selected text to black on a bright cyan block, and iOS Safari tints
+   its native selection with the editor's caret-color, which Wordgard sets to
+   transparent. An author ::selection is painted by the page in every engine.
+   The text color is set too, so dark text in a dark-mode highlight and syntax
+   colors in code stay readable when selected. */
+::selection {
+  color: var(--selection-foreground);
+  background: var(--selection);
 }
 [data-highlight="yellow"] {
   --pages-highlight: var(--highlight-yellow);
