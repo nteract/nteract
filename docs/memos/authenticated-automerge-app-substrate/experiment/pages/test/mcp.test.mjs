@@ -350,6 +350,7 @@ test("MCP initialization guides title authoring and successful receipts preserve
   );
   const initialized = (await initialization.json()).result;
   assert.equal(initialized.serverInfo.name, PRODUCT_NAME);
+  assert.equal(initialized.serverInfo.name, "Pages");
   const [orientation, ...rest] = initialized.instructions.split("\n");
   assert.match(orientation, /^Start with list_pages/);
   assert.match(rest.join("\n"), /home Page[\s\S]*url field[\s\S]*opening_heading_repeats_title/);

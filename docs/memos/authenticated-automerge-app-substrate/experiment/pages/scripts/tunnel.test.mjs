@@ -10,6 +10,7 @@ import {
   provisionTunnel,
   removeOwnedFiles,
 } from "./deployment/tunnel.mjs";
+import { deploymentProfile } from "./deployment/profiles.mjs";
 import { provisionTarget } from "./deployment/provision.mjs";
 
 const tunnelId = "8e7399d8-7fcf-463a-b2b1-18f5512bedbd";
@@ -326,7 +327,7 @@ function edge(tunnels = [], records = []) {
 }
 const etcFor = (target) => {
   const root = mkdtempSync(path.join(tmpdir(), "provision-etc-"));
-  execFileSync("mkdir", [path.join(root, "nteract-" + target)]);
+  execFileSync("mkdir", [path.join(root, deploymentProfile(target).deployment.service)]);
   return root;
 };
 const page10Record = {
@@ -346,7 +347,7 @@ for (const target of ["pages-next", "page3", "page4", "page5", "page6", "page7",
       const h = host(etcFor(target));
       await assert.rejects(
         provisionTarget({ token, target, apply, fetchImpl: cf.fetchImpl, run: h.run }),
-        /qualified only for page10/,
+        /qualified only for page10 and pages/,
       );
       assert.equal(cf.calls.length, 0);
       assert.equal(h.runs.length, 0);
@@ -557,5 +558,82 @@ test("provision without a token stops before Cloudflare or the host", async () =
     );
     assert.equal(cf.calls.length, 0);
     assert.equal(h.runs.length, 0);
+  }
+});
+
+test("pages provision creates tunnel nteract-pages-live and its pages.runtimed.run CNAME", async () => {
+  const root = etcFor("pages");
+  const cf = edge();
+  const result = await provisionTarget({
+    token,
+    target: "pages",
+    apply: true,
+    fetchImpl: cf.fetchImpl,
+    run: host(root).run,
+  });
+  const record = {
+    id: "a".repeat(32),
+    name: "pages.runtimed.run",
+    type: "CNAME",
+    content: `${tunnelId}.cfargotunnel.com`,
+    proxied: true,
+    ttl: 1,
+    comment: "nteract/pages:experiment:pages",
+  };
+  assert.deepEqual(result, {
+    target: "pages",
+    applied: true,
+    tunnel: { name: "nteract-pages-live", tunnelId, created: true, installed: true },
+    dns: {
+      name: "pages.runtimed.run",
+      target: `${tunnelId}.cfargotunnel.com`,
+      present: true,
+      recordId: "a".repeat(32),
+      changed: true,
+    },
+  });
+  assert.deepEqual(cf.records(), [record]);
+  const d = path.join(root, "nteract-pages-live");
+  assert.deepEqual(readdirSync(d).sort(), ["tunnel-provisioning.json", "tunnel.json"]);
+  assert.equal(
+    JSON.parse(readFileSync(path.join(d, "tunnel-provisioning.json"))).name,
+    "nteract-pages-live",
+  );
+});
+
+test("pages provision refuses a pages.runtimed.run record it does not own", async () => {
+  const root = etcFor("pages");
+  await provisionTunnel({
+    token,
+    target: "pages",
+    apply: true,
+    fetchImpl: cloudflare().fetchImpl,
+    run: host(root).run,
+  });
+  // Any other record at the hostname, such as one left by an earlier
+  // prototype, stops provisioning. It is never adopted or replaced.
+  for (const foreign of [
+    { ...page10Record, name: "pages.runtimed.run", comment: "" },
+    { ...page10Record, name: "pages.runtimed.run", comment: "nteract/pages:experiment:page10" },
+    {
+      ...page10Record,
+      name: "pages.runtimed.run",
+      content: "11111111-2222-4333-8444-555555555555.cfargotunnel.com",
+      comment: "nteract/pages:experiment:pages",
+    },
+  ]) {
+    const cf = edge([{ id: tunnelId, name: "nteract-pages-live" }], [foreign]);
+    await assert.rejects(
+      provisionTarget({
+        token,
+        target: "pages",
+        apply: true,
+        fetchImpl: cf.fetchImpl,
+        run: host(root).run,
+      }),
+      /conflicts with exact Pages ownership/,
+    );
+    assert.ok(cf.calls.every(({ method }) => method === "GET"));
+    assert.deepEqual(cf.records(), [foreign]);
   }
 });
