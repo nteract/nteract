@@ -13,6 +13,8 @@ import {
 } from "./reconnect-machine.mjs";
 import { SERVER_UNREACHABLE } from "./alerts.mjs";
 import { SLOW_SAVE_MS } from "./sync-status-machine.mjs";
+import { CATCH_UP_LIMIT_MS, CATCH_UP_SHOW_MS } from "./catch-up-machine.mjs";
+import { VirtualTimeScheduler } from "rxjs";
 
 const drain = () => new Promise((resolve) => setImmediate(resolve));
 function deferred() {
@@ -26,7 +28,7 @@ function deferred() {
 
 // Exercise the real discovery, authentication, socket lifecycle and receipt
 // methods. Only external I/O and time are controlled; no receipt methods are mocked.
-function fixture(t, { random, date = false } = {}) {
+function fixture(t, { random, date = false, scheduler } = {}) {
   // `date` mocks Date too, and performance.now(), the session's default
   // outage clock, as a fake monotonic clock that moves with the mocked
   // timers: Date.now() minus every wall-clock jump the test makes with
@@ -41,6 +43,7 @@ function fixture(t, { random, date = false } = {}) {
   const session = new PageSession("receipt-reconnect", {
     refreshSession: async () => ({ identity, canWrite: true }),
     random,
+    ...(scheduler && { scheduler }),
   });
   if (date) t.mock.method(globalThis.performance, "now", () => Date.now() - wallShift);
   const documentId = interpretAsDocumentId(generateAutomergeUrl());
@@ -56,6 +59,7 @@ function fixture(t, { random, date = false } = {}) {
     },
   };
   const requests = [],
+    probes = [],
     sockets = [],
     hooks = {};
   let added = 0,
@@ -120,6 +124,11 @@ function fixture(t, { random, date = false } = {}) {
       );
     assert.ok(url.startsWith("/api/saved?"), `unexpected fixture request: ${url}`);
     const pending = { ...deferred(), heads: JSON.parse(options.body).heads };
+    // Catch-up's frontier probe is not a save receipt.
+    if (url.endsWith("&probe=frontier")) {
+      probes.push(pending);
+      return pending.promise;
+    }
     requests.push(pending);
     return hooks.receipt ? hooks.receipt(pending) : pending.promise;
   });
@@ -132,6 +141,7 @@ function fixture(t, { random, date = false } = {}) {
   return {
     session,
     requests,
+    probes,
     sockets,
     hooks,
     mutate(text = "New edit") {
@@ -1462,6 +1472,167 @@ test("catching up on remote changes after a reopen is syncing; only a local edit
   await drain();
   assert.equal(f.session.status, "Saved");
   assert.equal(f.session.sync$.snapshot().pending, false);
+});
+
+// Catch-up after a reopen, with its timers on virtual time. The host's
+// frontier, from the per-socket probe or a receipt, is the only proof of
+// being caught up.
+async function catchUpFixture(t) {
+  const scheduler = new VirtualTimeScheduler();
+  const f = fixture(t, { scheduler });
+  f.session.syncStatus({ type: "opened", pending: false });
+  // A reopened local copy whose heads the host acknowledged before.
+  f.session.savedHeads = A.getHeads(f.session.doc);
+  const keys = [];
+  f.session.subscribe(() => keys.push(f.session.statusKey));
+  // The host's copy: this replica's history plus a change made elsewhere.
+  let host = A.merge(A.init(), f.session.doc);
+  host = A.change(host, (doc) => A.updateText(doc, ["text"], "Written elsewhere"));
+  const answer = (pending, heads = A.getHeads(host)) =>
+    pending.resolve(Response.json({ durableHeads: heads }));
+  // The change from elsewhere arrives over the socket.
+  const land = () => {
+    f.session.handle.merge(host);
+    f.session.receiveChange({});
+  };
+  // Run virtual time up to `ms`, leaving later timers armed.
+  const until = (ms) => {
+    scheduler.maxFrames = ms;
+    scheduler.flush();
+    scheduler.maxFrames = Infinity;
+  };
+  return { ...f, scheduler, keys, host, answer, land, until };
+}
+function mergeableHandle(f) {
+  const handle = f.session.handle;
+  let doc = handle.doc();
+  f.session.handle = {
+    ...handle,
+    doc: () => doc,
+    change(fn) {
+      doc = A.change(doc, fn);
+    },
+    merge(other) {
+      doc = A.merge(doc, other);
+    },
+  };
+}
+
+test("a reopened Page behind the host shows Catching up until the missing change lands", async (t) => {
+  const f = await catchUpFixture(t);
+  mergeableHandle(f);
+  await f.session.openConnection(false);
+  assert.equal(f.probes.length, 1, "one frontier probe per admitted socket");
+  assert.deepEqual(f.probes[0].heads, f.session.savedHeads);
+  f.answer(f.probes[0]);
+  await drain();
+  assert.notEqual(f.session.status, "Catching up…", "nothing shows before the threshold");
+  f.until(CATCH_UP_SHOW_MS);
+  assert.equal(CATCH_UP_SHOW_MS, 300);
+  assert.equal(f.session.status, "Catching up…");
+  assert.equal(f.session.statusKey, "catching-up");
+  // The missing change lands; no receipt is needed to clear the label.
+  const receipts = f.requests.length;
+  f.land();
+  assert.notEqual(f.session.status, "Catching up…");
+  assert.equal(f.requests.length, receipts);
+  f.scheduler.flush();
+  assert.ok(!f.session.status.startsWith("Catching"), f.session.status);
+});
+
+test("continuous typing after the frontier arrives still clears Catching up", async (t) => {
+  const f = await catchUpFixture(t);
+  mergeableHandle(f);
+  await f.session.openConnection(false);
+  f.answer(f.probes[0]);
+  await drain();
+  f.until(CATCH_UP_SHOW_MS);
+  assert.equal(f.session.status, "Catching up…");
+  // A keystroke every 100 ms keeps postponing the save receipt.
+  for (let i = 0; i < 30; i++) {
+    await f.session.change((doc) => A.updateText(doc, ["text"], `Typing ${i}`));
+    if (i === 10) f.land();
+    await f.advance(100);
+    if (i < 10) assert.equal(f.session.status, "Catching up…", `keystroke ${i}`);
+    else assert.notEqual(f.session.status, "Catching up…", `keystroke ${i}`);
+  }
+  const before = f.requests.length;
+  assert.ok(before <= 1, "no receipt went out while typing");
+  f.scheduler.flush();
+  assert.equal(f.session.catchUp.store.snapshot().name, "current");
+});
+
+test("a frontier that never arrives stops showing Catching up at the limit", async (t) => {
+  const f = await catchUpFixture(t);
+  const logged = [];
+  t.mock.method(console, "info", (message) => logged.push(message));
+  await f.session.openConnection(false);
+  f.answer(f.probes[0]);
+  await drain();
+  f.until(CATCH_UP_SHOW_MS);
+  assert.equal(f.session.status, "Catching up…");
+  f.until(CATCH_UP_LIMIT_MS - 1);
+  assert.equal(f.session.status, "Catching up…", "still showing just before the limit");
+  f.scheduler.flush();
+  assert.equal(CATCH_UP_LIMIT_MS, 15_000);
+  assert.equal(f.scheduler.now(), CATCH_UP_LIMIT_MS);
+  assert.notEqual(f.session.status, "Catching up…");
+  assert.equal(f.session.catchUp.store.snapshot().name, "timedOut");
+  assert.ok(f.keys.includes("catching-up"), f.keys.join(", "));
+  assert.match(logged.join("\n"), /wasn't confirmed within 15 s/);
+});
+
+test("a reopened Page already current never shows Catching up", async (t) => {
+  const f = await catchUpFixture(t);
+  await f.session.openConnection(false);
+  f.answer(f.probes[0], f.session.savedHeads);
+  await drain();
+  f.scheduler.flush();
+  assert.ok(!f.keys.includes("catching-up"), f.keys.join(", "));
+  assert.deepEqual(f.session.catchUp.store.snapshot(), { name: "current", attempt: 1 });
+});
+
+test("a same-head reconnect after a saved receipt, then a collaborator's edit, shows nothing", async (t) => {
+  const f = await catchUpFixture(t);
+  await f.session.openConnection(false);
+  f.answer(f.probes[0], f.session.savedHeads);
+  await f.advance(300);
+  f.requests[0].resolve(Response.json({ durableHeads: f.requests[0].heads }));
+  await drain();
+  assert.equal(f.session.status, "Saved");
+  // The socket drops and comes back with no change on either side. The
+  // receipt dedupes; the probe still answers for the new socket.
+  f.sockets[0].dispatchEvent(new Event("close"));
+  f.hooks.disconnect();
+  await drain();
+  await f.session.openConnection(false);
+  await drain();
+  const receipts = f.requests.length;
+  assert.equal(f.probes.length, 2);
+  f.answer(f.probes[1], A.getHeads(f.session.doc));
+  await drain();
+  assert.equal(f.requests.length, receipts, "no new save receipt");
+  assert.equal(f.session.catchUp.store.snapshot().name, "current");
+  // Idle well past the threshold, then a collaborator edits.
+  f.scheduler.flush();
+  f.mutate("A collaborator's edit");
+  f.session.receiveChange({});
+  f.scheduler.flush();
+  assert.ok(!f.keys.includes("catching-up"), f.keys.join(", "));
+});
+
+test("a socket lost mid catch-up hands the status line to the connection", async (t) => {
+  const f = await catchUpFixture(t);
+  await f.session.openConnection(false);
+  f.answer(f.probes[0]);
+  await drain();
+  f.until(CATCH_UP_SHOW_MS);
+  assert.equal(f.session.status, "Catching up…");
+  f.sockets[0].dispatchEvent(new Event("close"));
+  f.hooks.disconnect();
+  await drain();
+  assert.notEqual(f.session.status, "Catching up…");
+  assert.equal(f.session.catchUp.store.snapshot().name, "detached");
 });
 
 test("a checkpoint left before its receipt reopens as Saving until the host acknowledges it", async (t) => {

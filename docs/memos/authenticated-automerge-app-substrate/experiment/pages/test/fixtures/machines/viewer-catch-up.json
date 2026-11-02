@@ -1,0 +1,1724 @@
+{
+  "machine": "viewer-catch-up",
+  "description": "Whether one viewer PageSession's status line says Catching up after a socket is admitted. The host's frontier (durableHeads and durableCommentHeads from /api/saved, asked once per socket and answered by every receipt) ends catch-up when this replica holds it, comments included; a kept frontier is rechecked on every remote change and when the comments replica installs or fails to open. The label shows only on evidence 300 ms after admission and stops quietly 15 s after it. Runs against viewer/catch-up-machine.mjs in viewer/catch-up.test.mjs.",
+  "states": [
+    "detached",
+    "opening",
+    "settling",
+    "catchingUp",
+    "current",
+    "timedOut"
+  ],
+  "events": [
+    "admitted",
+    "disconnected",
+    "elapsed",
+    "expired",
+    "remote",
+    "recheck",
+    "answered"
+  ],
+  "unreachable": [],
+  "cases": {
+    "opening/elapsed": [
+      "behind",
+      "unproven",
+      "stale"
+    ],
+    "opening/expired": [
+      "limit",
+      "stale"
+    ],
+    "settling/expired": [
+      "limit",
+      "stale"
+    ],
+    "catchingUp/expired": [
+      "limit",
+      "stale"
+    ],
+    "opening/remote": [
+      "held",
+      "unproven"
+    ],
+    "catchingUp/remote": [
+      "held",
+      "unproven"
+    ],
+    "opening/recheck": [
+      "held",
+      "unheld",
+      "none"
+    ],
+    "catchingUp/recheck": [
+      "held",
+      "unheld",
+      "none"
+    ],
+    "opening/answered": [
+      "held",
+      "behind",
+      "stale"
+    ],
+    "settling/answered": [
+      "held",
+      "behind",
+      "stale"
+    ],
+    "catchingUp/answered": [
+      "held",
+      "behind",
+      "stale"
+    ],
+    "timedOut/answered": [
+      "held",
+      "behind",
+      "stale"
+    ]
+  },
+  "rows": [
+    {
+      "label": "the first admitted socket arms the threshold and the limit",
+      "state": {
+        "name": "detached",
+        "attempt": 0
+      },
+      "event": {
+        "type": "admitted"
+      },
+      "expect": {
+        "state": {
+          "name": "opening",
+          "attempt": 1,
+          "frontier": null
+        },
+        "effects": [
+          {
+            "type": "startTimer",
+            "attempt": 1,
+            "ms": 300
+          },
+          {
+            "type": "startLimit",
+            "attempt": 1,
+            "ms": 15000
+          }
+        ]
+      }
+    },
+    {
+      "label": "a socket replaced before the threshold starts over and drops the old frontier",
+      "state": {
+        "name": "opening",
+        "attempt": 2,
+        "frontier": {
+          "page": [
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          ],
+          "comments": [
+            "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+          ]
+        }
+      },
+      "event": {
+        "type": "admitted"
+      },
+      "expect": {
+        "state": {
+          "name": "opening",
+          "attempt": 3,
+          "frontier": null
+        },
+        "effects": [
+          {
+            "type": "startTimer",
+            "attempt": 3,
+            "ms": 300
+          },
+          {
+            "type": "startLimit",
+            "attempt": 3,
+            "ms": 15000
+          }
+        ]
+      }
+    },
+    {
+      "label": "a socket replaced while settling starts over",
+      "state": {
+        "name": "settling",
+        "attempt": 2
+      },
+      "event": {
+        "type": "admitted"
+      },
+      "expect": {
+        "state": {
+          "name": "opening",
+          "attempt": 3,
+          "frontier": null
+        },
+        "effects": [
+          {
+            "type": "startTimer",
+            "attempt": 3,
+            "ms": 300
+          },
+          {
+            "type": "startLimit",
+            "attempt": 3,
+            "ms": 15000
+          }
+        ]
+      }
+    },
+    {
+      "label": "a socket replaced mid catch-up keeps the label up and restarts the limit",
+      "state": {
+        "name": "catchingUp",
+        "attempt": 2,
+        "frontier": {
+          "page": [
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          ],
+          "comments": [
+            "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+          ]
+        }
+      },
+      "event": {
+        "type": "admitted"
+      },
+      "expect": {
+        "state": {
+          "name": "catchingUp",
+          "attempt": 3,
+          "frontier": null
+        },
+        "effects": [
+          {
+            "type": "startLimit",
+            "attempt": 3,
+            "ms": 15000
+          }
+        ]
+      }
+    },
+    {
+      "label": "a reconnect after catching up checks again",
+      "state": {
+        "name": "current",
+        "attempt": 2
+      },
+      "event": {
+        "type": "admitted"
+      },
+      "expect": {
+        "state": {
+          "name": "opening",
+          "attempt": 3,
+          "frontier": null
+        },
+        "effects": [
+          {
+            "type": "startTimer",
+            "attempt": 3,
+            "ms": 300
+          },
+          {
+            "type": "startLimit",
+            "attempt": 3,
+            "ms": 15000
+          }
+        ]
+      }
+    },
+    {
+      "label": "a reconnect after timing out checks again",
+      "state": {
+        "name": "timedOut",
+        "attempt": 2
+      },
+      "event": {
+        "type": "admitted"
+      },
+      "expect": {
+        "state": {
+          "name": "opening",
+          "attempt": 3,
+          "frontier": null
+        },
+        "effects": [
+          {
+            "type": "startTimer",
+            "attempt": 3,
+            "ms": 300
+          },
+          {
+            "type": "startLimit",
+            "attempt": 3,
+            "ms": 15000
+          }
+        ]
+      }
+    },
+    {
+      "label": "a disconnect with no socket admitted changes nothing",
+      "state": {
+        "name": "detached",
+        "attempt": 1
+      },
+      "event": {
+        "type": "disconnected"
+      },
+      "expect": {
+        "state": {
+          "name": "detached",
+          "attempt": 1
+        },
+        "effects": [],
+        "rejected": "No socket is admitted"
+      }
+    },
+    {
+      "label": "a disconnect before the threshold disarms both timers",
+      "state": {
+        "name": "opening",
+        "attempt": 1,
+        "frontier": {
+          "page": [
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          ],
+          "comments": [
+            "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+          ]
+        }
+      },
+      "event": {
+        "type": "disconnected"
+      },
+      "expect": {
+        "state": {
+          "name": "detached",
+          "attempt": 1
+        },
+        "effects": [
+          {
+            "type": "cancelTimer"
+          },
+          {
+            "type": "cancelLimit"
+          }
+        ]
+      }
+    },
+    {
+      "label": "a disconnect while settling disarms the limit",
+      "state": {
+        "name": "settling",
+        "attempt": 1
+      },
+      "event": {
+        "type": "disconnected"
+      },
+      "expect": {
+        "state": {
+          "name": "detached",
+          "attempt": 1
+        },
+        "effects": [
+          {
+            "type": "cancelLimit"
+          }
+        ]
+      }
+    },
+    {
+      "label": "a disconnect mid catch-up hands the status to the connection",
+      "state": {
+        "name": "catchingUp",
+        "attempt": 1,
+        "frontier": {
+          "page": [
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          ],
+          "comments": [
+            "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+          ]
+        }
+      },
+      "event": {
+        "type": "disconnected"
+      },
+      "expect": {
+        "state": {
+          "name": "detached",
+          "attempt": 1
+        },
+        "effects": [
+          {
+            "type": "cancelLimit"
+          }
+        ]
+      }
+    },
+    {
+      "label": "a disconnect after catching up detaches",
+      "state": {
+        "name": "current",
+        "attempt": 1
+      },
+      "event": {
+        "type": "disconnected"
+      },
+      "expect": {
+        "state": {
+          "name": "detached",
+          "attempt": 1
+        },
+        "effects": []
+      }
+    },
+    {
+      "label": "a disconnect after timing out detaches",
+      "state": {
+        "name": "timedOut",
+        "attempt": 1
+      },
+      "event": {
+        "type": "disconnected"
+      },
+      "expect": {
+        "state": {
+          "name": "detached",
+          "attempt": 1
+        },
+        "effects": []
+      }
+    },
+    {
+      "label": "detached has no threshold timer",
+      "state": {
+        "name": "detached",
+        "attempt": 1
+      },
+      "event": {
+        "type": "elapsed",
+        "attempt": 1
+      },
+      "expect": {
+        "state": {
+          "name": "detached",
+          "attempt": 1
+        },
+        "effects": [],
+        "rejected": "No timer is armed"
+      }
+    },
+    {
+      "label": "the host's frontier is known and not held: show at the threshold",
+      "case": "behind",
+      "state": {
+        "name": "opening",
+        "attempt": 1,
+        "frontier": {
+          "page": [
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          ],
+          "comments": [
+            "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+          ]
+        }
+      },
+      "event": {
+        "type": "elapsed",
+        "attempt": 1
+      },
+      "expect": {
+        "state": {
+          "name": "catchingUp",
+          "attempt": 1,
+          "frontier": {
+            "page": [
+              "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            ],
+            "comments": [
+              "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+            ]
+          }
+        },
+        "effects": []
+      }
+    },
+    {
+      "label": "no answer yet at the threshold: settle and show nothing",
+      "case": "unproven",
+      "state": {
+        "name": "opening",
+        "attempt": 1,
+        "frontier": null
+      },
+      "event": {
+        "type": "elapsed",
+        "attempt": 1
+      },
+      "expect": {
+        "state": {
+          "name": "settling",
+          "attempt": 1
+        },
+        "effects": []
+      }
+    },
+    {
+      "label": "a threshold timer from an earlier socket is stale",
+      "case": "stale",
+      "state": {
+        "name": "opening",
+        "attempt": 2,
+        "frontier": null
+      },
+      "event": {
+        "type": "elapsed",
+        "attempt": 1
+      },
+      "expect": {
+        "state": {
+          "name": "opening",
+          "attempt": 2,
+          "frontier": null
+        },
+        "effects": [],
+        "rejected": "The event is for an earlier socket"
+      }
+    },
+    {
+      "label": "settling has no threshold timer",
+      "state": {
+        "name": "settling",
+        "attempt": 1
+      },
+      "event": {
+        "type": "elapsed",
+        "attempt": 1
+      },
+      "expect": {
+        "state": {
+          "name": "settling",
+          "attempt": 1
+        },
+        "effects": [],
+        "rejected": "No timer is armed"
+      }
+    },
+    {
+      "label": "catching up has no threshold timer",
+      "state": {
+        "name": "catchingUp",
+        "attempt": 1,
+        "frontier": null
+      },
+      "event": {
+        "type": "elapsed",
+        "attempt": 1
+      },
+      "expect": {
+        "state": {
+          "name": "catchingUp",
+          "attempt": 1,
+          "frontier": null
+        },
+        "effects": [],
+        "rejected": "No timer is armed"
+      }
+    },
+    {
+      "label": "current has no threshold timer",
+      "state": {
+        "name": "current",
+        "attempt": 1
+      },
+      "event": {
+        "type": "elapsed",
+        "attempt": 1
+      },
+      "expect": {
+        "state": {
+          "name": "current",
+          "attempt": 1
+        },
+        "effects": [],
+        "rejected": "No timer is armed"
+      }
+    },
+    {
+      "label": "timed out has no threshold timer",
+      "state": {
+        "name": "timedOut",
+        "attempt": 1
+      },
+      "event": {
+        "type": "elapsed",
+        "attempt": 1
+      },
+      "expect": {
+        "state": {
+          "name": "timedOut",
+          "attempt": 1
+        },
+        "effects": [],
+        "rejected": "No timer is armed"
+      }
+    },
+    {
+      "label": "detached has no limit timer",
+      "state": {
+        "name": "detached",
+        "attempt": 1
+      },
+      "event": {
+        "type": "expired",
+        "attempt": 1
+      },
+      "expect": {
+        "state": {
+          "name": "detached",
+          "attempt": 1
+        },
+        "effects": [],
+        "rejected": "No timer is armed"
+      }
+    },
+    {
+      "label": "the limit before the threshold stops quietly",
+      "case": "limit",
+      "state": {
+        "name": "opening",
+        "attempt": 1,
+        "frontier": null
+      },
+      "event": {
+        "type": "expired",
+        "attempt": 1
+      },
+      "expect": {
+        "state": {
+          "name": "timedOut",
+          "attempt": 1
+        },
+        "effects": [
+          {
+            "type": "cancelTimer"
+          },
+          {
+            "type": "timedOut",
+            "attempt": 1
+          }
+        ]
+      }
+    },
+    {
+      "label": "a limit from an earlier socket is stale before the threshold",
+      "case": "stale",
+      "state": {
+        "name": "opening",
+        "attempt": 2,
+        "frontier": null
+      },
+      "event": {
+        "type": "expired",
+        "attempt": 1
+      },
+      "expect": {
+        "state": {
+          "name": "opening",
+          "attempt": 2,
+          "frontier": null
+        },
+        "effects": [],
+        "rejected": "The event is for an earlier socket"
+      }
+    },
+    {
+      "label": "an unproven socket at the limit stops quietly, so later changes never show",
+      "case": "limit",
+      "state": {
+        "name": "settling",
+        "attempt": 1
+      },
+      "event": {
+        "type": "expired",
+        "attempt": 1
+      },
+      "expect": {
+        "state": {
+          "name": "timedOut",
+          "attempt": 1
+        },
+        "effects": [
+          {
+            "type": "timedOut",
+            "attempt": 1
+          }
+        ]
+      }
+    },
+    {
+      "label": "a limit from an earlier socket is stale while settling",
+      "case": "stale",
+      "state": {
+        "name": "settling",
+        "attempt": 2
+      },
+      "event": {
+        "type": "expired",
+        "attempt": 1
+      },
+      "expect": {
+        "state": {
+          "name": "settling",
+          "attempt": 2
+        },
+        "effects": [],
+        "rejected": "The event is for an earlier socket"
+      }
+    },
+    {
+      "label": "a frontier that never arrives stops showing at the limit, without claiming current",
+      "case": "limit",
+      "state": {
+        "name": "catchingUp",
+        "attempt": 1,
+        "frontier": {
+          "page": [
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          ],
+          "comments": [
+            "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+          ]
+        }
+      },
+      "event": {
+        "type": "expired",
+        "attempt": 1
+      },
+      "expect": {
+        "state": {
+          "name": "timedOut",
+          "attempt": 1
+        },
+        "effects": [
+          {
+            "type": "timedOut",
+            "attempt": 1
+          }
+        ]
+      }
+    },
+    {
+      "label": "a limit from an earlier socket is stale mid catch-up",
+      "case": "stale",
+      "state": {
+        "name": "catchingUp",
+        "attempt": 2,
+        "frontier": {
+          "page": [
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          ],
+          "comments": [
+            "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+          ]
+        }
+      },
+      "event": {
+        "type": "expired",
+        "attempt": 1
+      },
+      "expect": {
+        "state": {
+          "name": "catchingUp",
+          "attempt": 2,
+          "frontier": {
+            "page": [
+              "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            ],
+            "comments": [
+              "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+            ]
+          }
+        },
+        "effects": [],
+        "rejected": "The event is for an earlier socket"
+      }
+    },
+    {
+      "label": "current has no limit timer",
+      "state": {
+        "name": "current",
+        "attempt": 1
+      },
+      "event": {
+        "type": "expired",
+        "attempt": 1
+      },
+      "expect": {
+        "state": {
+          "name": "current",
+          "attempt": 1
+        },
+        "effects": [],
+        "rejected": "No timer is armed"
+      }
+    },
+    {
+      "label": "timed out has no limit timer",
+      "state": {
+        "name": "timedOut",
+        "attempt": 1
+      },
+      "event": {
+        "type": "expired",
+        "attempt": 1
+      },
+      "expect": {
+        "state": {
+          "name": "timedOut",
+          "attempt": 1
+        },
+        "effects": [],
+        "rejected": "No timer is armed"
+      }
+    },
+    {
+      "label": "a remote change with no socket admitted is ignored",
+      "state": {
+        "name": "detached",
+        "attempt": 1
+      },
+      "event": {
+        "type": "remote",
+        "held": false
+      },
+      "expect": {
+        "state": {
+          "name": "detached",
+          "attempt": 1
+        },
+        "effects": [],
+        "rejected": "No socket is admitted"
+      }
+    },
+    {
+      "label": "the change that completes the kept frontier before the threshold: never show",
+      "case": "held",
+      "state": {
+        "name": "opening",
+        "attempt": 1,
+        "frontier": {
+          "page": [
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          ],
+          "comments": [
+            "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+          ]
+        }
+      },
+      "event": {
+        "type": "remote",
+        "held": true
+      },
+      "expect": {
+        "state": {
+          "name": "current",
+          "attempt": 1
+        },
+        "effects": [
+          {
+            "type": "cancelTimer"
+          },
+          {
+            "type": "cancelLimit"
+          }
+        ]
+      }
+    },
+    {
+      "label": "a remote change before the threshold that leaves the frontier unheld proves nothing",
+      "case": "unproven",
+      "state": {
+        "name": "opening",
+        "attempt": 1,
+        "frontier": {
+          "page": [
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          ],
+          "comments": [
+            "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+          ]
+        }
+      },
+      "event": {
+        "type": "remote",
+        "held": false
+      },
+      "expect": {
+        "state": {
+          "name": "opening",
+          "attempt": 1,
+          "frontier": {
+            "page": [
+              "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            ],
+            "comments": [
+              "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+            ]
+          }
+        },
+        "effects": [],
+        "rejected": "A remote change before the threshold proves nothing"
+      }
+    },
+    {
+      "label": "remote changes still arriving after the threshold show catch-up",
+      "state": {
+        "name": "settling",
+        "attempt": 1
+      },
+      "event": {
+        "type": "remote",
+        "held": false
+      },
+      "expect": {
+        "state": {
+          "name": "catchingUp",
+          "attempt": 1,
+          "frontier": null
+        },
+        "effects": []
+      }
+    },
+    {
+      "label": "the change that completes the kept frontier clears catch-up",
+      "case": "held",
+      "state": {
+        "name": "catchingUp",
+        "attempt": 1,
+        "frontier": {
+          "page": [
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          ],
+          "comments": [
+            "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+          ]
+        }
+      },
+      "event": {
+        "type": "remote",
+        "held": true
+      },
+      "expect": {
+        "state": {
+          "name": "current",
+          "attempt": 1
+        },
+        "effects": [
+          {
+            "type": "cancelLimit"
+          }
+        ]
+      }
+    },
+    {
+      "label": "a remote change that leaves the frontier unheld keeps catching up",
+      "case": "unproven",
+      "state": {
+        "name": "catchingUp",
+        "attempt": 1,
+        "frontier": {
+          "page": [
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          ],
+          "comments": [
+            "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+          ]
+        }
+      },
+      "event": {
+        "type": "remote",
+        "held": false
+      },
+      "expect": {
+        "state": {
+          "name": "catchingUp",
+          "attempt": 1,
+          "frontier": {
+            "page": [
+              "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            ],
+            "comments": [
+              "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+            ]
+          }
+        },
+        "effects": [],
+        "rejected": "Catch-up already shows"
+      }
+    },
+    {
+      "label": "a collaborator's change after catching up never shows it again",
+      "state": {
+        "name": "current",
+        "attempt": 1
+      },
+      "event": {
+        "type": "remote",
+        "held": false
+      },
+      "expect": {
+        "state": {
+          "name": "current",
+          "attempt": 1
+        },
+        "effects": [],
+        "rejected": "Catch-up already finished"
+      }
+    },
+    {
+      "label": "a collaborator's change after timing out never shows it",
+      "state": {
+        "name": "timedOut",
+        "attempt": 1
+      },
+      "event": {
+        "type": "remote",
+        "held": false
+      },
+      "expect": {
+        "state": {
+          "name": "timedOut",
+          "attempt": 1
+        },
+        "effects": [],
+        "rejected": "Catch-up already stopped showing"
+      }
+    },
+    {
+      "label": "a recheck with no socket admitted is ignored",
+      "state": {
+        "name": "detached",
+        "attempt": 1
+      },
+      "event": {
+        "type": "recheck",
+        "held": false
+      },
+      "expect": {
+        "state": {
+          "name": "detached",
+          "attempt": 1
+        },
+        "effects": [],
+        "rejected": "No socket is admitted"
+      }
+    },
+    {
+      "label": "the comments replica installs holding the kept frontier before the threshold: never show",
+      "case": "held",
+      "state": {
+        "name": "opening",
+        "attempt": 1,
+        "frontier": {
+          "page": [
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          ],
+          "comments": [
+            "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+          ]
+        }
+      },
+      "event": {
+        "type": "recheck",
+        "held": true
+      },
+      "expect": {
+        "state": {
+          "name": "current",
+          "attempt": 1
+        },
+        "effects": [
+          {
+            "type": "cancelTimer"
+          },
+          {
+            "type": "cancelLimit"
+          }
+        ]
+      }
+    },
+    {
+      "label": "the comments replica installs still behind the kept frontier: keep waiting",
+      "case": "unheld",
+      "state": {
+        "name": "opening",
+        "attempt": 1,
+        "frontier": {
+          "page": [
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          ],
+          "comments": [
+            "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+          ]
+        }
+      },
+      "event": {
+        "type": "recheck",
+        "held": false
+      },
+      "expect": {
+        "state": {
+          "name": "opening",
+          "attempt": 1,
+          "frontier": {
+            "page": [
+              "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            ],
+            "comments": [
+              "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+            ]
+          }
+        },
+        "effects": [],
+        "rejected": "The kept frontier is still not held"
+      }
+    },
+    {
+      "label": "a recheck before any frontier answered has nothing to check",
+      "case": "none",
+      "state": {
+        "name": "opening",
+        "attempt": 1,
+        "frontier": null
+      },
+      "event": {
+        "type": "recheck",
+        "held": false
+      },
+      "expect": {
+        "state": {
+          "name": "opening",
+          "attempt": 1,
+          "frontier": null
+        },
+        "effects": [],
+        "rejected": "No frontier is kept"
+      }
+    },
+    {
+      "label": "a recheck while settling has nothing to check",
+      "state": {
+        "name": "settling",
+        "attempt": 1
+      },
+      "event": {
+        "type": "recheck",
+        "held": false
+      },
+      "expect": {
+        "state": {
+          "name": "settling",
+          "attempt": 1
+        },
+        "effects": [],
+        "rejected": "No frontier is kept"
+      }
+    },
+    {
+      "label": "the comments replica installs holding the kept frontier: clear catch-up",
+      "case": "held",
+      "state": {
+        "name": "catchingUp",
+        "attempt": 1,
+        "frontier": {
+          "page": [
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          ],
+          "comments": [
+            "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+          ]
+        }
+      },
+      "event": {
+        "type": "recheck",
+        "held": true
+      },
+      "expect": {
+        "state": {
+          "name": "current",
+          "attempt": 1
+        },
+        "effects": [
+          {
+            "type": "cancelLimit"
+          }
+        ]
+      }
+    },
+    {
+      "label": "the comments replica installs still behind: keep catching up",
+      "case": "unheld",
+      "state": {
+        "name": "catchingUp",
+        "attempt": 1,
+        "frontier": {
+          "page": [
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          ],
+          "comments": [
+            "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+          ]
+        }
+      },
+      "event": {
+        "type": "recheck",
+        "held": false
+      },
+      "expect": {
+        "state": {
+          "name": "catchingUp",
+          "attempt": 1,
+          "frontier": {
+            "page": [
+              "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            ],
+            "comments": [
+              "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+            ]
+          }
+        },
+        "effects": [],
+        "rejected": "The kept frontier is still not held"
+      }
+    },
+    {
+      "label": "a recheck mid catch-up before any frontier answered has nothing to check",
+      "case": "none",
+      "state": {
+        "name": "catchingUp",
+        "attempt": 1,
+        "frontier": null
+      },
+      "event": {
+        "type": "recheck",
+        "held": false
+      },
+      "expect": {
+        "state": {
+          "name": "catchingUp",
+          "attempt": 1,
+          "frontier": null
+        },
+        "effects": [],
+        "rejected": "No frontier is kept"
+      }
+    },
+    {
+      "label": "a recheck after catching up changes nothing",
+      "state": {
+        "name": "current",
+        "attempt": 1
+      },
+      "event": {
+        "type": "recheck",
+        "held": true
+      },
+      "expect": {
+        "state": {
+          "name": "current",
+          "attempt": 1
+        },
+        "effects": [],
+        "rejected": "Catch-up already finished"
+      }
+    },
+    {
+      "label": "a recheck after timing out changes nothing",
+      "state": {
+        "name": "timedOut",
+        "attempt": 1
+      },
+      "event": {
+        "type": "recheck",
+        "held": true
+      },
+      "expect": {
+        "state": {
+          "name": "timedOut",
+          "attempt": 1
+        },
+        "effects": [],
+        "rejected": "Catch-up already stopped showing"
+      }
+    },
+    {
+      "label": "an answer with no socket admitted is ignored",
+      "state": {
+        "name": "detached",
+        "attempt": 1
+      },
+      "event": {
+        "type": "answered",
+        "attempt": 1,
+        "frontier": {
+          "page": [
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          ],
+          "comments": [
+            "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+          ]
+        },
+        "held": true
+      },
+      "expect": {
+        "state": {
+          "name": "detached",
+          "attempt": 1
+        },
+        "effects": [],
+        "rejected": "No socket is admitted"
+      }
+    },
+    {
+      "label": "a held frontier before the threshold: never show",
+      "case": "held",
+      "state": {
+        "name": "opening",
+        "attempt": 1,
+        "frontier": null
+      },
+      "event": {
+        "type": "answered",
+        "attempt": 1,
+        "frontier": {
+          "page": [
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          ],
+          "comments": [
+            "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+          ]
+        },
+        "held": true
+      },
+      "expect": {
+        "state": {
+          "name": "current",
+          "attempt": 1
+        },
+        "effects": [
+          {
+            "type": "cancelTimer"
+          },
+          {
+            "type": "cancelLimit"
+          }
+        ]
+      }
+    },
+    {
+      "label": "an unheld frontier before the threshold is kept",
+      "case": "behind",
+      "state": {
+        "name": "opening",
+        "attempt": 1,
+        "frontier": null
+      },
+      "event": {
+        "type": "answered",
+        "attempt": 1,
+        "frontier": {
+          "page": [
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          ],
+          "comments": [
+            "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+          ]
+        },
+        "held": false
+      },
+      "expect": {
+        "state": {
+          "name": "opening",
+          "attempt": 1,
+          "frontier": {
+            "page": [
+              "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            ],
+            "comments": [
+              "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+            ]
+          }
+        },
+        "effects": []
+      }
+    },
+    {
+      "label": "an answer to a request from an earlier socket is stale before the threshold",
+      "case": "stale",
+      "state": {
+        "name": "opening",
+        "attempt": 2,
+        "frontier": null
+      },
+      "event": {
+        "type": "answered",
+        "attempt": 1,
+        "frontier": {
+          "page": [
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          ],
+          "comments": [
+            "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+          ]
+        },
+        "held": true
+      },
+      "expect": {
+        "state": {
+          "name": "opening",
+          "attempt": 2,
+          "frontier": null
+        },
+        "effects": [],
+        "rejected": "The event is for an earlier socket"
+      }
+    },
+    {
+      "label": "a held frontier while settling: never show",
+      "case": "held",
+      "state": {
+        "name": "settling",
+        "attempt": 1
+      },
+      "event": {
+        "type": "answered",
+        "attempt": 1,
+        "frontier": {
+          "page": [
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          ],
+          "comments": [
+            "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+          ]
+        },
+        "held": true
+      },
+      "expect": {
+        "state": {
+          "name": "current",
+          "attempt": 1
+        },
+        "effects": [
+          {
+            "type": "cancelLimit"
+          }
+        ]
+      }
+    },
+    {
+      "label": "an unheld frontier after the threshold shows catch-up",
+      "case": "behind",
+      "state": {
+        "name": "settling",
+        "attempt": 1
+      },
+      "event": {
+        "type": "answered",
+        "attempt": 1,
+        "frontier": {
+          "page": [
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          ],
+          "comments": [
+            "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+          ]
+        },
+        "held": false
+      },
+      "expect": {
+        "state": {
+          "name": "catchingUp",
+          "attempt": 1,
+          "frontier": {
+            "page": [
+              "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            ],
+            "comments": [
+              "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+            ]
+          }
+        },
+        "effects": []
+      }
+    },
+    {
+      "label": "an answer from an earlier socket is stale while settling",
+      "case": "stale",
+      "state": {
+        "name": "settling",
+        "attempt": 2
+      },
+      "event": {
+        "type": "answered",
+        "attempt": 1,
+        "frontier": {
+          "page": [
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          ],
+          "comments": [
+            "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+          ]
+        },
+        "held": false
+      },
+      "expect": {
+        "state": {
+          "name": "settling",
+          "attempt": 2
+        },
+        "effects": [],
+        "rejected": "The event is for an earlier socket"
+      }
+    },
+    {
+      "label": "a held frontier clears catch-up",
+      "case": "held",
+      "state": {
+        "name": "catchingUp",
+        "attempt": 1,
+        "frontier": null
+      },
+      "event": {
+        "type": "answered",
+        "attempt": 1,
+        "frontier": {
+          "page": [
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          ],
+          "comments": [
+            "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+          ]
+        },
+        "held": true
+      },
+      "expect": {
+        "state": {
+          "name": "current",
+          "attempt": 1
+        },
+        "effects": [
+          {
+            "type": "cancelLimit"
+          }
+        ]
+      }
+    },
+    {
+      "label": "a newer unheld frontier replaces the kept one",
+      "case": "behind",
+      "state": {
+        "name": "catchingUp",
+        "attempt": 1,
+        "frontier": {
+          "page": [
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          ],
+          "comments": [
+            "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+          ]
+        }
+      },
+      "event": {
+        "type": "answered",
+        "attempt": 1,
+        "frontier": {
+          "page": [
+            "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+          ],
+          "comments": null
+        },
+        "held": false
+      },
+      "expect": {
+        "state": {
+          "name": "catchingUp",
+          "attempt": 1,
+          "frontier": {
+            "page": [
+              "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+            ],
+            "comments": null
+          }
+        },
+        "effects": []
+      }
+    },
+    {
+      "label": "an answer from an earlier socket is stale mid catch-up",
+      "case": "stale",
+      "state": {
+        "name": "catchingUp",
+        "attempt": 2,
+        "frontier": {
+          "page": [
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          ],
+          "comments": [
+            "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+          ]
+        }
+      },
+      "event": {
+        "type": "answered",
+        "attempt": 1,
+        "frontier": {
+          "page": [
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          ],
+          "comments": [
+            "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+          ]
+        },
+        "held": true
+      },
+      "expect": {
+        "state": {
+          "name": "catchingUp",
+          "attempt": 2,
+          "frontier": {
+            "page": [
+              "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            ],
+            "comments": [
+              "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+            ]
+          }
+        },
+        "effects": [],
+        "rejected": "The event is for an earlier socket"
+      }
+    },
+    {
+      "label": "an answer after catching up changes nothing",
+      "state": {
+        "name": "current",
+        "attempt": 1
+      },
+      "event": {
+        "type": "answered",
+        "attempt": 1,
+        "frontier": {
+          "page": [
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          ],
+          "comments": [
+            "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+          ]
+        },
+        "held": false
+      },
+      "expect": {
+        "state": {
+          "name": "current",
+          "attempt": 1
+        },
+        "effects": [],
+        "rejected": "Catch-up already finished"
+      }
+    },
+    {
+      "label": "a held frontier after timing out records the truth, with nothing to show",
+      "case": "held",
+      "state": {
+        "name": "timedOut",
+        "attempt": 1
+      },
+      "event": {
+        "type": "answered",
+        "attempt": 1,
+        "frontier": {
+          "page": [
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          ],
+          "comments": [
+            "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+          ]
+        },
+        "held": true
+      },
+      "expect": {
+        "state": {
+          "name": "current",
+          "attempt": 1
+        },
+        "effects": []
+      }
+    },
+    {
+      "label": "an unheld frontier after timing out never shows it again",
+      "case": "behind",
+      "state": {
+        "name": "timedOut",
+        "attempt": 1
+      },
+      "event": {
+        "type": "answered",
+        "attempt": 1,
+        "frontier": {
+          "page": [
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          ],
+          "comments": [
+            "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+          ]
+        },
+        "held": false
+      },
+      "expect": {
+        "state": {
+          "name": "timedOut",
+          "attempt": 1
+        },
+        "effects": [],
+        "rejected": "Catch-up already stopped showing"
+      }
+    },
+    {
+      "label": "an answer from an earlier socket after timing out is stale",
+      "case": "stale",
+      "state": {
+        "name": "timedOut",
+        "attempt": 2
+      },
+      "event": {
+        "type": "answered",
+        "attempt": 1,
+        "frontier": {
+          "page": [
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          ],
+          "comments": [
+            "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+          ]
+        },
+        "held": true
+      },
+      "expect": {
+        "state": {
+          "name": "timedOut",
+          "attempt": 2
+        },
+        "effects": [],
+        "rejected": "The event is for an earlier socket"
+      }
+    }
+  ]
+}

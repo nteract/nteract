@@ -76,3 +76,26 @@
   width: 24px;
   min-height: 24px;
 }
+/* Catching up (CatchingUp in SaveStatus.jsx): the still working dot keeps
+   the same 24px box as every other status, and its label hangs outside that
+   box in the header's free space: left of the dot on desktop, right of it on
+   phones, where the dot sits at the row's start. The label takes no layout
+   room, so the dot and the controls around it never move. */
+.save-status--catching-up {
+  position: relative;
+}
+.save-status--catching-up .save-status-label {
+  position: absolute;
+  top: 50%;
+  right: calc(100% + 2px);
+  transform: translateY(-50%);
+  color: var(--muted-foreground);
+  white-space: nowrap;
+  pointer-events: none;
+}
+@media (max-width: 600px) {
+  .save-status--catching-up .save-status-label {
+    right: auto;
+    left: calc(100% + 2px);
+  }
+}

@@ -34,6 +34,8 @@ import {
 } from "./local-pages.mjs";
 export { listLocalPages, retireLocalPage } from "./local-pages.mjs";
 import { entryStanding } from "./local-catalog.mjs";
+import { CatchUp } from "./catch-up.mjs";
+import { CATCH_UP_LIMIT_MS } from "./catch-up-machine.mjs";
 import { BACKEND_LIMITS } from "../model/limits.mjs";
 import { retryKey } from "../model/retry-key.mjs";
 import { MISSING_EDITS_MESSAGE } from "../shared/receipts.mjs";
@@ -423,6 +425,22 @@ export class PageSession {
         this.emit();
       },
     });
+    // Whether the status says "Catching up…" after a socket is admitted
+    // (catch-up-machine.mjs). Only the host's frontier answers and remote
+    // changes feed it, so this person's own typing never shows it.
+    this.catchUp = new CatchUp({
+      scheduler,
+      holds: (frontier) => this.holdsFrontier(frontier),
+      onTimeout: (attempt) =>
+        console.info(
+          `Pages: catch-up on socket ${attempt} wasn't confirmed within ${CATCH_UP_LIMIT_MS / 1000} s; the label stopped showing.`,
+        ),
+      onChange: () => {
+        if (!this.alive || !this.handle) return;
+        this.renderStatus();
+        this.emit();
+      },
+    });
   }
   get doc() {
     return this.handle?.doc();
@@ -652,6 +670,7 @@ export class PageSession {
     // store after this point starts its round at once. A retiring session
     // disconnected before its archive, so its rounds reach no host.
     this.outbound.close();
+    this.catchUp.close();
     this.unwatchPageLifecycle();
     this.clearPresence();
     this.cancelReceiptRetry();
@@ -987,7 +1006,10 @@ export class PageSession {
     const change = { ...event, remote: this.localDepth === 0 };
     if (this.composing && change.remote) this.deferredBefore ??= event.patchInfo.before;
     else this.notify(this.observers, change);
-    if (change.remote) this.queueSaved();
+    if (change.remote) {
+      this.catchUp.remote();
+      this.queueSaved();
+    }
     this.emit();
   }
   /** A change to the comments document. Comments render from snapshot(),
@@ -995,7 +1017,10 @@ export class PageSession {
   receiveCommentsChange() {
     if (!this.alive) return;
     this.observeSchema();
-    if (this.localDepth === 0) this.queueSaved();
+    if (this.localDepth === 0) {
+      this.catchUp.remote();
+      this.queueSaved();
+    }
     this.emit();
   }
   snapshot() {
@@ -1028,7 +1053,10 @@ export class PageSession {
       return false;
     }
     const resuming = this.authRequired && !this.accessDenied && !this.accessReloadRequired;
-    if (resuming) this.syncStatus({ type: "retrying" });
+    if (resuming) {
+      this.syncStatus({ type: "retrying" });
+      this.catchUp.disconnected();
+    }
     this.dispatch({ type: "signIn", ok: true });
     if (resuming) this.renderStatus();
     this.authProblem = "";
@@ -1084,6 +1112,7 @@ export class PageSession {
     // callback from that retired connection must not reconnect its successor.
     if (!this.sockets.delete(socket)) return;
     this.clearPresence();
+    this.catchUp.disconnected();
     const admittedAt = this.socketAdmittedAt.get(socket);
     const stable = admittedAt !== undefined && this.now() - admittedAt >= STABLE_CONNECTION_MS;
     if (stable) this.reconnect({ type: "stable" });
@@ -1169,6 +1198,7 @@ export class PageSession {
   }
   showConnectionStatus() {
     this.syncStatus({ type: "unreachable" });
+    this.catchUp.disconnected();
     if (this.receiptState) this.showReceiptState();
     else {
       this.renderStatus();
@@ -1648,6 +1678,8 @@ export class PageSession {
     if (this.accessDenied && pauseOf(this.phase$.snapshot()).access !== "trash")
       this.accessProblem = DENIED_COPY;
     this.syncStatus({ type: "opened", pending: unconfirmed });
+    // A socket admitted before the handle opened starts catch-up now.
+    if (this.sync$.snapshot().link === "connected") this.startCatchUp();
     this.renderStatus();
     // A pause while opening has already failed start().
     if (this.phase$.snapshot().name === "opening")
@@ -2154,6 +2186,7 @@ export class PageSession {
       }
       this.clearConnectionProblem();
       this.syncStatus({ type: "admitted" });
+      if (this.handle) this.startCatchUp();
       // A receipt that outlasted its transient retries starts over now that
       // the host answers; any other receipt keeps its own retry budget.
       if (this.handle) this.queueSaved({ restart: !!this.receiptState?.outage });
@@ -2428,6 +2461,8 @@ export class PageSession {
     }
     // A replaced or closed document is no longer this replica's.
     if (before.name === "ready" && result.state.name !== "ready") this.commentsHandle = undefined;
+    // Comments that can't open no longer hold catch-up open.
+    if (result.state.name === "failed" && before.name !== "failed") this.catchUp.recheck();
     if (result.state.name !== before.name) {
       this.updateCapabilities();
       this.emit();
@@ -2501,6 +2536,8 @@ export class PageSession {
     handle.on("change", () => {
       if (this.commentsHandle === handle) this.receiveCommentsChange();
     });
+    // The comments replica may already hold the host's frontier.
+    this.catchUp.recheck();
     if (this.localPage && this.localPage.comments_document_id !== handle.documentId)
       try {
         await this.persistLocal({ comments_document_id: handle.documentId });
@@ -2838,6 +2875,57 @@ export class PageSession {
       void this.saveReceipt();
     }, 300);
   }
+  /** A socket was admitted with the Page open: start catch-up for it and ask
+   * the host for its frontier. */
+  startCatchUp() {
+    this.catchUp.admitted();
+    this.probeFrontier();
+  }
+  /** Ask the host for its frontier on this socket, apart from save receipts:
+   * a reconnect at unchanged heads queues no receipt, and typing keeps
+   * postponing one. The request names heads the host already acknowledged,
+   * so it answers at once. It touches no receipt state; a failure leaves
+   * catch-up to receipts and its limit. */
+  probeFrontier() {
+    const attempt = this.catchUp.attempt;
+    const heads = this.savedHeads;
+    if (!this.handle || !heads.length) return;
+    void request(`/api/saved?page=${encodeURIComponent(this.pageId)}&probe=frontier`, {
+      signal: AbortSignal.timeout(CATCH_UP_LIMIT_MS),
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...admissionHeaders },
+      body: JSON.stringify({ heads, schema_features: this.buildFeatures }),
+    })
+      .then((result) => {
+        if (this.alive) this.answerCatchUp(attempt, result);
+      })
+      .catch(() => {});
+  }
+  /** Feed the host's frontier from a `/api/saved` answer, asked during
+   * `attempt`, to catch-up. A malformed answer is ignored. */
+  answerCatchUp(attempt, result) {
+    const valid = (value) =>
+      Array.isArray(value) &&
+      value.length > 0 &&
+      value.every((head) => typeof head === "string" && /^[0-9a-f]{64}$/.test(head));
+    if (!valid(result?.durableHeads)) return;
+    this.catchUp.answered(attempt, {
+      page: [...result.durableHeads],
+      comments: valid(result.durableCommentHeads) ? [...result.durableCommentHeads] : null,
+    });
+  }
+  /** Whether this replica holds a `{ page, comments }` frontier: it has
+   * everything the host had when it answered. The host names comment heads
+   * whenever it has a comments document, and then /api/connect names that
+   * document too, so this replica opens it. Until it installs, the comments
+   * replica can be behind, so it must exist and hold them. A comments
+   * document that is closed or failed to open renders nothing and has its own
+   * notice; it doesn't hold catch-up open. */
+  holdsFrontier({ page, comments }) {
+    if (!this.doc || !A.hasHeads(this.doc, page)) return false;
+    if (!comments || ["closed", "failed"].includes(this.commentsOpen$.snapshot().name)) return true;
+    return !!this.commentsDoc && A.hasHeads(this.commentsDoc, comments);
+  }
   sameReceiptHeads(left, right) {
     return left.length === right.length && left.every((head) => right.includes(head));
   }
@@ -2878,6 +2966,7 @@ export class PageSession {
         authRequired: this.authRequired,
         localFailed: !!this.localProblem,
         localCopy: !!this.localPage,
+        catchingUp: this.catchUp.showing,
       }),
     );
   }
@@ -3054,6 +3143,8 @@ export class PageSession {
       // acknowledge these exact heads after its storage barrier.
       const heads = state.heads;
       const commentHeads = state.commentHeads ?? [];
+      // The answer proves catch-up only for the socket it was asked on.
+      const catchUpAttempt = this.catchUp.attempt;
       const result = await this.requestWithRenewal(
         `/api/saved?page=${encodeURIComponent(this.pageId)}`,
         {
@@ -3090,6 +3181,7 @@ export class PageSession {
       state.outage = false;
       this.receiptOutageSince = null;
       this.syncStatus({ type: "acknowledged", revision: receipt });
+      this.answerCatchUp(catchUpAttempt, result);
       this.cancelReceiptRetry();
       this.receiptRetryAttempts = 0;
       await this.persistLocal({

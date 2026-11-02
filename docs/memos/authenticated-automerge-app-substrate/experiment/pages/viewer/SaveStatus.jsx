@@ -10,6 +10,7 @@ const KINDS = {
   quiet: "quiet",
   saving: "working",
   saved: "saved",
+  "catching-up": "working",
   attention: "attention",
   failed: "error",
 };
@@ -59,6 +60,25 @@ function StatusDot({ status, statusKey, kind }) {
   );
 }
 
+// Catching up after a Page opens is the one in-progress status that shows
+// its words, on phones too: remote changes are still landing on the page.
+// The dot stays still. The label sits beside it in the header's free space,
+// so nothing else in the header moves when it comes and goes.
+function CatchingUp({ status }) {
+  return (
+    <span
+      className="save-status save-status--dot save-status--working save-status--catching-up"
+      role="status"
+      aria-live="polite"
+      aria-atomic="true"
+      data-status={status}
+    >
+      <span className="status-dot" aria-hidden="true" />
+      <span className="save-status-label">{status}</span>
+    </span>
+  );
+}
+
 /**
  * `status` is the label people read; `statusKey` is how it is drawn. Both come
  * from the same PageSession status (`session.status`, `session.statusKey`).
@@ -68,6 +88,7 @@ export function SaveStatus({ status, statusKey, compact = false }) {
   // A connected socket or local checkpoint must retain its own visible status.
   const kind = Object.hasOwn(KINDS, statusKey) ? KINDS[statusKey] : "plain";
   if (kind === "quiet") return <QuietStatus compact={compact} />;
+  if (statusKey === "catching-up") return <CatchingUp status={status} />;
   if (compact || IN_PROGRESS.has(statusKey))
     return <StatusDot status={status} statusKey={statusKey} kind={kind} />;
   // Text stays for what needs a decision: Not saved, Offline and the other
