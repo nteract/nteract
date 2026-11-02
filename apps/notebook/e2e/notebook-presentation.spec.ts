@@ -71,7 +71,7 @@ async function openEmbeddedNotebook(page: Page, presentation?: NotebookPresentat
             connectElectronNotebookFrame(iframe.contentWindow, location.origin, {
               port: channel.port2,
               bootstrap: {
-                protocolVersion: 1, outputDocumentUrl: new URL('/isolated-renderer.html',location.href).href,
+                protocolVersion: 1, outputDocumentUrl: new URL('/output-frame.html',location.href).href,
                 presentation: ${JSON.stringify(presentation) ?? "undefined"}
               }
             });
