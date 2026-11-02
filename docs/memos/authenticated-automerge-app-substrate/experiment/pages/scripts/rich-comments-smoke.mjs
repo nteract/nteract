@@ -124,6 +124,26 @@ async function select(editor, text) {
   }, text);
   await page.waitForTimeout(60);
 }
+/**
+ * The prose-entry hints on a writing surface: AutoFill off, correction and
+ * capitalization on so the iOS keyboard keeps QuickType. See
+ * viewer/prose-entry.mjs.
+ */
+async function expectProseEntry(field, name, spellcheck = "true") {
+  const attributes = await field.evaluate((element) =>
+    Object.fromEntries(
+      ["autocomplete", "autocorrect", "autocapitalize", "spellcheck"].map((attribute) => [
+        attribute,
+        element.getAttribute(attribute),
+      ]),
+    ),
+  );
+  assert.deepEqual(
+    attributes,
+    { autocomplete: "off", autocorrect: "on", autocapitalize: "sentences", spellcheck },
+    `${name} carries the prose-entry hints`,
+  );
+}
 try {
   await page.context().grantPermissions(["clipboard-read", "clipboard-write"], { origin });
   await page.goto(origin + "/api/auth/login");
@@ -161,6 +181,9 @@ try {
   const panel = page.locator("#page-comments");
   const popover = page.getByRole("dialog", { name: "Comment on selection", exact: true });
   const inline = popover.getByRole("textbox", { name: "Comment on selection", exact: true });
+  await expectProseEntry(documentText, "the Page body");
+  // The title input leaves spellcheck at the input default.
+  await expectProseEntry(page.getByRole("textbox", { name: "Page title" }), "the title", null);
   await select(documentText, "discussion");
   // Where the composer is in the first frame it paints. A later re-placement
   // can't hide a first frame drawn somewhere else.
@@ -184,6 +207,7 @@ try {
   await page.getByRole("button", { name: "Comment on selection", exact: true }).click();
   await expect(popover).toBeVisible();
   await expect(inline).toBeFocused();
+  await expectProseEntry(inline, "the comment composer");
   await expect(panel).toBeHidden();
   await expect(page.locator(".comment-draft-passage")).toHaveText("discussion");
   const first = await firstFrame;
@@ -256,6 +280,8 @@ try {
   await thread.getByRole("button", { name: "Reply", exact: true }).click();
   const editor = thread.getByRole("textbox", { name: "Reply", exact: true });
   await expect(editor).toBeFocused();
+  await expectProseEntry(editor, "the reply composer");
+  checkpoint("the Page body, title, composer and reply composer carry the prose-entry hints");
   await editor.pressSequentially("Draft stays here");
   await select(editor, "Draft");
   await thread.getByRole("button", { name: "Bold", exact: true }).click();
