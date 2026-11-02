@@ -280,6 +280,31 @@ try {
   });
   assert.equal(placement.bottom, placement.height, JSON.stringify(placement));
   assert.equal(placement.width, 390, JSON.stringify(placement));
+  // The home indicator's room goes while a keyboard is up, however far iOS
+  // pans the visual viewport. Emulation has neither, so stand in for an
+  // iPhone's 34px inset and set what the viewport tracker would publish.
+  const heights = await bar.evaluate(async (element) => {
+    const style = document.documentElement.style;
+    const frame = () => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+    style.setProperty("--safe-area-bottom", "34px");
+    const heights = {};
+    for (const [name, bottom, keyboard] of [
+      ["closed", "0px", "0px"],
+      ["keyboard", "380px", "380px"],
+      ["panned", "0px", "380px"],
+    ]) {
+      style.setProperty("--vv-bottom", bottom);
+      style.setProperty("--vv-keyboard", keyboard);
+      await frame();
+      heights[name] = Math.round(element.getBoundingClientRect().height);
+    }
+    style.setProperty("--vv-bottom", "0px");
+    style.setProperty("--vv-keyboard", "0px");
+    style.removeProperty("--safe-area-bottom");
+    return heights;
+  });
+  assert.equal(heights.closed, heights.keyboard + 30, JSON.stringify(heights));
+  assert.equal(heights.panned, heights.keyboard, JSON.stringify(heights));
   await prose
     .locator("p")
     .first()
