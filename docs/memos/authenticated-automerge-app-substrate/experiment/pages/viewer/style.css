@@ -47,15 +47,46 @@
   --comment-anchor-fill: 18%;
   --selection: #264f78;
 }
-/* Without this rule each browser paints its own selection. Mobile Chromium
-   flips selected text to black on a bright cyan block, and iOS Safari tints
-   its native selection with the editor's caret-color, which Wordgard sets to
-   transparent. An author ::selection is painted by the page in every engine.
-   The text color is set too, so dark text in a dark-mode highlight and syntax
-   colors in code stay readable when selected. */
+/* Without this rule each browser paints its own selection; mobile Chromium
+   flips selected text to black on a bright cyan block. Desktop and mobile
+   Chromium and desktop WebKit paint this rule. The text color is set too, so
+   dark text in a dark-mode highlight and syntax colors in code stay readable
+   when selected. */
 ::selection {
   color: var(--selection-foreground);
   background: var(--selection);
+}
+/* Wordgard clears the selection background inside a cell or node selection,
+   which draws its own fill. Text there keeps its own color (currentColor; in
+   Chromium `inherit` would take the parent's ::selection color instead).
+   Wordgard's focused-control exception paints the system Highlight, so its
+   text takes the matching HighlightText. */
+.wg-selected-cell::selection,
+.wg-selected-cell ::selection,
+.wg-selected-node::selection,
+.wg-selected-node ::selection {
+  color: currentColor;
+}
+.wg-selected-cell :focus::selection,
+.wg-selected-cell :focus ::selection {
+  color: HighlightText;
+}
+/* iOS Safari only (-webkit-touch-callout parses nowhere else). UIKit tints
+   native touch selection and its handles with the editable's caret-color,
+   and Wordgard sets wg-content's to transparent because it draws its own
+   caret. Whether iOS paints the ::selection rule above for touch selection
+   in contenteditable is unverified, so give UIKit a visible tint and let the
+   native caret replace Wordgard's local text caret (wg-cursor-v). Its
+   between-blocks caret (wg-cursor-h) has no native equivalent and stays.
+   Collaborator carets are .wordgard-caret-layer and are untouched. Needs
+   real-iPhone validation; remove this block to revert. */
+@supports (-webkit-touch-callout: none) {
+  .wordgard-document > wg-scroller > wg-content {
+    caret-color: var(--foreground);
+  }
+  .wordgard-document > wg-scroller > wg-cursor-layer > .wg-cursor-v {
+    visibility: hidden;
+  }
 }
 [data-highlight="yellow"] {
   --pages-highlight: var(--highlight-yellow);

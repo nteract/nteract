@@ -386,6 +386,62 @@ try {
   report.screenshots.push(`${output}/checkbox-indent.png`);
   complete("Task-list checkboxes start at the bullet indent");
 
+  stage = "dark-mode cell selection keeps highlight text color";
+  const cellsId = await create(
+    a,
+    "Dark cell selection",
+    'Before the table\n\n| Name | Value |\n| --- | --- |\n| <mark data-color="yellow">marked cell</mark> | plain cell |\n| lower left | lower right |',
+  );
+  await a.evaluate(() => localStorage.setItem("nteract.pages.theme", "dark"));
+  await openPage(a, cellsId, "lower right");
+  await content(a).first().focus();
+  // A DOM range across cells becomes Wordgard's cell selection.
+  await content(a)
+    .first()
+    .evaluate((root) => {
+      const text = (needle) =>
+        [...root.querySelectorAll("td, th")]
+          .map((cell) => document.createTreeWalker(cell, NodeFilter.SHOW_TEXT))
+          .map((walker) => {
+            for (let node = walker.nextNode(); node; node = walker.nextNode())
+              if (node.data.includes(needle)) return node;
+            return null;
+          })
+          .find(Boolean);
+      const from = text("marked cell");
+      const to = text("lower right");
+      getSelection().setBaseAndExtent(from, 0, to, to.data.length);
+    });
+  await expect(content(a).first().locator(".wg-selected-cell mark")).toHaveCount(1);
+  const cellSelection = await content(a)
+    .first()
+    .evaluate((root) => {
+      const mark = root.querySelector(".wg-selected-cell mark");
+      const selection = getComputedStyle(mark, "::selection");
+      return {
+        dark: document.documentElement.classList.contains("dark"),
+        text: getComputedStyle(mark).color,
+        selectionText: selection.color,
+        selectionBackground: selection.backgroundColor,
+      };
+    });
+  // Wordgard clears the selection fill in a selected cell; the highlight's
+  // dark text must not take the dark theme's near-white selection color.
+  assert.equal(cellSelection.dark, true, JSON.stringify(cellSelection));
+  assert.equal(
+    cellSelection.selectionBackground,
+    "rgba(0, 0, 0, 0)",
+    JSON.stringify(cellSelection),
+  );
+  assert.equal(cellSelection.selectionText, cellSelection.text, JSON.stringify(cellSelection));
+  report.cellSelection = cellSelection;
+  await content(a)
+    .first()
+    .screenshot({ path: `${output}/dark-cell-selection.png` });
+  report.screenshots.push(`${output}/dark-cell-selection.png`);
+  await a.evaluate(() => localStorage.removeItem("nteract.pages.theme"));
+  complete("Dark-mode cell selection keeps a highlight's own text color");
+
   assert.deepEqual(report.errors, []);
 } catch (error) {
   report.failure = { stage, message: String(error?.message ?? error).slice(0, 2000) };
