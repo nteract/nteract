@@ -54,8 +54,10 @@ Then read a Page from that list, or create one. A plain idempotency_key of
 {"operation":"create_page","arguments":{"title":"Release plan","markdown":"We are preparing the next release.","idempotency_key":"release-plan-0001"}}
 \`\`\`
 
-create_page, read_page and create_project results carry url, the browser link;
-MCP list results carry it too. MCP tools take the same names and arguments.
+A successful result for a Page carries url, the browser link: create_page,
+read_page, edit_page, move_page and the rest, except a confirmed purge. A Project
+result carries url and home_page_url, and list results carry url on each
+entry. MCP tools take the same names and arguments.
 
 ## Error codes
 
@@ -74,6 +76,8 @@ Branch on code, not on the error message:
   grant is gone or lacks pages:read/pages:write. Reconnect the client.
 - tool_renamed, argument_renamed: an old name (a space tool or space_id); the
   error names the current one.
+- unknown_tool (MCP): the tools/call names a tool Pages doesn't have. Refresh
+  the tool list with tools/list and call a listed tool.
 - unknown_operation, invalid_arguments: the operation isn't one Pages has (the
   error lists the valid ones), or arguments isn't a JSON object.
 - invalid_page_id, page_not_found: page_id isn't a Page ID (a bare UUID), or no
@@ -150,6 +154,21 @@ Branch on code, not on the error message:
   progress_capacity_exceeded, progress_budget_exceeded. See Progress and
   presence below.
 - image_not_found (404): the asset isn't stored on this Page.
+- unsupported_media_type (415): import_page_image or a byte upload got bytes
+  that aren't a PNG, JPEG or static WebP, or don't match their Content-Type.
+  Convert the image and import it again; the same bytes fail again.
+- request_canceled (408): an image import or upload was canceled before it
+  finished, usually because the client disconnected. Import the same file
+  again; identical bytes reuse one asset.
+- Reads: invalid_read_selector, invalid_change_selector, read_target_not_found,
+  ambiguous_section, comment_not_found (fix the selector),
+  read_revision_changed (choose again from the fresh outline it returns),
+  read_budget_exceeded, changes_budget_exceeded, read_metadata_budget_exceeded
+  (raise max_bytes or narrow the read). See Read only what you need and Catch
+  up before editing below.
+- mcp_request_id_too_large (413, MCP): a read_page_changes call's JSON-RPC
+  request ID is so long that even a minimal result exceeds max_bytes. Use a
+  shorter ID or a larger budget.
 - company_email_proof_required (403): sharing with a company domain needs a
   verified email at that domain. Sign in again with it.
 - page_recovery_blocked: a pending edit exceeds the Page's history capacity;
@@ -175,10 +194,12 @@ Branch on code, not on the error message:
   deduplicated only while its receipt is retained, and a repeat after eviction
   is a new request, so a blind retry can add a second comment or Page.
   report_page_progress follows its lease rules instead.
-- A refusal without a more specific code gets one from its HTTP status in MCP:
-  access_denied, not_found, conflict, invalid_request, request_too_large,
-  rate_limited, unauthenticated or server_error. A JSON response for it has
-  error and the HTTP status.
+- A refusal without a more specific code gets one from its HTTP status, over
+  JSON and MCP: invalid_request (400), unauthenticated (401), access_denied
+  (403), not_found (404), conflict (409), gone (410), request_too_large (413),
+  rate_limited (429), server_error (5xx), or request_refused for any other
+  status. Read the error message to fix the request; retry only a server_error
+  or rate_limited, and only later.
 
 retryable:true means a retry can succeed; the code says whether to read first.
 

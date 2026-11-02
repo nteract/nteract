@@ -1,9 +1,14 @@
-import { pagePath, readPageRoute, projectPath } from "./shared/routes.mjs";
+import { pagePath, readPageRoute } from "./shared/routes.mjs";
 import { isTokenedRequest } from "./model/retry-key.mjs";
 import { pagesPublicOrigin } from "./agent-guide.mjs";
 import { PRODUCT_NAME } from "./shared/product.mjs";
 import { HIGHLIGHT_COLORS, MARK_NAMES, formatAddSchema } from "./model/marks.mjs";
-import { RENAMED_TOOLS, renamedTool } from "./worker/project-api.mjs";
+import {
+  RENAMED_TOOLS,
+  refusalCode,
+  renamedTool,
+  withBrowserLinks,
+} from "./worker/project-api.mjs";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
 import {
@@ -738,31 +743,26 @@ export const tools = [
   ),
 ];
 
-/** Codes for refusals the service answered without one. An MCP result carries
- * no HTTP status, so the status becomes the code. */
-const STATUS_CODES = {
-  400: "invalid_request",
-  401: "unauthenticated",
-  403: "access_denied",
-  404: "not_found",
-  408: "request_canceled",
-  409: "conflict",
-  410: "gone",
-  413: "request_too_large",
-  415: "unsupported_media_type",
-  429: "rate_limited",
-};
+/** Codes only this endpoint emits, beside the service's own and the
+ * status fallback (STATUS_FALLBACK_CODES). Every `code:` literal in this file
+ * is listed here, and the agent guide documents each one. */
+export const MCP_ERROR_CODES = Object.freeze([
+  "unknown_tool",
+  "changes_budget_exceeded",
+  "read_metadata_budget_exceeded",
+  "mcp_request_id_too_large",
+  "read_failed",
+  "outcome_unknown",
+]);
 
 /** The body of a failed tool result, in its text and structured content. Every
- * refusal has a stable code, so agents never branch on message text.
- * retryable:true means a retry can succeed; for stale_heads that retry is a new
- * request built on the refusal's current_heads (or a fresh read). */
+ * refusal has a stable code, so agents never branch on message text. An MCP
+ * result carries no HTTP status, so a refusal without a code gets one from its
+ * status. retryable:true means a retry can succeed; for stale_heads that retry
+ * is a new request built on the refusal's current_heads (or a fresh read). */
 function refusal(status, body) {
   const fields = body && typeof body === "object" && !Array.isArray(body) ? body : {};
-  const code =
-    typeof fields.code === "string" && fields.code
-      ? fields.code
-      : (STATUS_CODES[status] ?? (status >= 500 ? "server_error" : "request_refused"));
+  const code = refusalCode(status, fields);
   return { ...fields, code, ...(code === "stale_heads" && { retryable: true }) };
 }
 
@@ -805,24 +805,9 @@ export async function handleMcp(request, invoke, env) {
     try {
       const result = await invoke(params.name, params.arguments ?? {});
       const received = await result.json();
-      const body = result.ok ? received : refusal(result.status, received);
-      if (result.ok) {
-        if (body.page_id && !body.deleted) body.url = new URL(pagePath(body.page_id), origin).href;
-        else if (body.project_id && body.home_page_id) {
-          body.url = new URL(projectPath(body.project_id), origin).href;
-          body.home_page_url = new URL(pagePath(body.home_page_id), origin).href;
-        }
-        if (Array.isArray(body.pages))
-          body.pages = body.pages.map((page) => ({
-            ...page,
-            url: new URL(pagePath(page.page_id), origin).href,
-          }));
-        if (Array.isArray(body.projects))
-          body.projects = body.projects.map((entry) => ({
-            ...entry,
-            url: new URL(projectPath(entry.project_id), origin).href,
-          }));
-      }
+      const body = result.ok
+        ? withBrowserLinks(received, origin)
+        : refusal(result.status, received);
       // Only our credential errors can request account reauthorization. A Page
       // ACL denial cannot be repaired by granting broader OAuth scopes.
       const oauthError =

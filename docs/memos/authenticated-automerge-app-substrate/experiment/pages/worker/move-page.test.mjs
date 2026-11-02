@@ -260,6 +260,30 @@ test("move_page over MCP returns the receipt with its URL as structured content"
   assert.equal(result.body.space_id, undefined, "the API speaks Projects");
 });
 
+test("move_page over JSON returns the receipt with its URL from the configured origin", async (t) => {
+  const w = await world(t);
+  const s = await stage(w);
+  const a = await s.page({ title: "A", project_id: s.project.project_id });
+  const b = await s.page({ title: "B", project_id: s.project.project_id });
+  const unlinked = await s.move(a, b);
+  assert.equal(unlinked.status, 200, JSON.stringify(unlinked.body));
+  assert.equal(unlinked.body.url, undefined, "no configured origin, no link");
+  w.env.NOTEBOOK_CLOUD_PUBLIC_ORIGIN = "https://pages.invalid";
+  const moved = await s.move(a, s.home, "first");
+  assert.equal(moved.status, 200, JSON.stringify(moved.body));
+  assert.equal(moved.body.page_id, a);
+  assert.equal(moved.body.url, `https://pages.invalid/p/${a}`);
+  // A retry replays the stored receipt, link included.
+  const args = s.moveArgs(a, b);
+  const first = await w.call("owner", "move_page", args);
+  const replay = await w.call("owner", "move_page", args);
+  assert.deepEqual(replay, first);
+  assert.equal(replay.body.url, `https://pages.invalid/p/${a}`);
+  const refused = await s.move(a, a);
+  assert.equal(refused.body.code, "placement_cycle");
+  assert.equal(refused.body.url, undefined);
+});
+
 test("each refusal carries its code and status, over HTTP and as MCP structured content", async (t) => {
   const w = await world(t);
   const s = await stage(w);

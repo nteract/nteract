@@ -127,7 +127,10 @@ test("viewers can read presence but cannot report progress; removed readers see 
   f.page.metadata.acl.members[f.identity.principal] = { role: "none", generation: 2 };
   const denied = await f.call("read_page_presence");
   assert.equal(denied.status, 403);
-  assert.deepEqual(Object.keys(await denied.json()), ["error"]);
+  // No roster, heads or authority: only the refusal and its status code.
+  const refusal = await denied.json();
+  assert.deepEqual(Object.keys(refusal), ["error", "code"]);
+  assert.equal(refusal.code, "access_denied");
   assert.deepEqual(f.writes, []);
 });
 
@@ -154,7 +157,9 @@ test("change-feed gateway permits read scope and viewers but rechecks revoked Pa
   f.page.metadata.acl.members[f.identity.principal] = { role: "none", generation: 2 };
   const denied = await f.call("read_page_changes", { since_heads: heads });
   assert.equal(denied.status, 403);
-  assert.deepEqual(Object.keys(await denied.json()), ["error"]);
+  const refusal = await denied.json();
+  assert.deepEqual(Object.keys(refusal), ["error", "code"]);
+  assert.equal(refusal.code, "access_denied");
 });
 
 test("native selection listener uses authenticated profile identity and session handshake includes a fresh snapshot", async (t) => {
