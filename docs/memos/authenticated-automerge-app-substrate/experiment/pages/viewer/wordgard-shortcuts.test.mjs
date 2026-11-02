@@ -258,9 +258,12 @@ test("a block shortcut after a hard break splits out only that line", () => {
     ["# ", [["h1", "new"]]],
     ["###### ", [["h6", "new"]]],
     ["- ", [["BulletList", [["ListItem", [["Paragraph", "new"]]]]]]],
+    ["* ", [["BulletList", [["ListItem", [["Paragraph", "new"]]]]]]],
+    ["+ ", [["BulletList", [["ListItem", [["Paragraph", "new"]]]]]]],
     ["1. ", [["OrderedList", [["ListItem", [["Paragraph", "new"]]]]]]],
     ["[ ] ", [["PagesTaskList", [["ListItem", [["Paragraph", "new"]]]]]]],
     ["- [x] ", [["PagesTaskList", [["ListItem", [["Paragraph", "new"]]]]]]],
+    ["* [x] ", [["PagesTaskList", [["ListItem", [["Paragraph", "new"]]]]]]],
     ["> ", [["Blockquote", [["Paragraph", "new"]]]]],
   ];
   for (const [prefix, middle] of cases) {
@@ -304,6 +307,65 @@ test("a heading shortcut typed into Kyle's double-break layout converts the line
   assert.deepEqual(outline(f.editor.state.doc), [
     ["Paragraph", "Intro text<br><br>## <br><br>more text"],
   ]);
+  f.binding.destroy();
+});
+
+test("* and + start a bulleted list at a paragraph start, as - does", () => {
+  for (const prefix of ["- ", "* ", "+ ", " * "]) {
+    const f = fixture("");
+    f.editor.select(1);
+    f.editor.type(prefix + "note");
+    assert.deepEqual(
+      outline(f.editor.state.doc),
+      [["BulletList", [["ListItem", [["Paragraph", "note"]]]]]],
+      prefix,
+    );
+    assert.equal(f.markdownOf(), "* note", prefix);
+    f.binding.destroy();
+  }
+});
+
+test("* and + inside a list item do what - does there", () => {
+  const result = (prefix) => {
+    const f = fixture("- one");
+    f.editor.select(at(f.editor.state, "one", 3));
+    f.editor.run(enter);
+    f.editor.type(prefix + "two");
+    const shape = outline(f.editor.state.doc);
+    f.binding.destroy();
+    return shape;
+  };
+  const dash = result("- ");
+  assert.notDeepEqual(dash, result("x "), "- converts inside a list item");
+  assert.deepEqual(result("* "), dash);
+  assert.deepEqual(result("+ "), dash);
+});
+
+test("* stays text mid-line, before existing text, and as an emphasis or bold opener", () => {
+  for (const [markdown, cursor, typed, expected] of [
+    ["alpha", (s) => at(s, "alpha", 5), " * beta", [["Paragraph", "alpha * beta"]]],
+    ["alpha", (s) => at(s, "alpha", 2), "* ", [["Paragraph", "al* pha"]]],
+    ["beta", (s) => at(s, "beta"), "* ", [["Paragraph", "* beta"]]],
+    ["beta", (s) => at(s, "beta"), "+ ", [["Paragraph", "+ beta"]]],
+    ["", () => 1, "*em*", [["Paragraph", "em"]]],
+    ["", () => 1, "**bold**", [["Paragraph", "bold"]]],
+    ["", () => 1, "** ", [["Paragraph", "** "]]],
+  ]) {
+    const f = fixture(markdown);
+    f.editor.select(cursor(f.editor.state));
+    f.editor.type(typed);
+    assert.deepEqual(outline(f.editor.state.doc), expected, typed);
+    f.binding.destroy();
+  }
+  const f = fixture("");
+  f.editor.select(1);
+  f.editor.type("*em* and **bold**");
+  assert.deepEqual(markedRuns(f.editor.state.doc), [
+    ["em", ["em"]],
+    [" and ", []],
+    ["bold", ["strong"]],
+  ]);
+  assert.equal(f.markdownOf(), "*em* and **bold**");
   f.binding.destroy();
 });
 
@@ -633,7 +695,7 @@ test("delimiters inside words, code, escapes and unbalanced runs stay literal", 
     "a_b_",
     "2*3*4",
     "x**y**",
-    "* not em*",
+    "a * not em*",
     "*not em *",
     "**",
     "~~~a~~~",
