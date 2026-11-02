@@ -51,6 +51,8 @@ test("setup is public, uses configured destinations, and never reflects credenti
   ])
     assert.equal(html.includes(forbidden), false, forbidden);
   const dom = new JSDOM(html).window.document;
+  assert.equal(dom.title, "Connect an agent · Pages");
+  assert.equal(dom.querySelector(".app-header .brand").textContent, "Pages");
   const theme = dom.head.querySelector('script[src="/theme.js"]');
   assert.ok(theme);
   assert.equal(

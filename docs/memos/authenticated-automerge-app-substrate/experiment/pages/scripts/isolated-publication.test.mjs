@@ -683,7 +683,74 @@ for (const mutation of ["config", "pid"])
     );
   });
 
-test("OAuth and private images publish only exact Page7 through Page10 routes while previous targets remain closed", () => {
+test("Pages serves Page10's route set on pages.runtimed.run and its own listener", () => {
+  const current = routesFor("pages");
+  const page10 = deploymentProfile("page10").deployment;
+  const pages = deploymentProfile("pages").deployment;
+  // Pages copies Page10's route flags. Only the hostname and listener differ.
+  assert.equal(
+    current.replaceAll(pages.hostname, page10.hostname).replaceAll(pages.listen, page10.listen),
+    routesFor("page10"),
+  );
+  assert.match(current, /^  - hostname: pages[.]runtimed[.]run\n/);
+  assert.match(current, /service: http:\/\/127[.]0[.]0[.]1:9481\n/);
+  assert.doesNotMatch(current, /page10[.]runtimed[.]run|127[.]0[.]0[.]1:9480/);
+});
+
+test("pages has no route predecessor: it installs fresh and refuses Page10's receipts", (t) => {
+  const f = fixture(t, { target: "pages" });
+  const plan = isolatedPublicationPlan(inputFor("pages"));
+  const installation = "/etc/nteract-pages-live/tunnel-installation.json";
+  assert.equal(plan.service, "cloudflared-pages-live.service");
+  assert.equal(plan.configPath, "/etc/nteract-pages-live/tunnel.yml");
+  const result = f.execute();
+  assert.equal(result.routesUpdated, false);
+  assert.deepEqual(result.frozenTargetsUnchanged, ["page7", "page8", "page9"]);
+  assert.equal(fs.readFileSync(f.local(plan.configPath), "utf8"), plan.config);
+  assert.deepEqual(
+    f.calls
+      .filter(
+        ({ command, args }) =>
+          command === "systemctl" && ["start", "restart", "stop", "enable"].includes(args[0]),
+      )
+      .map(({ args }) => args.join(" ")),
+    ["enable cloudflared-pages-live.service", "start cloudflared-pages-live.service"],
+  );
+  // Page10's connector bytes are not Pages' to adopt.
+  const page10 = isolatedPublicationPlan(inputFor("page10"));
+  const g = fixture(t, { target: "pages" });
+  g.write(
+    installation,
+    JSON.stringify({
+      schema: 1,
+      tunnel_id: tunnelId,
+      config_sha256: digest(page10.config),
+      unit_sha256: digest(page10.unit),
+    }) + "\n",
+  );
+  assert.throws(g.execute, /Dedicated tunnel installation differs/);
+  assert.equal(g.writes.length, 0);
+  assert.throws(
+    () => isolatedPublicationPlan({ ...inputFor("pages"), target: "page10" }),
+    /Unexpected deployment target/,
+  );
+});
+
+for (const mutation of ["config", "pid"])
+  test(`Pages publication detects changed frozen Page9 ${mutation}`, (t) => {
+    const f = fixture(t, { target: "pages" });
+    assert.throws(
+      () =>
+        f.executeWith(() =>
+          mutation === "config"
+            ? f.write("/etc/nteract-page9/tunnel.yml", "foreign change")
+            : f.changeFrozenPid("cloudflared-page9.service"),
+        ),
+      /Frozen Pages (configuration|service) changed/,
+    );
+  });
+
+test("OAuth and private images publish only exact Page7 through Pages routes while previous targets remain closed", () => {
   for (const target of [
     "pages-next",
     "page3",
@@ -694,6 +761,7 @@ test("OAuth and private images publish only exact Page7 through Page10 routes wh
     "page8",
     "page9",
     "page10",
+    "pages",
   ]) {
     const route = new RegExp(/^    path: (.+)$/m.exec(routesFor(target))[1]);
     for (const pathname of [
@@ -708,7 +776,7 @@ test("OAuth and private images publish only exact Page7 through Page10 routes wh
     ])
       assert.equal(
         route.test(pathname),
-        ["page7", "page8", "page9", "page10"].includes(target),
+        ["page7", "page8", "page9", "page10", "pages"].includes(target),
         `${target}: ${pathname}`,
       );
     for (const pathname of [
@@ -1193,12 +1261,14 @@ const frozenBy = {
   page8: ["pages-next", "page3", "page4", "page5", "page6", "page7"],
   page9: ["page7", "page8"],
   page10: ["page7", "page8", "page9"],
+  pages: ["page7", "page8", "page9"],
 };
-for (const target of ["page7", "page8", "page9", "page10"])
+for (const target of ["page7", "page8", "page9", "page10", "pages"])
   test(`${target} publication retries preserve every earlier deployment`, (t) => {
+    const { deployment, tunnelService } = deploymentProfile(target);
     const f = fixture(t, { target, failStart: true });
     assert.throws(f.execute, /injected connector startup failure/);
-    const installation = `/etc/nteract-${target}/tunnel-installation.json`;
+    const installation = `/etc/${deployment.service}/tunnel-installation.json`;
     const receipt = fs.readFileSync(f.local(installation), "utf8");
     for (let i = 0; i < 2; i++) {
       const result = f.execute();
@@ -1210,8 +1280,8 @@ for (const target of ["page7", "page8", "page9", "page10"])
     assert.ok(
       f.writes.every(
         (file) =>
-          file.startsWith(`/etc/nteract-${target}/`) ||
-          file === `/etc/systemd/system/cloudflared-${target}.service`,
+          file.startsWith(`/etc/${deployment.service}/`) ||
+          file === `/etc/systemd/system/${tunnelService}`,
       ),
     );
     assert.ok(
@@ -1220,7 +1290,7 @@ for (const target of ["page7", "page8", "page9", "page10"])
           ({ command, args }) =>
             command === "systemctl" && ["start", "restart", "stop", "enable"].includes(args[0]),
         )
-        .every(({ args }) => args[1] === `cloudflared-${target}.service`),
+        .every(({ args }) => args[1] === tunnelService),
     );
     const route = new RegExp(/^    path: (.+)$/m.exec(routesFor(target))[1]);
     for (const pathname of [
@@ -1312,7 +1382,7 @@ for (const mutation of ["config", "pid"])
   });
 
 const imageAssetPath = "/api/pages/08c583e5-d29e-4f1e-b06b-333965254e94/assets";
-for (const target of ["page6", "page7", "page8", "page9", "page10"])
+for (const target of ["page6", "page7", "page8", "page9", "page10", "pages"])
   test(`${target} publisher verifies private image ingress before starting its connector`, (t) => {
     const f = fixture(t, { target });
     f.execute();
@@ -1334,7 +1404,7 @@ for (const target of ["page6", "page7", "page8", "page9", "page10"])
       assert.ok(paths.includes(pathname), pathname);
   });
 
-for (const target of ["page9", "page10"])
+for (const target of ["page9", "page10", "pages"])
   test(`${target} publisher verifies hashed chunk and asset ingress before starting its connector`, (t) => {
     const f = fixture(t, { target });
     f.execute();
@@ -1369,7 +1439,7 @@ for (const target of ["page9", "page10"])
       assert.ok(paths.includes(pathname), pathname);
   });
 
-for (const target of ["page9", "page10"])
+for (const target of ["page9", "page10", "pages"])
   test(`${target} publisher verifies Project link ingress before starting its connector`, (t) => {
     const f = fixture(t, { target });
     f.execute();
@@ -1400,7 +1470,7 @@ for (const target of ["page9", "page10"])
       assert.ok(paths.includes(pathname), pathname);
   });
 
-for (const target of ["page9", "page10"])
+for (const target of ["page9", "page10", "pages"])
   test(`${target} publisher verifies /projects and /pages ingress before starting its connector`, (t) => {
     const f = fixture(t, { target });
     f.execute();
@@ -1449,7 +1519,7 @@ for (const misroutePath of [
   "/project/prj_08c583e5-d29e-4f1e-b06b-333965254e94/private",
   "/project/08c583e5-d29e-4f1e-b06b-333965254e94",
 ])
-  for (const target of ["page9", "page10"])
+  for (const target of ["page9", "page10", "pages"])
     test(`${target} does not activate a connector with misrouted path ${misroutePath}`, (t) => {
       const f = fixture(t, { target, misroutePath });
       assert.throws(f.execute, /Dedicated tunnel route validation failed/);

@@ -1,15 +1,63 @@
 # Pages deployment
 
-The current release is qualified for the isolated **Page10** celld target only.
-Page9 and earlier services are frozen. Deployment helpers reject mutations to
-those targets and check their fingerprints when publishing Page10. Historical
-profiles remain in [profiles.mjs](scripts/deployment/profiles.mjs) for inspection
-and isolation checks; their presence is not permission to deploy to them.
+The current release is qualified for two isolated celld targets: **Pages**
+(`pages.runtimed.run`) and **Page10**. Page9 and earlier services are frozen.
+Deployment helpers reject mutations to those targets and check their
+fingerprints when publishing Pages or Page10. Historical profiles remain in
+[profiles.mjs](scripts/deployment/profiles.mjs) for inspection and isolation
+checks; their presence is not permission to deploy to them.
 
-Page targets are short-lived prototypes. A release that would break existing
-clients goes to a new target instead of carrying compatibility code; data is
-not copied between targets. Page10 is one of those: a fresh, empty target for
-the location and comments redesign, with no compatibility with Page9's data.
+Numbered page targets are short-lived prototypes. A release that would break
+existing clients goes to a new target instead of carrying compatibility code;
+deployment never copies data between targets. Page10 is one of those: a fresh,
+empty target for the location and comments redesign, with no compatibility with
+Page9's data. Page10 stays deployable until its Projects are copied to Pages; a
+later release freezes it.
+
+## Pages release
+
+The `pages` profile owns `pages.runtimed.run`:
+
+| Field | Value |
+| --- | --- |
+| Hostname | `pages.runtimed.run` |
+| Service and user | `nteract-pages-live` |
+| Prefix | `standalone/pages-live` in the lab1 fleet bucket |
+| Listeners | `127.0.0.1:9481`, internal `127.0.0.1:19481` |
+| Firewall | table `nteract_pages_live`, mark `0x00100000` |
+| Tunnel service | `cloudflared-pages-live.service`, tunnel `nteract-pages-live` |
+| Frozen neighbors | `page7`, `page8`, `page9` |
+
+It carries every Page10 flag, the Page quota default and D1 binding, and the
+same celld 0.6.3 runtime and OIDC client. The service and prefix end in `-live`
+because lab1 still holds a disabled `nteract-pages.service` and
+`/etc/nteract-pages` from an earlier prototype. The installer refuses any path,
+user or prefix it does not own, so the target must not share those names.
+
+Pages starts empty. Projects arrive from Page10 (or any older target) through
+[project-transfer.mjs](scripts/project-transfer.mjs); see
+[Copying a Project to a new target](#copying-a-project-to-a-new-target).
+
+Before anyone signs in, add `https://pages.runtimed.run/oidc` as a redirect URI
+on OIDC client `1a90d36b-5b97-4ebb-a1bc-f3de7ddb70e0`. The installer derives
+`NOTEBOOK_CLOUD_OIDC_REDIRECT_URI` from the hostname; the identity provider has
+to allow it.
+
+From `pages`, after review, commit, and a fresh build:
+
+```sh
+node scripts/deploy.mjs --target pages plan
+node scripts/deploy.mjs --target pages prepare
+node scripts/deploy.mjs --target pages upload LOCAL_STAGE
+node scripts/deploy.mjs --target pages install REMOTE_STAGE --apply
+CLOUDFLARE_API_TOKEN=... node scripts/deploy.mjs --target pages provision            # inspect
+CLOUDFLARE_API_TOKEN=... node scripts/deploy.mjs --target pages provision --apply    # first publication only
+node scripts/deploy.mjs --target pages publish REMOTE_STAGE --apply
+```
+
+`provision --apply` refuses a `pages.runtimed.run` DNS record it does not own,
+including one an earlier prototype left behind. Remove such a record in
+Cloudflare by hand, after checking nothing serves from it, then rerun.
 
 ## Page10 release
 
@@ -44,15 +92,16 @@ or simultaneous operator commands from crossing service boundaries.
 
 Each target owns its `/opt`, `/etc`, and `/var/lib` directories, session secret,
 service account, firewall table/mark, and release stage. Page10's firewall mark
-is `0x00200000`, the next bit below Page9's `0x00400000`. The installer checks
+is `0x00200000`, the next bit below Page9's `0x00400000`; Pages takes the next,
+`0x00100000`. The installer checks
 ownership and resource conflicts, preserves Durable Object bindings/migrations
 and persistent data, and restarts only the selected QA service. Installation and
 publication require lab1 SSH and sudo.
 
 Each installation copies `firewall.mjs` and `profiles.mjs` into its own
 `/opt/<service>`, and its unit's `ExecStartPre` runs that copy. A frozen service
-keeps the copy that qualified it, so Page9 keeps restarting after this release
-moves qualification to Page10.
+keeps the copy that qualified it, so Page9 keeps restarting after qualification
+moved to Page10 and Pages.
 
 The runtime must match the official celld 0.6.3 Linux x86_64 executable at
 `/usr/local/bin/celld-v0.6.3`, including the SHA-256 in `CELLD_RELEASE`. Services
@@ -81,7 +130,7 @@ frames are unchanged, so earlier builds read the result. A rollback build still 
 forever on stored history whose parent never became durable; startup recovery
 from that shape needs this build or later.
 
-The Page8, Page9 and Page10 profiles set `PAGES_CATALOG_INDEX=1`. Changing this epoch label starts
+The Page8, Page9, Page10 and Pages profiles set `PAGES_CATALOG_INDEX=1`. Changing this epoch label starts
 account reconciliation on the next listing. Reconciliation may take several
 listings. Unsetting the variable turns the index off, and listings read Catalog
 entries directly.
@@ -362,7 +411,7 @@ The replacement removes the preserved block, so nothing is left to convert.
 
 Each account may hold a limited number of active Pages and, separately, the
 same number in Trash. The profile's `pageQuota` sets the target's default, which
-the installer writes as `PAGES_DEFAULT_PAGE_QUOTA`; Page10's is 250. Without the
+the installer writes as `PAGES_DEFAULT_PAGE_QUOTA`; Page10's and Pages' are 250. Without the
 variable the Worker uses 250. Changing the default needs a new install.
 
 Rules in D1 override the default for one account or one email domain:
@@ -407,26 +456,31 @@ through the live owner of `pages-next-auth`, under its fence and in one
 transaction. The host, service, binary, bucket and database come from the
 target's deployment profile.
 
+Every command names its target. There is no default, so a command rerun from
+shell history after a new target ships still writes where it said it would.
+A command without `--target` exits 2 before it sends anything.
+
 ```bash
-node scripts/quota-rules.mjs check                     # tables, schema version, rule count
-node scripts/quota-rules.mjs list
-node scripts/quota-rules.mjs get    email rgbkrk@gmail.com
-node scripts/quota-rules.mjs set    email rgbkrk@gmail.com 1000 --note "design partner"
-node scripts/quota-rules.mjs set    domain anaconda.com 500
-node scripts/quota-rules.mjs set    email someone@example.com 0
-node scripts/quota-rules.mjs delete domain anaconda.com
+node scripts/quota-rules.mjs --target pages check      # tables, schema version, rule count
+node scripts/quota-rules.mjs --target pages list
+node scripts/quota-rules.mjs --target pages get    email rgbkrk@gmail.com
+node scripts/quota-rules.mjs --target pages set    email rgbkrk@gmail.com 1000 --note "design partner"
+node scripts/quota-rules.mjs --target pages set    domain anaconda.com 500
+node scripts/quota-rules.mjs --target pages set    email someone@example.com 0
+node scripts/quota-rules.mjs --target page10 delete domain anaconda.com
 ```
 
 | Option | Meaning |
 | --- | --- |
-| `--target NAME` | Deployment profile, `page10` by default. Only a profile with `pageQuota` and `d1` is accepted. |
+| `--target NAME` | Required for every command: `pages` or `page10`. Only a profile with `pageQuota` and `d1` is accepted. |
 | `--ssh-host HOST` | SSH destination, the profile's host (`lab1`) by default, for example `root@lab1`. |
 | `--dry-run` | Print the remote script and every SQL step, and write nothing. `delete` runs its read-only preflight to show the stored rows it would remove; every other command sends nothing. |
 | `--create-only` | `set` only: refuse when the rule already exists. |
 | `--note TEXT` | `set` only: a note of at most 200 characters. |
 
 Run it with Node 22.18 or later, which loads `sharing.ts` without a build step.
-The SSH user must be root or able to `sudo -n -u nteract-page10`: the service's
+The SSH user must be root or able to `sudo -n -u` the target's service user
+(`nteract-pages-live`, `nteract-page10`): the service's
 loopback firewall resets connections from any other uid.
 
 - **Values.** The script never accepts SQL. The kind is `email` or `domain`.
@@ -455,6 +509,12 @@ loopback firewall resets connections from any other uid.
   `pages_quota_rules` and `pages_quota_schema` must exist, at schema version 1.
   The script never creates a table. The Worker's migration owns both, so after
   deploying a quota build, call `list_pages` once before the first rule.
+- **Receipts name the target.** Every `set` and `delete` result, every
+  failure and read-back message, and the dry-run header name the target and
+  its prefix, for example `on pages
+  (s3://nteract-celld-lab-621741996708/standalone/pages-live)`. Commands the
+  script suggests, such as the `get` to reconcile with, carry the same
+  `--target` and `--ssh-host`.
 - **Five-minute cache.** Each Worker isolate reads the rule table at most once
   every five minutes. A change can take that long to apply, and different
   isolates can disagree until then. Poll `list_pages` for `quota.limit` rather
@@ -477,8 +537,11 @@ its own.
   exits 1. That state doesn't show the write failed. The write may have
   committed, lost its response, and been replaced by a newer change before the
   read-back; running it again would overwrite that change. Reconcile first:
-  find out who else changed the rule, and decide from the current state.
-- **Read-back failed.** The state is unknown. Run `get` and reconcile before
+  find out who else changed the rule, and decide from the current state. The
+  message names the target and prints the exact `get` to run, with its
+  `--target`.
+- **Read-back failed.** The state is unknown. Run the printed
+  `node scripts/quota-rules.mjs --target <target> get …` and reconcile before
   running anything again.
 
 A `delete` also reports "requested state not observed" without any error when
@@ -506,8 +569,8 @@ adopts, updates or deletes. Both steps are idempotent, so a rerun after a
 partial failure picks up where the last one stopped.
 
 ```sh
-CLOUDFLARE_API_TOKEN=... node scripts/deploy.mjs --target page10 provision
-CLOUDFLARE_API_TOKEN=... node scripts/deploy.mjs --target page10 provision --apply
+CLOUDFLARE_API_TOKEN=... node scripts/deploy.mjs --target pages provision
+CLOUDFLARE_API_TOKEN=... node scripts/deploy.mjs --target pages provision --apply
 ```
 
 Inspection prints the tunnel and DNS state. Before the tunnel exists there is no
@@ -516,8 +579,8 @@ tunnel UUID and CNAME, never the tunnel secret or the token. The two helpers it
 calls still run on their own:
 
 ```sh
-node scripts/deployment/tunnel.mjs --target page10 [--apply]
-node scripts/deployment/dns.mjs --target page10 TUNNEL_UUID [--apply]
+node scripts/deployment/tunnel.mjs --target pages [--apply]
+node scripts/deployment/dns.mjs --target pages TUNNEL_UUID [--apply]
 ```
 
 `provision` reads `CLOUDFLARE_API_TOKEN` from the environment only and never
@@ -531,13 +594,13 @@ SSH and sudo, because the tunnel step writes its files on the host.
 
 ```sh
 CLOUDFLARE_API_TOKEN="$(op read 'op://<vault>/<item>/<field>')" \
-  node scripts/deploy.mjs --target page10 provision --apply
+  node scripts/deploy.mjs --target pages provision --apply
 ```
 
 The tunnel step creates a locally managed tunnel named after the service
-(`nteract-page10`). Cloudflare returns a tunnel secret only when it is set, so the
-same run writes it over SSH to root-owned mode 0600 `/etc/nteract-page10/tunnel.json`
-and writes the nonsecret receipt `/etc/nteract-page10/tunnel-provisioning.json`.
+(`nteract-pages-live`). Cloudflare returns a tunnel secret only when it is set, so the
+same run writes it over SSH to root-owned mode 0600 `/etc/nteract-pages-live/tunnel.json`
+and writes the nonsecret receipt `/etc/nteract-pages-live/tunnel-provisioning.json`.
 Both writes require the directory that installation created and refuse to
 replace an existing file. The command prints the tunnel UUID, never the secret.
 A tunnel that exists without credentials on the host must be deleted in
@@ -548,7 +611,7 @@ Cloudflare before retrying. The receipt has this form:
   "schema": 1,
   "account_id": "1cfb529b94b3d6cde3aaf49d1d6ed5e6",
   "tunnel_id": "TUNNEL_UUID",
-  "name": "nteract-page10",
+  "name": "nteract-pages-live",
   "config_src": "local"
 }
 ```
@@ -565,8 +628,10 @@ Page10 serves Page9's route set on its own hostname and listener. It has no
 predecessor config, so the publisher installs its tunnel configuration fresh and
 refuses any other installation receipt, including Page9's earlier ones. The
 route migrations below are Page9's history; Page10 starts at the end of them.
+Pages serves Page10's route set on `pages.runtimed.run` and `127.0.0.1:9481`,
+also without a predecessor, and refuses Page10's installation receipts.
 
-Both admit the viewer's content-hashed chunks, `/chunks/` followed by
+All three admit the viewer's content-hashed chunks, `/chunks/` followed by
 eight base32 characters and `.js`. `build-receipt.json` maps each chunk to the
 sha256 of its bytes in `viewer_chunks`. `prepare` stages exactly those chunks,
 checks each one's bytes against its digest first, and refuses a changed chunk or
@@ -574,20 +639,20 @@ a `public/chunks` directory that holds any other file.
 
 The shell's own files are hashed the same way: `app-<hash>.js`,
 `app-<hash>.css`, `theme-<hash>.js`, `mermaid-<hash>.js`,
-`automerge-<hash>.wasm` and `subduction-<hash>.wasm`. Both admit each name
+`automerge-<hash>.wasm` and `subduction-<hash>.wasm`. All three admit each name
 with its own extension only. `viewer_assets` in the receipt maps each to its
 sha256, and the name's hash must be the first 40 bits of that digest.
 `prepare` stages exactly those six files, checks their bytes first, and refuses
 any other file of that shape in `public`.
 
-Both admit Project links: `/project/<id>` and the older `/s/<id>`, where the
+All three admit Project links: `/project/<id>` and the older `/s/<id>`, where the
 ID is `prj_` or `sp_` followed by a lowercase v4 UUID, with an optional
 trailing slash. These are the paths `shared/routes.mjs` opens as a Project;
 the viewer rewrites `/s/<id>` to `/project/<id>`. Page9's publisher migrates only
 from its hashed-asset config to this one, so an older installation must
 publish the hashed-asset release first.
 
-Both admit the viewer's index routes, `/projects` and `/pages`, as exact
+All three admit the viewer's index routes, `/projects` and `/pages`, as exact
 paths with an optional trailing slash. `/pages` keeps its search in `?q=`;
 ingress matches the path only. These are the paths `shared/routes.mjs` opens
 as index routes. Page9's publisher migrates only from its Project-link config
@@ -595,15 +660,15 @@ to this one, so an older installation must publish the Project-link release
 first.
 
 The OIDC client must allow `https://<hostname>/oidc` as a redirect URI before
-sign-in works on a new target. For Page10, add
-`https://page10.runtimed.run/oidc` to client
+sign-in works on a new target. For Pages, add
+`https://pages.runtimed.run/oidc` to client
 `1a90d36b-5b97-4ebb-a1bc-f3de7ddb70e0`. That change is made in the identity
 provider; no helper here does it.
 
 ## Telemetry
 
 Service units enable `CELLD_OTEL=1` and `CELLD_OTEL_RETENTION=30d` with celld's
-five-minute/5 MiB batching defaults. Page8 through Page10 also set
+five-minute/5 MiB batching defaults. Page8 through Page10 and Pages also set
 `OTEL_TRACES_SAMPLER=always_on`. Requests reach it with a `traceparent` whose
 sampled flag is clear. For a request with an unsampled parent, celld's default
 `parentbased_always_on` sampler records nothing, including the Worker's
@@ -730,9 +795,13 @@ source Pages outside the Project.
 node scripts/project-transfer.mjs import --bundle guide.bundle.json --dry-run
 PAGES_TARGET_TOKEN_FILE=~/.config/pages/anaconda-api-key \
   node scripts/project-transfer.mjs import \
-  --target https://page10.runtimed.run \
+  --target https://pages.runtimed.run \
   --bundle guide.bundle.json
 ```
+
+Moving Page10's Projects to Pages is one export from
+`https://page10.runtimed.run` and one import into `https://pages.runtimed.run`
+per Project, run by each Project's owner.
 
 `--dry-run` checks the bundle and prints where each Page lands without a
 network call. Import compares normalized origins and refuses the bundle's own

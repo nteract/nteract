@@ -498,14 +498,16 @@ function installFixture(
 function historicalInstallFixture(t, options = {}) {
   return installFixture(t, {
     ...options,
-    ...(options.target !== "page10" && { qualify: profiles.deploymentProfile }),
+    ...(!profiles.QUALIFIED_TARGETS.includes(options.target) && {
+      qualify: profiles.deploymentProfile,
+    }),
   });
 }
 
 for (const target of ["pages-next", "page3", "page4", "page5", "page6", "page7", "page8", "page9"])
   test(`current installer refuses frozen ${target} before host commands or release writes`, (t) => {
     const fixture = installFixture(t, { target });
-    assert.throws(fixture.execute, /qualified only for page10/);
+    assert.throws(fixture.execute, /qualified only for page10 and pages/);
     assert.deepEqual(fixture.calls, []);
     assert.equal(fs.existsSync(fixture.local(fixture.release)), false);
     assert.equal(fs.existsSync(fixture.local(fixture.audit)), false);
@@ -1240,6 +1242,7 @@ const frozenBy = {
   page8: ["pages-next", "page3", "page4", "page5", "page6", "page7"],
   page9: ["page7", "page8"],
   page10: ["page7", "page8", "page9"],
+  pages: ["page7", "page8", "page9"],
 };
 test("every deploy profile owns distinct hosts, ports, prefixes and firewall resources", () => {
   const targets = [
@@ -1252,6 +1255,7 @@ test("every deploy profile owns distinct hosts, ports, prefixes and firewall res
     "page8",
     "page9",
     "page10",
+    "pages",
   ];
   const seen = new Map();
   const claim = (kind, value, target) => {
@@ -1274,11 +1278,11 @@ test("every deploy profile owns distinct hosts, ports, prefixes and firewall res
   }
 });
 
-for (const target of ["page7", "page8", "page9", "page10"])
+for (const target of ["page7", "page8", "page9", "page10", "pages"])
   test(`${target} rejects frozen manifests, DNS ownership and occupied resources`, async (t) => {
     const profile = profiles.deploymentProfile(target);
     assert.deepEqual(profile.frozenTargets, frozenBy[target]);
-    const stage = `/tmp/nteract-${target}-stage-abcd1234`;
+    const stage = `/tmp/${profile.deployment.service}-stage-abcd1234`;
     assert.equal(profiles.stageTarget(stage), target);
     for (const other of profile.frozenTargets) {
       const previous = profiles.deploymentProfile(other);
@@ -1338,8 +1342,8 @@ for (const target of ["page7", "page8", "page9", "page10"])
     }
   });
 
-test("compaction maintenance and company viewing are enabled for Page7 through Page10", (t) => {
-  for (const target of ["page6", "page7", "page8", "page9", "page10"]) {
+test("compaction maintenance and company viewing are enabled for Page7 through Pages", (t) => {
+  for (const target of ["page6", "page7", "page8", "page9", "page10", "pages"]) {
     const f = historicalInstallFixture(t, { target });
     f.execute();
     const config = JSON.parse(f.read(f.release + "/wrangler.json"));
@@ -1351,7 +1355,7 @@ test("compaction maintenance and company viewing are enabled for Page7 through P
     );
     assert.equal(
       config.vars.PAGES_CATALOG_INDEX,
-      ["page8", "page9", "page10"].includes(target) ? "1" : undefined,
+      ["page8", "page9", "page10", "pages"].includes(target) ? "1" : undefined,
     );
   }
 });
@@ -1409,4 +1413,111 @@ test("fresh Page10 installation owns its origin, storage, runtime and service", 
     );
     assert.equal(fs.existsSync(f.local("/opt/" + prior.service)), false);
   }
+});
+
+test("fresh Pages installation owns pages.runtimed.run and its -live resources", (t) => {
+  const target = "pages";
+  const profile = profiles.deploymentProfile(target);
+  assert.deepEqual(profiles.selectTarget(["--target", target, "plan"]), { target, args: ["plan"] });
+  assert.doesNotThrow(() => profiles.assertQualifiedDeploymentTarget(target));
+  assert.deepEqual(profile.deployment, {
+    host: "lab1",
+    hostname: "pages.runtimed.run",
+    service: "nteract-pages-live",
+    bucket: profiles.deploymentProfile("page10").deployment.bucket,
+    prefix: "standalone/pages-live",
+    region: "us-east-1",
+    listen: "127.0.0.1:9481",
+    internalListen: "127.0.0.1:19481",
+    runtime: profiles.CELLD_RELEASE.path,
+    requiredVersion: "celld 0.6.3",
+  });
+  assert.equal(profile.firewallTable, "nteract_pages_live");
+  assert.equal(profile.firewallMark, "0x00100000");
+  assert.equal(profile.tunnelService, "cloudflared-pages-live.service");
+  // Every Page10 flag carries over; only the owned resources differ.
+  const owned = ["deployment", "firewallTable", "firewallMark", "firewallComment", "tunnelService"];
+  const flags = (name) =>
+    Object.fromEntries(
+      Object.entries(profiles.deploymentProfile(name)).filter(([key]) => !owned.includes(key)),
+    );
+  assert.deepEqual(flags(target), flags("page10"));
+  // Page10 stays deployable until its Projects are copied in.
+  assert.equal(profile.frozenTargets.includes("page10"), false);
+
+  // An earlier prototype left a disabled nteract-pages.service, /etc/nteract-pages
+  // and an nteract_pages table on the host. None of them belongs to this target,
+  // and neither do live Page10's listeners, table and mark.
+  const legacy = {
+    unit: "/etc/systemd/system/nteract-pages.service",
+    config: "/etc/nteract-pages/ownership.json",
+    base: "/opt/nteract-pages/celld",
+  };
+  const page10 = profiles.deploymentProfile("page10");
+  const f = installFixture(t, {
+    target,
+    fresh: true,
+    listeners: [page10.deployment.listen, page10.deployment.internalListen]
+      .map((listen) => `LISTEN 0 4096 ${listen} 0.0.0.0:*`)
+      .join("\n"),
+    rules: JSON.stringify([
+      { table: "nteract_pages" },
+      { table: page10.firewallTable, mark: Number(page10.firewallMark) },
+    ]),
+  });
+  f.write(legacy.unit, "legacy unit");
+  f.write(
+    legacy.config,
+    JSON.stringify({ prefix: "standalone/pages", hostname: "pages.runtimed.run" }),
+  );
+  f.write(legacy.base, "legacy runtime");
+  f.execute();
+  for (const [file, contents] of [
+    [legacy.unit, "legacy unit"],
+    [legacy.config, JSON.stringify({ prefix: "standalone/pages", hostname: "pages.runtimed.run" })],
+    [legacy.base, "legacy runtime"],
+  ])
+    assert.equal(f.read(file), contents, file);
+  const config = JSON.parse(f.read(f.release + "/wrangler.json"));
+  assert.equal(config.vars.NOTEBOOK_CLOUD_PUBLIC_ORIGIN, "https://pages.runtimed.run");
+  assert.equal(config.vars.NOTEBOOK_CLOUD_OIDC_REDIRECT_URI, "https://pages.runtimed.run/oidc");
+  assert.equal(config.vars.NOTEBOOK_CLOUD_OIDC_CLIENT_ID, "1a90d36b-5b97-4ebb-a1bc-f3de7ddb70e0");
+  assert.equal(config.vars.PAGES_EDITOR, "wordgard");
+  assert.equal(config.vars.PAGES_CATALOG_INDEX, "1");
+  assert.equal(config.vars.PAGES_DEFAULT_PAGE_QUOTA, "250");
+  assert.deepEqual(JSON.parse(f.read("/etc/nteract-pages-live/ownership.json")), {
+    prefix: "standalone/pages-live",
+    hostname: "pages.runtimed.run",
+  });
+  const unit = f.read("/etc/systemd/system/nteract-pages-live.service");
+  assert.match(unit, /User=nteract-pages-live\n/);
+  assert.match(unit, /WorkingDirectory=\/var\/lib\/nteract-pages-live\n/);
+  assert.match(
+    unit,
+    /ExecStart=\/opt\/nteract-pages-live\/celld --bucket s3:\/\/[^ ]+\/standalone\/pages-live /,
+  );
+  assert.match(unit, /--listen 127[.]0[.]0[.]1:9481 --internal-listen 127[.]0[.]0[.]1:19481/);
+  assert.match(
+    unit,
+    /ExecStartPre=\+\/usr\/bin\/node \/opt\/nteract-pages-live\/firewall[.]mjs --target pages\n/,
+  );
+  const prefixCheck = f.calls.find(
+    ({ command, args }) => command === "/usr/local/bin/aws" && args.includes("--prefix"),
+  );
+  assert.equal(
+    prefixCheck.args[prefixCheck.args.indexOf("--prefix") + 1],
+    "standalone/pages-live/",
+  );
+  assert.ok(
+    f.calls
+      .filter(
+        ({ command, args }) =>
+          command === "systemctl" && ["restart", "start", "stop", "enable"].includes(args[0]),
+      )
+      .every(({ args }) => args[1] === "nteract-pages-live"),
+  );
+  const rules = pagesFirewall(999, false, target);
+  assert.match(rules, /table inet nteract_pages_live \{/);
+  assert.match(rules, /ct mark set ct mark \| 0x00100000/);
+  assert.match(rules, /"system[.]slice\/nteract-pages-live[.]service"/);
 });

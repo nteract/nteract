@@ -37,6 +37,7 @@ test("GET llms.txt is readable without authentication and explains the supported
   assert.equal(response.headers.get("set-cookie"), null);
   const guide = await response.text();
   assert.ok(guide.startsWith(`# ${PRODUCT_NAME}\n`));
+  assert.ok(guide.startsWith("# Pages\n"));
   // A fetch that truncates the guide still gets the quick start and the codes.
   for (const marker of ["## Quick start", "## Error codes", "auth_required", "invalid_retry_token"])
     assert.ok(guide.indexOf(marker) < 12_000, marker);
