@@ -12551,6 +12551,303 @@ async fn project_file_watcher_discovers_manifest_created_after_not_found() {
     room.file_binding.shutdown_project_file_watcher().await;
 }
 
+/// A filesystem change between the initial scan and OS subscription must
+/// be reconciled without depending on a second filesystem event.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn project_file_watcher_reconciles_changes_during_subscription() {
+    use runtime_doc::ProjectContext;
+    let tmp = tempfile::TempDir::new().unwrap();
+    std::fs::create_dir_all(tmp.path().join(".git")).unwrap();
+    let notebook = tmp.path().join("demo.ipynb");
+    std::fs::write(&notebook, "{}").unwrap();
+    let manifest = tmp.path().join("environment.yml");
+    std::fs::write(&manifest, "dependencies:\n  - python=3.11\n").unwrap();
+    let (room, _) = test_room_with_path(&tmp, "demo.ipynb");
+    let room = std::sync::Arc::new(room);
+    *room
+        .file_binding
+        .project_file_watcher
+        .before_subscribe
+        .lock()
+        .unwrap() = Some(Box::new(move || std::fs::remove_file(manifest).unwrap()));
+    super::project_context::refresh_project_context_async(&room, Some(&notebook)).await;
+    let ctx = room.state.with_doc(|sd| Ok(sd.project_context())).unwrap();
+    room.file_binding.shutdown_project_file_watcher().await;
+    assert!(
+        matches!(ctx, ProjectContext::NotFound { .. }),
+        "stale snapshot: {ctx:?}"
+    );
+}
+
+/// Deleting the nearest manifest must expand coverage to the parent manifest;
+/// edits there must keep updating context without reopening the notebook.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn project_file_watcher_expands_coverage_after_deletion() {
+    use runtime_doc::{ProjectContext, ProjectFileKind};
+    let tmp = tempfile::TempDir::new().unwrap();
+    std::fs::create_dir_all(tmp.path().join(".git")).unwrap();
+    let outer = tmp.path().join("pyproject.toml");
+    std::fs::write(
+        &outer,
+        "[project]\nname = \"outer\"\ndependencies = [\"pandas\"]\n",
+    )
+    .unwrap();
+    let sub = tmp.path().join("analysis");
+    std::fs::create_dir(&sub).unwrap();
+    let inner = sub.join("environment.yml");
+    std::fs::write(&inner, "dependencies:\n  - python=3.11\n").unwrap();
+    let notebook = sub.join("demo.ipynb");
+    std::fs::write(&notebook, "{}").unwrap();
+    let (room, _) = test_room_with_path(&tmp, "analysis/demo.ipynb");
+    let room = std::sync::Arc::new(room);
+    super::project_context::refresh_project_context_async(&room, Some(&notebook)).await;
+    std::fs::remove_file(&inner).unwrap();
+    wait_for_project_context(&room, |ctx| {
+        detected_kind(ctx) == Some(ProjectFileKind::PyprojectToml)
+    })
+    .await;
+    // Atomic replacement exercises directory watches, not inode watches.
+    let replacement = tmp.path().join("pyproject.toml.new");
+    std::fs::write(
+        &replacement,
+        "[project]\nname = \"outer\"\ndependencies = [\"numpy\"]\n",
+    )
+    .unwrap();
+    std::fs::rename(&replacement, &outer).unwrap();
+    wait_for_project_context(&room, |ctx| {
+        matches!(ctx, ProjectContext::Detected { parsed, .. }
+        if parsed.dependencies == ["numpy"])
+    })
+    .await;
+    room.file_binding.shutdown_project_file_watcher().await;
+}
+
+/// Replacing a directory drops its Linux inotify subscription. Publishing the
+/// replacement snapshot is insufficient: a later edit must still be observed.
+#[cfg(target_os = "linux")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn project_file_watcher_rearms_recreated_directory() {
+    use runtime_doc::ProjectContext;
+    let tmp = tempfile::TempDir::new().unwrap();
+    std::fs::create_dir(tmp.path().join(".git")).unwrap();
+    let anchor = tmp.path().join("analysis");
+    std::fs::create_dir(&anchor).unwrap();
+    let manifest = anchor.join("environment.yml");
+    std::fs::write(&manifest, "dependencies:\n  - numpy\n").unwrap();
+    let (room, _) = test_room_with_path(&tmp, "untitled.ipynb");
+    let room = std::sync::Arc::new(room);
+    super::room::NotebookFileBinding::set_path_for_test(&room, None).await;
+    super::project_context::refresh_project_context_async(&room, Some(&anchor)).await;
+
+    std::fs::remove_file(&manifest).unwrap();
+    std::fs::remove_dir(&anchor).unwrap();
+    std::fs::create_dir(&anchor).unwrap();
+    std::fs::write(&manifest, "dependencies:\n  - pandas\n").unwrap();
+    wait_for_project_context(&room, |ctx| {
+        matches!(ctx, ProjectContext::Detected { parsed, .. }
+            if parsed.dependencies == ["pandas"])
+    })
+    .await;
+
+    std::fs::write(&manifest, "dependencies:\n  - scipy\n").unwrap();
+    wait_for_project_context(&room, |ctx| {
+        matches!(ctx, ProjectContext::Detected { parsed, .. }
+            if parsed.dependencies == ["scipy"])
+    })
+    .await;
+    room.file_binding.shutdown_project_file_watcher().await;
+}
+
+/// A directory that stays absent beyond a refresh must be rediscovered, even
+/// outside a repository where there is no parent subscription to wake it.
+#[cfg(target_os = "linux")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn project_file_watcher_recovers_missing_and_renamed_directory() {
+    use runtime_doc::ProjectContext;
+    for rename in [false, true] {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let anchor = tmp.path().join("analysis");
+        std::fs::create_dir(&anchor).unwrap();
+        let manifest = anchor.join("environment.yml");
+        std::fs::write(&manifest, "dependencies:\n  - numpy\n").unwrap();
+        let (room, _) = test_room_with_path(&tmp, "untitled.ipynb");
+        let room = std::sync::Arc::new(room);
+        super::room::NotebookFileBinding::set_path_for_test(&room, None).await;
+        super::project_context::refresh_project_context_async(&room, Some(&anchor)).await;
+        if rename {
+            std::fs::rename(&anchor, tmp.path().join("retired")).unwrap();
+        } else {
+            std::fs::remove_file(&manifest).unwrap();
+            std::fs::remove_dir(&anchor).unwrap();
+        }
+        wait_for_project_context(&room, |ctx| matches!(ctx, ProjectContext::NotFound { .. })).await;
+        std::fs::create_dir(&anchor).unwrap();
+        std::fs::write(&manifest, "dependencies:\n  - pandas\n").unwrap();
+        wait_for_project_context(&room, |ctx| {
+            matches!(ctx, ProjectContext::Detected { parsed, .. }
+                if parsed.dependencies == ["pandas"])
+        })
+        .await;
+        std::fs::write(&manifest, "dependencies:\n  - scipy\n").unwrap();
+        wait_for_project_context(&room, |ctx| {
+            matches!(ctx, ProjectContext::Detected { parsed, .. }
+                if parsed.dependencies == ["scipy"])
+        })
+        .await;
+        room.file_binding.shutdown_project_file_watcher().await;
+    }
+}
+
+/// A slow retired watcher cannot overwrite a newer anchor's context or clear
+/// its ownership slot when it finally finishes subscribing.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn project_file_watcher_fences_replaced_generation() {
+    use runtime_doc::ProjectContext;
+    let tmp = tempfile::TempDir::new().unwrap();
+    std::fs::create_dir_all(tmp.path().join(".git")).unwrap();
+    let old = tmp.path().join("old");
+    let new = tmp.path().join("new");
+    for dir in [&old, &new] {
+        std::fs::create_dir(dir).unwrap();
+    }
+    let old_notebook = old.join("demo.ipynb");
+    let new_notebook = new.join("demo.ipynb");
+    for notebook in [&old_notebook, &new_notebook] {
+        std::fs::write(notebook, "{}").unwrap();
+    }
+    std::fs::write(old.join("environment.yml"), "dependencies:\n  - numpy\n").unwrap();
+    let (room, _) = test_room_with_path(&tmp, "old/demo.ipynb");
+    let room = std::sync::Arc::new(room);
+    let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
+    let (resume_tx, resume_rx) = std::sync::mpsc::channel();
+    *room
+        .file_binding
+        .project_file_watcher
+        .before_subscribe
+        .lock()
+        .unwrap() = Some(Box::new(move || {
+        let _ = entered_tx.send(());
+        resume_rx
+            .recv_timeout(std::time::Duration::from_secs(15))
+            .unwrap();
+    }));
+    let old_refresh = {
+        let room = room.clone();
+        tokio::spawn(async move {
+            super::project_context::refresh_project_context_async(&room, Some(&old_notebook)).await;
+        })
+    };
+    entered_rx.await.unwrap();
+    super::room::NotebookFileBinding::set_path_for_test(&room, Some(new_notebook.clone())).await;
+    super::project_context::refresh_project_context_async(&room, Some(&new_notebook)).await;
+    resume_tx.send(()).unwrap();
+    old_refresh.await.unwrap();
+    assert!(room.file_binding.has_project_file_watcher_for_test().await);
+    let ctx = room.state.with_doc(|sd| Ok(sd.project_context())).unwrap();
+    assert!(
+        matches!(ctx, ProjectContext::NotFound { .. }),
+        "retired watcher published: {ctx:?}"
+    );
+    std::fs::write(new.join("environment.yml"), "dependencies:\n  - pandas\n").unwrap();
+    wait_for_project_context(&room, |ctx| {
+        matches!(ctx, ProjectContext::Detected { parsed, .. }
+        if parsed.dependencies == ["pandas"])
+    })
+    .await;
+    room.file_binding.shutdown_project_file_watcher().await;
+}
+
+/// A delayed save-as refresh must use the current binding, not revive the
+/// obsolete path passed by an older caller.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn project_file_watcher_uses_current_binding_for_delayed_refresh() {
+    use runtime_doc::ProjectContext;
+    let tmp = tempfile::TempDir::new().unwrap();
+    std::fs::create_dir_all(tmp.path().join(".git")).unwrap();
+    let old_notebook = tmp.path().join("old/demo.ipynb");
+    let new_notebook = tmp.path().join("new/demo.ipynb");
+    for notebook in [&old_notebook, &new_notebook] {
+        std::fs::create_dir_all(notebook.parent().unwrap()).unwrap();
+        std::fs::write(notebook, "{}").unwrap();
+    }
+    std::fs::write(
+        tmp.path().join("old/environment.yml"),
+        "dependencies:\n  - numpy\n",
+    )
+    .unwrap();
+    let (room, _) = test_room_with_path(&tmp, "new/demo.ipynb");
+    let room = std::sync::Arc::new(room);
+    super::project_context::refresh_project_context_async(&room, Some(&old_notebook)).await;
+    let ctx = room.state.with_doc(|sd| Ok(sd.project_context())).unwrap();
+    assert!(
+        matches!(ctx, ProjectContext::NotFound { .. }),
+        "stale binding: {ctx:?}"
+    );
+    std::fs::write(
+        tmp.path().join("new/environment.yml"),
+        "dependencies:\n  - pandas\n",
+    )
+    .unwrap();
+    wait_for_project_context(&room, |ctx| {
+        matches!(ctx, ProjectContext::Detected { parsed, .. }
+        if parsed.dependencies == ["pandas"])
+    })
+    .await;
+    room.file_binding.shutdown_project_file_watcher().await;
+}
+
+/// Linux inotify reports OPEN when the watcher parses its own manifest.
+/// Those read notifications must not produce perpetual CRDT revisions.
+#[cfg(target_os = "linux")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn project_file_watcher_stabilizes_after_its_own_reads() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    std::fs::create_dir_all(tmp.path().join(".git")).unwrap();
+    let notebook = tmp.path().join("demo.ipynb");
+    std::fs::write(&notebook, "{}").unwrap();
+    std::fs::write(
+        tmp.path().join("environment.yml"),
+        "dependencies:\n  - numpy\n",
+    )
+    .unwrap();
+    let (room, _) = test_room_with_path(&tmp, "demo.ipynb");
+    let room = std::sync::Arc::new(room);
+    super::project_context::refresh_project_context_async(&room, Some(&notebook)).await;
+    tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+    let before = room.state.with_doc(|sd| Ok(sd.project_context())).unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+    let after = room.state.with_doc(|sd| Ok(sd.project_context())).unwrap();
+    room.file_binding.shutdown_project_file_watcher().await;
+    assert_eq!(
+        format!("{before:?}"),
+        format!("{after:?}"),
+        "read events kept publishing new observations"
+    );
+}
+
+/// Explicit teardown fences even a caller that resumes after shutdown.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn project_file_watcher_does_not_restart_after_shutdown() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    std::fs::create_dir_all(tmp.path().join(".git")).unwrap();
+    let notebook = tmp.path().join("demo.ipynb");
+    std::fs::write(&notebook, "{}").unwrap();
+    let (room, _) = test_room_with_path(&tmp, "demo.ipynb");
+    let room = std::sync::Arc::new(room);
+    super::project_context::refresh_project_context_async(&room, Some(&notebook)).await;
+    room.file_binding.shutdown_project_file_watcher().await;
+    let before = room.state.with_doc(|sd| Ok(sd.project_context())).unwrap();
+    std::fs::write(
+        tmp.path().join("environment.yml"),
+        "dependencies:\n  - numpy\n",
+    )
+    .unwrap();
+    super::project_context::refresh_project_context_async(&room, Some(&notebook)).await;
+    let after = room.state.with_doc(|sd| Ok(sd.project_context())).unwrap();
+    assert!(!room.file_binding.has_project_file_watcher_for_test().await);
+    assert_eq!(format!("{before:?}"), format!("{after:?}"));
+}
+
 /// A manifest created closer to the notebook than the detected one wins
 /// without reopening the notebook.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
