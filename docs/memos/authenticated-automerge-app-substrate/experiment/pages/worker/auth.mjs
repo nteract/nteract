@@ -295,7 +295,74 @@ export function requireWrite(identity) {
 
 /** Server failures whose fixed message tells the caller to retry the same
  * request. Every other 5xx keeps the generic message. */
-const RETRYABLE_SERVER_CODES = [
+/** Codes a refusal below 500 carries to the client as-is. The agent guide
+ * lists every one of these. */
+export const CLIENT_ERROR_CODES = Object.freeze([
+  "auth_required",
+  "invalid_api_key",
+  "unknown_operation",
+  "invalid_arguments",
+  "invalid_page_id",
+  "page_not_found",
+  "oauth_invalid_token",
+  "oauth_insufficient_scope",
+  "retry_expired",
+  "invalid_retry_token",
+  "idempotency_conflict",
+  "operation_receipt_capacity",
+  "pending_operation_capacity",
+  "page_recovery_blocked",
+  "page_trashed",
+  "page_not_in_trash",
+  "trash_capacity",
+  "page_quota_exceeded",
+  "purge_preview_required",
+  "purge_preview_invalid",
+  "invalid_idempotency_key",
+  "invalid_edit_selector",
+  "replace_match_too_large",
+  "invalid_comment_selector",
+  "stale_heads",
+  "edit_conflict",
+  "resync_required",
+  "image_not_found",
+  "invalid_presence_target",
+  "presence_revision_changed",
+  "presence_target_not_found",
+  "progress_session_expired",
+  "progress_capacity_exceeded",
+  "progress_budget_exceeded",
+  "invalid_cursor",
+  "invalid_list_arguments",
+  "company_email_proof_required",
+  "project_id_as_page_id",
+  "page_id_as_project_id",
+  "project_not_found",
+  "project_pending",
+  "project_capacity",
+  "project_revision_conflict",
+  "tool_renamed",
+  "argument_renamed",
+  "placement_mismatch",
+  "parent_unavailable",
+  "nesting_depth_exceeded",
+  "home_page_protected",
+  "page_has_children",
+  "not_page_owner",
+  "placement_cycle",
+  "move_destination_required",
+  "invalid_position",
+  "position_sibling_unknown",
+  "lifecycle_unsettled",
+  "unsupported_schema_feature",
+  "unsupported_markdown",
+  "preserved_markdown_converting",
+  "comment_not_author",
+  "comment_access_denied",
+  "operation_pending",
+]);
+
+export const RETRYABLE_SERVER_CODES = Object.freeze([
   "record_persistence_timeout",
   "request_timeout",
   // The host is moving a Page's comments to their own document.
@@ -303,7 +370,7 @@ const RETRYABLE_SERVER_CODES = [
   // The owner's Catalog isn't in the current location shape yet
   // (location-shape.mjs); the next write tries the pass again.
   "location_migration_required",
-];
+]);
 
 const LOGGED_ERROR_TYPES = [
   "Error",
@@ -342,7 +409,9 @@ function failureShape(error) {
     origin: failureOrigin(error),
     ...(error?.name === "BackendError" &&
       /^[a-z-]{1,32}$/.test(error.operation) &&
-      /^[a-z-]{1,32}$/.test(error.code) && { backend: `${error.operation}/${error.code}` }),
+      /^[a-z-]{1,32}$/.test(error.code) && {
+        backend: `${error.operation}/${error.code}`,
+      }),
   };
 }
 
@@ -387,65 +456,7 @@ export function errorResponse(error, stage = "request") {
     {
       error: status < 500 || coded ? error.message : "Pages request failed",
       ...(coded && { code: error.code, retryable }),
-      ...([
-        "auth_required",
-        "invalid_api_key",
-        "unknown_operation",
-        "invalid_arguments",
-        "invalid_page_id",
-        "page_not_found",
-        "oauth_invalid_token",
-        "oauth_insufficient_scope",
-        "retry_expired",
-        "invalid_retry_token",
-        "idempotency_conflict",
-        "operation_receipt_capacity",
-        "pending_operation_capacity",
-        "page_recovery_blocked",
-        "page_trashed",
-        "page_not_in_trash",
-        "trash_capacity",
-        "page_quota_exceeded",
-        "purge_preview_required",
-        "purge_preview_invalid",
-        "invalid_idempotency_key",
-        "invalid_edit_selector",
-        "replace_match_too_large",
-        "invalid_comment_selector",
-        "stale_heads",
-        "edit_conflict",
-        "resync_required",
-        "image_not_found",
-        "invalid_presence_target",
-        "presence_revision_changed",
-        "presence_target_not_found",
-        "progress_session_expired",
-        "progress_capacity_exceeded",
-        "progress_budget_exceeded",
-        "invalid_cursor",
-        "invalid_list_arguments",
-        "company_email_proof_required",
-        "project_id_as_page_id",
-        "page_id_as_project_id",
-        "project_not_found",
-        "project_pending",
-        "project_capacity",
-        "project_revision_conflict",
-        "tool_renamed",
-        "argument_renamed",
-        "placement_mismatch",
-        "parent_unavailable",
-        "nesting_depth_exceeded",
-        "home_page_protected",
-        "page_has_children",
-        "lifecycle_unsettled",
-        "unsupported_schema_feature",
-        "unsupported_markdown",
-        "preserved_markdown_converting",
-        "comment_not_author",
-        "comment_access_denied",
-        "operation_pending",
-      ].includes(error?.code) && { code: error.code }),
+      ...(CLIENT_ERROR_CODES.includes(error?.code) && { code: error.code }),
       ...(error?.code === "unsupported_markdown" &&
         error.details?.unsupported && {
           unsupported: {
@@ -489,7 +500,9 @@ export function errorResponse(error, stage = "request") {
         ...(Array.isArray(error.details?.conflicts) && {
           conflicts: error.details.conflicts.slice(0, 10).map((conflict) => ({
             block_id: String(conflict.block_id ?? "").slice(0, 128),
-            ...(Number.isSafeInteger(conflict.node_index) && { node_index: conflict.node_index }),
+            ...(Number.isSafeInteger(conflict.node_index) && {
+              node_index: conflict.node_index,
+            }),
             reason: String(conflict.reason ?? "Target changed").slice(0, 240),
           })),
         }),
@@ -506,7 +519,10 @@ export function errorResponse(error, stage = "request") {
 }
 
 export function json(value, status = 200) {
-  return Response.json(value, { status, headers: { "cache-control": "no-store" } });
+  return Response.json(value, {
+    status,
+    headers: { "cache-control": "no-store" },
+  });
 }
 
 export async function readJson(request) {

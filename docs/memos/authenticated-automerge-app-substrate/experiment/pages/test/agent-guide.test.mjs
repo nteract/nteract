@@ -3,6 +3,8 @@ import { test } from "node:test";
 import worker from "../worker/index.mjs";
 import { agentGuide } from "../agent-guide.mjs";
 import { tools } from "../mcp.mjs";
+import { CLIENT_ERROR_CODES, RETRYABLE_SERVER_CODES } from "../worker/auth.mjs";
+import { MOVE_STATUS } from "../worker/move-page.mjs";
 import { PRODUCT_NAME } from "../shared/product.mjs";
 import {
   codexConfig,
@@ -38,14 +40,17 @@ test("GET llms.txt is readable without authentication and explains the supported
   // A fetch that truncates the guide still gets the quick start and the codes.
   for (const marker of ["## Quick start", "## Error codes", "auth_required", "invalid_retry_token"])
     assert.ok(guide.indexOf(marker) < 12_000, marker);
-  for (const code of [
-    "invalid_api_key",
-    "unknown_operation",
-    "invalid_arguments",
-    "invalid_page_id",
-    "page_not_found",
-  ])
-    assert.ok(guide.includes(code), code);
+  // Every code a client can receive is in the error list, ahead of setup.
+  const codeList = guide.slice(
+    guide.indexOf("## Error codes"),
+    guide.indexOf("## Connect your agent"),
+  );
+  for (const code of new Set([
+    ...CLIENT_ERROR_CODES,
+    ...RETRYABLE_SERVER_CODES,
+    ...Object.keys(MOVE_STATUS),
+  ]))
+    assert.match(codeList, new RegExp(`\\b${code}\\b`), code);
   assert.equal(guide.match(/^### One (document )?title/gm).length, 1, "one title section");
   for (const stale of [
     "prototype",

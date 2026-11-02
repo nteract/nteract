@@ -373,7 +373,14 @@ test("JSON tool refusals carry a code: rejected key, unknown operation, bad argu
   assert.equal(unknown.status, 400);
   assert.equal(unknown.body.code, "unknown_operation");
   assert.match(unknown.body.error, /^Unknown operation `list_everything`\. Valid operations: /);
-  for (const name of ["list_pages", "read_page", "create_page", "create_project", "list_projects"])
+  for (const name of [
+    "list_pages",
+    "read_page",
+    "create_page",
+    "create_project",
+    "list_projects",
+    "move_page",
+  ])
     assert.ok(unknown.body.error.includes(name), name);
   assert.doesNotMatch(unknown.body.error, /_space/);
   assert.equal((await call({ arguments: {} })).body.code, "unknown_operation");

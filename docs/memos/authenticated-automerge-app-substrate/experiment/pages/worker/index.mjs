@@ -98,6 +98,7 @@ import {
   observeRecordSaves,
   ActorPersistence,
   MAX_ATTESTED_CHANGES,
+  STORAGE_KEYS_PER_CALL,
   loadCommitAuthors,
   replayAuthor,
 } from "./actor-authorship.mjs";
@@ -202,6 +203,7 @@ import {
   locationAnswer,
   locationEntries,
   locationScan,
+  parentActive,
   projectOf,
   publicLocation,
   receiptLocation,
@@ -214,7 +216,14 @@ import {
   migrateLocationShape,
   shapeState,
 } from "./location-shape.mjs";
-import { MAX_DEPTH, deriveLocation } from "../model/location.mjs";
+import { LOCATION_REVISION_KEY, movePage } from "./move-page.mjs";
+import {
+  MAX_DEPTH,
+  deriveLocation,
+  planMove,
+  subtreeOf,
+  validPosition,
+} from "../model/location.mjs";
 import {
   SPACE_LIMIT,
   homePageMarkdown,
@@ -222,6 +231,7 @@ import {
   requirePageIdArgument,
   requireSpaceIdArgument,
   spaceNotFound,
+  validSpaceId,
   validateSpaceInput,
 } from "./spaces.mjs";
 // The class name is the storage identity for Projects; see spaces.mjs.
@@ -270,6 +280,7 @@ const operations = new Set([
   "delete_page",
   "restore_page",
   "purge_page",
+  "move_page",
   "create_space",
   "list_spaces",
   "get_space",
@@ -462,6 +473,46 @@ function validateCreateInput(args) {
   if (unsupported) throw unsupportedMarkdownError(unsupported);
 }
 
+/**
+ * move_page's arguments as the Catalog runs them: `{ pageId, parentId,
+ * position }`. Every refusal here is deterministic input, so it consumes no
+ * key and runs no shape pass. This build moves by `parent_id` alone: a
+ * Project's top level is its home Page (get_project's home_page_id), and a
+ * `project_id` destination (`space_id` once the Project API has mapped it)
+ * or an omitted parent is `move_destination_required`. The retry_token is
+ * required: a move's lost answer is reconciled by replaying its receipt.
+ */
+function validateMoveInput(args) {
+  const pageId = requirePageIdArgument(args.page_id);
+  if (args.space_id !== undefined || args.parent_id === undefined || args.parent_id === null)
+    throw new HttpError(
+      400,
+      "Name parent_id: the Page to move under. To move a Page to its Project's top level, name the Project's home Page (get_project's home_page_id). Destinations by project_id, and Your items, are not available yet.",
+      "move_destination_required",
+    );
+  if (validSpaceId(args.parent_id))
+    throw new HttpError(
+      400,
+      "parent_id expects a Page ID, but this is a Project ID. To move a Page to the Project's top level, pass its home Page (get_project's home_page_id) as parent_id.",
+      "project_id_as_page_id",
+    );
+  const parentId = requirePageIdArgument(args.parent_id, "parent_id");
+  const position = args.position === undefined ? "last" : args.position;
+  if (!validPosition(position))
+    throw new HttpError(
+      400,
+      'position is "first", "last", {"before": page_id} or {"after": page_id}',
+      "invalid_position",
+    );
+  if (typeof args.retry_token !== "string")
+    throw new HttpError(
+      400,
+      "move_page needs the retry_token from list_pages and a v1_ idempotency_key built from its retry_key_prefix",
+      "invalid_retry_token",
+    );
+  return { pageId, parentId, position };
+}
+
 function forwarded(request, path, body) {
   const url = new URL(request.url);
   url.pathname = path;
@@ -588,9 +639,13 @@ async function invoke(request, env, operation, args = {}) {
   if (!READ_OPERATIONS.includes(operation)) requireWrite(identity);
   if (["get_space", "update_space"].includes(operation)) requireSpaceIdArgument(args.space_id);
   if (
-    ["list_pages", "create_page", ...Object.keys(lifecycleRoutes), ...spaceOperations].includes(
-      operation,
-    )
+    [
+      "list_pages",
+      "create_page",
+      "move_page",
+      ...Object.keys(lifecycleRoutes),
+      ...spaceOperations,
+    ].includes(operation)
   ) {
     const body = { operation, arguments: args, ...(await quotaFields(env, identity, operation)) };
     return withinToolDeadline(
@@ -1161,6 +1216,7 @@ export class Catalog {
       if (body.operation === "create_space")
         return await this.createSpace(request, identity, args, limit);
       if (body.operation === "update_space") return await this.updateSpace(request, identity, args);
+      if (body.operation === "move_page") return await this.movePage(identity, args);
       const lifecycle = lifecycleRoutes[body.operation];
       if (!["create_page", "register_page"].includes(body.operation) && !lifecycle)
         throw new HttpError(400, "Unknown catalog operation");
@@ -1798,6 +1854,197 @@ export class Catalog {
     const parentId = (await storage.get(`trash/${pageId}`))?.parent_id;
     if (parentId && (await storage.get(`trash/${parentId}`))?.reservation)
       await this.settleReservation(parentId);
+  }
+
+  /**
+   * Run one move_page through the move-page machine (move-page.mjs). This
+   * method validates the input, runs the shape pass, then feeds the machine
+   * what it reads: the journal row, the settled reservations, the plan and
+   * the barrier. The machine decides every step; the plan it approves is kept
+   * here for the one put. Requests reach this one at a time through the
+   * Catalog's queue.
+   */
+  async movePage(identity, args) {
+    const { pageId, parentId, position } = validateMoveInput(args);
+    // Input is sound: the shape pass runs first, as for every queued write.
+    Catalog.requireMigrated(await this.locationShape());
+    const run = {
+      identity,
+      pageId,
+      parentId,
+      position,
+      key: mutationKey(args),
+      digest: await fingerprint("move_page", args, identity),
+    };
+    let state = { name: "received" };
+    let event = await this.inspectMove(run, args.retry_token);
+    for (;;) {
+      const result = movePage.step(state, event);
+      if (result.rejected !== undefined)
+        throw new Error(`move_page refused ${event.type}: ${result.rejected}`);
+      let next;
+      for (const effect of result.effects) next = await this.runMoveEffect(run, effect);
+      if (result.response !== undefined) return json(result.response.body, result.response.status);
+      if (!next) throw new Error("move_page stopped without a reply");
+      ({ state } = result);
+      event = next;
+    }
+  }
+
+  /** The journal's answer for this key as an `inspected` event. Only the
+   * two outcomes the machine decides are events; a malformed or expired
+   * token is a deterministic input error and throws as every write's does. */
+  async inspectMove(run, retryToken) {
+    let inspected;
+    try {
+      inspected = await inspectOperation(this.storage, {
+        key: run.key,
+        digest: run.digest,
+        retryToken,
+        scope: `catalog:${run.identity.principal}`,
+        principal: run.identity.principal,
+      });
+    } catch (error) {
+      if (error.code === "idempotency_conflict") return { type: "inspected", row: "conflict" };
+      throw error;
+    }
+    run.retry = inspected.retry;
+    const row = inspected.entry;
+    if (!row) return { type: "inspected", row: "absent" };
+    if (row.pending) return { type: "inspected", row: "pending" };
+    return { type: "inspected", row: "completed", receipt: row.receipt };
+  }
+
+  async runMoveEffect(run, effect) {
+    const storage = this.storage;
+    switch (effect.type) {
+      case "settle":
+        try {
+          await this.settleReservations([...new Set([run.pageId, run.parentId])]);
+          return { type: "settled", ok: true };
+        } catch (error) {
+          if (error.code === replies.unsettled.body.code) return { type: "settled", ok: false };
+          throw error;
+        }
+      case "plan":
+        return this.planMoveEvent(run);
+      case "write":
+        await this.writeMove(run);
+        return undefined;
+      case "sync":
+        try {
+          await storage.sync();
+          return { type: "synced", ok: true };
+        } catch (error) {
+          logFailure(error, "catalog-move");
+          return { type: "synced", ok: false };
+        }
+    }
+    throw new Error(`move_page can't run ${effect.type}`);
+  }
+
+  /**
+   * Plan the move as a `planned` event. The model's `planMove` decides over
+   * this Catalog's location entries; what it can't see is checked here first:
+   * a Page this account only has shared (`not_page_owner`), one still being
+   * created (`page_not_found`, as listings hide it), a parent leaving for
+   * Trash (its reservation, which the entries skip), and a parent in another
+   * Project, which this build refuses. Trashed descendants move with the
+   * subtree and are reported apart from the active ones.
+   */
+  async planMoveEvent(run) {
+    const storage = this.storage;
+    const { pageId, parentId, position } = run;
+    const refuse = (code, message) => ({ type: "planned", ok: false, code, message });
+    const { entries } = await locationScan(storage);
+    const entry = entries.get(pageId);
+    if (!entry) {
+      if (await storage.get(`shared/${pageId}`))
+        return refuse(
+          "not_page_owner",
+          "Only the Page's owner can move it; this Page is shared with you",
+        );
+      return refuse("page_not_found", "Page not found");
+    }
+    if (entry.state === "pending") return refuse("page_not_found", "Page not found");
+    if (!(await parentActive(storage, parentId)))
+      return refuse("parent_unavailable", "The parent Page is missing, pending or in Trash");
+    if (entry.state !== "trashed" && !("space_id" in entry)) {
+      const from = deriveLocation(entries, pageId);
+      const to = deriveLocation(entries, parentId);
+      if (from.ok && to.ok && from.space_id !== to.space_id)
+        return refuse(
+          "move_destination_required",
+          "In this build a Page moves within its Project, or within Your items. parent_id names a Page in another Project; moving between Projects is not available yet.",
+        );
+    }
+    const revision = (await storage.get(LOCATION_REVISION_KEY)) ?? 0;
+    const plan = planMove({ revision, entries }, pageId, { parent_id: parentId }, position);
+    if (!plan.ok) return refuse(plan.code, plan.message);
+    const trashed = subtreeOf(entries, pageId).filter(
+      ({ page_id }) => entries.get(page_id).state === "trashed",
+    ).length;
+    run.plan = plan;
+    run.receipt = {
+      page_id: pageId,
+      space_id: plan.moved.space_id,
+      parent_id: parentId,
+      position: plan.moved.position,
+      location_revision: plan.revision,
+      descendants: plan.moved.descendants - trashed,
+      trashed_descendants: trashed,
+    };
+    return { type: "planned", ok: true, receipt: run.receipt };
+  }
+
+  /**
+   * The one put: the moved entry with its new parent and position, the
+   * destination siblings the plan rekeyed, the location revision, the
+   * completed journal row with its receipt, and the index's dirty mark.
+   * `reserveOperation` checks capacity and writes nothing, so the row goes
+   * in with the rest. Storage takes at most STORAGE_KEYS_PER_CALL keys per
+   * put, so a large rebalance is several puts inside one transaction; a
+   * counted put may add the two count keys to a chunk, so chunks leave room.
+   */
+  async writeMove(run) {
+    const storage = this.storage;
+    const { pageId, key, plan } = run;
+    const row = await reserveOperation(storage, {
+      key,
+      retry: run.retry,
+      entry: {
+        fingerprint: run.digest,
+        pending: true,
+        pageId,
+        createdAt: new Date().toISOString(),
+      },
+    });
+    row.pending = false;
+    row.receipt = run.receipt;
+    const rekeyed = {};
+    for (const [id, entry] of Object.entries(plan.entries))
+      if (id !== pageId) rekeyed[id] = entry.position;
+    const transact = (work) =>
+      typeof storage.transaction === "function" ? storage.transaction(work) : work(storage);
+    await transact(async (target) => {
+      const current = await target.get(`page/${pageId}`);
+      if (!current || current.reservation) throw new Error("The moved Page lost its entry");
+      const { space_id: _space, home: _home, ...kept } = current;
+      const puts = Object.entries({
+        ...(await rekeyedEntries(target, rekeyed)),
+        [`page/${pageId}`]: {
+          ...kept,
+          parent_id: plan.moved.parent_id,
+          position: plan.moved.position,
+        },
+        [LOCATION_REVISION_KEY]: plan.revision,
+        [key]: row,
+      });
+      await markCatalogIndexDirty(target);
+      const perPut = STORAGE_KEYS_PER_CALL - 2;
+      for (let at = 0; at < puts.length; at += perPut)
+        await target.put(Object.fromEntries(puts.slice(at, at + perPut)));
+    });
   }
 
   async createSpace(request, identity, args, limit) {

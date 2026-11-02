@@ -574,10 +574,63 @@ try {
   const top = await ok("owner", "list_pages", { project_id: project.project_id, parent_id: null });
   for (const pageId of [roadmap.page_id, plan.page_id])
     assert.ok(top.pages.some((page) => page.page_id === pageId));
-  report.cleaned = true;
   complete(
     "Trash refused a parent with sub-pages, kept the home Page, and restore re-homed a child",
   );
+
+  // move_page nests the restored Page under its old parent again, in one
+  // Catalog write: the listing and the breadcrumbs follow, and its heads
+  // don't change.
+  const planHeads = (
+    await ok("owner", "read_page", { page_id: plan.page_id, include_content: false })
+  ).heads;
+  const moveKey = () => authority.retry_key_prefix + crypto.randomUUID();
+  const moved = await ok("owner", "move_page", {
+    page_id: plan.page_id,
+    parent_id: roadmap.page_id,
+    position: "first",
+    retry_token: authority.retry_token,
+    idempotency_key: moveKey(),
+  });
+  assert.equal(moved.parent_id, roadmap.page_id);
+  assert.equal(moved.project_id, project.project_id);
+  assert.ok(Number.isSafeInteger(moved.location_revision) && moved.location_revision >= 1);
+  assert.equal(moved.url, `${origin}/p/${plan.page_id}`);
+  const nestedAgain = await ok("owner", "list_pages", { parent_id: roadmap.page_id });
+  assert.deepEqual(
+    nestedAgain.pages.map((page) => [page.page_id, page.parent_id, page.position]),
+    [[plan.page_id, roadmap.page_id, moved.position]],
+  );
+  const movedRead = await ok("owner", "read_page", {
+    page_id: plan.page_id,
+    include_content: false,
+  });
+  assert.deepEqual(movedRead.heads, planHeads, "a move changes no Page heads");
+  assert.deepEqual(
+    movedRead.breadcrumbs.map((crumb) => [crumb.title, crumb.home === true]),
+    [
+      [title, false],
+      [title, true],
+      ["Roadmap", false],
+    ],
+  );
+  const homeMove = await mcp("owner", "move_page", {
+    page_id: project.home_page_id,
+    parent_id: roadmap.page_id,
+    retry_token: authority.retry_token,
+    idempotency_key: moveKey(),
+  });
+  assert.equal(homeMove.isError, true);
+  assert.equal(homeMove.body.code, "home_page_protected");
+  const cycle = await mcp("owner", "move_page", {
+    page_id: roadmap.page_id,
+    parent_id: plan.page_id,
+    retry_token: authority.retry_token,
+    idempotency_key: moveKey(),
+  });
+  assert.equal(cycle.body.code, "placement_cycle");
+  report.cleaned = true;
+  complete("move_page nested a Page under another over MCP; listing and breadcrumbs follow");
   assert.deepEqual(report.errors, []);
 } catch (error) {
   report.failure = error.stack || error.message;
