@@ -12,6 +12,7 @@ import {
 import { blockquote, bulletList, heading, horizontalRule, orderedList } from "wordgard/schema";
 import { history } from "wordgard/history";
 import {
+  BulletList,
   Code,
   CodeBlock,
   CodeBlockLanguage,
@@ -166,6 +167,13 @@ export const lineBlockCommands = [
   lineCommand(toggleBlock, outsideLists),
 ];
 
+// Markdown starts a bullet list with `*` or `+` as well as `-`. Wordgard's
+// bulletList() extension installs only the `-` rule, so Pages adds the other
+// two. Same shape as createOnDash: the prefix must be the whole textblock.
+// The emphasis rule never sees this keystroke: it fires on a typed `*`, and
+// this rule fires on the space after it.
+export const bulletListOnStarOrPlus = InputRule.wrapping(/^ ?[*+] $/, BulletList, true);
+
 // Paragraph-start Markdown shortcuts this editor installs. A typed prefix right
 // after a LineBreak isolates that line and replays the same rule there.
 export const blockInputRules = [
@@ -173,6 +181,7 @@ export const blockInputRules = [
   blockquote.createOnGT,
   taskListInputRule,
   bulletList.createOnDash,
+  bulletListOnStarOrPlus,
   orderedList.createOnNumber,
 ];
 
@@ -480,6 +489,7 @@ export const markdownShortcuts = () => [
   lineBlockCommands,
   inlineCodeInputRule,
   markInputRules,
+  bulletListOnStarOrPlus,
   // `---` alone in a paragraph becomes a horizontal rule.
   horizontalRule.createOnDashes,
   strikethroughKey,

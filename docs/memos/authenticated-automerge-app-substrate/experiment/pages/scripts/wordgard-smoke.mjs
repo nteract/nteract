@@ -871,6 +871,13 @@ try {
   await selectText(a, "two");
   await a.getByRole("combobox", { name: "Text style" }).selectOption("h1");
   await expect(content(a).locator("h1")).toHaveText("two");
+  // `* ` starts a bulleted list, as `- ` does.
+  await selectText(a, "three");
+  await a.keyboard.press("ArrowRight");
+  await a.keyboard.press("End");
+  await a.keyboard.press("Enter");
+  await a.keyboard.type("* starred");
+  await expect(content(a).locator("ul li")).toHaveText("starred");
   const shortcutMarkdown = [
     "Intro",
     "## Heading",
@@ -880,6 +887,7 @@ try {
     "one",
     "# two",
     "three",
+    "* starred",
   ].join("\n\n");
   await expect
     .poll(
