@@ -78,13 +78,23 @@ const mcpSession = async (request, principal) => {
   return session ? { session } : {};
 };
 
+/** Where a person gets an API key: absolute from the configured public
+ * origin, or the bare path when none is configured. Never the request URL. */
+function connectLink(env) {
+  try {
+    return `${pagesPublicOrigin(env)}/connect`;
+  } catch {
+    return "/connect";
+  }
+}
+
 /** The refusal for a request that presents no credential at all. It names the
  * header API clients send and where a person gets a key. */
-export const credentialRequired = (request, env) =>
+export const credentialRequired = (env) =>
   withAdmissionReason(
     new HttpError(
       401,
-      `Send Authorization: Bearer <Anaconda API key>; see ${new URL("/connect", env.NOTEBOOK_CLOUD_PUBLIC_ORIGIN || request.url).href}`,
+      `Send Authorization: Bearer <Anaconda API key>; see ${connectLink(env)}`,
       "auth_required",
     ),
     "credential_missing",
@@ -110,7 +120,7 @@ export function requireSameOrigin(request, env) {
   ) {
     // The Origin check guards the ambient cookie. With no credential at all
     // there is nothing to forge, and the request can only fail sign-in.
-    if (credentialless) throw credentialRequired(request, env);
+    if (credentialless) throw credentialRequired(env);
     throw withAdmissionReason(new HttpError(403, "Origin is required"), "origin_rejected");
   }
 }
@@ -213,7 +223,7 @@ export async function authenticate(request, env) {
         throw withAdmissionReason(
           new HttpError(
             401,
-            `${error.message}. Check that the key is current and from this deployment's Anaconda account, or create a new one at ${new URL("/connect", env.NOTEBOOK_CLOUD_PUBLIC_ORIGIN || request.url).href}`,
+            `${error.message}. Check that the key is current and from this deployment's Anaconda account, or create a new one at ${connectLink(env)}`,
             "invalid_api_key",
           ),
           "credential_invalid",
@@ -245,7 +255,13 @@ export async function authenticate(request, env) {
       "credential_missing",
     );
   const session = await readServerAppSession(env, request, Math.floor(Date.now() / 1000));
-  if (!session) throw new HttpError(401, "Sign in to Pages");
+  // An expired, revoked or unrelated cookie: sign in again. The Origin check
+  // already ran for this request.
+  if (!session)
+    throw withAdmissionReason(
+      new HttpError(401, "Sign in to Pages", "auth_required"),
+      "credential_expired",
+    );
   return withDomainAccess(
     {
       principal: session.principal,

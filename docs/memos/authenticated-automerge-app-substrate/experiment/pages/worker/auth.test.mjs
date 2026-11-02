@@ -292,6 +292,59 @@ test("a JSON tool call with no credential at all is 401 auth_required; a cookie 
   });
 });
 
+test("the /connect link comes from the configured origin, never the request", async (t) => {
+  const fixture = await createAuthFixture();
+  t.mock.method(globalThis, "fetch", fixture.fetch);
+  const call = async (env, authorization) => {
+    const response = await worker.fetch(
+      new Request("https://attacker.invalid/api/tools", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          ...(authorization && { authorization }),
+        },
+        body: JSON.stringify({ operation: "list_pages", arguments: {} }),
+      }),
+      env,
+    );
+    return (await response.json()).error;
+  };
+  const rejected = `Bearer ${fixture.apiKey({ status: 401 })}`;
+  const configured = { ...fixture.env, NOTEBOOK_CLOUD_PUBLIC_ORIGIN: "https://pages.invalid" };
+  assert.match(await call(configured), /see https:\/\/pages\.invalid\/connect$/);
+  assert.match(await call(configured, rejected), /at https:\/\/pages\.invalid\/connect$/);
+  const unconfigured = { ...fixture.env };
+  delete unconfigured.NOTEBOOK_CLOUD_PUBLIC_ORIGIN;
+  for (const message of [await call(unconfigured), await call(unconfigured, rejected)]) {
+    assert.match(message, / \/connect$/);
+    assert.doesNotMatch(message, /attacker/);
+  }
+});
+
+test("an Anaconda rate limit or outage is a server failure, not invalid_api_key", async (t) => {
+  const fixture = await createAuthFixture();
+  t.mock.method(globalThis, "fetch", fixture.fetch);
+  t.mock.method(console, "error", () => {});
+  const env = { ...fixture.env, NOTEBOOK_CLOUD_PUBLIC_ORIGIN: "https://pages.invalid" };
+  for (const status of [429, 503]) {
+    const response = await worker.fetch(
+      new Request("https://pages.invalid/api/tools", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          authorization: `Bearer ${fixture.apiKey({ status })}`,
+        },
+        body: JSON.stringify({ operation: "list_pages", arguments: {} }),
+      }),
+      env,
+    );
+    assert.equal(response.status, 503, String(status));
+    const body = await response.json();
+    assert.notEqual(body.code, "invalid_api_key", String(status));
+    assert.doesNotMatch(body.error, /create a new one/, String(status));
+  }
+});
+
 test("JSON tool refusals carry a code: rejected key, unknown operation, bad arguments, bad page_id", async (t) => {
   const fixture = await createAuthFixture();
   t.mock.method(globalThis, "fetch", fixture.fetch);

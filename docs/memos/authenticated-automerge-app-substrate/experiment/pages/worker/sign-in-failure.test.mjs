@@ -154,3 +154,22 @@ test("a stale callback in a browser that is already signed in goes to the Pages 
     );
   }
 });
+
+test("a same-origin tool call with an expired or unrelated cookie is 401 auth_required", async (t) => {
+  const env = fixture(t);
+  const expired = await signedIn(env);
+  const past = Math.floor(Date.now() / 1000) - 10;
+  await env.DB.prepare("UPDATE oidc_server_sessions SET access_expires_at = ?").bind(past).run();
+  for (const cookie of [expired, "theme=dark"]) {
+    const response = await worker.fetch(
+      new Request(`${origin}/api/tools`, {
+        method: "POST",
+        headers: { cookie, origin, "content-type": "application/json" },
+        body: JSON.stringify({ operation: "list_pages", arguments: {} }),
+      }),
+      env,
+    );
+    assert.equal(response.status, 401, cookie);
+    assert.deepEqual(await response.json(), { error: "Sign in to Pages", code: "auth_required" });
+  }
+});
