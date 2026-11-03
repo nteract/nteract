@@ -2,6 +2,7 @@ import * as A from "@automerge/automerge/slim";
 import {
   RICH_FORMAT,
   markdownlessNode,
+  quotableNodeType,
   setRichMarkdown,
   setRichImage,
   projectedBlock,
@@ -108,7 +109,7 @@ function applyEdit(doc, op, trace, context) {
     if (node)
       throw Object.assign(
         Error(
-          `This block holds a ${node}, which has no Markdown form, so a Markdown rewrite would lose it. Delete the block, or insert new content beside it.`,
+          `This block holds ${quotableNodeType(node) ? `a ${node}` : "a node this version of Pages doesn't know"}, which has no Markdown form, so a Markdown rewrite would lose it. Delete the block, or insert new content beside it.`,
         ),
         { code: "markdownless_node" },
       );

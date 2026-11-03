@@ -19,8 +19,8 @@ import {
   Blockquote,
   BulletList,
   ListItem,
-  UnknownBlock,
-  UnknownInline,
+  PagesUnknownBlock,
+  PagesUnknownEmbed,
 } from "./wordgard-model.mjs";
 function fixture(markdown) {
   return A.change(A.from({ blocks: { one: { id: "one", kind: "markdown", markdown } } }), (d) =>
@@ -205,21 +205,26 @@ test("pasted HTML links keep their destination and title; unsafe ones keep only 
 });
 
 // A node from a newer build: the Page opens, shows a notice, and an editor
-// rewrite writes the stored marker back exactly.
+// rewrite writes the stored marker back exactly. Where decode can't draw a
+// node as stored, it says so (`lossy`) and the binding refuses writes.
 const S = (value) => new A.ImmutableString(value);
 function withUnknown(source, marker, at) {
   let doc = fixture(source);
   const path = textPath("one");
   doc = A.change(doc, (d) =>
     A.splitBlock(d, path, at(d.blocks.one.richText), {
+      attrs: {},
       ...marker,
       type: S(marker.type),
       parents: marker.parents.map(S),
     }),
   );
   // Absorb the importer's explicit first-paragraph marker, which the editor
-  // leaves implicit, so the next rewrite measures only the unknown node.
-  return A.change(doc, (d) => A.updateSpans(d, path, encode(decode(A.spans(d, path)).doc)));
+  // leaves implicit, so the next rewrite measures only the unknown node. A
+  // lossy block is never rewritten, by the editor or here.
+  const decoded = decode(A.spans(doc, path));
+  if (decoded.lossy) return doc;
+  return A.change(doc, (d) => A.updateSpans(d, path, encode(decoded.doc)));
 }
 const rewriteWrites = (doc) => {
   const path = textPath("one"),
@@ -229,45 +234,129 @@ const rewriteWrites = (doc) => {
   );
   return A.diff(after, heads, A.getHeads(after));
 };
+const types = (doc) => {
+  const found = [];
+  decode(A.spans(doc, textPath("one"))).doc.iterate((node) => {
+    found.push(node.type);
+  });
+  return found;
+};
+const beforeAfter = (text) => text.indexOf("After") - 1;
+const insideAfter = (text) => text.indexOf("After") + 2;
+
 test("an unknown block or embed decodes to a notice and encodes back exactly", () => {
-  const attrs = { title: S("Usage"), rows: 3, wide: true, note: "plain", gone: null };
+  const attrs = {
+    title: S("Usage"),
+    rows: 3,
+    wide: true,
+    note: "plain",
+    gone: null,
+    nested: { list: [1, "x"], deep: { on: false } },
+  };
   const block = withUnknown(
     "Before\n\nAfter",
     { type: "dataframe", parents: [], attrs, isEmbed: false },
-    (text) => text.indexOf("After") - 1,
+    beforeAfter,
   );
-  const tree = decode(A.spans(block, textPath("one"))).doc;
-  const node = tree.content[1];
-  assert.equal(node.type, UnknownBlock);
-  assert.deepEqual(node.param, {
-    type: "dataframe",
-    attrs: { title: "Usage", rows: 3, wide: true, note: "plain", gone: null },
-    immutable: ["title"],
-  });
+  const decoded = decode(A.spans(block, textPath("one")));
+  assert.equal(decoded.lossy, false);
+  const node = decoded.doc.content[1];
+  assert.equal(node.type, PagesUnknownBlock);
+  assert.equal(node.param.type, "dataframe");
+  assert.deepEqual(node.param.immutable, ["title"]);
+  assert.deepEqual(node.param.parents, []);
   assert.deepEqual(rewriteWrites(block), []);
-  for (const [source, parents] of [
-    ["Before\n\nAfter", ["paragraph"]],
-    ["| a | b |\n| --- | --- |\n| After | 2 |", ["table", "table-row", "table-cell"]],
+  // The unknown block takes one native position, like any leaf block.
+  const { wgToAm, amToWg } = decoded.map;
+  const at = block.blocks.one.richText.indexOf("After") - 2;
+  assert.equal(wgToAm[amToWg[at]], at);
+  for (const [label, source, parents] of [
+    ["in a paragraph", "Before\n\nAfter", ["paragraph"]],
+    [
+      "in a table cell",
+      "| a | b |\n| --- | --- |\n| After | 2 |",
+      ["table", "table-row", "table-cell"],
+    ],
+    ["in a list item", "- one\n- After", ["unordered-list-item", "paragraph"]],
   ]) {
     const embed = withUnknown(
       source,
       { type: "video", parents, attrs: { src: S("x") }, isEmbed: true },
-      (text) => text.indexOf("After") + 2,
+      insideAfter,
     );
-    let found = false;
-    decode(A.spans(embed, textPath("one"))).doc.iterate((n) => {
-      found ||= n.type === UnknownInline;
-    });
-    assert.ok(found, source);
-    assert.deepEqual(rewriteWrites(embed), [], source);
+    assert.ok(types(embed).includes(PagesUnknownEmbed), label);
+    assert.equal(decode(A.spans(embed, textPath("one"))).lossy, false, label);
+    assert.deepEqual(rewriteWrites(embed), [], label);
+  }
+  const listed = withUnknown(
+    "- one\n- After",
+    { type: "dataframe", parents: ["unordered-list-item"], isEmbed: false },
+    (text) => text.length,
+  );
+  assert.equal(decode(A.spans(listed, textPath("one"))).lossy, false);
+  assert.deepEqual(rewriteWrites(listed), []);
+});
+
+test("decode marks a block it can't draw as stored lossy, and keeps the stored marker", () => {
+  for (const [label, source, marker, at, drawn] of [
+    [
+      "a block stored in a table cell",
+      "| a | b |\n| --- | --- |\n| After | 2 |",
+      { type: "dataframe", parents: ["table", "table-row", "table-cell"], isEmbed: false },
+      insideAfter,
+      PagesUnknownEmbed,
+    ],
+    [
+      "an embed in a code block",
+      "```\nAfter\n```",
+      { type: "video", parents: ["code-block"], isEmbed: true },
+      insideAfter,
+      null,
+    ],
+    [
+      "a container that owns text",
+      "Before\n\nAfter",
+      { type: "callout", parents: [], isEmbed: false },
+      (text) => text.indexOf("After"),
+      PagesUnknownBlock,
+    ],
+    [
+      "a paragraph in an unknown container",
+      "Before\n\nAfter",
+      { type: "paragraph", parents: ["callout"], isEmbed: false },
+      beforeAfter,
+      null,
+    ],
+  ]) {
+    const doc = withUnknown(source, marker, at);
+    const decoded = decode(A.spans(doc, textPath("one")));
+    assert.equal(decoded.lossy, true, label);
+    if (drawn) assert.ok(types(doc).includes(drawn), label);
+    // Where it was drawn as an embed, encode still writes the stored block.
+    if (drawn === PagesUnknownEmbed) {
+      const spans = encode(decoded.doc);
+      const stored = spans.find(
+        (span) => span.type === "block" && String(span.value.type) === "dataframe",
+      );
+      assert.equal(stored.value.isEmbed, false, label);
+      assert.deepEqual(
+        stored.value.parents.map(String),
+        ["table", "table-row", "table-cell"],
+        label,
+      );
+    }
   }
 });
+
 test("an unknown node draws only a notice, so copying it copies no text", () => {
-  const element = UnknownBlock.spec.shape.structure({
+  const value = {
     type: "dataframe",
     attrs: { title: "secret" },
     immutable: [],
-  });
+    parents: [],
+    isEmbed: false,
+  };
+  const element = PagesUnknownBlock.spec.shape.structure(value);
   assert.equal(element.tagName, "section");
   assert.deepEqual(element.children, []);
   const attrs = Object.fromEntries(
@@ -277,7 +366,7 @@ test("an unknown node draws only a notice, so copying it copies no text", () => 
   assert.ok(!JSON.stringify(element).includes("secret"));
   // A malformed value can't be written back.
   assert.throws(
-    () => encode(schema.doc([UnknownBlock.of({ type: 3 })])),
+    () => encode(schema.doc([PagesUnknownBlock.of({ type: 3 })])),
     /Invalid unknown Pages node/,
   );
 });

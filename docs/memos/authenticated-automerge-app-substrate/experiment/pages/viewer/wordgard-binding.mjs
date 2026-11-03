@@ -219,6 +219,10 @@ export function createWordgardBinding(replica, id, { encodeSpans = encode } = {}
     applyEditorTransaction(tr) {
       if (!tr.docChanged || tr.annotation(Transaction.remote)) return;
       const original = decode(A.spans(replica.doc, path));
+      // The editor couldn't draw this block as stored (a node or container
+      // from a newer build); any write would reshape what it left out.
+      if (original.lossy)
+        throw Error("This block holds content from a newer version of Pages. Reload to edit it.");
       if (!original.doc.eq(tr.startState.doc))
         throw Error("Wordgard editor is behind its Pages document");
       const replacements = [],

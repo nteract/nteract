@@ -12,6 +12,7 @@ import {
   validateRichSpans,
 } from "./richtext.mjs";
 import { projectReadContent } from "./read-content.mjs";
+import { pagePreview } from "./page-preview.mjs";
 
 const S = (value) => new A.ImmutableString(value);
 function withUnknown(source, marker, at) {
@@ -101,11 +102,64 @@ test("replace_block_markdown refuses a block holding an unknown node; text edits
     blockMarkdown(edited.blocks[id]),
     /\*\*Before\*\*[\s\S]*Unsupported node: dataframe[\s\S]*Later/,
   );
-  // A block with only known nodes rewrites as before.
-  assert.equal(
-    markdownlessNode(apply(doc, [{ op: "delete_block", block_id: id }]).blocks?.[id]),
-    null,
+});
+
+test("markdownlessNode names unknown types and unknown parents, never known ones", () => {
+  let plain = A.from(createPageData({ pageId: "known_only", title: "Known" }));
+  plain = A.change(plain, (draft) =>
+    initializePage(
+      draft,
+      "# Head\n\n- [ ] task\n\n> quote\n\n| a |\n| --- |\n| b |\n\n```py\nx\n```\n\n---",
+    ),
   );
+  assert.equal(markdownlessNode(plain.blocks[orderedBlockIds(plain)[0]]), null);
+  const nested = withUnknown(
+    "Before\n\nAfter",
+    { type: "paragraph", parents: ["callout"], attrs: {}, isEmbed: false },
+    (text) => text.indexOf("After") - 1,
+  );
+  assert.equal(markdownlessNode(nested.doc.blocks[nested.id]), "callout");
+  assert.throws(
+    () => apply(nested.doc, [{ op: "replace_block_markdown", block_id: nested.id, markdown: "x" }]),
+    (error) => error.code === "markdownless_node",
+  );
+});
+
+test("the refusal quotes only a short identifier", () => {
+  const odd = withUnknown(
+    "Before\n\nAfter",
+    { type: "<b>bad</b>", parents: [], attrs: {}, isEmbed: false },
+    (text) => text.indexOf("After") - 1,
+  );
+  assert.throws(
+    () => apply(odd.doc, [{ op: "replace_block_markdown", block_id: odd.id, markdown: "x" }]),
+    (error) =>
+      /a node this version of Pages doesn't know/.test(error.message) &&
+      !error.message.includes("<b>"),
+  );
+});
+
+test("reads project unknown nodes the adapter can't place", () => {
+  const cell = withUnknown(
+    "| a | b |\n| --- | --- |\n| After | 2 |",
+    { type: "dataframe", parents: ["table", "table-row", "table-cell"], attrs: {}, isEmbed: false },
+    (text) => text.indexOf("After") + 2,
+  );
+  assert.ok(
+    blockMarkdown(cell.doc.blocks[cell.id]).includes(
+      "| Af\\[Unsupported node: dataframe\\]ter | 2 |",
+    ),
+  );
+  const code = withUnknown(
+    "```\nAfter\n```",
+    { type: "video", parents: ["code-block"], attrs: {}, isEmbed: true },
+    (text) => text.indexOf("After") + 2,
+  );
+  assert.equal(blockMarkdown(code.doc.blocks[code.id]), "```\nAf[Unsupported node: video]ter\n```");
+  for (const { doc } of [cell, code]) {
+    assert.ok(projectReadContent(doc, {}).outline.length > 0);
+    assert.equal(pagePreview(doc).blocks.length, 1);
+  }
 });
 
 test("registration still refuses a marker this build doesn't know", () => {

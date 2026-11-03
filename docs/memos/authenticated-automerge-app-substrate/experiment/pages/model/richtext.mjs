@@ -621,8 +621,13 @@ const literalHighlightTag = /<(?=\/?mark\b)|&(?=#?[a-z0-9]{1,32};)/gi;
 /** What a read shows for a node this build doesn't know. The type is stored
  * data, so only a short identifier is quoted. */
 export function unknownNodeNotice(type) {
+  const name = quotableNodeType(type);
+  return name ? `[Unsupported node: ${name}]` : "[Unsupported node]";
+}
+/** A stored node type safe to quote: a short identifier, or null. */
+export function quotableNodeType(type) {
   const name = String(type ?? "");
-  return /^[a-z][a-z0-9-]{0,63}$/.test(name) ? `[Unsupported node: ${name}]` : "[Unsupported node]";
+  return /^[a-z][a-z0-9-]{0,63}$/.test(name) ? name : null;
 }
 const serializer = new MarkdownSerializer(
   {
@@ -738,6 +743,9 @@ const tableCellSerializer = new MarkdownSerializer(
       state.write("<br>");
     },
     unknownLeaf(state, node) {
+      state.write(state.esc(unknownNodeNotice(node.attrs.unknownBlock?.type)));
+    },
+    unknownBlock(state, node) {
       state.write(state.esc(unknownNodeNotice(node.attrs.unknownBlock?.type)));
     },
   },
@@ -1447,8 +1455,54 @@ export function codeTextUnmarked(spans) {
       : span;
   });
 }
-export const richDoc = (block) =>
-  pmDocFromSpans(adapter, codeTextUnmarked(A.spans(block, ["richText"])));
+const knownBlock = (type) => adapter.nodeMappings.some((mapping) => mapping.blockName === type);
+const TEXT_CONTAINERS = new Set(["code-block", "table-cell", "table-header"]);
+/** Spans the ProseMirror adapter can read, for a projection only. Unknown
+ * embeds in a code block always become their notice as text (a code block
+ * serializes only its text). With `all`, every unknown marker does: one
+ * outside a text container becomes a paragraph holding its notice, and
+ * unknown parents are dropped. Writers never store these spans. */
+function readableSpans(spans, all) {
+  const known = (types) => types.filter(knownBlock).map((p) => new A.ImmutableString(p));
+  const out = [];
+  for (const span of spans) {
+    if (span.type !== "block") {
+      out.push(span);
+      continue;
+    }
+    const type = String(span.value.type);
+    const parents = (span.value.parents ?? []).map(String);
+    const unknown = !knownBlock(type);
+    if (unknown && (all || (span.value.isEmbed && parents.includes("code-block")))) {
+      if (!span.value.isEmbed && !parents.some((parent) => TEXT_CONTAINERS.has(parent)))
+        out.push({
+          type: "block",
+          value: {
+            type: new A.ImmutableString("paragraph"),
+            parents: known(parents),
+            attrs: {},
+            isEmbed: false,
+          },
+        });
+      out.push({ type: "text", value: unknownNodeNotice(type), marks: {} });
+    } else if (all && parents.some((parent) => !knownBlock(parent)))
+      out.push({ ...span, value: { ...span.value, parents: known(parents) } });
+    else out.push(span);
+  }
+  return out;
+}
+/** A block's ProseMirror tree. Unknown nodes the adapter can't place, such as
+ * one stored inside a table cell or code block, are read through
+ * readableSpans, so a Page from a newer build always projects. */
+export const richDoc = (block) => {
+  const spans = codeTextUnmarked(A.spans(block, ["richText"]));
+  try {
+    return pmDocFromSpans(adapter, readableSpans(spans, false));
+  } catch (error) {
+    if (!markdownlessNode(block)) throw error;
+    return pmDocFromSpans(adapter, readableSpans(spans, true));
+  }
+};
 export function blockMarkdown(block) {
   if (!isRich(block)) return block.markdown;
   const current = exportMarkdown(richDoc(block));
@@ -1513,8 +1567,8 @@ export function markdownlessNode(block) {
   if (!isRich(block)) return null;
   for (const span of A.spans(block, ["richText"])) {
     if (span.type !== "block") continue;
-    const type = String(span.value?.type);
-    if (!adapter.nodeMappings.some((mapping) => mapping.blockName === type)) return type;
+    for (const type of [span.value?.type, ...(span.value?.parents ?? [])].map(String))
+      if (!knownBlock(type)) return type;
   }
   return null;
 }

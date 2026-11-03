@@ -192,9 +192,11 @@ export const PagesImage = Leaf.Type.define("PagesImage", {
 });
 // A node this build doesn't know, written by a newer build. Its feature stamp
 // makes the Page read-only here (schemaGateStep in viewer/session.mjs), so it
-// is drawn as a notice. Its value is the stored marker's type and attrs, and
-// encode writes that marker back exactly, so nothing is lost if a block that
-// holds one is ever encoded.
+// is drawn as a notice. Its value is the stored marker: type, attrs, parents
+// and isEmbed, and encode writes exactly that marker back. decode reports
+// `lossy` when it can't place a node where it was stored, or when it skips a
+// container this build doesn't know; the binding refuses writes then, so an
+// unstamped Page can't flatten what it can't draw.
 export const UNKNOWN_NODE_NOTICE = "Added by a newer version of Pages. Reload to see it.";
 function validateUnknown(value) {
   if (
@@ -202,7 +204,9 @@ function validateUnknown(value) {
     typeof value.type !== "string" ||
     !value.attrs ||
     typeof value.attrs !== "object" ||
-    !Array.isArray(value.immutable)
+    !Array.isArray(value.immutable) ||
+    !Array.isArray(value.parents) ||
+    typeof value.isEmbed !== "boolean"
   )
     throw Error("Invalid unknown Pages node");
 }
@@ -216,30 +220,37 @@ const unknownShape = (tag) => ({
       "data-pages-notice": UNKNOWN_NODE_NOTICE,
     }),
 });
-export const UnknownBlock = Leaf.Type.define("PagesUnknownBlock", {
+export const PagesUnknownBlock = Leaf.Type.define("PagesUnknownBlock", {
   group: Node.Group.Content,
   selectable: true,
   validate: validateUnknown,
   shape: unknownShape("section"),
 });
-export const UnknownInline = Leaf.Type.define("PagesUnknownInline", {
+export const PagesUnknownEmbed = Leaf.Type.define("PagesUnknownEmbed", {
   inline: true,
   selectable: true,
   validate: validateUnknown,
   shape: unknownShape("span"),
 });
-/** An unknown marker's value: its type, attrs as plain values, and which attrs
- * were immutable strings, so encode restores the exact stored map. */
+/** An unknown marker's value: its type, attrs as plain values, which attrs
+ * were immutable strings, its parents and isEmbed, so encode restores the
+ * exact stored marker. */
 function unknownValue(marker) {
-  const attrs = {},
-    immutable = [];
-  for (const [key, value] of Object.entries(marker.attrs ?? {})) {
-    if (A.isImmutableString(value)) {
-      attrs[key] = String(value);
+  const immutable = [];
+  const attrs = Object.fromEntries(
+    Object.entries(marker.attrs ?? {}).map(([key, value]) => {
+      if (!A.isImmutableString(value)) return [key, value];
       immutable.push(key);
-    } else attrs[key] = value;
-  }
-  return { type: String(marker.type), attrs, immutable };
+      return [key, String(value)];
+    }),
+  );
+  return {
+    type: String(marker.type),
+    attrs,
+    immutable,
+    parents: (marker.parents ?? []).map(String),
+    isEmbed: !!marker.isEmbed,
+  };
 }
 function storedAttrs({ attrs, immutable }) {
   return Object.fromEntries(
@@ -301,8 +312,8 @@ export const elements = [
   HorizontalRule,
   OpaqueBlock,
   PagesImage,
-  UnknownBlock,
-  UnknownInline,
+  PagesUnknownBlock,
+  PagesUnknownEmbed,
   Aside,
   Table,
   TableRow,
@@ -397,23 +408,6 @@ const strings = (attrs = {}) =>
   Object.fromEntries(
     Object.entries(attrs).map(([k, v]) => [k, A.isImmutableString(v) ? String(v) : v]),
   );
-// Block types descriptor() knows, plus the leaf blocks decode handles itself.
-const KNOWN_BLOCKS = new Set([
-  "table",
-  "table-row",
-  "table-cell",
-  "table-header",
-  "paragraph",
-  "heading",
-  "code-block",
-  "blockquote",
-  "aside",
-  "unordered-list-item",
-  "ordered-list-item",
-  "task-list-item",
-  "pages-opaque",
-  "horizontal-rule",
-]);
 function descriptor(type, attrs = {}) {
   switch (type) {
     case "table":
@@ -455,17 +449,22 @@ function descriptor(type, attrs = {}) {
       return { tag: ListItem.withMarks([TaskChecked.of(checked)]), outer: TaskList };
     }
     default:
-      throw Error(`Unsupported Pages block: ${type}`);
+      // A type this build doesn't know; decode draws a notice.
+      return null;
   }
 }
 
+/** The editor tree for a block's spans, the native/editor position maps, and
+ * whether the tree had to leave out something it couldn't place (`lossy`). */
 export function decode(spans) {
   const blocks = [],
     stack = [],
     wgToAm = [],
     amToWg = [];
   let wg = 0,
-    am = 0;
+    am = 0,
+    lossy = false,
+    afterUnknown = false;
   const boundary = () => {
     wgToAm[wg] = am;
     amToWg[am] ??= wg;
@@ -503,8 +502,21 @@ export function decode(spans) {
       boundary();
     }
   };
+  const inCode = () => stack.at(-1)?.tag.type === CodeBlock.type;
+  // An unknown node where only text can go: a code block holds nothing but
+  // text, so it shows an object replacement character; other text containers
+  // (a table cell) show the inline notice.
+  const unknownInline = (value) => {
+    if (inCode()) {
+      lossy = true;
+      leaf(Leaf.text("\uFFFC", Mark.none));
+    } else leaf(PagesUnknownEmbed.of(unknownValue(value)));
+  };
   for (const span of spans) {
     if (span.type === "text") {
+      // Text right after an unknown block is that block's own content, which
+      // this build draws as a separate paragraph.
+      if (afterUnknown) lossy = true;
       ensureText();
       const marks = fromMarks(span.marks);
       // Wordgard uses a LineBreak leaf for newlines in code and prose. Code
@@ -522,28 +534,32 @@ export function decode(spans) {
     const value = span.value,
       type = String(value.type),
       attrs = strings(value.attrs);
+    afterUnknown = false;
     if (value.isEmbed) {
       ensureText();
       if (type === "hard-break") leaf(LineBreak);
       else if (type === "image") {
         if (!safeUrl(attrs.src)) throw Error("Invalid Pages image");
         leaf(PagesImage.of({ src: attrs.src, alt: attrs.alt ?? null, title: attrs.title ?? null }));
-      } else leaf(UnknownInline.of(unknownValue(value)));
+      } else unknownInline(value);
       continue;
     }
     const outer = [];
     for (const parent of value.parents) {
       // A container this build doesn't know draws nothing of its own; its
       // content renders at the nearest known level.
-      if (!KNOWN_BLOCKS.has(String(parent))) continue;
       const d = descriptor(String(parent));
+      if (!d) {
+        lossy = true;
+        continue;
+      }
       if (d.outer) outer.push(d.outer);
       outer.push(d.tag);
     }
     // Leaf blocks hold no content of their own.
-    const unknown = !KNOWN_BLOCKS.has(type);
-    const leafBlock = unknown || type === "pages-opaque" || type === "horizontal-rule";
-    const desc = leafBlock ? null : descriptor(type, attrs);
+    const builtIn = type === "pages-opaque" || type === "horizontal-rule";
+    const desc = builtIn ? null : descriptor(type, attrs);
+    const unknown = !builtIn && !desc;
     if (desc?.outer) outer.push(desc.outer);
     let common = 0;
     while (
@@ -554,8 +570,14 @@ export function decode(spans) {
       common++;
     while (stack.length > common) close();
     for (let i = common; i < outer.length; i++) open(outer[i]);
-    if (unknown) leaf(UnknownBlock.of(unknownValue(value)));
-    else if (type === "horizontal-rule") leaf(HorizontalRule);
+    if (unknown) {
+      afterUnknown = true;
+      if (stack.at(-1)?.tag.type.spec.inlineContent) {
+        // Stored inside a text container (a table cell): drawn inline.
+        lossy = true;
+        unknownInline(value);
+      } else leaf(PagesUnknownBlock.of(unknownValue(value)));
+    } else if (type === "horizontal-rule") leaf(HorizontalRule);
     else if (type === "pages-opaque") {
       leaf(
         OpaqueBlock.of({
@@ -572,7 +594,7 @@ export function decode(spans) {
     open(Paragraph);
   while (stack.length) close();
   boundary();
-  return { doc: schema.doc(blocks), map: { wgToAm, amToWg } };
+  return { doc: schema.doc(blocks), map: { wgToAm, amToWg }, lossy };
 }
 
 export function encode(doc) {
@@ -592,16 +614,16 @@ export function encode(doc) {
         isEmbed,
       },
     });
-  // An unknown node's marker, exactly as it was stored.
-  const unknownMarker = (node, parents, isEmbed) => {
+  // An unknown node's marker, exactly as it was stored, wherever decode drew it.
+  const unknownMarker = (node) => {
     validateUnknown(node.param);
     spans.push({
       type: "block",
       value: {
         type: new A.ImmutableString(node.param.type),
-        parents: parents.map((p) => new A.ImmutableString(p)),
+        parents: node.param.parents.map((p) => new A.ImmutableString(p)),
         attrs: storedAttrs(node.param),
-        isEmbed,
+        isEmbed: node.param.isEmbed,
       },
     });
   };
@@ -614,7 +636,7 @@ export function encode(doc) {
     } else if (node.type === PagesImage) {
       PagesImage.spec.validate(node.param);
       marker("image", parents, node.param, true);
-    } else if (node.type === UnknownInline) unknownMarker(node, parents, true);
+    } else if (node.type === PagesUnknownEmbed) unknownMarker(node);
     else throw Error(`Unsupported Wordgard inline node: ${node.name}`);
   };
   // A first paragraph can omit its marker when it has content or is the
@@ -627,8 +649,8 @@ export function encode(doc) {
       marker("pages-opaque", parents, node.param);
       return;
     }
-    if (node.type === UnknownBlock) {
-      unknownMarker(node, parents, false);
+    if (node.type === PagesUnknownBlock) {
+      unknownMarker(node);
       return;
     }
     if (node.type === HorizontalRule.type) {

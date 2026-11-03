@@ -6,7 +6,7 @@ import {
   PagesImage,
   Paragraph,
   Table,
-  UnknownBlock,
+  PagesUnknownBlock,
 } from "./wordgard-model.mjs";
 
 // A caret can't type its way out of some final nodes: Enter adds a line in a
@@ -26,7 +26,7 @@ export function finalBlock(doc) {
     node.type === CodeBlock.type ||
     node.type === Table.type ||
     node.type === OpaqueBlock ||
-    node.type === UnknownBlock ||
+    node.type === PagesUnknownBlock ||
     (node.type === Paragraph.type && node.content.at(-1)?.type === PagesImage);
   return blocked ? { node, from: doc.length - node.length, to: doc.length } : null;
 }
