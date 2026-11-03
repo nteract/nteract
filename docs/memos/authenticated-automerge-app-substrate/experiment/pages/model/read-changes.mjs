@@ -2,6 +2,7 @@ import * as A from "@automerge/automerge/slim";
 import { eventsWithIndexChanges, traverseSpans } from "@automerge/prosemirror/dist/traversal.js";
 import { orderedBlockIds } from "./order.mjs";
 import { projectReadComments } from "./read-comments.mjs";
+import { nodeAttrs } from "./read-content.mjs";
 import { commentMessageState, commentThreadState } from "./comment-content.mjs";
 import {
   adapter,
@@ -97,6 +98,7 @@ function nativeNodes(doc, blockId, headings) {
       type: node.type.name,
       heading_path: headings.map((heading) => heading.text),
       markdown: exportMarkdown(schema.node("doc", null, [node])),
+      attrs: nodeAttrs(node),
       fingerprint: canonical(node.toJSON()),
     });
   });
@@ -177,6 +179,7 @@ function nodeChanges(blockId, before, after) {
         change: !prior ? "inserted" : prior.fingerprint !== entry.fingerprint ? "updated" : "moved",
         ...address(entry),
         markdown: entry.markdown,
+        ...(entry.attrs ? { attrs: entry.attrs } : {}),
         ...(moved && prior.fingerprint !== entry.fingerprint ? { moved: true } : {}),
       });
   }

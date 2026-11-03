@@ -367,3 +367,53 @@ test("a large selected node is returned intact for the wrapper to budget, never 
   assert.equal(result.blocks[0].markdown, body);
   assert.equal(result.outline[1].markdown_bytes, 40_000);
 });
+
+test("outline entries carry the typed attributes Markdown only implies", async () => {
+  const { createPageData, initializePage, orderedBlockIds, applyPageOperation } =
+    await import("./page.mjs");
+  const { projectReadChanges } = await import("./read-changes.mjs");
+  let doc = A.from(createPageData({ pageId: "outline_attrs", title: "Attrs" }));
+  doc = A.change(doc, (draft) =>
+    initializePage(
+      draft,
+      "# Head\n\n```python\nx = 1\n```\n\n```\nplain\n```\n\n- [x] done\n- [ ] open\n  - [x] nested\n\n- plain\n\n| a | b | c |\n| :-- | :-: | --- |\n| 1 | 2 | 3 |\n| 4 | 5 | 6 |",
+    ),
+  );
+  const outline = projectReadContent(doc, {}).outline;
+  assert.deepEqual(
+    outline.map((entry) => [entry.type, entry.attrs ?? null]),
+    [
+      ["heading", null],
+      ["code_block", { language: "python" }],
+      ["code_block", { language: "" }],
+      // Direct items only; the nested task list reads as its own Markdown.
+      ["task_list", { checked: [true, false] }],
+      ["bullet_list", null],
+      ["table", { rows: 3, columns: 3, align: ["left", "center", null] }],
+    ],
+  );
+  assert.equal(outline[0].level, 1);
+  // The change feed reports a changed node's attributes, so a set_node can be
+  // checked without parsing Markdown.
+  const id = orderedBlockIds(doc)[0];
+  const heads = A.getHeads(doc);
+  const next = A.change(A.clone(doc), (draft) =>
+    applyPageOperation(draft, {
+      operation: "patch_page",
+      arguments: {
+        operations: [
+          { op: "set_node", block_id: id, match_text: "open", checked: true },
+          { op: "set_node", block_id: id, match_text: "plain", occurrence: 1, language: "mermaid" },
+        ],
+      },
+    }),
+  );
+  const changed = projectReadChanges(next, { since_heads: heads, comments: "none" }).changes;
+  assert.deepEqual(
+    changed.map((change) => [change.type, change.attrs]),
+    [
+      ["code_block", { language: "mermaid" }],
+      ["task_list", { checked: [true, true] }],
+    ],
+  );
+});

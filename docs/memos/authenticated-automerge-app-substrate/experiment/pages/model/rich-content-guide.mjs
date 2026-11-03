@@ -96,6 +96,10 @@ other. Some nodes have no Markdown form: ${NODE_OPERATIONS.map(([, text]) => tex
 (see Datasets below). They read back as a labeled link on its own line;
 replace_block_markdown keeps the node when that line is unchanged and refuses
 a rewrite that drops or edits it.
+read_page's outline and read_page_changes report the attributes Markdown only
+implies as attrs: a code block's language, a task list's checked states, a
+table's rows, columns and column alignment, a dataframe's src, media type and
+title. A heading's level is its own level field.
 ${richEditOperations()}
 These operations keep comment anchors and untouched characters in place, so
 prefer them to replace_block_markdown for small changes.

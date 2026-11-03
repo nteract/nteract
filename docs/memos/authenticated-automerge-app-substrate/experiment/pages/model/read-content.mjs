@@ -4,6 +4,7 @@ import {
   isRich,
   parseMarkdown,
   projectedBlock,
+  quotableNodeType,
   richDoc,
   schema,
 } from "./richtext.mjs";
@@ -121,7 +122,34 @@ function indexNodes(doc) {
   return { nodes, trees };
 }
 
+/** Typed attributes of a top-level node that its Markdown only implies, named
+ * as set_node takes them, or null. A heading's level is its own field. Lists
+ * and tables report their direct items and columns; nested lists read as
+ * their own Markdown. */
+export function nodeAttrs(node) {
+  switch (node.type.name) {
+    case "code_block":
+      return { language: String(node.attrs.params ?? "") };
+    case "task_list": {
+      const checked = [];
+      node.forEach((item) => checked.push(item.attrs.checked === true));
+      return { checked };
+    }
+    case "table": {
+      const header = node.firstChild;
+      const align = [];
+      header?.forEach((cell) => align.push(cell.attrs.align ?? null));
+      return { rows: node.childCount, columns: align.length, align };
+    }
+    case "unknownBlock":
+      return { node_type: quotableNodeType(node.attrs.unknownBlock?.type) };
+    default:
+      return null;
+  }
+}
+
 function outlineEntry(entry) {
+  const attrs = nodeAttrs(entry.node);
   return {
     block_id: entry.blockId,
     node_index: entry.nodeIndex,
@@ -130,6 +158,7 @@ function outlineEntry(entry) {
     // Bytes of this node's standalone Markdown projection, excluding inter-node separators.
     markdown_bytes: utf8.encode(markdownFor([entry.node])).byteLength,
     ...(entry.heading !== undefined ? { heading: entry.heading, level: entry.level } : {}),
+    ...(attrs ? { attrs } : {}),
   };
 }
 
