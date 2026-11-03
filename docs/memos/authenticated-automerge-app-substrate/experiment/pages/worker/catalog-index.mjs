@@ -29,7 +29,7 @@
 import { pageGrant, pageState } from "./access.mjs";
 import { HttpError } from "./auth.mjs";
 import { catalogTitle, listAll } from "./catalog.mjs";
-import { validTime } from "./content-activity.mjs";
+import { acceptedTime, validTime } from "./content-activity.mjs";
 import { configuredDomainView } from "./domain-access.mjs";
 import { validPageId } from "./registration.mjs";
 import { holdUntilSettled } from "./request-hold.mjs";
@@ -399,7 +399,8 @@ function pageUpsert(db, page) {
       page.trashed_at ?? null,
       page.revision ?? 0,
       page.lifecycle ?? 0,
-      validTime(page.content_updated_at) ? page.content_updated_at : null,
+      // A time further ahead of this writer's clock than nodes skew is dropped.
+      acceptedTime(page.content_updated_at),
     );
 }
 
@@ -559,15 +560,25 @@ export async function reportPageIndex(
   ]);
 }
 
-/** Record a Page host's newest content time on its Page row and every access
- * row, in one batch. The time only moves forward, so a delayed report
- * changes nothing once a newer one has landed, and rows already at or past
- * it aren't rewritten. It inserts nothing: a Page without rows waits for its
- * next full report. Every principal's row gets the same time; a row for
- * someone who can no longer read the Page still lists nothing, because each
- * shared row is verified with its Page host before it is shown. */
+/** Record a Page host's newest content time on its Page row and its owner and
+ * member access rows, in one batch. The time only moves forward, so a delayed
+ * report changes nothing once a newer one has landed, and rows already at or
+ * past it aren't rewritten. It inserts nothing: a Page without rows waits for
+ * its next full report. A row for someone who can no longer read the Page
+ * still lists nothing, because each shared row is verified with its Page host
+ * before it is shown.
+ *
+ * One report rewrites the Page row plus one row per owner and member, at most
+ * once per content window while the Page is edited.
+ * Domain readers' rows (`domain_opened`) are unbounded on a domain-wide Page,
+ * so they aren't touched here: each copies the Page row's time when its reader
+ * opens the Page again or its account reconciles (`reconcileIntervalMs`), and
+ * a reader's listing shows the time from the host's check either way. Until
+ * then such a row sorts by its older time. A time further ahead of this clock
+ * than nodes skew writes nothing. */
 export async function reportContentActivity(env, ctx, { pageId, contentUpdatedAt }) {
   if (!validTime(contentUpdatedAt)) throw new TypeError("contentUpdatedAt must be an ISO time");
+  if (!acceptedTime(contentUpdatedAt)) return;
   const db = await catalogIndexDatabase(env, ctx);
   const stale = "(content_updated_at IS NULL OR content_updated_at < ?)";
   await db.batch([
@@ -580,7 +591,7 @@ export async function reportContentActivity(env, ctx, { pageId, contentUpdatedAt
     db
       .prepare(
         `UPDATE pages_catalog_access SET content_updated_at = ?
-        WHERE page_id = ? AND ${stale}`,
+        WHERE page_id = ? AND source IN ('owner', 'member') AND ${stale}`,
       )
       .bind(contentUpdatedAt, pageId, contentUpdatedAt),
   ]);

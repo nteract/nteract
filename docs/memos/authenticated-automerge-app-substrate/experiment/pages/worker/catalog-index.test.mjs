@@ -2167,7 +2167,7 @@ test("a shared row shows the content time its Page host reports, and only after 
         revision: 1,
         members: { [member]: { role: "viewer", generation: 1 } },
       });
-      host.contentActivity = { value: at(42), nudge() {} };
+      host.contentActivity = { value: at(42), pump() {} };
       await f.catalog(member).ctx.storage.put(`shared/${id(100)}`, {
         page_id: id(100),
         title: "Shared plan",

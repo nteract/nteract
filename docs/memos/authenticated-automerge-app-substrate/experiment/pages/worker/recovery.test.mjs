@@ -105,6 +105,8 @@ test("Page restart recovers an intent based on an unflushed WebSocket edit", asy
       async update(fn) {
         restored = fn(restored);
       },
+      on() {},
+      off() {},
     };
     this.repo = {
       async find() {

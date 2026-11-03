@@ -109,6 +109,7 @@ was a caret race in the smoke; the editor side is
 | Removed access hides the local copy across a reload, with its download | `node scripts/local-sharing-e2e.mjs --revocation` | Starts an isolated fixture |
 | A commenter comments but can't edit; a forged native edit of another author's message is refused | `node scripts/local-sharing-e2e.mjs --commenter` | Starts an isolated fixture |
 | Projects over MCP and in the browser, `/projects` and `/pages` on a phone-sized screen, breadcrumbs, Trash and restore in a Project | `node scripts/local-sharing-e2e.mjs --projects` | Starts an isolated fixture |
+| `list_pages` reports `content_updated_at` after an MCP edit and after typing in a tab, each well after the Page's creation | `node scripts/local-sharing-e2e.mjs --content-activity` | Starts an isolated fixture |
 | Cold first open of a 300-paragraph Page with images on Fast 3G and 4x CPU, phase by phase (records timings, gates on nothing) | `node scripts/local-sharing-e2e.mjs --cold-open` | Starts an isolated fixture behind a brotli proxy; writes `report.json` |
 | Rollback to a previous build and forward again on one data directory | `node scripts/rollback-qualification.mjs --previous <previous pages dir>` | Starts an isolated fixture; build the previous commit first |
 | Rich comment tables and drafts | `PAGES_ORIGIN=http://localhost:9894 node scripts/rich-comments-smoke.mjs` | Uses the running Wordgard fixture |
@@ -586,14 +587,30 @@ document handle (worker/content-activity.mjs). It writes `host/content-activity`
 and reports at most once a minute: the first change after a quiet minute flushes
 at once, later changes keep only the newest time in memory, and one flush at the
 window's end writes it. A flush is one storage write, one D1 batch (the Page row
-and every access row, only where the stored time is older) and one call to the
-owner's Catalog, which sets the `page/` entry's `content_updated_at` without
-touching `updated_at`. Members' Catalogs get the time with the next title
-projection. Every write takes the later of the stored and reported time, so a
-delayed report never moves a content time back. A host evicted before its
-trailing flush loses at most that minute. A failed flush retries with backoff
-from one minute up to fifteen. The time also rides on every full row report, so a
-restart re-reports it.
+and its owner and member access rows, only where the stored time is older) and
+one call to the owner's Catalog at `/internal/content-activity`, which sets the
+`page/` entry's `content_updated_at` without touching `updated_at`. A Catalog
+from before that route answers non-OK and the flush retries until its node runs
+this build; an earlier route would have read the title-less report as a title.
+Members' Catalogs get the time with the next title projection. Domain readers'
+rows aren't rewritten by a flush, since a domain-wide Page can have any number of
+them: each copies the Page row's time when its reader opens the Page again or
+its account reconciles, and until then sorts by its older time. Every write
+takes the later of the stored and reported time, so a delayed report never moves
+a content time back, and every writer drops a time more than five minutes ahead
+of its own clock, so a node whose clock runs ahead can't pin a Page to the top.
+Times have exactly `Date#toISOString`'s format, the only one whose string order
+is time order. A host evicted before its trailing flush loses at most that
+minute. A failed flush retries with backoff from one minute up to fifteen. The
+time also rides on every full row report, so a restart re-reports it. Deleting a
+Page stops its recorder for good and deletes `host/content-activity`.
+
+The `change` listener runs on the repository's scheduler loop, in the context of
+the request that opened the document, so it starts nothing (see the celld notes
+below). Requests run the deferred work as they start and finish, and so does a
+loop each resident socket's request runs while it's open. A window timer is held
+on the request that armed it, so a Page edited once still flushes at the
+window's end; a longer retry backoff isn't held, and waits for the next request.
 
 Cursors are sealed to the listing's location, kind, `access` and sort. A cursor
 issued under one combination never opens under another; the client gets
@@ -2053,6 +2070,17 @@ or 2.5 s, so `catalogIndexDatabase(env, ctx)` requires the caller's `ctx` and
 holds the migration on it; no Catalog or Page call site can skip the hold. The
 work runs to completion after its caller leaves, and its response is
 discarded.
+
+A continuation inside a Durable Object runs under the request that started the
+code awaiting, not the one that settled the promise, and celld 0.6.3 drops the
+timers and I/O started there once that request has responded and its
+`waitUntil` work has settled. A long-lived loop started by one request, such as
+automerge-repo's scheduler loop that delivers a document's `change` events,
+keeps that request's context for good. Storage writes from it may land, but a
+fetch, a D1 query or a timer started from it never settles, and nothing logs.
+So a listener on a document handle must not start I/O: it records what it saw,
+and a live request runs the work, as content activity does
+(worker/content-activity.mjs).
 
 `update_project` requires `expected_revision`. The Catalog records it in the
 journal intent before the Project sees the request, and every attempt carries it,

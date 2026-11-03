@@ -71,6 +71,8 @@ async function fixture(t) {
             update: async (update) => {
               doc = update(doc);
             },
+            on() {},
+            off() {},
           };
           const imports = [];
           const page = Object.assign(Object.create(Page.prototype), {
