@@ -187,11 +187,19 @@ test("Enter on a selected table focuses Sift's grid; Escape there returns to the
   }
 });
 
-test("Enter passes through before the grid has loaded", () => {
+test("Enter before the grid has loaded keeps the selected table", () => {
   const { editor, select } = withTable();
   try {
     select();
-    assert.equal(enterDataframeGrid(editor), false);
+    const before = editor.state.doc.toString();
+    assert.equal(enterDataframeGrid(editor), true);
+    // Through the editor's own key handling too: Enter's usual work would
+    // replace the selected table with an empty paragraph.
+    editor.contentDOM.dispatchEvent(
+      new window.KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }),
+    );
+    assert.equal(editor.state.doc.toString(), before);
+    assert.match(before, /PagesDataframe/);
   } finally {
     editor.dom.remove();
   }

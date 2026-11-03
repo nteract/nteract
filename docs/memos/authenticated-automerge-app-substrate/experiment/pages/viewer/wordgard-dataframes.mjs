@@ -10,6 +10,7 @@ import { GardSelection } from "wordgard/state";
 import { PagesDataframe } from "./wordgard-model.mjs";
 import { reportRendererUnavailable } from "./wordgard-widgets.mjs";
 import { PARQUET_MEDIA_TYPE, readDataframe } from "../shared/dataset-assets.mjs";
+import { asyncScheduler, timer as rxTimer } from "rxjs";
 import { dataframeTableMachine } from "./dataframe-table-machine.mjs";
 
 /** Media type -> lazily loaded renderer module with
@@ -37,12 +38,19 @@ export function dataframeFrame({ title, media_type }) {
   caption.className = "wordgard-dataframe-title";
   caption.textContent = title ?? "Table";
   caption.classList.toggle("is-untitled", !title);
-  const status = dom.appendChild(document.createElement("p"));
-  status.setAttribute("role", "status");
-  const canvas = dom.appendChild(document.createElement("div"));
+  // The status sits over the canvas, not above it, so hiding it when the
+  // table draws doesn't move anything.
+  const body = dom.appendChild(document.createElement("div"));
+  body.className = "wordgard-dataframe-body";
+  const canvas = body.appendChild(document.createElement("div"));
   canvas.className = "wordgard-dataframe-canvas";
+  const status = body.appendChild(document.createElement("p"));
+  status.setAttribute("role", "status");
   const load = DATAFRAME_RENDERERS[media_type];
-  status.textContent = load ? "Loading table…" : `This build can't show ${media_type}.`;
+  // A live region announces changes, not its first text. Starting with the
+  // text the lifecycle shows first means connecting a table announces
+  // nothing; only loading and failure do.
+  status.textContent = load ? DATAFRAME_STATUS.waiting : `This build can't show ${media_type}.`;
   canvas.hidden = !load;
   return { dom, header, status, canvas, load };
 }
@@ -107,9 +115,6 @@ export const observeNearViewport = (element, onChange) =>
     target: globalThis.window,
   }))(element, onChange);
 
-/** Wall-clock timers; tests pass virtual ones. */
-const REAL_TIMERS = { set: (run, ms) => setTimeout(run, ms), clear: (id) => clearTimeout(id) };
-
 /**
  * Runs dataframeTableMachine (dataframe-table-machine.mjs) for one table,
  * with its effects at the edge: the viewport watcher, the one armed timer,
@@ -125,7 +130,7 @@ export function dataframeLifecycle({
   delay = 50,
   park = 1000,
   observe = observeNearViewport,
-  timers = REAL_TIMERS,
+  scheduler = asyncScheduler,
   onUnavailable,
 }) {
   let model = dataframeTableMachine.initial,
@@ -156,20 +161,17 @@ export function dataframeLifecycle({
         stopWatching = null;
         return;
       case "startTimer":
-        if (timer !== null) timers.clear(timer);
-        timer = timers.set(
-          () => {
-            timer = null;
-            dispatch({
-              type: effect.timer === "park" ? "parkExpired" : "timer",
-              generation: effect.generation,
-            });
-          },
-          effect.timer === "park" ? park : delay,
-        );
+        timer?.unsubscribe();
+        timer = rxTimer(effect.timer === "park" ? park : delay, scheduler).subscribe(() => {
+          timer = null;
+          dispatch({
+            type: effect.timer === "park" ? "parkExpired" : "timer",
+            generation: effect.generation,
+          });
+        });
         return;
       case "clearTimer":
-        if (timer !== null) timers.clear(timer);
+        timer?.unsubscribe();
         timer = null;
         return;
       case "load":
@@ -278,8 +280,10 @@ const gridTarget = (frame) =>
 
 /**
  * Enter on a selected dataframe moves focus into Sift's grid, where arrows,
- * Page Up/Down and Home/End scroll rows. Returns false (Enter does its usual
- * work) when no table is selected or its grid hasn't loaded.
+ * Page Up/Down and Home/End scroll rows. Before the grid has loaded, Enter
+ * on the selected table does nothing, rather than its usual work of
+ * replacing the selected node. Returns false only when no table is
+ * selected.
  */
 export function enterDataframeGrid(editor) {
   const selection = selectedDataframe(editor.state);
@@ -288,9 +292,7 @@ export function enterDataframeGrid(editor) {
   const frame = dom?.matches?.(".wordgard-dataframe-table")
     ? dom
     : dom?.querySelector?.(".wordgard-dataframe-table");
-  const target = gridTarget(frame);
-  if (!target) return false;
-  target.focus({ preventScroll: true });
+  gridTarget(frame)?.focus({ preventScroll: true });
   return true;
 }
 

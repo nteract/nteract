@@ -536,11 +536,23 @@
   margin: 0;
   min-width: 0;
 }
-.wordgard-dataframe-table > p {
+.wordgard-dataframe-body {
+  position: relative;
+  min-width: 0;
+}
+/* Over the canvas's top-left corner, so it never takes or gives back space. */
+.wordgard-dataframe-body > p {
+  position: absolute;
+  inset: 1px auto auto 1px;
   margin: 0;
-  padding: 12px 0;
+  padding: 12px;
   color: var(--muted-foreground);
   font-size: 13px;
+}
+/* With no canvas (a media type this build can't show), the text is the body. */
+.wordgard-dataframe-canvas[hidden] + p {
+  position: static;
+  padding: 12px 0;
 }
 .wordgard-dataframe-canvas {
   height: 360px;
