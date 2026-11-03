@@ -261,11 +261,6 @@ test("a preserved block whose source would lose content converts to literal text
   });
 });
 
-const settle = async (predicate) => {
-  for (let i = 0; i < 200 && !predicate(); i++) await new Promise((r) => setImmediate(r));
-  assert.ok(predicate(), "condition reached");
-};
-
 // Discovery while fenced: readable, a `converting` notice, and the grant
 // unchanged so the viewer keeps its writer key.
 async function assertConverting(f) {
@@ -288,15 +283,27 @@ async function trashedPreservedPage(t) {
 
 test("restore keeps native writes fenced until the conversion finishes", async (t) => {
   const f = await trashedPreservedPage(t);
-  let release;
+  let release, reached;
   const gate = new Promise((resolve) => (release = resolve));
-  f.hooks.flush = () => gate;
+  // The conversion's flush is the first one the restore makes. Waiting for it
+  // waits for the conversion itself, however many turns the restore's storage
+  // calls take before it gets there.
+  const atFlush = new Promise((resolve) => (reached = resolve));
+  f.hooks.flush = () => {
+    reached();
+    return gate;
+  };
   const restoring = f.catalogCall("owner", "restore_page", {
     page_id: pageId,
     idempotency_key: "restore-fenced",
   });
+  const first = await Promise.race([
+    atFlush.then(() => "conversion flush"),
+    restoring.then(() => "restore finished"),
+  ]);
+  assert.equal(first, "conversion flush");
   // The active record is installed and the conversion is running.
-  await settle(() => f.page.conversion.name === "converting");
+  assert.equal(f.page.conversion.name, "converting");
   assert.equal(f.page.metadata.trash, undefined, "the record is active");
   // No key can write. (Discovery waits behind the restore in the request
   // queue; the failed-conversion test below reads it while fenced.)
