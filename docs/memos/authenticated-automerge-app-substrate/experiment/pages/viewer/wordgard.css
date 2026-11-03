@@ -90,7 +90,10 @@
   list-style: none;
   position: relative;
 }
-.wordgard-task-content > p {
+/* One rule for the editor's task text and the loading preview's, so the swap
+   from preview to editor doesn't move task items. It has to outrank the
+   general paragraph rule above. */
+.wordgard-document :is(wg-content, :where(.preview-content)) :is(.wordgard-task-content, li[data-task-checked] > div) > p {
   margin: 0.15em 0;
 }
 .wordgard-task-control {
@@ -138,16 +141,18 @@
   height: 15px;
   accent-color: var(--primary);
 }
-.wordgard-document .preview-content li[data-task-checked] > div > p {
-  margin: 0.15em 0;
-}
 .wordgard-document .preview-content li[data-task-checked="true"] > div > p {
   color: var(--muted-foreground);
   text-decoration: line-through;
 }
 @media (pointer: coarse) {
-  .wordgard-task-item {
+  .wordgard-task-item,
+  .wordgard-document .preview-content li[data-task-checked] {
     min-height: 44px;
+  }
+  .wordgard-document .preview-content li[data-task-checked] > input[type="checkbox"] {
+    inset-inline-start: -21.5px;
+    top: 6.5px;
   }
   .wordgard-task-control {
     justify-content: center;
