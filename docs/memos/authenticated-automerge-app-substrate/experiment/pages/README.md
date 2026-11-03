@@ -550,18 +550,60 @@ computes them. Listing titles are cut to 500 code units on a code point boundary
 with lone surrogates replaced, so a key reads back from D1 exactly as the
 fallback computes it. An empty title sorts first; a missing one is stored as
 "Untitled". Continuation pages compare a row value against the cursor's
-position, `(title_search, page_id) > (?, ?)` or `(updated_at, page_id) < (?, ?)`,
-which seeks the listing index instead of scanning from the principal's first row. The shown title still comes from the check,
+position, `(title_search, page_id) > (?, ?)`, `(activity_at, page_id) < (?, ?)`
+or `(created_at, page_id) < (?, ?)`, which seeks that sort's index instead of
+scanning from the principal's first row. The shown title still comes from the check,
 so a Page renamed since its snapshot can sit out of order until its row is
 rewritten. Children of a shared parent come from IDs alone and order by Page ID
-in either sort. The default `"activity"` sort is `updated_at` newest first.
+in every sort.
 
-A listing with no location, kind or `access` filter in the default sort seals its
-cursor exactly as builds before these arguments did, so those cursors stay valid
-across a deploy. `access` and a title sort extend the sealed scope, so a cursor
-issued under one never opens under another; the client gets `invalid_cursor` and
-restarts. A title-sorted cursor carries its position's title key, which makes it
-longer: cursors may run to 8192 characters.
+Every listed Page carries `content_updated_at`: when its Page host last accepted
+a change to its title or blocks, or `null` when no host has reported one. It is
+the host's clock at acceptance, from any writer: a browser, an agent tool, a
+peer syncing old offline edits. Comments (their own document), presence, sharing,
+Trash and moves don't change it, and neither do the host's own migrations
+(preserved Markdown conversion, moving legacy comments out), which rewrite how
+content is stored, not what it says. `updated_at` keeps its meaning: the newest
+title, discovery or lifecycle observation. A shared Page's `content_updated_at`
+comes from its host's check, like its title.
+
+| `sort` | Order | Key | Missing key |
+| --- | --- | --- | --- |
+| `"activity"` (default) | newest first, then Page ID descending | `activity_at`: `content_updated_at`, else `updated_at` | falls back to `updated_at` |
+| `"created"` | newest first, then Page ID descending | `created_at` | `''`, sorts last |
+| `"title"` | ascending, then Page ID ascending | `title_search` | `"untitled"` |
+
+`activity_at` is a virtual generated column, so every writer keeps it current,
+including a build that predates it. The Catalog fallback computes each key from
+the entry the same way: `content_updated_at ?? updated_at`, and `created_at`
+(else `updated_at`, as reconciliation indexes it). Owned rows order alike from
+either source. A shared row's times differ by source, as they always have: D1
+holds the Page row's own creation and content times, the Catalog entry this
+account's discovery time and whatever the last title projection carried.
+
+The Page host records content activity from the `change` events on its serving
+document handle (worker/content-activity.mjs). It writes `host/content-activity`
+and reports at most once a minute: the first change after a quiet minute flushes
+at once, later changes keep only the newest time in memory, and one flush at the
+window's end writes it. A flush is one storage write, one D1 batch (the Page row
+and every access row, only where the stored time is older) and one call to the
+owner's Catalog, which sets the `page/` entry's `content_updated_at` without
+touching `updated_at`. Members' Catalogs get the time with the next title
+projection. Every write takes the later of the stored and reported time, so a
+delayed report never moves a content time back. A host evicted before its
+trailing flush loses at most that minute. A failed flush retries with backoff
+from one minute up to fifteen. The time also rides on every full row report, so a
+restart re-reports it.
+
+Cursors are sealed to the listing's location, kind, `access` and sort. A cursor
+issued under one combination never opens under another; the client gets
+`invalid_cursor` and restarts. Activity positions hold `activity_at` values, which
+builds before content activity never sealed: their activity cursors held
+`updated_at` and opened under no scope or a scope without this sort's name. The
+scope now names the activity sort `content_activity`, so every such cursor fails
+with `invalid_cursor` instead of seeking the new order with an old key. Title
+cursors keep their scope and still open. A title-sorted cursor carries its
+position's title key, which makes it longer: cursors may run to 8192 characters.
 
 Page hosts report their row after creation, title changes and ACL commits. Writes
 carry the committed ACL revision, so a report that outlives its timeout changes
@@ -574,7 +616,7 @@ If D1 errors or exceeds its read budget, listing falls back to the Catalog entri
 
 Each account reconciles from its Catalog entries: on its first listing under an
 epoch, after a Catalog change that may have missed D1, and at least every six
-hours. A pass rewrites owner rows (title, timestamps, state), re-verifies shared
+hours. A pass rewrites owner rows (title, timestamps, content time, state), re-verifies shared
 entries and non-owner rows (using the Page host's own title observation time), and
 drops owner rows the Catalog no longer has. A Page host's first check after a
 restart also reports its row. Each listing advances the pass until about one

@@ -829,16 +829,19 @@ test("MCP list_pages advertises access and sort and forwards them unchanged", as
   const descriptor = tools.find((tool) => tool.name === "list_pages");
   const { access, sort, cursor } = descriptor.inputSchema.properties;
   assert.deepEqual(access.enum, ["owned", "shared"]);
-  assert.deepEqual(sort.enum, ["activity", "title"]);
+  assert.deepEqual(sort.enum, ["activity", "created", "title"]);
   assert.match(access.description, /in_trash or project_id/);
   assert.match(sort.description, /activity \(default\)/);
+  assert.match(sort.description, /content_updated_at/);
+  assert.match(sort.description, /created lists the newest first/);
+  assert.match(descriptor.description, /content_updated_at/);
   assert.equal(cursor.maxLength, CURSOR_MAX_LENGTH, "a title-sorted cursor must fit");
   assert.deepEqual(descriptor.inputSchema.required, []);
   const calls = [];
   const response = await handleMcp(
     request("tools/call", {
       name: "list_pages",
-      arguments: { access: "shared", sort: "title", limit: 5 },
+      arguments: { access: "shared", sort: "created", limit: 5 },
     }),
     async (operation, args) => {
       calls.push({ operation, args });
@@ -847,7 +850,7 @@ test("MCP list_pages advertises access and sort and forwards them unchanged", as
   );
   assert.equal(response.status, 200);
   assert.deepEqual(calls, [
-    { operation: "list_pages", args: { access: "shared", sort: "title", limit: 5 } },
+    { operation: "list_pages", args: { access: "shared", sort: "created", limit: 5 } },
   ]);
 });
 
