@@ -30,7 +30,7 @@
  */
 import { pageGrant, pageState } from "./access.mjs";
 import { HttpError } from "./auth.mjs";
-import { catalogTitle, listAll } from "./catalog.mjs";
+import { catalogTitle, listAll, trashTime } from "./catalog.mjs";
 import { acceptedTime, validTime } from "./content-activity.mjs";
 import { configuredDomainView } from "./domain-access.mjs";
 import { validPageId } from "./registration.mjs";
@@ -309,14 +309,10 @@ export function indexedState(metadata) {
   const state = pageState(metadata);
   return state === "missing" ? "active" : state;
 }
-/** The host record's trash time in the one format listings compare
- * (`validTime`), or null. Another date string or a number is converted, so a
- * Trash key never sorts by its spelling. */
-function trashedAt(metadata) {
-  const value = metadata?.trash?.trashed_at ?? metadata?.trash?.trashedAt;
-  const ms = typeof value === "string" ? Date.parse(value) : value;
-  return Number.isFinite(ms) ? new Date(ms).toISOString() : null;
-}
+/** The host record's trash time as the Catalog's `trash/` entry stores it
+ * (catalog.mjs `trashTime`), or null. */
+const trashedAt = (metadata) =>
+  trashTime(metadata?.trash?.trashed_at ?? metadata?.trash?.trashedAt);
 
 /** The first of `values` that is a listing time (`validTime`), else null. A
  * Catalog entry's stored time is trusted only in that format: a number would
@@ -380,6 +376,10 @@ const lifecycleGuard = (pageId) =>
 /** SQL for the later of two nullable timestamps. SQLite's two-argument max()
  * returns NULL when either is NULL. */
 const laterSql = (a, b) => `nullif(max(coalesce(${a}, ''), coalesce(${b}, '')), '')`;
+/** SQL for the earlier of two NOT NULL timestamps, where '' means unknown: a
+ * known time replaces '', and '' never replaces one. */
+const earlierSql = (a, b) =>
+  `CASE WHEN ${a} = '' THEN ${b} WHEN ${b} = '' THEN ${a} ELSE min(${a}, ${b}) END`;
 
 /** Title follows the latest observation time. Lifecycle state follows the
  * newest lifecycle revision, then observation time within one revision.
@@ -409,7 +409,7 @@ function pageUpsert(db, page) {
         state = CASE WHEN ${newerState} THEN excluded.state ELSE pages_catalog_pages.state END,
         trashed_at = CASE WHEN ${newerState}
           THEN excluded.trashed_at ELSE pages_catalog_pages.trashed_at END,
-        created_at = min(pages_catalog_pages.created_at, excluded.created_at),
+        created_at = ${earlierSql("pages_catalog_pages.created_at", "excluded.created_at")},
         updated_at = CASE WHEN ? = 1 AND excluded.title = pages_catalog_pages.title
             AND excluded.state = pages_catalog_pages.state
           THEN pages_catalog_pages.updated_at
@@ -1304,8 +1304,7 @@ export async function catalogSource(
         title_search: titleKey(entry.title),
         // As reconciliation indexes them: an entry whose created_at is
         // missing or malformed at its updated_at, and the other way round.
-        // With neither, reconciliation uses its own time; here the key is
-        // missing and reads as "".
+        // With neither, both read the key as "".
         created_at: firstTime(entry.created_at, entry.updated_at) ?? undefined,
         updated_at: firstTime(entry.updated_at, entry.created_at) ?? undefined,
         content_updated_at: firstTime(entry.content_updated_at),
@@ -1365,7 +1364,11 @@ export function indexSource(db, query) {
 
 /** Statements for one verified grant. The Page host's own title observation
  * time orders the snapshot, so a fresh title is never paired with an older
- * discovery timestamp. */
+ * discovery timestamp. With the host's `title_keep_time`, rows that already
+ * hold the title keep their `updated_at`, as they do for the host's own
+ * reports of that observation: a restart from a build without the stored
+ * observation re-observes an unchanged title now. A changed title, and an
+ * ACL commit's or a restore's observation, still move them. */
 function sharedStatements(db, principal, pageId, page, fallbackAt, createdAt) {
   const observed =
     typeof page.title_observed_at === "string" && isoTime.test(page.title_observed_at)
@@ -1382,6 +1385,7 @@ function sharedStatements(db, principal, pageId, page, fallbackAt, createdAt) {
       revision: page.revision ?? 0,
       lifecycle: page.lifecycle_revision ?? 0,
       content_updated_at: page.content_updated_at,
+      keep_time: page.title_keep_time === true,
     }),
     upsertAccess(
       db,
@@ -1395,7 +1399,12 @@ function sharedStatements(db, principal, pageId, page, fallbackAt, createdAt) {
         },
       ],
       page.revision ?? 0,
-      { title: page.title, updatedAt: observed, lifecycle: page.lifecycle_revision ?? 0 },
+      {
+        title: page.title,
+        updatedAt: observed,
+        lifecycle: page.lifecycle_revision ?? 0,
+        keepTime: page.title_keep_time === true,
+      },
     ),
   ];
 }
@@ -1521,9 +1530,10 @@ export async function reconcileAccountIndex({
       for (const [, entry] of listed) {
         if (entry?.pending || !validPageId(entry?.page_id)) continue;
         // Only listing times reach D1 (`firstTime`); the fallback reads the
-        // same entry with the same fallbacks (`catalogSource`).
-        const updatedAt =
-          firstTime(entry.updated_at, entry.created_at) ?? new Date(now).toISOString();
+        // same entry with the same fallbacks (`catalogSource`). An entry with
+        // neither time is indexed at '', which the fallback reads too: every
+        // pass writes the same value, so it never moves the row.
+        const updatedAt = firstTime(entry.updated_at, entry.created_at) ?? "";
         const state = pass.phase === "owned" ? "active" : "trashed";
         statements.push(
           pageUpsert(db, {

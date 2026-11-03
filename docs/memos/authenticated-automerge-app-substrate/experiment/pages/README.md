@@ -628,11 +628,14 @@ A stored time is a listing time only in `Date#toISOString`'s format. Anything
 else in a Catalog entry, such as a number, `"2026-10-01"` or an RFC 1123 date,
 never reaches D1, never jumps the order and never fails a listing or its
 cursor. Reconciliation indexes it as missing: `created_at` falls back to the
-entry's `updated_at`, `updated_at` to its `created_at` and then the pass's own
-time, and `trashed_at` to null. The Catalog fallback reads the same fallbacks,
-and a key with none reads as `''` and sorts last. A host record's trash time is
-converted to that format before it is indexed. A non-string title key reads as
-`''`.
+entry's `updated_at` and `updated_at` to its `created_at`, and a key with
+neither is `''`; `trashed_at` falls back to null. The Catalog fallback reads the
+same fallbacks, so a key with none sorts last in both, and every reconcile pass
+writes the same `''`, so it never moves the row. D1 keeps an earlier real time
+over `''`: a row the Page host already reported keeps that report's time, as any
+D1 time from the host can differ from the Catalog's (below). A host record's
+trash time is converted to that format before it is indexed, in D1 and in the
+Catalog's `trash/` entry alike. A non-string title key reads as `''`.
 
 `activity_at` is a virtual generated column, so every writer keeps it current,
 including a build that predates it. The Catalog fallback computes each key from
@@ -714,16 +717,19 @@ carry the committed ACL revision, so a report that outlives its timeout changes
 nothing once a newer revision has landed.
 
 Repeating a title observes nothing new, so it moves no `updated_at`. The host
-stores the title it last projected and when it first observed it
-(`host/title-projection`). After a restart, a retried projection or a repaired
-report, the same title goes out with that time, which also stays the host's
-`title_observed_at`. Every such projection and report also carries `keep_time`: a
-Catalog entry or D1 row whose title already equals it keeps its own
-`updated_at`. That covers a host restarted from a build without the stored
-record, and a writer that missed an earlier projection. A title change, a new
-entry or row (a discovery), an ACL commit and a restore still move it. So a host
-restart never reorders a library, even for Pages without a content time, which
-the activity sort orders by `updated_at`.
+stores the title it last projected, when it first observed it and whether that
+observation lets writers keep their time (`host/title-projection`). After a
+restart, a retried projection or a repaired report, the same title goes out with
+that time, which also stays the host's `title_observed_at`. A title observation
+carries `keep_time`: a Catalog entry or D1 row whose title already equals it
+keeps its own `updated_at`. That covers a host restarted from a build without the
+stored record, and a writer that missed an earlier projection. A title change, a
+new entry or row (a discovery), an ACL commit and a restore still move it. An ACL
+commit or a restore is stored without `keep_time`, so its retries and repairs
+move the writers it missed; writers that already took its time keep it, since
+every writer takes the later time. So a host restart never reorders a library,
+even for Pages without a content time, which the activity sort orders by
+`updated_at`.
 
 A failed report leaves a marker in the Page host and repeats on its next request.
 Before an ACL restriction or a deletion
