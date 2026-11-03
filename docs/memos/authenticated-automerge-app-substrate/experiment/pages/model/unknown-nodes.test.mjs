@@ -65,9 +65,7 @@ test("a read shows an unknown block or embed as a notice instead of hiding it", 
     blockMarkdown(cell.doc.blocks[cell.id]),
     /\| Af\\\[Unsupported node: video\\\]ter \| 2 \|/,
   );
-  assert.ok(
-    projectReadContent(block.doc, {}).outline.some((entry) => entry.type === "unknownBlock"),
-  );
+  assert.ok(projectReadContent(block.doc, {}).outline.some((entry) => entry.type === "unknown"));
   // read_page projects and outlines the block.
   for (const { doc } of [block, inline, cell]) {
     const read = projectReadContent(doc, {});

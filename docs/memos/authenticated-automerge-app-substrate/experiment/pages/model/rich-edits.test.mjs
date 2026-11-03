@@ -317,7 +317,7 @@ test("set_node refuses the wrong node and malformed fields", () => {
   refuses(
     doc,
     [{ ...base, match_text: "task" }],
-    /exactly one of checked, language, heading_level, align/,
+    /set_node takes type, attrs \(level, language, checked, align\), or both/,
   );
   refuses(doc, [{ ...base, match_text: "task", checked: true, language: "x" }], /exactly one of/);
   refuses(doc, [{ ...base, match_text: "task", checked: "yes" }], /checked takes true or false/);
@@ -678,4 +678,117 @@ test("set_node can't address an image block, which has no visible text", () => {
     [{ op: "set_node", block_id: image, match_text: "Chart", heading_level: 2 }],
     /found 0 matches/,
   );
+});
+
+test("set_node takes {type, attrs} with the names read_page reports", () => {
+  const { doc, id } = fixture(
+    "Intro words\n\n- [ ] task\n\n```\ngraph TD\n```\n\n| a | b |\n| --- | --- |\n| 1 | 2 |",
+  );
+  const run = (op) => apply(doc, [{ op: "set_node", block_id: id, ...op }]);
+  assert.match(
+    md(run({ match_text: "Intro", type: "heading", attrs: { level: 2 } }).after, id),
+    /^## Intro words/,
+  );
+  assert.match(md(run({ match_text: "task", attrs: { checked: true } }).after, id), /- \[x\] task/);
+  assert.match(
+    md(run({ match_text: "graph", attrs: { language: "mermaid" } }).after, id),
+    /```mermaid/,
+  );
+  const aligned = run({ match_text: "2", attrs: { align: "right" } });
+  assert.equal(aligned.result.edits[0].cells, 2);
+  // Heading level changes, and back to a paragraph drops the level.
+  const heading = run({ match_text: "Intro", type: "heading", attrs: { level: 2 } }).after;
+  const deeper = apply(heading, [
+    { op: "set_node", block_id: id, match_text: "Intro", attrs: { level: 4 } },
+  ]).after;
+  assert.match(md(deeper, id), /^#### Intro words/);
+  const back = apply(deeper, [
+    { op: "set_node", block_id: id, match_text: "Intro", type: "paragraph" },
+  ]).after;
+  assert.match(md(back, id), /^Intro words/);
+  assert.deepEqual(markers(back, id)[0], ["paragraph", {}]);
+  // Refusals name the registry's types.
+  refuses(
+    doc,
+    [{ op: "set_node", block_id: id, match_text: "Intro", type: "heading" }],
+    /heading needs attrs\.level/,
+  );
+  refuses(
+    doc,
+    [{ op: "set_node", block_id: id, match_text: "task", type: "heading", attrs: { level: 1 } }],
+    /type applies to paragraphs and headings; match_text is in a task list item/,
+  );
+  refuses(
+    doc,
+    [{ op: "set_node", block_id: id, match_text: "task", attrs: { level: 2 } }],
+    /level applies to headings; match_text is in a task list item/,
+  );
+  refuses(
+    doc,
+    [{ op: "set_node", block_id: id, match_text: "task", type: "code-block" }],
+    /type takes paragraph or heading/,
+  );
+  refuses(
+    doc,
+    [{ op: "set_node", block_id: id, match_text: "task", attrs: { color: "red" } }],
+    /attrs take level, language, checked, align; color isn't one/,
+  );
+  refuses(
+    doc,
+    [{ op: "set_node", block_id: id, match_text: "Intro", type: "heading", attrs: { level: 7 } }],
+    /level takes an integer from 1 to 6/,
+  );
+  refuses(
+    doc,
+    [{ op: "set_node", block_id: id, match_text: "task", checked: true, attrs: { checked: true } }],
+    /not both/,
+  );
+  // A retype refusal names the type the node would become.
+  refuses(
+    heading,
+    [{ op: "set_node", block_id: id, match_text: "Intro", type: "paragraph", attrs: { level: 2 } }],
+    /type paragraph has no level; level applies to headings/,
+  );
+  // attrs can name several attributes, and each must apply to the node. No
+  // type holds two settable attrs, so a second one is refused, never dropped.
+  refuses(
+    heading,
+    [{ op: "set_node", block_id: id, match_text: "Intro", attrs: { level: 3, checked: true } }],
+    /checked applies to task list items; match_text is in a heading/,
+  );
+  refuses(
+    doc,
+    [{ op: "set_node", block_id: id, match_text: "2", attrs: { align: "left", language: "js" } }],
+    /language applies to code blocks; match_text is in a table cell/,
+  );
+});
+
+test("the flat set_node fields and {type, attrs} write the same marker", () => {
+  const { doc: plain, id } = fixture(
+    "Intro words\n\n- [ ] task\n\n```\ngraph TD\n```\n\n| a | b |\n| --- | --- |\n| 1 | 2 |",
+  );
+  // Start from a heading and an aligned column, so heading_level: 0 and
+  // align: null have something to undo.
+  const doc = apply(plain, [
+    { op: "set_node", block_id: id, match_text: "Intro", type: "heading", attrs: { level: 2 } },
+    { op: "set_node", block_id: id, match_text: "2", attrs: { align: "right" } },
+  ]).after;
+  const pairs = [
+    ["Intro", { heading_level: 3 }, { type: "heading", attrs: { level: 3 } }],
+    ["Intro", { heading_level: 0 }, { type: "paragraph" }],
+    ["task", { checked: true }, { attrs: { checked: true } }],
+    ["graph", { language: "mermaid" }, { attrs: { language: "mermaid" } }],
+    ["2", { align: "center" }, { attrs: { align: "center" } }],
+    ["2", { align: null }, { attrs: { align: null } }],
+  ];
+  for (const [target, flat, typed] of pairs) {
+    const a = apply(doc, [{ op: "set_node", block_id: id, match_text: target, ...flat }]).after;
+    const b = apply(doc, [{ op: "set_node", block_id: id, match_text: target, ...typed }]).after;
+    assert.notDeepEqual(
+      markers(a, id),
+      markers(doc, id),
+      `${JSON.stringify(flat)} changed nothing`,
+    );
+    assert.deepEqual(markers(a, id), markers(b, id), JSON.stringify(flat));
+  }
 });

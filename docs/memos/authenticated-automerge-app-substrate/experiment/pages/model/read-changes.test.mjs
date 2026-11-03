@@ -245,7 +245,7 @@ test("lists and tables are whole top-level nodes while nearby prose stays out", 
   assert.deepEqual(
     changes.map((c) => [c.node_index, c.type, c.change]),
     [
-      [1, "bullet_list", "updated"],
+      [1, "bullet-list", "updated"],
       [2, "table", "updated"],
     ],
   );

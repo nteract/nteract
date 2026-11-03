@@ -3,6 +3,7 @@ import { eventsWithIndexChanges, traverseSpans } from "@automerge/prosemirror/di
 import { orderedBlockIds } from "./order.mjs";
 import { projectReadComments } from "./read-comments.mjs";
 import { nodeFields } from "./read-content.mjs";
+import { agentType } from "./node-registry.mjs";
 import { commentMessageState, commentThreadState } from "./comment-content.mjs";
 import {
   adapter,
@@ -95,7 +96,7 @@ function nativeNodes(doc, blockId, headings) {
       offset,
       end: offset + node.nodeSize,
       node_index: nodeIndex,
-      type: node.type.name,
+      type: agentType(node.type.name),
       heading_path: headings.map((heading) => heading.text),
       markdown: exportMarkdown(schema.node("doc", null, [node])),
       fields: nodeFields(node, { pageId: doc.page_id }),

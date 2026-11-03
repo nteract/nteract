@@ -158,7 +158,8 @@ test("helpers read the registry", () => {
   assert.equal(isKnownBlock("callout"), false);
   assert.equal(nodeLabel("blockquote"), "a quote's first paragraph");
   assert.equal(nodeLabel("callout"), "a callout node");
-  assert.equal(nodeType("heading").attrs.level.agent, "heading_level");
+  assert.equal(nodeType("heading").attrs.level.agent, undefined);
+  assert.equal(nodeType("code-block").attrs.params.agent, "language");
   assert.ok([1, 6].every(validHeadingLevel));
   assert.ok(![0, 7, 2.5, "2"].some(validHeadingLevel));
   for (const name of ["constructor", "__proto__", "toString", 3, undefined])
@@ -198,13 +199,14 @@ test("insertedAssets lists each stored asset a batch names, validated", () => {
   );
 });
 
-test("set_node's fields are the registry attrs marked settable", async () => {
-  const { NODE_FIELDS } = await import("./set-node.mjs");
+test("set_node's attrs are the registry attrs marked settable", async () => {
+  const { NODE_ATTRS, LEGACY_FIELDS } = await import("./set-node.mjs");
   const settable = new Set();
   for (const type of NODE_TYPES)
     for (const [name, attr] of Object.entries(type.attrs))
       if (attr.set === "set_node") settable.add(attr.agent ?? name);
-  assert.deepEqual([...settable].sort(), [...NODE_FIELDS].sort());
+  assert.deepEqual([...settable].sort(), [...NODE_ATTRS].sort());
+  assert.deepEqual([...LEGACY_FIELDS].sort(), ["align", "checked", "heading_level", "language"]);
 });
 
 test("the editor and registration agree on heading levels", () => {
@@ -217,4 +219,14 @@ test("the editor and registration agree on heading levels", () => {
   assert.equal(decode(heading({ level: 6 })).lossy, false);
   for (const level of [null, "3", S("3"), 0, 7, 2.5])
     assert.throws(() => decode(heading({ level })), /heading level/, String(level));
+});
+
+test("agent-facing types are stored block names, list names or unknown", async () => {
+  const { agentType, LIST_TYPES } = await import("./node-registry.mjs");
+  for (const type of NODE_TYPES) if (!type.wrapper) assert.equal(agentType(type.pm), type.block);
+  for (const [pm, name] of Object.entries(LIST_TYPES)) {
+    assert.ok(schema.nodes[pm], pm);
+    assert.equal(agentType(pm), name);
+  }
+  assert.equal(agentType("unknownBlock"), "unknown");
 });

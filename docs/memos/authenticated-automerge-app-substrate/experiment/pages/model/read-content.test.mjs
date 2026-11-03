@@ -221,7 +221,7 @@ test("partial reads preserve whole nested lists, tasks, tables, links, code and 
   );
   assert.match(result.blocks[0].markdown, /- \[x\] \*\*Done\*\* 🌊/);
   assert.match(result.blocks[0].markdown, /```mermaid/);
-  assert.equal(result.outline[1].type, "task_list");
+  assert.equal(result.outline[1].type, "task-list");
   assert.equal(result.outline[3].type, "table");
   for (const entry of result.outline) {
     const single = read(doc, {
@@ -388,11 +388,11 @@ test("outline entries and changed nodes carry attrs, summary and node_type", asy
     outline.map((entry) => [entry.type, fields(entry)]),
     [
       ["heading", { attrs: { level: 1 } }],
-      ["code_block", { attrs: { language: "python" } }],
-      ["code_block", { attrs: { language: "" } }],
+      ["code-block", { attrs: { language: "python" } }],
+      ["code-block", { attrs: { language: "" } }],
       // Direct items only; the nested task list reads as its own Markdown.
-      ["task_list", { summary: { items: 2, checked_count: 1, checked: [true, false] } }],
-      ["bullet_list", {}],
+      ["task-list", { summary: { items: 2, checked_count: 1, checked: [true, false] } }],
+      ["bullet-list", {}],
       ["table", { summary: { rows: 3, columns: 3, align: ["left", "center", null] } }],
     ],
   );
@@ -419,8 +419,8 @@ test("outline entries and changed nodes carry attrs, summary and node_type", asy
     changed.map((change) => [change.type, fields(change)]),
     [
       ["heading", { attrs: { level: 2 } }],
-      ["code_block", { attrs: { language: "mermaid" } }],
-      ["task_list", { summary: { items: 2, checked_count: 2, checked: [true, true] } }],
+      ["code-block", { attrs: { language: "mermaid" } }],
+      ["task-list", { summary: { items: 2, checked_count: 2, checked: [true, true] } }],
       ["table", { summary: { rows: 3, columns: 3, align: ["left", "center", "right"] } }],
     ],
   );
@@ -464,10 +464,10 @@ test("outline fields bound per-item values, cover ragged tables and name unknown
     A.splice(draft, path, end + 1, 0, "3");
   });
   const outline = projectReadContent(doc, {}).outline;
-  const unknown = outline.find((entry) => entry.type === "unknownBlock");
+  const unknown = outline.find((entry) => entry.type === "unknown");
   assert.equal(unknown.node_type, "callout");
   assert.equal(unknown.attrs, undefined);
-  const list = outline.find((entry) => entry.type === "task_list").summary;
+  const list = outline.find((entry) => entry.type === "task-list").summary;
   assert.equal(list.items, OUTLINE_MAX_ITEMS + 5);
   assert.equal(list.checked_count, Math.floor((OUTLINE_MAX_ITEMS + 5) / 2));
   assert.equal(list.checked.length, OUTLINE_MAX_ITEMS);

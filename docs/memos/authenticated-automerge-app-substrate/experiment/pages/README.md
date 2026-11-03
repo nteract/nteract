@@ -154,14 +154,15 @@ Wordgard keystrokes. Two encoders write spans:
   [`markdown-projection.test.mjs`](model/markdown-projection.test.mjs) lists
   where the two still differ.
 
-Block types are still defined separately in the ProseMirror schema and
-serializer and in Wordgard's decode and encode. A gated type is also listed in
-`features.json`, and a node with its own operation in the agent guide and MCP
-schema. There's no shared node registry or node id yet, so `set_node`
-addresses nodes through `match_text` and can't reach a node without text.
-Replacing the codec means, in order: a typed node registry that those places
-read; one span encoder for every writer; stable node ids with node reads; then
-outlines, change reads and Markdown on that node tree instead of ProseMirror.
+Block types are declared once in `model/node-registry.mjs`: stored names,
+ProseMirror names, agent-facing names, settable attrs and insert operations.
+The ProseMirror schema and serializer, Wordgard's decode and encode, and
+`features.json` still define types in their own terms;
+`node-registry.test.mjs` fails when one of them disagrees with the registry.
+There's no node id yet, so `set_node` addresses nodes through `match_text` and
+can't reach a node without text. Replacing the codec means, in order: one span
+encoder for every writer; stable node ids with node reads; then outlines,
+change reads and Markdown on that node tree instead of ProseMirror.
 Existing documents, comment anchors and MCP addresses must survive each step.
 
 Each Pages block has its own continuous editor. Moves update fractional positions without recreating the block or its
@@ -1735,13 +1736,15 @@ scopes agree. An occurrence an earlier operation changed is refused.
 block, at most 1,000, with matches in code blocks skipped and counted in
 `skipped_in_code`. A batch writes formatting on at most 2,000 ranges, counting
 each mark and each `replacement_markdown` run, refused before any mark is
-written. `set_node` is experimental: its four flat fields predate the typed
-node registry, and its receipt carries only `matched` and, for `align`,
+written. `set_node`'s receipt carries only `matched` and, for `align`,
 `cells`.
 
-[`set_node`](model/set-node.mjs) changes the node that holds `match_text`:
-`checked` on a task item, `language` on a code block, `heading_level` on a
-paragraph or heading (0 for a paragraph) or `align` on a table column. It
+[`set_node`](model/set-node.mjs) changes the node that holds `match_text`,
+as `{ type?, attrs? }` with the names [`model/node-registry.mjs`](model/node-registry.mjs)
+declares and `read_page` reports: `type` (`paragraph` or `heading`, the
+registry's `retype` group) and settable attrs (`level`, `language`, `checked`,
+`align`, the last scoped to the table column). The flat fields `checked`,
+`language`, `heading_level` and `align` are aliases for one deploy. It
 rewrites the governing block marker through `updateSpans`, which updates the
 marker's attributes in place, as the editor does: the marker, its text and
 its comment anchors keep their identity. Marks on text characters are unchanged;
@@ -1750,8 +1753,8 @@ keystroke in the block already does. The implicit first paragraph gets an
 explicit marker first, as the editor does; two writers converting it at once
 each insert one and leave an empty paragraph, which target scope refuses
 through its ancestry check. Inline embeds (hard breaks, images) govern no text.
-A container's first paragraph has no marker of its own, so `heading_level` on
-it names the quote or list item and is refused. In target scope a concurrent
+A container's first paragraph has no marker of its own, so a type change there
+names the quote or list item and is refused. In target scope a concurrent
 change to the node's attributes is a `target_structure_changed` conflict, and a
 `set_node` may share its passage with another operation.
 

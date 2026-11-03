@@ -299,7 +299,7 @@ function fakePages(origin, { placement = "page10", outlinePage = 100 } = {}) {
 const client = (fake, origin) => pagesClient({ origin, token: KEY, fetch: fake.fetch });
 
 /** A page9-shaped source: top-level Pages are the home Page's siblings. */
-function guideSource(options) {
+function guideSource({ preservedType = "pages-opaque", ...options } = {}) {
   const source = fakePages(SOURCE, { placement: "page9", ...options });
   const { project_id, home } = source.seedProject({
     title: "Pages engineering guide",
@@ -310,7 +310,7 @@ function guideSource(options) {
     source.insert({ title, blocks, project_id, parent_id: parent?.page_id ?? null, position });
   const before = at("Before home", ["Sorted before the home Page."], "a0");
   const zeta = at("Zeta", ["Last at the top level."], "a3");
-  const alpha = at("Alpha", ["First section.", { markdown: "$$x$$", type: "raw" }], "a2");
+  const alpha = at("Alpha", ["First section.", { markdown: "$$x$$", type: preservedType }], "a2");
   const two = at("Alpha two", ["Second child."], "a1", alpha);
   const one = at(
     "Alpha one",
@@ -379,7 +379,7 @@ test("export lists Pages in tree order: home first, parents before children, sib
   const alphaEntry = bundle.pages[2];
   assert.deepEqual(alphaEntry.blocks, ["First section.", "$$x$$"]);
   assert.equal(alphaEntry.markdown, "First section.\n\n$$x$$");
-  // The raw node is on the second outline page; only paging finds it.
+  // The preserved node is on the second outline page; only paging finds it.
   assert.equal(alphaEntry.preserved_markdown, true);
   assert.equal(bundle.pages[1].blocks, undefined, "a single block needs no blocks array");
   assert.equal(bundle.pages[3].private_images.length, 1);
@@ -393,6 +393,20 @@ test("export lists Pages in tree order: home first, parents before children, sib
     ["Alpha one"],
   );
   assert.equal(report.comment_threads, 2);
+});
+
+test("export flags preserved Markdown from a source that still reports raw", async () => {
+  const { report, bundle } = await exportGuide({ outlinePage: 1, preservedType: "raw" });
+  assert.equal(bundle.pages.find((page) => page.title === "Alpha").preserved_markdown, true);
+  assert.deepEqual(
+    report.preserved_markdown.map((page) => page.title),
+    ["Alpha"],
+  );
+});
+
+test("export does not flag a Page whose outline has only rich nodes", async () => {
+  const { bundle } = await exportGuide({ outlinePage: 1, preservedType: "code-block" });
+  assert.equal(bundle.pages.find((page) => page.title === "Alpha").preserved_markdown, false);
 });
 
 test("export reads an oversized Page through the unbounded read", async () => {
