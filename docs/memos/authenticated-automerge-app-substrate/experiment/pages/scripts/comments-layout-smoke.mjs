@@ -137,7 +137,15 @@ function measure(target) {
       clientWidth: document.documentElement.clientWidth,
       article: box(article.getBoundingClientRect()),
       text: box({ ...text, width: text.right - text.left }),
-      contentRight: Math.max(...contents.map((content) => content.getBoundingClientRect().right)),
+      // The text column is wg-content's content box. Its inline padding is
+      // room for a line-edge caret outside that column (wordgard.css).
+      contentRight: Math.max(
+        ...contents.map(
+          (content) =>
+            content.getBoundingClientRect().right -
+            parseFloat(getComputedStyle(content).paddingRight),
+        ),
+      ),
       panel: panel?.open ? box(panel.getBoundingClientRect()) : null,
       sheet: !!panel?.classList.contains("comments-sheet"),
       modal: !!panel?.matches(":modal"),
