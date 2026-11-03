@@ -358,6 +358,7 @@ export const CLIENT_ERROR_CODES = Object.freeze([
   "unsupported_schema_feature",
   "unsupported_markdown",
   "markdownless_node",
+  "node_not_found",
   "preserved_markdown_converting",
   "comment_not_author",
   "comment_access_denied",

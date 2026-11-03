@@ -159,10 +159,13 @@ ProseMirror names, agent-facing names, settable attrs and insert operations.
 The ProseMirror schema and serializer, Wordgard's decode and encode, and
 `features.json` still define types in their own terms;
 `node-registry.test.mjs` fails when one of them disagrees with the registry.
-There's no node id yet, so `set_node` addresses nodes through `match_text` and
-can't reach a node without text. Replacing the codec means, in order: one span
-encoder for every writer; stable node ids with node reads; then outlines,
-change reads and Markdown on that node tree instead of ProseMirror.
+A top-level node's id (`model/node-ids.mjs`) is an Automerge cursor at the
+block marker that opens it. Outlines and change reads report it as `node_id`,
+and `delete_node` takes it, so an agent can remove a node with no text. A
+paragraph that opens its block has no marker and no id. `set_node` still
+addresses nodes through `match_text`. Replacing the codec means, in order: one
+span encoder for every writer; node reads by id; then outlines, change reads
+and Markdown on that node tree instead of ProseMirror.
 Existing documents, comment anchors and MCP addresses must survive each step.
 
 Each Pages block has its own continuous editor. Moves update fractional positions without recreating the block or its
@@ -391,7 +394,7 @@ references; it does not publish the Page or change asset access.
   it reads as `[Dataframe: <title>](<src>)` on its own line, and Markdown
   never creates one. In a block that holds one, `replace_block_markdown` turns
   that exact line back into the original node, unknown attrs included, where
-  the node is stored: the top level, or the same quote or list item. It refuses
+  the node is stored: the top level, or inside the same kind of container. It refuses
   (`markdownless_node`) a rewrite that drops or edits the line, moves it into or
   out of a container or heading, repeats it beyond the block's matching nodes,
   or adds a line reading like a dataframe the block doesn't hold. Moving the

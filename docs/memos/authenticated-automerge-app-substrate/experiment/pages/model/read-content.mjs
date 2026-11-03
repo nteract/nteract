@@ -1,5 +1,6 @@
 import { orderedBlockIds } from "./order.mjs";
 import { agentType } from "./node-registry.mjs";
+import { readableNodeIds } from "./node-ids.mjs";
 import { DATAFRAME_TITLE_MAX, parseAssetPath, readDataframe } from "../shared/dataset-assets.mjs";
 import {
   exportMarkdown,
@@ -97,20 +98,23 @@ function visibleText(node) {
 
 const markdownFor = (nodes) => exportMarkdown(schema.node("doc", null, nodes));
 
-// Addresses refer to top-level rich-text nodes in this captured document version.
-// Lists, tables, and other containers stay intact; these are not stable node IDs.
+// node_index addresses a top-level rich-text node in this captured document
+// version; lists, tables and other containers stay intact. node_id
+// (model/node-ids.mjs) is the stable name for the same node, where it has one.
 function indexNodes(doc) {
   const nodes = [],
     trees = new Map(),
     headings = [];
   for (const blockId of orderedBlockIds(doc)) {
     const block = doc.blocks[blockId],
-      tree = isRich(block)
+      rich = isRich(block),
+      tree = rich
         ? richDoc(block, doc.page_id)
-        : parseMarkdown(block.markdown ?? "", { kind: block.kind ?? "markdown" });
+        : parseMarkdown(block.markdown ?? "", { kind: block.kind ?? "markdown" }),
+      ids = rich ? readableNodeIds(doc, blockId, tree) : [];
     trees.set(blockId, tree);
     tree.forEach((node, _offset, nodeIndex) => {
-      const entry = { blockId, nodeIndex, node };
+      const entry = { blockId, nodeIndex, node, nodeId: ids[nodeIndex]?.id ?? null };
       if (node.type.name === "heading") {
         entry.heading = visibleText(node);
         entry.level = node.attrs.level;
@@ -205,6 +209,8 @@ function outlineEntry(entry, pageId) {
   return {
     block_id: entry.blockId,
     node_index: entry.nodeIndex,
+    // Stable across edits; null for a block's implicit first paragraph.
+    node_id: entry.nodeId,
     // The agent-facing name set_node and insert_node take (node-registry.mjs).
     type: agentType(entry.node.type.name),
     heading_path: entry.headingPath,

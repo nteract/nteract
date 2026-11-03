@@ -397,3 +397,39 @@ test("set_node {type, attrs} goes through the host, and read_page reports the sa
   assert.equal(wrong.body.code, "invalid_edit_selector");
   assert.match(wrong.body.error, /checked applies to task list items; match_text is in a heading/);
 });
+
+test("delete_node goes through the host by the outline's node_id, and a gone id is node_not_found", async (t) => {
+  const plain = await fixture(t);
+  const path = ["blocks", plain.blockId, "richText"];
+  // A future-chart node: no text, so delete_node is the only way to reach it.
+  const page = A.change(A.load(A.save(plain.doc())), (draft) => {
+    const at = draft.blocks[plain.blockId].richText.indexOf("Friday");
+    A.splitBlock(draft, path, at, {
+      type: new A.ImmutableString("future-chart"),
+      parents: [],
+      attrs: {},
+      isEmbed: false,
+    });
+  });
+  const f = await fixture(t, { auth: plain.auth, docBytes: A.save(page) });
+  const read = await f.tool("owner", "read_page", { page_id: f.pageId, comments: "none" });
+  const chart = read.body.outline.entries.find((entry) => entry.type === "unknown");
+  assert.equal(typeof chart.node_id, "string", JSON.stringify(read.body.outline));
+  const op = { op: "delete_node", block_id: f.blockId, node_id: chart.node_id };
+  const deleted = await f.tool("owner", "edit_page", {
+    base_heads: f.heads(),
+    idempotency_key: "delete-node",
+    operations: [op],
+  });
+  assert.equal(deleted.status, 200, JSON.stringify(deleted.body));
+  assert.deepEqual(deleted.body.result.edits, [{ ...op, type: "unknown" }]);
+  const after = await f.tool("owner", "read_page", { page_id: f.pageId, comments: "none" });
+  assert.doesNotMatch(after.body.blocks[0].markdown, /Unsupported node/);
+  const again = await f.tool("owner", "edit_page", {
+    base_heads: f.heads(),
+    idempotency_key: "delete-node-again",
+    operations: [op],
+  });
+  assert.equal(again.status, 400);
+  assert.equal(again.body.code, "node_not_found", JSON.stringify(again.body));
+});

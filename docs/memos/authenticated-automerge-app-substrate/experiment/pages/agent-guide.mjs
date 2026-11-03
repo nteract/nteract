@@ -118,10 +118,15 @@ Branch on code, not on the error message:
   Markdown form. Two causes:
   - A dataframe's read-back line, [Dataframe: <title>](<src>), is missing or
     edited. Keep that line unchanged to keep the node; the error lists the
-    lines. To remove a dataframe, delete_block a block that holds only it.
+    lines. To remove a dataframe, delete_node it by its node_id.
   - The block holds a node a newer version of Pages added (it reads as
     [Unsupported node: <type>]). Edit around it with replace_match,
-    format_match or set_node, or delete the block.
+    format_match or set_node, or remove it with delete_node.
+- node_not_found: delete_node's node_id doesn't name a node in that block. The
+  node was deleted, or the id came from another block: read the outline again.
+  It's also returned for a Markdown block, and for a block holding a node this
+  version can't place; neither has node ids, so use delete_block or
+  replace_block_markdown there. Repeating the request unchanged fails again.
 - preserved_markdown_converting (503): Pages is converting Markdown an older
   version saved on this Page. read_page still works. Wait, read_page again,
   retry; if it persists, the Page needs an operator.
@@ -685,15 +690,16 @@ dataset_not_found (404), an image is 415.
 read_page shows a dataframe as a labeled link on its own line,
 [Dataframe: <title>](<src>), so you can see where it is. replace_block_markdown
 keeps a dataframe when that exact line is still in your Markdown, where the
-dataframe is stored: at the top level of the block, or in the same quote or list
-item. It refuses the rewrite with markdownless_node when the line is missing or
+dataframe is stored: at the top level of the block, or inside the same kind of
+quote or list item. It refuses the rewrite with markdownless_node when the line is missing or
 edited, appears more times than the block has dataframes with that line, moves
 into or out of a quote, list, table or heading, or reads like a dataframe the
 block doesn't hold. The line never creates or copies a dataframe: use
 insert_node for a new one. Moving the line among its neighbours keeps the
 dataframe's attrs but writes it as a new node.
 In a block with no dataframe, such a line stays a link. replace_match and
-set_node edit around a dataframe without touching it. A missing asset is dataset_not_found (404).
+set_node edit around a dataframe without touching it; delete_node removes it
+by the node_id read_page's outline reports. A missing asset is dataset_not_found (404).
 
 Readers see a Sift table: they can sort, filter and scroll it, and those
 changes stay in their own view. Nothing they do changes the document. Pages
@@ -746,7 +752,8 @@ page_quota_exceeded with limit and count; tell the person rather than retrying.
   occurrence-th match or every match (all:true), and set_node to check a task, set a
   code block's language, change a heading level or align a table column. See Rich content.
 - edit_page: set_title, replace_block_markdown, insert_markdown, insert_image,
-  move_block, or delete_block operations.
+  insert_node, move_block, delete_block, or delete_node operations. delete_node
+  removes one top-level node by the node_id read_page's outline reports.
 - manage_page_comment: add, reply, resolve, reopen, edit, or delete_message. resolve and
   reopen also take thread_ids to change up to 100 threads in one call. See Comments below.
 - import_page_image: page_id and a ChatGPT-supplied file descriptor; returns a
@@ -896,10 +903,14 @@ For body work, pass comments:"none". To discover a long Page first, pass
 include_content:false; this returns its title, heads, retry authority and outline
 without body content or comments. The outline has entries, total, offset and
 next_offset; use outline_offset to fetch another page (outline_limit is at most 100).
-Each entry has block_id, node_index, type, heading_path and markdown_bytes, plus
-heading and level for a heading, and typed fields where they apply.
+Each entry has block_id, node_index, node_id, type, heading_path and
+markdown_bytes, plus heading and level for a heading, and typed fields where they
+apply.
 ${typedReadFields()}
-All addresses in an outline describe the returned heads, not stable IDs across edits.
+node_index and node_range describe the returned heads and shift with edits;
+node_id lasts as long as the node's opening marker does. A replace_block_markdown
+rewrite diffs the block and can replace markers, so read the outline again after
+one before using an id.
 Pass those heads as expected_heads when using node_range or outline_offset > 0.
 A concurrent change returns read_revision_changed and a fresh outline; choose again.
 

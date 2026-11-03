@@ -1704,6 +1704,13 @@ export function pageSpans(tree) {
         }
       : span,
   );
+  return redundantFirstMarker(spans) ? spans.slice(1) : spans;
+}
+/** Whether `spans` open with a marker the editor wouldn't write: a plain
+ * top-level paragraph marker before content, or as the only node (encode's
+ * implicitAt in viewer/wordgard-model.mjs). Writers drop it, so the editor's
+ * next structural edit has nothing to delete. */
+export function redundantFirstMarker(spans) {
   const [first, next] = spans;
   const plainParagraph =
     first?.type === "block" &&
@@ -1712,7 +1719,7 @@ export function pageSpans(tree) {
     !first.value.parents?.length &&
     !Object.keys(first.value.attrs ?? {}).length;
   const content = !next || next.type === "text" || next.value?.isEmbed;
-  return plainParagraph && content ? spans.slice(1) : spans;
+  return plainParagraph && content;
 }
 export function setRichImage(doc, id, { src, alt }) {
   // Construct the embed directly: alt text is content, never Markdown syntax.
@@ -1857,7 +1864,7 @@ export function setRichMarkdownKeepingNodes(doc, id, source) {
     });
     throw Object.assign(
       Error(
-        `This block holds ${unmatched.length === 1 ? "a dataframe" : `${unmatched.length} dataframes`} with no line in your Markdown. A dataframe has no Markdown form; keep its line unchanged to keep it: ${counted.join(", ")}. To remove one, use delete_block on a block that holds only it.`,
+        `This block holds ${unmatched.length === 1 ? "a dataframe" : `${unmatched.length} dataframes`} with no line in your Markdown. A dataframe has no Markdown form; keep its line unchanged to keep it: ${counted.join(", ")}. To remove one, use edit_page delete_node with its node_id from read_page's outline.`,
       ),
       { code: "markdownless_node" },
     );
