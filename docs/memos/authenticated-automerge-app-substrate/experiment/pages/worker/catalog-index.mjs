@@ -7,7 +7,10 @@
  * owner's Catalog DO still has the matching `page/` or `trash/` entry. A stale
  * or missing D1 row can hide a Page from a listing; it cannot reveal a title.
  * Search and ordering use each principal's own snapshot of the titles it was
- * authorized to see. A listing looks ahead for one verified row, but a scan
+ * authorized to see. A title-sorted listing orders by that snapshot while it
+ * shows the title the owner's Catalog or the Page host returns, so a Page
+ * renamed since its snapshot can appear out of order until its row is
+ * rewritten. A listing looks ahead for one verified row, but a scan
  * stopped by its bound can still return a cursor positioned over stale rows
  * whose snapshots the caller was previously authorized to see.
  *
@@ -107,6 +110,15 @@ export const CATALOG_MIGRATIONS = Object.freeze([
       )`,
       `CREATE INDEX IF NOT EXISTS pages_catalog_spaces_listing
         ON pages_catalog_spaces (owner, updated_at DESC, space_id DESC)`,
+    ]),
+  }),
+  // Title-sorted listings page by (title_search, page_id) within a principal.
+  Object.freeze({
+    version: 5,
+    name: "access_title_listing",
+    statements: Object.freeze([
+      `CREATE INDEX IF NOT EXISTS pages_catalog_access_title
+        ON pages_catalog_access (principal, title_search, page_id)`,
     ]),
   }),
 ]);
@@ -591,6 +603,13 @@ export async function pruneIndexRows(db, rows) {
 }
 
 const CURSOR_PREFIX = "c2_";
+/** Longest cursor `openCursor` accepts. A title-sorted cursor carries its
+ * position's title key, up to 500 code units of title (`catalogTitle`), so it
+ * can run to a few kilobytes; activity cursors stay under 200 characters. */
+export const CURSOR_MAX_LENGTH = 8192;
+/** Longest cursor for a listing whose positions are only `updated_at` and an
+ * ID, such as list_projects. */
+export const SHORT_CURSOR_MAX_LENGTH = 256;
 const isoTime = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?Z$/;
 const cursorKeys = new Map();
 const toBase64url = (bytes) =>
@@ -633,8 +652,9 @@ function cursorKey(env) {
   }
   return key;
 }
-/** `scope` binds a cursor to its listing's filters (a Space, a parent, or
- * the Space listing itself). Cursors without one keep their original bytes. */
+/** `scope` binds a cursor to everything else that shapes its listing: a
+ * Space, a parent, kind, access and sort (see `listScope`), or the Space
+ * listing itself. Cursors without one keep their original bytes. */
 const cursorContext = ({ principal, needle, inTrash, scope }) =>
   encoder.encode(
     JSON.stringify([
@@ -647,15 +667,25 @@ const cursorContext = ({ principal, needle, inTrash, scope }) =>
   );
 
 /** Seal a keyset position. The position stays private, the cursor only
- * opens for the same principal, query and in_trash, and it expires after
- * `cursorMaxAgeMs`. */
-export async function sealCursor(env, context, { updated_at, page_id }, now = Date.now()) {
+ * opens for the same principal, query, in_trash and scope (location, kind,
+ * access and sort filters), and it expires after `cursorMaxAgeMs`. A position
+ * with a string `title_search` carries it as a fourth element; without one the
+ * payload keeps its three-element shape, which every build since sealed
+ * cursors opens. Callers pass exactly the keyset fields their order needs. */
+export async function sealCursor(
+  env,
+  context,
+  { updated_at, page_id, title_search },
+  now = Date.now(),
+) {
   const iv = crypto.getRandomValues(new Uint8Array(12));
+  const position = [updated_at ?? "", page_id, now];
+  if (typeof title_search === "string") position.push(title_search);
   const sealed = new Uint8Array(
     await crypto.subtle.encrypt(
       { name: "AES-GCM", iv, additionalData: cursorContext(context) },
       await cursorKey(env),
-      encoder.encode(JSON.stringify([updated_at ?? "", page_id, now])),
+      encoder.encode(JSON.stringify(position)),
     ),
   );
   const bytes = new Uint8Array(iv.length + sealed.length);
@@ -664,10 +694,19 @@ export async function sealCursor(env, context, { updated_at, page_id }, now = Da
   return CURSOR_PREFIX + toBase64url(bytes);
 }
 
-export async function openCursor(env, context, cursor, now = Date.now()) {
+/** Open a sealed cursor. `maxLength` is the longest cursor the listing can
+ * issue: `CURSOR_MAX_LENGTH` for Page listings, `SHORT_CURSOR_MAX_LENGTH` for
+ * listings whose positions carry no title key. */
+export async function openCursor(
+  env,
+  context,
+  cursor,
+  now = Date.now(),
+  { maxLength = CURSOR_MAX_LENGTH } = {},
+) {
   const invalid = () =>
     new HttpError(400, "Invalid cursor; restart from the first page", "invalid_cursor");
-  if (typeof cursor !== "string" || cursor.length > 256 || !cursor.startsWith(CURSOR_PREFIX))
+  if (typeof cursor !== "string" || cursor.length > maxLength || !cursor.startsWith(CURSOR_PREFIX))
     throw invalid();
   let value;
   try {
@@ -684,7 +723,7 @@ export async function openCursor(env, context, cursor, now = Date.now()) {
   }
   if (
     !Array.isArray(value) ||
-    value.length !== 3 ||
+    !(value.length === 3 || (value.length === 4 && typeof value[3] === "string")) ||
     typeof value[0] !== "string" ||
     !(value[0] === "" || isoTime.test(value[0])) ||
     !(validPageId(value[1]) || validSpaceId(value[1])) ||
@@ -693,7 +732,11 @@ export async function openCursor(env, context, cursor, now = Date.now()) {
     now - value[2] > catalogIndexBounds.cursorMaxAgeMs
   )
     throw invalid();
-  return { updated_at: value[0], page_id: value[1] };
+  return {
+    updated_at: value[0],
+    page_id: value[1],
+    ...(value.length === 4 && { title_search: value[3] }),
+  };
 }
 
 export const LIST_DEFAULT_LIMIT = 50;
@@ -701,14 +744,23 @@ export const LIST_LEGACY_LIMIT = 100;
 export const LIST_MAX_LIMIT = 100;
 
 /** Unknown keys are ignored: older clients sent arguments this tool never
- * read. A call with none of the new arguments keeps the old page size. */
+ * read. A call with none of the new arguments keeps the old page size.
+ *
+ * `access` narrows the listing to owned Pages ("owned") or Pages shared with
+ * the caller ("shared"); null lists both. `sort` is "activity" (newest
+ * `updated_at` first) or "title" (title key ascending, then Page ID). Null or
+ * omitted `access` and `sort` mean the defaults. Trash and Projects hold only
+ * owned Pages, so "shared" refuses in_trash and project_id rather than
+ * answering an empty list that looks like a real one. */
 export function parseListArguments(args = {}) {
   const fail = (message) => new HttpError(400, message, "invalid_list_arguments");
   if (!args || typeof args !== "object" || Array.isArray(args))
     throw fail("Invalid list arguments");
-  const legacy = ["query", "cursor", "limit", "in_trash", "space_id", "parent_id", "kind"].every(
-    (key) => args[key] === undefined,
-  );
+  // null `access` or `sort` is the default, so it leaves a bare call bare.
+  const legacy =
+    ["query", "cursor", "limit", "in_trash", "space_id", "parent_id", "kind"].every(
+      (key) => args[key] === undefined,
+    ) && ["access", "sort"].every((key) => args[key] == null);
   const options = {
     limit: legacy ? LIST_LEGACY_LIMIT : LIST_DEFAULT_LIMIT,
     inTrash: false,
@@ -718,7 +770,19 @@ export function parseListArguments(args = {}) {
     // undefined: any parent; null: top level; otherwise that parent's children.
     parentId: undefined,
     kind: null,
+    access: null,
+    sort: "activity",
   };
+  if (args.access !== undefined && args.access !== null) {
+    if (args.access !== "owned" && args.access !== "shared")
+      throw fail("access must be owned or shared");
+    options.access = args.access;
+  }
+  if (args.sort !== undefined && args.sort !== null) {
+    if (args.sort !== "activity" && args.sort !== "title")
+      throw fail("sort must be activity or title");
+    options.sort = args.sort;
+  }
   if (args.space_id !== undefined && args.space_id !== null)
     options.spaceId = requireSpaceIdArgument(args.space_id);
   if (args.parent_id === null) {
@@ -747,70 +811,176 @@ export function parseListArguments(args = {}) {
     options.inTrash = args.in_trash;
   }
   if (args.cursor !== undefined && args.cursor !== null) {
-    if (typeof args.cursor !== "string" || args.cursor.length > 256)
+    if (typeof args.cursor !== "string" || args.cursor.length > CURSOR_MAX_LENGTH)
       throw new HttpError(400, "Invalid cursor; restart from the first page", "invalid_cursor");
     options.cursor = args.cursor;
   }
   if (options.inTrash && (options.spaceId || options.parentId !== undefined))
     throw fail("in_trash lists your whole Trash; it does not combine with project_id or parent_id");
+  if (options.access === "shared" && options.inTrash)
+    throw fail("Trash lists only Pages you own; in_trash does not combine with access shared");
+  if (options.access === "shared" && options.spaceId)
+    throw fail(
+      "Projects hold only their owner's Pages; project_id does not combine with access shared",
+    );
   return options;
 }
 
-/** Cursor scope for a filtered listing; undefined keeps the original bytes. */
+/** Cursor scope for a filtered listing. A listing with no location, kind or
+ * access filter in the default sort scopes to undefined, the exact value
+ * builds before `access` and `sort` sealed with, so their cursors still
+ * open. `access` and a title sort append to the scope, so a cursor never
+ * opens under a different filter or order. */
 export function listScope(options) {
-  if (!options.spaceId && options.parentId === undefined && !options.kind) return undefined;
+  const order =
+    options.access || (options.sort ?? "activity") !== "activity"
+      ? [options.access ?? null, options.sort]
+      : [];
+  if (!options.spaceId && options.parentId === undefined && !options.kind && !order.length)
+    return undefined;
   return JSON.stringify([
     options.spaceId,
     options.parentId ?? null,
     options.parentId === undefined,
     options.kind,
+    ...order,
   ]);
 }
 
 export const escapeLike = (value) => value.replace(/[\\%_]/g, "\\$&");
 export const titleMatches = (title, needle) => !needle || searchText(title).includes(needle);
-const sortKey = (row) => row.updated_at ?? "";
-const before = (row, position) =>
-  !position ||
-  sortKey(row) < position.updated_at ||
-  (sortKey(row) === position.updated_at && row.page_id < position.page_id);
-const newestFirst = (a, b) =>
-  sortKey(a) === sortKey(b) ? (a.page_id < b.page_id ? 1 : -1) : sortKey(a) < sortKey(b) ? 1 : -1;
+/** The title key a title-sorted listing orders by: the same lowercased,
+ * capped title the index stores as `title_search`. An empty title sorts
+ * first; a missing one is stored as "Untitled" and sorts as that word. */
+export const titleKey = (title) => searchText(catalogTitle(title));
 
-/** Up to `count` candidate rows from D1 after `after`, newest first. */
-export async function queryCatalogIndex(db, { principal, domain, inTrash, needle, after, count }) {
+/** Code point order of two strings: the order SQLite's BINARY collation gives
+ * the UTF-8 text D1 stores. Plain `<` compares UTF-16 code units, which puts
+ * astral characters (surrogate pairs) before U+E000–U+FFFF. */
+export function compareText(a, b) {
+  if (a === b) return 0;
+  const length = Math.min(a.length, b.length);
+  for (let index = 0; index < length; index++) {
+    let x = a.charCodeAt(index),
+      y = b.charCodeAt(index);
+    if (x === y) continue;
+    if (x >= 0xd800 && y >= 0xd800) {
+      x += x >= 0xe000 ? -0x800 : 0x2000;
+      y += y >= 0xe000 ? -0x800 : 0x2000;
+    }
+    return x < y ? -1 : 1;
+  }
+  return a.length < b.length ? -1 : 1;
+}
+
+const sortKey = (row) => row.updated_at ?? "";
+const comparePageIds = (a, b) => (a.page_id < b.page_id ? -1 : a.page_id > b.page_id ? 1 : 0);
+/** One listing order: `compare` sorts candidate rows, and `follows(row,
+ * position)` keeps the rows strictly after a cursor position. Each matches
+ * the ORDER BY and keyset condition of the same sort in `listingQuery`. */
+const ORDERS = {
+  activity: {
+    compare: (a, b) =>
+      sortKey(a) === sortKey(b) ? -comparePageIds(a, b) : sortKey(a) < sortKey(b) ? 1 : -1,
+    follows: (row, position) =>
+      !position ||
+      sortKey(row) < position.updated_at ||
+      (sortKey(row) === position.updated_at && row.page_id < position.page_id),
+  },
+  title: {
+    compare: (a, b) =>
+      compareText(a.title_search ?? "", b.title_search ?? "") || comparePageIds(a, b),
+    follows: (row, position) =>
+      !position ||
+      compareText(row.title_search ?? "", position.title_search ?? "") > 0 ||
+      ((row.title_search ?? "") === (position.title_search ?? "") &&
+        row.page_id > position.page_id),
+  },
+};
+const listOrder = (sort) => ORDERS[sort] ?? ORDERS.activity;
+const newestFirst = ORDERS.activity.compare;
+const before = ORDERS.activity.follows;
+
+/** The keyset position a cursor seals for `row`. A title-sorted position
+ * carries the row's title key; an activity position keeps the original
+ * three-element payload. */
+export const cursorPosition = (row, sort) => ({
+  updated_at: row.updated_at,
+  page_id: row.page_id,
+  ...(sort === "title" && { title_search: row.title_search ?? "" }),
+});
+
+/** SQL and parameters for one page of D1 candidates. The SQL text depends
+ * only on `access`, `sort` and whether `after` holds a position; every value
+ * is a bound parameter. */
+export function listingQuery({
+  principal,
+  domain,
+  inTrash,
+  needle,
+  after,
+  count,
+  access = null,
+  sort = "activity",
+}) {
   const pattern = needle ? `%${escapeLike(needle)}%` : null;
-  const result = await db
-    .prepare(
-      `SELECT a.page_id, a.source, a.updated_at, a.updated_revision, a.title,
+  const title = sort === "title";
+  const accessFilter =
+    access === "owned"
+      ? "AND a.source = 'owner'"
+      : access === "shared"
+        ? "AND a.source != 'owner'"
+        : "";
+  const order = title ? "a.title_search ASC, a.page_id ASC" : "a.updated_at DESC, a.page_id DESC";
+  const key = (title ? after?.title_search : after?.updated_at) ?? null;
+  // A continuation page compares a row value, which SQLite turns into a range
+  // seek on the listing index after `principal = ?`. A first page has no
+  // position, so it carries no keyset predicate at all.
+  const continued = after != null && key !== null;
+  const keyset = !continued
+    ? ""
+    : title
+      ? "AND (a.title_search, a.page_id) > (?, ?)"
+      : "AND (a.updated_at, a.page_id) < (?, ?)";
+  return {
+    sql: `SELECT a.page_id, a.source, a.updated_at, a.updated_revision, a.title, a.title_search,
         p.created_at, p.trashed_at
       FROM pages_catalog_access a
       JOIN pages_catalog_pages p ON p.page_id = a.page_id
       WHERE a.principal = ? AND p.kind = 'page'
         AND CASE WHEN ? = 1 THEN a.source = 'owner' AND p.state = 'trashed'
           ELSE a.source != 'owner' OR p.state = 'active' END
+        ${accessFilter}
         AND (a.source != 'domain_opened' OR a.domain = ?)
         AND (? IS NULL OR a.title_search LIKE ? ESCAPE '\\')
-        AND (? IS NULL OR a.updated_at < ? OR (a.updated_at = ? AND a.page_id < ?))
-      ORDER BY a.updated_at DESC, a.page_id DESC
+        ${keyset}
+      ORDER BY ${order}
       LIMIT ?`,
-    )
-    .bind(
+    params: [
       principal,
       inTrash ? 1 : 0,
       domain ?? null,
       pattern,
       pattern,
-      after?.updated_at ?? null,
-      after?.updated_at ?? null,
-      after?.updated_at ?? null,
-      after?.page_id ?? null,
+      ...(continued ? [key, after.page_id] : []),
       count,
-    )
+    ],
+  };
+}
+
+/** Up to `count` candidate rows from D1 after `after`, in the listing's
+ * order: newest first, or by title key. `access` keeps only owner rows
+ * ("owned") or only non-owner rows ("shared"). */
+export async function queryCatalogIndex(db, query) {
+  const { sql, params } = listingQuery(query);
+  const result = await db
+    .prepare(sql)
+    .bind(...params)
     .all();
   return (result.results ?? []).map((row) => ({
     page_id: row.page_id,
     title: row.title,
+    title_search: row.title_search,
     created_at: row.created_at,
     updated_at: row.updated_at,
     owned: row.source === "owner",
@@ -824,11 +994,14 @@ export async function queryCatalogIndex(db, { principal, domain, inTrash, needle
  * Catalog's entries record. `owned(entry)` keeps an owned entry; `shared`
  * says whether shared entries are candidates. Owned entries are read whole:
  * the account's Page limit bounds them, and a listing reads them all for
- * location anyway. Shared entries have no limit, so that read is bounded. */
+ * location anyway. Shared entries have no limit, so that read is bounded.
+ * Rows order as `listingQuery` orders the same `sort`, with the title key
+ * computed from each entry's title as the index computes it. */
 export async function catalogSource(
   storage,
-  { inTrash, needle, owned = () => true, shared = true },
+  { inTrash, needle, owned = () => true, shared = true, sort = "activity" },
 ) {
+  const order = listOrder(sort);
   const list = async (prefix) => [
     ...(prefix === "shared/"
       ? await storage.list({ prefix, limit: catalogIndexBounds.fallbackScan })
@@ -848,26 +1021,33 @@ export async function catalogSource(
     .map(({ entry, owned }) => ({
       page_id: entry.page_id,
       title: catalogTitle(entry.title),
+      title_search: titleKey(entry.title),
       created_at: entry.created_at,
       updated_at: entry.updated_at ?? entry.created_at,
       owned,
       ...(entry.trashed_at ? { trashed_at: entry.trashed_at } : {}),
     }))
     .filter((row) => titleMatches(row.title, needle))
-    .sort(newestFirst);
-  return { next: async (after, count) => rows.filter((row) => before(row, after)).slice(0, count) };
+    .sort(order.compare);
+  return {
+    next: async (after, count) => rows.filter((row) => order.follows(row, after)).slice(0, count),
+  };
 }
 
 /** Candidate source over the child IDs a shared parent's owner Catalog
  * returned. The caller's discovery cache doesn't decide which children are
  * candidates: each one is checked with the caller's credentials before its
- * title is shown. IDs carry no time, so rows order by Page ID alone. */
-export function childIdSource(pageIds) {
+ * title is shown. IDs carry no time or title, so rows order by Page ID alone:
+ * descending for activity, ascending for title (every title key is empty). */
+export function childIdSource(pageIds, sort = "activity") {
+  const order = listOrder(sort);
   const rows = [...new Set(pageIds)]
     .filter(validPageId)
-    .map((pageId) => ({ page_id: pageId, updated_at: "", owned: false }))
-    .sort(newestFirst);
-  return { next: async (after, count) => rows.filter((row) => before(row, after)).slice(0, count) };
+    .map((pageId) => ({ page_id: pageId, updated_at: "", title_search: "", owned: false }))
+    .sort(order.compare);
+  return {
+    next: async (after, count) => rows.filter((row) => order.follows(row, after)).slice(0, count),
+  };
 }
 
 export class CatalogIndexUnavailable extends Error {}
