@@ -184,6 +184,7 @@ import {
   trashFields,
 } from "./catalog.mjs";
 import { holdsSlot, operationIntent, replies } from "./operation-intent.mjs";
+import { ContentActivity, changesContent, laterTime, validTime } from "./content-activity.mjs";
 import {
   CatalogIndexUnavailable,
   SHORT_CURSOR_MAX_LENGTH,
@@ -206,6 +207,7 @@ import {
   spaceIndexSource,
   pruneIndexRows,
   reconcileAccountIndex,
+  reportContentActivity,
   reportPageIndex,
   restrictPageIndex,
   retirePageIndex,
@@ -1308,8 +1310,16 @@ export class Catalog {
         await this.locationShape();
         const key = `${value.shared ? "shared/" : "page/"}${value.page_id}`;
         const previous = await this.storage.get(key);
+        // The Page host's newest content time. It only moves forward, and
+        // it never moves `updated_at`, which keeps its own meaning.
+        const content = laterTime(previous?.content_updated_at, value.content_updated_at);
+        const contentMoved = content !== null && content !== (previous?.content_updated_at ?? null);
         if (value.remove) await this.storage.delete(key);
-        else if (
+        else if (value.title === undefined) {
+          // A content-only report updates an entry that's already listed.
+          if (previous && !previous.pending && contentMoved)
+            await this.storage.put(key, { ...previous, content_updated_at: content });
+        } else if (
           !previous?.pending &&
           !(await this.storage.get(`host/deleted/${value.page_id}`)) &&
           // A projection observed before trashing must not relist the Page.
@@ -1324,9 +1334,12 @@ export class Catalog {
             title: catalogTitle(value.title),
             created_at: previous?.created_at ?? value.observed_at,
             updated_at: value.observed_at,
+            ...(content && { content_updated_at: content }),
             shared: value.shared === true,
           });
-        }
+        } else if (previous && !previous.pending && contentMoved)
+          // An older title observation still carries a newer content time.
+          await this.storage.put(key, { ...previous, content_updated_at: content });
         return json({ ok: true });
       }
       const identity = await authenticate(request, this.env);
@@ -2836,6 +2849,8 @@ export class Catalog {
           title,
           created_at: entry.created_at ?? row.created_at,
           updated_at: row.updated_at,
+          // Both are this owner's observations of its own Page.
+          content_updated_at: laterTime(entry.content_updated_at, row.content_updated_at),
           ...(entry.trashed_at ? { trashed_at: entry.trashed_at } : {}),
           ...(options.inTrash && trashFields({ ...entry, page_id: row.page_id })),
           // Top-level Pages in Your items keep the original row shape.
@@ -2870,8 +2885,13 @@ export class Catalog {
       return {
         page_id: row.page_id,
         title,
-        created_at: row.created_at ?? observed,
+        created_at: row.created_at || observed,
         updated_at: observed,
+        // From the check, never from the candidate row: the caller can read
+        // the Page, so when it last changed is theirs to see.
+        content_updated_at: validTime(result.page.content_updated_at)
+          ? result.page.content_updated_at
+          : null,
         shared: true,
         ...(options.parentId !== undefined && { parent_id: options.parentId }),
       };
@@ -2996,8 +3016,67 @@ export class Page {
       }
     }
     await this.loadComments();
+    // After recovery: a replayed journal entry was accepted before the
+    // restart, not now.
+    await this.watchContent();
     // Before native connections open, so peers sync the converted content.
     await this.convertPreservedMarkdown();
+  }
+
+  /** Record content changes on the serving document (content-activity.mjs).
+   * The stored time is restored first, so this host's next report carries
+   * it. A change counts when its patches touch the title or blocks and no
+   * host migration is running; the comments document isn't observed. */
+  async watchContent() {
+    if (typeof this.handle?.on !== "function") return;
+    this.contentActivity ??= new ContentActivity({
+      storage: this.ctx.storage,
+      report: (value) => this.reportContent(value),
+      hold: (work) => holdUntilSettled(this.ctx, work),
+      onError: (error) => logFailure(error, "content-activity"),
+    });
+    await this.contentActivity.restore();
+    if (this.contentHandle === this.handle) return;
+    this.contentHandle?.off?.("change", this.contentListener);
+    this.contentHandle = this.handle;
+    this.contentListener ??= ({ patches }) => {
+      if (this.hostRewrites > 0 || !changesContent(patches)) return;
+      this.contentActivity.changed();
+    };
+    this.handle.on("change", this.contentListener);
+  }
+
+  /** Report a stored content time: one D1 batch and one call to the owner's
+   * Catalog. Members' Catalogs get it with the next title projection; their
+   * listings read it from this host's check. A Page that isn't active has
+   * nothing to list, so it reports nothing. Rejects if either write fails. */
+  async reportContent(value) {
+    if (!this.metadata || pageState(this.metadata) !== "active") return;
+    const pageId = this.metadata.pageId;
+    const tasks = [];
+    if (this.env.CATALOGS)
+      tasks.push(
+        withTimeout(
+          this.env.CATALOGS.getByName(this.metadata.owner).fetch(
+            new Request("https://pages.internal/internal/projection", {
+              method: "POST",
+              body: JSON.stringify({ page_id: pageId, content_updated_at: value }),
+            }),
+          ),
+          serialQueueBounds.projectionMs,
+          "Catalog projection timed out",
+        ).then((response) => {
+          if (!response.ok) throw Error(`Content projection failed with ${response.status}`);
+        }),
+      );
+    if (catalogIndexEpoch(this.env))
+      tasks.push(
+        withTimeout(
+          reportContentActivity(this.env, this.ctx, { pageId, contentUpdatedAt: value }),
+          catalogIndexTimeouts.write,
+        ),
+      );
+    await Promise.all(tasks);
   }
 
   /** Open the Page's comments document (model/comments-doc.mjs) and finish
@@ -3124,19 +3203,26 @@ export class Page {
       } else if (effect.type === "logStuck")
         logPreservedStuck(this.metadata?.pageId ?? this.handle.doc().page_id, effect.reason);
       else if (effect.type === "convert") {
-        const run = this.convertPreservedOnce(effect.mode).then(
-          () => ({ type: "succeeded" }),
-          (error) => {
-            logFailure(error, "preserved-markdown");
-            return {
-              type: "failed",
-              permanent: permanentFailure(error, { isHistoryCapacityError }),
-              // Whether the run's journal entry is still reserved.
-              unfinished: !!this.conversionIntent,
-              reason: failureReason(error),
-            };
-          },
-        );
+        // The fence holds every other writer, so each Page change while this
+        // runs is the migration's own, and none of them is content activity.
+        this.hostRewrites = (this.hostRewrites ?? 0) + 1;
+        const run = this.convertPreservedOnce(effect.mode)
+          .finally(() => {
+            this.hostRewrites--;
+          })
+          .then(
+            () => ({ type: "succeeded" }),
+            (error) => {
+              logFailure(error, "preserved-markdown");
+              return {
+                type: "failed",
+                permanent: permanentFailure(error, { isHistoryCapacityError }),
+                // Whether the run's journal entry is still reserved.
+                unfinished: !!this.conversionIntent,
+                reason: failureReason(error),
+              };
+            },
+          );
         this.conversionRun = run.then((outcome) => {
           this.conversionRun = undefined;
           this.conversionEvent(outcome);
@@ -3653,6 +3739,7 @@ export class Page {
     this.cachedTitle = title;
     const observedAt = new Date().toISOString();
     if (titleChanged) this.titleObservedAt = observedAt;
+    const contentUpdatedAt = this.contentActivity?.value ?? null;
     // A projection that times out clears the cached title below, so the next
     // request to this Page sends it again.
     const tasks = recipients.map((principal) =>
@@ -3664,6 +3751,7 @@ export class Page {
               page_id: this.metadata.pageId,
               title,
               observed_at: observedAt,
+              ...(contentUpdatedAt && { content_updated_at: contentUpdatedAt }),
               shared: principal !== this.metadata.owner,
             }),
           }),
@@ -3682,7 +3770,13 @@ export class Page {
       if (titleChanged || reader) {
         if (reader) this.indexedReaders.add(reader.principal);
         tasks.push(
-          this.reportIndex({ title, observedAt, reader, readerOnly: !titleChanged }).then(
+          this.reportIndex({
+            title,
+            observedAt,
+            reader,
+            readerOnly: !titleChanged,
+            contentUpdatedAt,
+          }).then(
             () => ({ ok: true }),
             (error) => {
               logFailure(error, "catalog-index-report");
@@ -3741,6 +3835,7 @@ export class Page {
       this.reportIndex({
         title: catalogTitle(this.handle.doc().title),
         observedAt: new Date().toISOString(),
+        contentUpdatedAt: this.contentActivity?.value ?? null,
       })
         .catch((error) => logFailure(error, "catalog-index-repair"))
         .finally(() => {
@@ -3870,6 +3965,8 @@ export class Page {
     let identity;
     try {
       await this.ready;
+      // A coalesced content time whose timer never fired flushes now.
+      this.contentActivity?.nudge();
       // Host-only routes for the owner's Catalog. The gateway never forwards
       // /internal/* paths, so only the host namespace reaches them.
       if (url.pathname === "/internal/lifecycle-state") {
@@ -4040,7 +4137,8 @@ export class Page {
         // fixes the time its title was observed.
         this.cacheTitle();
         // Fields after title let the caller's Catalog index this grant; the
-        // listing returns only page_id and title from this response.
+        // listing returns only page_id, title and content_updated_at from
+        // this response.
         const access = pageAccess(this.metadata, identity);
         const domain = access.source === "domain";
         return json({
@@ -4055,6 +4153,8 @@ export class Page {
           lifecycle_revision: this.metadata.lifecycleRevision ?? 0,
           state: indexedState(this.metadata),
           title_observed_at: this.titleObservedAt,
+          // When this host last accepted a content change, or null.
+          content_updated_at: this.contentActivity?.value ?? null,
         });
       }
       if (url.pathname === "/internal/access") {
@@ -4721,6 +4821,7 @@ export class Page {
         return;
       case "closePolicy":
         this.recordMaintenance?.stop();
+        this.contentActivity?.stop();
         this.activity?.close();
         await this.policy.close();
         for (const wire of this.wires) await wire.disconnect();
@@ -4756,6 +4857,7 @@ export class Page {
           docId: context.intent.metadata.documentId,
         });
         await this.loadComments(context.intent.metadata);
+        await this.watchContent();
         // Not active yet: preserved blocks are held, fenced, until
         // finishCreation observes again after the record is installed.
         this.observeConversion();
