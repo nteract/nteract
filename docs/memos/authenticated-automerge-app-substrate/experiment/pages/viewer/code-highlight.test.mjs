@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { CODE_LANGUAGES, languageFor } from "./code-highlight.mjs";
+import { CODE_LANGUAGES, languageFor, tokenClass } from "./code-highlight.mjs";
+import { StringStream } from "@codemirror/streamparser";
 
 test("a stored language finds its highlighter by first word, any case", () => {
   for (const [stored, name] of [
@@ -228,4 +229,14 @@ test("structural edits leave the same decorations as a freshly built field", asy
     const fresh = GardState.create({ doc: target, config });
     assert.deepEqual(ranges(state), ranges(fresh), item.name);
   }
+});
+
+test("built-in functions such as Python's print get a token color", () => {
+  assert.equal(tokenClass("builtin"), "special");
+  const { parser } = languageFor("python");
+  const state = parser.startState(2);
+  const stream = new StringStream('print("hi")', 4, 2);
+  const token = parser.token(stream, state);
+  assert.equal(stream.current(), "print");
+  assert.equal(tokenClass(token), "special");
 });
