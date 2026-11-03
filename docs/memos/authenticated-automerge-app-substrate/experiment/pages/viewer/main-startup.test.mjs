@@ -94,12 +94,26 @@ const bundle = await build({
   ],
 });
 const source = Buffer.from(bundle.outputFiles[0].contents).toString("base64");
+const popstateListeners = [];
+{
+  const add = window.addEventListener.bind(window);
+  window.addEventListener = (type, listener, options) => {
+    if (type === "popstate") popstateListeners.push(listener);
+    return add(type, listener, options);
+  };
+}
 const { act } = await import("react");
 
 /** Mount main.jsx once, with `session` answering /api/auth/session and
- * `tools` answering /api/tools operations. `connect` answers /api/connect,
+ * `tools` answering /api/tools operations (a value, or a function of the
+ * arguments that returns one or a Response). `connect` answers /api/connect,
  * and `head` runs where theme.js would, before the app script. */
 async function boot(session, tools = {}, { connect, head } = {}) {
+  // Each boot's App stays mounted on its detached root. Retire the earlier
+  // ones' popstate listeners, so Back and Forward drive only this App and its
+  // requests are the only ones counted.
+  for (const listener of popstateListeners.splice(0))
+    window.removeEventListener("popstate", listener);
   document.body.innerHTML = '<div id="root"></div>';
   const requests = [];
   globalThis.fetch = async (url, init) => {
@@ -108,9 +122,14 @@ async function boot(session, tools = {}, { connect, head } = {}) {
     if (path === "/api/auth/session") return session();
     if (path === "/api/connect" && connect) return connect();
     if (path === "/api/tools") {
-      const { operation } = JSON.parse(init.body);
+      const { operation, arguments: args } = JSON.parse(init.body);
       requests.push(operation);
-      if (tools[operation]) return Response.json(tools[operation]);
+      const answer = tools[operation];
+      if (typeof answer === "function") {
+        const value = await answer(args ?? {});
+        return value instanceof Response ? value : Response.json(value);
+      }
+      if (answer) return Response.json(answer);
     }
     return Response.json({ error: "Not in this fixture" }, { status: 404 });
   };
@@ -192,9 +211,9 @@ const settle = async () => {
 };
 
 test("/pages and /projects render from the shell without importing the editor", async () => {
-  for (const [path, heading, tab] of [
-    ["/pages", "Pages", "Pages"],
-    ["/projects/", "Projects", "Projects · Pages"],
+  for (const [path, heading, tab, listing] of [
+    ["/pages", "Pages", "Pages", "list_pages"],
+    ["/projects/", "Projects", "Projects · Pages", "list_projects"],
   ]) {
     history.replaceState(null, "", path);
     const before = globalThis.__editorImports ?? 0;
@@ -202,7 +221,7 @@ test("/pages and /projects render from the shell without importing the editor", 
     await settle();
     assert.equal(document.querySelector("main h1")?.textContent, heading, path);
     assert.equal(document.title, tab, `${path} tab title`);
-    assert.ok(app.requests.includes("list_pages"), path);
+    assert.ok(app.requests.includes(listing), path);
     assert.equal(globalThis.__editorImports ?? 0, before, `${path} imported the editor`);
     assert.deepEqual(app.banners(), []);
   }
@@ -306,6 +325,119 @@ test("a Page opened from a /pages search keeps its address when the editor fails
   } finally {
     globalThis.__editorFails = false;
   }
+});
+
+// What each library visit costs on the wire, counted at /api/tools.
+const ROADMAP = "1a160b47-6df1-4983-81eb-489ca5a26812";
+/** list_pages and list_projects calls in `requests` from `from` on. */
+const listings = (requests, from = 0) => {
+  const made = requests.slice(from);
+  return {
+    list_pages: made.filter((name) => name === "list_pages").length,
+    list_projects: made.filter((name) => name === "list_projects").length,
+  };
+};
+/** A catalog whose list_pages waits on `gate.promise` while `gate` is set. */
+const gatedCatalog = (gate) => ({
+  ...catalog,
+  list_pages: async () => {
+    if (gate.promise) await gate.promise;
+    return { pages: [{ page_id: ROADMAP, title: "Roadmap" }], next_cursor: null };
+  },
+});
+const rows = () =>
+  [...document.querySelectorAll(".index-row-link")].map((link) => link.textContent);
+const click = (element) =>
+  act(() => {
+    element.dispatchEvent(
+      new window.MouseEvent("click", { bubbles: true, cancelable: true, button: 0 }),
+    );
+  });
+
+test("a cold library visit lists once and asks list_projects once, at / and /pages", async () => {
+  for (const base of ["/", "/pages"]) {
+    history.replaceState(null, "", base);
+    const app = await boot(signedIn, gatedCatalog({}));
+    await settle();
+    assert.deepEqual(rows(), ["Roadmap"], base);
+    assert.deepEqual(listings(app.requests), { list_pages: 1, list_projects: 1 }, base);
+  }
+  history.replaceState(null, "", "/projects");
+  const projects = await boot(signedIn, catalog);
+  await settle();
+  assert.deepEqual(
+    listings(projects.requests),
+    { list_pages: 0, list_projects: 1 },
+    "/projects and the shell share one list_projects",
+  );
+  history.replaceState(null, "", "/");
+});
+
+test("/ keeps its view in the canonical address", async () => {
+  history.replaceState(null, "", "/?sort=activity&show=everyone&group=project&q=%20");
+  await boot(signedIn, catalog);
+  await settle();
+  assert.equal(location.pathname + location.search, "/?group=project");
+  history.replaceState(null, "", "/");
+});
+
+test("Back and Forward over a grouping ask for nothing", async () => {
+  history.replaceState(null, "", "/");
+  const app = await boot(signedIn, gatedCatalog({}));
+  await settle();
+  const from = app.requests.length;
+  const group = document.querySelector('button[aria-label^="Group: "]');
+  await click(group);
+  await click(
+    [...document.querySelectorAll('[role="menuitemradio"]')].find(
+      (item) => item.querySelector(".library-menu-label").textContent === "Project",
+    ),
+  );
+  await settle();
+  assert.equal(location.pathname + location.search, "/?group=project");
+  const control = document.querySelector('button[aria-label^="Group: "]');
+  control.focus();
+  history.back();
+  await settle();
+  assert.equal(location.pathname + location.search, "/");
+  assert.equal(document.querySelector(".library-group"), null);
+  history.forward();
+  await settle();
+  assert.equal(location.pathname + location.search, "/?group=project");
+  assert.ok(document.querySelector(".library-group"), "the groups come back");
+  assert.deepEqual(listings(app.requests, from), { list_pages: 0, list_projects: 0 });
+  assert.equal(document.activeElement, control, "focus stays on the control");
+  history.replaceState(null, "", "/");
+});
+
+test("Back from a Page paints the library from memory and lists it once", async (t) => {
+  t.after(() => delete globalThis.__openPage);
+  // The Page open never finishes, so the library leaves the screen.
+  globalThis.__openPage = () => new Promise(() => {});
+  history.replaceState(null, "", "/pages");
+  const gate = {};
+  const app = await boot(signedIn, gatedCatalog(gate));
+  await settle();
+  const row = [...document.querySelectorAll(".index-row-link")].find(
+    (link) => link.textContent === "Roadmap",
+  );
+  await click(row);
+  await settle();
+  assert.equal(location.pathname, `/p/${ROADMAP}`);
+  assert.equal(document.querySelector(".library-view"), null, "the library left the screen");
+  const from = app.requests.length;
+  let release;
+  gate.promise = new Promise((resolve) => (release = resolve));
+  history.back();
+  await settle();
+  assert.equal(location.pathname + location.search, "/pages");
+  assert.deepEqual(rows(), ["Roadmap"], "the rows paint before list_pages answers");
+  assert.equal(document.querySelector(".index-status[role=status]"), null, "no Loading…");
+  release();
+  await settle();
+  assert.deepEqual(rows(), ["Roadmap"]);
+  assert.deepEqual(listings(app.requests, from), { list_pages: 1, list_projects: 1 });
+  history.replaceState(null, "", "/");
 });
 
 // The boot preview in the real shell: the head script's discovery, the

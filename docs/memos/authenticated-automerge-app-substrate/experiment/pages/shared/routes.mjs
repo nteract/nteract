@@ -42,8 +42,9 @@ export function normalizePagesQuery(value) {
   return clampPagesQuery(typeof value === "string" ? value.trim() : "").trimEnd();
 }
 /** The library's sort orders, list_pages' `sort` values. The first is the
- * default. `dated` orders rows newest first by `updated_at`, which grouping
- * by date needs. A new order is one entry here. */
+ * default. `dated` orders rows newest first by the time the date groups read
+ * (list_pages' activity key, activityAt in viewer/listing.mjs), which
+ * grouping by date needs. A new order is one entry here. */
 export const LIBRARY_SORTS = Object.freeze([
   Object.freeze({ value: "activity", label: "Last activity", dated: true }),
   Object.freeze({ value: "title", label: "Title", dated: false }),
@@ -99,6 +100,14 @@ export const sameLibraryRequest = (a, b) =>
   a?.access === b?.access &&
   a?.sort === b?.sort &&
   a?.projectId === b?.projectId;
+
+/** Whether two library views show the same thing: the same request and the
+ * same grouping. */
+export const sameLibraryView = (a, b) => {
+  const left = normalizeLibraryView(a);
+  const right = normalizeLibraryView(b);
+  return sameLibraryRequest(left, right) && left.group === right.group;
+};
 
 /** A library view read from an address's search: `q`, `show` (owned or
  * shared), `sort` (title), `group` (project or date) and `project`. */

@@ -623,14 +623,6 @@ details.document-actions > div button {
   color: var(--muted-foreground);
   font-size: 0.75rem;
 }
-.page-row-action {
-  color: var(--muted-foreground);
-  opacity: 0;
-}
-.page-row:hover .page-row-action,
-.page-row:focus-within .page-row-action {
-  opacity: 1;
-}
 .document {
   max-width: 1056px;
   margin: 1rem auto 0;
@@ -1285,20 +1277,12 @@ span.unknown-node {
     min-height: 64px;
     gap: 0.7rem;
   }
-  .page-row-action {
-    opacity: 1;
-  }
   .page-picker {
     width: calc(100vw - 1rem);
     max-height: 85dvh;
   }
   .picker-page {
     min-height: 48px;
-  }
-}
-@media (hover: none) and (min-width: 901px) {
-  .page-row-action {
-    opacity: 1;
   }
 }
 @media print {
@@ -2086,6 +2070,8 @@ details.account-actions > div a:hover {
   margin: 0;
   padding: 0;
 }
+/* Rows read as one continuous list: square corners, a rule between rows,
+   and a hover band edge to edge. */
 .index-row {
   position: relative;
   display: flex;
@@ -2094,7 +2080,6 @@ details.account-actions > div a:hover {
   min-height: 56px;
   padding: 0.9rem 0.6rem;
   border-bottom: 1px solid var(--border);
-  border-radius: 0.5rem;
 }
 .index-row:hover,
 .index-row:focus-within {
@@ -2213,12 +2198,12 @@ details.account-actions > div a:hover {
 .index-display .index-display-button:focus-visible {
   outline-offset: 1px;
 }
-/* List mode: Name, Source and Updated columns. The header row and every
-   Page row share one template so the columns line up. */
+/* List mode: Name, Source and Last activity columns. The header row and
+   every Page row share one template so the columns line up. */
 .index-columns,
 .index-page-row {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 12rem) 4.5rem;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 12rem) 6.5rem;
   align-items: center;
   gap: 1rem;
 }
@@ -2328,7 +2313,8 @@ details.account-actions > div a:hover {
 .index-card-placeholder {
   opacity: 0.55;
 }
-/* Phones: Name and Updated only, two cards to a row, and 44px toggles. */
+/* Phones: Name and Last activity only, with no column labels, two cards to a
+   row, and 44px toggles. */
 @media (max-width: 640px) {
   .index-heading .index-search {
     flex-basis: 100%;
@@ -2342,6 +2328,7 @@ details.account-actions > div a:hover {
     grid-template-columns: minmax(0, 1fr) auto;
     gap: 0.75rem;
   }
+  .index-columns,
   .index-column-source,
   .index-cell-source {
     display: none;
@@ -2614,10 +2601,32 @@ a.library-group-label:hover span {
   margin-top: 0;
 }
 /* List rows gain a Copy link column; the action shows on hover or focus and
-   always on touch screens. */
+   always on touch screens. Grouped by Project there is no Source column. */
 .library-view .index-columns,
 .library-view .index-page-row {
-  grid-template-columns: minmax(0, 1fr) minmax(0, 12rem) 4.5rem 2.5rem;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 12rem) 6.5rem 2.5rem;
+}
+.library-view .index-table-no-source .index-columns,
+.library-view .index-table-no-source .index-page-row {
+  grid-template-columns: minmax(0, 1fr) 6.5rem 2.5rem;
+}
+/* A Project filter the account can't name, and the way out of it. */
+.library-filter-notice {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem 0.75rem;
+  margin: 0 0 1rem;
+  padding: 0.6rem 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: 0.6rem;
+  color: var(--muted-foreground);
+  font-size: 0.9rem;
+}
+.library-filter-notice .subtle-button {
+  min-height: 36px;
+  border: 1px solid var(--border);
+  color: var(--foreground);
 }
 .index-cell-actions {
   display: flex;
@@ -2653,7 +2662,7 @@ a.library-group-label:hover span {
 @media (min-width: 901px) {
   .library-group-heading {
     position: sticky;
-    top: 64px;
+    top: var(--page-header-height);
     z-index: 2;
   }
 }
@@ -2681,11 +2690,28 @@ a.library-group-label:hover span {
     display: none;
   }
 }
-/* Phones: tabs and menus each take a row that scrolls sideways when it
-   doesn't fit, every control is 44px tall, and a menu opens as a sheet along
-   the bottom of the screen. */
+/* Phones: the tabs take a row that scrolls sideways when it doesn't fit, the
+   menus share the next row and wrap rather than clip, every control is 44px
+   tall, and a menu opens as a sheet along the bottom of the screen. The nav
+   above already says Pages, so the heading is for screen readers only. */
 @media (max-width: 640px) {
+  .library-header {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-areas: "actions" "search";
+  }
+  .library-header .library-title {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    margin: -1px;
+    padding: 0;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    white-space: nowrap;
+    border: 0;
+  }
   .library-header .library-actions {
+    justify-content: flex-end;
     gap: 0.25rem;
   }
   .library-controls {
@@ -2699,25 +2725,24 @@ a.library-group-label:hover span {
     margin-bottom: 0;
     border-bottom: 1px solid var(--border);
   }
-  /* One row of menus that scrolls sideways like the tabs. Each menu opens
-     as a fixed sheet, so the scroller never clips it. */
+  /* The menus fill their row and wrap to another when they don't fit, so
+     every label shows whole. Each menu opens as a fixed sheet. */
   .library-options {
-    flex-wrap: nowrap;
-    contain: inline-size;
+    flex-wrap: wrap;
     margin-inline-start: 0;
     padding-bottom: 0;
-    overflow-x: auto;
-    scrollbar-width: none;
   }
-  .library-options::-webkit-scrollbar {
-    display: none;
-  }
-  .library-options > * {
-    flex: none;
+  .library-options > .library-menu-root {
+    flex: 1 1 auto;
   }
   .library-menu-button {
+    width: 100%;
     min-height: 44px;
-    max-width: 11rem;
+    max-width: none;
+    justify-content: flex-start;
+  }
+  .library-menu-button .library-menu-chevron {
+    margin-inline-start: auto;
   }
   .library-menu {
     position: fixed;

@@ -63,7 +63,7 @@ test("a time cell carries the label, the ISO instant and a spoken long form", ()
     {
       label: "2d",
       dateTime: "2026-11-01T18:00:00.000Z",
-      spoken: "Updated 2 days ago, Nov 1, 2026, 6:00 PM",
+      spoken: "Last active 2 days ago, Nov 1, 2026, 6:00 PM",
     },
   );
   for (const [elapsed, label, relative] of [
@@ -77,18 +77,18 @@ test("a time cell carries the label, the ISO instant and a spoken long form", ()
   ]) {
     const cell = timeCell(ago(elapsed), now, pinned);
     assert.equal(cell.label, label);
-    assert.match(cell.spoken, new RegExp(`^Updated ${relative}, \\w{3} \\d{1,2}, \\d{4}, `));
+    assert.match(cell.spoken, new RegExp(`^Last active ${relative}, \\w{3} \\d{1,2}, \\d{4}, `));
   }
   assert.deepEqual(timeCell("garbage", now), {
     label: NO_TIME,
     dateTime: null,
     spoken: NO_TIME_SPOKEN,
   });
-  assert.equal(NO_TIME_SPOKEN, "Updated unknown");
+  assert.equal(NO_TIME_SPOKEN, "Last active unknown");
 });
 
 test("the spoken form follows the browser's locale", () => {
   const cell = timeCell(ago(2 * d), now, { locale: "de-DE", timeZone: "UTC" });
   assert.equal(cell.label, "2d", "the compact label is the same everywhere");
-  assert.match(cell.spoken, /^Updated vor 2 Tagen, /);
+  assert.match(cell.spoken, /^Last active vor 2 Tagen, /);
 });

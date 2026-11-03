@@ -56,6 +56,13 @@ export function ChoiceMenu({
     if (!unavailable) setOpen((shown) => !shown);
   }
   function buttonKeys(event) {
+    // Focus moves into the menu a frame after it opens; Escape before then
+    // still closes it.
+    if (event.key === "Escape" && open) {
+      event.preventDefault();
+      close(true);
+      return;
+    }
     if (event.key !== "ArrowDown" || unavailable) return;
     event.preventDefault();
     setOpen(true);

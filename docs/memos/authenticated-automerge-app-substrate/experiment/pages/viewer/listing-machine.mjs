@@ -15,6 +15,9 @@
  * - loading: the first page for `params` is in flight under `key`.
  * - ready: rows are shown. `cursor` continues the listing, or is null at its
  *   end.
+ * - refreshing: rows this tab showed for `params` earlier paint from memory
+ *   (listing-cache.mjs) while the first page for `params` is in flight under
+ *   `key`. It settles like loading.
  * - more: the page after `cursor` is in flight under `key`; rows stay shown.
  * - failed: the first page for `params` failed. Nothing is listed.
  * - stalled: the page after `cursor` failed. The rows already shown stay.
@@ -23,6 +26,9 @@
  * - load: list `params` from its first page. It supersedes any request in
  *   flight, so a search typed during a load, a tab or sort change, or a
  *   retry always wins.
+ * - restore: like load, for `params` whose first page this tab has shown
+ *   before. The remembered rows paint at once, and the first page replaces
+ *   them when it lands.
  * - more: list the next page (Load more), or retry the one that stalled.
  * - loaded / failed: the request for `key` settled. A key that no longer
  *   matches belongs to a superseded request, so its result is ignored.
@@ -34,9 +40,10 @@
  * so its key names the restart. Other failures stall and retry the same
  * cursor.
  *
- * Effects: `fetch` requests one page; `show` puts the settled request's rows
- * on screen, replacing them for a first page and appending otherwise;
- * `report` hands the failure to the screen's banner (alerts.mjs).
+ * Effects: `fetch` requests one page; `paint` puts the remembered rows for
+ * `params` on screen; `show` puts the settled request's rows on screen,
+ * replacing them for a first page and appending otherwise; `report` hands the
+ * failure to the screen's banner (alerts.mjs).
  */
 import { defineMachine, reject } from "../shared/machine.mjs";
 
@@ -81,8 +88,8 @@ const event = (...keys) => fields("type", keys);
 
 export const listingSpec = Object.freeze({
   name: "listing",
-  states: ["idle", "loading", "ready", "more", "failed", "stalled"],
-  events: ["load", "more", "loaded", "failed"],
+  states: ["idle", "loading", "refreshing", "ready", "more", "failed", "stalled"],
+  events: ["load", "restore", "more", "loaded", "failed"],
   unreachable: [
     ["idle", "loaded", "Nothing is requested before the first load"],
     ["idle", "failed", "Nothing is requested before the first load"],
@@ -90,6 +97,8 @@ export const listingSpec = Object.freeze({
   cases: {
     "loading/loaded": ["current", "stale"],
     "loading/failed": ["current", "stale"],
+    "refreshing/loaded": ["current", "stale"],
+    "refreshing/failed": ["current", "stale"],
     "more/loaded": ["current", "stale"],
     "more/failed": ["current", "stale", "expired"],
     "ready/more": ["cursor", "end"],
@@ -98,6 +107,7 @@ export const listingSpec = Object.freeze({
     states: {
       idle: state(),
       loading: state("key", "params"),
+      refreshing: state("key", "params"),
       ready: state("params", "cursor"),
       more: state("key", "params", "cursor"),
       failed: state("params", "message"),
@@ -105,12 +115,14 @@ export const listingSpec = Object.freeze({
     },
     events: {
       load: event("key", "params"),
+      restore: event("key", "params"),
       more: event("key"),
       loaded: event("key", "cursor"),
       failed: event("key", "message", "code"),
     },
     effects: {
       fetch: event("key", "params", "cursor"),
+      paint: event("params"),
       show: event("key", "append"),
       report: event("message"),
     },
@@ -136,9 +148,18 @@ function transition(current, input) {
       state: { name: "loading", key: input.key, params: input.params },
       effects: [{ type: "fetch", key: input.key, params: input.params, cursor: null }],
     };
+  if (input.type === "restore")
+    return {
+      state: { name: "refreshing", key: input.key, params: input.params },
+      effects: [
+        { type: "paint", params: input.params },
+        { type: "fetch", key: input.key, params: input.params, cursor: null },
+      ],
+    };
   if (input.type === "more") {
     if (current.name === "idle") return reject(current, REJECT.nothingListed);
-    if (current.name === "loading") return reject(current, REJECT.firstPage);
+    if (current.name === "loading" || current.name === "refreshing")
+      return reject(current, REJECT.firstPage);
     if (current.name === "more") return reject(current, REJECT.loadingMore);
     if (current.name === "failed") return reject(current, REJECT.reload);
     if (current.cursor === null) return reject(current, REJECT.end);
@@ -148,7 +169,8 @@ function transition(current, input) {
       effects: [{ type: "fetch", key: input.key, params, cursor }],
     };
   }
-  if (current.name !== "loading" && current.name !== "more") return reject(current, REJECT.idle);
+  if (current.name !== "loading" && current.name !== "refreshing" && current.name !== "more")
+    return reject(current, REJECT.idle);
   if (input.key !== current.key) return reject(current, REJECT.stale);
   const append = current.name === "more";
   if (append && input.type === "failed" && input.code === INVALID_CURSOR)

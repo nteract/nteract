@@ -1,6 +1,6 @@
 // Ages for listing rows: a compact label on screen ("now", "5m", "3h", "2d",
-// "1w", "2mo", "1y") and a spoken form for screen readers ("Updated 2 days
-// ago, Nov 1, 2026, 6:00 PM"). Pure: callers pass the clock, locale and time
+// "1w", "2mo", "1y") and a spoken form for screen readers ("Last active 2
+// days ago, Nov 1, 2026, 6:00 PM"). Pure: callers pass the clock, locale and time
 // zone, so tests pin every boundary.
 
 const SECOND = 1000;
@@ -14,7 +14,7 @@ const MONTH = YEAR / 12;
 /** What a missing or unreadable time shows. */
 export const NO_TIME = "—";
 /** What a screen reader hears for a missing or unreadable time. */
-export const NO_TIME_SPOKEN = "Updated unknown";
+export const NO_TIME_SPOKEN = "Last active unknown";
 
 const SUFFIX = { minute: "m", hour: "h", day: "d", week: "w", month: "mo", year: "y" };
 
@@ -50,7 +50,7 @@ export function compactAge(value, now = Date.now()) {
   return parts ? `${parts.value}${SUFFIX[parts.unit]}` : "now";
 }
 
-/** Everything an Updated cell needs: the compact label, the ISO dateTime,
+/** Everything a Last activity cell needs: the compact label, the ISO dateTime,
  * and the spoken form. `locale` and `timeZone` default to the browser's. */
 export function timeCell(value, now = Date.now(), { locale, timeZone } = {}) {
   const date = toDate(value);
@@ -68,6 +68,6 @@ export function timeCell(value, now = Date.now(), { locale, timeZone } = {}) {
   return {
     label: parts ? `${parts.value}${SUFFIX[parts.unit]}` : "now",
     dateTime: date.toISOString(),
-    spoken: `Updated ${relative}, ${absolute}`,
+    spoken: `Last active ${relative}, ${absolute}`,
   };
 }
