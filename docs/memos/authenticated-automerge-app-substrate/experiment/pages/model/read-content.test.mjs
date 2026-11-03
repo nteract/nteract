@@ -89,7 +89,7 @@ test("a section inside one rich block includes its heading and children until a 
   assert.deepEqual(result.blocks[0].node_range, { block_id: "one", from: 2, to: 6 });
   assert.equal(
     result.blocks[0].markdown,
-    "## **Target** 🌊\n\nBody.\n\n### Child\n\n* First\n\n* Second",
+    "## **Target** 🌊\n\nBody.\n\n### Child\n\n- First\n- Second",
   );
   assert.deepEqual(result.selection, {
     type: "section",

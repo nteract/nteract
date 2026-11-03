@@ -107,7 +107,7 @@ const SHAPES = [
         schema.node("list_item", null, [p("item"), raw("~~struck~~ note")]),
       ]),
     ],
-    "* item\n\n  ~~struck~~ note",
+    "- item\n\n  ~~struck~~ note",
   ],
   [
     "inside a quote",
