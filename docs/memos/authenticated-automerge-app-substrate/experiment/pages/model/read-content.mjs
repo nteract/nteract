@@ -1,4 +1,5 @@
 import { orderedBlockIds } from "./order.mjs";
+import { parseAssetPath } from "../shared/dataset-assets.mjs";
 import {
   exportMarkdown,
   isRich,
@@ -158,6 +159,15 @@ export function nodeAttrs(node, { maxChecked = Infinity } = {}) {
       node.firstChild?.forEach((cell, _offset, index) => (align[index] = cell.attrs.align ?? null));
       return { rows: node.childCount, columns, align };
     }
+    case "dataframe":
+      // No Markdown form beyond its read-back link: its attrs are the node,
+      // in the shape insert_node's receipt reports.
+      return {
+        asset_id: parseAssetPath(node.attrs.src)?.assetId ?? null,
+        src: node.attrs.src,
+        media_type: node.attrs.media_type,
+        title: node.attrs.title ?? null,
+      };
     case "unknownBlock":
       return {
         node_type: quotableNodeType(node.attrs.unknownBlock?.type ?? node.attrs.unknownParentBlock),

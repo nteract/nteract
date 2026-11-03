@@ -894,7 +894,8 @@ attributes: {"language"} for a code block; {"items", "checked_count", "checked"}
 for a task list (checked has one boolean per direct item, at most 200 in an
 outline, with "checked_truncated": true past that; read_page_changes lists all);
 {"rows", "columns", "align"} for a table (rows counts the header row, columns is
-the widest row); {"node_type"} for a node this version of Pages doesn't know.
+the widest row); {"asset_id", "src", "media_type", "title"} for a dataframe; {"node_type"} for
+a node this version of Pages doesn't know.
 All addresses in an outline describe the returned heads, not stable IDs across edits.
 Pass those heads as expected_heads when using node_range or outline_offset > 0.
 A concurrent change returns read_revision_changed and a fresh outline; choose again.

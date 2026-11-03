@@ -324,3 +324,11 @@ test("a synced dataframe naming another Page's asset reads as a notice and refus
   ]);
   assert.deepEqual(dataframes(after, id), dataframes(doc, id));
 });
+
+test("a dataframe's outline entry carries its attrs in insert_node's receipt shape", async () => {
+  const { projectReadContent } = await import("./read-content.mjs");
+  const { doc, result } = edit(fresh(), [dataframe()]);
+  const entry = projectReadContent(doc, {}).outline.find((item) => item.type === "dataframe");
+  const { block_id: _id, type: _type, ...receipt } = result.inserted_nodes[0];
+  assert.deepEqual(entry.attrs, receipt.attrs);
+});
