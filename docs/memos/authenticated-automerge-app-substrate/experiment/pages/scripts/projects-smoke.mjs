@@ -470,11 +470,27 @@ try {
   assert.ok(chipHeight >= 44, `the Project chip is ${chipHeight}px tall at 640px`);
   await phone.screenshot({ path: `${output}/project-home-640.png` });
   const beforeHomeCreate = await ok("owner", "list_pages", { project_id: project.project_id });
-  await homePages.getByRole("button", { name: "New Page" }).tap();
+  // A double tap: both clicks land before React disables the row. The
+  // one-at-a-time guard drops the second; the unit tests pin the guard
+  // itself (page-create-machine.test.mjs).
+  await homePages.getByRole("button", { name: "New Page" }).evaluate((button) => {
+    button.click();
+    button.click();
+  });
   await expect(phone).not.toHaveURL(`${origin}/p/${project.home_page_id}`, { timeout: 30000 });
   await expect(phone.getByLabel("Page title")).toBeVisible({ timeout: 30000 });
+  // A new Page names itself first: the title has focus, not the body.
+  await expect(phone.getByLabel("Page title")).toBeFocused();
+  const projectPageCount = async () =>
+    (await ok("owner", "list_pages", { project_id: project.project_id })).pages.length;
+  await expect.poll(projectPageCount, { timeout: 30000 }).toBe(beforeHomeCreate.pages.length + 1);
+  await phone.waitForTimeout(1000);
+  assert.equal(
+    await projectPageCount(),
+    beforeHomeCreate.pages.length + 1,
+    "a double tap made one Page",
+  );
   const afterHomeCreate = await ok("owner", "list_pages", { project_id: project.project_id });
-  assert.equal(afterHomeCreate.pages.length, beforeHomeCreate.pages.length + 1);
   const homeCreated = afterHomeCreate.pages.find(
     (entry) => !beforeHomeCreate.pages.some((known) => known.page_id === entry.page_id),
   );

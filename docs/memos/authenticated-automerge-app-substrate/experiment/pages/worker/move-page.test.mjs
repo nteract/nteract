@@ -19,7 +19,7 @@ import { LOCATION_REVISION_KEY, MOVE_STATUS, movePage, movePageSpec } from "./mo
 import { CrashStorage } from "./operation-intent-fixture.mjs";
 import { Storage, ids, shapeOf, unmigrate, world } from "./projects-fixture.mjs";
 import { tools } from "../mcp.mjs";
-import { createPageInProject } from "../viewer/projects.mjs";
+import { runPageCreation } from "../viewer/page-create-machine.mjs";
 
 const TABLE = new URL("../test/fixtures/machines/move-page.json", import.meta.url);
 
@@ -346,21 +346,44 @@ test("move_page moves a subtree across containers: Your items, Project and Proje
   assert.equal(deriveLocation(await s.entries(), gone).space_id, s.project.project_id);
 });
 
-test("New Page from a Project view lands at that Project's top level", async (t) => {
+test("a placed New Page lands at the Project's top level or under its parent, once", async (t) => {
   const w = await world(t);
   const project = await w.createProject("Conference");
+  let lose = false;
   const call = async (operation, args) => {
     const { status, body } = await w.call("owner", operation, args);
-    if (status !== 200) throw new Error(JSON.stringify(body));
+    if (status !== 200) throw Object.assign(new Error(body.error), { status, code: body.code });
+    // The write lands, but its answer is lost on the way back.
+    if (operation === "create_page" && lose) throw new TypeError("Failed to fetch");
     return body;
   };
-  const created = await createPageInProject(call, project.project_id);
-  assert.equal(created.project_id, project.project_id);
-  const entries = await locationEntries(w.catalogStorage());
-  assert.equal(entries.get(created.page_id).parent_id, project.home_page_id);
-  assert.equal(deriveLocation(entries, created.page_id).space_id, project.project_id);
+  const create = (placement, attempt = null) =>
+    runPageCreation({
+      placement,
+      attempt,
+      call,
+      open: async () => {},
+      refresh: async () => {},
+      current: () => true,
+    });
+  // New Page in the Project view, the home Page row and "In <Project>".
+  const top = (await create({ project_id: project.project_id })).receipt;
+  assert.equal(top.project_id, project.project_id);
+  let entries = await locationEntries(w.catalogStorage());
+  assert.equal(entries.get(top.page_id).parent_id, project.home_page_id);
+  assert.equal(deriveLocation(entries, top.page_id).space_id, project.project_id);
   const listed = await w.call("owner", "list_pages", { project_id: project.project_id });
-  assert.ok(ids(listed).includes(created.page_id));
+  assert.ok(ids(listed).includes(top.page_id));
+  // New sub-page, whose answer is lost, then retried with the same request.
+  lose = true;
+  const lost = await create({ parent_id: top.page_id });
+  assert.equal(lost.name, "failed");
+  lose = false;
+  const sub = (await create({ parent_id: top.page_id }, lost.attempt)).receipt;
+  entries = await locationEntries(w.catalogStorage());
+  assert.equal(entries.get(sub.page_id).parent_id, top.page_id);
+  const children = await w.call("owner", "list_pages", { parent_id: top.page_id });
+  assert.deepEqual(ids(children), [sub.page_id], "the retry landed one sub-page");
 });
 
 test("a cross-container move keeps the depth limit and the location revision fence", async (t) => {

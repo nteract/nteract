@@ -3,7 +3,8 @@ import { test } from "node:test";
 import { readPageRoute, projectPath, writePageRoute } from "../shared/routes.mjs";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { createPageInProject, listProjectPages, projectTree } from "./projects.mjs";
+import { listProjectPages, projectTree } from "./projects.mjs";
+import { runPageCreation } from "./page-create-machine.mjs";
 import {
   Breadcrumbs,
   ProjectChip,
@@ -73,7 +74,7 @@ test("a Project tree puts the home Page first with its descendants, then nests b
   );
 });
 
-test("Project listings follow cursors and new Pages reuse the listing's retry token", async () => {
+test("Project listings follow cursors and a new Page uses the listing's retry token", async () => {
   const calls = [];
   const call = async (operation, args) => {
     calls.push([operation, args]);
@@ -89,8 +90,17 @@ test("Project listings follow cursors and new Pages reuse the listing's retry to
     [page(1), page(2)],
   );
   assert.ok(calls.every(([, args]) => args.project_id === projectId));
-  const created = await createPageInProject(call, projectId);
-  assert.equal(created.page_id, page(3));
+  const opened = [];
+  const created = await runPageCreation({
+    placement: { project_id: projectId },
+    call: async (operation, args) =>
+      operation === "list_pages" ? { pages: [], retry_token: "token" } : call(operation, args),
+    open: async (pageId) => opened.push(pageId),
+    refresh: async () => {},
+    current: () => true,
+  });
+  assert.equal(created.receipt.page_id, page(3));
+  assert.deepEqual(opened, [page(3)]);
   const [, args] = calls.at(-1);
   assert.equal(args.project_id, projectId);
   assert.equal(args.retry_token, "token");

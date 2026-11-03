@@ -63,7 +63,7 @@ import {
   ProjectView,
   projectPageCount,
 } from "./ProjectView.jsx";
-import { replayAttempt, runPageCreation } from "./page-create-machine.mjs";
+import { pageCreations } from "./page-create-machine.mjs";
 import { IndexNav, PagesIndex, ProjectsIndex } from "./IndexViews.jsx";
 import { listProjects, pageLocation } from "./projects.mjs";
 import { closeTrashedSessions, moveToTrashError, restorePage } from "./trash.mjs";
@@ -162,6 +162,8 @@ function App() {
     [pickerOpen, setPickerOpen] = useState(false),
     [pickerError, setPickerError] = useState(""),
     [creating, setCreating] = useState(false),
+    // One creation at a time, and placed creates to replay (page-create-machine.mjs).
+    [creations] = useState(pageCreations),
     [opening, setOpening] = useState(false),
     [focusBlock, setFocusBlock] = useState(null),
     [titleFocusRequest, setTitleFocusRequest] = useState(null),
@@ -177,10 +179,6 @@ function App() {
     catalogRevision = useRef(0),
     indexVisits = useRef(0),
     lastRemote = useRef(null),
-    creationPending = useRef(false),
-    // The last placed create that didn't finish, `{ key, attempt }`: trying
-    // the same placement again replays its request (page-create-machine.mjs).
-    creationAttempt = useRef(null),
     article = useRef(null),
     titleInput = useRef(null),
     // The title value this tab last showed and its selection as native
@@ -414,7 +412,9 @@ function App() {
     link.click();
     setTimeout(() => URL.revokeObjectURL(url), 1000);
   }
-  async function open(id, { focus = false, historyMode = "push" } = {}) {
+  /** Open a Page. `nameIt` is for a Page just created: focus its title
+   * rather than its empty body. */
+  async function open(id, { focus = false, historyMode = "push", nameIt = false } = {}) {
     if (historyMode !== "none") writePageRoute(id, { replace: historyMode === "replace" });
     bootPreview.dispatch({ type: "navigated", pageId: id });
     setPickerOpen(false);
@@ -442,7 +442,9 @@ function App() {
           }),
         { signal: controller.signal },
       );
-      await install(next, revision, { focus });
+      if (nameIt) {
+        if (await install(next, revision, { focusEmpty: false })) setTitleFocusRequest(next);
+      } else await install(next, revision, { focus });
     } catch (error) {
       if (host.isCurrent(revision)) bootPreview.dispatch({ type: "refused" });
       if (host.isCurrent(revision) && !bannerShows(error)) showError(error);
@@ -583,6 +585,8 @@ function App() {
         const changed = authentication.current?.identity?.principal !== result.identity?.principal;
         if (changed) {
           host.navigate();
+          // Attempts to replay belong to the account that made them.
+          creations.account(result.identity?.principal ?? null);
           catalogRevision.current++;
           setPages([]);
           setQuota(null);
@@ -748,9 +752,13 @@ function App() {
     });
     return () => cancelAnimationFrame(frame);
   }, [focusBlock, session, page?.blocks.length]);
+  /** New Page in Your items, as a local draft. One creation runs at a time,
+   * placed or not (pageCreations in page-create-machine.mjs). */
   async function create() {
-    if (creationPending.current || host.current?.authRequired) return;
-    creationPending.current = true;
+    if (creations.pending || host.current?.authRequired) return;
+    await creations.exclusive(createDraft);
+  }
+  async function createDraft() {
     setCreating(true);
     setError("");
     setPickerError("");
@@ -786,7 +794,6 @@ function App() {
         setPickerError(failureMessage(error));
       }
     } finally {
-      creationPending.current = false;
       setCreating(false);
     }
   }
@@ -796,36 +803,27 @@ function App() {
    * during it leaves the new Page closed (page-create-machine.mjs). */
   async function createIn(placement) {
     const principal = authentication.current?.identity?.principal;
-    if (creationPending.current || host.current?.authRequired || !principal) return;
-    creationPending.current = true;
+    if (creations.pending || host.current?.authRequired || !principal) return;
     setCreating(true);
     setError("");
     setPickerError("");
     const revision = host.navigate();
     const current = () => navigationCurrent(revision, principal);
-    const key = JSON.stringify([principal, placement]);
-    const replay = creationAttempt.current?.key === key ? creationAttempt.current.attempt : null;
-    creationAttempt.current = null;
     try {
-      const state = await runPageCreation({
+      const state = await creations.create({
+        principal,
         placement,
-        attempt: replay,
         call: tool,
         current,
-        open: async (pageId) => {
-          setPickerOpen(false);
-          await open(pageId);
-        },
+        // A new Page names itself first, like create()'s draft.
+        open: (pageId) => open(pageId, { nameIt: true }),
         refresh: () => refresh(),
       });
-      const attempt = replayAttempt(state);
-      if (attempt) creationAttempt.current = { key, attempt };
-      if (state.name === "failed" && current()) {
-        setError(state.error);
-        setPickerError(state.error);
+      if (state?.name === "failed" && current() && !bannerShows(state.cause)) {
+        showError(state.cause);
+        setPickerError(failureMessage(state.cause));
       }
     } finally {
-      creationPending.current = false;
       setCreating(false);
     }
   }

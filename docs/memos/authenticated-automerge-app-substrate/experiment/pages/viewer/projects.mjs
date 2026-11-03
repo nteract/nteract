@@ -1,5 +1,3 @@
-import { retryKey } from "../model/retry-key.mjs";
-
 /** Projects this account can open. A failed listing shows none instead of
  * blocking the Page list. */
 export async function listProjects(call) {
@@ -56,17 +54,6 @@ export function projectTree(pages) {
   };
   visit(null, 0);
   return rows;
-}
-
-/** Create an empty Page at a Project's top level and return its receipt. */
-export async function createPageInProject(call, projectId) {
-  const prepared = await call("list_projects", { limit: 1 });
-  return call("create_page", {
-    title: "Untitled",
-    project_id: projectId,
-    retry_token: prepared.retry_token,
-    idempotency_key: await retryKey(prepared.retry_token),
-  });
 }
 
 /** Crumbs to show: a Project's home Page stands for its Project, so a home

@@ -1937,7 +1937,9 @@ details.account-actions > div a:hover {
 .project-new-page .page-card:hover:not(:disabled) {
   color: var(--foreground);
 }
-.project-chip {
+/* Inside the breadcrumbs nav, so these name it there to outrank
+   `.breadcrumbs a`. */
+.breadcrumbs .project-chip {
   display: inline-flex;
   align-items: center;
   gap: 0.35rem;
@@ -1949,13 +1951,14 @@ details.account-actions > div a:hover {
   font-size: 0.8rem;
   text-decoration: none;
 }
-.project-chip:hover {
+.breadcrumbs .project-chip:hover {
   color: var(--foreground);
   background: var(--accent);
+  text-decoration: none;
 }
 /* Phones and narrow windows: the chip is a full touch target. */
 @media (max-width: 640px) {
-  .project-chip {
+  .breadcrumbs .project-chip {
     min-height: 44px;
     padding-inline: 0.85rem;
   }

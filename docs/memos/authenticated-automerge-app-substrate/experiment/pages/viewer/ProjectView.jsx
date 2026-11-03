@@ -36,9 +36,9 @@ function PageRows({ rows, onOpen }) {
 
 /** One Project: its heading opens the home Page, then its other Pages as a
  * tree. Owner-only for now. `onCreate()` adds a Page at the top level (the
- * caller runs it as a cancellable draft). Loading and errors stay local and
- * simple here; the Project view moves to the shared RxJS store pattern when
- * the Pages state-machine tooling lands. */
+ * caller runs it as a cancellable draft). The Project and its Pages load
+ * separately, so New Page works as soon as the Project answers, even while
+ * the list loads or after it fails. Loading and errors stay local. */
 export function ProjectView({ tool, projectId, onOpen, onBack, onCreate, creating = false }) {
   const [project, setProject] = useState(null);
   const [pages, setPages] = useState(null);
@@ -49,19 +49,15 @@ export function ProjectView({ tool, projectId, onOpen, onBack, onCreate, creatin
     setProject(null);
     setPages(null);
     setError("");
-    Promise.all([
-      tool("get_project", { project_id: projectId }),
-      listProjectPages(tool, projectId),
-    ]).then(
-      ([loaded, listed]) => {
-        if (revision !== generation.current) return;
-        setProject(loaded);
-        setPages(listed);
-      },
-      (cause) => {
-        if (revision === generation.current) setError(cause.message);
-      },
-    );
+    const failed = (cause) => {
+      if (revision === generation.current) setError(cause.message);
+    };
+    tool("get_project", { project_id: projectId }).then((loaded) => {
+      if (revision === generation.current) setProject(loaded);
+    }, failed);
+    listProjectPages(tool, projectId).then((listed) => {
+      if (revision === generation.current) setPages(listed);
+    }, failed);
     return () => {
       generation.current++;
     };
@@ -111,7 +107,9 @@ export function ProjectView({ tool, projectId, onOpen, onBack, onCreate, creatin
             <p className="muted project-description">{project.description}</p>
           )}
         </div>
-        {rows?.length > 0 && <div className="library-actions">{newPage}</div>}
+        {/* Until the list answers, or when it fails, New Page stays here; an
+            empty Project carries it in its empty state instead. */}
+        {project && rows?.length !== 0 && <div className="library-actions">{newPage}</div>}
       </div>
       {error && (
         <p role="alert" className="error">
