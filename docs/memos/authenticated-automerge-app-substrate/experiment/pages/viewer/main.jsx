@@ -5,6 +5,7 @@ import { createRoot } from "react-dom/client";
 import {
   ChevronDown,
   FileText,
+  FilePlus,
   FolderInput,
   FolderOpen,
   LogOut,
@@ -55,7 +56,14 @@ import { ProjectCreator } from "./ProjectCreator.jsx";
 import { MoveDialog } from "./MoveDialog.jsx";
 import { moveOrigin } from "./container-dialog-machine.mjs";
 import { TrashView } from "./TrashView.jsx";
-import { Breadcrumbs, ProjectView } from "./ProjectView.jsx";
+import {
+  Breadcrumbs,
+  ProjectChip,
+  ProjectPages,
+  ProjectView,
+  projectPageCount,
+} from "./ProjectView.jsx";
+import { pageCreations } from "./page-create-machine.mjs";
 import { IndexNav, PagesIndex, ProjectsIndex } from "./IndexViews.jsx";
 import { listProjects, pageLocation } from "./projects.mjs";
 import { closeTrashedSessions, moveToTrashError, restorePage } from "./trash.mjs";
@@ -154,6 +162,8 @@ function App() {
     [pickerOpen, setPickerOpen] = useState(false),
     [pickerError, setPickerError] = useState(""),
     [creating, setCreating] = useState(false),
+    // One creation at a time, and placed creates to replay (page-create-machine.mjs).
+    [creations] = useState(pageCreations),
     [opening, setOpening] = useState(false),
     [focusBlock, setFocusBlock] = useState(null),
     [titleFocusRequest, setTitleFocusRequest] = useState(null),
@@ -169,7 +179,6 @@ function App() {
     catalogRevision = useRef(0),
     indexVisits = useRef(0),
     lastRemote = useRef(null),
-    creationPending = useRef(false),
     article = useRef(null),
     titleInput = useRef(null),
     // The title value this tab last showed and its selection as native
@@ -403,7 +412,9 @@ function App() {
     link.click();
     setTimeout(() => URL.revokeObjectURL(url), 1000);
   }
-  async function open(id, { focus = false, historyMode = "push" } = {}) {
+  /** Open a Page. `nameIt` is for a Page just created: focus its title
+   * rather than its empty body. */
+  async function open(id, { focus = false, historyMode = "push", nameIt = false } = {}) {
     if (historyMode !== "none") writePageRoute(id, { replace: historyMode === "replace" });
     bootPreview.dispatch({ type: "navigated", pageId: id });
     setPickerOpen(false);
@@ -431,7 +442,9 @@ function App() {
           }),
         { signal: controller.signal },
       );
-      await install(next, revision, { focus });
+      if (nameIt) {
+        if (await install(next, revision, { focusEmpty: false })) setTitleFocusRequest(next);
+      } else await install(next, revision, { focus });
     } catch (error) {
       if (host.isCurrent(revision)) bootPreview.dispatch({ type: "refused" });
       if (host.isCurrent(revision) && !bannerShows(error)) showError(error);
@@ -572,6 +585,8 @@ function App() {
         const changed = authentication.current?.identity?.principal !== result.identity?.principal;
         if (changed) {
           host.navigate();
+          // Attempts to replay belong to the account that made them.
+          creations.account(result.identity?.principal ?? null);
           catalogRevision.current++;
           setPages([]);
           setQuota(null);
@@ -737,9 +752,13 @@ function App() {
     });
     return () => cancelAnimationFrame(frame);
   }, [focusBlock, session, page?.blocks.length]);
+  /** New Page in Your items, as a local draft. One creation runs at a time,
+   * placed or not (pageCreations in page-create-machine.mjs). */
   async function create() {
-    if (creationPending.current || host.current?.authRequired) return;
-    creationPending.current = true;
+    if (creations.pending || host.current?.authRequired) return;
+    await creations.exclusive(createDraft);
+  }
+  async function createDraft() {
     setCreating(true);
     setError("");
     setPickerError("");
@@ -775,7 +794,36 @@ function App() {
         setPickerError(failureMessage(error));
       }
     } finally {
-      creationPending.current = false;
+      setCreating(false);
+    }
+  }
+  /** New Page in a Project or under a Page (`{ project_id }` or
+   * `{ parent_id }`), then open it. A cancellable draft like create(): a
+   * navigation or account change before create_page writes nothing, and one
+   * during it leaves the new Page closed (page-create-machine.mjs). */
+  async function createIn(placement) {
+    const principal = authentication.current?.identity?.principal;
+    if (creations.pending || host.current?.authRequired || !principal) return;
+    setCreating(true);
+    setError("");
+    setPickerError("");
+    const revision = host.navigate();
+    const current = () => navigationCurrent(revision, principal);
+    try {
+      const state = await creations.create({
+        principal,
+        placement,
+        call: tool,
+        current,
+        // A new Page names itself first, like create()'s draft.
+        open: (pageId) => open(pageId, { nameIt: true }),
+        refresh: () => refresh(),
+      });
+      if (state?.name === "failed" && current() && !bannerShows(state.cause)) {
+        showError(state.cause);
+        setPickerError(failureMessage(state.cause));
+      }
+    } finally {
       setCreating(false);
     }
   }
@@ -1007,6 +1055,24 @@ function App() {
     item.page_id === page?.page_id ? { ...item, title: page.title } : item,
   );
   const libraryPages = matchingPages(listedPages, libraryQuery);
+  // The open Page's Project, when read_page shows one: Projects are
+  // owner-only in this build, so a visible project_id means this account owns
+  // it. Shared viewers see none and get no create affordances. The owner
+  // role on the Page (`canDelete`) is the second check: a Page sits in its
+  // owner's Catalog, so only its owner can add Pages beside or under it.
+  const ownsProject =
+    !!placement?.project_id &&
+    !!session?.canDelete &&
+    !session.authRequired &&
+    session.pageId === host.current?.pageId &&
+    session.identity?.principal === authentication.current?.identity?.principal;
+  const placementProject = placement?.project_id
+    ? (projects.find((project) => project.project_id === placement.project_id) ??
+      placement.breadcrumbs.find((crumb) => crumb.kind === "project"))
+    : null;
+  const projectPages = placement?.project_id
+    ? listedPages.filter((item) => item.project_id === placement.project_id && !item.shared)
+    : [];
   const usage = quotaNotice(quota);
   const openComments = threads.filter((thread) => thread.state === "open").length;
   // The page menu: Document actions on desktop, the ⋯ menu on phones.
@@ -1045,6 +1111,13 @@ function App() {
             label: "Move to…",
             icon: FolderInput,
             run: startMove,
+          },
+        ownsProject &&
+          !placement.home && {
+            key: "new-sub-page",
+            label: "New sub-page",
+            icon: FilePlus,
+            run: () => createIn({ parent_id: session.pageId }),
           },
         session.canDelete && {
           key: "trash",
@@ -1209,6 +1282,12 @@ function App() {
             onClose={() => setPickerOpen(false)}
             onOpen={open}
             onCreate={create}
+            createProject={
+              ownsProject
+                ? { project_id: placement.project_id, title: placementProject?.title }
+                : null
+            }
+            onCreateInProject={(projectId) => createIn({ project_id: projectId })}
             onTrash={showTrash}
             onOpenIndex={navigateIndex}
             projects={projects}
@@ -1245,11 +1324,19 @@ function App() {
             >
               <article ref={article}>
                 <h1 className="document-print-title sr-only">{page.title || "Untitled"}</h1>
-                <Breadcrumbs
-                  crumbs={placement?.breadcrumbs ?? []}
-                  onOpenProject={(id) => openProject(id)}
-                  onOpenPage={open}
-                />
+                {placement?.home && placement.project_id ? (
+                  <ProjectChip
+                    projectId={placement.project_id}
+                    count={projectPageCount(projectPages)}
+                    onOpenProject={(id) => openProject(id)}
+                  />
+                ) : (
+                  <Breadcrumbs
+                    crumbs={placement?.breadcrumbs ?? []}
+                    onOpenProject={(id) => openProject(id)}
+                    onOpenPage={open}
+                  />
+                )}
                 {session.authRequired && (
                   <p className="error" role="alert">
                     {session.authProblem}{" "}
@@ -1387,6 +1474,15 @@ function App() {
                     {editor.module.WRITING_PROMPT}
                   </button>
                 )}
+                {ownsProject && placement.home && (
+                  <ProjectPages
+                    title={placementProject?.title}
+                    pages={projectPages}
+                    onOpen={open}
+                    onCreate={() => createIn({ project_id: placement.project_id })}
+                    creating={creating}
+                  />
+                )}
               </article>
               <CommentsPanel
                 key={session.pageId}
@@ -1429,7 +1525,8 @@ function App() {
               projectId={projectOpen}
               onOpen={(id) => open(id)}
               onBack={() => navigateIndex("projects")}
-              onCreated={() => void refresh().catch(() => {})}
+              onCreate={() => createIn({ project_id: projectOpen })}
+              creating={creating}
             />
           ) : index?.kind === "projects" ? (
             <ProjectsIndex

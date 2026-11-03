@@ -9,6 +9,9 @@ import {
 import { useEffect, useRef, useState } from "react";
 import { Boxes, Check, FileText, Files, Plus, Search, Trash2, X } from "lucide-react";
 
+/** `createProject` (`{ project_id, title }`), when the current Page is in a
+ * Project this account owns, splits New Page into "In <Project>", which
+ * calls `onCreateInProject(project_id)`, and "In Your items" (`onCreate`). */
 export function PagePicker({
   open,
   pages,
@@ -22,6 +25,8 @@ export function PagePicker({
   currentProjectId,
   onOpenProject,
   onCreateProject,
+  createProject,
+  onCreateInProject,
   creating,
   error,
 }) {
@@ -87,9 +92,31 @@ export function PagePicker({
             autoFocus
           />
         </label>
-        <button className="primary picker-create" disabled={creating} onClick={onCreate}>
-          <Plus size={18} aria-hidden="true" /> New Page
-        </button>
+        {createProject && onCreateInProject ? (
+          // The current Page is in a Project: New Page can land there or in
+          // Your items.
+          <div className="picker-create-choices" role="group" aria-label="New Page">
+            <button
+              className="primary picker-create"
+              disabled={creating}
+              title={`New Page in ${createProject.title || "Project"}`}
+              onClick={() => onCreateInProject(createProject.project_id)}
+            >
+              <Plus size={18} aria-hidden="true" />
+              <span className="picker-create-label">New Page</span>{" "}
+              <span className="picker-create-where">{`In ${createProject.title || "Project"}`}</span>
+            </button>
+            <button className="subtle-button picker-create" disabled={creating} onClick={onCreate}>
+              <Plus size={18} aria-hidden="true" />
+              <span className="picker-create-label">New Page</span>{" "}
+              <span className="picker-create-where">In Your items</span>
+            </button>
+          </div>
+        ) : (
+          <button className="primary picker-create" disabled={creating} onClick={onCreate}>
+            <Plus size={18} aria-hidden="true" /> New Page
+          </button>
+        )}
         {error && (
           <p className="error picker-error" role="alert">
             {error}
