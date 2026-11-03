@@ -1,6 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { isTransientFailure, request, REQUEST_TIMEOUT_MS } from "./request.mjs";
+import {
+  isTransientFailure,
+  observeSignedOut,
+  request,
+  REQUEST_TIMEOUT_MS,
+  tool,
+} from "./request.mjs";
 
 function deferred() {
   let resolve, reject;
@@ -394,4 +400,27 @@ test("errors the person can act on, timeouts and other failures are not transien
     Object.assign(Error("Specific"), { status: 500, retryable: false }),
   ])
     assert.equal(isTransientFailure(error), false, String(error));
+});
+
+test("a tool call the server refuses as signed out tells the observers once", async (t) => {
+  const answers = [
+    () => Response.json({ error: "Sign in required", code: "unauthenticated" }, { status: 401 }),
+    () => Response.json({ error: "Forbidden", code: "access_denied" }, { status: 403 }),
+    () => new Response("<html>proxy</html>", { status: 401 }),
+    () => Response.json({ pages: [] }),
+  ];
+  t.mock.method(globalThis, "fetch", async () => answers.shift()());
+  const seen = [];
+  const stop = observeSignedOut((error) => seen.push(error.code));
+  // An observer that throws never reaches the call or the other observers.
+  const stopThrowing = observeSignedOut(() => {
+    throw new Error("observer failed");
+  });
+  await assert.rejects(tool("list_pages"), { status: 401, code: "unauthenticated" });
+  await assert.rejects(tool("list_pages"), { status: 403 });
+  await assert.rejects(tool("list_pages"), { code: "INVALID_RESPONSE", httpStatus: 401 });
+  assert.deepEqual(await tool("list_pages"), { pages: [] });
+  assert.deepEqual(seen, ["unauthenticated"], "only a JSON 401 means signed out");
+  stop();
+  stopThrowing();
 });

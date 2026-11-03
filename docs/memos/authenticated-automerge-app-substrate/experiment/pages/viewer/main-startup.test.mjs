@@ -6,14 +6,32 @@ import { after, test } from "node:test";
 import { createRequire } from "node:module";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { build } from "esbuild";
-import { JSDOM } from "jsdom";
+import { JSDOM, VirtualConsole } from "jsdom";
 import { SERVER_UNREACHABLE_ACTION } from "./alerts.mjs";
 import { PRODUCT_NAME } from "../shared/product.mjs";
 
+// Sign-out leaves for / through location.href, a navigation jsdom can't
+// follow. Every other jsdom error still prints.
+const virtualConsole = new VirtualConsole();
+virtualConsole.sendTo(console, { omitJSDOMErrors: true });
+virtualConsole.on("jsdomError", (error) => {
+  if (!error.message.startsWith("Not implemented: navigation")) console.error(error);
+});
 const dom = new JSDOM('<!doctype html><body><div id="root"></div></body>', {
   url: "http://localhost/",
   pretendToBeVisual: true,
+  virtualConsole,
 });
+// jsdom has <dialog> without its modal methods; the Browse picker uses them.
+{
+  const proto = dom.window.HTMLDialogElement.prototype;
+  proto.showModal ??= function () {
+    this.setAttribute("open", "");
+  };
+  proto.close ??= function () {
+    this.removeAttribute("open");
+  };
+}
 const saved = new Map();
 for (const [key, value] of Object.entries({
   window: dom.window,
@@ -81,7 +99,20 @@ const bundle = await build({
             'if (globalThis.__editorFails) throw new TypeError("Failed to fetch dynamically imported module");\n' +
             "export function onRendererUnavailable() {}\n" +
             // A test that opens a Page supplies __openPage; others fail the open.
-            "export const PageSession = { open: (id) => globalThis.__openPage ? globalThis.__openPage(id) : Promise.reject(new Error('No Page in this fixture')) };",
+            "export const PageSession = { open: (id) => globalThis.__openPage ? globalThis.__openPage(id) : Promise.reject(new Error('No Page in this fixture')) };\n" +
+            // The rest of the editor's surface, from __editor when a test
+            // installs a Page, else inert.
+            "const pick = (name, fallback) => (...args) => (globalThis.__editor?.[name] ?? fallback)(...args);\n" +
+            "export const SaveStatus = pick('SaveStatus', () => null);\n" +
+            "export const PageControls = pick('PageControls', () => null);\n" +
+            "export const CommentsPanel = pick('CommentsPanel', () => null);\n" +
+            "export const CommentPopover = pick('CommentPopover', () => null);\n" +
+            "export const WordgardEditor = pick('WordgardEditor', () => null);\n" +
+            "export const orderedBlockIds = pick('orderedBlockIds', () => []);\n" +
+            "export const isEmptyPage = pick('isEmptyPage', () => false);\n" +
+            "export const pageHeads = pick('pageHeads', () => []);\n" +
+            "export const titleSnapshot = pick('titleSnapshot', () => null);\n" +
+            "export const composingTitle = pick('composingTitle', () => false);",
           loader: "js",
         }));
         build.onResolve({ filter: /^[^./]/ }, ({ path }) => ({
@@ -107,8 +138,9 @@ const { act } = await import("react");
 /** Mount main.jsx once, with `session` answering /api/auth/session and
  * `tools` answering /api/tools operations (a value, or a function of the
  * arguments that returns one or a Response). `connect` answers /api/connect,
- * and `head` runs where theme.js would, before the app script. */
-async function boot(session, tools = {}, { connect, head } = {}) {
+ * `paths` answers other paths by pathname, and `head` runs where theme.js
+ * would, before the app script. */
+async function boot(session, tools = {}, { connect, head, paths = {} } = {}) {
   // Each boot's App stays mounted on its detached root. Retire the earlier
   // ones' popstate listeners, so Back and Forward drive only this App and its
   // requests are the only ones counted.
@@ -121,6 +153,7 @@ async function boot(session, tools = {}, { connect, head } = {}) {
     requests.push(path);
     if (path === "/api/auth/session") return session();
     if (path === "/api/connect" && connect) return connect();
+    if (paths[path]) return paths[path]();
     if (path === "/api/tools") {
       const { operation, arguments: args } = JSON.parse(init.body);
       requests.push(operation);
@@ -337,12 +370,20 @@ const listings = (requests, from = 0) => {
     list_projects: made.filter((name) => name === "list_projects").length,
   };
 };
-/** A catalog whose list_pages waits on `gate.promise` while `gate` is set. */
-const gatedCatalog = (gate) => ({
+/** A catalog whose library listing waits on `gate.promise` while it is set.
+ * list_pages answers for `who.current` with `pages`; a call without a limit
+ * (the retry authority before a write) never waits. `gate.refuse` answers
+ * the listing 401 instead. */
+const gatedCatalog = (
+  gate,
+  { who = { current: "one" }, pages = [{ page_id: ROADMAP, title: "Roadmap" }] } = {},
+) => ({
   ...catalog,
-  list_pages: async () => {
-    if (gate.promise) await gate.promise;
-    return { pages: [{ page_id: ROADMAP, title: "Roadmap" }], next_cursor: null };
+  list_pages: async (args) => {
+    if (args.limit && gate.promise) await gate.promise;
+    if (args.limit && gate.refuse)
+      return Response.json({ error: "Sign in required", code: "unauthenticated" }, { status: 401 });
+    return { pages, next_cursor: null, principal: who.current, retry_token: "catalog-token" };
   },
 });
 const rows = () =>
@@ -547,4 +588,243 @@ test("navigating away and back to the Page doesn't bring the boot preview back",
   assert.equal(location.pathname, `/p/${PREVIEW_PAGE}`);
   assert.equal(document.querySelector('[role="status"]')?.textContent, "Opening…");
   assert.equal(showing(), false);
+});
+
+// What the shell remembers for an account (the library's first pages and the
+// account's Projects) and the edits that change it, through the real shell.
+const { BehaviorSubject } = await import("rxjs");
+const { createElement } = await import("react");
+const PLAN = "2b160b47-6df1-4983-81eb-489ca5a26812";
+const ROADMAP_AND_PLAN = [
+  { page_id: ROADMAP, title: "Roadmap" },
+  { page_id: PLAN, title: "Plan" },
+];
+/** A Page session the shell can install: it owns the Page, reads only, and
+ * holds `title`. `rename` changes the title as an edit would. */
+function fakeSession(pageId, principal, title) {
+  const phase = new BehaviorSubject({ name: "open" });
+  const doc = { title };
+  const listeners = new Set();
+  const close = async () => phase.next({ name: "closed" });
+  return {
+    pageId,
+    identity: { principal, displayName: principal },
+    doc,
+    alive: true,
+    phase$: { snapshot: () => phase.value, state$: phase },
+    canWrite: false,
+    canComment: false,
+    canDelete: true,
+    canRestore: false,
+    hidden: false,
+    authRequired: false,
+    accessReloadRequired: false,
+    recoveryPending: false,
+    localPage: { registered: true },
+    status: "saved",
+    statusKey: "saved",
+    saveState: "saving",
+    savedHeads: [],
+    snapshot: () => ({ page_id: pageId, title: doc.title, blocks: [], comments: [] }),
+    subscribe: (listener) => (listeners.add(listener), () => listeners.delete(listener)),
+    watchCommentDrafts() {},
+    listRecoveries: async () => [],
+    leave: close,
+    close,
+    closeSettled: async () => {},
+    rename(next) {
+      doc.title = next;
+      for (const listener of listeners) listener();
+    },
+  };
+}
+/** The page menu as plain buttons, one per action. */
+const editorSurface = {
+  PageControls: ({ actions }) =>
+    createElement(
+      "div",
+      { className: "fake-page-actions" },
+      actions.map((action) =>
+        createElement("button", { key: action.key, onClick: action.run }, action.label),
+      ),
+    ),
+};
+const pageAction = (label) =>
+  [...document.querySelectorAll(".fake-page-actions button")].find(
+    (button) => button.textContent === label,
+  );
+const openRow = async (title) => {
+  await click(
+    [...document.querySelectorAll(".index-row-link")].find((link) => link.textContent === title),
+  );
+  await settle();
+};
+/** Open `pageId`'s address and leave the library behind; the open never ends. */
+const leaveForPage = async (pageId) => {
+  globalThis.__openPage = () => new Promise(() => {});
+  history.pushState(null, "", `/p/${pageId}`);
+  await act(() => window.dispatchEvent(new window.PopStateEvent("popstate")));
+  await settle();
+  assert.equal(document.querySelector(".library-view"), null, "the library left the screen");
+};
+const closed = () => {
+  const gate = {};
+  gate.promise = new Promise((resolve) => (gate.release = resolve));
+  return gate;
+};
+const sessionRequests = (app) => app.requests.filter((path) => path === "/api/auth/session").length;
+const cleanUp = (t) =>
+  t.after(() => {
+    delete globalThis.__openPage;
+    delete globalThis.__editor;
+    history.replaceState(null, "", "/");
+  });
+
+test("an account change forgets the rows remembered for the last one", async (t) => {
+  cleanUp(t);
+  const who = { current: "alice" };
+  history.replaceState(null, "", "/pages");
+  const gate = {};
+  await boot(accountSession(who), gatedCatalog(gate, { who }));
+  await settle();
+  assert.deepEqual(rows(), ["Roadmap"]);
+  // Bob signs in from another window, then Alice again.
+  who.current = "bob";
+  await sessionCheck();
+  who.current = "alice";
+  Object.assign(gate, closed());
+  await sessionCheck();
+  assert.deepEqual(rows(), [], "nothing Alice saw before Bob paints");
+  assert.match(document.querySelector(".index-status[role=status]")?.textContent ?? "", /Loading/);
+  gate.release();
+  await settle();
+  assert.deepEqual(rows(), ["Roadmap"]);
+});
+
+test("sign-out forgets the rows remembered for the account", async (t) => {
+  cleanUp(t);
+  history.replaceState(null, "", "/pages");
+  const gate = {};
+  await boot(signedIn, gatedCatalog(gate), {
+    paths: { "/api/auth/logout": () => Response.json({ ok: true }) },
+  });
+  await settle();
+  assert.deepEqual(rows(), ["Roadmap"]);
+  await click(
+    [...document.querySelectorAll(".account-actions button")].find((button) =>
+      button.textContent.includes("Sign out"),
+    ),
+  );
+  await settle();
+  // jsdom can't leave for /, so this tab stays; what it shows next must not
+  // come from memory.
+  await leaveForPage(PLAN);
+  Object.assign(gate, closed());
+  history.back();
+  await settle();
+  assert.deepEqual(rows(), [], "nothing paints from before the sign-out");
+  gate.release();
+  await settle();
+});
+
+test("a tool call refused as signed out forgets the rows and checks the session", async (t) => {
+  cleanUp(t);
+  history.replaceState(null, "", "/pages");
+  const gate = {};
+  const app = await boot(signedIn, gatedCatalog(gate));
+  await settle();
+  await leaveForPage(PLAN);
+  const checks = sessionRequests(app);
+  gate.refuse = true;
+  history.back();
+  await settle();
+  assert.equal(sessionRequests(app), checks + 1, "the session is asked again");
+  gate.refuse = false;
+  await leaveForPage(PLAN);
+  Object.assign(gate, closed());
+  history.back();
+  await settle();
+  assert.deepEqual(rows(), [], "nothing paints from before the 401");
+  gate.release();
+  await settle();
+  assert.deepEqual(rows(), ["Roadmap"]);
+});
+
+test("Move to Trash forgets the Page, and Move to… waits for read_page", async (t) => {
+  cleanUp(t);
+  globalThis.__editor = editorSurface;
+  globalThis.confirm = () => true;
+  t.after(() => delete globalThis.confirm);
+  history.replaceState(null, "", "/pages");
+  const gate = {};
+  const placed = deferredAnswer();
+  const tools = {
+    ...gatedCatalog(gate, { pages: ROADMAP_AND_PLAN }),
+    read_page: () => placed.promise,
+    delete_page: () => ({ page_id: PLAN }),
+  };
+  await boot(signedIn, tools);
+  await settle();
+  assert.deepEqual(rows(), ["Roadmap", "Plan"]);
+  globalThis.__openPage = (id) => Promise.resolve(fakeSession(id, "one", "Plan"));
+  await openRow("Plan");
+  assert.equal(location.pathname, `/p/${PLAN}`);
+  assert.ok(pageAction("Move to Trash"), "the Page is open");
+  assert.equal(pageAction("Move to…"), undefined, "not before read_page says where it is");
+  placed.resolve({ page_id: PLAN, project_id: null, home: false, breadcrumbs: [] });
+  await settle();
+  assert.ok(pageAction("Move to…"));
+  Object.assign(gate, closed());
+  await click(pageAction("Move to Trash"));
+  await settle();
+  assert.equal(location.pathname, "/");
+  assert.deepEqual(rows(), ["Roadmap"], "the library paints without the trashed Page");
+  gate.release();
+  await settle();
+});
+
+test("a rename shows when Back returns to the library", async (t) => {
+  cleanUp(t);
+  globalThis.__editor = editorSurface;
+  history.replaceState(null, "", "/pages");
+  const gate = {};
+  await boot(signedIn, gatedCatalog(gate, { pages: ROADMAP_AND_PLAN }));
+  await settle();
+  const session = fakeSession(ROADMAP, "one", "Roadmap");
+  globalThis.__openPage = () => Promise.resolve(session);
+  await openRow("Roadmap");
+  assert.equal(document.querySelector("input.document-title")?.value, "Roadmap");
+  session.rename("Roadmap v2");
+  await settle();
+  Object.assign(gate, closed());
+  history.back();
+  await settle();
+  assert.equal(location.pathname, "/pages");
+  assert.deepEqual(rows(), ["Roadmap v2", "Plan"], "the new title paints from memory");
+  gate.release();
+  await settle();
+});
+
+test("Back and Forward between library addresses close the Browse picker", async (t) => {
+  cleanUp(t);
+  history.replaceState(null, "", "/");
+  await boot(signedIn, gatedCatalog({}));
+  await settle();
+  await click(
+    [...document.querySelectorAll('[role="group"][aria-label="Show"] button')].find(
+      (element) => element.textContent === "Shared with you",
+    ),
+  );
+  await settle();
+  assert.equal(location.search, "?show=shared");
+  const browse = document.querySelector('button[aria-label="Browse, switch page"]');
+  await click(browse);
+  await settle();
+  assert.equal(browse.getAttribute("aria-expanded"), "true");
+  assert.ok(document.querySelector("dialog.page-picker[open]"));
+  history.back();
+  await settle();
+  assert.equal(location.pathname + location.search, "/");
+  assert.equal(browse.getAttribute("aria-expanded"), "false");
+  assert.equal(document.querySelector("dialog.page-picker[open]"), null);
 });

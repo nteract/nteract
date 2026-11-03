@@ -12,7 +12,9 @@
 // alone changes nothing on the wire, and focus stays where it was.
 //
 // A first page this tab showed before paints from memory (listing-cache.mjs)
-// while the Listing asks for it again, so a return visit never starts blank.
+// while the Listing asks for it again, so a return visit within the cache's
+// age limit never starts blank. What a shown page says besides its rows (the
+// account's quota, the principal that answered) goes to onAnswer.
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import {
   ArrowDownUp,
@@ -69,6 +71,9 @@ export const SHARED_PROJECT_REASON =
 export const DATE_GROUP_REASON = "Sort by Last activity to group by date";
 /** The Project menu's label for a `project` the account can't list. */
 export const UNKNOWN_PROJECT = "Unknown Project";
+/** list_pages' code for a `project_id` the account can't list: deleted,
+ * someone else's, or mistyped (worker/spaces.mjs spaceNotFound). */
+export const PROJECT_NOT_FOUND = "project_not_found";
 /** What the library says about a Project filter it can't name. */
 export const UNKNOWN_PROJECT_MESSAGE = "This Project isn't one you can open.";
 
@@ -90,7 +95,6 @@ export function Library({
   principal = null,
   view: shown,
   projects,
-  projectsReady = false,
   drafts = [],
   notice = "",
   creating = false,
@@ -105,7 +109,7 @@ export function Library({
   onWarm,
   onError,
   onRetry,
-  onQuota,
+  onAnswer,
   cache = listingCache,
   clock: givenClock,
 }) {
@@ -116,18 +120,22 @@ export function Library({
   const now = useStore(clock.store);
   // The owner's latest callbacks, for the listing's subscription and replies.
   const latest = useRef(null);
-  latest.current = { onViewChange, onQuota };
-  const listing = useConnected(
-    () =>
-      new Listing({
-        fetch: pagesRequest(tool, {
-          onResult: (result) => latest.current.onQuota?.(result?.quota ?? null),
-        }),
-        report: onError,
-        idOf: (page) => page.page_id,
-        cache: cache?.scope(principal) ?? null,
-      }),
-  );
+  latest.current = { onViewChange, onAnswer, onError };
+  const listing = useConnected(() => {
+    const created = new Listing({
+      fetch: pagesRequest(tool),
+      // A Project the account can't list says so beside its filter, with
+      // the way out, rather than in the banner.
+      report: (message) => {
+        if (created.snapshot().state.code !== PROJECT_NOT_FOUND) latest.current.onError(message);
+      },
+      idOf: (page) => page.page_id,
+      cache: cache?.scope(principal) ?? null,
+      onShown: ({ quota, principal: answeredBy }) =>
+        latest.current.onAnswer?.({ quota, principal: answeredBy }),
+    });
+    return created;
+  });
   // The request the address last showed. Mounting lists the route's own view,
   // so it never reports a change; a choice reports itself before it loads, and
   // a typed search is reported once it lists.
@@ -215,12 +223,13 @@ export function Library({
 
   // The controls show what was chosen, which a slow request hasn't listed yet.
   const chosen = normalizeLibraryView({ ...params, query: text, group });
-  // A `project` the account's Projects don't include: deleted, someone
-  // else's, or mistyped. Until they load it is only not named yet.
+  // A `project` list_pages refused as one the account can't list. The
+  // account's Projects can't decide it: they are list_projects' first page,
+  // and a Project created a moment ago may not be in them yet.
   const unknownProject =
     !!chosen.projectId &&
-    projectsReady &&
-    !(projects ?? []).some((project) => project.project_id === chosen.projectId);
+    view.failureCode === PROJECT_NOT_FOUND &&
+    params.projectId === chosen.projectId;
   const projectChoices = useMemo(() => {
     const known = (projects ?? []).map((project) => ({
       value: project.project_id,

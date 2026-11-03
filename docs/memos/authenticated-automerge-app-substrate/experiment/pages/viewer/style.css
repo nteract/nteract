@@ -940,6 +940,10 @@ dialog::backdrop {
   color: var(--foreground);
   background: var(--accent-soft);
 }
+.picker-loading {
+  margin: 0.4rem 0.8rem 0;
+  font-size: 0.85rem;
+}
 .comments {
   position: fixed;
   inset: 80px 24px auto auto;
@@ -2498,6 +2502,11 @@ details.account-actions > div a:hover {
 .library-menu-start {
   left: 0;
 }
+/* The phone sheet's title (ChoiceMenu.jsx); the desktop menu sits under its
+   button, which names it. */
+.library-menu-title {
+  display: none;
+}
 .library-menu-end {
   right: 0;
 }
@@ -2753,6 +2762,14 @@ a.library-group-label:hover span {
     max-width: none;
     max-height: 60dvh;
     border-radius: 0.9rem;
+  }
+  .library-menu-title {
+    display: block;
+    margin: 0;
+    padding: 0.5rem 0.6rem 0.35rem;
+    color: var(--muted-foreground);
+    font-size: 0.8rem;
+    font-weight: 600;
   }
   .library-menu .library-menu-item {
     min-height: 44px;

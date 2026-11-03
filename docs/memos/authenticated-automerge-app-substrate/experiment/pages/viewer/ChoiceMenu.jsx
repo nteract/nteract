@@ -4,6 +4,10 @@
 // checked choice; arrows, Home and End move between choices; Escape closes it
 // and returns focus to the button; Tab or a pointer outside closes it.
 //
+// On a phone the menu opens as a sheet at the bottom of the screen, away from
+// its button, so it shows `label` as a visible title; the menu's accessible
+// name already says it, so the title is hidden from assistive tech.
+//
 // A choice with `disabled` stays focusable and says why in its `note`, and
 // choosing it does nothing. A control that is `unavailable` stays focusable
 // too, opens nothing, and names its reason as its description and tooltip.
@@ -129,6 +133,9 @@ export function ChoiceMenu({
           className={`library-menu library-menu-${align}`}
           onKeyDown={menuKeys}
         >
+          <p className="library-menu-title" aria-hidden="true">
+            {label}
+          </p>
           {choices.map((choice) => (
             <button
               key={choice.value ?? "none"}

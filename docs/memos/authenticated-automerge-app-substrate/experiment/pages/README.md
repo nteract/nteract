@@ -2049,8 +2049,10 @@ shows the same time, and screen readers hear "Last active 2 days ago, …".
 Drafts this browser hasn't synced show first, as "On this device", on All and
 Your items when there is no Project filter. The server can't search them, so a
 search keeps the drafts whose title holds it. When the listing fails, local
-copies show there too. A `project` the account can't list reads "Unknown
-Project", with a button that clears the filter. Load more follows
+copies show there too. A `project` that `list_pages` refuses with
+`project_not_found` reads "Unknown Project", with a button that clears the
+filter; the account's Projects alone can't say so, since a Project created a
+moment ago may not be in them yet. Load more follows
 `next_cursor`; a cursor that has expired (`invalid_cursor`) starts the listing
 over from its first page. Grid cards are behind the `grid` flag (`?grid=1` or
 `localStorage["pages.grid"] = "1"`) until they show previews.
@@ -2061,9 +2063,15 @@ and the first page of `/projects`; a request made while one is in flight joins
 it ([project-list.mjs](viewer/project-list.mjs)). The first page of each view
 this tab has shown stays in memory, keyed by account and request
 ([listing-cache.mjs](viewer/listing-cache.mjs)), so a return visit, Back from
-a Page included, paints it while the listing asks again. It is cleared on
-sign-out and account change, forgets a Page moved to Trash, and is never
-persisted. The Browse picker walks every Page (`list_pages` cursors, at most
+a Page included, paints it while the listing asks again. A page is kept only
+under the account that answered it (`list_pages` returns its `principal`),
+and paints for 5 minutes after it was shown: after that, shared titles wait
+for their Page hosts again and the view shows Loading…. A refresh that fails
+lists nothing rather than the remembered rows. The cache is cleared on
+sign-out, account change and any tool call refused with a 401 (which also
+rechecks the session). It overlays a rename this tab saw, forgets a Page moved
+to Trash, drops the views of the account's own Pages after a create, move or
+restore, and is never persisted. The Browse picker walks every Page (`list_pages` cursors, at most
 ten requests) only when it opens, and a Project's home Page lists its Project
 with `project_id`.
 

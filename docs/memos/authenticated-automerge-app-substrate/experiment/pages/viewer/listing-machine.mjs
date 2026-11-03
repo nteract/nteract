@@ -19,7 +19,11 @@
  *   (listing-cache.mjs) while the first page for `params` is in flight under
  *   `key`. It settles like loading.
  * - more: the page after `cursor` is in flight under `key`; rows stay shown.
- * - failed: the first page for `params` failed. Nothing is listed.
+ * - failed: the first page for `params` failed with the server's error
+ *   `code` (or null). Nothing is listed, even after a refresh painted rows
+ *   from memory: those rows were never confirmed, and the failure may be the
+ *   server refusing them (listing-cache.mjs explains). The screen reads
+ *   `code` to tell a Project it can't open from an outage.
  * - stalled: the page after `cursor` failed. The rows already shown stay.
  *
  * Events:
@@ -110,7 +114,7 @@ export const listingSpec = Object.freeze({
       refreshing: state("key", "params"),
       ready: state("params", "cursor"),
       more: state("key", "params", "cursor"),
-      failed: state("params", "message"),
+      failed: state("params", "message", "code"),
       stalled: state("params", "cursor", "message"),
     },
     events: {
@@ -186,7 +190,7 @@ function transition(current, input) {
   return {
     state: append
       ? { name: "stalled", params: current.params, cursor: current.cursor, message: input.message }
-      : { name: "failed", params: current.params, message: input.message },
+      : { name: "failed", params: current.params, message: input.message, code: input.code },
     effects: [{ type: "report", message: input.message }],
   };
 }

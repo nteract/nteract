@@ -1,10 +1,3 @@
-/** Projects this account can open. A failed listing shows none instead of
- * blocking the Page list. */
-export async function listProjects(call) {
-  const result = await call("list_projects", { limit: 100 });
-  return result.projects ?? [];
-}
-
 /** Every Page of one Project, following list_pages cursors. */
 export async function listProjectPages(call, projectId, { maxRequests = 10 } = {}) {
   const pages = new Map();

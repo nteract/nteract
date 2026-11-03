@@ -661,6 +661,27 @@ try {
     markdown: "Outside any Project.",
     idempotency_key: crypto.randomUUID(),
   });
+  // An edit after the catalog entry was written, so Zeta's content time
+  // moves past its updated_at once the host reports it (at most one content
+  // activity window, 60 s, later; checked below).
+  {
+    const read = await ok("editor", "read_page", { page_id: zeta.page_id });
+    const block = read.blocks.find((entry) => entry.markdown.includes("Outside any Project."));
+    assert.ok(block, "read_page finds Zeta's paragraph");
+    await ok("editor", "patch_page", {
+      page_id: zeta.page_id,
+      base_heads: read.heads,
+      idempotency_key: crypto.randomUUID(),
+      operations: [
+        {
+          op: "replace_match",
+          block_id: block.id,
+          match_text: "Outside any Project.",
+          replacement: "Outside any Project. Revisited.",
+        },
+      ],
+    });
+  }
   const shots = output;
   const library = alice.locator(".library-results");
   const rowLink = (name) => library.getByRole("link", { name, exact: true });
@@ -673,16 +694,24 @@ try {
   };
   const at = (search) => `${origin}/${search}`;
   // What each library visit costs: list_pages and list_projects calls at
-  // /api/tools, counted from a mark once the screen has settled.
+  // /api/tools, counted from a mark once the screen has settled: the rows
+  // are no longer busy and no tool call is in flight.
   const toolCalls = [];
+  const toolsInFlight = new Set();
+  const isToolCall = (request) =>
+    request.method() === "POST" && new URL(request.url()).pathname === "/api/tools";
   alice.on("request", (request) => {
-    if (request.method() !== "POST" || new URL(request.url()).pathname !== "/api/tools") return;
+    if (!isToolCall(request)) return;
+    toolsInFlight.add(request);
     try {
       toolCalls.push(JSON.parse(request.postData() ?? "{}").operation);
     } catch {}
   });
+  for (const settled of ["requestfinished", "requestfailed"])
+    alice.on(settled, (request) => toolsInFlight.delete(request));
   const listingsSince = async (mark) => {
-    await alice.waitForTimeout(750);
+    await expect(library).toHaveAttribute("aria-busy", "false", { timeout: 30000 });
+    await expect.poll(() => toolsInFlight.size, { timeout: 30000 }).toBe(0);
     const made = toolCalls.slice(mark);
     return {
       list_pages: made.filter((name) => name === "list_pages").length,
@@ -702,34 +731,47 @@ try {
     { list_pages: 1, list_projects: 1 },
     "a cold visit to / lists once and asks list_projects once",
   );
-  // Last activity is the time list_pages orders by: content_updated_at, else
-  // updated_at. A Page shared with alice was discovered after its content
-  // last changed, so its two times differ; the row shows the content time.
-  const aliceListed = await browserApi(alice, "/api/tools", {
-    operation: "list_pages",
-    arguments: { limit: 50 },
-  });
-  assert.equal(aliceListed.status, 200, JSON.stringify(aliceListed.body));
-  const differing = aliceListed.body.pages.find(
-    (page) =>
-      page.content_updated_at &&
-      Date.parse(page.content_updated_at) !== Date.parse(page.updated_at) &&
-      aliceListed.body.pages.filter((other) => other.title === page.title).length === 1,
-  );
-  if (differing) {
-    const shown = await library
-      .getByRole("listitem")
-      .filter({ has: alice.getByRole("link", { name: differing.title, exact: true }) })
-      .locator(".index-cell-updated time")
-      .getAttribute("datetime");
-    assert.equal(
-      shown,
-      new Date(differing.content_updated_at).toISOString(),
-      `${differing.title} shows its content time, not updated_at ${differing.updated_at}`,
-    );
-    complete("A row whose content and catalog times differ shows its last activity");
-  } else console.log("[Projects E2E] no listed Page had differing activity and updated times");
   complete("A cold library visit sends one list_pages and one list_projects");
+  // Last activity is the time list_pages orders by: content_updated_at, else
+  // updated_at. Zeta's edit above moves its content time past its catalog
+  // time once the host reports it; the row then shows the content time.
+  const aliceSession = await browserApi(alice, "/api/auth/session");
+  assert.equal(aliceSession.status, 200, JSON.stringify(aliceSession.body));
+  const listedZeta = async () => {
+    const listed = await browserApi(alice, "/api/tools", {
+      operation: "list_pages",
+      arguments: { limit: 50, query: "Zeta loose note" },
+    });
+    assert.equal(listed.status, 200, JSON.stringify(listed.body));
+    assert.equal(
+      listed.body.principal,
+      aliceSession.body.identity.principal,
+      "list_pages names the account that answered",
+    );
+    return listed.body.pages.find((page) => page.page_id === zeta.page_id) ?? null;
+  };
+  await expect
+    .poll(
+      async () => {
+        const page = await listedZeta();
+        return (
+          !!page?.content_updated_at &&
+          Date.parse(page.content_updated_at) > Date.parse(page.updated_at)
+        );
+      },
+      { timeout: 90000, intervals: [1000, 2000, 5000] },
+    )
+    .toBe(true);
+  const zetaListed = await listedZeta();
+  await alice.reload();
+  await expect(rowLink("Zeta loose note")).toBeVisible({ timeout: 30000 });
+  await expect(
+    library
+      .getByRole("listitem")
+      .filter({ has: alice.getByRole("link", { name: "Zeta loose note", exact: true }) })
+      .locator(".index-cell-updated time"),
+  ).toHaveAttribute("datetime", new Date(zetaListed.content_updated_at).toISOString());
+  complete("A row whose content and catalog times differ shows its last activity");
 
   await tabButton("Shared with you").click();
   await expect(alice).toHaveURL(at("?show=shared"));

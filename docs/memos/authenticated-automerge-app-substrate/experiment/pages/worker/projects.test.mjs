@@ -1828,12 +1828,14 @@ test("a shared parent's hidden children never show through pagination", async (t
 
   // Every child denied: the same answer as a parent with no children.
   const none = await list(empty);
-  // `quota` is the member's own account, which owns no Pages.
+  // `quota` is the member's own account, which owns no Pages, and
+  // `principal` names that account.
   assert.deepEqual(none, {
     pages: [],
     limit: 1,
     next_cursor: null,
     quota: { limit: 250, count: 0, trash_count: 0 },
+    principal: w.member,
   });
   assert.deepEqual(await list(parent), none);
 

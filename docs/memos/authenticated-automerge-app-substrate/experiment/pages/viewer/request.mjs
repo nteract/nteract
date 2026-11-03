@@ -136,11 +136,31 @@ export async function request(
   }
 }
 
+const signedOutObservers = new Set();
+/** Observe every tool call the server refused as signed out: a structured
+ * JSON 401. A proxy's HTML 401 is not evidence (see invalidResponse). The
+ * shell forgets what it remembers for the account and asks for the session
+ * again. An observer's exception never reaches the call. */
+export function observeSignedOut(fn) {
+  signedOutObservers.add(fn);
+  return () => signedOutObservers.delete(fn);
+}
+
 /** Call one Pages tool through /api/tools. */
-export function tool(operation, args = {}) {
-  return request("/api/tools", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ operation, arguments: args }),
-  });
+export async function tool(operation, args = {}) {
+  try {
+    return await request("/api/tools", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ operation, arguments: args }),
+    });
+  } catch (error) {
+    if (error?.status === 401)
+      for (const observe of signedOutObservers) {
+        try {
+          observe(error);
+        } catch {}
+      }
+    throw error;
+  }
 }

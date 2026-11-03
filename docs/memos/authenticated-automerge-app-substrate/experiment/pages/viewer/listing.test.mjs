@@ -19,7 +19,7 @@ import {
   projectsRequest,
 } from "./listing.mjs";
 import { SERVER_UNREACHABLE_ACTION } from "./alerts.mjs";
-import { ListingCache } from "./listing-cache.mjs";
+import { LISTING_CACHE_MAX_AGE_MS, ListingCache } from "./listing-cache.mjs";
 
 const pageId = "1a160b47-6df1-4983-81eb-489ca5a26812";
 const projectId = "prj_2b160b47-6df1-4983-81eb-489ca5a26812";
@@ -41,7 +41,7 @@ function deferred() {
 }
 const settle = () => new Promise((resolve) => setImmediate(resolve));
 
-function harness({ cache = null } = {}) {
+function harness({ cache = null, onShown } = {}) {
   const requests = [];
   const reports = [];
   let n = 0;
@@ -56,6 +56,7 @@ function harness({ cache = null } = {}) {
       report: (message) => reports.push(message),
       idOf: (item) => item.id,
       cache,
+      onShown,
     },
     { newKey: () => `k${++n}`, scheduler },
   );
@@ -298,6 +299,8 @@ test("the request adapters page with cursors and search only where the API can",
   assert.deepEqual(await pagesRequest(call)({ params: {}, cursor: null }), {
     items: [{ page_id: "p" }],
     cursor: "next",
+    principal: null,
+    quota: null,
   });
   await pagesRequest(call)({ params: { query: "road" }, cursor: "next" });
   await pagesRequest(call)({
@@ -498,10 +501,14 @@ test("a view this tab showed paints from memory, then its first page replaces it
   const first = harness({ cache: scope });
   first.listing.load();
   assert.equal(first.view().loading, true, "nothing remembered yet");
-  first.requests[0].resolve({ items: [{ id: "a" }, { id: "b" }], cursor: "c1" });
+  first.requests[0].resolve({
+    items: [{ id: "a" }, { id: "b" }],
+    cursor: "c1",
+    principal: "alice",
+  });
   await settle();
   first.listing.more();
-  first.requests[1].resolve({ items: [{ id: "c" }], cursor: null });
+  first.requests[1].resolve({ items: [{ id: "c" }], cursor: null, principal: "alice" });
   await settle();
   first.disconnect();
   assert.deepEqual(
@@ -519,7 +526,11 @@ test("a view this tab showed paints from memory, then its first page replaces it
   assert.equal(again.view().searching, false);
   assert.equal(again.listing.more(), false, "Load more waits for the fresh first page");
   assert.equal(again.requests.length, 1, "and the first page is asked for again");
-  again.requests[0].resolve({ items: [{ id: "new" }, { id: "a" }], cursor: null });
+  again.requests[0].resolve({
+    items: [{ id: "new" }, { id: "a" }],
+    cursor: null,
+    principal: "alice",
+  });
   await settle();
   assert.deepEqual(again.ids(), ["new", "a"]);
   assert.equal(again.view().refreshing, false);
@@ -533,7 +544,7 @@ test("a remembered view that fails to refresh drops its rows and reports", async
   const { scope } = scoped();
   const first = harness({ cache: scope });
   first.listing.load({ access: "owned" });
-  first.requests[0].resolve({ items: [{ id: "mine" }], cursor: null });
+  first.requests[0].resolve({ items: [{ id: "mine" }], cursor: null, principal: "alice" });
   await settle();
   const again = harness({ cache: scope });
   again.listing.load({ access: "owned" });
@@ -548,11 +559,11 @@ test("switching back to a tab paints it from memory while it refreshes", async (
   const { scope } = scoped();
   const { listing, requests, ids, view } = harness({ cache: scope });
   listing.load();
-  requests[0].resolve({ items: [{ id: "all" }], cursor: null });
+  requests[0].resolve({ items: [{ id: "all" }], cursor: null, principal: "alice" });
   await settle();
   listing.load({ access: "shared" });
   assert.equal(view().searching, true, "a tab never shown keeps the old rows and says so");
-  requests[1].resolve({ items: [{ id: "theirs" }], cursor: null });
+  requests[1].resolve({ items: [{ id: "theirs" }], cursor: null, principal: "alice" });
   await settle();
   listing.load();
   assert.deepEqual(ids(), ["all"], "All paints at once");
@@ -560,10 +571,10 @@ test("switching back to a tab paints it from memory while it refreshes", async (
   // A late answer for the superseded request changes nothing.
   listing.load({ access: "shared" });
   assert.deepEqual(ids(), ["theirs"]);
-  requests[2].resolve({ items: [{ id: "stale-all" }], cursor: null });
+  requests[2].resolve({ items: [{ id: "stale-all" }], cursor: null, principal: "alice" });
   await settle();
   assert.deepEqual(ids(), ["theirs"]);
-  requests[3].resolve({ items: [{ id: "theirs-2" }], cursor: null });
+  requests[3].resolve({ items: [{ id: "theirs-2" }], cursor: null, principal: "alice" });
   await settle();
   assert.deepEqual(ids(), ["theirs-2"]);
 });
@@ -597,17 +608,17 @@ test("the listing cache keeps one account's rows to that account", () => {
   assert.equal(cache.size, 0);
 });
 
-test("the request adapters report each answer and can share the first Projects page", async () => {
-  const seen = [];
+test("the request adapters carry each answer's account and quota, and can share the first Projects page", async () => {
   const call = async (name) =>
     name === "list_pages"
-      ? { pages: [], next_cursor: null, quota: { limit: 10, count: 9 } }
+      ? { pages: [], next_cursor: null, quota: { limit: 10, count: 9 }, principal: "alice" }
       : { projects: [{ project_id: "later" }], next_cursor: null };
-  await pagesRequest(call, { onResult: (result) => seen.push(result.quota) })({
-    params: {},
+  assert.deepEqual(await pagesRequest(call)({ params: {}, cursor: null }), {
+    items: [],
     cursor: null,
+    principal: "alice",
+    quota: { limit: 10, count: 9 },
   });
-  assert.deepEqual(seen, [{ limit: 10, count: 9 }]);
   let firsts = 0;
   const first = async () => (firsts++, { projects: [{ project_id: "shared" }], next_cursor: "c" });
   assert.deepEqual(await projectsRequest(call, { first })({ cursor: null }), {
@@ -619,4 +630,132 @@ test("the request adapters report each answer and can share the first Projects p
     cursor: null,
   });
   assert.equal(firsts, 1, "only the first page comes from the shared request");
+});
+
+test("a reply reports its quota only once the listing shows it", async () => {
+  const shown = [];
+  const { listing, requests, disconnect } = harness({ onShown: (answer) => shown.push(answer) });
+  listing.load();
+  listing.load({ query: "road" });
+  // The superseded request's reply is dropped before it shows.
+  requests[0].resolve({ items: [{ id: "old" }], cursor: null, quota: { count: 1 } });
+  await settle();
+  assert.deepEqual(shown, []);
+  requests[1].resolve({
+    items: [{ id: "road" }],
+    cursor: "c1",
+    principal: "alice",
+    quota: { count: 2 },
+  });
+  await settle();
+  assert.deepEqual(shown, [
+    { items: [{ id: "road" }], principal: "alice", quota: { count: 2 }, append: false },
+  ]);
+  // Disconnected (the screen left, or the account changed), then the reply
+  // lands: no rows, no quota.
+  listing.more();
+  disconnect();
+  requests[2].resolve({ items: [{ id: "late" }], cursor: null, quota: { count: 3 } });
+  await settle();
+  assert.equal(shown.length, 1);
+  assert.deepEqual(
+    listing.snapshot().items.map((item) => item.id),
+    ["road"],
+  );
+});
+
+test("a first page is remembered only under the account that answered it", async () => {
+  const { cache, scope } = scoped();
+  const { listing, requests } = harness({ cache: scope });
+  listing.load();
+  // Another window signed in as Bob; this tab still lists as Alice.
+  requests[0].resolve({ items: [{ id: "bobs" }], cursor: null, principal: "bob" });
+  await settle();
+  assert.equal(cache.size, 0);
+  assert.equal(cache.read("bob", {}), null, "nor under the account that answered");
+  listing.load({ access: "owned" });
+  // A reply that names no account (an older server) isn't remembered either.
+  requests[1].resolve({ items: [{ id: "anon" }], cursor: null });
+  await settle();
+  assert.equal(cache.size, 0);
+  listing.load();
+  requests[2].resolve({ items: [{ id: "alices" }], cursor: null, principal: "alice" });
+  await settle();
+  assert.deepEqual(cache.read("alice", {}), [{ id: "alices" }]);
+});
+
+test("a remembered view paints for five minutes after it was shown, then loads normally", async () => {
+  const scheduler = new VirtualTimeScheduler();
+  const advance = (ms) => {
+    scheduler.schedule(() => {}, ms);
+    scheduler.flush();
+  };
+  const cache = new ListingCache({ now: () => scheduler.now() });
+  assert.equal(LISTING_CACHE_MAX_AGE_MS, 5 * 60_000);
+  const scope = cache.scope("alice");
+  const first = harness({ cache: scope });
+  first.listing.load({ access: "shared" });
+  first.requests[0].resolve({ items: [{ id: "theirs" }], cursor: null, principal: "alice" });
+  await settle();
+  first.disconnect();
+
+  advance(LISTING_CACHE_MAX_AGE_MS);
+  const within = harness({ cache: scope });
+  within.listing.load({ access: "shared" });
+  assert.deepEqual(within.ids(), ["theirs"], "at five minutes it still paints");
+  assert.equal(within.view().refreshing, true);
+  within.disconnect();
+  // Painting doesn't renew it: only a fresh first page would.
+
+  advance(1);
+  const expired = harness({ cache: scope });
+  expired.listing.load({ access: "shared" });
+  assert.deepEqual(expired.ids(), [], "older than five minutes: nothing seeds the view");
+  assert.equal(expired.view().loading, true, "the normal loading state");
+  assert.equal(cache.size, 0, "and the entry is gone");
+  expired.requests[0].resolve({ items: [{ id: "theirs" }], cursor: null, principal: "alice" });
+  await settle();
+  advance(LISTING_CACHE_MAX_AGE_MS - 1);
+  assert.deepEqual(cache.read("alice", { access: "shared" }), [{ id: "theirs" }], "renewed");
+});
+
+test("edits this tab made patch what it remembers", () => {
+  const cache = new ListingCache();
+  const roadmap = { page_id: "p1", title: "Roadmap" };
+  const notes = { page_id: "p2", title: "Notes" };
+  const shared = { page_id: "p3", title: "Theirs", shared: true };
+  cache.write("alice", {}, [roadmap, notes, shared]);
+  cache.write("alice", { access: "owned", projectId }, [roadmap]);
+  cache.write("alice", { access: "shared" }, [shared]);
+  // A rename shows wherever the Page is remembered, and nothing else changes.
+  const before = cache.read("alice", {});
+  cache.retitle("p2", "Notes");
+  assert.equal(cache.read("alice", {}), before, "the same title changes nothing");
+  cache.retitle("p1", "Roadmap v2");
+  assert.deepEqual(cache.read("alice", {}), [{ ...roadmap, title: "Roadmap v2" }, notes, shared]);
+  assert.deepEqual(cache.read("alice", { access: "owned", projectId }), [
+    { ...roadmap, title: "Roadmap v2" },
+  ]);
+  // A create, move or restore drops every view of the account's own Pages.
+  cache.forgetOwnedViews();
+  assert.equal(cache.read("alice", {}), null);
+  assert.equal(cache.read("alice", { access: "owned", projectId }), null);
+  assert.deepEqual(cache.read("alice", { access: "shared" }), [shared]);
+  // A scope files a page only for the account that answered it.
+  const scope = cache.scope("alice");
+  scope.write({}, [notes], "bob");
+  assert.equal(cache.read("alice", {}), null);
+  scope.write({}, [notes], "alice");
+  assert.deepEqual(scope.read({}), [notes]);
+});
+
+test("a failed first page keeps the server's code for the screen", async () => {
+  const { listing, requests, view } = harness();
+  listing.load({ projectId });
+  requests[0].reject(Object.assign(Error("Project not found"), { code: "project_not_found" }));
+  await settle();
+  assert.equal(view().failed, true);
+  assert.equal(view().failureCode, "project_not_found");
+  listing.load();
+  assert.equal(view().failureCode, null);
 });

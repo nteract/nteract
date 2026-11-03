@@ -16,7 +16,7 @@ import {
   Trash2,
   UserRound,
 } from "lucide-react";
-import { request, tool } from "./request.mjs";
+import { observeSignedOut, request, tool } from "./request.mjs";
 import {
   failureMessage,
   screenBanners,
@@ -128,6 +128,12 @@ const warmEditor = () => editor.start();
 // The account's Projects, one list_projects request shared by the library's
 // Project filter, the Browse picker, Move to… and /projects.
 const projectList = new ProjectList({ call: tool });
+/** Forget the rows and Projects remembered for the account: it signed out,
+ * another one signed in, or the server refused a tool call as signed out. */
+function forgetAccountData() {
+  listingCache.clear();
+  projectList.reset();
+}
 const NO_PROJECTS = Object.freeze([]);
 /** The Browse picker's rows: every Page the account can open, walked only
  * while the picker is open. */
@@ -349,6 +355,10 @@ function App() {
   /** Leave the installed Page. It keeps syncing until its receipt (bounded)
    * so leaving never drops a save; the host tracks the close. */
   function releaseCurrent(options) {
+    // A return to the library paints the title this tab last showed, its own
+    // rename or a peer's, over the one it remembered.
+    const leaving = host.current;
+    if (leaving?.doc) listingCache.retitle(leaving.pageId, leaving.doc.title);
     host.release({ ...options, onError: showError });
     resetDocumentUI();
   }
@@ -609,6 +619,8 @@ function App() {
     if (!restoring) return;
     try {
       await restorePage(tool, restoring.pageId, restoring.identity.principal);
+      // The Page is back in the views that list the account's own Pages.
+      listingCache.forgetOwnedViews();
       await reopen(restoring.pageId, { restore: true });
       setNotice("Page restored");
       void refresh().catch(() => {});
@@ -637,6 +649,7 @@ function App() {
     if (isLibraryRoute(route) && libraryShowing()) {
       setError("");
       setNotice("");
+      setPickerOpen(false);
       setIndex((current) =>
         current ? { ...current, kind: route.kind, library: route.library } : current,
       );
@@ -693,8 +706,7 @@ function App() {
           creations.account(result.identity?.principal ?? null);
           catalogRevision.current++;
           // Rows and Projects remembered for one account never show another.
-          listingCache.clear();
-          projectList.reset();
+          forgetAccountData();
           setLocalPages([]);
           setQuota(null);
           setOpening(false);
@@ -723,6 +735,13 @@ function App() {
       },
     });
     auth.current = maintenance;
+    // A tool call refused as signed out: what this tab remembers for the
+    // account goes, and the session check decides who is signed in now.
+    const stopSignedOut = observeSignedOut(() => {
+      if (!alive) return;
+      forgetAccountData();
+      void maintenance.refresh().catch(() => {});
+    });
     const onPopState = () => {
       if (authentication.current?.identity) followRoute();
       else home(null, { historyMode: "none", refreshCatalog: false });
@@ -734,6 +753,7 @@ function App() {
     maintenance.refresh().catch(() => {});
     return () => {
       alive = false;
+      stopSignedOut();
       maintenance.stop();
       window.removeEventListener("popstate", onPopState);
       catalogRevision.current++;
@@ -892,6 +912,8 @@ function App() {
       setPickerOpen(false);
       setOpening(false);
       setNotice("");
+      // The account's own views gain the new Page.
+      listingCache.forgetOwnedViews();
       if (await install(next, revision, { focusEmpty: false })) setTitleFocusRequest(next);
       void refresh().catch(() => {});
     } catch (error) {
@@ -923,7 +945,11 @@ function App() {
         current,
         // A new Page names itself first, like create()'s draft.
         open: (pageId) => open(pageId, { nameIt: true }),
-        refresh: () => refresh({ fresh: true }),
+        refresh: () => {
+          // The account's own views may gain the new Page.
+          listingCache.forgetOwnedViews();
+          return refresh({ fresh: true });
+        },
       });
       if (state?.name === "failed" && current() && !bannerShows(state.cause)) {
         showError(state.cause);
@@ -955,27 +981,18 @@ function App() {
     );
   }
   /** Move to…: only the Page's owner, signed in as that account, moves it.
-   * The dialog starts where read_page says the Page is. */
-  async function startMove() {
+   * The dialog starts where read_page says the Page is; the action shows only
+   * once read_page answered, since a Project's home Page can't move. */
+  function startMove() {
     const moving = host.current;
-    if (!moving) return;
+    const where = placement;
+    if (!moving || !where) return;
     if (
       moving.authRequired ||
       moving.identity.principal !== authentication.current?.identity?.principal
     ) {
       setError("Sign in with this Page's original account to move it.");
       return;
-    }
-    let where = placement;
-    if (!where) {
-      try {
-        where = await pageLocation(tool, moving.pageId);
-      } catch (error) {
-        showError(error);
-        return;
-      }
-      if (host.current !== moving) return;
-      setPlacement(where);
     }
     const projectCrumb = where.breadcrumbs.find((crumb) => crumb.kind === "project");
     setContainerDialog({
@@ -995,6 +1012,9 @@ function App() {
       ? projects.find((project) => project.project_id === receipt.project_id)?.title || "Project"
       : "Your items";
     setNotice(`Moved to ${where}`);
+    // The Page and its sub-pages left one Project's views for another's, and
+    // their Project labels changed.
+    listingCache.forgetOwnedViews();
     void refresh({ fresh: true }).catch(() => {});
     const current = host.current;
     if (current?.pageId === receipt.page_id)
@@ -1008,6 +1028,8 @@ function App() {
   /** A Project was created: list it and open it. */
   function projectCreated(projectId) {
     setContainerDialog(null);
+    // Its home Page joins the account's own views.
+    listingCache.forgetOwnedViews();
     void refresh({ fresh: true }).catch(() => {});
     openProject(projectId);
   }
@@ -1077,8 +1099,7 @@ function App() {
   async function signout() {
     try {
       await request("/api/auth/logout", { method: "POST" });
-      listingCache.clear();
-      projectList.reset();
+      forgetAccountData();
       let failed;
       await host.close(host.current, { onError: (error) => (failed = error) });
       if (failed) throw failed;
@@ -1222,9 +1243,11 @@ function App() {
           icon: RotateCcw,
           run: restoreCurrent,
         },
-        // A Project's home Page stays with its Project.
+        // A Project's home Page stays with its Project, so Move to… waits for
+        // read_page to say where the Page is.
         session.canDelete &&
-          !placement?.home && {
+          !!placement &&
+          !placement.home && {
             key: "move",
             label: "Move to…",
             icon: FolderInput,
@@ -1396,7 +1419,7 @@ function App() {
           <PagePicker
             open={pickerOpen}
             pages={listedPages}
-            loading={pickerOpen && pickerView.loading}
+            loading={pickerOpen && (pickerView.loading || pickerView.refreshing)}
             currentId={page?.page_id}
             onClose={() => setPickerOpen(false)}
             onOpen={open}
@@ -1675,6 +1698,7 @@ function App() {
               onBack={() => home(null)}
               onOpen={(id) => open(id)}
               onRestored={async () => {
+                listingCache.forgetOwnedViews();
                 setNotice("Page restored");
                 await refresh().catch(() => {});
               }}
@@ -1690,7 +1714,6 @@ function App() {
               principal={index?.principal ?? account.principal}
               view={index?.library ?? libraryOf(readPageRoute(location.href))}
               projects={projects}
-              projectsReady={projectsReady}
               drafts={localPages}
               notice={usage}
               creating={creating}
@@ -1705,8 +1728,17 @@ function App() {
               onWarm={warmEditor}
               onError={index ? reportListing(index.visit, index.principal) : reportAddressListing}
               onRetry={retryListing}
-              onQuota={(value) => {
-                if ((index?.principal ?? account.principal) === account.principal) setQuota(value);
+              onAnswer={({ quota: value, principal: answeredBy }) => {
+                // Checked when the answer lands: the account may have changed
+                // since this library mounted.
+                const current = authentication.current?.identity?.principal;
+                if (answeredBy && answeredBy !== current) {
+                  // The cookie belongs to someone else now (another window
+                  // signed in). The session check settles who.
+                  void auth.current?.refresh().catch(() => {});
+                  return;
+                }
+                if ((index?.principal ?? account.principal) === current) setQuota(value);
               }}
             />
           )}

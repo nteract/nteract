@@ -357,7 +357,8 @@
           "sort": "activity",
           "projectId": null
         },
-        "message": "Pages can't reach the server. Try again in a moment."
+        "message": "Pages can't reach the server. Try again in a moment.",
+        "code": null
       },
       "event": {
         "type": "load",
@@ -611,7 +612,8 @@
           "sort": "activity",
           "projectId": null
         },
-        "message": "Pages can't reach the server. Try again in a moment."
+        "message": "Pages can't reach the server. Try again in a moment.",
+        "code": null
       },
       "event": {
         "type": "more",
@@ -626,7 +628,8 @@
             "sort": "activity",
             "projectId": null
           },
-          "message": "Pages can't reach the server. Try again in a moment."
+          "message": "Pages can't reach the server. Try again in a moment.",
+          "code": null
         },
         "effects": [],
         "rejected": "The first page failed; load it again"
@@ -863,7 +866,8 @@
           "sort": "activity",
           "projectId": null
         },
-        "message": "Pages can't reach the server. Try again in a moment."
+        "message": "Pages can't reach the server. Try again in a moment.",
+        "code": null
       },
       "event": {
         "type": "loaded",
@@ -879,7 +883,8 @@
             "sort": "activity",
             "projectId": null
           },
-          "message": "Pages can't reach the server. Try again in a moment."
+          "message": "Pages can't reach the server. Try again in a moment.",
+          "code": null
         },
         "effects": [],
         "rejected": "No request is in flight"
@@ -947,7 +952,8 @@
             "sort": "activity",
             "projectId": null
           },
-          "message": "Pages can't reach the server. Try again in a moment."
+          "message": "Pages can't reach the server. Try again in a moment.",
+          "code": null
         },
         "effects": [
           {
@@ -1157,7 +1163,8 @@
           "sort": "activity",
           "projectId": null
         },
-        "message": "Pages can't reach the server. Try again in a moment."
+        "message": "Pages can't reach the server. Try again in a moment.",
+        "code": null
       },
       "event": {
         "type": "failed",
@@ -1174,7 +1181,8 @@
             "sort": "activity",
             "projectId": null
           },
-          "message": "Pages can't reach the server. Try again in a moment."
+          "message": "Pages can't reach the server. Try again in a moment.",
+          "code": null
         },
         "effects": [],
         "rejected": "No request is in flight"
@@ -1243,7 +1251,8 @@
             "sort": "activity",
             "projectId": null
           },
-          "message": "Invalid cursor; restart from the first page"
+          "message": "Invalid cursor; restart from the first page",
+          "code": "invalid_cursor"
         },
         "effects": [
           {
@@ -1542,7 +1551,8 @@
           "sort": "activity",
           "projectId": null
         },
-        "message": "Couldn't reach Pages"
+        "message": "Couldn't reach Pages",
+        "code": null
       },
       "event": {
         "type": "restore",
@@ -1825,7 +1835,8 @@
             "sort": "activity",
             "projectId": null
           },
-          "message": "Couldn't reach Pages"
+          "message": "Couldn't reach Pages",
+          "code": null
         },
         "effects": [
           {
