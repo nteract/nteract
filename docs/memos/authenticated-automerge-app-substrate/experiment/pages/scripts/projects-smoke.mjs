@@ -321,7 +321,7 @@ try {
     "The picker's New Page offers the Project and Your items; In <Project> lands at its top level",
   );
 
-  // /pages at 1280px: Name, Source and Updated columns, and a grid of cards
+  // /pages at 1280px: Name, Source and Last activity columns, and a grid of cards
   // that this browser remembers. Grid cards are behind a flag until they
   // show previews (viewer/feature-flags.mjs).
   await owner.evaluate(() => localStorage.setItem("pages.grid", "1"));
@@ -338,8 +338,11 @@ try {
     await expect(desktopRow(name).getByRole("link", { name: `Project ${title}` })).toBeVisible();
   const updated = desktopRow("Q4 plan").locator("time");
   await expect(updated.locator("[aria-hidden=true]")).toHaveText(/^(now|\d+m)$/);
-  await expect(updated.locator(".sr-only")).toHaveText(/^Updated .+, .+/);
-  assert.ok(Date.parse(await updated.getAttribute("datetime")), "the Updated cell names its time");
+  await expect(updated.locator(".sr-only")).toHaveText(/^Last active .+, .+/);
+  assert.ok(
+    Date.parse(await updated.getAttribute("datetime")),
+    "the Last activity cell names its time",
+  );
   // The whole row is one target: a mouse click on the time opens the Page.
   const timeBox = await updated.boundingBox();
   await owner.mouse.click(timeBox.x + timeBox.width / 2, timeBox.y + timeBox.height / 2);
@@ -378,7 +381,7 @@ try {
   await expect(desktopRow("Q4 plan")).toBeVisible();
   await owner.evaluate(() => localStorage.removeItem("pages.grid"));
   complete(
-    "/pages at 1280px shows Source and Updated columns, a remembered grid of card links, and Project labels that open their Project",
+    "/pages at 1280px shows Source and Last activity columns, a remembered grid of card links, and Project labels that open their Project",
   );
 
   // /pages and /projects on a phone. They list from the shell: the only
@@ -446,7 +449,7 @@ try {
   });
   const pageRow = (name) =>
     allPages.getByRole("listitem").filter({ has: phone.getByRole("link", { name, exact: true }) });
-  // A phone keeps Name and Updated; the Source column is desktop-only.
+  // A phone keeps Name and Last activity; the Source column is desktop-only.
   for (const name of ["Roadmap", "Q4 plan", "Architecture", title]) {
     await expect(pageRow(name).locator("time")).toBeVisible();
     await expect(pageRow(name).locator(".index-cell-source")).toBeHidden();
@@ -455,7 +458,7 @@ try {
   await minimumRowHeight(allPages);
   assert.deepEqual(editorChunks(), [], "loading /pages fetched the editor chunk");
   await phone.screenshot({ path: `${output}/pages-mobile.png` });
-  complete("/pages on a phone lists Pages by Name and Updated, without the editor chunk");
+  complete("/pages on a phone lists Pages by Name and Last activity, without the editor chunk");
 
   await phone.getByRole("searchbox", { name: "Search Pages" }).fill("Q4");
   await expect(phone).toHaveURL(`${origin}/pages?q=Q4`);
@@ -669,13 +672,64 @@ try {
     await alice.getByRole("menuitemradio", { name: choice, exact: true }).click();
   };
   const at = (search) => `${origin}/${search}`;
+  // What each library visit costs: list_pages and list_projects calls at
+  // /api/tools, counted from a mark once the screen has settled.
+  const toolCalls = [];
+  alice.on("request", (request) => {
+    if (request.method() !== "POST" || new URL(request.url()).pathname !== "/api/tools") return;
+    try {
+      toolCalls.push(JSON.parse(request.postData() ?? "{}").operation);
+    } catch {}
+  });
+  const listingsSince = async (mark) => {
+    await alice.waitForTimeout(750);
+    const made = toolCalls.slice(mark);
+    return {
+      list_pages: made.filter((name) => name === "list_pages").length,
+      list_projects: made.filter((name) => name === "list_projects").length,
+    };
+  };
+  const coldMark = toolCalls.length;
   await alice.goto(`${origin}/`);
-  await expect(alice.getByRole("heading", { name: "Pages", exact: true })).toBeVisible({
+  await expect(alice.getByRole("heading", { name: "Pages", exact: true })).toBeAttached({
     timeout: 60000,
   });
   for (const name of ["Alpha survey", "Zeta loose note", "Roadmap", title])
     await expect(rowLink(name)).toBeVisible({ timeout: 30000 });
   await expect(tabButton("All")).toHaveAttribute("aria-pressed", "true");
+  assert.deepEqual(
+    await listingsSince(coldMark),
+    { list_pages: 1, list_projects: 1 },
+    "a cold visit to / lists once and asks list_projects once",
+  );
+  // Last activity is the time list_pages orders by: content_updated_at, else
+  // updated_at. A Page shared with alice was discovered after its content
+  // last changed, so its two times differ; the row shows the content time.
+  const aliceListed = await browserApi(alice, "/api/tools", {
+    operation: "list_pages",
+    arguments: { limit: 50 },
+  });
+  assert.equal(aliceListed.status, 200, JSON.stringify(aliceListed.body));
+  const differing = aliceListed.body.pages.find(
+    (page) =>
+      page.content_updated_at &&
+      Date.parse(page.content_updated_at) !== Date.parse(page.updated_at) &&
+      aliceListed.body.pages.filter((other) => other.title === page.title).length === 1,
+  );
+  if (differing) {
+    const shown = await library
+      .getByRole("listitem")
+      .filter({ has: alice.getByRole("link", { name: differing.title, exact: true }) })
+      .locator(".index-cell-updated time")
+      .getAttribute("datetime");
+    assert.equal(
+      shown,
+      new Date(differing.content_updated_at).toISOString(),
+      `${differing.title} shows its content time, not updated_at ${differing.updated_at}`,
+    );
+    complete("A row whose content and catalog times differ shows its last activity");
+  } else console.log("[Projects E2E] no listed Page had differing activity and updated times");
+  complete("A cold library visit sends one list_pages and one list_projects");
 
   await tabButton("Shared with you").click();
   await expect(alice).toHaveURL(at("?show=shared"));
@@ -714,6 +768,8 @@ try {
   await choose("Sort", "Title");
   await expect(alice).toHaveURL(at("?sort=title"));
   await expect(rowLink("Zeta loose note")).toBeVisible();
+  // The previous order shows, busy, until the title-sorted page lands.
+  await expect(library).toHaveAttribute("aria-busy", "false");
   const titles = await library.locator(".index-row-link").allTextContents();
   assert.ok(
     titles.indexOf("Alpha survey") < titles.indexOf("Zeta loose note"),
@@ -762,14 +818,38 @@ try {
   await choose("Group", "Date");
   await expect(alice).toHaveURL(at("?group=date"));
   await expect(heading("Today")).toBeVisible();
+  // Back and Forward over a grouping: the mounted library regroups the rows
+  // it has, with nothing on the wire, and focus stays on the menu.
+  const groupMark = toolCalls.length;
+  await menu("Group").focus();
+  await alice.goBack();
+  await expect(alice).toHaveURL(at("?group=project"));
+  await expect(heading("Shared with you")).toBeVisible();
+  await alice.goForward();
+  await expect(alice).toHaveURL(at("?group=date"));
+  await expect(heading("Today")).toBeVisible();
+  await expect(menu("Group")).toBeFocused();
+  assert.deepEqual(
+    await listingsSince(groupMark),
+    { list_pages: 0, list_projects: 0 },
+    "a grouping on Back and Forward asks for nothing",
+  );
+  complete("Back and Forward over a grouping send no request and keep focus");
   await rowLink("Zeta loose note").click();
   await expect(alice).toHaveURL(`${origin}/p/${zeta.page_id}`);
   await expect(alice.locator("wg-content").first()).toContainText("Outside any Project.", {
     timeout: 30000,
   });
+  const backMark = toolCalls.length;
   await alice.goBack();
   await expect(alice).toHaveURL(at("?group=date"));
   await expect(heading("Today")).toBeVisible({ timeout: 30000 });
+  assert.deepEqual(
+    await listingsSince(backMark),
+    { list_pages: 1, list_projects: 1 },
+    "Back from a Page lists the library once",
+  );
+  complete("Back from a Page lists the library once, painted from memory first");
   await alice.screenshot({ path: `${shots}/library-desktop-grouped-date.png` });
   // The head script picks the theme on load, so reload under a dark system.
   await alice.emulateMedia({ colorScheme: "dark" });
@@ -812,7 +892,8 @@ try {
   phones.set("alice-phone", narrow);
   narrow.on("pageerror", (error) => report.errors.push(error.message));
   await narrow.goto(`${origin}/?group=project`);
-  await expect(narrow.getByRole("heading", { name: "Pages", exact: true })).toBeVisible({
+  // The nav says Pages; on a phone the heading is for screen readers only.
+  await expect(narrow.getByRole("heading", { name: "Pages", exact: true })).toBeAttached({
     timeout: 60000,
   });
   await expect(narrow.getByRole("heading", { level: 2, name: /^Shared with you/ })).toBeVisible({
@@ -831,6 +912,12 @@ try {
     const box = await control.boundingBox();
     assert.ok(box.height >= 44, `a phone control is ${box.height}px tall`);
   }
+  const clipped = await narrow
+    .locator(".library-menu-value")
+    .evaluateAll((values) =>
+      values.filter((value) => value.scrollWidth > value.clientWidth).map((v) => v.textContent),
+    );
+  assert.deepEqual(clipped, [], "phone menus show their whole labels");
   await narrow.screenshot({ path: `${shots}/library-phone.png` });
   await narrow.getByRole("button", { name: /^Sort: / }).tap();
   await expect(narrow.getByRole("menu", { name: "Sort" })).toBeVisible();

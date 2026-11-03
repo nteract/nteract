@@ -10,7 +10,6 @@ import {
   LogOut,
   Link,
   MessageSquare,
-  Plus,
   Plug,
   RotateCcw,
   Type,
@@ -37,7 +36,7 @@ import {
   writePageRoute,
   writeRoute,
   isPlainNavigation,
-  pageListing,
+  mergePageListings,
 } from "../shared/routes.mjs";
 import { PRODUCT_NAME, tabTitle } from "../shared/product.mjs";
 import { maintainBrowserSession } from "./browser-session.mjs";
@@ -68,9 +67,12 @@ import {
 import { pageCreations } from "./page-create-machine.mjs";
 import { ProjectsIndex } from "./IndexViews.jsx";
 import { Library } from "./Library.jsx";
-import { listProjects, pageLocation } from "./projects.mjs";
+import { listProjectPages, pageLocation } from "./projects.mjs";
 import { closeTrashedSessions, moveToTrashError, restorePage } from "./trash.mjs";
 import { listAllPages } from "./page-list.mjs";
+import { Listing, listingView } from "./listing.mjs";
+import { listingCache } from "./listing-cache.mjs";
+import { ProjectList } from "./project-list.mjs";
 import { quotaNotice } from "./quota.mjs";
 import { AppearanceControls } from "./AppearanceControls.jsx";
 import { retryKey } from "../model/retry-key.mjs";
@@ -123,6 +125,16 @@ const bootPreview = new BootPreview();
 }
 // A pointer going down on a Page row is a strong hint a Page opens next.
 const warmEditor = () => editor.start();
+// The account's Projects, one list_projects request shared by the library's
+// Project filter, the Browse picker, Move to… and /projects.
+const projectList = new ProjectList({ call: tool });
+const NO_PROJECTS = Object.freeze([]);
+/** The Browse picker's rows: every Page the account can open, walked only
+ * while the picker is open. */
+const allPagesRequest = async () => ({
+  items: (await listAllPages(tool)).pages ?? [],
+  cursor: null,
+});
 // How long a new thread's passage stays emphasized after the inline composer
 // sends it.
 const CREATED_FLASH_MS = 1600;
@@ -139,28 +151,32 @@ function App() {
     documentDisclosure = useDismissibleDisclosure(),
     activityDisclosure = useDismissibleDisclosure();
   const [account, setAccount] = useState(undefined),
-    [pages, setPages] = useState([]),
     [, paint] = useState(0),
     [error, setError] = useState(""),
     // The session check's banner: { message, signIn } or null.
     [sessionNotice, setSessionNotice] = useState(null),
     [notice, setNotice] = useState(""),
     // This browser's local catalog for the account (local-catalog.mjs), as
-    // the last refresh read it. The library shows its drafts.
+    // the last refresh read it. The library and the picker show its drafts.
     [localPages, setLocalPages] = useState([]),
     [trashOpen, setTrashOpen] = useState(false),
-    [projects, setProjects] = useState([]),
-    // list_pages' `quota` for the signed-in account, or null.
+    // list_pages' `quota` for the signed-in account, from the library's
+    // latest answer, or null.
     [quota, setQuota] = useState(null),
     [projectOpen, setProjectOpen] = useState(null),
     // A listing screen: { kind: "projects" | "pages" | "home", library, visit,
     // principal } or null. "home" and "pages" are the Pages library at / and
-    // /pages. `visit` remounts the listing for each navigation, Back
-    // included; `library` (normalizeLibraryView) follows the view chosen
-    // there. Null shows the library at the address's view.
+    // /pages. `visit` remounts the listing for each navigation to it; Back
+    // and Forward from one library address to another keep it, and the
+    // mounted library takes the new `library` (normalizeLibraryView), which
+    // also follows the view chosen there. Null shows the library at the
+    // address's view.
     [index, setIndex] = useState(null),
     // read_page's location for the open Page, null until it answers.
     [placement, setPlacement] = useState(null),
+    // The Pages of the open Project home Page's Project: { pageId, pages },
+    // or null until list_pages answers.
+    [projectPages, setProjectPages] = useState(null),
     // The New Project or Move to… dialog: null, { kind: "create" } or
     // { kind: "move", pageId, title, projectId }. Each runs its own machine.
     [containerDialog, setContainerDialog] = useState(null);
@@ -181,6 +197,33 @@ function App() {
   const session = useStore(host.store, installedSession);
   const bootPreviewState = useStore(bootPreview.store);
   const editorUnavailable = useStore(editor.store, editorFailed);
+  // The account's Projects, once list_projects answered for this account.
+  const projectState = useStore(projectList.store);
+  const projectsReady =
+    !!account?.principal && projectState.principal === account.principal && projectState.ready;
+  const projects = projectsReady ? projectState.projects : NO_PROJECTS;
+  // The Browse picker's listing, one per account. It walks every Page each
+  // time the picker opens, starting from the library's first page when this
+  // tab has shown it (read only: the walk is not a library view).
+  const principal = account?.principal ?? null;
+  const pickerListing = React.useMemo(
+    () =>
+      new Listing({
+        fetch: allPagesRequest,
+        report: (message) => setPickerError(message),
+        idOf: (item) => item.page_id,
+        cache: principal
+          ? { read: (params) => listingCache.read(principal, params), write: () => {} }
+          : null,
+      }),
+    [principal],
+  );
+  useEffect(() => pickerListing.connect(), [pickerListing]);
+  const pickerSnapshot = useStore(pickerListing.store);
+  const pickerView = listingView(pickerSnapshot);
+  useEffect(() => {
+    if (pickerOpen) pickerListing.load();
+  }, [pickerOpen, pickerListing]);
   // Rendered only beside a session; handlers read editor.module when they run.
   const { WordgardEditor, CommentsPanel, CommentPopover, SaveStatus, PageControls } =
     editor.module ?? {};
@@ -188,7 +231,8 @@ function App() {
     authentication = useRef(null),
     catalogRevision = useRef(0),
     indexVisits = useRef(0),
-    lastRemote = useRef(null),
+    // What this render shows, for handlers bound at mount (popstate).
+    screen = useRef(null),
     article = useRef(null),
     titleInput = useRef(null),
     // The title value this tab last showed and its selection as native
@@ -199,6 +243,7 @@ function App() {
     titleCompositionRef = useRef(null),
     activeBlock = useRef(null),
     commentsButton = useRef(null);
+  screen.current = { index, projectOpen, trashOpen, opening };
   // The inline comment composer. It outlives Pages; resetDocumentUI resets it,
   // and a send that settles after the reset is ignored by its key.
   const [composer] = useState(
@@ -235,56 +280,33 @@ function App() {
   // signed-in account.
   const navigationCurrent = (revision, principal) =>
     host.isCurrent(revision) && authentication.current?.identity?.principal === principal;
-  const refresh = async () => {
+  /** Read this browser's local catalog (the drafts the library and picker
+   * show) and the account's Projects. `fresh` asks list_projects again even
+   * when a request is in flight, after a create or move this tab made. Page
+   * listings belong to their screens: the library lists its own view, and
+   * the picker walks every Page only while it is open. */
+  const refresh = async ({ fresh = false } = {}) => {
     const identity = authentication.current?.identity;
-    if (!identity) return [];
+    if (!identity) return;
     const revision = ++catalogRevision.current;
-    const remoteRequest = listAllPages(tool).then(
-      (value) => ({ value }),
-      (error) => ({ error }),
-    );
+    // A failure leaves the Project filter empty and everything else usable.
+    void projectList.request(identity.principal, { fresh }).catch(() => {});
     const closing = host.closingPages();
     const local = await listLocalPages(identity).catch(() => []);
     const stillCurrent = () =>
       identity.principal === authentication.current?.identity?.principal &&
       revision === catalogRevision.current;
-    if (!stillCurrent()) return [];
+    if (!stillCurrent()) return;
     setLocalPages(local);
-    // Until this refresh's remote result arrives, the last one for this
-    // account stands in for it.
-    const listing = pageListing(
-      lastRemote.current?.principal === identity.principal ? lastRemote.current.pages : [],
-      local,
-    );
-    setPages(listing.pages);
-    // Projects load beside the Page list; a failure leaves the list usable.
-    void listProjects(tool).then(
-      (value) => {
-        if (stillCurrent()) setProjects(value);
-      },
-      () => {},
-    );
     // A Page left by this navigation drains and writes its final local
-    // checkpoint (title included) in the background. Relist once it lands.
+    // checkpoint (title included) in the background. Read again once it lands.
     if (closing.length)
       void Promise.all(closing)
         .then(() => listLocalPages(identity))
         .then((latest) => {
-          if (!stillCurrent()) return;
-          setLocalPages(latest);
-          setPages(listing.local(latest));
+          if (stillCurrent()) setLocalPages(latest);
         })
         .catch(() => {});
-    const remote = await remoteRequest;
-    if (!stillCurrent()) return [];
-    if (remote.value) {
-      lastRemote.current = { principal: identity.principal, pages: remote.value.pages ?? [] };
-      setQuota(remote.value.quota ?? null);
-    }
-    const result = listing.remote(remote.value?.pages ?? null);
-    setPages(result);
-    if (remote.error && !result.length) throw remote.error;
-    return result;
   };
   function activateBlock(id) {
     setActive(id);
@@ -339,10 +361,20 @@ function App() {
     setProjectOpen(null);
     setIndex(null);
     setPlacement(null);
+    setProjectPages(null);
     // Breadcrumbs show only the Project and parents this account can open.
+    // A Project's home Page also lists the Project's Pages.
     void pageLocation(tool, next.pageId).then(
       (value) => {
-        if (host.current === next) setPlacement(value);
+        if (host.current !== next) return;
+        setPlacement(value);
+        if (value.home && value.project_id)
+          void listProjectPages(tool, value.project_id).then(
+            (pages) => {
+              if (host.current === next) setProjectPages({ pageId: next.pageId, pages });
+            },
+            () => {},
+          );
       },
       () => {},
     );
@@ -584,15 +616,41 @@ function App() {
       showError(error);
     }
   }
+  /** Whether the library is on screen for the signed-in account. */
+  function libraryShowing() {
+    const shown = screen.current;
+    return (
+      !host.current &&
+      !!shown &&
+      !shown.opening &&
+      !shown.projectOpen &&
+      !shown.trashOpen &&
+      isLibraryRoute(shown.index) &&
+      shown.index.principal === authentication.current?.identity?.principal
+    );
+  }
   function followRoute() {
     const route = readPageRoute(location.href);
+    // Back or Forward from one library address to another: the mounted
+    // library takes the view, so a grouping alone asks for nothing and focus
+    // stays put. The address keeps the canonical form.
+    if (isLibraryRoute(route) && libraryShowing()) {
+      setError("");
+      setNotice("");
+      setIndex((current) =>
+        current ? { ...current, kind: route.kind, library: route.library } : current,
+      );
+      writeRoute(route.path, { replace: true, state: { pageId: null } });
+      return;
+    }
     if (route.kind === "page") void open(route.pageId, { historyMode: "replace" });
     // Replace keeps the address canonical when an older /s/ link opened it.
     else if (route.kind === "project") openProject(route.projectId, { historyMode: "replace" });
     // Replace drops a trailing slash or an empty search from the address.
     else if (isIndexRoute(route)) openIndex(route, { historyMode: "replace" });
+    // Replace drops unknown or default parameters from the address.
     else if (route.kind === "home")
-      home(null, { historyMode: "none", refreshCatalog: false, library: route.library });
+      home(null, { historyMode: "replace", refreshCatalog: false, library: route.library });
     else {
       host.navigate();
       releaseCurrent();
@@ -634,7 +692,9 @@ function App() {
           // Attempts to replay belong to the account that made them.
           creations.account(result.identity?.principal ?? null);
           catalogRevision.current++;
-          setPages([]);
+          // Rows and Projects remembered for one account never show another.
+          listingCache.clear();
+          projectList.reset();
           setLocalPages([]);
           setQuota(null);
           setOpening(false);
@@ -863,7 +923,7 @@ function App() {
         current,
         // A new Page names itself first, like create()'s draft.
         open: (pageId) => open(pageId, { nameIt: true }),
-        refresh: () => refresh(),
+        refresh: () => refresh({ fresh: true }),
       });
       if (state?.name === "failed" && current() && !bannerShows(state.cause)) {
         showError(state.cause);
@@ -935,7 +995,7 @@ function App() {
       ? projects.find((project) => project.project_id === receipt.project_id)?.title || "Project"
       : "Your items";
     setNotice(`Moved to ${where}`);
-    void refresh().catch(() => {});
+    void refresh({ fresh: true }).catch(() => {});
     const current = host.current;
     if (current?.pageId === receipt.page_id)
       void pageLocation(tool, current.pageId).then(
@@ -948,7 +1008,7 @@ function App() {
   /** A Project was created: list it and open it. */
   function projectCreated(projectId) {
     setContainerDialog(null);
-    void refresh().catch(() => {});
+    void refresh({ fresh: true }).catch(() => {});
     openProject(projectId);
   }
   async function remove() {
@@ -1006,6 +1066,8 @@ function App() {
           revision: deleting.access?.revision,
         });
       }
+      // A return to the library mustn't paint it from memory.
+      listingCache.forget(deleting.pageId);
       setNotice("Moved to Trash");
       await refresh();
     } catch (error) {
@@ -1015,6 +1077,8 @@ function App() {
   async function signout() {
     try {
       await request("/api/auth/logout", { method: "POST" });
+      listingCache.clear();
+      projectList.reset();
       let failed;
       await host.close(host.current, { onError: (error) => (failed = error) });
       if (failed) throw failed;
@@ -1097,9 +1161,13 @@ function App() {
           : undefined,
     );
   }, [page?.title, index, projectOpen, trashOpen, opening]);
-  const listedPages = pages.map((item) =>
-    item.page_id === page?.page_id ? { ...item, title: page.title } : item,
-  );
+  // The open Page's title as this tab has it, over a listing's older copy.
+  const ownTitle = (item) =>
+    item.page_id === page?.page_id ? { ...item, title: page.title } : item;
+  const listedPages = mergePageListings(
+    pickerView.failed ? null : pickerSnapshot.items,
+    localPages,
+  ).map(ownTitle);
   // The open Page's Project, when read_page shows one: Projects are
   // owner-only in this build, so a visible project_id means this account owns
   // it. Shared viewers see none and get no create affordances. The owner
@@ -1115,8 +1183,12 @@ function App() {
     ? (projects.find((project) => project.project_id === placement.project_id) ??
       placement.breadcrumbs.find((crumb) => crumb.kind === "project"))
     : null;
-  const projectPages = placement?.project_id
-    ? listedPages.filter((item) => item.project_id === placement.project_id && !item.shared)
+  const projectPagesShown =
+    !!placement?.project_id && !!page && projectPages?.pageId === page.page_id;
+  const projectPagesList = projectPagesShown
+    ? projectPages.pages
+        .filter((item) => item.project_id === placement.project_id && !item.shared)
+        .map(ownTitle)
     : [];
   const usage = quotaNotice(quota);
   const openComments = threads.filter((thread) => thread.state === "open").length;
@@ -1150,8 +1222,9 @@ function App() {
           icon: RotateCcw,
           run: restoreCurrent,
         },
+        // A Project's home Page stays with its Project.
         session.canDelete &&
-          !pages.find((item) => item.page_id === page?.page_id)?.home && {
+          !placement?.home && {
             key: "move",
             label: "Move to…",
             icon: FolderInput,
@@ -1323,6 +1396,7 @@ function App() {
           <PagePicker
             open={pickerOpen}
             pages={listedPages}
+            loading={pickerOpen && pickerView.loading}
             currentId={page?.page_id}
             onClose={() => setPickerOpen(false)}
             onOpen={open}
@@ -1372,7 +1446,7 @@ function App() {
                 {placement?.home && placement.project_id ? (
                   <ProjectChip
                     projectId={placement.project_id}
-                    count={projectPageCount(projectPages)}
+                    count={projectPagesShown ? projectPageCount(projectPagesList) : null}
                     onOpenProject={(id) => openProject(id)}
                   />
                 ) : (
@@ -1531,7 +1605,7 @@ function App() {
                 {ownsProject && placement.home && (
                   <ProjectPages
                     title={placementProject?.title}
-                    pages={projectPages}
+                    pages={projectPagesList}
                     onOpen={open}
                     onCreate={() => createIn({ project_id: placement.project_id })}
                     creating={creating}
@@ -1586,6 +1660,7 @@ function App() {
             <ProjectsIndex
               key={index.visit}
               tool={tool}
+              requestProjects={() => projectList.request(index.principal)}
               onNavigate={navigateIndex}
               onOpenProject={(id) => openProject(id)}
               onProjectCreated={projectCreated}
@@ -1612,8 +1687,10 @@ function App() {
             <Library
               key={index?.visit ?? "address"}
               tool={tool}
+              principal={index?.principal ?? account.principal}
               view={index?.library ?? libraryOf(readPageRoute(location.href))}
               projects={projects}
+              projectsReady={projectsReady}
               drafts={localPages}
               notice={usage}
               creating={creating}
@@ -1628,6 +1705,9 @@ function App() {
               onWarm={warmEditor}
               onError={index ? reportListing(index.visit, index.principal) : reportAddressListing}
               onRetry={retryListing}
+              onQuota={(value) => {
+                if ((index?.principal ?? account.principal) === account.principal) setQuota(value);
+              }}
             />
           )}
         </>

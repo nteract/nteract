@@ -1,9 +1,10 @@
 {
   "machine": "listing",
-  "description": "One paged list_pages or list_projects listing behind the Pages library (/ and /pages) and /projects. `params` is the normalized request ({ query, access, sort, projectId }); the machine never looks inside it. The rows live beside it in viewer/listing.mjs. viewer/listing.test.mjs runs each row through the pure machine.",
+  "description": "One paged list_pages or list_projects listing behind the Pages library (/ and /pages) and /projects. `params` is the normalized request ({ query, access, sort, projectId }); the machine never looks inside it. The rows live beside it in viewer/listing.mjs; `restore` lists params whose first page this tab showed before (viewer/listing-cache.mjs), painting those rows while the first page loads again. viewer/listing.test.mjs runs each row through the pure machine.",
   "states": [
     "idle",
     "loading",
+    "refreshing",
     "ready",
     "more",
     "failed",
@@ -11,6 +12,7 @@
   ],
   "events": [
     "load",
+    "restore",
     "more",
     "loaded",
     "failed"
@@ -33,6 +35,14 @@
       "stale"
     ],
     "loading/failed": [
+      "current",
+      "stale"
+    ],
+    "refreshing/loaded": [
+      "current",
+      "stale"
+    ],
+    "refreshing/failed": [
       "current",
       "stale"
     ],
@@ -1241,6 +1251,622 @@
             "message": "Invalid cursor; restart from the first page"
           }
         ]
+      }
+    },
+    {
+      "label": "a return visit paints the rows this tab showed and lists the first page again",
+      "state": {
+        "name": "idle"
+      },
+      "event": {
+        "type": "restore",
+        "key": "k1",
+        "params": {
+          "query": "",
+          "access": null,
+          "sort": "activity",
+          "projectId": null
+        }
+      },
+      "expect": {
+        "state": {
+          "name": "refreshing",
+          "key": "k1",
+          "params": {
+            "query": "",
+            "access": null,
+            "sort": "activity",
+            "projectId": null
+          }
+        },
+        "effects": [
+          {
+            "type": "paint",
+            "params": {
+              "query": "",
+              "access": null,
+              "sort": "activity",
+              "projectId": null
+            }
+          },
+          {
+            "type": "fetch",
+            "key": "k1",
+            "params": {
+              "query": "",
+              "access": null,
+              "sort": "activity",
+              "projectId": null
+            },
+            "cursor": null
+          }
+        ]
+      }
+    },
+    {
+      "label": "switching back to a view shown before paints it while its first page loads",
+      "state": {
+        "name": "loading",
+        "key": "k1",
+        "params": {
+          "query": "",
+          "access": "shared",
+          "sort": "activity",
+          "projectId": null
+        }
+      },
+      "event": {
+        "type": "restore",
+        "key": "k2",
+        "params": {
+          "query": "",
+          "access": null,
+          "sort": "activity",
+          "projectId": null
+        }
+      },
+      "expect": {
+        "state": {
+          "name": "refreshing",
+          "key": "k2",
+          "params": {
+            "query": "",
+            "access": null,
+            "sort": "activity",
+            "projectId": null
+          }
+        },
+        "effects": [
+          {
+            "type": "paint",
+            "params": {
+              "query": "",
+              "access": null,
+              "sort": "activity",
+              "projectId": null
+            }
+          },
+          {
+            "type": "fetch",
+            "key": "k2",
+            "params": {
+              "query": "",
+              "access": null,
+              "sort": "activity",
+              "projectId": null
+            },
+            "cursor": null
+          }
+        ]
+      }
+    },
+    {
+      "label": "another remembered view supersedes the refresh in flight",
+      "state": {
+        "name": "refreshing",
+        "key": "k1",
+        "params": {
+          "query": "",
+          "access": null,
+          "sort": "activity",
+          "projectId": null
+        }
+      },
+      "event": {
+        "type": "restore",
+        "key": "k2",
+        "params": {
+          "query": "",
+          "access": "shared",
+          "sort": "activity",
+          "projectId": null
+        }
+      },
+      "expect": {
+        "state": {
+          "name": "refreshing",
+          "key": "k2",
+          "params": {
+            "query": "",
+            "access": "shared",
+            "sort": "activity",
+            "projectId": null
+          }
+        },
+        "effects": [
+          {
+            "type": "paint",
+            "params": {
+              "query": "",
+              "access": "shared",
+              "sort": "activity",
+              "projectId": null
+            }
+          },
+          {
+            "type": "fetch",
+            "key": "k2",
+            "params": {
+              "query": "",
+              "access": "shared",
+              "sort": "activity",
+              "projectId": null
+            },
+            "cursor": null
+          }
+        ]
+      }
+    },
+    {
+      "label": "returning to a remembered tab paints it at once",
+      "state": {
+        "name": "ready",
+        "params": {
+          "query": "",
+          "access": "shared",
+          "sort": "activity",
+          "projectId": null
+        },
+        "cursor": null
+      },
+      "event": {
+        "type": "restore",
+        "key": "k2",
+        "params": {
+          "query": "",
+          "access": null,
+          "sort": "activity",
+          "projectId": null
+        }
+      },
+      "expect": {
+        "state": {
+          "name": "refreshing",
+          "key": "k2",
+          "params": {
+            "query": "",
+            "access": null,
+            "sort": "activity",
+            "projectId": null
+          }
+        },
+        "effects": [
+          {
+            "type": "paint",
+            "params": {
+              "query": "",
+              "access": null,
+              "sort": "activity",
+              "projectId": null
+            }
+          },
+          {
+            "type": "fetch",
+            "key": "k2",
+            "params": {
+              "query": "",
+              "access": null,
+              "sort": "activity",
+              "projectId": null
+            },
+            "cursor": null
+          }
+        ]
+      }
+    },
+    {
+      "label": "a remembered view chosen during Load more abandons the next page",
+      "state": {
+        "name": "more",
+        "key": "k2",
+        "params": {
+          "query": "",
+          "access": null,
+          "sort": "activity",
+          "projectId": null
+        },
+        "cursor": "c1"
+      },
+      "event": {
+        "type": "restore",
+        "key": "k3",
+        "params": {
+          "query": "",
+          "access": "shared",
+          "sort": "activity",
+          "projectId": null
+        }
+      },
+      "expect": {
+        "state": {
+          "name": "refreshing",
+          "key": "k3",
+          "params": {
+            "query": "",
+            "access": "shared",
+            "sort": "activity",
+            "projectId": null
+          }
+        },
+        "effects": [
+          {
+            "type": "paint",
+            "params": {
+              "query": "",
+              "access": "shared",
+              "sort": "activity",
+              "projectId": null
+            }
+          },
+          {
+            "type": "fetch",
+            "key": "k3",
+            "params": {
+              "query": "",
+              "access": "shared",
+              "sort": "activity",
+              "projectId": null
+            },
+            "cursor": null
+          }
+        ]
+      }
+    },
+    {
+      "label": "a remembered view after a failed first page paints and lists it",
+      "state": {
+        "name": "failed",
+        "params": {
+          "query": "road",
+          "access": null,
+          "sort": "activity",
+          "projectId": null
+        },
+        "message": "Couldn't reach Pages"
+      },
+      "event": {
+        "type": "restore",
+        "key": "k2",
+        "params": {
+          "query": "",
+          "access": null,
+          "sort": "activity",
+          "projectId": null
+        }
+      },
+      "expect": {
+        "state": {
+          "name": "refreshing",
+          "key": "k2",
+          "params": {
+            "query": "",
+            "access": null,
+            "sort": "activity",
+            "projectId": null
+          }
+        },
+        "effects": [
+          {
+            "type": "paint",
+            "params": {
+              "query": "",
+              "access": null,
+              "sort": "activity",
+              "projectId": null
+            }
+          },
+          {
+            "type": "fetch",
+            "key": "k2",
+            "params": {
+              "query": "",
+              "access": null,
+              "sort": "activity",
+              "projectId": null
+            },
+            "cursor": null
+          }
+        ]
+      }
+    },
+    {
+      "label": "a remembered view after a stalled Load more paints and lists it",
+      "state": {
+        "name": "stalled",
+        "params": {
+          "query": "",
+          "access": null,
+          "sort": "activity",
+          "projectId": null
+        },
+        "cursor": "c1",
+        "message": "Couldn't reach Pages"
+      },
+      "event": {
+        "type": "restore",
+        "key": "k3",
+        "params": {
+          "query": "",
+          "access": "shared",
+          "sort": "activity",
+          "projectId": null
+        }
+      },
+      "expect": {
+        "state": {
+          "name": "refreshing",
+          "key": "k3",
+          "params": {
+            "query": "",
+            "access": "shared",
+            "sort": "activity",
+            "projectId": null
+          }
+        },
+        "effects": [
+          {
+            "type": "paint",
+            "params": {
+              "query": "",
+              "access": "shared",
+              "sort": "activity",
+              "projectId": null
+            }
+          },
+          {
+            "type": "fetch",
+            "key": "k3",
+            "params": {
+              "query": "",
+              "access": "shared",
+              "sort": "activity",
+              "projectId": null
+            },
+            "cursor": null
+          }
+        ]
+      }
+    },
+    {
+      "label": "a view never shown before supersedes the refresh in flight",
+      "state": {
+        "name": "refreshing",
+        "key": "k1",
+        "params": {
+          "query": "",
+          "access": null,
+          "sort": "activity",
+          "projectId": null
+        }
+      },
+      "event": {
+        "type": "load",
+        "key": "k2",
+        "params": {
+          "query": "road",
+          "access": null,
+          "sort": "activity",
+          "projectId": null
+        }
+      },
+      "expect": {
+        "state": {
+          "name": "loading",
+          "key": "k2",
+          "params": {
+            "query": "road",
+            "access": null,
+            "sort": "activity",
+            "projectId": null
+          }
+        },
+        "effects": [
+          {
+            "type": "fetch",
+            "key": "k2",
+            "params": {
+              "query": "road",
+              "access": null,
+              "sort": "activity",
+              "projectId": null
+            },
+            "cursor": null
+          }
+        ]
+      }
+    },
+    {
+      "label": "Load more waits for the refreshed first page",
+      "state": {
+        "name": "refreshing",
+        "key": "k1",
+        "params": {
+          "query": "",
+          "access": null,
+          "sort": "activity",
+          "projectId": null
+        }
+      },
+      "event": {
+        "type": "more",
+        "key": "k2"
+      },
+      "expect": {
+        "state": {
+          "name": "refreshing",
+          "key": "k1",
+          "params": {
+            "query": "",
+            "access": null,
+            "sort": "activity",
+            "projectId": null
+          }
+        },
+        "effects": [],
+        "rejected": "The first page is still loading"
+      }
+    },
+    {
+      "label": "the refreshed first page replaces the remembered rows",
+      "case": "current",
+      "state": {
+        "name": "refreshing",
+        "key": "k1",
+        "params": {
+          "query": "",
+          "access": null,
+          "sort": "activity",
+          "projectId": null
+        }
+      },
+      "event": {
+        "type": "loaded",
+        "key": "k1",
+        "cursor": "c1"
+      },
+      "expect": {
+        "state": {
+          "name": "ready",
+          "params": {
+            "query": "",
+            "access": null,
+            "sort": "activity",
+            "projectId": null
+          },
+          "cursor": "c1"
+        },
+        "effects": [
+          {
+            "type": "show",
+            "key": "k1",
+            "append": false
+          }
+        ]
+      }
+    },
+    {
+      "label": "a superseded request's page never replaces the refresh",
+      "case": "stale",
+      "state": {
+        "name": "refreshing",
+        "key": "k2",
+        "params": {
+          "query": "",
+          "access": null,
+          "sort": "activity",
+          "projectId": null
+        }
+      },
+      "event": {
+        "type": "loaded",
+        "key": "k1",
+        "cursor": null
+      },
+      "expect": {
+        "state": {
+          "name": "refreshing",
+          "key": "k2",
+          "params": {
+            "query": "",
+            "access": null,
+            "sort": "activity",
+            "projectId": null
+          }
+        },
+        "effects": [],
+        "rejected": "A newer request superseded this one"
+      }
+    },
+    {
+      "label": "a failed refresh drops the remembered rows and reports",
+      "case": "current",
+      "state": {
+        "name": "refreshing",
+        "key": "k1",
+        "params": {
+          "query": "",
+          "access": null,
+          "sort": "activity",
+          "projectId": null
+        }
+      },
+      "event": {
+        "type": "failed",
+        "key": "k1",
+        "message": "Couldn't reach Pages",
+        "code": null
+      },
+      "expect": {
+        "state": {
+          "name": "failed",
+          "params": {
+            "query": "",
+            "access": null,
+            "sort": "activity",
+            "projectId": null
+          },
+          "message": "Couldn't reach Pages"
+        },
+        "effects": [
+          {
+            "type": "report",
+            "message": "Couldn't reach Pages"
+          }
+        ]
+      }
+    },
+    {
+      "label": "a superseded request's failure leaves the refresh alone",
+      "case": "stale",
+      "state": {
+        "name": "refreshing",
+        "key": "k2",
+        "params": {
+          "query": "",
+          "access": null,
+          "sort": "activity",
+          "projectId": null
+        }
+      },
+      "event": {
+        "type": "failed",
+        "key": "k1",
+        "message": "Couldn't reach Pages",
+        "code": null
+      },
+      "expect": {
+        "state": {
+          "name": "refreshing",
+          "key": "k2",
+          "params": {
+            "query": "",
+            "access": null,
+            "sort": "activity",
+            "projectId": null
+          }
+        },
+        "effects": [],
+        "rejected": "A newer request superseded this one"
       }
     }
   ]

@@ -1997,17 +1997,39 @@ reload, Back and a shared link reproduce it
 | `project` | a Project ID | `project_id`; implies `show=owned`, dropped with `show=shared` (which `list_pages` refuses) |
 | `group` | `project`, `date` | group sections over the loaded rows; `date` needs Last activity |
 
-A choice pushes a history entry; typing a search replaces it. Groups are a
-presentation over loaded rows ([library-groups.mjs](viewer/library-groups.mjs)):
-by Project (each Project, Your items, Shared with you) or by the row's
-`updated_at` (Today, Yesterday, Previous 7 days, Previous 30 days, each month of
-the last year, then each year), in the order their first row appears. Drafts
-this browser hasn't synced show first, as "Saved locally", on All and Your items
-when there is no search or Project filter; when the listing fails, local copies
-show there too. Load more follows `next_cursor`; a cursor that has expired
-(`invalid_cursor`) starts the listing over from its first page. Grid cards are
-behind the `grid` flag (`?grid=1` or `localStorage["pages.grid"] = "1"`) until
-they show previews.
+A choice pushes a history entry; typing a search replaces it; choosing what
+already shows does nothing. `/` and `/pages` replace an address that isn't
+canonical. Back and Forward between two library addresses hand the mounted
+library its new view, so a grouping alone sends nothing and focus stays put.
+Groups are a presentation over loaded rows
+([library-groups.mjs](viewer/library-groups.mjs)): by Project (each Project,
+Your items, Shared with you; the Source column goes, since the heading names
+it) or by last activity (Today, Yesterday, Previous 7 days, Previous 30 days,
+each month of the last year, then each year), in the order their first row
+appears. Last activity is `content_updated_at`, else `updated_at`: the key the
+Last activity sort orders by, so date groups follow the rows
+([listing.mjs](viewer/listing.mjs) `activityAt`). The Last activity column
+shows the same time, and screen readers hear "Last active 2 days ago, …".
+Drafts this browser hasn't synced show first, as "On this device", on All and
+Your items when there is no Project filter. The server can't search them, so a
+search keeps the drafts whose title holds it. When the listing fails, local
+copies show there too. A `project` the account can't list reads "Unknown
+Project", with a button that clears the filter. Load more follows
+`next_cursor`; a cursor that has expired (`invalid_cursor`) starts the listing
+over from its first page. Grid cards are behind the `grid` flag (`?grid=1` or
+`localStorage["pages.grid"] = "1"`) until they show previews.
+
+A library visit sends one `list_pages`, for its view. `list_projects` is one
+request per account shared by the Project filter, the Browse picker, Move to…
+and the first page of `/projects`; a request made while one is in flight joins
+it ([project-list.mjs](viewer/project-list.mjs)). The first page of each view
+this tab has shown stays in memory, keyed by account and request
+([listing-cache.mjs](viewer/listing-cache.mjs)), so a return visit, Back from
+a Page included, paints it while the listing asks again. It is cleared on
+sign-out and account change, forgets a Page moved to Trash, and is never
+persisted. The Browse picker walks every Page (`list_pages` cursors, at most
+ten requests) only when it opens, and a Project's home Page lists its Project
+with `project_id`.
 
 | Tool | Arguments | Result |
 | --- | --- | --- |

@@ -98,7 +98,7 @@ export function groupRows(rows, group, { now = Date.now(), locale, timeZone } = 
         ? projectGroup(row)
         : row.local
           ? DEVICE_GROUP
-          : dateGroup(row.updatedAt, now, { locale, timeZone });
+          : dateGroup(row.activityAt, now, { locale, timeZone });
     let section = sections.get(head.key);
     if (!section) {
       section = { ...head, rows: [] };

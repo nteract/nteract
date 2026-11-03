@@ -87,8 +87,11 @@ function ListingStatus({ view, empty, onRetry, listing }) {
   return null;
 }
 
+/** `requestProjects()`, when given, answers the first page: the shell's
+ * shared list_projects request (project-list.mjs). */
 export function ProjectsIndex({
   tool,
+  requestProjects,
   onNavigate,
   onOpenProject,
   onProjectCreated = onOpenProject,
@@ -99,7 +102,7 @@ export function ProjectsIndex({
   const listing = useConnected(
     () =>
       new Listing({
-        fetch: projectsRequest(tool),
+        fetch: projectsRequest(tool, { first: requestProjects }),
         report: onError,
         idOf: (project) => project.project_id,
       }),

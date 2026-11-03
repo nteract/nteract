@@ -62,6 +62,7 @@ const { IndexNav, Library, ProjectsIndex } = await import(
   `data:text/javascript;base64,${Buffer.from(bundle.outputFiles[0].contents).toString("base64")}`
 );
 const { createElement, act, StrictMode } = await import("react");
+const { ListingCache } = await import("./listing-cache.mjs");
 const { VirtualTimeScheduler } = await import("rxjs");
 const { CLOCK_PERIOD_MS, Clock } = await import("./clock.mjs");
 const { createRoot } = await import("react-dom/client");
@@ -157,7 +158,7 @@ const libraryProps = (overrides) => ({
 const NOW = new Date(2026, 10, 3, 12, 0).getTime();
 const HOUR = 60 * 60 * 1000;
 const ago = (ms) => new Date(NOW - ms).toISOString();
-/** A fixed clock for date groups and Updated labels. */
+/** A fixed clock for date groups and Last activity labels. */
 const fixedClock = () => {
   const scheduler = new VirtualTimeScheduler();
   scheduler.maxFrames = 0;
@@ -238,7 +239,7 @@ test("the library lists every Page with Project labels, opens rows and Projects 
   );
   const { host } = app;
   assert.equal(host.querySelector("h1").textContent, "Pages");
-  assert.deepEqual(text(host, ".index-columns span"), ["Name", "Source", "Updated", ""]);
+  assert.deepEqual(text(host, ".index-columns span"), ["Name", "Source", "Last activity", ""]);
   assert.deepEqual(text(host, ".index-row-link"), ["Roadmap", "Untitled"]);
   assert.ok(host.querySelector('ul.index-page-list[aria-label="Pages"]'), "one list named Pages");
   assert.deepEqual(
@@ -254,8 +255,8 @@ test("the library lists every Page with Project labels, opens rows and Projects 
   assert.equal(updated.getAttribute("title"), null, "the row link covers the cell, so no tooltip");
   assert.deepEqual(text(host, ".index-cell-updated [aria-hidden=true]"), ["2d", "—"]);
   const spoken = text(host, ".index-cell-updated .sr-only");
-  assert.match(spoken[0], /^Updated .+, .*2\d{3}/, "screen readers hear the age and full time");
-  assert.equal(spoken[1], "Updated unknown");
+  assert.match(spoken[0], /^Last active .+, .*2\d{3}/, "screen readers hear the age and full time");
+  assert.equal(spoken[1], "Last active unknown");
   assert.equal(host.querySelectorAll(".index-cell-updated time").length, 1, "no time, no <time>");
   assert.equal(
     host.querySelector(".index-nav [aria-current=page]").textContent,
@@ -417,7 +418,46 @@ test("a Project filter lists Your items in that Project; Any project clears it",
   );
   assert.equal(menuButton(unknown.host, "Project").getAttribute("aria-label"), "Project: Project");
   assert.deepEqual(text(unknown.host, ".index-row-link"), ["Archive"]);
+  assert.equal(unknown.host.querySelector(".library-filter-notice"), null, "not until they load");
   await unknown.unmount();
+});
+
+test("a Project the account can't list says so and offers to clear the filter", async () => {
+  const calls = [];
+  const views = [];
+  const missing = "prj_9b160b47-6df1-4983-81eb-489ca5a26812";
+  const app = await mount(
+    createElement(
+      Library,
+      libraryProps({
+        tool: async (name, args) => {
+          calls.push(args);
+          if (args.project_id) throw Object.assign(Error("Project not found"), { status: 404 });
+          return catalogTool()(name, args);
+        },
+        view: { projectId: missing },
+        projects: PROJECTS,
+        projectsReady: true,
+        clock: fixedClock(),
+        onViewChange: (view, how) => views.push([view, how]),
+      }),
+    ),
+  );
+  const { host } = app;
+  assert.equal(menuButton(host, "Project").getAttribute("aria-label"), "Project: Unknown Project");
+  const notice = host.querySelector(".library-filter-notice");
+  assert.match(notice.textContent, /This Project isn't one you can open\./);
+  assert.equal(button(host, "Try again"), undefined, "clearing the filter is the way out");
+  await click(button(host, "Clear Project filter"));
+  await settle();
+  assert.deepEqual(calls.at(-1), { limit: 50, access: "owned" });
+  assert.deepEqual(views.at(-1), [
+    { query: "", access: "owned", sort: "activity", projectId: null, group: null },
+    { replace: false },
+  ]);
+  assert.equal(host.querySelector(".library-filter-notice"), null);
+  assert.equal(text(host, ".index-row-link").length, 4);
+  await app.unmount();
 });
 
 test("an empty listing says why, for its tab, Project and search", async () => {
@@ -477,6 +517,12 @@ test("sort by title, and group by Project or date with headings and counts", asy
   assert.equal(host.querySelectorAll(".index-columns").length, 1, "one column header");
 
   await pick(host, "Group", "Project");
+  assert.deepEqual(
+    text(host, ".index-columns span"),
+    ["Name", "Last activity", ""],
+    "the group heading names the source, so the column goes",
+  );
+  assert.equal(host.querySelector(".index-cell-source"), null);
   assert.deepEqual(headings(), [
     ["Launch", "2"],
     ["Shared with you", "1"],
@@ -592,13 +638,30 @@ test("drafts on this device lead All and Your items, and the offline fallback li
   );
   const { host } = app;
   assert.deepEqual(text(host, ".index-row-link").slice(0, 2), ["Draft", "Roadmap"]);
-  assert.deepEqual(text(host, ".index-row-local"), ["Saved locally"]);
+  assert.deepEqual(text(host, ".index-row-local"), ["On this device"]);
   assert.equal(text(host, ".index-row-link").filter((title) => title === "Roadmap").length, 1);
+  // The server's search can't see a draft; its title is searched here.
+  const input = host.querySelector('input[type="search"]');
+  await setInput(input, "dra");
+  await submitSearch(host);
+  await settle();
+  assert.deepEqual(text(host, ".index-row-link"), ["Draft"]);
+  await setInput(input, "road");
+  await submitSearch(host);
+  await settle();
+  assert.deepEqual(text(host, ".index-row-link"), ["Roadmap"]);
+  await setInput(input, "");
+  await submitSearch(host);
+  await settle();
+  await pick(host, "Group", "Date");
+  assert.equal(host.querySelector(".library-group-label").textContent, "On this device");
+  assert.deepEqual(text(host, ".index-row-local"), [], "one label: the heading says it");
   await pick(host, "Group", "Project");
   assert.equal(host.querySelector(".library-group-label").textContent, "On this device");
+  await pick(host, "Group", "None");
   await click(tab(host, "Your items"));
   await settle();
-  assert.deepEqual(text(host, ".index-row-local"), ["Saved locally"]);
+  assert.deepEqual(text(host, ".index-row-local"), ["On this device"]);
   await click(tab(host, "Shared with you"));
   await settle();
   assert.deepEqual(text(host, ".index-row-local"), [], "a draft is never shared");
@@ -619,7 +682,7 @@ test("drafts on this device lead All and Your items, and the offline fallback li
     ),
   );
   assert.deepEqual(text(offline.host, ".index-row-link"), ["Draft", "Roadmap"]);
-  assert.deepEqual(text(offline.host, ".index-row-local"), ["Saved locally", "On this device"]);
+  assert.deepEqual(text(offline.host, ".index-row-local"), ["On this device", "On this device"]);
   assert.ok(button(offline.host, "Try again"));
   assert.equal(errors.length > 0, true, "the banner says the server is unreachable");
   await offline.unmount();
@@ -706,7 +769,7 @@ test("the grid shows only when enabled, switches with the list, and never nests 
   }
 });
 
-test("the library refreshes its Updated times once a minute", async () => {
+test("the library refreshes its Last activity times once a minute", async () => {
   const scheduler = new VirtualTimeScheduler();
   scheduler.maxFrames = 0;
   const edited = Date.parse("2026-11-03T17:00:00.000Z");
@@ -949,4 +1012,151 @@ test("a listing that fails reports to the banner, offers Try again, and recovers
   assert.equal(retries.length, 1);
   assert.match(host.textContent, /No Projects yet/);
   await unmount();
+});
+
+test("date groups and the Last activity column read the content time, as the sort does", async () => {
+  // list_pages orders by content_updated_at || updated_at. A content edit
+  // doesn't move updated_at, so this Page's catalog time is September while
+  // its last edit was half an hour ago, and it lists first.
+  const pages = [
+    {
+      page_id: id(1),
+      title: "Edited today",
+      updated_at: new Date(2026, 8, 2, 12).toISOString(),
+      content_updated_at: ago(HOUR / 2),
+    },
+    { page_id: id(2), title: "Renamed today", updated_at: ago(HOUR), content_updated_at: null },
+    {
+      page_id: id(3),
+      title: "Edited this week",
+      updated_at: ago(40 * 24 * HOUR),
+      content_updated_at: ago(3 * 24 * HOUR),
+    },
+  ];
+  const app = await mount(
+    createElement(
+      Library,
+      libraryProps({
+        tool: async () => ({ pages, next_cursor: null }),
+        view: { group: "date" },
+        clock: fixedClock(),
+      }),
+    ),
+  );
+  const { host } = app;
+  assert.deepEqual(
+    [...host.querySelectorAll(".library-group-heading .library-group-label")].map(
+      (label) => label.textContent,
+    ),
+    ["Today", "Previous 7 days"],
+    "groups follow the row order: no September between Today and this week",
+  );
+  assert.deepEqual(text(host, ".index-cell-updated [aria-hidden=true]"), ["30m", "1h", "3d"]);
+  assert.match(text(host, ".index-cell-updated .sr-only")[0], /^Last active 30 minutes ago, /);
+  await app.unmount();
+});
+
+test("choosing what already shows, like the current tab, pushes nothing", async () => {
+  const calls = [];
+  const views = [];
+  const app = await mount(
+    createElement(
+      Library,
+      libraryProps({
+        tool: catalogTool(calls),
+        clock: fixedClock(),
+        onViewChange: (view, how) => views.push([view, how]),
+      }),
+    ),
+  );
+  const before = calls.length;
+  await click(tab(app.host, "All"));
+  await settle();
+  assert.deepEqual(views, []);
+  assert.equal(calls.length, before);
+  await app.unmount();
+});
+
+test("a new view from Back or Forward applies in place: a grouping alone asks for nothing", async () => {
+  const calls = [];
+  const views = [];
+  let render;
+  const host = document.createElement("div");
+  document.body.replaceChildren(host);
+  const { createRoot } = await import("react-dom/client");
+  const root = createRoot(host);
+  const props = libraryProps({
+    tool: catalogTool(calls),
+    projects: PROJECTS,
+    clock: fixedClock(),
+    onViewChange: (view, how) => views.push([view, how]),
+  });
+  render = (view) => act(() => root.render(createElement(Library, { ...props, view })));
+  await render({});
+  await settle();
+  const listed = calls.length;
+  const group = menuButton(host, "Group");
+  group.focus();
+  // Back to ?group=project: the same rows, grouped.
+  await render({ group: "project" });
+  await settle();
+  assert.equal(calls.length, listed, "no request for a grouping");
+  assert.equal(menuButton(host, "Group").getAttribute("aria-label"), "Group: Project");
+  assert.ok(host.querySelector(".library-group"));
+  assert.equal(document.activeElement, group, "focus stays on the control");
+  // Back to ?show=shared&q=plan: one request, and the box shows the search.
+  await render({ access: "shared", query: "plan" });
+  await settle();
+  assert.equal(calls.length, listed + 1);
+  assert.deepEqual(calls.at(-1), { limit: 50, query: "plan", access: "shared" });
+  assert.equal(host.querySelector('input[type="search"]').value, "plan");
+  assert.equal(tab(host, "Shared with you").getAttribute("aria-pressed"), "true");
+  assert.deepEqual(views, [], "a view the owner handed in is never reported back");
+  await act(() => root.unmount());
+});
+
+test("a return visit paints the rows this tab showed, then refreshes them", async () => {
+  const cache = new ListingCache();
+  const replies = [];
+  const tool = (name, args) => {
+    const reply = deferred();
+    replies.push({ args, ...reply });
+    return reply.promise;
+  };
+  const props = libraryProps({ tool, principal: "alice", cache, clock: fixedClock() });
+  const first = await mount(createElement(Library, props));
+  assert.match(first.host.textContent, /Loading…/, "a first visit has nothing to paint");
+  for (const reply of replies)
+    reply.resolve({ pages: [{ page_id: id(1), title: "Roadmap" }], next_cursor: null });
+  await settle();
+  assert.deepEqual(text(first.host, ".index-row-link"), ["Roadmap"]);
+  await first.unmount();
+
+  replies.length = 0;
+  const again = await mount(createElement(Library, props));
+  assert.deepEqual(text(again.host, ".index-row-link"), ["Roadmap"], "painted from memory");
+  assert.doesNotMatch(again.host.textContent, /Loading…/);
+  assert.equal(again.host.querySelector(".library-results").getAttribute("aria-busy"), "true");
+  assert.ok(replies.length > 0, "and asked for again");
+  for (const reply of replies)
+    reply.resolve({
+      pages: [
+        { page_id: id(2), title: "New" },
+        { page_id: id(1), title: "Roadmap" },
+      ],
+      next_cursor: null,
+    });
+  await settle();
+  assert.deepEqual(text(again.host, ".index-row-link"), ["New", "Roadmap"]);
+  assert.equal(again.host.querySelector(".library-results").getAttribute("aria-busy"), "false");
+  await again.unmount();
+
+  // Another account remembers nothing.
+  replies.length = 0;
+  const bob = await mount(createElement(Library, { ...props, principal: "bob" }));
+  assert.deepEqual(text(bob.host, ".index-row-link"), []);
+  assert.match(bob.host.textContent, /Loading…/);
+  for (const reply of replies) reply.resolve({ pages: [], next_cursor: null });
+  await settle();
+  await bob.unmount();
 });

@@ -2,8 +2,9 @@
 // projects their rows.
 //
 // The store holds the machine state and the rows on screen. A page of rows
-// reaches the store only through the machine's `show` effect, so a superseded
-// request can't overwrite a newer one.
+// reaches the store only through the machine's `show` effect (or `paint`, for
+// rows remembered from earlier in this tab), so a superseded request can't
+// overwrite a newer one.
 //
 // A listing does nothing while disconnected: React connects it on mount and
 // disconnects it on unmount. Disconnecting abandons every request in flight,
@@ -13,6 +14,7 @@ import { Subject, asyncScheduler, debounceTime } from "rxjs";
 import { failureMessage } from "./alerts.mjs";
 import { listingMachine } from "./listing-machine.mjs";
 import { Store } from "./store.mjs";
+import { matchingPages } from "./page-list.mjs";
 import {
   LIBRARY_DEFAULTS,
   libraryRequest,
@@ -49,6 +51,7 @@ export class Listing {
   #fetch;
   #report;
   #idOf;
+  #cache;
   #newKey;
   #results = new Map();
   #searches = new Subject();
@@ -64,9 +67,13 @@ export class Listing {
    *   (libraryRequest), so equal params mean the same rows.
    * - report(message): show a failure in the screen's banner.
    * - idOf(item): a row's stable id.
+   * - cache: `{ read(params), write(params, items) }` (listing-cache.mjs
+   *   scope), or null. A load whose params it holds rows for paints them
+   *   while the first page is fetched again; each first page shown is
+   *   written back.
    */
   constructor(
-    { fetch, report = () => {}, idOf },
+    { fetch, report = () => {}, idOf, cache = null },
     {
       newKey = () => crypto.randomUUID(),
       debounce = SEARCH_DEBOUNCE_MS,
@@ -76,6 +83,7 @@ export class Listing {
     this.#fetch = fetch;
     this.#report = report;
     this.#idOf = idOf;
+    this.#cache = cache;
     this.#newKey = newKey;
     this.#debounce = debounce;
     this.#scheduler = scheduler;
@@ -108,10 +116,12 @@ export class Listing {
   }
   /** List `params` from its first page now, superseding any request in
    * flight. Params follow libraryRequest, so the request, the address and
-   * Back agree. */
+   * Back agree. Rows this tab showed for `params` before paint first. */
   load(params = DEFAULT_PARAMS) {
     if (!this.#connected) return false;
-    return this.#dispatch({ type: "load", key: this.#newKey(), params: libraryRequest(params) });
+    const next = libraryRequest(params);
+    const type = this.#cache?.read(next)?.length ? "restore" : "load";
+    return this.#dispatch({ type, key: this.#newKey(), params: next });
   }
   /** List `query`, with the other params unchanged, once typing pauses
    * (while connected). */
@@ -134,9 +144,15 @@ export class Listing {
     switch (effect.type) {
       case "fetch":
         return this.#request(effect);
+      case "paint": {
+        const items = this.#cache?.read(effect.params) ?? [];
+        this.store.update((current) => ({ ...current, items }));
+        return;
+      }
       case "show": {
         const items = this.#results.get(effect.key) ?? [];
         this.#results.delete(effect.key);
+        if (!effect.append) this.#cache?.write(this.snapshot().state.params, items);
         this.store.update((current) => ({
           ...current,
           items: effect.append ? appendRows(current.items, items, this.#idOf) : items,
@@ -178,9 +194,10 @@ const nextCursor = (result) =>
 
 /** One library request: the Pages the account can open, narrowed by
  * list_pages' title search, `access` and `project_id`, in its `sort` order.
- * Defaults stay off the wire, so the plain listing is the bare call. */
+ * Defaults stay off the wire, so the plain listing is the bare call.
+ * `onResult` sees each whole answer (its `quota`, for one). */
 export const pagesRequest =
-  (call, limit = PAGES_PER_REQUEST) =>
+  (call, { limit = PAGES_PER_REQUEST, onResult } = {}) =>
   async ({ params, cursor }) => {
     const { query, access, sort, projectId } = libraryRequest(params);
     const result = await call("list_pages", {
@@ -191,22 +208,34 @@ export const pagesRequest =
       ...(projectId ? { project_id: projectId } : {}),
       ...(cursor ? { cursor } : {}),
     });
+    onResult?.(result);
     return { items: result.pages ?? [], cursor: nextCursor(result) };
   };
 
 /** One /projects request. list_projects has no search or filter, so
- * `params` is unused. */
+ * `params` is unused. `first()`, when given, answers the first page: the
+ * shell's shared list_projects request (project-list.mjs), so /projects and
+ * the shell never ask for it twice. */
 export const projectsRequest =
-  (call, limit = PROJECTS_PER_REQUEST) =>
+  (call, { limit = PROJECTS_PER_REQUEST, first } = {}) =>
   async ({ cursor }) => {
-    const result = await call("list_projects", { limit, ...(cursor ? { cursor } : {}) });
+    const result =
+      !cursor && first
+        ? await first()
+        : await call("list_projects", { limit, ...(cursor ? { cursor } : {}) });
     return { items: result.projects ?? [], cursor: nextCursor(result) };
   };
 
-/** The time a library row shows in its Updated column. list_pages'
- * `updated_at` is when the catalog entry last changed, which a rename, move
- * or share also bumps; it is not the time of the last content edit. */
-export const updatedAt = (page) => page?.updated_at ?? null;
+/**
+ * When a Page was last active: the time the Last activity sort orders by, so
+ * the Last activity column and the date groups agree with the row order.
+ * list_pages items carry `content_updated_at` (when the Page host last
+ * accepted a content change, or null) and `updated_at` (when the catalog
+ * entry last changed: a rename, move or share). The server's `activity_at`
+ * key is `content_updated_at || updated_at` (worker/catalog-index.mjs
+ * activityKey); a local draft carries only `updated_at`.
+ */
+export const activityAt = (page) => page?.content_updated_at || page?.updated_at || null;
 
 /** A library row. Owned Pages in a Project name it; a Project the account
  * can't list (or that hasn't loaded) still links by ID. Shared Pages never
@@ -218,7 +247,7 @@ export function pageRow(page, projectTitles = new Map(), { local = false } = {})
     id: page.page_id,
     title: page.title || "Untitled",
     href: pagePath(page.page_id),
-    updatedAt: updatedAt(page),
+    activityAt: activityAt(page),
     project: projectId
       ? {
           id: projectId,
@@ -236,17 +265,19 @@ export function pageRow(page, projectTitles = new Map(), { local = false } = {})
  * The local catalog's Pages (local-catalog.mjs) the library shows above the
  * server's rows: drafts that haven't reached the server, and, when the
  * listing failed (offline), every copy this browser holds. They show on All
- * and Your items with no search or Project filter, since they carry no
- * Project and the search runs on the server. A copy the server rows already
- * hold shows once, as the server's row. Copies of shared Pages look the
- * same as owned ones locally, so the offline fallback shows on All only.
+ * and Your items with no Project filter, since they carry no Project. The
+ * server's search can't see them, so a search keeps those whose title holds
+ * it (matchingPages, the Browse picker's rule). A copy the server rows
+ * already hold shows once, as the server's row. Copies of shared Pages look
+ * the same as owned ones locally, so the offline fallback shows on All only.
  */
 export function deviceRows(local, items, view, { failed = false } = {}) {
-  if (view.query || view.projectId || view.access === "shared") return [];
+  if (view.projectId || view.access === "shared") return [];
   const listed = new Set(items.map((page) => page.page_id));
-  return (local ?? []).filter(
+  const kept = (local ?? []).filter(
     (page) => !listed.has(page.page_id) && (page.pending || (failed && view.access === null)),
   );
+  return view.query ? matchingPages(kept, view.query) : kept;
 }
 
 /** Project titles by ID, for the Project label on library rows. */
@@ -272,6 +303,9 @@ export function listingView({ state, items }) {
     loading: busy && items.length === 0,
     // A new search runs while the previous rows still show.
     searching: busy && items.length > 0,
+    // Rows remembered from earlier in this tab show while their first page
+    // is fetched again. Nothing says so: they are the rows the account saw.
+    refreshing: state.name === "refreshing",
     failed: state.name === "failed",
     empty: state.name === "ready" && items.length === 0,
     canLoadMore: state.name === "ready" && state.cursor !== null,

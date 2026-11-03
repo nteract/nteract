@@ -7,15 +7,20 @@
 // UI state only: the search box's text, the grouping and the display. The
 // view (search, tab, Project, sort, grouping) lives in the address, which the
 // owner writes through onViewChange: a choice pushes a history entry, so
-// Back undoes it; a typed search replaces the entry.
+// Back undoes it; a typed search replaces the entry. Back and Forward between
+// two library addresses hand the mounted library its new `view`: a grouping
+// alone changes nothing on the wire, and focus stays where it was.
+//
+// A first page this tab showed before paints from memory (listing-cache.mjs)
+// while the Listing asks for it again, so a return visit never starts blank.
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import {
   ArrowDownUp,
   Boxes,
+  Copy,
   FileText,
   Home,
   LayoutGrid,
-  Link as LinkIcon,
   List,
   Plus,
   Rows3,
@@ -27,8 +32,10 @@ import {
   clampPagesQuery,
   groupApplies,
   libraryRequest,
+  libraryPath,
   normalizeLibraryView,
   sameLibraryRequest,
+  sameLibraryView,
 } from "../shared/routes.mjs";
 import {
   Listing,
@@ -38,7 +45,8 @@ import {
   pagesRequest,
   projectTitles,
 } from "./listing.mjs";
-import { groupRows } from "./library-groups.mjs";
+import { DEVICE_GROUP, groupRows } from "./library-groups.mjs";
+import { listingCache } from "./listing-cache.mjs";
 import { useStore } from "./store.mjs";
 import { readDisplayMode, writeDisplayMode } from "./display-mode.mjs";
 import { timeCell } from "./relative-time.mjs";
@@ -59,6 +67,10 @@ export const SHARED_PROJECT_REASON =
   "Projects hold only your own Pages. Switch to All or Your items to filter by Project.";
 /** Why date groups are unavailable under the title sort. */
 export const DATE_GROUP_REASON = "Sort by Last activity to group by date";
+/** The Project menu's label for a `project` the account can't list. */
+export const UNKNOWN_PROJECT = "Unknown Project";
+/** What the library says about a Project filter it can't name. */
+export const UNKNOWN_PROJECT_MESSAGE = "This Project isn't one you can open.";
 
 /** What an empty listing says, for the view it listed. */
 export function emptyMessage(params) {
@@ -75,8 +87,10 @@ const typing = (target) =>
 
 export function Library({
   tool,
-  view: initial,
+  principal = null,
+  view: shown,
   projects,
+  projectsReady = false,
   drafts = [],
   notice = "",
   creating = false,
@@ -91,19 +105,27 @@ export function Library({
   onWarm,
   onError,
   onRetry,
+  onQuota,
+  cache = listingCache,
   clock: givenClock,
 }) {
-  const start = useMemo(() => normalizeLibraryView(initial), []);
+  const start = useMemo(() => normalizeLibraryView(shown), []);
   const [text, setText] = useState(start.query);
   const [group, setGroup] = useState(start.group);
   const clock = useConnected(() => givenClock ?? new Clock());
   const now = useStore(clock.store);
+  // The owner's latest callbacks, for the listing's subscription and replies.
+  const latest = useRef(null);
+  latest.current = { onViewChange, onQuota };
   const listing = useConnected(
     () =>
       new Listing({
-        fetch: pagesRequest(tool),
+        fetch: pagesRequest(tool, {
+          onResult: (result) => latest.current.onQuota?.(result?.quota ?? null),
+        }),
         report: onError,
         idOf: (page) => page.page_id,
+        cache: cache?.scope(principal) ?? null,
       }),
   );
   // The request the address last showed. Mounting lists the route's own view,
@@ -120,21 +142,39 @@ export function Library({
       .subscribe((listed) => {
         if (!listed || sameLibraryRequest(listed, reported.current)) return;
         reported.current = listed;
-        onViewChange(normalizeLibraryView({ ...listed, group: groupNow.current }), {
+        latest.current.onViewChange(normalizeLibraryView({ ...listed, group: groupNow.current }), {
           replace: true,
         });
       });
     return () => subscription.unsubscribe();
   }, [listing]);
+  // A new `view` from the owner (Back or Forward to another library address)
+  // takes effect here; one this library reported itself already shows.
+  const shownKey = libraryPath("/", normalizeLibraryView(shown));
+  const applied = useRef(shownKey);
+  useEffect(() => {
+    if (applied.current === shownKey) return;
+    applied.current = shownKey;
+    const next = normalizeLibraryView(shown);
+    setGroup(next.group);
+    if (sameLibraryRequest(next, listing.params())) return;
+    setText(next.query);
+    reported.current = libraryRequest(next);
+    listing.load(next);
+  }, [shownKey, listing]);
   const snapshot = useStore(listing.store);
   const view = listingView(snapshot);
   // The params a choice starts from: what is listed, with the text typed so
-  // far, so a choice made mid-search carries it.
+  // far, so a choice made mid-search carries it. Choosing what already shows
+  // (the current tab, say) does nothing, unless the listing failed.
   const choose = (patch) => {
-    const next = normalizeLibraryView({ ...listing.params(), query: text, group, ...patch });
+    const current = normalizeLibraryView({ ...listing.params(), query: text, group });
+    const next = normalizeLibraryView({ ...current, ...patch });
+    if (sameLibraryView(next, current) && !view.failed) return;
     setGroup(next.group);
     reported.current = libraryRequest(next);
-    onViewChange(next, { replace: false });
+    applied.current = libraryPath("/", next);
+    latest.current.onViewChange(next, { replace: false });
     if (!sameLibraryRequest(next, listing.params()) || view.failed) listing.load(next);
   };
 
@@ -175,15 +215,24 @@ export function Library({
 
   // The controls show what was chosen, which a slow request hasn't listed yet.
   const chosen = normalizeLibraryView({ ...params, query: text, group });
+  // A `project` the account's Projects don't include: deleted, someone
+  // else's, or mistyped. Until they load it is only not named yet.
+  const unknownProject =
+    !!chosen.projectId &&
+    projectsReady &&
+    !(projects ?? []).some((project) => project.project_id === chosen.projectId);
   const projectChoices = useMemo(() => {
     const known = (projects ?? []).map((project) => ({
       value: project.project_id,
       label: project.title || "Untitled",
     }));
     if (chosen.projectId && !known.some((choice) => choice.value === chosen.projectId))
-      known.unshift({ value: chosen.projectId, label: "Project" });
+      known.unshift({
+        value: chosen.projectId,
+        label: unknownProject ? UNKNOWN_PROJECT : "Project",
+      });
     return [{ value: null, label: "Any project" }, ...known];
-  }, [projects, chosen.projectId]);
+  }, [projects, chosen.projectId, unknownProject]);
   const groupChoices = [
     { value: null, label: "None", short: "No grouping" },
     { value: "project", label: "Project", short: "By Project" },
@@ -196,12 +245,13 @@ export function Library({
     },
   ];
   const Rows = display === "grid" ? PageGrid : PageList;
-  const empty = view.empty && rows.length === 0;
+  const empty = view.empty && rows.length === 0 && !unknownProject;
   return (
     <main className="page-library index-view library-view">
       <IndexNav current="pages" onNavigate={onNavigate} />
       <div className="library-header">
-        <h1>Pages</h1>
+        {/* Phones hide it from view: the nav above already says Pages. */}
+        <h1 className="library-title">Pages</h1>
         <form
           className="index-search library-search-form"
           role="search"
@@ -291,6 +341,18 @@ export function Library({
           {notice}
         </p>
       )}
+      {unknownProject && (
+        <p className="library-filter-notice" role="status">
+          <span>{UNKNOWN_PROJECT_MESSAGE}</span>
+          <button
+            type="button"
+            className="subtle-button"
+            onClick={() => choose({ projectId: null })}
+          >
+            Clear Project filter
+          </button>
+        </p>
+      )}
       {view.searching && (
         <p role="status" className="muted index-searching">
           {params.query || text ? "Searching…" : "Loading…"}
@@ -301,7 +363,7 @@ export function Library({
           Loading…
         </p>
       )}
-      {view.failed && (
+      {view.failed && !unknownProject && (
         <p className="index-status">
           <button className="subtle-button" onClick={() => onRetry(() => listing.load(params))}>
             Try again
@@ -312,7 +374,8 @@ export function Library({
       {rows.length > 0 && (
         <Rows
           sections={sections}
-          busy={view.searching}
+          grouping={shownGroup}
+          busy={view.searching || view.refreshing}
           now={now}
           onOpen={onOpen}
           onOpenProject={onOpenProject}
@@ -363,9 +426,9 @@ const PageIcon = ({ home, className, size }) =>
     <FileText className={className} size={size} aria-hidden="true" />
   );
 
-/** A row's Updated time: the compact label on screen, and the relative and
- * full local time for screen readers. */
-function UpdatedTime({ value, now }) {
+/** A row's Last activity time: the compact label on screen, and the relative
+ * and full local time for screen readers ("Last active 2 days ago, …"). */
+function ActivityTime({ value, now }) {
   const cell = timeCell(value, now);
   const Tag = cell.dateTime ? "time" : "span";
   return (
@@ -420,14 +483,16 @@ function Sections({ sections, onOpenProject, children }) {
   );
 }
 
-/** Where a row comes from, in the Source column. */
-function Source({ row, onOpenProject }) {
-  if (row.local)
+/** Where a row comes from, in the Source column. A row only this browser
+ * holds says "On this device", unless its group heading already does. */
+function Source({ row, grouping, onOpenProject }) {
+  if (row.local && grouping)
     return (
-      <span className="index-row-local">
-        {row.local === "pending" ? "Saved locally" : "On this device"}
+      <span className="index-row-none" aria-hidden="true">
+        —
       </span>
     );
+  if (row.local) return <span className="index-row-local">{DEVICE_GROUP.label}</span>;
   if (row.project)
     return (
       <a
@@ -448,17 +513,22 @@ function Source({ row, onOpenProject }) {
   );
 }
 
-/** List mode: Name, Source and Updated columns, and a Copy link action. The
- * column labels are visual only; each cell names itself to assistive tech.
- * The Name link covers the row; the Project label and Copy link sit above it
- * as their own targets. */
-function PageList({ sections, busy, now, onOpen, onOpenProject, onCopyLink, onWarm }) {
+/** List mode: Name, Source and Last activity columns, and a Copy link
+ * action. The column labels are visual only; each cell names itself to
+ * assistive tech. The Name link covers the row; the Project label and Copy
+ * link sit above it as their own targets. Grouped by Project, the group
+ * heading names each row's source, so the Source column goes. */
+function PageList({ sections, grouping, busy, now, onOpen, onOpenProject, onCopyLink, onWarm }) {
+  const source = grouping !== "project";
   return (
-    <div className="index-table library-results" aria-busy={busy}>
+    <div
+      className={`index-table library-results${source ? "" : " index-table-no-source"}`}
+      aria-busy={busy}
+    >
       <div className="index-columns" aria-hidden="true">
         <span className="index-column-name">Name</span>
-        <span className="index-column-source">Source</span>
-        <span className="index-column-updated">Updated</span>
+        {source && <span className="index-column-source">Source</span>}
+        <span className="index-column-updated">Last activity</span>
         <span />
       </div>
       <Sections sections={sections} onOpenProject={onOpenProject}>
@@ -477,11 +547,13 @@ function PageList({ sections, busy, now, onOpen, onOpenProject, onCopyLink, onWa
                     {row.title}
                   </a>
                 </div>
-                <div className="index-cell-source">
-                  <Source row={row} onOpenProject={onOpenProject} />
-                </div>
+                {source && (
+                  <div className="index-cell-source">
+                    <Source row={row} grouping={grouping} onOpenProject={onOpenProject} />
+                  </div>
+                )}
                 <div className="index-cell-updated">
-                  <UpdatedTime value={row.updatedAt} now={now} />
+                  <ActivityTime value={row.activityAt} now={now} />
                 </div>
                 <div className="index-cell-actions">
                   <button
@@ -491,7 +563,7 @@ function PageList({ sections, busy, now, onOpen, onOpenProject, onCopyLink, onWa
                     title="Copy link"
                     onClick={() => onCopyLink(row.id)}
                   >
-                    <LinkIcon size={16} aria-hidden="true" />
+                    <Copy size={16} aria-hidden="true" />
                   </button>
                 </div>
               </li>
