@@ -1,9 +1,11 @@
 import { orderedBlockIds } from "./order.mjs";
+import { DATAFRAME_TITLE_MAX, parseAssetPath, readDataframe } from "../shared/dataset-assets.mjs";
 import {
   exportMarkdown,
   isRich,
   parseMarkdown,
   projectedBlock,
+  quotableNodeType,
   richDoc,
   schema,
 } from "./richtext.mjs";
@@ -103,7 +105,7 @@ function indexNodes(doc) {
   for (const blockId of orderedBlockIds(doc)) {
     const block = doc.blocks[blockId],
       tree = isRich(block)
-        ? richDoc(block)
+        ? richDoc(block, doc.page_id)
         : parseMarkdown(block.markdown ?? "", { kind: block.kind ?? "markdown" });
     trees.set(blockId, tree);
     tree.forEach((node, _offset, nodeIndex) => {
@@ -121,7 +123,84 @@ function indexNodes(doc) {
   return { nodes, trees };
 }
 
-function outlineEntry(entry) {
+/** The most per-item values (task states, column alignments) an outline
+ * entry lists. One entry can't be split across outline pages, so its size
+ * stays bounded; the change feed, which already carries the node's Markdown,
+ * lists them all. */
+export const OUTLINE_MAX_ITEMS = 200;
+
+const bounded = (name, values, max) =>
+  values.length > max
+    ? { [name]: values.slice(0, max), [`${name}_truncated`]: true }
+    : { [name]: values };
+
+/** The typed read of a top-level node, as fields to spread into an outline
+ * entry or a changed node:
+ *
+ * - `attrs`: the node's own stored attributes, under the names set_node and
+ *   insert_node take (`level`, `language`, a dataframe's `asset_id`).
+ * - `summary`: values computed from the node's children (a task list's
+ *   states, a table's size and column alignment).
+ * - `node_type`: the type of a node this build doesn't know.
+ * - `readable: false`: a dataframe this build can't show. richDoc already
+ *   reads one naming another Page's asset as a notice paragraph, so this is
+ *   the backstop if one reaches here: nothing of its stored attrs is
+ *   reported.
+ *
+ * Nested lists read as their own Markdown. `maxItems` bounds per-item
+ * arrays. */
+export function nodeFields(node, { pageId, maxItems = Infinity } = {}) {
+  switch (node.type.name) {
+    case "heading":
+      return { attrs: { level: node.attrs.level } };
+    case "code_block":
+      return { attrs: { language: String(node.attrs.params ?? "") } };
+    case "task_list": {
+      const checked = [];
+      node.forEach((item) => checked.push(item.attrs.checked === true));
+      return {
+        summary: {
+          items: checked.length,
+          checked_count: checked.filter(Boolean).length,
+          ...bounded("checked", checked, maxItems),
+        },
+      };
+    }
+    case "table": {
+      // As wide as its widest row, like its Markdown; a concurrent structural
+      // edit can leave rows ragged. Alignment comes from the first row.
+      let columns = 0;
+      node.forEach((row) => (columns = Math.max(columns, row.childCount)));
+      const align = Array.from({ length: columns }, () => null);
+      node.firstChild?.forEach((cell, _offset, index) => (align[index] = cell.attrs.align ?? null));
+      return { summary: { rows: node.childCount, columns, ...bounded("align", align, maxItems) } };
+    }
+    case "dataframe": {
+      // The same check the Markdown projection and the viewer make: a
+      // dataframe is readable only when it names an asset on this Page.
+      const value = readDataframe(node.attrs);
+      const asset = value && parseAssetPath(value.src);
+      if (!asset || (pageId && asset.pageId !== pageId)) return { readable: false };
+      return {
+        attrs: {
+          asset_id: asset.assetId,
+          src: value.src,
+          media_type: value.media_type,
+          // Writers cap a title; a peer-written one can be longer.
+          title: value.title?.slice(0, DATAFRAME_TITLE_MAX) ?? null,
+        },
+      };
+    }
+    case "unknownBlock":
+      return {
+        node_type: quotableNodeType(node.attrs.unknownBlock?.type ?? node.attrs.unknownParentBlock),
+      };
+    default:
+      return {};
+  }
+}
+
+function outlineEntry(entry, pageId) {
   return {
     block_id: entry.blockId,
     node_index: entry.nodeIndex,
@@ -130,6 +209,7 @@ function outlineEntry(entry) {
     // Bytes of this node's standalone Markdown projection, excluding inter-node separators.
     markdown_bytes: utf8.encode(markdownFor([entry.node])).byteLength,
     ...(entry.heading !== undefined ? { heading: entry.heading, level: entry.level } : {}),
+    ...nodeFields(entry.node, { pageId, maxItems: OUTLINE_MAX_ITEMS }),
   };
 }
 
@@ -241,7 +321,7 @@ export function projectReadContent(doc, args = {}) {
     ids = args.block_ids ? new Set(args.block_ids) : null,
     inScope = (entry) => !ids || ids.has(entry.blockId),
     chosen = selectedNodes(nodes, trees, args, inScope),
-    outline = nodes.filter(inScope).map(outlineEntry),
+    outline = nodes.filter(inScope).map((entry) => outlineEntry(entry, doc.page_id)),
     orderedIds = [...trees.keys()].filter((id) => !ids || ids.has(id));
   return {
     blocks:
@@ -249,7 +329,7 @@ export function projectReadContent(doc, args = {}) {
         ? []
         : chosen.selection
           ? projectedSlices(doc, chosen.nodes)
-          : orderedIds.map((id) => projectedBlock(doc.blocks[id])),
+          : orderedIds.map((id) => projectedBlock(doc.blocks[id], doc.page_id)),
     outline,
     ...(chosen.selection
       ? { selection: chosen.selection }

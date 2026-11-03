@@ -1146,12 +1146,14 @@ test("rollback: storage written here stays readable by older builds", async (t) 
   assert.equal(Object.hasOwn(record, "project_id"), false);
 
   // Builds that know fewer migrations (1-3 before Spaces, 1-4 before the
-  // title listing index) run against this schema unchanged.
+  // title listing index, 1-5 before content activity) run against this
+  // schema unchanged.
   const latest = CATALOG_MIGRATIONS.at(-1).version;
-  assert.equal(latest, 5);
+  assert.equal(latest, 6);
   assert.equal(await migrateCatalogIndex(w.db), latest);
   assert.equal(await migrateCatalogIndex(w.db, CATALOG_MIGRATIONS.slice(0, 3)), latest);
   assert.equal(await migrateCatalogIndex(w.db, CATALOG_MIGRATIONS.slice(0, 4)), latest);
+  assert.equal(await migrateCatalogIndex(w.db, CATALOG_MIGRATIONS.slice(0, 5)), latest);
   // Page reports write no D1 location: the owner's Catalog records it.
   const reported = crypto.randomUUID();
   await reportPageIndex(w.env, testCtx, {

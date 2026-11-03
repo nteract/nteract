@@ -14,6 +14,11 @@
  * stopped by its bound can still return a cursor positioned over stale rows
  * whose snapshots the caller was previously authorized to see.
  *
+ * Activity order follows `activity_at`: the time the Page host last accepted
+ * a content change (`content_updated_at`, content-activity.mjs), else the
+ * row's `updated_at`. Content times only move forward. A listing shows a
+ * shared row's content time from its Page host's check, never from D1.
+ *
  * Migrations are append-only and additive. Older builds ignore these tables,
  * and a build must keep working against a schema version newer than it knows.
  *
@@ -24,6 +29,7 @@
 import { pageGrant, pageState } from "./access.mjs";
 import { HttpError } from "./auth.mjs";
 import { catalogTitle, listAll } from "./catalog.mjs";
+import { validTime } from "./content-activity.mjs";
 import { configuredDomainView } from "./domain-access.mjs";
 import { validPageId } from "./registration.mjs";
 import { holdUntilSettled } from "./request-hold.mjs";
@@ -119,6 +125,30 @@ export const CATALOG_MIGRATIONS = Object.freeze([
     statements: Object.freeze([
       `CREATE INDEX IF NOT EXISTS pages_catalog_access_title
         ON pages_catalog_access (principal, title_search, page_id)`,
+    ]),
+  }),
+  // When each Page's content last changed, as its host reports it, and the
+  // two keys the activity and created sorts page by within a principal.
+  // `activity_at` is generated, so every writer keeps it right, including a
+  // build that predates it: the content time once known, else `updated_at`.
+  // `created_at` is copied from the Page row; a row a build without it
+  // inserts holds '' (sorts last) until this build rewrites it.
+  Object.freeze({
+    version: 6,
+    name: "content_activity_listing",
+    statements: Object.freeze([
+      "ALTER TABLE pages_catalog_pages ADD COLUMN content_updated_at TEXT",
+      "ALTER TABLE pages_catalog_access ADD COLUMN content_updated_at TEXT",
+      "ALTER TABLE pages_catalog_access ADD COLUMN created_at TEXT NOT NULL DEFAULT ''",
+      `ALTER TABLE pages_catalog_access ADD COLUMN activity_at TEXT
+        GENERATED ALWAYS AS (coalesce(content_updated_at, updated_at)) VIRTUAL`,
+      `UPDATE pages_catalog_access SET created_at = coalesce(
+        (SELECT created_at FROM pages_catalog_pages p WHERE p.page_id = pages_catalog_access.page_id),
+        '')`,
+      `CREATE INDEX IF NOT EXISTS pages_catalog_access_activity
+        ON pages_catalog_access (principal, activity_at DESC, page_id DESC)`,
+      `CREATE INDEX IF NOT EXISTS pages_catalog_access_created
+        ON pages_catalog_access (principal, created_at DESC, page_id DESC)`,
     ]),
   }),
 ]);
@@ -322,10 +352,15 @@ const lifecycleOf = (metadata) => metadata?.lifecycleRevision ?? 0;
 const lifecycleGuard = (pageId) =>
   `? >= coalesce((SELECT lifecycle_revision FROM pages_catalog_pages WHERE page_id = ${pageId}), 0)`;
 
+/** SQL for the later of two nullable timestamps. SQLite's two-argument max()
+ * returns NULL when either is NULL. */
+const laterSql = (a, b) => `nullif(max(coalesce(${a}, ''), coalesce(${b}, '')), '')`;
+
 /** Title follows the latest observation time. Lifecycle state follows the
  * newest lifecycle revision, then observation time within one revision.
  * Location lives in the owner's Catalog, and these rows don't carry it. The ACL and
- * lifecycle revisions only move forward. A deleted tombstone never changes
+ * lifecycle revisions only move forward, and so does `content_updated_at`:
+ * a delayed report can't move it back. A deleted tombstone never changes
  * again. */
 function pageUpsert(db, page) {
   const title = catalogTitle(page.title);
@@ -336,9 +371,10 @@ function pageUpsert(db, page) {
     .prepare(
       `INSERT INTO pages_catalog_pages
         (page_id, owner, title, title_search, state, created_at, updated_at, trashed_at,
-          acl_revision, lifecycle_revision)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          acl_revision, lifecycle_revision, content_updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT (page_id) DO UPDATE SET
+        content_updated_at = ${laterSql("pages_catalog_pages.content_updated_at", "excluded.content_updated_at")},
         title = CASE WHEN excluded.updated_at >= pages_catalog_pages.updated_at
           THEN excluded.title ELSE pages_catalog_pages.title END,
         title_search = CASE WHEN excluded.updated_at >= pages_catalog_pages.updated_at
@@ -363,6 +399,7 @@ function pageUpsert(db, page) {
       page.trashed_at ?? null,
       page.revision ?? 0,
       page.lifecycle ?? 0,
+      validTime(page.content_updated_at) ? page.content_updated_at : null,
     );
 }
 
@@ -411,7 +448,11 @@ function deleteDomainReaders(db, pageId, domain, memberKeys, revision, lifecycle
  * from Page host reports (members on title changes, a domain reader when it
  * opens the Page) and from account reconciliation after the Page host
  * verifies the principal. Owner rows imported from the owner's own Catalog
- * are unguarded: ownership never changes. */
+ * are unguarded: ownership never changes.
+ *
+ * Each row copies the Page row's `created_at` and `content_updated_at`, so
+ * call this after `pageUpsert` in the same batch. The content time only moves
+ * forward. */
 function upsertAccess(
   db,
   pageId,
@@ -423,16 +464,18 @@ function upsertAccess(
   return db
     .prepare(
       `INSERT INTO pages_catalog_access
-        (page_id, principal, role, source, domain, updated_revision, updated_at, title, title_search)
+        (page_id, principal, role, source, domain, updated_revision, updated_at, title, title_search,
+          created_at, content_updated_at)
       SELECT ?, json_extract(value, '$.principal'), json_extract(value, '$.role'),
-        json_extract(value, '$.source'), json_extract(value, '$.domain'), ?, ?, ?, ?
+        json_extract(value, '$.source'), json_extract(value, '$.domain'), ?, ?, ?, ?,
+        coalesce(p.created_at, ''), p.content_updated_at
       FROM json_each(?)
-      WHERE EXISTS (
-        SELECT 1 FROM pages_catalog_pages
-        WHERE page_id = ? AND state != 'deleted'
-          AND (? = 1 OR (acl_revision <= ? AND lifecycle_revision <= ?))
-      )
+      JOIN pages_catalog_pages p ON p.page_id = ?
+      WHERE p.state != 'deleted'
+        AND (? = 1 OR (p.acl_revision <= ? AND p.lifecycle_revision <= ?))
       ON CONFLICT (page_id, principal) DO UPDATE SET
+        created_at = excluded.created_at,
+        content_updated_at = ${laterSql("pages_catalog_access.content_updated_at", "excluded.content_updated_at")},
         role = excluded.role, source = excluded.source, domain = excluded.domain,
         title = CASE WHEN excluded.updated_at >= pages_catalog_access.updated_at
           THEN excluded.title ELSE pages_catalog_access.title END,
@@ -472,11 +515,12 @@ function deleteObserved(db, pageId, principal, revision, updatedAt = null) {
 }
 
 /** Full reconcile from a Page DO's committed host record. Runs after commit,
- * so it may add grants. A deleted Page is retired, never reported. */
+ * so it may add grants. A deleted Page is retired, never reported.
+ * `contentUpdatedAt` is the host's newest content time, when it has one. */
 export async function reportPageIndex(
   env,
   ctx,
-  { metadata, title, observedAt, reader, readerOnly },
+  { metadata, title, observedAt, reader, readerOnly, contentUpdatedAt },
 ) {
   const state = indexedState(metadata);
   if (state === "deleted") return;
@@ -500,6 +544,7 @@ export async function reportPageIndex(
       trashed_at: state === "trashed" ? trashedAt(metadata) : null,
       revision,
       lifecycle,
+      content_updated_at: contentUpdatedAt,
     }),
     deleteUnlisted(db, pageId, listed, revision, lifecycle),
     deleteDomainReaders(
@@ -511,6 +556,33 @@ export async function reportPageIndex(
       lifecycle,
     ),
     upsertAccess(db, pageId, rows, revision, { title, updatedAt: observedAt, lifecycle }),
+  ]);
+}
+
+/** Record a Page host's newest content time on its Page row and every access
+ * row, in one batch. The time only moves forward, so a delayed report
+ * changes nothing once a newer one has landed, and rows already at or past
+ * it aren't rewritten. It inserts nothing: a Page without rows waits for its
+ * next full report. Every principal's row gets the same time; a row for
+ * someone who can no longer read the Page still lists nothing, because each
+ * shared row is verified with its Page host before it is shown. */
+export async function reportContentActivity(env, ctx, { pageId, contentUpdatedAt }) {
+  if (!validTime(contentUpdatedAt)) throw new TypeError("contentUpdatedAt must be an ISO time");
+  const db = await catalogIndexDatabase(env, ctx);
+  const stale = "(content_updated_at IS NULL OR content_updated_at < ?)";
+  await db.batch([
+    db
+      .prepare(
+        `UPDATE pages_catalog_pages SET content_updated_at = ?
+        WHERE page_id = ? AND state != 'deleted' AND ${stale}`,
+      )
+      .bind(contentUpdatedAt, pageId, contentUpdatedAt),
+    db
+      .prepare(
+        `UPDATE pages_catalog_access SET content_updated_at = ?
+        WHERE page_id = ? AND ${stale}`,
+      )
+      .bind(contentUpdatedAt, pageId, contentUpdatedAt),
   ]);
 }
 
@@ -671,7 +743,10 @@ const cursorContext = ({ principal, needle, inTrash, scope }) =>
  * access and sort filters), and it expires after `cursorMaxAgeMs`. A position
  * with a string `title_search` carries it as a fourth element; without one the
  * payload keeps its three-element shape, which every build since sealed
- * cursors opens. Callers pass exactly the keyset fields their order needs. */
+ * cursors opens. Callers pass exactly the keyset fields their order needs.
+ * `updated_at` holds the order's time key: `activity_at` for the activity
+ * sort, `created_at` for the created sort, `updated_at` for Spaces. The
+ * scope names the sort, so a position never opens under another order. */
 export async function sealCursor(
   env,
   context,
@@ -748,8 +823,9 @@ export const LIST_MAX_LIMIT = 100;
  *
  * `access` narrows the listing to owned Pages ("owned") or Pages shared with
  * the caller ("shared"); null lists both. `sort` is "activity" (newest
- * `updated_at` first) or "title" (title key ascending, then Page ID). Null or
- * omitted `access` and `sort` mean the defaults. Trash and Projects hold only
+ * `activity_at` first: the content time, else `updated_at`), "created"
+ * (newest `created_at` first) or "title" (title key ascending, then Page
+ * ID). Null or omitted `access` and `sort` mean the defaults. Trash and Projects hold only
  * owned Pages, so "shared" refuses in_trash and project_id rather than
  * answering an empty list that looks like a real one. */
 export function parseListArguments(args = {}) {
@@ -779,8 +855,7 @@ export function parseListArguments(args = {}) {
     options.access = args.access;
   }
   if (args.sort !== undefined && args.sort !== null) {
-    if (args.sort !== "activity" && args.sort !== "title")
-      throw fail("sort must be activity or title");
+    if (!Object.hasOwn(ORDERS, args.sort)) throw fail("sort must be activity, created or title");
     options.sort = args.sort;
   }
   if (args.space_id !== undefined && args.space_id !== null)
@@ -826,24 +901,28 @@ export function parseListArguments(args = {}) {
   return options;
 }
 
-/** Cursor scope for a filtered listing. A listing with no location, kind or
- * access filter in the default sort scopes to undefined, the exact value
- * builds before `access` and `sort` sealed with, so their cursors still
- * open. `access` and a title sort append to the scope, so a cursor never
- * opens under a different filter or order. */
+/** The sort each scope names. Activity positions are `activity_at` values,
+ * which earlier builds never sealed: their activity cursors held `updated_at`
+ * and opened under no scope, or a scope without a sort, or with "activity".
+ * Naming this order "content_activity" makes every one of those fail with
+ * `invalid_cursor` rather than seek the new order with an old key. Title
+ * positions mean what they did, so a title cursor keeps its scope. */
+const SCOPE_SORTS = Object.freeze({
+  activity: "content_activity",
+  created: "created",
+  title: "title",
+});
+
+/** Cursor scope for a listing: its location, kind, access and sort, so a
+ * cursor never opens under a different filter or order. */
 export function listScope(options) {
-  const order =
-    options.access || (options.sort ?? "activity") !== "activity"
-      ? [options.access ?? null, options.sort]
-      : [];
-  if (!options.spaceId && options.parentId === undefined && !options.kind && !order.length)
-    return undefined;
   return JSON.stringify([
-    options.spaceId,
+    options.spaceId ?? null,
     options.parentId ?? null,
     options.parentId === undefined,
-    options.kind,
-    ...order,
+    options.kind ?? null,
+    options.access ?? null,
+    SCOPE_SORTS[options.sort ?? "activity"],
   ]);
 }
 
@@ -873,20 +952,28 @@ export function compareText(a, b) {
   return a.length < b.length ? -1 : 1;
 }
 
-const sortKey = (row) => row.updated_at ?? "";
+/** The activity key: the Page's content time once known, else `updated_at`.
+ * The index generates `activity_at` with the same rule. */
+export const activityKey = (row) => row.content_updated_at || row.updated_at || "";
 const comparePageIds = (a, b) => (a.page_id < b.page_id ? -1 : a.page_id > b.page_id ? 1 : 0);
+/** Newest first by an ISO time key (plain `<` is byte order over ASCII), then
+ * Page ID descending. A missing key is "" and sorts last, as SQLite puts ''
+ * after every timestamp in a descending index. */
+const newestBy = (key) => ({
+  key,
+  compare: (a, b) => (key(a) === key(b) ? -comparePageIds(a, b) : key(a) < key(b) ? 1 : -1),
+  follows: (row, position) =>
+    !position ||
+    key(row) < position.updated_at ||
+    (key(row) === position.updated_at && row.page_id < position.page_id),
+});
 /** One listing order: `compare` sorts candidate rows, and `follows(row,
  * position)` keeps the rows strictly after a cursor position. Each matches
- * the ORDER BY and keyset condition of the same sort in `listingQuery`. */
+ * the ORDER BY and keyset condition of the same sort in `listingQuery`. A
+ * time-keyed order's `key(row)` is the value its cursor seals. */
 const ORDERS = {
-  activity: {
-    compare: (a, b) =>
-      sortKey(a) === sortKey(b) ? -comparePageIds(a, b) : sortKey(a) < sortKey(b) ? 1 : -1,
-    follows: (row, position) =>
-      !position ||
-      sortKey(row) < position.updated_at ||
-      (sortKey(row) === position.updated_at && row.page_id < position.page_id),
-  },
+  activity: newestBy((row) => row.activity_at ?? activityKey(row)),
+  created: newestBy((row) => row.created_at ?? ""),
   title: {
     compare: (a, b) =>
       compareText(a.title_search ?? "", b.title_search ?? "") || comparePageIds(a, b),
@@ -898,17 +985,18 @@ const ORDERS = {
   },
 };
 const listOrder = (sort) => ORDERS[sort] ?? ORDERS.activity;
-const newestFirst = ORDERS.activity.compare;
-const before = ORDERS.activity.follows;
+/** Spaces list by `updated_at`, newest first. */
+const SPACE_ORDER = newestBy((row) => row.updated_at ?? "");
+const newestFirst = SPACE_ORDER.compare;
+const before = SPACE_ORDER.follows;
 
-/** The keyset position a cursor seals for `row`. A title-sorted position
- * carries the row's title key; an activity position keeps the original
- * three-element payload. */
-export const cursorPosition = (row, sort) => ({
-  updated_at: row.updated_at,
-  page_id: row.page_id,
-  ...(sort === "title" && { title_search: row.title_search ?? "" }),
-});
+/** The keyset position a cursor seals for `row`: the order's time key, or a
+ * title-sorted position's title key. Every position keeps the three-element
+ * payload but a title one, which adds its key. */
+export const cursorPosition = (row, sort) =>
+  sort === "title"
+    ? { updated_at: row.updated_at, page_id: row.page_id, title_search: row.title_search ?? "" }
+    : { updated_at: listOrder(sort).key(row), page_id: row.page_id };
 
 /** SQL and parameters for one page of D1 candidates. The SQL text depends
  * only on `access`, `sort` and whether `after` holds a position; every value
@@ -931,20 +1019,18 @@ export function listingQuery({
       : access === "shared"
         ? "AND a.source != 'owner'"
         : "";
-  const order = title ? "a.title_search ASC, a.page_id ASC" : "a.updated_at DESC, a.page_id DESC";
+  // Each sort walks its own index after `principal = ?`.
+  const column = title ? "a.title_search" : sort === "created" ? "a.created_at" : "a.activity_at";
+  const order = title ? `${column} ASC, a.page_id ASC` : `${column} DESC, a.page_id DESC`;
   const key = (title ? after?.title_search : after?.updated_at) ?? null;
   // A continuation page compares a row value, which SQLite turns into a range
   // seek on the listing index after `principal = ?`. A first page has no
   // position, so it carries no keyset predicate at all.
   const continued = after != null && key !== null;
-  const keyset = !continued
-    ? ""
-    : title
-      ? "AND (a.title_search, a.page_id) > (?, ?)"
-      : "AND (a.updated_at, a.page_id) < (?, ?)";
+  const keyset = !continued ? "" : `AND (${column}, a.page_id) ${title ? ">" : "<"} (?, ?)`;
   return {
     sql: `SELECT a.page_id, a.source, a.updated_at, a.updated_revision, a.title, a.title_search,
-        p.created_at, p.trashed_at
+        a.created_at, a.content_updated_at, a.activity_at, p.trashed_at
       FROM pages_catalog_access a
       JOIN pages_catalog_pages p ON p.page_id = a.page_id
       WHERE a.principal = ? AND p.kind = 'page'
@@ -969,8 +1055,8 @@ export function listingQuery({
 }
 
 /** Up to `count` candidate rows from D1 after `after`, in the listing's
- * order: newest first, or by title key. `access` keeps only owner rows
- * ("owned") or only non-owner rows ("shared"). */
+ * order: newest activity or creation first, or by title key. `access` keeps
+ * only owner rows ("owned") or only non-owner rows ("shared"). */
 export async function queryCatalogIndex(db, query) {
   const { sql, params } = listingQuery(query);
   const result = await db
@@ -983,6 +1069,8 @@ export async function queryCatalogIndex(db, query) {
     title_search: row.title_search,
     created_at: row.created_at,
     updated_at: row.updated_at,
+    content_updated_at: row.content_updated_at ?? null,
+    activity_at: row.activity_at,
     owned: row.source === "owner",
     revision: row.updated_revision,
     ...(row.trashed_at ? { trashed_at: row.trashed_at } : {}),
@@ -995,8 +1083,13 @@ export async function queryCatalogIndex(db, query) {
  * says whether shared entries are candidates. Owned entries are read whole:
  * the account's Page limit bounds them, and a listing reads them all for
  * location anyway. Shared entries have no limit, so that read is bounded.
- * Rows order as `listingQuery` orders the same `sort`, with the title key
- * computed from each entry's title as the index computes it. */
+ * Rows order as `listingQuery` orders the same `sort`, with each key computed
+ * from the entry as the index computes it: the title key from its title, the
+ * activity key from its `content_updated_at`, else `updated_at`, and the
+ * created key from its `created_at`. For a shared entry those times are this
+ * account's discovery and the Page host's projections, where D1 holds the
+ * Page row's own times, so shared rows can order differently between the
+ * two sources; owned rows order alike. */
 export async function catalogSource(
   storage,
   { inTrash, needle, owned = () => true, shared = true, sort = "activity" },
@@ -1018,15 +1111,20 @@ export async function catalogSource(
       ];
   const rows = entries
     .filter(({ entry }) => validPageId(entry?.page_id))
-    .map(({ entry, owned }) => ({
-      page_id: entry.page_id,
-      title: catalogTitle(entry.title),
-      title_search: titleKey(entry.title),
-      created_at: entry.created_at,
-      updated_at: entry.updated_at ?? entry.created_at,
-      owned,
-      ...(entry.trashed_at ? { trashed_at: entry.trashed_at } : {}),
-    }))
+    .map(({ entry, owned }) => {
+      const row = {
+        page_id: entry.page_id,
+        title: catalogTitle(entry.title),
+        title_search: titleKey(entry.title),
+        // Reconciliation indexes an entry without created_at at its updated_at.
+        created_at: entry.created_at ?? entry.updated_at,
+        updated_at: entry.updated_at ?? entry.created_at,
+        content_updated_at: validTime(entry.content_updated_at) ? entry.content_updated_at : null,
+        owned,
+        ...(entry.trashed_at ? { trashed_at: entry.trashed_at } : {}),
+      };
+      return { ...row, activity_at: activityKey(row) };
+    })
     .filter((row) => titleMatches(row.title, needle))
     .sort(order.compare);
   return {
@@ -1038,7 +1136,8 @@ export async function catalogSource(
  * returned. The caller's discovery cache doesn't decide which children are
  * candidates: each one is checked with the caller's credentials before its
  * title is shown. IDs carry no time or title, so rows order by Page ID alone:
- * descending for activity, ascending for title (every title key is empty). */
+ * descending for activity and created (every time key is empty), ascending
+ * for title (every title key is empty). */
 export function childIdSource(pageIds, sort = "activity") {
   const order = listOrder(sort);
   const rows = [...new Set(pageIds)]
@@ -1084,6 +1183,7 @@ function sharedStatements(db, principal, pageId, page, fallbackAt, createdAt) {
       updated_at: observed,
       revision: page.revision ?? 0,
       lifecycle: page.lifecycle_revision ?? 0,
+      content_updated_at: page.content_updated_at,
     }),
     upsertAccess(
       db,
@@ -1234,6 +1334,7 @@ export async function reconcileAccountIndex({
             updated_at: updatedAt,
             trashed_at: state === "trashed" ? (entry.trashed_at ?? null) : null,
             lifecycle: entry.lifecycle_revision ?? 0,
+            content_updated_at: entry.content_updated_at,
           }),
           upsertAccess(
             db,

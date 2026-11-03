@@ -22,6 +22,7 @@ import {
   pruneIndexRows,
   queryCatalogIndex,
   reconcileAccountIndex,
+  reportContentActivity,
   reportPageIndex,
   restrictPageIndex,
   retirePageIndex,
@@ -740,7 +741,10 @@ test("index disabled: no D1 access and the bare call keeps the legacy fields", a
   const result = await f.list(owner);
   assert.equal(result.source, "catalog");
   assert.equal(f.db.calls, 0);
-  assert.deepEqual(result.body.pages, [{ page_id: id(1), title: "Legacy" }]);
+  // Every row carries content_updated_at, null until its Page reports one.
+  assert.deepEqual(result.body.pages, [
+    { page_id: id(1), title: "Legacy", content_updated_at: null },
+  ]);
   assert.equal(result.body.limit, 100);
   for (const key of ["next_cursor", "retry_token", "retry_key_prefix", "retry_until"])
     assert.ok(Object.hasOwn(result.body, key), key);
@@ -1230,7 +1234,9 @@ test("access and sort are validated, and shared refuses Trash and Projects", () 
     assert.deepEqual(parseListArguments(args), defaults, JSON.stringify(args));
   assert.equal(parseListArguments({ access: null, query: "x" }).limit, 50);
   for (const access of ["all", "OWNED", "", 1, true]) fails({ access }, /access must be/);
-  for (const sort of ["created", "updated", "TITLE", "", 0]) fails({ sort }, /sort must be/);
+  for (const sort of ["updated", "TITLE", "CREATED", "", 0, "__proto__"])
+    fails({ sort }, /sort must be/);
+  assert.equal(parseListArguments({ sort: "created" }).sort, "created");
   fails({ access: "shared", in_trash: true }, /Trash lists only Pages you own/);
   fails({ access: "shared", space_id: PROJECT }, /project_id does not combine/);
   assert.equal(parseListArguments({ access: "owned", in_trash: true }).inTrash, true);
@@ -1240,27 +1246,53 @@ test("access and sort are validated, and shared refuses Trash and Projects", () 
   assert.equal(parseListArguments({ sort: "title", in_trash: true }).sort, "title");
 });
 
-test("list scope stays undefined for the default listing and separates access and sort", () => {
+test("list scope names every sort, so activity cursors from earlier builds don't open", () => {
   const scope = (args) => listScope(parseListArguments(args));
-  // Production cursors were sealed with these exact scopes.
-  for (const args of [{}, { query: "x" }, { sort: "activity" }, { access: null, sort: null }])
-    assert.equal(scope(args), undefined, JSON.stringify(args));
-  assert.equal(scope({ space_id: PROJECT }), JSON.stringify([PROJECT, null, true, null]));
-  assert.equal(
-    scope({ space_id: PROJECT, sort: "activity" }),
+  // Earlier builds sealed activity cursors with no scope, with a location-only
+  // scope, or with [access, "activity"]. Activity positions now hold
+  // activity_at, so none of those scopes may come back.
+  const earlier = [
+    undefined,
     JSON.stringify([PROJECT, null, true, null]),
+    JSON.stringify([null, id(1), false, null]),
+    JSON.stringify([null, null, true, null, "owned", "activity"]),
+    JSON.stringify([null, null, true, null, "shared", "activity"]),
+  ];
+  for (const args of [
+    {},
+    { query: "x" },
+    { sort: "activity" },
+    { access: null, sort: null },
+    { space_id: PROJECT },
+    { parent_id: id(1) },
+    { access: "owned" },
+    { access: "shared" },
+  ])
+    assert.ok(!earlier.includes(scope(args)), JSON.stringify(args));
+  assert.equal(scope({}), scope({ sort: "activity" }), "activity is the default");
+  assert.equal(scope({}), scope({ access: null, sort: null }));
+  // Title positions mean what they did, so title cursors keep their scope.
+  assert.equal(scope({ sort: "title" }), JSON.stringify([null, null, true, null, null, "title"]));
+  assert.equal(
+    scope({ access: "owned", sort: "title" }),
+    JSON.stringify([null, null, true, null, "owned", "title"]),
   );
-  assert.equal(scope({ parent_id: id(1) }), JSON.stringify([null, id(1), false, null]));
   const variants = [
     {},
     { access: "owned" },
     { access: "shared" },
     { sort: "title" },
+    { sort: "created" },
     { access: "owned", sort: "title" },
     { access: "shared", sort: "title" },
+    { access: "owned", sort: "created" },
+    { access: "shared", sort: "created" },
     { parent_id: id(1) },
     { parent_id: id(1), access: "shared" },
     { parent_id: id(1), sort: "title" },
+    { parent_id: id(1), sort: "created" },
+    { space_id: PROJECT },
+    { space_id: PROJECT, sort: "created" },
   ].map(scope);
   assert.equal(new Set(variants).size, variants.length, "every combination has its own scope");
 });
@@ -1278,15 +1310,25 @@ test("title cursors carry their key, fit the length bound and open only under th
   const cursor = await sealCursor(env, context({ sort: "title" }), titled);
   assert.deepEqual(await openCursor(env, context({ sort: "title" }), cursor), titled);
   assert.ok(!Buffer.from(cursor.slice(3), "base64url").toString("latin1").includes("alpha"));
-  for (const args of [{}, { sort: "activity" }, { access: "owned", sort: "title" }])
+  for (const args of [
+    {},
+    { sort: "activity" },
+    { sort: "created" },
+    { access: "owned", sort: "title" },
+  ])
     await rejects(openCursor(env, context(args), cursor));
-  // An activity position keeps the three-element payload older builds open.
+  // Activity and created positions keep the three-element payload.
   const plain = await sealCursor(env, context({}), { updated_at: at(1), page_id: id(1) });
   assert.deepEqual(await openCursor(env, context({ sort: "activity" }), plain), {
     updated_at: at(1),
     page_id: id(1),
   });
-  for (const args of [{ access: "owned" }, { access: "shared" }, { sort: "title" }])
+  for (const args of [
+    { access: "owned" },
+    { access: "shared" },
+    { sort: "title" },
+    { sort: "created" },
+  ])
     await rejects(openCursor(env, context(args), plain));
   // The longest title keys: 500 code units, escaped or multi-byte.
   for (const title of ["\u0001".repeat(500), "語".repeat(500), "😀".repeat(250), "İ".repeat(500)]) {
@@ -1424,9 +1466,14 @@ test("listing pages seek their index: first pages by principal, later pages by r
       next: "(principal=? AND (title_search,page_id)>(?,?))",
     },
     activity: {
-      index: "pages_catalog_access_listing",
+      index: "pages_catalog_access_activity",
       first: "(principal=?)",
-      next: "(principal=? AND (updated_at,page_id)<(?,?))",
+      next: "(principal=? AND (activity_at,page_id)<(?,?))",
+    },
+    created: {
+      index: "pages_catalog_access_created",
+      first: "(principal=?)",
+      next: "(principal=? AND (created_at,page_id)<(?,?))",
     },
   };
   for (const [sort, { index, first, next }] of Object.entries(expected))
@@ -1477,8 +1524,9 @@ test("the title listing index applies on a fresh database and on top of version 
     db
       .rows("SELECT name FROM sqlite_master WHERE type = 'index' AND name LIKE 'pages_catalog_%'")
       .map((row) => row.name);
+  const latest = CATALOG_MIGRATIONS.at(-1).version;
   const fresh = sqliteD1(t).open();
-  assert.equal(await migrateCatalogIndex(fresh), 5);
+  assert.equal(await migrateCatalogIndex(fresh), latest);
   assert.ok(indexes(fresh).includes("pages_catalog_access_title"));
 
   const upgraded = sqliteD1(t).open();
@@ -1489,7 +1537,7 @@ test("the title listing index applies on a fresh database and on top of version 
     title: "Kept",
     observedAt: at(1),
   });
-  assert.equal(await migrateCatalogIndex(upgraded), 5);
+  assert.equal(await migrateCatalogIndex(upgraded), latest);
   assert.ok(indexes(upgraded).includes("pages_catalog_access_title"));
   assert.deepEqual(
     (
@@ -1504,8 +1552,8 @@ test("the title listing index applies on a fresh database and on top of version 
     ).map((row) => row.title),
     ["Kept"],
   );
-  // A build that knows only migrations 1-4 runs against version 5 unchanged.
-  assert.equal(await migrateCatalogIndex(upgraded, CATALOG_MIGRATIONS.slice(0, 4)), 5);
+  // A build that knows only migrations 1-4 runs against the newer schema.
+  assert.equal(await migrateCatalogIndex(upgraded, CATALOG_MIGRATIONS.slice(0, 4)), latest);
 });
 
 /** A member who owns eight Pages and has two shared with them. */
@@ -1609,7 +1657,13 @@ test("access and title sort list the same Pages in the same order from D1 and th
       // Sorting one way doesn't change what owned rows show.
       const row = (await f.list(member, { access: "owned", sort: "title", limit: 1 })).body
         .pages[0];
-      assert.deepEqual(row, { page_id: id(3), title: "", created_at: at(0), updated_at: at(3) });
+      assert.deepEqual(row, {
+        page_id: id(3),
+        title: "",
+        created_at: at(0),
+        updated_at: at(3),
+        content_updated_at: null,
+      });
     });
   }
   // Shared rows' activity times come from different observations in each
@@ -1643,6 +1697,7 @@ test("a cursor opens only under the access and sort it was issued for", async (t
         shared: await cursorOf({ access: "shared", limit: 1 }),
         title: await cursorOf({ sort: "title" }),
         ownedTitle: await cursorOf({ access: "owned", sort: "title" }),
+        created: await cursorOf({ sort: "created" }),
       };
       const listings = {
         default: {},
@@ -1651,6 +1706,7 @@ test("a cursor opens only under the access and sort it was issued for", async (t
         shared: { access: "shared" },
         title: { sort: "title" },
         ownedTitle: { access: "owned", sort: "title" },
+        created: { sort: "created" },
       };
       for (const [from, cursor] of Object.entries(issued))
         for (const [to, args] of Object.entries(listings)) {
@@ -1661,22 +1717,38 @@ test("a cursor opens only under the access and sort it was issued for", async (t
             `${from} cursor under ${to}`,
           );
         }
-      // A cursor sealed exactly as the build before these arguments sealed
-      // it, with no scope, still opens the default listing.
-      const legacy = await sealCursor(
-        f.env,
-        { principal: member, needle: null, inTrash: false },
-        { updated_at: "2999-01-01T00:00:00.000Z", page_id: id(999) },
-      );
-      const resumed = await f.list(member, { cursor: legacy });
-      assert.equal(resumed.status, 200);
-      assert.equal(resumed.body.pages.length, OWNED_TITLES.length + SHARED_TITLES.length);
-      assert.equal((await f.list(member, { sort: "activity", cursor: legacy })).status, 200);
-      for (const args of [{ access: "owned" }, { sort: "title" }])
-        assert.equal(
-          (await f.list(member, { ...args, cursor: legacy })).body.code,
-          "invalid_cursor",
+      // Activity cursors from builds before content activity held
+      // updated_at positions. Each scope they were sealed under now fails
+      // with invalid_cursor, so a client restarts instead of seeking the
+      // activity order with an updated_at key.
+      const sealedBefore = async (scope) =>
+        sealCursor(
+          f.env,
+          { principal: member, needle: null, inTrash: false, ...(scope && { scope }) },
+          { updated_at: at(4), page_id: id(4) },
         );
+      for (const [scope, args] of [
+        [undefined, {}],
+        [undefined, { sort: "activity" }],
+        [JSON.stringify([null, null, true, null, "owned", "activity"]), { access: "owned" }],
+        [JSON.stringify([null, null, true, null, "shared", "activity"]), { access: "shared" }],
+      ]) {
+        const result = await f.list(member, { ...args, cursor: await sealedBefore(scope) });
+        assert.equal(result.status, 400, `${scope} under ${JSON.stringify(args)}`);
+        assert.equal(result.body.code, "invalid_cursor");
+      }
+      // A title cursor from before keeps opening: its scope and key are unchanged.
+      const titled = await sealCursor(
+        f.env,
+        {
+          principal: member,
+          needle: null,
+          inTrash: false,
+          scope: JSON.stringify([null, null, true, null, null, "title"]),
+        },
+        { updated_at: at(1), page_id: id(1), title_search: titleKey("Alpha") },
+      );
+      assert.equal((await f.list(member, { sort: "title", cursor: titled })).status, 200);
       // A title cursor carries its key, so the next page follows the tie.
       const first = await f.list(member, { sort: "title", limit: 2 });
       assert.deepEqual(
@@ -1810,4 +1882,425 @@ test("Trash sorts by title from D1 and from the Catalog alike", async (t) => {
     });
   }
   assert.deepEqual(results.index, results.catalog);
+});
+
+const columnsOf = (db, table) =>
+  db.rows(`SELECT name FROM pragma_table_xinfo('${table}')`).map((row) => row.name);
+const indexesOf = (db) =>
+  db
+    .rows("SELECT name FROM sqlite_master WHERE type = 'index' AND name LIKE 'pages_catalog_%'")
+    .map((row) => row.name);
+/** The write a build that knows migrations 1-5 makes for one owned Page. */
+function v5Report(db, pageId, { title, at: time }) {
+  db.sqlite
+    .prepare(
+      `INSERT INTO pages_catalog_pages
+        (page_id, owner, title, title_search, state, created_at, updated_at, trashed_at,
+          acl_revision, lifecycle_revision)
+      VALUES (?, ?, ?, ?, 'active', ?, ?, NULL, 0, 0)`,
+    )
+    .run(pageId, owner, title, title.toLowerCase(), time, time);
+  db.sqlite
+    .prepare(
+      `INSERT INTO pages_catalog_access
+        (page_id, principal, role, source, domain, updated_revision, updated_at, title, title_search)
+      VALUES (?, ?, 'owner', 'owner', NULL, 0, ?, ?, ?)`,
+    )
+    .run(pageId, owner, time, title, title.toLowerCase());
+}
+
+test("content activity migrates a fresh database and one at version 5, and builds without it keep working", async (t) => {
+  const latest = CATALOG_MIGRATIONS.at(-1).version;
+  assert.equal(latest, 6);
+  const fresh = sqliteD1(t).open();
+  assert.equal(await migrateCatalogIndex(fresh), latest);
+  for (const column of ["content_updated_at", "created_at", "activity_at"])
+    assert.ok(columnsOf(fresh, "pages_catalog_access").includes(column), column);
+  assert.ok(columnsOf(fresh, "pages_catalog_pages").includes("content_updated_at"));
+  for (const index of ["pages_catalog_access_activity", "pages_catalog_access_created"])
+    assert.ok(indexesOf(fresh).includes(index), index);
+
+  // Rows a build at version 5 wrote: created_at is backfilled from the Page
+  // row, the content time stays unknown, and activity falls back.
+  const upgraded = sqliteD1(t).open();
+  assert.equal(await migrateCatalogIndex(upgraded, CATALOG_MIGRATIONS.slice(0, 5)), 5);
+  v5Report(upgraded, id(1), { title: "Before", at: at(3) });
+  assert.equal(await migrateCatalogIndex(upgraded), latest);
+  const access = (pageId) =>
+    upgraded.rows(
+      `SELECT created_at, content_updated_at, activity_at, updated_at
+      FROM pages_catalog_access WHERE page_id = ?`,
+      pageId,
+    )[0];
+  assert.deepEqual(access(id(1)), {
+    created_at: at(3),
+    content_updated_at: null,
+    activity_at: at(3),
+    updated_at: at(3),
+  });
+
+  // A build that knows migrations 1-5 runs against version 6: it migrates
+  // nothing, writes rows without the new columns and lists as it always did.
+  assert.equal(await migrateCatalogIndex(upgraded, CATALOG_MIGRATIONS.slice(0, 5)), latest);
+  v5Report(upgraded, id(2), { title: "Rolled back", at: at(9) });
+  assert.deepEqual(access(id(2)), {
+    created_at: "",
+    content_updated_at: null,
+    activity_at: at(9),
+    updated_at: at(9),
+  });
+  assert.deepEqual(
+    upgraded
+      .rows(
+        `SELECT page_id FROM pages_catalog_access WHERE principal = ?
+        ORDER BY updated_at DESC, page_id DESC`,
+        owner,
+      )
+      .map((row) => row.page_id),
+    [id(2), id(1)],
+  );
+  // This build reads that row: activity from updated_at, created last until a
+  // report from this build copies the Page row's creation time.
+  const query = (sort) =>
+    queryCatalogIndex(upgraded, {
+      principal: owner,
+      inTrash: false,
+      needle: null,
+      after: null,
+      count: 10,
+      sort,
+    }).then((rows) => rows.map((row) => row.page_id));
+  assert.deepEqual(await query("activity"), [id(2), id(1)]);
+  assert.deepEqual(await query("created"), [id(1), id(2)]);
+  await reportPageIndex({ DB: upgraded, PAGES_CATALOG_INDEX: "1" }, testCtx, {
+    metadata: { pageId: id(2), owner, deleted: false, acl: { revision: 0, members: {} } },
+    title: "Rolled back",
+    observedAt: at(10),
+  });
+  assert.equal(access(id(2)).created_at, at(9));
+  assert.deepEqual(await query("created"), [id(2), id(1)]);
+});
+
+test("content times only move forward: delayed reports, older full reports and new grants", async (t) => {
+  const { db, env } = await seededIndex(t);
+  const rows = () =>
+    db.rows(
+      `SELECT principal, content_updated_at, activity_at FROM pages_catalog_access
+      WHERE page_id = ? ORDER BY principal`,
+      id(1),
+    );
+  const pageRow = () =>
+    db.rows("SELECT content_updated_at FROM pages_catalog_pages WHERE page_id = ?", id(1))[0];
+  const metadata = (members = {}, revision = 0) => ({
+    pageId: id(1),
+    owner,
+    deleted: false,
+    acl: { revision, members },
+  });
+  await reportPageIndex(env, testCtx, { metadata: metadata(), title: "Plan", observedAt: at(1) });
+  assert.deepEqual(rows(), [{ principal: owner, content_updated_at: null, activity_at: at(1) }]);
+  await reportContentActivity(env, testCtx, { pageId: id(1), contentUpdatedAt: at(10) });
+  assert.deepEqual(rows(), [{ principal: owner, content_updated_at: at(10), activity_at: at(10) }]);
+  // A report that outlived its caller lands after a newer one.
+  let release;
+  db.holdNext = new Promise((resolve) => {
+    release = resolve;
+  });
+  const delayed = reportContentActivity(env, testCtx, { pageId: id(1), contentUpdatedAt: at(5) });
+  await new Promise((resolve) => setImmediate(resolve));
+  await reportContentActivity(env, testCtx, { pageId: id(1), contentUpdatedAt: at(20) });
+  release();
+  await delayed;
+  assert.deepEqual(rows(), [{ principal: owner, content_updated_at: at(20), activity_at: at(20) }]);
+  assert.deepEqual(pageRow(), { content_updated_at: at(20) });
+  // A full report carrying an older content time moves updated_at, not the
+  // content time, so activity holds.
+  await reportPageIndex(env, testCtx, {
+    metadata: metadata(),
+    title: "Renamed",
+    observedAt: at(30),
+    contentUpdatedAt: at(15),
+  });
+  assert.deepEqual(rows(), [{ principal: owner, content_updated_at: at(20), activity_at: at(20) }]);
+  // A new grant copies the Page row's content time.
+  await reportPageIndex(env, testCtx, {
+    metadata: metadata({ [member]: { role: "viewer", generation: 1 } }, 1),
+    title: "Renamed",
+    observedAt: at(31),
+  });
+  assert.deepEqual(
+    rows(),
+    [
+      { principal: owner, content_updated_at: at(20), activity_at: at(20) },
+      { principal: member, content_updated_at: at(20), activity_at: at(20) },
+    ].sort((a, b) => (a.principal < b.principal ? -1 : 1)),
+  );
+  // A newer full report moves it forward for everyone it lists.
+  await reportPageIndex(env, testCtx, {
+    metadata: metadata({ [member]: { role: "viewer", generation: 1 } }, 1),
+    title: "Renamed",
+    observedAt: at(32),
+    contentUpdatedAt: at(25),
+  });
+  assert.ok(rows().every((row) => row.content_updated_at === at(25)));
+  // A content report never touches a deleted Page or makes rows for a Page
+  // without any.
+  await retirePageIndex(env, testCtx, { ...metadata(), deleted: true }, at(40));
+  await reportContentActivity(env, testCtx, { pageId: id(1), contentUpdatedAt: at(50) });
+  await reportContentActivity(env, testCtx, { pageId: id(2), contentUpdatedAt: at(50) });
+  assert.deepEqual(rows(), []);
+  assert.deepEqual(pageRow(), { content_updated_at: at(25) });
+  assert.equal(db.rows("SELECT count(*) AS n FROM pages_catalog_pages")[0].n, 1);
+  await assert.rejects(
+    reportContentActivity(env, testCtx, { pageId: id(1), contentUpdatedAt: "yesterday" }),
+    TypeError,
+  );
+});
+
+/** Owned entries whose activity and creation keys tie, fall back and go missing. */
+const ACTIVITY_ENTRIES = [
+  // [n, created_at, updated_at, content_updated_at]
+  [1, at(0), at(50), undefined],
+  [2, at(0), at(10), at(40)],
+  [3, at(5), at(60), at(40)],
+  [4, at(5), at(5), at(70)],
+  [5, undefined, at(20), undefined],
+  [6, at(30), at(30), at(30)],
+];
+
+test("activity and created sorts page alike from D1 and the Catalog, across ties and missing times", async (t) => {
+  const results = {};
+  for (const index of ["1", null]) {
+    await t.test(index ? "index" : "catalog", async (t) => {
+      const f = await catalogFixture(t, { index });
+      const storage = f.catalog(owner).ctx.storage;
+      for (const [n, created, updated, content] of ACTIVITY_ENTRIES)
+        await storage.put(`page/${id(n)}`, {
+          page_id: id(n),
+          title: `Page ${n}`,
+          ...(created && { created_at: created }),
+          updated_at: updated,
+          ...(content && { content_updated_at: content }),
+        });
+      for (let request = 0; request < 6; request++)
+        if ((await f.list(owner)).source === (index ? "index" : "catalog")) break;
+      const walk = async (args) => {
+        const rows = [];
+        let cursor;
+        for (let request = 0; request < 10; request++) {
+          const result = await f.list(owner, { limit: 2, ...args, ...(cursor && { cursor }) });
+          assert.equal(result.status, 200, JSON.stringify(result.body));
+          assert.equal(result.source, index ? "index" : "catalog");
+          rows.push(...result.body.pages);
+          cursor = result.body.next_cursor;
+          if (!cursor) break;
+        }
+        return rows;
+      };
+      const activity = await walk({});
+      assert.deepEqual(
+        activity.map((row) => row.page_id),
+        [4, 1, 3, 2, 6, 5].map(id),
+        "content time, else updated_at; a tie goes to the larger Page ID",
+      );
+      assert.deepEqual(
+        (await walk({ sort: "activity", access: "owned" })).map((row) => row.page_id),
+        [4, 1, 3, 2, 6, 5].map(id),
+      );
+      const created = await walk({ sort: "created" });
+      assert.deepEqual(
+        created.map((row) => row.page_id),
+        [6, 5, 4, 3, 2, 1].map(id),
+        "created_at, else updated_at; ties by Page ID",
+      );
+      // updated_at keeps its meaning; content_updated_at is null when unknown.
+      const byId = new Map(activity.map((row) => [row.page_id, row]));
+      for (const [n, created, updated, content] of ACTIVITY_ENTRIES) {
+        const row = byId.get(id(n));
+        assert.equal(row.updated_at, updated, `updated_at ${n}`);
+        assert.equal(row.content_updated_at, content ?? null, `content_updated_at ${n}`);
+        assert.equal(row.created_at, created ?? updated, `created_at ${n}`);
+      }
+      results[index ? "index" : "catalog"] = { activity, created };
+    });
+  }
+  assert.deepEqual(results.index, results.catalog);
+});
+
+test("an activity cursor from the Catalog fallback continues on D1 in the same order", async (t) => {
+  const f = await catalogFixture(t);
+  const storage = f.catalog(owner).ctx.storage;
+  for (const [n, created, updated, content] of ACTIVITY_ENTRIES)
+    await storage.put(`page/${id(n)}`, {
+      page_id: id(n),
+      title: `Page ${n}`,
+      ...(created && { created_at: created }),
+      updated_at: updated,
+      ...(content && { content_updated_at: content }),
+    });
+  for (let request = 0; request < 6; request++) if ((await f.list(owner)).source === "index") break;
+  for (const [sort, expected] of [
+    ["activity", [4, 1, 3, 2, 6, 5]],
+    ["created", [6, 5, 4, 3, 2, 1]],
+  ]) {
+    shortBounds(t, { read: 30, write: 30 });
+    f.db.mode = "fail";
+    const first = await f.list(owner, { sort, limit: 3 });
+    assert.equal(first.source, "catalog");
+    f.db.mode = "ok";
+    Object.assign(catalogIndexTimeouts, { read: 2500, write: 1500 });
+    const rest = await f.list(owner, { sort, limit: 10, cursor: first.body.next_cursor });
+    assert.equal(rest.source, "index");
+    assert.deepEqual(
+      [...first.body.pages, ...rest.body.pages].map((row) => row.page_id),
+      expected.map(id),
+      sort,
+    );
+  }
+});
+
+test("a shared row shows the content time its Page host reports, and only after the check", async (t) => {
+  for (const index of ["1", null]) {
+    await t.test(index ? "index" : "catalog", async (t) => {
+      const f = await catalogFixture(t, { index });
+      const host = f.addPage(id(100), "Shared plan", {
+        revision: 1,
+        members: { [member]: { role: "viewer", generation: 1 } },
+      });
+      host.contentActivity = { value: at(42), nudge() {} };
+      await f.catalog(member).ctx.storage.put(`shared/${id(100)}`, {
+        page_id: id(100),
+        title: "Shared plan",
+        created_at: at(1),
+        updated_at: at(2),
+        shared: true,
+      });
+      const listed = async () => {
+        for (let request = 0; request < 6; request++) {
+          const result = await f.list(member, { access: "shared" });
+          if (result.source === (index ? "index" : "catalog")) return result;
+        }
+        throw Error("the listing never reached its source");
+      };
+      let result = await listed();
+      assert.deepEqual(
+        result.body.pages.map(({ page_id, content_updated_at }) => ({
+          page_id,
+          content_updated_at,
+        })),
+        [{ page_id: id(100), content_updated_at: at(42) }],
+      );
+      if (index) {
+        // Reconciliation indexed the host's time from its check.
+        assert.deepEqual(
+          f.db.rows(
+            "SELECT content_updated_at FROM pages_catalog_access WHERE page_id = ? AND principal = ?",
+            id(100),
+            member,
+          ),
+          [{ content_updated_at: at(42) }],
+        );
+        // The listing shows the host's answer, never the candidate row's.
+        await reportContentActivity(f.env, testCtx, {
+          pageId: id(100),
+          contentUpdatedAt: at(99),
+        });
+        result = await listed();
+        assert.equal(result.body.pages[0].content_updated_at, at(42));
+      }
+      // A host that no longer lets the member read the Page shows nothing.
+      host.metadata = {
+        ...host.metadata,
+        acl: { revision: 2, members: { [member]: { role: "none", generation: 2 } } },
+      };
+      result = await f.list(member, { access: "shared" });
+      assert.deepEqual(result.body.pages, []);
+      assert.ok(!JSON.stringify(result.body).includes(at(42)));
+      // A host that hasn't recorded an edit reports null.
+      host.metadata = {
+        ...host.metadata,
+        acl: { revision: 3, members: { [member]: { role: "viewer", generation: 3 } } },
+      };
+      host.contentActivity = undefined;
+      await f.catalog(member).ctx.storage.put(`shared/${id(100)}`, {
+        page_id: id(100),
+        title: "Shared plan",
+        created_at: at(1),
+        updated_at: at(2),
+        shared: true,
+      });
+      // The denied listing pruned the D1 row; the next reconcile restores it.
+      await f.catalog(member).ctx.storage.put("host/index/dirty", crypto.randomUUID());
+      result = await listed();
+      assert.deepEqual(
+        result.body.pages.map((row) => row.content_updated_at),
+        [null],
+      );
+    });
+  }
+});
+
+test("the owner's Catalog takes content times forward without moving updated_at", async (t) => {
+  const f = await catalogFixture(t, { index: null });
+  const catalog = f.catalog(owner);
+  const storage = catalog.ctx.storage;
+  const project = (body) =>
+    catalog.fetch(
+      new Request("https://pages.internal/internal/projection", {
+        method: "POST",
+        body: JSON.stringify({ page_id: id(1), ...body }),
+      }),
+    );
+  await storage.put(`page/${id(1)}`, {
+    page_id: id(1),
+    title: "Plan",
+    created_at: at(0),
+    updated_at: at(1),
+  });
+  const entry = () => storage.get(`page/${id(1)}`);
+  await project({ content_updated_at: at(5) });
+  assert.deepEqual(await entry(), {
+    page_id: id(1),
+    title: "Plan",
+    created_at: at(0),
+    updated_at: at(1),
+    content_updated_at: at(5),
+  });
+  await project({ content_updated_at: at(3) });
+  assert.equal((await entry()).content_updated_at, at(5), "a delayed report changes nothing");
+  // A title observation older than the entry's still carries a newer content time.
+  await project({ title: "Stale", observed_at: at(0), content_updated_at: at(9) });
+  assert.deepEqual(
+    { ...(await entry()) },
+    {
+      page_id: id(1),
+      title: "Plan",
+      created_at: at(0),
+      updated_at: at(1),
+      content_updated_at: at(9),
+    },
+  );
+  // A newer title observation moves the title, never the content time back.
+  await project({ title: "Renamed", observed_at: at(10), content_updated_at: at(8) });
+  const renamed = await entry();
+  assert.equal(renamed.title, "Renamed");
+  assert.equal(renamed.updated_at, at(10));
+  assert.equal(renamed.content_updated_at, at(9));
+  // A content report lists nothing new: no entry for an unknown or trashed Page.
+  await catalog.fetch(
+    new Request("https://pages.internal/internal/projection", {
+      method: "POST",
+      body: JSON.stringify({ page_id: id(2), content_updated_at: at(20) }),
+    }),
+  );
+  assert.equal(await storage.get(`page/${id(2)}`), undefined);
+  await storage.put(`trash/${id(3)}`, { page_id: id(3), title: "Gone", updated_at: at(1) });
+  await catalog.fetch(
+    new Request("https://pages.internal/internal/projection", {
+      method: "POST",
+      body: JSON.stringify({ page_id: id(3), content_updated_at: at(20) }),
+    }),
+  );
+  assert.equal(await storage.get(`page/${id(3)}`), undefined);
+  assert.equal((await storage.get(`trash/${id(3)}`)).content_updated_at, undefined);
 });

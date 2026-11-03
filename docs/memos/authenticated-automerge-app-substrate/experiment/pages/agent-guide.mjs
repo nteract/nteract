@@ -8,7 +8,7 @@ import {
   saveKeyCommand,
 } from "./agent-client-setup.mjs";
 import { PRODUCT_NAME } from "./shared/product.mjs";
-import { richContentGuide } from "./model/rich-content-guide.mjs";
+import { richContentGuide, typedReadFields } from "./model/rich-content-guide.mjs";
 
 /** Public onboarding contains no account or document data. URLs come only from
  * deployment configuration, never a request Host or forwarded header. */
@@ -710,9 +710,11 @@ Pages list "comments-doc"); if Pages doesn't support one of them, edits fail wit
 unsupported_schema_feature and the Page stays readable.
 list_pages accepts optional query (title substring), limit (1-100, default 50) and cursor.
 access "owned" or "shared" narrows it to Pages you own or Pages shared with you; shared does
-not combine with in_trash or project_id. sort "activity" (default) lists most recently changed
-first; "title" lists by lowercased title in Unicode code point order: empty titles first,
-accented and non-Latin titles after z.
+not combine with in_trash or project_id. sort "activity" (default) lists the most recently edited
+first: each Page's content_updated_at (when its title or content last changed; null when
+unknown), or updated_at for a Page with no recorded edit. "created" lists the newest first;
+"title" lists by lowercased title in Unicode code point order: empty titles first, accented
+and non-Latin titles after z.
 Pass next_cursor back as cursor, with the same other arguments, until it is null. Pagination is not a
 snapshot: concurrent title or sharing changes can move Pages across the cursor. A short or
 empty result does not prove a Page is absent. Its quota object is your own account's Page
@@ -886,6 +888,9 @@ For body work, pass comments:"none". To discover a long Page first, pass
 include_content:false; this returns its title, heads, retry authority and outline
 without body content or comments. The outline has entries, total, offset and
 next_offset; use outline_offset to fetch another page (outline_limit is at most 100).
+Each entry has block_id, node_index, type, heading_path and markdown_bytes, plus
+heading and level for a heading, and typed fields where they apply.
+${typedReadFields()}
 All addresses in an outline describe the returned heads, not stable IDs across edits.
 Pass those heads as expected_heads when using node_range or outline_offset > 0.
 A concurrent change returns read_revision_changed and a fresh outline; choose again.
@@ -935,7 +940,7 @@ revision: every read returns it as comment_heads. Pass the comment_heads you kep
 as since_comment_heads to list comment changes. Without it the response lists
 every current thread with comments_snapshot: true; replace what you hold instead
 of merging. Updated/inserted nodes include current Markdown,
-node_index and heading_path; deleted nodes contain only their old address, never
+node_index, heading_path and the same typed fields an outline entry carries; deleted nodes contain only their old address, never
 deleted body text. Use these current addresses for a focused read or replace_match.
 If a whole block is inserted or cannot be indexed, its change has scope:block;
 read its outline to choose a node.

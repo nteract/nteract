@@ -38,15 +38,14 @@ test("a titled dataframe is named and captioned by its title, as text", () =>
     assert.equal(load, DATAFRAME_RENDERERS[PARQUET_MEDIA_TYPE]);
   }));
 
-test("an untitled dataframe has a generic name, an empty caption and a select handle", () =>
+test('an untitled dataframe is named and captioned "Table", muted', () =>
   withDocument(() => {
     const { dom } = dataframeFrame({ src, media_type: PARQUET_MEDIA_TYPE, title: null });
     assert.equal(dom.getAttribute("aria-label"), "Table");
-    assert.equal(dom.querySelector(".wordgard-dataframe-title").textContent, "");
-    assert.equal(
-      dom.querySelector(".wordgard-dataframe-select").getAttribute("aria-label"),
-      "Select table",
-    );
+    const caption = dom.querySelector(".wordgard-dataframe-title");
+    assert.equal(caption.textContent, "Table");
+    assert.ok(caption.classList.contains("is-untitled"));
+    assert.equal(dom.querySelector("button"), null);
   }));
 
 test("a media type this build can't render says so instead of loading", () =>
@@ -68,8 +67,9 @@ function lifecycleFixture() {
   const loads = [],
     mounts = [];
   const status = { hidden: false, textContent: "" };
+  const canvas = { dataset: {} };
   const lifecycle = dataframeLifecycle({
-    canvas: {},
+    canvas,
     status,
     attrs: { src },
     delay: 0,
@@ -87,7 +87,7 @@ function lifecycleFixture() {
       return instance;
     },
   };
-  return { lifecycle, loads, mounts, status, module };
+  return { lifecycle, loads, mounts, status, module, canvas };
 }
 
 test("a reconnect while loading mounts only the newest table", async () => {
@@ -132,6 +132,8 @@ test("a reconnect while parked keeps the mounted table without reloading", async
   assert.equal(f.mounts.length, 1);
   assert.equal(f.mounts[0].destroyed, false);
   assert.equal(f.loads.length, 1);
+  // The move replays CSS animations; the canvas is marked so they're off.
+  assert.equal(f.canvas.dataset.moved, "");
 });
 
 test("disconnect before the timer fires never loads; a failed load says so", async () => {

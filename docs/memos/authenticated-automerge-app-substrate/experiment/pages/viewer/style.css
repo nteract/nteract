@@ -2355,9 +2355,9 @@ details.account-actions > div a:hover {
    column so the list has room for its columns and a grid for 4-6 cards; the
    editor, /projects and the other screens keep their widths. Top to bottom:
    the heading row (title, search, Trash, New Page), the control row (tabs,
-   then Project, Sort, Group), and the results with optional group sections. */
-/* A definite width: the tab and menu rows scroll rather than widen the
-   screen, so the screen never sizes to their content. */
+   then Project, Sort, Group), and the results with optional group sections.
+   Its width is definite, so the tab and menu rows scroll rather than widen
+   the screen to fit their content. */
 .page-library.library-view {
   box-sizing: border-box;
   width: 100%;
