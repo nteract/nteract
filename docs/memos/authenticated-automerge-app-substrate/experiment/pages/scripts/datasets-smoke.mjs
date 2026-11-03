@@ -182,6 +182,59 @@ try {
   await viewer.screenshot({ path: `${output}/sift-table-viewer.png`, fullPage: true });
   complete("insert_node places a dataframe that renders as a Sift table for owner and viewer");
 
+  // A table far below the fold waits: no dataset fetch until a reader scrolls
+  // near it.
+  {
+    const listing = (await tool(owner, "list_pages")).body;
+    const long = await tool(owner, "create_page", {
+      title: "Datasets below the fold",
+      markdown: Array.from({ length: 120 }, (_, n) => `Paragraph ${n + 1} of a long Page.`).join(
+        "\n\n",
+      ),
+      ...retry(listing),
+    });
+    assert.equal(long.status, 200, JSON.stringify(long.body));
+    const longId = long.body.page_id;
+    created.push(longId);
+    const copy = await fetch(`${origin}/api/pages/${longId}/assets`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${keys.owner}`, "Content-Type": PARQUET },
+      body: parquetBytes,
+    });
+    assert.ok([200, 201].includes(copy.status), await copy.clone().text());
+    const asset = await copy.json();
+    const before = (await tool(owner, "read_page", { page_id: longId })).body;
+    const placed = await tool(owner, "edit_page", {
+      page_id: longId,
+      base_heads: before.heads,
+      ...retry(before),
+      operations: [dataframe(asset.asset_id, "Far below")],
+    });
+    assert.equal(placed.status, 200, JSON.stringify(placed.body));
+    const fetched = [];
+    const track = (request) => {
+      if (request.url().includes(asset.asset_url)) fetched.push(request.url());
+    };
+    owner.on("request", track);
+    await owner.goto(`${origin}/p/${longId}`);
+    await expect(tables(owner)).toHaveCount(1, { timeout: 15000 });
+    const far = tables(owner).first();
+    await expect(far).toContainText("Loading table…");
+    // Long enough for an eager load to have fetched the dataset.
+    await owner.waitForTimeout(1500);
+    assert.deepEqual(fetched, [], "an offscreen table fetched its dataset");
+    assert.equal(await far.locator(".sift-root").count(), 0);
+    await far.scrollIntoViewIfNeeded();
+    await expect(far.locator(".sift-root").first()).toBeVisible({ timeout: 20000 });
+    await expect(far).toContainText("browser", { timeout: 20000 });
+    assert.equal(fetched.length, 1, `dataset fetched ${fetched.length} times`);
+    owner.off("request", track);
+    // The steps below work on the first Page.
+    await owner.goto(`${origin}/p/${pageId}`);
+    await expect(tables(owner)).toHaveCount(1, { timeout: 15000 });
+  }
+  complete("A table below the fold fetches its dataset only when a reader scrolls near it");
+
   const rewrite = await editPage([
     { op: "replace_block_markdown", block_id: node.block_id, markdown: "gone" },
   ]);

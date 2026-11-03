@@ -51,107 +51,203 @@ export function dataframeFrame({ title, media_type }) {
 export const dataframeEventReachesEditor = (event) =>
   !event.target?.closest?.(".wordgard-dataframe-canvas");
 
+/** States of one table's renderer lifecycle (dataframeStep). */
+export const DATAFRAME_STATES = Object.freeze([
+  "idle",
+  "waiting",
+  "scheduled",
+  "loading",
+  "mounted",
+  "parked",
+  "failed",
+]);
+
 /**
- * The renderer lifecycle of one table, as a state machine:
+ * The renderer lifecycle of one table, as a pure transition:
  *
- *   idle --connect--> scheduled --timer--> loading --loaded--> mounted
+ *   idle --connect--> waiting --visible--> scheduled --timer--> loading
+ *   scheduled --hidden--> waiting (cancels the timer)
+ *   loading --loaded--> mounted   loading --failed--> failed
  *   mounted --disconnect--> parked --connect--> mounted
- *   parked --park timer--> idle (destroys the table)
- *   other --disconnect--> idle (cancels the timer)
- *   loading --failed--> failed
+ *   parked --parkExpired--> idle (destroys the table)
+ *   any other state --disconnect--> idle (cancels what's pending)
+ *
+ * `waiting` holds a connected table until it nears the viewport, so a Page
+ * with many tables loads Sift and fetches a dataset only for the ones a
+ * reader scrolls to. Once loading starts, visibility no longer matters: a
+ * mounted table stays mounted offscreen, keeping the reader's sort and
+ * filters.
  *
  * Selecting the node makes Wordgard move the same DOM into a selection
  * wrapper, which disconnects and reconnects the widget. `parked` keeps the
  * mounted table across that move instead of reloading the dataset.
  *
  * Wordgard can connect and disconnect a widget more than once. Each connect
- * starts a new generation; a load that resolves for an older generation is
- * dropped, so a widget never holds two mounted tables.
+ * starts a new generation; a timer or load that settles for an older
+ * generation is dropped, so a widget never holds two mounted tables.
+ *
+ * Returns the next model and the effects to run, in order. Every effect
+ * names the generation it belongs to where it can settle later.
  */
+export function dataframeStep(model, event, { canLoad = true } = {}) {
+  const { state, generation } = model;
+  const stay = { model, effects: [] };
+  const current = event.generation === generation;
+  switch (event.type) {
+    case "connect":
+      if (state === "parked")
+        return { model: { state: "mounted", generation }, effects: ["clearTimer", "markMoved"] };
+      if (state !== "idle" || !canLoad) return stay;
+      return { model: { state: "waiting", generation: generation + 1 }, effects: ["observe"] };
+    case "visible":
+      if (state !== "waiting") return stay;
+      return {
+        model: { state: "scheduled", generation },
+        effects: [{ type: "startTimer", event: "timer", generation }],
+      };
+    case "hidden":
+      if (state !== "scheduled") return stay;
+      return { model: { state: "waiting", generation }, effects: ["clearTimer"] };
+    case "timer":
+      if (state !== "scheduled" || !current) return stay;
+      return {
+        model: { state: "loading", generation },
+        effects: ["unobserve", { type: "load", generation }],
+      };
+    case "loaded":
+      if (state !== "loading" || !current) return stay;
+      return {
+        model: { state: "mounted", generation },
+        effects: [{ type: "mount", module: event.module }],
+      };
+    case "failed":
+      if (state !== "loading" || !current) return stay;
+      return { model: { state: "failed", generation }, effects: ["fail"] };
+    case "parkExpired":
+      if (state !== "parked" || !current) return stay;
+      return { model: { state: "idle", generation: generation + 1 }, effects: ["destroy"] };
+    case "disconnect":
+      if (state === "mounted")
+        return {
+          model: { state: "parked", generation },
+          effects: [{ type: "startTimer", event: "parkExpired", generation }],
+        };
+      if (state === "idle") return stay;
+      return {
+        model: { state: "idle", generation: generation + 1 },
+        effects: ["clearTimer", "unobserve", "destroy"],
+      };
+  }
+  return stay;
+}
+
+/** How far outside the viewport a table starts loading, so it's usually
+ * drawn by the time a reader scrolls to it. */
+const PRELOAD_MARGIN = "600px 0px";
+let sharedObserver = null;
+const observed = new Map();
+/** Calls `onChange(near)` when `element` comes within PRELOAD_MARGIN of the
+ * viewport or leaves it; returns the function that stops watching. Without
+ * IntersectionObserver every table counts as near. */
+export function observeNearViewport(element, onChange) {
+  if (typeof IntersectionObserver !== "function") {
+    onChange(true);
+    return () => {};
+  }
+  sharedObserver ??= new IntersectionObserver(
+    (entries) => {
+      for (const entry of entries) observed.get(entry.target)?.(entry.isIntersecting);
+    },
+    { rootMargin: PRELOAD_MARGIN },
+  );
+  observed.set(element, onChange);
+  sharedObserver.observe(element);
+  return () => {
+    observed.delete(element);
+    sharedObserver.unobserve(element);
+  };
+}
+
+/** Runs dataframeStep for one table, with its effects at the edge. */
 export function dataframeLifecycle({
   load,
+  dom,
   canvas,
   status,
   attrs,
   delay = 50,
   park = 1000,
+  observe = observeNearViewport,
   onUnavailable,
 }) {
-  let state = "idle",
-    generation = 0,
+  let model = { state: "idle", generation: 0 },
     timer = null,
-    instance = null;
-  const transition = (event, value) => {
-    switch (event) {
-      case "connect":
-        if (state === "parked") {
-          clearTimeout(timer);
-          timer = null;
-          state = "mounted";
-          // A move re-inserts the DOM, which restarts CSS animations. Sift's
-          // load-in animations would replay on every select; turn them off.
-          if (canvas.dataset) canvas.dataset.moved = "";
-          return;
-        }
-        if (state !== "idle" || !load) return;
-        state = "scheduled";
-        generation++;
-        timer = setTimeout(() => transition("timer", generation), delay);
-        return;
-      case "timer": {
-        if (state !== "scheduled" || value !== generation) return;
-        state = "loading";
-        const current = generation;
-        load().then(
-          (module) => transition("loaded", { current, module }),
-          () => transition("failed", current),
+    instance = null,
+    stopObserving = null;
+  const dispatch = (event) => {
+    const result = dataframeStep(model, event, { canLoad: Boolean(load) });
+    model = result.model;
+    for (const effect of result.effects)
+      run(typeof effect === "string" ? { type: effect } : effect);
+  };
+  const run = (effect) => {
+    switch (effect.type) {
+      case "observe":
+        stopObserving?.();
+        // The observer can report at once; dispatch reads the updated model.
+        stopObserving = observe(dom ?? canvas, (near) =>
+          dispatch({ type: near ? "visible" : "hidden" }),
         );
         return;
-      }
-      case "loaded":
-        if (state !== "loading" || value.current !== generation) return;
-        state = "mounted";
+      case "unobserve":
+        stopObserving?.();
+        stopObserving = null;
+        return;
+      case "startTimer":
+        clearTimeout(timer);
+        timer = setTimeout(
+          () => dispatch({ type: effect.event, generation: effect.generation }),
+          effect.event === "parkExpired" ? park : delay,
+        );
+        return;
+      case "clearTimer":
+        clearTimeout(timer);
+        timer = null;
+        return;
+      case "load":
+        load().then(
+          (module) => dispatch({ type: "loaded", generation: effect.generation, module }),
+          () => dispatch({ type: "failed", generation: effect.generation }),
+        );
+        return;
+      case "mount":
         // The renderer draws its own loading and error states, including
         // fetchDataset's access and missing-asset messages.
         status.hidden = true;
-        instance = value.module.mount(canvas, attrs);
+        instance = effect.module.mount(canvas, attrs);
         return;
-      case "parkExpired":
-        if (state !== "parked" || value !== generation) return;
-        instance?.destroy();
-        instance = null;
-        timer = null;
-        generation++;
-        state = "idle";
+      case "markMoved":
+        // A move re-inserts the DOM, which restarts CSS animations. Sift's
+        // load-in animations would replay on every select; turn them off.
+        if (canvas.dataset) canvas.dataset.moved = "";
         return;
-      case "failed":
-        if (state !== "loading" || value !== generation) return;
-        state = "failed";
+      case "fail":
         onUnavailable?.();
         status.hidden = false;
         status.textContent = "Table unavailable.";
         return;
-      case "disconnect":
-        if (state === "mounted") {
-          state = "parked";
-          const current = generation;
-          timer = setTimeout(() => transition("parkExpired", current), park);
-          return;
-        }
-        clearTimeout(timer);
-        timer = null;
+      case "destroy":
         instance?.destroy();
         instance = null;
-        generation++;
-        state = "idle";
+        timer = null;
         return;
     }
   };
   return {
-    connect: () => transition("connect"),
-    disconnect: () => transition("disconnect"),
+    connect: () => dispatch({ type: "connect" }),
+    disconnect: () => dispatch({ type: "disconnect" }),
     get state() {
-      return state;
+      return model.state;
     },
   };
 }
