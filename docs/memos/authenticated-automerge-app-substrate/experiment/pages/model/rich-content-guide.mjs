@@ -78,9 +78,11 @@ Mermaid diagrams render from the code block's source when people view the
 Page; the rendered SVG is never stored. Upload images to the Page and place
 them with insert_image (see Images below).
 
-Markdown is how you read and write rich text, not how Pages stores it. Each
-paragraph, heading, list item, code block and table cell is a native node,
-and formatting is a native mark on its characters. ${richEditOperations()}
+Pages stores native nodes, not Markdown. Each paragraph, heading, list item,
+code block, table cell and image is a node with typed attributes, and
+formatting is a native mark on its characters. Markdown is one way to read and
+write them; node operations (insert_image, set_node) are the other.
+${richEditOperations()}
 These operations keep comment anchors and untouched characters in place, so
 prefer them to replace_block_markdown for small changes.
 `;
