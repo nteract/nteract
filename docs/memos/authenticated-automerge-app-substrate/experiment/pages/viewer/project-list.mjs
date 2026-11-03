@@ -22,6 +22,10 @@
  *
  * Effects: `fetch` asks list_projects under `key`; `show` puts that answer's
  * Projects in the store for the state's account; `clear` empties the store.
+ *
+ * list_projects names the `principal` that answered. An answer for any other
+ * account than the request's (another window signed in) settles as `failed`,
+ * so it never shows as this account's Projects.
  */
 import { defineMachine, reject } from "../shared/machine.mjs";
 import { Store } from "./store.mjs";
@@ -182,6 +186,10 @@ export class ProjectList {
         this.#flight = { key, promise };
         promise.then(
           (answer) => {
+            if (answer?.principal !== this.#state.principal) {
+              this.#dispatch({ type: "failed", key });
+              return;
+            }
             this.#answer = answer;
             if (!this.#dispatch({ type: "loaded", key })) this.#answer = null;
           },

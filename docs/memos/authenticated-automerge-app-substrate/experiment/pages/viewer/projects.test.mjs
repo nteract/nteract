@@ -3,7 +3,7 @@ import { test } from "node:test";
 import { readPageRoute, projectPath, writePageRoute } from "../shared/routes.mjs";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { listProjectPages, projectTree } from "./projects.mjs";
+import { listProjectPages, projectTree, watchPageLocation } from "./projects.mjs";
 import { runPageCreation } from "./page-create-machine.mjs";
 import {
   Breadcrumbs,
@@ -183,4 +183,59 @@ test("the picker offers New Page in the current Project and in Your items", () =
   );
   assert.match(split, /In Launch/);
   assert.match(split, /In Your items/);
+});
+
+test("a Page's location is asked for again as its session registers and connects", async () => {
+  const settle = () => new Promise((resolve) => setImmediate(resolve));
+  // A draft made in this tab: not registered, not connected.
+  const session = { localPage: { registration: {}, registered: false }, connection: null };
+  const asks = [];
+  const found = [];
+  let current = true;
+  const location = watchPageLocation(session, {
+    locate: () => {
+      const answer = {};
+      answer.promise = new Promise((resolve, reject) => Object.assign(answer, { resolve, reject }));
+      asks.push(answer);
+      return answer.promise;
+    },
+    onFound: (value) => found.push(value),
+    current: () => current,
+  });
+  assert.equal(asks.length, 1, "asked at once");
+  asks[0].reject(Object.assign(Error("Page not found"), { status: 404 }));
+  await settle();
+  location.changed();
+  location.changed();
+  assert.equal(asks.length, 1, "nothing changed, so nothing is asked again");
+  // Registration changes what read_page can find, so it asks again.
+  session.localPage.registered = true;
+  location.changed();
+  assert.equal(asks.length, 2);
+  session.connection = {};
+  location.changed();
+  assert.equal(asks.length, 2, "one ask in flight at a time");
+  asks[1].reject(Object.assign(Error("Page not found"), { status: 404 }));
+  await settle();
+  assert.equal(asks.length, 3, "the connection changed while it was asking");
+  asks[2].resolve({ project_id: null, home: false, breadcrumbs: [] });
+  await settle();
+  assert.deepEqual(found, [{ project_id: null, home: false, breadcrumbs: [] }]);
+  session.connection = null;
+  location.changed();
+  assert.equal(asks.length, 3, "found is final");
+
+  // A Page the shell left hears nothing.
+  const left = watchPageLocation(
+    { connection: {} },
+    {
+      locate: async () => ({ home: true }),
+      onFound: (value) => found.push(value),
+      current: () => current,
+    },
+  );
+  current = false;
+  await settle();
+  left.stop();
+  assert.equal(found.length, 1);
 });

@@ -75,6 +75,63 @@ export async function pageLocation(call, pageId) {
   };
 }
 
+/** What decides whether read_page can find a session's Page: a draft made in
+ * this tab or offline isn't on the server until it registers, and nothing is
+ * reachable until the session connects. */
+const reachability = (session) =>
+  `${session.localPage?.registration ? !!session.localPage.registered : true}:${!!session.connection}`;
+
+/**
+ * Find where `session`'s Page is, and ask again until it is found.
+ *
+ * read_page refuses a Page created in this tab, or a draft made offline,
+ * until it registers, and can fail while the session is offline. A failed
+ * ask waits for the session's reachability (registered, connected) to change
+ * and then asks again; an ask never runs twice for the same reachability, so
+ * a Page read_page keeps refusing costs one request per change. States:
+ * waiting (no ask in flight; `asked` names the reachability last asked
+ * under), asking, found, stopped. `found` and `stopped` are terminal.
+ *
+ * `locate()` is read_page through pageLocation; `onFound(location)` hears the
+ * answer once, while `current()` holds. Call `changed()` whenever the session
+ * notifies; `stop()` ends it.
+ */
+export function watchPageLocation(session, { locate, onFound, current }) {
+  let state = { name: "waiting", asked: null };
+  const ask = () => {
+    if (state.name !== "waiting" || !current()) return;
+    const asked = reachability(session);
+    if (asked === state.asked) return;
+    state = { name: "asking", asked };
+    let pending;
+    try {
+      pending = Promise.resolve(locate());
+    } catch (error) {
+      pending = Promise.reject(error);
+    }
+    pending.then(
+      (location) => {
+        if (state.name !== "asking") return;
+        state = { name: "found" };
+        if (current()) onFound(location);
+      },
+      () => {
+        if (state.name !== "asking") return;
+        state = { name: "waiting", asked };
+        // Reachability may have changed while the ask was in flight.
+        ask();
+      },
+    );
+  };
+  ask();
+  return {
+    changed: ask,
+    stop: () => {
+      state = { name: "stopped" };
+    },
+  };
+}
+
 /** Breadcrumbs for an open Page, limited to what this account can open. */
 export async function pageBreadcrumbs(call, pageId) {
   return (await pageLocation(call, pageId)).breadcrumbs;

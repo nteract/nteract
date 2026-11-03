@@ -67,7 +67,7 @@ import {
 import { pageCreations } from "./page-create-machine.mjs";
 import { ProjectsIndex } from "./IndexViews.jsx";
 import { Library } from "./Library.jsx";
-import { listProjectPages, pageLocation } from "./projects.mjs";
+import { listProjectPages, pageLocation, watchPageLocation } from "./projects.mjs";
 import { closeTrashedSessions, moveToTrashError, restorePage } from "./trash.mjs";
 import { listAllPages } from "./page-list.mjs";
 import { Listing, listingView } from "./listing.mjs";
@@ -85,7 +85,7 @@ import { RetiredPage } from "./RetiredPage.jsx";
 import { reloadGate } from "./build-freshness.mjs";
 import { EditorLoader } from "./editor-loader.mjs";
 import { SessionHost } from "./session-host.mjs";
-import { useStore } from "./store.mjs";
+import { Store, useStore } from "./store.mjs";
 import { CommentComposer, hasDraftText } from "./comment-composer.mjs";
 import { focusReturnTarget } from "./focus-return.mjs";
 import { timer } from "rxjs";
@@ -128,13 +128,20 @@ const warmEditor = () => editor.start();
 // The account's Projects, one list_projects request shared by the library's
 // Project filter, the Browse picker, Move to… and /projects.
 const projectList = new ProjectList({ call: tool });
+// Counts forgetAccountData calls, so the open Browse picker drops its walk
+// too.
+const accountForgets = new Store(0);
 /** Forget the rows and Projects remembered for the account: it signed out,
  * another one signed in, or the server refused a tool call as signed out. */
 function forgetAccountData() {
   listingCache.clear();
   projectList.reset();
+  accountForgets.update((count) => count + 1);
 }
 const NO_PROJECTS = Object.freeze([]);
+/** What the Browse picker lists while it is closed: nothing. */
+const CLOSED_PICKER = new Listing({ fetch: () => ({ items: [], cursor: null }), idOf: () => null })
+  .store;
 /** The Browse picker's rows: every Page the account can open, walked only
  * while the picker is open. */
 const allPagesRequest = async () => ({
@@ -208,28 +215,36 @@ function App() {
   const projectsReady =
     !!account?.principal && projectState.principal === account.principal && projectState.ready;
   const projects = projectsReady ? projectState.projects : NO_PROJECTS;
-  // The Browse picker's listing, one per account. It walks every Page each
-  // time the picker opens, starting from the library's first page when this
-  // tab has shown it (read only: the walk is not a library view).
+  // The Browse picker's listing: a new one each time the picker opens, for
+  // the account and until the shell forgets what it remembers for it. It
+  // walks every Page, starting from the library's first page when this tab
+  // showed it within the cache's age limit (read only: the walk is not a
+  // library view). A walk never outlives its opening, so a later one never
+  // shows rows whose access nobody confirmed since.
   const principal = account?.principal ?? null;
+  const forgets = useStore(accountForgets);
   const pickerListing = React.useMemo(
     () =>
-      new Listing({
-        fetch: allPagesRequest,
-        report: (message) => setPickerError(message),
-        idOf: (item) => item.page_id,
-        cache: principal
-          ? { read: (params) => listingCache.read(principal, params), write: () => {} }
-          : null,
-      }),
-    [principal],
+      pickerOpen
+        ? new Listing({
+            fetch: allPagesRequest,
+            report: (message) => setPickerError(message),
+            idOf: (item) => item.page_id,
+            cache: principal
+              ? { read: (params) => listingCache.read(principal, params), write: () => {} }
+              : null,
+          })
+        : null,
+    [principal, pickerOpen, forgets],
   );
-  useEffect(() => pickerListing.connect(), [pickerListing]);
-  const pickerSnapshot = useStore(pickerListing.store);
-  const pickerView = listingView(pickerSnapshot);
   useEffect(() => {
-    if (pickerOpen) pickerListing.load();
-  }, [pickerOpen, pickerListing]);
+    if (!pickerListing) return;
+    const disconnect = pickerListing.connect();
+    pickerListing.load();
+    return disconnect;
+  }, [pickerListing]);
+  const pickerSnapshot = useStore(pickerListing?.store ?? CLOSED_PICKER);
+  const pickerView = listingView(pickerSnapshot);
   // Rendered only beside a session; handlers read editor.module when they run.
   const { WordgardEditor, CommentsPanel, CommentPopover, SaveStatus, PageControls } =
     editor.module ?? {};
@@ -356,9 +371,11 @@ function App() {
    * so leaving never drops a save; the host tracks the close. */
   function releaseCurrent(options) {
     // A return to the library paints the title this tab last showed, its own
-    // rename or a peer's, over the one it remembered.
+    // rename or a peer's, over the one it remembered. A Page the host deleted
+    // or stopped sharing leaves what this tab remembers instead.
     const leaving = host.current;
-    if (leaving?.doc) listingCache.retitle(leaving.pageId, leaving.doc.title);
+    if (leaving?.hidden) listingCache.forget(leaving.pageId);
+    else if (leaving?.doc) listingCache.retitle(leaving.pageId, leaving.doc.title);
     host.release({ ...options, onError: showError });
     resetDocumentUI();
   }
@@ -373,11 +390,14 @@ function App() {
     setPlacement(null);
     setProjectPages(null);
     // Breadcrumbs show only the Project and parents this account can open.
-    // A Project's home Page also lists the Project's Pages.
-    void pageLocation(tool, next.pageId).then(
-      (value) => {
-        if (host.current !== next) return;
-        setPlacement(value);
+    // A Project's home Page also lists the Project's Pages. A Page created in
+    // this tab isn't on the server until it registers, so the location is
+    // asked for again as the session registers and connects.
+    const location = watchPageLocation(next, {
+      locate: () => pageLocation(tool, next.pageId),
+      current: () => host.current === next,
+      onFound: (value) => {
+        setPlacement((shown) => shown ?? value);
         if (value.home && value.project_id)
           void listProjectPages(tool, value.project_id).then(
             (pages) => {
@@ -386,8 +406,7 @@ function App() {
             () => {},
           );
       },
-      () => {},
-    );
+    });
     const listRecoveries = () =>
       void next
         .listRecoveries()
@@ -416,6 +435,7 @@ function App() {
     next.subscribe(() => {
       if (host.current === next) {
         paint((n) => n + 1);
+        location.changed();
         if (next.accessReloadRequired && !next.recoveryPending) void reloadAccess(next);
         if (next.hidden && !hiding) {
           hiding = true;
@@ -736,11 +756,28 @@ function App() {
     });
     auth.current = maintenance;
     // A tool call refused as signed out: what this tab remembers for the
-    // account goes, and the session check decides who is signed in now.
+    // account goes, and the session check decides who is signed in now. When
+    // it answers with the same account, the account's Projects are asked for
+    // again. One recovery runs at a time, and a 401 during it (its own
+    // list_projects, say) starts no other, so a server that keeps refusing
+    // tool calls can't loop the tab.
+    let recovering = false;
     const stopSignedOut = observeSignedOut(() => {
       if (!alive) return;
       forgetAccountData();
-      void maintenance.refresh().catch(() => {});
+      if (recovering) return;
+      recovering = true;
+      const before = authentication.current?.identity?.principal ?? null;
+      void maintenance
+        .refresh()
+        .then(() => {
+          const now = authentication.current?.identity?.principal ?? null;
+          if (alive && now && now === before) return projectList.request(now, { fresh: true });
+        })
+        .catch(() => {})
+        .finally(() => {
+          recovering = false;
+        });
     });
     const onPopState = () => {
       if (authentication.current?.identity) followRoute();
@@ -981,17 +1018,31 @@ function App() {
     );
   }
   /** Move to…: only the Page's owner, signed in as that account, moves it.
-   * The dialog starts where read_page says the Page is; the action shows only
-   * once read_page answered, since a Project's home Page can't move. */
-  function startMove() {
+   * The dialog starts where read_page says the Page is, asked here when the
+   * shell doesn't know yet. A Project's home Page stays with its Project. */
+  async function startMove() {
     const moving = host.current;
-    const where = placement;
-    if (!moving || !where) return;
+    if (!moving) return;
     if (
       moving.authRequired ||
       moving.identity.principal !== authentication.current?.identity?.principal
     ) {
       setError("Sign in with this Page's original account to move it.");
+      return;
+    }
+    let where = placement;
+    if (!where) {
+      try {
+        where = await pageLocation(tool, moving.pageId);
+      } catch (error) {
+        showError(error);
+        return;
+      }
+      if (host.current !== moving) return;
+      setPlacement(where);
+    }
+    if (where.home) {
+      setError("A Project's home Page stays with its Project.");
       return;
     }
     const projectCrumb = where.breadcrumbs.find((crumb) => crumb.kind === "project");
@@ -1243,11 +1294,10 @@ function App() {
           icon: RotateCcw,
           run: restoreCurrent,
         },
-        // A Project's home Page stays with its Project, so Move to… waits for
-        // read_page to say where the Page is.
+        // A Project's home Page stays with its Project. Until read_page says
+        // where the Page is, Move to… asks when chosen (startMove).
         session.canDelete &&
-          !!placement &&
-          !placement.home && {
+          !placement?.home && {
             key: "move",
             label: "Move to…",
             icon: FolderInput,

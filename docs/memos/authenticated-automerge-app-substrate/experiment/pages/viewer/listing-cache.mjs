@@ -5,7 +5,9 @@
 // Who an entry belongs to. Entries are keyed by account and the normalized
 // request (libraryRequest), and a scope reads only its own account's entries.
 // A page is written only under the account that answered it: list_pages
-// names its `principal`, and a scope drops a page answered for anyone else.
+// names its `principal`, and a scope drops a page answered for anyone else
+// (or for no one named), forgetting what it held for that view: the tab's
+// account has just seen something else there.
 // The tab's account can lag the cookie (another window signed in as someone
 // else), so the tab's account alone can't file a reply.
 //
@@ -32,6 +34,7 @@
 // Pages (`forgetOwnedViews`), since any of them may gain, lose or relabel a
 // row. Views of Pages shared with the account can't change that way.
 import { libraryRequest } from "../shared/routes.mjs";
+import { monotonicNow } from "./monotonic.mjs";
 
 /** How many views one tab remembers; the least recently shown goes first. */
 export const LISTING_CACHE_LIMIT = 24;
@@ -48,11 +51,13 @@ export class ListingCache {
   #limit;
   #maxAge;
   #now;
-  /** `now()` is the clock in milliseconds; tests pass a virtual one. */
+  /** `now()` is a monotonic clock in milliseconds (monotonic.mjs), so a
+   * system clock change can't stretch or cut short the age limit; tests pass
+   * a virtual one. */
   constructor({
     limit = LISTING_CACHE_LIMIT,
     maxAgeMs = LISTING_CACHE_MAX_AGE_MS,
-    now = () => Date.now(),
+    now = monotonicNow,
   } = {}) {
     this.#limit = limit;
     this.#maxAge = maxAgeMs;
@@ -126,14 +131,13 @@ export class ListingCache {
   }
   /** The read/write pair a Listing takes for one account, or null when no one
    * is signed in. `write` files a page only when `answeredBy`, the principal
-   * the reply named, is this account. */
+   * the reply named, is this account; any other reply forgets the view. */
   scope(principal) {
     if (!principal) return null;
     return {
       read: (params) => this.read(principal, params),
-      write: (params, items, answeredBy) => {
-        if (answeredBy === principal) this.write(principal, params, items);
-      },
+      write: (params, items, answeredBy) =>
+        this.write(principal, params, answeredBy === principal ? items : []),
     };
   }
   get size() {

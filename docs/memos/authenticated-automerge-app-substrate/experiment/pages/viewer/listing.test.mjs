@@ -682,6 +682,12 @@ test("a first page is remembered only under the account that answered it", async
   requests[2].resolve({ items: [{ id: "alices" }], cursor: null, principal: "alice" });
   await settle();
   assert.deepEqual(cache.read("alice", {}), [{ id: "alices" }]);
+  // A later reply for someone else forgets the view: this tab just saw
+  // something other than Alice's rows there.
+  listing.load();
+  requests[3].resolve({ items: [{ id: "bobs" }], cursor: null, principal: "bob" });
+  await settle();
+  assert.equal(cache.read("alice", {}), null);
 });
 
 test("a remembered view paints for five minutes after it was shown, then loads normally", async () => {

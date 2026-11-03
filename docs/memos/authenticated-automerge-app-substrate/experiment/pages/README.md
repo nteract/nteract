@@ -1427,7 +1427,8 @@ entries without counts leaves that to repair.
 At the limit, creating or restoring returns `409 page_quota_exceeded` and moving
 to Trash returns `409 trash_capacity`, each with `limit` and `count`.
 `list_pages` returns `quota: {limit, count, trash_count}` for the caller's own
-account, whatever the listing's filters. The Pages library shows usage from 90% of the limit.
+account, whatever the listing's filters, and `principal`, the account that
+answered. `list_projects` returns `principal` too. The Pages library shows usage from 90% of the limit.
 
 ## Build updates
 
@@ -2024,20 +2025,25 @@ over from its first page. Grid cards are behind the `grid` flag (`?grid=1` or
 A library visit sends one `list_pages`, for its view. `list_projects` is one
 request per account shared by the Project filter, the Browse picker, Move to…
 and the first page of `/projects`; a request made while one is in flight joins
-it ([project-list.mjs](viewer/project-list.mjs)). The first page of each view
+it ([project-list.mjs](viewer/project-list.mjs)), and an answer that names
+another account (`principal`) never shows as this one's. The first page of each view
 this tab has shown stays in memory, keyed by account and request
 ([listing-cache.mjs](viewer/listing-cache.mjs)), so a return visit, Back from
 a Page included, paints it while the listing asks again. A page is kept only
 under the account that answered it (`list_pages` returns its `principal`),
 and paints for 5 minutes after it was shown: after that, shared titles wait
 for their Page hosts again and the view shows Loading…. A refresh that fails
-lists nothing rather than the remembered rows. The cache is cleared on
-sign-out, account change and any tool call refused with a 401 (which also
-rechecks the session). It overlays a rename this tab saw, forgets a Page moved
-to Trash, drops the views of the account's own Pages after a create, move or
-restore, and is never persisted. The Browse picker walks every Page (`list_pages` cursors, at most
-ten requests) only when it opens, and a Project's home Page lists its Project
-with `project_id`.
+lists nothing rather than the remembered rows. The cache and Projects are
+cleared on sign-out, account change and any tool call refused with a 401,
+which also rechecks the session and, if the same account answers, asks for
+its Projects again. The cache overlays a rename this tab saw, forgets a Page
+moved to Trash or hidden by its host, drops the views of the account's own
+Pages after a create, move or restore, and is never persisted. The Browse
+picker walks every Page (`list_pages` cursors, at most ten requests) afresh
+each time it opens, never showing an earlier walk, and a Project's home Page
+lists its Project with `project_id`. An open Page asks `read_page` where it
+is, and asks again as a Page created in this tab registers or reconnects;
+Move to… hides only on a Project's home Page and asks when chosen otherwise.
 
 | Tool | Arguments | Result |
 | --- | --- | --- |
