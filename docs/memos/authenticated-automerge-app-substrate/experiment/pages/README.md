@@ -158,10 +158,13 @@ ProseMirror names, agent-facing names, settable attrs and insert operations.
 The ProseMirror schema and serializer, Wordgard's decode and encode, and
 `features.json` still define types in their own terms;
 `node-registry.test.mjs` fails when one of them disagrees with the registry.
-There's no node id yet, so `set_node` addresses nodes through `match_text` and
-can't reach a node without text. Replacing the codec means, in order: one span
-encoder for every writer; stable node ids with node reads; then outlines,
-change reads and Markdown on that node tree instead of ProseMirror.
+A top-level node's id (`model/node-ids.mjs`) is an Automerge cursor at the
+block marker that opens it. Outlines and change reads report it as `node_id`,
+and `delete_node` takes it, so an agent can remove a node with no text. A
+paragraph that opens its block has no marker and no id. `set_node` still
+addresses nodes through `match_text`. Replacing the codec means, in order: one
+span encoder for every writer; node reads by id; then outlines, change reads
+and Markdown on that node tree instead of ProseMirror.
 Existing documents, comment anchors and MCP addresses must survive each step.
 
 Each Pages block has its own continuous editor. Moves update fractional positions without recreating the block or its

@@ -1,14 +1,19 @@
 import * as A from "@automerge/automerge/slim";
 import {
   RICH_FORMAT,
+  isRich,
   markdownlessNode,
   quotableNodeType,
+  redundantFirstMarker,
+  richDoc,
   setRichMarkdown,
   setRichMarkdownKeepingNodes,
   setRichImage,
   setRichNode,
   projectedBlock,
+  textPath,
 } from "./richtext.mjs";
+import { resolveNodeId } from "./node-ids.mjs";
 import { imageAssetUrl, validAssetId } from "../shared/image-assets.mjs";
 import { DATAFRAME_BLOCK, dataframeFor } from "../shared/dataset-assets.mjs";
 import { projectComments } from "./comments.mjs";
@@ -16,7 +21,7 @@ import { COMMENTS_FEATURE } from "./comments-doc.mjs";
 import { orderedBlockIds, positionForInsertion } from "./order.mjs";
 import { anchorOccurrence, formatMatch, replaceMatch } from "./replace-match.mjs";
 import { setNode } from "./set-node.mjs";
-import { insertOperation } from "./node-registry.mjs";
+import { agentType, insertOperation } from "./node-registry.mjs";
 import { stampFeatures } from "./schema-features.mjs";
 export { orderedBlockIds } from "./order.mjs";
 const block = (id = crypto.randomUUID(), position = positionForInsertion()) => ({
@@ -182,7 +187,7 @@ function applyEdit(doc, op, trace, context) {
     if (node)
       throw Object.assign(
         Error(
-          `This block holds ${quotableNodeType(node) ? `a ${node}` : "a node this version of Pages doesn't know"}, which has no Markdown form, so a Markdown rewrite would lose it. Delete the block, or insert new content beside it.`,
+          `This block holds ${quotableNodeType(node) ? `a ${node}` : "a node this version of Pages doesn't know"}, which has no Markdown form, so a Markdown rewrite would lose it. Remove it with delete_node, or edit around it with patch_page.`,
         ),
         { code: "markdownless_node" },
       );
@@ -193,7 +198,29 @@ function applyEdit(doc, op, trace, context) {
     trace?.push({ type: "block", block_id: id });
   } else if (op.op === "delete_block") {
     delete doc.blocks[id];
+  } else if (op.op === "delete_node") {
+    return deleteNode(doc, id, op, trace);
   } else throw Error("Unsupported edit operation");
+}
+/** Delete the top-level node `op.node_id` names: its marker through the next
+ * node's marker, so its text, marks and children go with it and its
+ * neighbours keep their identity. A block left opening with a plain paragraph
+ * marker loses that marker, as the editor would on its next edit. */
+function deleteNode(doc, id, op, trace) {
+  if (!isRich(doc.blocks[id]))
+    throw Object.assign(Error("delete_node needs a rich-text block; this block is Markdown"), {
+      code: "node_not_found",
+    });
+  const { index, start, end } = resolveNodeId(doc, id, op.node_id);
+  const type = agentType(richDoc(doc.blocks[id], doc.page_id).child(index).type.name);
+  const path = textPath(id);
+  A.splice(doc, path, start, end - start);
+  if (redundantFirstMarker(A.spans(doc, path))) A.splice(doc, path, 0, 1);
+  // Removing whole top-level nodes keeps the tree valid; check it anyway, so
+  // a malformed result can never be committed.
+  richDoc(doc.blocks[id], doc.page_id).check();
+  trace?.push({ type: "block", block_id: id });
+  return { op: "delete_node", block_id: id, node_id: op.node_id, type };
 }
 export function applyPageOperation(doc, options) {
   const result = applyOperation(doc, options);

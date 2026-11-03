@@ -118,10 +118,13 @@ Branch on code, not on the error message:
   Markdown form. Two causes:
   - A dataframe's read-back line, [Dataframe: <title>](<src>), is missing or
     edited. Keep that line unchanged to keep the node; the error lists the
-    lines. To remove a dataframe, delete_block a block that holds only it.
+    lines. To remove a dataframe, delete_node it by its node_id.
   - The block holds a node a newer version of Pages added (it reads as
     [Unsupported node: <type>]). Edit around it with replace_match,
-    format_match or set_node, or delete the block.
+    format_match or set_node, or remove it with delete_node.
+- node_not_found: delete_node's node_id doesn't name a node in that block. The
+  node was deleted, or the id came from another block. Read the outline again;
+  repeating the request unchanged fails again.
 - preserved_markdown_converting (503): Pages is converting Markdown an older
   version saved on this Page. read_page still works. Wait, read_page again,
   retry; if it persists, the Page needs an operator.
@@ -690,7 +693,8 @@ markdownless_node when the line is missing or edited, appears twice, sits inside
 a quote, list or table, or reads like a dataframe the block doesn't hold. The
 line never creates, copies or moves a dataframe: use insert_node for a new one.
 In a block with no dataframe, such a line stays a link. replace_match and
-set_node edit around a dataframe without touching it. A missing asset is dataset_not_found (404).
+set_node edit around a dataframe without touching it; delete_node removes it
+by the node_id read_page's outline reports. A missing asset is dataset_not_found (404).
 
 Readers see a Sift table: they can sort, filter and scroll it, and those
 changes stay in their own view. Nothing they do changes the document. Pages
@@ -741,7 +745,8 @@ page_quota_exceeded with limit and count; tell the person rather than retrying.
   occurrence-th match or every match (all:true), and set_node to check a task, set a
   code block's language, change a heading level or align a table column. See Rich content.
 - edit_page: set_title, replace_block_markdown, insert_markdown, insert_image,
-  move_block, or delete_block operations.
+  insert_node, move_block, delete_block, or delete_node operations. delete_node
+  removes one top-level node by the node_id read_page's outline reports.
 - manage_page_comment: add, reply, resolve, reopen, edit, or delete_message. resolve and
   reopen also take thread_ids to change up to 100 threads in one call. See Comments below.
 - import_page_image: page_id and a ChatGPT-supplied file descriptor; returns a

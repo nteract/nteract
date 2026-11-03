@@ -6,6 +6,7 @@ import { enableRich, setRichMarkdown, textPath } from "./richtext.mjs";
 import { replaceMatch } from "./replace-match.mjs";
 import { applyComment as applyCommentTo } from "./comments.mjs";
 import { comment, newCommentsDoc } from "./comments-test-support.mjs";
+import { nodeIds } from "./node-ids.mjs";
 
 const author = { principal: "user", displayName: "Collaborator", driver: "Browser" };
 function page(markdown = "# Start\n\nFirst paragraph.\n\n## Later\n\nSecond paragraph.") {
@@ -89,6 +90,7 @@ test("one native paragraph edit returns only its current Markdown and revision-b
       scope: "node",
       change: "updated",
       node_index: 3,
+      node_id: nodeIds(doc, "one")[3].id,
       type: "paragraph",
       heading_path: ["Start", "Later"],
       markdown: "Updated 🌊 paragraph.",
@@ -114,6 +116,7 @@ test("inserting an earlier native node does not report untouched shifted nodes a
       scope: "node",
       change: "inserted",
       node_index: 0,
+      node_id: nodeIds(doc, "one")[0].id,
       type: "paragraph",
       heading_path: [],
       markdown: "New opening.",
@@ -124,6 +127,7 @@ test("inserting an earlier native node does not report untouched shifted nodes a
 test("native deletion reports its old address without historical text", () => {
   let doc = page();
   const before = A.getHeads(doc);
+  const deletedId = nodeIds(doc, "one")[1].id;
   doc = A.change(doc, (draft) => {
     const path = textPath("one"),
       start = draft.blocks.one.richText.indexOf("First paragraph.") - 1;
@@ -131,7 +135,14 @@ test("native deletion reports its old address without historical text", () => {
   });
   const result = read(doc, before);
   assert.deepEqual(result.changes, [
-    { block_id: "one", scope: "node", change: "deleted", before_node_index: 1, type: "paragraph" },
+    {
+      block_id: "one",
+      scope: "node",
+      change: "deleted",
+      before_node_index: 1,
+      node_id: deletedId,
+      type: "paragraph",
+    },
   ]);
   assert.doesNotMatch(JSON.stringify(result), /First paragraph/);
 });

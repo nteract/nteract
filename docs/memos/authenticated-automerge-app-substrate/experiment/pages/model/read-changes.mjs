@@ -1,19 +1,11 @@
 import * as A from "@automerge/automerge/slim";
-import { eventsWithIndexChanges, traverseSpans } from "@automerge/prosemirror/dist/traversal.js";
 import { orderedBlockIds } from "./order.mjs";
 import { projectReadComments } from "./read-comments.mjs";
 import { nodeFields } from "./read-content.mjs";
 import { agentType } from "./node-registry.mjs";
+import { nodeIds } from "./node-ids.mjs";
 import { commentMessageState, commentThreadState } from "./comment-content.mjs";
-import {
-  adapter,
-  blockMarkdown,
-  exportMarkdown,
-  isRich,
-  richDoc,
-  schema,
-  textPath,
-} from "./richtext.mjs";
+import { blockMarkdown, exportMarkdown, isRich, richDoc, schema } from "./richtext.mjs";
 
 export const CHANGE_READ_DEFAULT_BYTES = 128 * 1024;
 const encoder = new TextEncoder();
@@ -67,18 +59,17 @@ function options(args) {
   };
 }
 
-// Positions returned to callers are revision-bound indexes, never durable IDs.
-// A native text object plus the first marker cursor provides an internal identity
-// that survives text/mark changes and earlier paragraph insertions. Destroying a
-// marker can produce delete+insert; this is a net projection, not an edit audit.
+// node_index is a revision-bound position. A node's identity is its text
+// object plus its node_id (model/node-ids.mjs), which survives text and mark
+// changes and earlier insertions. Destroying a marker can produce
+// delete+insert; this is a net projection, not an edit audit.
 function nativeNodes(doc, blockId, headings) {
   const block = doc.blocks[blockId],
-    path = textPath(blockId),
-    spans = A.spans(doc, path),
     tree = richDoc(block, doc.page_id),
+    ids = nodeIds(doc, blockId, tree),
     objectId = A.getObjectId(block, "richText"),
     entries = [];
-  tree.forEach((node, offset, nodeIndex) => {
+  tree.forEach((node, _offset, nodeIndex) => {
     if (node.type.name === "heading") {
       while (headings.length && headings.at(-1).level >= node.attrs.level) headings.pop();
       headings.push({
@@ -92,10 +83,11 @@ function nativeNodes(doc, blockId, headings) {
         ),
       });
     }
+    const nodeId = ids[nodeIndex].id;
     entries.push({
-      offset,
-      end: offset + node.nodeSize,
+      key: `${objectId}:${nodeId ?? `implicit:${nodeIndex}`}`,
       node_index: nodeIndex,
+      node_id: nodeId,
       type: agentType(node.type.name),
       heading_path: headings.map((heading) => heading.text),
       markdown: exportMarkdown(schema.node("doc", null, [node])),
@@ -103,16 +95,6 @@ function nativeNodes(doc, blockId, headings) {
       fingerprint: canonical(node.toJSON()),
     });
   });
-  // Walk the binding's indexed traversal once, rather than rescanning the full
-  // span array for every paragraph. Containers use their first native marker.
-  let at = 0;
-  for (const state of eventsWithIndexChanges(traverseSpans(adapter, spans))) {
-    while (at < entries.length && state.after.pmIdx >= entries[at].end) at++;
-    const entry = entries[at];
-    if (entry && state.event.type === "block" && entry.key === undefined)
-      entry.key = `${objectId}:${A.getCursor(doc, path, state.after.amIdx)}`;
-  }
-  for (const entry of entries) entry.key ??= `${objectId}:implicit:${entry.node_index}`;
   // Never match ambiguous marker identities by an index that can have shifted.
   if (new Set(entries.map((entry) => entry.key)).size !== entries.length)
     throw Error("Native node identities are ambiguous");
@@ -147,6 +129,8 @@ function metadata(block) {
 function address(entry, previous = false) {
   return {
     [previous ? "before_node_index" : "node_index"]: entry.node_index,
+    // A deleted node's id, so a caller can drop what it held under it.
+    node_id: entry.node_id,
     type: entry.type,
     // A deleted node gets only its old address, never its historical text/path.
     ...(!previous && { heading_path: entry.heading_path }),

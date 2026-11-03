@@ -86,6 +86,21 @@ test("patch_page advertises set_node, occurrence, all and replacement_markdown",
     assert.equal(patch.description.includes(field), false, `patch_page teaches ${field}`);
 });
 
+test("edit_page takes delete_node by node_id, and the guides say where the id comes from", async () => {
+  const editPage = tools.find((tool) => tool.name === "edit_page");
+  const deleteNode = editPage.inputSchema.properties.operations.items.oneOf.find(
+    (variant) => variant.properties.op.const === "delete_node",
+  );
+  assert.deepEqual(deleteNode.required, ["op", "block_id", "node_id"]);
+  assert.equal(deleteNode.additionalProperties, false);
+  assert.match(editPage.description, /delete_node removes one top-level node/);
+  const { typedReadFields } = await import("./rich-content-guide.mjs");
+  assert.match(typedReadFields(), /node_id names a top-level node/);
+  const guide = agentGuide({ NOTEBOOK_CLOUD_PUBLIC_ORIGIN: "https://pages.example" });
+  assert.match(guide, /- node_not_found:/);
+  assert.match(guide, /delete_node it by its node_id/);
+});
+
 test("the typed-field guide names every agent type a read can report", async () => {
   const { typedReadFields } = await import("./rich-content-guide.mjs");
   const { LIST_TYPES } = await import("./node-registry.mjs");
