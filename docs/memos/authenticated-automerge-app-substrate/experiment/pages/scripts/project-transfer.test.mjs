@@ -1579,7 +1579,7 @@ test("import refuses a target without insert_node before any write", async () =>
 
 test("the client sends its credential only to same-origin asset paths", async () => {
   const sent = [];
-  const fetch = async (url, init) => {
+  const fetch = async (url) => {
     sent.push(url);
     return new Response(new Uint8Array(0));
   };
