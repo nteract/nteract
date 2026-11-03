@@ -618,6 +618,12 @@ for (const { name } of MARK_REGISTRY.marks)
 // Literal text that looks like a highlight tag or an entity is escaped so it
 // reads back as text. Each lookahead reads a bounded run.
 const literalHighlightTag = /<(?=\/?mark\b)|&(?=#?[a-z0-9]{1,32};)/gi;
+/** What a read shows for a node this build doesn't know. The type is stored
+ * data, so only a short identifier is quoted. */
+export function unknownNodeNotice(type) {
+  const name = String(type ?? "");
+  return /^[a-z][a-z0-9-]{0,63}$/.test(name) ? `[Unsupported node: ${name}]` : "[Unsupported node]";
+}
 const serializer = new MarkdownSerializer(
   {
     ...defaultMarkdownSerializer.nodes,
@@ -706,6 +712,20 @@ const serializer = new MarkdownSerializer(
     raw(state, node) {
       state.renderContent(parseMarkdown(node.attrs.source, { kind: node.attrs.kind }));
     },
+    // A node this build doesn't know, written by a newer build. It reads as a
+    // notice naming its type, followed by any text it holds, so a read never
+    // hides it. replace_block_markdown refuses the block (markdownlessNode).
+    unknownBlock(state, node) {
+      const type = node.attrs.unknownBlock?.type ?? node.attrs.unknownParentBlock;
+      state.write(state.esc(unknownNodeNotice(type)));
+      state.closeBlock(node);
+      node.forEach((child, _offset, index) => {
+        if (child.type.name !== "paragraph" || child.content.size) state.render(child, node, index);
+      });
+    },
+    unknownLeaf(state, node) {
+      state.write(state.esc(unknownNodeNotice(node.attrs.unknownBlock?.type)));
+    },
   },
   markSerializers,
   { escapeExtraCharacters: literalHighlightTag },
@@ -716,6 +736,9 @@ const tableCellSerializer = new MarkdownSerializer(
     ...defaultMarkdownSerializer.nodes,
     hard_break(state) {
       state.write("<br>");
+    },
+    unknownLeaf(state, node) {
+      state.write(state.esc(unknownNodeNotice(node.attrs.unknownBlock?.type)));
     },
   },
   markSerializers,
@@ -1482,6 +1505,18 @@ export function setRichImage(doc, id, { src, alt }) {
   const spans = pmNodeToSpans(adapter, tree);
   A.updateSpans(doc, textPath(id), spans, updateSpansConfig);
   stampSpans(doc, spans);
+}
+/** The type of the first node in the block that Markdown can't reproduce, or
+ * null. Today that is a node this build doesn't know: rewriting its block
+ * from Markdown would delete it, so replace_block_markdown refuses. */
+export function markdownlessNode(block) {
+  if (!isRich(block)) return null;
+  for (const span of A.spans(block, ["richText"])) {
+    if (span.type !== "block") continue;
+    const type = String(span.value?.type);
+    if (!adapter.nodeMappings.some((mapping) => mapping.blockName === type)) return type;
+  }
+  return null;
 }
 export function projectedBlock(block) {
   const { richText: _rich, ...result } = block;

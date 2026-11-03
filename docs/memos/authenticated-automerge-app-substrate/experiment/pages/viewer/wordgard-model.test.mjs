@@ -19,6 +19,8 @@ import {
   Blockquote,
   BulletList,
   ListItem,
+  UnknownBlock,
+  UnknownInline,
 } from "./wordgard-model.mjs";
 function fixture(markdown) {
   return A.change(A.from({ blocks: { one: { id: "one", kind: "markdown", markdown } } }), (d) =>
@@ -96,11 +98,7 @@ test("native positions preserve paragraph ends and opaque leaf endpoints", () =>
   assert.deepEqual(table.map.wgToAm, [0, 1]);
   assert.deepEqual(table.map.amToWg, [0, 1]);
 });
-test("unsupported blocks and unsafe links fail explicitly; code blocks need no language mark", () => {
-  assert.throws(
-    () => decode([{ type: "block", value: { type: "mystery", parents: [], attrs: {} } }]),
-    /Unsupported/,
-  );
+test("invalid marks and unsafe links fail explicitly; code blocks need no language mark", () => {
   assert.throws(
     () => decode([{ type: "text", value: "x", marks: { highlight: "red" } }]),
     /Invalid/,
@@ -203,5 +201,83 @@ test("pasted HTML links keep their destination and title; unsafe ones keep only 
       .map((token) => token.param)
       .join("")
       .includes("js bare"),
+  );
+});
+
+// A node from a newer build: the Page opens, shows a notice, and an editor
+// rewrite writes the stored marker back exactly.
+const S = (value) => new A.ImmutableString(value);
+function withUnknown(source, marker, at) {
+  let doc = fixture(source);
+  const path = textPath("one");
+  doc = A.change(doc, (d) =>
+    A.splitBlock(d, path, at(d.blocks.one.richText), {
+      ...marker,
+      type: S(marker.type),
+      parents: marker.parents.map(S),
+    }),
+  );
+  // Absorb the importer's explicit first-paragraph marker, which the editor
+  // leaves implicit, so the next rewrite measures only the unknown node.
+  return A.change(doc, (d) => A.updateSpans(d, path, encode(decode(A.spans(d, path)).doc)));
+}
+const rewriteWrites = (doc) => {
+  const path = textPath("one"),
+    heads = A.getHeads(doc);
+  const after = A.change(A.clone(doc), (d) =>
+    A.updateSpans(d, path, encode(decode(A.spans(d, path)).doc)),
+  );
+  return A.diff(after, heads, A.getHeads(after));
+};
+test("an unknown block or embed decodes to a notice and encodes back exactly", () => {
+  const attrs = { title: S("Usage"), rows: 3, wide: true, note: "plain", gone: null };
+  const block = withUnknown(
+    "Before\n\nAfter",
+    { type: "dataframe", parents: [], attrs, isEmbed: false },
+    (text) => text.indexOf("After") - 1,
+  );
+  const tree = decode(A.spans(block, textPath("one"))).doc;
+  const node = tree.content[1];
+  assert.equal(node.type, UnknownBlock);
+  assert.deepEqual(node.param, {
+    type: "dataframe",
+    attrs: { title: "Usage", rows: 3, wide: true, note: "plain", gone: null },
+    immutable: ["title"],
+  });
+  assert.deepEqual(rewriteWrites(block), []);
+  for (const [source, parents] of [
+    ["Before\n\nAfter", ["paragraph"]],
+    ["| a | b |\n| --- | --- |\n| After | 2 |", ["table", "table-row", "table-cell"]],
+  ]) {
+    const embed = withUnknown(
+      source,
+      { type: "video", parents, attrs: { src: S("x") }, isEmbed: true },
+      (text) => text.indexOf("After") + 2,
+    );
+    let found = false;
+    decode(A.spans(embed, textPath("one"))).doc.iterate((n) => {
+      found ||= n.type === UnknownInline;
+    });
+    assert.ok(found, source);
+    assert.deepEqual(rewriteWrites(embed), [], source);
+  }
+});
+test("an unknown node draws only a notice, so copying it copies no text", () => {
+  const element = UnknownBlock.spec.shape.structure({
+    type: "dataframe",
+    attrs: { title: "secret" },
+    immutable: [],
+  });
+  assert.equal(element.tagName, "section");
+  assert.deepEqual(element.children, []);
+  const attrs = Object.fromEntries(
+    element.attrs.flatMap((_, i, all) => (i % 2 ? [] : [[all[i], all[i + 1]]])),
+  );
+  assert.equal(attrs["data-pages-node"], "dataframe");
+  assert.ok(!JSON.stringify(element).includes("secret"));
+  // A malformed value can't be written back.
+  assert.throws(
+    () => encode(schema.doc([UnknownBlock.of({ type: 3 })])),
+    /Invalid unknown Pages node/,
   );
 });

@@ -1159,6 +1159,22 @@ dialog::backdrop {
     background: color-mix(in srgb, var(--warning) 48%, transparent);
   }
 }
+/* A node from a newer build: a notice in place of the node. */
+.unknown-node {
+  display: block;
+  padding: 0.85rem 1rem;
+  border: 1px dashed var(--border);
+  border-radius: 0.45rem;
+  color: var(--muted-foreground);
+  font-size: 0.82rem;
+}
+span.unknown-node {
+  display: inline-block;
+  padding: 0 0.4rem;
+}
+.unknown-node::before {
+  content: attr(data-pages-notice);
+}
 .opaque::before {
   content: attr(data-pages-notice);
   display: block;

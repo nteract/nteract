@@ -341,3 +341,28 @@ test("target-scope set_node goes through the host from older heads", async (t) =
   assert.equal(stale.status, 409, JSON.stringify(stale.body));
   assert.equal(stale.body.code, "edit_conflict");
 });
+
+test("a Page holding a node this build doesn't know reads, and refuses a Markdown rewrite of that block", async (t) => {
+  const plain = await fixture(t);
+  const path = ["blocks", plain.blockId, "richText"];
+  const page = A.change(A.load(A.save(plain.doc())), (draft) => {
+    const at = draft.blocks[plain.blockId].richText.indexOf("Friday");
+    A.splitBlock(draft, path, at, {
+      type: new A.ImmutableString("dataframe"),
+      parents: [],
+      attrs: { title: new A.ImmutableString("Usage") },
+      isEmbed: false,
+    });
+  });
+  const f = await fixture(t, { auth: plain.auth, docBytes: A.save(page) });
+  const read = await f.tool("owner", "read_page", { page_id: f.pageId, comments: "none" });
+  assert.equal(read.status, 200, JSON.stringify(read.body));
+  assert.match(read.body.blocks[0].markdown, /\\\[Unsupported node: dataframe\\\]/);
+  const rewrite = await f.tool("owner", "edit_page", {
+    base_heads: f.heads(),
+    idempotency_key: "unknown-rewrite",
+    operations: [{ op: "replace_block_markdown", block_id: f.blockId, markdown: "We ship." }],
+  });
+  assert.equal(rewrite.body.code, "markdownless_node", JSON.stringify(rewrite.body));
+  assert.equal(rewrite.status, 400);
+});

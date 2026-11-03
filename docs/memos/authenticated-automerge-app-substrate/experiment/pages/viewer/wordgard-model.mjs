@@ -190,6 +190,65 @@ export const PagesImage = Leaf.Type.define("PagesImage", {
         : Elt.mk("span", ["Image omitted"]),
   },
 });
+// A node this build doesn't know, written by a newer build. Its feature stamp
+// makes the Page read-only here (schemaGateStep in viewer/session.mjs), so it
+// is drawn as a notice. Its value is the stored marker's type and attrs, and
+// encode writes that marker back exactly, so nothing is lost if a block that
+// holds one is ever encoded.
+export const UNKNOWN_NODE_NOTICE = "Added by a newer version of Pages. Reload to see it.";
+function validateUnknown(value) {
+  if (
+    !value ||
+    typeof value.type !== "string" ||
+    !value.attrs ||
+    typeof value.attrs !== "object" ||
+    !Array.isArray(value.immutable)
+  )
+    throw Error("Invalid unknown Pages node");
+}
+const unknownShape = (tag) => ({
+  // The notice is a CSS attribute, not content: copying the node copies
+  // nothing that pastes as text.
+  structure: (value) =>
+    Elt.mk(tag, {
+      class: "unknown-node",
+      "data-pages-node": value.type,
+      "data-pages-notice": UNKNOWN_NODE_NOTICE,
+    }),
+});
+export const UnknownBlock = Leaf.Type.define("PagesUnknownBlock", {
+  group: Node.Group.Content,
+  selectable: true,
+  validate: validateUnknown,
+  shape: unknownShape("section"),
+});
+export const UnknownInline = Leaf.Type.define("PagesUnknownInline", {
+  inline: true,
+  selectable: true,
+  validate: validateUnknown,
+  shape: unknownShape("span"),
+});
+/** An unknown marker's value: its type, attrs as plain values, and which attrs
+ * were immutable strings, so encode restores the exact stored map. */
+function unknownValue(marker) {
+  const attrs = {},
+    immutable = [];
+  for (const [key, value] of Object.entries(marker.attrs ?? {})) {
+    if (A.isImmutableString(value)) {
+      attrs[key] = String(value);
+      immutable.push(key);
+    } else attrs[key] = value;
+  }
+  return { type: String(marker.type), attrs, immutable };
+}
+function storedAttrs({ attrs, immutable }) {
+  return Object.fromEntries(
+    Object.entries(attrs).map(([key, value]) => [
+      key,
+      immutable.includes(key) ? new A.ImmutableString(value) : value,
+    ]),
+  );
+}
 export const Aside = Plot.define("PagesAside", {
   group: Node.Group.Content,
   blockContent: Node.Group.Content,
@@ -242,6 +301,8 @@ export const elements = [
   HorizontalRule,
   OpaqueBlock,
   PagesImage,
+  UnknownBlock,
+  UnknownInline,
   Aside,
   Table,
   TableRow,
@@ -336,6 +397,23 @@ const strings = (attrs = {}) =>
   Object.fromEntries(
     Object.entries(attrs).map(([k, v]) => [k, A.isImmutableString(v) ? String(v) : v]),
   );
+// Block types descriptor() knows, plus the leaf blocks decode handles itself.
+const KNOWN_BLOCKS = new Set([
+  "table",
+  "table-row",
+  "table-cell",
+  "table-header",
+  "paragraph",
+  "heading",
+  "code-block",
+  "blockquote",
+  "aside",
+  "unordered-list-item",
+  "ordered-list-item",
+  "task-list-item",
+  "pages-opaque",
+  "horizontal-rule",
+]);
 function descriptor(type, attrs = {}) {
   switch (type) {
     case "table":
@@ -450,17 +528,21 @@ export function decode(spans) {
       else if (type === "image") {
         if (!safeUrl(attrs.src)) throw Error("Invalid Pages image");
         leaf(PagesImage.of({ src: attrs.src, alt: attrs.alt ?? null, title: attrs.title ?? null }));
-      } else throw Error(`Unsupported Pages embed: ${type}`);
+      } else leaf(UnknownInline.of(unknownValue(value)));
       continue;
     }
     const outer = [];
     for (const parent of value.parents) {
+      // A container this build doesn't know draws nothing of its own; its
+      // content renders at the nearest known level.
+      if (!KNOWN_BLOCKS.has(String(parent))) continue;
       const d = descriptor(String(parent));
       if (d.outer) outer.push(d.outer);
       outer.push(d.tag);
     }
     // Leaf blocks hold no content of their own.
-    const leafBlock = type === "pages-opaque" || type === "horizontal-rule";
+    const unknown = !KNOWN_BLOCKS.has(type);
+    const leafBlock = unknown || type === "pages-opaque" || type === "horizontal-rule";
     const desc = leafBlock ? null : descriptor(type, attrs);
     if (desc?.outer) outer.push(desc.outer);
     let common = 0;
@@ -472,7 +554,8 @@ export function decode(spans) {
       common++;
     while (stack.length > common) close();
     for (let i = common; i < outer.length; i++) open(outer[i]);
-    if (type === "horizontal-rule") leaf(HorizontalRule);
+    if (unknown) leaf(UnknownBlock.of(unknownValue(value)));
+    else if (type === "horizontal-rule") leaf(HorizontalRule);
     else if (type === "pages-opaque") {
       leaf(
         OpaqueBlock.of({
@@ -509,6 +592,19 @@ export function encode(doc) {
         isEmbed,
       },
     });
+  // An unknown node's marker, exactly as it was stored.
+  const unknownMarker = (node, parents, isEmbed) => {
+    validateUnknown(node.param);
+    spans.push({
+      type: "block",
+      value: {
+        type: new A.ImmutableString(node.param.type),
+        parents: parents.map((p) => new A.ImmutableString(p)),
+        attrs: storedAttrs(node.param),
+        isEmbed,
+      },
+    });
+  };
   const inline = (node, parents, code = false) => {
     if (node.isText)
       spans.push({ type: "text", value: String(node.param), marks: toMarks(node.marks) });
@@ -518,7 +614,8 @@ export function encode(doc) {
     } else if (node.type === PagesImage) {
       PagesImage.spec.validate(node.param);
       marker("image", parents, node.param, true);
-    } else throw Error(`Unsupported Wordgard inline node: ${node.name}`);
+    } else if (node.type === UnknownInline) unknownMarker(node, parents, true);
+    else throw Error(`Unsupported Wordgard inline node: ${node.name}`);
   };
   // A first paragraph can omit its marker when it has content or is the
   // container's only child. Otherwise, emit a marker to preserve the empty
@@ -528,6 +625,10 @@ export function encode(doc) {
   const block = (node, parents, implicit = false, listType = null) => {
     if (node.type === OpaqueBlock) {
       marker("pages-opaque", parents, node.param);
+      return;
+    }
+    if (node.type === UnknownBlock) {
+      unknownMarker(node, parents, false);
       return;
     }
     if (node.type === HorizontalRule.type) {

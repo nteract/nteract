@@ -29,7 +29,13 @@ test("link activation resolves relative links and rejects unsafe destinations", 
 });
 
 test("Command-, Ctrl- and middle-clicks ask for a new tab; plain and Alt clicks don't", () => {
-  const click = (fields) => ({ button: 0, metaKey: false, ctrlKey: false, altKey: false, ...fields });
+  const click = (fields) => ({
+    button: 0,
+    metaKey: false,
+    ctrlKey: false,
+    altKey: false,
+    ...fields,
+  });
   assert.equal(wantsNewTab(click({ metaKey: true })), true);
   assert.equal(wantsNewTab(click({ ctrlKey: true })), true);
   assert.equal(wantsNewTab(click({ button: 1 })), true);

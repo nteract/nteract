@@ -209,6 +209,15 @@ references; it does not publish the Page or change asset access.
   - Nothing writes a preserved block (`raw`, `pages-opaque`). The schema keeps
     it read-only so older Pages open; the Page host converts each stored one
     on load (see Preserved blocks below).
+  - A node this build doesn't know, from a newer build, still opens. Its
+    feature stamp makes the Page read-only here and refuses this build's
+    writes. The editor draws a notice (`UnknownBlock`, `UnknownInline` in
+    `viewer/wordgard-model.mjs`) whose value is the stored marker, so encode
+    writes it back exactly. Reads project `[Unsupported node: <type>]`, and
+    `replace_block_markdown` refuses its block with `markdownless_node`.
+    Registration still refuses an unknown marker. A container this build
+    doesn't know draws nothing of its own; its content renders at the nearest
+    known level, so only a read-only Page keeps it intact.
 - **Typing shortcuts:** `*x*` and `_x_` italicize, `**x**` bolds, `~~x~~`
   strikes through when the closing delimiter is typed. A delimiter touching a
   letter or digit (`snake_case_name`, `2*3*4`), an escaped one, and one inside
