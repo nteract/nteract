@@ -58,7 +58,7 @@ export function markdownSyntax() {
 
 /** The targeted rich-text operations, in one paragraph. */
 export function richEditOperations() {
-  return "To change existing content without rewriting it, use patch_page: format_match adds or removes formatting on matched text (occurrence:n picks one match, all:true formats every match in the block); replace_match with replacement_markdown rewrites text with inline formatting; set_node checks a task, sets a code block's language, changes a heading level or aligns a table column.";
+  return "To change existing content without rewriting it, use patch_page: format_match adds or removes formatting on matched text (occurrence:n picks one match, all:true formats every match in the block); replace_match with replacement_markdown rewrites text with inline formatting; set_node (experimental) checks a task, sets a code block's language, changes a heading level or aligns a table column.";
 }
 
 /** The rich-content paragraph for the MCP server instructions. */

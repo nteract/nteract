@@ -1514,9 +1514,17 @@ explicit, so no `marks_dropped` warning is reported. Leading and trailing
 spaces are kept outside the parse, since Markdown trims a paragraph.
 
 Every passage operation takes a one-based `occurrence`, counted among the
-matches context and `node_index` allow when the operation runs.
+matches context and `node_index` allow in the batch's starting snapshot.
+[`applyOperation`](model/page.mjs) captures each one as cursors before any
+operation runs, and the target-scope dry run follows the same cursors, so both
+scopes agree. An occurrence an earlier operation changed is refused.
 `format_match` also takes `all: true`: every non-overlapping match in the
-block, with matches in code blocks skipped and counted in `skipped_in_code`.
+block, at most 1,000, with matches in code blocks skipped and counted in
+`skipped_in_code`. A batch writes formatting on at most 2,000 ranges, counting
+each mark and each `replacement_markdown` run, refused before any mark is
+written. `set_node` is experimental: its four flat fields predate the typed
+node registry, and its receipt carries only `matched` and, for `align`,
+`cells`.
 
 [`set_node`](model/set-node.mjs) changes the node that holds `match_text`:
 `checked` on a task item, `language` on a code block, `heading_level` on a

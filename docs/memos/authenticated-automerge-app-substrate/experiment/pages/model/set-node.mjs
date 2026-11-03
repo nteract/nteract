@@ -8,7 +8,7 @@
 import * as A from "@automerge/automerge/slim";
 import { richDoc, textPath } from "./richtext.mjs";
 import { updateSpansConfig } from "./marks.mjs";
-import { findUniqueVisibleRange } from "./replace-match.mjs";
+import { locateRange } from "./replace-match.mjs";
 
 export const NODE_FIELDS = Object.freeze(["checked", "language", "heading_level", "align"]);
 export const ALIGNMENTS = Object.freeze(["left", "center", "right"]);
@@ -112,13 +112,23 @@ const withAttrs = (span, attrs, type = span.value.type) => ({
   value: { ...span.value, type, attrs },
 });
 
-/** Change one node attribute for the text match_text addresses. */
-export function setNode(doc, id, input, trace) {
+/** Change one node attribute for the text match_text addresses.
+ *
+ * Experimental: these four fields come before the typed node registry. When
+ * block types declare their attributes there, set_node reads them from it. */
+export function setNode(doc, id, input, trace, { anchor } = {}) {
   const { field, value } = nodeChange(input);
-  const { path, start, end } = findUniqueVisibleRange(doc, id, { ...input, op: "set_node" });
+  const { path, start, end } = locateRange(doc, id, { ...input, op: "set_node" }, anchor);
   const spans = A.spans(doc, textPath(id));
   let index = governingMarker(spans, start);
   const implicit = index < 0;
+  const result = { op: "set_node", block_id: id, matched: 1 };
+  if (implicit && field === "heading_level" && value === 0) {
+    // Already a paragraph. An explicit marker would change nothing, and the
+    // editor drops it on the next keystroke.
+    trace?.push({ type: "text", block_id: id, start, end });
+    return result;
+  }
   if (implicit) {
     // The implicit first paragraph. Give it an explicit marker to change.
     // That inserts a character at 0, as the editor does: two writers that
@@ -166,11 +176,5 @@ export function setNode(doc, id, input, trace) {
   richDoc(doc.blocks[id]).check();
   const shift = implicit ? 1 : 0;
   trace?.push({ type: "text", block_id: id, start: start + shift, end: end + shift });
-  return {
-    op: "set_node",
-    block_id: id,
-    matched: 1,
-    node: field === "heading_level" ? (value ? "heading" : "paragraph") : type,
-    ...(cells ? { cells } : {}),
-  };
+  return { ...result, ...(cells ? { cells } : {}) };
 }

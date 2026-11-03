@@ -1012,9 +1012,10 @@ are unchanged. Unrelated edits, including elsewhere in the same rich-text block,
 are preserved. Deleted/reinserted lookalike text does not count as the same target.
 Overlapping targets in one such batch are rejected, except a set_node's, which
 changes no text; submit one combined edit or read again between dependent edits.
-In page scope occurrence counts matches when its operation runs, after earlier
-operations in the batch. In target scope it must pick the same characters at
-base_heads, now and after earlier operations, or the batch is an edit_conflict. Structural and Markdown replacements keep the
+occurrence counts matches in the Page as it was before the batch, the revision
+you read, in either scope. An occurrence an earlier operation in the batch
+changed is refused. Overlapping matches each count for occurrence; all skips
+them. Structural and Markdown replacements keep the
 exact Page revision guard. Comments have their own rules; see below.
 
 An edit_conflict identifies passages to reread. Catch up with read_page_changes,
@@ -1045,14 +1046,17 @@ yellow, green, blue, pink or a #rrggbb color; link takes {"href": "...",
 Adding a mark the text already has replaces its value across the range, so
 add {"highlight": "blue"} recolors a highlight. remove lists mark names to
 clear. Text, comment anchors and CRDT identity are unchanged. Receipts include
-matched: 1 for each format_match. Code blocks are unformatted, so format_match
+matched: the number of ranges formatted (1 unless all is set). Code blocks are unformatted, so format_match
 refuses text inside one.
 
 To format every match in a block, pass "all": true instead of picking one. It
 formats each non-overlapping match that context and node_index allow, skips
 matches inside code blocks (counted in skipped_in_code) and matches that start
 or end inside a character, and reports matched
-with the number it formatted. At least one is required. all needs
+with the number it formatted. At least one is required, and at most 1000. A
+batch writes formatting on at most 2000 ranges, each mark counted once, including
+replacement_markdown runs; split larger edits into several batches.
+Both refusals are invalid_edit_selector. all needs
 conflict_scope:"page", because a target is one captured passage.
 
 To rewrite text and its formatting together, give replace_match a
@@ -1066,7 +1070,9 @@ with invalid_edit_selector; escape a leading #, >, -, *, +, 1. or \`\`\` with a 
 replacement_markdown is refused inside code blocks.
 
 set_node changes the node that holds match_text, addressed the same way, without
-rewriting its text. Give exactly one field:
+rewriting its text. It is experimental: when block types declare their
+attributes, the fields may move under a typed attrs object. Give exactly one
+field:
 
 \`\`\`json
 [
@@ -1083,7 +1089,7 @@ paragraph; a quote's or list item's first paragraph belongs to the quote or
 item, so it is refused), and align to table cells: it aligns that cell's whole column,
 header included, and null clears it. Any other node is refused with
 invalid_edit_selector naming the node the text is in. Receipts include matched:
-1, node (the node type after the change) and, for align, cells.
+1 and, for align, cells. heading_level 0 on a paragraph changes nothing.
 
 Markdown is a projection of the rich text, not its storage. Highlights read as
 <mark data-color="green">text</mark>; insert_markdown, replace_block_markdown and

@@ -215,6 +215,53 @@ export function findAllVisibleRanges(doc, id, input) {
   return ranges;
 }
 
+const lastWidth = (text) => (/^[\udc00-\udfff]$/.test(text.at(-1)) ? 2 : 1);
+
+/** The characters an `occurrence` addresses, captured as cursors on the
+ * batch's starting snapshot. Agents count occurrences from what they read, so
+ * an earlier operation in the batch never shifts which match a later one
+ * means. */
+export function anchorOccurrence(doc, id, input) {
+  const { path, start, end } = findUniqueVisibleRange(doc, id, input);
+  return {
+    path,
+    first: A.getCursor(doc, path, start),
+    last: A.getCursor(doc, path, end - lastWidth(input.match_text)),
+  };
+}
+
+/** The range an operation addresses now: its anchored occurrence when it has
+ * one, otherwise its unique match. An anchored match an earlier operation in
+ * the batch changed is refused rather than retargeted. */
+export function locateRange(doc, id, input, anchor) {
+  if (!anchor) return findUniqueVisibleRange(doc, id, input);
+  const { path } = anchor;
+  const start = A.getCursorPosition(doc, path, anchor.first);
+  const end = A.getCursorPosition(doc, path, anchor.last) + lastWidth(input.match_text);
+  if (
+    A.getCursor(doc, path, start) !== anchor.first ||
+    doc.blocks[id].richText.slice(start, end) !== input.match_text
+  )
+    throw Error(
+      `${input.op ?? "replace_match"} occurrence ${input.occurrence} was changed by an earlier operation in this batch`,
+    );
+  return { path, start, end };
+}
+
+/** Bounds on the formatting one batch may write. A range written with each
+ * of its marks counts once per mark. */
+export const MAX_ALL_RANGES = 1000;
+export const MAX_BATCH_MARK_WRITES = 2000;
+/** Count `writes` against the batch, refusing before any is made. */
+export function spendMarkWrites(budget, writes) {
+  if (!budget) return;
+  budget.writes += writes;
+  if (budget.writes > MAX_BATCH_MARK_WRITES)
+    throw Error(
+      `This batch writes formatting on more than ${MAX_BATCH_MARK_WRITES} ranges; split it into smaller batches.`,
+    );
+}
+
 // Diff tokens are built from grapheme clusters, so a combining accent, a ZWJ
 // emoji sequence or a flag pair is never split: a run of word clusters
 // (letters, digits, marks, underscore), a run of whitespace, or one other
@@ -395,9 +442,9 @@ function marksDroppedWarning(partial, start, end) {
  * inserted strictly inside one, continues the run; a partial mark none of
  * whose words changed still covers every character it did; neither is
  * reported. */
-export function replaceMatch(doc, id, input, trace) {
+export function replaceMatch(doc, id, input, trace, { anchor, budget } = {}) {
   const { text: replacement, runs } = replacementOf(input);
-  const { path, start, end } = findUniqueVisibleRange(doc, id, input);
+  const { path, start, end } = locateRange(doc, id, input, anchor);
   if (runs && inCodeBlock(doc, path, start))
     throw Error(
       "replacement_markdown can't format text inside a code block; code text is unformatted. Use replacement.",
@@ -468,7 +515,7 @@ export function replaceMatch(doc, id, input, trace) {
   }
   if (inserted.length)
     stampMarks(doc, [...new Set(inserted.flatMap(({ keep }) => keep.map((mark) => mark.name)))]);
-  if (runs) applyRuns(doc, path, start, runs, commonMarks);
+  if (runs) applyRuns(doc, path, start, runs, commonMarks, budget);
   // The caret covers the words that changed; a replacement that changed
   // nothing shows the match it addressed.
   trace?.push({
@@ -503,9 +550,13 @@ export function replacementOf(input) {
  * as for a literal replacement. Every other mark this build knows is cleared
  * from the range before the written marks are applied. Marks this build
  * doesn't know are kept: Markdown can't express them. */
-function applyRuns(doc, path, start, runs, commonMarks) {
+function applyRuns(doc, path, start, runs, commonMarks, budget) {
   const end = start + runs.reduce((length, run) => length + run.text.length, 0);
   if (end === start) return;
+  spendMarkWrites(
+    budget,
+    runs.reduce((count, run) => count + Object.keys(run.marks).length, 0),
+  );
   const kept = new Set(commonMarks.map((mark) => mark.name));
   const clear = new Set(
     A.marks(doc, path)
@@ -565,24 +616,29 @@ export function formatChanges(input) {
  * Code text is unformatted. One addressed match inside a code block is
  * refused; with `all`, matches in code are left alone and counted in
  * `skipped_in_code`. */
-export function formatMatch(doc, id, input, trace) {
+export function formatMatch(doc, id, input, trace, { anchor, budget } = {}) {
   const { add, remove } = formatChanges(input);
   const located = { ...input, op: "format_match" };
   const path = textPath(id);
   let ranges,
     skipped = 0;
   if (input.all === undefined) {
-    const range = findUniqueVisibleRange(doc, id, located);
+    const range = locateRange(doc, id, located, anchor);
     if (inCodeBlock(doc, path, range.start))
       throw Error("format_match can't format text inside a code block; code text is unformatted.");
     ranges = [range];
   } else {
     const found = findAllVisibleRanges(doc, id, located);
+    if (found.length > MAX_ALL_RANGES)
+      throw Error(
+        `format_match all found ${found.length} matches; at most ${MAX_ALL_RANGES} per operation. Narrow it with node_index, context or a longer match_text.`,
+      );
     ranges = found.filter((range) => !range.code);
     skipped = found.length - ranges.length;
     if (!ranges.length)
       throw Error("format_match found matches only inside code blocks; code text is unformatted.");
   }
+  spendMarkWrites(budget, ranges.length * (Object.keys(add).length + remove.length));
   for (const { start, end } of ranges) {
     for (const name of remove) A.unmark(doc, path, { start, end, expand: "both" }, name);
     for (const [name, value] of Object.entries(add))

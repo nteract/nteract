@@ -12,7 +12,9 @@ export const isDiagramLanguage = (params) =>
     .trim()
     .toLowerCase() === DIAGRAM_LANGUAGE;
 
-/** The code block language menu, in menu order. Stored lowercased. */
+/** The code block language menu, in menu order. A code block stores the
+ * language as written; the editor's menu and highlighter compare it
+ * case-insensitively. */
 export const CODE_LANGUAGES = Object.freeze([
   "Mermaid",
   "Bash",

@@ -1,6 +1,7 @@
 import * as A from "@automerge/automerge/slim";
 import {
   findUniqueVisibleRange,
+  locateRange,
   formatChanges,
   formatMatch,
   replacementOf,
@@ -13,12 +14,12 @@ import { nodeChange, setNode } from "./set-node.mjs";
 // the same way; replace_match changes its text, format_match its marks and
 // set_node the attributes of the node that holds it.
 const PASSAGE_OPS = new Set(["replace_match", "format_match", "set_node"]);
-const applyPassage = (doc, input) =>
+const applyPassage = (doc, input, context) =>
   input.op === "format_match"
-    ? formatMatch(doc, input.block_id, input)
+    ? formatMatch(doc, input.block_id, input, undefined, context)
     : input.op === "set_node"
-      ? setNode(doc, input.block_id, input)
-      : replaceMatch(doc, input.block_id, input);
+      ? setNode(doc, input.block_id, input, undefined, context)
+      : replaceMatch(doc, input.block_id, input, undefined, context);
 // The same input checks each operation makes, raised before any guard work.
 // A target is one captured passage, so all (every match) is page-scoped only.
 function validatePassage(input) {
@@ -260,10 +261,17 @@ export function guardPassageEdits(current, baseHeads, operations) {
     let checked;
     try {
       checked = A.change(clone, (draft) => {
+        const budget = { writes: 0 };
         for (const target of targets) {
+          // An occurrence names a match in the batch's starting snapshot, as
+          // in page scope: follow the captured characters, never recount.
+          const anchor =
+            target.effective.occurrence === undefined
+              ? undefined
+              : { path: target.path, first: target.first, last: target.last };
           let range;
           try {
-            range = findUniqueVisibleRange(draft, target.input.block_id, target.effective);
+            range = locateRange(draft, target.input.block_id, target.effective, anchor);
           } catch {
             conflict(target, "batch_changes_target_resolution");
           }
@@ -274,7 +282,7 @@ export function guardPassageEdits(current, baseHeads, operations) {
           )
             conflict(target, "batch_changes_target_resolution");
           try {
-            applyPassage(draft, target.effective);
+            applyPassage(draft, target.effective, { anchor, budget });
           } catch (error) {
             // A rule the operation enforces on the text it found, such as
             // format_match refusing code text: the caller's request, not a race.

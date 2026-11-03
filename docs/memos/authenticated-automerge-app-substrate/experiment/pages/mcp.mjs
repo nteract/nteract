@@ -169,7 +169,7 @@ const matchProperties = {
     minimum: 1,
     maximum: 10000,
     description:
-      "One-based occurrence of match_text among the matches context and node_index allow, in document order. In page scope it is counted when this operation runs, after earlier operations in the batch. In target scope it must pick the same characters at base_heads, now, and after earlier operations, or the batch is an edit_conflict. Omit to require exactly one match.",
+      "One-based occurrence of match_text among the matches context and node_index allow, in document order, counted in the Page as it was before this batch (the revision you read). Overlapping matches each count. An occurrence an earlier operation in the batch changed is refused. Omit to require exactly one match.",
   },
   replacement: {
     ...string,
@@ -236,7 +236,7 @@ const formatMatchOperation = {
     all: {
       const: true,
       description:
-        "Format every non-overlapping match in the block that context and node_index allow, instead of exactly one. Matches inside code blocks are skipped and counted in skipped_in_code; result.edits[i].matched counts the rest. Not with occurrence or conflict_scope target.",
+        "Format every non-overlapping match in the block that context and node_index allow, instead of exactly one; at most 1000. Matches inside code blocks are skipped and counted in skipped_in_code; result.edits[i].matched counts the rest. A batch writes formatting on at most 2000 ranges, counting each mark. Not with occurrence or conflict_scope target.",
     },
     add: {
       ...formatAddSchema(),
@@ -256,7 +256,7 @@ const formatMatchOperation = {
 const setNodeOperation = {
   type: "object",
   description:
-    "Change one attribute of the paragraph, heading, list item, code block or table cell that holds match_text. Give exactly one of checked, language, heading_level or align. Text, formatting and comment anchors are unchanged.",
+    "Experimental: the fields may move under a typed attrs object when block types declare their attributes. Change one attribute of the paragraph, heading, list item, code block or table cell that holds match_text. Give exactly one of checked, language, heading_level or align. Text, formatting and comment anchors are unchanged. heading_level changes the node's type (0 makes a paragraph), and align changes the whole table column.",
   properties: {
     op: { const: "set_node" },
     ...locator,

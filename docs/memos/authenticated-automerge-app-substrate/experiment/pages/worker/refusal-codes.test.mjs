@@ -306,3 +306,38 @@ test("rich edits go through the host: set_node, all and replacement_markdown, wi
     '## W<mark data-color="blue">e</mark> ship on **Monday**.',
   );
 });
+
+test("target-scope set_node goes through the host from older heads", async (t) => {
+  const f = await fixture(t);
+  const base = f.heads();
+  // A peer edits elsewhere first.
+  const peer = await f.tool("owner", "patch_page", {
+    base_heads: base,
+    idempotency_key: "target-peer",
+    operations: [
+      { op: "replace_match", block_id: f.blockId, match_text: "Friday", replacement: "Monday" },
+    ],
+  });
+  assert.equal(peer.status, 200, JSON.stringify(peer.body));
+  const heading = await f.tool("owner", "patch_page", {
+    base_heads: base,
+    conflict_scope: "target",
+    idempotency_key: "target-set-node",
+    operations: [{ op: "set_node", block_id: f.blockId, match_text: "We ship", heading_level: 2 }],
+  });
+  assert.equal(heading.status, 200, JSON.stringify(heading.body));
+  assert.deepEqual(heading.body.result.edits, [
+    { op: "set_node", block_id: f.blockId, matched: 1 },
+  ]);
+  const read = await f.tool("owner", "read_page", { page_id: f.pageId, comments: "none" });
+  assert.equal(read.body.blocks[0].markdown, "## We ship on Monday.");
+  // The same node changed since base: a conflict, not a silent overwrite.
+  const stale = await f.tool("owner", "patch_page", {
+    base_heads: base,
+    conflict_scope: "target",
+    idempotency_key: "target-set-node-stale",
+    operations: [{ op: "set_node", block_id: f.blockId, match_text: "We ship", heading_level: 3 }],
+  });
+  assert.equal(stale.status, 409, JSON.stringify(stale.body));
+  assert.equal(stale.body.code, "edit_conflict");
+});

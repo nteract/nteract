@@ -218,9 +218,7 @@ test("set_node checks a task without moving its marker or text", () => {
     { op: "set_node", block_id: id, match_text: "Ship the beta", checked: true },
   ]);
   assert.equal(md(after, id), projected("- [x] Ship the beta\n- [ ] Write notes"));
-  assert.deepEqual(result.edits, [
-    { op: "set_node", block_id: id, matched: 1, node: "task-list-item" },
-  ]);
+  assert.deepEqual(result.edits, [{ op: "set_node", block_id: id, matched: 1 }]);
   assert.equal(A.getCursorPosition(after, path, marker), 0);
   assert.equal(A.getCursorPosition(after, path, text), 1);
   // One attribute write: no text splices, no marker replacement.
@@ -254,7 +252,6 @@ test("set_node changes heading levels and turns headings into paragraphs", () =>
     { op: "set_node", block_id: id, match_text: "Next steps", heading_level: 2 },
   ]);
   assert.equal(md(heading.after, id), "## Next steps\n\n### Details");
-  assert.equal(heading.result.edits[0].node, "heading");
   const paragraph = apply(heading.after, [
     { op: "set_node", block_id: id, match_text: "Details", heading_level: 0 },
   ]).after;
@@ -435,25 +432,63 @@ test("set_node updates markers in place and leaves every text mark alone", () =>
         .filter((span) => span.type === "text")
         .map((span) => [span.value, span.marks ?? {}]),
     );
-  for (const op of [
-    { match_text: "Intro", heading_level: 2 },
-    { match_text: "x = 1", language: "rust" },
-    { match_text: "2", align: "right" },
+  // Marker offsets by type, and each position's marks, at one revision.
+  const markerOffsets = (d) => {
+    const found = [];
+    let at = 0;
+    for (const span of A.spans(d, path)) {
+      if (span.type === "block") found.push([at++, String(span.value.type)]);
+      else at += span.value.length;
+    }
+    return found;
+  };
+  const positionMarks = (d) => {
+    const each = Array.from({ length: d.blocks[id].richText.length }, () => ({}));
+    for (const mark of A.marks(d, path))
+      for (let at = mark.start; at < mark.end; at++) each[at][mark.name] = mark.value;
+    return each.map((value) => JSON.stringify(value));
+  };
+  const cells = markerOffsets(marked)
+    .filter(([, type]) => type === "table-cell" || type === "table-header")
+    .map(([at]) => at);
+  for (const [op, expected] of [
+    [{ match_text: "Intro", heading_level: 2 }, [0]],
+    [
+      { match_text: "x = 1", language: "rust" },
+      markerOffsets(marked)
+        .filter(([, type]) => type === "code-block")
+        .map(([at]) => at),
+    ],
+    [{ match_text: "2", align: "right" }, cells.filter((_, index) => index % 2 === 1)],
   ]) {
     const heads = A.getHeads(marked);
     const before = marks(marked);
+    const beforePositions = positionMarks(marked);
+    const markers = new Set(markerOffsets(marked).map(([at]) => at));
     const next = apply(marked, [{ op: "set_node", block_id: id, ...op }]).after;
     assert.equal(marks(next), before, JSON.stringify(op));
-    // Only marker attributes and types change: no text splices, no marker
-    // deleted and reinserted. A mark patch is the marker normalization above.
+    // Only the expected markers' attributes and types change: no text
+    // splices, no marker deleted and reinserted, no other marker touched.
+    const touched = new Set();
     for (const patch of A.diff(next, heads, A.getHeads(next))) {
       if (patch.action === "mark") continue;
-      const [, , , , field] = patch.path;
+      const [, , , at, field] = patch.path;
       assert.ok(
         ["attrs", "type"].includes(field),
         `${JSON.stringify(op)} wrote ${JSON.stringify(patch)}`,
       );
+      touched.add(at);
     }
+    assert.deepEqual(
+      [...touched].sort((a, b) => a - b),
+      expected,
+      JSON.stringify(op),
+    );
+    // Marks change only on marker characters, which format nothing.
+    positionMarks(next).forEach((value, at) => {
+      if (value !== beforePositions[at])
+        assert.ok(markers.has(at), `${JSON.stringify(op)} changed marks at text offset ${at}`);
+    });
     marked = next;
   }
 });
@@ -506,7 +541,9 @@ test("an editor rewrite after set_node writes nothing set_node caused", () => {
   };
   const untouched = fixture(source);
   const baseline = rewrite(untouched.doc, untouched.id);
+  const key = JSON.stringify;
   for (const op of [
+    { match_text: "Intro", heading_level: 3 },
     { match_text: "task", checked: true },
     { match_text: "x = 1", language: "rust" },
     { match_text: "x = 1", language: "" },
@@ -515,6 +552,128 @@ test("an editor rewrite after set_node writes nothing set_node caused", () => {
   ]) {
     const { doc, id } = fixture(source);
     const { after } = apply(doc, [{ op: "set_node", block_id: id, ...op }]);
-    assert.deepEqual(rewrite(after, id), baseline, JSON.stringify(op));
+    const extra = rewrite(after, id).filter(
+      (patch) => !baseline.some((b) => key(b) === key(patch)),
+    );
+    assert.deepEqual(extra, [], key(op));
   }
+  // The implicit first paragraph: a heading marker the editor keeps, and a
+  // no-op that writes nothing at all.
+  let doc = A.from(createPageData({ pageId: "implicit_rewrite", title: "Implicit" }));
+  const id = orderedBlockIds(doc)[0];
+  doc = A.change(doc, (draft) => A.splice(draft, textPath(id), 0, 0, "Opening words"));
+  const heading = apply(doc, [
+    { op: "set_node", block_id: id, match_text: "Opening", heading_level: 2 },
+  ]);
+  assert.deepEqual(rewrite(heading.after, id), []);
+  const same = apply(doc, [
+    { op: "set_node", block_id: id, match_text: "Opening", heading_level: 0 },
+  ]);
+  assert.deepEqual(A.getHeads(same.after), A.getHeads(doc));
+  assert.deepEqual(same.result.edits, [{ op: "set_node", block_id: id, matched: 1 }]);
+});
+
+test("occurrence names a match in the batch's starting snapshot", () => {
+  const { doc, id } = fixture("TODO a, TODO b, TODO c");
+  const operations = [
+    { op: "replace_match", block_id: id, match_text: "TODO", occurrence: 1, replacement: "DONE" },
+    { op: "replace_match", block_id: id, match_text: "TODO", occurrence: 2, replacement: "DONE" },
+  ];
+  assert.equal(md(apply(doc, operations).after, id), "DONE a, DONE b, TODO c");
+  // Target scope agrees with page scope.
+  const plan = guardPassageEdits(doc, A.getHeads(doc), operations);
+  assert.equal(md(apply(doc, plan.operations).after, id), "DONE a, DONE b, TODO c");
+  // An occurrence an earlier operation rewrote is refused, never retargeted.
+  refuses(
+    doc,
+    [
+      { op: "replace_match", block_id: id, match_text: "TODO b", replacement: "x" },
+      {
+        op: "format_match",
+        block_id: id,
+        match_text: "TODO",
+        occurrence: 2,
+        add: { strong: true },
+      },
+    ],
+    /occurrence 2 was changed by an earlier operation in this batch/,
+  );
+  // Overlapping matches count for occurrence; all skips them.
+  const overlap = fixture("aaa");
+  const second = apply(overlap.doc, [
+    {
+      op: "format_match",
+      block_id: overlap.id,
+      match_text: "aa",
+      occurrence: 2,
+      add: { em: true },
+    },
+  ]).after;
+  assert.equal(md(second, overlap.id), "a*aa*");
+});
+
+test("formatting writes are capped per all and per batch", () => {
+  const { doc, id } = fixture("x ".repeat(1001).trim());
+  refuses(
+    doc,
+    [{ op: "format_match", block_id: id, match_text: "x", all: true, add: { strong: true } }],
+    /found 1001 matches; at most 1000 per operation/,
+  );
+  const many = fixture("y ".repeat(700).trim());
+  const each = { op: "format_match", block_id: many.id, match_text: "y", all: true };
+  refuses(
+    many.doc,
+    [
+      { ...each, add: { strong: true } },
+      { ...each, add: { em: true } },
+      { ...each, add: { strike: true } },
+    ],
+    /more than 2000 ranges; split it/,
+  );
+  // replacement_markdown runs count against the same batch budget.
+  refuses(
+    doc,
+    Array.from({ length: 5 }, (_, index) => ({
+      op: "replace_match",
+      block_id: id,
+      match_text: "x",
+      occurrence: index + 1,
+      replacement_markdown: "**a** *b* ".repeat(201).trim(),
+    })),
+    /more than 2000 ranges/,
+  );
+});
+
+test("replacement_markdown keeps unsafe link destinations as literal text", () => {
+  const { doc, id } = fixture("Read here.");
+  for (const markdown of ["[x](javascript:alert(1))", "[x](data:text/html,hi)"]) {
+    const { after } = apply(doc, [
+      { op: "replace_match", block_id: id, match_text: "here", replacement_markdown: markdown },
+    ]);
+    assert.deepEqual(A.marks(after, textPath(id)), [], markdown);
+    assert.ok(after.blocks[id].richText.includes(markdown), markdown);
+  }
+});
+
+test("set_node can't address an image block, which has no visible text", () => {
+  const { doc, id } = fixture("Before.");
+  const assetId = "a".repeat(64);
+  const { after } = (() => {
+    let result;
+    const next = A.change(A.clone(doc), (draft) => {
+      result = applyPageOperation(draft, {
+        operation: "edit_page",
+        arguments: {
+          operations: [{ op: "insert_image", asset_id: assetId, alt: "Chart", after_block_id: id }],
+        },
+      });
+    });
+    return { after: next, result };
+  })();
+  const image = orderedBlockIds(after)[1];
+  refuses(
+    after,
+    [{ op: "set_node", block_id: image, match_text: "Chart", heading_level: 2 }],
+    /found 0 matches/,
+  );
 });
