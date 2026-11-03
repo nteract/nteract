@@ -1,6 +1,7 @@
 // Projects through MCP and the browser on one local OIDC deployment: create a
 // Project and nested Pages over MCP, list them, open them in the browser, follow
-// breadcrumbs, browse /pages and /projects on a phone-sized screen, add Pages
+// breadcrumbs, browse /pages as a list and a grid at desktop width, browse
+// /pages and /projects on a phone-sized screen, add Pages
 // from a Project's home Page at the 640px breakpoint and from the picker,
 // check a shared editor gets no create affordances, and trash
 // and restore Pages one at a time.
@@ -319,6 +320,57 @@ try {
     "The picker's New Page offers the Project and Your items; In <Project> lands at its top level",
   );
 
+  // /pages at 1280px: Name, Source and Updated columns, and a grid of cards
+  // that this browser remembers.
+  await owner.goto(`${origin}/pages`);
+  await expect(owner.getByRole("heading", { name: "Pages", exact: true })).toBeVisible({
+    timeout: 60000,
+  });
+  const desktopPages = owner.getByRole("list", { name: "All Pages" });
+  const desktopRow = (name) =>
+    desktopPages
+      .getByRole("listitem")
+      .filter({ has: owner.getByRole("link", { name, exact: true }) });
+  for (const name of ["Roadmap", "Q4 plan", "Architecture", title])
+    await expect(desktopRow(name).getByRole("link", { name: `Project ${title}` })).toBeVisible();
+  const updated = desktopRow("Q4 plan").locator("time");
+  await expect(updated).toHaveText(/^Updated (now|\d+m)$/);
+  assert.ok(Date.parse(await updated.getAttribute("datetime")), "the Updated cell names its time");
+  assert.ok(await updated.getAttribute("title"), "the Updated cell's tooltip is the full time");
+  await owner.screenshot({ path: `${output}/pages-list-desktop.png` });
+  const display = owner.getByRole("group", { name: "Display" });
+  await display.getByRole("button", { name: "Grid view" }).click();
+  await expect(display.getByRole("button", { name: "Grid view" })).toHaveAttribute(
+    "aria-pressed",
+    "true",
+  );
+  const card = desktopPages.getByRole("link", { name: "Q4 plan", exact: true });
+  await expect(card).toHaveAttribute("href", `/p/${plan.page_id}`);
+  await expect(desktopPages.locator("a a")).toHaveCount(0);
+  await owner.screenshot({ path: `${output}/pages-grid-desktop.png` });
+  await owner.reload();
+  await expect(display.getByRole("button", { name: "Grid view" })).toHaveAttribute(
+    "aria-pressed",
+    "true",
+    { timeout: 60000 },
+  );
+  await card.click();
+  await expect(owner).toHaveURL(`${origin}/p/${plan.page_id}`);
+  await owner.goBack();
+  await expect(owner).toHaveURL(`${origin}/pages`);
+  await display.getByRole("button", { name: "List view" }).click();
+  await desktopRow("Q4 plan")
+    .getByRole("link", { name: `Project ${title}` })
+    .click();
+  await expect(owner).toHaveURL(`${origin}/project/${project.project_id}`);
+  await expect(owner.getByRole("heading", { name: title })).toBeVisible();
+  await owner.goBack();
+  await expect(owner).toHaveURL(`${origin}/pages`);
+  await expect(desktopRow("Q4 plan")).toBeVisible();
+  complete(
+    "/pages at 1280px shows Source and Updated columns, a remembered grid of card links, and Project labels that open their Project",
+  );
+
   // /pages and /projects on a phone. They list from the shell: the only
   // chunks a fresh load fetches are the ones index.html preloads for app.js,
   // never the editor chunk, which waits until a Page opens.
@@ -379,19 +431,21 @@ try {
 
   await phone.goto(`${origin}/pages`);
   const allPages = phone.getByRole("list", { name: "All Pages" });
-  await expect(phone.getByRole("heading", { name: "All Pages" })).toBeVisible({ timeout: 60000 });
+  await expect(phone.getByRole("heading", { name: "Pages", exact: true })).toBeVisible({
+    timeout: 60000,
+  });
   const pageRow = (name) =>
     allPages.getByRole("listitem").filter({ has: phone.getByRole("link", { name, exact: true }) });
-  for (const name of ["Roadmap", "Q4 plan", "Architecture", title])
-    await expect(pageRow(name).getByRole("link", { name: `Project ${title}` })).toHaveAttribute(
-      "href",
-      `/project/${project.project_id}`,
-    );
+  // A phone keeps Name and Updated; the Source column is desktop-only.
+  for (const name of ["Roadmap", "Q4 plan", "Architecture", title]) {
+    await expect(pageRow(name).locator("time")).toBeVisible();
+    await expect(pageRow(name).locator(".index-cell-source")).toBeHidden();
+  }
   await fitsScreen("/pages");
   await minimumRowHeight(allPages);
   assert.deepEqual(editorChunks(), [], "loading /pages fetched the editor chunk");
   await phone.screenshot({ path: `${output}/pages-mobile.png` });
-  complete("/pages on a phone lists Pages with Project labels, without the editor chunk");
+  complete("/pages on a phone lists Pages by Name and Updated, without the editor chunk");
 
   await phone.getByRole("searchbox", { name: "Search all Pages" }).fill("Q4");
   await expect(phone).toHaveURL(`${origin}/pages?q=Q4`);
@@ -416,16 +470,6 @@ try {
   complete(
     "Search narrowed /pages, a row opened its Page with an agent's caret, and Back returned to the search",
   );
-
-  await pageRow("Q4 plan")
-    .getByRole("link", { name: `Project ${title}` })
-    .tap();
-  await expect(phone).toHaveURL(`${origin}/project/${project.project_id}`);
-  await expect(phone.getByRole("heading", { name: title })).toBeVisible();
-  await phone.goBack();
-  await expect(phone).toHaveURL(`${origin}/pages?q=Q4`);
-  await expect(pageRow("Q4 plan")).toBeVisible();
-  complete("A Project label opened its Project, and Back returned to /pages");
 
   await phone
     .getByRole("navigation", { name: "Browse" })

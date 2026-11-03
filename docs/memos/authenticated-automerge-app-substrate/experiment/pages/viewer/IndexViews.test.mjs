@@ -60,6 +60,7 @@ const { createRoot } = await import("react-dom/client");
 
 const id = (n) => `1a160b47-6df1-4983-81eb-${String(n).padStart(12, "0")}`;
 const projectId = "prj_2b160b47-6df1-4983-81eb-489ca5a26812";
+const twoDaysAgo = new Date(Date.now() - 2 * 24 * 60 * 60 * 1000 - 60 * 1000).toISOString();
 const settle = () => act(() => new Promise((resolve) => setTimeout(resolve, 0)));
 
 async function mount(element) {
@@ -95,8 +96,14 @@ test("/pages lists every Page with Project labels, opens rows and Projects separ
     if (args.query) return { pages: [], next_cursor: null };
     return {
       pages: [
-        { page_id: id(1), title: "Roadmap", project_id: projectId, parent_id: null },
-        { page_id: id(2), title: "", shared: true },
+        {
+          page_id: id(1),
+          title: "Roadmap",
+          project_id: projectId,
+          parent_id: null,
+          updated_at: twoDaysAgo,
+        },
+        { page_id: id(2), title: "", shared: true, updated_at: "not a time" },
       ],
       next_cursor: "next",
     };
@@ -117,7 +124,8 @@ test("/pages lists every Page with Project labels, opens rows and Projects separ
     }),
   );
   const { host } = app;
-  assert.equal(host.querySelector("h1").textContent, "All Pages");
+  assert.equal(host.querySelector("h1").textContent, "Pages");
+  assert.deepEqual(text(host, ".index-columns span"), ["Name", "Source", "Updated"]);
   assert.deepEqual(text(host, ".index-row-link"), ["Roadmap", "Untitled"]);
   assert.deepEqual(
     [...host.querySelectorAll(".index-row-link")].map((link) => link.getAttribute("href")),
@@ -126,7 +134,12 @@ test("/pages lists every Page with Project labels, opens rows and Projects separ
   const label = host.querySelector(".index-row-project");
   assert.equal(label.getAttribute("href"), `/project/${projectId}`);
   assert.equal(label.getAttribute("aria-label"), "Project Launch");
-  assert.deepEqual(text(host, ".index-row-shared"), ["Shared with you"]);
+  assert.deepEqual(text(host, ".index-row-shared"), ["Shared"]);
+  const updated = host.querySelector(".index-cell-updated time");
+  assert.equal(updated.getAttribute("dateTime"), twoDaysAgo);
+  assert.ok(updated.getAttribute("title"), "the full local time is the tooltip");
+  assert.equal(updated.textContent, "Updated 2d");
+  assert.deepEqual(text(host, ".index-cell-updated"), ["Updated 2d", "—"]);
   assert.equal(
     host.querySelector(".index-nav [aria-current=page]").textContent,
     "All Pages",
@@ -185,6 +198,92 @@ test("/pages lists every Page with Project labels, opens rows and Projects separ
   assert.equal(host.querySelector(".index-list"), null);
   assert.match(host.textContent, /No Pages match “zzz”\./);
   await app.unmount();
+});
+
+test("/pages switches between list and grid, remembers the choice, and never nests links", async () => {
+  const events = [];
+  const props = {
+    tool: async () => ({
+      pages: [
+        { page_id: id(1), title: "Roadmap", project_id: projectId, updated_at: twoDaysAgo },
+        { page_id: id(2), title: "Launch", project_id: projectId, home: true },
+        { page_id: id(3), title: "Loose notes" },
+      ],
+      next_cursor: null,
+    }),
+    query: "",
+    projects: [{ project_id: projectId, title: "Launch" }],
+    onNavigate: () => {},
+    onQueryChange: () => {},
+    onOpen: (pageId) => events.push(["open", pageId]),
+    onOpenProject: (id) => events.push(["project", id]),
+    onWarm: () => events.push(["warm"]),
+    onError: () => {},
+    onRetry: (retry) => retry(),
+  };
+  window.localStorage.clear();
+  try {
+    const app = await mount(createElement(PagesIndex, props));
+    const group = app.host.querySelector('[role=group][aria-label="Display"]');
+    const button = (name) => group.querySelector(`button[aria-label="${name}"]`);
+    assert.deepEqual(
+      [...group.querySelectorAll("button")].map((b) => [
+        b.getAttribute("aria-label"),
+        b.getAttribute("aria-pressed"),
+      ]),
+      [
+        ["Grid view", "false"],
+        ["List view", "true"],
+      ],
+      "the list is the default",
+    );
+    assert.deepEqual(
+      [...app.host.querySelectorAll(".index-cell-source")].map((cell) => cell.textContent),
+      ["Launch", "Launch", "—"],
+      "a Page outside any Project shows a dash for its Source",
+    );
+    assert.equal(app.host.querySelector(".index-grid"), null);
+
+    await click(button("Grid view"));
+    assert.equal(window.localStorage.getItem("nteract.pages.view"), "grid");
+    assert.equal(button("Grid view").getAttribute("aria-pressed"), "true");
+    assert.equal(button("List view").getAttribute("aria-pressed"), "false");
+    assert.equal(app.host.querySelector(".index-columns"), null, "no column header in the grid");
+    const grid = app.host.querySelector('ul.index-grid[aria-label="All Pages"]');
+    assert.ok(grid, "the grid keeps the list's name");
+    const cards = [...grid.querySelectorAll(".index-card-link")];
+    assert.deepEqual(
+      cards.map((card) => [card.textContent, card.getAttribute("href")]),
+      [
+        ["Roadmap", `/p/${id(1)}`],
+        ["Launch", `/p/${id(2)}`],
+        ["Loose notes", `/p/${id(3)}`],
+      ],
+    );
+    assert.equal(grid.querySelectorAll("a a").length, 0, "a card holds no link inside its link");
+    assert.equal(grid.querySelectorAll("a").length, 3, "each card is one link");
+    assert.equal(grid.querySelectorAll(".index-card-preview").length, 3);
+
+    act(() => cards[0].dispatchEvent(new window.Event("pointerdown", { bubbles: true })));
+    await click(cards[0]);
+    await click(cards[1], { metaKey: true });
+    assert.deepEqual(events, [["warm"], ["open", id(1)]]);
+    await app.unmount();
+
+    const again = await mount(createElement(PagesIndex, props));
+    assert.ok(again.host.querySelector(".index-grid"), "a remount reads the stored mode");
+    await click(again.host.querySelector('button[aria-label="List view"]'));
+    assert.equal(window.localStorage.getItem("nteract.pages.view"), "list");
+    assert.ok(again.host.querySelector('ul.index-page-list[aria-label="All Pages"]'));
+    await again.unmount();
+
+    window.localStorage.setItem("nteract.pages.view", "carousel");
+    const unknown = await mount(createElement(PagesIndex, props));
+    assert.ok(unknown.host.querySelector(".index-page-list"), "an unknown mode falls back to list");
+    await unknown.unmount();
+  } finally {
+    window.localStorage.clear();
+  }
 });
 
 test("/projects lists each Project with its description and opens it", async () => {

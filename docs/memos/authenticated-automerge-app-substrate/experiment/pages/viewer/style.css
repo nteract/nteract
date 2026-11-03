@@ -2173,6 +2173,180 @@ details.account-actions > div a:hover {
   min-height: 48px;
   margin-top: 1rem;
 }
+/* /pages: the title and search share the heading row; the toolbar below it
+   holds the List/Grid toggle at its end. */
+.index-heading .index-search {
+  flex: 0 1 20rem;
+}
+.index-heading .library-search {
+  margin: 0;
+}
+.index-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  margin: 0 0 0.75rem;
+}
+.index-display {
+  display: inline-flex;
+  gap: 0.15rem;
+  margin-inline-start: auto;
+  padding: 0.2rem;
+  border-radius: 0.65rem;
+  background: var(--accent);
+}
+.index-display .index-display-button {
+  width: 34px;
+  height: 34px;
+  border-radius: 0.5rem;
+  color: var(--muted-foreground);
+}
+.index-display .index-display-button:hover:not(:disabled) {
+  background: transparent;
+  color: var(--foreground);
+}
+.index-display .index-display-button[aria-pressed="true"] {
+  background: var(--surface);
+  color: var(--foreground);
+  box-shadow: 0 1px 2px #0000001f;
+}
+.index-display .index-display-button:focus-visible {
+  outline-offset: 1px;
+}
+/* List mode: Name, Source and Updated columns. The header row and every
+   Page row share one template so the columns line up. */
+.index-columns,
+.index-page-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 12rem) 4.5rem;
+  align-items: center;
+  gap: 1rem;
+}
+.index-columns {
+  padding: 0 0.6rem 0.5rem;
+  border-bottom: 1px solid var(--border);
+  color: var(--muted-foreground);
+  font-size: 0.8rem;
+  font-weight: 500;
+}
+.index-column-updated,
+.index-cell-updated {
+  text-align: end;
+}
+.index-page-row {
+  padding-block: 0.6rem;
+}
+.index-cell-name {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.75rem;
+  min-width: 0;
+}
+.index-cell-source {
+  min-width: 0;
+  color: var(--muted-foreground);
+  font-size: 0.8rem;
+}
+.index-cell-source .index-row-project {
+  margin: 0;
+  padding: 0 0.6rem;
+  border: 1px solid var(--border);
+  min-height: 28px;
+}
+.index-cell-updated {
+  color: var(--muted-foreground);
+  font-size: 0.85rem;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+/* With a mouse, the time sits above the row link so its title shows the
+   full date. Touch keeps the whole row one target. */
+@media (hover: hover) and (pointer: fine) {
+  .index-time {
+    position: relative;
+    z-index: 1;
+  }
+}
+/* Grid mode: cards at least 200px wide, each one link to its Page. */
+.index-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 1rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.index-card {
+  min-width: 0;
+}
+.index-card-link {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 0.75rem;
+  background: var(--card);
+  color: inherit;
+  text-decoration: none;
+}
+.index-card-link:hover {
+  border-color: color-mix(in srgb, var(--foreground) 25%, var(--border));
+}
+.index-card-link:focus-visible {
+  outline-offset: 2px;
+}
+.index-card-header {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  min-width: 0;
+  padding: 0.7rem 0.85rem;
+  border-bottom: 1px solid var(--border);
+  font-size: 0.9rem;
+  font-weight: 500;
+}
+.index-card-icon {
+  flex-shrink: 0;
+  color: var(--muted-foreground);
+}
+.index-card-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.index-card-preview {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  aspect-ratio: 4 / 3;
+  background: var(--accent);
+  color: var(--muted-foreground);
+}
+.index-card-placeholder {
+  opacity: 0.55;
+}
+/* Phones: Name and Updated only, and two cards to a row. */
+@media (max-width: 640px) {
+  .index-heading .index-search {
+    flex-basis: 100%;
+  }
+  .index-columns,
+  .index-page-row {
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 0.75rem;
+  }
+  .index-column-source,
+  .index-cell-source {
+    display: none;
+  }
+  .index-grid {
+    grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+    gap: 0.75rem;
+  }
+}
 .picker-index {
   display: flex;
   gap: 0.5rem;

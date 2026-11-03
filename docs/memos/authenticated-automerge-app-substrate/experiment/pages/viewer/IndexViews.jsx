@@ -1,10 +1,10 @@
 // The index routes: /projects lists every Project the account can open and
 // /pages every Page, newest first. Both render from the shell chunk; nothing
 // here imports the editor. Each screen runs one Listing (listing.mjs); its
-// rows and request state live in that store, and React keeps only the search
-// box's text.
+// rows and request state live in that store, and React keeps only local UI
+// state: the search box's text and /pages' list or grid display.
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Boxes, FileText, Home, Plus, Search } from "lucide-react";
+import { Boxes, FileText, Home, LayoutGrid, List, Plus, Search } from "lucide-react";
 import {
   clampPagesQuery,
   PROJECTS_PATH,
@@ -21,6 +21,9 @@ import {
   projectsRequest,
 } from "./listing.mjs";
 import { useStore } from "./store.mjs";
+import { readDisplayMode, writeDisplayMode } from "./display-mode.mjs";
+import { timeCell } from "./relative-time.mjs";
+import { PageCardPreview } from "./PageCardPreview.jsx";
 import { ProjectCreator } from "./ProjectCreator.jsx";
 
 /** Where the index nav leads. `kind` is what onNavigate receives. */
@@ -211,43 +214,53 @@ export function PagesIndex({
   }, [listing]);
   const snapshot = useStore(listing.store);
   const view = listingView(snapshot);
+  const [display, setDisplay] = useState(() => readDisplayMode(browser()));
+  const chooseDisplay = useCallback((mode) => {
+    const shown = writeDisplayMode(browser(), mode);
+    if (shown) setDisplay(shown);
+  }, []);
   const titles = useMemo(() => projectTitles(projects), [projects]);
   const rows = useMemo(
     () => snapshot.items.map((page) => pageRow(page, titles)),
     [snapshot.items, titles],
   );
+  const Rows = display === "grid" ? PageGrid : PageList;
   return (
-    <main className="page-library index-view">
+    <main className="page-library index-view index-pages">
       <IndexNav current="pages" onNavigate={onNavigate} />
-      <div className="library-heading">
-        <h1>All Pages</h1>
+      <div className="library-heading index-heading">
+        <h1>Pages</h1>
+        <form
+          className="index-search"
+          role="search"
+          onSubmit={(event) => {
+            event.preventDefault();
+            listing.load(text);
+          }}
+        >
+          <label className="picker-search library-search">
+            <Search size={18} aria-hidden="true" />
+            <input
+              aria-label="Search all Pages"
+              placeholder="Search Pages"
+              type="search"
+              enterKeyHint="search"
+              value={text}
+              onChange={(event) => {
+                // Clamped here rather than by maxLength, which counts code
+                // units and can keep half of an emoji.
+                const value = clampPagesQuery(event.target.value);
+                setText(value);
+                listing.search(value);
+              }}
+            />
+          </label>
+        </form>
       </div>
-      <form
-        className="index-search"
-        role="search"
-        onSubmit={(event) => {
-          event.preventDefault();
-          listing.load(text);
-        }}
-      >
-        <label className="picker-search library-search">
-          <Search size={18} aria-hidden="true" />
-          <input
-            aria-label="Search all Pages"
-            placeholder="Search Pages"
-            type="search"
-            enterKeyHint="search"
-            value={text}
-            onChange={(event) => {
-              // Clamped here rather than by maxLength, which counts code
-              // units and can keep half of an emoji.
-              const value = clampPagesQuery(event.target.value);
-              setText(value);
-              listing.search(value);
-            }}
-          />
-        </label>
-      </form>
+      {/* The toggle holds the end of this row; its start is free for filters. */}
+      <div className="index-toolbar">
+        <DisplayToggle mode={display} onChange={chooseDisplay} />
+      </div>
       {view.searching && (
         <p role="status" className="muted index-searching">
           Searching…
@@ -260,45 +273,141 @@ export function PagesIndex({
         empty={view.query ? `No Pages match “${view.query}”.` : "No Pages yet."}
       />
       {!view.failed && rows.length > 0 && (
-        <ul className="index-list" aria-label="All Pages" aria-busy={view.searching}>
-          {rows.map((row) => (
-            <li className="index-row" key={row.id}>
-              {row.home ? (
-                <Home className="index-row-icon" size={19} aria-hidden="true" />
-              ) : (
-                <FileText className="index-row-icon" size={19} aria-hidden="true" />
-              )}
-              <div className="index-row-body">
-                <a
-                  className="index-row-link"
-                  href={row.href}
-                  onPointerDown={onWarm}
-                  onClick={follow(() => onOpen(row.id))}
-                >
-                  {row.title}
-                </a>
-                {(row.project || row.shared) && (
-                  <p className="index-row-meta">
-                    {row.project && (
-                      <a
-                        className="index-row-project"
-                        href={row.project.href}
-                        aria-label={`Project ${row.project.title}`}
-                        onClick={follow(() => onOpenProject(row.project.id))}
-                      >
-                        <Boxes size={13} aria-hidden="true" />
-                        <span>{row.project.title}</span>
-                      </a>
-                    )}
-                    {row.shared && <span className="index-row-shared">Shared with you</span>}
-                  </p>
-                )}
-              </div>
-            </li>
-          ))}
-        </ul>
+        <Rows
+          rows={rows}
+          busy={view.searching}
+          now={Date.now()}
+          onOpen={onOpen}
+          onOpenProject={onOpenProject}
+          onWarm={onWarm}
+        />
       )}
       <ListingFooter view={view} listing={listing} label="Pages" onRetry={onRetry} />
     </main>
+  );
+}
+
+/** The window whose localStorage holds the display mode, when there is one. */
+const browser = () => (typeof window === "undefined" ? undefined : window);
+
+/** Grid or list, for /pages. */
+function DisplayToggle({ mode, onChange }) {
+  return (
+    <div className="index-display" role="group" aria-label="Display">
+      {DISPLAY_CHOICES.map(({ value, label, Icon }) => (
+        <button
+          key={value}
+          type="button"
+          className="icon-button index-display-button"
+          aria-label={label}
+          aria-pressed={mode === value}
+          onClick={() => onChange(value)}
+        >
+          <Icon aria-hidden="true" />
+        </button>
+      ))}
+    </div>
+  );
+}
+const DISPLAY_CHOICES = Object.freeze([
+  { value: "grid", label: "Grid view", Icon: LayoutGrid },
+  { value: "list", label: "List view", Icon: List },
+]);
+
+const PageIcon = ({ home, className, size }) =>
+  home ? (
+    <Home className={className} size={size} aria-hidden="true" />
+  ) : (
+    <FileText className={className} size={size} aria-hidden="true" />
+  );
+
+/** A row's Updated time: compact on screen, the full local time on hover. */
+function UpdatedTime({ value, now }) {
+  const cell = timeCell(value, now);
+  if (!cell.dateTime) return <span className="index-time">{cell.label}</span>;
+  return (
+    <time className="index-time" dateTime={cell.dateTime} title={cell.title}>
+      <span className="sr-only">Updated </span>
+      {cell.label}
+    </time>
+  );
+}
+
+/** List mode: Name, Source and Updated columns. The column labels are
+ * visual only; each cell names itself to assistive tech. The Name link
+ * covers the row, and a Project label sits above it as its own link. */
+function PageList({ rows, busy, now, onOpen, onOpenProject, onWarm }) {
+  return (
+    <div className="index-table">
+      <div className="index-columns" aria-hidden="true">
+        <span className="index-column-name">Name</span>
+        <span className="index-column-source">Source</span>
+        <span className="index-column-updated">Updated</span>
+      </div>
+      <ul className="index-list index-page-list" aria-label="All Pages" aria-busy={busy}>
+        {rows.map((row) => (
+          <li className="index-row index-page-row" key={row.id}>
+            <div className="index-cell-name">
+              <PageIcon home={row.home} className="index-row-icon" size={19} />
+              <a
+                className="index-row-link"
+                href={row.href}
+                onPointerDown={onWarm}
+                onClick={follow(() => onOpen(row.id))}
+              >
+                {row.title}
+              </a>
+            </div>
+            <div className="index-cell-source">
+              {row.project ? (
+                <a
+                  className="index-row-project"
+                  href={row.project.href}
+                  aria-label={`Project ${row.project.title}`}
+                  onClick={follow(() => onOpenProject(row.project.id))}
+                >
+                  <Boxes size={13} aria-hidden="true" />
+                  <span>{row.project.title}</span>
+                </a>
+              ) : row.shared ? (
+                <span className="index-row-shared">Shared</span>
+              ) : (
+                <span className="index-row-none" aria-hidden="true">
+                  —
+                </span>
+              )}
+            </div>
+            <div className="index-cell-updated">
+              <UpdatedTime value={row.activityAt} now={now} />
+            </div>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+/** Grid mode: each card is one link to its Page, so it carries no Project
+ * label (a link inside a link). */
+function PageGrid({ rows, busy, onOpen, onWarm }) {
+  return (
+    <ul className="index-grid" aria-label="All Pages" aria-busy={busy}>
+      {rows.map((row) => (
+        <li className="index-card" key={row.id}>
+          <a
+            className="index-card-link"
+            href={row.href}
+            onPointerDown={onWarm}
+            onClick={follow(() => onOpen(row.id))}
+          >
+            <span className="index-card-header">
+              <PageIcon home={row.home} className="index-card-icon" size={16} />
+              <span className="index-card-title">{row.title}</span>
+            </span>
+            <PageCardPreview home={row.home} />
+          </a>
+        </li>
+      ))}
+    </ul>
   );
 }
