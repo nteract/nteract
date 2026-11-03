@@ -8,7 +8,7 @@ import {
   saveKeyCommand,
 } from "./agent-client-setup.mjs";
 import { PRODUCT_NAME } from "./shared/product.mjs";
-import { richContentGuide } from "./model/rich-content-guide.mjs";
+import { richContentGuide, typedReadFields } from "./model/rich-content-guide.mjs";
 
 /** Public onboarding contains no account or document data. URLs come only from
  * deployment configuration, never a request Host or forwarded header. */
@@ -888,6 +888,9 @@ For body work, pass comments:"none". To discover a long Page first, pass
 include_content:false; this returns its title, heads, retry authority and outline
 without body content or comments. The outline has entries, total, offset and
 next_offset; use outline_offset to fetch another page (outline_limit is at most 100).
+Each entry has block_id, node_index, type, heading_path and markdown_bytes, plus
+heading and level for a heading, and typed fields where they apply.
+${typedReadFields()}
 All addresses in an outline describe the returned heads, not stable IDs across edits.
 Pass those heads as expected_heads when using node_range or outline_offset > 0.
 A concurrent change returns read_revision_changed and a fresh outline; choose again.
@@ -937,7 +940,7 @@ revision: every read returns it as comment_heads. Pass the comment_heads you kep
 as since_comment_heads to list comment changes. Without it the response lists
 every current thread with comments_snapshot: true; replace what you hold instead
 of merging. Updated/inserted nodes include current Markdown,
-node_index and heading_path; deleted nodes contain only their old address, never
+node_index, heading_path and the same typed fields an outline entry carries; deleted nodes contain only their old address, never
 deleted body text. Use these current addresses for a focused read or replace_match.
 If a whole block is inserted or cannot be indexed, its change has scope:block;
 read its outline to choose a node.

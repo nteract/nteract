@@ -14,6 +14,15 @@ import {
   isPlainNavigation,
   mergePageListings,
   pageListing,
+  LIBRARY_DEFAULTS,
+  LIBRARY_SORTS,
+  groupApplies,
+  isLibraryRoute,
+  libraryBase,
+  libraryPath,
+  libraryRequest,
+  normalizeLibraryView,
+  sameLibraryRequest,
 } from "../shared/routes.mjs";
 const id = "1a160b47-6df1-4983-81eb-489ca5a26812";
 test("canonical and existing shared Page links resolve to the same document", () => {
@@ -21,7 +30,7 @@ test("canonical and existing shared Page links resolve to the same document", ()
   assert.deepEqual(readPageRoute(`/p/${id}`), expected);
   assert.deepEqual(readPageRoute(`/?page=${id}`), expected);
   assert.deepEqual(readPageRoute(`/p/${id}/`), expected);
-  assert.deepEqual(readPageRoute("/"), { kind: "home", path: "/" });
+  assert.deepEqual(readPageRoute("/"), { kind: "home", library: LIBRARY_DEFAULTS, path: "/" });
   for (const path of ["/p/nope", "/p/", "/p/" + id + "/other", "/missing", "/?page=bad"])
     assert.equal(readPageRoute(path).kind, "missing");
   assert.throws(() => pagePath("../api/auth/logout"), /Invalid Page/);
@@ -54,13 +63,17 @@ test("/projects and /pages are exact index routes with an optional trailing slas
   for (const path of ["/projects", "/projects/", "/projects?from=home"])
     assert.deepEqual(readPageRoute(path), { kind: "projects", path: PROJECTS_PATH });
   for (const path of ["/pages", "/pages/", "/pages?q=", "/pages?q=%20%20"])
-    assert.deepEqual(readPageRoute(path), { kind: "pages", query: "", path: "/pages" });
+    assert.deepEqual(readPageRoute(path), {
+      kind: "pages",
+      library: LIBRARY_DEFAULTS,
+      path: "/pages",
+    });
   assert.deepEqual(readPageRoute("/pages?q=%20road%20map%20"), {
     kind: "pages",
-    query: "road map",
+    library: { ...LIBRARY_DEFAULTS, query: "road map" },
     path: "/pages?q=road+map",
   });
-  assert.equal(readPageRoute(`/pages?q=${"x".repeat(300)}`).query.length, 200);
+  assert.equal(readPageRoute(`/pages?q=${"x".repeat(300)}`).library.query.length, 200);
   for (const path of [
     "/projects/x",
     "/projects//",
@@ -81,7 +94,7 @@ test("/projects and /pages are exact index routes with an optional trailing slas
   assert.equal(pagesPath(), "/pages");
   assert.equal(pagesPath("  "), "/pages");
   assert.equal(pagesPath("a&b"), "/pages?q=a%26b");
-  assert.equal(readPageRoute(pagesPath("a&b=c")).query, "a&b=c");
+  assert.equal(readPageRoute(pagesPath("a&b=c")).library.query, "a&b=c");
 });
 test("a /pages query has one rule for the box, the request and the address", () => {
   assert.equal(PAGES_QUERY_MAX, 200);
@@ -99,7 +112,11 @@ test("a /pages query has one rule for the box, the request and the address", () 
     const query = normalizePagesQuery(raw);
     assert.ok(query.length <= PAGES_QUERY_MAX);
     assert.equal(normalizePagesQuery(query), query, "normalizing twice changes nothing");
-    assert.equal(readPageRoute(pagesPath(raw)).query, query, "a reload lists the same search");
+    assert.equal(
+      readPageRoute(pagesPath(raw)).library.query,
+      query,
+      "a reload lists the same search",
+    );
     assert.equal(pagesPath(query), pagesPath(raw));
   }
 });
@@ -118,7 +135,7 @@ test("the search box clamps by code point, so it holds exactly what a search sen
     const stored = clampPagesQuery(raw);
     const query = normalizePagesQuery(stored);
     assert.equal(normalizePagesQuery(raw), query, "the box and a direct request agree");
-    assert.equal(readPageRoute(pagesPath(stored)).query, query, "and so does the address");
+    assert.equal(readPageRoute(pagesPath(stored)).library.query, query, "and so does the address");
     assert.equal(query.isWellFormed(), true);
   }
 });
@@ -192,4 +209,87 @@ test("a refresh recomputes from the latest remote result and local snapshot in e
   listing = start();
   assert.deepEqual(listing.remote(null), [stale, leaving]);
   assert.deepEqual(listing.local([renamed]), [renamed]);
+});
+
+const prj = "prj_2b160b47-6df1-4983-81eb-489ca5a26812";
+test("the library keeps its view in the address at / and /pages, defaults left out", () => {
+  const view = {
+    query: " road ",
+    access: "owned",
+    sort: "title",
+    group: "project",
+    projectId: prj,
+  };
+  for (const base of ["/", "/pages"]) {
+    const path = libraryPath(base, view);
+    assert.equal(path, `${base}?q=road&show=owned&sort=title&group=project&project=${prj}`);
+    const route = readPageRoute(path);
+    assert.equal(route.kind, base === "/" ? "home" : "pages");
+    assert.deepEqual(route.library, { ...view, query: "road" });
+    assert.equal(route.path, path, "a route's path is its canonical address");
+    assert.equal(isLibraryRoute(route), true);
+    assert.equal(libraryBase(route), base);
+    assert.equal(libraryPath(base), base);
+    assert.equal(libraryPath(base, LIBRARY_DEFAULTS), base);
+  }
+  assert.equal(libraryPath("/", { access: "shared" }), "/?show=shared");
+  assert.equal(libraryPath("/", { group: "date" }), "/?group=date");
+  assert.equal(isIndexRoute(readPageRoute("/?show=shared")), false, "Home starts the editor");
+  assert.equal(isLibraryRoute(readPageRoute("/projects")), false);
+  assert.equal(readPageRoute(`/?page=${id}&show=shared`).kind, "page", "legacy links still open");
+});
+
+test("one rule normalizes the library view: unknown values, Projects and date groups", () => {
+  assert.deepEqual(normalizeLibraryView(), LIBRARY_DEFAULTS);
+  assert.deepEqual(normalizeLibraryView(null), LIBRARY_DEFAULTS);
+  assert.deepEqual(
+    normalizeLibraryView({ access: "everyone", sort: "created", group: "author", projectId: "x" }),
+    LIBRARY_DEFAULTS,
+    "values this build doesn't know fall back to the defaults",
+  );
+  assert.deepEqual(normalizeLibraryView({ projectId: prj }), {
+    ...LIBRARY_DEFAULTS,
+    access: "owned",
+    projectId: prj,
+  });
+  assert.deepEqual(
+    normalizeLibraryView({ access: "shared", projectId: prj }),
+    { ...LIBRARY_DEFAULTS, access: "shared" },
+    "list_pages refuses shared with project_id, so the shared tab drops the Project",
+  );
+  assert.equal(normalizeLibraryView({ sort: "title", group: "date" }).group, null);
+  assert.equal(normalizeLibraryView({ sort: "title", group: "project" }).group, "project");
+  assert.equal(normalizeLibraryView({ group: "date" }).group, "date");
+  assert.equal(groupApplies("date", "activity"), true);
+  assert.equal(groupApplies("date", "title"), false);
+  assert.equal(groupApplies(null, "title"), true);
+  assert.deepEqual(
+    LIBRARY_SORTS.map((entry) => entry.value),
+    ["activity", "title"],
+  );
+  assert.equal(
+    readPageRoute("/?show=shared&project=" + prj).path,
+    "/?show=shared",
+    "an address list_pages would refuse is rewritten",
+  );
+  assert.equal(readPageRoute("/pages?sort=title&group=date").path, "/pages?sort=title");
+  for (const view of [
+    {},
+    { query: "x".repeat(300), access: "shared", group: "date" },
+    { projectId: prj, sort: "title", group: "project" },
+  ]) {
+    const once = normalizeLibraryView(view);
+    assert.deepEqual(normalizeLibraryView(once), once, "normalizing twice changes nothing");
+    assert.deepEqual(readPageRoute(libraryPath("/", once)).library, once, "a reload agrees");
+  }
+});
+
+test("a library request is the view without its grouping", () => {
+  const request = libraryRequest({ query: "a", group: "date", projectId: prj });
+  assert.deepEqual(request, { query: "a", access: "owned", sort: "activity", projectId: prj });
+  assert.equal(sameLibraryRequest(request, { ...request }), true);
+  assert.equal(sameLibraryRequest(request, libraryRequest({ query: "a", projectId: prj })), true);
+  for (const change of [{ query: "b" }, { access: null }, { sort: "title" }, { projectId: null }])
+    assert.equal(sameLibraryRequest(request, { ...request, ...change }), false);
+  assert.equal(sameLibraryRequest(undefined, request), false);
 });

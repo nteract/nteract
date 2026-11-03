@@ -4,6 +4,7 @@ import { KeyBinding, Decoration } from "wordgard/editor";
 import { addRow } from "wordgard/table";
 import { Table, TableRow, Cell, HeaderCell } from "wordgard/types";
 import { Alignment } from "./wordgard-model.mjs";
+import { validAlignment } from "../model/node-registry.mjs";
 
 export const selectedTable = (state) =>
   state.sel.head.matchingParent((node) => node.type === Table.type);
@@ -26,7 +27,7 @@ export const tablePresentation = Decoration.Point.source.of((state) => {
           role: index === 0 ? "columnheader" : "cell",
           "data-table-header": String(index === 0),
         };
-        if (["left", "center", "right"].includes(align)) attrs.style = `text-align: ${align}`;
+        if (validAlignment(align)) attrs.style = `text-align: ${align}`;
         entries.push([Decoration.Point.attributes(attrs), cellPos]);
         cellPos += cell.length;
       }

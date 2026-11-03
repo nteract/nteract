@@ -749,15 +749,14 @@ const cursorContext = ({ principal, needle, inTrash, scope }) =>
     ]),
   );
 
-/** Seal a keyset position. The position stays private, the cursor only
- * opens for the same principal, query, in_trash and scope (location, kind,
- * access and sort filters), and it expires after `cursorMaxAgeMs`. A position
- * with a string `title_search` carries it as a fourth element; without one the
- * payload keeps its three-element shape, which every build since sealed
- * cursors opens. Callers pass exactly the keyset fields their order needs.
- * `updated_at` holds the order's time key: `activity_at` for the activity
- * sort, `created_at` for the created sort, `updated_at` for Spaces. The
- * scope names the sort, so a position never opens under another order. */
+/** Seal a cursor payload. The payload stays private, the cursor only opens
+ * for the same principal, query, in_trash and scope (location, kind, access
+ * and sort filters), and it expires after `cursorMaxAgeMs`. The payload is
+ * `[updated_at, page_id, issued]`, plus `title_search` as a fourth element
+ * when it is a string; every build since sealed cursors opens that layout.
+ * Page listings seal positions through `sealPosition`, which maps each
+ * sort's position onto these slots. Spaces seal `{ updated_at, page_id }`
+ * directly: a Space's own time is its key. */
 export async function sealCursor(
   env,
   context,
@@ -823,6 +822,38 @@ export async function openCursor(
     page_id: value[1],
     ...(value.length === 4 && { title_search: value[3] }),
   };
+}
+
+/** Seal a Page listing position (see `positionOf`) in the payload layout
+ * `sealCursor` documents. An activity or created position seals its key in
+ * the time slot, as builds since content activity have. A title position
+ * seals its title key in the fourth slot and "" in the time slot, which no
+ * title listing has ever read. */
+export async function sealPosition(env, context, sort, position, now = Date.now()) {
+  const { page_id } = requirePosition(sort, position);
+  return sealCursor(
+    env,
+    context,
+    sort === "title"
+      ? { updated_at: "", page_id, title_search: position.title_search }
+      : { updated_at: position.key, page_id },
+    now,
+  );
+}
+
+/** Open a Page listing cursor into `sort`'s position shape. The scope binds
+ * the sort, so a payload of the other layout is malformed: a title position
+ * needs its title key, and a time-keyed one must not carry one. A title
+ * cursor sealed with a row's `updated_at` in its time slot opens to the same
+ * position as one sealed with "". */
+export async function openPosition(env, context, cursor, sort, now = Date.now()) {
+  const opened = await openCursor(env, context, cursor, now);
+  const title = sort === "title";
+  if (title !== (typeof opened.title_search === "string"))
+    throw new HttpError(400, "Invalid cursor; restart from the first page", "invalid_cursor");
+  return title
+    ? { title_search: opened.title_search, page_id: opened.page_id }
+    : { key: opened.updated_at, page_id: opened.page_id };
 }
 
 export const LIST_DEFAULT_LIMIT = 50;
@@ -912,12 +943,13 @@ export function parseListArguments(args = {}) {
   return options;
 }
 
-/** The sort each scope names. Activity positions are `activity_at` values,
- * which earlier builds never sealed: their activity cursors held `updated_at`
- * and opened under no scope, or a scope without a sort, or with "activity".
- * Naming this order "content_activity" makes every one of those fail with
- * `invalid_cursor` rather than seek the new order with an old key. Title
- * positions mean what they did, so a title cursor keeps its scope. */
+/** The name each sort seals into its cursor scope. A scope name stands for
+ * one meaning of a position's key, so a cursor opens only where its key
+ * means the same thing: "content_activity" positions hold `activity_at`,
+ * "created" positions `created_at`, "title" positions `title_search`. An
+ * activity cursor sealed with no scope, or a scope that names no sort or
+ * names "activity", held an `updated_at` key and fails with
+ * `invalid_cursor`. A change to what a sort's key means needs a new name. */
 const SCOPE_SORTS = Object.freeze({
   activity: "content_activity",
   created: "created",
@@ -969,49 +1001,80 @@ export const activityKey = (row) => row.content_updated_at || row.updated_at || 
 const comparePageIds = (a, b) => (a.page_id < b.page_id ? -1 : a.page_id > b.page_id ? 1 : 0);
 /** Newest first by an ISO time key (plain `<` is byte order over ASCII), then
  * Page ID descending. A missing key is "" and sorts last, as SQLite puts ''
- * after every timestamp in a descending index. */
+ * after every timestamp in a descending index. Positions are
+ * `{ key, page_id }`. */
 const newestBy = (key) => ({
-  key,
+  fields: ["key", "page_id"],
+  position: (row) => ({ key: key(row), page_id: row.page_id }),
+  seek: (position) => position.key,
   compare: (a, b) => (key(a) === key(b) ? -comparePageIds(a, b) : key(a) < key(b) ? 1 : -1),
   follows: (row, position) =>
     !position ||
-    key(row) < position.updated_at ||
-    (key(row) === position.updated_at && row.page_id < position.page_id),
+    key(row) < position.key ||
+    (key(row) === position.key && row.page_id < position.page_id),
 });
-/** One listing order: `compare` sorts candidate rows, and `follows(row,
- * position)` keeps the rows strictly after a cursor position. Each matches
- * the ORDER BY and keyset condition of the same sort in `listingQuery`. A
- * time-keyed order's `key(row)` is the value its cursor seals. */
+/** One listing order. `position(row)` is where a page that stopped on `row`
+ * resumes, in the one shape this order's positions have. `compare` sorts
+ * candidate rows, `follows(row, position)` keeps the rows strictly after a
+ * position, and `seek(position)` is the key `listingQuery` compares. Each
+ * matches the ORDER BY and keyset condition of the same sort there. */
 const ORDERS = {
   activity: newestBy((row) => row.activity_at ?? activityKey(row)),
   created: newestBy((row) => row.created_at ?? ""),
   title: {
+    fields: ["page_id", "title_search"],
+    position: (row) => ({ title_search: row.title_search ?? "", page_id: row.page_id }),
+    seek: (position) => position.title_search,
     compare: (a, b) =>
       compareText(a.title_search ?? "", b.title_search ?? "") || comparePageIds(a, b),
     follows: (row, position) =>
       !position ||
-      compareText(row.title_search ?? "", position.title_search ?? "") > 0 ||
-      ((row.title_search ?? "") === (position.title_search ?? "") &&
-        row.page_id > position.page_id),
+      compareText(row.title_search ?? "", position.title_search) > 0 ||
+      ((row.title_search ?? "") === position.title_search && row.page_id > position.page_id),
   },
 };
 const listOrder = (sort) => ORDERS[sort] ?? ORDERS.activity;
-/** Spaces list by `updated_at`, newest first. */
-const SPACE_ORDER = newestBy((row) => row.updated_at ?? "");
-const newestFirst = SPACE_ORDER.compare;
-const before = SPACE_ORDER.follows;
 
-/** The keyset position a cursor seals for `row`: the order's time key, or a
- * title-sorted position's title key. Every position keeps the three-element
- * payload but a title one, which adds its key. */
-export const cursorPosition = (row, sort) =>
-  sort === "title"
-    ? { updated_at: row.updated_at, page_id: row.page_id, title_search: row.title_search ?? "" }
-    : { updated_at: listOrder(sort).key(row), page_id: row.page_id };
+/**
+ * The position a Page listing in `sort` resumes from after `row`: a D1 row, a
+ * Catalog fallback row or a child ID row. Activity and created positions are
+ * `{ key, page_id }`, where `key` is the order's time key (`activity_at` or
+ * `created_at`), never the row's `updated_at`. Title positions are
+ * `{ title_search, page_id }`. The cursor seal, the scan's refetch position
+ * and the next cursor all come from here, and every source reads only this
+ * shape, so a raw row can't stand in for a position.
+ */
+export const positionOf = (sort, row) => listOrder(sort).position(row);
+
+/** `position` unchanged when it has exactly `sort`'s position fields, or
+ * null for a first page. Anything else is a programming error: a source
+ * handed a raw row would seek by the wrong key. */
+export function requirePosition(sort, position) {
+  if (position == null) return null;
+  const { fields } = listOrder(sort);
+  const keys = Object.keys(position).sort();
+  if (
+    keys.length !== fields.length ||
+    keys.some((key, index) => key !== fields[index]) ||
+    typeof listOrder(sort).seek(position) !== "string" ||
+    typeof position.page_id !== "string"
+  )
+    throw new TypeError(`A ${sort} listing position is {${fields.join(", ")}}; got {${keys}}`);
+  return position;
+}
+
+/** Spaces list by `updated_at`, newest first. A Space position is
+ * `{ updated_at, page_id }`: a Space row's own time is its key, so a raw row
+ * is already its position. */
+const newestFirst = newestBy((row) => row.updated_at ?? "").compare;
+const before = (row, after) =>
+  !after ||
+  (row.updated_at ?? "") < after.updated_at ||
+  ((row.updated_at ?? "") === after.updated_at && row.page_id < after.page_id);
 
 /** SQL and parameters for one page of D1 candidates. The SQL text depends
  * only on `access`, `sort` and whether `after` holds a position; every value
- * is a bound parameter. */
+ * is a bound parameter. `after` is null or a `positionOf(sort, …)`. */
 export function listingQuery({
   principal,
   domain,
@@ -1033,11 +1096,11 @@ export function listingQuery({
   // Each sort walks its own index after `principal = ?`.
   const column = title ? "a.title_search" : sort === "created" ? "a.created_at" : "a.activity_at";
   const order = title ? `${column} ASC, a.page_id ASC` : `${column} DESC, a.page_id DESC`;
-  const key = (title ? after?.title_search : after?.updated_at) ?? null;
   // A continuation page compares a row value, which SQLite turns into a range
   // seek on the listing index after `principal = ?`. A first page has no
   // position, so it carries no keyset predicate at all.
-  const continued = after != null && key !== null;
+  const continued = requirePosition(sort, after) !== null;
+  const key = continued ? listOrder(sort).seek(after) : null;
   const keyset = !continued ? "" : `AND (${column}, a.page_id) ${title ? ">" : "<"} (?, ?)`;
   return {
     sql: `SELECT a.page_id, a.source, a.updated_at, a.updated_revision, a.title, a.title_search,
@@ -1100,7 +1163,10 @@ export async function queryCatalogIndex(db, query) {
  * created key from its `created_at`. For a shared entry those times are this
  * account's discovery and the Page host's projections, where D1 holds the
  * Page row's own times, so shared rows can order differently between the
- * two sources; owned rows order alike. */
+ * two sources. Owned rows converge to one order: a content time reaches both
+ * from one flush that retries until both writes land, and D1's `created_at`
+ * holds the host's first report time until reconciliation imports the
+ * Catalog's earlier creation time (README, "Catalog index"). */
 export async function catalogSource(
   storage,
   { inTrash, needle, owned = () => true, shared = true, sort = "activity" },
@@ -1138,9 +1204,7 @@ export async function catalogSource(
     })
     .filter((row) => titleMatches(row.title, needle))
     .sort(order.compare);
-  return {
-    next: async (after, count) => rows.filter((row) => order.follows(row, after)).slice(0, count),
-  };
+  return memorySource(rows, sort);
 }
 
 /** Candidate source over the child IDs a shared parent's owner Catalog
@@ -1155,8 +1219,17 @@ export function childIdSource(pageIds, sort = "activity") {
     .filter(validPageId)
     .map((pageId) => ({ page_id: pageId, updated_at: "", title_search: "", owned: false }))
     .sort(order.compare);
+  return memorySource(rows, sort);
+}
+
+/** A candidate source over rows already sorted in `sort`'s order. */
+function memorySource(rows, sort) {
+  const { follows } = listOrder(sort);
   return {
-    next: async (after, count) => rows.filter((row) => order.follows(row, after)).slice(0, count),
+    next: async (after, count) => {
+      requirePosition(sort, after);
+      return rows.filter((row) => follows(row, after)).slice(0, count);
+    },
   };
 }
 
@@ -1167,6 +1240,8 @@ export class CatalogIndexUnavailable extends Error {}
 export function indexSource(db, query) {
   return {
     next: async (after, count) => {
+      // Outside the try: a malformed position is a bug, not an outage.
+      requirePosition(query.sort ?? "activity", after);
       try {
         return await read(queryCatalogIndex(db, { ...query, after, count }));
       } catch (error) {

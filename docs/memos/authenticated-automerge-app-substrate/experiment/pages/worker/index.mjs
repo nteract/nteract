@@ -19,9 +19,9 @@ import {
   createPageData,
   initializePage,
   applyPageOperation,
-  validateImageInsertion,
-  validateNodeInsertion,
+  insertedAssets,
 } from "../model/page.mjs";
+import { insertOperation } from "../model/node-registry.mjs";
 import {
   documentFeatures,
   missingFeatures,
@@ -200,7 +200,6 @@ import {
   catalogIndexTimeouts,
   catalogSource,
   childIdSource,
-  cursorPosition,
   indexSource,
   indexedState,
   listScope,
@@ -208,6 +207,8 @@ import {
   markCatalogIndexDirty,
   markSpaceIndexDirty,
   openCursor,
+  openPosition,
+  positionOf,
   parseListArguments,
   reconcileSpaceIndex,
   spaceCatalogSource,
@@ -219,6 +220,7 @@ import {
   restrictPageIndex,
   retirePageIndex,
   sealCursor,
+  sealPosition,
   titleMatches,
   withTimeout,
 } from "./catalog-index.mjs";
@@ -228,7 +230,12 @@ import {
   requireStoredDatasetAsset,
   requireStoredImageAsset,
 } from "./image-assets.mjs";
-import { dataframeFor } from "../shared/dataset-assets.mjs";
+// The host check for each stored asset kind a node can name
+// (INSERT_OPERATIONS in model/node-registry.mjs).
+const ASSET_CHECKS = Object.freeze({
+  image: requireStoredImageAsset,
+  dataset: requireStoredDatasetAsset,
+});
 import {
   appendPosition,
   childrenOf,
@@ -2750,11 +2757,11 @@ export class Catalog {
           principal: identity.principal,
         })),
       });
-    const after = options.cursor ? await openCursor(this.env, context, options.cursor) : null;
-    // The scope binds the sort, so only a title-sorted cursor opens here; a
-    // position without its title key is malformed all the same.
-    if (options.sort === "title" && after && typeof after.title_search !== "string")
-      throw new HttpError(400, "Invalid cursor; restart from the first page", "invalid_cursor");
+    // A position in this sort's shape (positionOf); the scan and the next
+    // cursor keep that shape.
+    const after = options.cursor
+      ? await openPosition(this.env, context, options.cursor, options.sort)
+      : null;
     const epoch = catalogIndexEpoch(this.env);
     let db;
     let source;
@@ -2826,7 +2833,7 @@ export class Catalog {
       pages: result.pages,
       limit: options.limit,
       next_cursor: result.next
-        ? await sealCursor(this.env, context, cursorPosition(result.next, options.sort))
+        ? await sealPosition(this.env, context, options.sort, result.next)
         : null,
       quota,
       ...migration,
@@ -2839,8 +2846,14 @@ export class Catalog {
     return response;
   }
 
+  /** Up to `options.limit` verified Pages after the position `after`, and the
+   * position the next page resumes from, or null. Every position here is
+   * `positionOf(options.sort, row)`: the refetch after a rejected candidate
+   * and the next cursor resume from the order's key, never a row's own
+   * `updated_at`. */
   async scanCandidates(request, identity, source, options, scope, after, db) {
     const storage = this.storage;
+    const resumeAt = (row) => positionOf(options.sort, row);
     const pruned = [];
     let stale = false;
     const check = async (row) => {
@@ -2940,7 +2953,7 @@ export class Catalog {
           if (page) verified.push({ page, row: group[offset] });
       }
       scanned += rows.length;
-      if (rows.length) position = rows.at(-1);
+      if (rows.length) position = resumeAt(rows.at(-1));
       if (rows.length < want) {
         exhausted = true;
         break;
@@ -2958,7 +2971,7 @@ export class Catalog {
     if (verified.length > limit)
       return {
         pages: verified.slice(0, limit).map(({ page }) => page),
-        next: verified[limit - 1].row,
+        next: resumeAt(verified[limit - 1].row),
       };
     // Only a scan stopped by its bound, not by the end of the candidates,
     // continues from the last scanned row.
@@ -4351,8 +4364,8 @@ export class Page {
         if (!["edit_page", "patch_page"].includes(body.operation))
           throw new HttpError(400, "Unknown document operation");
         const ops = Array.isArray(body.arguments?.operations) ? body.arguments.operations : [];
-        const images = ops.filter((op) => (op?.op ?? op?.type) === "insert_image");
-        const nodes = ops.filter((op) => (op?.op ?? op?.type) === "insert_node");
+        // Ops that create a node naming a stored asset (model/node-registry.mjs).
+        const inserts = ops.filter((op) => insertOperation(op?.op ?? op?.type));
         // Where this batch landed, captured inside the change so the cursors
         // name the characters it wrote. A replayed receipt has no caret.
         let caret = null;
@@ -4364,47 +4377,28 @@ export class Page {
           operation: body.operation,
           args: body.arguments,
           identity,
-          prepare:
-            images.length || nodes.length
-              ? async () => {
-                  if (images.length + nodes.length > 100)
-                    throw new HttpError(
-                      400,
-                      "Provide up to 100 operations",
-                      "invalid_edit_selector",
-                    );
-                  for (const image of images) {
-                    try {
-                      validateImageInsertion(image);
-                    } catch (error) {
-                      throw new HttpError(400, error.message, "invalid_edit_selector");
-                    }
-                  }
-                  for (const assetId of new Set(images.map((image) => image.asset_id))) {
-                    await requireStoredImageAsset(this.env.PAGES_ASSETS, {
-                      pageId: this.metadata.pageId,
-                      assetId,
-                    });
-                  }
-                  // Each dataframe names a stored dataset of its media type.
-                  for (const node of nodes) {
-                    let attrs;
-                    try {
-                      attrs = dataframeFor(this.metadata.pageId, validateNodeInsertion(node));
-                    } catch (error) {
-                      throw new HttpError(400, error.message, "invalid_edit_selector");
-                    }
-                    await requireStoredDatasetAsset(this.env.PAGES_ASSETS, {
-                      pageId: this.metadata.pageId,
-                      assetId: node.node.attrs.asset_id,
-                      mediaType: attrs.media_type,
-                    });
-                  }
-                  // The Page queue orders ACL changes; OAuth/key expiry and revocation
-                  // can still happen while immutable object metadata is being read.
-                  this.policy.account(await authenticate(request, this.env), true);
+          prepare: inserts.length
+            ? async () => {
+                if (inserts.length > 100)
+                  throw new HttpError(400, "Provide up to 100 operations", "invalid_edit_selector");
+                let assets;
+                try {
+                  assets = insertedAssets(inserts, this.metadata.pageId);
+                } catch (error) {
+                  throw new HttpError(400, error.message, "invalid_edit_selector");
                 }
-              : undefined,
+                // Each names an asset stored on this Page, of its kind.
+                for (const { asset, assetId, mediaType } of assets)
+                  await ASSET_CHECKS[asset](this.env.PAGES_ASSETS, {
+                    pageId: this.metadata.pageId,
+                    assetId,
+                    ...(mediaType && { mediaType }),
+                  });
+                // The Page queue orders ACL changes; OAuth/key expiry and revocation
+                // can still happen while immutable object metadata is being read.
+                this.policy.account(await authenticate(request, this.env), true);
+              }
+            : undefined,
           apply: (doc, effectiveArgs) => {
             try {
               const trace = [];

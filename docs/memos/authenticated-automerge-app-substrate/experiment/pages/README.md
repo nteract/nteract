@@ -108,7 +108,7 @@ was a caret race in the smoke; the editor side is
 | Trash, restore, and permanent deletion | `node scripts/local-sharing-e2e.mjs --trash` | Starts an isolated fixture |
 | Removed access hides the local copy across a reload, with its download | `node scripts/local-sharing-e2e.mjs --revocation` | Starts an isolated fixture |
 | A commenter comments but can't edit; a forged native edit of another author's message is refused | `node scripts/local-sharing-e2e.mjs --commenter` | Starts an isolated fixture |
-| Projects over MCP and in the browser, `/projects` and `/pages` on a phone-sized screen, breadcrumbs, Trash and restore in a Project | `node scripts/local-sharing-e2e.mjs --projects` | Starts an isolated fixture |
+| Projects over MCP and in the browser, `/projects` and `/pages` on a phone-sized screen, the Pages library's tabs, Project filter, sort and groups as an account with shared Pages, breadcrumbs, Trash and restore in a Project | `node scripts/local-sharing-e2e.mjs --projects` | Starts an isolated fixture |
 | `list_pages` reports `content_updated_at` after an MCP edit and after typing in a tab, each well after the Page's creation | `node scripts/local-sharing-e2e.mjs --content-activity` | Starts an isolated fixture |
 | Cold first open of a 300-paragraph Page with images on Fast 3G and 4x CPU, phase by phase (records timings, gates on nothing) | `node scripts/local-sharing-e2e.mjs --cold-open` | Starts an isolated fixture behind a brotli proxy; writes `report.json` |
 | Rollback to a previous build and forward again on one data directory | `node scripts/rollback-qualification.mjs --previous <previous pages dir>` | Starts an isolated fixture; build the previous commit first |
@@ -135,18 +135,36 @@ mobile-keyboard, object-store failover, or deployment reliability.
 
 A Page contains its title, stable ordered block IDs and rich text in Automerge.
 Its comments live in a second Automerge document beside it (see [Comments
-document](#comments-document)). Markdown is the import/export and tool
-projection. A dedicated title
+document](#comments-document)). The native spans are the document. Markdown
+is a lossy projection for import, export and agent prose; node operations
+(`insert_node`, `insert_image`, `set_node`) write what Markdown can't express,
+such as a dataframe (see Dataframes below). A dedicated title
 is displayed above the body; agents should not repeat it as an opening heading.
 Authoring receipts warn about likely duplicates without removing or hiding text.
 
 Wordgard is the sole editor and applies native text splices, marks, and
 structural spans. The shared Markdown codec still uses ProseMirror schema and
-traversal libraries for import/export, validation, and passage-address mapping.
-It does not own an editor or mediate Wordgard keystrokes. Keeping that codec
-preserves existing documents, comment anchors, and MCP operations while the
-browser editor is simplified; replacing it requires a separate compatibility
-pass. Each Pages block has its own continuous editor. Moves update fractional positions without recreating the block or its
+traversal libraries for import/export, validation, outlines and `node_index`,
+change reads, and passage-address mapping. It does not own an editor or mediate
+Wordgard keystrokes. Two encoders write spans:
+
+- Browser edits use Wordgard's `encode` (`viewer/wordgard-model.mjs`).
+- Markdown writes use the ProseMirror adapter, then `pageSpans`
+  (`model/richtext.mjs`), which adjusts its output to the editor's form.
+  [`markdown-projection.test.mjs`](model/markdown-projection.test.mjs) lists
+  where the two still differ.
+
+Block types are still defined separately in the ProseMirror schema and
+serializer and in Wordgard's decode and encode. A gated type is also listed in
+`features.json`, and a node with its own operation in the agent guide and MCP
+schema. There's no shared node registry or node id yet, so `set_node`
+addresses nodes through `match_text` and can't reach a node without text.
+Replacing the codec means, in order: a typed node registry that those places
+read; one span encoder for every writer; stable node ids with node reads; then
+outlines, change reads and Markdown on that node tree instead of ProseMirror.
+Existing documents, comment anchors and MCP addresses must survive each step.
+
+Each Pages block has its own continuous editor. Moves update fractional positions without recreating the block or its
 text object, preserving comment and selection anchors. Concurrent positions use
 block IDs as deterministic ties. Cross-Pages-block selections remain unsupported.
 When a block ends in a code block, table, preserved block or an image, ArrowDown
@@ -213,8 +231,9 @@ references; it does not publish the Page or change asset access.
     paste, a list toggle) in an agent-written block writes no history; plain
     typing never rewrites a block.
     [`markdown-projection.test.mjs`](model/markdown-projection.test.mjs)
-    checks every corpus case and lists the two disagreements left for the
-    shared encoder.
+    checks every corpus case and lists the cases left for a shared encoder:
+    two kinds of disagreement (a quote whose first child isn't a paragraph,
+    and mark runs the editor re-marks) across 11 corpus cases.
   - The scan masks code per table cell, as Markdown-it splits cells first,
     and recognizes a tag of any length, with `>` inside quoted values, in
     linear time.
@@ -577,10 +596,21 @@ comes from its host's check, like its title.
 `activity_at` is a virtual generated column, so every writer keeps it current,
 including a build that predates it. The Catalog fallback computes each key from
 the entry the same way: `content_updated_at ?? updated_at`, and `created_at`
-(else `updated_at`, as reconciliation indexes it). Owned rows order alike from
-either source. A shared row's times differ by source, as they always have: D1
-holds the Page row's own creation and content times, the Catalog entry this
-account's discovery time and whatever the last title projection carried.
+(else `updated_at`, as reconciliation indexes it). Owned rows converge to the
+same order in both sources, but they can disagree for a while:
+
+- A content time lands in D1 and in the owner's Catalog from one flush. If either
+  write fails, the flush retries both, backing off from one minute to fifteen,
+  and the two agree after the first retry that succeeds.
+- D1's `created_at` starts as the Page host's first report time, which follows
+  the Catalog's own creation time by the creation's latency. The account's next
+  reconcile pass imports the Catalog's earlier time: at most six hours later,
+  sooner after a Catalog change marks the index dirty. Until then, two Pages
+  created within that latency of each other can swap places in the created sort.
+
+A shared row's times differ by source, as they always have: D1 holds the Page
+row's own creation and content times, the Catalog entry this account's discovery
+time and whatever the last title projection carried.
 
 The Page host records content activity from the `change` events on its serving
 document handle (worker/content-activity.mjs). It writes `host/content-activity`
@@ -614,13 +644,20 @@ window's end; a longer retry backoff isn't held, and waits for the next request.
 
 Cursors are sealed to the listing's location, kind, `access` and sort. A cursor
 issued under one combination never opens under another; the client gets
-`invalid_cursor` and restarts. Activity positions hold `activity_at` values, which
-builds before content activity never sealed: their activity cursors held
-`updated_at` and opened under no scope or a scope without this sort's name. The
-scope now names the activity sort `content_activity`, so every such cursor fails
-with `invalid_cursor` instead of seeking the new order with an old key. Title
-cursors keep their scope and still open. A title-sorted cursor carries its
-position's title key, which makes it longer: cursors may run to 8192 characters.
+`invalid_cursor` and restarts. The scope names each sort by what its position's
+key means: `content_activity` for `activity_at`, `created` for `created_at` and
+`title` for `title_search`. An activity cursor sealed with no scope, or with a
+scope that names no sort or names `activity`, held an `updated_at` key, so it
+fails with `invalid_cursor`.
+
+A position has one shape per sort, built from the row a page stopped on:
+`{key, page_id}` for activity and created, where `key` is that sort's own key and
+never the row's `updated_at`, and `{title_search, page_id}` for title. The next
+cursor, the position a scan refetches from after rejecting candidates, and every
+source's keyset all use it. Sealed, an activity or created position puts its key
+in the payload's time slot; a title position puts its title key in a fourth slot
+and leaves the time slot empty, which no title listing reads. A title cursor
+carries its title key, which makes it longer: cursors may run to 8192 characters.
 
 Page hosts report their row after creation, title changes and ACL commits. Writes
 carry the committed ACL revision, so a report that outlives its timeout changes
@@ -1365,7 +1402,7 @@ entries without counts leaves that to repair.
 At the limit, creating or restoring returns `409 page_quota_exceeded` and moving
 to Trash returns `409 trash_capacity`, each with `limit` and `count`.
 `list_pages` returns `quota: {limit, count, trash_count}` for the caller's own
-account, whatever the listing's filters. Home shows usage from 90% of the limit.
+account, whatever the listing's filters. The Pages library shows usage from 90% of the limit.
 
 ## Build updates
 
@@ -1917,14 +1954,33 @@ sharing works as before and never reveals the Project. `move_page` moves Pages
 into, out of and between the owner's Projects. Inherited access and a Project
 change feed come later.
 
-The viewer lists them at two index routes. `/projects` shows every Project
-`list_projects` returns, with its description. `/pages` shows every Page
-`list_pages` returns, newest first, including Pages in Projects; an owned
-Page's row links its Project. Search uses `list_pages`' `query`, trimmed and
-cut to its 200-unit limit, and stays in the address as `?q=`. Load more follows
-`next_cursor`; a cursor that has expired (`invalid_cursor`) starts the listing
-over from its first page. `list_pages` has no filter for Your items or for
-shared Pages, so `/pages` has no filter chips; shared rows say so instead.
+The viewer lists them on two screens. `/projects` shows every Project
+`list_projects` returns, with its description. The Pages library, at `/` and
+`/pages` (one screen, two addresses), shows the Pages `list_pages` returns,
+including Pages in Projects; an owned Page's row links its Project, and a
+shared row never does. Its view lives in the address, defaults left out, so a
+reload, Back and a shared link reproduce it
+([routes.mjs](shared/routes.mjs) `normalizeLibraryView`):
+
+| Parameter | Values | Effect |
+| --- | --- | --- |
+| `q` | text | `list_pages` `query`, trimmed and cut to its 200-unit limit |
+| `show` | `owned`, `shared` | the Your items or Shared with you tab: `access` |
+| `sort` | `title` | `sort: "title"`; omitted is Last activity |
+| `project` | a Project ID | `project_id`; implies `show=owned`, dropped with `show=shared` (which `list_pages` refuses) |
+| `group` | `project`, `date` | group sections over the loaded rows; `date` needs Last activity |
+
+A choice pushes a history entry; typing a search replaces it. Groups are a
+presentation over loaded rows ([library-groups.mjs](viewer/library-groups.mjs)):
+by Project (each Project, Your items, Shared with you) or by the row's
+`updated_at` (Today, Yesterday, Previous 7 days, Previous 30 days, each month of
+the last year, then each year), in the order their first row appears. Drafts
+this browser hasn't synced show first, as "Saved locally", on All and Your items
+when there is no search or Project filter; when the listing fails, local copies
+show there too. Load more follows `next_cursor`; a cursor that has expired
+(`invalid_cursor`) starts the listing over from its first page. Grid cards are
+behind the `grid` flag (`?grid=1` or `localStorage["pages.grid"] = "1"`) until
+they show previews.
 
 | Tool | Arguments | Result |
 | --- | --- | --- |

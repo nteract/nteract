@@ -8,6 +8,8 @@ import { listingMachine } from "./listing-machine.mjs";
 import {
   Listing,
   SEARCH_DEBOUNCE_MS,
+  deviceRows,
+  updatedAt,
   appendRows,
   listingView,
   pageRow,
@@ -18,11 +20,13 @@ import {
 } from "./listing.mjs";
 import { SERVER_UNREACHABLE_ACTION } from "./alerts.mjs";
 
+const pageId = "1a160b47-6df1-4983-81eb-489ca5a26812";
+const projectId = "prj_2b160b47-6df1-4983-81eb-489ca5a26812";
 const TABLE = new URL("../test/fixtures/machines/listing.json", import.meta.url);
 
 test("the listing table runs through the pure machine", async () => {
   assert.deepEqual(await runTable(listingMachine, loadTable(TABLE)), {
-    rows: 29,
+    rows: 31,
     pairs: 22,
     unreachable: 2,
     cases: 11,
@@ -45,7 +49,7 @@ function harness() {
     {
       fetch: (request) => {
         const reply = deferred();
-        requests.push({ ...request, ...reply });
+        requests.push({ ...request, query: request.params.query, ...reply });
         return reply.promise;
       },
       report: (message) => reports.push(message),
@@ -96,7 +100,7 @@ test("a search supersedes the request in flight and its late rows never show", a
   requests[0].resolve({ items: [{ id: "all" }], cursor: "c1" });
   await settle();
   listing.more();
-  listing.load("road");
+  listing.load({ query: "road" });
   assert.equal(view().searching, true, "earlier rows stay while the search runs");
   requests[1].resolve({ items: [{ id: "late" }], cursor: null });
   await settle();
@@ -106,7 +110,7 @@ test("a search supersedes the request in flight and its late rows never show", a
   assert.deepEqual(ids(), ["roadmap"]);
   assert.equal(view().query, "road");
   assert.equal(view().empty, false);
-  listing.load("nothing");
+  listing.load({ query: "nothing" });
   requests[3].resolve({ items: [], cursor: null });
   await settle();
   assert.equal(view().empty, true);
@@ -114,7 +118,7 @@ test("a search supersedes the request in flight and its late rows never show", a
 
 test("typing searches once it pauses, and only when the query changed", async () => {
   const { listing, requests, scheduler, disconnect } = harness();
-  listing.load("");
+  listing.load({ query: "" });
   requests[0].resolve({ items: [], cursor: null });
   await settle();
   listing.search("r");
@@ -144,14 +148,14 @@ test("typing searches once it pauses, and only when the query changed", async ()
 
 test("a failed first page reports once and Retry lists it again", async () => {
   const { listing, requests, reports, view, ids } = harness();
-  listing.load("road");
+  listing.load({ query: "road" });
   requests[0].reject(new TypeError("Failed to fetch"));
   await settle();
   assert.equal(view().failed, true);
   assert.equal(view().loading, false);
   assert.deepEqual(reports, [SERVER_UNREACHABLE_ACTION]);
   assert.equal(listing.more(), false);
-  listing.load("road");
+  listing.load({ query: "road" });
   requests[1].resolve({ items: [{ id: "a" }], cursor: null });
   await settle();
   assert.deepEqual(ids(), ["a"]);
@@ -175,7 +179,7 @@ test("a failed Load more keeps the rows and retries the same cursor", async () =
 
 test("an expired cursor starts the listing over; a transient failure keeps its cursor", async () => {
   const { listing, requests, reports, view, ids } = harness();
-  listing.load("road");
+  listing.load({ query: "road" });
   requests[0].resolve({ items: [{ id: "a" }, { id: "b" }], cursor: "c1" });
   await settle();
   listing.more();
@@ -243,7 +247,7 @@ test("a late first page after disconnecting never reaches the store", async () =
 test("searches and requests follow one query rule: trimmed, at most 200 units", async () => {
   const { listing, requests, scheduler, view } = harness();
   const long = "  " + "x".repeat(250) + "  ";
-  listing.load(long);
+  listing.load({ query: long });
   assert.equal(requests[0].query, "x".repeat(200));
   assert.equal(view().query, "x".repeat(200));
   listing.search("  road  ");
@@ -251,7 +255,7 @@ test("searches and requests follow one query rule: trimmed, at most 200 units", 
   assert.equal(requests[1].query, "road");
   const calls = [];
   await pagesRequest(async (name, args) => (calls.push(args), { pages: [] }))({
-    query: "y".repeat(300),
+    params: { query: "y".repeat(300) },
     cursor: null,
   });
   assert.equal(calls[0].query.length, 200);
@@ -289,24 +293,28 @@ test("the request adapters page with cursors and search only where the API can",
       ? { pages: [{ page_id: "p" }], next_cursor: "next" }
       : { projects: [{ project_id: "prj" }], next_cursor: null };
   };
-  assert.deepEqual(await pagesRequest(call)({ query: "", cursor: null }), {
+  assert.deepEqual(await pagesRequest(call)({ params: {}, cursor: null }), {
     items: [{ page_id: "p" }],
     cursor: "next",
   });
-  await pagesRequest(call)({ query: "road", cursor: "next" });
-  assert.deepEqual(await projectsRequest(call)({ query: "ignored", cursor: "c" }), {
+  await pagesRequest(call)({ params: { query: "road" }, cursor: "next" });
+  await pagesRequest(call)({
+    params: { query: "", access: "owned", sort: "title", projectId },
+    cursor: null,
+  });
+  await pagesRequest(call)({ params: { access: "shared", sort: "activity" }, cursor: null });
+  assert.deepEqual(await projectsRequest(call)({ params: { query: "ignored" }, cursor: "c" }), {
     items: [{ project_id: "prj" }],
     cursor: null,
   });
   assert.deepEqual(calls, [
     ["list_pages", { limit: 50 }],
     ["list_pages", { limit: 50, query: "road", cursor: "next" }],
+    ["list_pages", { limit: 50, access: "owned", sort: "title", project_id: projectId }],
+    ["list_pages", { limit: 50, access: "shared" }],
     ["list_projects", { limit: 100, cursor: "c" }],
   ]);
 });
-
-const pageId = "1a160b47-6df1-4983-81eb-489ca5a26812";
-const projectId = "prj_2b160b47-6df1-4983-81eb-489ca5a26812";
 
 test("a /pages row links its Page and labels its Project; shared Pages show no Project", () => {
   const titles = projectTitles([{ project_id: projectId, title: "Launch" }]);
@@ -314,11 +322,20 @@ test("a /pages row links its Page and labels its Project; shared Pages show no P
     id: pageId,
     title: "Untitled",
     href: `/p/${pageId}`,
+    updatedAt: null,
     project: { id: projectId, title: "Launch", href: `/project/${projectId}` },
     shared: false,
     home: false,
+    local: null,
   });
   assert.deepEqual(pageRow({ page_id: pageId, title: "Notes" }).project, null);
+  assert.equal(
+    pageRow({ page_id: pageId, updated_at: "2026-11-01T18:00:00.000Z" }).updatedAt,
+    "2026-11-01T18:00:00.000Z",
+    "the Updated column reads list_pages' updated_at",
+  );
+  assert.equal(updatedAt({ page_id: pageId }), null);
+  assert.equal(updatedAt(undefined), null);
   assert.equal(
     pageRow({ page_id: pageId, project_id: projectId, home: true }).project.title,
     "Project",
@@ -340,4 +357,85 @@ test("a /projects row carries its description only when there is one", () => {
     projectRow({ project_id: projectId, description: "Where it lives." }).description,
     "Where it lives.",
   );
+});
+
+test("a change to any param supersedes the request in flight; typing keeps the other params", async () => {
+  const { listing, requests, scheduler, ids } = harness();
+  listing.load({ query: "road", access: "owned" });
+  listing.load({ query: "road", access: "shared" });
+  requests[0].resolve({ items: [{ id: "owned" }], cursor: null });
+  requests[1].resolve({ items: [{ id: "shared" }], cursor: null });
+  await settle();
+  assert.deepEqual(ids(), ["shared"], "the superseded tab's rows never show");
+  assert.deepEqual(listing.params(), {
+    query: "road",
+    access: "shared",
+    sort: "activity",
+    projectId: null,
+  });
+  listing.search("plan");
+  scheduler.flush();
+  assert.deepEqual(requests[2].params, { ...listing.params(), query: "plan" });
+  assert.equal(requests[2].params.access, "shared", "a search keeps the tab");
+  listing.load({ query: "plan", access: "owned", projectId, sort: "title" });
+  assert.deepEqual(requests[3].params, {
+    query: "plan",
+    access: "owned",
+    sort: "title",
+    projectId,
+  });
+  // A Project with the shared tab is a request list_pages refuses; the
+  // listing never sends it.
+  listing.load({ access: "shared", projectId });
+  assert.deepEqual(requests[4].params, {
+    query: "",
+    access: "shared",
+    sort: "activity",
+    projectId: null,
+  });
+});
+
+test("an expired cursor restarts with the same params", async () => {
+  const { listing, requests } = harness();
+  const params = { query: "", access: "owned", sort: "title", projectId };
+  listing.load(params);
+  requests[0].resolve({ items: [{ id: "a" }], cursor: "c1" });
+  await settle();
+  listing.more();
+  requests[1].reject(Object.assign(Error("Invalid cursor"), { code: "invalid_cursor" }));
+  await settle();
+  assert.deepEqual(requests[2].params, params);
+  assert.equal(requests[2].cursor, null);
+});
+
+test("drafts on this device show on All and Your items until the server lists them", () => {
+  const local = [
+    { page_id: "draft", title: "Draft", pending: true },
+    { page_id: "synced", title: "Synced", pending: false },
+    { page_id: "copy", title: "Copy", pending: false },
+  ];
+  const items = [{ page_id: "synced" }];
+  const all = { query: "", access: null, projectId: null };
+  const ids = (rows) => rows.map((page) => page.page_id);
+  assert.deepEqual(ids(deviceRows(local, items, all)), ["draft"]);
+  assert.deepEqual(ids(deviceRows(local, items, { ...all, access: "owned" })), ["draft"]);
+  assert.deepEqual(ids(deviceRows(local, [], all, { failed: true })), ["draft", "synced", "copy"]);
+  assert.deepEqual(
+    ids(deviceRows(local, [], { ...all, access: "owned" }, { failed: true })),
+    ["draft"],
+    "offline, Your items shows only drafts: a local copy can be someone else's Page",
+  );
+  for (const view of [
+    { ...all, query: "dr" },
+    { ...all, access: "shared" },
+    { ...all, access: "owned", projectId },
+  ])
+    assert.deepEqual(deviceRows(local, items, view), [], JSON.stringify(view));
+  assert.deepEqual(ids(deviceRows(local, [{ page_id: "draft" }], all)), [], "listed once");
+  assert.deepEqual(deviceRows(undefined, items, all), []);
+  assert.equal(
+    pageRow({ ...local[0], page_id: pageId }, new Map(), { local: true }).local,
+    "pending",
+  );
+  assert.equal(pageRow({ ...local[2], page_id: pageId }, new Map(), { local: true }).local, "copy");
 });

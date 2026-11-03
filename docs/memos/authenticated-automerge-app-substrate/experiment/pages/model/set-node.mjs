@@ -9,26 +9,15 @@ import * as A from "@automerge/automerge/slim";
 import { richDoc, textPath } from "./richtext.mjs";
 import { updateSpansConfig } from "./marks.mjs";
 import { locateRange } from "./replace-match.mjs";
+import { ALIGNMENTS, nodeLabel } from "./node-registry.mjs";
 
 export const NODE_FIELDS = Object.freeze(["checked", "language", "heading_level", "align"]);
-export const ALIGNMENTS = Object.freeze(["left", "center", "right"]);
 const MAX_LANGUAGE = 64;
-
-const NODE_NAMES = {
-  paragraph: "a paragraph",
-  heading: "a heading",
-  "task-list-item": "a task list item",
-  "unordered-list-item": "a bulleted list item",
-  "ordered-list-item": "a numbered list item",
-  "code-block": "a code block",
-  "table-cell": "a table cell",
-  "table-header": "a table header cell",
-  // A container's first paragraph has no marker of its own: the container's
-  // marker governs it, in the span adapter and the editor alike.
-  blockquote: "a quote's first paragraph",
-  aside: "an aside's first paragraph",
-};
-const nodeName = (type) => NODE_NAMES[type] ?? `a ${type} node`;
+// Node labels and the alignment values live in model/node-registry.mjs. A
+// container's first paragraph has no marker of its own, so the container's
+// label says so.
+export { ALIGNMENTS };
+const nodeName = nodeLabel;
 
 /** Validate set_node's one attribute field. Returns `{ field, value }` with
  * the value normalized for storage. */

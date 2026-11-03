@@ -128,7 +128,7 @@ export function MobileBar({
       <select
         className="mobile-bar-style"
         aria-label="Text style"
-        disabled={!editable || format?.table || format?.image}
+        disabled={!editable || format?.table || !!format?.atom}
         value={format?.style ?? "p"}
         onChange={(event) => onStyle(event.target.value)}
       >
@@ -149,7 +149,7 @@ export function MobileBar({
           className={`mobile-bar-button${format?.[name] ? " is-active" : ""}`}
           aria-label={label}
           aria-pressed={!!format?.[name]}
-          disabled={!editable || format?.image}
+          disabled={!editable || !!format?.atom}
           onPointerDown={keep}
           onClick={() => onRun(name)}
         >

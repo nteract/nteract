@@ -276,3 +276,7 @@ export function schemaUnsupported(features) {
     { status: 409, code: "schema_unsupported", details: { features } },
   );
 }
+
+/** Block types whose content is text: a block node can't be placed inside
+ * them. Declared by `kind` in model/node-registry.mjs. */
+export { TEXT_CONTAINERS } from "./node-registry.mjs";

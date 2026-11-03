@@ -18,7 +18,9 @@ import {
   listingRestricted,
   migrateCatalogIndex,
   openCursor,
+  openPosition,
   parseListArguments,
+  positionOf,
   pruneIndexRows,
   queryCatalogIndex,
   reconcileAccountIndex,
@@ -27,6 +29,7 @@ import {
   restrictPageIndex,
   retirePageIndex,
   sealCursor,
+  sealPosition,
   titleKey,
 } from "./catalog-index.mjs";
 
@@ -166,7 +169,7 @@ test("keyset positions are stable across ties and newer inserts", async (t) => {
     seen.push(...rows.map((row) => row.page_id));
     if (request === 0) await page(8, "Newest", at(30));
     if (rows.length < 3) break;
-    after = rows.at(-1);
+    after = positionOf("activity", rows.at(-1));
   }
   assert.deepEqual(seen, all);
 });
@@ -1436,7 +1439,7 @@ test("title order pages by title key and Page ID across ties, empty titles and s
     seen.push(...rows.map((row) => row.page_id));
     if (request === 1) await page(99, "😀😀 last", at(60));
     if (rows.length < 2) break;
-    after = rows.at(-1);
+    after = positionOf("title", rows.at(-1));
   }
   assert.deepEqual(seen, [...expected, id(99)]);
   // Search combines with the title order.
@@ -1446,7 +1449,12 @@ test("title order pages by title key and Page ID across ties, empty titles and s
     searched.map((row) => row.title),
     ["Alpha", "alpha", "ALPHA beta"],
   );
-  const second = await query({ sort: "title", needle, after: searched[0], count: 1 });
+  const second = await query({
+    sort: "title",
+    needle,
+    after: positionOf("title", searched[0]),
+    count: 1,
+  });
   assert.deepEqual(
     second.map((row) => row.title),
     ["alpha"],
@@ -1458,7 +1466,11 @@ test("listing pages seek their index: first pages by principal, later pages by r
   // Row values need SQLite 3.15; D1 and node:sqlite are far newer.
   const [major, minor] = db.rows("SELECT sqlite_version() AS v")[0].v.split(".").map(Number);
   assert.ok(major > 3 || (major === 3 && minor >= 15));
-  const position = { updated_at: at(5), page_id: id(5), title_search: "alpha" };
+  const positions = {
+    title: { title_search: "alpha", page_id: id(5) },
+    activity: { key: at(5), page_id: id(5) },
+    created: { key: at(5), page_id: id(5) },
+  };
   const expected = {
     title: {
       index: "pages_catalog_access_title",
@@ -1479,7 +1491,7 @@ test("listing pages seek their index: first pages by principal, later pages by r
   for (const [sort, { index, first, next }] of Object.entries(expected))
     for (const [after, constraint] of [
       [null, first],
-      [position, next],
+      [positions[sort], next],
     ])
       for (const access of [null, "owned", "shared"]) {
         const { sql, params } = listingQuery({
@@ -2303,4 +2315,287 @@ test("the owner's Catalog takes content times forward without moving updated_at"
   );
   assert.equal(await storage.get(`page/${id(3)}`), undefined);
   assert.equal((await storage.get(`trash/${id(3)}`)).content_updated_at, undefined);
+});
+
+test("positions have one shape per sort, and sources refuse anything else", async () => {
+  const row = {
+    page_id: id(1),
+    title: "Plan",
+    title_search: "plan",
+    created_at: at(1),
+    updated_at: at(2),
+    content_updated_at: at(3),
+    activity_at: at(3),
+    owned: true,
+  };
+  assert.deepEqual(positionOf("activity", row), { key: at(3), page_id: id(1) });
+  assert.deepEqual(positionOf("created", row), { key: at(1), page_id: id(1) });
+  assert.deepEqual(positionOf("title", row), { title_search: "plan", page_id: id(1) });
+  // A Catalog fallback row has no generated column; its key is computed alike.
+  const { activity_at: _, ...fallback } = row;
+  assert.deepEqual(positionOf("activity", fallback), { key: at(3), page_id: id(1) });
+  assert.deepEqual(positionOf("activity", { ...fallback, content_updated_at: null }), {
+    key: at(2),
+    page_id: id(1),
+  });
+  // A child ID row carries no time or title.
+  const child = { page_id: id(2), updated_at: "", title_search: "", owned: false };
+  assert.deepEqual(positionOf("created", child), { key: "", page_id: id(2) });
+  assert.deepEqual(positionOf("title", child), { title_search: "", page_id: id(2) });
+
+  // A raw row, an opened cursor's payload or another sort's position is a bug.
+  const storage = new Storage();
+  await storage.put(`page/${id(1)}`, { ...row });
+  for (const sort of ["activity", "created", "title"]) {
+    const memory = await catalogSource(storage, { inTrash: false, sort });
+    const other = positionOf(sort === "title" ? "activity" : "title", row);
+    for (const after of [row, { updated_at: at(3), page_id: id(1) }, other]) {
+      await assert.rejects(memory.next(after, 1), TypeError, sort);
+      assert.throws(
+        () => listingQuery({ principal: owner, inTrash: false, after, count: 1, sort }),
+        TypeError,
+      );
+    }
+    const [first] = await memory.next(null, 1);
+    assert.equal(first.page_id, id(1));
+    assert.deepEqual(positionOf(sort, first), positionOf(sort, row));
+    assert.deepEqual(await memory.next(positionOf(sort, first), 1), []);
+  }
+});
+
+test("listing positions seal into the payload layout every build opens", async () => {
+  const env = { NOTEBOOK_CLOUD_APP_SESSION_SECRET: "s".repeat(32) };
+  const context = (sort) => ({
+    principal: owner,
+    needle: null,
+    inTrash: false,
+    scope: listScope(parseListArguments({ sort })),
+  });
+  const invalid = { status: 400, code: "invalid_cursor" };
+  for (const sort of ["activity", "created"]) {
+    const position = { key: at(7), page_id: id(7) };
+    const cursor = await sealPosition(env, context(sort), sort, position);
+    // The time slot holds the order's key, as builds since content activity sealed it.
+    assert.deepEqual(await openCursor(env, context(sort), cursor), {
+      updated_at: at(7),
+      page_id: id(7),
+    });
+    assert.deepEqual(await openPosition(env, context(sort), cursor, sort), position);
+    // A created position can be "": a Page whose row has no creation time.
+    const empty = { key: "", page_id: id(8) };
+    assert.deepEqual(
+      await openPosition(
+        env,
+        context(sort),
+        await sealPosition(env, context(sort), sort, empty),
+        sort,
+      ),
+      empty,
+    );
+    // A payload with a title key never opens as a time-keyed position.
+    const titled = await sealCursor(env, context(sort), {
+      updated_at: at(7),
+      page_id: id(7),
+      title_search: "x",
+    });
+    await assert.rejects(openPosition(env, context(sort), titled, sort), invalid);
+  }
+  const position = { title_search: "alpha", page_id: id(1) };
+  const cursor = await sealPosition(env, context("title"), "title", position);
+  assert.deepEqual(await openCursor(env, context("title"), cursor), {
+    updated_at: "",
+    page_id: id(1),
+    title_search: "alpha",
+  });
+  assert.deepEqual(await openPosition(env, context("title"), cursor, "title"), position);
+  // Title cursors from earlier builds held the row's updated_at in the time
+  // slot. They open to the same position.
+  const earlier = await sealCursor(env, context("title"), {
+    updated_at: at(9),
+    page_id: id(1),
+    title_search: "alpha",
+  });
+  assert.deepEqual(await openPosition(env, context("title"), earlier, "title"), position);
+  // A title payload without its key is malformed.
+  const keyless = await sealCursor(env, context("title"), { updated_at: at(9), page_id: id(1) });
+  await assert.rejects(openPosition(env, context("title"), keyless, "title"), invalid);
+  // Sealing a raw row is a bug, not a cursor.
+  await assert.rejects(
+    sealPosition(env, context("activity"), "activity", { updated_at: at(1), page_id: id(1) }),
+    TypeError,
+  );
+});
+
+/**
+ * A member's listing where rejected candidates sit between visible Pages in
+ * every order, and no visible Page's sort key equals its `updated_at`.
+ *
+ * Visible: ten owned Pages and four shared with the member. Rejected: owned
+ * entries that vanish before the check (the D1 row is stale, or the Catalog
+ * entry went away after the fallback read it) and shared Pages whose host
+ * denies the member. Forty of each kind sit together in every order, so a
+ * limit-1 page meets more rejected rows in a row than its scan bound of 18,
+ * stops at the bound and resumes from the last row it rejected. The rest are
+ * scattered.
+ */
+const WALK_OWNED = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
+const WALK_SHARED = [101, 102, 103, 104];
+const WALK_VANISHED = Array.from({ length: 45 }, (_, n) => 201 + n);
+const WALK_REVOKED = Array.from({ length: 45 }, (_, n) => 301 + n);
+/** Two limit-1 bounds and more: a look-ahead can consume up to 17 rows of a
+ * block, and the next page still meets more than 18. */
+const WALK_BLOCK = 40;
+const WALK_SORTS = ["activity", "created", "title"];
+
+/** Each sort's order, top first: the vanished block, eight scattered rows,
+ * the revoked block, then the rest scattered. The shuffle is seeded per sort,
+ * so the three orders differ. */
+function walkOrders() {
+  const scattered = [
+    ...WALK_OWNED,
+    ...WALK_SHARED,
+    ...WALK_VANISHED.slice(WALK_BLOCK),
+    ...WALK_REVOKED.slice(WALK_BLOCK),
+  ];
+  const ranks = {};
+  for (const [index, sort] of WALK_SORTS.entries()) {
+    let seed = 7 + index * 101;
+    const random = () => (seed = (seed * 1103515245 + 12345) % 2147483648) / 2147483648;
+    const shuffled = [...scattered];
+    for (let i = shuffled.length - 1; i > 0; i--) {
+      const j = Math.floor(random() * (i + 1));
+      [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
+    }
+    const order = [
+      ...WALK_VANISHED.slice(0, WALK_BLOCK),
+      ...shuffled.slice(0, 8),
+      ...WALK_REVOKED.slice(0, WALK_BLOCK),
+      ...shuffled.slice(8),
+    ];
+    ranks[sort] = new Map(order.map((n, rank) => [n, rank]));
+  }
+  // Every ninth rank shares the previous one's key, so ties break by Page ID.
+  const tied = (rank) => (rank % 9 === 4 ? rank - 1 : rank);
+  return (n) => {
+    const activity = ranks.activity.get(n);
+    return {
+      content_updated_at: at(900 - tied(activity)),
+      created_at: at(600 - tied(ranks.created.get(n))),
+      // Runs opposite to activity, so a raw row's updated_at never stands in.
+      updated_at: at(100 + activity),
+      title: `${n % 2 ? "Title" : "TITLE"} ${String(tied(ranks.title.get(n))).padStart(3, "0")}`,
+    };
+  };
+}
+
+test("listings past rejected candidates show every visible Page once, in order, for every sort, source, access and limit", async (t) => {
+  const keys = walkOrders();
+  const viewer = { revision: 1, members: { [member]: { role: "viewer", generation: 1 } } };
+  const expected = (sort, access) => {
+    const ids = [
+      ...(access === "shared" ? [] : WALK_OWNED),
+      ...(access === "owned" ? [] : WALK_SHARED),
+    ];
+    const rows = ids.map((n) => ({
+      ...keys(n),
+      page_id: id(n),
+      title_search: titleKey(keys(n).title),
+    }));
+    const byPageId = (a, b) => (a.page_id < b.page_id ? -1 : 1);
+    rows.sort((a, b) => {
+      if (sort === "title") return compareText(a.title_search, b.title_search) || byPageId(a, b);
+      const key = sort === "created" ? "created_at" : "content_updated_at";
+      return a[key] === b[key] ? byPageId(b, a) : a[key] < b[key] ? 1 : -1;
+    });
+    return rows.map((row) => row.page_id);
+  };
+  for (const index of ["1", null]) {
+    await t.test(index ? "index" : "catalog", async (t) => {
+      const mode = index ? "index" : "catalog";
+      const f = await catalogFixture(t, { index });
+      const storage = f.catalog(member).ctx.storage;
+      for (const n of [...WALK_OWNED, ...WALK_VANISHED])
+        await storage.put(`page/${id(n)}`, { page_id: id(n), ...keys(n) });
+      for (const n of WALK_SHARED) {
+        const { title, content_updated_at } = keys(n);
+        f.addPage(id(n), title, viewer).contentActivity = { value: content_updated_at, pump() {} };
+        await storage.put(`shared/${id(n)}`, { page_id: id(n), ...keys(n), shared: true });
+      }
+      for (let request = 0; request < 8; request++)
+        if ((await f.list(member)).source === mode) break;
+      await f.settle();
+      // Vanished entries stay listed, so every reconcile keeps their D1 rows
+      // and the fallback reads them, but the check finds nothing.
+      const vanished = new Set(WALK_VANISHED.map((n) => `page/${id(n)}`));
+      const get = storage.get.bind(storage);
+      storage.get = async (key) => (vanished.has(key) ? undefined : get(key));
+      // Revoked Pages have no host, so each check is denied. A rejection
+      // prunes its D1 row and a denial deletes the entry, so every walk seeds
+      // both kinds again.
+      const reject = async () => {
+        if (index)
+          for (const n of WALK_VANISHED) {
+            const time = keys(n);
+            await reportPageIndex(f.env, testCtx, {
+              metadata: {
+                pageId: id(n),
+                owner: member,
+                deleted: false,
+                acl: { revision: 0, members: {} },
+              },
+              title: time.title,
+              observedAt: time.created_at,
+              contentUpdatedAt: time.content_updated_at,
+            });
+          }
+        // A stale owner row marks the index dirty, and the reconcile that
+        // follows re-verifies every shared row, dropping the revoked ones.
+        // Start each walk clean so its first page still meets them.
+        await storage.delete("host/index/dirty");
+        for (const n of WALK_REVOKED) {
+          const time = keys(n);
+          await storage.put(`shared/${id(n)}`, { page_id: id(n), ...time, shared: true });
+          if (index) {
+            // Its row's created_at and updated_at are both the report time.
+            await reportPageIndex(f.env, testCtx, {
+              metadata: { pageId: id(n), owner, deleted: false, acl: viewer },
+              title: time.title,
+              observedAt: time.created_at,
+              contentUpdatedAt: time.content_updated_at,
+            });
+          }
+        }
+      };
+      for (const sort of WALK_SORTS)
+        for (const access of [null, "owned", "shared"])
+          for (const limit of [1, 2, 3]) {
+            const label = `${mode} ${sort} ${access ?? "all"} limit ${limit}`;
+            await reject();
+            const seen = [];
+            let empty = 0;
+            let cursor;
+            for (let request = 0; request < 80; request++) {
+              const result = await f.list(member, {
+                sort,
+                limit,
+                ...(access && { access }),
+                ...(cursor && { cursor }),
+              });
+              assert.equal(result.status, 200, `${label}: ${JSON.stringify(result.body)}`);
+              assert.equal(result.source, mode, label);
+              assert.ok(result.body.pages.length <= limit, label);
+              seen.push(...result.body.pages.map((page) => page.page_id));
+              cursor = result.body.next_cursor;
+              if (!result.body.pages.length && cursor) empty++;
+              if (!cursor) break;
+            }
+            await f.settle();
+            assert.equal(cursor, null, `${label}: the walk ended`);
+            assert.deepEqual(seen, expected(sort, access), label);
+            // A limit-1 page meets a block of rejected rows past its bound of
+            // 18 and returns an empty page with a cursor.
+            if (limit === 1) assert.ok(empty > 0, `${label}: the scan stopped at its bound`);
+          }
+    });
+  }
 });

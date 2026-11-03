@@ -1,6 +1,8 @@
 // Projects through MCP and the browser on one local OIDC deployment: create a
 // Project and nested Pages over MCP, list them, open them in the browser, follow
-// breadcrumbs, browse /pages and /projects on a phone-sized screen, add Pages
+// breadcrumbs, browse /pages as a list and a grid at desktop width, browse
+// /pages and /projects on a phone-sized screen, filter, sort and group the
+// Pages library as an account with its own and shared Pages, add Pages
 // from a Project's home Page at the 640px breakpoint and from the picker,
 // check a shared editor gets no create affordances, and trash
 // and restore Pages one at a time.
@@ -239,7 +241,7 @@ try {
   const switcher = owner.getByRole("dialog", { name: "Pages" });
   await expect(switcher.getByRole("navigation", { name: "Projects" })).toContainText(title);
   const browse = switcher.getByRole("navigation", { name: "Browse" });
-  await expect(browse.getByRole("link", { name: "All Pages" })).toHaveAttribute("href", "/pages");
+  await expect(browse.getByRole("link", { name: "All Pages" })).toHaveAttribute("href", "/");
   await expect(browse.getByRole("link", { name: "All Projects" })).toHaveAttribute(
     "href",
     "/projects",
@@ -319,6 +321,66 @@ try {
     "The picker's New Page offers the Project and Your items; In <Project> lands at its top level",
   );
 
+  // /pages at 1280px: Name, Source and Updated columns, and a grid of cards
+  // that this browser remembers. Grid cards are behind a flag until they
+  // show previews (viewer/feature-flags.mjs).
+  await owner.evaluate(() => localStorage.setItem("pages.grid", "1"));
+  await owner.goto(`${origin}/pages`);
+  await expect(owner.getByRole("heading", { name: "Pages", exact: true })).toBeVisible({
+    timeout: 60000,
+  });
+  const desktopPages = owner.getByRole("list", { name: "Pages", exact: true });
+  const desktopRow = (name) =>
+    desktopPages
+      .getByRole("listitem")
+      .filter({ has: owner.getByRole("link", { name, exact: true }) });
+  for (const name of ["Roadmap", "Q4 plan", "Architecture", title])
+    await expect(desktopRow(name).getByRole("link", { name: `Project ${title}` })).toBeVisible();
+  const updated = desktopRow("Q4 plan").locator("time");
+  await expect(updated.locator("[aria-hidden=true]")).toHaveText(/^(now|\d+m)$/);
+  await expect(updated.locator(".sr-only")).toHaveText(/^Updated .+, .+/);
+  assert.ok(Date.parse(await updated.getAttribute("datetime")), "the Updated cell names its time");
+  // The whole row is one target: a mouse click on the time opens the Page.
+  const timeBox = await updated.boundingBox();
+  await owner.mouse.click(timeBox.x + timeBox.width / 2, timeBox.y + timeBox.height / 2);
+  await expect(owner).toHaveURL(`${origin}/p/${plan.page_id}`);
+  await owner.goBack();
+  await expect(owner).toHaveURL(`${origin}/pages`);
+  await owner.screenshot({ path: `${output}/pages-list-desktop.png` });
+  const display = owner.getByRole("group", { name: "Display" });
+  await display.getByRole("button", { name: "Grid view" }).click();
+  await expect(display.getByRole("button", { name: "Grid view" })).toHaveAttribute(
+    "aria-pressed",
+    "true",
+  );
+  const card = desktopPages.getByRole("link", { name: "Q4 plan", exact: true });
+  await expect(card).toHaveAttribute("href", `/p/${plan.page_id}`);
+  await expect(desktopPages.locator("a a")).toHaveCount(0);
+  await owner.screenshot({ path: `${output}/pages-grid-desktop.png` });
+  await owner.reload();
+  await expect(display.getByRole("button", { name: "Grid view" })).toHaveAttribute(
+    "aria-pressed",
+    "true",
+    { timeout: 60000 },
+  );
+  await card.click();
+  await expect(owner).toHaveURL(`${origin}/p/${plan.page_id}`);
+  await owner.goBack();
+  await expect(owner).toHaveURL(`${origin}/pages`);
+  await display.getByRole("button", { name: "List view" }).click();
+  await desktopRow("Q4 plan")
+    .getByRole("link", { name: `Project ${title}` })
+    .click();
+  await expect(owner).toHaveURL(`${origin}/project/${project.project_id}`);
+  await expect(owner.getByRole("heading", { name: title })).toBeVisible();
+  await owner.goBack();
+  await expect(owner).toHaveURL(`${origin}/pages`);
+  await expect(desktopRow("Q4 plan")).toBeVisible();
+  await owner.evaluate(() => localStorage.removeItem("pages.grid"));
+  complete(
+    "/pages at 1280px shows Source and Updated columns, a remembered grid of card links, and Project labels that open their Project",
+  );
+
   // /pages and /projects on a phone. They list from the shell: the only
   // chunks a fresh load fetches are the ones index.html preloads for app.js,
   // never the editor chunk, which waits until a Page opens.
@@ -378,22 +440,24 @@ try {
   };
 
   await phone.goto(`${origin}/pages`);
-  const allPages = phone.getByRole("list", { name: "All Pages" });
-  await expect(phone.getByRole("heading", { name: "All Pages" })).toBeVisible({ timeout: 60000 });
+  const allPages = phone.getByRole("list", { name: "Pages", exact: true });
+  await expect(phone.getByRole("heading", { name: "Pages", exact: true })).toBeVisible({
+    timeout: 60000,
+  });
   const pageRow = (name) =>
     allPages.getByRole("listitem").filter({ has: phone.getByRole("link", { name, exact: true }) });
-  for (const name of ["Roadmap", "Q4 plan", "Architecture", title])
-    await expect(pageRow(name).getByRole("link", { name: `Project ${title}` })).toHaveAttribute(
-      "href",
-      `/project/${project.project_id}`,
-    );
+  // A phone keeps Name and Updated; the Source column is desktop-only.
+  for (const name of ["Roadmap", "Q4 plan", "Architecture", title]) {
+    await expect(pageRow(name).locator("time")).toBeVisible();
+    await expect(pageRow(name).locator(".index-cell-source")).toBeHidden();
+  }
   await fitsScreen("/pages");
   await minimumRowHeight(allPages);
   assert.deepEqual(editorChunks(), [], "loading /pages fetched the editor chunk");
   await phone.screenshot({ path: `${output}/pages-mobile.png` });
-  complete("/pages on a phone lists Pages with Project labels, without the editor chunk");
+  complete("/pages on a phone lists Pages by Name and Updated, without the editor chunk");
 
-  await phone.getByRole("searchbox", { name: "Search all Pages" }).fill("Q4");
+  await phone.getByRole("searchbox", { name: "Search Pages" }).fill("Q4");
   await expect(phone).toHaveURL(`${origin}/pages?q=Q4`);
   await expect(allPages.getByRole("listitem")).toHaveCount(1);
   await expect(pageRow("Q4 plan")).toBeVisible();
@@ -411,21 +475,11 @@ try {
   await phone.screenshot({ path: `${output}/agent-caret-from-pages-mobile.png` });
   await phone.goBack();
   await expect(phone).toHaveURL(`${origin}/pages?q=Q4`);
-  await expect(phone.getByRole("searchbox", { name: "Search all Pages" })).toHaveValue("Q4");
+  await expect(phone.getByRole("searchbox", { name: "Search Pages" })).toHaveValue("Q4");
   await expect(pageRow("Q4 plan")).toBeVisible();
   complete(
     "Search narrowed /pages, a row opened its Page with an agent's caret, and Back returned to the search",
   );
-
-  await pageRow("Q4 plan")
-    .getByRole("link", { name: `Project ${title}` })
-    .tap();
-  await expect(phone).toHaveURL(`${origin}/project/${project.project_id}`);
-  await expect(phone.getByRole("heading", { name: title })).toBeVisible();
-  await phone.goBack();
-  await expect(phone).toHaveURL(`${origin}/pages?q=Q4`);
-  await expect(pageRow("Q4 plan")).toBeVisible();
-  complete("A Project label opened its Project, and Back returned to /pages");
 
   await phone
     .getByRole("navigation", { name: "Browse" })
@@ -584,6 +638,208 @@ try {
   await expect(alicePicker.getByRole("button", { name: "New Page", exact: true })).toBeVisible();
   await expect(alicePicker.getByRole("group", { name: "New Page" })).toHaveCount(0);
   await alice.screenshot({ path: `${output}/shared-editor-no-create.png` });
+  await alicePicker.getByRole("button", { name: "Close Pages" }).click();
+  // The Pages library as alice, who owns Pages in and out of a Project and has
+  // two of the owner's Pages shared with her: tabs, the Project filter, sort,
+  // groups, the address through reload and Back, and the list on a phone.
+  const aliceProject = await ok("editor", "create_project", {
+    title: "Field notes " + Date.now(),
+    idempotency_key: crypto.randomUUID(),
+  });
+  const alpha = await ok("editor", "create_page", {
+    title: "Alpha survey",
+    markdown: "Sites to visit.",
+    project_id: aliceProject.project_id,
+    idempotency_key: crypto.randomUUID(),
+  });
+  assert.equal(alpha.project_id, aliceProject.project_id);
+  const zeta = await ok("editor", "create_page", {
+    title: "Zeta loose note",
+    markdown: "Outside any Project.",
+    idempotency_key: crypto.randomUUID(),
+  });
+  const shots = output;
+  const library = alice.locator(".library-results");
+  const rowLink = (name) => library.getByRole("link", { name, exact: true });
+  const tabButton = (name) =>
+    alice.getByRole("group", { name: "Show" }).getByRole("button", { name, exact: true });
+  const menu = (name) => alice.getByRole("button", { name: new RegExp(`^${name}: `) });
+  const choose = async (name, choice) => {
+    await menu(name).click();
+    await alice.getByRole("menuitemradio", { name: choice, exact: true }).click();
+  };
+  const at = (search) => `${origin}/${search}`;
+  await alice.goto(`${origin}/`);
+  await expect(alice.getByRole("heading", { name: "Pages", exact: true })).toBeVisible({
+    timeout: 60000,
+  });
+  for (const name of ["Alpha survey", "Zeta loose note", "Roadmap", title])
+    await expect(rowLink(name)).toBeVisible({ timeout: 30000 });
+  await expect(tabButton("All")).toHaveAttribute("aria-pressed", "true");
+
+  await tabButton("Shared with you").click();
+  await expect(alice).toHaveURL(at("?show=shared"));
+  await expect(rowLink("Roadmap")).toBeVisible();
+  await expect(rowLink("Zeta loose note")).toHaveCount(0);
+  await expect(
+    library
+      .getByRole("listitem")
+      .filter({ has: alice.getByRole("link", { name: "Roadmap", exact: true }) })
+      .locator(".index-row-shared"),
+  ).toHaveText("Shared");
+  await expect(menu("Project")).toHaveAttribute("aria-disabled", "true");
+  await tabButton("Your items").click();
+  await expect(alice).toHaveURL(at("?show=owned"));
+  await expect(rowLink("Zeta loose note")).toBeVisible();
+  await expect(rowLink("Roadmap")).toHaveCount(0);
+  complete("The library's tabs list everything, Your items and Pages shared with you");
+
+  await choose("Project", aliceProject.title);
+  await expect(alice).toHaveURL(at(`?show=owned&project=${aliceProject.project_id}`));
+  await expect(rowLink("Alpha survey")).toBeVisible();
+  await expect(rowLink("Zeta loose note")).toHaveCount(0);
+  await tabButton("All").click();
+  await expect(alice).toHaveURL(at(""));
+  await expect(rowLink("Roadmap")).toBeVisible();
+  await alice.goBack();
+  await expect(alice).toHaveURL(at(`?show=owned&project=${aliceProject.project_id}`));
+  await expect(tabButton("Your items")).toHaveAttribute("aria-pressed", "true");
+  await expect(rowLink("Zeta loose note")).toHaveCount(0);
+  await expect(menu("Project")).toHaveAttribute("aria-label", `Project: ${aliceProject.title}`);
+  await choose("Project", "Any project");
+  await tabButton("All").click();
+  await expect(alice).toHaveURL(at(""));
+  complete("A Project filter lists Your items in it, and Back restores it");
+
+  await choose("Sort", "Title");
+  await expect(alice).toHaveURL(at("?sort=title"));
+  await expect(rowLink("Zeta loose note")).toBeVisible();
+  const titles = await library.locator(".index-row-link").allTextContents();
+  assert.ok(
+    titles.indexOf("Alpha survey") < titles.indexOf("Zeta loose note"),
+    `title order: ${titles}`,
+  );
+  await menu("Group").click();
+  await expect(alice.getByRole("menuitemradio", { name: /^Date/ })).toHaveAttribute(
+    "aria-disabled",
+    "true",
+  );
+  await alice.keyboard.press("Escape");
+  await expect(menu("Group")).toBeFocused();
+  await choose("Sort", "Last activity");
+  await choose("Group", "Project");
+  await expect(alice).toHaveURL(at("?group=project"));
+  const heading = (name) => alice.getByRole("heading", { level: 2, name: new RegExp(`^${name}`) });
+  await expect(heading(aliceProject.title).getByRole("link")).toHaveAttribute(
+    "href",
+    `/project/${aliceProject.project_id}`,
+  );
+  await expect(heading("Shared with you")).toBeVisible();
+  await expect(heading("Your items")).toBeVisible();
+  await expect(
+    alice.getByRole("list", { name: aliceProject.title, exact: true }).getByRole("link", {
+      name: "Alpha survey",
+      exact: true,
+    }),
+  ).toBeVisible();
+  await expect(
+    alice
+      .getByRole("list", { name: "Shared with you", exact: true })
+      .getByRole("link", { name: "Roadmap", exact: true }),
+  ).toBeVisible();
+  await alice.screenshot({ path: `${shots}/library-desktop-grouped-project.png` });
+  await alice.reload();
+  await expect(heading("Shared with you")).toBeVisible({ timeout: 60000 });
+  await expect(menu("Group")).toHaveAttribute("aria-label", "Group: Project");
+  await alice.goBack();
+  await expect(alice).toHaveURL(at(""));
+  await expect(alice.locator(".library-group")).toHaveCount(0);
+  await alice.goForward();
+  await expect(alice).toHaveURL(at("?group=project"));
+  await expect(heading("Shared with you")).toBeVisible({ timeout: 60000 });
+  complete("Sort by title, then group by Project; the address survives reload, Back and Forward");
+
+  await choose("Group", "Date");
+  await expect(alice).toHaveURL(at("?group=date"));
+  await expect(heading("Today")).toBeVisible();
+  await rowLink("Zeta loose note").click();
+  await expect(alice).toHaveURL(`${origin}/p/${zeta.page_id}`);
+  await expect(alice.locator("wg-content").first()).toContainText("Outside any Project.", {
+    timeout: 30000,
+  });
+  await alice.goBack();
+  await expect(alice).toHaveURL(at("?group=date"));
+  await expect(heading("Today")).toBeVisible({ timeout: 30000 });
+  await alice.screenshot({ path: `${shots}/library-desktop-grouped-date.png` });
+  // The head script picks the theme on load, so reload under a dark system.
+  await alice.emulateMedia({ colorScheme: "dark" });
+  await alice.reload();
+  await expect(alice.locator("html")).toHaveClass(/dark/);
+  await expect(heading("Today")).toBeVisible({ timeout: 60000 });
+  await choose("Group", "Project");
+  await expect(heading("Shared with you")).toBeVisible();
+  await alice.screenshot({ path: `${shots}/library-desktop-dark.png` });
+  await alice.emulateMedia({ colorScheme: "light" });
+  await alice.evaluate(() => localStorage.setItem("pages.grid", "1"));
+  await alice.reload();
+  await expect(heading("Shared with you")).toBeVisible({ timeout: 60000 });
+  await alice
+    .getByRole("group", { name: "Display" })
+    .getByRole("button", { name: "Grid view" })
+    .click();
+  await expect(
+    alice.getByRole("list", { name: aliceProject.title, exact: true }).getByRole("link", {
+      name: "Alpha survey",
+      exact: true,
+    }),
+  ).toBeVisible();
+  await alice.screenshot({ path: `${shots}/library-desktop-grid.png` });
+  await alice
+    .getByRole("group", { name: "Display" })
+    .getByRole("button", { name: "List view" })
+    .click();
+  await alice.evaluate(() => localStorage.removeItem("pages.grid"));
+  complete("Date groups, a Page opened from them and Back, dark theme, and the flagged grid");
+
+  const alicePhone = await browser.newContext({
+    viewport: { width: 390, height: 844 },
+    deviceScaleFactor: 3,
+    isMobile: true,
+    hasTouch: true,
+    storageState: await aliceContext.storageState(),
+  });
+  const narrow = await alicePhone.newPage();
+  phones.set("alice-phone", narrow);
+  narrow.on("pageerror", (error) => report.errors.push(error.message));
+  await narrow.goto(`${origin}/?group=project`);
+  await expect(narrow.getByRole("heading", { name: "Pages", exact: true })).toBeVisible({
+    timeout: 60000,
+  });
+  await expect(narrow.getByRole("heading", { level: 2, name: /^Shared with you/ })).toBeVisible({
+    timeout: 30000,
+  });
+  const width = await narrow.evaluate(() => [
+    document.documentElement.scrollWidth,
+    window.innerWidth,
+  ]);
+  assert.ok(width[0] <= width[1], `the library scrolls sideways on a phone: ${width}`);
+  for (const control of [
+    narrow.getByRole("group", { name: "Show" }).getByRole("button", { name: "All", exact: true }),
+    narrow.getByRole("button", { name: /^Sort: / }),
+    narrow.getByRole("button", { name: "New Page", exact: true }),
+  ]) {
+    const box = await control.boundingBox();
+    assert.ok(box.height >= 44, `a phone control is ${box.height}px tall`);
+  }
+  await narrow.screenshot({ path: `${shots}/library-phone.png` });
+  await narrow.getByRole("button", { name: /^Sort: / }).tap();
+  await expect(narrow.getByRole("menu", { name: "Sort" })).toBeVisible();
+  await narrow.screenshot({ path: `${shots}/library-phone-sort-menu.png` });
+  await narrow.getByRole("menuitemradio", { name: "Title", exact: true }).tap();
+  await expect(narrow).toHaveURL(`${origin}/?sort=title&group=project`);
+  await alicePhone.close();
+  phones.delete("alice-phone");
+  complete("The library on a phone: no sideways scroll, 44px controls, and a menu sheet");
   await aliceContext.close();
   phones.delete("alice");
   const intoProject = await mcp("editor", "create_page", {
@@ -640,7 +896,14 @@ try {
   await expect(fresh).toHaveURL(`${origin}/projects`);
   await fresh.goto(`${origin}/`);
   const homeNav = fresh.getByRole("navigation", { name: "Browse" });
-  await expect(homeNav.getByRole("link", { name: "All Pages" })).toHaveAttribute("href", "/pages");
+  await expect(homeNav.getByRole("link", { name: "Pages", exact: true })).toHaveAttribute(
+    "href",
+    "/",
+  );
+  await expect(homeNav.getByRole("link", { name: "Pages", exact: true })).toHaveAttribute(
+    "aria-current",
+    "page",
+  );
   await expect(homeNav.getByRole("link", { name: "Projects" })).toHaveAttribute(
     "href",
     "/projects",
@@ -650,7 +913,7 @@ try {
   await fresh.screenshot({ path: `${output}/home-mobile.png` });
   await phoneContext.close();
   complete(
-    "A fresh /projects load lists without the editor, a Page in its Project shows an agent's caret, and Home links both index routes",
+    "A fresh /projects load lists without the editor, a Page in its Project shows an agent's caret, and Home is the Pages library",
   );
 
   // Agent caret glide (viewer/caret-glide.mjs), an experiment behind ?glide=1.

@@ -31,12 +31,16 @@ for (const name of [
 const empty = () => ({ top: 0, bottom: 0, left: 0, right: 0, width: 0, height: 0, x: 0, y: 0 });
 dom.window.Range.prototype.getClientRects = () => [];
 dom.window.Range.prototype.getBoundingClientRect = empty;
+// Wordgard hit-tests clicks; jsdom has no layout.
+dom.window.document.elementFromPoint = () => null;
 
 const { Wordgard } = await import("wordgard/editor");
 const { GardState, GardSelection } = await import("wordgard/state");
 const { Leaf } = await import("wordgard/doc");
 const { schema, Paragraph, PagesDataframe } = await import("./wordgard-model.mjs");
-const { wordgardDataframes } = await import("./wordgard-dataframes.mjs");
+const { wordgardDataframes, dataframeEventReachesEditor, enterDataframeGrid } =
+  await import("./wordgard-dataframes.mjs");
+const { collapseAtomOnLeave } = await import("./image-selection.mjs");
 const { PARQUET_MEDIA_TYPE } = await import("../shared/dataset-assets.mjs");
 
 const pageId = "33333333-3333-4333-8333-333333333333";
@@ -81,9 +85,47 @@ for (const [where, at] of [
 
 // A press on the frame (the header or the select handle) selects the table as
 // one node, so cut and paste act on it. A press inside Sift's canvas doesn't.
-test("pressing the frame selects the dataframe as a node; the canvas doesn't", () => {
+
+test("wordgardDataframes refuses to run without the Page it shows", () => {
+  for (const options of [undefined, {}, { pageId: "" }, { pageId: 42 }])
+    assert.throws(() => wordgardDataframes(options), /needs the Page id/);
+});
+
+test("Escape on a selected dataframe moves the caret off it; elsewhere it passes through", async () => {
+  const { deselectDataframe } = await import("./wordgard-dataframes.mjs");
+  for (const doc of [
+    schema.doc([Paragraph.create([Leaf.text("hello")]), PagesDataframe.of(attrs)]),
+    schema.doc([
+      Paragraph.create([Leaf.text("hello")]),
+      PagesDataframe.of(attrs),
+      Paragraph.create([Leaf.text("after")]),
+    ]),
+  ]) {
+    const state = GardState.create({
+      doc,
+      config: [
+        ...schema.elements.map((e) => GardState.schemaElement.of(e)),
+        wordgardDataframes({ pageId }),
+      ],
+    });
+    const editor = new Wordgard({ state, parent: document.body });
+    try {
+      editor.dispatch({ selection: GardSelection.cursor(1) });
+      assert.equal(deselectDataframe(editor), false);
+      const block = editor.nodeFromDOM(document.querySelector("section.wordgard-dataframe-table"));
+      editor.dispatch({ selection: GardSelection.node(block.pos, block.node) });
+      assert.equal(deselectDataframe(editor), true);
+      assert.equal(editor.state.selection instanceof GardSelection.Node, false);
+      assert.ok(editor.state.doc.eq(doc));
+    } finally {
+      editor.dom.remove();
+    }
+  }
+});
+
+function editorWith(doc) {
   const state = GardState.create({
-    doc: schema.doc([Paragraph.create([Leaf.text("hello")]), PagesDataframe.of(attrs)]),
+    doc,
     config: [
       ...schema.elements.map((e) => GardState.schemaElement.of(e)),
       wordgardDataframes({ pageId }),
@@ -91,25 +133,87 @@ test("pressing the frame selects the dataframe as a node; the canvas doesn't", (
     ],
   });
   const editor = new Wordgard({ state, parent: document.body });
+  editor.flush();
+  const frame = () => document.querySelector("section.wordgard-dataframe-table");
+  const select = () => {
+    const block = editor.nodeFromDOM(frame());
+    editor.dispatch({ selection: GardSelection.node(block.pos, block.node) });
+  };
+  return { editor, frame, select };
+}
+const withTable = () =>
+  editorWith(schema.doc([Paragraph.create([Leaf.text("hello")]), PagesDataframe.of(attrs)]));
+
+test("events inside the canvas stay with Sift; frame events reach Wordgard", () => {
+  const frame = document.createElement("section");
+  frame.innerHTML =
+    '<div class="wordgard-dataframe-header"><div class="wordgard-dataframe-title"></div></div><div class="wordgard-dataframe-canvas"><span></span></div>';
+  const at = (selector, type) => ({ type, target: frame.querySelector(selector) });
+  for (const type of ["mousedown", "keydown", "copy"]) {
+    assert.equal(dataframeEventReachesEditor(at(".wordgard-dataframe-canvas span", type)), false);
+    assert.equal(dataframeEventReachesEditor(at(".wordgard-dataframe-title", type)), true);
+  }
+});
+
+test("Enter on a selected table focuses Sift's grid; Escape there returns to the table", () => {
+  const { editor, frame, select } = withTable();
   try {
-    editor.flush();
-    const frame = document.querySelector("section.wordgard-dataframe-table");
-    const press = (target) =>
-      target.dispatchEvent(new window.MouseEvent("mousedown", { bubbles: true, button: 0 }));
-    press(frame.querySelector(".wordgard-dataframe-canvas"));
+    // Stand in for Sift's focusable grid container.
+    const grid = document.createElement("div");
+    grid.tabIndex = 0;
+    frame().querySelector(".wordgard-dataframe-canvas").append(grid);
+    editor.dispatch({ selection: GardSelection.cursor(1) });
+    assert.equal(enterDataframeGrid(editor), false, "Enter passes through with no table selected");
+    select();
+    assert.equal(enterDataframeGrid(editor), true);
+    assert.equal(document.activeElement, grid);
+    editor.dispatch({ selection: GardSelection.cursor(1) });
+    // Sift clears filters on its first Escape and prevents the default.
+    const taken = new window.KeyboardEvent("keydown", {
+      key: "Escape",
+      bubbles: true,
+      cancelable: true,
+    });
+    grid.addEventListener("keydown", (event) => event.preventDefault(), { once: true });
+    grid.dispatchEvent(taken);
     assert.equal(editor.state.selection instanceof GardSelection.Node, false);
-    for (const target of [
-      frame.querySelector(".wordgard-dataframe-select"),
-      frame.querySelector(".wordgard-dataframe-header"),
-    ]) {
-      editor.dispatch({ selection: GardSelection.cursor(1) });
-      press(target);
-      assert.ok(editor.state.selection instanceof GardSelection.Node);
-      assert.equal(editor.state.selection.node.type, PagesDataframe);
-      editor.flush();
-      assert.ok(document.querySelector(".wg-selected-node section.wordgard-dataframe-table"));
-    }
+    grid.dispatchEvent(
+      new window.KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }),
+    );
+    assert.ok(editor.state.selection instanceof GardSelection.Node);
+    assert.equal(editor.state.selection.node.type, PagesDataframe);
   } finally {
     editor.dom.remove();
+  }
+});
+
+test("Enter passes through before the grid has loaded", () => {
+  const { editor, select } = withTable();
+  try {
+    select();
+    assert.equal(enterDataframeGrid(editor), false);
+  } finally {
+    editor.dom.remove();
+  }
+});
+
+test("focus moving to another block deselects the table; into its grid or a toolbar doesn't", () => {
+  const { editor, frame, select } = withTable();
+  const otherBlock = document.body.appendChild(document.createElement("wg-content"));
+  const toolbar = document.body.appendChild(document.createElement("div"));
+  try {
+    const grid = frame().querySelector(".wordgard-dataframe-canvas");
+    for (const relatedTarget of [grid, toolbar, null]) {
+      select();
+      assert.equal(collapseAtomOnLeave(editor, { relatedTarget }), false);
+      assert.ok(editor.state.selection instanceof GardSelection.Node);
+    }
+    select();
+    assert.equal(collapseAtomOnLeave(editor, { relatedTarget: otherBlock }), true);
+    assert.equal(editor.state.selection instanceof GardSelection.Node, false);
+  } finally {
+    editor.dom.remove();
+    otherBlock.remove();
+    toolbar.remove();
   }
 });
