@@ -6,7 +6,8 @@ import { Boxes, Check, FileText, Files, Plus, Search, Trash2, X } from "lucide-r
 /** `createProject` (`{ project_id, title }`), when the current Page is in a
  * Project this account owns, splits New Page into "In <Project>", which
  * calls `onCreateInProject(project_id)`, and "In Your items" (`onCreate`).
- * `loading` says the Pages are still on their way, rather than none. */
+ * `loading` says the Pages are still on their way: rather than none, or,
+ * while rows this tab remembered show, rather than all of them. */
 export function PagePicker({
   open,
   pages,
@@ -118,7 +119,7 @@ export function PagePicker({
             {error}
           </p>
         )}
-        <nav className="picker-list" aria-label="Pages">
+        <nav className="picker-list" aria-label="Pages" aria-busy={loading}>
           {matches.map((page) => (
             <a
               className="picker-page"
@@ -137,10 +138,16 @@ export function PagePicker({
               {page.page_id === currentId && <Check size={16} aria-hidden="true" />}
             </a>
           ))}
-          {!matches.length && (
+          {!matches.length ? (
             <p className="muted" role={loading ? "status" : undefined}>
               {loading ? "Loading…" : query ? "No matching pages." : "No pages yet."}
             </p>
+          ) : (
+            loading && (
+              <p className="muted picker-loading" role="status">
+                Loading every Page…
+              </p>
+            )
           )}
         </nav>
         {onOpenProject && (projects.length > 0 || onCreateProject) && (

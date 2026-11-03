@@ -9,7 +9,9 @@
 // A listing does nothing while disconnected: React connects it on mount and
 // disconnects it on unmount. Disconnecting abandons every request in flight,
 // so a reply that lands after the screen is gone, or after the account
-// changed, never reaches the store or the banner.
+// changed, never reaches the store, the banner or `onShown`. Whatever a reply
+// says besides its rows (list_pages' `quota` and `principal`) is handed on
+// from the same `show` effect, so it follows the same rule.
 import { Subject, asyncScheduler, debounceTime } from "rxjs";
 import { failureMessage } from "./alerts.mjs";
 import { listingMachine } from "./listing-machine.mjs";
@@ -52,6 +54,7 @@ export class Listing {
   #report;
   #idOf;
   #cache;
+  #onShown;
   #newKey;
   #results = new Map();
   #searches = new Subject();
@@ -67,13 +70,18 @@ export class Listing {
    *   (libraryRequest), so equal params mean the same rows.
    * - report(message): show a failure in the screen's banner.
    * - idOf(item): a row's stable id.
-   * - cache: `{ read(params), write(params, items) }` (listing-cache.mjs
-   *   scope), or null. A load whose params it holds rows for paints them
-   *   while the first page is fetched again; each first page shown is
-   *   written back.
+   *   A page may also name the `principal` that answered it and carry the
+   *   account's `quota`.
+   * - cache: `{ read(params), write(params, items, principal) }`
+   *   (listing-cache.mjs scope), or null. A load whose params it holds rows
+   *   for paints them while the first page is fetched again; each first page
+   *   shown is written back with the principal that answered it.
+   * - onShown({ items, principal, quota, append }): a page the machine
+   *   accepted, as it reaches the screen. A superseded or abandoned reply
+   *   never gets here.
    */
   constructor(
-    { fetch, report = () => {}, idOf, cache = null },
+    { fetch, report = () => {}, idOf, cache = null, onShown = () => {} },
     {
       newKey = () => crypto.randomUUID(),
       debounce = SEARCH_DEBOUNCE_MS,
@@ -84,6 +92,7 @@ export class Listing {
     this.#report = report;
     this.#idOf = idOf;
     this.#cache = cache;
+    this.#onShown = onShown;
     this.#newKey = newKey;
     this.#debounce = debounce;
     this.#scheduler = scheduler;
@@ -150,13 +159,16 @@ export class Listing {
         return;
       }
       case "show": {
-        const items = this.#results.get(effect.key) ?? [];
+        const answer = this.#results.get(effect.key) ?? EMPTY_ANSWER;
         this.#results.delete(effect.key);
-        if (!effect.append) this.#cache?.write(this.snapshot().state.params, items);
+        const { items } = answer;
+        if (!effect.append)
+          this.#cache?.write(this.snapshot().state.params, items, answer.principal);
         this.store.update((current) => ({
           ...current,
           items: effect.append ? appendRows(current.items, items, this.#idOf) : items,
         }));
+        this.#onShown({ ...answer, append: effect.append });
         return;
       }
       case "report":
@@ -176,7 +188,11 @@ export class Listing {
     Promise.resolve(pending).then(
       (page) => {
         if (!current()) return;
-        this.#results.set(key, Array.isArray(page?.items) ? page.items : []);
+        this.#results.set(key, {
+          items: Array.isArray(page?.items) ? page.items : [],
+          principal: typeof page?.principal === "string" && page.principal ? page.principal : null,
+          quota: page?.quota ?? null,
+        });
         const next = typeof page?.cursor === "string" && page.cursor ? page.cursor : null;
         if (!this.#dispatch({ type: "loaded", key, cursor: next })) this.#results.delete(key);
       },
@@ -189,15 +205,18 @@ export class Listing {
   }
 }
 
+const EMPTY_ANSWER = Object.freeze({ items: Object.freeze([]), principal: null, quota: null });
+
 const nextCursor = (result) =>
   typeof result?.next_cursor === "string" && result.next_cursor ? result.next_cursor : null;
 
 /** One library request: the Pages the account can open, narrowed by
  * list_pages' title search, `access` and `project_id`, in its `sort` order.
- * Defaults stay off the wire, so the plain listing is the bare call.
- * `onResult` sees each whole answer (its `quota`, for one). */
+ * Defaults stay off the wire, so the plain listing is the bare call. The
+ * page carries the answer's `principal` and `quota` for the Listing to hand
+ * on once it shows the page. */
 export const pagesRequest =
-  (call, { limit = PAGES_PER_REQUEST, onResult } = {}) =>
+  (call, { limit = PAGES_PER_REQUEST } = {}) =>
   async ({ params, cursor }) => {
     const { query, access, sort, projectId } = libraryRequest(params);
     const result = await call("list_pages", {
@@ -208,8 +227,12 @@ export const pagesRequest =
       ...(projectId ? { project_id: projectId } : {}),
       ...(cursor ? { cursor } : {}),
     });
-    onResult?.(result);
-    return { items: result.pages ?? [], cursor: nextCursor(result) };
+    return {
+      items: result.pages ?? [],
+      cursor: nextCursor(result),
+      principal: result.principal ?? null,
+      quota: result.quota ?? null,
+    };
   };
 
 /** One /projects request. list_projects has no search or filter, so
@@ -307,6 +330,8 @@ export function listingView({ state, items }) {
     // is fetched again. Nothing says so: they are the rows the account saw.
     refreshing: state.name === "refreshing",
     failed: state.name === "failed",
+    // The server's code for a failed first page, or null.
+    failureCode: state.name === "failed" ? state.code : null,
     empty: state.name === "ready" && items.length === 0,
     canLoadMore: state.name === "ready" && state.cursor !== null,
     loadingMore: state.name === "more",

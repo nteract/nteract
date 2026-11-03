@@ -409,22 +409,35 @@ test("a Project filter lists Your items in that Project; Any project clears it",
   assert.deepEqual(calls.at(-1), { limit: 50, access: "owned" });
   await app.unmount();
 
-  // An address naming a Project the account hasn't listed yet still filters.
-  const unknown = await mount(
-    createElement(
-      Library,
-      libraryProps({ tool: catalogTool(), view: { projectId: prjNotes }, clock: fixedClock() }),
-    ),
-  );
-  assert.equal(menuButton(unknown.host, "Project").getAttribute("aria-label"), "Project: Project");
-  assert.deepEqual(text(unknown.host, ".index-row-link"), ["Archive"]);
-  assert.equal(unknown.host.querySelector(".library-filter-notice"), null, "not until they load");
-  await unknown.unmount();
+  // An address naming a Project the account's Projects don't hold still
+  // filters: list_projects' first page may not have it yet (created a moment
+  // ago, or past the first 100). Only list_pages can say it's unknown.
+  for (const projects of [[], PROJECTS.filter((project) => project.project_id !== prjNotes)]) {
+    const unknown = await mount(
+      createElement(
+        Library,
+        libraryProps({
+          tool: catalogTool(),
+          view: { projectId: prjNotes },
+          projects,
+          clock: fixedClock(),
+        }),
+      ),
+    );
+    assert.equal(
+      menuButton(unknown.host, "Project").getAttribute("aria-label"),
+      "Project: Project",
+    );
+    assert.deepEqual(text(unknown.host, ".index-row-link"), ["Archive"]);
+    assert.equal(unknown.host.querySelector(".library-filter-notice"), null);
+    await unknown.unmount();
+  }
 });
 
 test("a Project the account can't list says so and offers to clear the filter", async () => {
   const calls = [];
   const views = [];
+  const banners = [];
   const missing = "prj_9b160b47-6df1-4983-81eb-489ca5a26812";
   const app = await mount(
     createElement(
@@ -432,14 +445,18 @@ test("a Project the account can't list says so and offers to clear the filter", 
       libraryProps({
         tool: async (name, args) => {
           calls.push(args);
-          if (args.project_id) throw Object.assign(Error("Project not found"), { status: 404 });
+          if (args.project_id)
+            throw Object.assign(Error("Project not found"), {
+              status: 404,
+              code: "project_not_found",
+            });
           return catalogTool()(name, args);
         },
         view: { projectId: missing },
         projects: PROJECTS,
-        projectsReady: true,
         clock: fixedClock(),
         onViewChange: (view, how) => views.push([view, how]),
+        onError: (message) => banners.push(message),
       }),
     ),
   );
@@ -448,6 +465,7 @@ test("a Project the account can't list says so and offers to clear the filter", 
   const notice = host.querySelector(".library-filter-notice");
   assert.match(notice.textContent, /This Project isn't one you can open\./);
   assert.equal(button(host, "Try again"), undefined, "clearing the filter is the way out");
+  assert.deepEqual(banners, [], "the notice says it, not the banner");
   await click(button(host, "Clear Project filter"));
   await settle();
   assert.deepEqual(calls.at(-1), { limit: 50, access: "owned" });
@@ -1127,7 +1145,11 @@ test("a return visit paints the rows this tab showed, then refreshes them", asyn
   const first = await mount(createElement(Library, props));
   assert.match(first.host.textContent, /Loading…/, "a first visit has nothing to paint");
   for (const reply of replies)
-    reply.resolve({ pages: [{ page_id: id(1), title: "Roadmap" }], next_cursor: null });
+    reply.resolve({
+      pages: [{ page_id: id(1), title: "Roadmap" }],
+      next_cursor: null,
+      principal: "alice",
+    });
   await settle();
   assert.deepEqual(text(first.host, ".index-row-link"), ["Roadmap"]);
   await first.unmount();
@@ -1145,6 +1167,7 @@ test("a return visit paints the rows this tab showed, then refreshes them", asyn
         { page_id: id(1), title: "Roadmap" },
       ],
       next_cursor: null,
+      principal: "alice",
     });
   await settle();
   assert.deepEqual(text(again.host, ".index-row-link"), ["New", "Roadmap"]);
@@ -1159,4 +1182,54 @@ test("a return visit paints the rows this tab showed, then refreshes them", asyn
   for (const reply of replies) reply.resolve({ pages: [], next_cursor: null });
   await settle();
   await bob.unmount();
+});
+
+test("a page answered for another account shows but is never remembered for this one", async () => {
+  // Another window signed in as Bob: the cookie answers for Bob while this
+  // tab still believes it is Alice.
+  const cache = new ListingCache();
+  const answers = [];
+  const replies = [];
+  const tool = (name, args) => {
+    const reply = deferred();
+    replies.push({ args, ...reply });
+    return reply.promise;
+  };
+  const props = libraryProps({
+    tool,
+    principal: "alice",
+    cache,
+    clock: fixedClock(),
+    onAnswer: (answer) => answers.push(answer),
+  });
+  const first = await mount(createElement(Library, props));
+  for (const reply of replies)
+    reply.resolve({
+      pages: [{ page_id: id(9), title: "Bob's diary" }],
+      next_cursor: null,
+      principal: "bob",
+      quota: { limit: 10, count: 1 },
+    });
+  await settle();
+  assert.deepEqual(text(first.host, ".index-row-link"), ["Bob's diary"]);
+  assert.equal(cache.size, 0, "nothing filed under Alice");
+  assert.deepEqual(answers.at(-1), { quota: { limit: 10, count: 1 }, principal: "bob" });
+  await first.unmount();
+
+  replies.length = 0;
+  const again = await mount(createElement(Library, props));
+  assert.deepEqual(text(again.host, ".index-row-link"), [], "nothing to paint");
+  assert.match(again.host.textContent, /Loading…/);
+  // The library leaves before its answer lands: the answer goes nowhere.
+  const before = answers.length;
+  await again.unmount();
+  for (const reply of replies)
+    reply.resolve({
+      pages: [],
+      next_cursor: null,
+      principal: "alice",
+      quota: { limit: 10, count: 9 },
+    });
+  await settle();
+  assert.equal(answers.length, before, "no quota from a library that left");
 });

@@ -2836,6 +2836,7 @@ export class Catalog {
         ? await sealPosition(this.env, context, options.sort, result.next)
         : null,
       quota,
+      principal: identity.principal,
       ...migration,
       ...(await issueRetryToken(storage, {
         scope: `catalog:${identity.principal}`,
