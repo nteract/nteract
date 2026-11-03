@@ -101,7 +101,10 @@
   list-style: none;
   position: relative;
 }
-.wordgard-task-content > p {
+/* One rule for the editor's task text and the loading preview's, so the swap
+   from preview to editor doesn't move task items. It has to outrank the
+   general paragraph rule above. */
+.wordgard-document :is(wg-content, :where(.preview-content)) :is(.wordgard-task-content, li[data-task-checked] > div) > p {
   margin: 0.15em 0;
 }
 .wordgard-task-control {
@@ -132,9 +135,35 @@
   color: var(--muted-foreground);
   text-decoration: line-through;
 }
+/* The loading preview (viewer/PagePreview.jsx) draws a task item as
+   li[data-task-checked] > input + div. Lay it out like the editor's task item,
+   so the swap to the live editor doesn't show a bullet and a stray box. */
+.wordgard-document .preview-content li[data-task-checked] {
+  list-style: none;
+  position: relative;
+}
+.wordgard-document .preview-content li[data-task-checked] > input[type="checkbox"] {
+  position: absolute;
+  inset-inline-start: calc(-1.9em + 0.45em);
+  top: calc((1.7em - 15px) / 2);
+  appearance: auto;
+  margin: 0;
+  width: 15px;
+  height: 15px;
+  accent-color: var(--primary);
+}
+.wordgard-document .preview-content li[data-task-checked="true"] > div > p {
+  color: var(--muted-foreground);
+  text-decoration: line-through;
+}
 @media (pointer: coarse) {
-  .wordgard-task-item {
+  .wordgard-task-item,
+  .wordgard-document .preview-content li[data-task-checked] {
     min-height: 44px;
+  }
+  .wordgard-document .preview-content li[data-task-checked] > input[type="checkbox"] {
+    inset-inline-start: -21.5px;
+    top: 6.5px;
   }
   .wordgard-task-control {
     justify-content: center;
