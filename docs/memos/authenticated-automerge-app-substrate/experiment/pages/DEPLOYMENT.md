@@ -628,12 +628,13 @@ install`, which targets the shared connector.
 The DNS step creates only an absent owned CNAME; conflicts are rejected.
 Public ingress allows application, auth, sharing, MCP, asset, and sync routes,
 then ends in a catch-all 404. Internal Durable Object routes stay private.
-Page10 serves Page9's route set on its own hostname and listener. It has no
-predecessor config, so the publisher installs its tunnel configuration fresh and
-refuses any other installation receipt, including Page9's earlier ones. The
+Page10 serves Page9's route set on its own hostname and listener, plus Sift's
+WASM route. Its only predecessor is its own config without that route; the
+publisher refuses any other installation receipt, including Page9's earlier
+ones. The
 route migrations below are Page9's history; Page10 starts at the end of them.
 Pages serves Page10's route set on `pages.runtimed.run` and `127.0.0.1:9481`,
-also without a predecessor, and refuses Page10's installation receipts.
+with the same single predecessor, and refuses Page10's installation receipts.
 
 All three admit the viewer's content-hashed chunks, `/chunks/` followed by
 eight base32 characters and `.js`. `build-receipt.json` maps each chunk to the
@@ -643,11 +644,16 @@ a `public/chunks` directory that holds any other file.
 
 The shell's own files are hashed the same way: `app-<hash>.js`,
 `app-<hash>.css`, `theme-<hash>.js`, `mermaid-<hash>.js`,
-`automerge-<hash>.wasm` and `subduction-<hash>.wasm`. All three admit each name
-with its own extension only. `viewer_assets` in the receipt maps each to its
-sha256, and the name's hash must be the first 40 bits of that digest.
-`prepare` stages exactly those six files, checks their bytes first, and refuses
-any other file of that shape in `public`.
+`automerge-<hash>.wasm`, `subduction-<hash>.wasm` and `sift-<hash>.wasm`. All
+three admit each name with its own extension only. `viewer_assets` in the
+receipt maps each to its sha256, and the name's hash must be the first 40 bits
+of that digest. `prepare` stages exactly those seven files, checks their bytes
+first, and refuses any other file of that shape in `public`.
+
+Page10 and Pages admit `sift-<hash>.wasm` through their own route group, which
+Page9 never had. Each publisher migrates only from its config without that
+group, so the first release with Sift tables restarts that target's connector
+once; later releases are no-ops.
 
 All three admit Project links: `/project/<id>` and the older `/s/<id>`, where the
 ID is `prj_` or `sp_` followed by a lowercase v4 UUID, with an optional

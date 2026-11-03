@@ -8,8 +8,14 @@ import { schema, CodeBlock, CodeBlockLanguage } from "./wordgard-model.mjs";
 
 // These tests exercise native editor transactions; styles and SVG mounting
 // are qualified separately by the real-browser Wordgard smoke.
-const { wordgardWidgets, selectCodeLanguage, diagramFrame, maximizeButton, renderedSvg } =
-  await import("./wordgard-widgets.mjs");
+const {
+  wordgardWidgets,
+  selectCodeLanguage,
+  diagramFrame,
+  maximizeButton,
+  renderedSvg,
+  siftFrame,
+} = await import("./wordgard-widgets.mjs");
 
 function withDocument(run) {
   const { window } = new JSDOM("<!doctype html><body></body>");
@@ -154,4 +160,54 @@ test("read-only language selection cannot mutate or focus the editor", () => {
   assert.equal(selectCodeLanguage(editor, block(), "mermaid"), false);
   assert.equal(editor.state, before);
   assert.equal(editor.focused, null);
+});
+
+const siftSrc = `/api/pages/33333333-3333-4333-8333-333333333333/assets/${"c".repeat(64)}`;
+
+test("a titled sift table shows and is named by its title", () =>
+  withDocument(() => {
+    const { dom, header, parsed } = siftFrame(
+      JSON.stringify({ src: siftSrc, title: "<b>Usage</b> by day" }),
+    );
+    assert.equal(parsed.src, siftSrc);
+    assert.equal(dom.getAttribute("aria-label"), "<b>Usage</b> by day");
+    assert.equal(header.textContent, "<b>Usage</b> by day");
+    assert.equal(dom.querySelector("b"), null);
+  }));
+
+test("an untitled or malformed sift table has a generic name and reports the problem", () =>
+  withDocument(() => {
+    const untitled = siftFrame(JSON.stringify({ src: siftSrc }));
+    assert.equal(untitled.dom.getAttribute("aria-label"), "Table");
+    assert.equal(untitled.header.childElementCount, 0);
+    const broken = siftFrame("{not json");
+    assert.equal(broken.dom.getAttribute("aria-label"), "Table");
+    assert.match(broken.parsed.error, /JSON/);
+  }));
+
+test("a sift block renders like a diagram and reveals its source the same way", () => {
+  const source = JSON.stringify({ src: siftSrc });
+  const { editor, block, sourceIsOpen } = editorFixture(source, "sift");
+  assert.equal(sourceIsOpen(), false);
+  editor.dispatch({ selection: GardSelection.cursor(6) });
+  assert.equal(sourceIsOpen(), true);
+  editor.dispatch({ selection: GardSelection.cursor(0) });
+  // Choosing Sift on a code block with source previews it, as Mermaid does.
+  const plain = editorFixture(source);
+  plain.editor.dispatch({ selection: GardSelection.cursor(6) });
+  assert.equal(selectCodeLanguage(plain.editor, plain.block(), "sift"), true);
+  assert.equal(plain.block().node.mark(CodeBlockLanguage), "sift");
+  assert.equal(plain.sourceIsOpen(), false);
+  assert.equal(plain.editor.state.doc.textContent(), source);
+  assert.equal(block().node.mark(CodeBlockLanguage), "sift");
+});
+
+test("a peer's sift language choice previews in an untouched editor", () => {
+  const { editor, sourceIsOpen } = editorFixture(JSON.stringify({ src: siftSrc }));
+  editor.dispatch({
+    changes: { from: 0, add: CodeBlockLanguage.of("sift") },
+    annotations: Transaction.remote.of(true),
+  });
+  assert.equal(sourceIsOpen(), false);
+  assert.equal(editor.state.selection.head, 0);
 });

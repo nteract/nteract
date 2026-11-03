@@ -8,6 +8,10 @@ export const chunkPaths = "chunks/[A-Z2-7]{8}[.]js|";
 // source name with its own extension only.
 export const assetPaths =
   "(app|theme|mermaid)-[A-Z2-7]{8}[.]js|app-[A-Z2-7]{8}[.]css|(automerge|subduction)-[A-Z2-7]{8}[.]wasm|";
+// Sift's content-hashed WASM (scripts/viewer-chunks.mjs VIEWER_ASSET), loaded
+// only when a Page shows a `sift` table. A separate group, so Page9's frozen
+// asset route bytes stay exactly as deployed.
+export const siftPaths = "sift-[A-Z2-7]{8}[.]wasm|";
 // Viewer Project links (shared/routes.mjs readPageRoute): /project/<id> and
 // the older /s/<id>, which the viewer rewrites to /project/<id>.
 export const projectPaths =
@@ -27,6 +31,7 @@ export function routesFor(target = "pages-next", legacy = false) {
   const theme = profile.theme ? "theme[.]js|" : "";
   const chunks = profile.viewerChunks ? chunkPaths : "";
   const assets = profile.viewerAssets ? assetPaths : "";
+  const sift = profile.siftTables ? siftPaths : "";
   const projects = profile.projectLinks ? projectPaths : "";
   const index = profile.indexRoutes ? indexPaths : "";
   // Frozen deployments retain their exact route receipts. Sharing targets expose
@@ -41,6 +46,7 @@ export function routesFor(target = "pages-next", legacy = false) {
       theme +
       chunks +
       assets +
+      sift +
       renderer +
       connect +
       (authenticatedAssets ? oauthPaths : "") +

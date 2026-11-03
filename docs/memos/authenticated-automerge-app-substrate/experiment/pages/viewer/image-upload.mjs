@@ -2,12 +2,21 @@ import * as A from "@automerge/automerge/slim";
 import { history } from "wordgard/history";
 import { GardSelection } from "wordgard/state";
 import { PagesImage } from "./wordgard-model.mjs";
+import { applyPageOperation } from "../model/page.mjs";
+import { blockMarkdown } from "../model/richtext.mjs";
 import {
   IMAGE_MAX_BYTES,
   IMAGE_MEDIA_TYPES,
   imageAssetUrl,
   validAssetId,
 } from "../shared/image-assets.mjs";
+import {
+  DATASET_MAX_BYTES,
+  PARQUET_MEDIA_TYPE,
+  SIFT_LANGUAGE,
+  isParquetFile,
+  siftSource,
+} from "../shared/dataset-assets.mjs";
 
 export const IMAGE_ACCEPT = IMAGE_MEDIA_TYPES.join(",");
 const pathFor = (id) => ["blocks", id, "richText"];
@@ -25,6 +34,26 @@ export function imageFiles(transfer) {
     (file) =>
       file.type.startsWith("image/") || /\.(png|jpe?g|webp|gif|svg|heic|avif)$/i.test(file.name),
   );
+}
+
+/** Files a Page body accepts from paste or drop: images, and Parquet
+ * datasets, which land as a `sift` table. Comments take images only. */
+export function uploadFiles(transfer) {
+  const files = Array.from(transfer?.files ?? []);
+  if (!files.length)
+    for (const item of Array.from(transfer?.items ?? [])) {
+      const file = item.kind === "file" && item.getAsFile();
+      if (file) files.push(file);
+    }
+  const images = new Set(imageFiles({ files }));
+  return files.filter((file) => images.has(file) || isParquetFile(file));
+}
+
+/** validateImageFile, or for a Parquet file, the dataset size limit. */
+export function validateUploadFile(file) {
+  if (!isParquetFile(file)) return validateImageFile(file);
+  if (!Number.isSafeInteger(file.size) || file.size <= 0 || file.size > DATASET_MAX_BYTES)
+    throw Error("Choose a Parquet file smaller than 5 MiB.");
 }
 
 /** The checks the asset endpoint applies, run before uploading: a PNG, JPEG
@@ -164,10 +193,13 @@ export function caretAfterImage(replica, target, map, selection, position) {
 }
 
 export async function uploadPageImage(pageId, file, signal, request = fetch) {
+  const dataset = isParquetFile(file);
   const response = await request(`/api/pages/${encodeURIComponent(pageId)}/assets`, {
     method: "POST",
     credentials: "same-origin",
-    headers: { "Content-Type": file.type || "application/octet-stream" },
+    headers: {
+      "Content-Type": dataset ? PARQUET_MEDIA_TYPE : file.type || "application/octet-stream",
+    },
     body: file,
     signal,
   });
@@ -180,14 +212,59 @@ export async function uploadPageImage(pageId, file, signal, request = fetch) {
   if (
     !validAssetId(assetId) ||
     result.url !== imageAssetUrl(pageId, assetId) ||
-    !IMAGE_MEDIA_TYPES.includes(result.mime_type)
+    (dataset
+      ? result.mime_type !== PARQUET_MEDIA_TYPE
+      : !IMAGE_MEDIA_TYPES.includes(result.mime_type))
   )
     throw Error("The server returned an invalid image reference.");
   return result;
 }
 
+/** The image leaf an uploaded image inserts at the captured cursor.
+ * `count(replica, id)` reports how many copies the block holds, so the
+ * uploader can confirm its one insertion landed. */
+function imageInsertion(file, asset) {
+  const alt = imageAlt(file);
+  return {
+    node: PagesImage.of({ src: asset.url, alt, title: null }),
+    count: (replica, id) =>
+      A.spans(replica.doc, pathFor(id)).filter(
+        (span) =>
+          span.type === "block" &&
+          String(span.value.type) === "image" &&
+          String(span.value.attrs.src) === asset.url,
+      ).length,
+  };
+}
+
+/**
+ * A dataset lands as its own Page block after the block it was dropped on,
+ * holding one `sift` fence, the same shape an agent's insert_markdown makes.
+ * A new block opens in a fresh editor. Inserting the fence inline instead
+ * makes Wordgard 0.6.2 map the rendered table's shape at the insertion
+ * boundary to a position past the end of the document, which throws in this
+ * editor and in every peer's. Returns the new block's ID.
+ */
+function insertDatasetBlock(replica, afterBlockId, markdown) {
+  let id = null;
+  replica.change((doc) => {
+    const before = new Set(Object.keys(doc.blocks ?? {}));
+    applyPageOperation(doc, {
+      operation: "edit_page",
+      arguments: {
+        operations: [{ op: "insert_markdown", after_block_id: afterBlockId, markdown }],
+      },
+    });
+    id = Object.keys(doc.blocks).find((key) => !before.has(key)) ?? null;
+  });
+  if (!id || blockMarkdown(replica.doc.blocks[id]) !== markdown)
+    throw Error("The dataset uploaded but wasn't inserted. Drop it again.");
+  return id;
+}
+
 // The pending File and retry state stay local. Only the completed, stable asset
-// reference enters the document, through the same undoable transaction as typing.
+// reference enters the document: an image through the same undoable
+// transaction as typing, a dataset as a new block (insertDatasetBlock).
 export function createImageUploader({
   replica,
   getEditor,
@@ -207,15 +284,16 @@ export function createImageUploader({
   const release = (attempt) => {
     if (attempt) attempt.preview = null;
   };
+  const uploading = (file) => (isParquetFile(file) ? "Uploading dataset…" : "Uploading image…");
   const readPreview = (attempt) => {
-    if (typeof FileReader !== "function") return;
+    if (typeof FileReader !== "function" || isParquetFile(attempt.file)) return;
     const reader = new FileReader();
     reader.onload = () => {
       if (job !== attempt || !abort || typeof reader.result !== "string") return;
       attempt.preview = reader.result;
       onState({
         pending: true,
-        message: "Uploading image…",
+        message: uploading(attempt.file),
         retryable: false,
         target: attempt.target,
         preview: attempt.preview,
@@ -237,14 +315,14 @@ export function createImageUploader({
     abort = controller;
     onState({
       pending: true,
-      message: "Uploading image…",
+      message: uploading(attempt.file),
       retryable: false,
       target: attempt.target,
       preview: attempt.preview ?? null,
       name: String(attempt.file?.name ?? ""),
     });
     try {
-      validateImageFile(attempt.file);
+      validateUploadFile(attempt.file);
       resolveImageInsertion(replica, attempt.target, getMap());
       const asset = await upload(attempt.target.pageId, attempt.file, controller.signal);
       if (controller.signal.aborted || !current() || job !== attempt) return;
@@ -252,31 +330,30 @@ export function createImageUploader({
       const editor = getEditor();
       if (!editor || editor.state.readOnly) throw unavailable();
       const position = resolveImageInsertion(replica, attempt.target, getMap());
-      const alt = imageAlt(attempt.file);
-      const count = () =>
-        A.spans(replica.doc, pathFor(attempt.target.id)).filter(
-          (span) =>
-            span.type === "block" &&
-            String(span.value.type) === "image" &&
-            String(span.value.attrs.src) === asset.url,
-        ).length;
-      const before = count();
-      editor.dispatch({
-        changes: {
-          from: position,
-          insert: [PagesImage.of({ src: asset.url, alt, title: null })],
-          fit: true,
-        },
-        selection:
-          caretAfterImage(replica, attempt.target, getMap(), editor.state.selection, position) ??
-          undefined,
-        userEvent: "input.image",
-        annotations: history.isolate.of(true),
-      });
-      // The editor reports rejected canonical writes through its exception sink.
-      // Do not silently clear upload status if that transaction was rolled back.
-      if (count() !== before + 1)
-        throw Error("The image uploaded but wasn't inserted. Choose its position again.");
+      if (isParquetFile(attempt.file)) {
+        const source = siftSource({ src: asset.url, title: imageAlt(attempt.file) });
+        insertDatasetBlock(
+          replica,
+          attempt.target.id,
+          "```" + SIFT_LANGUAGE + "\n" + source + "\n```",
+        );
+      } else {
+        const insertion = imageInsertion(attempt.file, asset);
+        const count = () => insertion.count(replica, attempt.target.id);
+        const before = count();
+        editor.dispatch({
+          changes: { from: position, insert: [insertion.node], fit: true },
+          selection:
+            caretAfterImage(replica, attempt.target, getMap(), editor.state.selection, position) ??
+            undefined,
+          userEvent: "input.image",
+          annotations: history.isolate.of(true),
+        });
+        // The editor reports rejected canonical writes through its exception sink.
+        // Do not silently clear upload status if that transaction was rolled back.
+        if (count() !== before + 1)
+          throw Error("The image uploaded but wasn't inserted. Choose its position again.");
+      }
       job = null;
       abort = null;
       onState(null);
@@ -287,7 +364,7 @@ export function createImageUploader({
       // a duplicate insertion after an ambiguous editor failure.
       let retryable = current() && !attempt.asset;
       try {
-        validateImageFile(attempt.file);
+        validateUploadFile(attempt.file);
         resolveImageInsertion(replica, attempt.target, getMap());
       } catch {
         retryable = false;
@@ -306,14 +383,14 @@ export function createImageUploader({
       if (abort) return;
       if (files.length !== 1) {
         job = null;
-        onState({ pending: false, message: "Add one image at a time.", retryable: false });
+        onState({ pending: false, message: "Add one file at a time.", retryable: false });
         return;
       }
       release(job);
       job = { file: files[0], target, preview: null };
       const running = run(job);
       try {
-        validateImageFile(files[0]);
+        validateUploadFile(files[0]);
         readPreview(job);
       } catch {}
       return running;

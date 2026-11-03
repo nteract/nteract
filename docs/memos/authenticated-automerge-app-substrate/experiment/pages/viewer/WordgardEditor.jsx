@@ -115,7 +115,7 @@ import {
   IMAGE_ACCEPT,
   captureImageInsertion,
   createImageUploader,
-  imageFiles,
+  uploadFiles,
   resolveImageInsertion,
 } from "./image-upload.mjs";
 import { caretGlideFor, createGlideRunner, mediaMatches$ } from "./caret-glide.mjs";
@@ -358,7 +358,7 @@ export function WordgardEditor(props) {
       if (!latest.current.editable || replica.canWrite === false) {
         setImageStatus({
           pending: false,
-          message: "You need edit access to add images.",
+          message: "You need edit access to add images or datasets.",
           retryable: false,
         });
         return true;
@@ -416,9 +416,11 @@ export function WordgardEditor(props) {
         permissions.current.of(editConfig(latest.current.editable)),
         hint.current.of(placeholderConfig(latest.current.placeholder)),
         Wordgard.clipboardInputHTMLFilter.of((html) => normalizePastedHTML(html)),
-        Wordgard.domEventHandler("paste", (event) => acceptImages(imageFiles(event.clipboardData))),
+        Wordgard.domEventHandler("paste", (event) =>
+          acceptImages(uploadFiles(event.clipboardData)),
+        ),
         Wordgard.domEventHandler("drop", (event) => {
-          const files = imageFiles(event.dataTransfer);
+          const files = uploadFiles(event.dataTransfer);
           if (!files.length) return false;
           return acceptImages(
             files,
@@ -538,6 +540,7 @@ export function WordgardEditor(props) {
             resolve: () => resolveImageInsertion(replica, target, bound.current.map),
             src: state.preview ?? "",
             name: state.name ?? "",
+            message: state.message ?? "",
             onCancel: () => uploader.cancel(),
           };
           try {

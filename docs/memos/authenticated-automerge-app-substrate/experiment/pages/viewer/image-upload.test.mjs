@@ -10,24 +10,27 @@ import { createWordgardBinding } from "./wordgard-binding.mjs";
 import { projectChanges } from "./wordgard-projection.mjs";
 import { schema, encode, decode, PagesImage, Paragraph } from "./wordgard-model.mjs";
 import { blockMarkdown, enableRich, textPath, validateRich } from "../model/richtext.mjs";
+import { orderedBlockIds } from "../model/order.mjs";
 import { IMAGE_MAX_BYTES, imageAssetUrl } from "../shared/image-assets.mjs";
+import { DATASET_MAX_BYTES, PARQUET_MEDIA_TYPE } from "../shared/dataset-assets.mjs";
 import {
   captureImageInsertion,
   resolveImageInsertion,
   createImageUploader,
   imageFiles,
+  uploadFiles,
   uploadPageImage,
 } from "./image-upload.mjs";
 
 const assetId = "a".repeat(64),
-  pageId = "page-a",
+  pageId = "33333333-3333-4333-8333-333333333333",
   asset = { asset_id: assetId, url: imageAssetUrl(pageId, assetId), mime_type: "image/png" },
   file = { name: "Screenshot.png", type: "image/png", size: 100 };
 function fixture(markdown = "hello world", { anchor = 7 } = {}) {
   let doc = A.change(
     A.from({
       page_id: pageId,
-      blocks: { one: { id: "one", kind: "markdown", markdown } },
+      blocks: { one: { id: "one", position: "a0", kind: "markdown", markdown } },
     }),
     (d) => enableRich(d, "one"),
   );
@@ -400,7 +403,7 @@ test("invalid files are rejected before upload, and read-only capture is unavail
     assert.equal(states.at(-1).retryable, false);
   }
   await uploader.start([file, file], f.target());
-  assert.match(states.at(-1).message, /one image/);
+  assert.match(states.at(-1).message, /one file/);
   const target = f.target();
   f.replica.canWrite = false;
   assert.throws(f.target, /insertion point/);
@@ -475,5 +478,88 @@ test("raw upload uses only the stable same-origin authenticated route", async ()
       Response.json({ error: "No edit access" }, { status: 403 }),
     ),
     /No edit access/,
+  );
+});
+
+const parquet = { name: "usage.parquet", type: "", size: 1018 },
+  dataset = {
+    asset_id: assetId,
+    url: imageAssetUrl(pageId, assetId),
+    mime_type: PARQUET_MEDIA_TYPE,
+  };
+
+test("a Parquet upload lands as a sift block after the block it was dropped on", async () => {
+  const f = fixture(),
+    states = [];
+  const uploader = createImageUploader({
+    replica: f.replica,
+    getEditor: () => f.editor,
+    getMap: () => f.binding.current.map,
+    isCurrent: () => true,
+    onState: (state) => states.push(state),
+    upload: async (_pageId, uploaded) => {
+      assert.equal(uploaded, parquet);
+      return dataset;
+    },
+  });
+  await uploader.start([parquet], f.target());
+  assert.equal(states[0].message, "Uploading dataset…");
+  assert.equal(states[0].preview, null);
+  assert.equal(states.at(-1), null);
+  const fence = "```sift\n" + JSON.stringify({ src: dataset.url, title: "usage" }) + "\n```";
+  const [first, second, ...rest] = orderedBlockIds(f.replica.doc);
+  assert.deepEqual([first, rest], ["one", []]);
+  assert.equal(blockMarkdown(f.replica.doc.blocks.one), "hello world");
+  assert.equal(blockMarkdown(f.replica.doc.blocks[second]), fence);
+  uploader.destroy();
+  f.binding.destroy();
+});
+
+test("Parquet files over the dataset limit are refused before upload", async () => {
+  const f = fixture(),
+    states = [];
+  const uploader = createImageUploader({
+    replica: f.replica,
+    getEditor: () => f.editor,
+    getMap: () => f.binding.current.map,
+    isCurrent: () => true,
+    onState: (state) => states.push(state),
+    upload() {
+      assert.fail("Unexpected upload");
+    },
+  });
+  for (const invalid of [
+    { ...parquet, size: DATASET_MAX_BYTES + 1 },
+    { ...parquet, size: 0 },
+  ]) {
+    await uploader.start([invalid], f.target());
+    assert.match(states.at(-1).message, /Parquet file smaller than 5 MiB/);
+    assert.equal(states.at(-1).retryable, false);
+  }
+  uploader.destroy();
+  f.binding.destroy();
+});
+
+test("Page paste/drop accepts images and Parquet files; comments keep images only", () => {
+  const notes = { type: "text/plain", name: "notes.txt" };
+  assert.deepEqual(uploadFiles({ files: [file, parquet, notes] }), [file, parquet]);
+  assert.deepEqual(uploadFiles({ items: [{ kind: "file", getAsFile: () => parquet }] }), [parquet]);
+  assert.deepEqual(imageFiles({ files: [parquet] }), []);
+});
+
+test("a Parquet upload declares its media type and needs a dataset reference back", async () => {
+  const signal = new AbortController().signal;
+  const result = await uploadPageImage(pageId, parquet, signal, async (_url, options) => {
+    assert.equal(options.headers["Content-Type"], PARQUET_MEDIA_TYPE);
+    return Response.json(dataset, { status: 201 });
+  });
+  assert.deepEqual(result, dataset);
+  await assert.rejects(
+    uploadPageImage(pageId, parquet, signal, async () => Response.json(asset, { status: 201 })),
+    /invalid image reference/,
+  );
+  await assert.rejects(
+    uploadPageImage(pageId, file, signal, async () => Response.json(dataset, { status: 201 })),
+    /invalid image reference/,
   );
 });

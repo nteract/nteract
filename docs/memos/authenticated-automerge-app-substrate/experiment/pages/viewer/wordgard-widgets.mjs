@@ -5,21 +5,49 @@ import { CodeBlock, CodeBlockLanguage } from "./wordgard-model.mjs";
 import { mermaidTitle } from "./mermaid-title.mjs";
 import { diagramIcon } from "./diagram-icons.mjs";
 import { openDiagramViewer } from "./diagram-viewer.mjs";
+import { SIFT_LANGUAGE, parseSiftSource } from "../shared/dataset-assets.mjs";
 
 // The renderer is a separate content-hashed file (scripts/browser-mermaid.mjs).
 // A deploy retires this tab's copy, so a failed import usually means the
 // server moved on; main.jsx points onRendererUnavailable at the build check,
 // which raises the reload banner when that's the cause.
 const loadMermaid = () => import("../../../../../../src/components/markdown/mermaid-renderer.ts");
+// The Sift table is a lazily loaded viewer chunk with the same retirement
+// behavior.
+const loadSift = () => import("./sift-table.jsx");
 let rendererUnavailable = () => {};
-/** `listener` runs each time the Mermaid renderer fails to load. */
+/** `listener` runs each time the Mermaid or Sift renderer fails to load. */
 export function onRendererUnavailable(listener) {
   rendererUnavailable = listener;
 }
 const mounted = new WeakMap();
 let diagramId = 0;
-const isMermaid = (node) =>
-  node?.type === CodeBlock.type && node.mark(CodeBlockLanguage)?.trim().toLowerCase() === "mermaid";
+// Code blocks in these languages render in place of their source: Mermaid as
+// a diagram, `sift` as a table of a Page dataset. Both keep the source as the
+// shared content and reveal it for editing the same way.
+const RENDERED_LANGUAGES = new Set(["mermaid", SIFT_LANGUAGE]);
+const renderedLanguage = (node) => {
+  if (node?.type !== CodeBlock.type) return null;
+  const language = node.mark(CodeBlockLanguage)?.trim().toLowerCase();
+  return RENDERED_LANGUAGES.has(language) ? language : null;
+};
+const isRendered = (node) => renderedLanguage(node) !== null;
+const LABELS = {
+  mermaid: {
+    edit: "Edit diagram",
+    preview: "Preview diagram",
+    copy: "Copy diagram code",
+    copied: "Diagram code copied",
+    actions: "Diagram actions",
+  },
+  [SIFT_LANGUAGE]: {
+    edit: "Edit table source",
+    preview: "Show table",
+    copy: "Copy table source",
+    copied: "Table source copied",
+    actions: "Table actions",
+  },
+};
 const codeSource = (node) =>
   node.content.map((child) => (child.isText ? String(child.param) : "\n")).join("");
 
@@ -49,7 +77,7 @@ const editingDiagrams = GardState.Field.define({
     }
     for (const effect of transaction.effects) {
       if (!effect.is(diagramMode)) continue;
-      if (effect.value.editing && isMermaid(transaction.newDoc.nodeAt(effect.value.pos)))
+      if (effect.value.editing && isRendered(transaction.newDoc.nodeAt(effect.value.pos)))
         next.add(effect.value.pos);
       else next.delete(effect.value.pos);
     }
@@ -91,7 +119,7 @@ const visibleDiagramSelection = Transaction.extender.of((transaction) => {
   const selection = state.selection;
   const visibleEndpoint = (position, side) => {
     const block = state.doc.resolve(position).textblockParent;
-    return block && isMermaid(block.node) && !showCode(state, block.node, block.before)
+    return block && isRendered(block.node) && !showCode(state, block.node, block.before)
       ? side < 0
         ? block.before
         : block.after
@@ -112,7 +140,7 @@ const visibleDiagramSelection = Transaction.extender.of((transaction) => {
 function openDiagram(editor, dom) {
   if (!editor.editable) return;
   const block = editor.nodeFromDOM(dom);
-  if (!block || !isMermaid(block.node)) return;
+  if (!block || !isRendered(block.node)) return;
   editor.dispatch({
     effects: diagramMode.of({ pos: block.pos, editing: true }),
     selection: GardSelection.cursor(block.pos + 1),
@@ -131,16 +159,16 @@ function diagramButton(label, icon, className = "") {
   return button;
 }
 
-function diagramActions(editor, dom, toggle, extra) {
+function diagramActions(editor, dom, toggle, extra, labels = LABELS.mermaid) {
   const actions = document.createElement("div");
   actions.className = "wordgard-diagram-actions";
   actions.setAttribute("role", "group");
-  actions.setAttribute("aria-label", "Diagram actions");
+  actions.setAttribute("aria-label", labels.actions);
   // `extra` (Maximize) leads, so Edit/Preview and Copy keep the same corner
   // positions in the rendered and source views.
   if (extra) actions.append(extra);
   if (toggle) actions.append(toggle);
-  const copy = actions.appendChild(diagramButton("Copy diagram code", "copy"));
+  const copy = actions.appendChild(diagramButton(labels.copy, "copy"));
   const feedback = actions.appendChild(document.createElement("span"));
   feedback.className = "sr-only";
   feedback.setAttribute("role", "status");
@@ -149,7 +177,7 @@ function diagramActions(editor, dom, toggle, extra) {
   copy.onclick = async () => {
     if (copying) return;
     const block = editor.nodeFromDOM(dom.closest("pre") ?? dom);
-    if (!block || !isMermaid(block.node)) return;
+    if (!block || !isRendered(block.node)) return;
     copying = true;
     const version = ++feedbackVersion;
     copy.setAttribute("aria-busy", "true");
@@ -161,7 +189,7 @@ function diagramActions(editor, dom, toggle, extra) {
       copy.replaceChildren(diagramIcon("check"));
       copy.title = "Copied";
       feedback.className = "sr-only";
-      feedback.textContent = "Diagram code copied";
+      feedback.textContent = labels.copied;
     } catch {
       if (!copy.isConnected || version !== feedbackVersion) return;
       feedback.className = "wordgard-diagram-copy-error";
@@ -174,7 +202,7 @@ function diagramActions(editor, dom, toggle, extra) {
   const reset = () => {
     feedbackVersion++;
     copy.replaceChildren(diagramIcon("copy"));
-    copy.title = "Copy diagram code";
+    copy.title = labels.copy;
     feedback.className = "sr-only";
     feedback.textContent = "";
   };
@@ -308,18 +336,101 @@ const diagram = Widget.define({
   propagateEvent: false,
 });
 
-const previewDiagram = Widget.create({
-  render(_value, editor) {
-    const button = diagramButton("Preview diagram", "preview", "wordgard-diagram-preview");
+/**
+ * The rendered table's container. Its name is the source's title, when it has
+ * one, which also shows in the header. Sift's own controls (sorting, filters,
+ * column menus) change only this reader's view; nothing writes them back.
+ */
+export function siftFrame(source) {
+  const parsed = parseSiftSource(source);
+  const dom = document.createElement("section");
+  dom.className = "wordgard-widget wordgard-diagram wordgard-sift";
+  dom.tabIndex = -1;
+  dom.setAttribute("aria-label", parsed.title ?? "Table");
+  const header = dom.appendChild(document.createElement("div"));
+  header.className = "wordgard-diagram-header";
+  if (parsed.title) {
+    const title = header.appendChild(document.createElement("span"));
+    title.className = "wordgard-sift-title";
+    title.textContent = parsed.title;
+  }
+  return { dom, header, parsed };
+}
+
+const siftTable = Widget.define({
+  eq: (a, b) => a.source === b.source && a.editable === b.editable,
+  render({ source, editable }, editor) {
+    const { dom, header, parsed } = siftFrame(source);
+    const labels = LABELS[SIFT_LANGUAGE];
+    let edit;
+    if (editable) {
+      edit = diagramButton(labels.edit, "code", "wordgard-diagram-edit");
+      edit.onclick = () => openDiagram(editor, dom);
+    }
+    header.append(diagramActions(editor, dom, edit, undefined, labels));
+    const status = dom.appendChild(document.createElement("p"));
+    status.setAttribute("role", "status");
+    status.textContent = parsed.error ?? "Loading table…";
+    const canvas = dom.appendChild(document.createElement("div"));
+    canvas.className = "wordgard-sift-canvas";
+    canvas.hidden = !!parsed.error;
+    mounted.set(dom, { alive: false, parsed, canvas, status, instance: null, timer: null });
+    return dom;
+  },
+  connect(_value, dom) {
+    const state = mounted.get(dom);
+    if (!state || state.parsed.error) return;
+    state.alive = true;
+    const fail = (message) => {
+      if (!state.alive) return;
+      state.status.hidden = false;
+      state.status.textContent = message;
+    };
+    state.timer = setTimeout(
+      () =>
+        loadSift()
+          .catch((error) => {
+            try {
+              rendererUnavailable();
+            } catch {}
+            throw error;
+          })
+          .then(({ mountSiftTable }) => {
+            if (!state.alive) return;
+            // Sift draws its own loading and error states inside the canvas,
+            // including fetchDataset's access and missing-asset messages.
+            state.status.hidden = true;
+            state.instance = mountSiftTable(state.canvas, { src: state.parsed.src });
+          })
+          .catch(() => fail("Table unavailable.")),
+      100,
+    );
+  },
+  disconnect(_value, dom) {
+    const state = mounted.get(dom);
+    if (!state) return;
+    state.alive = false;
+    clearTimeout(state.timer);
+    state.instance?.destroy();
+    state.instance = null;
+  },
+  propagateEvent: false,
+});
+
+const previewDiagram = Widget.define({
+  eq: (a, b) => a.language === b.language,
+  render({ language }, editor) {
+    const labels = LABELS[language];
+    const button = diagramButton(labels.preview, "preview", "wordgard-diagram-preview");
     const host = document.createElement("span");
     host.className = "wordgard-code-actions";
     // Resolve the code block when used, after the point widget has mounted.
-    const actions = diagramActions(editor, host, button);
+    const actions = diagramActions(editor, host, button, undefined, labels);
     host.append(actions);
     button.onclick = () => {
       if (!editor.editable) return;
       const block = editor.nodeFromDOM(button.closest("pre"));
-      if (!block || !isMermaid(block.node) || !codeSource(block.node).trim()) return;
+      if (!block || !isRendered(block.node) || !codeSource(block.node).trim()) return;
       editor.dispatch({
         effects: diagramMode.of({ pos: block.pos, editing: false }),
         selection: GardSelection.cursor(block.pos),
@@ -338,7 +449,7 @@ const previewDiagram = Widget.create({
 export function selectCodeLanguage(editor, block, language) {
   if (!editor.editable || block?.node.type !== CodeBlock.type) return false;
   const existing = CodeBlockLanguage.isInSet(block.node.tag.marks);
-  const preview = language === "mermaid" && !!codeSource(block.node).trim();
+  const preview = RENDERED_LANGUAGES.has(language) && !!codeSource(block.node).trim();
   editor.dispatch({
     changes: language
       ? { from: block.pos, add: CodeBlockLanguage.of(language) }
@@ -347,7 +458,7 @@ export function selectCodeLanguage(editor, block, language) {
         : undefined,
     ...(preview && {
       effects: diagramMode.of({ pos: block.pos, editing: false }),
-      // Choosing Mermaid is an explicit request to render. Move outside the
+      // Choosing Mermaid or Sift is an explicit request to render. Move outside the
       // source in the same transaction so local caret tracking cannot reopen it.
       selection: GardSelection.cursor(block.pos),
     }),
@@ -364,21 +475,23 @@ export function wordgardWidgets() {
     Decoration.Point.source.of((state) => {
       const entries = [];
       state.doc.iterate((node, pos) => {
-        if (!isMermaid(node)) return;
+        const language = renderedLanguage(node);
+        if (!language) return;
         if (showCode(state, node, pos)) {
           if (!state.readOnly && codeSource(node).trim())
             entries.push([
-              Decoration.Point.widget(previewDiagram, { side: 1 }),
+              Decoration.Point.widget(previewDiagram.of({ language }), { side: 1 }),
               pos + node.length - 1,
             ]);
         } else {
+          const rendered = { source: codeSource(node), editable: !state.readOnly };
           entries.push([
             Decoration.Point.shape(
               // Keep Wordgard's native content hole: atomic replacement shapes
               // cannot apply partial remote edits to a non-atomic CodeBlock.
               // Selection entering source reveals it in the same transaction.
               Elt.mk("div", { class: "wordgard-diagram-block" }, [
-                diagram.of({ source: codeSource(node), editable: !state.readOnly }),
+                language === SIFT_LANGUAGE ? siftTable.of(rendered) : diagram.of(rendered),
                 // The content hole must stay last: Wordgard 0.6.2 reparents
                 // trailing widgets into it when range decorations change.
                 Elt.mk("pre", { hidden: "", "aria-hidden": "true" }, [0]),
@@ -429,7 +542,7 @@ export function wordgardCodeLanguages(languages) {
         if (
           node.type === CodeBlock.type &&
           node.content.length &&
-          (!isMermaid(node) || showCode(state, node, pos))
+          (!isRendered(node) || showCode(state, node, pos))
         )
           entries.push([
             Decoration.Point.widget(

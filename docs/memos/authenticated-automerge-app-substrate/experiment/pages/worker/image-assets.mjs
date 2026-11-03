@@ -8,6 +8,7 @@ import {
   validAssetId,
   imageAssetUrl,
 } from "../shared/image-assets.mjs";
+import { DATASET_MAX_BYTES, PARQUET_MEDIA_TYPE } from "../shared/dataset-assets.mjs";
 
 export const imageAssetKey = (pageId, assetId) => `pages/${pageId}/assets/${assetId}`;
 const invalid = () => {
@@ -211,15 +212,52 @@ export function inspectImage(bytes) {
   return { mime_type, width, height };
 }
 
-export async function readImageBody(source, { signal } = {}) {
+const PARQUET_MAGIC = "PAR1";
+const invalidParquet = () => {
+  throw new HttpError(415, "Use a valid, unencrypted Parquet file");
+};
+
+/**
+ * Check the Parquet container: `PAR1` at both ends and a footer length that
+ * fits between them. Encrypted-footer files end in `PARE` and are refused.
+ * The Worker never decodes the Thrift footer or any column data; readers
+ * decode it in the browser.
+ */
+export function inspectParquet(bytes) {
+  if (!(bytes instanceof Uint8Array) || bytes.length < 12) invalidParquet();
+  if (ascii(bytes, 0, 4) !== PARQUET_MAGIC || ascii(bytes, bytes.length - 4, 4) !== PARQUET_MAGIC)
+    invalidParquet();
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const footer = view.getUint32(bytes.length - 8, true);
+  if (footer === 0 || footer > bytes.length - 12) invalidParquet();
+  return { mime_type: PARQUET_MEDIA_TYPE };
+}
+
+/** The upload route's check: a raster image or a Parquet dataset, chosen by
+ * the leading bytes. */
+export function inspectAsset(bytes) {
+  if (bytes instanceof Uint8Array && bytes.length >= 4 && ascii(bytes, 0, 4) === PARQUET_MAGIC)
+    return inspectParquet(bytes);
+  try {
+    return inspectImage(bytes);
+  } catch (error) {
+    if (error?.status !== 415) throw error;
+    throw new HttpError(415, "Use a valid, static PNG, JPEG, or WebP image, or a Parquet file");
+  }
+}
+
+const IMAGE_TOO_LARGE = "Images must be 5 MiB or smaller";
+const ASSET_MAX_BYTES = Math.max(IMAGE_MAX_BYTES, DATASET_MAX_BYTES);
+
+export async function readImageBody(
+  source,
+  { signal, tooLarge = IMAGE_TOO_LARGE, maxBytes = IMAGE_MAX_BYTES } = {},
+) {
   const length = source.headers.get("content-length");
-  const invalidLength =
-    length !== null && (!/^\d+$/.test(length) || Number(length) > IMAGE_MAX_BYTES);
+  const invalidLength = length !== null && (!/^\d+$/.test(length) || Number(length) > maxBytes);
   const reader = source.body?.getReader();
   if (!reader)
-    throw invalidLength
-      ? new HttpError(413, "Images must be 5 MiB or smaller")
-      : new HttpError(400, "Image bytes required");
+    throw invalidLength ? new HttpError(413, tooLarge) : new HttpError(400, "Image bytes required");
   let size = 0;
   const chunks = [];
   let onAbort;
@@ -231,15 +269,15 @@ export async function readImageBody(source, { signal } = {}) {
     : undefined;
   try {
     signal?.throwIfAborted();
-    if (invalidLength) throw new HttpError(413, "Images must be 5 MiB or smaller");
+    if (invalidLength) throw new HttpError(413, tooLarge);
     for (;;) {
       const { done, value } = await (aborted
         ? Promise.race([reader.read(), aborted])
         : reader.read());
       if (done) break;
       size += value.byteLength;
-      if (size > IMAGE_MAX_BYTES) {
-        throw new HttpError(413, "Images must be 5 MiB or smaller");
+      if (size > maxBytes) {
+        throw new HttpError(413, tooLarge);
       }
       chunks.push(value);
     }
@@ -298,6 +336,34 @@ function storedImageMetadata(object, pageId, assetId) {
   };
 }
 
+function storedDatasetMetadata(object, pageId, assetId) {
+  const metadata = object?.customMetadata;
+  if (
+    !object ||
+    object.httpMetadata?.contentType !== PARQUET_MEDIA_TYPE ||
+    !Number.isInteger(object.size) ||
+    object.size < 12 ||
+    object.size > DATASET_MAX_BYTES ||
+    metadata?.page_id !== pageId ||
+    metadata?.hash !== assetId ||
+    metadata?.width !== undefined ||
+    metadata?.height !== undefined
+  )
+    throw new HttpError(500, "Invalid stored dataset metadata");
+  return {
+    asset_id: assetId,
+    asset_url: imageAssetUrl(pageId, assetId),
+    mime_type: PARQUET_MEDIA_TYPE,
+    size: object.size,
+  };
+}
+
+const isDataset = (object) => object?.httpMetadata?.contentType === PARQUET_MEDIA_TYPE;
+const storedAssetMetadata = (object, pageId, assetId) =>
+  isDataset(object)
+    ? storedDatasetMetadata(object, pageId, assetId)
+    : storedImageMetadata(object, pageId, assetId);
+
 /**
  * Resolve only a validated immutable asset in this Page. The caller must enforce
  * current Page access; this helper never grants access or reads another Page.
@@ -310,19 +376,37 @@ export async function requireStoredImageAsset(bucket, { pageId, assetId }) {
   if (!bucket) throw new HttpError(503, "Image storage is unavailable");
   const stored = await bucket.head(imageAssetKey(pageId, assetId));
   if (!stored) throw new HttpError(404, "Image not found in this Page", "image_not_found");
+  if (isDataset(stored))
+    throw new HttpError(
+      415,
+      "This asset is a Parquet dataset, not an image. Show it with a sift code block.",
+    );
   return storedImageMetadata(stored, pageId, assetId);
 }
 
-/** Store only validated original bytes; authorization belongs to the caller. */
-export async function persistImageAsset(bucket, { pageId, bytes, contentTypes = [] }) {
+/**
+ * Store only validated original bytes; authorization belongs to the caller.
+ * `accept: "image"` admits rasters only (import_page_image, comment images);
+ * `accept: "any"` also admits Parquet datasets (the Page asset route).
+ */
+export async function persistPageAsset(
+  bucket,
+  { pageId, bytes, contentTypes = [], accept = "image" },
+) {
   if (!validPageId(pageId)) throw new HttpError(400, "Invalid image reference");
-  if (bytes.byteLength > IMAGE_MAX_BYTES)
-    throw new HttpError(413, "Images must be 5 MiB or smaller");
-  const image = inspectImage(bytes);
+  if (bytes.byteLength > (accept === "image" ? IMAGE_MAX_BYTES : ASSET_MAX_BYTES))
+    throw new HttpError(413, accept === "image" ? IMAGE_TOO_LARGE : FILE_TOO_LARGE);
+  const inspected = accept === "image" ? inspectImage(bytes) : inspectAsset(bytes);
+  const dataset = inspected.mime_type === PARQUET_MEDIA_TYPE;
+  if (bytes.byteLength > (dataset ? DATASET_MAX_BYTES : IMAGE_MAX_BYTES))
+    throw new HttpError(413, dataset ? "Datasets must be 5 MiB or smaller" : IMAGE_TOO_LARGE);
   for (const contentType of contentTypes) {
     const claimed = contentType?.split(";")[0].trim().toLowerCase();
-    if (claimed && claimed !== "application/octet-stream" && claimed !== image.mime_type)
-      throw new HttpError(415, "Image bytes do not match Content-Type");
+    if (claimed && claimed !== "application/octet-stream" && claimed !== inspected.mime_type)
+      throw new HttpError(
+        415,
+        dataset ? "File bytes do not match Content-Type" : "Image bytes do not match Content-Type",
+      );
   }
   const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", bytes));
   const hash = Array.from(digest, (value) => value.toString(16).padStart(2, "0")).join("");
@@ -332,12 +416,11 @@ export async function persistImageAsset(bucket, { pageId, bytes, contentTypes = 
   if (!stored) {
     stored = await bucket.put(key, bytes, {
       onlyIf: { etagDoesNotMatch: "*" },
-      httpMetadata: { contentType: image.mime_type, cacheControl: "private, no-store" },
+      httpMetadata: { contentType: inspected.mime_type, cacheControl: "private, no-store" },
       customMetadata: {
         page_id: pageId,
         hash,
-        width: String(image.width),
-        height: String(image.height),
+        ...(!dataset && { width: String(inspected.width), height: String(inspected.height) }),
       },
     });
     if (!stored) {
@@ -345,19 +428,31 @@ export async function persistImageAsset(bucket, { pageId, bytes, contentTypes = 
       stored = await bucket.head(key);
     }
   }
-  const confirmed = storedImageMetadata(stored, pageId, hash);
+  const confirmed = storedAssetMetadata(stored, pageId, hash);
   if (
     confirmed.size !== bytes.byteLength ||
-    confirmed.mime_type !== image.mime_type ||
-    confirmed.width !== image.width ||
-    confirmed.height !== image.height
+    confirmed.mime_type !== inspected.mime_type ||
+    confirmed.width !== inspected.width ||
+    confirmed.height !== inspected.height
   )
-    throw new Error("Image storage did not confirm the immutable object");
+    throw new Error("Asset storage did not confirm the immutable object");
   return {
-    asset: { asset_id: hash, url: imageAssetUrl(pageId, hash), ...image, size: bytes.byteLength },
+    asset: {
+      asset_id: hash,
+      url: imageAssetUrl(pageId, hash),
+      ...inspected,
+      size: bytes.byteLength,
+    },
     duplicate,
   };
 }
+
+/** Images only; see persistPageAsset. */
+export const persistImageAsset = (bucket, options) =>
+  persistPageAsset(bucket, { ...options, accept: "image" });
+
+const FILE_TOO_LARGE = "Files must be 5 MiB or smaller";
+const SERVED_MEDIA_TYPES = Object.freeze([...IMAGE_MEDIA_TYPES, PARQUET_MEDIA_TYPE]);
 
 /** The authorize callback is a short Page-DO request; byte transfer stays outside its queue. */
 export async function handleImageAssets(request, env, { pageId, assetId, authorize }) {
@@ -374,11 +469,15 @@ export async function handleImageAssets(request, env, { pageId, assetId, authori
     const bucket = env.PAGES_ASSETS;
     if (!bucket) throw new HttpError(503, "Image storage is unavailable");
     if (upload) {
-      const bytes = await readImageBody(request);
-      const { asset, duplicate } = await persistImageAsset(bucket, {
+      const bytes = await readImageBody(request, {
+        maxBytes: ASSET_MAX_BYTES,
+        tooLarge: FILE_TOO_LARGE,
+      });
+      const { asset, duplicate } = await persistPageAsset(bucket, {
         pageId,
         bytes,
         contentTypes: [request.headers.get("content-type")],
+        accept: "any",
       });
       const current = await authorize(true);
       if (!current.ok) return privateImageResponse(current);
@@ -389,14 +488,18 @@ export async function handleImageAssets(request, env, { pageId, assetId, authori
     const key = imageAssetKey(pageId, assetId);
     const object = await (request.method === "HEAD" ? bucket.head(key) : bucket.get(key));
     if (!object) throw new HttpError(404, "Image not found");
-    if (!IMAGE_MEDIA_TYPES.includes(object.httpMetadata?.contentType))
-      throw new Error("Invalid stored image type");
+    const contentType = object.httpMetadata?.contentType;
+    if (!SERVED_MEDIA_TYPES.includes(contentType)) throw new Error("Invalid stored asset type");
+    // A dataset is data for the viewer to fetch, never a document to open:
+    // navigating to it downloads the file.
+    const disposition =
+      contentType === PARQUET_MEDIA_TYPE ? `attachment; filename="${assetId}.parquet"` : "inline";
     return privateImageResponse(
       new Response(request.method === "HEAD" ? null : object.body, {
         headers: {
-          "Content-Type": object.httpMetadata.contentType,
+          "Content-Type": contentType,
           "Content-Length": String(object.size),
-          "Content-Disposition": "inline",
+          "Content-Disposition": disposition,
           ...(object.httpEtag && { ETag: object.httpEtag }),
         },
       }),

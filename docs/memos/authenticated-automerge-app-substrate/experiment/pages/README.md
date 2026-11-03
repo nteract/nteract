@@ -321,6 +321,21 @@ references; it does not publish the Page or change asset access.
   zoom controls get a gutter beside a shrunk diagram. Source and
   language are shared content; rendered SVG is not stored. Cmd/Ctrl+Enter
   continues in a paragraph. Pages does not execute code.
+- **Dataset tables:** a code block whose language is `sift` holds one JSON
+  object, `{"src": "/api/pages/<id>/assets/<sha256>", "title": "…"}`, and
+  renders the Parquet asset at `src` as a Sift table. It reveals and hides its
+  source with the same Edit and Preview controls as Mermaid. Dropping or
+  pasting a `.parquet` file uploads it and inserts the fence as a new block
+  after the one it landed on. A new block opens in a fresh editor: Wordgard
+  0.6.2 maps a rendered block's shape that appears at an insertion boundary
+  inside an open editor past the end of the document and throws, so the
+  fence is never spliced into the block being edited. The fence stands in
+  for a native dataset node in the rich-text schema; a table that is part of
+  the document model, rather than a Markdown convention, replaces it. Sorting,
+  filtering and scrolling stay in each reader's view; only the fence is
+  shared. Sift decodes the file in the browser
+  ([`viewer/sift-table.jsx`](viewer/sift-table.jsx)), loaded with its
+  stylesheet and WASM only when a Page shows a table.
 - **Tables:** native row/cell markers live in the same rich-text field as prose.
   Insert table chooses dimensions; Table options changes rows and columns. Tab
   moves between cells and appends a row at the end. The first row is the header.
@@ -982,8 +997,15 @@ read access before lookup, then return verified raster MIME, `nosniff`, and
 `Cache-Control: private, no-store`. No public bucket, persistent presigned URL,
 or cross-Page hash lookup is exposed.
 
-Current limits are 5 MiB per image, 8192 pixels per side, and 25 million pixels;
-the HTTP request ceiling is 6 MiB. SVG, HTML, GIF, APNG, and animated WebP are not
+The same route stores Parquet datasets for `sift` tables. The Worker checks
+only the container: `PAR1` at both ends, a footer length that fits, and no
+encrypted footer. It never decodes the footer or column data. A dataset is
+served as `application/vnd.apache.parquet` with `Content-Disposition:
+attachment`, so opening its URL downloads it. `insert_image` and
+`import_page_image` refuse datasets.
+
+Current limits are 5 MiB per image or dataset, 8192 pixels per side, and 25
+million pixels; the HTTP request ceiling is 6 MiB. SVG, HTML, GIF, APNG, and animated WebP are not
 accepted. Container validation is not full pixel decoding. Removed images and
 interrupted uploads may leave private objects: immediate deletion would break
 undo or offline references. Asset garbage collection and copying assets between
@@ -1246,12 +1268,14 @@ a Page row. A
 release serves only its own chunks, so a tab still running an earlier `app.js`
 can find its editor chunk gone: the path then answers with the app's HTML and
 the import fails. The tab asks `/health` for the build and the banner offers
-Reload. The Mermaid renderer loads only when a diagram shows; a failed import
-asks `/health` the same way.
+Reload. The Mermaid renderer loads only when a diagram shows, and the Sift
+table chunk only when a `sift` block shows; a failed import asks `/health` the
+same way.
 
 Every file `index.html` names carries a content hash too: `app-<hash>.js`,
 `app-<hash>.css`, `theme-<hash>.js`, `automerge-<hash>.wasm` and
-`subduction-<hash>.wasm`, plus `mermaid-<hash>.js` from the editor chunk. The
+`subduction-<hash>.wasm`, plus `mermaid-<hash>.js` from the editor chunk and
+`sift-<hash>.wasm` from the Sift table chunk. The
 hash is the first 40 bits of the file's sha256 in base32. `_headers` serves
 each hashed file `public, max-age=31536000, immutable` by its exact path, so
 a return visit revalidates only `index.html`, which stays

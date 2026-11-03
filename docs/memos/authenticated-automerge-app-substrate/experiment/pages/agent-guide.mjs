@@ -155,8 +155,10 @@ Branch on code, not on the error message:
   presence below.
 - image_not_found (404): the asset isn't stored on this Page.
 - unsupported_media_type (415): import_page_image or a byte upload got bytes
-  that aren't a PNG, JPEG or static WebP, or don't match their Content-Type.
-  Convert the image and import it again; the same bytes fail again.
+  that aren't a PNG, JPEG or static WebP (or, for a byte upload, an
+  unencrypted Parquet file), or don't match their Content-Type. Convert the
+  file and upload it again; the same bytes fail again. insert_image also
+  returns this for a Parquet asset: show a dataset with a sift block instead.
 - request_canceled (408): an image import or upload was canceled before it
   finished, usually because the client disconnected. Import the same file
   again; identical bytes reuse one asset.
@@ -625,6 +627,38 @@ HTTP endpoint above. MCP can import files and preserve image references, but it
 does not return image pixels. A reference from read_page is not evidence that an
 agent has seen the image. Copying a document to another deployment also requires
 transferring its private assets; copying Markdown alone is insufficient.
+
+## Datasets
+
+A Page can show a Parquet file as an interactive table. The file is a private
+Page asset like an image, up to 5 MiB, and the same upload route stores it:
+POST the raw bytes to ${origin}/api/pages/<page_id>/assets with Content-Type
+application/vnd.apache.parquet and your API-key bearer header. The response
+contains asset_id, asset_url, mime_type and size. In the browser, an editor can
+drop or paste a .parquet file into a block.
+
+Show it with a fenced code block whose language is sift. Its body is one JSON
+object: src is the asset_url from the upload, and title is optional.
+
+\`\`\`\`markdown
+\`\`\`sift
+{"src": "/api/pages/<page_id>/assets/<asset_id>", "title": "Usage by day"}
+\`\`\`
+\`\`\`\`
+
+Insert it as its own block with insert_markdown; the browser does the same
+when someone drops a .parquet file. Don't splice a fence into an existing
+block: open editors can fail to redraw a table that appears inside a block
+they are showing. Readers see a Sift table: they can sort,
+filter and scroll it, and those changes stay in their own view. Nothing they
+do changes the document. read_page returns the fence as written. Pages does not
+decode the file on the server, so read the Parquet yourself when you need its
+rows, schema or row count; GET of asset_url with your bearer header returns
+the bytes.
+
+The table loads with the reader's own session. A reader without access to the
+Page, or a src that isn't a Page asset path, sees a message in place of the
+table. Keep src a relative /api/pages/... path; other URLs never load.
 
 ## JSON tools
 
