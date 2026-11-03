@@ -682,13 +682,19 @@ export const tools = [
   ),
   tool(
     "move_page",
-    'Move a Page you own under another Page you own, or to a new position among its siblings, in one call. Name the destination with parent_id; to move to a Project\'s top level, pass the Project\'s home Page (get_project\'s home_page_id). position is "first", "last" (default), {"before": sibling_page_id} or {"after": sibling_page_id}, where the sibling is already under that parent. The Page keeps its ID, URL, content, comments, sharing and heads: this is a Catalog write, no document changes. Its sub-pages move with it, trashed ones included (descendants and trashed_descendants in the result). Needs page_id, parent_id, idempotency_key and the list_pages retry_token; no read_page first. Refused: a Project\'s home Page (home_page_protected), a Page in Trash (page_trashed, restore it first), a parent that is missing, pending or in Trash (parent_unavailable), a parent that is the Page or one of its sub-pages (placement_cycle), a parent in another Project (move_destination_required; moving between Projects, by project_id, or to Your items is not available yet), nesting past 9 levels counting the deepest sub-page (nesting_depth_exceeded), and a position naming a Page that isn\'t a sibling there (position_sibling_unknown). Retrying the same key, token and payload replays the same move.',
+    'Move a Page you own to a new place, with its sub-pages, in one call: under another Page you own, to a Project\'s top level, or to Your items, within its current Project or Your items or across them (Your items into a Project, a Project out to Your items, or one Project to another). Name the destination with parent_id (a Page; its Project or Your items follows from it), with project_id (a Project you own: its top level, under its home Page; null: a root in Your items), or both, in which case the parent must be in that Project. position is "first", "last" (default), {"before": sibling_page_id} or {"after": sibling_page_id}, where the sibling is already at the destination. The Page keeps its ID, URL, content, comments, sharing and heads: this is a Catalog write, no document changes. Its sub-pages move with it, trashed ones included (descendants and trashed_descendants in the result). Projects are owner-only, so a move changes no one\'s access. Needs page_id, a destination, idempotency_key and the list_pages retry_token; no read_page first. Refused: no destination at all (move_destination_required), a Project\'s home Page (home_page_protected), a Page in Trash (page_trashed, restore it first), a parent that is missing, pending or in Trash (parent_unavailable), a Project you don\'t own or that doesn\'t exist (project_not_found), a parent outside the named project_id (placement_mismatch), a parent that is the Page or one of its sub-pages (placement_cycle), nesting past 9 levels counting the deepest sub-page (nesting_depth_exceeded), and a position naming a Page that isn\'t a sibling there (position_sibling_unknown). Retrying the same key, token and payload replays the same move.',
     {
       page_id: page,
       parent_id: {
         ...string,
         description:
-          "Page ID of the new parent, a Page you own in the same Project (or in Your items). A Project's top level is its home Page.",
+          "Page ID of the new parent, a Page you own in any Project or in Your items. Omit it to move to a Project's top level or to Your items with project_id.",
+      },
+      project_id: {
+        ...project,
+        type: ["string", "null"],
+        description:
+          "Project ID (prj_…) of a Project you own: without parent_id, its top level; with parent_id, the parent's Project, checked. null moves the Page to Your items. Never a Page ID.",
       },
       position: {
         description:
@@ -716,7 +722,7 @@ export const tools = [
       },
       idempotency_key: guard.idempotency_key,
     },
-    ["page_id", "parent_id", "idempotency_key", "retry_token"],
+    ["page_id", "idempotency_key", "retry_token"],
     WRITE,
   ),
   tool(

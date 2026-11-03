@@ -19,9 +19,19 @@ import {
   canAddMarkInRange,
 } from "wordgard/command";
 import { history, undo, redo, undoDepth, redoDepth } from "wordgard/history";
-import { tables } from "wordgard/table";
+import { tables, addRow, addColumn, deleteRow, deleteColumn } from "wordgard/table";
 import { insertTable, tablePresentation, tableKeys, selectedTable } from "./wordgard-tables.mjs";
 import { TableMenu } from "./TableMenu.jsx";
+
+// The phone bar's table actions, by MobileBar TABLE_ACTIONS name.
+const TABLE_COMMANDS = {
+  "row-after": [addRow, "after"],
+  "row-before": [addRow, "before"],
+  "column-after": [addColumn, "after"],
+  "column-before": [addColumn, "before"],
+  "row-delete": [deleteRow],
+  "column-delete": [deleteColumn],
+};
 import { CODE_LANGUAGES, codeHighlighting } from "./code-highlight.mjs";
 import { MobileBar } from "./MobileBar.jsx";
 import { mobileCommentScope } from "./mobile-comment.mjs";
@@ -87,6 +97,7 @@ import {
 import { PagesLink, TaskList, elements } from "./wordgard-model.mjs";
 import { taskLists } from "./wordgard-task-lists.mjs";
 import { markdownShortcuts } from "./wordgard-shortcuts.mjs";
+import { displaySymbols } from "./wordgard-symbols.mjs";
 import { clickBelowFinalBlock, exitBlock, leaveFinalBlock } from "./wordgard-leave-block.mjs";
 import { projectChanges } from "./wordgard-projection.mjs";
 import {
@@ -399,6 +410,7 @@ export function WordgardEditor(props) {
         wordgardCodeNewlines,
         wordgardListStarts,
         codeHighlighting,
+        displaySymbols,
         uploadPreviews,
         undoHistory.extension,
         permissions.current.of(editConfig(latest.current.editable)),
@@ -1042,7 +1054,10 @@ export function WordgardEditor(props) {
       if (name === "link") return openLink();
       if (name === "highlight") Command.dispatch(editor, toggleHighlight);
       else if (name === "table") insertTable(editor);
-      else if (marks[name]) Command.dispatch(editor, toggleMark, marks[name]);
+      else if (TABLE_COMMANDS[name]) {
+        if (!selectedTable(editor.state)) return;
+        Command.dispatch(editor, ...TABLE_COMMANDS[name]);
+      } else if (marks[name]) Command.dispatch(editor, toggleMark, marks[name]);
       else if (name === "undo" || name === "redo")
         Command.dispatch(editor, name === "undo" ? undo : redo);
       else if (["bullet", "ordered", "task"].includes(name))

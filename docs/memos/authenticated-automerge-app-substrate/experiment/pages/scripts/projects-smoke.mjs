@@ -629,8 +629,109 @@ try {
     idempotency_key: moveKey(),
   });
   assert.equal(cycle.body.code, "placement_cycle");
-  report.cleaned = true;
   complete("move_page nested a Page under another over MCP; listing and breadcrumbs follow");
+
+  // A person creates a Project from /projects, then moves a loose Page into
+  // it from the Page's menu on a phone. The Page keeps its heads, its sub-page
+  // follows, and it moves on to Your items and back over MCP.
+  const notesTitle = "Conference notes " + Date.now();
+  await owner.goto(`${origin}/projects`);
+  await owner.getByRole("button", { name: "New Project", exact: true }).click();
+  const creator = owner.getByRole("dialog", { name: "New Project" });
+  await creator.getByLabel("Title").fill(notesTitle);
+  await creator.getByLabel(/Description/).fill("Talks and hallway notes.");
+  await owner.screenshot({ path: `${output}/new-project-dialog.png` });
+  await creator.getByRole("button", { name: "Create Project" }).click();
+  await expect(owner.getByRole("heading", { name: notesTitle })).toBeVisible({ timeout: 30000 });
+  await expect(owner).toHaveURL(new RegExp(`/project/prj_`));
+  const notesProject = (await ok("owner", "list_projects")).projects.find(
+    (entry) => entry.title === notesTitle,
+  );
+  assert.ok(notesProject, "the dialog created the Project through create_project");
+  assert.equal(notesProject.description, "Talks and hallway notes.");
+  complete("New Project in the browser created a Project and opened it");
+
+  const loose = await ok("owner", "create_page", {
+    title: "Keynote",
+    markdown: "Opening remarks.",
+    idempotency_key: crypto.randomUUID(),
+  });
+  const looseChild = await ok("owner", "create_page", {
+    title: "Keynote Q&A",
+    parent_id: loose.page_id,
+    idempotency_key: crypto.randomUUID(),
+  });
+  const looseHeads = (
+    await ok("owner", "read_page", { page_id: loose.page_id, include_content: false })
+  ).heads;
+  const moverContext = await browser.newContext({
+    viewport: { width: 390, height: 844 },
+    deviceScaleFactor: 3,
+    isMobile: true,
+    hasTouch: true,
+    storageState: await context.storageState(),
+  });
+  const movePhone = await moverContext.newPage();
+  phones.set("move", movePhone);
+  movePhone.on("pageerror", (error) => report.errors.push(error.message));
+  await movePhone.goto(`${origin}/p/${loose.page_id}`);
+  await expect(movePhone.locator("wg-content").first()).toContainText("Opening remarks.", {
+    timeout: 30000,
+  });
+  await movePhone.getByRole("button", { name: "More page actions" }).first().click();
+  await movePhone.getByRole("menuitem", { name: "Move to…" }).click();
+  const mover = movePhone.getByRole("dialog", { name: /^Move/ });
+  await expect(mover.getByLabel("Move to")).toHaveValue("your-items");
+  await mover.getByLabel("Move to").selectOption({ label: notesTitle });
+  await expect(mover.getByLabel(/Under/)).toBeEnabled({ timeout: 30000 });
+  await movePhone.screenshot({ path: `${output}/move-dialog-phone.png` });
+  await mover.getByRole("button", { name: "Move", exact: true }).click();
+  await expect(mover).toBeHidden({ timeout: 30000 });
+  await expect(movePhone.getByRole("navigation", { name: "Breadcrumbs" })).toContainText(
+    notesTitle,
+    {
+      timeout: 30000,
+    },
+  );
+  const notesPages = await ok("owner", "list_pages", { project_id: notesProject.project_id });
+  for (const pageId of [loose.page_id, looseChild.page_id])
+    assert.ok(
+      notesPages.pages.some((entry) => entry.page_id === pageId),
+      "the Page and its sub-page are in the Project",
+    );
+  assert.deepEqual(
+    (await ok("owner", "read_page", { page_id: loose.page_id, include_content: false })).heads,
+    looseHeads,
+    "a move changes no Page heads",
+  );
+  await moverContext.close();
+  phones.delete("move");
+  complete("Move to… on a phone moved a Page from Your items into the new Project");
+
+  const across = await ok("owner", "move_page", {
+    page_id: loose.page_id,
+    parent_id: roadmap.page_id,
+    retry_token: authority.retry_token,
+    idempotency_key: moveKey(),
+  });
+  assert.equal(across.project_id, project.project_id, "Project to Project");
+  const out = await ok("owner", "move_page", {
+    page_id: loose.page_id,
+    project_id: null,
+    retry_token: authority.retry_token,
+    idempotency_key: moveKey(),
+  });
+  assert.equal(out.project_id, null, "Project to Your items");
+  assert.equal(out.parent_id, null);
+  assert.equal(out.descendants, 1);
+  const missing = await mcp("owner", "move_page", {
+    page_id: loose.page_id,
+    retry_token: authority.retry_token,
+    idempotency_key: moveKey(),
+  });
+  assert.equal(missing.body.code, "move_destination_required");
+  report.cleaned = true;
+  complete("move_page moved the Page between Projects and out to Your items over MCP");
   assert.deepEqual(report.errors, []);
 } catch (error) {
   report.failure = error.stack || error.message;

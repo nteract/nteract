@@ -5,6 +5,7 @@ import { createRoot } from "react-dom/client";
 import {
   ChevronDown,
   FileText,
+  FolderInput,
   FolderOpen,
   LogOut,
   Link,
@@ -50,10 +51,13 @@ import "./sharing-panel.css";
 import "./comments.css";
 import "./save-status.css";
 import { PagePicker } from "./PagePicker.jsx";
+import { ProjectCreator } from "./ProjectCreator.jsx";
+import { MoveDialog } from "./MoveDialog.jsx";
+import { moveOrigin } from "./container-dialog-machine.mjs";
 import { TrashView } from "./TrashView.jsx";
 import { Breadcrumbs, ProjectView } from "./ProjectView.jsx";
 import { IndexNav, PagesIndex, ProjectsIndex } from "./IndexViews.jsx";
-import { listProjects, pageBreadcrumbs } from "./projects.mjs";
+import { listProjects, pageLocation } from "./projects.mjs";
 import { closeTrashedSessions, moveToTrashError, restorePage } from "./trash.mjs";
 import { listAllPages, matchingPages } from "./page-list.mjs";
 import { quotaNotice } from "./quota.mjs";
@@ -137,7 +141,11 @@ function App() {
     // or null. `visit` remounts the listing for each navigation, Back
     // included; `query` follows the search typed on /pages.
     [index, setIndex] = useState(null),
-    [crumbs, setCrumbs] = useState([]);
+    // read_page's location for the open Page, null until it answers.
+    [placement, setPlacement] = useState(null),
+    // The New Project or Move to… dialog: null, { kind: "create" } or
+    // { kind: "move", pageId, title, projectId }. Each runs its own machine.
+    [containerDialog, setContainerDialog] = useState(null);
   const [toolbar, setToolbar] = useState(null),
     [toolbarOpen, setToolbarOpen] = useState(false),
     [active, setActive] = useState(null),
@@ -308,11 +316,11 @@ function App() {
     bootPreview.dispatch({ type: "installed" });
     setProjectOpen(null);
     setIndex(null);
-    setCrumbs([]);
+    setPlacement(null);
     // Breadcrumbs show only the Project and parents this account can open.
-    void pageBreadcrumbs(tool, next.pageId).then(
+    void pageLocation(tool, next.pageId).then(
       (value) => {
-        if (host.current === next) setCrumbs(value);
+        if (host.current === next) setPlacement(value);
       },
       () => {},
     );
@@ -785,6 +793,70 @@ function App() {
       );
     }
   }
+  /** The visible "More page actions" button (desktop or phone header),
+   * where focus goes back when the Move dialog closes. */
+  function pageMenuButton() {
+    return [...document.querySelectorAll('button[aria-label="More page actions"]')].find(
+      (button) => button.getClientRects().length > 0,
+    );
+  }
+  /** Move to…: only the Page's owner, signed in as that account, moves it.
+   * The dialog starts where read_page says the Page is. */
+  async function startMove() {
+    const moving = host.current;
+    if (!moving) return;
+    if (
+      moving.authRequired ||
+      moving.identity.principal !== authentication.current?.identity?.principal
+    ) {
+      setError("Sign in with this Page's original account to move it.");
+      return;
+    }
+    let where = placement;
+    if (!where) {
+      try {
+        where = await pageLocation(tool, moving.pageId);
+      } catch (error) {
+        showError(error);
+        return;
+      }
+      if (host.current !== moving) return;
+      setPlacement(where);
+    }
+    const projectCrumb = where.breadcrumbs.find((crumb) => crumb.kind === "project");
+    setContainerDialog({
+      kind: "move",
+      pageId: moving.pageId,
+      title: page?.title,
+      origin: moveOrigin(where),
+      currentProject: where.project_id
+        ? { project_id: where.project_id, title: projectCrumb?.title }
+        : null,
+    });
+  }
+  /** A move landed: the Page list, Projects and breadcrumbs follow it. */
+  function moved(receipt) {
+    setContainerDialog(null);
+    const where = receipt.project_id
+      ? projects.find((project) => project.project_id === receipt.project_id)?.title || "Project"
+      : "Your items";
+    setNotice(`Moved to ${where}`);
+    void refresh().catch(() => {});
+    const current = host.current;
+    if (current?.pageId === receipt.page_id)
+      void pageLocation(tool, current.pageId).then(
+        (value) => {
+          if (host.current === current) setPlacement(value);
+        },
+        () => {},
+      );
+  }
+  /** A Project was created: list it and open it. */
+  function projectCreated(projectId) {
+    setContainerDialog(null);
+    void refresh().catch(() => {});
+    openProject(projectId);
+  }
   async function remove() {
     const deleting = host.current;
     if (!deleting) return;
@@ -967,6 +1039,13 @@ function App() {
           icon: RotateCcw,
           run: restoreCurrent,
         },
+        session.canDelete &&
+          !pages.find((item) => item.page_id === page?.page_id)?.home && {
+            key: "move",
+            label: "Move to…",
+            icon: FolderInput,
+            run: startMove,
+          },
         session.canDelete && {
           key: "trash",
           label: "Move to Trash",
@@ -1135,9 +1214,31 @@ function App() {
             projects={projects}
             currentProjectId={projectOpen}
             onOpenProject={(id) => openProject(id)}
+            onCreateProject={() => setContainerDialog({ kind: "create" })}
             creating={creating || !!session?.authRequired}
             error={pickerError}
           />
+          {containerDialog?.kind === "create" && (
+            <ProjectCreator
+              tool={tool}
+              onClose={() => setContainerDialog(null)}
+              onCreated={(receipt) => projectCreated(receipt.project_id)}
+            />
+          )}
+          {containerDialog?.kind === "move" && (
+            <MoveDialog
+              key={containerDialog.pageId}
+              tool={tool}
+              pageId={containerDialog.pageId}
+              title={containerDialog.title}
+              origin={containerDialog.origin}
+              currentProject={containerDialog.currentProject}
+              returnFocus={pageMenuButton}
+              projects={projects}
+              onClose={() => setContainerDialog(null)}
+              onMoved={moved}
+            />
+          )}
           {page ? (
             <main
               className={commentsOpen ? "workspace document with-comments" : "workspace document"}
@@ -1145,7 +1246,7 @@ function App() {
               <article ref={article}>
                 <h1 className="document-print-title sr-only">{page.title || "Untitled"}</h1>
                 <Breadcrumbs
-                  crumbs={crumbs}
+                  crumbs={placement?.breadcrumbs ?? []}
                   onOpenProject={(id) => openProject(id)}
                   onOpenPage={open}
                 />
@@ -1336,6 +1437,7 @@ function App() {
               tool={tool}
               onNavigate={navigateIndex}
               onOpenProject={(id) => openProject(id)}
+              onProjectCreated={projectCreated}
               onError={reportListing(index.visit, index.principal)}
               onRetry={retryListing}
             />

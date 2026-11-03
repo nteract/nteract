@@ -2099,3 +2099,74 @@ details.account-actions > div a:hover {
     min-height: 64px;
   }
 }
+
+/* New Project and Move to… (ContainerDialog.jsx). */
+.container-dialog .picker-content {
+  max-height: inherit;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+.container-form {
+  display: flex;
+  flex-direction: column;
+  gap: 0.9rem;
+  margin: 0;
+  padding: 0.5rem 1.2rem 1.2rem;
+}
+.container-field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  font-size: 0.875rem;
+  font-weight: 500;
+}
+.container-field input,
+.container-field textarea,
+.container-field select {
+  width: 100%;
+  min-height: 40px;
+  padding: 0.55rem 0.7rem;
+  border: 1px solid var(--border);
+  border-radius: 0.55rem;
+  background: var(--surface);
+  color: inherit;
+  /* 16px keeps phones from zooming into the field. */
+  font: inherit;
+  font-size: 16px;
+  font-weight: 400;
+}
+.container-field textarea {
+  resize: vertical;
+}
+.container-form > p {
+  margin: 0;
+}
+.container-note {
+  font-size: 0.8rem;
+}
+.container-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.6rem;
+}
+.container-actions button {
+  min-height: 40px;
+}
+@media (max-width: 640px) {
+  .container-actions button {
+    flex: 1;
+  }
+}
+.picker-section-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+.picker-new-project {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  min-height: 32px;
+  font-size: 0.8rem;
+}

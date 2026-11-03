@@ -19,6 +19,7 @@ import { LOCATION_REVISION_KEY, MOVE_STATUS, movePage, movePageSpec } from "./mo
 import { CrashStorage } from "./operation-intent-fixture.mjs";
 import { Storage, ids, shapeOf, unmigrate, world } from "./projects-fixture.mjs";
 import { tools } from "../mcp.mjs";
+import { createPageInProject } from "../viewer/projects.mjs";
 
 const TABLE = new URL("../test/fixtures/machines/move-page.json", import.meta.url);
 
@@ -36,18 +37,14 @@ test("move-page: the table covers every state and event, and the machine agrees"
 
 test("the move_page tool declares its keys, positions and refusals", () => {
   const tool = tools.find((entry) => entry.name === "move_page");
-  assert.deepEqual(tool.inputSchema.required, [
-    "page_id",
-    "parent_id",
-    "idempotency_key",
-    "retry_token",
-  ]);
+  assert.deepEqual(tool.inputSchema.required, ["page_id", "idempotency_key", "retry_token"]);
   assert.equal(tool.inputSchema.additionalProperties, false);
   assert.deepEqual(Object.keys(tool.inputSchema.properties).sort(), [
     "idempotency_key",
     "page_id",
     "parent_id",
     "position",
+    "project_id",
     "retry_token",
   ]);
   assert.deepEqual(tool.annotations, {
@@ -62,6 +59,9 @@ test("the move_page tool declares its keys, positions and refusals", () => {
     "parent_unavailable",
     "placement_cycle",
     "move_destination_required",
+    "project_not_found",
+    "placement_mismatch",
+    "Your items",
     "nesting_depth_exceeded",
     "position_sibling_unknown",
     "heads",
@@ -245,6 +245,172 @@ test("move_page reparents a Page with its subtree, reorders siblings, and change
   assert.equal((await s.entries()).get(loose).parent_id, otherLoose);
 });
 
+test("move_page moves a subtree across containers: Your items, Project and Project", async (t) => {
+  const w = await world(t);
+  const s = await stage(w, "First");
+  const second = await w.createProject("Second");
+  const traces = traceEffects(t);
+  const storage = w.catalogStorage();
+  // A loose Page with a sub-page, a grandchild, and a trashed sub-page.
+  const loose = await s.page({ title: "Notes" });
+  const child = await s.page({ title: "Child", parent_id: loose });
+  const grandchild = await s.page({ title: "Grandchild", parent_id: child });
+  const gone = await s.page({ title: "Gone", parent_id: loose });
+  await s.trash(gone);
+  const heads = Object.fromEntries([loose, child, grandchild].map((id) => [id, w.heads(id)]));
+  const subtreeIn = async (space) => {
+    const entries = await s.entries();
+    for (const id of [loose, child, grandchild, gone])
+      assert.equal(deriveLocation(entries, id).space_id, space, id);
+  };
+  const destination = (pageId, extra) => ({
+    ...s.moveArgs(pageId, undefined),
+    parent_id: undefined,
+    ...extra,
+  });
+
+  // Your items → a Project's top level, by project_id.
+  const into = await w.call(
+    "owner",
+    "move_page",
+    destination(loose, { project_id: s.project.project_id }),
+  );
+  assert.equal(into.status, 200, JSON.stringify(into.body));
+  assert.deepEqual(into.body, {
+    page_id: loose,
+    project_id: s.project.project_id,
+    parent_id: s.home,
+    position: into.body.position,
+    location_revision: 1,
+    descendants: 2,
+    trashed_descendants: 1,
+  });
+  await subtreeIn(s.project.project_id);
+  assert.deepEqual(traces.at(-1), ["settle", "plan", "write", "sync"]);
+
+  // Project → Project, under a Page there, by parent_id alone.
+  const target = await s.page({
+    title: "Target",
+    project_id: second.project_id,
+  });
+  const across = await s.move(loose, target);
+  assert.equal(across.status, 200, JSON.stringify(across.body));
+  assert.equal(across.body.project_id, second.project_id);
+  assert.equal(across.body.parent_id, target);
+  assert.equal(across.body.location_revision, 2);
+  await subtreeIn(second.project_id);
+  const read = await w.call("owner", "read_page", {
+    page_id: grandchild,
+    include_content: false,
+  });
+  assert.deepEqual(
+    read.body.breadcrumbs.map((crumb) => crumb.page_id ?? crumb.project_id),
+    [second.project_id, second.home_page_id, target, loose, child],
+  );
+
+  // Project → Your items, as a root.
+  const out = await w.call("owner", "move_page", destination(loose, { project_id: null }));
+  assert.equal(out.status, 200, JSON.stringify(out.body));
+  assert.equal(out.body.project_id, null);
+  assert.equal(out.body.parent_id, null);
+  assert.equal(out.body.trashed_descendants, 1);
+  await subtreeIn(null);
+
+  // Same container, by both names at once: the Project and a Page in it.
+  const back = await w.call(
+    "owner",
+    "move_page",
+    destination(loose, { project_id: s.project.project_id }),
+  );
+  assert.equal(back.status, 200);
+  const sibling = await s.page({
+    title: "Sibling",
+    project_id: s.project.project_id,
+  });
+  const same = await s.move(loose, sibling, undefined, {
+    project_id: s.project.project_id,
+  });
+  assert.equal(same.status, 200, JSON.stringify(same.body));
+  assert.equal(same.body.parent_id, sibling);
+  assert.equal(same.body.location_revision, 5);
+
+  await s.invariants();
+  for (const id of [loose, child, grandchild]) assert.deepEqual(w.heads(id), heads[id], id);
+  assert.ok(await storage.get("host/index/dirty"));
+  // The trashed sub-page restores into the container its parent now sits in.
+  const restored = await w.call("owner", "restore_page", {
+    page_id: gone,
+    idempotency_key: w.key(),
+  });
+  assert.equal(restored.status, 200, JSON.stringify(restored.body));
+  assert.equal(deriveLocation(await s.entries(), gone).space_id, s.project.project_id);
+});
+
+test("New Page from a Project view lands at that Project's top level", async (t) => {
+  const w = await world(t);
+  const project = await w.createProject("Conference");
+  const call = async (operation, args) => {
+    const { status, body } = await w.call("owner", operation, args);
+    if (status !== 200) throw new Error(JSON.stringify(body));
+    return body;
+  };
+  const created = await createPageInProject(call, project.project_id);
+  assert.equal(created.project_id, project.project_id);
+  const entries = await locationEntries(w.catalogStorage());
+  assert.equal(entries.get(created.page_id).parent_id, project.home_page_id);
+  assert.equal(deriveLocation(entries, created.page_id).space_id, project.project_id);
+  const listed = await w.call("owner", "list_pages", { project_id: project.project_id });
+  assert.ok(ids(listed).includes(created.page_id));
+});
+
+test("a cross-container move keeps the depth limit and the location revision fence", async (t) => {
+  const w = await world(t);
+  const s = await stage(w, "Deep");
+  const other = await w.createProject("Other");
+  // A chain in Your items whose height fills every level below a root.
+  const root = await s.page({ title: "Root" });
+  let deepest = root;
+  for (let depth = 2; depth <= MAX_DEPTH; depth++)
+    deepest = await s.page({ title: `Depth ${depth}`, parent_id: deepest });
+  const revision = await w.catalogStorage().get(LOCATION_REVISION_KEY);
+  // A Project's top level is depth 2, one below its home Page: too deep.
+  const refused = await w.call("owner", "move_page", {
+    ...s.moveArgs(root, undefined),
+    parent_id: undefined,
+    project_id: other.project_id,
+  });
+  assert.equal(refused.status, 400);
+  assert.equal(refused.body.code, "nesting_depth_exceeded");
+  assert.equal(await w.catalogStorage().get(LOCATION_REVISION_KEY), revision, "no revision spent");
+
+  // A barrier failure on the cross-container write: the retry re-plans from
+  // what is stored and the revision advances exactly once.
+  const storage = new VolatileStorage();
+  const v = await world(t, { storage: () => storage });
+  const vs = await stage(v, "Volatile");
+  const page = await vs.page({ title: "Loose" });
+  storage.failNext = (name) => name === LOCATION_REVISION_KEY;
+  const args = {
+    ...vs.moveArgs(page, undefined),
+    parent_id: undefined,
+    project_id: vs.project.project_id,
+  };
+  const failed = await v.call("owner", "move_page", args);
+  assert.equal(failed.status, 503, JSON.stringify(failed.body));
+  assert.equal(failed.body.code, "move_unconfirmed");
+  assert.equal(deriveLocation(await vs.entries(), page).space_id, null, "nothing landed");
+  const retried = await v.call("owner", "move_page", args);
+  assert.equal(retried.status, 200, JSON.stringify(retried.body));
+  assert.equal(retried.body.location_revision, 1);
+  assert.equal(retried.body.project_id, vs.project.project_id);
+  assert.deepEqual(
+    await v.call("owner", "move_page", args),
+    retried,
+    "a replay, not a second move",
+  );
+  await vs.invariants();
+});
+
 test("move_page over MCP returns the receipt with its URL as structured content", async (t) => {
   const w = await world(t);
   const s = await stage(w);
@@ -322,11 +488,30 @@ test("each refusal carries its code and status, over HTTP and as MCP structured 
     // A, at depth 2, holds a chain down to MAX_DEPTH; one level lower is too
     // deep for its deepest sub-page.
     ["nesting_depth_exceeded", 400, s.moveArgs(a, shallow)],
-    ["move_destination_required", 400, s.moveArgs(loose, b)],
-    ["move_destination_required", 400, s.moveArgs(a, other.home_page_id)],
-    ["move_destination_required", 400, { ...s.moveArgs(a, s.home), project_id: other.project_id }],
+    // Only a request that names no destination at all lacks one.
     ["move_destination_required", 400, { ...s.moveArgs(a, s.home), parent_id: undefined }],
     ["move_destination_required", 400, { ...s.moveArgs(a, s.home), parent_id: null }],
+    ["placement_mismatch", 400, { ...s.moveArgs(a, s.home), project_id: other.project_id }],
+    ["placement_mismatch", 400, { ...s.moveArgs(a, other.home_page_id), project_id: null }],
+    [
+      "project_not_found",
+      404,
+      {
+        ...s.moveArgs(a, undefined),
+        parent_id: undefined,
+        project_id: `prj_${crypto.randomUUID()}`,
+      },
+    ],
+    [
+      "home_page_protected",
+      409,
+      {
+        ...s.moveArgs(s.home, undefined),
+        parent_id: undefined,
+        project_id: null,
+      },
+    ],
+    ["home_page_protected", 409, s.moveArgs(other.home_page_id, s.home)],
     ["project_id_as_page_id", 400, s.moveArgs(a, s.project.project_id)],
     ["invalid_position", 400, s.moveArgs(a, s.home, "middle")],
     ["invalid_position", 400, s.moveArgs(a, s.home, { before: a, after: a })],
@@ -810,5 +995,102 @@ test("property: checkInvariants holds after every move in a random run, and refu
     idempotency_key: w.key(),
   });
   assert.equal(restored.status, 200, JSON.stringify(restored.body));
+  await s.invariants();
+});
+
+/** Purge a trashed Page through preview and confirm. */
+async function purge(w, pageId) {
+  const preview = await w.call("owner", "purge_page", { page_id: pageId, action: "preview" });
+  assert.equal(preview.status, 200, JSON.stringify(preview.body));
+  const purged = await w.call("owner", "purge_page", {
+    page_id: pageId,
+    action: "confirm",
+    preview_token: preview.body.preview_token,
+    idempotency_key: w.key(),
+  });
+  assert.equal(purged.status, 200, JSON.stringify(purged.body));
+}
+
+for (const destination of ["another Project", "Your items"])
+  test(`a trashed sub-page moved to ${destination} restores there once its parent is purged`, async (t) => {
+    const w = await world(t);
+    const s = await stage(w, "From");
+    const to = destination === "Your items" ? null : await w.createProject("To");
+    const p = await s.page({ title: "P", project_id: s.project.project_id });
+    const child = await s.page({ title: "T", parent_id: p });
+    await s.trash(child);
+    const storage = w.catalogStorage();
+    assert.equal((await storage.get(`trash/${child}`)).restore_space_id, s.project.project_id);
+    const moved = await s.move(p, undefined, undefined, {
+      parent_id: undefined,
+      project_id: to?.project_id ?? null,
+    });
+    assert.equal(moved.status, 200, JSON.stringify(moved.body));
+    assert.equal(moved.body.trashed_descendants, 1);
+    assert.equal((await storage.get(`trash/${child}`)).restore_space_id, to?.project_id);
+    await s.trash(p);
+    await purge(w, p);
+    const restored = await w.call("owner", "restore_page", {
+      page_id: child,
+      idempotency_key: w.key(),
+    });
+    assert.equal(restored.status, 200, JSON.stringify(restored.body));
+    assert.equal(restored.body.project_id ?? null, to?.project_id ?? null);
+    assert.equal(restored.body.parent_id ?? null, to?.home_page_id ?? null);
+    await s.invariants();
+  });
+
+/** What a refused cross-account move must leave alone: the owner's entry for
+ * the Page, its location revision, and which Catalog holds it. */
+async function untouched(w, pageId) {
+  const owner = w.catalogStorage();
+  const member = w.catalogStorage(w.member);
+  return {
+    entry: (await owner.get(`page/${pageId}`)) ?? null,
+    revision: (await owner.get(LOCATION_REVISION_KEY)) ?? null,
+    memberRevision: (await member.get(LOCATION_REVISION_KEY)) ?? null,
+    hostedByMember: !!(await member.get(`page/${pageId}`)),
+  };
+}
+
+test("move_page across accounts: another account's Project, parent or Page is refused and nothing moves", async (t) => {
+  const w = await world(t);
+  const s = await stage(w);
+  const mine = await s.page({ title: "Mine", project_id: s.project.project_id });
+  const theirProject = await w.call("member", "create_project", {
+    title: "Theirs",
+    idempotency_key: w.key(),
+  });
+  assert.equal(theirProject.status, 200, JSON.stringify(theirProject.body));
+  const theirPage = await w.createPage(
+    { title: "Their page", project_id: theirProject.body.project_id },
+    "member",
+  );
+  assert.equal(theirPage.status, 200, JSON.stringify(theirPage.body));
+  const before = await untouched(w, mine);
+
+  const intoProject = await s.move(mine, undefined, undefined, {
+    parent_id: undefined,
+    project_id: theirProject.body.project_id,
+  });
+  assert.equal(intoProject.body.code, "project_not_found", JSON.stringify(intoProject.body));
+  assert.deepEqual(await untouched(w, mine), before);
+
+  const underParent = await s.move(mine, theirPage.body.page_id);
+  assert.equal(underParent.body.code, "parent_unavailable", JSON.stringify(underParent.body));
+  assert.deepEqual(await untouched(w, mine), before);
+
+  const authority = (await w.call("member", "list_pages")).body;
+  const byMember = await w.call("member", "move_page", {
+    page_id: mine,
+    project_id: theirProject.body.project_id,
+    retry_token: authority.retry_token,
+    idempotency_key: authority.retry_key_prefix + crypto.randomUUID(),
+  });
+  assert.ok(
+    ["page_not_found", "not_page_owner"].includes(byMember.body.code),
+    JSON.stringify(byMember.body),
+  );
+  assert.deepEqual(await untouched(w, mine), before);
   await s.invariants();
 });
