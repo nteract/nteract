@@ -11,6 +11,7 @@ import {
   readFileSync,
   readdirSync,
   renameSync,
+  statSync,
   writeFileSync,
 } from "node:fs";
 import path from "node:path";
@@ -22,6 +23,14 @@ import {
   verifyRuntime,
   parseRuntimeVersion,
 } from "./profiles.mjs";
+import {
+  awaitBuild,
+  fingerprint,
+  observedFingerprint,
+  parseRunning,
+  planActivation,
+  runningRecord,
+} from "./activation.mjs";
 const [stage, apply, extra] = process.argv.slice(2);
 const target = stageTarget(stage);
 assertQualifiedDeploymentTarget(target);
@@ -43,6 +52,10 @@ const run = (command, args) => {
 const hash = (bytes) => createHash("sha256").update(bytes).digest("hex");
 const manifest = JSON.parse(readFileSync(stage + "/manifest.json"));
 const expected = verifyDeployment(manifest, target);
+// /health reports this id once the node serves the release.
+const wantBuild = manifest.build_receipt?.build_id;
+if (!/^[a-f0-9]{12}$/.test(wantBuild ?? ""))
+  throw new Error("Manifest build receipt must carry the 12-hex build id");
 function stagedFiles(directory, prefix = "") {
   return readdirSync(directory)
     .sort()
@@ -65,7 +78,7 @@ if (
   throw new Error("Stage file set differs from manifest");
 for (const [file, digest] of Object.entries(manifest.files)) {
   if (
-    !/^(release\/[A-Za-z0-9_./-]+|(install|firewall|publish|profiles|isolated-publication|routes)[.]mjs)$/.test(
+    !/^(release\/[A-Za-z0-9_./-]+|(install|activation|firewall|publish|profiles|isolated-publication|routes)[.]mjs)$/.test(
       file,
     ) ||
     file.split("/").includes("..")
@@ -86,16 +99,89 @@ const base = "/opt/" + expected.service,
   state = "/var/lib/" + expected.service;
 const unit = "/etc/systemd/system/" + expected.service + ".service";
 const owned = existsSync(configDir + "/ownership.json");
-if (owned && existsSync(base + "/celld"))
+const installedRuntime =
+  owned && existsSync(base + "/celld") ? hash(readFileSync(base + "/celld")) : null;
+if (installedRuntime)
   verifyRuntime(runtime, {
     version: parseRuntimeVersion(run(base + "/celld", ["--version"])),
-    sha256: hash(readFileSync(base + "/celld")),
+    sha256: installedRuntime,
   });
 if (owned) {
   const ownership = JSON.parse(readFileSync(configDir + "/ownership.json"));
   if (ownership.prefix !== expected.prefix || ownership.hostname !== expected.hostname)
     throw new Error("Existing service has different ownership");
 }
+const helpers = ["firewall.mjs", "profiles.mjs"];
+const helpersHash = (directory) =>
+  hash(helpers.map((helper) => hash(readFileSync(directory + "/" + helper))).join("\n"));
+const runningPath = configDir + "/running.json";
+const serviceActive = () => {
+  try {
+    return run("systemctl", ["is-active", expected.service]) === "active";
+  } catch {
+    // is-active exits non-zero for every state but active.
+    return false;
+  }
+};
+const serviceProcess = () => {
+  const properties = Object.fromEntries(
+    run("systemctl", [
+      "show",
+      expected.service,
+      "--property=MainPID",
+      "--property=ExecMainStartTimestamp",
+      "--property=NeedDaemonReload",
+      "--timestamp=unix",
+    ])
+      .split("\n")
+      .map((line) => [line.slice(0, line.indexOf("=")), line.slice(line.indexOf("=") + 1)]),
+  );
+  return {
+    pid: Number(properties.MainPID),
+    startedAtSeconds: Number(/^@(\d+)$/.exec(properties.ExecMainStartTimestamp ?? "")?.[1]),
+    needDaemonReload: properties.NeedDaemonReload !== "no",
+  };
+};
+// What the running process started with, read before this installation
+// changes any of it. See activation.mjs.
+function observeRunning() {
+  if (!owned || !serviceActive()) return null;
+  const current = serviceProcess();
+  const recorded = existsSync(runningPath)
+    ? parseRunning(readFileSync(runningPath, "utf8"), current)
+    : null;
+  if (recorded) return recorded;
+  const { pid, startedAtSeconds } = current;
+  const file = (paths, sha256) =>
+    paths.every((file) => existsSync(file))
+      ? { sha256: sha256(), mtimeMs: Math.max(...paths.map((file) => statSync(file).mtimeMs)) }
+      : null;
+  // The newest rollout recorded before the process started carries the
+  // configured wrangler.json that process deployed.
+  const provenance = readdirSync(configDir)
+    .filter((name) => /^rollout-[a-f0-9]{40}$/.test(name))
+    .map((name) => configDir + "/" + name + "/provenance.json")
+    .filter((file) => existsSync(file))
+    .map((file) => ({
+      sha256: JSON.parse(readFileSync(file)).configured_wrangler_sha256,
+      mtimeMs: statSync(file).mtimeMs,
+    }))
+    .filter(({ mtimeMs }) => mtimeMs < startedAtSeconds * 1000)
+    .sort((a, b) => b.mtimeMs - a.mtimeMs)[0];
+  return observedFingerprint({
+    startedAtSeconds,
+    exeSha256:
+      Number.isSafeInteger(pid) && pid > 0 ? hash(readFileSync("/proc/" + pid + "/exe")) : null,
+    needDaemonReload: current.needDaemonReload,
+    unit: file([unit], () => hash(readFileSync(unit))),
+    config: provenance ?? null,
+    firewall: file(
+      helpers.map((helper) => base + "/" + helper),
+      () => helpersHash(base),
+    ),
+  });
+}
+const running = observeRunning();
 if (!owned) {
   for (const target of [base, configDir, state, unit])
     if (existsSync(target)) throw new Error("An unowned deployment path already exists: " + target);
@@ -260,12 +346,15 @@ function permissions(directory) {
   }
 }
 permissions(base + "/releases");
-cpSync(expected.runtime, base + "/celld.next");
-if (hash(readFileSync(base + "/celld.next")) !== runtime.sha256)
-  throw new Error("Copied celld differs from the verified release");
-chmodSync(base + "/celld.next", 0o755);
-renameSync(base + "/celld.next", base + "/celld");
-for (const helper of ["firewall.mjs", "profiles.mjs"]) {
+// Keep the executable's inode when the bytes already match.
+if (installedRuntime !== runtime.sha256) {
+  cpSync(expected.runtime, base + "/celld.next");
+  if (hash(readFileSync(base + "/celld.next")) !== runtime.sha256)
+    throw new Error("Copied celld differs from the verified release");
+  chmodSync(base + "/celld.next", 0o755);
+  renameSync(base + "/celld.next", base + "/celld");
+}
+for (const helper of helpers) {
   cpSync(stage + "/" + helper, base + "/" + helper);
   chmodSync(base + "/" + helper, 0o644);
 }
@@ -301,15 +390,59 @@ writeFileSync(
   ),
   { mode: 0o600 },
 );
-writeFileSync(
-  unit,
-  `[Unit]\nDescription=Isolated native Pages experiment on celld\nAfter=network-online.target\nWants=network-online.target\n\n[Service]\nType=simple\nUser=${expected.service}\nGroup=${expected.service}\nWorkingDirectory=${state}\nEnvironment=AWS_REGION=us-east-1\nEnvironment=CELLD_DURABILITY=bucket\nEnvironment=CELLD_OTEL=1\nEnvironment=CELLD_OTEL_RETENTION=30d\n${profile.otelTracesSampler ? `Environment=OTEL_TRACES_SAMPLER=${profile.otelTracesSampler}\n` : ""}Environment=CELLD_TOKIO_THREADS=2\nEnvironment=CELLD_V8_HEAP_LIMIT_MB=256\nEnvironment=CELLD_MAX_REQUEST_BODY_BYTES=6291456\nEnvironment=CELLD_MAX_RSS_MB=768\nEnvironment=CELLD_LOCAL_CACHE_MAX_BYTES=536870912\nEnvironment=CELLD_TEST_DATA_DIR=${state}/cache\nExecStartPre=+/usr/bin/node ${base}/firewall.mjs --target ${target}\nExecStart=${base}/celld --bucket s3://${expected.bucket}/${expected.prefix} --region ${expected.region} --listen ${expected.listen} --internal-listen ${expected.internalListen}\nRestart=on-failure\nRestartSec=5\nTimeoutStopSec=60\nLimitNOFILE=65536\nMemoryMax=1G\nCPUQuota=100%\nTasksMax=256\nNoNewPrivileges=true\nPrivateTmp=true\nProtectHome=true\nProtectSystem=strict\nReadWritePaths=${state}\nUMask=0077\n\n[Install]\nWantedBy=multi-user.target\n`,
-  { mode: 0o644 },
-);
-run("systemd-analyze", ["verify", unit]);
-run("systemctl", ["daemon-reload"]);
+const unitText = `[Unit]\nDescription=Isolated native Pages experiment on celld\nAfter=network-online.target\nWants=network-online.target\n\n[Service]\nType=simple\nUser=${expected.service}\nGroup=${expected.service}\nWorkingDirectory=${state}\nEnvironment=AWS_REGION=us-east-1\nEnvironment=CELLD_DURABILITY=bucket\nEnvironment=CELLD_OTEL=1\nEnvironment=CELLD_OTEL_RETENTION=30d\n${profile.otelTracesSampler ? `Environment=OTEL_TRACES_SAMPLER=${profile.otelTracesSampler}\n` : ""}Environment=CELLD_TOKIO_THREADS=2\nEnvironment=CELLD_V8_HEAP_LIMIT_MB=256\nEnvironment=CELLD_MAX_REQUEST_BODY_BYTES=6291456\nEnvironment=CELLD_MAX_RSS_MB=768\nEnvironment=CELLD_LOCAL_CACHE_MAX_BYTES=536870912\nEnvironment=CELLD_TEST_DATA_DIR=${state}/cache\nExecStartPre=+/usr/bin/node ${base}/firewall.mjs --target ${target}\nExecStart=${base}/celld --bucket s3://${expected.bucket}/${expected.prefix} --region ${expected.region} --listen ${expected.listen} --internal-listen ${expected.internalListen}\nRestart=on-failure\nRestartSec=5\nTimeoutStopSec=60\nLimitNOFILE=65536\nMemoryMax=1G\nCPUQuota=100%\nTasksMax=256\nNoNewPrivileges=true\nPrivateTmp=true\nProtectHome=true\nProtectSystem=strict\nReadWritePaths=${state}\nUMask=0077\n\n[Install]\nWantedBy=multi-user.target\n`;
+const desired = fingerprint({
+  unit: hash(unitText),
+  celld: runtime.sha256,
+  config: hash(readFileSync(configPath)),
+  firewall: helpersHash(base),
+});
+if (!existsSync(unit) || readFileSync(unit, "utf8") !== unitText) {
+  writeFileSync(unit, unitText, { mode: 0o644 });
+  run("systemd-analyze", ["verify", unit]);
+  run("systemctl", ["daemon-reload"]);
+}
 run("systemctl", ["enable", expected.service]);
-run("systemctl", ["restart", expected.service]);
+const activation = planActivation({ active: serviceActive(), running, desired });
+if (activation.action === "restart") run("systemctl", ["restart", expected.service]);
+// The firewall rules name the service cgroup, which a running process keeps,
+// so a changed helper applies in place.
+else if (activation.applyFirewall)
+  run("/usr/bin/node", [base + "/firewall.mjs", "--target", target]);
+const served = awaitBuild({
+  want: wantBuild,
+  probe: () => {
+    try {
+      const health = JSON.parse(
+        run("curl", [
+          "--fail",
+          "--silent",
+          "--show-error",
+          "--max-time",
+          "5",
+          "http://" + expected.listen + "/health",
+        ]),
+      );
+      return {
+        ok: health.ok === true && health.prototype === "pages-celld-native",
+        build: health.build,
+      };
+    } catch (error) {
+      return { ok: false, error: error.message };
+    }
+  },
+  sleep: (ms) => run("sleep", [String(ms / 1000)]),
+  now: () => Date.now(),
+  // A restart drains (up to CELLD_SHUTDOWN_TOTAL_MS, 40 s) and then waits for
+  // fleet readiness. Adoption waits for the next pointer poll (30 s).
+  timeoutMs: activation.action === "restart" ? 240_000 : 120_000,
+  intervalMs: 2000,
+});
+writeFileSync(
+  runningPath,
+  JSON.stringify(runningRecord(desired, serviceProcess()), null, 2) + "\n",
+  { mode: 0o600 },
+);
 console.log(
   JSON.stringify({
     installed: true,
@@ -317,6 +450,11 @@ console.log(
     runtime_sha256: manifest.runtime.sha256,
     prefix: expected.prefix,
     hostname: expected.hostname,
+    activation: activation.action,
+    ...(activation.reasons.length && { restart_reasons: activation.reasons }),
+    ...(activation.applyFirewall && { firewall_applied: true }),
+    build: wantBuild,
+    serving_after_ms: served.waitedMs,
     published: false,
   }),
 );

@@ -82,6 +82,7 @@ function prepare() {
   stageArtifacts(dist, path.join(output, "release"));
   for (const name of [
     "install.mjs",
+    "activation.mjs",
     "firewall.mjs",
     "publish.mjs",
     "profiles.mjs",

@@ -95,13 +95,90 @@ service account, firewall table/mark, and release stage. Page10's firewall mark
 is `0x00200000`, the next bit below Page9's `0x00400000`; Pages takes the next,
 `0x00100000`. The installer checks
 ownership and resource conflicts, preserves Durable Object bindings/migrations
-and persistent data, and restarts only the selected QA service. Installation and
+and persistent data, and touches only the selected service. Installation and
 publication require lab1 SSH and sudo.
 
 Each installation copies `firewall.mjs` and `profiles.mjs` into its own
 `/opt/<service>`, and its unit's `ExecStartPre` runs that copy. A frozen service
 keeps the copy that qualified it, so Page9 keeps restarting after qualification
 moved to Page10 and Pages.
+
+### App-only and full deploys
+
+`install` always runs `celld deploy`, which uploads the release and moves the
+fleet's deployment pointer. A running node adopts the new pointer at its next
+poll (`CELLD_DEPLOY_POLL_S`, 30 s) without restarting. Resident Durable Objects
+move to the new code within `CELLD_DEPLOY_MAX_AGE_S` (60 s). Open WebSockets
+stay up.
+
+A restart is different: celld drains, answers 503 while it hands cells off,
+and on a one-node fleet the handoff cannot succeed, so a restart is downtime.
+The installer therefore restarts only when something the process reads at
+startup changed ([activation.mjs](scripts/deployment/activation.mjs)):
+
+| Changed since the process started | Install does |
+| --- | --- |
+| Nothing but the release (app-only) | Adopt: no restart |
+| `firewall.mjs` or `profiles.mjs` only | Adopt, and apply the firewall in place |
+| Rendered unit file | Rewrite, `daemon-reload`, restart |
+| celld executable (SHA-256) | Copy, restart |
+| Configured `wrangler.json` (bindings, migrations, vars) | Restart |
+| Service not active | Start |
+
+The firewall rules name the service cgroup, which lives as long as the process,
+so `ExecStartPre` does not need to run per deploy. A changed helper runs
+directly with `node /opt/<service>/firewall.mjs --target <target>`.
+
+Either way, install then polls `http://<listen>/health` every 2 s until `build`
+equals the manifest's `build_receipt.build_id`. It fails with the last health
+response after 120 s for an adoption or 240 s for a restart. On success it
+writes `/etc/<service>/running.json`: the SHA-256 of the unit, executable,
+configured `wrangler.json` and firewall helpers the process now runs with,
+keyed by its `MainPID` and start second. The next install compares against
+that record. A failed restart leaves the old record, so a retry restarts again.
+
+Without a record for the current process (a crash restart, a manual restart,
+an earlier installer), the installer observes the process instead. Installers
+write their files before they restart, so it trusts a file only if it is older
+than the process start (`ExecMainStartTimestamp`), the unit has no pending
+`daemon-reload`, and `/proc/<pid>/exe` hashes to the executable. Anything else
+counts as unknown and restarts.
+
+The install output names the outcome: `"activation": "adopt"` or `"restart"`
+with `restart_reasons`, and `serving_after_ms`.
+
+celld 0.6.3 bounds the drain with `CELLD_SHUTDOWN_TOTAL_MS` (40 s); the
+handoff gives up after 5/8 of it without progress (25 s). The profiles leave
+it at the default. Lowering it shortens a one-node restart by at most that
+interval, but it changes the unit (one restart to roll it in) and cuts the
+handoff budget once a fleet has a second node, where the handoff succeeds and
+the survivor would otherwise have to recover the stopped node's log. With
+app-only deploys, a restart is rare: a celld upgrade, a unit change, or a
+binding change.
+
+### Restore points
+
+The fleet bucket is versioned and keeps noncurrent versions for 14 days, so
+every object as of a moment stays recoverable without copying it. A restore
+point records the current version id of every key under the prefix, and
+taking one does not stop the service:
+
+```sh
+aws s3api list-object-versions --bucket nteract-celld-lab-621741996708 \
+  --prefix standalone/<prefix>/ \
+  --query 'Versions[?IsLatest].{Key:Key,VersionId:VersionId,Size:Size}' \
+  --output json > versions.json
+aws s3 cp versions.json \
+  s3://nteract-celld-lab-621741996708/standalone/<prefix>-snapshots/<date>-<label>/versions.json
+```
+
+Take one before a release that changes storage. To restore, stop the service on
+every node of the fleet, copy each listed version back over its key
+(`aws s3api copy-object --copy-source '<bucket>/<key>?versionId=<id>'`), delete
+current keys under the prefix that the manifest does not list, move each node's
+`/var/lib/<service>` contents aside so no node resumes from newer local state,
+and start the nodes. A restore point is worth 14 days; after that its versions
+expire.
 
 The runtime must match the official celld 0.6.3 Linux x86_64 executable at
 `/usr/local/bin/celld-v0.6.3`, including the SHA-256 in `CELLD_RELEASE`. Services

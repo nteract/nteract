@@ -9,6 +9,7 @@ import { insertRoutes, routes } from "./deployment/publish.mjs";
 import { configureDns } from "./deployment/dns.mjs";
 import { pagesFirewall } from "./deployment/firewall.mjs";
 import * as profiles from "./deployment/profiles.mjs";
+import * as activation from "./deployment/activation.mjs";
 import * as fs from "node:fs";
 import { createHash } from "node:crypto";
 import { runInNewContext } from "node:vm";
@@ -337,6 +338,13 @@ function installFixture(
     installedRuntime,
     candidateVersion,
     qualify = profiles.assertQualifiedDeploymentTarget,
+    // The unit's systemd state: { active, pid, startedAt (unix s), needDaemonReload }.
+    service = { active: false },
+    // Each local /health probe returns this body; a function receives the
+    // build the manifest wants.
+    health = (build) => JSON.stringify({ ok: true, prototype: "pages-celld-native", build }),
+    // A fake clock that `sleep` advances, for adoption timeouts.
+    clock,
   } = {},
 ) {
   const root = mkdtempSync(path.join(tmpdir(), "pages-install-retry-"));
@@ -378,6 +386,7 @@ function installFixture(
   const manifest = {
     source_sha: "a".repeat(40),
     source_tree: "b".repeat(40),
+    build_receipt: { build_id: "0123456789ab" },
     deployment,
     runtime: { version: profiles.CELLD_RELEASE.version, sha256: profiles.CELLD_RELEASE.sha256 },
     files: Object.fromEntries(Object.entries(files).map(([file, value]) => [file, digest(value)])),
@@ -398,6 +407,8 @@ function installFixture(
   for (const parent of ["/opt", "/etc", "/var/lib"]) mkdirSync(local(parent), { recursive: true });
   mkdirSync(local("/etc/systemd/system"), { recursive: true });
   const calls = [];
+  const outputs = [];
+  const unitState = { ...service };
   let pendingFailure = failure;
   const filesystem = {};
   for (const name of [
@@ -406,6 +417,7 @@ function installFixture(
     "mkdirSync",
     "readFileSync",
     "readdirSync",
+    "statSync",
     "writeFileSync",
   ])
     filesystem[name] = (file, ...args) => fs[name](local(file), ...args);
@@ -447,6 +459,32 @@ function installFixture(
       if (command === "/usr/sbin/nft") return rules;
       if (command === "useradd") return "";
       if (command === "runuser") return JSON.stringify({ id: "current" });
+      if (command === "systemctl" && args[0] === "is-active") {
+        if (unitState.active) return "active";
+        throw Object.assign(Error("inactive"), { status: 3 });
+      }
+      if (command === "systemctl" && args[0] === "show")
+        return [
+          "MainPID=" + (unitState.pid ?? 0),
+          "ExecMainStartTimestamp=" + (unitState.startedAt ? "@" + unitState.startedAt : ""),
+          "NeedDaemonReload=" + (unitState.needDaemonReload ? "yes" : "no"),
+        ].join("\n");
+      if (command === "systemctl" && args[0] === "restart") {
+        Object.assign(unitState, {
+          active: true,
+          needDaemonReload: false,
+          pid: (unitState.pid ?? 4000) + 1,
+          startedAt: Math.floor(Date.now() / 1000),
+        });
+        return "";
+      }
+      if (command === "curl")
+        return health(JSON.parse(read(stage + "/manifest.json")).build_receipt.build_id);
+      if (command === "sleep") {
+        if (clock) clock.now += Number(args[0]) * 1000;
+        return "";
+      }
+      if (command === "/usr/bin/node") return "";
       if (command === "systemd-analyze" || command === "systemctl") return "";
       throw Error("Unexpected command: " + command);
     },
@@ -468,7 +506,9 @@ function installFixture(
     "node:fs": filesystem,
     "node:path": path,
     "./profiles.mjs": { ...profiles, assertQualifiedDeploymentTarget: qualify },
+    "./activation.mjs": activation,
   };
+  const read = (file) => fs.readFileSync(local(file), "utf8");
   const execute = () =>
     runInNewContext(compiled, {
       exports: {},
@@ -477,11 +517,14 @@ function installFixture(
         return modules[name];
       },
       process: { argv: ["node", "install.mjs", stage, "--apply"], getuid: () => 0 },
-      console: { log() {} },
+      console: { log: (line) => outputs.push(JSON.parse(line)) },
+      ...(clock && { Date: { now: () => clock.now } }),
     });
   return {
     execute,
     calls,
+    outputs,
+    unitState,
     write,
     local,
     manifest,
@@ -489,7 +532,7 @@ function installFixture(
     configDir,
     release: "/opt/" + deployment.service + "/releases/" + manifest.source_sha,
     audit: configDir + "/rollout-" + manifest.source_sha,
-    read: (file) => fs.readFileSync(local(file), "utf8"),
+    read,
   };
 }
 
@@ -1520,4 +1563,207 @@ test("fresh Pages installation owns pages.runtimed.run and its -live resources",
   assert.match(rules, /table inet nteract_pages_live \{/);
   assert.match(rules, /ct mark set ct mark \| 0x00100000/);
   assert.match(rules, /"system[.]slice\/nteract-pages-live[.]service"/);
+});
+
+// Activation: a running node adopts a new pointer without a restart unless
+// something it reads at startup changed.
+function liveFixture(t, options = {}) {
+  const f = installFixture(t, {
+    target: "page10",
+    installedRuntime: { version: "celld 0.6.3", bytes: "qualified runtime" },
+    ...options,
+  });
+  f.execute();
+  assert.equal(f.outputs.at(-1).activation, "restart");
+  f.calls.length = 0;
+  return f;
+}
+// A second release: new source, new build id, same artifacts.
+function nextRelease(f, build = "ba9876543210") {
+  const manifest = {
+    ...f.manifest,
+    source_sha: "c".repeat(40),
+    build_receipt: { build_id: build },
+  };
+  f.write(f.stage + "/manifest.json", JSON.stringify(manifest));
+  return manifest;
+}
+const commands = (f, verb) =>
+  f.calls.filter(({ command, args }) => command === "systemctl" && args[0] === verb);
+const running = (f) => JSON.parse(f.read(f.configDir + "/running.json"));
+// The recorded inputs, without the process they describe.
+const inputs = (record) =>
+  Object.fromEntries(
+    Object.entries(record).filter(([key]) => !["pid", "started_at"].includes(key)),
+  );
+
+test("an app-only release adopts the new pointer without restarting celld", (t) => {
+  const f = liveFixture(t);
+  const before = running(f);
+  nextRelease(f);
+  f.execute();
+  assert.equal(f.calls.filter(({ command }) => command === "runuser").length, 1);
+  assert.deepEqual(commands(f, "restart"), []);
+  assert.deepEqual(commands(f, "daemon-reload"), []);
+  assert.ok(f.calls.some(({ command }) => command === "curl"));
+  assert.deepEqual(running(f), before);
+  const output = f.outputs.at(-1);
+  assert.equal(output.activation, "adopt");
+  assert.equal(output.build, "ba9876543210");
+  assert.equal(output.restart_reasons, undefined);
+});
+
+for (const [input, reason] of [
+  ["unit_sha256", "unit"],
+  ["celld_sha256", "celld"],
+  ["config_sha256", "config"],
+])
+  test(`a changed ${reason} restarts the node`, (t) => {
+    const f = liveFixture(t);
+    const desired = running(f);
+    f.write(f.configDir + "/running.json", JSON.stringify({ ...desired, [input]: "0".repeat(64) }));
+    nextRelease(f);
+    f.execute();
+    assert.equal(commands(f, "restart").length, 1);
+    assert.deepEqual(f.outputs.at(-1).restart_reasons, [reason]);
+    assert.deepEqual(inputs(running(f)), inputs(desired));
+  });
+
+test("a rendered unit that differs on disk is rewritten, reloaded and restarted", (t) => {
+  const f = liveFixture(t);
+  const unit = "/etc/systemd/system/nteract-page10.service";
+  const rendered = f.read(unit);
+  const old = rendered.replace("CELLD_TOKIO_THREADS=2", "CELLD_TOKIO_THREADS=1");
+  f.write(unit, old);
+  const desired = running(f);
+  f.write(
+    f.configDir + "/running.json",
+    JSON.stringify({
+      ...desired,
+      unit_sha256: createHash("sha256").update(old).digest("hex"),
+    }),
+  );
+  nextRelease(f);
+  f.execute();
+  assert.equal(f.read(unit), rendered);
+  assert.equal(commands(f, "daemon-reload").length, 1);
+  assert.equal(commands(f, "restart").length, 1);
+  assert.deepEqual(f.outputs.at(-1).restart_reasons, ["unit"]);
+});
+
+test("a changed firewall helper applies in place without a restart", (t) => {
+  const f = liveFixture(t);
+  f.write(
+    f.configDir + "/running.json",
+    JSON.stringify({ ...running(f), firewall_sha256: "0".repeat(64) }),
+  );
+  nextRelease(f);
+  f.execute();
+  assert.deepEqual(commands(f, "restart"), []);
+  assert.deepEqual(
+    f.calls.filter(({ command }) => command === "/usr/bin/node").map(({ args }) => [...args]),
+    [["/opt/nteract-page10/firewall.mjs", "--target", "page10"]],
+  );
+  assert.equal(f.outputs.at(-1).firewall_applied, true);
+});
+
+test("an inactive service starts even when nothing changed", (t) => {
+  const f = liveFixture(t);
+  f.unitState.active = false;
+  nextRelease(f);
+  f.execute();
+  assert.equal(commands(f, "restart").length, 1);
+  assert.deepEqual(f.outputs.at(-1).restart_reasons, ["inactive"]);
+});
+
+test("adoption that never serves the new build fails loudly and keeps the record", (t) => {
+  const clock = { now: 1_000_000 };
+  const f = liveFixture(t, {
+    clock,
+    health: () =>
+      JSON.stringify({ ok: true, prototype: "pages-celld-native", build: "0123456789ab" }),
+  });
+  const before = f.read(f.configDir + "/running.json");
+  nextRelease(f);
+  assert.throws(f.execute, /did not serve build ba9876543210 within 120000 ms.*build=0123456789ab/);
+  assert.deepEqual(commands(f, "restart"), []);
+  assert.equal(f.read(f.configDir + "/running.json"), before);
+  assert.ok(clock.now - 1_000_000 >= 120_000);
+});
+
+test("a failed restart is retried, and the record moves only after the node serves", (t) => {
+  const f = liveFixture(t);
+  const desired = running(f);
+  const stale = { ...desired, celld_sha256: "0".repeat(64) };
+  f.write(f.configDir + "/running.json", JSON.stringify(stale));
+  nextRelease(f);
+  // Fail the first restart only.
+  const original = f.calls.push.bind(f.calls);
+  let failed = false;
+  f.calls.push = (call) => {
+    original(call);
+    if (!failed && call.command === "systemctl" && call.args[0] === "restart") {
+      failed = true;
+      throw Object.assign(Error("injected"), { status: 1 });
+    }
+  };
+  assert.throws(f.execute, /failed \(status 1\)/);
+  assert.deepEqual(running(f), stale);
+  f.execute();
+  assert.equal(commands(f, "restart").length, 2);
+  assert.deepEqual(inputs(running(f)), inputs(desired));
+});
+
+// Services installed before running.json existed are observed: a file older
+// than the process start is what the process read.
+function legacyFixture(t, { startedOffset, needDaemonReload = false, exe = "qualified runtime" }) {
+  const f = liveFixture(t);
+  rmSync(f.local(f.configDir + "/running.json"));
+  f.write("/proc/4242/exe", exe);
+  Object.assign(f.unitState, {
+    active: true,
+    pid: 4242,
+    startedAt: Math.floor(Date.now() / 1000) + startedOffset,
+    needDaemonReload,
+  });
+  nextRelease(f);
+  return f;
+}
+
+test("a running service from an earlier installer adopts without a restart", (t) => {
+  const f = legacyFixture(t, { startedOffset: 5 });
+  f.execute();
+  assert.deepEqual(commands(f, "restart"), []);
+  assert.equal(f.outputs.at(-1).activation, "adopt");
+  assert.equal(running(f).celld_sha256, profiles.CELLD_RELEASE.sha256);
+});
+
+for (const [name, options] of [
+  ["files newer than the process", { startedOffset: -100 }],
+  ["a pending daemon-reload", { startedOffset: 5, needDaemonReload: true }],
+  ["a different running executable", { startedOffset: 5, exe: "older runtime" }],
+])
+  test(`an earlier installation with ${name} restarts`, (t) => {
+    const f = legacyFixture(t, options);
+    f.execute();
+    assert.equal(commands(f, "restart").length, 1);
+    assert.deepEqual(f.outputs.at(-1).restart_reasons, [
+      name.startsWith("a different") ? "celld" : "unknown",
+    ]);
+  });
+
+test("a record from an earlier process is ignored, and the current one observed", (t) => {
+  const f = liveFixture(t);
+  // A stale record that would restart, then an out-of-band restart after it.
+  f.write(
+    f.configDir + "/running.json",
+    JSON.stringify({ ...running(f), config_sha256: "0".repeat(64) }),
+  );
+  f.write("/proc/4242/exe", "qualified runtime");
+  Object.assign(f.unitState, { pid: 4242, startedAt: Math.floor(Date.now() / 1000) + 5 });
+  nextRelease(f);
+  f.execute();
+  assert.deepEqual(commands(f, "restart"), []);
+  assert.equal(f.outputs.at(-1).activation, "adopt");
+  assert.equal(running(f).pid, 4242);
 });
