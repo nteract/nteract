@@ -537,8 +537,16 @@
   font: inherit;
   font-size: 12px;
   letter-spacing: -2px;
-  cursor: grab;
+  cursor: pointer;
   opacity: 0.6;
+}
+/* Touch: a 44 px target, always visible. */
+@media (pointer: coarse) {
+  .wordgard-dataframe-select {
+    min-width: 44px;
+    min-height: 44px;
+    opacity: 1;
+  }
 }
 .wordgard-dataframe-table:hover .wordgard-dataframe-select,
 .wordgard-dataframe-select:focus-visible {

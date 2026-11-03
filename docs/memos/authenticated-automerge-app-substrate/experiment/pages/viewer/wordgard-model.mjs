@@ -36,6 +36,7 @@ import {
   updateSpansConfig,
 } from "../model/marks.mjs";
 import { DATAFRAME_BLOCK, readDataframe } from "../shared/dataset-assets.mjs";
+import { TEXT_CONTAINERS } from "../model/schema-features.mjs";
 // The Pages table format stores physical alignment. Wordgard's stock mark
 // uses logical values and does not round-trip a physical `right` clipboard style.
 const validCellAlignment = (value) => ["left", "center", "right"].includes(value);
@@ -627,9 +628,7 @@ export function decode(spans) {
     // A dataframe stored inside a text container (a table cell, a code
     // block) can't be drawn there. No Pages writer puts one there; one from
     // a peer takes the unknown-node path below (an inline notice, lossy).
-    const inText = value.parents.some((parent) =>
-      ["code-block", "table-cell", "table-header"].includes(String(parent)),
-    );
+    const inText = value.parents.some((parent) => TEXT_CONTAINERS.has(String(parent)));
     const dataframe =
       type === DATAFRAME_BLOCK &&
       !inText &&

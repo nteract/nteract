@@ -31,12 +31,15 @@ for (const name of [
 const empty = () => ({ top: 0, bottom: 0, left: 0, right: 0, width: 0, height: 0, x: 0, y: 0 });
 dom.window.Range.prototype.getClientRects = () => [];
 dom.window.Range.prototype.getBoundingClientRect = empty;
+// Wordgard hit-tests clicks; jsdom has no layout.
+dom.window.document.elementFromPoint = () => null;
 
 const { Wordgard } = await import("wordgard/editor");
 const { GardState, GardSelection } = await import("wordgard/state");
 const { Leaf } = await import("wordgard/doc");
 const { schema, Paragraph, PagesDataframe } = await import("./wordgard-model.mjs");
-const { wordgardDataframes } = await import("./wordgard-dataframes.mjs");
+const { wordgardDataframes, dataframeEventReachesEditor } =
+  await import("./wordgard-dataframes.mjs");
 const { PARQUET_MEDIA_TYPE } = await import("../shared/dataset-assets.mjs");
 
 const pageId = "33333333-3333-4333-8333-333333333333";
@@ -95,7 +98,9 @@ test("pressing the frame selects the dataframe as a node; the canvas doesn't", (
     editor.flush();
     const frame = document.querySelector("section.wordgard-dataframe-table");
     const press = (target) =>
-      target.dispatchEvent(new window.MouseEvent("mousedown", { bubbles: true, button: 0 }));
+      target.dispatchEvent(
+        new window.MouseEvent("mousedown", { bubbles: true, cancelable: true, button: 0 }),
+      );
     press(frame.querySelector(".wordgard-dataframe-canvas"));
     assert.equal(editor.state.selection instanceof GardSelection.Node, false);
     for (const target of [
@@ -112,4 +117,60 @@ test("pressing the frame selects the dataframe as a node; the canvas doesn't", (
   } finally {
     editor.dom.remove();
   }
+});
+
+// A keyboard or screen reader activates the handle with a click. Keys typed
+// on the focused handle never reach the editor's keymap.
+test("activating the handle by keyboard selects the node and edits nothing", () => {
+  const state = GardState.create({
+    doc: schema.doc([Paragraph.create([Leaf.text("hello")]), PagesDataframe.of(attrs)]),
+    config: [
+      ...schema.elements.map((e) => GardState.schemaElement.of(e)),
+      wordgardDataframes({ pageId }),
+      Wordgard.editable.of(true),
+    ],
+  });
+  const editor = new Wordgard({ state, parent: document.body });
+  try {
+    editor.flush();
+    const before = editor.state.doc;
+    const handle = document.querySelector(".wordgard-dataframe-select");
+    editor.dispatch({ selection: GardSelection.cursor(3) });
+    handle.focus();
+    for (const key of ["Enter", "Backspace", "a"])
+      handle.dispatchEvent(
+        new window.KeyboardEvent("keydown", { key, bubbles: true, cancelable: true }),
+      );
+    assert.ok(editor.state.doc.eq(before), "keys on the handle changed the document");
+    handle.click();
+    assert.ok(editor.state.selection instanceof GardSelection.Node);
+    assert.equal(editor.state.selection.node.type, PagesDataframe);
+    assert.ok(editor.state.doc.eq(before));
+  } finally {
+    editor.dom.remove();
+  }
+});
+
+test("frame event routing: canvas stays with Sift, typing on a control stays local", () => {
+  const frame = document.createElement("section");
+  frame.innerHTML =
+    '<div class="wordgard-dataframe-header"><button class="wordgard-dataframe-select"></button></div><div class="wordgard-dataframe-canvas"><span></span></div>';
+  const at = (selector, type) => ({ type, target: frame.querySelector(selector) });
+  assert.equal(
+    dataframeEventReachesEditor(at(".wordgard-dataframe-canvas span", "mousedown")),
+    false,
+  );
+  assert.equal(
+    dataframeEventReachesEditor(at(".wordgard-dataframe-canvas span", "keydown")),
+    false,
+  );
+  for (const type of ["keydown", "keyup", "keypress", "beforeinput", "input"])
+    assert.equal(dataframeEventReachesEditor(at(".wordgard-dataframe-select", type)), false, type);
+  assert.equal(dataframeEventReachesEditor(at(".wordgard-dataframe-select", "mousedown")), true);
+  assert.equal(dataframeEventReachesEditor(at(".wordgard-dataframe-header", "copy")), true);
+});
+
+test("wordgardDataframes refuses to run without the Page it shows", () => {
+  for (const options of [undefined, {}, { pageId: "" }, { pageId: 42 }])
+    assert.throws(() => wordgardDataframes(options), /needs the Page id/);
 });
