@@ -413,7 +413,8 @@ export function WordgardEditor(props) {
         displaySymbols,
         uploadPreviews,
         undoHistory.extension,
-        permissions.current.of(editConfig(latest.current.editable)),
+        // A block decode couldn't draw as stored opens read-only.
+        permissions.current.of(editConfig(latest.current.editable && !bound.current.lossy)),
         hint.current.of(placeholderConfig(latest.current.placeholder)),
         Wordgard.clipboardInputHTMLFilter.of((html) => normalizePastedHTML(html)),
         Wordgard.domEventHandler("paste", (event) => acceptImages(imageFiles(event.clipboardData))),
@@ -923,7 +924,9 @@ export function WordgardEditor(props) {
     if (!editor) return;
     if (!editable) imageUploader.current?.cancel();
     editor.dispatch({
-      effects: permissions.current.reconfigure(editConfig(editable)),
+      effects: permissions.current.reconfigure(
+        editConfig(editable && !binding.current?.current.lossy),
+      ),
       annotations: remoteAnnotations(),
     });
   }, [editable, generation]);

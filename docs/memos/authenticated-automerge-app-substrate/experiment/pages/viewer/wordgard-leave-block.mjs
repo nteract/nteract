@@ -1,6 +1,13 @@
 import { Plot } from "wordgard/doc";
 import { GardSelection } from "wordgard/state";
-import { CodeBlock, OpaqueBlock, PagesImage, Paragraph, Table } from "./wordgard-model.mjs";
+import {
+  CodeBlock,
+  OpaqueBlock,
+  PagesImage,
+  Paragraph,
+  Table,
+  PagesUnknownBlock,
+} from "./wordgard-model.mjs";
 
 // A caret can't type its way out of some final nodes: Enter adds a line in a
 // code block, moves between table cells, and a preserved block or an image
@@ -10,7 +17,8 @@ import { CodeBlock, OpaqueBlock, PagesImage, Paragraph, Table } from "./wordgard
 // Enter, and opening a Page still writes nothing.
 
 /** The final top-level node when the caret can't leave it by typing: a code
- * block, table or preserved block, or a paragraph that ends in an image. */
+ * block, table, preserved or unknown block, or a paragraph that ends in an
+ * image. */
 export function finalBlock(doc) {
   const node = doc.content.at(-1);
   if (!node) return null;
@@ -18,6 +26,7 @@ export function finalBlock(doc) {
     node.type === CodeBlock.type ||
     node.type === Table.type ||
     node.type === OpaqueBlock ||
+    node.type === PagesUnknownBlock ||
     (node.type === Paragraph.type && node.content.at(-1)?.type === PagesImage);
   return blocked ? { node, from: doc.length - node.length, to: doc.length } : null;
 }

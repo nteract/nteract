@@ -928,3 +928,27 @@ test("a caret after an emoji keeps its side of a peer's insertion", () => {
   assert.equal(moved, binding.current.map.amToWg[raw().indexOf("XY")]);
   binding.destroy();
 });
+
+test("the binding refuses writes to a block decode couldn't draw as stored", () => {
+  const replica = fixture("Before\n\nAfter");
+  replica.change((d) => {
+    const at = d.blocks.one.richText.indexOf("After") - 1;
+    A.splitBlock(d, textPath("one"), at, {
+      type: new A.ImmutableString("paragraph"),
+      parents: [new A.ImmutableString("callout")],
+      attrs: {},
+      isEmbed: false,
+    });
+  });
+  const binding = createWordgardBinding(replica, "one");
+  assert.equal(binding.current.lossy, true);
+  const heads = A.getHeads(replica.doc);
+  assert.throws(
+    () =>
+      binding.applyEditorTransaction(
+        state(binding).update({ changes: { from: 1, insert: [Leaf.text("x")] } }),
+      ),
+    /newer version of Pages/,
+  );
+  assert.deepEqual(A.getHeads(replica.doc), heads);
+});

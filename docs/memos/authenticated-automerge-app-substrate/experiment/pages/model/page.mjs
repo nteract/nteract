@@ -1,5 +1,12 @@
 import * as A from "@automerge/automerge/slim";
-import { RICH_FORMAT, setRichMarkdown, setRichImage, projectedBlock } from "./richtext.mjs";
+import {
+  RICH_FORMAT,
+  markdownlessNode,
+  quotableNodeType,
+  setRichMarkdown,
+  setRichImage,
+  projectedBlock,
+} from "./richtext.mjs";
 import { imageAssetUrl, validAssetId } from "../shared/image-assets.mjs";
 import { projectComments } from "./comments.mjs";
 import { COMMENTS_FEATURE } from "./comments-doc.mjs";
@@ -98,6 +105,14 @@ function applyEdit(doc, op, trace, context) {
   if (op.op === "format_match") return formatMatch(doc, id, op, trace, context);
   if (op.op === "set_node") return setNode(doc, id, op, trace, context);
   if (op.op === "replace_block_markdown") {
+    const node = markdownlessNode(doc.blocks[id]);
+    if (node)
+      throw Object.assign(
+        Error(
+          `This block holds ${quotableNodeType(node) ? `a ${node}` : "a node this version of Pages doesn't know"}, which has no Markdown form, so a Markdown rewrite would lose it. Delete the block, or insert new content beside it.`,
+        ),
+        { code: "markdownless_node" },
+      );
     setRichMarkdown(doc, id, String(op.markdown ?? ""));
     trace?.push({ type: "block", block_id: id });
   } else if (op.op === "delete_block") {

@@ -114,6 +114,10 @@ Branch on code, not on the error message:
   "table-cells", "empty-link", "definition" or "unrepresentable"), line,
   column and excerpt. Rewrite that part as code, escaped text or plain
   Markdown and retry with a new key.
+- markdownless_node: replace_block_markdown targeted a block holding a node
+  with no Markdown form, such as one a newer version of Pages added (it reads
+  as [Unsupported node: <type>]). A rewrite would lose it. Edit around it with
+  replace_match, format_match or set_node, or delete the block.
 - preserved_markdown_converting (503): Pages is converting Markdown an older
   version saved on this Page. read_page still works. Wait, read_page again,
   retry; if it persists, the Page needs an operator.

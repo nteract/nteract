@@ -618,6 +618,17 @@ for (const { name } of MARK_REGISTRY.marks)
 // Literal text that looks like a highlight tag or an entity is escaped so it
 // reads back as text. Each lookahead reads a bounded run.
 const literalHighlightTag = /<(?=\/?mark\b)|&(?=#?[a-z0-9]{1,32};)/gi;
+/** What a read shows for a node this build doesn't know. The type is stored
+ * data, so only a short identifier is quoted. */
+export function unknownNodeNotice(type) {
+  const name = quotableNodeType(type);
+  return name ? `[Unsupported node: ${name}]` : "[Unsupported node]";
+}
+/** A stored node type safe to quote: a short identifier, or null. */
+export function quotableNodeType(type) {
+  const name = String(type ?? "");
+  return /^[a-z][a-z0-9-]{0,63}$/.test(name) ? name : null;
+}
 const serializer = new MarkdownSerializer(
   {
     ...defaultMarkdownSerializer.nodes,
@@ -706,6 +717,20 @@ const serializer = new MarkdownSerializer(
     raw(state, node) {
       state.renderContent(parseMarkdown(node.attrs.source, { kind: node.attrs.kind }));
     },
+    // A node this build doesn't know, written by a newer build. It reads as a
+    // notice naming its type, followed by any text it holds, so a read never
+    // hides it. replace_block_markdown refuses the block (markdownlessNode).
+    unknownBlock(state, node) {
+      const type = node.attrs.unknownBlock?.type ?? node.attrs.unknownParentBlock;
+      state.write(state.esc(unknownNodeNotice(type)));
+      state.closeBlock(node);
+      node.forEach((child, _offset, index) => {
+        if (child.type.name !== "paragraph" || child.content.size) state.render(child, node, index);
+      });
+    },
+    unknownLeaf(state, node) {
+      state.write(state.esc(unknownNodeNotice(node.attrs.unknownBlock?.type)));
+    },
   },
   markSerializers,
   { escapeExtraCharacters: literalHighlightTag },
@@ -716,6 +741,12 @@ const tableCellSerializer = new MarkdownSerializer(
     ...defaultMarkdownSerializer.nodes,
     hard_break(state) {
       state.write("<br>");
+    },
+    unknownLeaf(state, node) {
+      state.write(state.esc(unknownNodeNotice(node.attrs.unknownBlock?.type)));
+    },
+    unknownBlock(state, node) {
+      state.write(state.esc(unknownNodeNotice(node.attrs.unknownBlock?.type)));
     },
   },
   markSerializers,
@@ -1424,8 +1455,54 @@ export function codeTextUnmarked(spans) {
       : span;
   });
 }
-export const richDoc = (block) =>
-  pmDocFromSpans(adapter, codeTextUnmarked(A.spans(block, ["richText"])));
+const knownBlock = (type) => adapter.nodeMappings.some((mapping) => mapping.blockName === type);
+const TEXT_CONTAINERS = new Set(["code-block", "table-cell", "table-header"]);
+/** Spans the ProseMirror adapter can read, for a projection only. Unknown
+ * embeds in a code block always become their notice as text (a code block
+ * serializes only its text). With `all`, every unknown marker does: one
+ * outside a text container becomes a paragraph holding its notice, and
+ * unknown parents are dropped. Writers never store these spans. */
+function readableSpans(spans, all) {
+  const known = (types) => types.filter(knownBlock).map((p) => new A.ImmutableString(p));
+  const out = [];
+  for (const span of spans) {
+    if (span.type !== "block") {
+      out.push(span);
+      continue;
+    }
+    const type = String(span.value.type);
+    const parents = (span.value.parents ?? []).map(String);
+    const unknown = !knownBlock(type);
+    if (unknown && (all || (span.value.isEmbed && parents.includes("code-block")))) {
+      if (!span.value.isEmbed && !parents.some((parent) => TEXT_CONTAINERS.has(parent)))
+        out.push({
+          type: "block",
+          value: {
+            type: new A.ImmutableString("paragraph"),
+            parents: known(parents),
+            attrs: {},
+            isEmbed: false,
+          },
+        });
+      out.push({ type: "text", value: unknownNodeNotice(type), marks: {} });
+    } else if (all && parents.some((parent) => !knownBlock(parent)))
+      out.push({ ...span, value: { ...span.value, parents: known(parents) } });
+    else out.push(span);
+  }
+  return out;
+}
+/** A block's ProseMirror tree. Unknown nodes the adapter can't place, such as
+ * one stored inside a table cell or code block, are read through
+ * readableSpans, so a Page from a newer build always projects. */
+export const richDoc = (block) => {
+  const spans = codeTextUnmarked(A.spans(block, ["richText"]));
+  try {
+    return pmDocFromSpans(adapter, readableSpans(spans, false));
+  } catch (error) {
+    if (!markdownlessNode(block)) throw error;
+    return pmDocFromSpans(adapter, readableSpans(spans, true));
+  }
+};
 export function blockMarkdown(block) {
   if (!isRich(block)) return block.markdown;
   const current = exportMarkdown(richDoc(block));
@@ -1482,6 +1559,18 @@ export function setRichImage(doc, id, { src, alt }) {
   const spans = pmNodeToSpans(adapter, tree);
   A.updateSpans(doc, textPath(id), spans, updateSpansConfig);
   stampSpans(doc, spans);
+}
+/** The type of the first node in the block that Markdown can't reproduce, or
+ * null. Today that is a node this build doesn't know: rewriting its block
+ * from Markdown would delete it, so replace_block_markdown refuses. */
+export function markdownlessNode(block) {
+  if (!isRich(block)) return null;
+  for (const span of A.spans(block, ["richText"])) {
+    if (span.type !== "block") continue;
+    for (const type of [span.value?.type, ...(span.value?.parents ?? [])].map(String))
+      if (!knownBlock(type)) return type;
+  }
+  return null;
 }
 export function projectedBlock(block) {
   const { richText: _rich, ...result } = block;
