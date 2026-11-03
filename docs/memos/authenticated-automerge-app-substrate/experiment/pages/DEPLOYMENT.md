@@ -969,8 +969,13 @@ same `asset_id`), then writes each dataframe whose read-back line stands alone
 as its own block with `insert_node`. A dataframe inside a block splits that
 block there; one inside a quote or list stays a link. Import never rewrites a
 block holding a dataframe, so rerunning over a body an earlier run wrote
-converges. A bundle carries at most 256 MiB of asset bytes; export stops with a
-message past that. Import reads version 1 bundles, which have no dataframes.
+converges. Before its first write, import asks the target's tool list for
+`insert_node` and refuses a target without it. The client sends its credential
+only to `/api/pages/<id>/assets/<sha256>` paths on the target's own origin; a
+dataframe whose `src` isn't one is skipped. A dataframe whose asset is missing on
+the source, or one inside a quote or list, imports as a link and is reported in
+`dataframes_not_copied`. A bundle carries at most 256 MiB of asset bytes; export
+stops with a message past that. Import reads version 1 bundles, which have no dataframes.
 
 The report lists Pages with `preserved_markdown` (the source stored preserved
 blocks or non-Markdown blocks; check that they read as intended),

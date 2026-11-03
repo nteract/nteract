@@ -13,6 +13,7 @@ import { open, readFile, rename } from "node:fs/promises";
 import { pathToFileURL } from "node:url";
 import { isProjectId } from "../shared/routes.mjs";
 import { exportMarkdown, parseMarkdown, unsupportedMarkdown } from "../model/richtext.mjs";
+import { DATASET_MAX_BYTES } from "../shared/dataset-assets.mjs";
 
 export const BUNDLE_FORMAT = "nteract-pages-project-bundle";
 /** Version 2 adds dataframes and their asset bytes. Import reads 1 and 2. */
@@ -34,8 +35,16 @@ const ASSET_ID = /^[a-f0-9]{64}$/;
 const DATAFRAME_LINE = new RegExp(
   `^\\[Dataframe(?:: .*)?\\]\\((/api/pages/${UUID}/assets/([a-f0-9]{64}))\\)$`,
 );
-/** The largest asset the asset routes accept (shared/dataset-assets.mjs). */
-const MAX_ASSET_BYTES = 5 * 1024 * 1024;
+/** One asset's path: the only shape the client sends its credential to. */
+const ASSET_SRC = new RegExp(`^/api/pages/${UUID}/assets/([a-f0-9]{64})$`);
+/** A dataframe's src, when it is a same-origin asset path naming `assetId`. */
+const assetSrc = (src, assetId) => typeof src === "string" && ASSET_SRC.exec(src)?.[1] === assetId;
+/** Asset paths in dataframe-labelled links: dataframes, read back, whether or
+ * not the outline lists them (one in a quote or list isn't top level). */
+const DATAFRAME_LINKS = new RegExp(
+  `\\[Dataframe(?:: [^\\n]*)?\\]\\((/api/pages/${UUID}/assets/[a-f0-9]{64})\\)`,
+  "g",
+);
 /** The most asset bytes one bundle carries. Base64 grows them by a third, and
  * the bundle is one JSON string, which V8 caps near 512 MiB. */
 export const MAX_BUNDLE_ASSET_BYTES = 256 * 1024 * 1024;
@@ -199,8 +208,11 @@ export function pagesClient({
       uncertain: response.status >= 500 || response.status === 429,
     });
   }
-  /** The bytes at a same-origin asset path. */
+  /** The bytes at a same-origin asset path. Anything else is refused before
+   * the request, so the credential never goes to another origin. */
   async function download(path) {
+    if (typeof path !== "string" || !ASSET_SRC.test(path))
+      throw new TransferError(`Not an asset path: ${String(path).slice(0, 200)}`);
     const response = await assetRequest(path, { method: "GET", headers: {} }, `GET ${path}`);
     return new Uint8Array(await response.arrayBuffer());
   }
@@ -208,6 +220,7 @@ export function pagesClient({
    * SHA-256, so storing the same bytes again is a no-op that returns the same
    * asset_id. */
   async function upload(pageId, bytes, mediaType) {
+    if (!PAGE_ID.test(pageId)) throw new TransferError(`Not a Page ID: ${pageId}`);
     const response = await assetRequest(
       `/api/pages/${pageId}/assets`,
       { method: "POST", headers: { "Content-Type": mediaType }, body: bytes },
@@ -219,7 +232,40 @@ export function pagesClient({
   // any Page lookup (worker/auth.mjs authenticate). Only other credentials,
   // such as an Anaconda API key, can use the asset routes.
   const assets = !token.trim().startsWith("pages_");
-  return { origin: base, assets, call, download, upload };
+  /** Whether this target's edit_page takes insert_node, from its tool list.
+   * The asset routes shipped with it, so a target without it can't hold a
+   * dataframe. */
+  async function insertsNodes() {
+    let response;
+    try {
+      response = await fetchImpl(`${base}/mcp`, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${token.trim()}`,
+          "Content-Type": "application/json",
+          Accept: "application/json, text/event-stream",
+          "X-Pages-Driver": DRIVER,
+        },
+        body: JSON.stringify({ jsonrpc: "2.0", id: ++sequence, method: "tools/list" }),
+        signal: AbortSignal.timeout(timeoutMs),
+      });
+    } catch (error) {
+      throw new TransferError(`tools/list on ${base}: no response (${error?.name ?? "error"})`, {
+        uncertain: true,
+      });
+    }
+    if (!response.ok)
+      throw new TransferError(`tools/list on ${base}: HTTP ${response.status}`, {
+        uncertain: response.status >= 500 || response.status === 429,
+      });
+    const tools = (await response.json().catch(() => null))?.result?.tools;
+    if (!Array.isArray(tools))
+      throw new TransferError(`tools/list on ${base}: unreadable response`);
+    const editPage = tools.find((tool) => tool?.name === "edit_page");
+    const variants = editPage?.inputSchema?.properties?.operations?.items?.oneOf ?? [];
+    return variants.some((variant) => variant?.properties?.op?.const === "insert_node");
+  }
+  return { origin: base, assets, call, download, upload, insertsNodes };
 }
 
 /** The lowercase hex SHA-256 of `bytes`: an asset's id. */
@@ -368,7 +414,12 @@ export async function readWholePage(client, pageId, options) {
       // Dataframes on this Page, from the outline's typed fields. One naming
       // another Page's asset reads as readable:false, with no attrs.
       dataframes: entries
-        .filter((entry) => entry.type === "dataframe" && ASSET_ID.test(entry.attrs?.asset_id ?? ""))
+        .filter(
+          (entry) =>
+            entry.type === "dataframe" &&
+            ASSET_ID.test(entry.attrs?.asset_id ?? "") &&
+            assetSrc(entry.attrs.src, entry.attrs.asset_id),
+        )
         .map(({ attrs }) => ({
           asset_id: attrs.asset_id,
           src: attrs.src,
@@ -394,6 +445,10 @@ function bundlePage(row, parentSourceId, read, homePageId) {
   const markdown = blocks.join("\n\n");
   const dataframes = read.dataframes ?? [];
   const dataframeSources = new Set(dataframes.map((frame) => frame.src));
+  // Dataframe lines the outline didn't list (inside a quote or list): they
+  // import as links, and are reported with the dataframes not copied.
+  const linked = new Set([...markdown.matchAll(DATAFRAME_LINKS)].map((match) => match[1]));
+  const unlisted = [...linked].filter((path) => !dataframeSources.has(path));
   return {
     source_page_id: row.page_id,
     parent_source_id: parentSourceId,
@@ -408,9 +463,10 @@ function bundlePage(row, parentSourceId, read, homePageId) {
       read.types.some((type) => PRESERVED_TYPES.has(type)) ||
       read.blocks.some((block) => block.kind && block.kind !== "markdown"),
     private_images: [...new Set(markdown.match(ASSET_PATH) ?? [])].filter(
-      (path) => !dataframeSources.has(path),
+      (path) => !dataframeSources.has(path) && !linked.has(path),
     ),
     ...(dataframes.length && { dataframes }),
+    ...(unlisted.length && { unlisted_dataframes: unlisted }),
     comment_threads: read.comment_threads,
   };
 }
@@ -434,7 +490,16 @@ async function exportAssets(client, pages, { log, ...options }) {
   }
   let total = 0;
   for (const [assetId, frame] of wanted) {
-    const bytes = await withRetries(() => client.download(frame.src), options);
+    let bytes;
+    try {
+      bytes = await withRetries(() => client.download(frame.src), options);
+    } catch (error) {
+      // The node names an asset its Page no longer stores: nothing to copy,
+      // and the dataframe imports as a link, reported with the rest.
+      if (!/: HTTP 404\b/.test(error.message)) throw error;
+      warnings.push(`${frame.src} is missing on the source; that dataframe imports as a link.`);
+      continue;
+    }
     total += bytes.length;
     if (total > MAX_BUNDLE_ASSET_BYTES)
       throw new TransferError(
@@ -518,15 +583,18 @@ const pageRef = (page) => ({ title: page.title, source_page_id: page.source_page
  * as links to the source's asset). */
 function dataframeReport(bundle) {
   const held = (frame) => Object.hasOwn(bundle.assets ?? {}, frame.asset_id);
-  const pages = bundle.pages.filter((page) => page.dataframes?.length);
+  const missing = (page) => [
+    ...(page.dataframes ?? []).filter((frame) => !held(frame)).map((frame) => frame.src),
+    ...(page.unlisted_dataframes ?? []),
+  ];
   return {
-    dataframes: pages.reduce((sum, page) => sum + page.dataframes.filter(held).length, 0),
-    dataframes_not_copied: pages
-      .filter((page) => page.dataframes.some((frame) => !held(frame)))
-      .map((page) => ({
-        ...pageRef(page),
-        assets: page.dataframes.filter((frame) => !held(frame)).map((frame) => frame.src),
-      })),
+    dataframes: bundle.pages.reduce(
+      (sum, page) => sum + (page.dataframes ?? []).filter(held).length,
+      0,
+    ),
+    dataframes_not_copied: bundle.pages
+      .filter((page) => missing(page).length)
+      .map((page) => ({ ...pageRef(page), assets: missing(page) })),
   };
 }
 
@@ -570,16 +638,24 @@ export function validateBundle(bundle) {
       fail(`${at}.parent_source_id must name an earlier Page (parents come before children)`);
     if (typeof page.title !== "string") fail(`${at}.title must be a string`);
     if (typeof page.markdown !== "string") fail(`${at}.markdown must be a string`);
+    if (
+      page.unlisted_dataframes !== undefined &&
+      (!Array.isArray(page.unlisted_dataframes) ||
+        page.unlisted_dataframes.some((path) => typeof path !== "string" || !ASSET_SRC.test(path)))
+    )
+      fail(`${at}.unlisted_dataframes must be asset paths`);
     if (page.dataframes !== undefined) {
       if (!Array.isArray(page.dataframes)) fail(`${at}.dataframes must be an array`);
       for (const frame of page.dataframes)
         if (
           !ASSET_ID.test(frame?.asset_id ?? "") ||
-          typeof frame.src !== "string" ||
+          !assetSrc(frame.src, frame.asset_id) ||
           typeof frame.media_type !== "string" ||
           (frame.title !== undefined && typeof frame.title !== "string")
         )
-          fail(`${at}.dataframes entries need asset_id, src, media_type and an optional title`);
+          fail(
+            `${at}.dataframes entries need asset_id, a src naming it (/api/pages/<id>/assets/<asset_id>), media_type and an optional title`,
+          );
         else if (
           Object.hasOwn(bundle.assets ?? {}, frame.asset_id) &&
           bundle.assets[frame.asset_id].media_type !== frame.media_type
@@ -1088,7 +1164,7 @@ export async function importBundle(
   const bytes = new Map();
   for (const [assetId, asset] of Object.entries(assets)) {
     const decoded = new Uint8Array(Buffer.from(asset.data, "base64"));
-    if (decoded.length > MAX_ASSET_BYTES)
+    if (decoded.length > DATASET_MAX_BYTES)
       throw new TransferError(`Asset ${assetId} is larger than the asset routes accept`);
     if ((await sha256(decoded)) !== assetId)
       throw new TransferError(`Invalid bundle: the data for asset ${assetId} doesn't match its id`);
@@ -1098,6 +1174,13 @@ export async function importBundle(
     throw new TransferError(
       "This bundle carries dataframe bytes, and a Pages OAuth token can't store assets. Import with an Anaconda API key, or delete the bundle's assets to import those dataframes as links.",
       { code: "assets_unauthorized" },
+    );
+  // An older target has no insert_node (or asset routes): find out before the
+  // first write, not after the Project and its Pages exist.
+  if (bytes.size && !(await withRetries(() => client.insertsNodes(), options)))
+    throw new TransferError(
+      `${client.origin} doesn't take dataframes (its edit_page has no insert_node). Import into a current target, or delete the bundle's assets to import those dataframes as links.`,
+      { code: "dataframes_unsupported" },
     );
   const warnings = [];
 

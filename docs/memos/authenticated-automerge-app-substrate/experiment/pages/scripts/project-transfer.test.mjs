@@ -38,7 +38,10 @@ const PARQUET = "application/vnd.apache.parquet";
  * what project_id alone means: "page9" puts the Page at the Project's top
  * level, "page10" under the home Page.
  */
-function fakePages(origin, { placement = "page10", outlinePage = 100, token = KEY } = {}) {
+function fakePages(
+  origin,
+  { placement = "page10", outlinePage = 100, token = KEY, insertNode = true } = {},
+) {
   const pages = new Map();
   // Stored asset bytes by "<page_id>/<asset_id>", as the asset routes keep them.
   const assets = new Map();
@@ -359,6 +362,29 @@ function fakePages(origin, { placement = "page10", outlinePage = 100, token = KE
     if (init.headers.Authorization !== `Bearer ${token}`)
       return Response.json({ error: "invalid_token" }, { status: 401 });
     const message = JSON.parse(init.body);
+    if (message.method === "tools/list") {
+      calls.push({ name: "tools/list", args: {}, ok: true, replayed: false });
+      const ops = ["replace_block_markdown", "insert_markdown", "delete_block"];
+      if (insertNode) ops.push("insert_node");
+      return Response.json({
+        jsonrpc: "2.0",
+        id: message.id,
+        result: {
+          tools: [
+            {
+              name: "edit_page",
+              inputSchema: {
+                properties: {
+                  operations: {
+                    items: { oneOf: ops.map((op) => ({ properties: { op: { const: op } } })) },
+                  },
+                },
+              },
+            },
+          ],
+        },
+      });
+    }
     assert.equal(message.method, "tools/call");
     const { name, arguments: args } = message.params;
     const count = (counts.get(name) ?? 0) + 1;
@@ -1534,4 +1560,95 @@ test("validateBundle refuses a dataframe whose asset names another media type", 
   const edited = structuredClone(bundle);
   edited.assets[daily.asset_id].media_type = "text/csv";
   assert.throws(() => validateBundle(edited), /disagree on media_type/);
+});
+
+test("import refuses a target without insert_node before any write", async () => {
+  const { bundle } = await dataframeSource();
+  const target = fakePages(TARGET, { insertNode: false });
+  await assert.rejects(
+    importBundle(client(target, TARGET), bundle, { store: memoryStore(), ...quick }),
+    (error) => error.code === "dataframes_unsupported",
+  );
+  assert.equal(target.calls.filter((call) => MUTATIONS.has(call.name)).length, 0);
+  // A bundle with no bytes doesn't need to ask.
+  const plain = await exportGuide();
+  const older = fakePages(TARGET, { insertNode: false });
+  await importBundle(client(older, TARGET), plain.bundle, { store: memoryStore(), ...quick });
+  assert.equal(older.calls.filter((call) => call.name === "tools/list").length, 0);
+});
+
+test("the client sends its credential only to same-origin asset paths", async () => {
+  const sent = [];
+  const fetch = async (url, init) => {
+    sent.push(url);
+    return new Response(new Uint8Array(0));
+  };
+  const transfer = pagesClient({ origin: SOURCE, token: KEY, fetch });
+  for (const path of [
+    "@evil.example/steal",
+    "//evil.example/x",
+    "https://evil.example/api/pages/x/assets/y",
+    `/api/pages/${"1".repeat(8)}-1111-4111-8111-${"1".repeat(12)}/assets/${"a".repeat(64)}/../x`,
+    "/mcp",
+  ])
+    await assert.rejects(transfer.download(path), /Not an asset path/, path);
+  await assert.rejects(transfer.upload("../mcp", new Uint8Array(1), PARQUET), /Not a Page ID/);
+  assert.deepEqual(sent, []);
+});
+
+test("an outline src that isn't its own asset path is never downloaded", async () => {
+  const source = fakePages(SOURCE, { placement: "page9" });
+  const { project_id, home } = source.seedProject({ title: "Hostile src" });
+  home.blocks = [{ id: crypto.randomUUID(), kind: "markdown", markdown: "Intro." }];
+  const frame = await source.addDataframe(home, frameBytes("x"), { title: "X" });
+  home.blocks.at(-1).attrs.src = "@evil.example/steal";
+  const { bundle } = await exportProject(client(source, SOURCE), {
+    projectId: project_id,
+    ...quick,
+  });
+  assert.equal(bundle.pages[0].dataframes, undefined);
+  assert.deepEqual(bundle.assets, {});
+  assert.equal(source.assetCalls.length, 0);
+  // The line itself still reads as a dataframe link, reported as not copied.
+  assert.deepEqual(bundle.pages[0].unlisted_dataframes, [frame.src]);
+  // A bundle edited to point a src elsewhere is refused.
+  const { bundle: good, daily } = await dataframeSource();
+  const edited = structuredClone(good);
+  edited.pages[0].dataframes[0].src = "@evil.example/steal";
+  assert.throws(() => validateBundle(edited), /a src naming it/);
+  assert.ok(daily);
+});
+
+test("a dataframe whose asset is missing on the source imports as a reported link", async () => {
+  const source = fakePages(SOURCE, { placement: "page9" });
+  const { project_id, home } = source.seedProject({ title: "Missing asset" });
+  home.blocks = [{ id: crypto.randomUUID(), kind: "markdown", markdown: "Intro." }];
+  const kept = await source.addDataframe(home, frameBytes("kept"), { title: "Kept" });
+  const gone = await source.addDataframe(home, frameBytes("gone"), { title: "Gone" });
+  source.assets.delete(`${home.page_id}/${gone.asset_id}`);
+  const { bundle, report } = await exportProject(client(source, SOURCE), {
+    projectId: project_id,
+    ...quick,
+  });
+  assert.deepEqual(Object.keys(bundle.assets), [kept.asset_id]);
+  assert.match(report.warnings.join("\n"), /missing on the source/);
+  assert.deepEqual(report.dataframes_not_copied, [
+    { title: "Missing asset", source_page_id: home.page_id, assets: [gone.src] },
+  ]);
+});
+
+test("a dataframe line inside a quote isn't a private image; it's reported as not copied", async () => {
+  const source = fakePages(SOURCE, { placement: "page9" });
+  const { project_id, home } = source.seedProject({ title: "Quoted" });
+  const frame = await source.addDataframe(home, frameBytes("q"), { title: "Q" });
+  home.blocks = [
+    { id: crypto.randomUUID(), kind: "markdown", markdown: `> ${frame.line}\n>\n> Quoted.` },
+  ];
+  const { bundle, report } = await exportProject(client(source, SOURCE), {
+    projectId: project_id,
+    ...quick,
+  });
+  assert.deepEqual(bundle.pages[0].private_images, []);
+  assert.deepEqual(bundle.pages[0].unlisted_dataframes, [frame.src]);
+  assert.deepEqual(report.dataframes_not_copied[0].assets, [frame.src]);
 });
