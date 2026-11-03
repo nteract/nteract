@@ -15,11 +15,13 @@
 // new Page doesn't open over wherever the person went. In `opening` the Page
 // exists; `cancel` just ends the run without opening it.
 //
-// `done`, `failed` and `cancelled` end a run. A failed run keeps its
-// `attempt` ({ retry_token, idempotency_key }); the caller starts the next
-// try for the same placement with it, so a create whose answer was lost
-// lands once. A failed open keeps it too: the replay answers with the same
-// Page.
+// `done`, `failed` and `cancelled` end a run. A run that ends anywhere but
+// `done` keeps its `attempt` ({ retry_token, idempotency_key }), and
+// `replayAttempt()` hands it to the next try for the same placement, so a
+// create whose answer was lost lands once. That covers a failed open (the
+// replay answers with the same Page) and a write that failed after a cancel
+// detached it. A replayed run still starts in `preparing`, with the attempt
+// in hand instead of listing, so a cancel before its write writes nothing.
 //
 // State: `{ name, placement, attempt, detached, receipt?, error? }`
 //   placement  { project_id } for a Project's top level, or { parent_id }
@@ -32,7 +34,8 @@
 //   { type: "cancel" }              navigation or account change
 //
 // Effects, run by the driver after the transition, in order:
-//   { type: "prepare" }                       fetch a retry_token
+//   { type: "prepare", attempt }              fetch a retry_token, or reuse
+//                                             the replayed attempt
 //   { type: "write", placement, attempt }     create_page
 //   { type: "open", pageId }                  open the new Page
 //   { type: "refresh" }                       list Pages again
@@ -61,11 +64,16 @@ export function placementArguments(placement) {
 /** A run's first state and effects. `attempt` replays an earlier request. */
 export function start(placement, attempt = null) {
   placementArguments(placement);
-  const state = { name: attempt ? "writing" : "preparing", placement, attempt, detached: false };
   return {
-    state,
-    effects: attempt ? [{ type: "write", placement, attempt }] : [{ type: "prepare" }],
+    state: { name: "preparing", placement, attempt, detached: false },
+    effects: [{ type: "prepare", attempt }],
   };
+}
+
+/** The attempt the next try for the same placement replays: any run that
+ * didn't reach `done` may have written, so its key must be reused. */
+export function replayAttempt(state) {
+  return state.name === "done" ? null : (state.attempt ?? null);
 }
 
 const stay = (state) => ({ state, effects: [] });
@@ -140,24 +148,25 @@ export async function runPageCreation({ placement, attempt = null, call, open, r
         .catch(() => {});
       continue;
     }
-    if (!current()) {
-      // Before the write: nothing lands. Before the open: it stays closed.
-      if (effect.type !== "write") {
-        apply({ type: "cancel" });
-        continue;
-      }
+    // Before the prepare nothing is written; before the open the new Page
+    // stays closed. `write` needs no check here: only `prepared` emits it, in
+    // the same step that consumed the prepare answer checked below.
+    if (effect.type !== "write" && !current()) {
+      apply({ type: "cancel" });
+      continue;
     }
     let event;
     try {
       if (effect.type === "prepare") {
-        const listed = await call("list_pages", { limit: 1 });
-        event = {
-          type: "prepared",
-          attempt: {
+        let prepared = effect.attempt;
+        if (!prepared) {
+          const listed = await call("list_pages", { limit: 1 });
+          prepared = {
             retry_token: listed.retry_token,
             idempotency_key: await retryKey(listed.retry_token),
-          },
-        };
+          };
+        }
+        event = { type: "prepared", attempt: prepared };
       } else if (effect.type === "write") {
         const receipt = await call("create_page", {
           title: "Untitled",

@@ -63,7 +63,7 @@ import {
   ProjectView,
   projectPageCount,
 } from "./ProjectView.jsx";
-import { runPageCreation } from "./page-create-machine.mjs";
+import { replayAttempt, runPageCreation } from "./page-create-machine.mjs";
 import { IndexNav, PagesIndex, ProjectsIndex } from "./IndexViews.jsx";
 import { listProjects, pageLocation } from "./projects.mjs";
 import { closeTrashedSessions, moveToTrashError, restorePage } from "./trash.mjs";
@@ -178,8 +178,8 @@ function App() {
     indexVisits = useRef(0),
     lastRemote = useRef(null),
     creationPending = useRef(false),
-    // The last failed placed create, `{ key, attempt }`: trying the same
-    // placement again replays its request (page-create-machine.mjs).
+    // The last placed create that didn't finish, `{ key, attempt }`: trying
+    // the same placement again replays its request (page-create-machine.mjs).
     creationAttempt = useRef(null),
     article = useRef(null),
     titleInput = useRef(null),
@@ -818,12 +818,11 @@ function App() {
         },
         refresh: () => refresh(),
       });
-      if (state.name === "failed") {
-        if (state.attempt) creationAttempt.current = { key, attempt: state.attempt };
-        if (current()) {
-          setError(state.error);
-          setPickerError(state.error);
-        }
+      const attempt = replayAttempt(state);
+      if (attempt) creationAttempt.current = { key, attempt };
+      if (state.name === "failed" && current()) {
+        setError(state.error);
+        setPickerError(state.error);
       }
     } finally {
       creationPending.current = false;
@@ -1060,10 +1059,12 @@ function App() {
   const libraryPages = matchingPages(listedPages, libraryQuery);
   // The open Page's Project, when read_page shows one: Projects are
   // owner-only in this build, so a visible project_id means this account owns
-  // it. Shared viewers see none and get no create affordances.
+  // it. Shared viewers see none and get no create affordances. The owner
+  // role on the Page (`canDelete`) is the second check: a Page sits in its
+  // owner's Catalog, so only its owner can add Pages beside or under it.
   const ownsProject =
     !!placement?.project_id &&
-    !!session &&
+    !!session?.canDelete &&
     !session.authRequired &&
     session.pageId === host.current?.pageId &&
     session.identity?.principal === authentication.current?.identity?.principal;

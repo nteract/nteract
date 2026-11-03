@@ -1925,6 +1925,7 @@ details.account-actions > div a:hover {
 }
 .project-new-page .page-card {
   width: 100%;
+  justify-content: flex-start;
   min-height: 44px;
   border: 0;
   background: none;
@@ -1952,6 +1953,13 @@ details.account-actions > div a:hover {
   color: var(--foreground);
   background: var(--accent);
 }
+/* Phones and narrow windows: the chip is a full touch target. */
+@media (max-width: 640px) {
+  .project-chip {
+    min-height: 44px;
+    padding-inline: 0.85rem;
+  }
+}
 .picker-create-choices {
   display: flex;
   flex-wrap: wrap;
@@ -1960,10 +1968,21 @@ details.account-actions > div a:hover {
 }
 .picker-create-choices .picker-create {
   flex: 1 1 12rem;
+  min-width: 0;
+  min-height: 44px;
   margin: 0;
 }
+/* "New Page" stays on one line; a long Project name truncates instead. */
+.picker-create-label {
+  flex: none;
+  white-space: nowrap;
+}
 .picker-create-where {
+  min-width: 0;
+  overflow: hidden;
   font-weight: 400;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .breadcrumbs ol {
   display: flex;

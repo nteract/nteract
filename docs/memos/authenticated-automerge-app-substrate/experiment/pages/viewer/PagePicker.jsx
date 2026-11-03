@@ -99,13 +99,16 @@ export function PagePicker({
             <button
               className="primary picker-create"
               disabled={creating}
+              title={`New Page in ${createProject.title || "Project"}`}
               onClick={() => onCreateInProject(createProject.project_id)}
             >
-              <Plus size={18} aria-hidden="true" /> New Page{" "}
+              <Plus size={18} aria-hidden="true" />
+              <span className="picker-create-label">New Page</span>{" "}
               <span className="picker-create-where">{`In ${createProject.title || "Project"}`}</span>
             </button>
             <button className="subtle-button picker-create" disabled={creating} onClick={onCreate}>
-              <Plus size={18} aria-hidden="true" /> New Page{" "}
+              <Plus size={18} aria-hidden="true" />
+              <span className="picker-create-label">New Page</span>{" "}
               <span className="picker-create-where">In Your items</span>
             </button>
           </div>

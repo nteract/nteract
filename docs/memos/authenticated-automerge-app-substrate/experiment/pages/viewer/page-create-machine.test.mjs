@@ -5,6 +5,7 @@ import {
   FINAL,
   STATES,
   placementArguments,
+  replayAttempt,
   runPageCreation,
   start,
   transition,
@@ -89,12 +90,15 @@ test("cancel during the write detaches the run instead of ending it", () => {
   assert.equal(transition(detached, SAMPLE.cancel).state, detached, "a second cancel is a no-op");
 });
 
-test("start: a fresh run prepares; a replay writes with its attempt", () => {
-  assert.deepEqual(start(placement).effects, [{ type: "prepare" }]);
+test("start: every run prepares first; a replay carries its attempt", () => {
+  assert.deepEqual(start(placement).effects, [{ type: "prepare", attempt: null }]);
   assert.equal(start(placement).state.name, "preparing");
   const replay = start({ parent_id: "p" }, attempt);
-  assert.equal(replay.state.name, "writing");
-  assert.deepEqual(replay.effects, [{ type: "write", placement: { parent_id: "p" }, attempt }]);
+  assert.equal(replay.state.name, "preparing");
+  assert.equal(replay.state.attempt, attempt);
+  assert.deepEqual(replay.effects, [{ type: "prepare", attempt }]);
+  // A cancel before a replayed write ends the run with nothing written.
+  assert.equal(transition(replay.state, SAMPLE.cancel).state.name, "cancelled");
   assert.throws(() => start({}), /Project or a parent/);
   assert.deepEqual(placementArguments({ parent_id: "p", project_id: PRJ }), { parent_id: "p" });
   assert.deepEqual(placementArguments(placement), { project_id: PRJ });
@@ -218,4 +222,46 @@ test("runPageCreation: a failed write keeps its attempt, and the retry replays i
   });
   assert.equal(unopened.name, "failed");
   assert.ok(unopened.attempt);
+});
+
+test("runPageCreation: a navigation before a replayed write writes nothing", async () => {
+  const world = fake();
+  const state = await runPageCreation({ placement, attempt, current: () => false, ...world });
+  assert.equal(state.name, "cancelled");
+  assert.deepEqual(world.calls, []);
+  assert.deepEqual(world.opened, []);
+  assert.equal(replayAttempt(state), attempt, "the next try still replays it");
+});
+
+test("replayAttempt: only a run that reached done starts the next try fresh", () => {
+  for (const name of STATES)
+    assert.equal(replayAttempt(at(name)), name === "done" ? null : attempt, name);
+  assert.equal(replayAttempt(at("failed", { attempt: null })), null);
+});
+
+test("runPageCreation: a write that fails after a cancel detached it is replayed", async () => {
+  let live = true;
+  const failing = fake({
+    fail: { create_page: "lost" },
+    onCall: (operation) => {
+      if (operation === "create_page") live = false;
+    },
+  });
+  const lost = await runPageCreation({ placement, current: () => live, ...failing });
+  assert.equal(lost.name, "cancelled");
+  assert.equal(lost.error, undefined, "a detached run shows no error");
+  const sent = failing.calls.find(([operation]) => operation === "create_page")[1];
+  const retry = fake();
+  const state = await runPageCreation({
+    placement,
+    attempt: replayAttempt(lost),
+    current: () => true,
+    ...retry,
+  });
+  assert.equal(state.name, "done");
+  assert.deepEqual(
+    retry.calls.map(([operation, args]) => [operation, args.idempotency_key]),
+    [["create_page", sent.idempotency_key]],
+    "the retry sends the lost request again, without a new listing",
+  );
 });
