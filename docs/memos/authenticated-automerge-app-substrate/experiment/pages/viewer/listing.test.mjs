@@ -8,6 +8,7 @@ import { listingMachine } from "./listing-machine.mjs";
 import {
   Listing,
   SEARCH_DEBOUNCE_MS,
+  updatedAt,
   appendRows,
   listingView,
   pageRow,
@@ -314,11 +315,19 @@ test("a /pages row links its Page and labels its Project; shared Pages show no P
     id: pageId,
     title: "Untitled",
     href: `/p/${pageId}`,
+    updatedAt: null,
     project: { id: projectId, title: "Launch", href: `/project/${projectId}` },
     shared: false,
     home: false,
   });
   assert.deepEqual(pageRow({ page_id: pageId, title: "Notes" }).project, null);
+  assert.equal(
+    pageRow({ page_id: pageId, updated_at: "2026-11-01T18:00:00.000Z" }).updatedAt,
+    "2026-11-01T18:00:00.000Z",
+    "the Updated column reads list_pages' updated_at",
+  );
+  assert.equal(updatedAt({ page_id: pageId }), null);
+  assert.equal(updatedAt(undefined), null);
   assert.equal(
     pageRow({ page_id: pageId, project_id: projectId, home: true }).project.title,
     "Project",

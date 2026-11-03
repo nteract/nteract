@@ -192,15 +192,16 @@ const settle = async () => {
 };
 
 test("/pages and /projects render from the shell without importing the editor", async () => {
-  for (const [path, heading] of [
-    ["/pages", "All Pages"],
-    ["/projects/", "Projects"],
+  for (const [path, heading, tab] of [
+    ["/pages", "Pages", "Pages"],
+    ["/projects/", "Projects", "Projects · Pages"],
   ]) {
     history.replaceState(null, "", path);
     const before = globalThis.__editorImports ?? 0;
     const app = await boot(signedIn, catalog);
     await settle();
     assert.equal(document.querySelector("main h1")?.textContent, heading, path);
+    assert.equal(document.title, tab, `${path} tab title`);
     assert.ok(app.requests.includes("list_pages"), path);
     assert.equal(globalThis.__editorImports ?? 0, before, `${path} imported the editor`);
     assert.deepEqual(app.banners(), []);
@@ -257,7 +258,7 @@ test("a Page opened from a /pages search keeps its address when the editor fails
     assert.equal(location.pathname + location.search, `/p/${pageId}`);
     assert.ok(document.querySelector(".build-update[role=alert]"), "the reload banner shows");
     // The listing behind the banner kept the search that was typed.
-    assert.equal(document.querySelector("main h1")?.textContent, "All Pages");
+    assert.equal(document.querySelector("main h1")?.textContent, "Pages");
     assert.equal(document.querySelector('input[type="search"]').value, "road");
     // Back returns to that search, and from there the address follows it again.
     history.back();

@@ -56,10 +56,13 @@ const { IndexNav, PagesIndex, ProjectsIndex } = await import(
   `data:text/javascript;base64,${Buffer.from(bundle.outputFiles[0].contents).toString("base64")}`
 );
 const { createElement, act, StrictMode } = await import("react");
+const { VirtualTimeScheduler } = await import("rxjs");
+const { CLOCK_PERIOD_MS, Clock } = await import("./clock.mjs");
 const { createRoot } = await import("react-dom/client");
 
 const id = (n) => `1a160b47-6df1-4983-81eb-${String(n).padStart(12, "0")}`;
 const projectId = "prj_2b160b47-6df1-4983-81eb-489ca5a26812";
+const twoDaysAgo = new Date(Date.now() - 2 * 24 * 60 * 60 * 1000 - 60 * 1000).toISOString();
 const settle = () => act(() => new Promise((resolve) => setTimeout(resolve, 0)));
 
 async function mount(element) {
@@ -95,8 +98,14 @@ test("/pages lists every Page with Project labels, opens rows and Projects separ
     if (args.query) return { pages: [], next_cursor: null };
     return {
       pages: [
-        { page_id: id(1), title: "Roadmap", project_id: projectId, parent_id: null },
-        { page_id: id(2), title: "", shared: true },
+        {
+          page_id: id(1),
+          title: "Roadmap",
+          project_id: projectId,
+          parent_id: null,
+          updated_at: twoDaysAgo,
+        },
+        { page_id: id(2), title: "", shared: true, updated_at: "not a time" },
       ],
       next_cursor: "next",
     };
@@ -117,7 +126,8 @@ test("/pages lists every Page with Project labels, opens rows and Projects separ
     }),
   );
   const { host } = app;
-  assert.equal(host.querySelector("h1").textContent, "All Pages");
+  assert.equal(host.querySelector("h1").textContent, "Pages");
+  assert.deepEqual(text(host, ".index-columns span"), ["Name", "Source", "Updated"]);
   assert.deepEqual(text(host, ".index-row-link"), ["Roadmap", "Untitled"]);
   assert.deepEqual(
     [...host.querySelectorAll(".index-row-link")].map((link) => link.getAttribute("href")),
@@ -126,7 +136,15 @@ test("/pages lists every Page with Project labels, opens rows and Projects separ
   const label = host.querySelector(".index-row-project");
   assert.equal(label.getAttribute("href"), `/project/${projectId}`);
   assert.equal(label.getAttribute("aria-label"), "Project Launch");
-  assert.deepEqual(text(host, ".index-row-shared"), ["Shared with you"]);
+  assert.deepEqual(text(host, ".index-row-shared"), ["Shared"]);
+  const updated = host.querySelector(".index-cell-updated time");
+  assert.equal(updated.getAttribute("dateTime"), twoDaysAgo);
+  assert.equal(updated.getAttribute("title"), null, "the row link covers the cell, so no tooltip");
+  assert.deepEqual(text(host, ".index-cell-updated [aria-hidden=true]"), ["2d", "—"]);
+  const spoken = text(host, ".index-cell-updated .sr-only");
+  assert.match(spoken[0], /^Updated .+, .*2\d{3}/, "screen readers hear the age and full time");
+  assert.equal(spoken[1], "Updated unknown");
+  assert.equal(host.querySelectorAll(".index-cell-updated time").length, 1, "no time, no <time>");
   assert.equal(
     host.querySelector(".index-nav [aria-current=page]").textContent,
     "All Pages",
@@ -185,6 +203,122 @@ test("/pages lists every Page with Project labels, opens rows and Projects separ
   assert.equal(host.querySelector(".index-list"), null);
   assert.match(host.textContent, /No Pages match “zzz”\./);
   await app.unmount();
+});
+
+test("/pages switches between list and grid, remembers the choice, and never nests links", async () => {
+  const events = [];
+  const props = {
+    tool: async () => ({
+      pages: [
+        { page_id: id(1), title: "Roadmap", project_id: projectId, updated_at: twoDaysAgo },
+        { page_id: id(2), title: "Launch", project_id: projectId, home: true },
+        { page_id: id(3), title: "Loose notes" },
+      ],
+      next_cursor: null,
+    }),
+    query: "",
+    projects: [{ project_id: projectId, title: "Launch" }],
+    onNavigate: () => {},
+    onQueryChange: () => {},
+    onOpen: (pageId) => events.push(["open", pageId]),
+    onOpenProject: (id) => events.push(["project", id]),
+    onWarm: () => events.push(["warm"]),
+    onError: () => {},
+    onRetry: (retry) => retry(),
+  };
+  window.localStorage.clear();
+  try {
+    const app = await mount(createElement(PagesIndex, props));
+    const group = app.host.querySelector('[role=group][aria-label="Display"]');
+    const button = (name) => group.querySelector(`button[aria-label="${name}"]`);
+    assert.deepEqual(
+      [...group.querySelectorAll("button")].map((b) => [
+        b.getAttribute("aria-label"),
+        b.getAttribute("aria-pressed"),
+      ]),
+      [
+        ["Grid view", "false"],
+        ["List view", "true"],
+      ],
+      "the list is the default",
+    );
+    assert.deepEqual(
+      [...app.host.querySelectorAll(".index-cell-source")].map((cell) => cell.textContent),
+      ["Launch", "Launch", "—"],
+      "a Page outside any Project shows a dash for its Source",
+    );
+    assert.equal(app.host.querySelector(".index-grid"), null);
+
+    await click(button("Grid view"));
+    assert.equal(window.localStorage.getItem("nteract.pages.view"), "grid");
+    assert.equal(button("Grid view").getAttribute("aria-pressed"), "true");
+    assert.equal(button("List view").getAttribute("aria-pressed"), "false");
+    assert.equal(app.host.querySelector(".index-columns"), null, "no column header in the grid");
+    const grid = app.host.querySelector('ul.index-grid[aria-label="All Pages"]');
+    assert.ok(grid, "the grid keeps the list's name");
+    const cards = [...grid.querySelectorAll(".index-card-link")];
+    assert.deepEqual(
+      cards.map((card) => [card.textContent, card.getAttribute("href")]),
+      [
+        ["Roadmap", `/p/${id(1)}`],
+        ["Launch", `/p/${id(2)}`],
+        ["Loose notes", `/p/${id(3)}`],
+      ],
+    );
+    assert.equal(grid.querySelectorAll("a a").length, 0, "a card holds no link inside its link");
+    assert.equal(grid.querySelectorAll("a").length, 3, "each card is one link");
+    assert.equal(grid.querySelectorAll(".index-card-preview").length, 3);
+
+    act(() => cards[0].dispatchEvent(new window.Event("pointerdown", { bubbles: true })));
+    await click(cards[0]);
+    await click(cards[1], { metaKey: true });
+    assert.deepEqual(events, [["warm"], ["open", id(1)]]);
+    await app.unmount();
+
+    const again = await mount(createElement(PagesIndex, props));
+    assert.ok(again.host.querySelector(".index-grid"), "a remount reads the stored mode");
+    await click(again.host.querySelector('button[aria-label="List view"]'));
+    assert.equal(window.localStorage.getItem("nteract.pages.view"), "list");
+    assert.ok(again.host.querySelector('ul.index-page-list[aria-label="All Pages"]'));
+    await again.unmount();
+
+    window.localStorage.setItem("nteract.pages.view", "carousel");
+    const unknown = await mount(createElement(PagesIndex, props));
+    assert.ok(unknown.host.querySelector(".index-page-list"), "an unknown mode falls back to list");
+    await unknown.unmount();
+  } finally {
+    window.localStorage.clear();
+  }
+});
+
+test("/pages refreshes its Updated times once a minute", async () => {
+  const scheduler = new VirtualTimeScheduler();
+  scheduler.maxFrames = 0;
+  const edited = Date.parse("2026-11-03T17:00:00.000Z");
+  const start = edited + 59 * 60 * 1000;
+  const clock = new Clock({ now: () => start + scheduler.frame, scheduler });
+  const app = await mount(
+    createElement(
+      PagesIndex,
+      pagesProps({
+        clock,
+        tool: async () => ({
+          pages: [{ page_id: id(1), title: "Roadmap", updated_at: new Date(edited).toISOString() }],
+        }),
+      }),
+    ),
+  );
+  const label = () => text(app.host, ".index-cell-updated [aria-hidden=true]")[0];
+  assert.equal(label(), "59m");
+  await act(() => {
+    scheduler.maxFrames += CLOCK_PERIOD_MS;
+    scheduler.flush();
+  });
+  assert.equal(label(), "1h");
+  await app.unmount();
+  scheduler.maxFrames += 10 * CLOCK_PERIOD_MS;
+  scheduler.flush();
+  assert.equal(clock.snapshot(), start + CLOCK_PERIOD_MS, "an unmounted screen stops its clock");
 });
 
 test("/projects lists each Project with its description and opens it", async () => {

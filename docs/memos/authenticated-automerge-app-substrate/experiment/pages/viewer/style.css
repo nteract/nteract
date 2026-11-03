@@ -2034,8 +2034,9 @@ details.account-actions > div a:hover {
 }
 
 /* Index routes (/pages, /projects) and the Home · All Pages · Projects nav.
-   Narrow screens first: each row is one link the full width of the screen,
-   at least 56px tall, and a Project label stays a separate 32px target. */
+   Each row is one link the full width of the list, at least 56px tall. On
+   /pages a row's Project chip is its own 28px link above the row link, in
+   the Source column; phones hide that column and keep Name and Updated. */
 .index-nav {
   display: flex;
   gap: 0.25rem;
@@ -2138,15 +2139,6 @@ details.account-actions > div a:hover {
   line-height: 1.45;
   overflow-wrap: anywhere;
 }
-.index-row-meta {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 0.25rem 0.75rem;
-  margin: 0.3rem 0 0;
-  color: var(--muted-foreground);
-  font-size: 0.8rem;
-}
 /* Above the row link, so a tap on the label opens the Project. */
 .index-row-project {
   position: relative;
@@ -2179,6 +2171,185 @@ details.account-actions > div a:hover {
   width: 100%;
   min-height: 48px;
   margin-top: 1rem;
+}
+/* /pages: the title and search share the heading row; the toolbar below it
+   holds the List/Grid toggle at its end. */
+.index-heading .index-search {
+  flex: 0 1 20rem;
+}
+.index-heading .library-search {
+  margin: 0;
+}
+.index-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  margin: 0 0 0.75rem;
+}
+.index-display {
+  display: inline-flex;
+  gap: 0.15rem;
+  margin-inline-start: auto;
+  padding: 0.2rem;
+  border-radius: 0.65rem;
+  background: var(--accent);
+}
+.index-display .index-display-button {
+  width: 34px;
+  height: 34px;
+  border-radius: 0.5rem;
+  color: var(--muted-foreground);
+}
+.index-display .index-display-button:hover:not(:disabled) {
+  background: transparent;
+  color: var(--foreground);
+}
+.index-display .index-display-button[aria-pressed="true"] {
+  background: var(--surface);
+  color: var(--foreground);
+  box-shadow: 0 1px 2px #0000001f;
+}
+.index-display .index-display-button:focus-visible {
+  outline-offset: 1px;
+}
+/* List mode: Name, Source and Updated columns. The header row and every
+   Page row share one template so the columns line up. */
+.index-columns,
+.index-page-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 12rem) 4.5rem;
+  align-items: center;
+  gap: 1rem;
+}
+.index-columns {
+  padding: 0 0.6rem 0.5rem;
+  border-bottom: 1px solid var(--border);
+  color: var(--muted-foreground);
+  font-size: 0.8rem;
+  font-weight: 500;
+}
+.index-column-updated,
+.index-cell-updated {
+  text-align: end;
+}
+.index-page-row {
+  padding-block: 0.6rem;
+}
+.index-cell-name {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.75rem;
+  min-width: 0;
+}
+.index-cell-source {
+  min-width: 0;
+  color: var(--muted-foreground);
+  font-size: 0.8rem;
+}
+.index-cell-source .index-row-project {
+  margin: 0;
+  padding: 0 0.6rem;
+  border: 1px solid var(--border);
+  min-height: 28px;
+}
+.index-cell-updated {
+  color: var(--muted-foreground);
+  font-size: 0.85rem;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+/* Grid mode: cards at least 200px wide, each one link to its Page. */
+.index-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 1rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.index-card {
+  min-width: 0;
+}
+.index-card-link {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 0.75rem;
+  background: var(--card);
+  color: inherit;
+  text-decoration: none;
+}
+.index-card-link:hover {
+  border-color: color-mix(in srgb, var(--foreground) 25%, var(--border));
+}
+.index-card-link:focus-visible {
+  outline-offset: 2px;
+}
+.index-card-header {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.5rem;
+  min-width: 0;
+  padding: 0.7rem 0.85rem;
+  border-bottom: 1px solid var(--border);
+  font-size: 0.9rem;
+  font-weight: 500;
+}
+.index-card-icon {
+  flex-shrink: 0;
+  margin-top: 0.15rem;
+  color: var(--muted-foreground);
+}
+/* Long titles wrap to two lines, then end in an ellipsis. */
+.index-card-title {
+  display: -webkit-box;
+  min-width: 0;
+  overflow: hidden;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+}
+/* At least 4:3, and taller when a neighbor's two-line title stretches the
+   grid row, so every card in a row ends at the same edge. */
+.index-card-preview {
+  display: flex;
+  flex: 1 0 auto;
+  align-items: center;
+  justify-content: center;
+  aspect-ratio: 4 / 3;
+  background: var(--accent);
+  color: var(--muted-foreground);
+}
+.index-card-placeholder {
+  opacity: 0.55;
+}
+/* Phones: Name and Updated only, two cards to a row, and 44px toggles. */
+@media (max-width: 640px) {
+  .index-heading .index-search {
+    flex-basis: 100%;
+  }
+  .index-display .index-display-button {
+    width: 44px;
+    height: 44px;
+  }
+  .index-columns,
+  .index-page-row {
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 0.75rem;
+  }
+  .index-column-source,
+  .index-cell-source {
+    display: none;
+  }
+  .index-grid {
+    grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+    gap: 0.75rem;
+  }
 }
 .picker-index {
   display: flex;
