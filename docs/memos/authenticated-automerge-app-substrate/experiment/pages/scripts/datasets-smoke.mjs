@@ -240,10 +240,18 @@ try {
   // Select the dropped table by its frame, cut it, and paste it back at the
   // top of the Page's first block. The node survives, unknown attrs and all.
   const dropped = tables(owner).filter({ hasText: "dropped usage" });
+  // Selection outlines actually drawn (an unfocused editor's are transparent).
+  const outline = () =>
+    owner
+      .locator(".wg-selected-node:has(section.wordgard-dataframe-table)")
+      .evaluateAll((nodes) => nodes.map((node) => getComputedStyle(node).outlineColor));
+
   // Hold the mounted Sift root: selecting must keep this same element.
   const siftRoot = await dropped.locator(".sift-root").first().elementHandle();
   await dropped.getByRole("button", { name: "Select table" }).click();
-  await expect(owner.locator(".wg-selected-node section.wordgard-dataframe-table")).toHaveCount(1);
+  await expect
+    .poll(async () => (await outline()).filter((color) => color !== "rgba(0, 0, 0, 0)").length)
+    .toBe(1);
   // Selecting keeps the table mounted, and the text toolbar stays hidden.
   await owner.waitForTimeout(1500);
   assert.equal(
@@ -253,6 +261,23 @@ try {
   );
   await expect(owner.getByRole("toolbar", { name: "Text formatting" })).toBeHidden();
   await owner.screenshot({ path: `${output}/sift-table-selected.png`, fullPage: true });
+  // Escape deselects; clicking another block hides the outline too.
+  await owner.keyboard.press("Escape");
+  await expect(owner.locator(".wg-selected-node section.wordgard-dataframe-table")).toHaveCount(0);
+  // Selecting the other table (another block's editor) leaves exactly one
+  // table drawn as selected: the one just picked.
+  await dropped.getByRole("button", { name: "Select table" }).click();
+  await tables(owner)
+    .filter({ hasText: "Usage by day" })
+    .getByRole("button", { name: "Select table" })
+    .click();
+  await expect
+    .poll(async () => (await outline()).filter((color) => color !== "rgba(0, 0, 0, 0)").length)
+    .toBe(1);
+  await dropped.getByRole("button", { name: "Select table" }).click();
+  await expect
+    .poll(async () => (await outline()).filter((color) => color !== "rgba(0, 0, 0, 0)").length)
+    .toBe(1);
   await owner.keyboard.press("ControlOrMeta+X");
   await expect(tables(owner)).toHaveCount(1, { timeout: 10000 });
   await expect(tables(viewer)).toHaveCount(1, { timeout: 15000 });

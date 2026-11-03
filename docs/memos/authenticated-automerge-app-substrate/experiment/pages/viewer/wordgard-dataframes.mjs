@@ -5,7 +5,7 @@
 // Sorting, filtering and column changes stay in each reader's view. A shared
 // view belongs beside the node, not in its attrs; see the README's Dataframes
 // section.
-import { Decoration, Widget } from "wordgard/editor";
+import { Decoration, KeyBinding, Widget } from "wordgard/editor";
 import { GardSelection } from "wordgard/state";
 import { PagesDataframe } from "./wordgard-model.mjs";
 import { reportRendererUnavailable } from "./wordgard-widgets.mjs";
@@ -235,12 +235,30 @@ const dataframeTable = Widget.define({
 export function wordgardDataframes({ pageId } = {}) {
   if (typeof pageId !== "string" || !pageId)
     throw Error("wordgardDataframes needs the Page id it shows");
-  return Decoration.Tag.shape(
-    PagesDataframe,
-    (tag) => {
-      const { src, media_type, title } = readDataframe(tag.param);
-      return dataframeTable.of({ src, media_type, title, pageId });
-    },
-    { atom: true },
-  );
+  return [
+    Decoration.Tag.shape(
+      PagesDataframe,
+      (tag) => {
+        const { src, media_type, title } = readDataframe(tag.param);
+        return dataframeTable.of({ src, media_type, title, pageId });
+      },
+      { atom: true },
+    ),
+    KeyBinding.of({ key: "Escape", run: deselectDataframe }),
+  ];
+}
+
+/**
+ * Escape on a selected dataframe puts the caret just after it, so the table
+ * is no longer selected. Returns false (letting Escape through) otherwise.
+ */
+export function deselectDataframe(editor) {
+  const { selection } = editor.state;
+  if (!(selection instanceof GardSelection.Node) || selection.node.type !== PagesDataframe)
+    return false;
+  editor.dispatch({
+    selection: (cx) =>
+      selection.nextNormalCursor(cx, true) ?? GardSelection.near(cx, selection.from, -1),
+  });
+  return true;
 }

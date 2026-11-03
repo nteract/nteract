@@ -15,6 +15,12 @@
 .wordgard-editor .wg-selected-node {
   outline-color: var(--primary);
 }
+/* Each Page block is its own editor, and an editor keeps its selection when
+   focus moves to another block. Only the focused editor draws its node
+   selection, so clicking elsewhere visibly deselects a table or image. */
+.wordgard-editor:not(:focus-within) .wg-selected-node {
+  outline-color: transparent;
+}
 .wordgard-editor wg-dropcursor.wg-vertical,
 .wordgard-editor wg-dropcursor.wg-horizontal {
   border-color: var(--primary);

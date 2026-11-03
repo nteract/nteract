@@ -174,3 +174,35 @@ test("wordgardDataframes refuses to run without the Page it shows", () => {
   for (const options of [undefined, {}, { pageId: "" }, { pageId: 42 }])
     assert.throws(() => wordgardDataframes(options), /needs the Page id/);
 });
+
+test("Escape on a selected dataframe moves the caret off it; elsewhere it passes through", async () => {
+  const { deselectDataframe } = await import("./wordgard-dataframes.mjs");
+  for (const doc of [
+    schema.doc([Paragraph.create([Leaf.text("hello")]), PagesDataframe.of(attrs)]),
+    schema.doc([
+      Paragraph.create([Leaf.text("hello")]),
+      PagesDataframe.of(attrs),
+      Paragraph.create([Leaf.text("after")]),
+    ]),
+  ]) {
+    const state = GardState.create({
+      doc,
+      config: [
+        ...schema.elements.map((e) => GardState.schemaElement.of(e)),
+        wordgardDataframes({ pageId }),
+      ],
+    });
+    const editor = new Wordgard({ state, parent: document.body });
+    try {
+      editor.dispatch({ selection: GardSelection.cursor(1) });
+      assert.equal(deselectDataframe(editor), false);
+      const block = editor.nodeFromDOM(document.querySelector("section.wordgard-dataframe-table"));
+      editor.dispatch({ selection: GardSelection.node(block.pos, block.node) });
+      assert.equal(deselectDataframe(editor), true);
+      assert.equal(editor.state.selection instanceof GardSelection.Node, false);
+      assert.ok(editor.state.doc.eq(doc));
+    } finally {
+      editor.dom.remove();
+    }
+  }
+});
