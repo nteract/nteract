@@ -160,7 +160,8 @@ After the restart or adoption, install waits twice:
    adoption or 240 s after a restart. This proves only the gateway of the node
    on this host. The output reports it as `local_serving_after_ms`.
 2. **Every live node.** It lists the fleet's node leases
-   (`<prefix>/nodes/*.json`), skips expired ones, and polls
+   (`<prefix>/nodes/*.json`), skips expired ones, keeps the newest lease per
+   listener address (a restarted node's old lease lingers up to 10 s), and polls
    `GET http://<addr>/state` on each lease's internal listener every 3 s until
    every node's `deployment.version` equals the version `celld deploy`
    reported, for up to 120 s. Nodes poll the pointer on their own schedules:

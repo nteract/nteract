@@ -245,6 +245,13 @@ test("liveLeases keeps unexpired leases with an IPv4 listener", () => {
     null,
   ])
     assert.deepEqual(liveLeases([bad], 1000), []);
+  // A restarted node's predecessor lease on the same listener collapses into
+  // the newest one.
+  const restarted = { ...lease, node: "node_b", expires_ms: 3000 };
+  assert.deepEqual(liveLeases([lease, restarted], 1000), [restarted]);
+  assert.deepEqual(liveLeases([restarted, lease], 1000), [restarted]);
+  const peer = { ...lease, node: "node_c", addr: "172.31.1.233:19480" };
+  assert.deepEqual(liveLeases([lease, peer, restarted], 1000), [restarted, peer]);
 });
 
 test("fleetServing needs every live node on the deployed version", () => {

@@ -1996,7 +1996,13 @@ test("install waits until every live node runs the deployed version", (t) => {
   const f = installFixture(t, {
     target: "page10",
     clock,
-    nodes: [self, peer, { ...peer, node: "node_" + "3".repeat(32), expires_ms: 1 }],
+    nodes: [
+      self,
+      peer,
+      { ...peer, node: "node_" + "3".repeat(32), expires_ms: 1 },
+      // lab1's previous process, same listener, lease not yet expired.
+      { ...self, node: "node_" + "4".repeat(32), expires_ms: self.expires_ms - 5000 },
+    ],
     nodeVersion: (addr, deployed) =>
       addr === peer.addr && ++polls < 4 ? "0000000000000000" : deployed,
   });

@@ -173,15 +173,24 @@ export function localServing(health, want) {
   };
 }
 
-/** Node leases (`<prefix>/nodes/*.json`) that are live at `nowMs`. */
+/**
+ * Node leases (`<prefix>/nodes/*.json`) that are live at `nowMs`, one per
+ * listener. A restarted node writes a new lease on the same address while its
+ * predecessor's lease runs out (CELLD_TTL_MS, 10 s); both answer from the same
+ * process, so the newest lease per address stands for it.
+ */
 export function liveLeases(leases, nowMs) {
-  return leases.filter(
-    (lease) =>
+  const byAddr = new Map();
+  for (const lease of leases)
+    if (
       typeof lease?.node === "string" &&
       /^\d{1,3}(\.\d{1,3}){3}:\d{1,5}$/.test(lease.addr ?? "") &&
       Number.isSafeInteger(lease.expires_ms) &&
-      lease.expires_ms > nowMs,
-  );
+      lease.expires_ms > nowMs &&
+      !(byAddr.get(lease.addr)?.expires_ms >= lease.expires_ms)
+    )
+      byAddr.set(lease.addr, lease);
+  return [...byAddr.values()];
 }
 
 /**
