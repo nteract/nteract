@@ -136,8 +136,8 @@ Branch on code, not on the error message:
   nesting_depth_exceeded (past 9 levels, counting the deepest sub-page),
   placement_cycle (under itself or a sub-page), home_page_protected (a
   Project's home Page can't move or go to Trash alone), not_page_owner (only the
-  owner places a Page), move_destination_required (no parent_id, or a move
-  between Projects or to Your items, which isn't available yet),
+  owner places a Page), move_destination_required (neither parent_id nor
+  project_id names a destination),
   invalid_position (position isn't "first", "last", {"before": id} or
   {"after": id}), position_sibling_unknown (that Page isn't a sibling there).
   move_unconfirmed (503, retryable:true): the move was written but its
@@ -708,13 +708,16 @@ home Page cannot be moved to Trash on its own (home_page_protected).
 Only a Project's owner can open it or add Pages to it. Sharing a
 Page in a Project works as before and does not reveal the Project.
 
-- move_page: page_id, parent_id, optional position ("first", "last", {"before":
-  page_id} or {"after": page_id}), idempotency_key and the list_pages
-  retry_token. One call reparents a Page you own within its Project (or within
-  Your items) and places it among the new parent's children; its sub-pages move
-  with it, trashed ones included, counted as descendants and
-  trashed_descendants. To move a Page to the Project's top level, pass the home
-  Page (get_project's home_page_id) as parent_id. The Page keeps its ID, URL,
+- move_page: page_id, a destination, optional position ("first", "last",
+  {"before": page_id} or {"after": page_id}), idempotency_key and the
+  list_pages retry_token. The destination is parent_id (a Page you own, in any
+  Project or Your items), project_id (a Project you own: its top level), or
+  project_id: null (a root in Your items); with both, the parent must be in
+  that Project (placement_mismatch). One call reparents a Page you own within
+  its Project or Your items, or across them: Your items into a Project, a
+  Project out to Your items, one Project to another. Its sub-pages move with
+  it, trashed ones included, counted as descendants and trashed_descendants.
+  Projects are owner-only, so a move changes no one's access. The Page keeps its ID, URL,
   content, comments, sharing and heads; only the owner's catalog changes, and
   the result's location_revision counts those changes. The home Page can't move
   (home_page_protected); a Page can't move under itself or a sub-page
@@ -722,8 +725,8 @@ Page in a Project works as before and does not reveal the Project.
   (parent_unavailable), deeper than 9 levels counting its deepest sub-page
   (nesting_depth_exceeded), or before/after a Page that isn't a sibling there
   (position_sibling_unknown). A Page in Trash must be restored first
-  (page_trashed). Moving between Projects, into a Project by project_id, or out
-  to Your items returns move_destination_required: those are not available yet.
+  (page_trashed). A Project you don't own or that doesn't exist is
+  project_not_found; naming no destination is move_destination_required.
 
 Trash a Page's children first; subtree Trash is not available yet. delete_page
 on a Page that has sub-pages returns page_has_children. A restored Page whose

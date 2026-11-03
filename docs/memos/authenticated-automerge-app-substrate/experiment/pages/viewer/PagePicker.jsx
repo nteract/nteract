@@ -21,6 +21,7 @@ export function PagePicker({
   projects = [],
   currentProjectId,
   onOpenProject,
+  onCreateProject,
   creating,
   error,
 }) {
@@ -117,9 +118,23 @@ export function PagePicker({
             <p className="muted">{query ? "No matching pages." : "No pages yet."}</p>
           )}
         </nav>
-        {onOpenProject && projects.length > 0 && (
+        {onOpenProject && (projects.length > 0 || onCreateProject) && (
           <nav className="picker-list picker-projects" aria-label="Projects">
-            <h3 className="picker-section">Projects</h3>
+            <div className="picker-section-heading">
+              <h3 className="picker-section">Projects</h3>
+              {onCreateProject && (
+                <button
+                  type="button"
+                  className="subtle-button picker-new-project"
+                  onClick={() => {
+                    onClose();
+                    onCreateProject();
+                  }}
+                >
+                  <Plus size={16} aria-hidden="true" /> New Project
+                </button>
+              )}
+            </div>
             {matchingPages(projects, query).map((project) => (
               <a
                 className="picker-page"

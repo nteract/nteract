@@ -191,3 +191,17 @@ export async function rekeyedEntries(storage, rekeyed) {
   }
   return puts;
 }
+
+/** Puts that set each trashed Page's `restore_space_id` to `spaceId`, or
+ * drop it when `spaceId` is null: a move carries trashed sub-pages to a new
+ * container, and a later restore whose parent is gone lands there. */
+export async function movedTrashEntries(storage, pageIds, spaceId) {
+  const puts = {};
+  for (const pageId of pageIds) {
+    const entry = await storage.get(`trash/${pageId}`);
+    if (!entry || entry.reservation) continue;
+    const { restore_space_id: _old, ...kept } = entry;
+    puts[`trash/${pageId}`] = spaceId ? { ...kept, restore_space_id: spaceId } : kept;
+  }
+  return puts;
+}

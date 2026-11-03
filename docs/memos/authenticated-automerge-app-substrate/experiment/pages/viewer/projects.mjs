@@ -76,13 +76,26 @@ export function visibleCrumbs(crumbs) {
   return crumbs.filter((crumb, index) => !(crumb.home && crumbs[index - 1]?.kind === "project"));
 }
 
-/** Breadcrumbs for an open Page, limited to what this account can open. */
-export async function pageBreadcrumbs(call, pageId) {
+/** Where an open Page is, from read_page: `{ project_id, parent_id, home,
+ * breadcrumbs }`, limited to what this account can open. project_id and
+ * parent_id are null when absent; a Project's top-level Page has its home
+ * Page as parent_id. */
+export async function pageLocation(call, pageId) {
   const result = await call("read_page", {
     page_id: pageId,
     include_content: false,
     comments: "none",
     outline_limit: 1,
   });
-  return Array.isArray(result.breadcrumbs) ? result.breadcrumbs : [];
+  return {
+    project_id: result.project_id ?? null,
+    parent_id: result.parent_id ?? null,
+    home: result.home === true,
+    breadcrumbs: Array.isArray(result.breadcrumbs) ? result.breadcrumbs : [],
+  };
+}
+
+/** Breadcrumbs for an open Page, limited to what this account can open. */
+export async function pageBreadcrumbs(call, pageId) {
+  return (await pageLocation(call, pageId)).breadcrumbs;
 }

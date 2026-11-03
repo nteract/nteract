@@ -3,8 +3,8 @@
 // here imports the editor. Each screen runs one Listing (listing.mjs); its
 // rows and request state live in that store, and React keeps only the search
 // box's text.
-import { useEffect, useMemo, useState } from "react";
-import { Boxes, FileText, Home, Search } from "lucide-react";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { Boxes, FileText, Home, Plus, Search } from "lucide-react";
 import {
   clampPagesQuery,
   PROJECTS_PATH,
@@ -21,6 +21,7 @@ import {
   projectsRequest,
 } from "./listing.mjs";
 import { useStore } from "./store.mjs";
+import { ProjectCreator } from "./ProjectCreator.jsx";
 
 /** Where the index nav leads. `kind` is what onNavigate receives. */
 export const INDEX_LINKS = Object.freeze([
@@ -99,7 +100,15 @@ function ListingStatus({ view, empty, onRetry, listing }) {
   return null;
 }
 
-export function ProjectsIndex({ tool, onNavigate, onOpenProject, onError, onRetry }) {
+export function ProjectsIndex({
+  tool,
+  onNavigate,
+  onOpenProject,
+  onProjectCreated = onOpenProject,
+  onError,
+  onRetry,
+}) {
+  const [creating, setCreating] = useState(false);
   const listing = useListing(
     () =>
       new Listing({
@@ -112,17 +121,30 @@ export function ProjectsIndex({ tool, onNavigate, onOpenProject, onError, onRetr
   const snapshot = useStore(listing.store);
   const view = listingView(snapshot);
   const rows = useMemo(() => snapshot.items.map(projectRow), [snapshot.items]);
+
+  const onCreated = useCallback(
+    (receipt) => {
+      setCreating(false);
+      onProjectCreated(receipt.project_id);
+    },
+    [onProjectCreated],
+  );
+
   return (
     <main className="page-library index-view">
       <IndexNav current="projects" onNavigate={onNavigate} />
       <div className="library-heading">
         <h1>Projects</h1>
+        <button className="primary" onClick={() => setCreating(true)}>
+          <Plus size={18} aria-hidden="true" />
+          New Project
+        </button>
       </div>
       <ListingStatus
         view={view}
         listing={listing}
         onRetry={onRetry}
-        empty="No Projects yet. An agent can create one with create_project."
+        empty="No Projects yet. Create one with New Project, or ask an agent to."
       />
       {!view.failed && rows.length > 0 && (
         <ul className="index-list" aria-label="Projects">
@@ -144,6 +166,9 @@ export function ProjectsIndex({ tool, onNavigate, onOpenProject, onError, onRetr
         </ul>
       )}
       <ListingFooter view={view} listing={listing} label="Projects" onRetry={onRetry} />
+      {creating && (
+        <ProjectCreator tool={tool} onClose={() => setCreating(false)} onCreated={onCreated} />
+      )}
     </main>
   );
 }

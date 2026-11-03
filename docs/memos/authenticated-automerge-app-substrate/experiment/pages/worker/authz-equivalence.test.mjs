@@ -275,3 +275,16 @@ test("a decision inspects only the caller's member row, however many tombstones 
     );
   }
 });
+
+test("projectObject grants no member a role: the owner is the only relation", () => {
+  // move_page's access guard (index.mjs planMoveEvent) relies on Projects
+  // being owner-only. If this fails, that guard must re-check access first.
+  const record = { space_id: "prj_guard", owner: "user:owner", acl: { revision: 3 } };
+  const object = projectObject(record);
+  assert.deepEqual(Object.keys(object.relations).sort(), ["editor", "owner", "viewer"]);
+  assert.equal(object.relations.owner.length, 1);
+  assert.deepEqual(object.relations.editor, []);
+  assert.deepEqual(object.relations.viewer, []);
+  assert.equal(heldRelation(object, "user:member"), "none");
+  assert.equal(heldRelation(object, "user:owner"), "owner");
+});

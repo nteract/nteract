@@ -214,6 +214,10 @@ Pages themselves show in the full Project listing and under `parent_id:
 It also writes the older shape for new Pages; a roll forward after such writes
 must bump `LOCATION_SHAPE_VERSION` so every Catalog runs the pass again.
 
+Rollback past #4712. Builds before #4712 can't replay a `move_page` receipt
+for a request with `parent_id: null`. The move already landed, so after such a
+rollback a client should read or list the Page instead of retrying the move.
+
 ### Projects and their storage identity
 
 Projects were called Spaces through 3548b9750, which Page8 runs. Callers now see
