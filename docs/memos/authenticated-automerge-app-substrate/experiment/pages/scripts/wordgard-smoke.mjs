@@ -428,10 +428,12 @@ async function deniedDiagramCopy(page, block = 0, delayed = false) {
     const copy = editor.getByRole("button", { name: "Copy diagram code", exact: true });
     await copy.click();
     const status = editor.locator(".wordgard-diagram-actions").getByRole("status");
+    // Focus leaves Copy backwards: the copy button can be the Page's last tab
+    // stop, and Tab from there takes focus out of the document.
     if (delayed) {
       await expect(copy).toBeFocused();
       await expect(copy).toHaveAttribute("aria-busy", "true");
-      await copy.press("Tab");
+      await copy.press("Shift+Tab");
       await page.evaluate(() => window.finishDiagramCopy());
       await expect(copy).not.toHaveAttribute("aria-busy");
       await expect(status).toBeEmpty();
@@ -440,7 +442,7 @@ async function deniedDiagramCopy(page, block = 0, delayed = false) {
     await expect(status).toHaveText("Couldn’t copy. Try again.");
     await expect(status).toBeVisible();
     await expect(copy).toBeFocused();
-    await copy.press("Tab");
+    await copy.press("Shift+Tab");
     await expect(status).toBeEmpty();
   } finally {
     await page.evaluate(() => {

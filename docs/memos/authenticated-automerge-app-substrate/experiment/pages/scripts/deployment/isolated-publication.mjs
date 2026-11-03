@@ -3,7 +3,7 @@ import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import { deploymentProfile, stageTarget, verifyDeployment } from "./profiles.mjs";
-import { routesFor, imagePaths, indexPaths } from "./routes.mjs";
+import { routesFor, imagePaths, indexPaths, siftPaths } from "./routes.mjs";
 
 const accountId = "1cfb529b94b3d6cde3aaf49d1d6ed5e6";
 function publicationPaths(target) {
@@ -195,7 +195,9 @@ export function publishIsolated(stage, { filesystem = fs, run = runCommand } = {
             ? plan.config.replace("|theme[.]js|", "|")
             : target === "page9"
               ? plan.config.replace(indexPaths, "")
-              : null;
+              : target === "page10" || target === "pages"
+                ? plan.config.replace(siftPaths, "")
+                : null;
   const previousReceipt = previousConfig === null ? null : receiptFor(previousConfig);
   const pendingReceipt =
     previousConfig === null
@@ -268,6 +270,7 @@ export function publishIsolated(stage, { filesystem = fs, run = runCommand } = {
     const shell = profile.viewerAssets === true;
     const projects = profile.projectLinks === true;
     const index = profile.indexRoutes === true;
+    const sift = profile.siftTables === true;
     const uuid = "08c583e5-d29e-4f1e-b06b-333965254e94";
     const assets = "/api/pages/" + uuid + "/assets";
     run("/usr/bin/cloudflared", ["--config", file, "tunnel", "ingress", "validate"]);
@@ -298,6 +301,10 @@ export function publishIsolated(stage, { filesystem = fs, run = runCommand } = {
       ["/mermaid-ABCDEFGH.js", shell ? plan.listen : "http_status:404"],
       ["/automerge-ABCDEFGH.wasm", shell ? plan.listen : "http_status:404"],
       ["/subduction-ABCDEFGH.wasm", shell ? plan.listen : "http_status:404"],
+      ["/sift-ABCDEFGH.wasm", sift ? plan.listen : "http_status:404"],
+      ["/sift-ABCDEFGH.js", "http_status:404"],
+      ["/sift-abcdefgh.wasm", "http_status:404"],
+      ["/sift-ABCDEFGH.wasm/private", "http_status:404"],
       ["/app-abcdefgh.js", "http_status:404"],
       ["/app-ABCDEFGHI.js", "http_status:404"],
       ["/app-ABCDEFGH.wasm", "http_status:404"],

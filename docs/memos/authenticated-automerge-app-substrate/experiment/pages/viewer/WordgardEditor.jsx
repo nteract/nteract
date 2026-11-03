@@ -3,12 +3,7 @@
 import { Fragment, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import * as A from "@automerge/automerge/slim";
-import {
-  Wordgard,
-  Decoration,
-  KeyBinding,
-  placeholder as wordgardPlaceholder,
-} from "wordgard/editor";
+import { Wordgard, Decoration, KeyBinding } from "wordgard/editor";
 import { GardState, GardSelection, Transaction } from "wordgard/state";
 import {
   Command,
@@ -94,7 +89,8 @@ import {
   wordgardHistory,
   wordgardListStarts,
 } from "./wordgard-binding.mjs";
-import { PagesLink, TaskList, elements } from "./wordgard-model.mjs";
+import { PagesLink, TaskList, elements, filterPastedDataframes } from "./wordgard-model.mjs";
+import { DATASET_ACCEPT } from "../shared/dataset-assets.mjs";
 import { taskLists } from "./wordgard-task-lists.mjs";
 import { markdownShortcuts } from "./wordgard-shortcuts.mjs";
 import { displaySymbols } from "./wordgard-symbols.mjs";
@@ -106,16 +102,17 @@ import {
   wordgardCommentSelection,
 } from "./wordgard-collaboration.mjs";
 import { wordgardWidgets, wordgardCodeLanguages } from "./wordgard-widgets.mjs";
+import { wordgardDataframes } from "./wordgard-dataframes.mjs";
 import { selectionToolbarPosition } from "./selection-toolbar.mjs";
 import { linkDestination, openInNewTab, wantsNewTab } from "./link-destination.mjs";
 import { LinkPopover } from "./LinkPopover.jsx";
-import { selectedImage } from "./image-selection.mjs";
+import { selectedAtom, selectedImage } from "./image-selection.mjs";
 import { normalizePastedHTML } from "./clipboard-html.mjs";
 import {
   IMAGE_ACCEPT,
   captureImageInsertion,
   createImageUploader,
-  imageFiles,
+  uploadFiles,
   resolveImageInsertion,
 } from "./image-upload.mjs";
 import { caretGlideFor, createGlideRunner, mediaMatches$ } from "./caret-glide.mjs";
@@ -162,19 +159,6 @@ const editConfig = (editable) => [
   ...(editable ? wordgardCodeLanguages(CODE_LANGUAGES) : []),
 ];
 
-// Placeholder text Wordgard draws while this block is empty. The words are
-// for sight only: the content element carries them as aria-placeholder, so a
-// screen reader doesn't read them as the paragraph's text.
-const placeholderConfig = (text) =>
-  text
-    ? wordgardPlaceholder(() => {
-        const words = document.createElement("span");
-        words.textContent = text;
-        words.setAttribute("aria-hidden", "true");
-        return words;
-      })
-    : [];
-
 // A pending upload is on screen when the editor draws its inline preview.
 // The preview clears itself when its insertion point is deleted; the status
 // row, with Cancel, then shows again.
@@ -192,9 +176,6 @@ export function WordgardEditor(props) {
     threads,
     commentTarget,
     commentDraft,
-    // Shown in this block while it is empty; main.jsx passes it to an empty
-    // Page's only paragraph when this person can edit.
-    placeholder = null,
   } = props;
   // The toolbar shows for an editor, or with only Comment for a commenter.
   const toolbarUsable = editable || commentable;
@@ -211,7 +192,6 @@ export function WordgardEditor(props) {
     imageUploader = useRef(null),
     imageTarget = useRef(null);
   const permissions = useRef(new GardState.Compartment());
-  const hint = useRef(new GardState.Compartment());
   const [format, setFormat] = useState(null),
     [floating, setFloating] = useState(null),
     [contextualToolbar, setContextualToolbar] = useState(false),
@@ -358,7 +338,7 @@ export function WordgardEditor(props) {
       if (!latest.current.editable || replica.canWrite === false) {
         setImageStatus({
           pending: false,
-          message: "You need edit access to add images.",
+          message: "You need edit access to add images or datasets.",
           retryable: false,
         });
         return true;
@@ -407,6 +387,7 @@ export function WordgardEditor(props) {
           },
         }),
         wordgardWidgets(),
+        wordgardDataframes({ pageId: replica.doc.page_id }),
         wordgardCodeNewlines,
         wordgardListStarts,
         codeHighlighting,
@@ -415,11 +396,14 @@ export function WordgardEditor(props) {
         undoHistory.extension,
         // A block decode couldn't draw as stored opens read-only.
         permissions.current.of(editConfig(latest.current.editable && !bound.current.lossy)),
-        hint.current.of(placeholderConfig(latest.current.placeholder)),
-        Wordgard.clipboardInputHTMLFilter.of((html) => normalizePastedHTML(html)),
-        Wordgard.domEventHandler("paste", (event) => acceptImages(imageFiles(event.clipboardData))),
+        Wordgard.clipboardInputHTMLFilter.of((html) =>
+          filterPastedDataframes(normalizePastedHTML(html), replica.doc.page_id),
+        ),
+        Wordgard.domEventHandler("paste", (event) =>
+          acceptImages(uploadFiles(event.clipboardData)),
+        ),
         Wordgard.domEventHandler("drop", (event) => {
-          const files = imageFiles(event.dataTransfer);
+          const files = uploadFiles(event.dataTransfer);
           if (!files.length) return false;
           return acceptImages(
             files,
@@ -539,6 +523,7 @@ export function WordgardEditor(props) {
             resolve: () => resolveImageInsertion(replica, target, bound.current.map),
             src: state.preview ?? "",
             name: state.name ?? "",
+            message: state.message ?? "",
             onCancel: () => uploader.cancel(),
           };
           try {
@@ -589,7 +574,16 @@ export function WordgardEditor(props) {
         caretFrame = null;
         if (!alive || !caretLayer.current) return;
         const origin = caretLayer.current.getBoundingClientRect();
-        const bounds = editor.contentDOM.getBoundingClientRect();
+        // The text column: wg-content's inline padding is caret room outside
+        // it (wordgard.css), and the reading bar and image dot sit on its edges.
+        const content = editor.contentDOM.getBoundingClientRect(),
+          padding = getComputedStyle(editor.contentDOM);
+        const bounds = {
+          top: content.top,
+          bottom: content.bottom,
+          left: content.left + parseFloat(padding.paddingLeft),
+          right: content.right - parseFloat(padding.paddingRight),
+        };
         const visibleTop = Math.max(0, bounds.top),
           visibleBottom = Math.min(innerHeight, bounds.bottom);
         // Glide positions are article-relative, so they hold across blocks and scrolling.
@@ -681,10 +675,10 @@ export function WordgardEditor(props) {
         collab.observeChange(event);
         let selection;
         const { anchor, head } = editor.state.selection;
-        // Let Wordgard map a selected image through the projection change set.
+        // Let Wordgard map a selected image or dataframe through the projection change set.
         // Rebuilding it as a text range would bring back text controls on peer edits.
         if (
-          !selectedImage(editor.state) &&
+          !selectedAtom(editor.state) &&
           event.nativeBefore &&
           event.nativeAfter &&
           !event.changes.empty
@@ -931,16 +925,6 @@ export function WordgardEditor(props) {
     });
   }, [editable, generation]);
   useEffect(() => {
-    const editor = view.current;
-    if (!editor) return;
-    editor.dispatch({
-      effects: hint.current.reconfigure(placeholderConfig(placeholder)),
-      annotations: remoteAnnotations(),
-    });
-    if (placeholder) editor.contentDOM.setAttribute("aria-placeholder", placeholder);
-    else editor.contentDOM.removeAttribute("aria-placeholder");
-  }, [placeholder, generation]);
-  useEffect(() => {
     if (view.current && !view.current.composing)
       view.current.dispatch({ annotations: remoteAnnotations() });
   }, [threads, commentTarget, commentDraft, generation]);
@@ -998,7 +982,7 @@ export function WordgardEditor(props) {
       const contextual =
         !mobile &&
         !selection.empty &&
-        !selectedImage(editor.state) &&
+        !selectedAtom(editor.state) &&
         !editor.composing &&
         (editor.hasFocus ||
           selectedHere ||
@@ -1252,7 +1236,7 @@ export function WordgardEditor(props) {
       <input
         ref={imageInput}
         type="file"
-        accept={IMAGE_ACCEPT}
+        accept={`${IMAGE_ACCEPT},${DATASET_ACCEPT}`}
         aria-label="Choose image"
         hidden
         onChange={(event) => {

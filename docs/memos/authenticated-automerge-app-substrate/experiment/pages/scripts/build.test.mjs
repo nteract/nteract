@@ -123,7 +123,12 @@ test("failed rebuild removes the previous receipt before replacing any artifacts
       "scripts/browser-mermaid.mjs",
       readFileSync(new URL("./browser-mermaid.mjs", import.meta.url), "utf8"),
     );
-    for (const name of ["browser-wasm.mjs", "viewer-chunks.mjs", "deployment/profiles.mjs"])
+    for (const name of [
+      "browser-wasm.mjs",
+      "browser-sift.mjs",
+      "viewer-chunks.mjs",
+      "deployment/profiles.mjs",
+    ])
       write(`scripts/${name}`, readFileSync(new URL(`./${name}`, import.meta.url), "utf8"));
     for (const name of ["favicon.mjs", "product.mjs"])
       write(`shared/${name}`, readFileSync(new URL(`../shared/${name}`, import.meta.url), "utf8"));

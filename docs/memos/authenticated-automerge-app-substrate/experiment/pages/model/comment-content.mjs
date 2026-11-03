@@ -13,6 +13,7 @@ import {
   validateRichSpans,
 } from "./richtext.mjs";
 import { stampSpans } from "./schema-features.mjs";
+import { DATAFRAME_BLOCK } from "../shared/dataset-assets.mjs";
 
 export const COMMENT_MAX_LENGTH = 16000;
 export const COMMENT_MAX_BYTES = 65536;
@@ -74,6 +75,8 @@ export function validateCommentSpans(spans) {
       length += text.length;
       if (text.trim()) content = true;
     } else if (span?.type === "block") {
+      if (String(span.value?.type) === DATAFRAME_BLOCK)
+        throw Error("Comments can't hold a dataframe");
       length += 1;
       if (span.value?.isEmbed === true) content = true;
     }

@@ -399,6 +399,11 @@ try {
     .toBe(1);
   await selectText(b, "The quick", true);
   await b.keyboard.type(" very");
+  // Wait for " very" to be committed before moving the caret. On a slow
+  // runner the editor can redraw for it after selectText, which puts the
+  // caret back after "very" and types " small" there.
+  await expect.poll(markdown).toContain("The quick very");
+  await saved(b);
   await selectText(b, "brown", true);
   await b.keyboard.type(" small");
   await expect.poll(markdown).toContain("brown small fox");

@@ -39,6 +39,7 @@ import {
   TaskList,
   PagesLink,
   PagesImage,
+  filterPastedDataframes,
 } from "./wordgard-model.mjs";
 import { taskLists } from "./wordgard-task-lists.mjs";
 import { markdownShortcuts } from "./wordgard-shortcuts.mjs";
@@ -99,6 +100,8 @@ function nativeConfig() {
     tablePresentation,
     tableKeys,
     GardState.schemaElement.of(elements),
+    // Comments can't hold a dataframe: a pasted one becomes its title.
+    Wordgard.clipboardInputHTMLFilter.of((html) => filterPastedDataframes(html, null)),
     wordgardCodeNewlines,
     wordgardListStarts,
     codeHighlighting,

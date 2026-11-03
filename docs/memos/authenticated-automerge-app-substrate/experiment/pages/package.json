@@ -19,6 +19,7 @@
     "@automerge/prosemirror": "0.2.0",
     "@automerge/subduction": "0.26.0",
     "@modelcontextprotocol/sdk": "1.29.0",
+    "@nteract/sift": "0.6.0",
     "diff": "8.0.2",
     "dompurify": "3.4.17",
     "fractional-indexing": "4.0.0",

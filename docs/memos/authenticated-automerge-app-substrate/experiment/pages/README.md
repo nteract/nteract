@@ -353,6 +353,34 @@ references; it does not publish the Page or change asset access.
   zoom controls get a gutter beside a shrunk diagram. Source and
   language are shared content; rendered SVG is not stored. Cmd/Ctrl+Enter
   continues in a paragraph. Pages does not execute code.
+- **Dataframes:** a `dataframe` block marker with no text. Its attrs are
+  `src` (a Page asset path), `media_type` and an optional `title`
+  ([`shared/dataset-assets.mjs`](shared/dataset-assets.mjs)). The viewer picks
+  a renderer by media type
+  ([`viewer/wordgard-dataframes.mjs`](viewer/wordgard-dataframes.mjs));
+  `application/vnd.apache.parquet` renders as a Sift table
+  ([`viewer/sift-table.jsx`](viewer/sift-table.jsx)), loaded with its
+  stylesheet and WASM only when a Page shows one. Dropping or pasting a
+  `.parquet` file uploads it and inserts the node at the cursor, undoably.
+  Agents use `edit_page` `insert_node`. A dataframe has no Markdown syntax:
+  it reads as `[Dataframe: <title>](<src>)` on its own line, and Markdown
+  never creates one. `replace_block_markdown` turns that exact line back into
+  the original node, unknown attrs included, and refuses a rewrite that drops
+  or edits it (`markdownless_node`). It's gated by the `dataframe` schema
+  feature. Decode is lenient: a later build's media type or attr under the
+  same feature still decodes, draws "This build can't show…", and writes back
+  unchanged; writers (`insert_node`, upload) check strictly. Copy writes a
+  `figure[data-pages-dataframe]` with the attrs as JSON, and paste reads it
+  back only when its `src` is on the same Page. The table fetch refuses a
+  `src` on another Page too. A dataframe whose attrs this build can't read
+  decodes as an unknown node (see above), and a Markdown rewrite of its block
+  is refused. Each block editor also sits in an error boundary
+  (`viewer/BlockBoundary.jsx`), so any other failure to draw one block can't
+  unmount the viewer. Sorting, filtering and
+  scrolling stay in each reader's view. A shared view (filters, sort, column
+  choices) is not stored yet; it belongs in its own Automerge document keyed
+  by the node, like the comments document, so view edits never touch Page
+  content or its history.
 - **Tables:** native row/cell markers live in the same rich-text field as prose.
   Insert table chooses dimensions; Table options changes rows and columns. Tab
   moves between cells and appends a row at the end. The first row is the header.
@@ -501,9 +529,39 @@ guarded by the revision the listing read. A listing looks ahead for one verified
 row past its page; only a scan that stops at its bound (`2 × limit + 16`
 candidates) returns a cursor without one, and that can only reflect stale rows
 carrying titles the caller was previously authorized to see. `next_cursor` is sealed (AES-GCM, keyed from
-`NOTEBOOK_CLOUD_APP_SESSION_SECRET`) to the caller, query and `in_trash`, and
-expires after 24 hours. Pagination is best-effort: a Page whose title or sharing
+`NOTEBOOK_CLOUD_APP_SESSION_SECRET`) to the caller, query, `in_trash` and filters,
+and expires after 24 hours. Pagination is best-effort: a Page whose title or sharing
 changes mid-traversal can move across the cursor.
+
+`access` narrows a listing to owner rows (`"owned"`) or non-owner rows
+(`"shared"`); every row still passes the same check. An owned-only scan never
+asks a Page host about a shared row (the account's reconcile pass still advances
+as on any listing). Trash and Projects hold only owned Pages, so
+`"shared"` with `in_trash` or `project_id` is refused with
+`invalid_list_arguments`. Under an owned parent, `"shared"` lists nothing; under a
+shared parent, `"owned"` lists nothing, since only a Page's owner places Pages
+under it.
+
+`sort: "title"` orders by the caller's title snapshot (`title_search`, lowercased)
+in code point order, then Page ID, both ascending, so accented and non-Latin
+titles come after z. That is SQLite's `BINARY` order over the UTF-8 D1 stores,
+and the Catalog fallback compares the same way over keys computed as the index
+computes them. Listing titles are cut to 500 code units on a code point boundary
+with lone surrogates replaced, so a key reads back from D1 exactly as the
+fallback computes it. An empty title sorts first; a missing one is stored as
+"Untitled". Continuation pages compare a row value against the cursor's
+position, `(title_search, page_id) > (?, ?)` or `(updated_at, page_id) < (?, ?)`,
+which seeks the listing index instead of scanning from the principal's first row. The shown title still comes from the check,
+so a Page renamed since its snapshot can sit out of order until its row is
+rewritten. Children of a shared parent come from IDs alone and order by Page ID
+in either sort. The default `"activity"` sort is `updated_at` newest first.
+
+A listing with no location, kind or `access` filter in the default sort seals its
+cursor exactly as builds before these arguments did, so those cursors stay valid
+across a deploy. `access` and a title sort extend the sealed scope, so a cursor
+issued under one never opens under another; the client gets `invalid_cursor` and
+restarts. A title-sorted cursor carries its position's title key, which makes it
+longer: cursors may run to 8192 characters.
 
 Page hosts report their row after creation, title changes and ACL commits. Writes
 carry the committed ACL revision, so a report that outlives its timeout changes
@@ -1014,8 +1072,16 @@ read access before lookup, then return verified raster MIME, `nosniff`, and
 `Cache-Control: private, no-store`. No public bucket, persistent presigned URL,
 or cross-Page hash lookup is exposed.
 
-Current limits are 5 MiB per image, 8192 pixels per side, and 25 million pixels;
-the HTTP request ceiling is 6 MiB. SVG, HTML, GIF, APNG, and animated WebP are not
+The same route stores Parquet datasets for dataframe nodes. The Worker checks
+only the container: `PAR1` at both ends, a footer length that fits, and no
+encrypted footer. It never decodes the footer or column data. A dataset is
+served as `application/vnd.apache.parquet` with `Content-Disposition:
+attachment`, so opening its URL downloads it. `insert_image` and
+`import_page_image` refuse datasets; `insert_node` checks with `HEAD` that its
+asset is a dataset of the node's media type on the same Page.
+
+Current limits are 5 MiB per image or dataset, 8192 pixels per side, and 25
+million pixels; the HTTP request ceiling is 6 MiB. SVG, HTML, GIF, APNG, and animated WebP are not
 accepted. Container validation is not full pixel decoding. Removed images and
 interrupted uploads may leave private objects: immediate deletion would break
 undo or offline references. Asset garbage collection and copying assets between
@@ -1278,12 +1344,14 @@ a Page row. A
 release serves only its own chunks, so a tab still running an earlier `app.js`
 can find its editor chunk gone: the path then answers with the app's HTML and
 the import fails. The tab asks `/health` for the build and the banner offers
-Reload. The Mermaid renderer loads only when a diagram shows; a failed import
-asks `/health` the same way.
+Reload. The Mermaid renderer loads only when a diagram shows, and the Sift
+table chunk only when a dataframe shows; a failed import asks `/health` the
+same way.
 
 Every file `index.html` names carries a content hash too: `app-<hash>.js`,
 `app-<hash>.css`, `theme-<hash>.js`, `automerge-<hash>.wasm` and
-`subduction-<hash>.wasm`, plus `mermaid-<hash>.js` from the editor chunk. The
+`subduction-<hash>.wasm`, plus `mermaid-<hash>.js` from the editor chunk and
+`sift-<hash>.wasm` from the Sift table chunk. The
 hash is the first 40 bits of the file's sha256 in base32. `_headers` serves
 each hashed file `public, max-age=31536000, immutable` by its exact path, so
 a return visit revalidates only `index.html`, which stays

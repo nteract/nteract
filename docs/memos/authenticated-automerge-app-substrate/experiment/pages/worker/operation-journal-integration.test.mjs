@@ -1073,6 +1073,110 @@ test("Page image preflight rejects missing assets and lost write access before e
   }
 });
 
+const parquetHead = (assetId, owner = pageId) => ({
+  size: 1018,
+  httpMetadata: { contentType: "application/vnd.apache.parquet" },
+  customMetadata: { page_id: owner, hash: assetId },
+});
+
+test("Page dataframe insertion checks storage once and replays without it", async (t) => {
+  const f = await pageFixture(t);
+  const assetId = "c".repeat(64);
+  let heads = 0;
+  f.page.env = {
+    ...f.page.env,
+    PAGES_ASSETS: {
+      async head(key) {
+        heads++;
+        assert.ok(key.includes(pageId) && key.includes(assetId));
+        return parquetHead(assetId);
+      },
+    },
+  };
+  const before = await (await f.request("read_page")).json();
+  const args = {
+    page_id: pageId,
+    base_heads: before.heads,
+    retry_token: before.retry_token,
+    idempotency_key: await retryKey(before.retry_token, "insert-dataframe-once"),
+    operations: [
+      {
+        op: "insert_node",
+        node: { type: "dataframe", attrs: { asset_id: assetId, title: "Usage" } },
+      },
+    ],
+  };
+  const response = await f.request("edit_page", args);
+  assert.equal(response.status, 200);
+  const receipt = await response.json();
+  const [node] = receipt.result.inserted_nodes;
+  assert.equal(node.attrs.src, `/api/pages/${pageId}/assets/${assetId}`);
+  assert.ok(f.page.handle.doc().blocks[node.block_id]);
+  assert.equal(heads, 1);
+  f.page.env.PAGES_ASSETS.head = async () => assert.fail("Retry depends on blob storage");
+  assert.deepEqual(await (await f.request("edit_page", args)).json(), receipt);
+});
+
+test("Page dataframe preflight refuses missing, image and malformed assets before editing", async (t) => {
+  const assetId = "c".repeat(64);
+  for (const [name, head, attrs, status, code] of [
+    ["missing", () => null, { asset_id: assetId }, 404, "dataset_not_found"],
+    [
+      "image",
+      () => ({
+        size: 74,
+        httpMetadata: { contentType: "image/png" },
+        customMetadata: { page_id: pageId, hash: assetId, width: "3", height: "2" },
+      }),
+      { asset_id: assetId },
+      415,
+      undefined,
+    ],
+    // A stored object whose metadata names another Page fails closed.
+    [
+      "foreign",
+      () => parquetHead(assetId, "44444444-4444-4444-8444-444444444444"),
+      { asset_id: assetId },
+      500,
+      undefined,
+    ],
+    [
+      "malformed",
+      () => assert.fail("No HEAD for a malformed node"),
+      { asset_id: "x" },
+      400,
+      "invalid_edit_selector",
+    ],
+    [
+      "media type",
+      () => assert.fail("No HEAD for an unknown media type"),
+      { asset_id: assetId, media_type: "text/csv" },
+      400,
+      "invalid_edit_selector",
+    ],
+  ]) {
+    const f = await pageFixture(t);
+    f.page.env = { ...f.page.env, PAGES_ASSETS: { head } };
+    const before = await (await f.request("read_page")).json();
+    const args = {
+      page_id: pageId,
+      base_heads: before.heads,
+      retry_token: before.retry_token,
+      idempotency_key: await retryKey(before.retry_token, `dataframe-${name.replace(" ", "-")}`),
+      operations: [
+        { op: "set_title", title: "Must not apply" },
+        { op: "insert_node", node: { type: "dataframe", attrs } },
+      ],
+    };
+    const response = await f.request("edit_page", args);
+    assert.equal(response.status, status, name);
+    if (code) assert.equal((await response.json()).code, code, name);
+    assert.equal(f.updates(), 0, name);
+    assert.equal(f.page.handle.doc().title, "Accepted content", name);
+    assert.equal(await f.storage.get(`host/operation/${args.idempotency_key}`), undefined, name);
+  }
+});
+
 test("recovery-blocked Page keeps accepted content readable and rejects tool and native writes", async (t) => {
   t.mock.method(Date, "now", () => start);
   const f = await pageFixture(t);

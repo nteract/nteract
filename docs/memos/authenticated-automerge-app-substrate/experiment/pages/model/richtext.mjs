@@ -22,6 +22,7 @@ import {
   validateMarkValue,
 } from "./marks.mjs";
 import { FEATURE_REGISTRY, stampSpans } from "./schema-features.mjs";
+import { DATAFRAME_BLOCK, dataframeAttrs, readDataframe } from "../shared/dataset-assets.mjs";
 
 export { safeUrl } from "./marks.mjs";
 
@@ -155,6 +156,40 @@ nodes.hard_break = {
 nodes.horizontal_rule = {
   ...nodes.horizontal_rule,
   automerge: { block: "horizontal-rule" },
+};
+// A dataframe: a block with no text whose attrs name a Page dataset asset
+// (shared/dataset-assets.mjs). It has no Markdown syntax, so the codec never
+// creates one; insert_node does (model/page.mjs). Every string attr is
+// immutable, as the Wordgard encoder writes it, so either writer leaves the
+// marker unchanged. The adapter keeps attrs this build doesn't know in
+// `unknownAttrs` and writes them back (pageSpans stores them immutable), so
+// a later build can add one under the same feature.
+const immutable = (value) => (value == null ? null : new A.ImmutableString(String(value)));
+nodes.dataframe = {
+  group: "block",
+  atom: true,
+  selectable: true,
+  attrs: { src: {}, media_type: {}, title: { default: null } },
+  automerge: {
+    block: DATAFRAME_BLOCK,
+    attrParsers: {
+      fromAutomerge: (block) => ({
+        src: String(block.attrs.src ?? ""),
+        media_type: String(block.attrs.media_type ?? ""),
+        title: block.attrs.title == null ? null : String(block.attrs.title),
+      }),
+      fromProsemirror: (node) => ({
+        src: immutable(node.attrs.src),
+        media_type: immutable(node.attrs.media_type),
+        ...(node.attrs.title != null && { title: immutable(node.attrs.title) }),
+      }),
+    },
+  },
+  toDOM: (node) => [
+    "figure",
+    { "data-dataframe": node.attrs.media_type },
+    node.attrs.title ?? "Dataframe",
+  ],
 };
 // `raw` (`pages-opaque`) is read-only and exists only to read documents that
 // still hold one. No writer creates it: Markdown import never emits it, and the
@@ -762,6 +797,17 @@ const serializer = new MarkdownSerializer(
         // write() supplies the surrounding quote/list delimiter for every row.
         state.write(row);
       });
+      state.closeBlock(node);
+    },
+    // A dataframe has no Markdown form. It reads as a labeled link to its
+    // asset on its own line. replace_block_markdown turns that exact line back
+    // into the node (setRichMarkdownKeepingNodes) and refuses a rewrite
+    // without it, so the link never silently replaces the node.
+    dataframe(state, node) {
+      // Attrs this build can't read (never written by a Pages writer) read as
+      // a notice, so a read never offers their src as a link.
+      if (!readDataframe(node.attrs)) state.write(state.esc(unknownNodeNotice("dataframe")));
+      else state.write(`[${state.esc(dataframeLabel(node.attrs.title))}](${node.attrs.src})`);
       state.closeBlock(node);
     },
     // A preserved block the host has not converted yet projects as the
@@ -1514,6 +1560,8 @@ const TEXT_CONTAINERS = new Set(["code-block", "table-cell", "table-header"]);
  * serializes only its text). With `all`, every unknown marker does: one
  * outside a text container becomes a paragraph holding its notice, and
  * unknown parents are dropped. Writers never store these spans. */
+const dataframeInText = (type, parents) =>
+  type === DATAFRAME_BLOCK && parents.some((parent) => TEXT_CONTAINERS.has(parent));
 function readableSpans(spans, all) {
   const known = (types) => types.filter(knownBlock).map((p) => new A.ImmutableString(p));
   const out = [];
@@ -1524,7 +1572,9 @@ function readableSpans(spans, all) {
     }
     const type = String(span.value.type);
     const parents = (span.value.parents ?? []).map(String);
-    const unknown = !knownBlock(type);
+    // A dataframe inside a text container can't be placed; it reads like a
+    // node this build doesn't know (dataframeInText).
+    const unknown = !knownBlock(type) || dataframeInText(type, parents);
     if (unknown && (all || (span.value.isEmbed && parents.includes("code-block")))) {
       if (!span.value.isEmbed && !parents.some((parent) => TEXT_CONTAINERS.has(parent)))
         out.push({
@@ -1660,10 +1710,91 @@ export function markdownlessNode(block) {
   if (!isRich(block)) return null;
   for (const span of A.spans(block, ["richText"])) {
     if (span.type !== "block") continue;
-    for (const type of [span.value?.type, ...(span.value?.parents ?? [])].map(String))
+    const parents = (span.value?.parents ?? []).map(String);
+    if (dataframeInText(String(span.value?.type), parents)) return DATAFRAME_BLOCK;
+    for (const type of [span.value?.type, ...parents].map(String))
       if (!knownBlock(type)) return type;
   }
   return null;
+}
+/** Write one node with no Markdown form as a block's whole content. */
+export function setRichNode(doc, id, { type, attrs }) {
+  if (type !== DATAFRAME_BLOCK) throw Error(`Unsupported node type: ${type}`);
+  // isAmgBlock marks an explicit block marker; without it the adapter writes
+  // no span for a node with no text.
+  const node = schema.node("dataframe", { ...dataframeAttrs(attrs), isAmgBlock: true });
+  const tree = schema.node("doc", null, [node]);
+  const spans = pageSpans(tree);
+  A.updateSpans(doc, textPath(id), spans, updateSpansConfig);
+  stampSpans(doc, spans);
+}
+/** The read-back line of a dataframe: `[Dataframe: <title>](<src>)`. */
+export const dataframeLabel = (title) => {
+  // One line, whatever the stored title holds, so the read-back line always
+  // matches itself on a rewrite.
+  const line = title?.replace(/\s+/g, " ").trim();
+  return line ? `Dataframe: ${line}` : "Dataframe";
+};
+
+/**
+ * Rewrite a block from agent Markdown, keeping its dataframes. Each existing
+ * dataframe must appear in `source` as its own read-back line, unchanged; that
+ * line becomes the original node again, unknown attrs included. A line naming
+ * a dataframe the block doesn't hold stays a link, so Markdown never creates
+ * one. Throws `markdownless_node` when a dataframe's line is missing or
+ * edited, rather than dropping the node.
+ */
+export function setRichMarkdownKeepingNodes(doc, id, source) {
+  const block = doc.blocks[id];
+  const existing = isRich(block)
+    ? richDoc(block).content.content.flatMap(function collect(node) {
+        return node.type.name === "dataframe" ? [node] : node.content.content.flatMap(collect);
+      })
+    : [];
+  // Every dataframe counts, readable or not: one whose attrs this build can't
+  // read never matches a line, so the rewrite is refused rather than dropping
+  // it.
+  if (!existing.length) return setRichMarkdown(doc, id, source);
+  const tree = parseAgentMarkdown(source);
+  const unmatched = [...existing];
+  const restore = (node) => {
+    const only = node.type.name === "paragraph" && node.childCount === 1 ? node.firstChild : null;
+    const link = only?.isText ? only.marks.find((mark) => mark.type.name === "link") : null;
+    if (link) {
+      const index = unmatched.findIndex(
+        (candidate) =>
+          candidate.attrs.src === link.attrs.href &&
+          dataframeLabel(candidate.attrs.title) === only.text,
+      );
+      if (index !== -1) {
+        const [original] = unmatched.splice(index, 1);
+        // The original attrs, unknown ones included (the adapter's
+        // unknownAttrs); pageSpans stores every string attr immutable.
+        return schema.node("dataframe", { ...original.attrs, isAmgBlock: true });
+      }
+    }
+    if (node.isLeaf || node.isTextblock) return node;
+    const children = [];
+    node.forEach((child) => children.push(restore(child)));
+    return node.copy(node.content.constructor.from(children));
+  };
+  const kept = restore(tree);
+  if (unmatched.length)
+    throw Object.assign(
+      Error(
+        `This block holds ${unmatched.length === 1 ? "a dataframe" : `${unmatched.length} dataframes`}, which ${unmatched.length === 1 ? "has" : "have"} no Markdown form. Keep ${unmatched.length === 1 ? "its line" : "each line"} unchanged to keep ${unmatched.length === 1 ? "it" : "them"}: ${unmatched
+          .map((node) =>
+            readDataframe(node.attrs)
+              ? `[${dataframeLabel(node.attrs.title)}](${node.attrs.src})`
+              : unknownNodeNotice("dataframe"),
+          )
+          .join(", ")}. To remove one, use delete_block on a block that holds only it.`,
+      ),
+      { code: "markdownless_node" },
+    );
+  const spans = pageSpans(kept);
+  A.updateSpans(doc, textPath(id), spans, updateSpansConfig);
+  stampSpans(doc, spans);
 }
 export function projectedBlock(block) {
   const { richText: _rich, ...result } = block;
@@ -1718,6 +1849,10 @@ export function validateRichSpans(spans, maxBytes = 262144) {
       throw Error("Invalid table alignment");
     if (node.type.name === "image" && !safeUrl(node.attrs.src))
       throw Error("Invalid rich image URL");
+    // Lenient: a later build may add media types or attrs under the same
+    // feature. Writers check strictly (dataframeAttrs) before writing.
+    if (node.type.name === "dataframe" && !readDataframe(node.attrs))
+      throw Error("Invalid dataframe: src must be a Page asset path");
     for (const mark of node.marks)
       if (mark.type.name === "link" && !safeUrl(mark.attrs.href)) throw Error("Invalid rich link");
   });

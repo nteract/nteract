@@ -42,6 +42,7 @@ import { PRODUCT_NAME, tabTitle } from "../shared/product.mjs";
 import { maintainBrowserSession } from "./browser-session.mjs";
 import { earlyConnectAnswer, requestSession } from "./early-session.mjs";
 import { PagePreview } from "./PagePreview.jsx";
+import { BlockBoundary } from "./BlockBoundary.jsx";
 import { BootPreview, visiblePreview } from "./boot-preview.mjs";
 import { openPageWithRetry } from "./page-open.mjs";
 // app.css carries the editor's styles too, ahead of style.css so the cascade
@@ -376,7 +377,7 @@ function App() {
     if (next.accessReloadRequired && !next.recoveryPending) void reloadAccess(next);
     const first = next.doc ? (editor.module.orderedBlockIds(next.doc)[0] ?? null) : null;
     activateBlock(first);
-    // An empty Page opens with the caret in its placeholder paragraph, where
+    // An empty Page opens with the caret in its empty paragraph, where
     // a pointer and keyboard are ready for it. A new Page names itself first,
     // and a phone keeps its keyboard down until someone taps.
     const empty =
@@ -636,7 +637,6 @@ function App() {
   }, []);
   const page = session?.snapshot(),
     threads = page?.comments ?? [];
-  const emptyPage = !!page && !!editor.module?.isEmptyPage(page);
   const shownPreview = page
     ? null
     : visiblePreview(bootPreviewState, {
@@ -1434,44 +1434,53 @@ function App() {
                         ?.focus();
                   }}
                 />
-                {page.blocks.map((block, index) => (
+                {page.blocks.map((block) => (
                   <section className="page-block" data-block-id={block.id} key={block.id}>
                     {block.format === "automerge-rich-text-v1" ? (
-                      <WordgardEditor
-                        replica={session}
-                        id={block.id}
-                        editable={session.canWrite}
-                        commentable={session.canComment}
-                        onError={setError}
-                        onComment={(selected) => startComment(block.id, selected)}
-                        onRevealComment={selectComment}
-                        toolbarHost={active === block.id ? toolbar : null}
-                        toolbarOpen={toolbarOpen}
-                        placeholder={
-                          emptyPage && index === 0 && session.canWrite
-                            ? editor.module.WRITING_PROMPT
-                            : null
+                      <BlockBoundary
+                        onError={(error) =>
+                          console.error(
+                            `Pages block ${block.id} failed to draw:`,
+                            error?.stack ?? error,
+                          )
                         }
-                        onActivate={() => activateBlock(block.id)}
-                        threads={threads}
-                        commentTarget={target}
-                        commentDraft={
-                          composerState.composer?.draft.blockId === block.id &&
-                          (composerState.state.name === "open" ||
-                            composerState.state.name === "sending")
-                            ? composerState.composer.draft
-                            : null
-                        }
-                      />
+                      >
+                        <WordgardEditor
+                          replica={session}
+                          id={block.id}
+                          editable={session.canWrite}
+                          commentable={session.canComment}
+                          onError={setError}
+                          onComment={(selected) => startComment(block.id, selected)}
+                          onRevealComment={selectComment}
+                          toolbarHost={active === block.id ? toolbar : null}
+                          toolbarOpen={toolbarOpen}
+                          onActivate={() => activateBlock(block.id)}
+                          threads={threads}
+                          commentTarget={target}
+                          commentDraft={
+                            composerState.composer?.draft.blockId === block.id &&
+                            (composerState.state.name === "open" ||
+                              composerState.state.name === "sending")
+                              ? composerState.composer.draft
+                              : null
+                          }
+                        />
+                      </BlockBoundary>
                     ) : (
                       <pre>{block.markdown ?? "Unsupported block"}</pre>
                     )}
                   </section>
                 ))}
-                {/* An empty Page shows the prompt inside its paragraph instead. */}
-                {session.canWrite && !emptyPage && (
+                {/* Blank space below the last block: a click there puts the
+                    caret in an empty paragraph at the end. Its label shows
+                    only under keyboard focus, when the editor has no caret,
+                    so it can't be mistaken for the caret's line. It stays in
+                    the tab order for a last block that ArrowDown and
+                    Mod-Enter can't leave: read-only or not rich text. */}
+                {session.canWrite && (
                   <button type="button" className="writing-continuation" onClick={continueWriting}>
-                    {editor.module.WRITING_PROMPT}
+                    <span className="writing-continuation-label">Continue writing</span>
                   </button>
                 )}
                 {ownsProject && placement.home && (

@@ -3,6 +3,7 @@ import { test } from "node:test";
 import { handleMcp as handleMcpRequest, tools } from "../mcp.mjs";
 import { PRODUCT_NAME } from "../shared/product.mjs";
 import { logUsage } from "../worker/usage.mjs";
+import { CURSOR_MAX_LENGTH } from "../worker/catalog-index.mjs";
 const env = { NOTEBOOK_CLOUD_PUBLIC_ORIGIN: "https://pages.example" };
 const handleMcp = (request, invoke) => handleMcpRequest(request, invoke, env);
 const request = (method, params = {}, id = 1) =>
@@ -821,6 +822,32 @@ test("MCP resources reach invoke() as kind resource; tool calls carry no kind", 
     { operation: "list_pages", options: { kind: "resource" } },
     { operation: "read_page", options: { kind: "resource" } },
     { operation: "read_page", options: undefined },
+  ]);
+});
+
+test("MCP list_pages advertises access and sort and forwards them unchanged", async () => {
+  const descriptor = tools.find((tool) => tool.name === "list_pages");
+  const { access, sort, cursor } = descriptor.inputSchema.properties;
+  assert.deepEqual(access.enum, ["owned", "shared"]);
+  assert.deepEqual(sort.enum, ["activity", "title"]);
+  assert.match(access.description, /in_trash or project_id/);
+  assert.match(sort.description, /activity \(default\)/);
+  assert.equal(cursor.maxLength, CURSOR_MAX_LENGTH, "a title-sorted cursor must fit");
+  assert.deepEqual(descriptor.inputSchema.required, []);
+  const calls = [];
+  const response = await handleMcp(
+    request("tools/call", {
+      name: "list_pages",
+      arguments: { access: "shared", sort: "title", limit: 5 },
+    }),
+    async (operation, args) => {
+      calls.push({ operation, args });
+      return Response.json({ pages: [], limit: 5, next_cursor: null });
+    },
+  );
+  assert.equal(response.status, 200);
+  assert.deepEqual(calls, [
+    { operation: "list_pages", args: { access: "shared", sort: "title", limit: 5 } },
   ]);
 });
 

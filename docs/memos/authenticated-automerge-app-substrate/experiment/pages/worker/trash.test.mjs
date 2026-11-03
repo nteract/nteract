@@ -107,6 +107,24 @@ test("delete_page moves a Page to Trash and keeps its document, comments and ACL
   );
   assert.equal(typeof listed.body.retry_token, "string");
   assert.equal((await f.catalogCall("owner", "list_pages", { in_trash: "yes" })).status, 400);
+  // Trash holds only owned Pages: owned lists it, shared is refused.
+  const ownedTrash = await f.catalogCall("owner", "list_pages", {
+    in_trash: true,
+    access: "owned",
+  });
+  assert.deepEqual(ownedTrash.body.pages, listed.body.pages);
+  const titledTrash = await f.catalogCall("owner", "list_pages", {
+    in_trash: true,
+    access: "owned",
+    sort: "title",
+  });
+  assert.deepEqual(titledTrash.body.pages, listed.body.pages);
+  const sharedTrash = await f.catalogCall("owner", "list_pages", {
+    in_trash: true,
+    access: "shared",
+  });
+  assert.equal(sharedTrash.status, 400);
+  assert.equal(sharedTrash.body.code, "invalid_list_arguments");
 
   // A projection observed before trashing cannot relist the Page.
   const projection = await f.catalogOf(f.owner).catalog.fetch(
@@ -263,6 +281,15 @@ test("members and strangers lose access and listings while trashed", async (t) =
   assert.equal(
     (await f.catalogCall("member", "list_pages", { in_trash: true })).body.pages.length,
     0,
+  );
+  // A member can't reach the owner's Trash through the shared filter either.
+  assert.equal(
+    (await f.catalogCall("member", "list_pages", { in_trash: true, access: "shared" })).body.code,
+    "invalid_list_arguments",
+  );
+  assert.deepEqual(
+    (await f.catalogCall("member", "list_pages", { access: "shared" })).body.pages,
+    [],
   );
 });
 

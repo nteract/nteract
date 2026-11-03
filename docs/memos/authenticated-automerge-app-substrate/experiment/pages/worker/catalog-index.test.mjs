@@ -5,10 +5,16 @@ import { createAuthFixture } from "../../auth-fixtures.mjs";
 import { sqliteD1 } from "../test/sqlite-d1.mjs";
 import { Catalog, Page } from "./index.mjs";
 import { DocumentPolicy } from "./policy.mjs";
+import { catalogTitle } from "./catalog.mjs";
 import {
   CATALOG_MIGRATIONS,
+  CURSOR_MAX_LENGTH,
   catalogIndexBounds,
+  catalogSource,
   catalogIndexTimeouts,
+  compareText,
+  listScope,
+  listingQuery,
   listingRestricted,
   migrateCatalogIndex,
   openCursor,
@@ -20,6 +26,7 @@ import {
   restrictPageIndex,
   retirePageIndex,
   sealCursor,
+  titleKey,
 } from "./catalog-index.mjs";
 
 class Storage {
@@ -345,6 +352,14 @@ test("restrictions are delete-only; only a durable retirement writes the deleted
   ]);
 });
 
+/** The access and sort combinations a denial must look the same under. */
+const LISTING_VARIANTS = [
+  {},
+  { access: "shared" },
+  { sort: "title" },
+  { access: "shared", sort: "title" },
+];
+
 async function catalogFixture(t, { index = "1" } = {}) {
   const auth = await createAuthFixture();
   t.mock.method(globalThis, "fetch", auth.fetch);
@@ -448,6 +463,9 @@ test("bare list_pages returns up to 100 entries; explicit arguments page by 50",
   assert.equal(bare.body.limit, 100);
   assert.equal(bare.body.pages.length, 60);
   assert.equal(bare.body.next_cursor, null);
+  const nulls = await f.list(owner, { access: null, sort: null });
+  assert.equal(nulls.body.limit, 100, "null access and sort leave the call bare");
+  assert.equal(nulls.body.pages.length, 60);
   const paged = await f.list(owner, { query: "owned" });
   assert.equal(paged.body.pages.length, 50);
   assert.ok(paged.body.next_cursor);
@@ -554,7 +572,10 @@ test("a denied matching row and a nonexistent row produce the same response", as
     pages: result.body.pages.map((page) => page.page_id),
     more: result.body.next_cursor !== null,
   });
-  for (const args of [{ limit: 2 }, { query: "secret" }, { query: "visible", limit: 2 }]) {
+  const cases = [{ limit: 2 }, { query: "secret" }, { query: "visible", limit: 2 }].flatMap(
+    (base) => LISTING_VARIANTS.map((variant) => ({ ...base, ...variant })),
+  );
+  for (const args of cases) {
     f.db.sqlite.exec(`INSERT OR IGNORE INTO pages_catalog_access
       (page_id, principal, role, source, updated_revision, updated_at, title, title_search)
       VALUES ('${id(9)}', '${member}', 'viewer', 'member', 1, '2000-01-01T00:00:00.000Z',
@@ -1056,7 +1077,10 @@ test("a revoked principal cannot probe titles set after revocation", async (t) =
     pages: result.body.pages,
     more: result.body.next_cursor !== null,
   });
-  for (const args of [{ query: "zebra", limit: 1 }, { query: "zebra 7" }]) {
+  const cases = [{ query: "zebra", limit: 1 }, { query: "zebra 7" }].flatMap((base) =>
+    LISTING_VARIANTS.map((variant) => ({ ...base, ...variant })),
+  );
+  for (const args of cases) {
     const revoked = shape(await f.list(member, args));
     const nonexistent = shape(await f.list(stranger, args));
     assert.deepEqual(revoked, nonexistent, JSON.stringify(args));
@@ -1185,4 +1209,605 @@ test("a slow D1 cannot stretch reconcile past its deadline plus one call", async
   for (let request = 0; request < 10 && !done; request++) done = await reconcile();
   assert.equal(done, true);
   assert.equal(ownerRows(), 100);
+});
+
+const PROJECT = `prj_${id(7)}`;
+
+test("access and sort are validated, and shared refuses Trash and Projects", () => {
+  const fails = (args, pattern) =>
+    assert.throws(() => parseListArguments(args), {
+      status: 400,
+      code: "invalid_list_arguments",
+      message: pattern,
+    });
+  const defaults = parseListArguments({});
+  assert.equal(defaults.access, null);
+  assert.equal(defaults.sort, "activity");
+  assert.equal(parseListArguments({ access: "owned" }).limit, 50, "access is a new argument");
+  assert.equal(parseListArguments({ sort: "title" }).limit, 50, "sort is a new argument");
+  // null is omitted, including for the bare call's page size.
+  for (const args of [{ access: null }, { sort: null }, { access: null, sort: null }])
+    assert.deepEqual(parseListArguments(args), defaults, JSON.stringify(args));
+  assert.equal(parseListArguments({ access: null, query: "x" }).limit, 50);
+  for (const access of ["all", "OWNED", "", 1, true]) fails({ access }, /access must be/);
+  for (const sort of ["created", "updated", "TITLE", "", 0]) fails({ sort }, /sort must be/);
+  fails({ access: "shared", in_trash: true }, /Trash lists only Pages you own/);
+  fails({ access: "shared", space_id: PROJECT }, /project_id does not combine/);
+  assert.equal(parseListArguments({ access: "owned", in_trash: true }).inTrash, true);
+  assert.equal(parseListArguments({ access: "owned", space_id: PROJECT }).spaceId, PROJECT);
+  assert.equal(parseListArguments({ access: "shared", parent_id: id(1) }).parentId, id(1));
+  assert.equal(parseListArguments({ access: "shared", in_trash: false }).access, "shared");
+  assert.equal(parseListArguments({ sort: "title", in_trash: true }).sort, "title");
+});
+
+test("list scope stays undefined for the default listing and separates access and sort", () => {
+  const scope = (args) => listScope(parseListArguments(args));
+  // Production cursors were sealed with these exact scopes.
+  for (const args of [{}, { query: "x" }, { sort: "activity" }, { access: null, sort: null }])
+    assert.equal(scope(args), undefined, JSON.stringify(args));
+  assert.equal(scope({ space_id: PROJECT }), JSON.stringify([PROJECT, null, true, null]));
+  assert.equal(
+    scope({ space_id: PROJECT, sort: "activity" }),
+    JSON.stringify([PROJECT, null, true, null]),
+  );
+  assert.equal(scope({ parent_id: id(1) }), JSON.stringify([null, id(1), false, null]));
+  const variants = [
+    {},
+    { access: "owned" },
+    { access: "shared" },
+    { sort: "title" },
+    { access: "owned", sort: "title" },
+    { access: "shared", sort: "title" },
+    { parent_id: id(1) },
+    { parent_id: id(1), access: "shared" },
+    { parent_id: id(1), sort: "title" },
+  ].map(scope);
+  assert.equal(new Set(variants).size, variants.length, "every combination has its own scope");
+});
+
+test("title cursors carry their key, fit the length bound and open only under their scope", async () => {
+  const env = { NOTEBOOK_CLOUD_APP_SESSION_SECRET: "s".repeat(32) };
+  const context = (args) => ({
+    principal: owner,
+    needle: null,
+    inTrash: false,
+    scope: listScope(parseListArguments(args)),
+  });
+  const rejects = (promise) => assert.rejects(promise, { status: 400, code: "invalid_cursor" });
+  const titled = { updated_at: at(1), page_id: id(1), title_search: "alpha" };
+  const cursor = await sealCursor(env, context({ sort: "title" }), titled);
+  assert.deepEqual(await openCursor(env, context({ sort: "title" }), cursor), titled);
+  assert.ok(!Buffer.from(cursor.slice(3), "base64url").toString("latin1").includes("alpha"));
+  for (const args of [{}, { sort: "activity" }, { access: "owned", sort: "title" }])
+    await rejects(openCursor(env, context(args), cursor));
+  // An activity position keeps the three-element payload older builds open.
+  const plain = await sealCursor(env, context({}), { updated_at: at(1), page_id: id(1) });
+  assert.deepEqual(await openCursor(env, context({ sort: "activity" }), plain), {
+    updated_at: at(1),
+    page_id: id(1),
+  });
+  for (const args of [{ access: "owned" }, { access: "shared" }, { sort: "title" }])
+    await rejects(openCursor(env, context(args), plain));
+  // The longest title keys: 500 code units, escaped or multi-byte.
+  for (const title of ["\u0001".repeat(500), "語".repeat(500), "😀".repeat(250), "İ".repeat(500)]) {
+    const long = await sealCursor(env, context({ sort: "title" }), {
+      updated_at: at(1),
+      page_id: id(1),
+      title_search: titleKey(title),
+    });
+    assert.ok(long.length <= CURSOR_MAX_LENGTH, `${long.length} characters`);
+    assert.equal(
+      (await openCursor(env, context({ sort: "title" }), long)).title_search,
+      titleKey(title),
+    );
+    assert.equal(parseListArguments({ cursor: long }).cursor, long);
+  }
+  assert.throws(() => parseListArguments({ cursor: `c2_${"a".repeat(CURSOR_MAX_LENGTH)}` }), {
+    code: "invalid_cursor",
+  });
+  await rejects(openCursor(env, context({}), `c2_${"a".repeat(CURSOR_MAX_LENGTH)}`));
+});
+
+test("title keys read back from D1 exactly as the Catalog fallback computes them", async (t) => {
+  const split = `${"a".repeat(499)}😀 tail`;
+  assert.equal(catalogTitle(split), "a".repeat(499), "a pair split at the limit is dropped");
+  assert.equal(catalogTitle(`${"a".repeat(498)}😀 tail`), `${"a".repeat(498)}😀`);
+  assert.equal(catalogTitle("x\uD800y\uDC00"), "x\uFFFDy\uFFFD", "lone halves become U+FFFD");
+  assert.equal(catalogTitle("😀".repeat(300)), "😀".repeat(250));
+  for (const title of ["x\uD800y\uDC00", split, "😀".repeat(300)])
+    assert.equal(catalogTitle(title).isWellFormed(), true, title.slice(0, 4));
+  // Every key survives the UTF-8 round trip, so a cursor handed from the
+  // fallback to D1 (or back) compares against the same text.
+  const { db, page } = await seededIndex(t);
+  const titles = [split, "x\uD800y", "\uDC00lead", `${"b".repeat(499)}\uD83D`];
+  for (const [index, title] of titles.entries()) await page(index + 1, title, at(index));
+  for (const [index, title] of titles.entries()) {
+    const [row] = db.rows(
+      "SELECT title, title_search FROM pages_catalog_access WHERE page_id = ?",
+      id(index + 1),
+    );
+    assert.equal(row.title, catalogTitle(title), `title ${index}`);
+    assert.equal(row.title_search, titleKey(title), `key ${index}`);
+  }
+  const storage = new Storage();
+  for (const [index, title] of titles.entries())
+    await storage.put(`page/${id(index + 1)}`, {
+      page_id: id(index + 1),
+      title,
+      created_at: at(0),
+      updated_at: at(index),
+    });
+  const fallback = await (
+    await catalogSource(storage, { inTrash: false, sort: "title" })
+  ).next(null, 10);
+  const indexed = await queryCatalogIndex(db, {
+    principal: owner,
+    inTrash: false,
+    needle: null,
+    after: null,
+    count: 10,
+    sort: "title",
+  });
+  assert.deepEqual(
+    fallback.map((row) => [row.page_id, row.title_search]),
+    indexed.map((row) => [row.page_id, row.title_search]),
+  );
+});
+
+test("compareText orders strings as SQLite compares their UTF-8 bytes", () => {
+  const samples = ["", "a", "A", "ab", "b", "é", "z", "～", "😀", "\uffff", "\ue000", "a😀", "a～"];
+  const bytes = (a, b) => Buffer.compare(Buffer.from(a), Buffer.from(b));
+  for (const a of samples)
+    for (const b of samples) assert.equal(compareText(a, b), bytes(a, b), `${a} vs ${b}`);
+  assert.ok("😀" < "～", "plain < disagrees with UTF-8 order");
+  assert.equal(compareText("😀", "～"), 1);
+});
+
+test("title order pages by title key and Page ID across ties, empty titles and search", async (t) => {
+  const { page, query } = await seededIndex(t);
+  const titles = ["beta", "Alpha", "alpha", "", "ALPHA beta", "😀 smile", "～ wave", "Éclair", ""];
+  for (const [index, title] of titles.entries()) await page(index + 1, title, at(30 - index));
+  const expected = titles
+    .map((title, index) => ({ page_id: id(index + 1), title_search: titleKey(title) }))
+    .sort((a, b) => compareText(a.title_search, b.title_search) || (a.page_id < b.page_id ? -1 : 1))
+    .map((row) => row.page_id);
+  const all = await query({ sort: "title" });
+  assert.deepEqual(
+    all.map((row) => row.page_id),
+    expected,
+  );
+  assert.deepEqual(
+    all.slice(0, 2).map((row) => row.title_search),
+    ["", ""],
+    "empty titles first",
+  );
+  assert.deepEqual(
+    all.map((row) => row.title).slice(2, 5),
+    ["Alpha", "alpha", "ALPHA beta"],
+    "case-insensitive, ties by Page ID",
+  );
+  // Keyset pages see every row once, including across a tie, while new rows land.
+  const seen = [];
+  let after = null;
+  for (let request = 0; request < 20; request++) {
+    const rows = await query({ sort: "title", after, count: 2 });
+    seen.push(...rows.map((row) => row.page_id));
+    if (request === 1) await page(99, "😀😀 last", at(60));
+    if (rows.length < 2) break;
+    after = rows.at(-1);
+  }
+  assert.deepEqual(seen, [...expected, id(99)]);
+  // Search combines with the title order.
+  const needle = parseListArguments({ query: "alpha" }).needle;
+  const searched = await query({ sort: "title", needle });
+  assert.deepEqual(
+    searched.map((row) => row.title),
+    ["Alpha", "alpha", "ALPHA beta"],
+  );
+  const second = await query({ sort: "title", needle, after: searched[0], count: 1 });
+  assert.deepEqual(
+    second.map((row) => row.title),
+    ["alpha"],
+  );
+});
+
+test("listing pages seek their index: first pages by principal, later pages by row value", async (t) => {
+  const { db } = await seededIndex(t);
+  // Row values need SQLite 3.15; D1 and node:sqlite are far newer.
+  const [major, minor] = db.rows("SELECT sqlite_version() AS v")[0].v.split(".").map(Number);
+  assert.ok(major > 3 || (major === 3 && minor >= 15));
+  const position = { updated_at: at(5), page_id: id(5), title_search: "alpha" };
+  const expected = {
+    title: {
+      index: "pages_catalog_access_title",
+      first: "(principal=?)",
+      next: "(principal=? AND (title_search,page_id)>(?,?))",
+    },
+    activity: {
+      index: "pages_catalog_access_listing",
+      first: "(principal=?)",
+      next: "(principal=? AND (updated_at,page_id)<(?,?))",
+    },
+  };
+  for (const [sort, { index, first, next }] of Object.entries(expected))
+    for (const [after, constraint] of [
+      [null, first],
+      [position, next],
+    ])
+      for (const access of [null, "owned", "shared"]) {
+        const { sql, params } = listingQuery({
+          principal: owner,
+          inTrash: false,
+          needle: access ? "al" : null,
+          after,
+          count: 50,
+          sort,
+          access,
+        });
+        const plan = db.rows(`EXPLAIN QUERY PLAN ${sql}`, ...params).map((row) => row.detail);
+        const label = `${sort} ${after ? "next" : "first"} ${access}:\n${plan.join("\n")}`;
+        assert.ok(plan.includes(`SEARCH a USING INDEX ${index} ${constraint}`), label);
+        assert.ok(!plan.some((detail) => detail.includes("TEMP B-TREE")), label);
+      }
+});
+
+test("access filters D1 candidates to owner or non-owner rows", async (t) => {
+  const { env, page, query } = await seededIndex(t);
+  await page(1, "Mine", at(1));
+  await reportPageIndex(env, testCtx, {
+    metadata: {
+      pageId: id(2),
+      owner: member,
+      deleted: false,
+      acl: { revision: 1, members: { [owner]: { role: "viewer", generation: 1 } } },
+    },
+    title: "Theirs",
+    observedAt: at(2),
+  });
+  const ids = async (options) => (await query(options)).map((row) => row.page_id);
+  assert.deepEqual(await ids({}), [id(2), id(1)]);
+  assert.deepEqual(await ids({ access: "owned" }), [id(1)]);
+  assert.deepEqual(await ids({ access: "shared" }), [id(2)]);
+  assert.deepEqual(await ids({ access: "shared", sort: "title" }), [id(2)]);
+  assert.deepEqual(await ids({ access: "owned", inTrash: true }), []);
+});
+
+test("the title listing index applies on a fresh database and on top of version 4", async (t) => {
+  const indexes = (db) =>
+    db
+      .rows("SELECT name FROM sqlite_master WHERE type = 'index' AND name LIKE 'pages_catalog_%'")
+      .map((row) => row.name);
+  const fresh = sqliteD1(t).open();
+  assert.equal(await migrateCatalogIndex(fresh), 5);
+  assert.ok(indexes(fresh).includes("pages_catalog_access_title"));
+
+  const upgraded = sqliteD1(t).open();
+  assert.equal(await migrateCatalogIndex(upgraded, CATALOG_MIGRATIONS.slice(0, 4)), 4);
+  assert.ok(!indexes(upgraded).includes("pages_catalog_access_title"));
+  await reportPageIndex({ DB: upgraded, PAGES_CATALOG_INDEX: "1" }, testCtx, {
+    metadata: { pageId: id(1), owner, deleted: false, acl: { revision: 0, members: {} } },
+    title: "Kept",
+    observedAt: at(1),
+  });
+  assert.equal(await migrateCatalogIndex(upgraded), 5);
+  assert.ok(indexes(upgraded).includes("pages_catalog_access_title"));
+  assert.deepEqual(
+    (
+      await queryCatalogIndex(upgraded, {
+        principal: owner,
+        inTrash: false,
+        needle: null,
+        after: null,
+        count: 10,
+        sort: "title",
+      })
+    ).map((row) => row.title),
+    ["Kept"],
+  );
+  // A build that knows only migrations 1-4 runs against version 5 unchanged.
+  assert.equal(await migrateCatalogIndex(upgraded, CATALOG_MIGRATIONS.slice(0, 4)), 5);
+});
+
+/** A member who owns eight Pages and has two shared with them. */
+const OWNED_TITLES = [
+  [1, "Alpha"],
+  [2, "alpha"],
+  [3, ""],
+  [4, "beta"],
+  [5, "Zeta"],
+  [6, "Éclair"],
+  [7, "～ wave"],
+  [8, "😀 smile"],
+];
+const SHARED_TITLES = [
+  [100, "Gamma shared"],
+  [101, "alpha shared"],
+];
+async function accessWorld(t, index) {
+  const f = await catalogFixture(t, { index });
+  const storage = f.catalog(member).ctx.storage;
+  for (const [n, title] of OWNED_TITLES)
+    await storage.put(`page/${id(n)}`, {
+      page_id: id(n),
+      title,
+      created_at: at(0),
+      updated_at: at(n),
+    });
+  for (const [n, title] of SHARED_TITLES) {
+    f.addPage(id(n), title, {
+      revision: 1,
+      members: { [member]: { role: "viewer", generation: 1 } },
+    });
+    await storage.put(`shared/${id(n)}`, {
+      page_id: id(n),
+      title,
+      created_at: at(0),
+      updated_at: at(n - 80),
+      shared: true,
+    });
+  }
+  // Let the member's first reconcile pass finish, so D1 serves.
+  for (let request = 0; request < 8; request++)
+    if ((await f.list(member)).source === "index") break;
+  const calls = () => [...f.pages.values()].reduce((sum, page) => sum + page.calls, 0);
+  const walk = async (args) => {
+    const rows = [];
+    let cursor;
+    for (let request = 0; request < 20; request++) {
+      const result = await f.list(member, { limit: 3, ...args, ...(cursor && { cursor }) });
+      assert.equal(result.status, 200, JSON.stringify(result.body));
+      assert.equal(result.source, index ? "index" : "catalog");
+      rows.push(...result.body.pages);
+      cursor = result.body.next_cursor;
+      if (!cursor) break;
+    }
+    return rows;
+  };
+  return { f, calls, walk };
+}
+
+test("access and title sort list the same Pages in the same order from D1 and the Catalog", async (t) => {
+  const results = {};
+  for (const index of ["1", null]) {
+    await t.test(index ? "index" : "catalog", async (t) => {
+      const { f, calls, walk } = await accessWorld(t, index);
+      const ids = (rows) => rows.map((row) => row.page_id);
+      const result = {};
+      result.title = ids(await walk({ sort: "title" }));
+      assert.deepEqual(
+        result.title,
+        [3, 1, 2, 101, 4, 100, 5, 6, 7, 8].map(id),
+        "empty title first, case-insensitive, ties by Page ID, code point order",
+      );
+      result.ownedTitle = ids(await walk({ access: "owned", sort: "title" }));
+      assert.deepEqual(result.ownedTitle, [3, 1, 2, 4, 5, 6, 7, 8].map(id));
+      result.sharedTitle = await walk({ access: "shared", sort: "title" });
+      assert.deepEqual(ids(result.sharedTitle), [101, 100].map(id));
+      for (const row of result.sharedTitle) {
+        assert.equal(row.shared, true);
+        for (const field of ["project_id", "parent_id", "space_id", "position"])
+          assert.equal(Object.hasOwn(row, field), false, field);
+      }
+      result.searched = ids(await walk({ sort: "title", query: "ALPHA" }));
+      assert.deepEqual(result.searched, [1, 2, 101].map(id));
+      result.activity = ids(await walk({}));
+      result.ownedActivity = ids(await walk({ access: "owned" }));
+      assert.deepEqual(result.ownedActivity, [8, 7, 6, 5, 4, 3, 2, 1].map(id));
+      result.sharedActivity = ids(await walk({ access: "shared" }));
+      assert.deepEqual(result.sharedActivity.sort(), [100, 101].map(id));
+      assert.deepEqual(
+        [...result.activity].sort(),
+        [...result.title].sort(),
+        "every sort lists the same Pages",
+      );
+      // An owned-only listing never asks a Page host about a shared row.
+      const before = calls();
+      await walk({ access: "owned" });
+      await walk({ access: "owned", sort: "title", query: "a" });
+      assert.equal(calls() - before, 0);
+      results[index ? "index" : "catalog"] = result;
+      // Sorting one way doesn't change what owned rows show.
+      const row = (await f.list(member, { access: "owned", sort: "title", limit: 1 })).body
+        .pages[0];
+      assert.deepEqual(row, { page_id: id(3), title: "", created_at: at(0), updated_at: at(3) });
+    });
+  }
+  // Shared rows' activity times come from different observations in each
+  // source; every title order and the owned activity order must match.
+  const comparable = (result) => ({
+    title: result.title,
+    ownedTitle: result.ownedTitle,
+    sharedTitle: result.sharedTitle.map((row) => row.page_id),
+    searched: result.searched,
+    ownedActivity: result.ownedActivity,
+  });
+  assert.deepEqual(comparable(results.index), comparable(results.catalog));
+});
+
+test("a cursor opens only under the access and sort it was issued for", async (t) => {
+  for (const index of ["1", null]) {
+    await t.test(index ? "index" : "catalog", async (t) => {
+      const { f } = await accessWorld(t, index);
+      const cursorOf = async (args) => {
+        const result = await f.list(member, { limit: 2, ...args });
+        assert.ok(result.body.next_cursor, JSON.stringify(args));
+        return result.body.next_cursor;
+      };
+      const code = async (args) => {
+        const result = await f.list(member, { limit: 2, ...args });
+        return result.status === 200 ? "ok" : result.body.code;
+      };
+      const issued = {
+        default: await cursorOf({}),
+        owned: await cursorOf({ access: "owned" }),
+        shared: await cursorOf({ access: "shared", limit: 1 }),
+        title: await cursorOf({ sort: "title" }),
+        ownedTitle: await cursorOf({ access: "owned", sort: "title" }),
+      };
+      const listings = {
+        default: {},
+        activity: { sort: "activity" },
+        owned: { access: "owned" },
+        shared: { access: "shared" },
+        title: { sort: "title" },
+        ownedTitle: { access: "owned", sort: "title" },
+      };
+      for (const [from, cursor] of Object.entries(issued))
+        for (const [to, args] of Object.entries(listings)) {
+          const same = from === to || (from === "default" && to === "activity");
+          assert.equal(
+            await code({ ...args, cursor }),
+            same ? "ok" : "invalid_cursor",
+            `${from} cursor under ${to}`,
+          );
+        }
+      // A cursor sealed exactly as the build before these arguments sealed
+      // it, with no scope, still opens the default listing.
+      const legacy = await sealCursor(
+        f.env,
+        { principal: member, needle: null, inTrash: false },
+        { updated_at: "2999-01-01T00:00:00.000Z", page_id: id(999) },
+      );
+      const resumed = await f.list(member, { cursor: legacy });
+      assert.equal(resumed.status, 200);
+      assert.equal(resumed.body.pages.length, OWNED_TITLES.length + SHARED_TITLES.length);
+      assert.equal((await f.list(member, { sort: "activity", cursor: legacy })).status, 200);
+      for (const args of [{ access: "owned" }, { sort: "title" }])
+        assert.equal(
+          (await f.list(member, { ...args, cursor: legacy })).body.code,
+          "invalid_cursor",
+        );
+      // A title cursor carries its key, so the next page follows the tie.
+      const first = await f.list(member, { sort: "title", limit: 2 });
+      assert.deepEqual(
+        first.body.pages.map((row) => row.page_id),
+        [id(3), id(1)],
+      );
+      const next = await f.list(member, {
+        sort: "title",
+        limit: 2,
+        cursor: first.body.next_cursor,
+      });
+      assert.deepEqual(
+        next.body.pages.map((row) => row.page_id),
+        [id(2), id(101)],
+      );
+    });
+  }
+});
+
+test("a title cursor from the Catalog fallback continues on D1 in the same order", async (t) => {
+  const { f, walk } = await accessWorld(t, "1");
+  const expected = (await walk({ sort: "title" })).map((row) => row.page_id);
+  shortBounds(t, { read: 30, write: 30 });
+  f.db.mode = "fail";
+  const first = await f.list(member, { sort: "title", limit: 4 });
+  assert.equal(first.source, "catalog");
+  f.db.mode = "ok";
+  Object.assign(catalogIndexTimeouts, { read: 2500, write: 1500 });
+  const rest = await f.list(member, { sort: "title", limit: 10, cursor: first.body.next_cursor });
+  assert.equal(rest.source, "index");
+  assert.deepEqual(
+    [...first.body.pages, ...rest.body.pages].map((row) => row.page_id),
+    expected,
+  );
+});
+
+test("the scan refuses a row of the other kind, and an owned scan never checks a shared row", async (t) => {
+  const { f } = await accessWorld(t, null);
+  const catalog = f.catalog(member);
+  const checked = [];
+  const verify = catalog.verifyShared.bind(catalog);
+  catalog.verifyShared = async (request, pageId) => {
+    checked.push(pageId);
+    return verify(request, pageId);
+  };
+  const identity = { principal: member };
+  const request = f.request(member, "/internal/catalog", {});
+  const scope = { locations: new Map(), located: () => true, exhaustive: false };
+  // A source that ignores access: it hands over one owned and one shared row.
+  const rows = [
+    { page_id: id(1), updated_at: at(1), title_search: "alpha", owned: true },
+    { page_id: id(100), updated_at: at(20), title_search: "gamma shared", owned: false },
+  ];
+  const source = {
+    next: async (after, count) => (after ? [] : rows.slice(0, count).map((row) => ({ ...row }))),
+  };
+  const scan = (args) =>
+    catalog.scanCandidates(request, identity, source, parseListArguments(args), scope, null, null);
+  const ids = (result) => result.pages.map((page) => page.page_id);
+
+  assert.deepEqual(ids(await scan({ access: "owned" })), [id(1)]);
+  assert.deepEqual(checked, [], "an owned scan never asks a Page host");
+  assert.deepEqual(ids(await scan({ access: "shared" })), [id(100)]);
+  assert.deepEqual(checked, [id(100)], "a shared scan never reads an owned entry as shared");
+  checked.length = 0;
+  assert.deepEqual(ids(await scan({})), [id(1), id(100)]);
+  assert.deepEqual(checked, [id(100)]);
+});
+
+test("Trash sorts by title from D1 and from the Catalog alike", async (t) => {
+  const results = {};
+  for (const index of ["1", null]) {
+    await t.test(index ? "index" : "catalog", async (t) => {
+      const f = await catalogFixture(t, { index });
+      const storage = f.catalog(owner).ctx.storage;
+      const trashed = [
+        [1, "Zeta"],
+        [2, "alpha"],
+        [3, ""],
+        [4, "Alpha"],
+        [5, "Éclair"],
+      ];
+      for (const [n, title] of trashed)
+        await storage.put(`trash/${id(n)}`, {
+          page_id: id(n),
+          title,
+          created_at: at(0),
+          updated_at: at(n),
+          trashed_at: at(n + 10),
+          trashed_by: owner,
+          trash_root_id: id(n),
+        });
+      await storage.put(`page/${id(9)}`, {
+        page_id: id(9),
+        title: "Active",
+        created_at: at(0),
+        updated_at: at(9),
+      });
+      for (let request = 0; request < 6; request++)
+        if ((await f.list(owner, { in_trash: true })).source === "index") break;
+      const seen = [];
+      let cursor;
+      for (let request = 0; request < 10; request++) {
+        const result = await f.list(owner, {
+          in_trash: true,
+          sort: "title",
+          limit: 2,
+          ...(cursor && { cursor }),
+        });
+        assert.equal(result.status, 200, JSON.stringify(result.body));
+        assert.equal(result.source, index ? "index" : "catalog");
+        seen.push(...result.body.pages);
+        cursor = result.body.next_cursor;
+        if (!cursor) break;
+      }
+      assert.deepEqual(
+        seen.map((page) => page.page_id),
+        [3, 2, 4, 1, 5].map(id),
+        "empty first, ties by Page ID, accented after z; active Pages stay out",
+      );
+      for (const page of seen) {
+        assert.equal(page.state, "trashed");
+        assert.equal(page.trashed_by, owner);
+      }
+      const owned = await f.list(owner, { in_trash: true, sort: "title", access: "owned" });
+      assert.deepEqual(
+        owned.body.pages.map((page) => page.page_id),
+        seen.map((page) => page.page_id),
+      );
+      results[index ? "index" : "catalog"] = seen;
+    });
+  }
+  assert.deepEqual(results.index, results.catalog);
 });

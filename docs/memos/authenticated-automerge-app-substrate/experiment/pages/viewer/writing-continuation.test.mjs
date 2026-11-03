@@ -4,7 +4,7 @@ import * as A from "@automerge/automerge";
 import { createPageData, initializePage, projectPage } from "../model/page.mjs";
 import { orderedBlockIds } from "../model/order.mjs";
 import { setRichMarkdown } from "../model/richtext.mjs";
-import { WRITING_PROMPT, isEmptyPage, writingContinuation } from "./writing-continuation.mjs";
+import { isEmptyPage, writingContinuation } from "./writing-continuation.mjs";
 
 function session(markdown = "") {
   let doc = A.from(createPageData({ pageId: "continuation_fixture", title: "Test" }));
@@ -90,14 +90,13 @@ test("a non-editable empty block is not mistaken for a writable trailing paragra
 });
 
 test("only a Page with one empty paragraph is empty", () => {
-  assert.equal(WRITING_PROMPT, "Write something…");
   const page = (markdown) => projectPage(session(markdown).doc);
   assert.equal(isEmptyPage(page("")), true, "a new Page");
   assert.equal(isEmptyPage(page("  \n")), true, "whitespace only");
   assert.equal(isEmptyPage(page("Hello")), false);
   assert.equal(isEmptyPage(page("![Cat](/api/pages/continuation_fixture/assets/cat)")), false);
   assert.equal(isEmptyPage(null), false);
-  assert.equal(isEmptyPage({ blocks: [] }), false, "no paragraph to hold the placeholder");
+  assert.equal(isEmptyPage({ blocks: [] }), false, "no paragraph to put the caret in");
   const current = session("Before");
   writingContinuation(current);
   assert.equal(isEmptyPage(projectPage(current.doc)), false, "content and a blank paragraph");

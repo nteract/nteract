@@ -30,6 +30,7 @@ const output = path.resolve(
 );
 const domainView = process.argv.includes("--domain-view");
 const images = process.argv.includes("--images");
+const datasets = process.argv.includes("--datasets");
 const mcpImages = process.argv.includes("--mcp-images");
 const taskLists = process.argv.includes("--task-lists");
 const admission = process.argv.includes("--admission");
@@ -43,6 +44,7 @@ if (
   [
     domainView,
     images,
+    datasets,
     mcpImages,
     taskLists,
     admission,
@@ -55,7 +57,7 @@ if (
   ].filter(Boolean).length > 1
 )
   throw new Error(
-    "Choose one qualification: --domain-view, --images, --mcp-images, --task-lists, --admission, --build-update, --trash, --projects, --revocation, --cold-open or --commenter",
+    "Choose one qualification: --domain-view, --images, --datasets, --mcp-images, --task-lists, --admission, --build-update, --trash, --projects, --revocation, --cold-open or --commenter",
   );
 const children = new Set();
 let canceled = false;
@@ -235,7 +237,7 @@ try {
       .filter((key) => process.env[key] !== undefined)
       .map((key) => [key, process.env[key]]),
   );
-  if (images || mcpImages || coldOpen)
+  if (images || datasets || mcpImages || coldOpen)
     hostEnv.CELLD_MAX_REQUEST_BODY_BYTES = String(6 * 1024 * 1024);
   const version = parseRuntimeVersion(
     execFileSync(process.env.CELLD_BIN || "celld", ["--version"], {
@@ -375,11 +377,13 @@ try {
                       ? "scripts/mcp-image-import-smoke.mjs"
                       : images
                         ? "scripts/images-smoke.mjs"
-                        : domainView
-                          ? "scripts/domain-sharing-smoke.mjs"
-                          : buildUpdate
-                            ? "scripts/build-update-smoke.mjs"
-                            : "scripts/sharing-smoke.mjs",
+                        : datasets
+                          ? "scripts/datasets-smoke.mjs"
+                          : domainView
+                            ? "scripts/domain-sharing-smoke.mjs"
+                            : buildUpdate
+                              ? "scripts/build-update-smoke.mjs"
+                              : "scripts/sharing-smoke.mjs",
     ],
     {
       env: {

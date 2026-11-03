@@ -310,6 +310,41 @@ test("typed trailing spaces can't scroll the editor sideways", async () => {
   assert.match(css, /\.wordgard-document > wg-scroller \{\s*overflow: clip visible;/);
 });
 
+test("the sideways clip leaves room for a caret at the start of a line", async () => {
+  const css = (await readFile(new URL("./wordgard.css", import.meta.url), "utf8")).replace(
+    /\/\*[\s\S]*?\*\//g,
+    "",
+  );
+  const scroller = css.match(/\.wordgard-document > wg-scroller \{([^}]*)\}/)?.[1] ?? "";
+  const room = css.match(/:root \{\s*--wg-caret-room: (\d+(?:\.\d+)?)px;/);
+  // Wordgard's caret is centered on its position: 2.4px wide when bold,
+  // and an italic caret leans about 2.4px either way at a 27px line.
+  assert.ok(room && Number(room[1]) >= 3, "at least 3px of room");
+  assert.match(scroller, /margin-inline: calc\(-1 \* var\(--wg-caret-room\)\);/);
+  assert.match(
+    css,
+    /\.wordgard-document > wg-scroller > wg-content \{\s*padding-inline: var\(--wg-caret-room\);/,
+  );
+  // Inline padding on wg-content elsewhere would take the room back.
+  for (const file of ["./wordgard.css", "./comments.css", "./style.css"]) {
+    const source = (await readFile(new URL(file, import.meta.url), "utf8")).replace(
+      /\/\*[\s\S]*?\*\//g,
+      "",
+    );
+    for (const [selector, body] of source
+      .matchAll(/([^{}]*\bwg-content)\s*\{([^}]*)\}/g)
+      .map((match) => [match[1].trim(), match[2]])) {
+      if (selector === ".wordgard-document > wg-scroller > wg-content") continue;
+      assert.doesNotMatch(body, /(^|[\s;])padding(-inline|-left|-right)?:/, `${file}: ${selector}`);
+    }
+  }
+  // The comment popover's draft box scrolls; it leaves the same room.
+  const comments = await readFile(new URL("./comments.css", import.meta.url), "utf8");
+  const draft = comments.match(/\.comment-popover \.comment-rich-scroll \{([^}]*)\}/)?.[1] ?? "";
+  assert.match(draft, /margin-inline: calc\(-1 \* var\(--wg-caret-room\)\);/);
+  assert.match(draft, /padding-inline: var\(--wg-caret-room\);/);
+});
+
 // An image pasted into an empty composer is the only draft there is: the
 // reload gate must hold it from paste until it lands, fails or is cancelled.
 for (const [ending, finish, expected] of [

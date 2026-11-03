@@ -20,6 +20,7 @@ import {
   initializePage,
   applyPageOperation,
   validateImageInsertion,
+  validateNodeInsertion,
 } from "../model/page.mjs";
 import {
   documentFeatures,
@@ -185,11 +186,13 @@ import {
 import { holdsSlot, operationIntent, replies } from "./operation-intent.mjs";
 import {
   CatalogIndexUnavailable,
+  SHORT_CURSOR_MAX_LENGTH,
   catalogIndexDatabase,
   catalogIndexEpoch,
   catalogIndexTimeouts,
   catalogSource,
   childIdSource,
+  cursorPosition,
   indexSource,
   indexedState,
   listScope,
@@ -211,7 +214,12 @@ import {
   withTimeout,
 } from "./catalog-index.mjs";
 import { readRegistration, requireRegistrationAccount, validPageId } from "./registration.mjs";
-import { handleImageAssets, requireStoredImageAsset } from "./image-assets.mjs";
+import {
+  handleImageAssets,
+  requireStoredDatasetAsset,
+  requireStoredImageAsset,
+} from "./image-assets.mjs";
+import { dataframeFor } from "../shared/dataset-assets.mjs";
 import {
   appendPosition,
   childrenOf,
@@ -2481,7 +2489,13 @@ export class Catalog {
       inTrash: false,
       scope: "spaces",
     };
-    const after = args.cursor ? await openCursor(this.env, context, args.cursor) : null;
+    // Project positions are an update time and a Project ID, never a title
+    // key, so their cursors keep the short bound.
+    const after = args.cursor
+      ? await openCursor(this.env, context, args.cursor, undefined, {
+          maxLength: SHORT_CURSOR_MAX_LENGTH,
+        })
+      : null;
     let source;
     const epoch = catalogIndexEpoch(this.env);
     if (epoch) {
@@ -2538,7 +2552,12 @@ export class Catalog {
     return json({
       spaces: found.slice(0, limit).map(({ space }) => space),
       limit,
-      next_cursor: more ? await sealCursor(this.env, context, found[limit - 1].row) : null,
+      next_cursor: more
+        ? await sealCursor(this.env, context, {
+            updated_at: found[limit - 1].row.updated_at,
+            page_id: found[limit - 1].row.page_id,
+          })
+        : null,
       ...(await issueRetryToken(storage, {
         scope: `catalog:${identity.principal}`,
         principal: identity.principal,
@@ -2591,8 +2610,10 @@ export class Catalog {
    * The scan looks ahead for one verified row past the page, so rejected rows
    * set next_cursor only when the scan stops at its bound, and then only over
    * stale rows whose snapshots the caller was previously authorized to see.
-   * The cursor is sealed to the caller, query and in_trash, and rejected rows
-   * are pruned on encounter.
+   * The cursor is sealed to the caller, query, in_trash and filters (location,
+   * kind, access and sort), and rejected rows are pruned on encounter. Rows
+   * come back in the candidate source's order; a title sort orders by the
+   * source's title snapshot, not the verified title shown.
    */
   async listPages(request, identity, args, limit) {
     const options = parseListArguments(args);
@@ -2640,7 +2661,12 @@ export class Catalog {
           throw new HttpError(503, "Shared Pages are temporarily unavailable");
         if (shared.status !== "ok" || (shared.page.state && shared.page.state !== "active"))
           throw new HttpError(404, "Parent Page not found", "parent_unavailable");
-        sharedChildren = await this.childIdsFromOwner(shared.page.owner, options.parentId);
+        // Only a Page's owner places Pages under it, so no child of a shared
+        // parent is the caller's own: an owned-only listing of one is empty.
+        sharedChildren =
+          options.access === "owned"
+            ? []
+            : await this.childIdsFromOwner(shared.page.owner, options.parentId);
       }
     }
     // A Project's top level (`project_id` with `parent_id: null`) is its home
@@ -2691,6 +2717,10 @@ export class Catalog {
         })),
       });
     const after = options.cursor ? await openCursor(this.env, context, options.cursor) : null;
+    // The scope binds the sort, so only a title-sorted cursor opens here; a
+    // position without its title key is malformed all the same.
+    if (options.sort === "title" && after && typeof after.title_search !== "string")
+      throw new HttpError(400, "Invalid cursor; restart from the first page", "invalid_cursor");
     const epoch = catalogIndexEpoch(this.env);
     let db;
     let source;
@@ -2715,6 +2745,8 @@ export class Catalog {
             domain: evidence?.expiresAt > Date.now() ? evidence.domain : null,
             inTrash: options.inTrash,
             needle: options.needle,
+            access: options.access,
+            sort: options.sort,
           });
       } catch (error) {
         // Listing degrades to the Catalog entries; editing never waits on D1.
@@ -2738,14 +2770,16 @@ export class Catalog {
         // Children of a shared parent are the IDs its owner's Catalog
         // returned, whether or not this account has discovered them.
         sharedChildren
-          ? childIdSource(sharedChildren)
+          ? childIdSource(sharedChildren, options.sort)
           : await catalogSource(storage, {
               inTrash: options.inTrash,
               needle: options.needle,
-              owned: (entry) => located(entry.page_id),
+              sort: options.sort,
+              owned: options.access === "shared" ? () => false : (entry) => located(entry.page_id),
               // Shared Pages are never in a Project here, and never under a
               // parent this account owns.
-              shared: !options.spaceId && options.parentId === undefined,
+              shared:
+                options.access !== "owned" && !options.spaceId && options.parentId === undefined,
             }),
         options,
         scope,
@@ -2757,7 +2791,9 @@ export class Catalog {
     const response = json({
       pages: result.pages,
       limit: options.limit,
-      next_cursor: result.next ? await sealCursor(this.env, context, result.next) : null,
+      next_cursor: result.next
+        ? await sealCursor(this.env, context, cursorPosition(result.next, options.sort))
+        : null,
       quota,
       ...migration,
       ...(await issueRetryToken(storage, {
@@ -2774,6 +2810,10 @@ export class Catalog {
     const pruned = [];
     let stale = false;
     const check = async (row) => {
+      // Sources already apply `access`; these guards keep the other kind of
+      // row out even if one doesn't, and keep owned-only listings from ever
+      // asking a Page host about a shared row.
+      if (row.owned ? options.access === "shared" : options.access === "owned") return null;
       if (row.owned) {
         const entry = await storage.get(`${options.inTrash ? "trash/" : "page/"}${row.page_id}`);
         if (!entry) {
@@ -4155,9 +4195,9 @@ export class Page {
           return json(this.activityState().report(this.handle.doc(), identity, body.arguments));
         if (!["edit_page", "patch_page"].includes(body.operation))
           throw new HttpError(400, "Unknown document operation");
-        const images = Array.isArray(body.arguments?.operations)
-          ? body.arguments.operations.filter((op) => (op?.op ?? op?.type) === "insert_image")
-          : [];
+        const ops = Array.isArray(body.arguments?.operations) ? body.arguments.operations : [];
+        const images = ops.filter((op) => (op?.op ?? op?.type) === "insert_image");
+        const nodes = ops.filter((op) => (op?.op ?? op?.type) === "insert_node");
         // Where this batch landed, captured inside the change so the cursors
         // name the characters it wrote. A replayed receipt has no caret.
         let caret = null;
@@ -4169,28 +4209,47 @@ export class Page {
           operation: body.operation,
           args: body.arguments,
           identity,
-          prepare: images.length
-            ? async () => {
-                if (images.length > 100)
-                  throw new HttpError(400, "Provide up to 100 operations", "invalid_edit_selector");
-                for (const image of images) {
-                  try {
-                    validateImageInsertion(image);
-                  } catch (error) {
-                    throw new HttpError(400, error.message, "invalid_edit_selector");
+          prepare:
+            images.length || nodes.length
+              ? async () => {
+                  if (images.length + nodes.length > 100)
+                    throw new HttpError(
+                      400,
+                      "Provide up to 100 operations",
+                      "invalid_edit_selector",
+                    );
+                  for (const image of images) {
+                    try {
+                      validateImageInsertion(image);
+                    } catch (error) {
+                      throw new HttpError(400, error.message, "invalid_edit_selector");
+                    }
                   }
+                  for (const assetId of new Set(images.map((image) => image.asset_id))) {
+                    await requireStoredImageAsset(this.env.PAGES_ASSETS, {
+                      pageId: this.metadata.pageId,
+                      assetId,
+                    });
+                  }
+                  // Each dataframe names a stored dataset of its media type.
+                  for (const node of nodes) {
+                    let attrs;
+                    try {
+                      attrs = dataframeFor(this.metadata.pageId, validateNodeInsertion(node));
+                    } catch (error) {
+                      throw new HttpError(400, error.message, "invalid_edit_selector");
+                    }
+                    await requireStoredDatasetAsset(this.env.PAGES_ASSETS, {
+                      pageId: this.metadata.pageId,
+                      assetId: node.node.attrs.asset_id,
+                      mediaType: attrs.media_type,
+                    });
+                  }
+                  // The Page queue orders ACL changes; OAuth/key expiry and revocation
+                  // can still happen while immutable object metadata is being read.
+                  this.policy.account(await authenticate(request, this.env), true);
                 }
-                for (const assetId of new Set(images.map((image) => image.asset_id))) {
-                  await requireStoredImageAsset(this.env.PAGES_ASSETS, {
-                    pageId: this.metadata.pageId,
-                    assetId,
-                  });
-                }
-                // The Page queue orders ACL changes; OAuth/key expiry and revocation
-                // can still happen while immutable object metadata is being read.
-                this.policy.account(await authenticate(request, this.env), true);
-              }
-            : undefined,
+              : undefined,
           apply: (doc, effectiveArgs) => {
             try {
               const trace = [];

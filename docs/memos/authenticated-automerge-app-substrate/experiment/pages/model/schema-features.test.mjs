@@ -77,9 +77,10 @@ const stamped = (features) =>
     draft.schema = { features };
   });
 
-test("today's registry: strikethrough, horizontal rules and the preserved-block conversion", () => {
+test("today's registry: strikethrough, horizontal rules, dataframes and the preserved-block conversion", () => {
   assert.deepEqual(BUILD_FEATURES, [
     "comments-doc",
+    "dataframe",
     "horizontal-rule",
     "preserved-markdown-converted",
     "strike",
@@ -89,7 +90,13 @@ test("today's registry: strikethrough, horizontal rules and the preserved-block 
     [["strike", "strike"]],
   );
   assert.deepEqual([...FEATURE_REGISTRY.marks], [["strike", "strike"]]);
-  assert.deepEqual([...FEATURE_REGISTRY.blocks], [["horizontal-rule", "horizontal-rule"]]);
+  assert.deepEqual(
+    [...FEATURE_REGISTRY.blocks],
+    [
+      ["horizontal-rule", "horizontal-rule"],
+      ["dataframe", "dataframe"],
+    ],
+  );
 });
 
 // A build from before these features opens such a Page read-only, rather than

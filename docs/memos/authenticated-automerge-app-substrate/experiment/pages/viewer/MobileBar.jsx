@@ -159,7 +159,7 @@ export function MobileBar({
       <button
         type="button"
         className="mobile-bar-button"
-        aria-label="Insert image"
+        aria-label="Insert image or dataset"
         disabled={!editable}
         onPointerDown={keep}
         onClick={onImage}

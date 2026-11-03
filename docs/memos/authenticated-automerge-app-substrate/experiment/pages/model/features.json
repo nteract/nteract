@@ -18,6 +18,11 @@
     {
       "id": "comments-doc",
       "description": "The Page's comments live in their own Automerge document, not in the Page document. A build without this feature would write comments into the Page document, so it opens the Page read-only."
+    },
+    {
+      "id": "dataframe",
+      "description": "Dataframe nodes: a block with no text whose attrs name a Page dataset asset (src, media_type, title). The viewer renders it by media type; Parquet shows as a Sift table. It has no Markdown syntax: agents write one with the insert_node operation.",
+      "blocks": ["dataframe"]
     }
   ]
 }

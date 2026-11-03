@@ -10,6 +10,7 @@ import {
   imagePaths,
   indexPaths,
   projectPaths,
+  siftPaths,
 } from "./deployment/routes.mjs";
 import { isIndexRoute, readPageRoute } from "../shared/routes.mjs";
 import { deploymentProfile } from "./deployment/profiles.mjs";
@@ -273,8 +274,11 @@ function priorConfig(config, target) {
         ? config.replace("|theme[.]js|", "|")
         : target === "page9"
           ? config.replace(indexPaths, "")
-          : config.replace("|mermaid[.]js|", "|");
+          : target === "page10" || target === "pages"
+            ? config.replace(siftPaths, "")
+            : config.replace("|mermaid[.]js|", "|");
 }
+const configDir = (target) => "/etc/" + deploymentProfile(target).deployment.service;
 function previousInstallation(f, { pending = false, newConfig = false } = {}) {
   const plan = isolatedPublicationPlan(inputFor(f.target));
   const oldConfig = priorConfig(plan.config, f.target);
@@ -291,7 +295,7 @@ function previousInstallation(f, { pending = false, newConfig = false } = {}) {
   f.write(plan.configPath, newConfig ? plan.config : oldConfig);
   f.write(plan.unitPath, plan.unit);
   f.write(
-    "/etc/nteract-" + f.target + "/tunnel-installation.json",
+    configDir(f.target) + "/tunnel-installation.json",
     pending ? receipt(plan.config, { previous_config_sha256: digest(oldConfig) }) : oldReceipt,
   );
   return { plan, oldConfig, oldReceipt, newReceipt };
@@ -593,15 +597,42 @@ test("Page10 serves Page9's route set on its own origin while every older route 
   const current = routesFor("page10");
   const page9 = deploymentProfile("page9").deployment;
   const page10 = deploymentProfile("page10").deployment;
-  // Page10 copies Page9's route flags. Only the hostname and listener differ.
+  // Page10 copies Page9's route flags and adds Sift's WASM. Otherwise only the
+  // hostname and listener differ.
+  assert.equal(current.split(siftPaths).length, 2, "the Sift route appears once");
   assert.equal(
-    current.replaceAll(page10.hostname, page9.hostname).replaceAll(page10.listen, page9.listen),
+    current
+      .replace(siftPaths, "")
+      .replaceAll(page10.hostname, page9.hostname)
+      .replaceAll(page10.listen, page9.listen),
     routesFor("page9"),
   );
   assert.doesNotMatch(current, /page9[.]runtimed[.]run|127[.]0[.]0[.]1:9479/);
 });
 
-test("page10 has no route predecessor: it installs fresh and refuses older receipts", (t) => {
+test("Page10 and Pages admit exactly Sift's hashed WASM; Page9 never does", () => {
+  const page9 = new RegExp(/^    path: (.+)$/m.exec(routesFor("page9"))[1]);
+  assert.equal(page9.test("/sift-ABCDEFGH.wasm"), false);
+  for (const target of ["page10", "pages"]) {
+    const route = new RegExp(/^    path: (.+)$/m.exec(routesFor(target))[1]);
+    for (const pathname of ["/sift-ABCDEFGH.wasm", "/sift-EMZCXH4D.wasm"])
+      assert.equal(route.test(pathname), true, `${target} ${pathname}`);
+    for (const pathname of [
+      "/sift.wasm",
+      "/sift-abcdefgh.wasm",
+      "/sift-ABCDEFG.wasm",
+      "/sift-ABCDEFGHI.wasm",
+      "/sift-ABCDEFGH.js",
+      "/sift-ABCDEFGH.css",
+      "/sift-ABCDEFGH.wasm/",
+      "/sift-ABCDEFGH.wasm/private",
+      "/chunks/sift-ABCDEFGH.wasm",
+    ])
+      assert.equal(route.test(pathname), false, `${target} ${pathname}`);
+  }
+});
+
+test("page10 installs fresh and refuses Page9's route predecessors", (t) => {
   const f = fixture(t, { target: "page10" });
   const plan = isolatedPublicationPlan(inputFor("page10"));
   const installation = "/etc/nteract-page10/tunnel-installation.json";
@@ -697,7 +728,7 @@ test("Pages serves Page10's route set on pages.runtimed.run and its own listener
   assert.doesNotMatch(current, /page10[.]runtimed[.]run|127[.]0[.]0[.]1:9480/);
 });
 
-test("pages has no route predecessor: it installs fresh and refuses Page10's receipts", (t) => {
+test("pages installs fresh and refuses Page10's receipts", (t) => {
   const f = fixture(t, { target: "pages" });
   const plan = isolatedPublicationPlan(inputFor("pages"));
   const installation = "/etc/nteract-pages-live/tunnel-installation.json";
@@ -792,14 +823,16 @@ test("OAuth and private images publish only exact Page7 through Pages routes whi
   }
 });
 
-for (const target of ["page3", "page5", "page7", "page8", "page9"]) {
+// Page10 and Pages migrate from their configs before Sift's WASM route.
+for (const target of ["page3", "page5", "page7", "page8", "page9", "page10", "pages"]) {
+  const connector = deploymentProfile(target).tunnelService;
   test(`${target} known route upgrade restarts only its dedicated connector then becomes a no-op`, (t) => {
     const f = fixture(t, { target });
     const expected = previousInstallation(f);
     assert.equal(f.execute().routesUpdated, true);
     assert.equal(fs.readFileSync(f.local(expected.plan.configPath), "utf8"), expected.plan.config);
     assert.equal(
-      fs.readFileSync(f.local("/etc/nteract-" + target + "/tunnel-installation.json"), "utf8"),
+      fs.readFileSync(f.local(configDir(target) + "/tunnel-installation.json"), "utf8"),
       expected.newReceipt,
     );
     assert.equal(fs.readFileSync(f.local("/etc/cloudflared/config.yml"), "utf8"), sharedConfig);
@@ -809,9 +842,9 @@ for (const target of ["page3", "page5", "page7", "page8", "page9"]) {
     );
     assert.deepEqual(
       restarts.map(({ args }) => args[1]),
-      ["cloudflared-" + target + ".service"],
+      [connector],
     );
-    assert.ok(f.writes.every((file) => file.startsWith("/etc/nteract-" + target + "/")));
+    assert.ok(f.writes.every((file) => file.startsWith(configDir(target) + "/")));
   });
 
   for (const newConfig of [false, true]) {
@@ -820,7 +853,7 @@ for (const target of ["page3", "page5", "page7", "page8", "page9"]) {
       const expected = previousInstallation(f, { pending: true, newConfig });
       assert.equal(f.execute().routesUpdated, true);
       assert.equal(
-        fs.readFileSync(f.local("/etc/nteract-" + target + "/tunnel-installation.json"), "utf8"),
+        fs.readFileSync(f.local(configDir(target) + "/tunnel-installation.json"), "utf8"),
         expected.newReceipt,
       );
       assert.equal(
@@ -837,7 +870,7 @@ for (const target of ["page3", "page5", "page7", "page8", "page9"]) {
     assert.throws(f.execute, /injected connector restart failure/);
     assert.equal(fs.readFileSync(f.local(expected.plan.configPath), "utf8"), expected.oldConfig);
     assert.equal(
-      fs.readFileSync(f.local("/etc/nteract-" + target + "/tunnel-installation.json"), "utf8"),
+      fs.readFileSync(f.local(configDir(target) + "/tunnel-installation.json"), "utf8"),
       expected.oldReceipt,
     );
     assert.equal(f.execute().routesUpdated, true);
@@ -845,7 +878,7 @@ for (const target of ["page3", "page5", "page7", "page8", "page9"]) {
     assert.ok(
       f.calls
         .filter(({ command, args }) => command === "systemctl" && args[0] === "restart")
-        .every(({ args }) => args[1] === "cloudflared-" + target + ".service"),
+        .every(({ args }) => args[1] === connector),
     );
   });
 
@@ -854,7 +887,7 @@ for (const target of ["page3", "page5", "page7", "page8", "page9"]) {
       const f = fixture(t, { target });
       const expected = previousInstallation(f, { newConfig: changed === "new-with-old-receipt" });
       if (changed === "receipt")
-        f.write("/etc/nteract-" + target + "/tunnel-installation.json", "unknown receipt");
+        f.write(configDir(target) + "/tunnel-installation.json", "unknown receipt");
       if (changed === "unit")
         f.write(expected.plan.unitPath, expected.plan.unit + "# foreign change\n");
       if (changed === "config")
@@ -879,7 +912,7 @@ for (const target of ["page3", "page5", "page7", "page8", "page9"]) {
       const expected = previousInstallation(f);
       assert.throws(f.execute, /injected interruption before rollback rename/);
       const beforeRetry = fs.readFileSync(
-        f.local("/etc/nteract-" + target + "/tunnel-installation.json"),
+        f.local(configDir(target) + "/tunnel-installation.json"),
         "utf8",
       );
       assert.ok(
@@ -892,14 +925,14 @@ for (const target of ["page3", "page5", "page7", "page8", "page9"]) {
         expected.plan.config,
       );
       assert.equal(
-        fs.readFileSync(f.local("/etc/nteract-" + target + "/tunnel-installation.json"), "utf8"),
+        fs.readFileSync(f.local(configDir(target) + "/tunnel-installation.json"), "utf8"),
         expected.newReceipt,
       );
       assert.equal(fs.readFileSync(f.local("/etc/cloudflared/config.yml"), "utf8"), sharedConfig);
       assert.ok(
         f.calls
           .filter(({ command, args }) => command === "systemctl" && args[0] === "restart")
-          .every(({ args }) => args[1] === "cloudflared-" + target + ".service"),
+          .every(({ args }) => args[1] === connector),
       );
     });
   }
