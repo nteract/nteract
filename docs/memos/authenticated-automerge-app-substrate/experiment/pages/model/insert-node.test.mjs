@@ -9,7 +9,7 @@ import {
   projectPage,
   validateNodeInsertion,
 } from "./page.mjs";
-import { textPath, validateRich } from "./richtext.mjs";
+import { schema, textPath, validateRich } from "./richtext.mjs";
 import { documentFeatures } from "./schema-features.mjs";
 import { decode, encode, PagesDataframe } from "../viewer/wordgard-model.mjs";
 import { PARQUET_MEDIA_TYPE } from "../shared/dataset-assets.mjs";
@@ -323,4 +323,68 @@ test("a synced dataframe naming another Page's asset reads as a notice and refus
     { op: "replace_match", block_id: id, match_text: "hello", replacement: "hi" },
   ]);
   assert.deepEqual(dataframes(after, id), dataframes(doc, id));
+});
+
+test("a dataframe's outline entry carries its attrs in insert_node's receipt shape", async () => {
+  const { projectReadContent } = await import("./read-content.mjs");
+  const { doc, result } = edit(fresh(), [dataframe()]);
+  const entry = projectReadContent(doc, {}).outline.find((item) => item.type === "dataframe");
+  assert.deepEqual(entry.attrs, result.inserted_nodes[0].attrs);
+});
+
+test("an unreadable dataframe exposes none of its stored attrs in typed reads", async () => {
+  const { projectReadContent, nodeFields } = await import("./read-content.mjs");
+  const { projectReadChanges } = await import("./read-changes.mjs");
+  const base = fresh();
+  const id = orderedBlockIds(base)[0];
+  const heads = A.getHeads(base);
+  const otherPage = `/api/pages/44444444-4444-4444-8444-444444444444/assets/${assetId}`;
+  for (const stored of ["https://evil.example/x.parquet", otherPage]) {
+    const next = A.change(A.clone(base), (draft) =>
+      A.splitBlock(draft, textPath(id), draft.blocks[id].richText.length, {
+        type: new A.ImmutableString("dataframe"),
+        parents: [],
+        attrs: {
+          src: new A.ImmutableString(stored),
+          media_type: new A.ImmutableString(PARQUET_MEDIA_TYPE),
+        },
+        isEmbed: false,
+      }),
+    );
+    // richDoc reads it as a notice paragraph, so no dataframe entry exists.
+    const outline = projectReadContent(next, {}).outline;
+    assert.equal(
+      outline.find((item) => item.type === "dataframe"),
+      undefined,
+      stored,
+    );
+    assert.ok(!JSON.stringify(outline).includes(stored), stored);
+    const changes = projectReadChanges(next, { since_heads: heads, comments: "none" }).changes;
+    assert.ok(!JSON.stringify(changes).includes(stored), stored);
+    // The backstop, if such a node ever reaches nodeFields.
+    const node = schema.nodes.dataframe.create({ src: stored, media_type: PARQUET_MEDIA_TYPE });
+    assert.deepEqual(nodeFields(node, { pageId }), { readable: false }, stored);
+  }
+});
+
+test("a peer-written dataframe's title reads back normalized and bounded", async () => {
+  const { projectReadContent } = await import("./read-content.mjs");
+  const { DATAFRAME_TITLE_MAX } = await import("../shared/dataset-assets.mjs");
+  const base = fresh();
+  const id = orderedBlockIds(base)[0];
+  const next = A.change(A.clone(base), (draft) =>
+    A.splitBlock(draft, textPath(id), draft.blocks[id].richText.length, {
+      type: new A.ImmutableString("dataframe"),
+      parents: [],
+      attrs: {
+        src: new A.ImmutableString(src),
+        media_type: new A.ImmutableString(PARQUET_MEDIA_TYPE),
+        title: new A.ImmutableString(`  ${"t".repeat(DATAFRAME_TITLE_MAX + 50)}  `),
+      },
+      isEmbed: false,
+    }),
+  );
+  const entry = projectReadContent(next, {}).outline.find((item) => item.type === "dataframe");
+  assert.equal(entry.attrs.title.length, DATAFRAME_TITLE_MAX);
+  assert.equal(entry.attrs.title.trim(), entry.attrs.title);
 });

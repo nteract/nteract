@@ -367,3 +367,114 @@ test("a large selected node is returned intact for the wrapper to budget, never 
   assert.equal(result.blocks[0].markdown, body);
   assert.equal(result.outline[1].markdown_bytes, 40_000);
 });
+
+test("outline entries and changed nodes carry attrs, summary and node_type", async () => {
+  const { createPageData, initializePage, orderedBlockIds, applyPageOperation } =
+    await import("./page.mjs");
+  const { projectReadChanges } = await import("./read-changes.mjs");
+  let doc = A.from(createPageData({ pageId: "outline_attrs", title: "Attrs" }));
+  doc = A.change(doc, (draft) =>
+    initializePage(
+      draft,
+      "# Head\n\n```python\nx = 1\n```\n\n```\nplain\n```\n\n- [x] done\n- [ ] open\n  - [x] nested\n\n- plain\n\n| a | b | c |\n| :-- | :-: | --- |\n| 1 | 2 | 3 |\n| 4 | 5 | 6 |",
+    ),
+  );
+  const fields = ({ attrs, summary, node_type, readable }) =>
+    Object.fromEntries(
+      Object.entries({ attrs, summary, node_type, readable }).filter(([, v]) => v !== undefined),
+    );
+  const outline = projectReadContent(doc, {}).outline;
+  assert.deepEqual(
+    outline.map((entry) => [entry.type, fields(entry)]),
+    [
+      ["heading", { attrs: { level: 1 } }],
+      ["code_block", { attrs: { language: "python" } }],
+      ["code_block", { attrs: { language: "" } }],
+      // Direct items only; the nested task list reads as its own Markdown.
+      ["task_list", { summary: { items: 2, checked_count: 1, checked: [true, false] } }],
+      ["bullet_list", {}],
+      ["table", { summary: { rows: 3, columns: 3, align: ["left", "center", null] } }],
+    ],
+  );
+  assert.equal(outline[0].level, 1);
+  // The change feed reports the same fields, so set_node can be checked
+  // without parsing Markdown, headings included.
+  const id = orderedBlockIds(doc)[0];
+  const heads = A.getHeads(doc);
+  const next = A.change(A.clone(doc), (draft) =>
+    applyPageOperation(draft, {
+      operation: "patch_page",
+      arguments: {
+        operations: [
+          { op: "set_node", block_id: id, match_text: "Head", heading_level: 2 },
+          { op: "set_node", block_id: id, match_text: "open", checked: true },
+          { op: "set_node", block_id: id, match_text: "plain", occurrence: 1, language: "mermaid" },
+          { op: "set_node", block_id: id, match_text: "3", align: "right" },
+        ],
+      },
+    }),
+  );
+  const changed = projectReadChanges(next, { since_heads: heads, comments: "none" }).changes;
+  assert.deepEqual(
+    changed.map((change) => [change.type, fields(change)]),
+    [
+      ["heading", { attrs: { level: 2 } }],
+      ["code_block", { attrs: { language: "mermaid" } }],
+      ["task_list", { summary: { items: 2, checked_count: 2, checked: [true, true] } }],
+      ["table", { summary: { rows: 3, columns: 3, align: ["left", "center", "right"] } }],
+    ],
+  );
+});
+
+test("outline fields bound per-item values, cover ragged tables and name unknown parents", async () => {
+  const { createPageData, initializePage, orderedBlockIds } = await import("./page.mjs");
+  const { textPath } = await import("./richtext.mjs");
+  const { OUTLINE_MAX_ITEMS } = await import("./read-content.mjs");
+  const S = (value) => new A.ImmutableString(value);
+  const tasks = Array.from(
+    { length: OUTLINE_MAX_ITEMS + 5 },
+    (_, i) => `- [${i % 2 ? "x" : " "}] t${i}`,
+  );
+  const wide = Array.from({ length: OUTLINE_MAX_ITEMS + 2 }, (_, i) => `c${i}`);
+  let doc = A.from(createPageData({ pageId: "outline_bounds", title: "Bounds" }));
+  doc = A.change(doc, (draft) =>
+    initializePage(
+      draft,
+      `Before\n\nAfter\n\n${tasks.join("\n")}\n\n| ${wide.join(" | ")} |\n| ${wide.map(() => "---").join(" | ")} |\n\n| a | b |\n| :-- | --- |\n| 1 | 2 |`,
+    ),
+  );
+  const id = orderedBlockIds(doc)[0],
+    path = textPath(id);
+  doc = A.change(doc, (draft) => {
+    // A paragraph inside a container a newer build added.
+    A.splitBlock(draft, path, draft.blocks[id].richText.indexOf("After") - 1, {
+      type: S("paragraph"),
+      parents: [S("callout")],
+      attrs: {},
+      isEmbed: false,
+    });
+    // A ragged last row, as a concurrent structural edit can leave one.
+    const end = draft.blocks[id].richText.length;
+    A.splitBlock(draft, path, end, {
+      type: S("table-cell"),
+      parents: [S("table"), S("table-row")],
+      attrs: {},
+      isEmbed: false,
+    });
+    A.splice(draft, path, end + 1, 0, "3");
+  });
+  const outline = projectReadContent(doc, {}).outline;
+  const unknown = outline.find((entry) => entry.type === "unknownBlock");
+  assert.equal(unknown.node_type, "callout");
+  assert.equal(unknown.attrs, undefined);
+  const list = outline.find((entry) => entry.type === "task_list").summary;
+  assert.equal(list.items, OUTLINE_MAX_ITEMS + 5);
+  assert.equal(list.checked_count, Math.floor((OUTLINE_MAX_ITEMS + 5) / 2));
+  assert.equal(list.checked.length, OUTLINE_MAX_ITEMS);
+  assert.equal(list.checked_truncated, true);
+  const [wideTable, small] = outline.filter((entry) => entry.type === "table");
+  assert.equal(wideTable.summary.columns, OUTLINE_MAX_ITEMS + 2);
+  assert.equal(wideTable.summary.align.length, OUTLINE_MAX_ITEMS);
+  assert.equal(wideTable.summary.align_truncated, true);
+  assert.deepEqual(small.summary, { rows: 2, columns: 3, align: ["left", null, null] });
+});
