@@ -348,7 +348,7 @@ test("a Page holding a node this build doesn't know reads, and refuses a Markdow
   const page = A.change(A.load(A.save(plain.doc())), (draft) => {
     const at = draft.blocks[plain.blockId].richText.indexOf("Friday");
     A.splitBlock(draft, path, at, {
-      type: new A.ImmutableString("dataframe"),
+      type: new A.ImmutableString("future-chart"),
       parents: [],
       attrs: { title: new A.ImmutableString("Usage") },
       isEmbed: false,
@@ -357,7 +357,7 @@ test("a Page holding a node this build doesn't know reads, and refuses a Markdow
   const f = await fixture(t, { auth: plain.auth, docBytes: A.save(page) });
   const read = await f.tool("owner", "read_page", { page_id: f.pageId, comments: "none" });
   assert.equal(read.status, 200, JSON.stringify(read.body));
-  assert.match(read.body.blocks[0].markdown, /\\\[Unsupported node: dataframe\\\]/);
+  assert.match(read.body.blocks[0].markdown, /\\\[Unsupported node: future-chart\\\]/);
   const rewrite = await f.tool("owner", "edit_page", {
     base_heads: f.heads(),
     idempotency_key: "unknown-rewrite",

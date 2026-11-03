@@ -1,6 +1,7 @@
 import { celldCborPlugin } from "./celld-cbor.mjs";
 import { AUTH_D1 } from "./deployment/profiles.mjs";
 import { mermaidSource } from "./browser-mermaid.mjs";
+import { siftWasmPath } from "./browser-sift.mjs";
 import { sourceFingerprint, writeBuildReceipt } from "./source-fingerprint.mjs";
 import {
   VIEWER_ASSETS,
@@ -86,6 +87,8 @@ for (const [module, name] of [
   ["@automerge/subduction/wasm", "subduction.wasm"],
 ])
   await writeAsset(name, await readFile(require.resolve(module)));
+// Sift's WASM loads only when a Page shows a Parquet dataframe (viewer/sift-table.jsx).
+await writeAsset("sift.wasm", await readFile(siftWasmPath(app)));
 
 const viewer = await build(
   viewerBuildOptions(
@@ -93,7 +96,7 @@ const viewer = await build(
     dist,
     buildDefine,
     Object.fromEntries(
-      ["mermaid.js", "automerge.wasm", "subduction.wasm"].map((name) => [
+      ["mermaid.js", "automerge.wasm", "subduction.wasm", "sift.wasm"].map((name) => [
         name,
         publicUrl(assets[name]),
       ]),

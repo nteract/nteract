@@ -5,6 +5,7 @@ import { MARK_REGISTRY } from "./marks.mjs";
 import {
   BLOCK_SYNTAX,
   MARK_SYNTAX,
+  NODE_OPERATIONS,
   checkCoverage,
   markdownSyntax,
   richContentGuide,
@@ -14,7 +15,7 @@ import { CODE_LANGUAGES } from "../shared/code-languages.mjs";
 import { tools } from "../mcp.mjs";
 import { agentGuide } from "../agent-guide.mjs";
 
-test("a new mark or feature block can't ship without agent syntax", () => {
+test("a new mark or feature block can't ship without an agent write path", () => {
   assert.doesNotThrow(() => checkCoverage());
   const marks = {
     ...MARK_REGISTRY,
@@ -27,8 +28,18 @@ test("a new mark or feature block can't ship without agent syntax", () => {
   };
   assert.throws(
     () => checkCoverage(MARK_REGISTRY, features),
-    /No agent syntax for blocks: callout/,
+    /No agent write path for blocks: callout/,
   );
+});
+
+test("a block with no Markdown form is covered by its node operation", () => {
+  assert.ok(featureFile.features.some((feature) => feature.blocks?.includes("dataframe")));
+  assert.equal(
+    BLOCK_SYNTAX.some(([type]) => type === "dataframe"),
+    false,
+  );
+  assert.ok(NODE_OPERATIONS.some(([type]) => type === "dataframe"));
+  assert.match(richContentGuide(), /insert_node with node \{type: "dataframe"/);
 });
 
 const editOps = ["format_match", "occurrence", "all:true", "replacement_markdown", "set_node"];

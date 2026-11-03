@@ -528,7 +528,7 @@ export const tools = [
   },
   tool(
     "edit_page",
-    "Apply an atomic structural edit batch at the observed heads. insert_image places an already uploaded Page-local asset in its own rich-text block and returns result.inserted_images with the actual block_id, asset_id, asset_url and alt; heads is the updated revision and url opens the Page. Unknown document fields are preserved. replace_block_markdown with a block's exported Markdown drops an empty first paragraph, because Markdown cannot represent it; use replace_match to keep it. Prefer patch_page for targeted prose edits.",
+    "Apply an atomic structural edit batch at the observed heads. insert_image places an already uploaded Page-local asset in its own rich-text block and returns result.inserted_images with the actual block_id, asset_id, asset_url and alt. insert_node places a node with no Markdown form in its own block: today a dataframe, which shows an uploaded Parquet dataset as an interactive table; it returns result.inserted_nodes with block_id, type and attrs. replace_block_markdown refuses a block holding such a node with markdownless_node; heads is the updated revision and url opens the Page. Unknown document fields are preserved. replace_block_markdown with a block's exported Markdown drops an empty first paragraph, because Markdown cannot represent it; use replace_match to keep it. Prefer patch_page for targeted prose edits.",
     {
       ...guard,
       operations: {
@@ -582,6 +582,52 @@ export const tools = [
                 },
               },
               required: ["op", "asset_id", "alt"],
+              additionalProperties: false,
+            },
+            {
+              type: "object",
+              properties: {
+                op: { const: "insert_node" },
+                node: {
+                  type: "object",
+                  properties: {
+                    type: {
+                      const: "dataframe",
+                      description:
+                        "A dataframe shows a dataset asset as a table people can sort and filter.",
+                    },
+                    attrs: {
+                      type: "object",
+                      properties: {
+                        asset_id: {
+                          type: "string",
+                          pattern: "^[a-f0-9]{64}$",
+                          description:
+                            "Asset ID from a Parquet byte upload (Content-Type application/vnd.apache.parquet) to this same Page.",
+                        },
+                        title: {
+                          type: "string",
+                          maxLength: 200,
+                          description: "Optional caption shown above the table.",
+                        },
+                        media_type: {
+                          const: "application/vnd.apache.parquet",
+                          description: "The dataset's media type. Defaults to Parquet.",
+                        },
+                      },
+                      required: ["asset_id"],
+                      additionalProperties: false,
+                    },
+                  },
+                  required: ["type", "attrs"],
+                  additionalProperties: false,
+                },
+                after_block_id: {
+                  type: ["string", "null"],
+                  description: "Insert after this block; null prepends, omitted appends.",
+                },
+              },
+              required: ["op", "node"],
               additionalProperties: false,
             },
           ],

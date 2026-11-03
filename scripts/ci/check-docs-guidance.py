@@ -75,7 +75,62 @@ def local_target(raw_target: str, source: Path) -> Path | None:
         return None
 
 
+FENCE_RE = re.compile(r"^ {0,3}(`{3,}|~{3,})")
+
+
+def blank(text: str) -> str:
+    """Replace every character but newlines with a space."""
+    return re.sub(r"[^\n]", " ", text)
+
+
+def mask_code(text: str) -> str:
+    """Blank out fenced code blocks and inline code spans, keeping offsets.
+
+    Markdown never reads link syntax inside code, so a documented example such
+    as `[label](<path>)` is not a link. Line numbers stay valid because every
+    newline is kept.
+    """
+    lines = text.split("\n")
+    fence: str | None = None
+    for index, line in enumerate(lines):
+        match = FENCE_RE.match(line)
+        if fence is None:
+            if match:
+                fence = match.group(1)
+                lines[index] = blank(line)
+        else:
+            # A closing fence uses the same character, is at least as long,
+            # and has nothing else on its line.
+            if (
+                match
+                and match.group(1)[0] == fence[0]
+                and len(match.group(1)) >= len(fence)
+                and not line.strip().strip(fence[0])
+            ):
+                fence = None
+            lines[index] = blank(line)
+    text = "\n".join(lines)
+
+    # An inline code span opens with a run of backticks and closes with a run
+    # of the same length. It may span lines within a paragraph.
+    out: list[str] = []
+    cursor = 0
+    for match in re.finditer(r"`+", text):
+        if match.start() < cursor:
+            continue
+        run = match.group(0)
+        close = re.compile(rf"(?<!`){run}(?!`)").search(text, match.end())
+        if close is None or "\n\n" in text[match.end() : close.start()]:
+            continue
+        out.append(text[cursor : match.start()])
+        out.append(blank(text[match.start() : close.end()]))
+        cursor = close.end()
+    out.append(text[cursor:])
+    return "".join(out)
+
+
 def iter_link_targets(text: str) -> list[tuple[int, str]]:
+    text = mask_code(text)
     targets: list[tuple[int, str]] = []
     cursor = 0
     while cursor < len(text):

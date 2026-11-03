@@ -4,10 +4,13 @@ import {
   markdownlessNode,
   quotableNodeType,
   setRichMarkdown,
+  setRichMarkdownKeepingNodes,
   setRichImage,
+  setRichNode,
   projectedBlock,
 } from "./richtext.mjs";
 import { imageAssetUrl, validAssetId } from "../shared/image-assets.mjs";
+import { DATAFRAME_BLOCK, dataframeFor } from "../shared/dataset-assets.mjs";
 import { projectComments } from "./comments.mjs";
 import { COMMENTS_FEATURE } from "./comments-doc.mjs";
 import { orderedBlockIds, positionForInsertion } from "./order.mjs";
@@ -63,6 +66,32 @@ export function validateImageInsertion(op) {
       "insert_image requires an uploaded asset_id, alt text (up to 2048 characters), and optional after_block_id",
     );
 }
+const NODE_INSERTION_USAGE =
+  'insert_node requires node: {type: "dataframe", attrs: {asset_id, title?, media_type?}} and optional after_block_id';
+const only = (value, keys) =>
+  !!value &&
+  typeof value === "object" &&
+  !Array.isArray(value) &&
+  Object.keys(value).every((key) => keys.includes(key));
+/** Check an insert_node operation without a Page: its shape, the node type and
+ * the attrs an agent may set. Returns the agent's attrs. */
+export function validateNodeInsertion(op) {
+  const node = op?.node;
+  if (
+    !only(op, ["op", "type", "node", "after_block_id"]) ||
+    !only(node, ["type", "attrs"]) ||
+    node.type !== DATAFRAME_BLOCK ||
+    !only(node.attrs, ["asset_id", "media_type", "title"]) ||
+    !validAssetId(node.attrs.asset_id) ||
+    (op.after_block_id !== undefined &&
+      op.after_block_id !== null &&
+      (typeof op.after_block_id !== "string" || !op.after_block_id))
+  )
+    throw Error(NODE_INSERTION_USAGE);
+  // Title and media type rules live with the node.
+  dataframeFor("00000000-0000-4000-8000-000000000000", node.attrs);
+  return node.attrs;
+}
 const PASSAGE_OPS = new Set(["replace_match", "format_match", "set_node"]);
 // `trace` records where each operation landed, for agent presence. It never
 // enters the result, so stored receipts and retries are unchanged.
@@ -94,6 +123,20 @@ function applyEdit(doc, op, trace, context) {
       alt: op.alt,
     };
   }
+  if (op.op === "insert_node") {
+    const input = validateNodeInsertion(op);
+    const value = block(crypto.randomUUID(), positionForInsertion(doc, op.after_block_id));
+    const attrs = dataframeFor(doc.page_id, input);
+    doc.blocks[value.id] = value;
+    setRichNode(doc, value.id, { type: op.node.type, attrs });
+    trace?.push({ type: "block", block_id: value.id });
+    return {
+      op: "insert_node",
+      block_id: value.id,
+      type: op.node.type,
+      attrs: { asset_id: input.asset_id, ...attrs },
+    };
+  }
   if (!Object.hasOwn(doc.blocks, id)) throw Error("Block not found");
   if (op.op === "move_block") {
     if (op.after_block_id !== id)
@@ -113,7 +156,10 @@ function applyEdit(doc, op, trace, context) {
         ),
         { code: "markdownless_node" },
       );
-    setRichMarkdown(doc, id, String(op.markdown ?? ""));
+    // A dataframe's read-back line, left unchanged, keeps the node. Runs
+    // after the unknown-node refusal: with no dataframe in the block it
+    // falls through to a plain rewrite.
+    setRichMarkdownKeepingNodes(doc, id, String(op.markdown ?? ""));
     trace?.push({ type: "block", block_id: id });
   } else if (op.op === "delete_block") {
     delete doc.blocks[id];
@@ -142,17 +188,22 @@ function applyOperation(doc, { operation, arguments: args = {}, trace }) {
   });
   const budget = { writes: 0 };
   const edits = [],
-    inserted_images = [];
+    inserted_images = [],
+    inserted_nodes = [];
   for (const [index, op] of operations.entries()) {
     const edit = applyEdit(doc, op, trace, { anchor: anchors[index], budget });
     if (edit?.op === "insert_image") {
       const { op: _op, ...image } = edit;
       inserted_images.push(image);
+    } else if (edit?.op === "insert_node") {
+      const { op: _op, ...node } = edit;
+      inserted_nodes.push(node);
     } else if (edit) edits.push(edit);
   }
   return {
     page_id: doc.page_id,
     ...(edits.length ? { edits } : {}),
     ...(inserted_images.length ? { inserted_images } : {}),
+    ...(inserted_nodes.length ? { inserted_nodes } : {}),
   };
 }

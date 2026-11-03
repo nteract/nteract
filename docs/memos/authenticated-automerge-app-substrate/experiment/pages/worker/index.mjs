@@ -20,6 +20,7 @@ import {
   initializePage,
   applyPageOperation,
   validateImageInsertion,
+  validateNodeInsertion,
 } from "../model/page.mjs";
 import {
   documentFeatures,
@@ -211,7 +212,12 @@ import {
   withTimeout,
 } from "./catalog-index.mjs";
 import { readRegistration, requireRegistrationAccount, validPageId } from "./registration.mjs";
-import { handleImageAssets, requireStoredImageAsset } from "./image-assets.mjs";
+import {
+  handleImageAssets,
+  requireStoredDatasetAsset,
+  requireStoredImageAsset,
+} from "./image-assets.mjs";
+import { dataframeFor } from "../shared/dataset-assets.mjs";
 import {
   appendPosition,
   childrenOf,
@@ -4155,9 +4161,9 @@ export class Page {
           return json(this.activityState().report(this.handle.doc(), identity, body.arguments));
         if (!["edit_page", "patch_page"].includes(body.operation))
           throw new HttpError(400, "Unknown document operation");
-        const images = Array.isArray(body.arguments?.operations)
-          ? body.arguments.operations.filter((op) => (op?.op ?? op?.type) === "insert_image")
-          : [];
+        const ops = Array.isArray(body.arguments?.operations) ? body.arguments.operations : [];
+        const images = ops.filter((op) => (op?.op ?? op?.type) === "insert_image");
+        const nodes = ops.filter((op) => (op?.op ?? op?.type) === "insert_node");
         // Where this batch landed, captured inside the change so the cursors
         // name the characters it wrote. A replayed receipt has no caret.
         let caret = null;
@@ -4169,28 +4175,47 @@ export class Page {
           operation: body.operation,
           args: body.arguments,
           identity,
-          prepare: images.length
-            ? async () => {
-                if (images.length > 100)
-                  throw new HttpError(400, "Provide up to 100 operations", "invalid_edit_selector");
-                for (const image of images) {
-                  try {
-                    validateImageInsertion(image);
-                  } catch (error) {
-                    throw new HttpError(400, error.message, "invalid_edit_selector");
+          prepare:
+            images.length || nodes.length
+              ? async () => {
+                  if (images.length + nodes.length > 100)
+                    throw new HttpError(
+                      400,
+                      "Provide up to 100 operations",
+                      "invalid_edit_selector",
+                    );
+                  for (const image of images) {
+                    try {
+                      validateImageInsertion(image);
+                    } catch (error) {
+                      throw new HttpError(400, error.message, "invalid_edit_selector");
+                    }
                   }
+                  for (const assetId of new Set(images.map((image) => image.asset_id))) {
+                    await requireStoredImageAsset(this.env.PAGES_ASSETS, {
+                      pageId: this.metadata.pageId,
+                      assetId,
+                    });
+                  }
+                  // Each dataframe names a stored dataset of its media type.
+                  for (const node of nodes) {
+                    let attrs;
+                    try {
+                      attrs = dataframeFor(this.metadata.pageId, validateNodeInsertion(node));
+                    } catch (error) {
+                      throw new HttpError(400, error.message, "invalid_edit_selector");
+                    }
+                    await requireStoredDatasetAsset(this.env.PAGES_ASSETS, {
+                      pageId: this.metadata.pageId,
+                      assetId: node.node.attrs.asset_id,
+                      mediaType: attrs.media_type,
+                    });
+                  }
+                  // The Page queue orders ACL changes; OAuth/key expiry and revocation
+                  // can still happen while immutable object metadata is being read.
+                  this.policy.account(await authenticate(request, this.env), true);
                 }
-                for (const assetId of new Set(images.map((image) => image.asset_id))) {
-                  await requireStoredImageAsset(this.env.PAGES_ASSETS, {
-                    pageId: this.metadata.pageId,
-                    assetId,
-                  });
-                }
-                // The Page queue orders ACL changes; OAuth/key expiry and revocation
-                // can still happen while immutable object metadata is being read.
-                this.policy.account(await authenticate(request, this.env), true);
-              }
-            : undefined,
+              : undefined,
           apply: (doc, effectiveArgs) => {
             try {
               const trace = [];

@@ -35,6 +35,7 @@ import {
   safeUrl,
   updateSpansConfig,
 } from "../model/marks.mjs";
+import { DATAFRAME_BLOCK, readDataframe } from "../shared/dataset-assets.mjs";
 // The Pages table format stores physical alignment. Wordgard's stock mark
 // uses logical values and does not round-trip a physical `right` clipboard style.
 const validCellAlignment = (value) => ["left", "center", "right"].includes(value);
@@ -190,6 +191,71 @@ export const PagesImage = Leaf.Type.define("PagesImage", {
         : Elt.mk("span", ["Image omitted"]),
   },
 });
+// A dataframe: a block with no text that names a Page dataset asset. Its
+// value is the stored attrs as strings, including any this build doesn't
+// know, so encode writes them back unchanged (shared/dataset-assets.mjs
+// readDataframe). The leaf's shape is what copy writes: a figure carrying the
+// attrs as JSON, which its parse rule reads back on paste. In the editor,
+// wordgard-dataframes.mjs draws the table instead.
+const DATAFRAME_ATTR = "data-pages-dataframe";
+const scalar = (v) => v === null || ["string", "number", "boolean"].includes(typeof v);
+const plainAttrs = (value) =>
+  value && typeof value === "object" && !Array.isArray(value)
+    ? Object.fromEntries(Object.entries(value).filter(([, v]) => scalar(v)))
+    : null;
+export const PagesDataframe = Leaf.Type.define("PagesDataframe", {
+  group: Node.Group.Content,
+  selectable: true,
+  validate(value) {
+    if (!readDataframe(value) || Object.values(value).some((v) => !scalar(v)))
+      throw Error("Invalid Pages dataframe");
+  },
+  parseRules: [
+    {
+      selector: `figure[${DATAFRAME_ATTR}]`,
+      readElement(element) {
+        try {
+          const value = plainAttrs(JSON.parse(element.getAttribute(DATAFRAME_ATTR)));
+          return value && readDataframe(value) ? value : parse.Reject;
+        } catch {
+          return parse.Reject;
+        }
+      },
+    },
+  ],
+  shape: {
+    structure: (value) =>
+      Elt.mk(
+        "figure",
+        {
+          class: "wordgard-dataframe",
+          [DATAFRAME_ATTR]: JSON.stringify(value),
+          "aria-label": value.title || "Table",
+        },
+        [value.title || "Table"],
+      ),
+  },
+});
+/** Copy HTML keeps a dataframe only when it names an asset on `pageId`. A
+ * dataframe from another Page pastes as its title, because its asset isn't
+ * readable here. */
+export function filterPastedDataframes(html, pageId, parser = new DOMParser()) {
+  if (!html.includes(DATAFRAME_ATTR)) return html;
+  const doc = parser.parseFromString(html, "text/html");
+  let changed = false;
+  for (const figure of doc.body.querySelectorAll(`figure[${DATAFRAME_ATTR}]`)) {
+    let value = null;
+    try {
+      value = readDataframe(plainAttrs(JSON.parse(figure.getAttribute(DATAFRAME_ATTR))));
+    } catch {}
+    if (value && value.src.split("/")[3] === pageId) continue;
+    const text = doc.createElement("p");
+    text.textContent = figure.textContent;
+    figure.replaceWith(text);
+    changed = true;
+  }
+  return changed ? doc.body.innerHTML : html;
+}
 // A node this build doesn't know, written by a newer build. Its feature stamp
 // makes the Page read-only here (schemaGateStep in viewer/session.mjs), so it
 // is drawn as a notice. Its value is the stored marker: type, attrs, parents
@@ -312,6 +378,7 @@ export const elements = [
   HorizontalRule,
   OpaqueBlock,
   PagesImage,
+  PagesDataframe,
   PagesUnknownBlock,
   PagesUnknownEmbed,
   Aside,
@@ -557,7 +624,11 @@ export function decode(spans) {
       outer.push(d.tag);
     }
     // Leaf blocks hold no content of their own.
-    const builtIn = type === "pages-opaque" || type === "horizontal-rule";
+    const dataframe =
+      type === DATAFRAME_BLOCK && readDataframe(attrs) && Object.values(attrs).every(scalar)
+        ? attrs
+        : null;
+    const builtIn = type === "pages-opaque" || type === "horizontal-rule" || !!dataframe;
     const desc = builtIn ? null : descriptor(type, attrs);
     const unknown = !builtIn && !desc;
     if (desc?.outer) outer.push(desc.outer);
@@ -578,6 +649,7 @@ export function decode(spans) {
         unknownInline(value);
       } else leaf(PagesUnknownBlock.of(unknownValue(value)));
     } else if (type === "horizontal-rule") leaf(HorizontalRule);
+    else if (dataframe) leaf(PagesDataframe.of(dataframe));
     else if (type === "pages-opaque") {
       leaf(
         OpaqueBlock.of({
@@ -655,6 +727,10 @@ export function encode(doc) {
     }
     if (node.type === HorizontalRule.type) {
       marker("horizontal-rule", parents);
+      return;
+    }
+    if (node.type === PagesDataframe) {
+      marker(DATAFRAME_BLOCK, parents, node.param);
       return;
     }
     if (!node.isPlot) throw Error(`Unsupported Wordgard block: ${node.name}`);

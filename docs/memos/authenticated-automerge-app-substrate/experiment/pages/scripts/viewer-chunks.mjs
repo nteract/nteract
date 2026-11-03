@@ -10,6 +10,7 @@ import { readdirSync } from "node:fs";
 import { createRequire } from "node:module";
 import path from "node:path";
 import { browserMermaidPlugin } from "./browser-mermaid.mjs";
+import { SIFT_WASM_URL, browserSiftPlugin } from "./browser-sift.mjs";
 import { BROWSER_WASM_URLS, browserWasmPlugin } from "./browser-wasm.mjs";
 import { FAVICON_HREF } from "../shared/favicon.mjs";
 import { PRODUCT_NAME } from "../shared/product.mjs";
@@ -34,10 +35,11 @@ export const VIEWER_ASSETS = Object.freeze([
   "mermaid.js",
   "automerge.wasm",
   "subduction.wasm",
+  "sift.wasm",
 ]);
 // Staging and the page9 ingress route admit exactly these shapes.
 const VIEWER_ASSET =
-  /^public\/(app|theme|mermaid|automerge|subduction)-([A-Z2-7]{8})\.(js|css|wasm)$/;
+  /^public\/(app|theme|mermaid|automerge|subduction|sift)-([A-Z2-7]{8})\.(js|css|wasm)$/;
 export const IMMUTABLE = "public, max-age=31536000, immutable";
 
 const BASE32 = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
@@ -75,7 +77,7 @@ export const publicUrl = (file) => {
 
 /** esbuild options for the viewer: app.js renders the shell, and the editor
  * with the WASM runtimes loads from public/chunks through a dynamic import.
- * `urls` maps the WASM and Mermaid source names to the URLs to load. */
+ * `urls` maps the WASM, Mermaid and Sift source names to the URLs to load. */
 export function viewerBuildOptions(app, dist, define = {}, urls = {}) {
   const require = createRequire(path.join(app, "package.json"));
   return {
@@ -103,6 +105,7 @@ export function viewerBuildOptions(app, dist, define = {}, urls = {}) {
     define: { "process.env.NODE_ENV": '"production"', ...define },
     plugins: [
       browserMermaidPlugin(app, urls["mermaid.js"]),
+      browserSiftPlugin(app, urls["sift.wasm"] ?? SIFT_WASM_URL),
       browserWasmPlugin(app, {
         automerge: urls["automerge.wasm"] ?? BROWSER_WASM_URLS.automerge,
         subduction: urls["subduction.wasm"] ?? BROWSER_WASM_URLS.subduction,
