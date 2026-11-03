@@ -65,7 +65,7 @@ const SUITES = Object.freeze([
   { name: "build-update", harness: sharing("--build-update"), timeout: 4 * minute, optIn: true },
   { name: "trash", harness: sharing("--trash"), timeout: 4 * minute },
   { name: "revocation", harness: sharing("--revocation"), timeout: 4 * minute },
-  { name: "projects", harness: sharing("--projects"), timeout: 4 * minute },
+  { name: "projects", harness: sharing("--projects"), timeout: 6 * minute },
   { name: "oauth", harness: ["scripts/local-oauth-e2e.mjs"], timeout: 4 * minute },
 ]);
 

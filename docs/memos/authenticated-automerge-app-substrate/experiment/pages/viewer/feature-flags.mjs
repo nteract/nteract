@@ -72,6 +72,21 @@ export function readGlideSettings(browser = globalThis) {
   });
 }
 
+/**
+ * Grid cards in the Pages library: `?grid=1` or `localStorage["pages.grid"]`.
+ * Off by default; the library shows its list and no List/Grid toggle until
+ * cards show previews. With it on, the toggle returns and the choice is
+ * remembered (display-mode.mjs).
+ */
+export const readGridFlag = (browser = globalThis) => enabled(readFlag("grid", browser));
+
+let tabGrid = null;
+/** Whether this tab shows grid cards. Read once, like glideSettings. */
+export function gridEnabled() {
+  tabGrid ??= readGridFlag(globalThis);
+  return tabGrid;
+}
+
 let tabGlide = null;
 /** The glide settings this tab opened with. In-app navigation drops the query,
  * so the first read is kept; reload to pick up a localStorage change. */

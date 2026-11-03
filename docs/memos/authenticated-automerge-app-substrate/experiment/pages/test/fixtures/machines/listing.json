@@ -1,6 +1,6 @@
 {
   "machine": "listing",
-  "description": "One paged list_pages or list_projects listing behind the /pages and /projects index routes. The rows live beside it in viewer/listing.mjs. viewer/listing.test.mjs runs each row through the pure machine.",
+  "description": "One paged list_pages or list_projects listing behind the Pages library (/ and /pages) and /projects. `params` is the normalized request ({ query, access, sort, projectId }); the machine never looks inside it. The rows live beside it in viewer/listing.mjs. viewer/listing.test.mjs runs each row through the pure machine.",
   "states": [
     "idle",
     "loading",
@@ -59,19 +59,34 @@
       "event": {
         "type": "load",
         "key": "k1",
-        "query": ""
+        "params": {
+          "query": "",
+          "access": null,
+          "sort": "activity",
+          "projectId": null
+        }
       },
       "expect": {
         "state": {
           "name": "loading",
           "key": "k1",
-          "query": ""
+          "params": {
+            "query": "",
+            "access": null,
+            "sort": "activity",
+            "projectId": null
+          }
         },
         "effects": [
           {
             "type": "fetch",
             "key": "k1",
-            "query": "",
+            "params": {
+              "query": "",
+              "access": null,
+              "sort": "activity",
+              "projectId": null
+            },
             "cursor": null
           }
         ]
@@ -83,24 +98,44 @@
       "state": {
         "name": "loading",
         "key": "k1",
-        "query": "road"
+        "params": {
+          "query": "road",
+          "access": null,
+          "sort": "activity",
+          "projectId": null
+        }
       },
       "event": {
         "type": "load",
         "key": "k2",
-        "query": "plan"
+        "params": {
+          "query": "plan",
+          "access": null,
+          "sort": "activity",
+          "projectId": null
+        }
       },
       "expect": {
         "state": {
           "name": "loading",
           "key": "k2",
-          "query": "plan"
+          "params": {
+            "query": "plan",
+            "access": null,
+            "sort": "activity",
+            "projectId": null
+          }
         },
         "effects": [
           {
             "type": "fetch",
             "key": "k2",
-            "query": "plan",
+            "params": {
+              "query": "plan",
+              "access": null,
+              "sort": "activity",
+              "projectId": null
+            },
             "cursor": null
           }
         ]
@@ -111,25 +146,45 @@
       "note": "Listing keeps the shown rows until the new first page replaces them.",
       "state": {
         "name": "ready",
-        "query": "road",
+        "params": {
+          "query": "road",
+          "access": null,
+          "sort": "activity",
+          "projectId": null
+        },
         "cursor": "c1"
       },
       "event": {
         "type": "load",
         "key": "k2",
-        "query": "plan"
+        "params": {
+          "query": "plan",
+          "access": null,
+          "sort": "activity",
+          "projectId": null
+        }
       },
       "expect": {
         "state": {
           "name": "loading",
           "key": "k2",
-          "query": "plan"
+          "params": {
+            "query": "plan",
+            "access": null,
+            "sort": "activity",
+            "projectId": null
+          }
         },
         "effects": [
           {
             "type": "fetch",
             "key": "k2",
-            "query": "plan",
+            "params": {
+              "query": "plan",
+              "access": null,
+              "sort": "activity",
+              "projectId": null
+            },
             "cursor": null
           }
         ]
@@ -140,25 +195,143 @@
       "state": {
         "name": "more",
         "key": "k1",
-        "query": "road",
+        "params": {
+          "query": "road",
+          "access": null,
+          "sort": "activity",
+          "projectId": null
+        },
         "cursor": "c1"
       },
       "event": {
         "type": "load",
         "key": "k2",
-        "query": "plan"
+        "params": {
+          "query": "plan",
+          "access": null,
+          "sort": "activity",
+          "projectId": null
+        }
       },
       "expect": {
         "state": {
           "name": "loading",
           "key": "k2",
-          "query": "plan"
+          "params": {
+            "query": "plan",
+            "access": null,
+            "sort": "activity",
+            "projectId": null
+          }
         },
         "effects": [
           {
             "type": "fetch",
             "key": "k2",
-            "query": "plan",
+            "params": {
+              "query": "plan",
+              "access": null,
+              "sort": "activity",
+              "projectId": null
+            },
+            "cursor": null
+          }
+        ]
+      }
+    },
+    {
+      "label": "a tab change during a load supersedes it",
+      "note": "Any change to params is a load: the Shared tab lists access shared from its first page.",
+      "state": {
+        "name": "loading",
+        "key": "k1",
+        "params": {
+          "query": "",
+          "access": null,
+          "sort": "activity",
+          "projectId": null
+        }
+      },
+      "event": {
+        "type": "load",
+        "key": "k2",
+        "params": {
+          "query": "",
+          "access": "shared",
+          "sort": "activity",
+          "projectId": null
+        }
+      },
+      "expect": {
+        "state": {
+          "name": "loading",
+          "key": "k2",
+          "params": {
+            "query": "",
+            "access": "shared",
+            "sort": "activity",
+            "projectId": null
+          }
+        },
+        "effects": [
+          {
+            "type": "fetch",
+            "key": "k2",
+            "params": {
+              "query": "",
+              "access": "shared",
+              "sort": "activity",
+              "projectId": null
+            },
+            "cursor": null
+          }
+        ]
+      }
+    },
+    {
+      "label": "a sort or Project change lists from the first page",
+      "note": "A cursor belongs to the order and filter it came from, so the old one is dropped.",
+      "state": {
+        "name": "ready",
+        "params": {
+          "query": "road",
+          "access": null,
+          "sort": "activity",
+          "projectId": null
+        },
+        "cursor": "c1"
+      },
+      "event": {
+        "type": "load",
+        "key": "k2",
+        "params": {
+          "query": "road",
+          "access": "owned",
+          "sort": "title",
+          "projectId": "prj_2b160b47-6df1-4983-81eb-489ca5a26812"
+        }
+      },
+      "expect": {
+        "state": {
+          "name": "loading",
+          "key": "k2",
+          "params": {
+            "query": "road",
+            "access": "owned",
+            "sort": "title",
+            "projectId": "prj_2b160b47-6df1-4983-81eb-489ca5a26812"
+          }
+        },
+        "effects": [
+          {
+            "type": "fetch",
+            "key": "k2",
+            "params": {
+              "query": "road",
+              "access": "owned",
+              "sort": "title",
+              "projectId": "prj_2b160b47-6df1-4983-81eb-489ca5a26812"
+            },
             "cursor": null
           }
         ]
@@ -168,25 +341,45 @@
       "label": "Retry after a failed first page lists it again",
       "state": {
         "name": "failed",
-        "query": "road",
+        "params": {
+          "query": "road",
+          "access": null,
+          "sort": "activity",
+          "projectId": null
+        },
         "message": "Pages can't reach the server. Try again in a moment."
       },
       "event": {
         "type": "load",
         "key": "k2",
-        "query": "road"
+        "params": {
+          "query": "road",
+          "access": null,
+          "sort": "activity",
+          "projectId": null
+        }
       },
       "expect": {
         "state": {
           "name": "loading",
           "key": "k2",
-          "query": "road"
+          "params": {
+            "query": "road",
+            "access": null,
+            "sort": "activity",
+            "projectId": null
+          }
         },
         "effects": [
           {
             "type": "fetch",
             "key": "k2",
-            "query": "road",
+            "params": {
+              "query": "road",
+              "access": null,
+              "sort": "activity",
+              "projectId": null
+            },
             "cursor": null
           }
         ]
@@ -196,26 +389,46 @@
       "label": "a new search after Load more stalled starts over",
       "state": {
         "name": "stalled",
-        "query": "road",
+        "params": {
+          "query": "road",
+          "access": null,
+          "sort": "activity",
+          "projectId": null
+        },
         "cursor": "c1",
         "message": "Pages can't reach the server. Try again in a moment."
       },
       "event": {
         "type": "load",
         "key": "k2",
-        "query": "plan"
+        "params": {
+          "query": "plan",
+          "access": null,
+          "sort": "activity",
+          "projectId": null
+        }
       },
       "expect": {
         "state": {
           "name": "loading",
           "key": "k2",
-          "query": "plan"
+          "params": {
+            "query": "plan",
+            "access": null,
+            "sort": "activity",
+            "projectId": null
+          }
         },
         "effects": [
           {
             "type": "fetch",
             "key": "k2",
-            "query": "plan",
+            "params": {
+              "query": "plan",
+              "access": null,
+              "sort": "activity",
+              "projectId": null
+            },
             "cursor": null
           }
         ]
@@ -243,7 +456,12 @@
       "state": {
         "name": "loading",
         "key": "k1",
-        "query": "road"
+        "params": {
+          "query": "road",
+          "access": null,
+          "sort": "activity",
+          "projectId": null
+        }
       },
       "event": {
         "type": "more",
@@ -253,7 +471,12 @@
         "state": {
           "name": "loading",
           "key": "k1",
-          "query": "road"
+          "params": {
+            "query": "road",
+            "access": null,
+            "sort": "activity",
+            "projectId": null
+          }
         },
         "effects": [],
         "rejected": "The first page is still loading"
@@ -264,7 +487,12 @@
       "case": "cursor",
       "state": {
         "name": "ready",
-        "query": "road",
+        "params": {
+          "query": "road",
+          "access": null,
+          "sort": "activity",
+          "projectId": null
+        },
         "cursor": "c1"
       },
       "event": {
@@ -275,14 +503,24 @@
         "state": {
           "name": "more",
           "key": "k2",
-          "query": "road",
+          "params": {
+            "query": "road",
+            "access": null,
+            "sort": "activity",
+            "projectId": null
+          },
           "cursor": "c1"
         },
         "effects": [
           {
             "type": "fetch",
             "key": "k2",
-            "query": "road",
+            "params": {
+              "query": "road",
+              "access": null,
+              "sort": "activity",
+              "projectId": null
+            },
             "cursor": "c1"
           }
         ]
@@ -293,7 +531,12 @@
       "case": "end",
       "state": {
         "name": "ready",
-        "query": "road",
+        "params": {
+          "query": "road",
+          "access": null,
+          "sort": "activity",
+          "projectId": null
+        },
         "cursor": null
       },
       "event": {
@@ -303,7 +546,12 @@
       "expect": {
         "state": {
           "name": "ready",
-          "query": "road",
+          "params": {
+            "query": "road",
+            "access": null,
+            "sort": "activity",
+            "projectId": null
+          },
           "cursor": null
         },
         "effects": [],
@@ -315,7 +563,12 @@
       "state": {
         "name": "more",
         "key": "k1",
-        "query": "road",
+        "params": {
+          "query": "road",
+          "access": null,
+          "sort": "activity",
+          "projectId": null
+        },
         "cursor": "c1"
       },
       "event": {
@@ -326,7 +579,12 @@
         "state": {
           "name": "more",
           "key": "k1",
-          "query": "road",
+          "params": {
+            "query": "road",
+            "access": null,
+            "sort": "activity",
+            "projectId": null
+          },
           "cursor": "c1"
         },
         "effects": [],
@@ -337,7 +595,12 @@
       "label": "a failed first page has no next page",
       "state": {
         "name": "failed",
-        "query": "road",
+        "params": {
+          "query": "road",
+          "access": null,
+          "sort": "activity",
+          "projectId": null
+        },
         "message": "Pages can't reach the server. Try again in a moment."
       },
       "event": {
@@ -347,7 +610,12 @@
       "expect": {
         "state": {
           "name": "failed",
-          "query": "road",
+          "params": {
+            "query": "road",
+            "access": null,
+            "sort": "activity",
+            "projectId": null
+          },
           "message": "Pages can't reach the server. Try again in a moment."
         },
         "effects": [],
@@ -358,7 +626,12 @@
       "label": "Retry after Load more stalled requests the same page",
       "state": {
         "name": "stalled",
-        "query": "road",
+        "params": {
+          "query": "road",
+          "access": null,
+          "sort": "activity",
+          "projectId": null
+        },
         "cursor": "c1",
         "message": "Pages can't reach the server. Try again in a moment."
       },
@@ -370,14 +643,24 @@
         "state": {
           "name": "more",
           "key": "k2",
-          "query": "road",
+          "params": {
+            "query": "road",
+            "access": null,
+            "sort": "activity",
+            "projectId": null
+          },
           "cursor": "c1"
         },
         "effects": [
           {
             "type": "fetch",
             "key": "k2",
-            "query": "road",
+            "params": {
+              "query": "road",
+              "access": null,
+              "sort": "activity",
+              "projectId": null
+            },
             "cursor": "c1"
           }
         ]
@@ -389,7 +672,12 @@
       "state": {
         "name": "loading",
         "key": "k1",
-        "query": "road"
+        "params": {
+          "query": "road",
+          "access": null,
+          "sort": "activity",
+          "projectId": null
+        }
       },
       "event": {
         "type": "loaded",
@@ -399,7 +687,12 @@
       "expect": {
         "state": {
           "name": "ready",
-          "query": "road",
+          "params": {
+            "query": "road",
+            "access": null,
+            "sort": "activity",
+            "projectId": null
+          },
           "cursor": "c1"
         },
         "effects": [
@@ -417,7 +710,12 @@
       "state": {
         "name": "loading",
         "key": "k1",
-        "query": "road"
+        "params": {
+          "query": "road",
+          "access": null,
+          "sort": "activity",
+          "projectId": null
+        }
       },
       "event": {
         "type": "loaded",
@@ -428,7 +726,12 @@
         "state": {
           "name": "loading",
           "key": "k1",
-          "query": "road"
+          "params": {
+            "query": "road",
+            "access": null,
+            "sort": "activity",
+            "projectId": null
+          }
         },
         "effects": [],
         "rejected": "A newer request superseded this one"
@@ -438,7 +741,12 @@
       "label": "a late result after the listing settled is ignored",
       "state": {
         "name": "ready",
-        "query": "road",
+        "params": {
+          "query": "road",
+          "access": null,
+          "sort": "activity",
+          "projectId": null
+        },
         "cursor": "c1"
       },
       "event": {
@@ -449,7 +757,12 @@
       "expect": {
         "state": {
           "name": "ready",
-          "query": "road",
+          "params": {
+            "query": "road",
+            "access": null,
+            "sort": "activity",
+            "projectId": null
+          },
           "cursor": "c1"
         },
         "effects": [],
@@ -462,7 +775,12 @@
       "state": {
         "name": "more",
         "key": "k1",
-        "query": "road",
+        "params": {
+          "query": "road",
+          "access": null,
+          "sort": "activity",
+          "projectId": null
+        },
         "cursor": "c1"
       },
       "event": {
@@ -473,7 +791,12 @@
       "expect": {
         "state": {
           "name": "ready",
-          "query": "road",
+          "params": {
+            "query": "road",
+            "access": null,
+            "sort": "activity",
+            "projectId": null
+          },
           "cursor": null
         },
         "effects": [
@@ -491,7 +814,12 @@
       "state": {
         "name": "more",
         "key": "k1",
-        "query": "road",
+        "params": {
+          "query": "road",
+          "access": null,
+          "sort": "activity",
+          "projectId": null
+        },
         "cursor": "c1"
       },
       "event": {
@@ -503,7 +831,12 @@
         "state": {
           "name": "more",
           "key": "k1",
-          "query": "road",
+          "params": {
+            "query": "road",
+            "access": null,
+            "sort": "activity",
+            "projectId": null
+          },
           "cursor": "c1"
         },
         "effects": [],
@@ -514,7 +847,12 @@
       "label": "a late result after a failed first page is ignored",
       "state": {
         "name": "failed",
-        "query": "road",
+        "params": {
+          "query": "road",
+          "access": null,
+          "sort": "activity",
+          "projectId": null
+        },
         "message": "Pages can't reach the server. Try again in a moment."
       },
       "event": {
@@ -525,7 +863,12 @@
       "expect": {
         "state": {
           "name": "failed",
-          "query": "road",
+          "params": {
+            "query": "road",
+            "access": null,
+            "sort": "activity",
+            "projectId": null
+          },
           "message": "Pages can't reach the server. Try again in a moment."
         },
         "effects": [],
@@ -536,7 +879,12 @@
       "label": "a late result after Load more stalled is ignored",
       "state": {
         "name": "stalled",
-        "query": "road",
+        "params": {
+          "query": "road",
+          "access": null,
+          "sort": "activity",
+          "projectId": null
+        },
         "cursor": "c1",
         "message": "Pages can't reach the server. Try again in a moment."
       },
@@ -548,7 +896,12 @@
       "expect": {
         "state": {
           "name": "stalled",
-          "query": "road",
+          "params": {
+            "query": "road",
+            "access": null,
+            "sort": "activity",
+            "projectId": null
+          },
           "cursor": "c1",
           "message": "Pages can't reach the server. Try again in a moment."
         },
@@ -562,7 +915,12 @@
       "state": {
         "name": "loading",
         "key": "k1",
-        "query": "road"
+        "params": {
+          "query": "road",
+          "access": null,
+          "sort": "activity",
+          "projectId": null
+        }
       },
       "event": {
         "type": "failed",
@@ -573,7 +931,12 @@
       "expect": {
         "state": {
           "name": "failed",
-          "query": "road",
+          "params": {
+            "query": "road",
+            "access": null,
+            "sort": "activity",
+            "projectId": null
+          },
           "message": "Pages can't reach the server. Try again in a moment."
         },
         "effects": [
@@ -590,7 +953,12 @@
       "state": {
         "name": "loading",
         "key": "k1",
-        "query": "road"
+        "params": {
+          "query": "road",
+          "access": null,
+          "sort": "activity",
+          "projectId": null
+        }
       },
       "event": {
         "type": "failed",
@@ -602,7 +970,12 @@
         "state": {
           "name": "loading",
           "key": "k1",
-          "query": "road"
+          "params": {
+            "query": "road",
+            "access": null,
+            "sort": "activity",
+            "projectId": null
+          }
         },
         "effects": [],
         "rejected": "A newer request superseded this one"
@@ -612,7 +985,12 @@
       "label": "a late failure after the listing settled is ignored",
       "state": {
         "name": "ready",
-        "query": "road",
+        "params": {
+          "query": "road",
+          "access": null,
+          "sort": "activity",
+          "projectId": null
+        },
         "cursor": "c1"
       },
       "event": {
@@ -624,7 +1002,12 @@
       "expect": {
         "state": {
           "name": "ready",
-          "query": "road",
+          "params": {
+            "query": "road",
+            "access": null,
+            "sort": "activity",
+            "projectId": null
+          },
           "cursor": "c1"
         },
         "effects": [],
@@ -637,7 +1020,12 @@
       "state": {
         "name": "more",
         "key": "k1",
-        "query": "road",
+        "params": {
+          "query": "road",
+          "access": null,
+          "sort": "activity",
+          "projectId": null
+        },
         "cursor": "c1"
       },
       "event": {
@@ -649,7 +1037,12 @@
       "expect": {
         "state": {
           "name": "stalled",
-          "query": "road",
+          "params": {
+            "query": "road",
+            "access": null,
+            "sort": "activity",
+            "projectId": null
+          },
           "cursor": "c1",
           "message": "Pages can't reach the server. Try again in a moment."
         },
@@ -667,7 +1060,12 @@
       "state": {
         "name": "more",
         "key": "k1",
-        "query": "road",
+        "params": {
+          "query": "road",
+          "access": null,
+          "sort": "activity",
+          "projectId": null
+        },
         "cursor": "c1"
       },
       "event": {
@@ -680,7 +1078,12 @@
         "state": {
           "name": "more",
           "key": "k1",
-          "query": "road",
+          "params": {
+            "query": "road",
+            "access": null,
+            "sort": "activity",
+            "projectId": null
+          },
           "cursor": "c1"
         },
         "effects": [],
@@ -694,7 +1097,12 @@
       "state": {
         "name": "more",
         "key": "k1",
-        "query": "road",
+        "params": {
+          "query": "road",
+          "access": null,
+          "sort": "activity",
+          "projectId": null
+        },
         "cursor": "c1"
       },
       "event": {
@@ -707,13 +1115,23 @@
         "state": {
           "name": "loading",
           "key": "k1",
-          "query": "road"
+          "params": {
+            "query": "road",
+            "access": null,
+            "sort": "activity",
+            "projectId": null
+          }
         },
         "effects": [
           {
             "type": "fetch",
             "key": "k1",
-            "query": "road",
+            "params": {
+              "query": "road",
+              "access": null,
+              "sort": "activity",
+              "projectId": null
+            },
             "cursor": null
           }
         ]
@@ -723,7 +1141,12 @@
       "label": "a second failure after a failed first page is ignored",
       "state": {
         "name": "failed",
-        "query": "road",
+        "params": {
+          "query": "road",
+          "access": null,
+          "sort": "activity",
+          "projectId": null
+        },
         "message": "Pages can't reach the server. Try again in a moment."
       },
       "event": {
@@ -735,7 +1158,12 @@
       "expect": {
         "state": {
           "name": "failed",
-          "query": "road",
+          "params": {
+            "query": "road",
+            "access": null,
+            "sort": "activity",
+            "projectId": null
+          },
           "message": "Pages can't reach the server. Try again in a moment."
         },
         "effects": [],
@@ -746,7 +1174,12 @@
       "label": "a second failure after Load more stalled is ignored",
       "state": {
         "name": "stalled",
-        "query": "road",
+        "params": {
+          "query": "road",
+          "access": null,
+          "sort": "activity",
+          "projectId": null
+        },
         "cursor": "c1",
         "message": "Pages can't reach the server. Try again in a moment."
       },
@@ -759,7 +1192,12 @@
       "expect": {
         "state": {
           "name": "stalled",
-          "query": "road",
+          "params": {
+            "query": "road",
+            "access": null,
+            "sort": "activity",
+            "projectId": null
+          },
           "cursor": "c1",
           "message": "Pages can't reach the server. Try again in a moment."
         },
@@ -773,7 +1211,12 @@
       "state": {
         "name": "loading",
         "key": "k1",
-        "query": "road"
+        "params": {
+          "query": "road",
+          "access": null,
+          "sort": "activity",
+          "projectId": null
+        }
       },
       "event": {
         "type": "failed",
@@ -784,7 +1227,12 @@
       "expect": {
         "state": {
           "name": "failed",
-          "query": "road",
+          "params": {
+            "query": "road",
+            "access": null,
+            "sort": "activity",
+            "projectId": null
+          },
           "message": "Invalid cursor; restart from the first page"
         },
         "effects": [

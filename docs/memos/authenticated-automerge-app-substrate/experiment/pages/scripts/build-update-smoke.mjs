@@ -227,7 +227,7 @@ try {
   await owner.keyboard.insertText(" Checkpointed.");
   await paragraph(owner, "Deploy garden. Before deploy. During deploy. Checkpointed.");
   await owner.getByRole("link", { name: PRODUCT_NAME, exact: true }).click();
-  await expect(owner.getByRole("heading", { name: "Your pages" })).toBeVisible();
+  await expect(owner.getByRole("heading", { name: "Pages", exact: true })).toBeVisible();
   await owner.evaluate(() => {
     window.__pagesBeforeReload = true;
   });
@@ -273,7 +273,7 @@ try {
     "Deploy garden. Before deploy. During deploy. Checkpointed. After banner.",
   );
   await owner.getByRole("link", { name: PRODUCT_NAME, exact: true }).click();
-  await expect(owner.getByRole("heading", { name: "Your pages" })).toBeVisible();
+  await expect(owner.getByRole("heading", { name: "Pages", exact: true })).toBeVisible();
   await expect.poll(() => receipts.inFlight, { timeout: 15000 }).toBeGreaterThan(0);
   let loadedAt = 0;
   owner.once("load", () => {
@@ -402,7 +402,7 @@ try {
   // chunk lands, the abandoned New Page must not create a draft. A created
   // draft lives in this browser first, so count the library's rows (local and
   // server Pages) as well as the server catalog.
-  const library = owner.locator(".page-card");
+  const library = owner.locator(".index-row-link");
   const untitled = async () => {
     await owner.goto(origin);
     await expect(library.filter({ hasText: title })).toBeVisible({ timeout: 30000 });

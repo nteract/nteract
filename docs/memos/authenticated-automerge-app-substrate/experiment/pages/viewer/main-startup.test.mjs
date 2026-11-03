@@ -209,15 +209,53 @@ test("/pages and /projects render from the shell without importing the editor", 
   assert.equal(location.pathname, "/projects", "the trailing slash is dropped");
 });
 
-test("Home starts the editor import at boot", async () => {
+test("Home is the Pages library and starts the editor import at boot", async () => {
   history.replaceState(null, "", "/");
   const before = globalThis.__editorImports ?? 0;
   await boot(signedIn, catalog);
   await settle();
-  assert.equal(document.querySelector("main h1")?.textContent, "Your pages");
+  assert.equal(document.querySelector("main h1")?.textContent, "Pages");
   assert.equal(globalThis.__editorImports, before + 1);
   const nav = [...document.querySelectorAll(".index-nav a")].map((link) => link.textContent);
-  assert.deepEqual(nav, ["Home", "All Pages", "Projects"]);
+  assert.deepEqual(nav, ["Pages", "Projects"]);
+  assert.equal(document.querySelector(".index-nav [aria-current=page]")?.textContent, "Pages");
+});
+
+test("a library choice pushes the address at / and /pages, and Back restores the view", async () => {
+  for (const base of ["/", "/pages"]) {
+    history.replaceState(null, "", base);
+    const app = await boot(signedIn, {
+      ...catalog,
+      list_pages: {
+        pages: [{ page_id: "1a160b47-6df1-4983-81eb-489ca5a26812", title: "Roadmap" }],
+        next_cursor: null,
+      },
+    });
+    await settle();
+    const tab = (label) =>
+      [...document.querySelectorAll('[role="group"][aria-label="Show"] button')].find(
+        (element) => element.textContent === label,
+      );
+    await act(() => {
+      tab("Shared with you").dispatchEvent(
+        new window.MouseEvent("click", { bubbles: true, cancelable: true, button: 0 }),
+      );
+    });
+    await settle();
+    const shared = base === "/" ? "/?show=shared" : "/pages?show=shared";
+    assert.equal(location.pathname + location.search, shared, base);
+    assert.equal(tab("Shared with you").getAttribute("aria-pressed"), "true");
+    history.back();
+    await settle();
+    assert.equal(location.pathname + location.search, base, `${base}: Back`);
+    assert.equal(tab("All").getAttribute("aria-pressed"), "true", `${base}: Back restores All`);
+    history.forward();
+    await settle();
+    assert.equal(location.pathname + location.search, shared, `${base}: Forward`);
+    assert.equal(tab("Shared with you").getAttribute("aria-pressed"), "true");
+    assert.deepEqual(app.banners(), []);
+  }
+  history.replaceState(null, "", "/");
 });
 
 test("a Page opened from a /pages search keeps its address when the editor fails to load", async () => {

@@ -4,7 +4,6 @@ import { flushSync } from "react-dom";
 import { createRoot } from "react-dom/client";
 import {
   ChevronDown,
-  FileText,
   FilePlus,
   FolderInput,
   FolderOpen,
@@ -14,7 +13,6 @@ import {
   Plus,
   Plug,
   RotateCcw,
-  Search,
   Type,
   Trash2,
   UserRound,
@@ -28,10 +26,13 @@ import {
 } from "./alerts.mjs";
 import { listLocalPages, retireLocalPage } from "./local-catalog.mjs";
 import {
+  LIBRARY_DEFAULTS,
   PROJECTS_PATH,
   isIndexRoute,
+  isLibraryRoute,
+  libraryBase,
+  libraryPath,
   pagePath,
-  pagesPath,
   readPageRoute,
   writePageRoute,
   writeRoute,
@@ -65,10 +66,11 @@ import {
   projectPageCount,
 } from "./ProjectView.jsx";
 import { pageCreations } from "./page-create-machine.mjs";
-import { IndexNav, PagesIndex, ProjectsIndex } from "./IndexViews.jsx";
+import { ProjectsIndex } from "./IndexViews.jsx";
+import { Library } from "./Library.jsx";
 import { listProjects, pageLocation } from "./projects.mjs";
 import { closeTrashedSessions, moveToTrashError, restorePage } from "./trash.mjs";
-import { listAllPages, matchingPages } from "./page-list.mjs";
+import { listAllPages } from "./page-list.mjs";
 import { quotaNotice } from "./quota.mjs";
 import { AppearanceControls } from "./AppearanceControls.jsx";
 import { retryKey } from "../model/retry-key.mjs";
@@ -86,15 +88,18 @@ import { CommentComposer, hasDraftText } from "./comment-composer.mjs";
 import { focusReturnTarget } from "./focus-return.mjs";
 import { timer } from "rxjs";
 import { MOBILE_EDITOR_QUERY, trackVisualViewport } from "./visual-viewport.mjs";
-import { glideSettings } from "./feature-flags.mjs";
+import { glideSettings, gridEnabled } from "./feature-flags.mjs";
 
 // Opening a Page rewrites the address to its canonical path, which drops the
 // query, so read the experiment flags before anything routes.
 glideSettings();
+gridEnabled();
 
 // The editor, and the WASM runtimes it waits for, load beside the shell
 // from boot, except on the index routes (/projects, /pages), which only list;
-// there the first Page open or creation starts it. A Page session exists only
+// there the first Page open or creation starts it. Home (/) shows the same
+// library as /pages but starts the editor at boot, since a Page usually opens
+// next. A Page session exists only
 // once it has loaded, so code that holds a session reads `editor.module`
 // directly. A failed import, or a Mermaid renderer that fails to load later,
 // asks the server for its build.
@@ -140,15 +145,19 @@ function App() {
     // The session check's banner: { message, signIn } or null.
     [sessionNotice, setSessionNotice] = useState(null),
     [notice, setNotice] = useState(""),
-    [libraryQuery, setLibraryQuery] = useState(""),
+    // This browser's local catalog for the account (local-catalog.mjs), as
+    // the last refresh read it. The library shows its drafts.
+    [localPages, setLocalPages] = useState([]),
     [trashOpen, setTrashOpen] = useState(false),
     [projects, setProjects] = useState([]),
     // list_pages' `quota` for the signed-in account, or null.
     [quota, setQuota] = useState(null),
     [projectOpen, setProjectOpen] = useState(null),
-    // An index route: { kind: "projects" | "pages", query, visit, principal }
-    // or null. `visit` remounts the listing for each navigation, Back
-    // included; `query` follows the search typed on /pages.
+    // A listing screen: { kind: "projects" | "pages" | "home", library, visit,
+    // principal } or null. "home" and "pages" are the Pages library at / and
+    // /pages. `visit` remounts the listing for each navigation, Back
+    // included; `library` (normalizeLibraryView) follows the view chosen
+    // there. Null shows the library at the address's view.
     [index, setIndex] = useState(null),
     // read_page's location for the open Page, null until it answers.
     [placement, setPlacement] = useState(null),
@@ -240,6 +249,7 @@ function App() {
       identity.principal === authentication.current?.identity?.principal &&
       revision === catalogRevision.current;
     if (!stillCurrent()) return [];
+    setLocalPages(local);
     // Until this refresh's remote result arrives, the last one for this
     // account stands in for it.
     const listing = pageListing(
@@ -260,7 +270,9 @@ function App() {
       void Promise.all(closing)
         .then(() => listLocalPages(identity))
         .then((latest) => {
-          if (stillCurrent()) setPages(listing.local(latest));
+          if (!stillCurrent()) return;
+          setLocalPages(latest);
+          setPages(listing.local(latest));
         })
         .catch(() => {});
     const remote = await remoteRequest;
@@ -454,7 +466,11 @@ function App() {
       if (host.isCurrent(revision)) setOpening(false);
     }
   }
-  function home(event, { historyMode = "push", refreshCatalog = true } = {}) {
+  /** Show the Pages library at /, with `library` as its view. */
+  function home(
+    event,
+    { historyMode = "push", refreshCatalog = true, library = LIBRARY_DEFAULTS } = {},
+  ) {
     if (event) {
       if (!isPlainNavigation(event)) return;
       event.preventDefault();
@@ -469,9 +485,22 @@ function App() {
     setPickerOpen(false);
     setTrashOpen(false);
     setProjectOpen(null);
-    setIndex(null);
-    if (historyMode !== "none") writePageRoute(null, { replace: historyMode === "replace" });
+    setIndex(listingVisit("home", library));
+    if (historyMode !== "none")
+      writeRoute(libraryPath("/", library), {
+        replace: historyMode === "replace",
+        state: { pageId: null },
+      });
     if (refreshCatalog) void refresh().catch((error) => showError(error));
+  }
+  /** A new visit to a listing screen, for setIndex. */
+  function listingVisit(kind, library = LIBRARY_DEFAULTS) {
+    return {
+      kind,
+      library,
+      visit: ++indexVisits.current,
+      principal: authentication.current?.identity?.principal ?? null,
+    };
   }
   function openProject(projectId, { historyMode = "push" } = {}) {
     home(null, { historyMode: "none", refreshCatalog: false });
@@ -482,37 +511,52 @@ function App() {
   function openIndex(route, { historyMode = "push" } = {}) {
     home(null, { historyMode: "none", refreshCatalog: false });
     if (historyMode !== "none") writeRoute(route.path, { replace: historyMode === "replace" });
-    setIndex({
-      kind: route.kind,
-      query: route.query ?? "",
-      visit: ++indexVisits.current,
-      principal: authentication.current?.identity?.principal ?? null,
-    });
+    setIndex(listingVisit(route.kind, route.library));
   }
-  /** The Home · All Pages · Projects nav and the switcher's index links. */
+  /** The Pages · Projects nav and the switcher's index links. Pages opens
+   * the library at /. */
   function navigateIndex(kind) {
-    if (kind === "home") home(null);
-    else openIndex(readPageRoute(kind === "projects" ? PROJECTS_PATH : pagesPath()));
+    if (kind === "projects") openIndex(readPageRoute(PROJECTS_PATH));
+    else home(null);
   }
-  /** Whether index visit `visit` is still on screen for the account that
-   * started it, at its own address. */
-  const indexCurrent = (visit, principal) =>
-    indexVisits.current === visit &&
-    authentication.current?.identity?.principal === principal &&
-    isIndexRoute(readPageRoute(location.href));
+  /** Whether listing visit `visit` is still on screen for the account that
+   * started it, at a listing address. */
+  const indexCurrent = (visit, principal) => {
+    const route = readPageRoute(location.href);
+    return (
+      indexVisits.current === visit &&
+      authentication.current?.identity?.principal === principal &&
+      (isIndexRoute(route) || isLibraryRoute(route))
+    );
+  };
   /** A listing failure goes to the screen's banner like any failed action,
    * while its screen is still the one showing. */
   const reportListing = (visit, principal) => (message) => {
     if (indexCurrent(visit, principal)) setError(message);
   };
-  /** A search typed on /pages: the address and the visit's query follow it,
-   * so Back, a reload, or a remount after a failed Page open show it again.
-   * A visit whose address moved on (to the Page it is opening) leaves the
+  /** A view chosen in the library: the address and the visit's view follow
+   * it, so Back, a reload, or a remount after a failed Page open show it
+   * again. A choice pushes a history entry; a typed search replaces it. A
+   * visit whose address moved on (to the Page it is opening) leaves the
    * address alone. */
-  const followIndexQuery = (visit, principal) => (query) => {
-    if (!indexCurrent(visit, principal) || readPageRoute(location.href).kind !== "pages") return;
-    setIndex((current) => (current?.visit === visit ? { ...current, query } : current));
-    writeRoute(pagesPath(query), { replace: true });
+  const followLibrary =
+    (visit, principal) =>
+    (library, { replace }) => {
+      const route = readPageRoute(location.href);
+      if (!indexCurrent(visit, principal) || !isLibraryRoute(route)) return;
+      setIndex((current) => (current?.visit === visit ? { ...current, library } : current));
+      writeRoute(libraryPath(libraryBase(route), library), { replace, state: { pageId: null } });
+    };
+  /** The library's view at an address no visit owns: after a Page closed
+   * without navigating (moved to Trash, say), / shows the library. */
+  const libraryOf = (route) => (isLibraryRoute(route) ? route.library : LIBRARY_DEFAULTS);
+  const followAddress = (library, { replace }) => {
+    const route = readPageRoute(location.href);
+    if (host.current || !isLibraryRoute(route)) return;
+    writeRoute(libraryPath(libraryBase(route), library), { replace, state: { pageId: null } });
+  };
+  const reportAddressListing = (message) => {
+    if (!host.current && isLibraryRoute(readPageRoute(location.href))) setError(message);
   };
   const retryListing = (retry) => {
     setError("");
@@ -547,7 +591,8 @@ function App() {
     else if (route.kind === "project") openProject(route.projectId, { historyMode: "replace" });
     // Replace drops a trailing slash or an empty search from the address.
     else if (isIndexRoute(route)) openIndex(route, { historyMode: "replace" });
-    else if (route.kind === "home") home(null, { historyMode: "none", refreshCatalog: false });
+    else if (route.kind === "home")
+      home(null, { historyMode: "none", refreshCatalog: false, library: route.library });
     else {
       host.navigate();
       releaseCurrent();
@@ -590,6 +635,7 @@ function App() {
           creations.account(result.identity?.principal ?? null);
           catalogRevision.current++;
           setPages([]);
+          setLocalPages([]);
           setQuota(null);
           setOpening(false);
         }
@@ -1054,7 +1100,6 @@ function App() {
   const listedPages = pages.map((item) =>
     item.page_id === page?.page_id ? { ...item, title: page.title } : item,
   );
-  const libraryPages = matchingPages(listedPages, libraryQuery);
   // The open Page's Project, when read_page shows one: Projects are
   // owner-only in this build, so a visible project_id means this account owns
   // it. Shared viewers see none and get no create affordances. The owner
@@ -1547,20 +1592,6 @@ function App() {
               onError={reportListing(index.visit, index.principal)}
               onRetry={retryListing}
             />
-          ) : index?.kind === "pages" ? (
-            <PagesIndex
-              key={index.visit}
-              tool={tool}
-              query={index.query}
-              projects={projects}
-              onNavigate={navigateIndex}
-              onQueryChange={followIndexQuery(index.visit, index.principal)}
-              onOpen={(id) => open(id)}
-              onOpenProject={(id) => openProject(id)}
-              onWarm={warmEditor}
-              onError={reportListing(index.visit, index.principal)}
-              onRetry={retryListing}
-            />
           ) : trashOpen ? (
             <TrashView
               tool={tool}
@@ -1578,67 +1609,26 @@ function App() {
               }}
             />
           ) : (
-            <main className="page-library">
-              <IndexNav current="home" onNavigate={navigateIndex} />
-              <div className="library-heading">
-                <h1>Your pages</h1>
-                <div className="library-actions">
-                  <button className="subtle-button" onClick={showTrash}>
-                    <Trash2 size={16} aria-hidden="true" /> Trash
-                  </button>
-                  <button className="primary" onClick={create} disabled={creating}>
-                    <Plus size={18} aria-hidden="true" /> New Page
-                  </button>
-                </div>
-              </div>
-              <label className="picker-search library-search">
-                <Search size={18} aria-hidden="true" />
-                <input
-                  aria-label="Search your pages"
-                  placeholder="Search pages"
-                  value={libraryQuery}
-                  onChange={(event) => setLibraryQuery(event.target.value)}
-                  type="search"
-                />
-              </label>
-              {usage && (
-                <p className="muted quota-notice" role="status">
-                  {usage}
-                </p>
-              )}
-              {!pages.length && <p className="muted">Start a page and write together.</p>}
-              {!!pages.length && !libraryPages.length && (
-                <p className="muted">No matching pages.</p>
-              )}
-              <ul className="page-list page-cards" aria-label="Your pages">
-                {libraryPages.map((item) => (
-                  <li className="page-row" key={item.page_id}>
-                    <a
-                      className="page-card"
-                      href={pagePath(item.page_id)}
-                      onClick={(event) => {
-                        if (isPlainNavigation(event)) {
-                          event.preventDefault();
-                          void open(item.page_id);
-                        }
-                      }}
-                    >
-                      <FileText size={19} aria-hidden="true" />
-                      <span className="page-card-title">{item.title || "Untitled"}</span>
-                      {item.pending && <span className="page-card-meta">Saved locally</span>}
-                    </a>
-                    <button
-                      className="icon-button page-row-action"
-                      aria-label={`Copy link to ${item.title || "Untitled"}`}
-                      title="Copy link"
-                      onClick={() => copyLink(item.page_id)}
-                    >
-                      <Link size={16} aria-hidden="true" />
-                    </button>
-                  </li>
-                ))}
-              </ul>
-            </main>
+            <Library
+              key={index?.visit ?? "address"}
+              tool={tool}
+              view={index?.library ?? libraryOf(readPageRoute(location.href))}
+              projects={projects}
+              drafts={localPages}
+              notice={usage}
+              creating={creating}
+              grid={gridEnabled()}
+              onNavigate={navigateIndex}
+              onViewChange={index ? followLibrary(index.visit, index.principal) : followAddress}
+              onOpen={(id) => open(id)}
+              onOpenProject={(id) => openProject(id)}
+              onCreate={create}
+              onTrash={showTrash}
+              onCopyLink={copyLink}
+              onWarm={warmEditor}
+              onError={index ? reportListing(index.visit, index.principal) : reportAddressListing}
+              onRetry={retryListing}
+            />
           )}
         </>
       )}

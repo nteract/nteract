@@ -1,23 +1,28 @@
 /**
  * One paged listing (list_pages or list_projects) as a state machine.
  *
- * The index routes, /pages and /projects, each run one. The rows themselves
- * live beside this state in Listing (listing.mjs); the machine owns which
- * request is in flight, the cursor for the next page, and whether a failure
- * lost the first page or only the next one.
+ * The Pages library and /projects each run one. The rows themselves live
+ * beside this state in Listing (listing.mjs); the machine owns which request
+ * is in flight, the cursor for the next page, and whether a failure lost the
+ * first page or only the next one.
+ *
+ * `params` is what one listing lists: `{ query, access, sort, projectId }`,
+ * already normalized by the caller (libraryRequest in shared/routes.mjs). The
+ * machine compares nothing inside it; every `load` starts over.
  *
  * States:
  * - idle: nothing requested yet.
- * - loading: the first page for `query` is in flight under `key`.
+ * - loading: the first page for `params` is in flight under `key`.
  * - ready: rows are shown. `cursor` continues the listing, or is null at its
  *   end.
  * - more: the page after `cursor` is in flight under `key`; rows stay shown.
- * - failed: the first page for `query` failed. Nothing is listed.
+ * - failed: the first page for `params` failed. Nothing is listed.
  * - stalled: the page after `cursor` failed. The rows already shown stay.
  *
  * Events:
- * - load: list `query` from its first page. It supersedes any request in
- *   flight, so a search typed during a load, or a retry, always wins.
+ * - load: list `params` from its first page. It supersedes any request in
+ *   flight, so a search typed during a load, a tab or sort change, or a
+ *   retry always wins.
  * - more: list the next page (Load more), or retry the one that stalled.
  * - loaded / failed: the request for `key` settled. A key that no longer
  *   matches belongs to a superseded request, so its result is ignored.
@@ -42,10 +47,21 @@ const only = (value, keys) => {
   for (const key of Object.keys(value)) check(keys.includes(key), `unexpected field ${key}`);
 };
 const isKey = (value) => typeof value === "string" && value !== "";
+const PARAMS = ["query", "access", "sort", "projectId"];
+const nullableText = (value) => value === null || (typeof value === "string" && value !== "");
+function checkParams(params) {
+  check(params !== null && typeof params === "object", "params must be an object");
+  only(params, PARAMS);
+  for (const key of PARAMS) check(key in params, `params.${key} is required`);
+  check(typeof params.query === "string", "params.query must be a string");
+  check(nullableText(params.access), "params.access must be a string or null");
+  check(isKey(params.sort), "params.sort must be a string");
+  check(nullableText(params.projectId), "params.projectId must be a string or null");
+}
 const fields = (head, keys) => (value) => {
   only(value, [head, ...keys]);
   if (keys.includes("key")) check(isKey(value.key), "key is required");
-  if (keys.includes("query")) check(typeof value.query === "string", "query must be a string");
+  if (keys.includes("params")) checkParams(value.params);
   if (keys.includes("cursor"))
     check(
       value.cursor === null || (typeof value.cursor === "string" && value.cursor !== ""),
@@ -81,20 +97,20 @@ export const listingSpec = Object.freeze({
   validate: {
     states: {
       idle: state(),
-      loading: state("key", "query"),
-      ready: state("query", "cursor"),
-      more: state("key", "query", "cursor"),
-      failed: state("query", "message"),
-      stalled: state("query", "cursor", "message"),
+      loading: state("key", "params"),
+      ready: state("params", "cursor"),
+      more: state("key", "params", "cursor"),
+      failed: state("params", "message"),
+      stalled: state("params", "cursor", "message"),
     },
     events: {
-      load: event("key", "query"),
+      load: event("key", "params"),
       more: event("key"),
       loaded: event("key", "cursor"),
       failed: event("key", "message", "code"),
     },
     effects: {
-      fetch: event("key", "query", "cursor"),
+      fetch: event("key", "params", "cursor"),
       show: event("key", "append"),
       report: event("message"),
     },
@@ -117,8 +133,8 @@ export const REJECT = Object.freeze({
 function transition(current, input) {
   if (input.type === "load")
     return {
-      state: { name: "loading", key: input.key, query: input.query },
-      effects: [{ type: "fetch", key: input.key, query: input.query, cursor: null }],
+      state: { name: "loading", key: input.key, params: input.params },
+      effects: [{ type: "fetch", key: input.key, params: input.params, cursor: null }],
     };
   if (input.type === "more") {
     if (current.name === "idle") return reject(current, REJECT.nothingListed);
@@ -126,10 +142,10 @@ function transition(current, input) {
     if (current.name === "more") return reject(current, REJECT.loadingMore);
     if (current.name === "failed") return reject(current, REJECT.reload);
     if (current.cursor === null) return reject(current, REJECT.end);
-    const { query, cursor } = current;
+    const { params, cursor } = current;
     return {
-      state: { name: "more", key: input.key, query, cursor },
-      effects: [{ type: "fetch", key: input.key, query, cursor }],
+      state: { name: "more", key: input.key, params, cursor },
+      effects: [{ type: "fetch", key: input.key, params, cursor }],
     };
   }
   if (current.name !== "loading" && current.name !== "more") return reject(current, REJECT.idle);
@@ -137,18 +153,18 @@ function transition(current, input) {
   const append = current.name === "more";
   if (append && input.type === "failed" && input.code === INVALID_CURSOR)
     return {
-      state: { name: "loading", key: input.key, query: current.query },
-      effects: [{ type: "fetch", key: input.key, query: current.query, cursor: null }],
+      state: { name: "loading", key: input.key, params: current.params },
+      effects: [{ type: "fetch", key: input.key, params: current.params, cursor: null }],
     };
   if (input.type === "loaded")
     return {
-      state: { name: "ready", query: current.query, cursor: input.cursor },
+      state: { name: "ready", params: current.params, cursor: input.cursor },
       effects: [{ type: "show", key: input.key, append }],
     };
   return {
     state: append
-      ? { name: "stalled", query: current.query, cursor: current.cursor, message: input.message }
-      : { name: "failed", query: current.query, message: input.message },
+      ? { name: "stalled", params: current.params, cursor: current.cursor, message: input.message }
+      : { name: "failed", params: current.params, message: input.message },
     effects: [{ type: "report", message: input.message }],
   };
 }
