@@ -138,7 +138,8 @@ test("base node_index follows its native passage after an earlier paragraph is i
       attrs: {},
       isEmbed: false,
     });
-    A.splice(draft, textPath(f.id), 1, 0, "New introduction.");
+    // The new first paragraph is implicit, before the old one's new marker.
+    A.splice(draft, textPath(f.id), 0, 0, "New introduction.");
   });
   assert.equal(f.markdown(), "New introduction.\n\nFirst apple.\n\nSecond apple.\n\nTail.");
   const receipt = await documentMutation(f.context(args));

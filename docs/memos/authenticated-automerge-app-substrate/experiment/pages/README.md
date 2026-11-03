@@ -203,6 +203,17 @@ references; it does not publish the Page or change asset access.
   - Stored source, browser drafts and paste keep math and HTML as literal,
     editable text. Lossy source is literal text in full, so nothing is lost.
     Export escapes literal `$` and `<`, so a read is always writable.
+  - Export writes lists tight with `-` bullets. The native model doesn't
+    record blank lines between items, so a list reads back loose only when an
+    item holds a second block, which Markdown can't write tight.
+  - Markdown writes store the editor's form ([`pageSpans`](model/richtext.mjs)):
+    an implicit top-level first paragraph and immutable-string attrs. The
+    editor's first structural edit (Enter, a cross-block delete, a block
+    paste, a list toggle) in an agent-written block writes no history; plain
+    typing never rewrites a block.
+    [`markdown-projection.test.mjs`](model/markdown-projection.test.mjs)
+    checks every corpus case and lists the two disagreements left for the
+    shared encoder.
   - The scan masks code per table cell, as Markdown-it splits cells first,
     and recognizes a tag of any length, with `>` inside quoted values, in
     linear time.

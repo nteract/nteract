@@ -401,9 +401,10 @@ test("set_node names a container's first paragraph instead of a marker type", ()
 
 test("set_node updates markers in place and leaves every text mark alone", () => {
   const { doc, id } = fixture(
-    "Intro **bold** text\n\n```py\nx = 1\n```\n\n| a | *b* |\n| --- | --- |\n| 1 | 2 |",
+    "Lead\n\nIntro **bold** text\n\n```py\nx = 1\n```\n\n| a | *b* |\n| --- | --- |\n| 1 | 2 |",
   );
   const path = textPath(id);
+  // The first paragraph is implicit; "Intro" has its own marker to update.
   // A mark crossing a block marker, a stray mark on code text, and a mark
   // this build doesn't know: none may change on any text character. Marks on
   // the marker characters themselves carry no formatting; updateSpans drops
@@ -452,7 +453,13 @@ test("set_node updates markers in place and leaves every text mark alone", () =>
     .filter(([, type]) => type === "table-cell" || type === "table-header")
     .map(([at]) => at);
   for (const [op, expected] of [
-    [{ match_text: "Intro", heading_level: 2 }, [0]],
+    [
+      { match_text: "Intro", heading_level: 2 },
+      markerOffsets(marked)
+        .filter(([, type]) => type === "paragraph")
+        .map(([at]) => at)
+        .slice(0, 1),
+    ],
     [
       { match_text: "x = 1", language: "rust" },
       markerOffsets(marked)
@@ -520,12 +527,10 @@ test("format_match all skips a match that cuts a character", () => {
   assert.equal(md(after, id), "cafe\u0301 and **cafe**");
 });
 
-// The editor rewrites a whole block from encode(decode(spans)). If set_node
-// wrote a marker the editor would encode differently, the next keystroke in
-// the block would write history. Compare against the same rewrite of the
-// untouched import, which already drops the importer's explicit first
-// paragraph marker.
-test("an editor rewrite after set_node writes nothing set_node caused", () => {
+// The editor rewrites a whole block from encode(decode(spans)). If an import
+// or a set_node wrote a marker the editor would encode differently, the next
+// keystroke in the block would write history.
+test("an editor rewrite after an import or a set_node writes nothing", () => {
   const source =
     "Intro words\n\n- [ ] task\n\n```py\nx = 1\n```\n\n| a | b |\n| --- | ---: |\n| 1 | 2 |";
   const rewrite = (doc, id) => {
@@ -540,7 +545,7 @@ test("an editor rewrite after set_node writes nothing set_node caused", () => {
     ]);
   };
   const untouched = fixture(source);
-  const baseline = rewrite(untouched.doc, untouched.id);
+  assert.deepEqual(rewrite(untouched.doc, untouched.id), []);
   const key = JSON.stringify;
   for (const op of [
     { match_text: "Intro", heading_level: 3 },
@@ -552,10 +557,7 @@ test("an editor rewrite after set_node writes nothing set_node caused", () => {
   ]) {
     const { doc, id } = fixture(source);
     const { after } = apply(doc, [{ op: "set_node", block_id: id, ...op }]);
-    const extra = rewrite(after, id).filter(
-      (patch) => !baseline.some((b) => key(b) === key(patch)),
-    );
-    assert.deepEqual(extra, [], key(op));
+    assert.deepEqual(rewrite(after, id), [], key(op));
   }
   // The implicit first paragraph: a heading marker the editor keeps, and a
   // no-op that writes nothing at all.

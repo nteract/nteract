@@ -6,6 +6,7 @@ import {
   MATH_SYNTAX,
   adapter,
   exportMarkdown,
+  pageSpans,
   parseAgentMarkdown,
   parseMarkdown,
   richDoc,
@@ -34,8 +35,7 @@ const BODY = [
 ].join("\n");
 
 // Native content as stored: parsed Markdown after the Automerge span round trip.
-const nativeDoc = (markdown) =>
-  pmDocFromSpans(adapter, pmNodeToSpans(adapter, parseMarkdown(markdown)));
+const nativeDoc = (markdown) => pmDocFromSpans(adapter, pageSpans(parseMarkdown(markdown)));
 const kinds = (doc) => {
   const names = [];
   doc.descendants((node) => {

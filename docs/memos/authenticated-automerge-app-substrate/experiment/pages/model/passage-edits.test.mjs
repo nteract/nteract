@@ -109,9 +109,11 @@ test("unrelated edits in the same rich block preserve both contributions, marks 
 
 test("native cursors map a scoped node past an inserted paragraph without selecting duplicate text", () => {
   const { doc, id, heads } = fixture("apple\n\napple");
+  // A new first paragraph, as the editor writes one: the old first paragraph
+  // gets its own marker, and the new one is implicit before it.
   const current = A.change(A.clone(doc), (draft) => {
     A.splitBlock(draft, textPath(id), 0, paragraph());
-    A.splice(draft, textPath(id), 1, 0, "apple");
+    A.splice(draft, textPath(id), 0, 0, "apple");
   });
   const { after, plan } = edit(current, heads, [
     op(id, { match_text: "apple", replacement: "pear", node_index: 1 }),
@@ -286,7 +288,7 @@ const spansOf = (doc, id) =>
 test("format_match accepts an older read when its target is unchanged", () => {
   const { doc, id, heads } = fixture();
   // Someone types elsewhere in the same block after the agent read.
-  const moved = A.change(doc, (d) => A.splice(d, ["blocks", id, "richText"], 1, 0, "Edited: "));
+  const moved = A.change(doc, (d) => A.splice(d, ["blocks", id, "richText"], 0, 0, "Edited: "));
   const { after, plan } = edit(moved, heads, [
     fmt(id),
     op(id, { match_text: "Last", replacement: "Final" }),

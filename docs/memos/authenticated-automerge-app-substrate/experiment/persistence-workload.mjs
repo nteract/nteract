@@ -4,7 +4,20 @@ import * as A from "@automerge/automerge";
 import { recordBytes } from "@automerge/automerge-repo/sedimentree";
 import { extractRecords } from "@automerge/automerge-repo/sedimentree/automerge";
 import { selectionContext } from "./pages/model/comments.mjs";
-import { RICH_FORMAT, setRichMarkdown } from "./pages/model/richtext.mjs";
+import { RICH_FORMAT, adapterSpans, parseAgentMarkdown } from "./pages/model/richtext.mjs";
+import { updateSpansConfig } from "./pages/model/marks.mjs";
+import { stampSpans } from "./pages/model/schema-features.mjs";
+
+// The workload's history is a measured, deterministic corpus: its byte sizes
+// and change hashes decide where compaction cuts fragments, and its edits
+// address offsets in that layout. It writes the spans the ProseMirror adapter
+// produces, with an explicit first paragraph marker, independent of the form
+// Pages' own writers use.
+function setRichMarkdown(doc, id, source) {
+  const spans = adapterSpans(parseAgentMarkdown(source));
+  A.updateSpans(doc, ["blocks", id, "richText"], spans, updateSpansConfig);
+  stampSpans(doc, spans);
+}
 
 export const MiB = 1024 * 1024;
 export const actors = Object.freeze({

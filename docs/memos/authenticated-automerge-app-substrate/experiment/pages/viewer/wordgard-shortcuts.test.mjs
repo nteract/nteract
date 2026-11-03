@@ -321,7 +321,7 @@ test("* and + start a bulleted list at a paragraph start, as - does", () => {
       [["BulletList", [["ListItem", [["Paragraph", "note"]]]]]],
       prefix,
     );
-    assert.equal(f.markdownOf(), "* note", prefix);
+    assert.equal(f.markdownOf(), "- note", prefix);
     f.binding.destroy();
   }
 });

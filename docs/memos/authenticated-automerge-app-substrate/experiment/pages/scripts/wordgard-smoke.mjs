@@ -887,7 +887,7 @@ try {
     "one",
     "# two",
     "three",
-    "* starred",
+    "- starred",
   ].join("\n\n");
   await expect
     .poll(

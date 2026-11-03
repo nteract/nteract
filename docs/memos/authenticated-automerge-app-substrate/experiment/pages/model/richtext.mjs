@@ -629,6 +629,47 @@ export function quotableNodeType(type) {
   const name = String(type ?? "");
   return /^[a-z][a-z0-9-]{0,63}$/.test(name) ? name : null;
 }
+// Lists have no tight attribute: the native model doesn't record blank lines
+// between items. A list reads back tight unless an item holds more than one
+// block besides nested lists, which Markdown can only write loose.
+const LIST_TYPES = new Set(["bullet_list", "ordered_list", "task_list"]);
+const looseItem = (item) => {
+  let blocks = 0;
+  item.forEach((child) => {
+    if (!LIST_TYPES.has(child.type.name)) blocks++;
+  });
+  return blocks > 1;
+};
+// Markdown lets a list interrupt a paragraph only when its first item has
+// text, and an ordered one only when it starts at 1. Directly under a
+// paragraph, any other list reads as that paragraph's text (or turns it into a
+// setext heading), so it needs a blank line first.
+const cannotInterrupt = (list) => {
+  if (list.type.name === "ordered_list" && (list.attrs.order ?? 1) !== 1) return true;
+  const first = list.firstChild?.firstChild;
+  if (first?.type.name !== "paragraph") return false;
+  let text = false;
+  first.forEach((child) => {
+    text ||= child.isText && child.text.trim() !== "";
+    text ||= child.type.name !== "hard_break" && !child.isText;
+  });
+  return !text;
+};
+function renderList(state, node, delim, firstDelim) {
+  if (state.inTightList && state.closed?.type.name === "paragraph" && cannotInterrupt(node))
+    state.flushClose(2);
+  const tight = state.options.tightLists;
+  let loose = false;
+  node.forEach((item) => {
+    loose ||= looseItem(item);
+  });
+  state.options.tightLists = !loose;
+  try {
+    state.renderList(node, delim, firstDelim);
+  } finally {
+    state.options.tightLists = tight;
+  }
+}
 const serializer = new MarkdownSerializer(
   {
     ...defaultMarkdownSerializer.nodes,
@@ -664,10 +705,21 @@ const serializer = new MarkdownSerializer(
       }
       state.text(node.text, !state.inAutolink);
     },
+    bullet_list(state, node) {
+      renderList(state, node, "  ", () => "- ");
+    },
+    ordered_list(state, node) {
+      const start = node.attrs.order ?? 1;
+      const width = String(start + node.childCount - 1).length;
+      const space = " ".repeat(width + 2);
+      // Numbers aren't padded; continuation lines take the widest marker's
+      // indent, which stays inside every item.
+      renderList(state, node, space, (index) => `${start + index}. `);
+    },
     task_list(state, node) {
       // The Markdown list marker is '- '; '[x] ' belongs to the paragraph.
       // Six-space continuation would turn later paragraphs into code blocks.
-      state.renderList(node, "  ", (index) =>
+      renderList(state, node, "  ", (index) =>
         node.child(index).attrs.checked ? "- [x] " : "- [ ] ",
       );
     },
@@ -1547,16 +1599,57 @@ export function enableRich(doc, id) {
 // `literal: true` for stored source, which keeps them as text instead.
 export function setRichMarkdown(doc, id, source, { literal = false } = {}) {
   const tree = literal ? parseMarkdown(source) : parseAgentMarkdown(source);
-  const spans = pmNodeToSpans(adapter, tree);
+  const spans = pageSpans(tree);
   A.updateSpans(doc, textPath(id), spans, updateSpansConfig);
   stampSpans(doc, spans);
+}
+/** A Page block's spans for `tree`, in the form the editor writes: a
+ * top-level first paragraph has no marker when it has content or is the only
+ * node (encode's implicitAt in viewer/wordgard-model.mjs). The adapter always
+ * writes that marker, so the editor's first structural edit (Enter, a
+ * cross-block delete, a block paste, a list toggle) would otherwise delete
+ * it and write history. Two disagreements remain for the shared encoder: a
+ * quote whose first child isn't a paragraph, and some mark runs
+ * (markdown-projection.test.mjs lists them). */
+/** The spans the ProseMirror adapter writes for `tree`, before pageSpans
+ * puts them in the editor's form. Fixtures whose history must not move with
+ * Pages' writer form use these. */
+export const adapterSpans = (tree) => pmNodeToSpans(adapter, tree);
+export function pageSpans(tree) {
+  // String attrs are immutable strings, as encode writes them; the adapter
+  // writes an image's alt and title as text.
+  const spans = pmNodeToSpans(adapter, tree).map((span) =>
+    span.type === "block"
+      ? {
+          ...span,
+          value: {
+            ...span.value,
+            attrs: Object.fromEntries(
+              Object.entries(span.value.attrs ?? {}).map(([key, value]) => [
+                key,
+                typeof value === "string" ? new A.ImmutableString(value) : value,
+              ]),
+            ),
+          },
+        }
+      : span,
+  );
+  const [first, next] = spans;
+  const plainParagraph =
+    first?.type === "block" &&
+    String(first.value.type) === "paragraph" &&
+    !first.value.isEmbed &&
+    !first.value.parents?.length &&
+    !Object.keys(first.value.attrs ?? {}).length;
+  const content = !next || next.type === "text" || next.value?.isEmbed;
+  return plainParagraph && content ? spans.slice(1) : spans;
 }
 export function setRichImage(doc, id, { src, alt }) {
   // Construct the embed directly: alt text is content, never Markdown syntax.
   const tree = schema.node("doc", null, [
     schema.node("paragraph", null, [schema.node("image", { src, alt, title: null })]),
   ]);
-  const spans = pmNodeToSpans(adapter, tree);
+  const spans = pageSpans(tree);
   A.updateSpans(doc, textPath(id), spans, updateSpansConfig);
   stampSpans(doc, spans);
 }
