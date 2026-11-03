@@ -690,8 +690,8 @@ dataset_not_found (404), an image is 415.
 read_page shows a dataframe as a labeled link on its own line,
 [Dataframe: <title>](<src>), so you can see where it is. replace_block_markdown
 keeps a dataframe when that exact line is still in your Markdown, where the
-dataframe is stored: at the top level of the block, or in the same quote or list
-item. It refuses the rewrite with markdownless_node when the line is missing or
+dataframe is stored: at the top level of the block, or inside the same kind of
+quote or list item. It refuses the rewrite with markdownless_node when the line is missing or
 edited, appears more times than the block has dataframes with that line, moves
 into or out of a quote, list, table or heading, or reads like a dataframe the
 block doesn't hold. The line never creates or copies a dataframe: use
@@ -908,7 +908,9 @@ markdown_bytes, plus heading and level for a heading, and typed fields where the
 apply.
 ${typedReadFields()}
 node_index and node_range describe the returned heads and shift with edits;
-node_id is the one stable address.
+node_id lasts as long as the node's opening marker does. A replace_block_markdown
+rewrite diffs the block and can replace markers, so read the outline again after
+one before using an id.
 Pass those heads as expected_heads when using node_range or outline_offset > 0.
 A concurrent change returns read_revision_changed and a fresh outline; choose again.
 

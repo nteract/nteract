@@ -31,6 +31,7 @@ const flushing = (value, overrides) => ({
   ...fields({ latest: value, ...overrides }),
   value,
 });
+const queued = (overrides) => ({ name: "flushQueued", ...fields(overrides) });
 const stopped = (overrides) => ({ name: "stopped", ...fields(overrides) });
 const refused = (state) => ({ state, effects: [], rejected: "the Page host stopped" });
 
@@ -54,13 +55,10 @@ test("the content activity machine covers every state and event", async () => {
     },
     {
       case: "window-closed",
-      label: "the first change after a quiet window flushes at once",
+      label: "the first change after a quiet window queues a flush at once",
       state: idle({ latest: known, durable: known }),
       event: { type: "changed", now: T0 + 10_000 },
-      expect: {
-        state: flushing(later, { durable: known }),
-        effects: [{ type: "flush", value: later }],
-      },
+      expect: { state: queued({ latest: later, durable: known }), effects: [] },
     },
     {
       case: "window-open",
@@ -95,12 +93,60 @@ test("the content activity machine covers every state and event", async () => {
     },
     {
       case: "past-due",
-      label: "a change after a timer that never fired flushes",
+      label: "a change after a timer that never fired queues a flush",
       state: waiting(T0 + WINDOW, { latest: known, flushedAt: T0 }),
       event: { type: "changed", now: T0 + WINDOW + 5 },
       expect: {
-        state: flushing(iso(T0 + WINDOW + 5), { flushedAt: T0 }),
-        effects: [{ type: "flush", value: iso(T0 + WINDOW + 5) }],
+        state: queued({ latest: iso(T0 + WINDOW + 5), flushedAt: T0 }),
+        effects: [],
+      },
+    },
+    {
+      label: "a change while a flush is queued moves the newest time",
+      state: queued({ latest: known, durable: null }),
+      event: { type: "changed", now: T0 + 10_000 },
+      expect: { state: queued({ latest: later }), effects: [] },
+    },
+    {
+      label: "a live request starts a queued flush of the newest time",
+      state: queued({ latest: later, durable: known, flushedAt: T0 }),
+      event: { type: "start" },
+      expect: {
+        state: flushing(later, { durable: known, flushedAt: T0 }),
+        effects: [{ type: "flush", value: later }],
+      },
+    },
+    {
+      state: idle({ latest: known, durable: known }),
+      event: { type: "start" },
+      expect: {
+        state: idle({ latest: known, durable: known }),
+        effects: [],
+        rejected: "no flush is queued",
+      },
+    },
+    {
+      label: "a waiting time is started by its timer or a nudge, not by start",
+      state: waiting(T0 + WINDOW, { latest: later, durable: known, flushedAt: T0 }),
+      event: { type: "start" },
+      expect: {
+        state: waiting(T0 + WINDOW, { latest: later, durable: known, flushedAt: T0 }),
+        effects: [],
+        rejected: "no flush is queued",
+      },
+    },
+    {
+      state: flushing(known),
+      event: { type: "start" },
+      expect: { state: flushing(known), effects: [], rejected: "a flush is running" },
+    },
+    {
+      state: queued({ latest: later, durable: known }),
+      event: { type: "due", now: T0 + WINDOW },
+      expect: {
+        state: queued({ latest: later, durable: known }),
+        effects: [],
+        rejected: "a flush is queued",
       },
     },
     {
@@ -176,6 +222,7 @@ test("the content activity machine covers every state and event", async () => {
     ...[
       idle({ latest: known, durable: known }),
       waiting(T0 + WINDOW, { latest: later, durable: known, flushedAt: T0 }),
+      queued({ latest: later, durable: known }),
       flushing(later, { durable: known }),
     ].map((state) => ({
       label: `stopping from ${state.name} cancels the timer and anything deferred`,
@@ -193,6 +240,7 @@ test("the content activity machine covers every state and event", async () => {
     ...[
       { type: "restored", value: known, now: T0 },
       { type: "changed", now: T0 + WINDOW },
+      { type: "start" },
       { type: "due", now: T0 + WINDOW },
       { type: "flushed", now: T0 + 1 },
       { type: "failed", now: T0 + 1 },
@@ -334,7 +382,7 @@ test("a change observed outside a live request waits for one to run its effects"
   activity.changed();
   await settle();
   assert.equal(activity.value, iso(T0));
-  assert.equal(activity.state.name, "flushing");
+  assert.equal(activity.state.name, "flushQueued", "decided, but nothing runs yet");
   assert.equal(activity.pending, true);
   assert.deepEqual([storage.puts, reports.length, held.length], [0, 0, 0]);
   // The next request runs it.

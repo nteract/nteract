@@ -442,7 +442,21 @@ test("delete_node refuses to join the lists on either side into one", () => {
   refuses(
     doc,
     [{ op: "delete_node", block_id: id, node_id: rule }],
-    /would join the bullet-lists before and after this node into one list/,
+    /would join the bullet-list before this node and the bullet-list after it into one/,
+  );
+  // A quote whose first child is a list opens under its own marker; deleting
+  // the rule would reopen the quote above. Refused too.
+  const quoted = fixture("Intro\n\n> a\n\n---\n\n> - x");
+  refuses(
+    quoted.doc,
+    [
+      {
+        op: "delete_node",
+        block_id: quoted.id,
+        node_id: idOf(quoted.doc, quoted.id, "horizontal-rule"),
+      },
+    ],
+    /would join the blockquote before this node and the blockquote after it into one/,
   );
   // Different kinds of list stay separate, so that delete goes through.
   const mixed = fixture("Intro\n\n- a\n\n---\n\n1. b");
@@ -499,6 +513,38 @@ test("delete_node beside a peer typing into the same node merges into a valid tr
   const merged = A.merge(A.clone(deleted), typed);
   richDoc(merged.blocks[id], pageId).check();
   assert.ok(outline(merged, id).every((entry) => entry.node_id !== quote));
+  // The quote's own text is gone. The peer's new characters survive (a
+  // delete removes only what it saw) and join the end of the node before:
+  // the list's last item.
+  const markdown = blockMarkdown(merged.blocks[id]);
+  assert.doesNotMatch(markdown, /quoted/);
+  assert.match(markdown, /- two text\n/);
+  assert.equal(outline(merged, id).length, outline(deleted, id).length);
+});
+
+test("a list's id is its first item's marker, and goes when that marker does", () => {
+  const { doc, id } = fixture("Intro\n\n- one\n- two\n- three\n\n## After");
+  const list = idOf(doc, id, "bullet-list");
+  // An edit inside a later item keeps it.
+  const edited = patch(doc, [
+    { op: "replace_match", block_id: id, match_text: "three", replacement: "third" },
+  ]);
+  assert.equal(idOf(edited, id, "bullet-list"), list);
+  // The editor deleting the first item removes its marker and text, as a
+  // peer would.
+  const rewritten = A.change(A.clone(doc), (draft) => {
+    const text = draft.blocks[id].richText;
+    const from = text.indexOf("one") - 1;
+    A.splice(draft, textPath(id), from, text.indexOf("two") - 1 - from);
+  });
+  assert.match(blockMarkdown(rewritten.blocks[id]), /^Intro\n\n- two\n- three/);
+  const next = idOf(rewritten, id, "bullet-list");
+  assert.equal(typeof next, "string");
+  assert.notEqual(next, list);
+  assert.throws(
+    () => edit(rewritten, [{ op: "delete_node", block_id: id, node_id: list }]),
+    (error) => error.code === "node_not_found",
+  );
 });
 
 test("read_page_changes reports a block without node ids as a whole block", () => {

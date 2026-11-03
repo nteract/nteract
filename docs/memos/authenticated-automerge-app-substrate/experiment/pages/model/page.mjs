@@ -202,11 +202,12 @@ function applyEdit(doc, op, trace, context) {
     return deleteNode(doc, id, op, trace, context.opened);
   } else throw Error("Unsupported edit operation");
 }
-const LISTS = new Set(["bullet_list", "ordered_list", "task_list"]);
 /** Delete the top-level node `op.node_id` names: its marker through the next
  * node's marker, so its text, marks and children go with it and its
- * neighbours keep their identity. Refused when it would join the lists on
- * either side into one: a list has no marker of its own, so they'd merge.
+ * neighbours keep their identity. Refused when the block ends up with fewer
+ * than one node less: a list or quote has no marker of its own, so two alike
+ * on either side of the deleted node would join into one. (Deleting a
+ * block's only node leaves the one empty paragraph a block always has.)
  * A delete of the node that opens the block is recorded in `opened`; the
  * batch drops the next node's plain paragraph marker once it's done
  * (dropOpeningMarkers), so later deletes in the batch still find their ids. */
@@ -217,18 +218,20 @@ function deleteNode(doc, id, op, trace, opened) {
     });
   const { index, start, end } = resolveNodeId(doc, id, op.node_id);
   const tree = richDoc(doc.blocks[id], doc.page_id);
-  const before = index > 0 ? tree.child(index - 1).type.name : null;
-  const after = index + 1 < tree.childCount ? tree.child(index + 1).type.name : null;
-  if (before && before === after && LISTS.has(before))
-    throw Error(
-      `delete_node would join the ${agentType(before)}s before and after this node into one list. Delete one of the lists too, or rewrite the block with replace_block_markdown.`,
-    );
   const type = agentType(tree.child(index).type.name);
   A.splice(doc, textPath(id), start, end - start);
-  if (start === 0) opened.add(id);
   // Removing whole top-level nodes keeps the tree valid; check it anyway, so
   // a malformed result can never be committed.
-  richDoc(doc.blocks[id], doc.page_id).check();
+  const result = richDoc(doc.blocks[id], doc.page_id);
+  result.check();
+  if (result.childCount < tree.childCount - 1) {
+    const name = (offset) => agentType(tree.child(index + offset).type.name);
+    // Throwing aborts the whole change, the splice included.
+    throw Error(
+      `delete_node would join the ${name(-1)} before this node and the ${name(1)} after it into one. Delete one of them too, or rewrite the block with replace_block_markdown.`,
+    );
+  }
+  if (start === 0) opened.add(id);
   trace?.push({ type: "block", block_id: id });
   return { op: "delete_node", block_id: id, node_id: op.node_id, type };
 }

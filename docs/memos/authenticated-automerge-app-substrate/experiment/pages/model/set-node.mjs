@@ -192,8 +192,11 @@ export function setNode(doc, id, input, trace, { anchor } = {}) {
   const target = change.type ?? current;
   if (target !== current && !retypeTargets(current).includes(target))
     refuse(change.label ?? "type", retypeTargets(target));
-  // Attributes the target type keeps: a retype drops the old type's own.
-  const attrs = target === current ? { ...marker.value.attrs } : {};
+  // A retype drops the attributes the old type registers (a heading's level)
+  // and keeps the rest, including any a newer build wrote.
+  const attrs = { ...marker.value.attrs };
+  if (target !== current)
+    for (const stored of Object.keys(nodeType(current).attrs)) delete attrs[stored];
   // Column-scoped attributes, by stored name, written to every cell below.
   const column = {};
   for (const name of names) {

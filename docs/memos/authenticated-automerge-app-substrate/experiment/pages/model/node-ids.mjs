@@ -8,6 +8,11 @@
 // offset. It stops resolving once the marker is deleted, which is when the
 // node is gone (or retyped by a writer that replaces markers).
 //
+// A container (a list or quote) has no marker of its own: its id is the
+// marker of its first item or child, and changes when that one is deleted or
+// moved. A Markdown rewrite diffs the block and can replace markers, so it
+// can mint new ids.
+//
 // The block's implicit first paragraph has no marker, so it has no id
 // (null). Inline embeds (images, line breaks) are markers too, but they sit
 // inside a node and never open one.

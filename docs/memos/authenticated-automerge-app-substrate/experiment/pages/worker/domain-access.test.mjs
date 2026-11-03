@@ -546,3 +546,54 @@ test("opening a domain Page remembers only that reader's discovery entry, never 
   assert.equal(calls[0].body.shared, true);
   assert.deepEqual(page.metadata.acl.members, {});
 });
+
+test("a domain reader's row is reported again when the Page's content moved since its last report", async () => {
+  const doc = metadata(),
+    reports = [],
+    projections = [],
+    pending = [];
+  const page = Object.assign(Object.create(Page.prototype), {
+    metadata: { ...doc, pageId: "test-page" },
+    handle: { doc: () => ({ title: "Shared by domain" }) },
+    cachedTitle: "Shared by domain",
+    contentActivity: { value: null },
+    ctx: { waitUntil: (promise) => pending.push(promise) },
+    env: {
+      PAGES_CATALOG_INDEX: "1",
+      DB: { prepare() {}, batch() {} },
+      CATALOGS: {
+        getByName(principal) {
+          return {
+            async fetch(request) {
+              projections.push({ principal, body: await request.json() });
+              return new Response(null);
+            },
+          };
+        },
+      },
+    },
+    reportIndex: async (details) => reports.push(details),
+  });
+  const open = async () => {
+    page.cacheTitle({
+      ...employee,
+      expiresAt: Date.now() + 60_000,
+      domainAccess: { ...lease, expiresAt: Date.now() + 60_000 },
+    });
+    await Promise.all(pending.splice(0));
+  };
+  await open();
+  await open();
+  assert.equal(reports.length, 1, "once per host life while nothing changed");
+  assert.equal(reports[0].readerOnly, true);
+  assert.equal(reports[0].reader.principal, employee.principal);
+  assert.equal(reports[0].keepTime, false);
+  page.contentActivity.value = "2026-11-03T12:00:00.000Z";
+  await open();
+  await open();
+  assert.equal(reports.length, 2, "again once the content time moved past the last report");
+  assert.equal(reports[1].contentUpdatedAt, "2026-11-03T12:00:00.000Z");
+  // A reader's open is its discovery: its projection carries no keep_time.
+  assert.equal(projections.length, 4);
+  for (const { body } of projections) assert.equal(body.keep_time, undefined);
+});
