@@ -122,34 +122,53 @@ function indexNodes(doc) {
   return { nodes, trees };
 }
 
-/** Typed attributes of a top-level node that its Markdown only implies, named
- * as set_node takes them, or null. A heading's level is its own field. Lists
- * and tables report their direct items and columns; nested lists read as
- * their own Markdown. */
-export function nodeAttrs(node) {
+/** The most task states an outline entry lists. One entry can't be split
+ * across outline pages, so its size stays bounded; the change feed, which
+ * already carries the node's Markdown, lists them all. */
+export const OUTLINE_MAX_CHECKED = 200;
+
+/** Typed attributes of a top-level node that its Markdown only implies, or
+ * null. `language` and the table's `align` are the values set_node writes. A
+ * heading's level is its own field. Lists and tables report their direct
+ * items and columns; nested lists read as their own Markdown. `maxChecked`
+ * bounds a task list's `checked` array. */
+export function nodeAttrs(node, { maxChecked = Infinity } = {}) {
   switch (node.type.name) {
     case "code_block":
       return { language: String(node.attrs.params ?? "") };
     case "task_list": {
       const checked = [];
       node.forEach((item) => checked.push(item.attrs.checked === true));
-      return { checked };
+      const count = checked.filter(Boolean).length;
+      return checked.length > maxChecked
+        ? {
+            items: checked.length,
+            checked_count: count,
+            checked: checked.slice(0, maxChecked),
+            checked_truncated: true,
+          }
+        : { items: checked.length, checked_count: count, checked };
     }
     case "table": {
-      const header = node.firstChild;
-      const align = [];
-      header?.forEach((cell) => align.push(cell.attrs.align ?? null));
-      return { rows: node.childCount, columns: align.length, align };
+      // As wide as its widest row, like its Markdown; a concurrent structural
+      // edit can leave rows ragged. Alignment comes from the first row.
+      let columns = 0;
+      node.forEach((row) => (columns = Math.max(columns, row.childCount)));
+      const align = Array.from({ length: columns }, () => null);
+      node.firstChild?.forEach((cell, _offset, index) => (align[index] = cell.attrs.align ?? null));
+      return { rows: node.childCount, columns, align };
     }
     case "unknownBlock":
-      return { node_type: quotableNodeType(node.attrs.unknownBlock?.type) };
+      return {
+        node_type: quotableNodeType(node.attrs.unknownBlock?.type ?? node.attrs.unknownParentBlock),
+      };
     default:
       return null;
   }
 }
 
 function outlineEntry(entry) {
-  const attrs = nodeAttrs(entry.node);
+  const attrs = nodeAttrs(entry.node, { maxChecked: OUTLINE_MAX_CHECKED });
   return {
     block_id: entry.blockId,
     node_index: entry.nodeIndex,

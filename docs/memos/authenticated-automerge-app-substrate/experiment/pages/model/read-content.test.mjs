@@ -387,7 +387,7 @@ test("outline entries carry the typed attributes Markdown only implies", async (
       ["code_block", { language: "python" }],
       ["code_block", { language: "" }],
       // Direct items only; the nested task list reads as its own Markdown.
-      ["task_list", { checked: [true, false] }],
+      ["task_list", { items: 2, checked_count: 1, checked: [true, false] }],
       ["bullet_list", null],
       ["table", { rows: 3, columns: 3, align: ["left", "center", null] }],
     ],
@@ -413,7 +413,59 @@ test("outline entries carry the typed attributes Markdown only implies", async (
     changed.map((change) => [change.type, change.attrs]),
     [
       ["code_block", { language: "mermaid" }],
-      ["task_list", { checked: [true, true] }],
+      ["task_list", { items: 2, checked_count: 2, checked: [true, true] }],
     ],
   );
+});
+
+test("outline attrs bound task states, cover ragged tables and name unknown parents", async () => {
+  const { createPageData, initializePage, orderedBlockIds } = await import("./page.mjs");
+  const { textPath } = await import("./richtext.mjs");
+  const { OUTLINE_MAX_CHECKED } = await import("./read-content.mjs");
+  const S = (value) => new A.ImmutableString(value);
+  const tasks = Array.from(
+    { length: OUTLINE_MAX_CHECKED + 5 },
+    (_, i) => `- [${i % 2 ? "x" : " "}] t${i}`,
+  );
+  let doc = A.from(createPageData({ pageId: "outline_bounds", title: "Bounds" }));
+  doc = A.change(doc, (draft) =>
+    initializePage(
+      draft,
+      `Before\n\nAfter\n\n${tasks.join("\n")}\n\n| a | b |\n| :-- | --- |\n| 1 | 2 |`,
+    ),
+  );
+  const id = orderedBlockIds(doc)[0],
+    path = textPath(id);
+  doc = A.change(doc, (draft) => {
+    // A paragraph inside a container a newer build added.
+    A.splitBlock(draft, path, draft.blocks[id].richText.indexOf("After") - 1, {
+      type: S("paragraph"),
+      parents: [S("callout")],
+      attrs: {},
+      isEmbed: false,
+    });
+    // A ragged last row, as a concurrent structural edit can leave one.
+    const end = draft.blocks[id].richText.length;
+    A.splitBlock(draft, path, end, {
+      type: S("table-cell"),
+      parents: [S("table"), S("table-row")],
+      attrs: {},
+      isEmbed: false,
+    });
+    A.splice(draft, path, end + 1, 0, "3");
+  });
+  const outline = projectReadContent(doc, {}).outline;
+  assert.deepEqual(outline.find((entry) => entry.type === "unknownBlock").attrs, {
+    node_type: "callout",
+  });
+  const list = outline.find((entry) => entry.type === "task_list").attrs;
+  assert.equal(list.items, OUTLINE_MAX_CHECKED + 5);
+  assert.equal(list.checked_count, Math.floor((OUTLINE_MAX_CHECKED + 5) / 2));
+  assert.equal(list.checked.length, OUTLINE_MAX_CHECKED);
+  assert.equal(list.checked_truncated, true);
+  assert.deepEqual(outline.find((entry) => entry.type === "table").attrs, {
+    rows: 2,
+    columns: 3,
+    align: ["left", null, null],
+  });
 });
