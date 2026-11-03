@@ -1,0 +1,80 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import featureFile from "./features.json" with { type: "json" };
+import { MARK_REGISTRY } from "./marks.mjs";
+import {
+  BLOCK_SYNTAX,
+  MARK_SYNTAX,
+  checkCoverage,
+  markdownSyntax,
+  richContentGuide,
+  richContentInstructions,
+} from "./rich-content-guide.mjs";
+import { CODE_LANGUAGES } from "../shared/code-languages.mjs";
+import { tools } from "../mcp.mjs";
+import { agentGuide } from "../agent-guide.mjs";
+
+test("a new mark or feature block can't ship without agent syntax", () => {
+  assert.doesNotThrow(() => checkCoverage());
+  const marks = {
+    ...MARK_REGISTRY,
+    marks: [...MARK_REGISTRY.marks, { name: "underline", value: { type: "flag" } }],
+  };
+  assert.throws(() => checkCoverage(marks), /No agent syntax for marks: underline/);
+  const features = {
+    ...featureFile,
+    features: [...featureFile.features, { id: "callout", description: "x", blocks: ["callout"] }],
+  };
+  assert.throws(
+    () => checkCoverage(MARK_REGISTRY, features),
+    /No agent syntax for blocks: callout/,
+  );
+});
+
+const editOps = ["format_match", "occurrence", "all:true", "replacement_markdown", "set_node"];
+
+test("every surface an MCP agent reads names the rich content people get", () => {
+  const syntax = [...Object.values(MARK_SYNTAX), ...BLOCK_SYNTAX.map(([, text]) => text)];
+  const markdown = tools.find((tool) => tool.name === "create_page").inputSchema.properties.markdown
+    .description;
+  const instructions = richContentInstructions("https://pages.example");
+  for (const [name, text] of [
+    ["create_page markdown", markdown],
+    ["server instructions", instructions],
+  ]) {
+    for (const piece of syntax) assert.ok(text.includes(piece), `${name} lacks ${piece}`);
+    assert.match(text, /```mermaid code block renders as a diagram/, name);
+    assert.match(text, /unsupported_markdown/, name);
+  }
+  for (const op of editOps) assert.ok(instructions.includes(op), `instructions lack ${op}`);
+  assert.ok(instructions.endsWith("https://pages.example/llms.txt."));
+  assert.equal(markdown.includes(markdownSyntax()), true);
+});
+
+test("patch_page advertises set_node, occurrence, all and replacement_markdown", () => {
+  const patch = tools.find((tool) => tool.name === "patch_page");
+  const [replace, format, setNode] = patch.inputSchema.properties.operations.items.oneOf;
+  assert.deepEqual(
+    [replace, format, setNode].map((op) => op.properties.op.const),
+    ["replace_match", "format_match", "set_node"],
+  );
+  assert.ok(replace.properties.replacement_markdown);
+  assert.deepEqual(replace.required, ["op", "block_id", "match_text"]);
+  for (const op of [replace, format, setNode]) assert.ok(op.properties.occurrence);
+  assert.deepEqual(format.properties.all, { ...format.properties.all, const: true });
+  assert.deepEqual(Object.keys(setNode.properties).slice(-4), [
+    "checked",
+    "language",
+    "heading_level",
+    "align",
+  ]);
+  assert.match(patch.description, /set_node/);
+});
+
+test("/llms.txt has the rich content section with the language menu", () => {
+  const guide = agentGuide({ NOTEBOOK_CLOUD_PUBLIC_ORIGIN: "https://pages.example" });
+  assert.ok(guide.includes(richContentGuide()));
+  for (const language of CODE_LANGUAGES) assert.ok(guide.includes(language), language);
+  for (const op of editOps) assert.ok(guide.includes(op), op);
+  assert.match(guide, /"op": "set_node".*"checked": true/);
+});

@@ -23,23 +23,8 @@ import { RangeSet } from "wordgard/set";
 import { GardState } from "wordgard/state";
 import { CodeBlock, CodeBlockLanguage, LineBreak } from "wordgard/types";
 
-// The code block language menu. Each highlights through code-highlight.mjs
-// except Mermaid (a diagram) and Markdown, which stay plain.
-export const CODE_LANGUAGES = Object.freeze([
-  "Mermaid",
-  "Bash",
-  "CSS",
-  "HTML",
-  "JavaScript",
-  "JSON",
-  "Markdown",
-  "Python",
-  "R",
-  "Rust",
-  "SQL",
-  "TypeScript",
-  "YAML",
-]);
+// The code block language menu lives in shared/ so agent guidance lists it too.
+export { CODE_LANGUAGES } from "../shared/code-languages.mjs";
 export const HIGHLIGHT_LANGUAGES = Object.freeze([
   CSS,
   Go,

@@ -4,6 +4,7 @@ import { Elt } from "wordgard/doc";
 import { CodeBlock, CodeBlockLanguage } from "./wordgard-model.mjs";
 import { mermaidTitle } from "./mermaid-title.mjs";
 import { diagramIcon } from "./diagram-icons.mjs";
+import { isDiagramLanguage } from "../shared/code-languages.mjs";
 import { openDiagramViewer } from "./diagram-viewer.mjs";
 
 // The renderer is a separate content-hashed file (scripts/browser-mermaid.mjs).
@@ -19,7 +20,7 @@ export function onRendererUnavailable(listener) {
 const mounted = new WeakMap();
 let diagramId = 0;
 const isMermaid = (node) =>
-  node?.type === CodeBlock.type && node.mark(CodeBlockLanguage)?.trim().toLowerCase() === "mermaid";
+  node?.type === CodeBlock.type && isDiagramLanguage(node.mark(CodeBlockLanguage));
 const codeSource = (node) =>
   node.content.map((child) => (child.isText ? String(child.param) : "\n")).join("");
 

@@ -1337,6 +1337,35 @@ export function parseAgentMarkdown(source) {
   }
   return doc;
 }
+
+const inlineOnly = () =>
+  Object.assign(
+    Error(
+      'replacement_markdown must be inline Markdown on one line: text, **bold**, *italic*, ~~strike~~, `code`, [links](url) and <mark data-color="…">highlights</mark>. Escape a leading #, >, -, *, +, 1. or ``` with a backslash.',
+    ),
+    { status: 400, code: "invalid_edit_selector" },
+  );
+/** One line of inline Markdown an agent wrote, as text runs with their stored
+ * mark values: `[{ text, marks }]`. Blocks, images and line breaks are
+ * refused. Markdown trims a paragraph's outer whitespace, so leading and
+ * trailing spaces and tabs are kept as plain text outside the parse. */
+export function parseInlineMarkdown(source) {
+  if (/[\r\n]/.test(source)) throw inlineOnly();
+  const lead = /^[ \t]*/.exec(source)[0];
+  const trail = /[ \t]*$/.exec(source.slice(lead.length))[0];
+  const middle = source.slice(lead.length, source.length - trail.length);
+  const runs = lead ? [{ text: lead, marks: {} }] : [];
+  if (middle) {
+    const tree = parseAgentMarkdown(middle);
+    if (tree.childCount !== 1 || tree.firstChild.type.name !== "paragraph") throw inlineOnly();
+    for (const span of pmNodeToSpans(adapter, tree)) {
+      if (span.type !== "text") throw inlineOnly();
+      runs.push({ text: span.value, marks: { ...span.marks } });
+    }
+  }
+  if (trail) runs.push({ text: trail, marks: {} });
+  return runs;
+}
 // The parser over tokens this module already read, so one import tokenizes
 // its source once. Synchronous: nothing else can use the parser meanwhile.
 function parseTokens(tokens) {

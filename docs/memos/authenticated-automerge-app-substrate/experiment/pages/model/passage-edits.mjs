@@ -1,28 +1,33 @@
 import * as A from "@automerge/automerge/slim";
 import {
   findUniqueVisibleRange,
-  formatMarks,
+  locateRange,
+  formatChanges,
   formatMatch,
-  replacementLiteral,
+  replacementOf,
   replaceMatch,
   visibleRangeAddress,
 } from "./replace-match.mjs";
+import { nodeChange, setNode } from "./set-node.mjs";
 
-// Operations a target-scoped batch may contain. Both find one literal range
-// the same way; replace_match changes its text, format_match its marks.
-const PASSAGE_OPS = new Set(["replace_match", "format_match"]);
-const applyPassage = (doc, input) =>
+// Operations a target-scoped batch may contain. Each finds one literal range
+// the same way; replace_match changes its text, format_match its marks and
+// set_node the attributes of the node that holds it.
+const PASSAGE_OPS = new Set(["replace_match", "format_match", "set_node"]);
+const applyPassage = (doc, input, context) =>
   input.op === "format_match"
-    ? formatMatch(doc, input.block_id, input)
-    : replaceMatch(doc, input.block_id, input);
-// The same input checks format_match makes, raised before any guard work.
-function validateFormat(input) {
-  formatMarks(input.add);
-  const remove = input.remove ?? [];
-  if (!Array.isArray(remove) || remove.some((name) => typeof name !== "string"))
-    throw Error("remove must be a list of mark names");
-  if (!Object.keys(input.add ?? {}).length && !remove.length)
-    throw Error("format_match requires add or remove");
+    ? formatMatch(doc, input.block_id, input, undefined, context)
+    : input.op === "set_node"
+      ? setNode(doc, input.block_id, input, undefined, context)
+      : replaceMatch(doc, input.block_id, input, undefined, context);
+// The same input checks each operation makes, raised before any guard work.
+// A target is one captured passage, so all (every match) is page-scoped only.
+function validatePassage(input) {
+  if (input.all !== undefined)
+    throw Error("all addresses every match, so it needs conflict_scope page");
+  if (input.op === "format_match") formatChanges(input);
+  else if (input.op === "set_node") nodeChange(input);
+  else replacementOf(input);
 }
 
 const invalid = (message) => {
@@ -109,7 +114,7 @@ function remapTarget(target, patches, conflict) {
   return { start, end };
 }
 
-/** Prepare an explicitly target-scoped batch of replace_match and format_match
+/** Prepare an explicitly target-scoped batch of replace_match, format_match and set_node
  * operations against a
  * captured current snapshot. Text identity, current formatting and structure
  * must still match the historical target. Toggled-back identical formatting is
@@ -144,7 +149,7 @@ export function guardPassageEdits(current, baseHeads, operations) {
     )
   )
     invalid(
-      "Target-scoped edits require 1 to 100 replace_match or format_match operations with block_id",
+      "Target-scoped edits require 1 to 100 replace_match, format_match or set_node operations with block_id",
     );
   if (!A.hasHeads(current, baseHeads))
     throw Object.assign(Error("The base revision is unavailable; read the Page again"), {
@@ -178,11 +183,13 @@ export function guardPassageEdits(current, baseHeads, operations) {
       let range;
       let address;
       try {
-        if (input.op === "format_match") validateFormat(input);
-        else replacementLiteral(input.replacement, "replacement");
+        validatePassage(input);
         range = findUniqueVisibleRange(base, id, input);
         address = visibleRangeAddress(base, id, range.start, range.end);
       } catch (error) {
+        // A refusal with its own code (unsupported_markdown from
+        // replacement_markdown) keeps it, as in page scope.
+        if (error.status) throw error;
         invalid(error.message);
       }
       const target = {
@@ -233,9 +240,14 @@ export function guardPassageEdits(current, baseHeads, operations) {
       if (found.start !== start || found.end !== end) conflict(target, "target_changed_identity");
       return { ...target, effective, currentStart: start, currentEnd: end };
     });
+    // set_node changes no text, so it may share its passage with another
+    // operation ("check this task and strike it"). The dry run below still
+    // refuses a batch whose earlier operation retargets a later one.
     for (let i = 0; i < targets.length; i++)
       for (let j = i + 1; j < targets.length; j++)
         if (
+          targets[i].input.op !== "set_node" &&
+          targets[j].input.op !== "set_node" &&
           targets[i].input.block_id === targets[j].input.block_id &&
           targets[i].start < targets[j].end &&
           targets[j].start < targets[i].end
@@ -249,10 +261,17 @@ export function guardPassageEdits(current, baseHeads, operations) {
     let checked;
     try {
       checked = A.change(clone, (draft) => {
+        const budget = { writes: 0 };
         for (const target of targets) {
+          // An occurrence names a match in the batch's starting snapshot, as
+          // in page scope: follow the captured characters, never recount.
+          const anchor =
+            target.effective.occurrence === undefined
+              ? undefined
+              : { path: target.path, first: target.first, last: target.last };
           let range;
           try {
-            range = findUniqueVisibleRange(draft, target.input.block_id, target.effective);
+            range = locateRange(draft, target.input.block_id, target.effective, anchor);
           } catch {
             conflict(target, "batch_changes_target_resolution");
           }
@@ -263,7 +282,7 @@ export function guardPassageEdits(current, baseHeads, operations) {
           )
             conflict(target, "batch_changes_target_resolution");
           try {
-            applyPassage(draft, target.effective);
+            applyPassage(draft, target.effective, { anchor, budget });
           } catch (error) {
             // A rule the operation enforces on the text it found, such as
             // format_match refusing code text: the caller's request, not a race.

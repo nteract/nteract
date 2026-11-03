@@ -4,7 +4,8 @@ import { imageAssetUrl, validAssetId } from "../shared/image-assets.mjs";
 import { projectComments } from "./comments.mjs";
 import { COMMENTS_FEATURE } from "./comments-doc.mjs";
 import { orderedBlockIds, positionForInsertion } from "./order.mjs";
-import { formatMatch, replaceMatch } from "./replace-match.mjs";
+import { anchorOccurrence, formatMatch, replaceMatch } from "./replace-match.mjs";
+import { setNode } from "./set-node.mjs";
 import { stampFeatures } from "./schema-features.mjs";
 export { orderedBlockIds } from "./order.mjs";
 const block = (id = crypto.randomUUID(), position = positionForInsertion()) => ({
@@ -55,9 +56,10 @@ export function validateImageInsertion(op) {
       "insert_image requires an uploaded asset_id, alt text (up to 2048 characters), and optional after_block_id",
     );
 }
+const PASSAGE_OPS = new Set(["replace_match", "format_match", "set_node"]);
 // `trace` records where each operation landed, for agent presence. It never
 // enters the result, so stored receipts and retries are unchanged.
-function applyEdit(doc, op, trace) {
+function applyEdit(doc, op, trace, context) {
   const id = op.block_id ?? op.id;
   if (op.op === "set_title") {
     A.updateText(doc, ["title"], String(op.title).slice(0, 1024));
@@ -92,8 +94,9 @@ function applyEdit(doc, op, trace) {
     trace?.push({ type: "block", block_id: id });
     return;
   }
-  if (op.op === "replace_match") return replaceMatch(doc, id, op, trace);
-  if (op.op === "format_match") return formatMatch(doc, id, op, trace);
+  if (op.op === "replace_match") return replaceMatch(doc, id, op, trace, context);
+  if (op.op === "format_match") return formatMatch(doc, id, op, trace, context);
+  if (op.op === "set_node") return setNode(doc, id, op, trace, context);
   if (op.op === "replace_block_markdown") {
     setRichMarkdown(doc, id, String(op.markdown ?? ""));
     trace?.push({ type: "block", block_id: id });
@@ -113,10 +116,20 @@ function applyOperation(doc, { operation, arguments: args = {}, trace }) {
     throw Error("Unsupported Page operation");
   if (!Array.isArray(args.operations) || args.operations.length > 100)
     throw Error("Provide up to 100 operations");
+  const operations = args.operations.map((op) => ({ ...op, op: op.op ?? op.type }));
+  // Every occurrence names a match in the batch's starting snapshot, the one
+  // the caller read. Resolve them all before any operation runs.
+  const anchors = operations.map((op) => {
+    if (!PASSAGE_OPS.has(op.op) || op.occurrence === undefined) return undefined;
+    const id = op.block_id ?? op.id;
+    if (!Object.hasOwn(doc.blocks, id)) throw Error("Block not found");
+    return anchorOccurrence(doc, id, op);
+  });
+  const budget = { writes: 0 };
   const edits = [],
     inserted_images = [];
-  for (const op of args.operations) {
-    const edit = applyEdit(doc, { ...op, op: op.op ?? op.type }, trace);
+  for (const [index, op] of operations.entries()) {
+    const edit = applyEdit(doc, op, trace, { anchor: anchors[index], budget });
     if (edit?.op === "insert_image") {
       const { op: _op, ...image } = edit;
       inserted_images.push(image);

@@ -546,7 +546,7 @@ test("MCP advertises visible-text replacement separately from Markdown replaceme
   const variants = patch.inputSchema.properties.operations.items.oneOf;
   assert.deepEqual(
     variants.map((operation) => operation.properties.op.const),
-    ["replace_match", "format_match"],
+    ["replace_match", "format_match", "set_node"],
   );
   assert.deepEqual(variants[1].required, ["op", "block_id", "match_text"]);
   assert.deepEqual(variants[1].properties.remove.items.enum, [
@@ -559,7 +559,10 @@ test("MCP advertises visible-text replacement separately from Markdown replaceme
   ]);
   assert.equal(variants[1].properties.add.properties.strong.const, true);
   assert.equal(variants[1].properties.add.properties.strike.const, true);
-  assert.deepEqual(variants[0].required, ["op", "block_id", "match_text", "replacement"]);
+  // replacement or replacement_markdown: exactly one, checked when the edit runs.
+  assert.deepEqual(variants[0].required, ["op", "block_id", "match_text"]);
+  assert.equal(variants[0].properties.replacement.type, "string");
+  assert.equal(variants[0].properties.replacement_markdown.type, "string");
   assert.equal(variants[0].properties.context_before.type, "string");
   assert.equal(variants[0].properties.context_after.type, "string");
   assert.match(patch.description, /without streamed keystrokes/);

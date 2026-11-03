@@ -219,8 +219,15 @@ references; it does not publish the Page or change asset access.
   the Wordgard binding, Markdown import/export, and the MCP `format_match`
   schema read it. Readers keep marks they don't know: they render as
   plain text and survive edits. Agents edit existing text through
-  `replace_match` and `format_match`, which work on native spans; Markdown is
-  for reading and for writing whole blocks.
+  `replace_match`, `format_match` and `set_node`, which work on native spans
+  and block markers; Markdown is for reading, for writing whole blocks, and
+  for `replacement_markdown`'s inline formatting.
+- **Agent guidance:** [`model/rich-content-guide.mjs`](model/rich-content-guide.mjs)
+  writes the rich-content paragraph in the MCP server instructions, the
+  `markdown` parameter description and `/llms.txt` from `marks.json`,
+  `features.json` and [`shared/code-languages.mjs`](shared/code-languages.mjs).
+  Importing it throws when a mark or feature block has no agent syntax, so a
+  new one can't reach people without reaching agents.
 - **Preserved blocks:** older builds stored Markdown they couldn't import as one
   read-only `pages-opaque` block holding its source. The Page host replaces
   each with what its source imports as today, in
@@ -1457,7 +1464,8 @@ consuming a successful response or resynchronizing with focused reads.
 Mutations require an idempotency key; content edits, comment adds and deletion
 also require observed `base_heads`. The default
 `conflict_scope:"page"` requires exact current heads. `patch_page` can use
-`conflict_scope:"target"` for batches of only `replace_match` and `format_match`:
+`conflict_scope:"target"` for batches of only `replace_match`, `format_match`
+and `set_node`, without `all`:
 native identity maps
 historical literal ranges into current text, checking text, marks, and structure.
 Optional `node_index` narrows the match at the base revision. Unrelated edits,
@@ -1496,6 +1504,43 @@ ranges as offsets into `match_text`, capped at 32 ranges (`ranges_truncated`),
 so the caller can reapply them with `format_match`. A partial mark none of
 whose words changed still covers them and is not reported. The agent caret
 covers the changed words.
+
+`replace_match` can take `replacement_markdown` instead of `replacement`: one
+line of inline Markdown ([`parseInlineMarkdown`](model/richtext.mjs)). The
+plain text goes through the same word diff, then the replaced range gets
+exactly the written marks plus marks that covered the whole match; other
+known marks are cleared from it and unknown ones kept. Written formatting is
+explicit, so no `marks_dropped` warning is reported. Leading and trailing
+spaces are kept outside the parse, since Markdown trims a paragraph.
+
+Every passage operation takes a one-based `occurrence`, counted among the
+matches context and `node_index` allow in the batch's starting snapshot.
+[`applyOperation`](model/page.mjs) captures each one as cursors before any
+operation runs, and the target-scope dry run follows the same cursors, so both
+scopes agree. An occurrence an earlier operation changed is refused.
+`format_match` also takes `all: true`: every non-overlapping match in the
+block, at most 1,000, with matches in code blocks skipped and counted in
+`skipped_in_code`. A batch writes formatting on at most 2,000 ranges, counting
+each mark and each `replacement_markdown` run, refused before any mark is
+written. `set_node` is experimental: its four flat fields predate the typed
+node registry, and its receipt carries only `matched` and, for `align`,
+`cells`.
+
+[`set_node`](model/set-node.mjs) changes the node that holds `match_text`:
+`checked` on a task item, `language` on a code block, `heading_level` on a
+paragraph or heading (0 for a paragraph) or `align` on a table column. It
+rewrites the governing block marker through `updateSpans`, which updates the
+marker's attributes in place, as the editor does: the marker, its text and
+its comment anchors keep their identity. Marks on text characters are unchanged;
+marks on marker characters, which format nothing, are dropped, as every editor
+keystroke in the block already does. The implicit first paragraph gets an
+explicit marker first, as the editor does; two writers converting it at once
+each insert one and leave an empty paragraph, which target scope refuses
+through its ancestry check. Inline embeds (hard breaks, images) govern no text.
+A container's first paragraph has no marker of its own, so `heading_level` on
+it names the quote or list item and is refused. In target scope a concurrent
+change to the node's attributes is a `target_structure_changed` conflict, and a
+`set_node` may share its passage with another operation.
 
 ### Refusal codes and tool hints
 
