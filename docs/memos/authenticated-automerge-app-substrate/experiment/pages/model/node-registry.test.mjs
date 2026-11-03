@@ -8,6 +8,7 @@ import featureFile from "./features.json" with { type: "json" };
 import {
   ALIGNMENTS,
   INSERT_OPERATIONS,
+  insertOperation,
   NODE_TYPES,
   TEXT_CONTAINERS,
   isKnownBlock,
@@ -16,7 +17,7 @@ import {
   validHeadingLevel,
 } from "./node-registry.mjs";
 import { adapter, schema } from "./richtext.mjs";
-import { decode } from "../viewer/wordgard-model.mjs";
+import { PagesUnknownBlock, PagesUnknownEmbed, decode, encode } from "../viewer/wordgard-model.mjs";
 import { insertedAssets } from "./page.mjs";
 
 test("every adapter block mapping has exactly one registry entry, and back", () => {
@@ -40,10 +41,7 @@ test("each entry's ProseMirror node, wrapper and kind match the schema", () => {
       assert.ok(!node.contentMatch.matchType(schema.nodes.paragraph), type.block);
     }
     for (const name of Object.keys(type.attrs))
-      assert.ok(
-        name in (node.spec.attrs ?? {}) || type.block === "code-block",
-        `${type.block}.${name}`,
-      );
+      assert.ok(name in (node.spec.attrs ?? {}), `${type.block}.${name}`);
   }
 });
 
@@ -133,9 +131,23 @@ test("the Wordgard model draws every block type as a known node", () => {
     assert.equal(decoded.lossy, false, type.block);
     let unknown = false;
     decoded.doc.iterate((node) => {
-      unknown ||= /Unknown/.test(node.type.name ?? "");
+      unknown ||= node.type === PagesUnknownBlock || node.type === PagesUnknownEmbed;
     });
     assert.equal(unknown, false, type.block);
+    // The editor's rewrite keeps the node, and a second rewrite writes
+    // nothing. (The first may drop an explicit first paragraph marker,
+    // which the editor leaves implicit.)
+    const rewrite = (doc) =>
+      A.change(A.clone(doc), (d) => A.updateSpans(d, ["t"], encode(decode(A.spans(d, ["t"])).doc)));
+    let doc = A.change(A.from({ t: "" }), (d) => A.updateSpans(d, ["t"], forms[type.block]));
+    const once = rewrite(doc);
+    assert.ok(decode(A.spans(once, ["t"])).doc.eq(decoded.doc), `${type.block} rewrite`);
+    const twice = rewrite(once);
+    assert.deepEqual(
+      A.diff(twice, A.getHeads(once), A.getHeads(twice)),
+      [],
+      `${type.block} round trip`,
+    );
   }
 });
 
@@ -149,6 +161,9 @@ test("helpers read the registry", () => {
   assert.equal(nodeType("heading").attrs.level.agent, "heading_level");
   assert.ok([1, 6].every(validHeadingLevel));
   assert.ok(![0, 7, 2.5, "2"].some(validHeadingLevel));
+  for (const name of ["constructor", "__proto__", "toString", 3, undefined])
+    assert.equal(insertOperation(name), undefined, String(name));
+  assert.equal(nodeType("task-list-item").governsFirstParagraph, true);
   assert.deepEqual(INSERT_OPERATIONS, {
     insert_image: { block: "image", asset: "image" },
     insert_node: { block: "dataframe", asset: "dataset" },
@@ -190,4 +205,16 @@ test("set_node's fields are the registry attrs marked settable", async () => {
     for (const [name, attr] of Object.entries(type.attrs))
       if (attr.set === "set_node") settable.add(attr.agent ?? name);
   assert.deepEqual([...settable].sort(), [...NODE_FIELDS].sort());
+});
+
+test("the editor and registration agree on heading levels", () => {
+  const S = (value) => new A.ImmutableString(value);
+  const heading = (attrs) => [
+    { type: "block", value: { type: S("heading"), parents: [], attrs, isEmbed: false } },
+    { type: "text", value: "x" },
+  ];
+  assert.equal(decode(heading({})).lossy, false);
+  assert.equal(decode(heading({ level: 6 })).lossy, false);
+  for (const level of [null, "3", S("3"), 0, 7, 2.5])
+    assert.throws(() => decode(heading({ level })), /heading level/, String(level));
 });

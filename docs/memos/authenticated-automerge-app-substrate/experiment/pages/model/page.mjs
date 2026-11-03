@@ -16,7 +16,7 @@ import { COMMENTS_FEATURE } from "./comments-doc.mjs";
 import { orderedBlockIds, positionForInsertion } from "./order.mjs";
 import { anchorOccurrence, formatMatch, replaceMatch } from "./replace-match.mjs";
 import { setNode } from "./set-node.mjs";
-import { INSERT_OPERATIONS } from "./node-registry.mjs";
+import { insertOperation } from "./node-registry.mjs";
 import { stampFeatures } from "./schema-features.mjs";
 export { orderedBlockIds } from "./order.mjs";
 const block = (id = crypto.randomUUID(), position = positionForInsertion()) => ({
@@ -95,7 +95,7 @@ export function validateNodeInsertion(op) {
 }
 /** The stored assets a batch's node-creating operations name, for the host
  * to check before the change (`apply` can't await). Each operation is
- * validated first; an invalid one throws. Driven by INSERT_OPERATIONS in
+ * validated first; an invalid one throws. Driven by insertOperation in
  * model/node-registry.mjs, so a new node type that names an asset declares
  * its asset kind there and gets the check. Image assets are listed once
  * each. */
@@ -104,7 +104,7 @@ export function insertedAssets(operations, pageId) {
   const seen = new Set();
   for (const op of operations) {
     const name = op?.op ?? op?.type;
-    const insert = INSERT_OPERATIONS[name];
+    const insert = insertOperation(name);
     if (!insert) continue;
     if (insert.asset === "image") {
       validateImageInsertion(op);

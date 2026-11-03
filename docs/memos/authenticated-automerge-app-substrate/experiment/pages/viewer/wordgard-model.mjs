@@ -492,7 +492,8 @@ function descriptor(type, attrs = {}) {
     case "paragraph":
       return { tag: Paragraph };
     case "heading": {
-      const level = Number(attrs.level ?? 1);
+      // The same rule registration applies: an integer 1 to 6, 1 when absent.
+      const level = attrs.level === undefined ? 1 : attrs.level;
       if (!validHeadingLevel(level)) throw Error("Invalid Pages heading level");
       return { tag: Heading.of(level) };
     }

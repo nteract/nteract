@@ -21,7 +21,7 @@ import {
   applyPageOperation,
   insertedAssets,
 } from "../model/page.mjs";
-import { INSERT_OPERATIONS } from "../model/node-registry.mjs";
+import { insertOperation } from "../model/node-registry.mjs";
 import {
   documentFeatures,
   missingFeatures,
@@ -4302,7 +4302,7 @@ export class Page {
           throw new HttpError(400, "Unknown document operation");
         const ops = Array.isArray(body.arguments?.operations) ? body.arguments.operations : [];
         // Ops that create a node naming a stored asset (model/node-registry.mjs).
-        const inserts = ops.filter((op) => INSERT_OPERATIONS[op?.op ?? op?.type]);
+        const inserts = ops.filter((op) => insertOperation(op?.op ?? op?.type));
         // Where this batch landed, captured inside the change so the cursors
         // name the characters it wrote. A replayed receipt has no caret.
         let caret = null;

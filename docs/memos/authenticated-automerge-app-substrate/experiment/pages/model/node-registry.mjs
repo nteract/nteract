@@ -15,7 +15,9 @@
 //     leaf            a block with no content (rule, dataframe)
 //     embed           an inline marker (image, hard break)
 // - `governsFirstParagraph`: the container's own marker governs its first
-//   paragraph, which has no marker (model/set-node.mjs).
+//   paragraph, which has no marker of its own (model/set-node.mjs). True for
+//   quotes, asides and list items; a list item's label already names the item,
+//   a quote's says "first paragraph".
 // - `feature`: the model/features.json feature that gates it, or null.
 // - `readOnly`: no writer creates it (preserved Markdown).
 // - `label`: how a refusal names a node of this type.
@@ -74,18 +76,21 @@ export const NODE_TYPES = Object.freeze([
   }),
   entry("unordered-list-item", {
     pm: "list_item",
+    governsFirstParagraph: true,
     wrapper: "bullet_list",
     kind: "container",
     label: "a bulleted list item",
   }),
   entry("ordered-list-item", {
     pm: "list_item",
+    governsFirstParagraph: true,
     wrapper: "ordered_list",
     kind: "container",
     label: "a numbered list item",
   }),
   entry("task-list-item", {
     pm: "list_item",
+    governsFirstParagraph: true,
     wrapper: "task_list",
     kind: "container",
     label: "a task list item",
@@ -175,3 +180,10 @@ export const INSERT_OPERATIONS = Object.freeze(
     ]),
   ),
 );
+
+/** The node-creating operation `name`, as `{ block, asset }`, or undefined.
+ * Own keys only, so an op named `constructor` or `__proto__` isn't one. */
+export const insertOperation = (name) =>
+  typeof name === "string" && Object.hasOwn(INSERT_OPERATIONS, name)
+    ? INSERT_OPERATIONS[name]
+    : undefined;
