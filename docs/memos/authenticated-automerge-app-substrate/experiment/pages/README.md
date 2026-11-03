@@ -108,7 +108,8 @@ was a caret race in the smoke; the editor side is
 | Trash, restore, and permanent deletion | `node scripts/local-sharing-e2e.mjs --trash` | Starts an isolated fixture |
 | Removed access hides the local copy across a reload, with its download | `node scripts/local-sharing-e2e.mjs --revocation` | Starts an isolated fixture |
 | A commenter comments but can't edit; a forged native edit of another author's message is refused | `node scripts/local-sharing-e2e.mjs --commenter` | Starts an isolated fixture |
-| Projects over MCP and in the browser, `/projects` and `/pages` on a phone-sized screen, breadcrumbs, Trash and restore in a Project | `node scripts/local-sharing-e2e.mjs --projects` | Starts an isolated fixture |
+| Projects over MCP and in the browser, `/projects` and `/pages` on a phone-sized screen, the Pages library's tabs, Project filter, sort and groups as an account with shared Pages, breadcrumbs, Trash and restore in a Project | `node scripts/local-sharing-e2e.mjs --projects` | Starts an isolated fixture |
+| `list_pages` reports `content_updated_at` after an MCP edit and after typing in a tab, each well after the Page's creation | `node scripts/local-sharing-e2e.mjs --content-activity` | Starts an isolated fixture |
 | Cold first open of a 300-paragraph Page with images on Fast 3G and 4x CPU, phase by phase (records timings, gates on nothing) | `node scripts/local-sharing-e2e.mjs --cold-open` | Starts an isolated fixture behind a brotli proxy; writes `report.json` |
 | Rollback to a previous build and forward again on one data directory | `node scripts/rollback-qualification.mjs --previous <previous pages dir>` | Starts an isolated fixture; build the previous commit first |
 | Rich comment tables and drafts | `PAGES_ORIGIN=http://localhost:9894 node scripts/rich-comments-smoke.mjs` | Uses the running Wordgard fixture |
@@ -387,9 +388,13 @@ references; it does not publish the Page or change asset access.
   `.parquet` file uploads it and inserts the node at the cursor, undoably.
   Agents use `edit_page` `insert_node`. A dataframe has no Markdown syntax:
   it reads as `[Dataframe: <title>](<src>)` on its own line, and Markdown
-  never creates one. `replace_block_markdown` turns that exact line back into
-  the original node, unknown attrs included, and refuses a rewrite that drops
-  or edits it (`markdownless_node`). It's gated by the `dataframe` schema
+  never creates one. In a block that holds one, `replace_block_markdown` turns
+  that exact line back into the original node, unknown attrs included, where
+  the node is stored: the top level, or the same quote or list item. It refuses
+  (`markdownless_node`) a rewrite that drops or edits the line, moves it into or
+  out of a container or heading, repeats it beyond the block's matching nodes,
+  or adds a line reading like a dataframe the block doesn't hold. Moving the
+  line among its neighbours keeps the attrs and writes a new marker. It's gated by the `dataframe` schema
   feature. Decode is lenient: a later build's media type or attr under the
   same feature still decodes, draws "This build can't show…", and writes back
   unchanged; writers (`insert_node`, upload) check strictly. Copy writes a
@@ -554,7 +559,8 @@ candidates) returns a cursor without one, and that can only reflect stale rows
 carrying titles the caller was previously authorized to see. `next_cursor` is sealed (AES-GCM, keyed from
 `NOTEBOOK_CLOUD_APP_SESSION_SECRET`) to the caller, query, `in_trash` and filters,
 and expires after 24 hours. Pagination is best-effort: a Page whose title or sharing
-changes mid-traversal can move across the cursor.
+changes mid-traversal can move across the cursor, and so can a Page whose content
+changes under the activity sort.
 
 `access` narrows a listing to owner rows (`"owned"`) or non-owner rows
 (`"shared"`); every row still passes the same check. An owned-only scan never
@@ -595,6 +601,27 @@ comes from its host's check, like its title.
 | `"activity"` (default) | newest first, then Page ID descending | `activity_at`: `content_updated_at`, else `updated_at` | falls back to `updated_at` |
 | `"created"` | newest first, then Page ID descending | `created_at` | `''`, sorts last |
 | `"title"` | ascending, then Page ID ascending | `title_search` | `"untitled"` |
+| `"activity"` with `in_trash` | newest first, then Page ID descending | `trash_key`: `trashed_at` | `''`, sorts last |
+
+In Trash, a Page's latest activity is being trashed, and a trashed Page takes no
+edits. So `"activity"` (and an omitted `sort`) under `in_trash` lists by when each
+Page was trashed: a Page restored and trashed again goes back to the top, wherever
+its last edit would put it. The caller names no new sort; internally it is the
+`trashed` order. `trash_key` is a virtual column generated from the Page row's
+`trashed_at` (migration 7). Every build
+writes `trashed_at` when it records a trash and clears it on restore, so a build
+that predates the column keeps it right. A partial index,
+`(owner, trash_key DESC, page_id DESC) WHERE state = 'trashed'`, holds only
+trashed rows, and the Trash query walks it from `owner = ?`, joining each row's
+owner access row by primary key for the title snapshot. Continuation pages seek
+`(trash_key, page_id) < (?, ?)`. The Catalog fallback reads the `trash/` entry's
+`trashed_at` the same way, `''` when it is missing, and reconciliation indexes a
+missing or non-string `trashed_at` as null, so both sources order Trash alike,
+ties and missing times included. Created and title order Trash as they order
+every other listing.
+
+A stored key that isn't a string, such as a numeric `created_at` in a Catalog
+entry, reads as `''` in every order and sorts last; it never fails the listing.
 
 `activity_at` is a virtual generated column, so every writer keeps it current,
 including a build that predates it. The Catalog fallback computes each key from
@@ -620,28 +647,46 @@ document handle (worker/content-activity.mjs). It writes `host/content-activity`
 and reports at most once a minute: the first change after a quiet minute flushes
 at once, later changes keep only the newest time in memory, and one flush at the
 window's end writes it. A flush is one storage write, one D1 batch (the Page row
-and every access row, only where the stored time is older) and one call to the
-owner's Catalog, which sets the `page/` entry's `content_updated_at` without
-touching `updated_at`. Members' Catalogs get the time with the next title
-projection. Every write takes the later of the stored and reported time, so a
-delayed report never moves a content time back. A host evicted before its
-trailing flush loses at most that minute. A failed flush retries with backoff
-from one minute up to fifteen. The time also rides on every full row report, so a
-restart re-reports it.
+and its owner and member access rows, only where the stored time is older) and
+one call to the owner's Catalog at `/internal/content-activity`, which sets the
+`page/` entry's `content_updated_at` without touching `updated_at`. A Catalog
+from before that route answers non-OK and the flush retries until its node runs
+this build; an earlier route would have read the title-less report as a title.
+Members' Catalogs get the time with the next title projection. Domain readers'
+rows aren't rewritten by a flush, since a domain-wide Page can have any number of
+them: each copies the Page row's time when its reader opens the Page again or
+its account reconciles, and until then sorts by its older time. Every write
+takes the later of the stored and reported time, so a delayed report never moves
+a content time back, and every writer drops a time more than five minutes ahead
+of its own clock, so a node whose clock runs ahead can't pin a Page to the top.
+Times have exactly `Date#toISOString`'s format, the only one whose string order
+is time order. A host evicted before its trailing flush loses at most that
+minute. A failed flush retries with backoff from one minute up to fifteen. The
+time also rides on every full row report, so a restart re-reports it. Deleting a
+Page stops its recorder for good and deletes `host/content-activity`.
+
+The `change` listener runs on the repository's scheduler loop, in the context of
+the request that opened the document, so it starts nothing (see the celld notes
+below). Requests run the deferred work as they start and finish, and so does a
+loop each resident socket's request runs while it's open. A window timer is held
+on the request that armed it, so a Page edited once still flushes at the
+window's end; a longer retry backoff isn't held, and waits for the next request.
 
 Cursors are sealed to the listing's location, kind, `access` and sort. A cursor
 issued under one combination never opens under another; the client gets
 `invalid_cursor` and restarts. The scope names each sort by what its position's
-key means: `content_activity` for `activity_at`, `created` for `created_at` and
-`title` for `title_search`. An activity cursor sealed with no scope, or with a
-scope that names no sort or names `activity`, held an `updated_at` key, so it
-fails with `invalid_cursor`.
+key means: `content_activity` for `activity_at`, `created` for `created_at`,
+`title` for `title_search` and `trashed` for `trash_key`. An activity cursor
+sealed with no scope, or with a scope that names no sort or names `activity`,
+held an `updated_at` key, so it fails with `invalid_cursor`. A Trash cursor
+sealed under `content_activity` held an `activity_at` key and fails the same way;
+created and title cursors in Trash keep their scopes.
 
 A position has one shape per sort, built from the row a page stopped on:
-`{key, page_id}` for activity and created, where `key` is that sort's own key and
+`{key, page_id}` for activity, created and trashed, where `key` is that sort's own key and
 never the row's `updated_at`, and `{title_search, page_id}` for title. The next
 cursor, the position a scan refetches from after rejecting candidates, and every
-source's keyset all use it. Sealed, an activity or created position puts its key
+source's keyset all use it. Sealed, a time-keyed position puts its key
 in the payload's time slot; a title position puts its title key in a fourth slot
 and leaves the time slot empty, which no title listing reads. A title cursor
 carries its title key, which makes it longer: cursors may run to 8192 characters.
@@ -1389,7 +1434,7 @@ entries without counts leaves that to repair.
 At the limit, creating or restoring returns `409 page_quota_exceeded` and moving
 to Trash returns `409 trash_capacity`, each with `limit` and `count`.
 `list_pages` returns `quota: {limit, count, trash_count}` for the caller's own
-account, whatever the listing's filters. Home shows usage from 90% of the limit.
+account, whatever the listing's filters. The Pages library shows usage from 90% of the limit.
 
 ## Build updates
 
@@ -1943,14 +1988,55 @@ sharing works as before and never reveals the Project. `move_page` moves Pages
 into, out of and between the owner's Projects. Inherited access and a Project
 change feed come later.
 
-The viewer lists them at two index routes. `/projects` shows every Project
-`list_projects` returns, with its description. `/pages` shows every Page
-`list_pages` returns, newest first, including Pages in Projects; an owned
-Page's row links its Project. Search uses `list_pages`' `query`, trimmed and
-cut to its 200-unit limit, and stays in the address as `?q=`. Load more follows
+The viewer lists them on two screens. `/projects` shows every Project
+`list_projects` returns, with its description. The Pages library, at `/` and
+`/pages` (one screen, two addresses), shows the Pages `list_pages` returns,
+including Pages in Projects; an owned Page's row links its Project, and a
+shared row never does. Its view lives in the address, defaults left out, so a
+reload, Back and a shared link reproduce it
+([routes.mjs](shared/routes.mjs) `normalizeLibraryView`):
+
+| Parameter | Values | Effect |
+| --- | --- | --- |
+| `q` | text | `list_pages` `query`, trimmed and cut to its 200-unit limit |
+| `show` | `owned`, `shared` | the Your items or Shared with you tab: `access` |
+| `sort` | `title` | `sort: "title"`; omitted is Last activity |
+| `project` | a Project ID | `project_id`; implies `show=owned`, dropped with `show=shared` (which `list_pages` refuses) |
+| `group` | `project`, `date` | group sections over the loaded rows; `date` needs Last activity |
+
+A choice pushes a history entry; typing a search replaces it; choosing what
+already shows does nothing. `/` and `/pages` replace an address that isn't
+canonical. Back and Forward between two library addresses hand the mounted
+library its new view, so a grouping alone sends nothing and focus stays put.
+Groups are a presentation over loaded rows
+([library-groups.mjs](viewer/library-groups.mjs)): by Project (each Project,
+Your items, Shared with you; the Source column goes, since the heading names
+it) or by last activity (Today, Yesterday, Previous 7 days, Previous 30 days,
+each month of the last year, then each year), in the order their first row
+appears. Last activity is `content_updated_at`, else `updated_at`: the key the
+Last activity sort orders by, so date groups follow the rows
+([listing.mjs](viewer/listing.mjs) `activityAt`). The Last activity column
+shows the same time, and screen readers hear "Last active 2 days ago, …".
+Drafts this browser hasn't synced show first, as "On this device", on All and
+Your items when there is no Project filter. The server can't search them, so a
+search keeps the drafts whose title holds it. When the listing fails, local
+copies show there too. A `project` the account can't list reads "Unknown
+Project", with a button that clears the filter. Load more follows
 `next_cursor`; a cursor that has expired (`invalid_cursor`) starts the listing
-over from its first page. `list_pages` has no filter for Your items or for
-shared Pages, so `/pages` has no filter chips; shared rows say so instead.
+over from its first page. Grid cards are behind the `grid` flag (`?grid=1` or
+`localStorage["pages.grid"] = "1"`) until they show previews.
+
+A library visit sends one `list_pages`, for its view. `list_projects` is one
+request per account shared by the Project filter, the Browse picker, Move to…
+and the first page of `/projects`; a request made while one is in flight joins
+it ([project-list.mjs](viewer/project-list.mjs)). The first page of each view
+this tab has shown stays in memory, keyed by account and request
+([listing-cache.mjs](viewer/listing-cache.mjs)), so a return visit, Back from
+a Page included, paints it while the listing asks again. It is cleared on
+sign-out and account change, forgets a Page moved to Trash, and is never
+persisted. The Browse picker walks every Page (`list_pages` cursors, at most
+ten requests) only when it opens, and a Project's home Page lists its Project
+with `project_id`.
 
 | Tool | Arguments | Result |
 | --- | --- | --- |
@@ -2096,6 +2182,17 @@ or 2.5 s, so `catalogIndexDatabase(env, ctx)` requires the caller's `ctx` and
 holds the migration on it; no Catalog or Page call site can skip the hold. The
 work runs to completion after its caller leaves, and its response is
 discarded.
+
+A continuation inside a Durable Object runs under the request that started the
+code awaiting, not the one that settled the promise, and celld 0.6.3 drops the
+timers and I/O started there once that request has responded and its
+`waitUntil` work has settled. A long-lived loop started by one request, such as
+automerge-repo's scheduler loop that delivers a document's `change` events,
+keeps that request's context for good. Storage writes from it may land, but a
+fetch, a D1 query or a timer started from it never settles, and nothing logs.
+So a listener on a document handle must not start I/O: it records what it saw,
+and a live request runs the work, as content activity does
+(worker/content-activity.mjs).
 
 `update_project` requires `expected_revision`. The Catalog records it in the
 journal intent before the Project sees the request, and every attempt carries it,

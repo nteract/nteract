@@ -162,7 +162,8 @@ export function ProjectPages({ title, pages, onOpen, onCreate, creating = false 
 export const projectPageCount = (pages) => pages.filter((page) => !page.home).length;
 
 /** On a Project's home Page, in place of the breadcrumb that repeats the
- * title: "Project · N Pages", opening the Project view. */
+ * title: "Project · N Pages", opening the Project view. A null `count`
+ * (still loading) shows "Project". */
 export function ProjectChip({ projectId, count, onOpenProject }) {
   return (
     <nav className="breadcrumbs project-chip-nav" aria-label="Project">
@@ -176,7 +177,9 @@ export function ProjectChip({ projectId, count, onOpenProject }) {
         }}
       >
         <Boxes size={14} aria-hidden="true" />
-        {`Project · ${count} ${count === 1 ? "Page" : "Pages"}`}
+        {count === null || count === undefined
+          ? "Project"
+          : `Project · ${count} ${count === 1 ? "Page" : "Pages"}`}
       </a>
     </nav>
   );

@@ -15,9 +15,12 @@ export function projectPath(id) {
   return `/project/${id}`;
 }
 
-// The two index routes list what the account can open: every Project, and
-// every Page newest first. /pages keeps its search in `q` so Back restores it.
+// The index routes list what the account can open. /projects lists every
+// Project. The Pages library lists Pages at two addresses, / and /pages,
+// which show the same screen; each keeps its view in the address (below) so
+// Back, a reload and a shared link reproduce it.
 export const PROJECTS_PATH = "/projects";
+export const PAGES_PATH = "/pages";
 /** list_pages accepts a query of at most this many UTF-16 code units. */
 export const PAGES_QUERY_MAX = 200;
 /** Cut `value` to at most PAGES_QUERY_MAX UTF-16 code units, by code point:
@@ -38,20 +41,116 @@ export function clampPagesQuery(value) {
 export function normalizePagesQuery(value) {
   return clampPagesQuery(typeof value === "string" ? value.trim() : "").trimEnd();
 }
-export function pagesPath(query = "") {
-  const text = normalizePagesQuery(query);
-  return text ? `/pages?${new URLSearchParams({ q: text })}` : "/pages";
+/** The library's sort orders, list_pages' `sort` values. The first is the
+ * default. `dated` orders rows newest first by the time the date groups read
+ * (list_pages' activity key, activityAt in viewer/listing.mjs), which
+ * grouping by date needs. A new order is one entry here. */
+export const LIBRARY_SORTS = Object.freeze([
+  Object.freeze({ value: "activity", label: "Last activity", dated: true }),
+  Object.freeze({ value: "title", label: "Title", dated: false }),
+]);
+/** The library's tabs: list_pages' `access`, null for everything. */
+export const LIBRARY_ACCESS = Object.freeze([null, "owned", "shared"]);
+/** How the library groups the rows it has loaded; null shows one list. */
+export const LIBRARY_GROUPS = Object.freeze([null, "project", "date"]);
+export const LIBRARY_DEFAULTS = Object.freeze({
+  query: "",
+  access: null,
+  sort: LIBRARY_SORTS[0].value,
+  projectId: null,
+  group: null,
+});
+/** Whether `group` applies under `sort`: date groups need a dated order. */
+export const groupApplies = (group, sort) =>
+  group !== "date" || LIBRARY_SORTS.some((entry) => entry.value === sort && entry.dated);
+
+/**
+ * The one rule for the library's view, wherever it comes from (the address,
+ * a control, a request). Unknown values fall back to the defaults.
+ * - A Project holds only its owner's Pages, so a Project filter lists Your
+ *   items (`access: "owned"`), and the shared tab takes no Project:
+ *   list_pages refuses `access: "shared"` with `project_id`.
+ * - Date groups need a dated sort; under any other the rows show ungrouped.
+ */
+export function normalizeLibraryView(input = {}) {
+  const value = input ?? {};
+  const sort = LIBRARY_SORTS.some((entry) => entry.value === value.sort)
+    ? value.sort
+    : LIBRARY_DEFAULTS.sort;
+  const access = LIBRARY_ACCESS.includes(value.access) ? value.access : null;
+  const projectId = access !== "shared" && isProjectId(value.projectId) ? value.projectId : null;
+  const group =
+    LIBRARY_GROUPS.includes(value.group) && groupApplies(value.group, sort) ? value.group : null;
+  return Object.freeze({
+    query: normalizePagesQuery(value.query),
+    access: projectId ? "owned" : access,
+    sort,
+    projectId,
+    group,
+  });
 }
+/** The part of a library view a list_pages request reads. */
+export function libraryRequest(view) {
+  const { query, access, sort, projectId } = normalizeLibraryView(view);
+  return Object.freeze({ query, access, sort, projectId });
+}
+/** Whether two library requests list the same rows. */
+export const sameLibraryRequest = (a, b) =>
+  a?.query === b?.query &&
+  a?.access === b?.access &&
+  a?.sort === b?.sort &&
+  a?.projectId === b?.projectId;
+
+/** Whether two library views show the same thing: the same request and the
+ * same grouping. */
+export const sameLibraryView = (a, b) => {
+  const left = normalizeLibraryView(a);
+  const right = normalizeLibraryView(b);
+  return sameLibraryRequest(left, right) && left.group === right.group;
+};
+
+/** A library view read from an address's search: `q`, `show` (owned or
+ * shared), `sort` (title), `group` (project or date) and `project`. */
+export const readLibraryView = (search) =>
+  normalizeLibraryView({
+    query: search.get("q"),
+    access: search.get("show"),
+    sort: search.get("sort"),
+    group: search.get("group"),
+    projectId: search.get("project"),
+  });
+
+/** `base` (/ or /pages) with `view` in its search. Defaults are left out, so
+ * the plain library is its bare path. */
+export function libraryPath(base, view = LIBRARY_DEFAULTS) {
+  const current = normalizeLibraryView(view);
+  // Built on URL alone: the head script (theme.js) reads routes before
+  // anything else loads, where URLSearchParams may not be a global.
+  const url = new URL(base, "https://pages.invalid");
+  const search = url.searchParams;
+  if (current.query) search.set("q", current.query);
+  if (current.access) search.set("show", current.access);
+  if (current.sort !== LIBRARY_DEFAULTS.sort) search.set("sort", current.sort);
+  if (current.group) search.set("group", current.group);
+  if (current.projectId) search.set("project", current.projectId);
+  return `${base}${url.search}`;
+}
+export const pagesPath = (query = "") => libraryPath(PAGES_PATH, { query });
 /** Index routes render from the shell alone; the editor chunk waits until a
- * Page opens. */
+ * Page opens. Home (/) is the library too but starts the editor at boot,
+ * since a Page usually opens next. */
 export const isIndexRoute = (route) => route?.kind === "projects" || route?.kind === "pages";
+/** Both addresses of the Pages library. */
+export const isLibraryRoute = (route) => route?.kind === "home" || route?.kind === "pages";
+/** The path a library route keeps its view on. */
+export const libraryBase = (route) => (route?.kind === "pages" ? PAGES_PATH : "/");
 
 export function readPageRoute(input) {
   const url = new URL(input, "https://pages.invalid");
   if (/^\/projects\/?$/.test(url.pathname)) return { kind: "projects", path: PROJECTS_PATH };
   if (/^\/pages\/?$/.test(url.pathname)) {
-    const query = normalizePagesQuery(url.searchParams.get("q"));
-    return { kind: "pages", query, path: pagesPath(query) };
+    const library = readLibraryView(url.searchParams);
+    return { kind: "pages", library, path: libraryPath(PAGES_PATH, library) };
   }
   // /s/<id> links predate the Project name; they open the Project's own path.
   const project = /^\/(?:project|s)\/([^/]+)\/?$/.exec(url.pathname);
@@ -66,7 +165,9 @@ export function readPageRoute(input) {
     if (!pageIdPattern.test(id)) return { kind: "missing" };
     return { kind: "page", pageId: id, path: pagePath(id) };
   }
-  return url.pathname === "/" ? { kind: "home", path: "/" } : { kind: "missing" };
+  if (url.pathname !== "/") return { kind: "missing" };
+  const library = readLibraryView(url.searchParams);
+  return { kind: "home", library, path: libraryPath("/", library) };
 }
 
 // Modified and auxiliary clicks retain normal browser link behavior.

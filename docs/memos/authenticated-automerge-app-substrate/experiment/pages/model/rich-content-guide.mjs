@@ -102,11 +102,13 @@ and formatting is a native mark on its characters. Markdown is one way to read
 and write them; node operations (insert_image, insert_node, set_node, delete_node) are the
 other. Some nodes have no Markdown form: ${NODE_OPERATIONS.map(([, text]) => text).join("; ")}
 (see Datasets below). They read back as a labeled link on its own line;
-replace_block_markdown keeps the node when that line is unchanged and at the top
-level of the block, once. It refuses with markdownless_node a rewrite that drops
-or edits the line, repeats it, moves it into a quote, list or table, or adds a
-line that reads like a node the block doesn't hold: Markdown never creates,
-copies or moves a node.
+replace_block_markdown keeps the node when that line is unchanged and stays
+where the node is stored: at the top level of the block, or in the same quote or
+list item. It refuses with markdownless_node a rewrite that drops or edits the
+line, takes it into or out of a quote, list, table or heading, has more copies
+of it than the block has such nodes, or adds a line that reads like a node the
+block doesn't hold: Markdown never creates or copies a node. Moving the line
+among its neighbours keeps the node's attrs but writes it as a new node.
 ${typedReadFields()}
 ${richEditOperations()}
 These operations keep comment anchors and untouched characters in place, so

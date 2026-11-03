@@ -231,10 +231,11 @@ test("every mutation the lifecycle makes can reject before or after it applies, 
   assert.deepEqual(
     { cuts, runs, ...tally },
     {
-      // The comments document's import and delete are cut points too. The
-      // active/trash heads-absent row runs the full trash commit again.
-      cuts: 160,
-      runs: 600,
+      // The comments document's import and delete are cut points too, and so
+      // is a purge's delete of the stored content time. The active/trash
+      // heads-absent row runs the full trash commit again.
+      cuts: 168,
+      runs: 632,
       indexRetirement: 21,
       titleProjection: 14,
       bindingRetirement: 30,

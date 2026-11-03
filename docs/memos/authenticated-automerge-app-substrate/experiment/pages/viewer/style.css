@@ -623,14 +623,6 @@ details.document-actions > div button {
   color: var(--muted-foreground);
   font-size: 0.75rem;
 }
-.page-row-action {
-  color: var(--muted-foreground);
-  opacity: 0;
-}
-.page-row:hover .page-row-action,
-.page-row:focus-within .page-row-action {
-  opacity: 1;
-}
 .document {
   max-width: 1056px;
   margin: 1rem auto 0;
@@ -1285,20 +1277,12 @@ span.unknown-node {
     min-height: 64px;
     gap: 0.7rem;
   }
-  .page-row-action {
-    opacity: 1;
-  }
   .page-picker {
     width: calc(100vw - 1rem);
     max-height: 85dvh;
   }
   .picker-page {
     min-height: 48px;
-  }
-}
-@media (hover: none) and (min-width: 901px) {
-  .page-row-action {
-    opacity: 1;
   }
 }
 @media print {
@@ -2086,6 +2070,8 @@ details.account-actions > div a:hover {
   margin: 0;
   padding: 0;
 }
+/* Rows read as one continuous list: square corners, a rule between rows,
+   and a hover band edge to edge. */
 .index-row {
   position: relative;
   display: flex;
@@ -2094,7 +2080,6 @@ details.account-actions > div a:hover {
   min-height: 56px;
   padding: 0.9rem 0.6rem;
   border-bottom: 1px solid var(--border);
-  border-radius: 0.5rem;
 }
 .index-row:hover,
 .index-row:focus-within {
@@ -2213,12 +2198,12 @@ details.account-actions > div a:hover {
 .index-display .index-display-button:focus-visible {
   outline-offset: 1px;
 }
-/* List mode: Name, Source and Updated columns. The header row and every
-   Page row share one template so the columns line up. */
+/* List mode: Name, Source and Last activity columns. The header row and
+   every Page row share one template so the columns line up. */
 .index-columns,
 .index-page-row {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 12rem) 4.5rem;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 12rem) 6.5rem;
   align-items: center;
   gap: 1rem;
 }
@@ -2328,7 +2313,8 @@ details.account-actions > div a:hover {
 .index-card-placeholder {
   opacity: 0.55;
 }
-/* Phones: Name and Updated only, two cards to a row, and 44px toggles. */
+/* Phones: Name and Last activity only, with no column labels, two cards to a
+   row, and 44px toggles. */
 @media (max-width: 640px) {
   .index-heading .index-search {
     flex-basis: 100%;
@@ -2342,6 +2328,7 @@ details.account-actions > div a:hover {
     grid-template-columns: minmax(0, 1fr) auto;
     gap: 0.75rem;
   }
+  .index-columns,
   .index-column-source,
   .index-cell-source {
     display: none;
@@ -2349,6 +2336,435 @@ details.account-actions > div a:hover {
   .index-grid {
     grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
     gap: 0.75rem;
+  }
+}
+/* The Pages library (Library.jsx), at / and /pages. Wider than the reading
+   column so the list has room for its columns and a grid for 4-6 cards; the
+   editor, /projects and the other screens keep their widths. Top to bottom:
+   the heading row (title, search, Trash, New Page), the control row (tabs,
+   then Project, Sort, Group), and the results with optional group sections.
+   Its width is definite, so the tab and menu rows scroll rather than widen
+   the screen to fit their content. */
+.page-library.library-view {
+  box-sizing: border-box;
+  width: 100%;
+  max-width: 1200px;
+}
+.library-header {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(12rem, 22rem) auto;
+  align-items: center;
+  gap: 0.75rem 1rem;
+  margin: 0 0 1.25rem;
+}
+.library-header h1 {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.library-search-form {
+  min-width: 0;
+}
+.library-header .picker-search.library-search {
+  margin: 0;
+  min-height: 44px;
+  padding-block: 0.55rem;
+}
+.library-search-key {
+  flex-shrink: 0;
+  min-width: 1.4rem;
+  padding: 0.05rem 0.35rem;
+  border: 1px solid var(--border);
+  border-radius: 0.3rem;
+  background: var(--surface);
+  color: var(--muted-foreground);
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 0.75rem;
+  line-height: 1.3;
+  text-align: center;
+}
+.library-search:focus-within .library-search-key {
+  display: none;
+}
+.library-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 0.5rem 1rem;
+  margin: 0 0 0.75rem;
+  border-bottom: 1px solid var(--border);
+}
+/* Tabs read as one segmented set: the chosen one is underlined. Too many to
+   fit (a narrow phone) scroll sideways rather than wrapping. */
+.library-tabs {
+  display: flex;
+  gap: 0.25rem;
+  min-width: 0;
+  margin-bottom: -1px;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.library-tabs::-webkit-scrollbar {
+  display: none;
+}
+.library-tabs .library-tab {
+  flex: none;
+  min-height: 44px;
+  padding: 0 0.7rem;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  border-radius: 0.4rem 0.4rem 0 0;
+  color: var(--muted-foreground);
+  font-size: 0.9rem;
+  font-weight: 500;
+  white-space: nowrap;
+}
+.library-tabs .library-tab:hover:not(:disabled) {
+  background: transparent;
+  color: var(--foreground);
+}
+.library-tabs .library-tab[aria-pressed="true"] {
+  border-bottom-color: var(--foreground);
+  color: var(--foreground);
+}
+.library-tabs .library-tab:focus-visible {
+  outline-offset: -2px;
+}
+.library-options {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.35rem;
+  margin-inline-start: auto;
+  padding-bottom: 0.4rem;
+}
+.library-options .index-display {
+  margin-inline-start: 0.25rem;
+}
+/* Project, Sort and Group (ChoiceMenu.jsx). */
+.library-menu-root {
+  position: relative;
+}
+.library-menu-button {
+  max-width: 15rem;
+  min-height: 36px;
+  padding: 0 0.6rem;
+  border: 1px solid var(--border);
+  color: var(--foreground);
+  font-size: 0.85rem;
+  white-space: nowrap;
+}
+.library-menu-button svg {
+  width: 16px;
+  height: 16px;
+  color: var(--muted-foreground);
+}
+.library-menu-button .library-menu-chevron {
+  width: 14px;
+  height: 14px;
+}
+.library-menu-value {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.library-menu-button[aria-expanded="true"] {
+  background: var(--accent);
+}
+.library-menu-button[aria-disabled="true"] {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+.library-menu-button[aria-disabled="true"]:hover {
+  background: transparent;
+}
+.library-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  z-index: 20;
+  display: grid;
+  min-width: 13rem;
+  max-width: min(20rem, calc(100vw - 2rem));
+  max-height: min(22rem, calc(100dvh - 10rem));
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 0.3rem;
+  border: 1px solid var(--line);
+  border-radius: 0.65rem;
+  background: var(--popover, var(--surface));
+  color: var(--popover-foreground, var(--foreground));
+  box-shadow: 0 10px 30px #00000026;
+}
+.library-menu-start {
+  left: 0;
+}
+.library-menu-end {
+  right: 0;
+}
+.library-menu .library-menu-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.55rem;
+  min-height: 36px;
+  padding: 0.45rem 0.6rem;
+  border: 0;
+  border-radius: 0.45rem;
+  font-size: 0.875rem;
+  text-align: start;
+}
+.library-menu .library-menu-item:focus-visible {
+  outline-offset: -2px;
+  background: var(--accent);
+}
+.library-menu-check {
+  margin-top: 0.1rem;
+  visibility: hidden;
+}
+.library-menu-item[aria-checked="true"] .library-menu-check {
+  visibility: visible;
+}
+.library-menu-item[aria-disabled="true"] {
+  cursor: not-allowed;
+}
+.library-menu-item[aria-disabled="true"] .library-menu-label {
+  color: var(--muted-foreground);
+}
+.library-menu-text {
+  display: grid;
+  gap: 0.1rem;
+  min-width: 0;
+}
+.library-menu-label {
+  overflow-wrap: anywhere;
+}
+.library-menu-note {
+  color: var(--muted-foreground);
+  font-size: 0.75rem;
+}
+.library-view .quota-notice {
+  margin: 0 0 0.75rem;
+}
+.library-empty {
+  padding: 2.5rem 0;
+  text-align: center;
+}
+/* Group sections: a heading row per group, then its rows. On desktop the
+   heading sticks under the app header while its rows scroll past. */
+.library-group + .library-group {
+  margin-top: 1.25rem;
+}
+.library-group-heading {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  min-height: 40px;
+  margin: 0;
+  padding: 0.5rem 0.6rem 0.4rem;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--muted-foreground);
+  font-size: 0.8rem;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+}
+.library-group-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  min-width: 0;
+  color: var(--foreground);
+  text-decoration: none;
+}
+.library-group-label span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+a.library-group-label:hover span {
+  text-decoration: underline;
+}
+.library-group-label svg {
+  flex-shrink: 0;
+  color: var(--muted-foreground);
+}
+.library-group-count {
+  padding: 0 0.45rem;
+  border-radius: 1rem;
+  background: var(--accent);
+  font-size: 0.75rem;
+  font-variant-numeric: tabular-nums;
+}
+.library-results .index-grid {
+  margin-top: 0.75rem;
+}
+.library-results > div > .index-grid {
+  margin-top: 0;
+}
+/* List rows gain a Copy link column; the action shows on hover or focus and
+   always on touch screens. Grouped by Project there is no Source column. */
+.library-view .index-columns,
+.library-view .index-page-row {
+  grid-template-columns: minmax(0, 1fr) minmax(0, 12rem) 6.5rem 2.5rem;
+}
+.library-view .index-table-no-source .index-columns,
+.library-view .index-table-no-source .index-page-row {
+  grid-template-columns: minmax(0, 1fr) 6.5rem 2.5rem;
+}
+/* A Project filter the account can't name, and the way out of it. */
+.library-filter-notice {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem 0.75rem;
+  margin: 0 0 1rem;
+  padding: 0.6rem 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: 0.6rem;
+  color: var(--muted-foreground);
+  font-size: 0.9rem;
+}
+.library-filter-notice .subtle-button {
+  min-height: 36px;
+  border: 1px solid var(--border);
+  color: var(--foreground);
+}
+.index-cell-actions {
+  display: flex;
+  justify-content: flex-end;
+}
+.index-row-action {
+  position: relative;
+  z-index: 1;
+  width: 36px;
+  height: 36px;
+  color: var(--muted-foreground);
+  opacity: 0;
+}
+.index-row:hover .index-row-action,
+.index-row:focus-within .index-row-action {
+  opacity: 1;
+}
+.index-row-action:hover:not(:disabled) {
+  background: var(--surface);
+  color: var(--foreground);
+}
+.index-row-local {
+  display: inline-flex;
+  align-items: center;
+  min-height: 24px;
+  padding: 0 0.5rem;
+  border-radius: 1rem;
+  background: var(--warning-soft);
+  color: var(--foreground);
+  font-size: 0.75rem;
+  white-space: nowrap;
+}
+@media (min-width: 901px) {
+  .library-group-heading {
+    position: sticky;
+    top: var(--page-header-height);
+    z-index: 2;
+  }
+}
+@media (hover: none) {
+  .index-row-action {
+    opacity: 1;
+  }
+}
+/* Tablets: the search takes its own row under the title and actions. */
+@media (max-width: 900px) {
+  .library-header {
+    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-areas: "title actions" "search search";
+  }
+  .library-header h1 {
+    grid-area: title;
+  }
+  .library-header .library-actions {
+    grid-area: actions;
+  }
+  .library-search-form {
+    grid-area: search;
+  }
+  .library-search-key {
+    display: none;
+  }
+}
+/* Phones: the tabs take a row that scrolls sideways when it doesn't fit, the
+   menus share the next row and wrap rather than clip, every control is 44px
+   tall, and a menu opens as a sheet along the bottom of the screen. The nav
+   above already says Pages, so the heading is for screen readers only. */
+@media (max-width: 640px) {
+  .library-header {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-areas: "actions" "search";
+  }
+  .library-header .library-title {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    margin: -1px;
+    padding: 0;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    white-space: nowrap;
+    border: 0;
+  }
+  .library-header .library-actions {
+    justify-content: flex-end;
+    gap: 0.25rem;
+  }
+  .library-controls {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 0.5rem;
+    border-bottom: 0;
+  }
+  .library-tabs {
+    contain: inline-size;
+    margin-bottom: 0;
+    border-bottom: 1px solid var(--border);
+  }
+  /* The menus fill their row and wrap to another when they don't fit, so
+     every label shows whole. Each menu opens as a fixed sheet. */
+  .library-options {
+    flex-wrap: wrap;
+    margin-inline-start: 0;
+    padding-bottom: 0;
+  }
+  .library-options > .library-menu-root {
+    flex: 1 1 auto;
+  }
+  .library-menu-button {
+    width: 100%;
+    min-height: 44px;
+    max-width: none;
+    justify-content: flex-start;
+  }
+  .library-menu-button .library-menu-chevron {
+    margin-inline-start: auto;
+  }
+  .library-menu {
+    position: fixed;
+    top: auto;
+    right: 0.75rem;
+    bottom: calc(0.75rem + env(safe-area-inset-bottom));
+    left: 0.75rem;
+    max-width: none;
+    max-height: 60dvh;
+    border-radius: 0.9rem;
+  }
+  .library-menu .library-menu-item {
+    min-height: 44px;
+    align-items: center;
+  }
+  .library-view .index-columns,
+  .library-view .index-page-row {
+    grid-template-columns: minmax(0, 1fr) auto 2.75rem;
+  }
+  .index-row-action {
+    width: 44px;
+    height: 44px;
   }
 }
 .picker-index {

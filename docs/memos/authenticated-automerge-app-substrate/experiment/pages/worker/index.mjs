@@ -184,7 +184,14 @@ import {
   trashFields,
 } from "./catalog.mjs";
 import { holdsSlot, operationIntent, replies } from "./operation-intent.mjs";
-import { ContentActivity, changesContent, laterTime, validTime } from "./content-activity.mjs";
+import {
+  CONTENT_ACTIVITY_KEY,
+  ContentActivity,
+  acceptedTime,
+  changesContent,
+  laterTime,
+  validTime,
+} from "./content-activity.mjs";
 import {
   CatalogIndexUnavailable,
   SHORT_CURSOR_MAX_LENGTH,
@@ -1310,19 +1317,33 @@ export class Catalog {
   }
   async run(request) {
     try {
-      if (new URL(request.url).pathname === "/internal/projection") {
+      const pathname = new URL(request.url).pathname;
+      if (pathname === "/internal/projection" || pathname === "/internal/content-activity") {
         // Reachable only through the host's CATALOGS namespace, never the gateway.
         const value = await readJson(request);
         if (!validPageId(value.page_id)) throw new HttpError(400, "Invalid page_id");
+        // A content report never names a title. The projection route also
+        // reads a title-less body as one: the first content-activity build's
+        // Page hosts send their reports there.
+        const contentOnly = pathname === "/internal/content-activity" || value.title === undefined;
+        if (
+          pathname === "/internal/content-activity" &&
+          (value.title !== undefined || value.remove)
+        )
+          throw new HttpError(400, "A content report carries only page_id and content_updated_at");
         await this.locationShape();
         const key = `${value.shared ? "shared/" : "page/"}${value.page_id}`;
         const previous = await this.storage.get(key);
         // The Page host's newest content time. It only moves forward, and
-        // it never moves `updated_at`, which keeps its own meaning.
-        const content = laterTime(previous?.content_updated_at, value.content_updated_at);
+        // it never moves `updated_at`, which keeps its own meaning. A time
+        // further ahead of this clock than nodes skew is dropped.
+        const content = laterTime(
+          previous?.content_updated_at,
+          acceptedTime(value.content_updated_at),
+        );
         const contentMoved = content !== null && content !== (previous?.content_updated_at ?? null);
         if (value.remove) await this.storage.delete(key);
-        else if (value.title === undefined) {
+        else if (contentOnly) {
           // A content-only report updates an entry that's already listed.
           if (previous && !previous.pending && contentMoved)
             await this.storage.put(key, { ...previous, content_updated_at: content });
@@ -3038,10 +3059,27 @@ export class Page {
 
   /** Record content changes on the serving document (content-activity.mjs).
    * The stored time is restored first, so this host's next report carries
-   * it. A change counts when its patches touch the title or blocks and no
-   * host migration is running; the comments document isn't observed. */
+   * it. A change counts when its patches touch the title or blocks and the
+   * conversion machine isn't `converting`; the comments document isn't
+   * observed.
+   *
+   * The listener runs on the repository's scheduler loop, in a request that
+   * may have responded long ago, so it only records: requests pump the
+   * effects (`run`), and so does each resident socket (`serve`). */
   async watchContent() {
-    if (typeof this.handle?.on !== "function") return;
+    if (!this.handle) return;
+    if (typeof this.handle.on !== "function" || typeof this.handle.off !== "function") {
+      // A host without the event API never records content activity. Tests
+      // and the local E2E fixture fail at once; a deployed host logs once.
+      const error = TypeError("The serving document handle has no event API");
+      if (globalThis.process?.env?.NODE_TEST_CONTEXT || this.env.PAGES_E2E_ONLY === "true")
+        throw error;
+      if (!this.contentUnobservable) logFailure(error, "content-activity");
+      this.contentUnobservable = true;
+      return;
+    }
+    // Deletion stops the recorder for good; nothing loads a deleted Page.
+    if (this.contentActivity?.state.name === "stopped") return;
     this.contentActivity ??= new ContentActivity({
       storage: this.ctx.storage,
       report: (value) => this.reportContent(value),
@@ -3050,19 +3088,40 @@ export class Page {
     });
     await this.contentActivity.restore();
     if (this.contentHandle === this.handle) return;
-    this.contentHandle?.off?.("change", this.contentListener);
+    this.unwatchContent();
     this.contentHandle = this.handle;
     this.contentListener ??= ({ patches }) => {
-      if (this.hostRewrites > 0 || !changesContent(patches)) return;
+      // While `converting`, the fence holds every other writer, so each Page
+      // change is the host's own migration.
+      if (this.conversion.name === "converting" || !changesContent(patches)) return;
       this.contentActivity.changed();
     };
     this.handle.on("change", this.contentListener);
   }
 
+  /** Detach the content listener from the handle it was attached to. */
+  unwatchContent() {
+    this.contentHandle?.off?.("change", this.contentListener);
+    this.contentHandle = undefined;
+  }
+
+  /** Stop recording for good and forget the stored time: the Page is being
+   * deleted. A flush already storing it lands before this delete. */
+  async forgetContent() {
+    this.contentActivity?.stop();
+    this.unwatchContent();
+    await this.ctx.storage.delete(CONTENT_ACTIVITY_KEY);
+  }
+
   /** Report a stored content time: one D1 batch and one call to the owner's
    * Catalog. Members' Catalogs get it with the next title projection; their
    * listings read it from this host's check. A Page that isn't active has
-   * nothing to list, so it reports nothing. Rejects if either write fails. */
+   * nothing to list, so it reports nothing. Rejects if either write fails.
+   *
+   * The Catalog call has its own route. A Catalog without it answers non-OK,
+   * and the flush retries with backoff until that node runs this build; a
+   * Catalog from before content activity would read a title-less projection
+   * as a title, "Untitled". */
   async reportContent(value) {
     if (!this.metadata || pageState(this.metadata) !== "active") return;
     const pageId = this.metadata.pageId;
@@ -3071,7 +3130,7 @@ export class Page {
       tasks.push(
         withTimeout(
           this.env.CATALOGS.getByName(this.metadata.owner).fetch(
-            new Request("https://pages.internal/internal/projection", {
+            new Request("https://pages.internal/internal/content-activity", {
               method: "POST",
               body: JSON.stringify({ page_id: pageId, content_updated_at: value }),
             }),
@@ -3216,26 +3275,21 @@ export class Page {
       } else if (effect.type === "logStuck")
         logPreservedStuck(this.metadata?.pageId ?? this.handle.doc().page_id, effect.reason);
       else if (effect.type === "convert") {
-        // The fence holds every other writer, so each Page change while this
-        // runs is the migration's own, and none of them is content activity.
-        this.hostRewrites = (this.hostRewrites ?? 0) + 1;
-        const run = this.convertPreservedOnce(effect.mode)
-          .finally(() => {
-            this.hostRewrites--;
-          })
-          .then(
-            () => ({ type: "succeeded" }),
-            (error) => {
-              logFailure(error, "preserved-markdown");
-              return {
-                type: "failed",
-                permanent: permanentFailure(error, { isHistoryCapacityError }),
-                // Whether the run's journal entry is still reserved.
-                unfinished: !!this.conversionIntent,
-                reason: failureReason(error),
-              };
-            },
-          );
+        // `converting` until this run's outcome steps the machine: the content
+        // listener ignores every Page change in between (watchContent).
+        const run = this.convertPreservedOnce(effect.mode).then(
+          () => ({ type: "succeeded" }),
+          (error) => {
+            logFailure(error, "preserved-markdown");
+            return {
+              type: "failed",
+              permanent: permanentFailure(error, { isHistoryCapacityError }),
+              // Whether the run's journal entry is still reserved.
+              unfinished: !!this.conversionIntent,
+              reason: failureReason(error),
+            };
+          },
+        );
         this.conversionRun = run.then((outcome) => {
           this.conversionRun = undefined;
           this.conversionEvent(outcome);
@@ -3978,8 +4032,9 @@ export class Page {
     let identity;
     try {
       await this.ready;
-      // A coalesced content time whose timer never fired flushes now.
-      this.contentActivity?.nudge();
+      // This request is live: content effects deferred from the repository's
+      // loop, or a coalesced time whose timer never fired, run now.
+      this.contentActivity?.pump();
       // Host-only routes for the owner's Catalog. The gateway never forwards
       // /internal/* paths, so only the host namespace reaches them.
       if (url.pathname === "/internal/lifecycle-state") {
@@ -4395,6 +4450,11 @@ export class Page {
       if (!admissionRoute) return errorResponse(this.withCommentHeads(error), "page");
       if ((error.status ?? 500) >= 500) logFailure(error, "page");
       return admissionErrorResponse(error, { stage: "page", identity });
+    } finally {
+      // Still live: a change this request made (a tool edit, a save that
+      // waited for a peer's heads) was observed by now, and its flush runs
+      // on this request's hold.
+      this.contentActivity?.pump();
     }
   }
 
@@ -4816,11 +4876,13 @@ export class Page {
       case "closePolicy":
         this.recordMaintenance?.stop();
         this.contentActivity?.stop();
+        this.unwatchContent();
         this.activity?.close();
         await this.policy.close();
         for (const wire of this.wires) await wire.disconnect();
         return;
       case "deleteDocument":
+        await this.forgetContent();
         // Both documents go together: the Page and its comments.
         await this.repo.delete(this.metadata.documentId);
         if (this.commentsUuid) {
@@ -4839,6 +4901,8 @@ export class Page {
         this.deletionFinished = true;
         return;
       case "dropDocument":
+        this.contentActivity?.stop();
+        this.unwatchContent();
         this.handle = undefined;
         this.commentsHandle = undefined;
         this.commentAdmission?.reset();
@@ -5289,8 +5353,9 @@ export class Page {
           transport.free();
         }
         // Native callbacks retain this request's I/O context. Keep it alive
-        // while the resident socket can trigger authorization and storage work.
-        await disconnected;
+        // while the resident socket can trigger authorization and storage work,
+        // and run content effects for the edits it brings (watchContent).
+        await Promise.all([disconnected, this.contentActivity?.serve(disconnected)]);
       })().catch((error) => {
         if (syncAdmittedAt === undefined)
           logUsage({

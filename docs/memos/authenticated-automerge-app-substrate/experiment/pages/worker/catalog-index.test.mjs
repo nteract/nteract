@@ -31,6 +31,7 @@ import {
   sealCursor,
   sealPosition,
   titleKey,
+  titleMatches,
 } from "./catalog-index.mjs";
 
 class Storage {
@@ -1247,6 +1248,18 @@ test("access and sort are validated, and shared refuses Trash and Projects", () 
   assert.equal(parseListArguments({ access: "shared", parent_id: id(1) }).parentId, id(1));
   assert.equal(parseListArguments({ access: "shared", in_trash: false }).access, "shared");
   assert.equal(parseListArguments({ sort: "title", in_trash: true }).sort, "title");
+  assert.equal(parseListArguments({ sort: "created", in_trash: true }).sort, "created");
+  // In Trash, activity is trashing: the default lists the most recently trashed first.
+  for (const args of [
+    { in_trash: true },
+    { in_trash: true, sort: "activity" },
+    { in_trash: true, sort: null },
+  ])
+    assert.equal(parseListArguments(args).sort, "trashed", JSON.stringify(args));
+  assert.equal(parseListArguments({ in_trash: false }).sort, "activity");
+  // The trashed order is internal; callers name activity.
+  fails({ sort: "trashed" }, /sort must be/);
+  fails({ sort: "trashed", in_trash: true }, /sort must be/);
 });
 
 test("list scope names every sort, so activity cursors from earlier builds don't open", () => {
@@ -1280,6 +1293,20 @@ test("list scope names every sort, so activity cursors from earlier builds don't
     scope({ access: "owned", sort: "title" }),
     JSON.stringify([null, null, true, null, "owned", "title"]),
   );
+  // Trash's default order has its own name: earlier builds sealed Trash
+  // cursors under "content_activity", with activity_at keys.
+  assert.equal(
+    scope({ in_trash: true }),
+    JSON.stringify([null, null, true, null, null, "trashed"]),
+  );
+  assert.equal(scope({ in_trash: true }), scope({ in_trash: true, sort: "activity" }));
+  assert.equal(
+    scope({ in_trash: true, access: "owned" }),
+    JSON.stringify([null, null, true, null, "owned", "trashed"]),
+  );
+  // Created and title positions mean in Trash what they did.
+  assert.equal(scope({ in_trash: true, sort: "title" }), scope({ sort: "title" }));
+  assert.equal(scope({ in_trash: true, sort: "created" }), scope({ sort: "created" }));
   const variants = [
     {},
     { access: "owned" },
@@ -1508,6 +1535,42 @@ test("listing pages seek their index: first pages by principal, later pages by r
         assert.ok(plan.includes(`SEARCH a USING INDEX ${index} ${constraint}`), label);
         assert.ok(!plan.some((detail) => detail.includes("TEMP B-TREE")), label);
       }
+  // Trash's default order walks the owner's trashed Page rows and looks up
+  // each one's owner row by primary key.
+  for (const [after, constraint] of [
+    [null, "(owner=?)"],
+    [{ key: at(5), page_id: id(5) }, "(owner=? AND (trash_key,page_id)<(?,?))"],
+  ])
+    for (const access of [null, "owned"]) {
+      const { sql, params } = listingQuery({
+        principal: owner,
+        inTrash: true,
+        needle: access ? "al" : null,
+        after,
+        count: 50,
+        sort: "trashed",
+        access,
+      });
+      const plan = db.rows(`EXPLAIN QUERY PLAN ${sql}`, ...params).map((row) => row.detail);
+      const label = `trashed ${after ? "next" : "first"} ${access}:\n${plan.join("\n")}`;
+      assert.ok(
+        plan.includes(`SEARCH p USING INDEX pages_catalog_pages_trash ${constraint}`),
+        label,
+      );
+      assert.ok(
+        plan.includes(
+          "SEARCH a USING INDEX sqlite_autoindex_pages_catalog_access_1 (page_id=? AND principal=?)",
+        ),
+        label,
+      );
+      assert.ok(!plan.some((detail) => detail.includes("TEMP B-TREE")), label);
+    }
+  // The trashed order lists only Trash.
+  assert.throws(
+    () =>
+      listingQuery({ principal: owner, inTrash: false, after: null, count: 1, sort: "trashed" }),
+    TypeError,
+  );
 });
 
 test("access filters D1 candidates to owner or non-owner rows", async (t) => {
@@ -1896,6 +1959,186 @@ test("Trash sorts by title from D1 and from the Catalog alike", async (t) => {
   assert.deepEqual(results.index, results.catalog);
 });
 
+/** Trashed entries whose trash times tie and go missing, and whose content
+ * times run another way. */
+const TRASH_ENTRIES = [
+  // [n, trashed_at, content_updated_at]
+  [1, at(30), at(90)],
+  [2, at(50), at(10)],
+  [3, at(30), at(80)],
+  [4, undefined, at(99)],
+  [5, at(70), undefined],
+  [6, undefined, at(5)],
+];
+
+test("Trash lists the most recently trashed first from D1 and the Catalog alike, across ties, missing times and search", async (t) => {
+  const results = {};
+  for (const index of ["1", null]) {
+    await t.test(index ? "index" : "catalog", async (t) => {
+      const mode = index ? "index" : "catalog";
+      const f = await catalogFixture(t, { index });
+      const storage = f.catalog(owner).ctx.storage;
+      for (const [n, trashed, content] of TRASH_ENTRIES)
+        await storage.put(`trash/${id(n)}`, {
+          page_id: id(n),
+          title: n % 2 ? `Plan ${n}` : `Notes ${n}`,
+          created_at: at(0),
+          updated_at: at(n),
+          ...(content && { content_updated_at: content }),
+          ...(trashed && { trashed_at: trashed }),
+          trashed_by: owner,
+          trash_root_id: id(n),
+        });
+      for (let request = 0; request < 6; request++)
+        if ((await f.list(owner, { in_trash: true })).source === mode) break;
+      const walk = async (args) => {
+        const pages = [];
+        let cursor;
+        for (let request = 0; request < 10; request++) {
+          const result = await f.list(owner, {
+            in_trash: true,
+            limit: 2,
+            ...args,
+            ...(cursor && { cursor }),
+          });
+          assert.equal(result.status, 200, JSON.stringify(result.body));
+          assert.equal(result.source, mode);
+          pages.push(...result.body.pages);
+          cursor = result.body.next_cursor;
+          if (!cursor) break;
+        }
+        return pages;
+      };
+      const trashed = await walk({});
+      assert.deepEqual(
+        trashed.map((page) => page.page_id),
+        [5, 2, 3, 1, 6, 4].map(id),
+        "trash time, newest first; ties by the larger Page ID; no trash time last",
+      );
+      for (const args of [{ sort: "activity" }, { sort: null }, { access: "owned" }])
+        assert.deepEqual(
+          (await walk(args)).map((page) => page.page_id),
+          [5, 2, 3, 1, 6, 4].map(id),
+          JSON.stringify(args),
+        );
+      assert.deepEqual(
+        (await walk({ query: "plan" })).map((page) => page.page_id),
+        [5, 3, 1].map(id),
+        "search keeps the trash order",
+      );
+      for (const page of trashed) {
+        const [, time] = TRASH_ENTRIES.find(([n]) => id(n) === page.page_id);
+        assert.equal(page.trashed_at, time, page.page_id);
+      }
+      // A Trash cursor sealed under the activity scope, as earlier builds
+      // sealed it, held an activity_at key: it no longer opens.
+      const earlier = await sealCursor(
+        f.env,
+        {
+          principal: owner,
+          needle: null,
+          inTrash: true,
+          scope: JSON.stringify([null, null, true, null, null, "content_activity"]),
+        },
+        { updated_at: at(90), page_id: id(1) },
+      );
+      const refused = await f.list(owner, { in_trash: true, cursor: earlier });
+      assert.equal(refused.status, 400);
+      assert.equal(refused.body.code, "invalid_cursor");
+      results[mode] = trashed;
+    });
+  }
+  assert.deepEqual(results.index, results.catalog);
+});
+
+test("restoring a Page and trashing it again moves it to the top of Trash", async (t) => {
+  for (const index of ["1", null]) {
+    await t.test(index ? "index" : "catalog", async (t) => {
+      const mode = index ? "index" : "catalog";
+      const f = await catalogFixture(t, { index });
+      const storage = f.catalog(owner).ctx.storage;
+      const hosts = {};
+      // Page 72 was edited last, so by activity it would stay on top.
+      for (const [n, edited] of [
+        [71, at(50)],
+        [72, at(60)],
+      ]) {
+        hosts[n] = f.addPage(id(n), `Plan ${n}`);
+        await storage.put(`page/${id(n)}`, {
+          page_id: id(n),
+          title: `Plan ${n}`,
+          created_at: at(0),
+          updated_at: at(1),
+          content_updated_at: edited,
+        });
+        hosts[n].cacheTitle();
+      }
+      await f.settle();
+      for (let pass = 0; pass < 3; pass++) await f.list(owner);
+      const call = async (operation, args) =>
+        (
+          await f
+            .catalog(owner)
+            .fetch(f.request(owner, "/internal/catalog", { operation, arguments: args }))
+        ).json();
+      let requests = 0;
+      // Trash times have millisecond resolution; space the transitions so
+      // they never tie.
+      const later = () => new Promise((resolve) => setTimeout(resolve, 5));
+      const trash = async (n) => {
+        await later();
+        const result = await call("delete_page", {
+          page_id: id(n),
+          base_heads: A.getHeads(hosts[n].handle.doc()),
+          idempotency_key: `trash-again-${n}-${requests++}`,
+        });
+        assert.equal(result.state, "trashed", JSON.stringify(result));
+        await f.settle();
+      };
+      const listed = async () => {
+        for (let request = 0; request < 6; request++) {
+          const result = await f.list(owner, { in_trash: true });
+          if (result.source === mode) return result.body.pages;
+        }
+        throw Error("the listing never reached its source");
+      };
+      await trash(71);
+      await trash(72);
+      assert.deepEqual(
+        (await listed()).map((page) => page.page_id),
+        [72, 71].map(id),
+      );
+      await later();
+      const restored = await call("restore_page", {
+        page_id: id(71),
+        idempotency_key: `restore-again-71-${requests++}`,
+      });
+      assert.equal(restored.restored, true, JSON.stringify(restored));
+      await f.settle();
+      assert.deepEqual(
+        (await listed()).map((page) => page.page_id),
+        [id(72)],
+      );
+      await trash(71);
+      const pages = await listed();
+      assert.deepEqual(
+        pages.map((page) => page.page_id),
+        [71, 72].map(id),
+        "the Page trashed last is on top",
+      );
+      assert.ok(pages[0].trashed_at > pages[1].trashed_at);
+      if (index)
+        assert.deepEqual(
+          f.db.rows(
+            `SELECT page_id FROM pages_catalog_pages WHERE state = 'trashed'
+            ORDER BY trash_key DESC, page_id DESC`,
+          ),
+          [71, 72].map((n) => ({ page_id: id(n) })),
+        );
+    });
+  }
+});
+
 const columnsOf = (db, table) =>
   db.rows(`SELECT name FROM pragma_table_xinfo('${table}')`).map((row) => row.name);
 const indexesOf = (db) =>
@@ -1923,7 +2166,7 @@ function v5Report(db, pageId, { title, at: time }) {
 
 test("content activity migrates a fresh database and one at version 5, and builds without it keep working", async (t) => {
   const latest = CATALOG_MIGRATIONS.at(-1).version;
-  assert.equal(latest, 6);
+  assert.ok(latest >= 6);
   const fresh = sqliteD1(t).open();
   assert.equal(await migrateCatalogIndex(fresh), latest);
   for (const column of ["content_updated_at", "created_at", "activity_at"])
@@ -1991,6 +2234,76 @@ test("content activity migrates a fresh database and one at version 5, and build
   });
   assert.equal(access(id(2)).created_at, at(9));
   assert.deepEqual(await query("created"), [id(2), id(1)]);
+});
+
+/** The Page row writes a build that knows migrations 1-6 makes when it
+ * records a trash and a restore. */
+function v6Trash(db, pageId, trashedAt) {
+  db.sqlite
+    .prepare(
+      `UPDATE pages_catalog_pages
+      SET state = 'trashed', trashed_at = ?, updated_at = max(updated_at, ?),
+        lifecycle_revision = lifecycle_revision + 1
+      WHERE page_id = ?`,
+    )
+    .run(trashedAt, trashedAt, pageId);
+}
+function v6Restore(db, pageId, at) {
+  db.sqlite
+    .prepare(
+      `UPDATE pages_catalog_pages
+      SET state = 'active', trashed_at = NULL, updated_at = max(updated_at, ?),
+        lifecycle_revision = lifecycle_revision + 1
+      WHERE page_id = ?`,
+    )
+    .run(at, pageId);
+}
+
+test("the trash listing migrates a fresh database and one at version 6, and builds without it keep working", async (t) => {
+  const latest = CATALOG_MIGRATIONS.at(-1).version;
+  assert.equal(latest, 7);
+  const fresh = sqliteD1(t).open();
+  assert.equal(await migrateCatalogIndex(fresh), latest);
+  assert.ok(columnsOf(fresh, "pages_catalog_pages").includes("trash_key"));
+  assert.ok(indexesOf(fresh).includes("pages_catalog_pages_trash"));
+
+  // Pages a build at version 6 trashed: the migration keys them by trash time.
+  const upgraded = sqliteD1(t).open();
+  assert.equal(await migrateCatalogIndex(upgraded, CATALOG_MIGRATIONS.slice(0, 6)), 6);
+  for (const n of [1, 2, 3, 4]) v5Report(upgraded, id(n), { title: `Page ${n}`, at: at(n) });
+  v6Trash(upgraded, id(1), at(30));
+  v6Trash(upgraded, id(2), at(10));
+  v6Trash(upgraded, id(3), at(20));
+  assert.equal(await migrateCatalogIndex(upgraded), latest);
+  const keys = () =>
+    upgraded.rows("SELECT page_id, trash_key FROM pages_catalog_pages ORDER BY page_id");
+  assert.deepEqual(keys(), [
+    { page_id: id(1), trash_key: at(30) },
+    { page_id: id(2), trash_key: at(10) },
+    { page_id: id(3), trash_key: at(20) },
+    { page_id: id(4), trash_key: "" },
+  ]);
+  const trash = (sort) =>
+    queryCatalogIndex(upgraded, {
+      principal: owner,
+      inTrash: true,
+      needle: null,
+      after: null,
+      count: 10,
+      sort,
+    }).then((rows) => rows.map((row) => row.page_id));
+  assert.deepEqual(await trash("trashed"), [1, 3, 2].map(id));
+
+  // A build that knows migrations 1-6 runs against version 7: it migrates
+  // nothing, and its restores and trashes keep the trash key right.
+  assert.equal(await migrateCatalogIndex(upgraded, CATALOG_MIGRATIONS.slice(0, 6)), latest);
+  v6Restore(upgraded, id(1), at(40));
+  v6Trash(upgraded, id(2), at(50));
+  v6Trash(upgraded, id(4), at(45));
+  assert.deepEqual(await trash("trashed"), [2, 4, 3].map(id));
+  assert.equal(keys()[0].trash_key, "", "a restored Page has no trash key");
+  // Its own Trash query, the access row's activity order, still runs.
+  assert.deepEqual((await trash("activity")).sort(), [2, 3, 4].map(id));
 });
 
 test("content times only move forward: delayed reports, older full reports and new grants", async (t) => {
@@ -2179,7 +2492,7 @@ test("a shared row shows the content time its Page host reports, and only after 
         revision: 1,
         members: { [member]: { role: "viewer", generation: 1 } },
       });
-      host.contentActivity = { value: at(42), nudge() {} };
+      host.contentActivity = { value: at(42), pump() {} };
       await f.catalog(member).ctx.storage.put(`shared/${id(100)}`, {
         page_id: id(100),
         title: "Shared plan",
@@ -2342,6 +2655,12 @@ test("positions have one shape per sort, and sources refuse anything else", asyn
   const child = { page_id: id(2), updated_at: "", title_search: "", owned: false };
   assert.deepEqual(positionOf("created", child), { key: "", page_id: id(2) });
   assert.deepEqual(positionOf("title", child), { title_search: "", page_id: id(2) });
+  // A trashed position holds the trash time, or "" without one, never another time.
+  assert.deepEqual(positionOf("trashed", { ...row, trashed_at: at(4) }), {
+    key: at(4),
+    page_id: id(1),
+  });
+  assert.deepEqual(positionOf("trashed", row), { key: "", page_id: id(1) });
 
   // A raw row, an opened cursor's payload or another sort's position is a bug.
   const storage = new Storage();
@@ -2361,6 +2680,63 @@ test("positions have one shape per sort, and sources refuse anything else", asyn
     assert.deepEqual(positionOf(sort, first), positionOf(sort, row));
     assert.deepEqual(await memory.next(positionOf(sort, first), 1), []);
   }
+});
+
+test("a stored key of another type sorts last instead of failing the listing", async (t) => {
+  const numeric = Date.parse(at(99));
+  const row = { page_id: id(1), title_search: 7, created_at: numeric, trashed_at: numeric };
+  for (const sort of ["activity", "created", "trashed"])
+    assert.deepEqual(positionOf(sort, { ...row, updated_at: numeric }), {
+      key: "",
+      page_id: id(1),
+    });
+  assert.deepEqual(positionOf("title", row), { title_search: "", page_id: id(1) });
+
+  const f = await catalogFixture(t, { index: null });
+  const storage = f.catalog(owner).ctx.storage;
+  await storage.put(`page/${id(1)}`, {
+    page_id: id(1),
+    title: "One",
+    created_at: numeric,
+    updated_at: at(1),
+  });
+  await storage.put(`page/${id(2)}`, {
+    page_id: id(2),
+    title: "Two",
+    created_at: at(5),
+    updated_at: at(5),
+  });
+  await storage.put(`page/${id(3)}`, {
+    page_id: id(3),
+    title: "Three",
+    created_at: at(3),
+    updated_at: numeric,
+  });
+  for (const n of [4, 5])
+    await storage.put(`trash/${id(n)}`, {
+      page_id: id(n),
+      title: `Gone ${n}`,
+      created_at: at(0),
+      updated_at: at(0),
+      trashed_at: n === 4 ? numeric : at(9),
+      trashed_by: owner,
+      trash_root_id: id(n),
+    });
+  const walk = async (args) => {
+    const seen = [];
+    let cursor;
+    for (let request = 0; request < 10; request++) {
+      const result = await f.list(owner, { limit: 1, ...args, ...(cursor && { cursor }) });
+      assert.equal(result.status, 200, `${JSON.stringify(args)}: ${JSON.stringify(result.body)}`);
+      seen.push(...result.body.pages.map((page) => page.page_id));
+      cursor = result.body.next_cursor;
+      if (!cursor) break;
+    }
+    return seen;
+  };
+  assert.deepEqual(await walk({ sort: "created" }), [2, 3, 1].map(id));
+  assert.deepEqual(await walk({ sort: "activity" }), [2, 1, 3].map(id));
+  assert.deepEqual(await walk({ in_trash: true }), [5, 4].map(id));
 });
 
 test("listing positions seal into the payload layout every build opens", async () => {
@@ -2437,6 +2813,10 @@ test("listing positions seal into the payload layout every build opens", async (
  * limit-1 page meets more rejected rows in a row than its scan bound of 18,
  * stops at the bound and resumes from the last row it rejected. The rest are
  * scattered.
+ *
+ * The member's Trash holds the owned and vanished Pages again under their
+ * own IDs (`walkTrashId`), with trash times in a fourth order, so Trash's
+ * default sort walks past the same blocks.
  */
 const WALK_OWNED = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
 const WALK_SHARED = [101, 102, 103, 104];
@@ -2446,10 +2826,13 @@ const WALK_REVOKED = Array.from({ length: 45 }, (_, n) => 301 + n);
  * block, and the next page still meets more than 18. */
 const WALK_BLOCK = 40;
 const WALK_SORTS = ["activity", "created", "title"];
+const walkTrashId = (n) => id(1000 + n);
+/** Matches the titles whose rank has a 4: a scattered subset of every order. */
+const WALK_QUERY = "4";
 
 /** Each sort's order, top first: the vanished block, eight scattered rows,
  * the revoked block, then the rest scattered. The shuffle is seeded per sort,
- * so the three orders differ. */
+ * so the four orders differ. */
 function walkOrders() {
   const scattered = [
     ...WALK_OWNED,
@@ -2458,7 +2841,7 @@ function walkOrders() {
     ...WALK_REVOKED.slice(WALK_BLOCK),
   ];
   const ranks = {};
-  for (const [index, sort] of WALK_SORTS.entries()) {
+  for (const [index, sort] of [...WALK_SORTS, "trashed"].entries()) {
     let seed = 7 + index * 101;
     const random = () => (seed = (seed * 1103515245 + 12345) % 2147483648) / 2147483648;
     const shuffled = [...scattered];
@@ -2476,7 +2859,7 @@ function walkOrders() {
   }
   // Every ninth rank shares the previous one's key, so ties break by Page ID.
   const tied = (rank) => (rank % 9 === 4 ? rank - 1 : rank);
-  return (n) => {
+  const keys = (n) => {
     const activity = ranks.activity.get(n);
     return {
       content_updated_at: at(900 - tied(activity)),
@@ -2486,47 +2869,65 @@ function walkOrders() {
       title: `${n % 2 ? "Title" : "TITLE"} ${String(tied(ranks.title.get(n))).padStart(3, "0")}`,
     };
   };
+  /** When the Page's Trash copy was trashed. Shared Pages have none. */
+  const trashedAt = (n) => at(1300 - tied(ranks.trashed.get(n)));
+  return { keys, trashedAt };
 }
 
 test("listings past rejected candidates show every visible Page once, in order, for every sort, source, access and limit", async (t) => {
-  const keys = walkOrders();
+  const { keys, trashedAt } = walkOrders();
   const viewer = { revision: 1, members: { [member]: { role: "viewer", generation: 1 } } };
-  const expected = (sort, access) => {
-    const ids = [
-      ...(access === "shared" ? [] : WALK_OWNED),
-      ...(access === "owned" ? [] : WALK_SHARED),
-    ];
-    const rows = ids.map((n) => ({
-      ...keys(n),
-      page_id: id(n),
-      title_search: titleKey(keys(n).title),
-    }));
+  const needleOf = (query) => (query === undefined ? null : parseListArguments({ query }).needle);
+  const expected = (sort, access, { inTrash = false, query } = {}) => {
+    const ids = inTrash
+      ? WALK_OWNED
+      : [...(access === "shared" ? [] : WALK_OWNED), ...(access === "owned" ? [] : WALK_SHARED)];
+    const rows = ids
+      .filter((n) => titleMatches(keys(n).title, needleOf(query)))
+      .map((n) => ({
+        ...keys(n),
+        trashed_at: trashedAt(n),
+        page_id: inTrash ? walkTrashId(n) : id(n),
+        title_search: titleKey(keys(n).title),
+      }));
     const byPageId = (a, b) => (a.page_id < b.page_id ? -1 : 1);
+    // Trash's default order is by trash time.
+    const key = sort === "created" ? "created_at" : inTrash ? "trashed_at" : "content_updated_at";
     rows.sort((a, b) => {
       if (sort === "title") return compareText(a.title_search, b.title_search) || byPageId(a, b);
-      const key = sort === "created" ? "created_at" : "content_updated_at";
       return a[key] === b[key] ? byPageId(b, a) : a[key] < b[key] ? 1 : -1;
     });
     return rows.map((row) => row.page_id);
   };
+  const trashEntry = (n) => ({
+    page_id: walkTrashId(n),
+    ...keys(n),
+    trashed_at: trashedAt(n),
+    trashed_by: member,
+    trash_root_id: walkTrashId(n),
+  });
   for (const index of ["1", null]) {
     await t.test(index ? "index" : "catalog", async (t) => {
       const mode = index ? "index" : "catalog";
       const f = await catalogFixture(t, { index });
       const storage = f.catalog(member).ctx.storage;
-      for (const n of [...WALK_OWNED, ...WALK_VANISHED])
+      for (const n of [...WALK_OWNED, ...WALK_VANISHED]) {
         await storage.put(`page/${id(n)}`, { page_id: id(n), ...keys(n) });
+        await storage.put(`trash/${walkTrashId(n)}`, trashEntry(n));
+      }
       for (const n of WALK_SHARED) {
         const { title, content_updated_at } = keys(n);
-        f.addPage(id(n), title, viewer).contentActivity = { value: content_updated_at, nudge() {} };
+        f.addPage(id(n), title, viewer).contentActivity = { value: content_updated_at, pump() {} };
         await storage.put(`shared/${id(n)}`, { page_id: id(n), ...keys(n), shared: true });
       }
-      for (let request = 0; request < 8; request++)
+      for (let request = 0; request < 12; request++)
         if ((await f.list(member)).source === mode) break;
       await f.settle();
       // Vanished entries stay listed, so every reconcile keeps their D1 rows
       // and the fallback reads them, but the check finds nothing.
-      const vanished = new Set(WALK_VANISHED.map((n) => `page/${id(n)}`));
+      const vanished = new Set(
+        WALK_VANISHED.flatMap((n) => [`page/${id(n)}`, `trash/${walkTrashId(n)}`]),
+      );
       const get = storage.get.bind(storage);
       storage.get = async (key) => (vanished.has(key) ? undefined : get(key));
       // Revoked Pages have no host, so each check is denied. A rejection
@@ -2536,17 +2937,19 @@ test("listings past rejected candidates show every visible Page once, in order, 
         if (index)
           for (const n of WALK_VANISHED) {
             const time = keys(n);
-            await reportPageIndex(f.env, testCtx, {
-              metadata: {
-                pageId: id(n),
-                owner: member,
-                deleted: false,
-                acl: { revision: 0, members: {} },
-              },
-              title: time.title,
-              observedAt: time.created_at,
-              contentUpdatedAt: time.content_updated_at,
-            });
+            for (const trashed of [false, true])
+              await reportPageIndex(f.env, testCtx, {
+                metadata: {
+                  pageId: trashed ? walkTrashId(n) : id(n),
+                  owner: member,
+                  deleted: trashed,
+                  ...(trashed && { trash: { trashed_at: trashedAt(n) } }),
+                  acl: { revision: 0, members: {} },
+                },
+                title: time.title,
+                observedAt: time.created_at,
+                contentUpdatedAt: time.content_updated_at,
+              });
           }
         // A stale owner row marks the index dirty, and the reconcile that
         // follows re-verifies every shared row, dropping the revoked ones.
@@ -2566,36 +2969,51 @@ test("listings past rejected candidates show every visible Page once, in order, 
           }
         }
       };
-      for (const sort of WALK_SORTS)
-        for (const access of [null, "owned", "shared"])
-          for (const limit of [1, 2, 3]) {
-            const label = `${mode} ${sort} ${access ?? "all"} limit ${limit}`;
-            await reject();
-            const seen = [];
-            let empty = 0;
-            let cursor;
-            for (let request = 0; request < 80; request++) {
-              const result = await f.list(member, {
-                sort,
-                limit,
-                ...(access && { access }),
-                ...(cursor && { cursor }),
-              });
-              assert.equal(result.status, 200, `${label}: ${JSON.stringify(result.body)}`);
-              assert.equal(result.source, mode, label);
-              assert.ok(result.body.pages.length <= limit, label);
-              seen.push(...result.body.pages.map((page) => page.page_id));
-              cursor = result.body.next_cursor;
-              if (!result.body.pages.length && cursor) empty++;
-              if (!cursor) break;
-            }
-            await f.settle();
-            assert.equal(cursor, null, `${label}: the walk ended`);
-            assert.deepEqual(seen, expected(sort, access), label);
-            // A limit-1 page meets a block of rejected rows past its bound of
-            // 18 and returns an empty page with a cursor.
-            if (limit === 1) assert.ok(empty > 0, `${label}: the scan stopped at its bound`);
-          }
+      const walk = async (label, args, want) => {
+        await reject();
+        const seen = [];
+        let empty = 0;
+        let cursor;
+        for (let request = 0; request < 80; request++) {
+          const result = await f.list(member, { ...args, ...(cursor && { cursor }) });
+          assert.equal(result.status, 200, `${label}: ${JSON.stringify(result.body)}`);
+          assert.equal(result.source, mode, label);
+          assert.ok(result.body.pages.length <= args.limit, label);
+          seen.push(...result.body.pages.map((page) => page.page_id));
+          cursor = result.body.next_cursor;
+          if (!result.body.pages.length && cursor) empty++;
+          if (!cursor) break;
+        }
+        await f.settle();
+        assert.equal(cursor, null, `${label}: the walk ended`);
+        assert.deepEqual(seen, want, label);
+        // A limit-1 page meets a block of rejected rows past its bound of 18
+        // and returns an empty page with a cursor. A search walks only the
+        // block's matches, so it may not.
+        if (args.limit === 1 && args.query === undefined)
+          assert.ok(empty > 0, `${label}: the scan stopped at its bound`);
+      };
+      for (const inTrash of [false, true])
+        for (const query of [undefined, WALK_QUERY])
+          for (const sort of WALK_SORTS)
+            // Trash holds only owned Pages; shared refuses in_trash.
+            for (const access of inTrash ? [null, "owned"] : [null, "owned", "shared"])
+              for (const limit of query === undefined ? [1, 2, 3] : [1, 2]) {
+                const want = expected(sort, access, { inTrash, query });
+                if (query !== undefined && access === null)
+                  assert.ok(want.length > 1, "the search matches visible Pages");
+                await walk(
+                  `${mode}${inTrash ? " trash" : ""} ${sort} ${access ?? "all"}${query === undefined ? "" : ` query ${query}`} limit ${limit}`,
+                  {
+                    sort,
+                    limit,
+                    ...(access && { access }),
+                    ...(inTrash && { in_trash: true }),
+                    ...(query !== undefined && { query }),
+                  },
+                  want,
+                );
+              }
     });
   }
 });
