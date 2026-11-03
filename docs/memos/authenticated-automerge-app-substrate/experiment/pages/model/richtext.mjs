@@ -1758,60 +1758,117 @@ export const dataframeLabel = (title) => {
 };
 
 /**
- * Rewrite a block from agent Markdown, keeping its dataframes. Each existing
- * dataframe must appear in `source` as its own read-back line, unchanged; that
- * line becomes the original node again, unknown attrs included. A line naming
- * a dataframe the block doesn't hold stays a link, so Markdown never creates
- * one. Throws `markdownless_node` when a dataframe's line is missing or
- * edited, rather than dropping the node.
+ * Rewrite a block from agent Markdown, keeping its dataframes. Applies only
+ * when the block holds one; otherwise this is a plain Markdown rewrite, and a
+ * dataframe-like line stays a link.
+ *
+ * Each dataframe must appear in `source` as its read-back line, unchanged, in
+ * the same place in the block's structure: at the top level, or inside the
+ * same kind of quote or list item it's stored in. That line becomes the
+ * original node again, unknown attrs included. Lines may move among their
+ * siblings. Throws `markdownless_node`, rather than dropping or inventing a
+ * node, when a line:
+ *
+ * - moves into or out of a quote, list or table, or sits in a heading;
+ * - is missing or edited;
+ * - outnumbers the block's dataframes with that line;
+ * - reads like a dataframe the block doesn't hold.
  */
 export function setRichMarkdownKeepingNodes(doc, id, source) {
   const block = doc.blocks[id];
-  const existing = isRich(block)
-    ? richDoc(block).content.content.flatMap(function collect(node) {
-        return node.type.name === "dataframe" ? [node] : node.content.content.flatMap(collect);
-      })
-    : [];
+  // Each dataframe with its container path: the node types from the block's
+  // root down to it, "" at the top level.
+  const existing = [];
+  if (isRich(block))
+    (function collect(node, path) {
+      node.forEach((child) => {
+        if (child.type.name === "dataframe") existing.push({ node: child, path });
+        else if (!child.isTextblock && !child.isLeaf)
+          collect(child, path ? `${path}/${child.type.name}` : child.type.name);
+      });
+    })(richDoc(block), "");
   // Every dataframe counts, readable or not: one whose attrs this build can't
   // read never matches a line, so the rewrite is refused rather than dropping
   // it.
   if (!existing.length) return setRichMarkdown(doc, id, source);
   const tree = parseAgentMarkdown(source);
   const unmatched = [...existing];
-  const restore = (node) => {
-    const only = node.type.name === "paragraph" && node.childCount === 1 ? node.firstChild : null;
+  const refuse = (message) => {
+    throw Object.assign(Error(message), { code: "markdownless_node" });
+  };
+  // Look-alike lines the walk found; the most specific one is reported.
+  const problems = new Set();
+  // The link a textblock holds when its whole text is one link: the shape of
+  // a dataframe's read-back line. Table cells hold their text directly.
+  const lineLink = (node) => {
+    const only = node.isTextblock && node.childCount === 1 ? node.firstChild : null;
     const link = only?.isText ? only.marks.find((mark) => mark.type.name === "link") : null;
-    if (link) {
-      const index = unmatched.findIndex(
-        (candidate) =>
-          candidate.attrs.src === link.attrs.href &&
-          dataframeLabel(candidate.attrs.title) === only.text,
-      );
+    return link ? { href: link.attrs.href, text: only.text } : null;
+  };
+  const sameNode = (candidate, line) =>
+    candidate.attrs.src === line.href && dataframeLabel(candidate.attrs.title) === line.text;
+  // A line that reads as a dataframe's read-back line: a "Dataframe" label
+  // linking a Page asset. Kept as a plain link it would read exactly like the
+  // node, so it's refused unless it brings a node back.
+  const looksLikeNode = (line) =>
+    /^Dataframe(: .*)?$/.test(line.text) && parseAssetPath(line.href) !== null;
+  const restore = (node, path) => {
+    const line = node.isTextblock ? lineLink(node) : null;
+    if (line) {
+      // Only a paragraph can stand where a dataframe was: a heading, code
+      // block or table cell can't hold one.
+      const index =
+        node.type.name === "paragraph"
+          ? unmatched.findIndex((entry) => entry.path === path && sameNode(entry.node, line))
+          : -1;
       if (index !== -1) {
         const [original] = unmatched.splice(index, 1);
         // The original attrs, unknown ones included (the adapter's
         // unknownAttrs); pageSpans stores every string attr immutable.
-        return schema.node("dataframe", { ...original.attrs, isAmgBlock: true });
+        return schema.node("dataframe", { ...original.node.attrs, isAmgBlock: true });
       }
+      const same = existing.filter((entry) => sameNode(entry.node, line));
+      if (same.some((entry) => entry.path === path && node.type.name === "paragraph"))
+        problems.add("duplicate");
+      else if (same.length) problems.add("moved");
+      else if (looksLikeNode(line)) problems.add("foreign");
+      return node;
     }
     if (node.isLeaf || node.isTextblock) return node;
     const children = [];
-    node.forEach((child) => children.push(restore(child)));
+    const inner = node === tree ? "" : path ? `${path}/${node.type.name}` : node.type.name;
+    node.forEach((child) => children.push(restore(child, inner)));
     return node.copy(node.content.constructor.from(children));
   };
-  const kept = restore(tree);
-  if (unmatched.length)
+  const kept = restore(tree, "");
+  if (problems.has("moved"))
+    refuse(
+      "A dataframe's line can't go inside a quote, list or table, into a heading, or out of the quote or list item it's stored in. Keep it where read_page shows it; it may move among its neighbours.",
+    );
+  if (unmatched.length) {
+    const line = (node) =>
+      readDataframe(node.attrs)
+        ? `[${dataframeLabel(node.attrs.title)}](${node.attrs.src})`
+        : unknownNodeNotice("dataframe");
+    const lines = [...new Set(unmatched.map((entry) => line(entry.node)))];
+    const counted = lines.map((text) => {
+      const total = existing.filter((entry) => line(entry.node) === text).length;
+      return total > 1 ? `${text} (the block holds ${total}; keep one line for each)` : text;
+    });
     throw Object.assign(
       Error(
-        `This block holds ${unmatched.length === 1 ? "a dataframe" : `${unmatched.length} dataframes`}, which ${unmatched.length === 1 ? "has" : "have"} no Markdown form. Keep ${unmatched.length === 1 ? "its line" : "each line"} unchanged to keep ${unmatched.length === 1 ? "it" : "them"}: ${unmatched
-          .map((node) =>
-            readDataframe(node.attrs)
-              ? `[${dataframeLabel(node.attrs.title)}](${node.attrs.src})`
-              : unknownNodeNotice("dataframe"),
-          )
-          .join(", ")}. To remove one, use delete_block on a block that holds only it.`,
+        `This block holds ${unmatched.length === 1 ? "a dataframe" : `${unmatched.length} dataframes`} with no line in your Markdown. A dataframe has no Markdown form; keep its line unchanged to keep it: ${counted.join(", ")}. To remove one, use delete_block on a block that holds only it.`,
       ),
       { code: "markdownless_node" },
+    );
+  }
+  if (problems.has("duplicate"))
+    refuse(
+      "A dataframe's line appears more times than the block has dataframes with that line. Each dataframe keeps exactly one line; to copy one, use insert_node with its asset_id.",
+    );
+  if (problems.has("foreign"))
+    refuse(
+      "This line reads as a dataframe this block doesn't hold. Markdown can't create or move a dataframe; use insert_node with its asset_id.",
     );
   const spans = pageSpans(kept);
   A.updateSpans(doc, textPath(id), spans, updateSpansConfig);

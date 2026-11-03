@@ -358,6 +358,102 @@ test("deleting a Page stops recording, detaches the listener and forgets the sto
   assert.equal(await h.storage.get(CONTENT_ACTIVITY_KEY), undefined);
 });
 
+test("Trash never stops the recorder, so a restored Page keeps recording", async (t) => {
+  const h = await host(t);
+  const page = await created(h);
+  const read = await h.tool(page, "read_page", { comments: "none" });
+  const trashed = await h.call(page, "/internal/trash", {
+    page_id: pageId,
+    base_heads: read.body.heads,
+    idempotency_key: "content-activity-host-trash",
+  });
+  assert.equal(trashed.status, 200, JSON.stringify(trashed.body));
+  assert.notEqual(page.contentActivity.state.name, "stopped");
+  const restored = await h.call(page, "/internal/restore", {
+    page_id: pageId,
+    idempotency_key: "content-activity-host-restore",
+  });
+  assert.equal(restored.status, 200, JSON.stringify(restored.body));
+  assert.notEqual(page.contentActivity.state.name, "stopped");
+  const again = await h.tool(page, "read_page", { comments: "none" });
+  const edit = await h.tool(page, "edit_page", {
+    base_heads: again.body.heads,
+    idempotency_key: "content-activity-host-after-restore",
+    operations: [{ op: "insert_markdown", markdown: "Back from Trash." }],
+  });
+  assert.equal(edit.status, 200, JSON.stringify(edit.body));
+  await h.settle();
+  assert.ok(page.contentActivity.value);
+  assert.equal(h.ownerRow(), page.contentActivity.value);
+  assert.equal(h.contentReports().length, 1);
+});
+
+test("a tombstone forgets the stored time and title projection, as a purge does", async (t) => {
+  const h = await host(t);
+  const page = await created(h);
+  const read = await h.tool(page, "read_page", { comments: "none" });
+  await h.tool(page, "edit_page", {
+    base_heads: read.body.heads,
+    idempotency_key: "content-activity-host-tombstone-edit",
+    operations: [{ op: "insert_markdown", markdown: "Soon gone." }],
+  });
+  await h.settle();
+  assert.ok(await h.storage.get(CONTENT_ACTIVITY_KEY));
+  assert.ok(await h.storage.get("host/title-projection"));
+  const handle = page.handle;
+  await page.applyLifecycle([{ type: "dropDocument" }], {});
+  assert.equal(page.contentActivity.state.name, "stopped");
+  assert.equal(handle.listenerCount("change"), 0);
+  assert.equal(await h.storage.get(CONTENT_ACTIVITY_KEY), undefined);
+  assert.equal(await h.storage.get("host/title-projection"), undefined);
+});
+
+test("a restarted host projects an unchanged title with the time it first observed it", async (t) => {
+  const h = await host(t);
+  const first = await created(h);
+  const projections = () => h.calls.filter((entry) => entry.path === "/internal/projection");
+  const [initial] = projections();
+  assert.equal(initial.body.keep_time, true);
+  const rowTimes = () =>
+    h.db.rows(
+      `SELECT a.updated_at AS access, p.updated_at AS page
+      FROM pages_catalog_access a JOIN pages_catalog_pages p USING (page_id)`,
+    );
+  const before = rowTimes();
+  first.contentActivity.stop();
+  first.unwatchContent();
+  await first.repo.shutdown();
+  await first.backend.close();
+  first.signer.free();
+  first.repo = first.backend = first.signer = undefined;
+  await new Promise((resolve) => setTimeout(resolve, 5));
+
+  const page = await h.open();
+  const seen = projections().length;
+  assert.equal((await h.tool(page, "read_page", { comments: "none" })).status, 200);
+  await h.settle();
+  const repeated = projections().slice(seen);
+  assert.equal(repeated.length, 1, "the restart re-projects, as the first check always has");
+  assert.equal(repeated[0].body.observed_at, initial.body.observed_at);
+  assert.equal(page.titleObservedAt, initial.body.observed_at);
+  assert.deepEqual(rowTimes(), before, "the index row keeps its time");
+
+  // A title change is a new observation.
+  const read = await h.tool(page, "read_page", { comments: "none" });
+  const renamed = await h.tool(page, "edit_page", {
+    base_heads: read.body.heads,
+    idempotency_key: "content-activity-host-rename",
+    operations: [{ op: "set_title", title: "Launch plan, renamed" }],
+  });
+  assert.equal(renamed.status, 200, JSON.stringify(renamed.body));
+  await h.tool(page, "read_page", { comments: "none" });
+  await h.settle();
+  const changed = projections().at(-1);
+  assert.equal(changed.body.title, "Launch plan, renamed");
+  assert.ok(changed.body.observed_at > initial.body.observed_at);
+  assert.ok(rowTimes()[0].access > before[0].access);
+});
+
 test("a host whose handle has no event API fails loudly under test", async (t) => {
   const h = await host(t);
   const page = await created(h);

@@ -1,0 +1,1057 @@
+{
+  "machine": "dataframe-table",
+  "description": "One dataframe table's renderer lifecycle: viewport-gated loading, parking across selection moves, and generation-guarded timers and loads (viewer/dataframe-table-machine.mjs).",
+  "states": [
+    "idle",
+    "waiting",
+    "scheduled",
+    "loading",
+    "mounted",
+    "parked",
+    "failed"
+  ],
+  "events": [
+    "connect",
+    "disconnect",
+    "visible",
+    "hidden",
+    "timer",
+    "parkExpired",
+    "loaded",
+    "failed"
+  ],
+  "unreachable": [
+    [
+      "idle",
+      "timer",
+      "No timer of this kind is armed in this state"
+    ],
+    [
+      "waiting",
+      "timer",
+      "No timer of this kind is armed in this state"
+    ],
+    [
+      "loading",
+      "timer",
+      "No timer of this kind is armed in this state"
+    ],
+    [
+      "mounted",
+      "timer",
+      "No timer of this kind is armed in this state"
+    ],
+    [
+      "parked",
+      "timer",
+      "No timer of this kind is armed in this state"
+    ],
+    [
+      "failed",
+      "timer",
+      "No timer of this kind is armed in this state"
+    ],
+    [
+      "idle",
+      "parkExpired",
+      "No timer of this kind is armed in this state"
+    ],
+    [
+      "waiting",
+      "parkExpired",
+      "No timer of this kind is armed in this state"
+    ],
+    [
+      "scheduled",
+      "parkExpired",
+      "No timer of this kind is armed in this state"
+    ],
+    [
+      "loading",
+      "parkExpired",
+      "No timer of this kind is armed in this state"
+    ],
+    [
+      "mounted",
+      "parkExpired",
+      "No timer of this kind is armed in this state"
+    ],
+    [
+      "failed",
+      "parkExpired",
+      "No timer of this kind is armed in this state"
+    ]
+  ],
+  "cases": {
+    "loading/failed": [
+      "current",
+      "stale"
+    ],
+    "loading/loaded": [
+      "current",
+      "stale"
+    ],
+    "parked/parkExpired": [
+      "current",
+      "stale"
+    ],
+    "scheduled/timer": [
+      "current",
+      "stale"
+    ]
+  },
+  "rows": [
+    {
+      "label": "idle \u00d7 connect",
+      "state": {
+        "name": "idle",
+        "generation": 3
+      },
+      "event": {
+        "type": "connect"
+      },
+      "expect": {
+        "state": {
+          "name": "waiting",
+          "generation": 4
+        },
+        "effects": [
+          {
+            "type": "showStatus",
+            "status": "waiting"
+          },
+          {
+            "type": "observe"
+          }
+        ]
+      }
+    },
+    {
+      "label": "waiting \u00d7 connect",
+      "state": {
+        "name": "waiting",
+        "generation": 3
+      },
+      "event": {
+        "type": "connect"
+      },
+      "expect": {
+        "state": {
+          "name": "waiting",
+          "generation": 3
+        },
+        "effects": [],
+        "rejected": "The table is already connected"
+      }
+    },
+    {
+      "label": "scheduled \u00d7 connect",
+      "state": {
+        "name": "scheduled",
+        "generation": 3
+      },
+      "event": {
+        "type": "connect"
+      },
+      "expect": {
+        "state": {
+          "name": "scheduled",
+          "generation": 3
+        },
+        "effects": [],
+        "rejected": "The table is already connected"
+      }
+    },
+    {
+      "label": "loading \u00d7 connect",
+      "state": {
+        "name": "loading",
+        "generation": 3
+      },
+      "event": {
+        "type": "connect"
+      },
+      "expect": {
+        "state": {
+          "name": "loading",
+          "generation": 3
+        },
+        "effects": [],
+        "rejected": "The table is already connected"
+      }
+    },
+    {
+      "label": "mounted \u00d7 connect",
+      "state": {
+        "name": "mounted",
+        "generation": 3
+      },
+      "event": {
+        "type": "connect"
+      },
+      "expect": {
+        "state": {
+          "name": "mounted",
+          "generation": 3
+        },
+        "effects": [],
+        "rejected": "The table is already connected"
+      }
+    },
+    {
+      "label": "failed \u00d7 connect",
+      "state": {
+        "name": "failed",
+        "generation": 3
+      },
+      "event": {
+        "type": "connect"
+      },
+      "expect": {
+        "state": {
+          "name": "failed",
+          "generation": 3
+        },
+        "effects": [],
+        "rejected": "The table is already connected"
+      }
+    },
+    {
+      "label": "parked \u00d7 connect",
+      "state": {
+        "name": "parked",
+        "generation": 3
+      },
+      "event": {
+        "type": "connect"
+      },
+      "expect": {
+        "state": {
+          "name": "mounted",
+          "generation": 3
+        },
+        "effects": [
+          {
+            "type": "clearTimer"
+          },
+          {
+            "type": "markMoved"
+          }
+        ]
+      }
+    },
+    {
+      "label": "idle \u00d7 disconnect",
+      "state": {
+        "name": "idle",
+        "generation": 3
+      },
+      "event": {
+        "type": "disconnect"
+      },
+      "expect": {
+        "state": {
+          "name": "idle",
+          "generation": 3
+        },
+        "effects": [],
+        "rejected": "The table isn't connected"
+      }
+    },
+    {
+      "label": "waiting \u00d7 disconnect",
+      "state": {
+        "name": "waiting",
+        "generation": 3
+      },
+      "event": {
+        "type": "disconnect"
+      },
+      "expect": {
+        "state": {
+          "name": "idle",
+          "generation": 4
+        },
+        "effects": [
+          {
+            "type": "unobserve"
+          }
+        ]
+      }
+    },
+    {
+      "label": "scheduled \u00d7 disconnect",
+      "state": {
+        "name": "scheduled",
+        "generation": 3
+      },
+      "event": {
+        "type": "disconnect"
+      },
+      "expect": {
+        "state": {
+          "name": "idle",
+          "generation": 4
+        },
+        "effects": [
+          {
+            "type": "clearTimer"
+          },
+          {
+            "type": "unobserve"
+          }
+        ]
+      }
+    },
+    {
+      "label": "loading \u00d7 disconnect",
+      "state": {
+        "name": "loading",
+        "generation": 3
+      },
+      "event": {
+        "type": "disconnect"
+      },
+      "expect": {
+        "state": {
+          "name": "idle",
+          "generation": 4
+        },
+        "effects": []
+      }
+    },
+    {
+      "label": "mounted \u00d7 disconnect",
+      "state": {
+        "name": "mounted",
+        "generation": 3
+      },
+      "event": {
+        "type": "disconnect"
+      },
+      "expect": {
+        "state": {
+          "name": "parked",
+          "generation": 3
+        },
+        "effects": [
+          {
+            "type": "startTimer",
+            "timer": "park",
+            "generation": 3
+          }
+        ]
+      }
+    },
+    {
+      "label": "parked \u00d7 disconnect",
+      "state": {
+        "name": "parked",
+        "generation": 3
+      },
+      "event": {
+        "type": "disconnect"
+      },
+      "expect": {
+        "state": {
+          "name": "idle",
+          "generation": 4
+        },
+        "effects": [
+          {
+            "type": "clearTimer"
+          },
+          {
+            "type": "destroy"
+          }
+        ]
+      }
+    },
+    {
+      "label": "failed \u00d7 disconnect",
+      "state": {
+        "name": "failed",
+        "generation": 3
+      },
+      "event": {
+        "type": "disconnect"
+      },
+      "expect": {
+        "state": {
+          "name": "idle",
+          "generation": 4
+        },
+        "effects": []
+      }
+    },
+    {
+      "label": "idle \u00d7 visible",
+      "state": {
+        "name": "idle",
+        "generation": 3
+      },
+      "event": {
+        "type": "visible"
+      },
+      "expect": {
+        "state": {
+          "name": "idle",
+          "generation": 3
+        },
+        "effects": [],
+        "rejected": "Nothing is watching the table's visibility"
+      }
+    },
+    {
+      "label": "idle \u00d7 hidden",
+      "state": {
+        "name": "idle",
+        "generation": 3
+      },
+      "event": {
+        "type": "hidden"
+      },
+      "expect": {
+        "state": {
+          "name": "idle",
+          "generation": 3
+        },
+        "effects": [],
+        "rejected": "Nothing is watching the table's visibility"
+      }
+    },
+    {
+      "label": "waiting \u00d7 visible",
+      "state": {
+        "name": "waiting",
+        "generation": 3
+      },
+      "event": {
+        "type": "visible"
+      },
+      "expect": {
+        "state": {
+          "name": "scheduled",
+          "generation": 3
+        },
+        "effects": [
+          {
+            "type": "startTimer",
+            "timer": "delay",
+            "generation": 3
+          }
+        ]
+      }
+    },
+    {
+      "label": "waiting \u00d7 hidden",
+      "state": {
+        "name": "waiting",
+        "generation": 3
+      },
+      "event": {
+        "type": "hidden"
+      },
+      "expect": {
+        "state": {
+          "name": "waiting",
+          "generation": 3
+        },
+        "effects": [],
+        "rejected": "The table is already away from the viewport"
+      }
+    },
+    {
+      "label": "scheduled \u00d7 visible",
+      "state": {
+        "name": "scheduled",
+        "generation": 3
+      },
+      "event": {
+        "type": "visible"
+      },
+      "expect": {
+        "state": {
+          "name": "scheduled",
+          "generation": 3
+        },
+        "effects": [],
+        "rejected": "The table is already near the viewport"
+      }
+    },
+    {
+      "label": "scheduled \u00d7 hidden",
+      "state": {
+        "name": "scheduled",
+        "generation": 3
+      },
+      "event": {
+        "type": "hidden"
+      },
+      "expect": {
+        "state": {
+          "name": "waiting",
+          "generation": 3
+        },
+        "effects": [
+          {
+            "type": "clearTimer"
+          }
+        ]
+      }
+    },
+    {
+      "label": "loading \u00d7 visible",
+      "state": {
+        "name": "loading",
+        "generation": 3
+      },
+      "event": {
+        "type": "visible"
+      },
+      "expect": {
+        "state": {
+          "name": "loading",
+          "generation": 3
+        },
+        "effects": [],
+        "rejected": "Nothing is watching the table's visibility"
+      }
+    },
+    {
+      "label": "loading \u00d7 hidden",
+      "state": {
+        "name": "loading",
+        "generation": 3
+      },
+      "event": {
+        "type": "hidden"
+      },
+      "expect": {
+        "state": {
+          "name": "loading",
+          "generation": 3
+        },
+        "effects": [],
+        "rejected": "Nothing is watching the table's visibility"
+      }
+    },
+    {
+      "label": "mounted \u00d7 visible",
+      "state": {
+        "name": "mounted",
+        "generation": 3
+      },
+      "event": {
+        "type": "visible"
+      },
+      "expect": {
+        "state": {
+          "name": "mounted",
+          "generation": 3
+        },
+        "effects": [],
+        "rejected": "Nothing is watching the table's visibility"
+      }
+    },
+    {
+      "label": "mounted \u00d7 hidden",
+      "state": {
+        "name": "mounted",
+        "generation": 3
+      },
+      "event": {
+        "type": "hidden"
+      },
+      "expect": {
+        "state": {
+          "name": "mounted",
+          "generation": 3
+        },
+        "effects": [],
+        "rejected": "Nothing is watching the table's visibility"
+      }
+    },
+    {
+      "label": "parked \u00d7 visible",
+      "state": {
+        "name": "parked",
+        "generation": 3
+      },
+      "event": {
+        "type": "visible"
+      },
+      "expect": {
+        "state": {
+          "name": "parked",
+          "generation": 3
+        },
+        "effects": [],
+        "rejected": "Nothing is watching the table's visibility"
+      }
+    },
+    {
+      "label": "parked \u00d7 hidden",
+      "state": {
+        "name": "parked",
+        "generation": 3
+      },
+      "event": {
+        "type": "hidden"
+      },
+      "expect": {
+        "state": {
+          "name": "parked",
+          "generation": 3
+        },
+        "effects": [],
+        "rejected": "Nothing is watching the table's visibility"
+      }
+    },
+    {
+      "label": "failed \u00d7 visible",
+      "state": {
+        "name": "failed",
+        "generation": 3
+      },
+      "event": {
+        "type": "visible"
+      },
+      "expect": {
+        "state": {
+          "name": "failed",
+          "generation": 3
+        },
+        "effects": [],
+        "rejected": "Nothing is watching the table's visibility"
+      }
+    },
+    {
+      "label": "failed \u00d7 hidden",
+      "state": {
+        "name": "failed",
+        "generation": 3
+      },
+      "event": {
+        "type": "hidden"
+      },
+      "expect": {
+        "state": {
+          "name": "failed",
+          "generation": 3
+        },
+        "effects": [],
+        "rejected": "Nothing is watching the table's visibility"
+      }
+    },
+    {
+      "label": "scheduled \u00d7 timer (current)",
+      "state": {
+        "name": "scheduled",
+        "generation": 3
+      },
+      "event": {
+        "type": "timer",
+        "generation": 3
+      },
+      "case": "current",
+      "expect": {
+        "state": {
+          "name": "loading",
+          "generation": 3
+        },
+        "effects": [
+          {
+            "type": "unobserve"
+          },
+          {
+            "type": "showStatus",
+            "status": "loading"
+          },
+          {
+            "type": "load",
+            "generation": 3
+          }
+        ]
+      }
+    },
+    {
+      "label": "scheduled \u00d7 timer (stale)",
+      "state": {
+        "name": "scheduled",
+        "generation": 3
+      },
+      "event": {
+        "type": "timer",
+        "generation": 2
+      },
+      "case": "stale",
+      "expect": {
+        "state": {
+          "name": "scheduled",
+          "generation": 3
+        },
+        "effects": [],
+        "rejected": "This settled for an older connect"
+      }
+    },
+    {
+      "label": "parked \u00d7 parkExpired (current)",
+      "state": {
+        "name": "parked",
+        "generation": 3
+      },
+      "event": {
+        "type": "parkExpired",
+        "generation": 3
+      },
+      "case": "current",
+      "expect": {
+        "state": {
+          "name": "idle",
+          "generation": 4
+        },
+        "effects": [
+          {
+            "type": "destroy"
+          }
+        ]
+      }
+    },
+    {
+      "label": "parked \u00d7 parkExpired (stale)",
+      "state": {
+        "name": "parked",
+        "generation": 3
+      },
+      "event": {
+        "type": "parkExpired",
+        "generation": 2
+      },
+      "case": "stale",
+      "expect": {
+        "state": {
+          "name": "parked",
+          "generation": 3
+        },
+        "effects": [],
+        "rejected": "This settled for an older connect"
+      }
+    },
+    {
+      "label": "loading \u00d7 loaded (current)",
+      "state": {
+        "name": "loading",
+        "generation": 3
+      },
+      "event": {
+        "type": "loaded",
+        "generation": 3
+      },
+      "case": "current",
+      "expect": {
+        "state": {
+          "name": "mounted",
+          "generation": 3
+        },
+        "effects": [
+          {
+            "type": "mount",
+            "generation": 3
+          }
+        ]
+      }
+    },
+    {
+      "label": "loading \u00d7 loaded (stale)",
+      "state": {
+        "name": "loading",
+        "generation": 3
+      },
+      "event": {
+        "type": "loaded",
+        "generation": 2
+      },
+      "case": "stale",
+      "expect": {
+        "state": {
+          "name": "loading",
+          "generation": 3
+        },
+        "effects": [],
+        "rejected": "This settled for an older connect"
+      }
+    },
+    {
+      "label": "loading \u00d7 failed (current)",
+      "state": {
+        "name": "loading",
+        "generation": 3
+      },
+      "event": {
+        "type": "failed",
+        "generation": 3
+      },
+      "case": "current",
+      "expect": {
+        "state": {
+          "name": "failed",
+          "generation": 3
+        },
+        "effects": [
+          {
+            "type": "fail"
+          }
+        ]
+      }
+    },
+    {
+      "label": "loading \u00d7 failed (stale)",
+      "state": {
+        "name": "loading",
+        "generation": 3
+      },
+      "event": {
+        "type": "failed",
+        "generation": 2
+      },
+      "case": "stale",
+      "expect": {
+        "state": {
+          "name": "loading",
+          "generation": 3
+        },
+        "effects": [],
+        "rejected": "This settled for an older connect"
+      }
+    },
+    {
+      "label": "idle \u00d7 loaded",
+      "state": {
+        "name": "idle",
+        "generation": 3
+      },
+      "event": {
+        "type": "loaded",
+        "generation": 2
+      },
+      "expect": {
+        "state": {
+          "name": "idle",
+          "generation": 3
+        },
+        "effects": [],
+        "rejected": "No load is in flight for this table"
+      }
+    },
+    {
+      "label": "idle \u00d7 failed",
+      "state": {
+        "name": "idle",
+        "generation": 3
+      },
+      "event": {
+        "type": "failed",
+        "generation": 2
+      },
+      "expect": {
+        "state": {
+          "name": "idle",
+          "generation": 3
+        },
+        "effects": [],
+        "rejected": "No load is in flight for this table"
+      }
+    },
+    {
+      "label": "waiting \u00d7 loaded",
+      "state": {
+        "name": "waiting",
+        "generation": 3
+      },
+      "event": {
+        "type": "loaded",
+        "generation": 2
+      },
+      "expect": {
+        "state": {
+          "name": "waiting",
+          "generation": 3
+        },
+        "effects": [],
+        "rejected": "No load is in flight for this table"
+      }
+    },
+    {
+      "label": "waiting \u00d7 failed",
+      "state": {
+        "name": "waiting",
+        "generation": 3
+      },
+      "event": {
+        "type": "failed",
+        "generation": 2
+      },
+      "expect": {
+        "state": {
+          "name": "waiting",
+          "generation": 3
+        },
+        "effects": [],
+        "rejected": "No load is in flight for this table"
+      }
+    },
+    {
+      "label": "scheduled \u00d7 loaded",
+      "state": {
+        "name": "scheduled",
+        "generation": 3
+      },
+      "event": {
+        "type": "loaded",
+        "generation": 2
+      },
+      "expect": {
+        "state": {
+          "name": "scheduled",
+          "generation": 3
+        },
+        "effects": [],
+        "rejected": "No load is in flight for this table"
+      }
+    },
+    {
+      "label": "scheduled \u00d7 failed",
+      "state": {
+        "name": "scheduled",
+        "generation": 3
+      },
+      "event": {
+        "type": "failed",
+        "generation": 2
+      },
+      "expect": {
+        "state": {
+          "name": "scheduled",
+          "generation": 3
+        },
+        "effects": [],
+        "rejected": "No load is in flight for this table"
+      }
+    },
+    {
+      "label": "mounted \u00d7 loaded",
+      "state": {
+        "name": "mounted",
+        "generation": 3
+      },
+      "event": {
+        "type": "loaded",
+        "generation": 2
+      },
+      "expect": {
+        "state": {
+          "name": "mounted",
+          "generation": 3
+        },
+        "effects": [],
+        "rejected": "No load is in flight for this table"
+      }
+    },
+    {
+      "label": "mounted \u00d7 failed",
+      "state": {
+        "name": "mounted",
+        "generation": 3
+      },
+      "event": {
+        "type": "failed",
+        "generation": 2
+      },
+      "expect": {
+        "state": {
+          "name": "mounted",
+          "generation": 3
+        },
+        "effects": [],
+        "rejected": "No load is in flight for this table"
+      }
+    },
+    {
+      "label": "parked \u00d7 loaded",
+      "state": {
+        "name": "parked",
+        "generation": 3
+      },
+      "event": {
+        "type": "loaded",
+        "generation": 2
+      },
+      "expect": {
+        "state": {
+          "name": "parked",
+          "generation": 3
+        },
+        "effects": [],
+        "rejected": "No load is in flight for this table"
+      }
+    },
+    {
+      "label": "parked \u00d7 failed",
+      "state": {
+        "name": "parked",
+        "generation": 3
+      },
+      "event": {
+        "type": "failed",
+        "generation": 2
+      },
+      "expect": {
+        "state": {
+          "name": "parked",
+          "generation": 3
+        },
+        "effects": [],
+        "rejected": "No load is in flight for this table"
+      }
+    },
+    {
+      "label": "failed \u00d7 loaded",
+      "state": {
+        "name": "failed",
+        "generation": 3
+      },
+      "event": {
+        "type": "loaded",
+        "generation": 2
+      },
+      "expect": {
+        "state": {
+          "name": "failed",
+          "generation": 3
+        },
+        "effects": [],
+        "rejected": "No load is in flight for this table"
+      }
+    },
+    {
+      "label": "failed \u00d7 failed",
+      "state": {
+        "name": "failed",
+        "generation": 3
+      },
+      "event": {
+        "type": "failed",
+        "generation": 2
+      },
+      "expect": {
+        "state": {
+          "name": "failed",
+          "generation": 3
+        },
+        "effects": [],
+        "rejected": "No load is in flight for this table"
+      }
+    }
+  ]
+}

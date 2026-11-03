@@ -26,15 +26,18 @@ import { defineMachine, reject } from "../shared/machine.mjs";
  * `attempt` (failed flushes in a row):
  * - idle: nothing newer than `durable` waits.
  * - waiting: `latest` waits for `dueAt` (window end or retry backoff).
+ * - flushQueued: `latest` is due, and a flush waits for a live request to
+ *   start it. A change decides it; only a live request may run it.
  * - flushing: a flush of `value` is running.
- * - stopped: the host closed this Page (Trash, purge, deletion). Terminal:
+ * - stopped: the Page is being deleted, by a purge or a tombstone. Terminal:
  *   every later event is refused, so a late flush outcome, change or nudge
- *   can't arm a timer or write into a deleted Page.
+ *   can't arm a timer or write into a deleted Page. Trash never stops it: a
+ *   restored Page keeps recording.
  *
  * Events: `restored` (the stored time, at startup, at `now`), `changed`
- * (content changed at `now`), `due` (the timer, or a request nudging a lost
- * one, at `now`), `flushed` and `failed` (the running flush's outcome, at
- * `now`), `stop`.
+ * (content changed at `now`), `start` (a live request starts a queued flush),
+ * `due` (the timer, or a request nudging a lost one, at `now`), `flushed` and
+ * `failed` (the running flush's outcome, at `now`), `stop`.
  *
  * Effects: `arm` a timer for `at`; `flush` `value`; `cancel` the timer and
  * anything not yet run.
@@ -46,9 +49,10 @@ import { defineMachine, reject } from "../shared/machine.mjs";
  * the context of the request that opened the document, long finished. A flush
  * started from the listener stores its time, then its D1 batch, its Catalog
  * call and their timeouts never settle, and the machine waits in `flushing`
- * for good. So `changed()` only steps the machine and defers its effects;
- * they run from a live request: `pump()` at a request's edges, and `serve()`,
- * a loop a resident socket's request runs while it's open. A window timer
+ * for good. So `changed` never starts a flush: it queues one
+ * (`flushQueued`), and the runner defers the timer it arms. Both run from a
+ * live request: `pump()` at a request's edges, and `serve()`, a loop a
+ * resident socket's request runs while it's open. A window timer
  * armed from a live request is held on it until it fires; a longer retry
  * backoff isn't, and the next request or socket wake nudges it.
  */
@@ -108,16 +112,19 @@ const at = (event) => ms(event.now, "now");
 
 export const contentActivityMachine = defineMachine({
   name: "content-activity",
-  states: ["idle", "waiting", "flushing", "stopped"],
-  events: ["restored", "changed", "due", "flushed", "failed", "stop"],
+  states: ["idle", "waiting", "flushQueued", "flushing", "stopped"],
+  events: ["restored", "changed", "start", "due", "flushed", "failed", "stop"],
   initial: { name: "idle", latest: null, durable: null, flushedAt: null, attempt: 0 },
   unreachable: [
     ["waiting", "restored", "the host restores before it observes a change"],
+    ["flushQueued", "restored", "the host restores before it observes a change"],
     ["flushing", "restored", "the host restores before it observes a change"],
     ["idle", "flushed", "only a running flush reports an outcome"],
     ["idle", "failed", "only a running flush reports an outcome"],
     ["waiting", "flushed", "only a running flush reports an outcome"],
     ["waiting", "failed", "only a running flush reports an outcome"],
+    ["flushQueued", "flushed", "only a running flush reports an outcome"],
+    ["flushQueued", "failed", "only a running flush reports an outcome"],
   ],
   cases: {
     "idle/restored": ["stored", "ahead"],
@@ -133,6 +140,7 @@ export const contentActivityMachine = defineMachine({
         fields(state);
         ms(state.dueAt, "dueAt");
       },
+      flushQueued: fields,
       flushing: (state) => {
         fields(state);
         time(state.value, "value");
@@ -147,6 +155,7 @@ export const contentActivityMachine = defineMachine({
         at(event);
       },
       changed: at,
+      start: () => {},
       due: at,
       flushed: at,
       failed: at,
@@ -164,6 +173,8 @@ export const contentActivityMachine = defineMachine({
       state: { name: "flushing", ...fieldsNow, value: fieldsNow.latest },
       effects: [{ type: "flush", value: fieldsNow.latest }],
     });
+    // A change may come from a context that can't run work (see above).
+    const queue = (fieldsNow) => ({ state: { name: "flushQueued", ...fieldsNow }, effects: [] });
     const wait = (fieldsNow, dueAt) => ({
       state: { name: "waiting", ...fieldsNow, dueAt },
       effects: [{ type: "arm", at: dueAt }],
@@ -186,19 +197,27 @@ export const contentActivityMachine = defineMachine({
       }
       case "changed": {
         const next = { ...base(state), latest: laterTime(state.latest, iso(event.now)) };
-        if (state.name === "flushing") return { state: { ...state, ...next }, effects: [] };
+        if (state.name === "flushing" || state.name === "flushQueued")
+          return { state: { ...state, ...next }, effects: [] };
         if (state.name === "waiting") {
-          if (event.now >= state.dueAt) return flush(next);
+          if (event.now >= state.dueAt) return queue(next);
           return { state: { ...state, ...next }, effects: [] };
         }
         // A clock behind the stored time observes nothing newer.
         if (next.latest === state.durable) return reject(state, "not newer than the stored time");
         if (state.flushedAt === null || event.now - state.flushedAt >= CONTENT_ACTIVITY_INTERVAL_MS)
-          return flush(next);
+          return queue(next);
         return wait(next, state.flushedAt + CONTENT_ACTIVITY_INTERVAL_MS);
+      }
+      case "start": {
+        // The newest time, which may have moved since the flush was queued.
+        if (state.name === "flushQueued") return flush(base(state));
+        if (state.name === "flushing") return reject(state, "a flush is running");
+        return reject(state, "no flush is queued");
       }
       case "due": {
         if (state.name === "idle") return reject(state, "nothing waits");
+        if (state.name === "flushQueued") return reject(state, "a flush is queued");
         if (state.name === "flushing") return reject(state, "a flush is running");
         if (event.now < state.dueAt) return reject(state, "not due yet");
         return flush(base(state));
@@ -234,7 +253,8 @@ export class ContentActivity {
   #timer;
   #timerDone;
   #restored;
-  /** Effects `changed()` stepped to but didn't run, at most one per type. */
+  /** Effects `changed()` stepped to but didn't run, at most one per type:
+   * only `arm`, since a change queues a flush in the machine instead. */
   #deferred = [];
   /** Resolvers for `serve()` loops waiting for deferred effects. */
   #waiters = new Set();
@@ -266,9 +286,10 @@ export class ContentActivity {
     return this.#state.latest;
   }
 
-  /** Whether effects wait for a live request to run them. */
+  /** Whether work waits for a live request to run it: a queued flush or a
+   * deferred timer. */
   get pending() {
-    return this.#deferred.length > 0;
+    return this.#state.name === "flushQueued" || this.#deferred.length > 0;
   }
 
   /** Read the stored time once. Call before observing changes. */
@@ -286,10 +307,11 @@ export class ContentActivity {
     this.#step({ type: "changed", now: this.now() }, { defer: true });
   }
 
-  /** From a live request: run deferred effects, then flush a wait whose timer
-   * never fired. Cheap when nothing waits. */
+  /** From a live request: run deferred effects, start a queued flush, then
+   * flush a wait whose timer never fired. Cheap when nothing waits. */
   pump() {
     this.#run(this.#deferred.splice(0));
+    if (this.#state.name === "flushQueued") this.#step({ type: "start" });
     this.nudge();
   }
 
@@ -310,7 +332,7 @@ export class ContentActivity {
     };
     until.then(close, close);
     while (open && this.#state.name !== "stopped") {
-      if (this.#deferred.length) this.pump();
+      if (this.pending) this.pump();
       await new Promise((resolve) => this.#waiters.add(resolve));
     }
   }
@@ -335,7 +357,7 @@ export class ContentActivity {
       this.#deferred = this.#deferred.filter((queued) => queued.type !== effect.type);
       this.#deferred.push(effect);
     }
-    if (result.effects.length) this.#wake();
+    if (result.effects.length || result.state.name === "flushQueued") this.#wake();
   }
 
   #run(effects) {
@@ -362,7 +384,9 @@ export class ContentActivity {
       this.#timer = undefined;
       this.#timerDone = undefined;
       try {
+        // A timer runs in the live request that armed it.
         if (this.#state.name === "waiting") this.#step({ type: "due", now: this.now() });
+        else if (this.#state.name === "flushQueued") this.#step({ type: "start" });
       } finally {
         done();
       }

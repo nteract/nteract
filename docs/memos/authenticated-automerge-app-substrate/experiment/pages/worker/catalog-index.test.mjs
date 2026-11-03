@@ -416,8 +416,12 @@ async function catalogFixture(t, { index = "1" } = {}) {
     };
   };
   /** A real Page host with stubbed native resources. */
-  const addPage = (pageId, title, acl = { revision: 0, members: {} }) => {
-    const storage = new Storage();
+  const addPage = (
+    pageId,
+    title,
+    acl = { revision: 0, members: {} },
+    { storage = new Storage() } = {},
+  ) => {
     const doc = A.from({ page_id: pageId, title });
     const page = Object.assign(Object.create(Page.prototype), {
       env,
@@ -908,6 +912,99 @@ test("a crash between trash barriers leaves the Page indexable; trash and purge 
     { state: "deleted", title: "" },
   ]);
   assert.equal(f.db.rows("SELECT count(*) AS n FROM pages_catalog_access")[0].n, 0);
+});
+
+test("a restarted Page host with an unchanged title moves no updated_at and reorders nothing", async (t) => {
+  for (const index of ["1", null]) {
+    await t.test(index ? "index" : "catalog", async (t) => {
+      const mode = index ? "index" : "catalog";
+      const f = await catalogFixture(t, { index });
+      const later = () => new Promise((resolve) => setTimeout(resolve, 5));
+      const acl = { revision: 1, members: { [member]: { role: "viewer", generation: 1 } } };
+      // Neither Page has a content time, so activity sorts by updated_at.
+      const older = f.addPage(id(81), "Older plan", acl);
+      older.cacheTitle();
+      await f.settle();
+      await later();
+      f.addPage(id(82), "Newer plan").cacheTitle();
+      await f.settle();
+      const listed = async (principal = owner) => {
+        for (let request = 0; request < 6; request++) {
+          const result = await f.list(principal, { sort: "activity" });
+          if (result.source === mode) return result.body.pages.map((page) => page.page_id);
+        }
+        throw Error("the listing never reached its source");
+      };
+      assert.deepEqual(await listed(), [82, 81].map(id));
+      const ownerStorage = f.catalog(owner).ctx.storage;
+      const memberStorage = f.catalog(member).ctx.storage;
+      const times = async () => ({
+        owner: (await ownerStorage.get(`page/${id(81)}`)).updated_at,
+        member: (await memberStorage.get(`shared/${id(81)}`)).updated_at,
+        d1: index
+          ? f.db.rows(
+              `SELECT a.principal, a.updated_at AS access, p.updated_at AS page
+              FROM pages_catalog_access a JOIN pages_catalog_pages p USING (page_id)
+              WHERE page_id = ? ORDER BY a.principal`,
+              id(81),
+            )
+          : [],
+      });
+      const before = await times();
+      assert.ok(before.owner);
+
+      // Restarts, with and without the stored projection a build before it
+      // never wrote. Both project to the owner and the member and report the
+      // row again, as the first check after a restart does.
+      for (const legacy of [false, true]) {
+        await later();
+        if (legacy) await older.ctx.storage.delete("host/title-projection");
+        const restarted = f.addPage(id(81), "Older plan", acl, { storage: older.ctx.storage });
+        await restarted.restoreTitleProjection();
+        restarted.cacheTitle();
+        await f.settle();
+        assert.deepEqual(await times(), before, legacy ? "without a record" : "with a record");
+        assert.deepEqual(await listed(), [82, 81].map(id));
+      }
+
+      // A real title change still moves it.
+      await later();
+      const renamed = f.addPage(id(81), "Renamed plan", acl, { storage: older.ctx.storage });
+      await renamed.restoreTitleProjection();
+      renamed.cacheTitle();
+      await f.settle();
+      const after = await times();
+      assert.ok(after.owner > before.owner);
+      assert.ok(after.member > before.member);
+      for (const [n, row] of after.d1.entries()) {
+        assert.ok(row.access > before.d1[n].access);
+        assert.ok(row.page > before.d1[n].page);
+      }
+      assert.deepEqual(await listed(), [81, 82].map(id));
+    });
+  }
+});
+
+test("a restore and an ACL commit observe an unchanged title anew", async (t) => {
+  const f = await catalogFixture(t);
+  const page = f.addPage(id(83), "Plan", { revision: 1, members: {} });
+  page.cacheTitle();
+  await f.settle();
+  const updated = () =>
+    f.db.rows("SELECT updated_at FROM pages_catalog_access WHERE page_id = ?", id(83))[0]
+      .updated_at;
+  const first = updated();
+  await new Promise((resolve) => setTimeout(resolve, 5));
+  await page.installAccess({
+    ...page.metadata,
+    acl: { revision: 2, members: { [member]: { role: "viewer", generation: 2 } } },
+  });
+  await f.settle();
+  assert.ok(updated() > first, "an ACL commit observes the title now, as it always has");
+  assert.equal(
+    (await page.ctx.storage.get("host/title-projection")).observed_at,
+    page.titleObservedAt,
+  );
 });
 
 test("Trash and restore through the Catalog move a Page between indexed listings", async (t) => {
@@ -1969,6 +2066,9 @@ const TRASH_ENTRIES = [
   [4, undefined, at(99)],
   [5, at(70), undefined],
   [6, undefined, at(5)],
+  // A trash time that isn't a listing time sorts as a missing one.
+  [7, Date.parse(at(95)), at(1)],
+  [8, "2026-10-01", at(2)],
 ];
 
 test("Trash lists the most recently trashed first from D1 and the Catalog alike, across ties, missing times and search", async (t) => {
@@ -2012,18 +2112,18 @@ test("Trash lists the most recently trashed first from D1 and the Catalog alike,
       const trashed = await walk({});
       assert.deepEqual(
         trashed.map((page) => page.page_id),
-        [5, 2, 3, 1, 6, 4].map(id),
+        [5, 2, 3, 1, 8, 7, 6, 4].map(id),
         "trash time, newest first; ties by the larger Page ID; no trash time last",
       );
       for (const args of [{ sort: "activity" }, { sort: null }, { access: "owned" }])
         assert.deepEqual(
           (await walk(args)).map((page) => page.page_id),
-          [5, 2, 3, 1, 6, 4].map(id),
+          [5, 2, 3, 1, 8, 7, 6, 4].map(id),
           JSON.stringify(args),
         );
       assert.deepEqual(
         (await walk({ query: "plan" })).map((page) => page.page_id),
-        [5, 3, 1].map(id),
+        [5, 3, 1, 7].map(id),
         "search keeps the trash order",
       );
       for (const page of trashed) {
@@ -2682,61 +2782,115 @@ test("positions have one shape per sort, and sources refuse anything else", asyn
   }
 });
 
-test("a stored key of another type sorts last instead of failing the listing", async (t) => {
+test("a stored time key that isn't an ISO time never jumps the order or breaks a cursor", async (t) => {
   const numeric = Date.parse(at(99));
   const row = { page_id: id(1), title_search: 7, created_at: numeric, trashed_at: numeric };
-  for (const sort of ["activity", "created", "trashed"])
+  for (const sort of ["activity", "created", "trashed"]) {
     assert.deepEqual(positionOf(sort, { ...row, updated_at: numeric }), {
       key: "",
       page_id: id(1),
     });
+    // A date string in another format would sort by its spelling.
+    for (const spelled of ["2026-10-01", "Thu, 01 Oct 2026 00:00:00 GMT"])
+      assert.deepEqual(
+        positionOf(sort, {
+          ...row,
+          created_at: spelled,
+          updated_at: spelled,
+          trashed_at: spelled,
+        }),
+        { key: "", page_id: id(1) },
+      );
+  }
   assert.deepEqual(positionOf("title", row), { title_search: "", page_id: id(1) });
 
-  const f = await catalogFixture(t, { index: null });
-  const storage = f.catalog(owner).ctx.storage;
-  await storage.put(`page/${id(1)}`, {
-    page_id: id(1),
-    title: "One",
-    created_at: numeric,
-    updated_at: at(1),
-  });
-  await storage.put(`page/${id(2)}`, {
-    page_id: id(2),
-    title: "Two",
-    created_at: at(5),
-    updated_at: at(5),
-  });
-  await storage.put(`page/${id(3)}`, {
-    page_id: id(3),
-    title: "Three",
-    created_at: at(3),
-    updated_at: numeric,
-  });
-  for (const n of [4, 5])
-    await storage.put(`trash/${id(n)}`, {
-      page_id: id(n),
-      title: `Gone ${n}`,
-      created_at: at(0),
-      updated_at: at(0),
-      trashed_at: n === 4 ? numeric : at(9),
-      trashed_by: owner,
-      trash_root_id: id(n),
+  const results = {};
+  for (const index of ["1", null]) {
+    await t.test(index ? "index" : "catalog", async (t) => {
+      const mode = index ? "index" : "catalog";
+      const f = await catalogFixture(t, { index });
+      const storage = f.catalog(owner).ctx.storage;
+      await storage.put(`page/${id(1)}`, {
+        page_id: id(1),
+        title: "One",
+        created_at: numeric,
+        updated_at: at(1),
+      });
+      await storage.put(`page/${id(2)}`, {
+        page_id: id(2),
+        title: "Two",
+        created_at: at(5),
+        updated_at: at(5),
+      });
+      await storage.put(`page/${id(3)}`, {
+        page_id: id(3),
+        title: "Three",
+        created_at: at(3),
+        updated_at: numeric,
+      });
+      await storage.put(`page/${id(8)}`, {
+        page_id: id(8),
+        title: "Eight",
+        created_at: "2026-10-01",
+        updated_at: at(2),
+      });
+      for (const [n, trashed] of [
+        [4, numeric],
+        [5, at(9)],
+        [6, "2026-10-01"],
+        [7, "Thu, 01 Oct 2026 00:00:00 GMT"],
+      ])
+        await storage.put(`trash/${id(n)}`, {
+          page_id: id(n),
+          title: `Gone ${n}`,
+          created_at: at(0),
+          updated_at: at(0),
+          trashed_at: trashed,
+          trashed_by: owner,
+          trash_root_id: id(n),
+        });
+      for (let request = 0; request < 6; request++)
+        if ((await f.list(owner)).source === mode) break;
+      const walk = async (args) => {
+        const seen = [];
+        let cursor;
+        for (let request = 0; request < 10; request++) {
+          const result = await f.list(owner, { limit: 1, ...args, ...(cursor && { cursor }) });
+          assert.equal(
+            result.status,
+            200,
+            `${JSON.stringify(args)}: ${JSON.stringify(result.body)}`,
+          );
+          assert.equal(result.source, mode);
+          seen.push(...result.body.pages.map((page) => page.page_id));
+          cursor = result.body.next_cursor;
+          if (!cursor) break;
+        }
+        return seen;
+      };
+      // A malformed created_at reads as the entry's updated_at, and a
+      // malformed updated_at as its created_at, in both sources.
+      const created = await walk({ sort: "created" });
+      assert.deepEqual(created, [2, 3, 8, 1].map(id));
+      const activity = await walk({ sort: "activity" });
+      assert.deepEqual(activity, [2, 3, 8, 1].map(id));
+      // A malformed trash time sorts last, ties by the larger Page ID.
+      const trashed = await walk({ in_trash: true });
+      assert.deepEqual(trashed, [5, 7, 6, 4].map(id));
+      if (index) {
+        // Only listing times reach D1.
+        for (const { created_at, updated_at, trashed_at } of f.db.rows(
+          "SELECT created_at, updated_at, trashed_at FROM pages_catalog_pages",
+        )) {
+          assert.match(created_at, /^2026-10-01T\d\d:\d\d:00\.000Z$/);
+          assert.match(updated_at, /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/);
+          assert.ok(trashed_at === null || trashed_at === at(9), String(trashed_at));
+        }
+      }
+      results[mode] = { created, activity, trashed };
     });
-  const walk = async (args) => {
-    const seen = [];
-    let cursor;
-    for (let request = 0; request < 10; request++) {
-      const result = await f.list(owner, { limit: 1, ...args, ...(cursor && { cursor }) });
-      assert.equal(result.status, 200, `${JSON.stringify(args)}: ${JSON.stringify(result.body)}`);
-      seen.push(...result.body.pages.map((page) => page.page_id));
-      cursor = result.body.next_cursor;
-      if (!cursor) break;
-    }
-    return seen;
-  };
-  assert.deepEqual(await walk({ sort: "created" }), [2, 3, 1].map(id));
-  assert.deepEqual(await walk({ sort: "activity" }), [2, 1, 3].map(id));
-  assert.deepEqual(await walk({ in_trash: true }), [5, 4].map(id));
+  }
+  assert.deepEqual(results.index, results.catalog);
 });
 
 test("listing positions seal into the payload layout every build opens", async () => {

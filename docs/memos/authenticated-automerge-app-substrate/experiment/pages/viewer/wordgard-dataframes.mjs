@@ -10,6 +10,7 @@ import { GardSelection } from "wordgard/state";
 import { PagesDataframe } from "./wordgard-model.mjs";
 import { reportRendererUnavailable } from "./wordgard-widgets.mjs";
 import { PARQUET_MEDIA_TYPE, readDataframe } from "../shared/dataset-assets.mjs";
+import { dataframeTableMachine } from "./dataframe-table-machine.mjs";
 
 /** Media type -> lazily loaded renderer module with
  * `mount(container, { src, pageId })` returning `{ destroy }`. Each is its own
@@ -51,107 +52,163 @@ export function dataframeFrame({ title, media_type }) {
 export const dataframeEventReachesEditor = (event) =>
   !event.target?.closest?.(".wordgard-dataframe-canvas");
 
+/** Status text while a table waits for the viewport, and while it loads. */
+export const DATAFRAME_STATUS = Object.freeze({
+  waiting: "This table loads when you scroll to it.",
+  loading: "Loading table…",
+});
+
+/** How far outside the viewport a table starts loading, so it's usually
+ * drawn by the time a reader scrolls to it. */
+export const PRELOAD_MARGIN = "600px 0px";
+
 /**
- * The renderer lifecycle of one table, as a state machine:
- *
- *   idle --connect--> scheduled --timer--> loading --loaded--> mounted
- *   mounted --disconnect--> parked --connect--> mounted
- *   parked --park timer--> idle (destroys the table)
- *   other --disconnect--> idle (cancels the timer)
- *   loading --failed--> failed
- *
- * Selecting the node makes Wordgard move the same DOM into a selection
- * wrapper, which disconnects and reconnects the widget. `parked` keeps the
- * mounted table across that move instead of reloading the dataset.
- *
- * Wordgard can connect and disconnect a widget more than once. Each connect
- * starts a new generation; a load that resolves for an older generation is
- * dropped, so a widget never holds two mounted tables.
+ * A viewport watcher over one shared observer: `observe(element, onChange)`
+ * calls `onChange(near)` when the element comes within PRELOAD_MARGIN of the
+ * viewport or leaves it, and returns the function that stops watching.
+ * Printing counts every watched table as near, so a printed Page starts
+ * loading its tables. Without an Observer every table counts as near.
+ */
+export function viewportWatcher({ Observer, target } = {}) {
+  if (typeof Observer !== "function")
+    return (_element, onChange) => {
+      onChange(true);
+      return () => {};
+    };
+  const watched = new Map();
+  let observer = null;
+  target?.addEventListener?.("beforeprint", () => {
+    for (const onChange of watched.values()) onChange(true);
+  });
+  return (element, onChange) => {
+    observer ??= new Observer(
+      (entries) => {
+        for (const entry of entries) watched.get(entry.target)?.(entry.isIntersecting);
+      },
+      { rootMargin: PRELOAD_MARGIN },
+    );
+    watched.set(element, onChange);
+    observer.observe(element);
+    return () => {
+      // A later observe of the same element replaces its callback. A stop
+      // from an older one leaves that registration watched.
+      if (watched.get(element) !== onChange) return;
+      watched.delete(element);
+      observer.unobserve(element);
+    };
+  };
+}
+
+let defaultWatcher = null;
+/** The page's shared viewport watcher. */
+export const observeNearViewport = (element, onChange) =>
+  (defaultWatcher ??= viewportWatcher({
+    Observer: globalThis.IntersectionObserver,
+    target: globalThis.window,
+  }))(element, onChange);
+
+/** Wall-clock timers; tests pass virtual ones. */
+const REAL_TIMERS = { set: (run, ms) => setTimeout(run, ms), clear: (id) => clearTimeout(id) };
+
+/**
+ * Runs dataframeTableMachine (dataframe-table-machine.mjs) for one table,
+ * with its effects at the edge: the viewport watcher, the one armed timer,
+ * the renderer chunk and the mounted instance. A media type with no renderer
+ * (`load` undefined) never connects.
  */
 export function dataframeLifecycle({
   load,
+  dom,
   canvas,
   status,
   attrs,
   delay = 50,
   park = 1000,
+  observe = observeNearViewport,
+  timers = REAL_TIMERS,
   onUnavailable,
 }) {
-  let state = "idle",
-    generation = 0,
+  let model = dataframeTableMachine.initial,
     timer = null,
-    instance = null;
-  const transition = (event, value) => {
-    switch (event) {
-      case "connect":
-        if (state === "parked") {
-          clearTimeout(timer);
-          timer = null;
-          state = "mounted";
-          // A move re-inserts the DOM, which restarts CSS animations. Sift's
-          // load-in animations would replay on every select; turn them off.
-          if (canvas.dataset) canvas.dataset.moved = "";
-          return;
-        }
-        if (state !== "idle" || !load) return;
-        state = "scheduled";
-        generation++;
-        timer = setTimeout(() => transition("timer", generation), delay);
+    instance = null,
+    stopWatching = null,
+    module = null;
+  const dispatch = (event) => {
+    const result = dataframeTableMachine.step(model, event);
+    model = result.state;
+    for (const effect of result.effects) run(effect);
+  };
+  const run = (effect) => {
+    switch (effect.type) {
+      case "showStatus":
+        status.hidden = false;
+        status.textContent = DATAFRAME_STATUS[effect.status];
         return;
-      case "timer": {
-        if (state !== "scheduled" || value !== generation) return;
-        state = "loading";
-        const current = generation;
-        load().then(
-          (module) => transition("loaded", { current, module }),
-          () => transition("failed", current),
+      case "observe":
+        stopWatching?.();
+        // The watcher can answer at once; dispatch reads the updated model.
+        stopWatching = observe(dom ?? canvas, (near) =>
+          dispatch({ type: near ? "visible" : "hidden" }),
         );
         return;
-      }
-      case "loaded":
-        if (state !== "loading" || value.current !== generation) return;
-        state = "mounted";
+      case "unobserve":
+        stopWatching?.();
+        stopWatching = null;
+        return;
+      case "startTimer":
+        if (timer !== null) timers.clear(timer);
+        timer = timers.set(
+          () => {
+            timer = null;
+            dispatch({
+              type: effect.timer === "park" ? "parkExpired" : "timer",
+              generation: effect.generation,
+            });
+          },
+          effect.timer === "park" ? park : delay,
+        );
+        return;
+      case "clearTimer":
+        if (timer !== null) timers.clear(timer);
+        timer = null;
+        return;
+      case "load":
+        load().then(
+          (loaded) => {
+            module = { generation: effect.generation, loaded };
+            dispatch({ type: "loaded", generation: effect.generation });
+          },
+          () => dispatch({ type: "failed", generation: effect.generation }),
+        );
+        return;
+      case "mount":
         // The renderer draws its own loading and error states, including
         // fetchDataset's access and missing-asset messages.
         status.hidden = true;
-        instance = value.module.mount(canvas, attrs);
+        instance = module.loaded.mount(canvas, attrs);
+        module = null;
         return;
-      case "parkExpired":
-        if (state !== "parked" || value !== generation) return;
-        instance?.destroy();
-        instance = null;
-        timer = null;
-        generation++;
-        state = "idle";
+      case "markMoved":
+        // A move re-inserts the DOM, which restarts CSS animations. Sift's
+        // load-in animations would replay on every select; turn them off.
+        if (canvas.dataset) canvas.dataset.moved = "";
         return;
-      case "failed":
-        if (state !== "loading" || value !== generation) return;
-        state = "failed";
+      case "fail":
         onUnavailable?.();
         status.hidden = false;
         status.textContent = "Table unavailable.";
         return;
-      case "disconnect":
-        if (state === "mounted") {
-          state = "parked";
-          const current = generation;
-          timer = setTimeout(() => transition("parkExpired", current), park);
-          return;
-        }
-        clearTimeout(timer);
-        timer = null;
+      case "destroy":
         instance?.destroy();
         instance = null;
-        generation++;
-        state = "idle";
         return;
     }
   };
   return {
-    connect: () => transition("connect"),
-    disconnect: () => transition("disconnect"),
+    connect: () => load && dispatch({ type: "connect" }),
+    disconnect: () => load && dispatch({ type: "disconnect" }),
     get state() {
-      return state;
+      return model.name;
     },
   };
 }

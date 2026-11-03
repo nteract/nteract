@@ -442,6 +442,9 @@ const locationRequest = (query) =>
     body: JSON.stringify(query),
   });
 const INDEX_REPORT_PENDING = "host/index/report-pending";
+/** `{ title, observed_at }`: the title this Page host last projected to the
+ * Catalogs and the index, and when it first observed it (`titleObservation`). */
+const TITLE_PROJECTION_KEY = "host/title-projection";
 /** Lifecycle receipts kept per Page for retries; older ones are pruned. */
 const LIFECYCLE_RECEIPT_LIMIT = 256;
 const lifecycleReceiptKey = (operationKey) =>
@@ -1346,6 +1349,16 @@ export class Catalog {
         else if (contentOnly) {
           // A content-only report updates an entry that's already listed.
           if (previous && !previous.pending && contentMoved)
+            await this.storage.put(key, { ...previous, content_updated_at: content });
+        } else if (
+          value.keep_time === true &&
+          previous &&
+          !previous.pending &&
+          previous.title === catalogTitle(value.title)
+        ) {
+          // The host repeats an observation of the title this entry holds
+          // (a restart, a retry): `updated_at` keeps its time.
+          if (contentMoved)
             await this.storage.put(key, { ...previous, content_updated_at: content });
         } else if (
           !previous?.pending &&
@@ -3053,6 +3066,7 @@ export class Page {
       }
     }
     await this.loadComments();
+    await this.restoreTitleProjection();
     // After recovery: a replayed journal entry was accepted before the
     // restart, not now.
     await this.watchContent();
@@ -3108,12 +3122,14 @@ export class Page {
     this.contentHandle = undefined;
   }
 
-  /** Stop recording for good and forget the stored time: the Page is being
-   * deleted. A flush already storing it lands before this delete. */
+  /** Stop recording for good and forget the stored content time and title
+   * projection: the Page is being deleted. A flush already storing its time
+   * lands before this delete. */
   async forgetContent() {
     this.contentActivity?.stop();
     this.unwatchContent();
     await this.ctx.storage.delete(CONTENT_ACTIVITY_KEY);
+    await this.ctx.storage.delete(TITLE_PROJECTION_KEY);
   }
 
   /** Report a stored content time: one D1 batch and one call to the owner's
@@ -3787,7 +3803,43 @@ export class Page {
     }
   }
 
-  cacheTitle(identity) {
+  /** Read the title this host last projected and when it observed it. Call
+   * once the serving document is loaded, before the first projection. */
+  async restoreTitleProjection() {
+    const stored = await this.ctx.storage.get(TITLE_PROJECTION_KEY);
+    if (typeof stored?.title === "string" && validTime(stored.observed_at))
+      this.titleProjection ??= stored;
+  }
+
+  /** When `title` was observed, for a projection or report about to send it.
+   *
+   * A title this host already projected keeps the time it was first observed
+   * (`TITLE_PROJECTION_KEY`), so a restart, a retried projection or a repeated
+   * report carries the same time, and so does `title_observed_at` on this
+   * host's checks. Any other title, and every `observe` (an ACL commit or a
+   * restore), is observed now and stored.
+   *
+   * `keepTime` is true unless `observe`: a writer whose stored title already
+   * equals this one keeps its own `updated_at`. That covers a host with no
+   * record, such as one from a build without it, and a writer that never got
+   * an earlier projection. Only a title change, a discovery (a row or entry
+   * the writer doesn't have) or an observation moves a writer's time. */
+  titleObservation(title, { observe = false } = {}) {
+    const keepTime = !observe;
+    if (!observe && this.titleProjection?.title === title)
+      return { observedAt: this.titleProjection.observed_at, keepTime };
+    const record = { title, observed_at: new Date().toISOString() };
+    this.titleProjection = record;
+    const stored = Promise.resolve()
+      .then(() => this.ctx.storage.put(TITLE_PROJECTION_KEY, record))
+      .catch((error) => logFailure(error, "title-projection"));
+    return { observedAt: record.observed_at, keepTime, stored };
+  }
+
+  /** Project this Page's title to the Catalogs that list it, and report its
+   * row to the index. `observe` marks a new observation of an unchanged
+   * title: an ACL commit or a restore. */
+  cacheTitle(identity, { observe = false } = {}) {
     // A trashed Page must not relist itself in owner or member catalogs.
     if (pageState(this.metadata) !== "active") return;
     const title = catalogTitle(this.handle.doc().title);
@@ -3807,11 +3859,15 @@ export class Page {
           ...(observedReader ? [observedReader] : []),
         ];
     this.cachedTitle = title;
-    const observedAt = new Date().toISOString();
+    // A domain reader's open alone is that reader's discovery, observed now.
+    const observation = titleChanged
+      ? this.titleObservation(title, { observe })
+      : { observedAt: new Date().toISOString(), keepTime: false };
+    const { observedAt, keepTime } = observation;
     if (titleChanged) this.titleObservedAt = observedAt;
     const contentUpdatedAt = this.contentActivity?.value ?? null;
     // A projection that times out clears the cached title below, so the next
-    // request to this Page sends it again.
+    // request to this Page sends it again, with the same observation time.
     const tasks = recipients.map((principal) =>
       withTimeout(
         this.env.CATALOGS.getByName(principal).fetch(
@@ -3821,6 +3877,7 @@ export class Page {
               page_id: this.metadata.pageId,
               title,
               observed_at: observedAt,
+              ...(keepTime && { keep_time: true }),
               ...(contentUpdatedAt && { content_updated_at: contentUpdatedAt }),
               shared: principal !== this.metadata.owner,
             }),
@@ -3830,15 +3887,23 @@ export class Page {
         "Catalog projection timed out",
       ),
     );
+    if (observation.stored) tasks.push(observation.stored.then(() => ({ ok: true })));
     if (catalogIndexEpoch(this.env)) {
-      if (titleChanged) this.indexedReaders = new Set();
-      this.indexedReaders ??= new Set();
+      // A domain reader's row is rewritten when the reader opens the Page for
+      // the first time in this host's life, after a title change, and after
+      // the content time moved past the one its last report carried. A flush
+      // never rewrites these rows (reportContentActivity).
+      if (titleChanged) this.indexedReaders = new Map();
+      this.indexedReaders ??= new Map();
+      const reported = this.indexedReaders.get(observedReader);
       const reader =
-        observedReader && identity.domainAccess && !this.indexedReaders.has(observedReader)
+        observedReader &&
+        identity.domainAccess &&
+        (reported === undefined || (contentUpdatedAt !== null && contentUpdatedAt !== reported))
           ? { principal: observedReader, domain: identity.domainAccess.domain }
           : undefined;
       if (titleChanged || reader) {
-        if (reader) this.indexedReaders.add(reader.principal);
+        if (reader) this.indexedReaders.set(reader.principal, contentUpdatedAt);
         tasks.push(
           this.reportIndex({
             title,
@@ -3846,6 +3911,7 @@ export class Page {
             reader,
             readerOnly: !titleChanged,
             contentUpdatedAt,
+            keepTime,
           }).then(
             () => ({ ok: true }),
             (error) => {
@@ -3901,12 +3967,19 @@ export class Page {
     this.indexReportPending ??= (await this.ctx.storage.get(INDEX_REPORT_PENDING)) === true;
     if (!this.indexReportPending || this.indexRepairing) return;
     this.indexRepairing = true;
+    const title = catalogTitle(this.handle.doc().title);
+    // A repeat observes nothing new: the title keeps its observation time.
+    const { observedAt, keepTime, stored } = this.titleObservation(title);
     this.ctx.waitUntil(
-      this.reportIndex({
-        title: catalogTitle(this.handle.doc().title),
-        observedAt: new Date().toISOString(),
-        contentUpdatedAt: this.contentActivity?.value ?? null,
-      })
+      Promise.all([
+        stored,
+        this.reportIndex({
+          title,
+          observedAt,
+          keepTime,
+          contentUpdatedAt: this.contentActivity?.value ?? null,
+        }),
+      ])
         .catch((error) => logFailure(error, "catalog-index-repair"))
         .finally(() => {
           this.indexRepairing = false;
@@ -3964,7 +4037,7 @@ export class Page {
     this.activity?.prune();
     this.pendingAccess = undefined;
     this.cachedTitle = undefined;
-    this.cacheTitle();
+    this.cacheTitle(undefined, { observe: true });
   }
 
   schedulePersistence() {
@@ -4870,8 +4943,9 @@ export class Page {
         this.activity?.prune();
         return;
       case "projectTitle":
+        // A restore is a lifecycle observation: listings move it now.
         this.cachedTitle = undefined;
-        this.cacheTitle();
+        this.cacheTitle(undefined, { observe: true });
         return;
       case "retireIndex":
         await this.retireIndex();
@@ -4904,8 +4978,8 @@ export class Page {
         this.deletionFinished = true;
         return;
       case "dropDocument":
-        this.contentActivity?.stop();
-        this.unwatchContent();
+        // A tombstone deletes the Page as a purge does.
+        await this.forgetContent();
         this.handle = undefined;
         this.commentsHandle = undefined;
         this.commentAdmission?.reset();
