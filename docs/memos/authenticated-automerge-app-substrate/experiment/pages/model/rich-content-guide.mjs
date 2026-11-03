@@ -7,6 +7,7 @@
 import featureFile from "./features.json" with { type: "json" };
 import { HIGHLIGHT_COLORS, MARK_REGISTRY } from "./marks.mjs";
 import { CODE_LANGUAGES, DIAGRAM_LANGUAGE } from "../shared/code-languages.mjs";
+import { OUTLINE_MAX_ITEMS } from "./read-content.mjs";
 
 /** Markdown for each inline mark in marks.json. */
 export const MARK_SYNTAX = Object.freeze({
@@ -66,6 +67,13 @@ export function markdownSyntax() {
   return `Pages stores Markdown as native rich text: ${join(inlineList())}; ${join(blockList())}. Highlight colors are ${HIGHLIGHT_COLORS.join(", ")} or #rrggbb. ${diagram}. Math ($…$) and raw HTML are refused with unsupported_markdown; escape a literal $ or < with a backslash.`;
 }
 
+/** The typed fields read_page's outline entries and read_page_changes'
+ * changed nodes carry, in one paragraph. Every description of them reads this
+ * function, so they can't disagree. */
+export function typedReadFields() {
+  return `read_page's outline entries and read_page_changes' changed nodes carry typed fields beside the Markdown. attrs holds a node's own stored attributes under the names set_node and insert_node take: {level} for a heading, {language} for a code block, {asset_id, src, media_type, title} for a dataframe on this Page. summary holds values computed from a node's children: {items, checked_count, checked} for a task list (one boolean per direct item) and {rows, columns, align} for a table (rows counts the header row, columns is the widest row, align has one entry per column). An outline lists at most ${OUTLINE_MAX_ITEMS} values in checked or align, with checked_truncated or align_truncated past that; read_page_changes lists all of them, and they count toward its max_bytes. A dataframe this version can't show reads as readable: false with no attrs, and a node this version doesn't know carries node_type.`;
+}
+
 /** The targeted rich-text operations, in one paragraph. */
 export function richEditOperations() {
   return "To change existing content without rewriting it, use patch_page: format_match adds or removes formatting on matched text (occurrence:n picks one match, all:true formats every match in the block); replace_match with replacement_markdown rewrites text with inline formatting; set_node (experimental) checks a task, sets a code block's language, changes a heading level or aligns a table column.";
@@ -96,10 +104,7 @@ other. Some nodes have no Markdown form: ${NODE_OPERATIONS.map(([, text]) => tex
 (see Datasets below). They read back as a labeled link on its own line;
 replace_block_markdown keeps the node when that line is unchanged and refuses
 a rewrite that drops or edits it.
-read_page's outline and read_page_changes report the attributes Markdown only
-implies as attrs: a code block's language, a task list's checked states, a
-table's rows, columns and column alignment, a dataframe's src, media type and
-title. A heading's level is its own level field.
+${typedReadFields()}
 ${richEditOperations()}
 These operations keep comment anchors and untouched characters in place, so
 prefer them to replace_block_markdown for small changes.

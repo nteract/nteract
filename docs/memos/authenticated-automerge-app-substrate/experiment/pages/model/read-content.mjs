@@ -1,5 +1,5 @@
 import { orderedBlockIds } from "./order.mjs";
-import { parseAssetPath } from "../shared/dataset-assets.mjs";
+import { parseAssetPath, readDataframe } from "../shared/dataset-assets.mjs";
 import {
   exportMarkdown,
   isRich,
@@ -123,32 +123,46 @@ function indexNodes(doc) {
   return { nodes, trees };
 }
 
-/** The most task states an outline entry lists. One entry can't be split
- * across outline pages, so its size stays bounded; the change feed, which
- * already carries the node's Markdown, lists them all. */
-export const OUTLINE_MAX_CHECKED = 200;
+/** The most per-item values (task states, column alignments) an outline
+ * entry lists. One entry can't be split across outline pages, so its size
+ * stays bounded; the change feed, which already carries the node's Markdown,
+ * lists them all. */
+export const OUTLINE_MAX_ITEMS = 200;
 
-/** Typed attributes of a top-level node that its Markdown only implies, or
- * null. `language` and the table's `align` are the values set_node writes. A
- * heading's level is its own field. Lists and tables report their direct
- * items and columns; nested lists read as their own Markdown. `maxChecked`
- * bounds a task list's `checked` array. */
-export function nodeAttrs(node, { maxChecked = Infinity } = {}) {
+const bounded = (name, values, max) =>
+  values.length > max
+    ? { [name]: values.slice(0, max), [`${name}_truncated`]: true }
+    : { [name]: values };
+
+/** The typed read of a top-level node, as fields to spread into an outline
+ * entry or a changed node:
+ *
+ * - `attrs`: the node's own stored attributes, under the names set_node and
+ *   insert_node take (`level`, `language`, a dataframe's `asset_id`).
+ * - `summary`: values computed from the node's children (a task list's
+ *   states, a table's size and column alignment).
+ * - `node_type`: the type of a node this build doesn't know.
+ * - `readable: false`: a dataframe this build can't show, such as one whose
+ *   asset is on another Page. Nothing of its stored attrs is reported.
+ *
+ * Nested lists read as their own Markdown. `maxItems` bounds per-item
+ * arrays. */
+export function nodeFields(node, { pageId, maxItems = Infinity } = {}) {
   switch (node.type.name) {
+    case "heading":
+      return { attrs: { level: node.attrs.level } };
     case "code_block":
-      return { language: String(node.attrs.params ?? "") };
+      return { attrs: { language: String(node.attrs.params ?? "") } };
     case "task_list": {
       const checked = [];
       node.forEach((item) => checked.push(item.attrs.checked === true));
-      const count = checked.filter(Boolean).length;
-      return checked.length > maxChecked
-        ? {
-            items: checked.length,
-            checked_count: count,
-            checked: checked.slice(0, maxChecked),
-            checked_truncated: true,
-          }
-        : { items: checked.length, checked_count: count, checked };
+      return {
+        summary: {
+          items: checked.length,
+          checked_count: checked.filter(Boolean).length,
+          ...bounded("checked", checked, maxItems),
+        },
+      };
     }
     case "table": {
       // As wide as its widest row, like its Markdown; a concurrent structural
@@ -157,28 +171,33 @@ export function nodeAttrs(node, { maxChecked = Infinity } = {}) {
       node.forEach((row) => (columns = Math.max(columns, row.childCount)));
       const align = Array.from({ length: columns }, () => null);
       node.firstChild?.forEach((cell, _offset, index) => (align[index] = cell.attrs.align ?? null));
-      return { rows: node.childCount, columns, align };
+      return { summary: { rows: node.childCount, columns, ...bounded("align", align, maxItems) } };
     }
-    case "dataframe":
-      // No Markdown form beyond its read-back link: its attrs are the node,
-      // in the shape insert_node's receipt reports.
+    case "dataframe": {
+      // The same check the Markdown projection and the viewer make: a
+      // dataframe is readable only when it names an asset on this Page.
+      const value = readDataframe(node.attrs);
+      const asset = value && parseAssetPath(value.src);
+      if (!asset || (pageId && asset.pageId !== pageId)) return { readable: false };
       return {
-        asset_id: parseAssetPath(node.attrs.src)?.assetId ?? null,
-        src: node.attrs.src,
-        media_type: node.attrs.media_type,
-        title: node.attrs.title ?? null,
+        attrs: {
+          asset_id: asset.assetId,
+          src: value.src,
+          media_type: value.media_type,
+          title: value.title,
+        },
       };
+    }
     case "unknownBlock":
       return {
         node_type: quotableNodeType(node.attrs.unknownBlock?.type ?? node.attrs.unknownParentBlock),
       };
     default:
-      return null;
+      return {};
   }
 }
 
-function outlineEntry(entry) {
-  const attrs = nodeAttrs(entry.node, { maxChecked: OUTLINE_MAX_CHECKED });
+function outlineEntry(entry, pageId) {
   return {
     block_id: entry.blockId,
     node_index: entry.nodeIndex,
@@ -187,7 +206,7 @@ function outlineEntry(entry) {
     // Bytes of this node's standalone Markdown projection, excluding inter-node separators.
     markdown_bytes: utf8.encode(markdownFor([entry.node])).byteLength,
     ...(entry.heading !== undefined ? { heading: entry.heading, level: entry.level } : {}),
-    ...(attrs ? { attrs } : {}),
+    ...nodeFields(entry.node, { pageId, maxItems: OUTLINE_MAX_ITEMS }),
   };
 }
 
@@ -299,7 +318,7 @@ export function projectReadContent(doc, args = {}) {
     ids = args.block_ids ? new Set(args.block_ids) : null,
     inScope = (entry) => !ids || ids.has(entry.blockId),
     chosen = selectedNodes(nodes, trees, args, inScope),
-    outline = nodes.filter(inScope).map(outlineEntry),
+    outline = nodes.filter(inScope).map((entry) => outlineEntry(entry, doc.page_id)),
     orderedIds = [...trees.keys()].filter((id) => !ids || ids.has(id));
   return {
     blocks:

@@ -8,7 +8,7 @@ import {
   saveKeyCommand,
 } from "./agent-client-setup.mjs";
 import { PRODUCT_NAME } from "./shared/product.mjs";
-import { richContentGuide } from "./model/rich-content-guide.mjs";
+import { richContentGuide, typedReadFields } from "./model/rich-content-guide.mjs";
 
 /** Public onboarding contains no account or document data. URLs come only from
  * deployment configuration, never a request Host or forwarded header. */
@@ -889,13 +889,8 @@ include_content:false; this returns its title, heads, retry authority and outlin
 without body content or comments. The outline has entries, total, offset and
 next_offset; use outline_offset to fetch another page (outline_limit is at most 100).
 Each entry has block_id, node_index, type, heading_path and markdown_bytes, plus
-heading and level for a heading, and attrs where Markdown only implies a node's
-attributes: {"language"} for a code block; {"items", "checked_count", "checked"}
-for a task list (checked has one boolean per direct item, at most 200 in an
-outline, with "checked_truncated": true past that; read_page_changes lists all);
-{"rows", "columns", "align"} for a table (rows counts the header row, columns is
-the widest row); {"asset_id", "src", "media_type", "title"} for a dataframe; {"node_type"} for
-a node this version of Pages doesn't know.
+heading and level for a heading, and typed fields where they apply.
+${typedReadFields()}
 All addresses in an outline describe the returned heads, not stable IDs across edits.
 Pass those heads as expected_heads when using node_range or outline_offset > 0.
 A concurrent change returns read_revision_changed and a fresh outline; choose again.
@@ -945,7 +940,7 @@ revision: every read returns it as comment_heads. Pass the comment_heads you kep
 as since_comment_heads to list comment changes. Without it the response lists
 every current thread with comments_snapshot: true; replace what you hold instead
 of merging. Updated/inserted nodes include current Markdown,
-node_index, heading_path and the same attrs an outline entry carries; deleted nodes contain only their old address, never
+node_index, heading_path and the same typed fields an outline entry carries; deleted nodes contain only their old address, never
 deleted body text. Use these current addresses for a focused read or replace_match.
 If a whole block is inserted or cannot be indexed, its change has scope:block;
 read its outline to choose a node.

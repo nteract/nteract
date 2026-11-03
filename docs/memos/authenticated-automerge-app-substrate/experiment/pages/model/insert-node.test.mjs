@@ -329,6 +329,37 @@ test("a dataframe's outline entry carries its attrs in insert_node's receipt sha
   const { projectReadContent } = await import("./read-content.mjs");
   const { doc, result } = edit(fresh(), [dataframe()]);
   const entry = projectReadContent(doc, {}).outline.find((item) => item.type === "dataframe");
-  const { block_id: _id, type: _type, ...receipt } = result.inserted_nodes[0];
-  assert.deepEqual(entry.attrs, receipt.attrs);
+  assert.deepEqual(entry.attrs, result.inserted_nodes[0].attrs);
+});
+
+test("an unreadable dataframe reports readable: false and none of its stored attrs", async () => {
+  const { projectReadContent } = await import("./read-content.mjs");
+  const { projectReadChanges } = await import("./read-changes.mjs");
+  const base = fresh();
+  const id = orderedBlockIds(base)[0];
+  const heads = A.getHeads(base);
+  const otherPage = `/api/pages/44444444-4444-4444-8444-444444444444/assets/${assetId}`;
+  for (const stored of ["https://evil.example/x.parquet", otherPage]) {
+    const next = A.change(A.clone(base), (draft) =>
+      A.splitBlock(draft, textPath(id), draft.blocks[id].richText.length, {
+        type: new A.ImmutableString("dataframe"),
+        parents: [],
+        attrs: {
+          src: new A.ImmutableString(stored),
+          media_type: new A.ImmutableString(PARQUET_MEDIA_TYPE),
+        },
+        isEmbed: false,
+      }),
+    );
+    const entry = projectReadContent(next, {}).outline.find((item) => item.type === "dataframe");
+    assert.equal(entry.readable, false, stored);
+    assert.equal(entry.attrs, undefined, stored);
+    const change = projectReadChanges(next, { since_heads: heads, comments: "none" }).changes.find(
+      (item) => item.type === "dataframe",
+    );
+    assert.equal(change.readable, false, stored);
+    assert.equal(change.attrs, undefined, stored);
+    // An outline entry carries no Markdown, so nothing of the stored src.
+    assert.ok(!JSON.stringify(entry).includes(stored), stored);
+  }
 });
