@@ -1127,12 +1127,13 @@ test("rollback: storage written here stays readable by older builds", async (t) 
   assert.equal(record.space_id, project.project_id);
   assert.equal(Object.hasOwn(record, "project_id"), false);
 
-  // The schema is the Spaces build's: a build that knows migrations 1-3 runs
-  // against it unchanged.
+  // Builds that know fewer migrations (1-3 before Spaces, 1-4 before the
+  // title listing index) run against this schema unchanged.
   const latest = CATALOG_MIGRATIONS.at(-1).version;
-  assert.equal(latest, 4);
+  assert.equal(latest, 5);
   assert.equal(await migrateCatalogIndex(w.db), latest);
   assert.equal(await migrateCatalogIndex(w.db, CATALOG_MIGRATIONS.slice(0, 3)), latest);
+  assert.equal(await migrateCatalogIndex(w.db, CATALOG_MIGRATIONS.slice(0, 4)), latest);
   // Page reports write no D1 location: the owner's Catalog records it.
   const reported = crypto.randomUUID();
   await reportPageIndex(w.env, testCtx, {
@@ -1297,7 +1298,7 @@ test("Project tools are concise and keep the untrusted-content rule", () => {
   assert.equal(byName.get("list_projects").annotations.readOnlyHint, true);
   for (const name of ["project_id", "parent_id"])
     assert.ok(byName.get("create_page").inputSchema.properties[name], name);
-  for (const name of ["project_id", "parent_id", "kind"])
+  for (const name of ["project_id", "parent_id", "kind", "access", "sort"])
     assert.ok(byName.get("list_pages").inputSchema.properties[name], name);
   assert.match(byName.get("read_page").description, /breadcrumbs/);
 });
@@ -1568,6 +1569,89 @@ test("list_pages by Project lists every descendant; by parent, direct children, 
   assert.deepEqual(ids(await w.call("member", "list_pages", { parent_id: c })), []);
   // A, unreadable, can't be listed.
   assert.equal((await w.call("member", "list_pages", { parent_id: a })).status, 404);
+});
+
+test("list_pages access and sort combine with Project and parent filters; shared rows never show a Project", async (t) => {
+  const w = await world(t);
+  const project = await w.createProject("Wiki");
+  const a = (await w.createPage({ title: "Beta", project_id: project.project_id })).body.page_id;
+  const b = (await w.createPage({ title: "alpha", parent_id: a })).body.page_id;
+  const c = (await w.createPage({ title: "Gamma", parent_id: b })).body.page_id;
+  const c2 = (await w.createPage({ title: "delta", parent_id: b })).body.page_id;
+  const order = (listing) => listing.body.pages.map((page) => page.page_id);
+  const list = (who, args) => w.call(who, "list_pages", args);
+
+  for (const index of ["1", undefined]) {
+    if (index) w.env.PAGES_CATALOG_INDEX = index;
+    else delete w.env.PAGES_CATALOG_INDEX;
+    // Projects hold only their owner's Pages.
+    const refused = await list("owner", { project_id: project.project_id, access: "shared" });
+    assert.equal(refused.status, 400);
+    assert.equal(refused.body.code, "invalid_list_arguments");
+    const inProject = await list("owner", { project_id: project.project_id });
+    assert.deepEqual(
+      ids(await list("owner", { project_id: project.project_id, access: "owned" })),
+      ids(inProject),
+    );
+    // Title order inside a Project: the home Page carries the Project's title.
+    const titled = await list("owner", {
+      project_id: project.project_id,
+      access: "owned",
+      sort: "title",
+    });
+    assert.deepEqual(order(titled), [b, a, c2, c, project.home_page_id]);
+    assert.equal(titled.body.pages[0].project_id, project.project_id);
+    assert.deepEqual(order(await list("owner", { parent_id: b, sort: "title" })), [c2, c]);
+    // Children of an owned parent are owned.
+    const sharedUnderOwned = await list("owner", { parent_id: b, access: "shared" });
+    assert.equal(sharedUnderOwned.status, 200);
+    assert.deepEqual(sharedUnderOwned.body.pages, []);
+    assert.deepEqual(ids(await list("owner", { parent_id: b, access: "owned" })), [c, c2].sort());
+  }
+
+  await grant(w, b);
+  await grant(w, c);
+  await grant(w, c2);
+  const calls = spy(w);
+  for (const index of ["1", undefined]) {
+    if (index) w.env.PAGES_CATALOG_INDEX = index;
+    else delete w.env.PAGES_CATALOG_INDEX;
+    const shared = await list("member", { parent_id: b, access: "shared" });
+    assert.equal(shared.status, 200, JSON.stringify(shared.body));
+    assert.deepEqual(ids(shared), [c, c2].sort());
+    for (const row of shared.body.pages) {
+      assert.equal(row.shared, true);
+      assert.equal(row.parent_id, b);
+      assert.equal(Object.hasOwn(row, "project_id"), false);
+      assert.equal(Object.hasOwn(row, "position"), false);
+    }
+    assert.equal(JSON.stringify(shared.body).includes(project.project_id), false);
+    // IDs from the parent's owner carry no title: both sorts order by Page ID.
+    assert.deepEqual(order(await list("member", { parent_id: b, sort: "title" })), [c, c2].sort());
+    assert.deepEqual(order(await list("member", { parent_id: b })), [c, c2].sort().reverse());
+    // No child of a shared parent is the caller's own. The parent is still
+    // checked, so an unreadable one stays missing.
+    calls.length = 0;
+    const owned = await list("member", { parent_id: b, access: "owned" });
+    assert.equal(owned.status, 200);
+    assert.deepEqual(owned.body.pages, []);
+    assert.deepEqual(
+      calls
+        .filter(
+          (call) =>
+            call.path === "/internal/location" ||
+            (call.binding === "PAGES" && call.path === "/internal/catalog"),
+        )
+        .map((call) => call.name),
+      [b],
+      "only the parent is checked; the owner's children are never read",
+    );
+    assert.equal((await list("member", { parent_id: a, access: "owned" })).status, 404);
+    assert.equal((await list("member", { parent_id: a, access: "shared" })).status, 404);
+    // A Project the caller can't see is refused before it is looked up.
+    const project404 = await list("member", { project_id: project.project_id, access: "shared" });
+    assert.equal(project404.body.code, "invalid_list_arguments");
+  }
 });
 
 test("an interrupted create under a parent keeps that parent on retry", async (t) => {

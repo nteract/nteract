@@ -529,9 +529,34 @@ guarded by the revision the listing read. A listing looks ahead for one verified
 row past its page; only a scan that stops at its bound (`2 × limit + 16`
 candidates) returns a cursor without one, and that can only reflect stale rows
 carrying titles the caller was previously authorized to see. `next_cursor` is sealed (AES-GCM, keyed from
-`NOTEBOOK_CLOUD_APP_SESSION_SECRET`) to the caller, query and `in_trash`, and
-expires after 24 hours. Pagination is best-effort: a Page whose title or sharing
+`NOTEBOOK_CLOUD_APP_SESSION_SECRET`) to the caller, query, `in_trash` and filters,
+and expires after 24 hours. Pagination is best-effort: a Page whose title or sharing
 changes mid-traversal can move across the cursor.
+
+`access` narrows a listing to owner rows (`"owned"`) or non-owner rows
+(`"shared"`); every row still passes the same check. An owned-only scan never
+asks a Page host about a shared row (the account's reconcile pass still advances
+as on any listing). Trash and Projects hold only owned Pages, so
+`"shared"` with `in_trash` or `project_id` is refused with
+`invalid_list_arguments`. Under an owned parent, `"shared"` lists nothing; under a
+shared parent, `"owned"` lists nothing, since only a Page's owner places Pages
+under it.
+
+`sort: "title"` orders by the caller's title snapshot (`title_search`, lowercased)
+in code point order, then Page ID, both ascending. That is SQLite's `BINARY`
+order over the UTF-8 D1 stores, and the Catalog fallback compares the same way
+over keys computed as the index computes them. An empty title sorts first; a
+missing one is stored as "Untitled". The shown title still comes from the check,
+so a Page renamed since its snapshot can sit out of order until its row is
+rewritten. Children of a shared parent come from IDs alone and order by Page ID
+in either sort. The default `"activity"` sort is `updated_at` newest first.
+
+A listing with no location, kind or `access` filter in the default sort seals its
+cursor exactly as builds before these arguments did, so those cursors stay valid
+across a deploy. `access` and a title sort extend the sealed scope, so a cursor
+issued under one never opens under another; the client gets `invalid_cursor` and
+restarts. A title-sorted cursor carries its position's title key, which makes it
+longer: cursors may run to 8192 characters.
 
 Page hosts report their row after creation, title changes and ACL commits. Writes
 carry the committed ACL revision, so a report that outlives its timeout changes
