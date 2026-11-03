@@ -2027,8 +2027,9 @@ details.account-actions > div a:hover {
 }
 
 /* Index routes (/pages, /projects) and the Home · All Pages · Projects nav.
-   Narrow screens first: each row is one link the full width of the screen,
-   at least 56px tall, and a Project label stays a separate 32px target. */
+   Each row is one link the full width of the list, at least 56px tall. On
+   /pages a row's Project chip is its own 28px link above the row link, in
+   the Source column; phones hide that column and keep Name and Updated. */
 .index-nav {
   display: flex;
   gap: 0.25rem;
@@ -2130,15 +2131,6 @@ details.account-actions > div a:hover {
   font-size: 0.875rem;
   line-height: 1.45;
   overflow-wrap: anywhere;
-}
-.index-row-meta {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 0.25rem 0.75rem;
-  margin: 0.3rem 0 0;
-  color: var(--muted-foreground);
-  font-size: 0.8rem;
 }
 /* Above the row link, so a tap on the label opens the Project. */
 .index-row-project {
@@ -2260,14 +2252,6 @@ details.account-actions > div a:hover {
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
-/* With a mouse, the time sits above the row link so its title shows the
-   full date. Touch keeps the whole row one target. */
-@media (hover: hover) and (pointer: fine) {
-  .index-time {
-    position: relative;
-    z-index: 1;
-  }
-}
 /* Grid mode: cards at least 200px wide, each one link to its Page. */
 .index-grid {
   display: grid;
@@ -2299,7 +2283,7 @@ details.account-actions > div a:hover {
 }
 .index-card-header {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   gap: 0.5rem;
   min-width: 0;
   padding: 0.7rem 0.85rem;
@@ -2309,16 +2293,25 @@ details.account-actions > div a:hover {
 }
 .index-card-icon {
   flex-shrink: 0;
+  margin-top: 0.15rem;
   color: var(--muted-foreground);
 }
+/* Long titles wrap to two lines, then end in an ellipsis. */
 .index-card-title {
+  display: -webkit-box;
   min-width: 0;
   overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
 }
+/* At least 4:3, and taller when a neighbor's two-line title stretches the
+   grid row, so every card in a row ends at the same edge. */
 .index-card-preview {
   display: flex;
+  flex: 1 0 auto;
   align-items: center;
   justify-content: center;
   aspect-ratio: 4 / 3;
@@ -2328,10 +2321,14 @@ details.account-actions > div a:hover {
 .index-card-placeholder {
   opacity: 0.55;
 }
-/* Phones: Name and Updated only, and two cards to a row. */
+/* Phones: Name and Updated only, two cards to a row, and 44px toggles. */
 @media (max-width: 640px) {
   .index-heading .index-search {
     flex-basis: 100%;
+  }
+  .index-display .index-display-button {
+    width: 44px;
+    height: 44px;
   }
   .index-columns,
   .index-page-row {

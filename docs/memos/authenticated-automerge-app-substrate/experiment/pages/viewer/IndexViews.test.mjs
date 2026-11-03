@@ -56,6 +56,8 @@ const { IndexNav, PagesIndex, ProjectsIndex } = await import(
   `data:text/javascript;base64,${Buffer.from(bundle.outputFiles[0].contents).toString("base64")}`
 );
 const { createElement, act, StrictMode } = await import("react");
+const { VirtualTimeScheduler } = await import("rxjs");
+const { CLOCK_PERIOD_MS, Clock } = await import("./clock.mjs");
 const { createRoot } = await import("react-dom/client");
 
 const id = (n) => `1a160b47-6df1-4983-81eb-${String(n).padStart(12, "0")}`;
@@ -137,9 +139,12 @@ test("/pages lists every Page with Project labels, opens rows and Projects separ
   assert.deepEqual(text(host, ".index-row-shared"), ["Shared"]);
   const updated = host.querySelector(".index-cell-updated time");
   assert.equal(updated.getAttribute("dateTime"), twoDaysAgo);
-  assert.ok(updated.getAttribute("title"), "the full local time is the tooltip");
-  assert.equal(updated.textContent, "Updated 2d");
-  assert.deepEqual(text(host, ".index-cell-updated"), ["Updated 2d", "—"]);
+  assert.equal(updated.getAttribute("title"), null, "the row link covers the cell, so no tooltip");
+  assert.deepEqual(text(host, ".index-cell-updated [aria-hidden=true]"), ["2d", "—"]);
+  const spoken = text(host, ".index-cell-updated .sr-only");
+  assert.match(spoken[0], /^Updated .+, .*2\d{3}/, "screen readers hear the age and full time");
+  assert.equal(spoken[1], "Updated unknown");
+  assert.equal(host.querySelectorAll(".index-cell-updated time").length, 1, "no time, no <time>");
   assert.equal(
     host.querySelector(".index-nav [aria-current=page]").textContent,
     "All Pages",
@@ -284,6 +289,36 @@ test("/pages switches between list and grid, remembers the choice, and never nes
   } finally {
     window.localStorage.clear();
   }
+});
+
+test("/pages refreshes its Updated times once a minute", async () => {
+  const scheduler = new VirtualTimeScheduler();
+  scheduler.maxFrames = 0;
+  const edited = Date.parse("2026-11-03T17:00:00.000Z");
+  const start = edited + 59 * 60 * 1000;
+  const clock = new Clock({ now: () => start + scheduler.frame, scheduler });
+  const app = await mount(
+    createElement(
+      PagesIndex,
+      pagesProps({
+        clock,
+        tool: async () => ({
+          pages: [{ page_id: id(1), title: "Roadmap", updated_at: new Date(edited).toISOString() }],
+        }),
+      }),
+    ),
+  );
+  const label = () => text(app.host, ".index-cell-updated [aria-hidden=true]")[0];
+  assert.equal(label(), "59m");
+  await act(() => {
+    scheduler.maxFrames += CLOCK_PERIOD_MS;
+    scheduler.flush();
+  });
+  assert.equal(label(), "1h");
+  await app.unmount();
+  scheduler.maxFrames += 10 * CLOCK_PERIOD_MS;
+  scheduler.flush();
+  assert.equal(clock.snapshot(), start + CLOCK_PERIOD_MS, "an unmounted screen stops its clock");
 });
 
 test("/projects lists each Project with its description and opens it", async () => {

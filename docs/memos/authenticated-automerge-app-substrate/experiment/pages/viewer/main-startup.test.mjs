@@ -192,15 +192,16 @@ const settle = async () => {
 };
 
 test("/pages and /projects render from the shell without importing the editor", async () => {
-  for (const [path, heading] of [
-    ["/pages", "Pages"],
-    ["/projects/", "Projects"],
+  for (const [path, heading, tab] of [
+    ["/pages", "Pages", "Pages"],
+    ["/projects/", "Projects", "Projects · Pages"],
   ]) {
     history.replaceState(null, "", path);
     const before = globalThis.__editorImports ?? 0;
     const app = await boot(signedIn, catalog);
     await settle();
     assert.equal(document.querySelector("main h1")?.textContent, heading, path);
+    assert.equal(document.title, tab, `${path} tab title`);
     assert.ok(app.requests.includes("list_pages"), path);
     assert.equal(globalThis.__editorImports ?? 0, before, `${path} imported the editor`);
     assert.deepEqual(app.banners(), []);

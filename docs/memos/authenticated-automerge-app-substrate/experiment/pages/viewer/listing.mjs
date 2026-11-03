@@ -185,7 +185,7 @@ export const projectsRequest =
 /** The time a /pages row shows in its Updated column. list_pages'
  * `updated_at` is when the catalog entry last changed, which a rename, move
  * or share also bumps; it is not the time of the last content edit. */
-export const activityAt = (page) => page?.updated_at ?? null;
+export const updatedAt = (page) => page?.updated_at ?? null;
 
 /** A /pages row. Owned Pages in a Project name it; a Project the account
  * can't list (or that hasn't loaded) still links by ID. Shared Pages never
@@ -196,7 +196,7 @@ export function pageRow(page, projectTitles = new Map()) {
     id: page.page_id,
     title: page.title || "Untitled",
     href: pagePath(page.page_id),
-    activityAt: activityAt(page),
+    updatedAt: updatedAt(page),
     project: projectId
       ? {
           id: projectId,

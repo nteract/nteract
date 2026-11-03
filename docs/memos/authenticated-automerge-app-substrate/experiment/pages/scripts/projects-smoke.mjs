@@ -334,9 +334,15 @@ try {
   for (const name of ["Roadmap", "Q4 plan", "Architecture", title])
     await expect(desktopRow(name).getByRole("link", { name: `Project ${title}` })).toBeVisible();
   const updated = desktopRow("Q4 plan").locator("time");
-  await expect(updated).toHaveText(/^Updated (now|\d+m)$/);
+  await expect(updated.locator("[aria-hidden=true]")).toHaveText(/^(now|\d+m)$/);
+  await expect(updated.locator(".sr-only")).toHaveText(/^Updated .+, .+/);
   assert.ok(Date.parse(await updated.getAttribute("datetime")), "the Updated cell names its time");
-  assert.ok(await updated.getAttribute("title"), "the Updated cell's tooltip is the full time");
+  // The whole row is one target: a mouse click on the time opens the Page.
+  const timeBox = await updated.boundingBox();
+  await owner.mouse.click(timeBox.x + timeBox.width / 2, timeBox.y + timeBox.height / 2);
+  await expect(owner).toHaveURL(`${origin}/p/${plan.page_id}`);
+  await owner.goBack();
+  await expect(owner).toHaveURL(`${origin}/pages`);
   await owner.screenshot({ path: `${output}/pages-list-desktop.png` });
   const display = owner.getByRole("group", { name: "Display" });
   await display.getByRole("button", { name: "Grid view" }).click();

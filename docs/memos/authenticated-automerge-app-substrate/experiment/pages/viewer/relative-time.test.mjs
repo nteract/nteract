@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { compactAge, NO_TIME, timeCell, toDate } from "./relative-time.mjs";
+import { compactAge, NO_TIME, NO_TIME_SPOKEN, timeCell, toDate } from "./relative-time.mjs";
 
 const now = Date.parse("2026-11-03T18:00:00.000Z");
 const ago = (ms) => new Date(now - ms).toISOString();
@@ -53,11 +53,42 @@ test("dates, epoch milliseconds and ISO strings all read", () => {
   assert.equal(toDate("nope"), null);
 });
 
-test("a time cell carries the label, the ISO instant and a local tooltip", () => {
-  const cell = timeCell(ago(2 * d), now, "en-US");
-  assert.equal(cell.label, "2d");
-  assert.equal(cell.dateTime, "2026-11-01T18:00:00.000Z");
-  assert.equal(typeof cell.title, "string");
-  assert.match(cell.title, /2026/);
-  assert.deepEqual(timeCell("garbage", now), { label: NO_TIME, dateTime: null, title: null });
+const pinned = { locale: "en-US", timeZone: "UTC" };
+
+test("a time cell carries the label, the ISO instant and a spoken long form", () => {
+  const cell = timeCell(ago(2 * d), now, pinned);
+  // Some ICU versions put a narrow no-break space before "PM".
+  assert.deepEqual(
+    { ...cell, spoken: cell.spoken.replace(/\s/g, " ") },
+    {
+      label: "2d",
+      dateTime: "2026-11-01T18:00:00.000Z",
+      spoken: "Updated 2 days ago, Nov 1, 2026, 6:00 PM",
+    },
+  );
+  for (const [elapsed, label, relative] of [
+    [5 * s, "now", "now"],
+    [-2 * h, "now", "now"],
+    [m, "1m", "1 minute ago"],
+    [3 * h, "3h", "3 hours ago"],
+    [14 * d, "2w", "2 weeks ago"],
+    [61 * d, "2mo", "2 months ago"],
+    [800 * d, "2y", "2 years ago"],
+  ]) {
+    const cell = timeCell(ago(elapsed), now, pinned);
+    assert.equal(cell.label, label);
+    assert.match(cell.spoken, new RegExp(`^Updated ${relative}, \\w{3} \\d{1,2}, \\d{4}, `));
+  }
+  assert.deepEqual(timeCell("garbage", now), {
+    label: NO_TIME,
+    dateTime: null,
+    spoken: NO_TIME_SPOKEN,
+  });
+  assert.equal(NO_TIME_SPOKEN, "Updated unknown");
+});
+
+test("the spoken form follows the browser's locale", () => {
+  const cell = timeCell(ago(2 * d), now, { locale: "de-DE", timeZone: "UTC" });
+  assert.equal(cell.label, "2d", "the compact label is the same everywhere");
+  assert.match(cell.spoken, /^Updated vor 2 Tagen, /);
 });

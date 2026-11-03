@@ -23,6 +23,7 @@ import {
 import { useStore } from "./store.mjs";
 import { readDisplayMode, writeDisplayMode } from "./display-mode.mjs";
 import { timeCell } from "./relative-time.mjs";
+import { Clock } from "./clock.mjs";
 import { PageCardPreview } from "./PageCardPreview.jsx";
 import { ProjectCreator } from "./ProjectCreator.jsx";
 
@@ -59,10 +60,11 @@ export function IndexNav({ current, onNavigate }) {
   );
 }
 
-function useListing(create) {
-  const [listing] = useState(create);
-  useEffect(() => listing.connect(), [listing]);
-  return listing;
+/** A Listing or Clock made once per mount, connected while mounted. */
+function useConnected(create) {
+  const [connectable] = useState(create);
+  useEffect(() => connectable.connect(), [connectable]);
+  return connectable;
 }
 
 /** What shows under the rows: Load more, its progress, or its retry. */
@@ -112,7 +114,7 @@ export function ProjectsIndex({
   onRetry,
 }) {
   const [creating, setCreating] = useState(false);
-  const listing = useListing(
+  const listing = useConnected(
     () =>
       new Listing({
         fetch: projectsRequest(tool),
@@ -187,9 +189,12 @@ export function PagesIndex({
   onWarm,
   onError,
   onRetry,
+  clock: givenClock,
 }) {
   const [text, setText] = useState(query);
-  const listing = useListing(
+  const clock = useConnected(() => givenClock ?? new Clock());
+  const now = useStore(clock.store);
+  const listing = useConnected(
     () =>
       new Listing({
         fetch: pagesRequest(tool),
@@ -257,7 +262,6 @@ export function PagesIndex({
           </label>
         </form>
       </div>
-      {/* The toggle holds the end of this row; its start is free for filters. */}
       <div className="index-toolbar">
         <DisplayToggle mode={display} onChange={chooseDisplay} />
       </div>
@@ -276,7 +280,7 @@ export function PagesIndex({
         <Rows
           rows={rows}
           busy={view.searching}
-          now={Date.now()}
+          now={now}
           onOpen={onOpen}
           onOpenProject={onOpenProject}
           onWarm={onWarm}
@@ -321,15 +325,16 @@ const PageIcon = ({ home, className, size }) =>
     <FileText className={className} size={size} aria-hidden="true" />
   );
 
-/** A row's Updated time: compact on screen, the full local time on hover. */
+/** A row's Updated time: the compact label on screen, and the relative and
+ * full local time for screen readers. */
 function UpdatedTime({ value, now }) {
   const cell = timeCell(value, now);
-  if (!cell.dateTime) return <span className="index-time">{cell.label}</span>;
+  const Tag = cell.dateTime ? "time" : "span";
   return (
-    <time className="index-time" dateTime={cell.dateTime} title={cell.title}>
-      <span className="sr-only">Updated </span>
-      {cell.label}
-    </time>
+    <Tag className="index-time" dateTime={cell.dateTime ?? undefined}>
+      <span aria-hidden="true">{cell.label}</span>
+      <span className="sr-only">{cell.spoken}</span>
+    </Tag>
   );
 }
 
@@ -378,7 +383,7 @@ function PageList({ rows, busy, now, onOpen, onOpenProject, onWarm }) {
               )}
             </div>
             <div className="index-cell-updated">
-              <UpdatedTime value={row.activityAt} now={now} />
+              <UpdatedTime value={row.updatedAt} now={now} />
             </div>
           </li>
         ))}
@@ -402,7 +407,9 @@ function PageGrid({ rows, busy, onOpen, onWarm }) {
           >
             <span className="index-card-header">
               <PageIcon home={row.home} className="index-card-icon" size={16} />
-              <span className="index-card-title">{row.title}</span>
+              <span className="index-card-title" title={row.title}>
+                {row.title}
+              </span>
             </span>
             <PageCardPreview home={row.home} />
           </a>

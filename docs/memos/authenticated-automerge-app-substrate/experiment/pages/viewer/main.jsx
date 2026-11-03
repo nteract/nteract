@@ -1041,13 +1041,13 @@ function App() {
     element?.scrollIntoView({ block: "center", inline: "nearest" });
   }
   useEffect(() => {
+    // /pages is headed "Pages", the product name, so its tab is the product
+    // name alone rather than "Pages · Pages".
     document.title = tabTitle(
       page
         ? page.title || "Untitled"
-        : index && !projectOpen && !trashOpen && !opening
-          ? index.kind === "pages"
-            ? "All Pages"
-            : "Projects"
+        : index?.kind === "projects" && !projectOpen && !trashOpen && !opening
+          ? "Projects"
           : undefined,
     );
   }, [page?.title, index, projectOpen, trashOpen, opening]);
