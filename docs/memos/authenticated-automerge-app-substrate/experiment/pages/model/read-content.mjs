@@ -1,5 +1,5 @@
 import { orderedBlockIds } from "./order.mjs";
-import { parseAssetPath, readDataframe } from "../shared/dataset-assets.mjs";
+import { DATAFRAME_TITLE_MAX, parseAssetPath, readDataframe } from "../shared/dataset-assets.mjs";
 import {
   exportMarkdown,
   isRich,
@@ -142,8 +142,10 @@ const bounded = (name, values, max) =>
  * - `summary`: values computed from the node's children (a task list's
  *   states, a table's size and column alignment).
  * - `node_type`: the type of a node this build doesn't know.
- * - `readable: false`: a dataframe this build can't show, such as one whose
- *   asset is on another Page. Nothing of its stored attrs is reported.
+ * - `readable: false`: a dataframe this build can't show. richDoc already
+ *   reads one naming another Page's asset as a notice paragraph, so this is
+ *   the backstop if one reaches here: nothing of its stored attrs is
+ *   reported.
  *
  * Nested lists read as their own Markdown. `maxItems` bounds per-item
  * arrays. */
@@ -184,7 +186,8 @@ export function nodeFields(node, { pageId, maxItems = Infinity } = {}) {
           asset_id: asset.assetId,
           src: value.src,
           media_type: value.media_type,
-          title: value.title,
+          // Writers cap a title; a peer-written one can be longer.
+          title: value.title?.slice(0, DATAFRAME_TITLE_MAX) ?? null,
         },
       };
     }
