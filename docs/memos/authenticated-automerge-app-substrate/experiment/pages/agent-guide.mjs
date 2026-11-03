@@ -684,11 +684,14 @@ dataset_not_found (404), an image is 415.
 
 read_page shows a dataframe as a labeled link on its own line,
 [Dataframe: <title>](<src>), so you can see where it is. replace_block_markdown
-keeps a dataframe when that exact line is still in your Markdown, on its own at
-the top level of the block, exactly once. It refuses the rewrite with
-markdownless_node when the line is missing or edited, appears twice, sits inside
-a quote, list or table, or reads like a dataframe the block doesn't hold. The
-line never creates, copies or moves a dataframe: use insert_node for a new one.
+keeps a dataframe when that exact line is still in your Markdown, where the
+dataframe is stored: at the top level of the block, or in the same quote or list
+item. It refuses the rewrite with markdownless_node when the line is missing or
+edited, appears more times than the block has dataframes with that line, moves
+into or out of a quote, list, table or heading, or reads like a dataframe the
+block doesn't hold. The line never creates or copies a dataframe: use
+insert_node for a new one. Moving the line among its neighbours keeps the
+dataframe's attrs but writes it as a new node.
 In a block with no dataframe, such a line stays a link. replace_match and
 set_node edit around a dataframe without touching it. A missing asset is dataset_not_found (404).
 

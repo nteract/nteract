@@ -384,9 +384,13 @@ references; it does not publish the Page or change asset access.
   `.parquet` file uploads it and inserts the node at the cursor, undoably.
   Agents use `edit_page` `insert_node`. A dataframe has no Markdown syntax:
   it reads as `[Dataframe: <title>](<src>)` on its own line, and Markdown
-  never creates one. `replace_block_markdown` turns that exact line back into
-  the original node, unknown attrs included, and refuses a rewrite that drops
-  or edits it (`markdownless_node`). It's gated by the `dataframe` schema
+  never creates one. In a block that holds one, `replace_block_markdown` turns
+  that exact line back into the original node, unknown attrs included, where
+  the node is stored: the top level, or the same quote or list item. It refuses
+  (`markdownless_node`) a rewrite that drops or edits the line, moves it into or
+  out of a container or heading, repeats it beyond the block's matching nodes,
+  or adds a line reading like a dataframe the block doesn't hold. Moving the
+  line among its neighbours keeps the attrs and writes a new marker. It's gated by the `dataframe` schema
   feature. Decode is lenient: a later build's media type or attr under the
   same feature still decodes, draws "This build can't show…", and writes back
   unchanged; writers (`insert_node`, upload) check strictly. Copy writes a

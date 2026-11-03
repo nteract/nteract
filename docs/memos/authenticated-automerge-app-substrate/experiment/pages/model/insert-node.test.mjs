@@ -144,13 +144,26 @@ const marker = (type, attrs = {}, parents = [], isEmbed = false) => ({
   type: "block",
   value: { type: S(type), parents: parents.map(S), attrs, isEmbed },
 });
-const dataframeMarker = (extra = {}) =>
-  marker("dataframe", {
-    src: S(src),
-    media_type: S(PARQUET_MEDIA_TYPE),
-    title: S("Usage by day"),
-    ...extra,
-  });
+const dataframeMarker = (extra = {}, parents = []) =>
+  marker(
+    "dataframe",
+    {
+      src: S(src),
+      media_type: S(PARQUET_MEDIA_TYPE),
+      title: S("Usage by day"),
+      ...extra,
+    },
+    parents,
+  );
+/** The text index of the block's first dataframe marker. */
+const dataframeIndex = (doc, id) => {
+  let at = 0;
+  for (const span of A.spans(doc, textPath(id))) {
+    if (span.type === "block" && String(span.value.type) === "dataframe") return at;
+    at += span.type === "block" ? 1 : span.value.length;
+  }
+  return -1;
+};
 /** A block holding prose, a dataframe and more prose, as a browser drop makes. */
 function mixed(spans = [dataframeMarker()]) {
   const doc = fresh();
@@ -202,6 +215,80 @@ test("replace_block_markdown refuses to drop or edit a dataframe's line", () => 
     );
 });
 
+test("a dataframe stored in a quote or list item echoes back there, and can't move out", () => {
+  const line = `[Dataframe: Usage by day](${src})`;
+  const text = (value) => ({ type: "text", value });
+  for (const [label, spans] of [
+    ["quote", [marker("blockquote"), dataframeMarker({}, ["blockquote"])]],
+    [
+      "list item",
+      [marker("unordered-list-item"), text("item"), dataframeMarker({}, ["unordered-list-item"])],
+    ],
+  ]) {
+    const { doc, id } = mixed(spans);
+    const markdown = projectPage(doc).blocks[0].markdown;
+    assert.ok(markdown.includes(line), label);
+    assert.ok(!markdown.includes(`\n\n${line}\n\n`), `${label}: the line is inside its container`);
+    const cursor = A.getCursor(doc, textPath(id), dataframeIndex(doc, id));
+    for (const rewrite of [markdown, markdown.replace("hello", "hi")]) {
+      const { doc: after } = edit(doc, [
+        { op: "replace_block_markdown", block_id: id, markdown: rewrite },
+      ]);
+      assert.equal(projectPage(after).blocks[0].markdown, rewrite, label);
+      assert.equal(A.getCursor(after, textPath(id), dataframeIndex(after, id)), cursor, label);
+    }
+    assert.throws(
+      () =>
+        edit(doc, [
+          {
+            op: "replace_block_markdown",
+            block_id: id,
+            markdown: `hello\n\n${line}\n\nworld`,
+          },
+        ]),
+      (error) =>
+        error.code === "markdownless_node" && /out of the quote or list item/.test(error.message),
+      label,
+    );
+  }
+});
+
+test("a block holding two identical dataframes keeps one line for each", () => {
+  const line = `[Dataframe: Usage by day](${src})`;
+  const { doc, id } = mixed([dataframeMarker(), dataframeMarker()]);
+  const markdown = projectPage(doc).blocks[0].markdown;
+  assert.equal(markdown, `hello\n\n${line}\n\n${line}\n\nworld`);
+  const { doc: after } = edit(doc, [
+    { op: "replace_block_markdown", block_id: id, markdown: markdown.replace("hello", "hi") },
+  ]);
+  assert.equal(dataframes(after, id).length, 2);
+  // Dropping one names the line and says the block holds two.
+  assert.throws(
+    () =>
+      edit(doc, [
+        {
+          op: "replace_block_markdown",
+          block_id: id,
+          markdown: `hello\n\n${line}\n\nworld`,
+        },
+      ]),
+    (error) =>
+      error.code === "markdownless_node" &&
+      error.message.includes(`${line} (the block holds 2; keep one line for each)`),
+  );
+  assert.throws(
+    () =>
+      edit(doc, [
+        {
+          op: "replace_block_markdown",
+          block_id: id,
+          markdown: `hello\n\n${line}\n\n${line}\n\n${line}\n\nworld`,
+        },
+      ]),
+    /appears more times than the block has/,
+  );
+});
+
 test("replace_block_markdown keeps a dataframe only as its own top-level line, once", () => {
   const { doc, id } = mixed();
   const line = `[Dataframe: Usage by day](${src})`;
@@ -217,7 +304,7 @@ test("replace_block_markdown keeps a dataframe only as its own top-level line, o
   refused(`hello\n\n> ${line}\n\nworld`, /can't go inside a quote, list or table/);
   refused(`hello\n\n| a |\n| --- |\n| ${line} |`, /can't go inside/);
   // Duplicated: refused instead of leaving a look-alike link.
-  refused(`hello\n\n${line}\n\n${line}\n\nworld`, /appears more than once/);
+  refused(`hello\n\n${line}\n\n${line}\n\nworld`, /appears more times than the block has/);
   // A line for a dataframe the block doesn't hold reads like one: refused.
   refused(`hello\n\n${line}\n\n${other}\n\nworld`, /doesn't hold/);
   // Text around the line can change; the node keeps its stored marker, the
@@ -237,6 +324,19 @@ test("replace_block_markdown keeps a dataframe only as its own top-level line, o
   ]);
   assert.deepEqual(dataframes(after, id), before);
   assert.equal(A.getCursor(after, textPath(id), markerAt(after)), cursor);
+  // A line in a heading reads like the node too: refused, not kept as a link.
+  refused(`# ${line}\n\nhello\n\n${line}\n\nworld`, /into a heading/);
+  refused(`# ${other}\n\nhello\n\n${line}\n\nworld`, /doesn't hold/);
+  // Moving the line among its neighbours keeps the node and its attrs, but
+  // updateSpans writes a new marker for it.
+  const { doc: reordered } = edit(doc, [
+    { op: "replace_block_markdown", block_id: id, markdown: `hello\n\nworld\n\n${line}` },
+  ]);
+  assert.deepEqual(
+    dataframes(reordered, id).map((span) => span.value),
+    before.map((span) => span.value),
+  );
+  assert.notEqual(A.getCursor(reordered, textPath(id), markerAt(reordered)), cursor);
   // Ordinary links stay links.
   const { doc: linked } = edit(doc, [
     {
