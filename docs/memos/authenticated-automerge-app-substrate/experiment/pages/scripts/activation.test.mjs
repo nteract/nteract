@@ -1,12 +1,16 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
-  awaitBuild,
+  awaitServing,
   fingerprint,
+  fleetServing,
+  liveLeases,
+  localServing,
   observedFingerprint,
   parseRunning,
   planActivation,
   runningRecord,
+  unitInput,
   waitTransition,
 } from "./deployment/activation.mjs";
 
@@ -56,6 +60,55 @@ test("planActivation restarts only for startup inputs and applies the firewall l
   assert.deepEqual(planActivation({ active: true, running: null, desired }).reasons, ["unknown"]);
 });
 
+test("a pending reload and --restart are restart reasons of their own", () => {
+  assert.deepEqual(
+    planActivation({ active: true, running: desired, desired, reloadPending: true }),
+    { action: "restart", reasons: ["reload"], applyFirewall: false },
+  );
+  assert.deepEqual(
+    planActivation({ active: true, running: desired, desired, requested: true }).reasons,
+    ["requested"],
+  );
+  assert.deepEqual(
+    planActivation({
+      active: true,
+      running: { ...desired, unit_sha256: sha("9") },
+      desired,
+      reloadPending: true,
+      requested: true,
+    }).reasons,
+    ["requested", "unit", "reload"],
+  );
+  assert.deepEqual(
+    planActivation({ active: true, running: null, desired, reloadPending: true }).reasons,
+    ["unknown", "reload"],
+  );
+  // A stopped service starts; the reasons for a running one do not apply.
+  assert.deepEqual(
+    planActivation({ active: false, running: null, desired, reloadPending: true }).reasons,
+    ["inactive"],
+  );
+});
+
+test("unitInput covers drop-ins by path order, path and content", () => {
+  const fragment = "[Service]\nExecStart=/bin/true\n";
+  assert.equal(unitInput(fragment, []), fragment);
+  const a = { path: "/etc/systemd/system/x.service.d/10-a.conf", text: "[Service]\nA=1\n" };
+  const b = { path: "/etc/systemd/system/x.service.d/20-b.conf", text: "[Service]\nB=1\n" };
+  assert.equal(unitInput(fragment, [b, a]), unitInput(fragment, [a, b]));
+  assert.notEqual(unitInput(fragment, [a]), unitInput(fragment, []));
+  assert.notEqual(
+    unitInput(fragment, [a]),
+    unitInput(fragment, [{ ...a, text: "[Service]\nA=2\n" }]),
+  );
+  assert.notEqual(
+    unitInput(fragment, [a]),
+    unitInput(fragment, [{ ...a, path: "/etc/systemd/system/x.service.d/90-a.conf" }]),
+  );
+  // Content cannot impersonate a drop-in boundary.
+  assert.notEqual(unitInput(fragment + "\n\0drop-in " + a.path + "\n" + a.text, []), fragment);
+});
+
 test("a running record describes only the process it was written for", () => {
   const current = { pid: 4242, startedAtSeconds: 1_800_000_000 };
   const record = runningRecord(desired, current);
@@ -71,8 +124,8 @@ test("a running record describes only the process it was written for", () => {
     "",
     "null",
     "{",
-    JSON.stringify(desired),
-    JSON.stringify({ ...record, schema: 2 }),
+    JSON.stringify({ ...record, schema: 1 }),
+    JSON.stringify({ ...record, schema: 3 }),
     JSON.stringify({ ...record, unit_sha256: "short" }),
     JSON.stringify({ ...record, firewall_sha256: undefined }),
   ])
@@ -85,7 +138,6 @@ test("observedFingerprint trusts only files written before the process started",
   const observed = {
     startedAtSeconds,
     exeSha256: sha("2"),
-    needDaemonReload: false,
     unit: before("1"),
     config: before("3"),
     firewall: before("4"),
@@ -101,7 +153,6 @@ test("observedFingerprint trusts only files written before the process started",
       null,
     );
   for (const change of [
-    { needDaemonReload: true },
     { exeSha256: null },
     { unit: null },
     { config: null },
@@ -111,31 +162,39 @@ test("observedFingerprint trusts only files written before the process started",
     assert.equal(observedFingerprint({ ...observed, ...change }), null);
 });
 
-test("waitTransition serves on the wanted build and times out on anything else", () => {
-  const waiting = { phase: "waiting", startedAt: 0, timeoutMs: 100, want: "aaaaaaaaaaaa" };
-  assert.equal(
-    waitTransition(waiting, { at: 10, health: { ok: true, build: "bbbbbbbbbbbb" } }),
-    waiting,
-  );
-  assert.equal(
-    waitTransition(waiting, { at: 10, health: { ok: false, error: "refused" } }),
-    waiting,
-  );
-  assert.deepEqual(
-    waitTransition(waiting, { at: 20, health: { ok: true, build: "aaaaaaaaaaaa" } }),
-    { phase: "serving", waitedMs: 20, health: { ok: true, build: "aaaaaaaaaaaa" } },
-  );
-  // A wrong build that reports ok is not serving.
-  assert.equal(
-    waitTransition(waiting, { at: 100, health: { ok: true, build: "bbbbbbbbbbbb" } }).phase,
-    "timed_out",
-  );
+test("waitTransition serves on a serving event and times out otherwise", () => {
+  const waiting = { phase: "waiting", startedAt: 0, timeoutMs: 100 };
+  assert.equal(waitTransition(waiting, { at: 10, serving: false, detail: "old" }), waiting);
+  assert.deepEqual(waitTransition(waiting, { at: 20, serving: true, detail: "new", nodes: 2 }), {
+    phase: "serving",
+    waitedMs: 20,
+    detail: "new",
+    nodes: 2,
+  });
+  assert.deepEqual(waitTransition(waiting, { at: 100, serving: false, detail: "old" }), {
+    phase: "timed_out",
+    waitedMs: 100,
+    detail: "old",
+  });
   // Terminal states absorb later events.
-  const served = { phase: "serving", waitedMs: 1, health: {} };
-  assert.equal(waitTransition(served, { at: 500, health: { ok: false } }), served);
+  const served = { phase: "serving", waitedMs: 1, detail: "" };
+  assert.equal(waitTransition(served, { at: 500, serving: false, detail: "x" }), served);
 });
 
-test("awaitBuild sleeps between probes and reports the last health on timeout", () => {
+test("localServing wants the manifest build from an ok gateway", () => {
+  assert.deepEqual(localServing({ ok: true, build: "aaaaaaaaaaaa" }, "aaaaaaaaaaaa"), {
+    serving: true,
+    detail: "ok=true build=aaaaaaaaaaaa",
+  });
+  assert.equal(localServing({ ok: true, build: "bbbbbbbbbbbb" }, "aaaaaaaaaaaa").serving, false);
+  assert.equal(localServing({ ok: false, build: "aaaaaaaaaaaa" }, "aaaaaaaaaaaa").serving, false);
+  assert.deepEqual(localServing({ error: "curl failed (status 7)" }, "aaaaaaaaaaaa"), {
+    serving: false,
+    detail: "curl failed (status 7)",
+  });
+});
+
+test("awaitServing sleeps between probes and reports the last detail on timeout", () => {
   let now = 0;
   const slept = [];
   const sleep = (ms) => {
@@ -143,13 +202,13 @@ test("awaitBuild sleeps between probes and reports the last health on timeout", 
     now += ms;
   };
   const sequence = [
-    { ok: false, error: "refused" },
-    { ok: true, build: "old000000000" },
+    { serving: false, detail: "refused" },
+    { serving: false, detail: "old" },
   ];
   let call = 0;
-  const served = awaitBuild({
-    want: "new000000000",
-    probe: () => sequence[call++] ?? { ok: true, build: "new000000000" },
+  const served = awaitServing({
+    what: "Local node",
+    probe: () => sequence[call++] ?? { serving: true, detail: "new" },
     sleep,
     now: () => now,
     timeoutMs: 10_000,
@@ -162,14 +221,49 @@ test("awaitBuild sleeps between probes and reports the last health on timeout", 
   now = 0;
   assert.throws(
     () =>
-      awaitBuild({
-        want: "new000000000",
-        probe: () => ({ ok: false, error: "curl failed (status 7)" }),
+      awaitServing({
+        what: "Local node 127.0.0.1:9480 build new000000000",
+        probe: () => ({ serving: false, detail: "curl failed (status 7)" }),
         sleep,
         now: () => now,
         timeoutMs: 6000,
         intervalMs: 2000,
       }),
-    /did not serve build new000000000 within 6000 ms; last health: curl failed \(status 7\)/,
+    /Local node 127[.]0[.]0[.]1:9480 build new000000000 did not serve within 6000 ms; last: curl failed \(status 7\)/,
   );
+});
+
+test("liveLeases keeps unexpired leases with an IPv4 listener", () => {
+  const lease = { node: "node_a", addr: "172.31.1.152:19480", expires_ms: 2000 };
+  assert.deepEqual(liveLeases([lease], 1000), [lease]);
+  for (const bad of [
+    { ...lease, expires_ms: 1000 },
+    { ...lease, addr: "172.31.1.152:19480/x" },
+    { ...lease, addr: "evil.example:80" },
+    { ...lease, node: undefined },
+    { ...lease, expires_ms: "2000" },
+    null,
+  ])
+    assert.deepEqual(liveLeases([bad], 1000), []);
+});
+
+test("fleetServing needs every live node on the deployed version", () => {
+  const version = "c0ffee0123456789";
+  const a = { node: "node_a", addr: "172.31.1.152:19480", version };
+  const b = { node: "node_b", addr: "172.31.1.233:19480", version };
+  assert.deepEqual(fleetServing([a, b], version), {
+    serving: true,
+    detail: `node_a@172.31.1.152:19480=${version}, node_b@172.31.1.233:19480=${version}`,
+    nodes: 2,
+  });
+  assert.equal(fleetServing([a, { ...b, version: "0000000000000000" }], version).serving, false);
+  assert.match(
+    fleetServing([a, { ...b, version: null, error: "curl failed (status 28)" }], version).detail,
+    /node_b@172[.]31[.]1[.]233:19480=curl failed \(status 28\)/,
+  );
+  assert.deepEqual(fleetServing([], version), {
+    serving: false,
+    detail: "no live node lease",
+    nodes: 0,
+  });
 });

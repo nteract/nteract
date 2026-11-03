@@ -114,38 +114,100 @@ stay up.
 A restart is different: celld drains, answers 503 while it hands cells off,
 and on a one-node fleet the handoff cannot succeed, so a restart is downtime.
 The installer therefore restarts only when something the process reads at
-startup changed ([activation.mjs](scripts/deployment/activation.mjs)):
+startup changed ([activation.mjs](scripts/deployment/activation.mjs)). The
+unit counts as systemd loads it: the rendered fragment plus every drop-in in
+`DropInPaths`, by path and content.
 
-| Changed since the process started | Install does |
-| --- | --- |
-| Nothing but the release (app-only) | Adopt: no restart |
-| `firewall.mjs` or `profiles.mjs` only | Adopt, and apply the firewall in place |
-| Rendered unit file | Rewrite, `daemon-reload`, restart |
-| celld executable (SHA-256) | Copy, restart |
-| Configured `wrangler.json` (bindings, migrations, vars) | Restart |
-| Service not active | Start |
+| Changed since the process started | Install does | `restart_reasons` |
+| --- | --- | --- |
+| Nothing but the release (app-only) | Adopt: no restart | |
+| `firewall.mjs` or `profiles.mjs` only | Adopt, and apply the firewall in place | |
+| Rendered unit fragment | Stage, verify, rename, `daemon-reload`, restart | `unit` |
+| A drop-in under `<unit>.d/` added, edited or removed | `daemon-reload` if pending, restart | `unit` |
+| `NeedDaemonReload=yes` before install (anything on disk not loaded) | `daemon-reload`, restart | `reload` |
+| celld executable (SHA-256) | Copy, restart | `celld` |
+| Configured `wrangler.json` (bindings, migrations, vars) | Restart | `config` |
+| No record and the process cannot be observed | Restart | `unknown` |
+| `install ... --apply --restart` | Restart | `requested` |
+| Service not active | Start | `inactive` |
+
+The installer renders the unit into a temporary directory under `/etc/systemd`
+with the same basename, runs `systemd-analyze verify` on it there, and only
+then renames it over `/etc/systemd/system/<service>.service`. A failed verify
+leaves the old file, the loaded definition and the fleet pointer untouched.
+It runs `daemon-reload` when the text changed or systemd reports
+`NeedDaemonReload=yes`, which also covers a unit an interrupted run renamed
+into place but never loaded. If systemd still reports `NeedDaemonReload=yes`
+after the reload, install stops before `celld deploy` and before any restart.
+All of this happens before `celld deploy`, so a unit problem never leaves the
+pointer moved.
 
 The firewall rules name the service cgroup, which lives as long as the process,
 so `ExecStartPre` does not need to run per deploy. A changed helper runs
 directly with `node /opt/<service>/firewall.mjs --target <target>`.
 
-Either way, install then polls `http://<listen>/health` every 2 s until `build`
-equals the manifest's `build_receipt.build_id`. It fails with the last health
-response after 120 s for an adoption or 240 s for a restart. On success it
-writes `/etc/<service>/running.json`: the SHA-256 of the unit, executable,
+`--restart` (`node scripts/deploy.mjs --target <target> install <stage> --apply
+--restart`) restarts even when nothing changed: to roll a node by hand, or
+after changing something outside the unit that the process reads only at
+start.
+
+### Serving: local node, then the fleet
+
+After the restart or adoption, install waits twice:
+
+1. **Local node.** It polls `http://<listen>/health` every 2 s until `build`
+   equals the manifest's `build_receipt.build_id`, for up to 120 s after an
+   adoption or 240 s after a restart. This proves only the gateway of the node
+   on this host. The output reports it as `local_serving_after_ms`.
+2. **Every live node.** It lists the fleet's node leases
+   (`<prefix>/nodes/*.json`), skips expired ones, and polls
+   `GET http://<addr>/state` on each lease's internal listener every 3 s until
+   every node's `deployment.version` equals the version `celld deploy`
+   reported, for up to 120 s. Nodes poll the pointer on their own schedules:
+   with two Page10 nodes, one adopted 9 s after the pointer moved and the other
+   26 s. The output reports `deployment_version`, `fleet_nodes` and
+   `fleet_serving_after_ms`. Peers must accept the probe on their internal
+   port from this host; see the second-node runbook in the sandbox
+   `celld-lab` README.
+
+After the local wait succeeds, install writes `/etc/<service>/running.json`:
+the SHA-256 of the unit (fragment plus loaded drop-ins), executable,
 configured `wrangler.json` and firewall helpers the process now runs with,
 keyed by its `MainPID` and start second. The next install compares against
-that record. A failed restart leaves the old record, so a retry restarts again.
+that record. A restart that fails, or never serves, leaves the old record; a
+retry restarts again as long as the same process is still running. If the
+process changed in between (a crash restart, a manual restart), the record no
+longer matches and the installer observes the new process instead.
 
-Without a record for the current process (a crash restart, a manual restart,
-an earlier installer), the installer observes the process instead. Installers
-write their files before they restart, so it trusts a file only if it is older
-than the process start (`ExecMainStartTimestamp`), the unit has no pending
-`daemon-reload`, and `/proc/<pid>/exe` hashes to the executable. Anything else
-counts as unknown and restarts.
+Without a record for the current process, the installer observes the
+process. Installers write their files before they restart, so it trusts a file
+only if it is older than the process start (`ExecMainStartTimestamp`): the
+fragment, each loaded drop-in, the configured `wrangler.json` from the newest
+earlier rollout, and the firewall helpers. `/proc/<pid>/exe` must hash to the
+executable. Anything else counts as `unknown` and restarts.
 
-The install output names the outcome: `"activation": "adopt"` or `"restart"`
-with `restart_reasons`, and `serving_after_ms`.
+`systemctl show --timestamp=unix` needs systemd 248 or later. lab1 and
+pages-node2 run systemd 255. On an older systemd the call fails and install
+stops before it changes anything.
+
+### When a wait times out
+
+Either timeout fails the install after `celld deploy` has moved the pointer.
+The error names both deployments and the way back:
+
+```text
+... did not serve within 120000 ms; last: <detail>. The fleet pointer names
+<new version>; the previous deployment <old version> is recorded in
+/etc/<service>/rollout-<sha>/previous-deployment.json. Roll back with:
+sudo runuser -u <service> -- /opt/<service>/celld deploy
+/opt/<service>/releases/<previous sha> --bucket s3://<bucket>/<prefix>
+--region us-east-1 --json
+```
+
+The installer finds `<previous sha>` as the earlier rollout whose
+`deployment.json` names the previous version. The rollback moves the pointer
+back; nodes adopt it the same way, without a restart. A first deployment has no
+previous one, and the error says so.
 
 celld 0.6.3 bounds the drain with `CELLD_SHUTDOWN_TOTAL_MS` (40 s); the
 handoff gives up after 5/8 of it without progress (25 s). The profiles leave

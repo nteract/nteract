@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, writeFileSync, existsSync, rmSync } from "node:fs";
+import { mkdtempSync, writeFileSync, existsSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -99,3 +99,47 @@ for (const target of QUALIFIED_TARGETS)
       assert.equal(existsSync(called), false, "provision must not reach SSH without a token");
     }
   });
+
+test("install --restart reaches the host installer; other extra flags do not", (t) => {
+  const directory = mkdtempSync(path.join(tmpdir(), "page10-install-restart-"));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const log = path.join(directory, "ssh-args");
+  writeFileSync(
+    path.join(directory, "ssh"),
+    `#!/bin/sh\nprintf '%s\\n' "$@" > '${log}'\necho '{}'\n`,
+    {
+      mode: 0o700,
+    },
+  );
+  const env = { ...process.env, PATH: directory + path.delimiter + process.env.PATH };
+  const stage = `/tmp/${deploymentProfile("page10").deployment.service}-stage-ZZrstart`;
+  const deploy = (...args) =>
+    spawnSync(process.execPath, [path.join(scripts, "deploy.mjs"), "--target", "page10", ...args], {
+      env,
+      encoding: "utf8",
+      timeout: 5000,
+    });
+  const lastCommand = () =>
+    existsSync(log) ? readFileSync(log, "utf8").trim().split("\n").at(-1) : "";
+
+  let result = deploy("install", stage, "--apply", "--restart");
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(
+    lastCommand(),
+    /install[.]mjs' '\/tmp\/nteract-page10-stage-ZZrstart' --apply --restart$/,
+  );
+  result = deploy("install", stage, "--apply");
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(lastCommand(), /--apply$/);
+  rmSync(log);
+  for (const args of [
+    ["install", stage, "--apply", "--force"],
+    ["publish", stage, "--apply", "--restart"],
+    ["install", stage, "--apply", "--restart", "extra"],
+  ]) {
+    result = deploy(...args);
+    assert.equal(result.status, 1, args.join(" "));
+    assert.match(result.stderr, /Unexpected deployment argument/);
+    assert.equal(existsSync(log), false, "rejected flags must not reach SSH");
+  }
+});

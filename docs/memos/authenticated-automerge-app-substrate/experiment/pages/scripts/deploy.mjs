@@ -115,8 +115,11 @@ function prepare() {
     ),
   );
 }
-const [mode = "plan", stage, flag, extra] = args;
-if (extra) throw new Error("Unexpected deployment argument");
+const [mode = "plan", stage, flag, extra, ...rest] = args;
+// `install ... --apply --restart` restarts the service even when nothing it
+// reads at startup changed.
+const restart = mode === "install" && extra === "--restart";
+if ((extra && !restart) || rest.length) throw new Error("Unexpected deployment argument");
 if (["prepare", "upload", "install", "provision", "publish"].includes(mode))
   assertQualifiedDeploymentTarget(target);
 if (mode === "plan" && !stage) console.log(JSON.stringify(deployment, null, 2));
@@ -146,10 +149,11 @@ else if (mode === "provision" && [undefined, "--apply"].includes(stage) && !flag
   // Serialize operator commands across the isolated deployment profiles.
   console.log(
     ssh(
-      `sudo flock -n /run/nteract-pages-next-deploy.lock node ${quote(stage + "/" + mode + ".mjs")} ${quote(stage)} --apply`,
+      `sudo flock -n /run/nteract-pages-next-deploy.lock node ${quote(stage + "/" + mode + ".mjs")} ${quote(stage)} --apply` +
+        (restart ? " --restart" : ""),
     ),
   );
 } else
   throw new Error(
-    "Usage: deploy.mjs [--target pages-next|page3|page4|page5|page6|page7|page8|page9|page10|pages] [plan | prepare | upload LOCAL_STAGE | install REMOTE_STAGE --apply | provision [--apply] | publish REMOTE_STAGE --apply]",
+    "Usage: deploy.mjs [--target pages-next|page3|page4|page5|page6|page7|page8|page9|page10|pages] [plan | prepare | upload LOCAL_STAGE | install REMOTE_STAGE --apply [--restart] | provision [--apply] | publish REMOTE_STAGE --apply]",
   );

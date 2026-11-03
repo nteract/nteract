@@ -8,9 +8,11 @@ import {
   existsSync,
   lstatSync,
   mkdirSync,
+  mkdtempSync,
   readFileSync,
   readdirSync,
   renameSync,
+  rmSync,
   statSync,
   writeFileSync,
 } from "node:fs";
@@ -24,17 +26,23 @@ import {
   parseRuntimeVersion,
 } from "./profiles.mjs";
 import {
-  awaitBuild,
+  awaitServing,
   fingerprint,
+  fleetServing,
+  liveLeases,
+  localServing,
   observedFingerprint,
   parseRunning,
   planActivation,
   runningRecord,
+  unitInput,
 } from "./activation.mjs";
-const [stage, apply, extra] = process.argv.slice(2);
+const [stage, apply, ...flags] = process.argv.slice(2);
 const target = stageTarget(stage);
 assertQualifiedDeploymentTarget(target);
-if (process.getuid() !== 0 || apply !== "--apply" || extra)
+// --restart restarts the service even when nothing it reads at startup changed.
+const requested = flags.length === 1 && flags[0] === "--restart";
+if (process.getuid() !== 0 || apply !== "--apply" || (flags.length && !requested))
   throw new Error("Explicit root installation with a prepared stage is required");
 const profile = deploymentProfile(target);
 const run = (command, args) => {
@@ -123,6 +131,9 @@ const serviceActive = () => {
     return false;
   }
 };
+// systemd's view of the unit. `--timestamp=unix` needs systemd 248 or later
+// (lab1 and pages-node2 run 255); an older systemctl rejects it and the
+// installation stops here, before it changes anything.
 const serviceProcess = () => {
   const properties = Object.fromEntries(
     run("systemctl", [
@@ -131,6 +142,7 @@ const serviceProcess = () => {
       "--property=MainPID",
       "--property=ExecMainStartTimestamp",
       "--property=NeedDaemonReload",
+      "--property=DropInPaths",
       "--timestamp=unix",
     ])
       .split("\n")
@@ -140,13 +152,23 @@ const serviceProcess = () => {
     pid: Number(properties.MainPID),
     startedAtSeconds: Number(/^@(\d+)$/.exec(properties.ExecMainStartTimestamp ?? "")?.[1]),
     needDaemonReload: properties.NeedDaemonReload !== "no",
+    dropIns: (properties.DropInPaths ?? "").split(/\s+/).filter(Boolean),
   };
 };
-// What the running process started with, read before this installation
-// changes any of it. See activation.mjs.
+// unit_sha256: the fragment and the drop-ins systemd loaded with it.
+const unitHash = (fragment, dropIns) =>
+  hash(
+    unitInput(
+      fragment,
+      dropIns.map((file) => ({ path: file, text: readFileSync(file, "utf8") })),
+    ),
+  );
+// systemd's view before this installation changes anything.
+const before = owned ? serviceProcess() : null;
+// What the running process started with. See activation.mjs.
 function observeRunning() {
   if (!owned || !serviceActive()) return null;
-  const current = serviceProcess();
+  const current = before;
   const recorded = existsSync(runningPath)
     ? parseRunning(readFileSync(runningPath, "utf8"), current)
     : null;
@@ -172,8 +194,9 @@ function observeRunning() {
     startedAtSeconds,
     exeSha256:
       Number.isSafeInteger(pid) && pid > 0 ? hash(readFileSync("/proc/" + pid + "/exe")) : null,
-    needDaemonReload: current.needDaemonReload,
-    unit: file([unit], () => hash(readFileSync(unit))),
+    unit: file([unit, ...current.dropIns], () =>
+      unitHash(readFileSync(unit, "utf8"), current.dropIns),
+    ),
     config: provenance ?? null,
     firewall: file(
       helpers.map((helper) => base + "/" + helper),
@@ -358,6 +381,31 @@ for (const helper of helpers) {
   cpSync(stage + "/" + helper, base + "/" + helper);
   chmodSync(base + "/" + helper, 0o644);
 }
+const unitText = `[Unit]\nDescription=Isolated native Pages experiment on celld\nAfter=network-online.target\nWants=network-online.target\n\n[Service]\nType=simple\nUser=${expected.service}\nGroup=${expected.service}\nWorkingDirectory=${state}\nEnvironment=AWS_REGION=us-east-1\nEnvironment=CELLD_DURABILITY=bucket\nEnvironment=CELLD_OTEL=1\nEnvironment=CELLD_OTEL_RETENTION=30d\n${profile.otelTracesSampler ? `Environment=OTEL_TRACES_SAMPLER=${profile.otelTracesSampler}\n` : ""}Environment=CELLD_TOKIO_THREADS=2\nEnvironment=CELLD_V8_HEAP_LIMIT_MB=256\nEnvironment=CELLD_MAX_REQUEST_BODY_BYTES=6291456\nEnvironment=CELLD_MAX_RSS_MB=768\nEnvironment=CELLD_LOCAL_CACHE_MAX_BYTES=536870912\nEnvironment=CELLD_TEST_DATA_DIR=${state}/cache\nExecStartPre=+/usr/bin/node ${base}/firewall.mjs --target ${target}\nExecStart=${base}/celld --bucket s3://${expected.bucket}/${expected.prefix} --region ${expected.region} --listen ${expected.listen} --internal-listen ${expected.internalListen}\nRestart=on-failure\nRestartSec=5\nTimeoutStopSec=60\nLimitNOFILE=65536\nMemoryMax=1G\nCPUQuota=100%\nTasksMax=256\nNoNewPrivileges=true\nPrivateTmp=true\nProtectHome=true\nProtectSystem=strict\nReadWritePaths=${state}\nUMask=0077\n\n[Install]\nWantedBy=multi-user.target\n`;
+// Stage and verify the unit under its own basename, then rename it into place,
+// so a failed verify leaves the loaded definition and the file in agreement.
+// /etc/systemd is the same filesystem as /etc/systemd/system.
+const unitChanged = !existsSync(unit) || readFileSync(unit, "utf8") !== unitText;
+if (unitChanged) {
+  const staging = mkdtempSync("/etc/systemd/." + expected.service + "-unit-");
+  try {
+    const staged = staging + "/" + path.basename(unit);
+    writeFileSync(staged, unitText, { mode: 0o644 });
+    run("systemd-analyze", ["verify", staged]);
+    renameSync(staged, unit);
+  } finally {
+    rmSync(staging, { recursive: true, force: true });
+  }
+}
+// A changed fragment, or one an interrupted run renamed into place but never
+// loaded, or a drop-in someone added: all show as NeedDaemonReload.
+if (unitChanged || serviceProcess().needDaemonReload) run("systemctl", ["daemon-reload"]);
+const loaded = serviceProcess();
+if (loaded.needDaemonReload)
+  throw new Error(
+    "systemd still reports NeedDaemonReload=yes after daemon-reload; refusing to start a stale definition",
+  );
+run("systemctl", ["enable", expected.service]);
 const receipt = run("runuser", [
   "-u",
   expected.service,
@@ -371,7 +419,9 @@ const receipt = run("runuser", [
   expected.region,
   "--json",
 ]);
-JSON.parse(receipt);
+const deployedVersion = JSON.parse(receipt)?.version;
+if (!/^[a-f0-9]{16}$/.test(deployedVersion ?? ""))
+  throw new Error("celld deploy receipt must name the 16-hex deployment version");
 writeFileSync(configDir + "/deployment.json", receipt, { mode: 0o600 });
 writeFileSync(audit + "/deployment.json", receipt, { mode: 0o600 });
 writeFileSync(
@@ -390,49 +440,73 @@ writeFileSync(
   ),
   { mode: 0o600 },
 );
-const unitText = `[Unit]\nDescription=Isolated native Pages experiment on celld\nAfter=network-online.target\nWants=network-online.target\n\n[Service]\nType=simple\nUser=${expected.service}\nGroup=${expected.service}\nWorkingDirectory=${state}\nEnvironment=AWS_REGION=us-east-1\nEnvironment=CELLD_DURABILITY=bucket\nEnvironment=CELLD_OTEL=1\nEnvironment=CELLD_OTEL_RETENTION=30d\n${profile.otelTracesSampler ? `Environment=OTEL_TRACES_SAMPLER=${profile.otelTracesSampler}\n` : ""}Environment=CELLD_TOKIO_THREADS=2\nEnvironment=CELLD_V8_HEAP_LIMIT_MB=256\nEnvironment=CELLD_MAX_REQUEST_BODY_BYTES=6291456\nEnvironment=CELLD_MAX_RSS_MB=768\nEnvironment=CELLD_LOCAL_CACHE_MAX_BYTES=536870912\nEnvironment=CELLD_TEST_DATA_DIR=${state}/cache\nExecStartPre=+/usr/bin/node ${base}/firewall.mjs --target ${target}\nExecStart=${base}/celld --bucket s3://${expected.bucket}/${expected.prefix} --region ${expected.region} --listen ${expected.listen} --internal-listen ${expected.internalListen}\nRestart=on-failure\nRestartSec=5\nTimeoutStopSec=60\nLimitNOFILE=65536\nMemoryMax=1G\nCPUQuota=100%\nTasksMax=256\nNoNewPrivileges=true\nPrivateTmp=true\nProtectHome=true\nProtectSystem=strict\nReadWritePaths=${state}\nUMask=0077\n\n[Install]\nWantedBy=multi-user.target\n`;
 const desired = fingerprint({
-  unit: hash(unitText),
+  unit: unitHash(unitText, loaded.dropIns),
   celld: runtime.sha256,
   config: hash(readFileSync(configPath)),
   firewall: helpersHash(base),
 });
-if (!existsSync(unit) || readFileSync(unit, "utf8") !== unitText) {
-  writeFileSync(unit, unitText, { mode: 0o644 });
-  run("systemd-analyze", ["verify", unit]);
-  run("systemctl", ["daemon-reload"]);
+const activation = planActivation({
+  active: serviceActive(),
+  running,
+  desired,
+  reloadPending: before?.needDaemonReload ?? false,
+  requested,
+});
+// The pointer has moved. A timeout names the way back.
+function rollback(error) {
+  const previousPath = audit + "/previous-deployment.json";
+  const previous = JSON.parse(readFileSync(previousPath, "utf8"));
+  if (!previous?.version)
+    return new Error(`${error.message}. No earlier deployment to roll back to (${previousPath}).`);
+  const prior = readdirSync(configDir)
+    .filter((name) => /^rollout-[a-f0-9]{40}$/.test(name) && name !== path.basename(audit))
+    .find((name) => {
+      const file = configDir + "/" + name + "/deployment.json";
+      return (
+        existsSync(file) && JSON.parse(readFileSync(file, "utf8"))?.version === previous.version
+      );
+    });
+  const release = prior ? base + "/releases/" + prior.slice("rollout-".length) : null;
+  return new Error(
+    `${error.message}. The fleet pointer names ${deployedVersion}; the previous deployment ` +
+      `${previous.version} is recorded in ${previousPath}. Roll back with: ` +
+      `sudo runuser -u ${expected.service} -- ${base}/celld deploy ` +
+      `${release && existsSync(release) ? release : `<release of ${previous.version}>`} ` +
+      `--bucket s3://${expected.bucket}/${expected.prefix} --region ${expected.region} --json`,
+  );
 }
-run("systemctl", ["enable", expected.service]);
-const activation = planActivation({ active: serviceActive(), running, desired });
+const curl = (url) => run("curl", ["--fail", "--silent", "--show-error", "--max-time", "5", url]);
+const wait = (options) => {
+  try {
+    return awaitServing({
+      sleep: (ms) => run("sleep", [String(ms / 1000)]),
+      now: () => Date.now(),
+      ...options,
+    });
+  } catch (error) {
+    throw rollback(error);
+  }
+};
 if (activation.action === "restart") run("systemctl", ["restart", expected.service]);
 // The firewall rules name the service cgroup, which a running process keeps,
 // so a changed helper applies in place.
 else if (activation.applyFirewall)
   run("/usr/bin/node", [base + "/firewall.mjs", "--target", target]);
-const served = awaitBuild({
-  want: wantBuild,
+// The local gateway serves the new build. This proves only this node.
+const local = wait({
+  what: `Local node ${expected.listen} build ${wantBuild}`,
   probe: () => {
     try {
-      const health = JSON.parse(
-        run("curl", [
-          "--fail",
-          "--silent",
-          "--show-error",
-          "--max-time",
-          "5",
-          "http://" + expected.listen + "/health",
-        ]),
+      const health = JSON.parse(curl("http://" + expected.listen + "/health"));
+      return localServing(
+        health.prototype === "pages-celld-native" ? health : { error: "not a Pages gateway" },
+        wantBuild,
       );
-      return {
-        ok: health.ok === true && health.prototype === "pages-celld-native",
-        build: health.build,
-      };
     } catch (error) {
-      return { ok: false, error: error.message };
+      return localServing({ error: error.message }, wantBuild);
     }
   },
-  sleep: (ms) => run("sleep", [String(ms / 1000)]),
-  now: () => Date.now(),
   // A restart drains (up to CELLD_SHUTDOWN_TOTAL_MS, 40 s) and then waits for
   // fleet readiness. Adoption waits for the next pointer poll (30 s).
   timeoutMs: activation.action === "restart" ? 240_000 : 120_000,
@@ -443,6 +517,61 @@ writeFileSync(
   JSON.stringify(runningRecord(desired, serviceProcess()), null, 2) + "\n",
   { mode: 0o600 },
 );
+// Every node polls the pointer on its own schedule (page10 with two nodes:
+// one adopted 9 s after the pointer moved, the other 26 s), so each live node
+// is asked directly: its lease names its internal listener, and /state there
+// reports the deployment version it runs.
+const aws = (args) => run("/usr/local/bin/aws", [...args, "--region", expected.region]);
+const fleet = wait({
+  what: `Fleet deployment ${deployedVersion}`,
+  probe: () => {
+    let keys;
+    try {
+      keys = JSON.parse(
+        aws([
+          "s3api",
+          "list-objects-v2",
+          "--bucket",
+          expected.bucket,
+          "--prefix",
+          expected.prefix + "/nodes/",
+          "--query",
+          "Contents[].Key",
+          "--output",
+          "json",
+        ]) || "null",
+      );
+    } catch (error) {
+      return { serving: false, detail: "listing node leases failed: " + error.message };
+    }
+    const leases = (keys ?? [])
+      .filter((key) => /\/nodes\/node_[a-f0-9]+\.json$/.test(key))
+      .map((key) => {
+        try {
+          return JSON.parse(aws(["s3", "cp", `s3://${expected.bucket}/${key}`, "-"]));
+        } catch {
+          // A lease deleted between list and read is a node that left.
+          return null;
+        }
+      });
+    return fleetServing(
+      liveLeases(leases, Date.now()).map(({ node, addr }) => {
+        try {
+          return {
+            node,
+            addr,
+            version: JSON.parse(curl(`http://${addr}/state`)).deployment?.version ?? null,
+          };
+        } catch (error) {
+          return { node, addr, version: null, error: error.message };
+        }
+      }),
+      deployedVersion,
+    );
+  },
+  timeoutMs: 120_000,
+  intervalMs: 3000,
+});
 console.log(
   JSON.stringify({
     installed: true,
@@ -454,7 +583,10 @@ console.log(
     ...(activation.reasons.length && { restart_reasons: activation.reasons }),
     ...(activation.applyFirewall && { firewall_applied: true }),
     build: wantBuild,
-    serving_after_ms: served.waitedMs,
+    local_serving_after_ms: local.waitedMs,
+    deployment_version: deployedVersion,
+    fleet_nodes: fleet.nodes,
+    fleet_serving_after_ms: fleet.waitedMs,
     published: false,
   }),
 );
