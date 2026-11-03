@@ -193,7 +193,6 @@ import {
   catalogIndexTimeouts,
   catalogSource,
   childIdSource,
-  cursorPosition,
   indexSource,
   indexedState,
   listScope,
@@ -201,6 +200,8 @@ import {
   markCatalogIndexDirty,
   markSpaceIndexDirty,
   openCursor,
+  openPosition,
+  positionOf,
   parseListArguments,
   reconcileSpaceIndex,
   spaceCatalogSource,
@@ -212,6 +213,7 @@ import {
   restrictPageIndex,
   retirePageIndex,
   sealCursor,
+  sealPosition,
   titleMatches,
   withTimeout,
 } from "./catalog-index.mjs";
@@ -2734,11 +2736,11 @@ export class Catalog {
           principal: identity.principal,
         })),
       });
-    const after = options.cursor ? await openCursor(this.env, context, options.cursor) : null;
-    // The scope binds the sort, so only a title-sorted cursor opens here; a
-    // position without its title key is malformed all the same.
-    if (options.sort === "title" && after && typeof after.title_search !== "string")
-      throw new HttpError(400, "Invalid cursor; restart from the first page", "invalid_cursor");
+    // A position in this sort's shape (positionOf); the scan and the next
+    // cursor keep that shape.
+    const after = options.cursor
+      ? await openPosition(this.env, context, options.cursor, options.sort)
+      : null;
     const epoch = catalogIndexEpoch(this.env);
     let db;
     let source;
@@ -2810,7 +2812,7 @@ export class Catalog {
       pages: result.pages,
       limit: options.limit,
       next_cursor: result.next
-        ? await sealCursor(this.env, context, cursorPosition(result.next, options.sort))
+        ? await sealPosition(this.env, context, options.sort, result.next)
         : null,
       quota,
       ...migration,
@@ -2823,8 +2825,14 @@ export class Catalog {
     return response;
   }
 
+  /** Up to `options.limit` verified Pages after the position `after`, and the
+   * position the next page resumes from, or null. Every position here is
+   * `positionOf(options.sort, row)`: the refetch after a rejected candidate
+   * and the next cursor resume from the order's key, never a row's own
+   * `updated_at`. */
   async scanCandidates(request, identity, source, options, scope, after, db) {
     const storage = this.storage;
+    const resumeAt = (row) => positionOf(options.sort, row);
     const pruned = [];
     let stale = false;
     const check = async (row) => {
@@ -2924,7 +2932,7 @@ export class Catalog {
           if (page) verified.push({ page, row: group[offset] });
       }
       scanned += rows.length;
-      if (rows.length) position = rows.at(-1);
+      if (rows.length) position = resumeAt(rows.at(-1));
       if (rows.length < want) {
         exhausted = true;
         break;
@@ -2942,7 +2950,7 @@ export class Catalog {
     if (verified.length > limit)
       return {
         pages: verified.slice(0, limit).map(({ page }) => page),
-        next: verified[limit - 1].row,
+        next: resumeAt(verified[limit - 1].row),
       };
     // Only a scan stopped by its bound, not by the end of the candidates,
     // continues from the last scanned row.

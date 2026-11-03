@@ -595,10 +595,21 @@ comes from its host's check, like its title.
 `activity_at` is a virtual generated column, so every writer keeps it current,
 including a build that predates it. The Catalog fallback computes each key from
 the entry the same way: `content_updated_at ?? updated_at`, and `created_at`
-(else `updated_at`, as reconciliation indexes it). Owned rows order alike from
-either source. A shared row's times differ by source, as they always have: D1
-holds the Page row's own creation and content times, the Catalog entry this
-account's discovery time and whatever the last title projection carried.
+(else `updated_at`, as reconciliation indexes it). Owned rows converge to the
+same order in both sources, but they can disagree for a while:
+
+- A content time lands in D1 and in the owner's Catalog from one flush. If either
+  write fails, the flush retries both, backing off from one minute to fifteen,
+  and the two agree after the first retry that succeeds.
+- D1's `created_at` starts as the Page host's first report time, which follows
+  the Catalog's own creation time by the creation's latency. The account's next
+  reconcile pass imports the Catalog's earlier time: at most six hours later,
+  sooner after a Catalog change marks the index dirty. Until then, two Pages
+  created within that latency of each other can swap places in the created sort.
+
+A shared row's times differ by source, as they always have: D1 holds the Page
+row's own creation and content times, the Catalog entry this account's discovery
+time and whatever the last title projection carried.
 
 The Page host records content activity from the `change` events on its serving
 document handle (worker/content-activity.mjs). It writes `host/content-activity`
@@ -616,13 +627,20 @@ restart re-reports it.
 
 Cursors are sealed to the listing's location, kind, `access` and sort. A cursor
 issued under one combination never opens under another; the client gets
-`invalid_cursor` and restarts. Activity positions hold `activity_at` values, which
-builds before content activity never sealed: their activity cursors held
-`updated_at` and opened under no scope or a scope without this sort's name. The
-scope now names the activity sort `content_activity`, so every such cursor fails
-with `invalid_cursor` instead of seeking the new order with an old key. Title
-cursors keep their scope and still open. A title-sorted cursor carries its
-position's title key, which makes it longer: cursors may run to 8192 characters.
+`invalid_cursor` and restarts. The scope names each sort by what its position's
+key means: `content_activity` for `activity_at`, `created` for `created_at` and
+`title` for `title_search`. An activity cursor sealed with no scope, or with a
+scope that names no sort or names `activity`, held an `updated_at` key, so it
+fails with `invalid_cursor`.
+
+A position has one shape per sort, built from the row a page stopped on:
+`{key, page_id}` for activity and created, where `key` is that sort's own key and
+never the row's `updated_at`, and `{title_search, page_id}` for title. The next
+cursor, the position a scan refetches from after rejecting candidates, and every
+source's keyset all use it. Sealed, an activity or created position puts its key
+in the payload's time slot; a title position puts its title key in a fourth slot
+and leaves the time slot empty, which no title listing reads. A title cursor
+carries its title key, which makes it longer: cursors may run to 8192 characters.
 
 Page hosts report their row after creation, title changes and ACL commits. Writes
 carry the committed ACL revision, so a report that outlives its timeout changes
