@@ -28,12 +28,12 @@
 //   differs from the stored one; `set` names the operation that may change
 //   it; `scope: "column"` applies the change to the whole table column;
 //   `nullable` lets null clear it.
+// - `insert`: how agents create it, and which stored asset it names, so the
+//   host can check the asset before the change (worker/index.mjs prepare).
 //
 // Agent-facing names are the same everywhere: a node's `type` is its stored
 // block name (`code-block`), and its attrs are the `agent` names. read_page
 // reports them, set_node and insert_node take them.
-// - `insert`: how agents create it, and which stored asset it names, so the
-//   host can check the asset before the change (worker/index.mjs prepare).
 //
 // node-registry.test.mjs checks the entries against the ProseMirror adapter,
 // features.json and the Wordgard model, so a new type can't be added in one

@@ -743,19 +743,52 @@ test("set_node takes {type, attrs} with the names read_page reports", () => {
     [{ op: "set_node", block_id: id, match_text: "task", checked: true, attrs: { checked: true } }],
     /not both/,
   );
+  // A retype refusal names the type the node would become.
+  refuses(
+    heading,
+    [{ op: "set_node", block_id: id, match_text: "Intro", type: "paragraph", attrs: { level: 2 } }],
+    /type paragraph has no level; level applies to headings/,
+  );
+  // attrs can name several attributes, and each must apply to the node. No
+  // type holds two settable attrs, so a second one is refused, never dropped.
+  refuses(
+    heading,
+    [{ op: "set_node", block_id: id, match_text: "Intro", attrs: { level: 3, checked: true } }],
+    /checked applies to task list items; match_text is in a heading/,
+  );
+  refuses(
+    doc,
+    [{ op: "set_node", block_id: id, match_text: "2", attrs: { align: "left", language: "js" } }],
+    /language applies to code blocks; match_text is in a table cell/,
+  );
 });
 
 test("the flat set_node fields and {type, attrs} write the same marker", () => {
-  const { doc, id } = fixture("Intro words\n\n- [ ] task");
+  const { doc: plain, id } = fixture(
+    "Intro words\n\n- [ ] task\n\n```\ngraph TD\n```\n\n| a | b |\n| --- | --- |\n| 1 | 2 |",
+  );
+  // Start from a heading and an aligned column, so heading_level: 0 and
+  // align: null have something to undo.
+  const doc = apply(plain, [
+    { op: "set_node", block_id: id, match_text: "Intro", type: "heading", attrs: { level: 2 } },
+    { op: "set_node", block_id: id, match_text: "2", attrs: { align: "right" } },
+  ]).after;
   const pairs = [
-    [{ heading_level: 3 }, { type: "heading", attrs: { level: 3 } }],
-    [{ heading_level: 0 }, { type: "paragraph" }],
-    [{ checked: true }, { attrs: { checked: true } }],
+    ["Intro", { heading_level: 3 }, { type: "heading", attrs: { level: 3 } }],
+    ["Intro", { heading_level: 0 }, { type: "paragraph" }],
+    ["task", { checked: true }, { attrs: { checked: true } }],
+    ["graph", { language: "mermaid" }, { attrs: { language: "mermaid" } }],
+    ["2", { align: "center" }, { attrs: { align: "center" } }],
+    ["2", { align: null }, { attrs: { align: null } }],
   ];
-  for (const [flat, typed] of pairs) {
-    const target = flat.checked !== undefined ? "task" : "Intro";
+  for (const [target, flat, typed] of pairs) {
     const a = apply(doc, [{ op: "set_node", block_id: id, match_text: target, ...flat }]).after;
     const b = apply(doc, [{ op: "set_node", block_id: id, match_text: target, ...typed }]).after;
+    assert.notDeepEqual(
+      markers(a, id),
+      markers(doc, id),
+      `${JSON.stringify(flat)} changed nothing`,
+    );
     assert.deepEqual(markers(a, id), markers(b, id), JSON.stringify(flat));
   }
 });
