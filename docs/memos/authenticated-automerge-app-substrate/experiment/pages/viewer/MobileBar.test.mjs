@@ -183,3 +183,15 @@ test("inside a table, More offers row and column actions instead of Insert table
   await click(row);
   assert.deepEqual(ran, ["row-after"]);
 });
+
+test("with an image or a dataframe selected, text style, marks and lists are disabled", async (t) => {
+  for (const atom of ["image", "dataframe"]) {
+    const view = await renderBar(t, { format: { atom } });
+    for (const label of ["Text style", "Bold", "Italic", "Bulleted list"])
+      assert.equal(
+        view.bar.querySelector(`[aria-label="${label}"]`).disabled,
+        true,
+        `${atom} ${label}`,
+      );
+  }
+});

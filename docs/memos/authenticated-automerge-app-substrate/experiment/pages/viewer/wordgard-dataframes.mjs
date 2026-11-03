@@ -5,7 +5,7 @@
 // Sorting, filtering and column changes stay in each reader's view. A shared
 // view belongs beside the node, not in its attrs; see the README's Dataframes
 // section.
-import { Decoration, Widget } from "wordgard/editor";
+import { Decoration, KeyBinding, Widget } from "wordgard/editor";
 import { GardSelection } from "wordgard/state";
 import { PagesDataframe } from "./wordgard-model.mjs";
 import { reportRendererUnavailable } from "./wordgard-widgets.mjs";
@@ -19,27 +19,23 @@ export const DATAFRAME_RENDERERS = Object.freeze({
 });
 
 /**
- * The table's frame: a header (the title, when set, and a select handle)
- * above the canvas. The header and the frame's edges belong to the node;
- * the canvas belongs to Sift, so text inside the grid stays selectable.
+ * The table's frame: a title row above the canvas. The title row and the
+ * frame's edges belong to the node: a click there selects the table the way
+ * a click selects an image (Wordgard's native atom selection). The canvas
+ * belongs to Sift.
  */
 export function dataframeFrame({ title, media_type }) {
   const dom = document.createElement("section");
   dom.className = "wordgard-widget wordgard-dataframe-table";
-  dom.tabIndex = -1;
   dom.dataset.mediaType = media_type;
   dom.setAttribute("aria-label", title ?? "Table");
+  dom.setAttribute("aria-roledescription", "table");
   const header = dom.appendChild(document.createElement("div"));
   header.className = "wordgard-dataframe-header";
   const caption = header.appendChild(document.createElement("div"));
   caption.className = "wordgard-dataframe-title";
-  caption.textContent = title ?? "";
-  const handle = header.appendChild(document.createElement("button"));
-  handle.type = "button";
-  handle.className = "wordgard-dataframe-select";
-  handle.setAttribute("aria-label", "Select table");
-  handle.title = "Select table";
-  handle.textContent = "⋮⋮";
+  caption.textContent = title ?? "Table";
+  caption.classList.toggle("is-untitled", !title);
   const status = dom.appendChild(document.createElement("p"));
   status.setAttribute("role", "status");
   const canvas = dom.appendChild(document.createElement("div"));
@@ -47,26 +43,13 @@ export function dataframeFrame({ title, media_type }) {
   const load = DATAFRAME_RENDERERS[media_type];
   status.textContent = load ? "Loading table…" : `This build can't show ${media_type}.`;
   canvas.hidden = !load;
-  return { dom, header, handle, status, canvas, load };
+  return { dom, header, status, canvas, load };
 }
 
-/**
- * Select the dataframe drawn by `dom` as one node, so cut, copy, delete and
- * drag act on the whole table, the way a click selects an image. A press
- * inside Sift's canvas is left alone: that's for the grid.
- */
-export function selectDataframeOnPress(editor, dom) {
-  dom.addEventListener("mousedown", (event) => {
-    if (event.button !== 0 || event.target.closest?.(".wordgard-dataframe-canvas")) return;
-    const block = editor.nodeFromDOM(dom);
-    if (!block || block.node.type !== PagesDataframe) return;
-    event.preventDefault();
-    // Focus first: focusing reads the DOM selection, which would replace a
-    // node selection made before it.
-    editor.focus();
-    editor.dispatch({ selection: GardSelection.node(block.pos, block.node) });
-  });
-}
+/** Events inside Sift's canvas are the grid's; Wordgard never sees them.
+ * Everything on the frame reaches Wordgard, which selects the node. */
+export const dataframeEventReachesEditor = (event) =>
+  !event.target?.closest?.(".wordgard-dataframe-canvas");
 
 /**
  * The renderer lifecycle of one table, as a state machine:
@@ -105,6 +88,9 @@ export function dataframeLifecycle({
           clearTimeout(timer);
           timer = null;
           state = "mounted";
+          // A move re-inserts the DOM, which restarts CSS animations. Sift's
+          // load-in animations would replay on every select; turn them off.
+          if (canvas.dataset) canvas.dataset.moved = "";
           return;
         }
         if (state !== "idle" || !load) return;
@@ -180,7 +166,7 @@ const dataframeTable = Widget.define({
     a.pageId === b.pageId,
   render(attrs, editor) {
     const frame = dataframeFrame(attrs);
-    selectDataframeOnPress(editor, frame.dom);
+    leaveGridOnEscape(editor, frame.dom);
     mounted.set(
       frame.dom,
       dataframeLifecycle({
@@ -197,10 +183,7 @@ const dataframeTable = Widget.define({
   disconnect(_value, dom) {
     mounted.get(dom)?.disconnect();
   },
-  // Events inside Sift's canvas are the grid's; the editor ignores them.
-  // Events on the frame (keys and clipboard while the node is selected)
-  // reach the editor, so cut, copy and delete act on the node.
-  propagateEvent: (event) => !event.target?.closest?.(".wordgard-dataframe-canvas"),
+  propagateEvent: dataframeEventReachesEditor,
 });
 
 /**
@@ -213,12 +196,74 @@ const dataframeTable = Widget.define({
 export function wordgardDataframes({ pageId } = {}) {
   if (typeof pageId !== "string" || !pageId)
     throw Error("wordgardDataframes needs the Page id it shows");
-  return Decoration.Tag.shape(
-    PagesDataframe,
-    (tag) => {
-      const { src, media_type, title } = readDataframe(tag.param);
-      return dataframeTable.of({ src, media_type, title, pageId });
-    },
-    { atom: true },
-  );
+  return [
+    Decoration.Tag.shape(
+      PagesDataframe,
+      (tag) => {
+        const { src, media_type, title } = readDataframe(tag.param);
+        return dataframeTable.of({ src, media_type, title, pageId });
+      },
+      { atom: true },
+    ),
+    KeyBinding.of({ key: "Escape", run: deselectDataframe }),
+    KeyBinding.of({ key: "Enter", run: enterDataframeGrid }),
+  ];
+}
+
+const selectedDataframe = (state) =>
+  state.selection instanceof GardSelection.Node && state.selection.node.type === PagesDataframe
+    ? state.selection
+    : null;
+
+/** The focus target inside a rendered table: Sift's grid container. */
+const gridTarget = (frame) =>
+  frame?.querySelector(".wordgard-dataframe-canvas [tabindex='0']") ?? null;
+
+/**
+ * Enter on a selected dataframe moves focus into Sift's grid, where arrows,
+ * Page Up/Down and Home/End scroll rows. Returns false (Enter does its usual
+ * work) when no table is selected or its grid hasn't loaded.
+ */
+export function enterDataframeGrid(editor) {
+  const selection = selectedDataframe(editor.state);
+  if (!selection) return false;
+  const dom = editor.nodeDOM(selection.from);
+  const frame = dom?.matches?.(".wordgard-dataframe-table")
+    ? dom
+    : dom?.querySelector?.(".wordgard-dataframe-table");
+  const target = gridTarget(frame);
+  if (!target) return false;
+  target.focus({ preventScroll: true });
+  return true;
+}
+
+/**
+ * Escape inside the grid returns to the table selected in the editor. Sift
+ * uses its first Escape to clear active filters (and prevents the default);
+ * only an Escape it didn't take leaves the grid.
+ */
+function leaveGridOnEscape(editor, frame) {
+  frame.addEventListener("keydown", (event) => {
+    if (event.key !== "Escape" || event.defaultPrevented) return;
+    if (!event.target?.closest?.(".wordgard-dataframe-canvas")) return;
+    const block = editor.nodeFromDOM(frame);
+    if (!block || block.node.type !== PagesDataframe) return;
+    event.preventDefault();
+    editor.focus();
+    editor.dispatch({ selection: GardSelection.node(block.pos, block.node) });
+  });
+}
+
+/**
+ * Escape on a selected dataframe puts the caret just after it, so the table
+ * is no longer selected. Returns false (letting Escape through) otherwise.
+ */
+export function deselectDataframe(editor) {
+  const selection = selectedDataframe(editor.state);
+  if (!selection) return false;
+  editor.dispatch({
+    selection: (cx) =>
+      selection.nextNormalCursor(cx, true) ?? GardSelection.near(cx, selection.from, -1),
+  });
+  return true;
 }

@@ -305,3 +305,22 @@ test("a peer-written dataframe inside a table cell projects a notice and refuses
   const decoded = decode(A.spans(next, textPath(id)));
   assert.equal(decoded.lossy, true);
 });
+
+test("a synced dataframe naming another Page's asset reads as a notice and refuses a rewrite", () => {
+  const foreign = `/api/pages/44444444-4444-4444-8444-444444444444/assets/${"e".repeat(64)}`;
+  const { doc, id } = mixed([
+    marker("dataframe", { src: S(foreign), media_type: S(PARQUET_MEDIA_TYPE), title: S("Theirs") }),
+  ]);
+  const markdown = projectPage(doc).blocks[0].markdown;
+  assert.equal(markdown, "hello\n\n\\[Unsupported node: dataframe\\]\n\nworld");
+  assert.doesNotMatch(markdown, /44444444/);
+  assert.throws(
+    () => edit(doc, [{ op: "replace_block_markdown", block_id: id, markdown }]),
+    (error) => error.code === "markdownless_node",
+  );
+  // replace_match beside it still works, and leaves it alone.
+  const { doc: after } = edit(doc, [
+    { op: "replace_match", block_id: id, match_text: "hello", replacement: "hi" },
+  ]);
+  assert.deepEqual(dataframes(after, id), dataframes(doc, id));
+});

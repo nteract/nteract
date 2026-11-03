@@ -276,3 +276,8 @@ export function schemaUnsupported(features) {
     { status: 409, code: "schema_unsupported", details: { features } },
   );
 }
+
+/** Block types whose content is text: a block node can't be placed inside
+ * them. The model (richtext.mjs) and the editor (wordgard-model.mjs) both
+ * read this. */
+export const TEXT_CONTAINERS = Object.freeze(new Set(["code-block", "table-cell", "table-header"]));

@@ -237,15 +237,67 @@ try {
   assert.ok((await markdownOf()).includes(`[Dataframe: dropped usage](${dataset.asset_url})`));
   complete("Dropping a .parquet file uploads it and inserts a shared dataframe node");
 
-  // Select the dropped table by its frame, cut it, and paste it back at the
-  // top of the Page's first block. The node survives, unknown attrs and all.
+  // Selection model: a click on the frame selects the table natively, as a
+  // click selects an image. Arrows reach it from text. Enter enters Sift's
+  // grid; Escape leaves it, then deselects. One table selected per Page.
   const dropped = tables(owner).filter({ hasText: "dropped usage" });
-  await dropped.getByRole("button", { name: "Select table" }).click();
-  await expect(owner.locator(".wg-selected-node section.wordgard-dataframe-table")).toHaveCount(1);
-  // Selecting keeps the table mounted, and the text toolbar stays hidden.
-  await expect(dropped.locator(".sift-root").first()).toContainText("browser");
+  const other = tables(owner).filter({ hasText: "Usage by day" });
+  const selected = (table) =>
+    table.locator("xpath=ancestor::*[contains(@class,'wg-selected-node')]");
+  const drawnOutlines = () =>
+    owner
+      .locator(".wg-selected-node:has(section.wordgard-dataframe-table)")
+      .evaluateAll(
+        (nodes) =>
+          nodes.filter((node) => getComputedStyle(node).outlineColor !== "rgba(0, 0, 0, 0)").length,
+      );
+  const siftRoot = await dropped.locator(".sift-root").first().elementHandle();
+
+  await dropped.locator(".wordgard-dataframe-title").click();
+  await expect(selected(dropped)).toHaveCount(1);
   await expect(owner.getByRole("toolbar", { name: "Text formatting" })).toBeHidden();
   await owner.screenshot({ path: `${output}/sift-table-selected.png`, fullPage: true });
+  complete("A click on the title selects the table");
+
+  // The dropped table ends its block, so Escape leaves the caret just
+  // before it, and ArrowDown selects it again.
+  await owner.keyboard.press("Escape");
+  await expect(selected(dropped)).toHaveCount(0);
+  await owner.keyboard.press("ArrowDown");
+  await expect(selected(dropped)).toHaveCount(1);
+  complete("Escape deselects; ArrowDown from the text above selects it again");
+
+  await owner.keyboard.press("Enter");
+  await expect
+    .poll(() =>
+      dropped.evaluate((frame) =>
+        frame.querySelector(".wordgard-dataframe-canvas")?.contains(document.activeElement),
+      ),
+    )
+    .toBe(true);
+  await owner.keyboard.press("ArrowDown");
+  await owner.keyboard.press("Escape");
+  await expect(selected(dropped)).toHaveCount(1);
+  await expect
+    .poll(() => dropped.evaluate((frame) => frame.closest("wg-content") === document.activeElement))
+    .toBe(true);
+  complete("Enter enters the grid; Escape returns to the table selected");
+
+  await other.locator(".wordgard-dataframe-title").click();
+  await expect(selected(other)).toHaveCount(1);
+  await expect(selected(dropped)).toHaveCount(0);
+  await expect.poll(drawnOutlines).toBe(1);
+  complete("Selecting another block's table deselects the first");
+
+  await owner.waitForTimeout(1200);
+  assert.equal(
+    await siftRoot.evaluate((element) => element.isConnected),
+    true,
+    "selection reloaded the table",
+  );
+
+  await dropped.locator(".wordgard-dataframe-title").click();
+  await expect(selected(dropped)).toHaveCount(1);
   await owner.keyboard.press("ControlOrMeta+X");
   await expect(tables(owner)).toHaveCount(1, { timeout: 10000 });
   await expect(tables(viewer)).toHaveCount(1, { timeout: 15000 });
@@ -257,7 +309,35 @@ try {
     timeout: 20000,
   });
   await expect.poll(async () => (await markdownOf()).match(/\[Dataframe/g)?.length ?? 0).toBe(2);
-  complete("Selecting a table by its frame, cutting and pasting it moves the node");
+  complete("Click, Cmd-X and paste move the table");
+
+  // An HTML drop of a dataframe copied from another Page lands as its title,
+  // never as a node naming another Page's asset.
+  const foreign = `/api/pages/44444444-4444-4444-8444-444444444444/assets/${"a".repeat(64)}`;
+  await content(owner).evaluate((element, src) => {
+    const data = new DataTransfer();
+    const attrs = JSON.stringify({
+      src,
+      media_type: "application/vnd.apache.parquet",
+      title: "Foreign table",
+    });
+    data.setData("text/html", `<figure data-pages-dataframe='${attrs}'>Foreign table</figure>`);
+    data.setData("text/plain", "Foreign table");
+    const rect = element.getBoundingClientRect();
+    element.dispatchEvent(
+      new DragEvent("drop", {
+        dataTransfer: data,
+        clientX: rect.left + 20,
+        clientY: rect.top + 10,
+        bubbles: true,
+        cancelable: true,
+      }),
+    );
+  }, foreign);
+  await expect.poll(markdownOf).toContain("Foreign table");
+  assert.equal((await markdownOf()).includes("44444444-4444-4444-8444-444444444444"), false);
+  await expect(tables(owner)).toHaveCount(2);
+  complete("An HTML drop of another Page's dataframe lands as its title");
 
   for (const page of [owner, viewer])
     assert.equal(await page.locator("[data-block-error]").count(), 0, "a block failed to draw");

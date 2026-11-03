@@ -46,7 +46,7 @@ export function projectPage(doc, commentsDoc) {
   return {
     page_id: doc.page_id,
     title: doc.title,
-    blocks: orderedBlockIds(doc).map((id) => projectedBlock(doc.blocks[id])),
+    blocks: orderedBlockIds(doc).map((id) => projectedBlock(doc.blocks[id], doc.page_id)),
     comments: projectComments(doc, commentsDoc),
   };
 }
@@ -148,7 +148,7 @@ function applyEdit(doc, op, trace, context) {
   if (op.op === "format_match") return formatMatch(doc, id, op, trace, context);
   if (op.op === "set_node") return setNode(doc, id, op, trace, context);
   if (op.op === "replace_block_markdown") {
-    const node = markdownlessNode(doc.blocks[id]);
+    const node = markdownlessNode(doc.blocks[id], doc.page_id);
     if (node)
       throw Object.assign(
         Error(

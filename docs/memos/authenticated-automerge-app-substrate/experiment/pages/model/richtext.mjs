@@ -21,8 +21,13 @@ import {
   updateSpansConfig,
   validateMarkValue,
 } from "./marks.mjs";
-import { FEATURE_REGISTRY, stampSpans } from "./schema-features.mjs";
-import { DATAFRAME_BLOCK, dataframeAttrs, readDataframe } from "../shared/dataset-assets.mjs";
+import { TEXT_CONTAINERS, FEATURE_REGISTRY, stampSpans } from "./schema-features.mjs";
+import {
+  DATAFRAME_BLOCK,
+  dataframeAttrs,
+  parseAssetPath,
+  readDataframe,
+} from "../shared/dataset-assets.mjs";
 
 export { safeUrl } from "./marks.mjs";
 
@@ -1554,7 +1559,6 @@ export function codeTextUnmarked(spans) {
   });
 }
 const knownBlock = (type) => adapter.nodeMappings.some((mapping) => mapping.blockName === type);
-const TEXT_CONTAINERS = new Set(["code-block", "table-cell", "table-header"]);
 /** Spans the ProseMirror adapter can read, for a projection only. Unknown
  * embeds in a code block always become their notice as text (a code block
  * serializes only its text). With `all`, every unknown marker does: one
@@ -1562,7 +1566,14 @@ const TEXT_CONTAINERS = new Set(["code-block", "table-cell", "table-header"]);
  * unknown parents are dropped. Writers never store these spans. */
 const dataframeInText = (type, parents) =>
   type === DATAFRAME_BLOCK && parents.some((parent) => TEXT_CONTAINERS.has(parent));
-function readableSpans(spans, all) {
+/** A dataframe naming an asset on a Page other than `pageId`. No Pages
+ * writer stores one; a synced document can. It reads like a node this build
+ * doesn't know, so a read never offers the other Page's asset path. */
+const foreignDataframe = (span, pageId) =>
+  pageId !== undefined &&
+  String(span.value?.type) === DATAFRAME_BLOCK &&
+  parseAssetPath(String(span.value?.attrs?.src ?? ""))?.pageId !== pageId;
+function readableSpans(spans, all, pageId) {
   const known = (types) => types.filter(knownBlock).map((p) => new A.ImmutableString(p));
   const out = [];
   for (const span of spans) {
@@ -1574,8 +1585,9 @@ function readableSpans(spans, all) {
     const parents = (span.value.parents ?? []).map(String);
     // A dataframe inside a text container can't be placed; it reads like a
     // node this build doesn't know (dataframeInText).
-    const unknown = !knownBlock(type) || dataframeInText(type, parents);
-    if (unknown && (all || (span.value.isEmbed && parents.includes("code-block")))) {
+    const foreign = foreignDataframe(span, pageId);
+    const unknown = !knownBlock(type) || dataframeInText(type, parents) || foreign;
+    if (unknown && (all || foreign || (span.value.isEmbed && parents.includes("code-block")))) {
       if (!span.value.isEmbed && !parents.some((parent) => TEXT_CONTAINERS.has(parent)))
         out.push({
           type: "block",
@@ -1596,18 +1608,20 @@ function readableSpans(spans, all) {
 /** A block's ProseMirror tree. Unknown nodes the adapter can't place, such as
  * one stored inside a table cell or code block, are read through
  * readableSpans, so a Page from a newer build always projects. */
-export const richDoc = (block) => {
+export const richDoc = (block, pageId) => {
   const spans = codeTextUnmarked(A.spans(block, ["richText"]));
   try {
-    return pmDocFromSpans(adapter, readableSpans(spans, false));
+    return pmDocFromSpans(adapter, readableSpans(spans, false, pageId));
   } catch (error) {
-    if (!markdownlessNode(block)) throw error;
-    return pmDocFromSpans(adapter, readableSpans(spans, true));
+    if (!markdownlessNode(block, pageId)) throw error;
+    return pmDocFromSpans(adapter, readableSpans(spans, true, pageId));
   }
 };
-export function blockMarkdown(block) {
+/** `pageId` is the Page holding the block; a dataframe naming another
+ * Page's asset then reads as an unknown-node notice. */
+export function blockMarkdown(block, pageId) {
   if (!isRich(block)) return block.markdown;
-  const current = exportMarkdown(richDoc(block));
+  const current = exportMarkdown(richDoc(block, pageId));
   // Source that holds math or HTML is provenance only: its current projection
   // is the escaped literal text an agent can write back.
   if (unsupportedMarkdown(block.markdown)) return current;
@@ -1706,12 +1720,13 @@ export function setRichImage(doc, id, { src, alt }) {
 /** The type of the first node in the block that Markdown can't reproduce, or
  * null. Today that is a node this build doesn't know: rewriting its block
  * from Markdown would delete it, so replace_block_markdown refuses. */
-export function markdownlessNode(block) {
+export function markdownlessNode(block, pageId) {
   if (!isRich(block)) return null;
   for (const span of A.spans(block, ["richText"])) {
     if (span.type !== "block") continue;
     const parents = (span.value?.parents ?? []).map(String);
-    if (dataframeInText(String(span.value?.type), parents)) return DATAFRAME_BLOCK;
+    if (dataframeInText(String(span.value?.type), parents) || foreignDataframe(span, pageId))
+      return DATAFRAME_BLOCK;
     for (const type of [span.value?.type, ...parents].map(String))
       if (!knownBlock(type)) return type;
   }
@@ -1796,9 +1811,9 @@ export function setRichMarkdownKeepingNodes(doc, id, source) {
   A.updateSpans(doc, textPath(id), spans, updateSpansConfig);
   stampSpans(doc, spans);
 }
-export function projectedBlock(block) {
+export function projectedBlock(block, pageId) {
   const { richText: _rich, ...result } = block;
-  return { ...result, markdown: blockMarkdown(block) };
+  return { ...result, markdown: blockMarkdown(block, pageId) };
 }
 
 // Bound the actual spans: JSON.stringify(doc) alone misses block-marker data.
