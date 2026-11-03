@@ -36,6 +36,14 @@ const DATAFRAME_LINE = new RegExp(
 );
 /** The largest asset the asset routes accept (shared/dataset-assets.mjs). */
 const MAX_ASSET_BYTES = 5 * 1024 * 1024;
+/** The most asset bytes one bundle carries. Base64 grows them by a third, and
+ * the bundle is one JSON string, which V8 caps near 512 MiB. */
+export const MAX_BUNDLE_ASSET_BYTES = 256 * 1024 * 1024;
+/** Whether a block's Markdown holds a dataframe's read-back line anywhere:
+ * the server refuses a Markdown rewrite of such a block that drops it. */
+const HOLDS_DATAFRAME = new RegExp(
+  `\\[Dataframe(?:: [^\\n]*)?\\]\\(/api/pages/${UUID}/assets/[a-f0-9]{64}\\)`,
+);
 // Tool errors that say "try the same request again later". Anything else with
 // a body is a definite answer from the server.
 const RETRY_LATER = new Set([
@@ -179,16 +187,17 @@ export function pagesClient({
         uncertain: true,
       });
     }
-    if (response.status === 401 || response.status === 403)
-      throw new TransferError(
-        `${what} on ${base}: the credential can't use the asset routes (HTTP ${response.status}). Dataframes need an Anaconda API key; a Pages OAuth token works only on /mcp.`,
-        { code: "assets_unauthorized" },
-      );
-    if (!response.ok)
-      throw new TransferError(`${what} on ${base}: HTTP ${response.status}`, {
-        uncertain: response.status >= 500 || response.status === 429,
-      });
-    return response;
+    if (response.ok) return response;
+    // The server's reason, without echoing anything else from the response.
+    let reason = "";
+    try {
+      const body = await response.json();
+      if (typeof body?.error === "string") reason = `: ${body.error.slice(0, 300)}`;
+    } catch {}
+    throw new TransferError(`${what} on ${base}: HTTP ${response.status}${reason}`, {
+      code: response.status === 401 || response.status === 403 ? "unauthorized" : undefined,
+      uncertain: response.status >= 500 || response.status === 429,
+    });
   }
   /** The bytes at a same-origin asset path. */
   async function download(path) {
@@ -206,7 +215,11 @@ export function pagesClient({
     );
     return response.json();
   }
-  return { origin: base, call, download, upload };
+  // The server limits a Pages OAuth token (pages_…) to /mcp, by path, before
+  // any Page lookup (worker/auth.mjs authenticate). Only other credentials,
+  // such as an Anaconda API key, can use the asset routes.
+  const assets = !token.trim().startsWith("pages_");
+  return { origin: base, assets, call, download, upload };
 }
 
 /** The lowercase hex SHA-256 of `bytes`: an asset's id. */
@@ -403,8 +416,9 @@ function bundlePage(row, parentSourceId, read, homePageId) {
 }
 
 /** Each distinct dataframe asset in `pages`, downloaded and checked against
- * its id. A credential that can't use the asset routes leaves `assets` empty
- * and says why; those dataframes stay as links. */
+ * its id. A Pages OAuth token can't use the asset routes, so with one
+ * `assets` stays empty, a warning says why, and those dataframes stay as
+ * links. Any other refusal fails the export. */
 async function exportAssets(client, pages, { log, ...options }) {
   const wanted = new Map();
   for (const page of pages)
@@ -412,15 +426,20 @@ async function exportAssets(client, pages, { log, ...options }) {
       if (!wanted.has(frame.asset_id)) wanted.set(frame.asset_id, frame);
   const assets = {};
   const warnings = [];
+  if (wanted.size && !client.assets) {
+    warnings.push(
+      `A Pages OAuth token can't read assets, so ${wanted.size} dataframe asset(s) were not exported; they import as links. Export with an Anaconda API key to copy them.`,
+    );
+    return { assets, warnings };
+  }
+  let total = 0;
   for (const [assetId, frame] of wanted) {
-    let bytes;
-    try {
-      bytes = await withRetries(() => client.download(frame.src), options);
-    } catch (error) {
-      if (error.code !== "assets_unauthorized") throw error;
-      warnings.push(`${error.message} ${wanted.size} dataframe asset(s) not exported.`);
-      return { assets: {}, warnings };
-    }
+    const bytes = await withRetries(() => client.download(frame.src), options);
+    total += bytes.length;
+    if (total > MAX_BUNDLE_ASSET_BYTES)
+      throw new TransferError(
+        `The Project's dataframes are larger than one bundle carries (${MAX_BUNDLE_ASSET_BYTES} bytes)`,
+      );
     if ((await sha256(bytes)) !== assetId)
       throw new TransferError(`The bytes at ${frame.src} don't match asset ${assetId}`);
     assets[assetId] = {
@@ -561,6 +580,11 @@ export function validateBundle(bundle) {
           (frame.title !== undefined && typeof frame.title !== "string")
         )
           fail(`${at}.dataframes entries need asset_id, src, media_type and an optional title`);
+        else if (
+          Object.hasOwn(bundle.assets ?? {}, frame.asset_id) &&
+          bundle.assets[frame.asset_id].media_type !== frame.media_type
+        )
+          fail(`${at}: dataframe ${frame.asset_id} and its asset disagree on media_type`);
     }
     if (page.blocks !== undefined) {
       if (
@@ -597,11 +621,21 @@ const pageBlocks = (page) => (page.blocks ?? [page.markdown]).map(importable);
  * that sat inside a block splits it there.
  */
 export function bodyUnits(blocks, page, assets = {}) {
-  const frames = new Map(
-    (page.dataframes ?? [])
-      .filter((frame) => Object.hasOwn(assets, frame.asset_id))
-      .map((frame) => [frame.src, frame]),
-  );
+  // Frames by src, in outline order. Two dataframes can show one asset under
+  // different titles; each standalone line takes the next one.
+  const frames = new Map();
+  for (const frame of page.dataframes ?? [])
+    if (Object.hasOwn(assets, frame.asset_id))
+      frames.set(frame.src, [...(frames.get(frame.src) ?? []), frame]);
+  const taken = new Map();
+  const next = (src) => {
+    const queue = frames.get(src);
+    if (!queue) return undefined;
+    const index = taken.get(src) ?? 0;
+    taken.set(src, index + 1);
+    // More lines than the outline listed: reuse the last one's attrs.
+    return queue[Math.min(index, queue.length - 1)];
+  };
   const units = [];
   for (const markdown of blocks) {
     const lines = markdown.split("\n");
@@ -616,9 +650,10 @@ export function bodyUnits(blocks, page, assets = {}) {
       const marker = /^ {0,3}(`{3,}|~{3,})/.exec(line)?.[1];
       if (marker && (fence === null || (marker[0] === fence[0] && marker.length >= fence.length)))
         fence = fence === null ? marker : null;
-      const frame = fence === null ? frames.get(DATAFRAME_LINE.exec(line)?.[1]) : undefined;
+      const src = fence === null ? DATAFRAME_LINE.exec(line)?.[1] : undefined;
       const alone = !lines[index - 1]?.trim() && !lines[index + 1]?.trim();
-      if (frame && alone) {
+      const frame = src && alone ? next(src) : undefined;
+      if (frame) {
         flush();
         units.push({ dataframe: frame });
       } else chunk.push(line);
@@ -629,8 +664,11 @@ export function bodyUnits(blocks, page, assets = {}) {
 }
 
 /** The edit_page operations that make a Page with `blocks` hold `units`, in
- * order: units before the first Markdown one are put first, the first block
- * takes that Markdown, every other block is deleted, and the rest append. */
+ * order. The first existing block with no dataframe takes the first Markdown
+ * unit; units before it are put first; every other block is deleted; the
+ * rest append. A block holding a dataframe is never rewritten (the server
+ * refuses to drop one), so a rerun over a body an earlier run wrote,
+ * dataframes first, converges instead of being refused. */
 export function bodyOperations(blocks, units) {
   const write = (unit, after) =>
     unit.dataframe
@@ -652,8 +690,9 @@ export function bodyOperations(blocks, units) {
           ...(after !== undefined && { after_block_id: after }),
         };
   const first = units.findIndex((unit) => unit.markdown !== undefined);
+  const target = blocks.find((block) => !HOLDS_DATAFRAME.test(block.markdown ?? ""));
   const operations = [];
-  if (first === -1 || !blocks.length) {
+  if (first === -1 || !target) {
     for (const unit of units) operations.push(write(unit));
     for (const block of blocks) operations.push({ op: "delete_block", block_id: block.id });
     return operations;
@@ -662,10 +701,11 @@ export function bodyOperations(blocks, units) {
   for (const unit of units.slice(0, first).reverse()) operations.push(write(unit, null));
   operations.push({
     op: "replace_block_markdown",
-    block_id: blocks[0].id,
+    block_id: target.id,
     markdown: units[first].markdown,
   });
-  for (const block of blocks.slice(1)) operations.push({ op: "delete_block", block_id: block.id });
+  for (const block of blocks)
+    if (block !== target) operations.push({ op: "delete_block", block_id: block.id });
   for (const unit of units.slice(first + 1)) operations.push(write(unit));
   return operations;
 }
@@ -1054,6 +1094,11 @@ export async function importBundle(
       throw new TransferError(`Invalid bundle: the data for asset ${assetId} doesn't match its id`);
     bytes.set(assetId, decoded);
   }
+  if (bytes.size && !client.assets)
+    throw new TransferError(
+      "This bundle carries dataframe bytes, and a Pages OAuth token can't store assets. Import with an Anaconda API key, or delete the bundle's assets to import those dataframes as links.",
+      { code: "assets_unauthorized" },
+    );
   const warnings = [];
 
   // One request at a time. Its exact arguments are saved before sending, so a

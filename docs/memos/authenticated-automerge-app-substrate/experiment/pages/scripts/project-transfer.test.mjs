@@ -5,6 +5,7 @@ import path from "node:path";
 import { test } from "node:test";
 import { generateKeyBetween } from "fractional-indexing";
 import { retryKeyPrefix } from "../model/retry-key.mjs";
+import { inspectParquet } from "../worker/image-assets.mjs";
 import {
   BUNDLE_FORMAT,
   EDIT_BATCH,
@@ -37,7 +38,7 @@ const PARQUET = "application/vnd.apache.parquet";
  * what project_id alone means: "page9" puts the Page at the Project's top
  * level, "page10" under the home Page.
  */
-function fakePages(origin, { placement = "page10", outlinePage = 100, assetKey = KEY } = {}) {
+function fakePages(origin, { placement = "page10", outlinePage = 100, token = KEY } = {}) {
   const pages = new Map();
   // Stored asset bytes by "<page_id>/<asset_id>", as the asset routes keep them.
   const assets = new Map();
@@ -58,6 +59,9 @@ function fakePages(origin, { placement = "page10", outlinePage = 100, assetKey =
   // dropResponse: apply, then lose the response. before: answer without
   // applying ("lost" loses the request; an object is the tool's result).
   const hooks = { dropResponse: null, before: null };
+  // Answer every asset request with a refusal an API key can still get (a
+  // Page trashed mid-export, say).
+  let refuseAssets = false;
   const fail = (code, error = code) => ({ ok: false, body: { error, code } });
   const head = (page) => page.revision.toString(16).padStart(64, "0");
   async function authority() {
@@ -275,15 +279,33 @@ function fakePages(origin, { placement = "page10", outlinePage = 100, assetKey =
           else if (op.op === "insert_markdown")
             place({ id: crypto.randomUUID(), kind: "markdown", markdown: op.markdown });
           else if (op.op === "insert_node") {
-            const { asset_id } = op.node.attrs;
+            const { attrs } = op.node;
+            // validateNodeInsertion's shape (model/page.mjs).
+            if (
+              op.node.type !== "dataframe" ||
+              Object.keys(attrs).some(
+                (key) => !["asset_id", "media_type", "title"].includes(key),
+              ) ||
+              (attrs.media_type !== undefined && attrs.media_type !== PARQUET) ||
+              (attrs.title !== undefined &&
+                (typeof attrs.title !== "string" || attrs.title.length > 200))
+            )
+              return fail("invalid_node");
+            const { asset_id } = attrs;
             if (!assets.has(`${page.page_id}/${asset_id}`)) return fail("dataset_not_found");
             place(dataframeBlock(page.page_id, op.node.attrs));
           } else {
             const index = page.blocks.findIndex((block) => block.id === op.block_id);
             if (index < 0) return fail("block_not_found");
             if (op.op === "delete_block") page.blocks.splice(index, 1);
-            else if (op.op === "replace_block_markdown") page.blocks[index].markdown = op.markdown;
-            else return fail("unsupported_operation");
+            else if (op.op === "replace_block_markdown") {
+              // The server keeps a dataframe only when its line survives the
+              // rewrite (setRichMarkdownKeepingNodes); this fake never sees
+              // one survive, so it refuses, as the server does on a drop.
+              if (page.blocks[index].type === "dataframe" || page.blocks[index].outline)
+                return fail("markdownless_node");
+              page.blocks[index].markdown = op.markdown;
+            } else return fail("unsupported_operation");
           }
         }
         page.revision++;
@@ -294,8 +316,12 @@ function fakePages(origin, { placement = "page10", outlinePage = 100, assetKey =
   async function assetRoute(url, init) {
     const path = url.slice(origin.length);
     assetCalls.push({ method: init.method, path });
-    if (init.headers.Authorization !== `Bearer ${assetKey}`)
+    // The server limits a pages_ token to /mcp by path (worker/auth.mjs).
+    if (token.startsWith("pages_"))
+      return Response.json({ error: "This credential is limited to Pages MCP" }, { status: 403 });
+    if (init.headers.Authorization !== `Bearer ${token}`)
       return Response.json({ error: "unauthorized" }, { status: 401 });
+    if (refuseAssets) return Response.json({ error: "Page not found" }, { status: 403 });
     const read = /^\/api\/pages\/([^/]+)\/assets\/([a-f0-9]{64})$/.exec(path);
     if (init.method === "GET" && read) {
       const bytes = assets.get(`${read[1]}/${read[2]}`);
@@ -305,6 +331,11 @@ function fakePages(origin, { placement = "page10", outlinePage = 100, assetKey =
     if (init.method === "POST" && write) {
       if (!pages.has(write[1])) return Response.json({ error: "not found" }, { status: 404 });
       const bytes = new Uint8Array(init.body);
+      try {
+        inspectParquet(bytes);
+      } catch (error) {
+        return Response.json({ error: error.message }, { status: error.status ?? 415 });
+      }
       const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", bytes));
       const asset_id = [...digest].map((byte) => byte.toString(16).padStart(2, "0")).join("");
       const key = `${write[1]}/${asset_id}`;
@@ -325,7 +356,7 @@ function fakePages(origin, { placement = "page10", outlinePage = 100, assetKey =
     assert.equal(init.headers["X-Pages-Driver"], "Pages project transfer");
     if (url.startsWith(`${origin}/api/pages/`)) return assetRoute(url, init);
     assert.equal(url, `${origin}/mcp`);
-    if (init.headers.Authorization !== `Bearer ${KEY}`)
+    if (init.headers.Authorization !== `Bearer ${token}`)
       return Response.json({ error: "invalid_token" }, { status: 401 });
     const message = JSON.parse(init.body);
     assert.equal(message.method, "tools/call");
@@ -364,6 +395,7 @@ function fakePages(origin, { placement = "page10", outlinePage = 100, assetKey =
     return { asset_id, line: block.markdown, src: block.attrs.src };
   }
   return {
+    refuseAssets: (value) => (refuseAssets = value),
     fetch,
     pages,
     projects,
@@ -379,7 +411,7 @@ function fakePages(origin, { placement = "page10", outlinePage = 100, assetKey =
   };
 }
 
-const client = (fake, origin) => pagesClient({ origin, token: KEY, fetch: fake.fetch });
+const client = (fake, origin, token = KEY) => pagesClient({ origin, token, fetch: fake.fetch });
 
 /** A page9-shaped source: top-level Pages are the home Page's siblings. */
 function guideSource({ preservedType = "pages-opaque", ...options } = {}) {
@@ -1232,14 +1264,23 @@ test("an expired body batch is rewritten from a fresh read and converges", async
   }
 });
 
-// Parquet-ish bytes; the transfer never parses them.
-const frameBytes = (label) => new TextEncoder().encode(`PAR1 ${label} PAR1`);
+/** Bytes with a valid Parquet container (worker/image-assets.mjs
+ * inspectParquet): PAR1, a body, its length as the footer, PAR1. */
+function frameBytes(label) {
+  const body = new TextEncoder().encode(label);
+  const bytes = new Uint8Array(body.length + 12);
+  bytes.set(new TextEncoder().encode("PAR1"), 0);
+  bytes.set(body, 4);
+  new DataView(bytes.buffer).setUint32(4 + body.length, body.length, true);
+  bytes.set(new TextEncoder().encode("PAR1"), body.length + 8);
+  return bytes;
+}
 const base64 = (bytes) => Buffer.from(bytes).toString("base64");
 
 /** A source Project whose home Page holds two dataframes: one in its own
  * block between prose blocks, and one inside a prose block. */
-async function dataframeSource(options) {
-  const source = fakePages(SOURCE, { placement: "page9", ...options });
+async function dataframeSource({ token = KEY, ...options } = {}) {
+  const source = fakePages(SOURCE, { placement: "page9", token, ...options });
   const { project_id, home } = source.seedProject({ title: "Usage report" });
   home.blocks = [{ id: crypto.randomUUID(), kind: "markdown", markdown: "Intro prose." }];
   const daily = await source.addDataframe(home, frameBytes("daily"), { title: "Usage by day" });
@@ -1257,12 +1298,14 @@ async function dataframeSource(options) {
       { type: "paragraph" },
     ],
   });
-  const { bundle, report } = await exportProject(client(source, SOURCE), {
-    projectId: project_id,
-    ...quick,
-    uuid: () => "8c1d6c2e-1f7b-4b8e-9a51-0c2d5e7f8a90",
-  });
-  return { source, home, daily, weekly, bundle, report };
+  const exporting = () =>
+    exportProject(client(source, SOURCE, token), {
+      projectId: project_id,
+      ...quick,
+      uuid: () => "8c1d6c2e-1f7b-4b8e-9a51-0c2d5e7f8a90",
+    });
+  const { bundle, report } = await exporting();
+  return { source, home, daily, weekly, bundle, report, exporting };
 }
 
 test("export carries each dataframe's bytes, checked against its asset_id", async () => {
@@ -1316,17 +1359,16 @@ test("import stores each dataframe on its target Page and writes it as a node", 
   assert.equal(target.calls.filter((call) => call.name === "edit_page").length, edits);
 });
 
-test("a credential that can't use the asset routes leaves dataframes as reported links", async () => {
-  const { bundle, report, daily } = await dataframeSource({
-    assetKey: "an-api-key-not-this-token",
-  });
+test("a Pages OAuth token leaves dataframes as reported links", async () => {
+  const { bundle, report, daily, source } = await dataframeSource({ token: "pages_oauth-token" });
+  assert.equal(source.assetCalls.length, 0, "no asset request with a token the routes refuse");
   assert.deepEqual(bundle.assets, {});
   assert.equal(report.dataframes, 0);
   assert.deepEqual(
     report.dataframes_not_copied.map((page) => [page.title, page.assets.length]),
     [["Usage report", 2]],
   );
-  assert.match(report.warnings.join("\n"), /need an Anaconda API key/);
+  assert.match(report.warnings.join("\n"), /Export with an Anaconda API key/);
   const target = fakePages(TARGET);
   const result = await importBundle(client(target, TARGET), bundle, {
     store: memoryStore(),
@@ -1408,4 +1450,88 @@ test("bodyOperations puts leading dataframes first and replaces the first block"
     { op: "delete_block", block_id: "b1" },
     { op: "delete_block", block_id: "b2" },
   ]);
+});
+
+test("a rerun over a body an earlier run wrote, dataframes first, converges", async () => {
+  const source = fakePages(SOURCE, { placement: "page9" });
+  const { project_id, home } = source.seedProject({ title: "Frames first" });
+  home.blocks = [];
+  await source.addDataframe(home, frameBytes("lead"), { title: "Lead" });
+  home.blocks.push({ id: crypto.randomUUID(), kind: "markdown", markdown: "After the lead." });
+  const { bundle } = await exportProject(client(source, SOURCE), {
+    projectId: project_id,
+    ...quick,
+  });
+  const target = fakePages(TARGET);
+  const store = memoryStore();
+  // The body edit applies, then its response is lost, so the state never
+  // records the body as done and a rerun rewrites it from a fresh read.
+  target.hooks.dropResponse = (name) => name === "edit_page";
+  await assert.rejects(
+    importBundle(client(target, TARGET), bundle, { store, attempts: 1, ...quick }),
+  );
+  target.hooks.dropResponse = null;
+  const [project] = target.projects.values();
+  const page = target.pages.get(project.home_page_id);
+  assert.equal(page.blocks[0].type, "dataframe", "the first run wrote the dataframe first");
+  // Forget the pending edit too: the next run must work from what's there.
+  store.peek().pending = null;
+  await importBundle(client(target, TARGET), bundle, { store, ...quick });
+  assert.deepEqual(
+    page.blocks.map((block) => [block.type ?? "paragraph", block.markdown.replace(/\(.*\)/, "")]),
+    [
+      ["dataframe", "[Dataframe: Lead]"],
+      ["paragraph", "After the lead."],
+    ],
+  );
+});
+
+test("two dataframes showing one asset keep their own titles", async () => {
+  const source = fakePages(SOURCE, { placement: "page9" });
+  const { project_id, home } = source.seedProject({ title: "Same asset" });
+  home.blocks = [{ id: crypto.randomUUID(), kind: "markdown", markdown: "Two views." }];
+  const bytes = frameBytes("shared");
+  await source.addDataframe(home, bytes, { title: "By day" });
+  await source.addDataframe(home, bytes, { title: "By week" });
+  const { bundle } = await exportProject(client(source, SOURCE), {
+    projectId: project_id,
+    ...quick,
+  });
+  assert.equal(Object.keys(bundle.assets).length, 1);
+  const target = fakePages(TARGET);
+  await importBundle(client(target, TARGET), bundle, { store: memoryStore(), ...quick });
+  const [project] = target.projects.values();
+  assert.deepEqual(
+    target.pages
+      .get(project.home_page_id)
+      .blocks.filter((block) => block.type === "dataframe")
+      .map((block) => block.attrs.title),
+    ["By day", "By week"],
+  );
+});
+
+test("an asset refusal with an API key fails the export instead of dropping bytes", async () => {
+  const { source, exporting } = await dataframeSource();
+  source.refuseAssets(true);
+  await assert.rejects(exporting(), /HTTP 403: Page not found/);
+});
+
+test("import with a Pages OAuth token refuses a bundle with bytes before any write", async () => {
+  const { bundle } = await dataframeSource();
+  const target = fakePages(TARGET, { token: "pages_oauth-token" });
+  await assert.rejects(
+    importBundle(client(target, TARGET, "pages_oauth-token"), bundle, {
+      store: memoryStore(),
+      ...quick,
+    }),
+    /Import with an Anaconda API key/,
+  );
+  assert.equal(target.calls.filter((call) => MUTATIONS.has(call.name)).length, 0);
+});
+
+test("validateBundle refuses a dataframe whose asset names another media type", async () => {
+  const { bundle, daily } = await dataframeSource();
+  const edited = structuredClone(bundle);
+  edited.assets[daily.asset_id].media_type = "text/csv";
+  assert.throws(() => validateBundle(edited), /disagree on media_type/);
 });

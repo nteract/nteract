@@ -908,8 +908,10 @@ Channels no access. Save it with the `/connect` instructions, which write
 stays out of shell history. A Pages OAuth access token (`pages_…`) also works on
 `/mcp`, but it expires after ten minutes and the script does not refresh it, so
 use an API key for anything that runs unattended. Only an API key can use the
-asset routes, so with an OAuth token dataframes are not copied: export says so,
-and they import as links. Only the source Project's owner can
+asset routes. Export with an OAuth token skips dataframe bytes, says so, and
+those dataframes import as links. Import with an OAuth token refuses a bundle
+that carries bytes before it writes anything; use an API key, or delete the
+bundle's `assets` to import those dataframes as links. Only the source Project's owner can
 list it. The target Project belongs to the account that imports it.
 
 ### Export
@@ -965,8 +967,10 @@ one's bytes once, checked against its SHA-256 `asset_id` on export and again on
 import. Import stores the bytes on the target Page (the same content gets the
 same `asset_id`), then writes each dataframe whose read-back line stands alone
 as its own block with `insert_node`. A dataframe inside a block splits that
-block there; one inside a quote or list stays a link. Import reads version 1
-bundles, which have no dataframes.
+block there; one inside a quote or list stays a link. Import never rewrites a
+block holding a dataframe, so rerunning over a body an earlier run wrote
+converges. A bundle carries at most 256 MiB of asset bytes; export stops with a
+message past that. Import reads version 1 bundles, which have no dataframes.
 
 The report lists Pages with `preserved_markdown` (the source stored preserved
 blocks or non-Markdown blocks; check that they read as intended),
