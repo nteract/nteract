@@ -10,6 +10,7 @@ import { GardSelection } from "wordgard/state";
 import { PagesDataframe } from "./wordgard-model.mjs";
 import { reportRendererUnavailable } from "./wordgard-widgets.mjs";
 import { PARQUET_MEDIA_TYPE, readDataframe } from "../shared/dataset-assets.mjs";
+import { dataframeTableMachine } from "./dataframe-table-machine.mjs";
 
 /** Media type -> lazily loaded renderer module with
  * `mount(container, { src, pageId })` returning `{ destroy }`. Each is its own
@@ -51,124 +52,70 @@ export function dataframeFrame({ title, media_type }) {
 export const dataframeEventReachesEditor = (event) =>
   !event.target?.closest?.(".wordgard-dataframe-canvas");
 
-/** States of one table's renderer lifecycle (dataframeStep). */
-export const DATAFRAME_STATES = Object.freeze([
-  "idle",
-  "waiting",
-  "scheduled",
-  "loading",
-  "mounted",
-  "parked",
-  "failed",
-]);
-
-/**
- * The renderer lifecycle of one table, as a pure transition:
- *
- *   idle --connect--> waiting --visible--> scheduled --timer--> loading
- *   scheduled --hidden--> waiting (cancels the timer)
- *   loading --loaded--> mounted   loading --failed--> failed
- *   mounted --disconnect--> parked --connect--> mounted
- *   parked --parkExpired--> idle (destroys the table)
- *   any other state --disconnect--> idle (cancels what's pending)
- *
- * `waiting` holds a connected table until it nears the viewport, so a Page
- * with many tables loads Sift and fetches a dataset only for the ones a
- * reader scrolls to. Once loading starts, visibility no longer matters: a
- * mounted table stays mounted offscreen, keeping the reader's sort and
- * filters.
- *
- * Selecting the node makes Wordgard move the same DOM into a selection
- * wrapper, which disconnects and reconnects the widget. `parked` keeps the
- * mounted table across that move instead of reloading the dataset.
- *
- * Wordgard can connect and disconnect a widget more than once. Each connect
- * starts a new generation; a timer or load that settles for an older
- * generation is dropped, so a widget never holds two mounted tables.
- *
- * Returns the next model and the effects to run, in order. Every effect
- * names the generation it belongs to where it can settle later.
- */
-export function dataframeStep(model, event, { canLoad = true } = {}) {
-  const { state, generation } = model;
-  const stay = { model, effects: [] };
-  const current = event.generation === generation;
-  switch (event.type) {
-    case "connect":
-      if (state === "parked")
-        return { model: { state: "mounted", generation }, effects: ["clearTimer", "markMoved"] };
-      if (state !== "idle" || !canLoad) return stay;
-      return { model: { state: "waiting", generation: generation + 1 }, effects: ["observe"] };
-    case "visible":
-      if (state !== "waiting") return stay;
-      return {
-        model: { state: "scheduled", generation },
-        effects: [{ type: "startTimer", event: "timer", generation }],
-      };
-    case "hidden":
-      if (state !== "scheduled") return stay;
-      return { model: { state: "waiting", generation }, effects: ["clearTimer"] };
-    case "timer":
-      if (state !== "scheduled" || !current) return stay;
-      return {
-        model: { state: "loading", generation },
-        effects: ["unobserve", { type: "load", generation }],
-      };
-    case "loaded":
-      if (state !== "loading" || !current) return stay;
-      return {
-        model: { state: "mounted", generation },
-        effects: [{ type: "mount", module: event.module }],
-      };
-    case "failed":
-      if (state !== "loading" || !current) return stay;
-      return { model: { state: "failed", generation }, effects: ["fail"] };
-    case "parkExpired":
-      if (state !== "parked" || !current) return stay;
-      return { model: { state: "idle", generation: generation + 1 }, effects: ["destroy"] };
-    case "disconnect":
-      if (state === "mounted")
-        return {
-          model: { state: "parked", generation },
-          effects: [{ type: "startTimer", event: "parkExpired", generation }],
-        };
-      if (state === "idle") return stay;
-      return {
-        model: { state: "idle", generation: generation + 1 },
-        effects: ["clearTimer", "unobserve", "destroy"],
-      };
-  }
-  return stay;
-}
+/** Status text while a table waits for the viewport, and while it loads. */
+export const DATAFRAME_STATUS = Object.freeze({
+  waiting: "This table loads when you scroll to it.",
+  loading: "Loading table…",
+});
 
 /** How far outside the viewport a table starts loading, so it's usually
  * drawn by the time a reader scrolls to it. */
-const PRELOAD_MARGIN = "600px 0px";
-let sharedObserver = null;
-const observed = new Map();
-/** Calls `onChange(near)` when `element` comes within PRELOAD_MARGIN of the
- * viewport or leaves it; returns the function that stops watching. Without
- * IntersectionObserver every table counts as near. */
-export function observeNearViewport(element, onChange) {
-  if (typeof IntersectionObserver !== "function") {
-    onChange(true);
-    return () => {};
-  }
-  sharedObserver ??= new IntersectionObserver(
-    (entries) => {
-      for (const entry of entries) observed.get(entry.target)?.(entry.isIntersecting);
-    },
-    { rootMargin: PRELOAD_MARGIN },
-  );
-  observed.set(element, onChange);
-  sharedObserver.observe(element);
-  return () => {
-    observed.delete(element);
-    sharedObserver.unobserve(element);
+export const PRELOAD_MARGIN = "600px 0px";
+
+/**
+ * A viewport watcher over one shared observer: `observe(element, onChange)`
+ * calls `onChange(near)` when the element comes within PRELOAD_MARGIN of the
+ * viewport or leaves it, and returns the function that stops watching.
+ * Printing counts every watched table as near, so a printed Page starts
+ * loading its tables. Without an Observer every table counts as near.
+ */
+export function viewportWatcher({ Observer, target } = {}) {
+  if (typeof Observer !== "function")
+    return (_element, onChange) => {
+      onChange(true);
+      return () => {};
+    };
+  const watched = new Map();
+  let observer = null;
+  target?.addEventListener?.("beforeprint", () => {
+    for (const onChange of watched.values()) onChange(true);
+  });
+  return (element, onChange) => {
+    observer ??= new Observer(
+      (entries) => {
+        for (const entry of entries) watched.get(entry.target)?.(entry.isIntersecting);
+      },
+      { rootMargin: PRELOAD_MARGIN },
+    );
+    watched.set(element, onChange);
+    observer.observe(element);
+    return () => {
+      // A later observe of the same element replaces its callback. A stop
+      // from an older one leaves that registration watched.
+      if (watched.get(element) !== onChange) return;
+      watched.delete(element);
+      observer.unobserve(element);
+    };
   };
 }
 
-/** Runs dataframeStep for one table, with its effects at the edge. */
+let defaultWatcher = null;
+/** The page's shared viewport watcher. */
+export const observeNearViewport = (element, onChange) =>
+  (defaultWatcher ??= viewportWatcher({
+    Observer: globalThis.IntersectionObserver,
+    target: globalThis.window,
+  }))(element, onChange);
+
+/** Wall-clock timers; tests pass virtual ones. */
+const REAL_TIMERS = { set: (run, ms) => setTimeout(run, ms), clear: (id) => clearTimeout(id) };
+
+/**
+ * Runs dataframeTableMachine (dataframe-table-machine.mjs) for one table,
+ * with its effects at the edge: the viewport watcher, the one armed timer,
+ * the renderer chunk and the mounted instance. A media type with no renderer
+ * (`load` undefined) never connects.
+ */
 export function dataframeLifecycle({
   load,
   dom,
@@ -178,45 +125,59 @@ export function dataframeLifecycle({
   delay = 50,
   park = 1000,
   observe = observeNearViewport,
+  timers = REAL_TIMERS,
   onUnavailable,
 }) {
-  let model = { state: "idle", generation: 0 },
+  let model = dataframeTableMachine.initial,
     timer = null,
     instance = null,
-    stopObserving = null;
+    stopWatching = null,
+    module = null;
   const dispatch = (event) => {
-    const result = dataframeStep(model, event, { canLoad: Boolean(load) });
-    model = result.model;
-    for (const effect of result.effects)
-      run(typeof effect === "string" ? { type: effect } : effect);
+    const result = dataframeTableMachine.step(model, event);
+    model = result.state;
+    for (const effect of result.effects) run(effect);
   };
   const run = (effect) => {
     switch (effect.type) {
+      case "showStatus":
+        status.hidden = false;
+        status.textContent = DATAFRAME_STATUS[effect.status];
+        return;
       case "observe":
-        stopObserving?.();
-        // The observer can report at once; dispatch reads the updated model.
-        stopObserving = observe(dom ?? canvas, (near) =>
+        stopWatching?.();
+        // The watcher can answer at once; dispatch reads the updated model.
+        stopWatching = observe(dom ?? canvas, (near) =>
           dispatch({ type: near ? "visible" : "hidden" }),
         );
         return;
       case "unobserve":
-        stopObserving?.();
-        stopObserving = null;
+        stopWatching?.();
+        stopWatching = null;
         return;
       case "startTimer":
-        clearTimeout(timer);
-        timer = setTimeout(
-          () => dispatch({ type: effect.event, generation: effect.generation }),
-          effect.event === "parkExpired" ? park : delay,
+        if (timer !== null) timers.clear(timer);
+        timer = timers.set(
+          () => {
+            timer = null;
+            dispatch({
+              type: effect.timer === "park" ? "parkExpired" : "timer",
+              generation: effect.generation,
+            });
+          },
+          effect.timer === "park" ? park : delay,
         );
         return;
       case "clearTimer":
-        clearTimeout(timer);
+        if (timer !== null) timers.clear(timer);
         timer = null;
         return;
       case "load":
         load().then(
-          (module) => dispatch({ type: "loaded", generation: effect.generation, module }),
+          (loaded) => {
+            module = { generation: effect.generation, loaded };
+            dispatch({ type: "loaded", generation: effect.generation });
+          },
           () => dispatch({ type: "failed", generation: effect.generation }),
         );
         return;
@@ -224,7 +185,8 @@ export function dataframeLifecycle({
         // The renderer draws its own loading and error states, including
         // fetchDataset's access and missing-asset messages.
         status.hidden = true;
-        instance = effect.module.mount(canvas, attrs);
+        instance = module.loaded.mount(canvas, attrs);
+        module = null;
         return;
       case "markMoved":
         // A move re-inserts the DOM, which restarts CSS animations. Sift's
@@ -239,15 +201,14 @@ export function dataframeLifecycle({
       case "destroy":
         instance?.destroy();
         instance = null;
-        timer = null;
         return;
     }
   };
   return {
-    connect: () => dispatch({ type: "connect" }),
-    disconnect: () => dispatch({ type: "disconnect" }),
+    connect: () => load && dispatch({ type: "connect" }),
+    disconnect: () => load && dispatch({ type: "disconnect" }),
     get state() {
-      return model.state;
+      return model.name;
     },
   };
 }
