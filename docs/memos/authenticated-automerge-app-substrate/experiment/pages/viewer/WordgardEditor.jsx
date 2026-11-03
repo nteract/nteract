@@ -107,7 +107,7 @@ import {
 } from "./wordgard-collaboration.mjs";
 import { wordgardWidgets, wordgardCodeLanguages } from "./wordgard-widgets.mjs";
 import { selectionToolbarPosition } from "./selection-toolbar.mjs";
-import { linkDestination } from "./link-destination.mjs";
+import { linkDestination, openInNewTab, wantsNewTab } from "./link-destination.mjs";
 import { LinkPopover } from "./LinkPopover.jsx";
 import { selectedImage } from "./image-selection.mjs";
 import { normalizePastedHTML } from "./clipboard-html.mjs";
@@ -834,6 +834,11 @@ export function WordgardEditor(props) {
       const anchor = event.target.closest?.("a");
       if (anchor && !anchor.closest(".wordgard-widget")) {
         const href = linkDestination(anchor.getAttribute("href"), location.href);
+        if (editor.editable && wantsNewTab(event)) {
+          event.preventDefault();
+          openInNewTab(href);
+          return;
+        }
         if (!editor.editable || event.metaKey || event.ctrlKey) {
           if (!href) event.preventDefault();
           return;
@@ -864,11 +869,20 @@ export function WordgardEditor(props) {
       );
       if (thread) latest.current.onRevealComment?.(thread, "passage");
     };
+    // A middle click fires auxclick, not click.
+    const auxclick = (event) => {
+      if (!editor.editable || !wantsNewTab(event)) return;
+      const anchor = event.target.closest?.("a");
+      if (!anchor || anchor.closest(".wordgard-widget")) return;
+      event.preventDefault();
+      openInNewTab(linkDestination(anchor.getAttribute("href"), location.href));
+    };
     // Wordgard maps composition input through incoming transactions. Holding
     // notifications while the canonical document advances would stale that view.
     editor.contentDOM.addEventListener("focusout", focusout);
     editor.contentDOM.addEventListener("pointerdown", pointerdown);
     editor.contentDOM.addEventListener("click", click);
+    editor.contentDOM.addEventListener("auxclick", auxclick);
     refresh.current();
     reset((n) => n + 1);
     return () => {
