@@ -552,6 +552,11 @@
 .wordgard-dataframe-canvas[hidden] {
   display: none;
 }
+/* After the table first loads, selecting it moves its DOM, which restarts
+   CSS animations. Sift's summary fade-in and stat pop would replay. */
+.wordgard-dataframe-canvas[data-moved] :is(.sift-th-summary, .sift-stat-flash) {
+  animation: none;
+}
 /* The header and the frame's edges select the node
    (selectDataframeOnPress); the canvas is Sift's. */
 .wordgard-dataframe-table {
@@ -574,33 +579,15 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.wordgard-dataframe-select {
-  padding: 2px 6px;
-  border: 0;
-  border-radius: 4px;
-  background: none;
+.wordgard-dataframe-title.is-untitled {
   color: var(--muted-foreground);
-  font: inherit;
-  font-size: 12px;
-  letter-spacing: -2px;
-  cursor: pointer;
-  opacity: 0.6;
+  font-weight: 500;
 }
-/* Touch: a 44 px target, always visible. */
+/* Touch: the title row is the table's tap target. */
 @media (pointer: coarse) {
-  .wordgard-dataframe-select {
-    min-width: 44px;
+  .wordgard-dataframe-header {
     min-height: 44px;
-    opacity: 1;
   }
-}
-.wordgard-dataframe-table:hover .wordgard-dataframe-select,
-.wordgard-dataframe-select:focus-visible {
-  opacity: 1;
-}
-.wordgard-dataframe-select:hover {
-  background: var(--accent);
-  color: var(--foreground);
 }
 .wordgard-dataframe-canvas {
   cursor: auto;

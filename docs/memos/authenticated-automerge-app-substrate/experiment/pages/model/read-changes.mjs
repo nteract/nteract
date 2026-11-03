@@ -73,7 +73,7 @@ function nativeNodes(doc, blockId, headings) {
   const block = doc.blocks[blockId],
     path = textPath(blockId),
     spans = A.spans(doc, path),
-    tree = richDoc(block),
+    tree = richDoc(block, doc.page_id),
     objectId = A.getObjectId(block, "richText"),
     entries = [];
   tree.forEach((node, offset, nodeIndex) => {
@@ -123,6 +123,7 @@ function index(doc) {
     const block = doc.blocks[id];
     blocks.set(id, {
       block,
+      pageId: doc.page_id,
       nodes: isRich(block) ? nativeNodes(doc, id, headings) : null,
     });
     // A preserved/legacy block can contain headings, but its source format has
@@ -195,7 +196,7 @@ function contentChanges(before, after) {
         block_id: id,
         scope: "block",
         change: "inserted",
-        ...(entry.nodes ? {} : { markdown: blockMarkdown(entry.block) }),
+        ...(entry.nodes ? {} : { markdown: blockMarkdown(entry.block, entry.pageId) }),
       });
       if (entry.nodes) changes.push(...nodeChanges(id, [], entry.nodes));
       continue;
@@ -207,12 +208,15 @@ function contentChanges(before, after) {
       if (metadataChanged)
         changes.push({ block_id: id, scope: "block", change: "updated", metadata_changed: true });
       changes.push(...nodeChanges(id, prior.nodes, entry.nodes));
-    } else if (metadataChanged || blockMarkdown(prior.block) !== blockMarkdown(entry.block))
+    } else if (
+      metadataChanged ||
+      blockMarkdown(prior.block, prior.pageId) !== blockMarkdown(entry.block, entry.pageId)
+    )
       changes.push({
         block_id: id,
         scope: "block",
         change: "updated",
-        markdown: blockMarkdown(entry.block),
+        markdown: blockMarkdown(entry.block, entry.pageId),
         ...(metadataChanged && { metadata_changed: true }),
       });
   }

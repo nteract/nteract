@@ -112,7 +112,7 @@ import { wordgardDataframes } from "./wordgard-dataframes.mjs";
 import { selectionToolbarPosition } from "./selection-toolbar.mjs";
 import { linkDestination, openInNewTab, wantsNewTab } from "./link-destination.mjs";
 import { LinkPopover } from "./LinkPopover.jsx";
-import { selectedAtom, selectedImage } from "./image-selection.mjs";
+import { collapseAtomOnLeave, selectedAtom, selectedImage } from "./image-selection.mjs";
 import { normalizePastedHTML } from "./clipboard-html.mjs";
 import {
   IMAGE_ACCEPT,
@@ -405,6 +405,9 @@ export function WordgardEditor(props) {
         Wordgard.clipboardInputHTMLFilter.of((html) =>
           filterPastedDataframes(normalizePastedHTML(html), replica.doc.page_id),
         ),
+        Wordgard.domEventObserver("focusout", (event, wg) => {
+          collapseAtomOnLeave(wg, event);
+        }),
         Wordgard.domEventHandler("paste", (event) =>
           acceptImages(uploadFiles(event.clipboardData)),
         ),

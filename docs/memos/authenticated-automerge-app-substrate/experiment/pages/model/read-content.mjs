@@ -103,7 +103,7 @@ function indexNodes(doc) {
   for (const blockId of orderedBlockIds(doc)) {
     const block = doc.blocks[blockId],
       tree = isRich(block)
-        ? richDoc(block)
+        ? richDoc(block, doc.page_id)
         : parseMarkdown(block.markdown ?? "", { kind: block.kind ?? "markdown" });
     trees.set(blockId, tree);
     tree.forEach((node, _offset, nodeIndex) => {
@@ -249,7 +249,7 @@ export function projectReadContent(doc, args = {}) {
         ? []
         : chosen.selection
           ? projectedSlices(doc, chosen.nodes)
-          : orderedIds.map((id) => projectedBlock(doc.blocks[id])),
+          : orderedIds.map((id) => projectedBlock(doc.blocks[id], doc.page_id)),
     outline,
     ...(chosen.selection
       ? { selection: chosen.selection }
