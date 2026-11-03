@@ -717,11 +717,13 @@ list_pages accepts optional query (title substring), limit (1-100, default 50) a
 access "owned" or "shared" narrows it to Pages you own or Pages shared with you; shared does
 not combine with in_trash or project_id. sort "activity" (default) lists the most recently edited
 first: each Page's content_updated_at (when its title or content last changed; null when
-unknown), or updated_at for a Page with no recorded edit. "created" lists the newest first;
+unknown), or updated_at for a Page with no recorded edit. With in_trash, "activity" lists the
+most recently trashed first, by trashed_at. "created" lists the newest first;
 "title" lists by lowercased title in Unicode code point order: empty titles first, accented
 and non-Latin titles after z.
 Pass next_cursor back as cursor, with the same other arguments, until it is null. Pagination is not a
-snapshot: concurrent title or sharing changes can move Pages across the cursor. A short or
+snapshot: concurrent title or sharing changes can move Pages across the cursor, and so can
+content edits under the activity sort. A short or
 empty result does not prove a Page is absent. Its quota object is your own account's Page
 limit: {limit, count, trash_count}. At the limit, create_page and restore_page return
 page_quota_exceeded with limit and count; tell the person rather than retrying.
@@ -837,8 +839,9 @@ request was reserved. Its state field is the current state. Read the Page's
 current state (list_pages with in_trash, or read_page) before deciding what to
 do; do not treat it as success.
 
-- list_pages with {"in_trash": true} lists your trashed Pages with trashed_at and
-  trashed_by. Shared Pages in another owner's Trash are not listed.
+- list_pages with {"in_trash": true} lists your trashed Pages, most recently
+  trashed first, with trashed_at and trashed_by. Shared Pages in another owner's
+  Trash are not listed.
 - restore_page returns the Page with the same page_id, content, comments and
   sharing. Collaborators regain their previous access.
 - purge_page deletes permanently and cannot be undone. Call it first with

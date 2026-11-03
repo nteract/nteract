@@ -57,3 +57,11 @@ test("glide knobs read from the URL or localStorage and fall back when invalid",
     GLIDE_DEFAULTS.easing,
   );
 });
+
+test("grid cards are off unless this browser opts in", async () => {
+  const { readGridFlag } = await import("./feature-flags.mjs");
+  assert.equal(readGridFlag(browser()), false);
+  assert.equal(readGridFlag(browser("?grid=1")), true);
+  assert.equal(readGridFlag(browser("", { "pages.grid": "on" })), true);
+  assert.equal(readGridFlag(browser("?grid=0", { "pages.grid": "1" })), false);
+});

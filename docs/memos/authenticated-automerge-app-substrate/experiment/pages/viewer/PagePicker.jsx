@@ -1,20 +1,16 @@
 import { matchingPages } from "./page-list.mjs";
-import {
-  PROJECTS_PATH,
-  pagePath,
-  pagesPath,
-  projectPath,
-  isPlainNavigation,
-} from "../shared/routes.mjs";
+import { PROJECTS_PATH, pagePath, projectPath, isPlainNavigation } from "../shared/routes.mjs";
 import { useEffect, useRef, useState } from "react";
 import { Boxes, Check, FileText, Files, Plus, Search, Trash2, X } from "lucide-react";
 
 /** `createProject` (`{ project_id, title }`), when the current Page is in a
  * Project this account owns, splits New Page into "In <Project>", which
- * calls `onCreateInProject(project_id)`, and "In Your items" (`onCreate`). */
+ * calls `onCreateInProject(project_id)`, and "In Your items" (`onCreate`).
+ * `loading` says the Pages are still on their way, rather than none. */
 export function PagePicker({
   open,
   pages,
+  loading = false,
   currentId,
   onClose,
   onOpen,
@@ -63,7 +59,7 @@ export function PagePicker({
         {onOpenIndex && (
           <nav className="picker-index" aria-label="Browse">
             {[
-              { kind: "pages", href: pagesPath(), label: "All Pages", Icon: Files },
+              { kind: "pages", href: "/", label: "All Pages", Icon: Files },
               { kind: "projects", href: PROJECTS_PATH, label: "All Projects", Icon: Boxes },
             ].map(({ kind, href, label, Icon }) => (
               <a
@@ -142,7 +138,9 @@ export function PagePicker({
             </a>
           ))}
           {!matches.length && (
-            <p className="muted">{query ? "No matching pages." : "No pages yet."}</p>
+            <p className="muted" role={loading ? "status" : undefined}>
+              {loading ? "Loading…" : query ? "No matching pages." : "No pages yet."}
+            </p>
           )}
         </nav>
         {onOpenProject && (projects.length > 0 || onCreateProject) && (

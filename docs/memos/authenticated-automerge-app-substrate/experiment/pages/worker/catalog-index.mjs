@@ -18,6 +18,8 @@
  * a content change (`content_updated_at`, content-activity.mjs), else the
  * row's `updated_at`. Content times only move forward. A listing shows a
  * shared row's content time from its Page host's check, never from D1.
+ * Trash's activity is trashing: under `in_trash` the default sort lists by
+ * `trashed_at`, most recent first.
  *
  * Migrations are append-only and additive. Older builds ignore these tables,
  * and a build must keep working against a schema version newer than it knows.
@@ -29,7 +31,7 @@
 import { pageGrant, pageState } from "./access.mjs";
 import { HttpError } from "./auth.mjs";
 import { catalogTitle, listAll } from "./catalog.mjs";
-import { validTime } from "./content-activity.mjs";
+import { acceptedTime, validTime } from "./content-activity.mjs";
 import { configuredDomainView } from "./domain-access.mjs";
 import { validPageId } from "./registration.mjs";
 import { holdUntilSettled } from "./request-hold.mjs";
@@ -149,6 +151,21 @@ export const CATALOG_MIGRATIONS = Object.freeze([
         ON pages_catalog_access (principal, activity_at DESC, page_id DESC)`,
       `CREATE INDEX IF NOT EXISTS pages_catalog_access_created
         ON pages_catalog_access (principal, created_at DESC, page_id DESC)`,
+    ]),
+  }),
+  // Trash lists the most recently trashed Page first. `trash_key` is
+  // generated from `trashed_at`, which every build sets when it records a
+  // trash and clears on restore, so a build without this migration keeps it
+  // right. The index holds only trashed rows, keyed by owner: Trash lists
+  // only the caller's own Pages.
+  Object.freeze({
+    version: 7,
+    name: "trash_listing",
+    statements: Object.freeze([
+      `ALTER TABLE pages_catalog_pages ADD COLUMN trash_key TEXT
+        GENERATED ALWAYS AS (coalesce(trashed_at, '')) VIRTUAL`,
+      `CREATE INDEX IF NOT EXISTS pages_catalog_pages_trash
+        ON pages_catalog_pages (owner, trash_key DESC, page_id DESC) WHERE state = 'trashed'`,
     ]),
   }),
 ]);
@@ -399,7 +416,8 @@ function pageUpsert(db, page) {
       page.trashed_at ?? null,
       page.revision ?? 0,
       page.lifecycle ?? 0,
-      validTime(page.content_updated_at) ? page.content_updated_at : null,
+      // A time further ahead of this writer's clock than nodes skew is dropped.
+      acceptedTime(page.content_updated_at),
     );
 }
 
@@ -559,15 +577,25 @@ export async function reportPageIndex(
   ]);
 }
 
-/** Record a Page host's newest content time on its Page row and every access
- * row, in one batch. The time only moves forward, so a delayed report
- * changes nothing once a newer one has landed, and rows already at or past
- * it aren't rewritten. It inserts nothing: a Page without rows waits for its
- * next full report. Every principal's row gets the same time; a row for
- * someone who can no longer read the Page still lists nothing, because each
- * shared row is verified with its Page host before it is shown. */
+/** Record a Page host's newest content time on its Page row and its owner and
+ * member access rows, in one batch. The time only moves forward, so a delayed
+ * report changes nothing once a newer one has landed, and rows already at or
+ * past it aren't rewritten. It inserts nothing: a Page without rows waits for
+ * its next full report. A row for someone who can no longer read the Page
+ * still lists nothing, because each shared row is verified with its Page host
+ * before it is shown.
+ *
+ * One report rewrites the Page row plus one row per owner and member, at most
+ * once per content window while the Page is edited.
+ * Domain readers' rows (`domain_opened`) are unbounded on a domain-wide Page,
+ * so they aren't touched here: each copies the Page row's time when its reader
+ * opens the Page again or its account reconciles (`reconcileIntervalMs`), and
+ * a reader's listing shows the time from the host's check either way. Until
+ * then such a row sorts by its older time. A time further ahead of this clock
+ * than nodes skew writes nothing. */
 export async function reportContentActivity(env, ctx, { pageId, contentUpdatedAt }) {
   if (!validTime(contentUpdatedAt)) throw new TypeError("contentUpdatedAt must be an ISO time");
+  if (!acceptedTime(contentUpdatedAt)) return;
   const db = await catalogIndexDatabase(env, ctx);
   const stale = "(content_updated_at IS NULL OR content_updated_at < ?)";
   await db.batch([
@@ -580,7 +608,7 @@ export async function reportContentActivity(env, ctx, { pageId, contentUpdatedAt
     db
       .prepare(
         `UPDATE pages_catalog_access SET content_updated_at = ?
-        WHERE page_id = ? AND ${stale}`,
+        WHERE page_id = ? AND source IN ('owner', 'member') AND ${stale}`,
       )
       .bind(contentUpdatedAt, pageId, contentUpdatedAt),
   ]);
@@ -742,7 +770,9 @@ const cursorContext = ({ principal, needle, inTrash, scope }) =>
  * for the same principal, query, in_trash and scope (location, kind, access
  * and sort filters), and it expires after `cursorMaxAgeMs`. The payload is
  * `[updated_at, page_id, issued]`, plus `title_search` as a fourth element
- * when it is a string; every build since sealed cursors opens that layout.
+ * when it is a string. Every build since sealed cursors opens the
+ * three-element layout; the four-element one opens on builds since title
+ * sort.
  * Page listings seal positions through `sealPosition`, which maps each
  * sort's position onto these slots. Spaces seal `{ updated_at, page_id }`
  * directly: a Space's own time is its key. */
@@ -814,8 +844,8 @@ export async function openCursor(
 }
 
 /** Seal a Page listing position (see `positionOf`) in the payload layout
- * `sealCursor` documents. An activity or created position seals its key in
- * the time slot, as builds since content activity have. A title position
+ * `sealCursor` documents. An activity, created or trashed position seals its
+ * key in the time slot, as builds since content activity have. A title position
  * seals its title key in the fourth slot and "" in the time slot, which no
  * title listing has ever read. */
 export async function sealPosition(env, context, sort, position, now = Date.now()) {
@@ -858,7 +888,12 @@ export const LIST_MAX_LIMIT = 100;
  * (newest `created_at` first) or "title" (title key ascending, then Page
  * ID). Null or omitted `access` and `sort` mean the defaults. Trash and Projects hold only
  * owned Pages, so "shared" refuses in_trash and project_id rather than
- * answering an empty list that looks like a real one. */
+ * answering an empty list that looks like a real one.
+ *
+ * Under `in_trash`, "activity" means the most recently trashed first, and
+ * the options carry the internal "trashed" order for it: in Trash, being
+ * trashed is a Page's latest activity, and an edit can't happen there. The
+ * caller never names "trashed". */
 export function parseListArguments(args = {}) {
   const fail = (message) => new HttpError(400, message, "invalid_list_arguments");
   if (!args || typeof args !== "object" || Array.isArray(args))
@@ -886,7 +921,7 @@ export function parseListArguments(args = {}) {
     options.access = args.access;
   }
   if (args.sort !== undefined && args.sort !== null) {
-    if (!Object.hasOwn(ORDERS, args.sort)) throw fail("sort must be activity, created or title");
+    if (!LIST_SORTS.includes(args.sort)) throw fail("sort must be activity, created or title");
     options.sort = args.sort;
   }
   if (args.space_id !== undefined && args.space_id !== null)
@@ -929,20 +964,27 @@ export function parseListArguments(args = {}) {
     throw fail(
       "Projects hold only their owner's Pages; project_id does not combine with access shared",
     );
+  if (options.inTrash && options.sort === "activity") options.sort = "trashed";
   return options;
 }
+
+/** The sorts a caller can name. */
+const LIST_SORTS = Object.freeze(["activity", "created", "title"]);
 
 /** The name each sort seals into its cursor scope. A scope name stands for
  * one meaning of a position's key, so a cursor opens only where its key
  * means the same thing: "content_activity" positions hold `activity_at`,
- * "created" positions `created_at`, "title" positions `title_search`. An
- * activity cursor sealed with no scope, or a scope that names no sort or
- * names "activity", held an `updated_at` key and fails with
- * `invalid_cursor`. A change to what a sort's key means needs a new name. */
+ * "created" positions `created_at`, "title" positions `title_search`,
+ * "trashed" positions `trash_key`. An activity cursor sealed with no scope,
+ * or a scope that names no sort or names "activity", held an `updated_at`
+ * key and fails with `invalid_cursor`. So does a Trash cursor sealed under
+ * "content_activity": it held an `activity_at` key. A change to what a
+ * sort's key means needs a new name. */
 const SCOPE_SORTS = Object.freeze({
   activity: "content_activity",
   created: "created",
   title: "title",
+  trashed: "trashed",
 });
 
 /** Cursor scope for a listing: its location, kind, access and sort, so a
@@ -988,47 +1030,58 @@ export function compareText(a, b) {
  * The index generates `activity_at` with the same rule. */
 export const activityKey = (row) => row.content_updated_at || row.updated_at || "";
 const comparePageIds = (a, b) => (a.page_id < b.page_id ? -1 : a.page_id > b.page_id ? 1 : 0);
+/** A stored sort key as the orders read it. Any value but a string reads as
+ * "", so a malformed entry (a numeric `created_at`, say) sorts last instead
+ * of failing the listing with a position `requirePosition` refuses. */
+const keyText = (value) => (typeof value === "string" ? value : "");
 /** Newest first by an ISO time key (plain `<` is byte order over ASCII), then
  * Page ID descending. A missing key is "" and sorts last, as SQLite puts ''
  * after every timestamp in a descending index. Positions are
  * `{ key, page_id }`. */
-const newestBy = (key) => ({
-  fields: ["key", "page_id"],
-  position: (row) => ({ key: key(row), page_id: row.page_id }),
-  seek: (position) => position.key,
-  compare: (a, b) => (key(a) === key(b) ? -comparePageIds(a, b) : key(a) < key(b) ? 1 : -1),
-  follows: (row, position) =>
-    !position ||
-    key(row) < position.key ||
-    (key(row) === position.key && row.page_id < position.page_id),
-});
+const newestBy = (stored) => {
+  const key = (row) => keyText(stored(row));
+  return {
+    fields: ["key", "page_id"],
+    position: (row) => ({ key: key(row), page_id: row.page_id }),
+    seek: (position) => position.key,
+    compare: (a, b) => (key(a) === key(b) ? -comparePageIds(a, b) : key(a) < key(b) ? 1 : -1),
+    follows: (row, position) =>
+      !position ||
+      key(row) < position.key ||
+      (key(row) === position.key && row.page_id < position.page_id),
+  };
+};
+const titleOf = (row) => keyText(row.title_search);
 /** One listing order. `position(row)` is where a page that stopped on `row`
  * resumes, in the one shape this order's positions have. `compare` sorts
  * candidate rows, `follows(row, position)` keeps the rows strictly after a
  * position, and `seek(position)` is the key `listingQuery` compares. Each
- * matches the ORDER BY and keyset condition of the same sort there. */
+ * matches the ORDER BY and keyset condition of the same sort there.
+ * "trashed" lists only Trash (see `parseListArguments`): its key is
+ * `trashed_at`, or "" without one, as D1 generates `trash_key`. */
 const ORDERS = {
   activity: newestBy((row) => row.activity_at ?? activityKey(row)),
-  created: newestBy((row) => row.created_at ?? ""),
+  created: newestBy((row) => row.created_at),
   title: {
     fields: ["page_id", "title_search"],
-    position: (row) => ({ title_search: row.title_search ?? "", page_id: row.page_id }),
+    position: (row) => ({ title_search: titleOf(row), page_id: row.page_id }),
     seek: (position) => position.title_search,
-    compare: (a, b) =>
-      compareText(a.title_search ?? "", b.title_search ?? "") || comparePageIds(a, b),
+    compare: (a, b) => compareText(titleOf(a), titleOf(b)) || comparePageIds(a, b),
     follows: (row, position) =>
       !position ||
-      compareText(row.title_search ?? "", position.title_search) > 0 ||
-      ((row.title_search ?? "") === position.title_search && row.page_id > position.page_id),
+      compareText(titleOf(row), position.title_search) > 0 ||
+      (titleOf(row) === position.title_search && row.page_id > position.page_id),
   },
+  trashed: newestBy((row) => row.trashed_at),
 };
 const listOrder = (sort) => ORDERS[sort] ?? ORDERS.activity;
 
 /**
  * The position a Page listing in `sort` resumes from after `row`: a D1 row, a
- * Catalog fallback row or a child ID row. Activity and created positions are
- * `{ key, page_id }`, where `key` is the order's time key (`activity_at` or
- * `created_at`), never the row's `updated_at`. Title positions are
+ * Catalog fallback row or a child ID row. Activity, created and trashed
+ * positions are `{ key, page_id }`, where `key` is the order's time key
+ * (`activity_at`, `created_at` or `trashed_at`), never the row's
+ * `updated_at`. Title positions are
  * `{ title_search, page_id }`. The cursor seal, the scan's refetch position
  * and the next cursor all come from here, and every source reads only this
  * shape, so a raw row can't stand in for a position.
@@ -1075,6 +1128,7 @@ export function listingQuery({
   sort = "activity",
 }) {
   const pattern = needle ? `%${escapeLike(needle)}%` : null;
+  if (sort === "trashed") return trashQuery({ principal, inTrash, pattern, after, count });
   const title = sort === "title";
   const accessFilter =
     access === "owned"
@@ -1117,8 +1171,39 @@ export function listingQuery({
   };
 }
 
+/** The trashed order's query. A trash time lives on the Page row, so it walks
+ * `pages_catalog_pages_trash` from `owner = ?` and joins the caller's own
+ * access row for its title snapshot and times, where the other sorts walk the
+ * access row's indexes. The candidates are the ones the other sorts list
+ * under `in_trash`, owner rows of trashed Pages: an owner row's principal is
+ * its Page row's `owner`. `access` needs no filter, since every row here is
+ * an owner row. */
+function trashQuery({ principal, inTrash, pattern, after, count }) {
+  if (inTrash !== true) throw new TypeError("The trashed order lists only Trash");
+  const continued = requirePosition("trashed", after) !== null;
+  return {
+    sql: `SELECT a.page_id, a.source, a.updated_at, a.updated_revision, a.title, a.title_search,
+        a.created_at, a.content_updated_at, a.activity_at, p.trashed_at
+      FROM pages_catalog_pages p
+      JOIN pages_catalog_access a ON a.page_id = p.page_id AND a.principal = ?
+      WHERE p.owner = ? AND p.state = 'trashed' AND p.kind = 'page' AND a.source = 'owner'
+        AND (? IS NULL OR a.title_search LIKE ? ESCAPE '\\')
+        ${continued ? "AND (p.trash_key, p.page_id) < (?, ?)" : ""}
+      ORDER BY p.trash_key DESC, p.page_id DESC
+      LIMIT ?`,
+    params: [
+      principal,
+      principal,
+      pattern,
+      pattern,
+      ...(continued ? [after.key, after.page_id] : []),
+      count,
+    ],
+  };
+}
+
 /** Up to `count` candidate rows from D1 after `after`, in the listing's
- * order: newest activity or creation first, or by title key. `access` keeps
+ * order: newest activity, creation or trash first, or by title key. `access` keeps
  * only owner rows ("owned") or only non-owner rows ("shared"). */
 export async function queryCatalogIndex(db, query) {
   const { sql, params } = listingQuery(query);
@@ -1148,8 +1233,9 @@ export async function queryCatalogIndex(db, query) {
  * location anyway. Shared entries have no limit, so that read is bounded.
  * Rows order as `listingQuery` orders the same `sort`, with each key computed
  * from the entry as the index computes it: the title key from its title, the
- * activity key from its `content_updated_at`, else `updated_at`, and the
- * created key from its `created_at`. For a shared entry those times are this
+ * activity key from its `content_updated_at`, else `updated_at`, the
+ * created key from its `created_at`, and a `trash/` entry's trash key from
+ * its `trashed_at`. For a shared entry those times are this
  * account's discovery and the Page host's projections, where D1 holds the
  * Page row's own times, so shared rows can order differently between the
  * two sources. Owned rows converge to one order: a content time reaches both
@@ -1407,7 +1493,10 @@ export async function reconcileAccountIndex({
             state,
             created_at: entry.created_at ?? updatedAt,
             updated_at: updatedAt,
-            trashed_at: state === "trashed" ? (entry.trashed_at ?? null) : null,
+            // A trash key the fallback would read as "" is indexed as null,
+            // which `trash_key` reads as '': both sort it last.
+            trashed_at:
+              state === "trashed" && typeof entry.trashed_at === "string" ? entry.trashed_at : null,
             lifecycle: entry.lifecycle_revision ?? 0,
             content_updated_at: entry.content_updated_at,
           }),

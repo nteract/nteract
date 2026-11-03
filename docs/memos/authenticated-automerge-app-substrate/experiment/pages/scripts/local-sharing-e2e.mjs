@@ -40,6 +40,7 @@ const projects = process.argv.includes("--projects");
 const revocation = process.argv.includes("--revocation");
 const coldOpen = process.argv.includes("--cold-open");
 const commenter = process.argv.includes("--commenter");
+const contentActivity = process.argv.includes("--content-activity");
 if (
   [
     domainView,
@@ -54,10 +55,11 @@ if (
     revocation,
     coldOpen,
     commenter,
+    contentActivity,
   ].filter(Boolean).length > 1
 )
   throw new Error(
-    "Choose one qualification: --domain-view, --images, --datasets, --mcp-images, --task-lists, --admission, --build-update, --trash, --projects, --revocation, --cold-open or --commenter",
+    "Choose one qualification: --domain-view, --images, --datasets, --mcp-images, --task-lists, --admission, --build-update, --trash, --projects, --revocation, --cold-open, --commenter or --content-activity",
   );
 const children = new Set();
 let canceled = false;
@@ -359,31 +361,33 @@ try {
   await run(
     process.execPath,
     [
-      revocation
-        ? "scripts/revocation-smoke.mjs"
-        : coldOpen
-          ? "scripts/cold-open-benchmark.mjs"
-          : commenter
-            ? "scripts/commenter-smoke.mjs"
-            : projects
-              ? "scripts/projects-smoke.mjs"
-              : trash
-                ? "scripts/trash-smoke.mjs"
-                : admission
-                  ? "scripts/admission-smoke.mjs"
-                  : taskLists
-                    ? "scripts/task-lists-smoke.mjs"
-                    : mcpImages
-                      ? "scripts/mcp-image-import-smoke.mjs"
-                      : images
-                        ? "scripts/images-smoke.mjs"
-                        : datasets
-                          ? "scripts/datasets-smoke.mjs"
-                          : domainView
-                            ? "scripts/domain-sharing-smoke.mjs"
-                            : buildUpdate
-                              ? "scripts/build-update-smoke.mjs"
-                              : "scripts/sharing-smoke.mjs",
+      contentActivity
+        ? "scripts/content-activity-smoke.mjs"
+        : revocation
+          ? "scripts/revocation-smoke.mjs"
+          : coldOpen
+            ? "scripts/cold-open-benchmark.mjs"
+            : commenter
+              ? "scripts/commenter-smoke.mjs"
+              : projects
+                ? "scripts/projects-smoke.mjs"
+                : trash
+                  ? "scripts/trash-smoke.mjs"
+                  : admission
+                    ? "scripts/admission-smoke.mjs"
+                    : taskLists
+                      ? "scripts/task-lists-smoke.mjs"
+                      : mcpImages
+                        ? "scripts/mcp-image-import-smoke.mjs"
+                        : images
+                          ? "scripts/images-smoke.mjs"
+                          : datasets
+                            ? "scripts/datasets-smoke.mjs"
+                            : domainView
+                              ? "scripts/domain-sharing-smoke.mjs"
+                              : buildUpdate
+                                ? "scripts/build-update-smoke.mjs"
+                                : "scripts/sharing-smoke.mjs",
     ],
     {
       env: {
