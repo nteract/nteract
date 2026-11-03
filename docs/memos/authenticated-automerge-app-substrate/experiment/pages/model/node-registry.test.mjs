@@ -209,6 +209,18 @@ test("set_node's attrs are the registry attrs marked settable", async () => {
   assert.deepEqual([...LEGACY_FIELDS].sort(), ["align", "checked", "heading_level", "language"]);
 });
 
+test("the editor and registration agree on heading levels", () => {
+  const S = (value) => new A.ImmutableString(value);
+  const heading = (attrs) => [
+    { type: "block", value: { type: S("heading"), parents: [], attrs, isEmbed: false } },
+    { type: "text", value: "x" },
+  ];
+  assert.equal(decode(heading({})).lossy, false);
+  assert.equal(decode(heading({ level: 6 })).lossy, false);
+  for (const level of [null, "3", S("3"), 0, 7, 2.5])
+    assert.throws(() => decode(heading({ level })), /heading level/, String(level));
+});
+
 test("agent-facing types are stored block names, list names or unknown", async () => {
   const { agentType, LIST_TYPES } = await import("./node-registry.mjs");
   for (const type of NODE_TYPES) if (!type.wrapper) assert.equal(agentType(type.pm), type.block);

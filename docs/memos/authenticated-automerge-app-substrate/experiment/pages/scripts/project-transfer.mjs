@@ -294,6 +294,13 @@ export async function readWholePage(client, pageId, options) {
   throw new TransferError(`read_page on ${pageId}: the Page kept changing while it was read`);
 }
 
+/**
+ * Outline types for a node Pages keeps as its Markdown source. Current servers
+ * report `pages-opaque`; a source deployed before the node registry reports
+ * `raw`. Drop `raw` once no source can be that old.
+ */
+const PRESERVED_TYPES = new Set(["pages-opaque", "raw"]);
+
 /** A bundle entry for one source Page. */
 function bundlePage(row, parentSourceId, read, homePageId) {
   const blocks = read.blocks.length ? read.blocks.map((block) => block.markdown) : [""];
@@ -309,7 +316,7 @@ function bundlePage(row, parentSourceId, read, homePageId) {
     // stores preserved blocks exports each one's source as its own block.
     ...(blocks.length > 1 && { blocks }),
     preserved_markdown:
-      read.types.includes("raw") ||
+      read.types.some((type) => PRESERVED_TYPES.has(type)) ||
       read.blocks.some((block) => block.kind && block.kind !== "markdown"),
     private_images: [...new Set(markdown.match(ASSET_PATH) ?? [])],
     comment_threads: read.comment_threads,

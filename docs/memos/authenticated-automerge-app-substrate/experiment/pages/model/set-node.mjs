@@ -194,13 +194,19 @@ export function setNode(doc, id, input, trace, { anchor } = {}) {
     refuse(change.label ?? "type", retypeTargets(target));
   // Attributes the target type keeps: a retype drops the old type's own.
   const attrs = target === current ? { ...marker.value.attrs } : {};
-  let column = null;
+  // Column-scoped attributes, by stored name, written to every cell below.
+  const column = {};
   for (const name of names) {
     const found = settableAttr(target, name);
+    if (!found && target !== current)
+      // A retype: name the type the node would become, not the one it is.
+      throw Error(
+        `type ${target} has no ${name}; ${name} applies to ${pluralLabel(SETTABLE_ATTRS[name].blocks)}`,
+      );
     if (!found) refuse(change.label ?? name, SETTABLE_ATTRS[name].blocks);
     const value = change.attrs[name];
     if (found.spec.scope === "column") {
-      column = { stored: found.stored, value };
+      column[found.stored] = value;
       continue;
     }
     if (value === null) delete attrs[found.stored];
@@ -214,15 +220,13 @@ export function setNode(doc, id, input, trace, { anchor } = {}) {
   const typeValue = target === current ? marker.value.type : new A.ImmutableString(target);
   spans[index] = withAttrs(marker, attrs, typeValue);
   let cells = 0;
-  if (column) {
+  if (Object.keys(column).length) {
     for (const cell of columnCells(spans, index)) {
-      const { [column.stored]: _old, ...rest } = spans[cell].value.attrs;
-      spans[cell] = withAttrs(
-        spans[cell],
-        column.value === null
-          ? rest
-          : { ...rest, [column.stored]: new A.ImmutableString(column.value) },
-      );
+      const cellAttrs = { ...spans[cell].value.attrs };
+      for (const [stored, value] of Object.entries(column))
+        if (value === null) delete cellAttrs[stored];
+        else cellAttrs[stored] = new A.ImmutableString(value);
+      spans[cell] = withAttrs(spans[cell], cellAttrs);
       cells++;
     }
   }

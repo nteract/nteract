@@ -153,14 +153,15 @@ Wordgard keystrokes. Two encoders write spans:
   [`markdown-projection.test.mjs`](model/markdown-projection.test.mjs) lists
   where the two still differ.
 
-Block types are still defined separately in the ProseMirror schema and
-serializer and in Wordgard's decode and encode. A gated type is also listed in
-`features.json`, and a node with its own operation in the agent guide and MCP
-schema. There's no shared node registry or node id yet, so `set_node`
-addresses nodes through `match_text` and can't reach a node without text.
-Replacing the codec means, in order: a typed node registry that those places
-read; one span encoder for every writer; stable node ids with node reads; then
-outlines, change reads and Markdown on that node tree instead of ProseMirror.
+Block types are declared once in `model/node-registry.mjs`: stored names,
+ProseMirror names, agent-facing names, settable attrs and insert operations.
+The ProseMirror schema and serializer, Wordgard's decode and encode, and
+`features.json` still define types in their own terms;
+`node-registry.test.mjs` fails when one of them disagrees with the registry.
+There's no node id yet, so `set_node` addresses nodes through `match_text` and
+can't reach a node without text. Replacing the codec means, in order: one span
+encoder for every writer; stable node ids with node reads; then outlines,
+change reads and Markdown on that node tree instead of ProseMirror.
 Existing documents, comment anchors and MCP addresses must survive each step.
 
 Each Pages block has its own continuous editor. Moves update fractional positions without recreating the block or its

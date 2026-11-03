@@ -80,6 +80,18 @@ test("patch_page advertises set_node, occurrence, all and replacement_markdown",
     "align",
   ]);
   assert.match(patch.description, /set_node/);
+  // Agents learn the {type, attrs} shape; the flat fields are deprecated aliases.
+  assert.match(patch.description, /type heading, attrs \{level\}/);
+  for (const field of ["heading_level", "(checked)", "(language", "(align)"])
+    assert.equal(patch.description.includes(field), false, `patch_page teaches ${field}`);
+});
+
+test("the typed-field guide names every agent type a read can report", async () => {
+  const { typedReadFields } = await import("./rich-content-guide.mjs");
+  const { LIST_TYPES } = await import("./node-registry.mjs");
+  const text = typedReadFields();
+  for (const name of [...Object.values(LIST_TYPES), "pages-opaque", "unknown", "code-block"])
+    assert.ok(text.includes(name), `typedReadFields lacks ${name}`);
 });
 
 test("/llms.txt has the rich content section with the language menu", () => {
