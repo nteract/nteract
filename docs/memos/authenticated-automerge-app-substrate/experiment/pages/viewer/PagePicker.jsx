@@ -1,11 +1,5 @@
 import { matchingPages } from "./page-list.mjs";
-import {
-  PROJECTS_PATH,
-  pagePath,
-  pagesPath,
-  projectPath,
-  isPlainNavigation,
-} from "../shared/routes.mjs";
+import { PROJECTS_PATH, pagePath, projectPath, isPlainNavigation } from "../shared/routes.mjs";
 import { useEffect, useRef, useState } from "react";
 import { Boxes, Check, FileText, Files, Plus, Search, Trash2, X } from "lucide-react";
 
@@ -63,7 +57,7 @@ export function PagePicker({
         {onOpenIndex && (
           <nav className="picker-index" aria-label="Browse">
             {[
-              { kind: "pages", href: pagesPath(), label: "All Pages", Icon: Files },
+              { kind: "pages", href: "/", label: "All Pages", Icon: Files },
               { kind: "projects", href: PROJECTS_PATH, label: "All Projects", Icon: Boxes },
             ].map(({ kind, href, label, Icon }) => (
               <a

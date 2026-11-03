@@ -104,7 +104,10 @@
 /* One rule for the editor's task text and the loading preview's, so the swap
    from preview to editor doesn't move task items. It has to outrank the
    general paragraph rule above. */
-.wordgard-document :is(wg-content, :where(.preview-content)) :is(.wordgard-task-content, li[data-task-checked] > div) > p {
+.wordgard-document
+  :is(wg-content, :where(.preview-content))
+  :is(.wordgard-task-content, li[data-task-checked] > div)
+  > p {
   margin: 0.15em 0;
 }
 .wordgard-task-control {

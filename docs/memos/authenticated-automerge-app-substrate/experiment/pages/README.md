@@ -108,7 +108,7 @@ was a caret race in the smoke; the editor side is
 | Trash, restore, and permanent deletion | `node scripts/local-sharing-e2e.mjs --trash` | Starts an isolated fixture |
 | Removed access hides the local copy across a reload, with its download | `node scripts/local-sharing-e2e.mjs --revocation` | Starts an isolated fixture |
 | A commenter comments but can't edit; a forged native edit of another author's message is refused | `node scripts/local-sharing-e2e.mjs --commenter` | Starts an isolated fixture |
-| Projects over MCP and in the browser, `/projects` and `/pages` on a phone-sized screen, breadcrumbs, Trash and restore in a Project | `node scripts/local-sharing-e2e.mjs --projects` | Starts an isolated fixture |
+| Projects over MCP and in the browser, `/projects` and `/pages` on a phone-sized screen, the Pages library's tabs, Project filter, sort and groups as an account with shared Pages, breadcrumbs, Trash and restore in a Project | `node scripts/local-sharing-e2e.mjs --projects` | Starts an isolated fixture |
 | Cold first open of a 300-paragraph Page with images on Fast 3G and 4x CPU, phase by phase (records timings, gates on nothing) | `node scripts/local-sharing-e2e.mjs --cold-open` | Starts an isolated fixture behind a brotli proxy; writes `report.json` |
 | Rollback to a previous build and forward again on one data directory | `node scripts/rollback-qualification.mjs --previous <previous pages dir>` | Starts an isolated fixture; build the previous commit first |
 | Rich comment tables and drafts | `PAGES_ORIGIN=http://localhost:9894 node scripts/rich-comments-smoke.mjs` | Uses the running Wordgard fixture |
@@ -1306,7 +1306,7 @@ entries without counts leaves that to repair.
 At the limit, creating or restoring returns `409 page_quota_exceeded` and moving
 to Trash returns `409 trash_capacity`, each with `limit` and `count`.
 `list_pages` returns `quota: {limit, count, trash_count}` for the caller's own
-account, whatever the listing's filters. Home shows usage from 90% of the limit.
+account, whatever the listing's filters. The Pages library shows usage from 90% of the limit.
 
 ## Build updates
 
@@ -1858,14 +1858,33 @@ sharing works as before and never reveals the Project. `move_page` moves Pages
 into, out of and between the owner's Projects. Inherited access and a Project
 change feed come later.
 
-The viewer lists them at two index routes. `/projects` shows every Project
-`list_projects` returns, with its description. `/pages` shows every Page
-`list_pages` returns, newest first, including Pages in Projects; an owned
-Page's row links its Project. Search uses `list_pages`' `query`, trimmed and
-cut to its 200-unit limit, and stays in the address as `?q=`. Load more follows
-`next_cursor`; a cursor that has expired (`invalid_cursor`) starts the listing
-over from its first page. `list_pages` has no filter for Your items or for
-shared Pages, so `/pages` has no filter chips; shared rows say so instead.
+The viewer lists them on two screens. `/projects` shows every Project
+`list_projects` returns, with its description. The Pages library, at `/` and
+`/pages` (one screen, two addresses), shows the Pages `list_pages` returns,
+including Pages in Projects; an owned Page's row links its Project, and a
+shared row never does. Its view lives in the address, defaults left out, so a
+reload, Back and a shared link reproduce it
+([routes.mjs](shared/routes.mjs) `normalizeLibraryView`):
+
+| Parameter | Values | Effect |
+| --- | --- | --- |
+| `q` | text | `list_pages` `query`, trimmed and cut to its 200-unit limit |
+| `show` | `owned`, `shared` | the Your items or Shared with you tab: `access` |
+| `sort` | `title` | `sort: "title"`; omitted is Last activity |
+| `project` | a Project ID | `project_id`; implies `show=owned`, dropped with `show=shared` (which `list_pages` refuses) |
+| `group` | `project`, `date` | group sections over the loaded rows; `date` needs Last activity |
+
+A choice pushes a history entry; typing a search replaces it. Groups are a
+presentation over loaded rows ([library-groups.mjs](viewer/library-groups.mjs)):
+by Project (each Project, Your items, Shared with you) or by the row's
+`updated_at` (Today, Yesterday, Previous 7 days, Previous 30 days, each month of
+the last year, then each year), in the order their first row appears. Drafts
+this browser hasn't synced show first, as "Saved locally", on All and Your items
+when there is no search or Project filter; when the listing fails, local copies
+show there too. Load more follows `next_cursor`; a cursor that has expired
+(`invalid_cursor`) starts the listing over from its first page. Grid cards are
+behind the `grid` flag (`?grid=1` or `localStorage["pages.grid"] = "1"`) until
+they show previews.
 
 | Tool | Arguments | Result |
 | --- | --- | --- |

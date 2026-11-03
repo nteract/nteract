@@ -1,4 +1,5 @@
-// Interprets listing-machine.mjs for the index routes, and projects their rows.
+// Interprets listing-machine.mjs for the Pages library and /projects, and
+// projects their rows.
 //
 // The store holds the machine state and the rows on screen. A page of rows
 // reaches the store only through the machine's `show` effect, so a superseded
@@ -12,9 +13,15 @@ import { Subject, asyncScheduler, debounceTime } from "rxjs";
 import { failureMessage } from "./alerts.mjs";
 import { listingMachine } from "./listing-machine.mjs";
 import { Store } from "./store.mjs";
-import { normalizePagesQuery, pagePath, projectPath } from "../shared/routes.mjs";
+import {
+  LIBRARY_DEFAULTS,
+  libraryRequest,
+  normalizePagesQuery,
+  pagePath,
+  projectPath,
+} from "../shared/routes.mjs";
 
-/** Rows per list_pages request on /pages. */
+/** Rows per list_pages request in the library. */
 export const PAGES_PER_REQUEST = 50;
 /** list_projects' largest page. */
 export const PROJECTS_PER_REQUEST = 100;
@@ -22,6 +29,7 @@ export const PROJECTS_PER_REQUEST = 100;
 export const SEARCH_DEBOUNCE_MS = 250;
 
 const EMPTY = Object.freeze({ state: listingMachine.initial, items: Object.freeze([]) });
+const DEFAULT_PARAMS = libraryRequest(LIBRARY_DEFAULTS);
 
 /** Appended rows keep the first occurrence of each id: an edit during
  * pagination can move a row onto the next page. */
@@ -51,8 +59,9 @@ export class Listing {
   #connection = 0;
   #connected = false;
   /**
-   * - fetch({ query, cursor }): one page as `{ items, cursor }`, cursor null
-   *   at the end. A rejection reports `failed`.
+   * - fetch({ params, cursor }): one page as `{ items, cursor }`, cursor null
+   *   at the end. A rejection reports `failed`. `params` is normalized
+   *   (libraryRequest), so equal params mean the same rows.
    * - report(message): show a failure in the screen's banner.
    * - idOf(item): a row's stable id.
    */
@@ -79,7 +88,8 @@ export class Listing {
     const subscription = this.#searches
       .pipe(debounceTime(this.#debounce, this.#scheduler))
       .subscribe((query) => {
-        if (query !== this.snapshot().state.query) this.load(query);
+        const params = this.params();
+        if (query !== params.query) this.load({ ...params, query });
       });
     return () => {
       subscription.unsubscribe();
@@ -92,13 +102,19 @@ export class Listing {
   snapshot() {
     return this.store.snapshot();
   }
-  /** List `query` from its first page now. Queries follow
-   * normalizePagesQuery, so the request, the address and Back agree. */
-  load(query = "") {
-    if (!this.#connected) return false;
-    return this.#dispatch({ type: "load", key: this.#newKey(), query: normalizePagesQuery(query) });
+  /** What the listing lists, or would list first: the defaults until a load. */
+  params() {
+    return this.snapshot().state.params ?? DEFAULT_PARAMS;
   }
-  /** List `query` once typing pauses (while connected). */
+  /** List `params` from its first page now, superseding any request in
+   * flight. Params follow libraryRequest, so the request, the address and
+   * Back agree. */
+  load(params = DEFAULT_PARAMS) {
+    if (!this.#connected) return false;
+    return this.#dispatch({ type: "load", key: this.#newKey(), params: libraryRequest(params) });
+  }
+  /** List `query`, with the other params unchanged, once typing pauses
+   * (while connected). */
   search(query) {
     this.#searches.next(normalizePagesQuery(query));
   }
@@ -132,12 +148,12 @@ export class Listing {
     }
     throw new Error(`unknown effect ${effect.type}`);
   }
-  #request({ key, query, cursor }) {
+  #request({ key, params, cursor }) {
     const connection = this.#connection;
     const current = () => connection === this.#connection;
     let pending;
     try {
-      pending = this.#fetch({ query, cursor });
+      pending = this.#fetch({ params, cursor });
     } catch (error) {
       pending = Promise.reject(error);
     }
@@ -160,21 +176,26 @@ export class Listing {
 const nextCursor = (result) =>
   typeof result?.next_cursor === "string" && result.next_cursor ? result.next_cursor : null;
 
-/** One /pages request: every Page the account can open, newest first,
- * narrowed by list_pages' own title search. */
+/** One library request: the Pages the account can open, narrowed by
+ * list_pages' title search, `access` and `project_id`, in its `sort` order.
+ * Defaults stay off the wire, so the plain listing is the bare call. */
 export const pagesRequest =
   (call, limit = PAGES_PER_REQUEST) =>
-  async ({ query, cursor }) => {
-    const text = normalizePagesQuery(query);
+  async ({ params, cursor }) => {
+    const { query, access, sort, projectId } = libraryRequest(params);
     const result = await call("list_pages", {
       limit,
-      ...(text ? { query: text } : {}),
+      ...(query ? { query } : {}),
+      ...(access ? { access } : {}),
+      ...(sort !== LIBRARY_DEFAULTS.sort ? { sort } : {}),
+      ...(projectId ? { project_id: projectId } : {}),
       ...(cursor ? { cursor } : {}),
     });
     return { items: result.pages ?? [], cursor: nextCursor(result) };
   };
 
-/** One /projects request. list_projects has no search, so `query` is unused. */
+/** One /projects request. list_projects has no search or filter, so
+ * `params` is unused. */
 export const projectsRequest =
   (call, limit = PROJECTS_PER_REQUEST) =>
   async ({ cursor }) => {
@@ -182,15 +203,16 @@ export const projectsRequest =
     return { items: result.projects ?? [], cursor: nextCursor(result) };
   };
 
-/** The time a /pages row shows in its Updated column. list_pages'
+/** The time a library row shows in its Updated column. list_pages'
  * `updated_at` is when the catalog entry last changed, which a rename, move
  * or share also bumps; it is not the time of the last content edit. */
 export const updatedAt = (page) => page?.updated_at ?? null;
 
-/** A /pages row. Owned Pages in a Project name it; a Project the account
+/** A library row. Owned Pages in a Project name it; a Project the account
  * can't list (or that hasn't loaded) still links by ID. Shared Pages never
- * reveal their Project. */
-export function pageRow(page, projectTitles = new Map()) {
+ * reveal their Project. `local` marks a copy only this browser lists
+ * (deviceRows): `pending` when it has never reached the server. */
+export function pageRow(page, projectTitles = new Map(), { local = false } = {}) {
   const projectId = page.shared ? null : (page.project_id ?? null);
   return {
     id: page.page_id,
@@ -206,10 +228,28 @@ export function pageRow(page, projectTitles = new Map()) {
       : null,
     shared: page.shared === true,
     home: page.home === true,
+    local: local ? (page.pending ? "pending" : "copy") : null,
   };
 }
 
-/** Project titles by ID, for the Project label on /pages rows. */
+/**
+ * The local catalog's Pages (local-catalog.mjs) the library shows above the
+ * server's rows: drafts that haven't reached the server, and, when the
+ * listing failed (offline), every copy this browser holds. They show on All
+ * and Your items with no search or Project filter, since they carry no
+ * Project and the search runs on the server. A copy the server rows already
+ * hold shows once, as the server's row. Copies of shared Pages look the
+ * same as owned ones locally, so the offline fallback shows on All only.
+ */
+export function deviceRows(local, items, view, { failed = false } = {}) {
+  if (view.query || view.projectId || view.access === "shared") return [];
+  const listed = new Set(items.map((page) => page.page_id));
+  return (local ?? []).filter(
+    (page) => !listed.has(page.page_id) && (page.pending || (failed && view.access === null)),
+  );
+}
+
+/** Project titles by ID, for the Project label on library rows. */
 export const projectTitles = (projects) =>
   new Map((projects ?? []).map((project) => [project.project_id, project.title || "Untitled"]));
 
@@ -225,6 +265,7 @@ export function projectRow(project) {
 
 /** What a listing screen shows besides its rows. */
 export function listingView({ state, items }) {
+  const params = state.params ?? DEFAULT_PARAMS;
   const busy = state.name === "idle" || state.name === "loading";
   return {
     // The first page is on its way and nothing from an earlier search shows.
@@ -236,6 +277,7 @@ export function listingView({ state, items }) {
     canLoadMore: state.name === "ready" && state.cursor !== null,
     loadingMore: state.name === "more",
     stalled: state.name === "stalled",
-    query: state.query ?? "",
+    query: params.query,
+    params,
   };
 }

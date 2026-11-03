@@ -179,7 +179,7 @@ try {
   page.once("dialog", (dialog) => dialog.accept());
   await page.getByRole("button", { name: "Move to Trash", exact: true }).click();
   await expect(page).toHaveURL(origin + "/");
-  await expect(page.locator('a.page-card[href="/p/' + rejectedId + '"]')).toHaveCount(0);
+  await expect(page.locator('a.index-row-link[href="/p/' + rejectedId + '"]')).toHaveCount(0);
   await page.unroute("**/api/pages/register");
   // Losing and renewing the same account refreshes the current home route.
   await page.route("**/api/auth/session", (route) =>
@@ -193,9 +193,9 @@ try {
   await expect(page.getByRole("link", { name: "Sign in", exact: true })).toBeVisible();
   await page.unroute("**/api/auth/session");
   await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
-  await expect(page.locator('a.page-card[href="/p/' + plainId + '"]')).toBeVisible();
+  await expect(page.locator('a.index-row-link[href="/p/' + plainId + '"]')).toBeVisible();
   // Trash in one tab must survive the other tab's final local checkpoint.
-  await page.locator('a.page-card[href="/p/' + plainId + '"]').click();
+  await page.locator('a.index-row-link[href="/p/' + plainId + '"]').click();
   await peer.goto(plainUrl);
   await expect(editor(peer)).toHaveText("Written and saved without reopening.");
   await saved(page);
@@ -206,9 +206,9 @@ try {
   // An open tab of the owner learns the Page moved to Trash.
   await expect(peer.getByText("This Page is in Trash.")).toBeVisible({ timeout: 20000 });
   await peer.getByRole("link", { name: PRODUCT_NAME, exact: true }).click();
-  await expect(peer.locator('a.page-card[href="/p/' + plainId + '"]')).toHaveCount(0);
+  await expect(peer.locator('a.index-row-link[href="/p/' + plainId + '"]')).toHaveCount(0);
   await page.reload();
-  await expect(page.locator('a.page-card[href="/p/' + plainId + '"]')).toHaveCount(0);
+  await expect(page.locator('a.index-row-link[href="/p/' + plainId + '"]')).toHaveCount(0);
   // Missing routes remain visible instead of silently displaying an unrelated document.
   await peer.goto(origin + "/p/not-a-page");
   await expect(peer.getByRole("alert")).toContainText("not valid");
