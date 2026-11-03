@@ -52,7 +52,7 @@ import {
 import { readTargets, writeTargets } from "../model/agent-presence.mjs";
 import { BACKEND_LIMITS, assertDocumentLimits, assertIntentSize } from "../model/limits.mjs";
 import { handleMcp } from "../mcp.mjs";
-import { declaredLabels, logUsage, mcpClientLabel, requestClient } from "./usage.mjs";
+import { declaredLabels, logUsage, mcpClientLabel, requestClient, usageDropped } from "./usage.mjs";
 import {
   invalidArguments,
   invokeProjectApi,
@@ -842,6 +842,7 @@ function toolUsage(request, surface, operation, args) {
         }
       } catch {
         // Usage telemetry never fails the request.
+        usageDropped();
       }
       return response;
     },

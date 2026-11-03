@@ -9,7 +9,7 @@ import {
   renamedTool,
   withBrowserLinks,
 } from "./worker/project-api.mjs";
-import { mcpSessionId } from "./worker/usage.mjs";
+import { mcpSessionId, usageDropped } from "./worker/usage.mjs";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
 import {
@@ -990,6 +990,7 @@ export async function handleMcp(request, invoke, env, { onInitialize } = {}) {
         onInitialize?.(initialize);
       } catch {
         // Usage telemetry never fails the request.
+        usageDropped();
       }
     }
     return response;

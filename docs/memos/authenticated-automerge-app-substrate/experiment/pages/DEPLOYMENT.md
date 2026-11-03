@@ -689,8 +689,12 @@ Usage events are `pages.usage.v1` JSON log lines from
 [worker/usage.mjs](worker/usage.mjs): MCP initialize, tool calls on `/mcp` and
 `/api/tools`, Page creation, and browser sync open/close, with principal,
 surface, driver, agent, client and model. They inherit the 30-day log
-retention. [scripts/usage-report.sql](scripts/usage-report.sql) summarizes
-them with duckdb straight from the log Parquet.
+retention. celld 0.6.3 did not export lines still buffered at shutdown in a
+local OTLP run, so expect a restart to drop up to one flush interval of
+events. A line the Worker fails to build or
+write is counted, and the next line carries the count as `dropped`.
+[scripts/usage-report.sql](scripts/usage-report.sql) summarizes them with
+duckdb straight from the log Parquet.
 See the [pinned runtime telemetry contract](https://github.com/denoland/celld/blob/8702f6d186c77698dbfb30cf29e3b1922a88f008/docs/telemetry.md).
 
 ## Cloudflare packaging fixture

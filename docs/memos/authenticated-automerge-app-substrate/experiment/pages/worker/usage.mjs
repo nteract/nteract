@@ -8,8 +8,14 @@
  *
  * Never logged: document content, titles, arguments, tokens, keys, cookies,
  * raw MCP session ids or emails. Principals and display names are recorded
- * (Anaconda-internal, authorized). Client and model labels are
- * self-declared and informational only: nothing reads them for auth. */
+ * (Anaconda-internal, authorized). A display name falls back to the account
+ * email when the profile has no name, so an email-shaped one is dropped.
+ * Client and model labels are self-declared and informational only: nothing
+ * reads them for auth.
+ *
+ * Emission never fails or delays a request. A record that can't be built or
+ * written is dropped and counted; the next record carries the count as
+ * `dropped`. */
 
 export const USAGE_EVENT = "pages.usage.v1";
 export const USAGE_ACTIONS = Object.freeze([
@@ -98,6 +104,25 @@ export function requestClient(request) {
 }
 
 const finite = (value) => (Number.isFinite(value) && value >= 0 ? Math.round(value) : undefined);
+// Operation names and ids can come straight from a caller's request, even on
+// a refused call. Only identifier-shaped values are kept, so no free text
+// reaches the log.
+const identifier = (value, limit) =>
+  typeof value === "string" && new RegExp(`^[A-Za-z0-9_.-]{1,${limit}}$`).test(value)
+    ? value
+    : undefined;
+const operationName = (value) =>
+  value === undefined ? undefined : (identifier(value, 64) ?? "invalid");
+// Display names fall back to the account email (apps/notebook-cloud
+// host-session.ts) when a profile has no name or username.
+const displayName = (value) =>
+  typeof value === "string" && !value.includes("@") ? value : undefined;
+
+let dropped = 0;
+/** Count a usage record that was lost. The next emitted record reports it. */
+export function usageDropped() {
+  dropped++;
+}
 
 /** Build one usage record. Unknown keys are dropped; absent values omitted. */
 export function usageEvent({
@@ -122,7 +147,7 @@ export function usageEvent({
     action,
     surface: USAGE_SURFACES.includes(surface) ? surface : "unknown",
     principal: identity?.principal,
-    display_name: identity?.displayName,
+    display_name: displayName(identity?.displayName),
     namespace: identity?.namespace,
     credential: identity?.credentialKind,
     driver: identity?.driver,
@@ -131,10 +156,10 @@ export function usageEvent({
     client: labels.client,
     mcp_client: labels.mcp_client,
     model: labels.model,
-    operation: typeof operation === "string" ? operation.slice(0, 64) : undefined,
-    page_id: typeof pageId === "string" ? pageId.slice(0, 128) : undefined,
-    project_id: typeof projectId === "string" ? projectId.slice(0, 128) : undefined,
-    outcome: typeof outcome === "string" ? outcome.slice(0, 64) : undefined,
+    operation: operationName(operation),
+    page_id: identifier(pageId, 128),
+    project_id: identifier(projectId, 128),
+    outcome: identifier(outcome, 64),
     status: Number.isSafeInteger(status) ? status : undefined,
     latency_ms: finite(latencyMs),
     bytes: finite(bytes),
@@ -145,13 +170,17 @@ export function usageEvent({
   return record;
 }
 
-/** Emit one usage line. Telemetry must never fail the request. */
+/** Emit one usage line. Telemetry must never fail the request: a failure is
+ * counted, and the next line carries the count as `dropped`. */
 export function logUsage(fields) {
   try {
     const record = usageEvent(fields);
+    if (dropped) record.dropped = dropped;
     console.info(JSON.stringify(record));
+    dropped = 0;
     return record;
   } catch {
+    usageDropped();
     return undefined;
   }
 }

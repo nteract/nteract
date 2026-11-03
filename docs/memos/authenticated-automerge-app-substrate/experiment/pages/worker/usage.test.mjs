@@ -7,10 +7,12 @@ import {
   USAGE_EVENT,
   cleanLabel,
   declaredLabels,
+  logUsage,
   mcpClientLabel,
   mcpSessionClient,
   mcpSessionId,
   requestClient,
+  usageDropped,
   usageEvent,
 } from "./usage.mjs";
 
@@ -68,6 +70,41 @@ test("usage event has a fixed shape and omits secrets and absent fields", () => 
   assert.doesNotMatch(text, /kyle@example\.com|secret/);
   assert.throws(() => usageEvent({ action: "page.read" }), TypeError);
   assert.equal(usageEvent({ action: "sync.open", surface: "elsewhere" }).surface, "unknown");
+});
+
+test("caller-supplied names and ids are kept only when identifier-shaped", () => {
+  const record = usageEvent({
+    action: "tool.call",
+    surface: "http-tools",
+    identity: { ...identity, displayName: "kyle@example.com" },
+    operation: "Please summarize: secret plans",
+    pageId: "not a page id\nwith text",
+    projectId: "prj_11111111-1111-4111-8111-111111111111",
+    outcome: "http_404",
+  });
+  assert.equal(record.operation, "invalid");
+  assert.equal(record.page_id, undefined);
+  assert.equal(record.project_id, "prj_11111111-1111-4111-8111-111111111111");
+  assert.equal(record.outcome, "http_404");
+  // An email-shaped display name is a profile without a name: never logged.
+  assert.equal(record.display_name, undefined);
+  assert.doesNotMatch(JSON.stringify(record), /example\.com|secret plans|with text/);
+  assert.equal(usageEvent({ action: "sync.open" }).operation, undefined);
+});
+
+test("a lost usage record is counted on the next one and never throws", (t) => {
+  const lines = [];
+  t.mock.method(console, "info", (line) => lines.push(JSON.parse(line)));
+  assert.equal(logUsage({ action: "not.an.action" }), undefined);
+  usageDropped();
+  const next = logUsage({ action: "sync.open", surface: "browser-sync" });
+  assert.equal(next.dropped, 2);
+  assert.equal(lines.at(-1).dropped, 2);
+  assert.equal(logUsage({ action: "sync.close", surface: "browser-sync" }).dropped, undefined);
+  t.mock.method(console, "info", () => {
+    throw new Error("sink unavailable");
+  });
+  assert.doesNotThrow(() => logUsage({ action: "sync.open" }));
 });
 
 test("client and model headers are cleaned, truncated, and never rejected", () => {
@@ -177,4 +214,37 @@ test("MCP clientInfo from initialize is carried onto tool-call usage events", as
   assert.ok(tool.principal);
   assert.match(tool.session, /^[0-9a-f]{16}$/);
   assert.doesNotMatch(JSON.stringify(usage), new RegExp(token));
+
+  const readPresence = {
+    method: "tools/call",
+    params: { name: "read_page_presence", arguments: { page_id: pageId } },
+  };
+  const toolCalls = () =>
+    lines.filter((line) => line.event === USAGE_EVENT && line.action === "tool.call");
+
+  // A plain-UUID session id issued before this format still works after a
+  // deploy: same presence tag shape, no client from the id.
+  const before = toolCalls().length;
+  const legacy = await post(readPresence, "11111111-1111-4111-8111-111111111111");
+  assert.equal(legacy.status, 200);
+  const legacyCall = toolCalls().slice(before).at(-1);
+  assert.match(legacyCall.session, /^[0-9a-f]{16}$/);
+  assert.notEqual(legacyCall.session, tool.session);
+  assert.equal(legacyCall.mcp_client, undefined);
+  assert.equal(legacyCall.client, undefined);
+  assert.equal(legacyCall.principal, tool.principal);
+
+  // A forged client segment only changes the self-declared client label,
+  // cleaned like a header. Identity still comes from the credential.
+  const forgedLabel = btoa('admin\n{"principal":"x"}\u0007')
+    .replaceAll("+", "-")
+    .replaceAll("/", "_")
+    .replace(/=+$/, "");
+  const forged = await post(readPresence, `22222222-2222-4222-8222-222222222222.${forgedLabel}`);
+  assert.equal(forged.status, 200);
+  const forgedCall = toolCalls().at(-1);
+  assert.equal(forgedCall.mcp_client, 'admin{"principal":"x"}');
+  assert.equal(forgedCall.principal, tool.principal);
+  assert.equal(forgedCall.driver, "Claude Code");
+  assert.equal(forgedCall.credential, "api-key");
 });
