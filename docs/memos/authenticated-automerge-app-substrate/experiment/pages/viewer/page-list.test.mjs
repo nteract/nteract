@@ -51,3 +51,28 @@ test("listing stops at the request bound even if the server keeps returning curs
   assert.equal(requests, 3);
   assert.equal(result.pages.length, 3);
 });
+
+test("a walk stops between pages once cancelled, and refuses a change of account", async () => {
+  const controller = new AbortController();
+  const asked = [];
+  const walk = listAllPages(
+    async (operation, args) => {
+      asked.push(args.cursor ?? null);
+      controller.abort(new DOMException("closed", "AbortError"));
+      return { pages: [{ page_id: "a" }], next_cursor: "c1", principal: "alice" };
+    },
+    { signal: controller.signal },
+  );
+  await assert.rejects(walk, { name: "AbortError" });
+  assert.deepEqual(asked, [null], "no page after the cancel");
+
+  let page = 0;
+  await assert.rejects(
+    listAllPages(async () => ({
+      pages: [{ page_id: `p${page}` }],
+      next_cursor: page < 2 ? `c${++page}` : null,
+      principal: page === 2 ? "bob" : "alice",
+    })),
+    /account changed/,
+  );
+});

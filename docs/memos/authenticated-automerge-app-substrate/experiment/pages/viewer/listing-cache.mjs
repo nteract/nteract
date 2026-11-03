@@ -33,6 +33,12 @@
 // and a create, move or restore drops every view that lists the account's own
 // Pages (`forgetOwnedViews`), since any of them may gain, lose or relabel a
 // row. Views of Pages shared with the account can't change that way.
+//
+// A reply in flight across a patch. Every patch (`forget`, `retitle`,
+// `forgetOwnedViews`, `clear`) moves the cache to a new `revision`. A Listing
+// reads the revision when its request starts and hands it back with the
+// write; a write from an older revision is refused, so a reply asked for
+// before a create or move can't put back the rows the patch dropped.
 import { libraryRequest } from "../shared/routes.mjs";
 import { monotonicNow } from "./monotonic.mjs";
 
@@ -48,6 +54,7 @@ const keyOf = (principal, params) => {
 
 export class ListingCache {
   #entries = new Map();
+  #revision = 0;
   #limit;
   #maxAge;
   #now;
@@ -77,9 +84,10 @@ export class ListingCache {
     return entry.items;
   }
   /** Remember the first page `principal` was shown for `params`, from now.
-   * An empty page forgets the view: there is nothing to paint. */
-  write(principal, params, items) {
-    if (!principal) return;
+   * An empty page forgets the view: there is nothing to paint. `revision` is
+   * the one the page's request began under; an older one writes nothing. */
+  write(principal, params, items, { revision = this.#revision } = {}) {
+    if (!principal || revision !== this.#revision) return;
     const key = keyOf(principal, params);
     this.#entries.delete(key);
     if (!Array.isArray(items) || items.length === 0) return;
@@ -92,7 +100,12 @@ export class ListingCache {
     while (this.#entries.size > this.#limit)
       this.#entries.delete(this.#entries.keys().next().value);
   }
+  /** Moves with every patch. */
+  get revision() {
+    return this.#revision;
+  }
   #patch(change) {
+    this.#revision++;
     for (const [key, entry] of this.#entries) {
       const items = change(entry.items);
       if (items === entry.items) continue;
@@ -122,22 +135,27 @@ export class ListingCache {
    * items, with or without a Project or search): a create, move or restore
    * changed which rows they hold. Shared-only views stay. */
   forgetOwnedViews() {
+    this.#revision++;
     for (const [key, entry] of this.#entries)
       if (entry.access !== "shared") this.#entries.delete(key);
   }
   /** Forget everything: the account changed or signed out. */
   clear() {
+    this.#revision++;
     this.#entries.clear();
   }
-  /** The read/write pair a Listing takes for one account, or null when no one
-   * is signed in. `write` files a page only when `answeredBy`, the principal
-   * the reply named, is this account; any other reply forgets the view. */
+  /** The read/write/revision triple a Listing takes for one account, or null
+   * when no one is signed in. `write` files a page only when `answeredBy`,
+   * the principal the reply named, is this account; any other reply forgets
+   * the view. Either way it does nothing when `revision` (the one the request
+   * began under) is no longer current. */
   scope(principal) {
     if (!principal) return null;
     return {
       read: (params) => this.read(principal, params),
-      write: (params, items, answeredBy) =>
-        this.write(principal, params, answeredBy === principal ? items : []),
+      revision: () => this.#revision,
+      write: (params, items, answeredBy, revision) =>
+        this.write(principal, params, answeredBy === principal ? items : [], { revision }),
     };
   }
   get size() {

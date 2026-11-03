@@ -3,7 +3,13 @@ import { test } from "node:test";
 import { readPageRoute, projectPath, writePageRoute } from "../shared/routes.mjs";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { listProjectPages, projectTree, watchPageLocation } from "./projects.mjs";
+import {
+  LOCATION_RETRIES,
+  LOCATION_RETRY_MS,
+  listProjectPages,
+  projectTree,
+  watchPageLocation,
+} from "./projects.mjs";
 import { runPageCreation } from "./page-create-machine.mjs";
 import {
   Breadcrumbs,
@@ -238,4 +244,71 @@ test("a Page's location is asked for again as its session registers and connects
   await settle();
   left.stop();
   assert.equal(found.length, 1);
+});
+
+test("a reconnect asks for a Page's location again, and a transient failure retries three times", async () => {
+  const settle = () => new Promise((resolve) => setImmediate(resolve));
+  // A virtual clock: timers run only when `advance` passes their time.
+  let now = 0;
+  const timers = new Set();
+  const schedule = (fn, ms) => {
+    const timer = { at: now + ms, fn };
+    timers.add(timer);
+    return () => timers.delete(timer);
+  };
+  const advance = async (ms) => {
+    now += ms;
+    for (const timer of [...timers].sort((a, b) => a.at - b.at))
+      if (timer.at <= now && timers.delete(timer)) timer.fn();
+    await settle();
+  };
+  const session = { connection: {}, connectionGeneration: 1 };
+  const asks = [];
+  const found = [];
+  const location = watchPageLocation(session, {
+    locate: () => {
+      const answer = {};
+      answer.promise = new Promise((resolve, reject) => Object.assign(answer, { resolve, reject }));
+      asks.push(answer);
+      return answer.promise;
+    },
+    onFound: (value) => found.push(value),
+    current: () => true,
+    schedule,
+  });
+  const unavailable = () => Object.assign(Error("Service unavailable"), { status: 503 });
+  asks[0].reject(unavailable());
+  await settle();
+  assert.equal(asks.length, 1);
+  await advance(LOCATION_RETRY_MS - 1);
+  assert.equal(asks.length, 1, "waits 2 s");
+  await advance(1);
+  assert.equal(asks.length, 2);
+  asks[1].reject(unavailable());
+  await settle();
+  await advance(2 * LOCATION_RETRY_MS);
+  assert.equal(asks.length, 3, "then 4 s");
+  asks[2].reject(unavailable());
+  await settle();
+  await advance(4 * LOCATION_RETRY_MS);
+  assert.equal(asks.length, 4, "then 8 s");
+  asks[3].reject(unavailable());
+  await settle();
+  await advance(60_000);
+  assert.equal(asks.length, 1 + LOCATION_RETRIES, "then it waits for a change");
+  // The session reconnects: the same `connection` field, a new generation.
+  session.connectionGeneration = 2;
+  location.changed();
+  assert.equal(asks.length, 5);
+  asks[4].reject(unavailable());
+  await settle();
+  // A reconnect during a backoff asks at once instead of waiting.
+  session.connectionGeneration = 3;
+  location.changed();
+  assert.equal(asks.length, 6);
+  await advance(60_000);
+  assert.equal(asks.length, 6, "the cancelled retry never fires");
+  asks[5].resolve({ home: false });
+  await settle();
+  assert.deepEqual(found, [{ home: false }]);
 });

@@ -271,11 +271,16 @@ test("an answer for another account never shows as this one's Projects", async (
   await settle();
   assert.deepEqual(shown(), { principal: null, projects: [], ready: false });
   assert.equal(list.state.name, "idle");
-  // An answer that names no account isn't this one's either.
+  // An answer that names no account (an older API) shows, as the library
+  // listing shows one; it isn't kept past the next request.
   list.request("alice");
   calls[1].resolve({ projects: [{ project_id: "anon" }] });
   await settle();
-  assert.equal(shown().ready, false);
+  assert.deepEqual(shown(), {
+    principal: "alice",
+    projects: [{ project_id: "anon" }],
+    ready: true,
+  });
   list.request("alice");
   calls[2].resolve({ projects: [{ project_id: "hers" }], principal: "alice" });
   await settle();

@@ -70,8 +70,8 @@ import { Library } from "./Library.jsx";
 import { listProjectPages, pageLocation, watchPageLocation } from "./projects.mjs";
 import { closeTrashedSessions, moveToTrashError, restorePage } from "./trash.mjs";
 import { listAllPages } from "./page-list.mjs";
-import { Listing, listingView } from "./listing.mjs";
 import { listingCache } from "./listing-cache.mjs";
+import { PickerWalk } from "./picker-walk.mjs";
 import { ProjectList } from "./project-list.mjs";
 import { quotaNotice } from "./quota.mjs";
 import { AppearanceControls } from "./AppearanceControls.jsx";
@@ -85,7 +85,7 @@ import { RetiredPage } from "./RetiredPage.jsx";
 import { reloadGate } from "./build-freshness.mjs";
 import { EditorLoader } from "./editor-loader.mjs";
 import { SessionHost } from "./session-host.mjs";
-import { Store, useStore } from "./store.mjs";
+import { useStore } from "./store.mjs";
 import { CommentComposer, hasDraftText } from "./comment-composer.mjs";
 import { focusReturnTarget } from "./focus-return.mjs";
 import { timer } from "rxjs";
@@ -128,26 +128,29 @@ const warmEditor = () => editor.start();
 // The account's Projects, one list_projects request shared by the library's
 // Project filter, the Browse picker, Move to… and /projects.
 const projectList = new ProjectList({ call: tool });
-// Counts forgetAccountData calls, so the open Browse picker drops its walk
-// too.
-const accountForgets = new Store(0);
+// The App's handlers for the Browse picker's error line and a walk answered
+// for another account, set while it is mounted.
+const pickerHooks = { report: () => {}, otherAccount: () => {} };
+// The Browse picker (picker-walk.mjs): open or closed, and the walk of every
+// Page the account can open while it is open. It starts from the library's
+// first page when this tab showed it within the cache's age limit (read
+// only: the walk is not a library view).
+const picker = new PickerWalk({
+  walk: ({ signal }) => listAllPages(tool, { signal }),
+  seed: (principal) => listingCache.read(principal, LIBRARY_DEFAULTS),
+  report: (message) => pickerHooks.report(message),
+  onOtherAccount: () => pickerHooks.otherAccount(),
+});
 /** Forget the rows and Projects remembered for the account: it signed out,
- * another one signed in, or the server refused a tool call as signed out. */
+ * another one signed in, or the server refused a tool call as signed out.
+ * The Browse picker closes and drops its walk; nothing here starts a request,
+ * so a 401 handled here can't cause another. */
 function forgetAccountData() {
   listingCache.clear();
   projectList.reset();
-  accountForgets.update((count) => count + 1);
+  picker.forget();
 }
 const NO_PROJECTS = Object.freeze([]);
-/** What the Browse picker lists while it is closed: nothing. */
-const CLOSED_PICKER = new Listing({ fetch: () => ({ items: [], cursor: null }), idOf: () => null })
-  .store;
-/** The Browse picker's rows: every Page the account can open, walked only
- * while the picker is open. */
-const allPagesRequest = async () => ({
-  items: (await listAllPages(tool)).pages ?? [],
-  cursor: null,
-});
 // How long a new thread's passage stays emphasized after the inline composer
 // sends it.
 const CREATED_FLASH_MS = 1600;
@@ -198,7 +201,6 @@ function App() {
     [active, setActive] = useState(null),
     [commentsOpen, setCommentsOpen] = useState(false),
     [target, setTarget] = useState(null),
-    [pickerOpen, setPickerOpen] = useState(false),
     [pickerError, setPickerError] = useState(""),
     [creating, setCreating] = useState(false),
     // One creation at a time, and placed creates to replay (page-create-machine.mjs).
@@ -215,36 +217,12 @@ function App() {
   const projectsReady =
     !!account?.principal && projectState.principal === account.principal && projectState.ready;
   const projects = projectsReady ? projectState.projects : NO_PROJECTS;
-  // The Browse picker's listing: a new one each time the picker opens, for
-  // the account and until the shell forgets what it remembers for it. It
-  // walks every Page, starting from the library's first page when this tab
-  // showed it within the cache's age limit (read only: the walk is not a
-  // library view). A walk never outlives its opening, so a later one never
-  // shows rows whose access nobody confirmed since.
-  const principal = account?.principal ?? null;
-  const forgets = useStore(accountForgets);
-  const pickerListing = React.useMemo(
-    () =>
-      pickerOpen
-        ? new Listing({
-            fetch: allPagesRequest,
-            report: (message) => setPickerError(message),
-            idOf: (item) => item.page_id,
-            cache: principal
-              ? { read: (params) => listingCache.read(principal, params), write: () => {} }
-              : null,
-          })
-        : null,
-    [principal, pickerOpen, forgets],
-  );
-  useEffect(() => {
-    if (!pickerListing) return;
-    const disconnect = pickerListing.connect();
-    pickerListing.load();
-    return disconnect;
-  }, [pickerListing]);
-  const pickerSnapshot = useStore(pickerListing?.store ?? CLOSED_PICKER);
-  const pickerView = listingView(pickerSnapshot);
+  // The Browse picker: open while its machine is, for the signed-in account.
+  const pickerSnapshot = useStore(picker.store);
+  const pickerOpen = pickerSnapshot.state.name !== "closed";
+  const pickerLoading =
+    pickerSnapshot.state.name === "loading" || pickerSnapshot.state.name === "refreshing";
+  const pickerFailed = pickerSnapshot.state.name === "failed";
   // Rendered only beside a session; handlers read editor.module when they run.
   const { WordgardEditor, CommentsPanel, CommentPopover, SaveStatus, PageControls } =
     editor.module ?? {};
@@ -492,7 +470,7 @@ function App() {
   async function open(id, { focus = false, historyMode = "push", nameIt = false } = {}) {
     if (historyMode !== "none") writePageRoute(id, { replace: historyMode === "replace" });
     bootPreview.dispatch({ type: "navigated", pageId: id });
-    setPickerOpen(false);
+    picker.close();
     setNotice("");
     if (host.current?.pageId === id) return;
     const controller = new AbortController();
@@ -544,7 +522,7 @@ function App() {
     setError("");
     setNotice("");
     setOpening(false);
-    setPickerOpen(false);
+    picker.close();
     setTrashOpen(false);
     setProjectOpen(null);
     setIndex(listingVisit("home", library));
@@ -669,7 +647,7 @@ function App() {
     if (isLibraryRoute(route) && libraryShowing()) {
       setError("");
       setNotice("");
-      setPickerOpen(false);
+      picker.close();
       setIndex((current) =>
         current ? { ...current, kind: route.kind, library: route.library } : current,
       );
@@ -696,6 +674,16 @@ function App() {
   }
   // Publish the visual viewport's edges for the mobile bar and header.
   useEffect(() => trackVisualViewport(), []);
+  // The Browse picker reports here, and a walk answered for another account
+  // asks the session check who is signed in.
+  useEffect(() => {
+    pickerHooks.report = (message) => setPickerError(message);
+    pickerHooks.otherAccount = () => void auth.current?.refresh().catch(() => {});
+    return () => {
+      pickerHooks.report = pickerHooks.otherAccount = () => {};
+      picker.close();
+    };
+  }, []);
   // On phones the status is a dot (its label stays for screen readers), and
   // Share, activity and the page actions sit under one ⋯ menu.
   const [phoneHeader, setPhoneHeader] = useState(() => matchMedia(MOBILE_EDITOR_QUERY).matches);
@@ -946,7 +934,7 @@ function App() {
       }
       releaseCurrent();
       writePageRoute(next.pageId);
-      setPickerOpen(false);
+      picker.close();
       setOpening(false);
       setNotice("");
       // The account's own views gain the new Page.
@@ -1031,6 +1019,11 @@ function App() {
       return;
     }
     let where = placement;
+    // A draft the host hasn't registered isn't on the server to move yet.
+    if (!where && moving.localPage?.registration && !moving.localPage.registered) {
+      setError("Wait for this Page to sync before moving it.");
+      return;
+    }
     if (!where) {
       try {
         where = await pageLocation(tool, moving.pageId);
@@ -1236,10 +1229,9 @@ function App() {
   // The open Page's title as this tab has it, over a listing's older copy.
   const ownTitle = (item) =>
     item.page_id === page?.page_id ? { ...item, title: page.title } : item;
-  const listedPages = mergePageListings(
-    pickerView.failed ? null : pickerSnapshot.items,
-    localPages,
-  ).map(ownTitle);
+  const listedPages = mergePageListings(pickerFailed ? null : pickerSnapshot.items, localPages).map(
+    ownTitle,
+  );
   // The open Page's Project, when read_page shows one: Projects are
   // owner-only in this build, so a visible project_id means this account owns
   // it. Shared viewers see none and get no create affordances. The owner
@@ -1333,7 +1325,7 @@ function App() {
               title="Switch page"
               onClick={() => {
                 setPickerError("");
-                setPickerOpen(true);
+                picker.open(authentication.current?.identity?.principal ?? null);
               }}
               aria-haspopup="dialog"
               aria-expanded={pickerOpen}
@@ -1469,9 +1461,9 @@ function App() {
           <PagePicker
             open={pickerOpen}
             pages={listedPages}
-            loading={pickerOpen && (pickerView.loading || pickerView.refreshing)}
+            loading={pickerLoading}
             currentId={page?.page_id}
-            onClose={() => setPickerOpen(false)}
+            onClose={() => picker.close()}
             onOpen={open}
             onCreate={create}
             createProject={

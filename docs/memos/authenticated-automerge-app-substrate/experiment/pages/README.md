@@ -2062,7 +2062,8 @@ A library visit sends one `list_pages`, for its view. `list_projects` is one
 request per account shared by the Project filter, the Browse picker, Move to…
 and the first page of `/projects`; a request made while one is in flight joins
 it ([project-list.mjs](viewer/project-list.mjs)), and an answer that names
-another account (`principal`) never shows as this one's. The first page of each view
+another account (`principal`) never shows as this one's; one that names no
+account, from an older API, shows until the next request. The first page of each view
 this tab has shown stays in memory, keyed by account and request
 ([listing-cache.mjs](viewer/listing-cache.mjs)), so a return visit, Back from
 a Page included, paints it while the listing asks again. A page is kept only
@@ -2074,12 +2075,20 @@ cleared on sign-out, account change and any tool call refused with a 401,
 which also rechecks the session and, if the same account answers, asks for
 its Projects again. The cache overlays a rename this tab saw, forgets a Page
 moved to Trash or hidden by its host, drops the views of the account's own
-Pages after a create, move or restore, and is never persisted. The Browse
-picker walks every Page (`list_pages` cursors, at most ten requests) afresh
-each time it opens, never showing an earlier walk, and a Project's home Page
-lists its Project with `project_id`. An open Page asks `read_page` where it
-is, and asks again as a Page created in this tab registers or reconnects;
-Move to… hides only on a Project's home Page and asks when chosen otherwise.
+Pages after a create, move or restore, and is never persisted. Each patch
+moves the cache's revision, and a reply whose request began under an older
+one isn't written back, so a listing in flight across a create can't restore
+what it dropped. The Browse picker
+([picker-walk.mjs](viewer/picker-walk.mjs)) walks every Page (`list_pages`
+cursors, at most ten requests) afresh each time it opens, for the signed-in
+account only. Closing it cancels the walk between pages, and forgetting the
+account's data closes it without walking again, so a 401 can't start another
+walk. A Project's home Page lists its Project with `project_id`. An open Page
+asks `read_page` where it is, and asks again each time a Page created in this
+tab registers or the session reconnects; a transient failure also retries
+after 2, 4 and 8 seconds. Move to… hides only on a Project's home Page, asks
+when chosen otherwise, and on a draft that hasn't registered says to wait for
+it to sync.
 
 | Tool | Arguments | Result |
 | --- | --- | --- |

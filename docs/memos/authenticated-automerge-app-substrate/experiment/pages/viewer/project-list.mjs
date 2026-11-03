@@ -25,7 +25,9 @@
  *
  * list_projects names the `principal` that answered. An answer for any other
  * account than the request's (another window signed in) settles as `failed`,
- * so it never shows as this account's Projects.
+ * so it never shows as this account's Projects. An answer that names no
+ * account (an older API, during a deploy) shows, as the library listing shows
+ * such a page; every request asks again, so it lasts no longer than one.
  */
 import { defineMachine, reject } from "../shared/machine.mjs";
 import { Store } from "./store.mjs";
@@ -186,7 +188,7 @@ export class ProjectList {
         this.#flight = { key, promise };
         promise.then(
           (answer) => {
-            if (answer?.principal !== this.#state.principal) {
+            if (answer?.principal && answer.principal !== this.#state.principal) {
               this.#dispatch({ type: "failed", key });
               return;
             }

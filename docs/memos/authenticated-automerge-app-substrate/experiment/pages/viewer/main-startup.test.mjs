@@ -887,6 +887,10 @@ test("a Page created in this tab finds its place once it registers", async (t) =
   assert.ok(await until(() => pageAction("Move to…")), "Move to… is offered");
   assert.equal(toolCalls(app, "read_page"), 1, "asked once, and refused");
   assert.equal(document.querySelector(".breadcrumbs"), null);
+  await click(pageAction("Move to…"));
+  await settle();
+  assert.match(document.body.textContent, /Wait for this Page to sync before moving it\./);
+  assert.equal(toolCalls(app, "read_page"), 1, "Move to… doesn't ask for an unregistered draft");
   draft.rename("Untitled");
   await settle();
   assert.equal(toolCalls(app, "read_page"), 1, "nothing changed, so nothing is asked again");
@@ -1048,4 +1052,53 @@ test("leaving a Page the host deleted or stopped sharing forgets it", async (t) 
   assert.deepEqual(rows(), ["Roadmap"], "the hidden Page doesn't paint from memory");
   gate.release();
   await settle();
+});
+
+test("a 401 with the Browse picker open closes it and stops, signed in or out", async (t) => {
+  cleanUp(t);
+  for (const signsOut of [false, true]) {
+    history.replaceState(null, "", "/");
+    const server = { refuse: false, signedIn: true, refusals: 0 };
+    // After 20 refusals the server answers 500 instead, which breaks a loop
+    // so the count below fails the test rather than hanging the file.
+    const refused = () =>
+      ++server.refusals > 20
+        ? Response.json({ error: "Stop", code: "internal" }, { status: 500 })
+        : Response.json({ error: "Sign in required", code: "unauthenticated" }, { status: 401 });
+    const app = await boot(
+      () =>
+        server.signedIn
+          ? signedIn()
+          : Response.json({ error: "Sign in required", code: "unauthenticated" }, { status: 401 }),
+      {
+        list_pages: () =>
+          server.refuse
+            ? refused()
+            : {
+                pages: [{ page_id: ROADMAP, title: "Roadmap" }],
+                next_cursor: null,
+                principal: "one",
+              },
+        list_projects: () =>
+          server.refuse ? refused() : { projects: [], next_cursor: null, principal: "one" },
+      },
+    );
+    await settle();
+    // From here every tool call is refused as signed out; the session check
+    // still says signed in, or says signed out too.
+    server.refuse = true;
+    server.signedIn = !signsOut;
+    const from = app.requests.length;
+    const browse = document.querySelector('button[aria-label="Browse, switch page"]');
+    await click(browse);
+    // Two seconds of real time: a loop would make hundreds of requests.
+    for (let i = 0; i < 20; i++) await settle();
+    const made = listings(app.requests, from);
+    const label = signsOut ? "signed out" : "signed in";
+    assert.ok(made.list_pages <= 2, `${label}: ${made.list_pages} list_pages`);
+    assert.ok(made.list_projects <= 2, `${label}: ${made.list_projects} list_projects`);
+    assert.equal(document.querySelector("dialog.page-picker[open]"), null, `${label}: closed`);
+    if (signsOut)
+      assert.equal(document.querySelector("h1")?.textContent, "A place to write together.");
+  }
 });
