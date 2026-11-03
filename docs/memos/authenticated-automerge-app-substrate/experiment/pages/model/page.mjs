@@ -16,6 +16,7 @@ import { COMMENTS_FEATURE } from "./comments-doc.mjs";
 import { orderedBlockIds, positionForInsertion } from "./order.mjs";
 import { anchorOccurrence, formatMatch, replaceMatch } from "./replace-match.mjs";
 import { setNode } from "./set-node.mjs";
+import { INSERT_OPERATIONS } from "./node-registry.mjs";
 import { stampFeatures } from "./schema-features.mjs";
 export { orderedBlockIds } from "./order.mjs";
 const block = (id = crypto.randomUUID(), position = positionForInsertion()) => ({
@@ -91,6 +92,35 @@ export function validateNodeInsertion(op) {
   // Title and media type rules live with the node.
   dataframeFor("00000000-0000-4000-8000-000000000000", node.attrs);
   return node.attrs;
+}
+/** The stored assets a batch's node-creating operations name, for the host
+ * to check before the change (`apply` can't await). Each operation is
+ * validated first; an invalid one throws. Driven by INSERT_OPERATIONS in
+ * model/node-registry.mjs, so a new node type that names an asset declares
+ * its asset kind there and gets the check. Image assets are listed once
+ * each. */
+export function insertedAssets(operations, pageId) {
+  const assets = [];
+  const seen = new Set();
+  for (const op of operations) {
+    const name = op?.op ?? op?.type;
+    const insert = INSERT_OPERATIONS[name];
+    if (!insert) continue;
+    if (insert.asset === "image") {
+      validateImageInsertion(op);
+      if (seen.has(op.asset_id)) continue;
+      seen.add(op.asset_id);
+      assets.push({ asset: "image", assetId: op.asset_id });
+    } else if (insert.asset === "dataset") {
+      const attrs = dataframeFor(pageId, validateNodeInsertion(op));
+      assets.push({
+        asset: "dataset",
+        assetId: op.node.attrs.asset_id,
+        mediaType: attrs.media_type,
+      });
+    } else throw Error(`No asset check for ${insert.asset}`);
+  }
+  return assets;
 }
 const PASSAGE_OPS = new Set(["replace_match", "format_match", "set_node"]);
 // `trace` records where each operation landed, for agent presence. It never

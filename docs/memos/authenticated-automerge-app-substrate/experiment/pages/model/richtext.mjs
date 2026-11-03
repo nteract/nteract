@@ -21,7 +21,13 @@ import {
   updateSpansConfig,
   validateMarkValue,
 } from "./marks.mjs";
-import { TEXT_CONTAINERS, FEATURE_REGISTRY, stampSpans } from "./schema-features.mjs";
+import { FEATURE_REGISTRY, stampSpans } from "./schema-features.mjs";
+import {
+  TEXT_CONTAINERS,
+  isKnownBlock,
+  validAlignment,
+  validHeadingLevel,
+} from "./node-registry.mjs";
 import {
   DATAFRAME_BLOCK,
   dataframeAttrs,
@@ -274,7 +280,7 @@ for (const [name, tag, block] of [
       {
         tag,
         getAttrs: (dom) => ({
-          align: ["left", "center", "right"].includes(dom.dataset.align) ? dom.dataset.align : null,
+          align: validAlignment(dom.dataset.align) ? dom.dataset.align : null,
         }),
       },
     ],
@@ -1558,7 +1564,7 @@ export function codeTextUnmarked(spans) {
       : span;
   });
 }
-const knownBlock = (type) => adapter.nodeMappings.some((mapping) => mapping.blockName === type);
+const knownBlock = isKnownBlock;
 /** Spans the ProseMirror adapter can read, for a projection only. Unknown
  * embeds in a code block always become their notice as text (a code block
  * serializes only its text). With `all`, every unknown marker does: one
@@ -1843,12 +1849,11 @@ export function validateRichSpans(spans, maxBytes = 262144) {
         Object.keys(value).some((k) => !["type", "parents", "attrs", "isEmbed"].includes(k)) ||
         !Array.isArray(value.parents) ||
         value.parents.length > 32 ||
-        !adapter.nodeMappings.some((mapping) => mapping.blockName === String(value.type))
+        !isKnownBlock(value.type)
       )
         throw Error("Unsupported rich block marker");
       for (const parent of value.parents)
-        if (!adapter.nodeMappings.some((mapping) => mapping.blockName === String(parent)))
-          throw Error("Unsupported rich parent");
+        if (!isKnownBlock(parent)) throw Error("Unsupported rich parent");
       if (String(value.type) === "task-list-item" && typeof value.attrs.checked !== "boolean")
         throw Error("Invalid task checked state");
     } else throw Error("Unsupported rich span");
@@ -1859,9 +1864,11 @@ export function validateRichSpans(spans, maxBytes = 262144) {
     if (
       ["table_cell", "table_header"].includes(node.type.name) &&
       node.attrs.align != null &&
-      !["left", "center", "right"].includes(node.attrs.align)
+      !validAlignment(node.attrs.align)
     )
       throw Error("Invalid table alignment");
+    if (node.type.name === "heading" && !validHeadingLevel(node.attrs.level))
+      throw Error("Invalid heading level");
     if (node.type.name === "image" && !safeUrl(node.attrs.src))
       throw Error("Invalid rich image URL");
     // Lenient: a later build may add media types or attrs under the same
