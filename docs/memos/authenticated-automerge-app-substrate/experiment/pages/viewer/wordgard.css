@@ -436,9 +436,19 @@
   overflow: auto;
   text-align: center;
 }
+/* Pele draws its zoom controls over the canvas's top-right corner when it
+   shrinks a diagram to fit. Give them a gutter of their own (30px controls at
+   8px from the edge) so they never cover the diagram's rightmost shapes. A
+   short diagram still leaves room for all three controls (82px at 8px). */
+.wordgard-diagram-canvas:has(> .pele-zoom:not([hidden])) {
+  padding-inline-end: 44px;
+  min-height: 96px;
+}
 /* Pele retains these CSS references in its sanitized SVG. Color changes flow
-   through the existing diagram without remounting it or changing editor state. */
-.wordgard-diagram-canvas {
+   through the existing diagram without remounting it or changing editor state.
+   The expanded viewer's copy of the SVG reads the same ones. */
+.wordgard-diagram-canvas,
+.diagram-viewer-stage {
   --pele-bg: var(--card);
   --pele-fg: var(--foreground);
   --pele-muted: var(--muted-foreground);
@@ -485,6 +495,9 @@
   color: var(--muted-foreground);
   cursor: pointer;
 }
+.wordgard-diagram-actions .wordgard-diagram-action[hidden] {
+  display: none;
+}
 .wordgard-diagram-action svg {
   width: 16px;
   height: 16px;
@@ -515,6 +528,136 @@
     sans-serif;
   white-space: normal;
 }
+/* The expanded diagram viewer (diagram-viewer.mjs): a modal dialog over the
+   whole viewport, a bar of controls, and a stage the diagram pans and zooms in.
+   The bar clears a phone's notch and rounded corners through the safe-area
+   insets. */
+.diagram-viewer {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: 100%;
+  max-width: none;
+  max-height: none;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  overflow: hidden;
+  overscroll-behavior: none;
+  background: var(--card);
+  color: var(--foreground);
+  font:
+    14px/1.4 Inter,
+    ui-sans-serif,
+    system-ui,
+    sans-serif;
+}
+.diagram-viewer:not([open]) {
+  display: none;
+}
+.diagram-viewer::backdrop {
+  background: var(--background);
+}
+:root:has(.diagram-viewer[open]) {
+  overflow: hidden;
+}
+.diagram-viewer-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: none;
+  padding: max(8px, env(safe-area-inset-top)) max(12px, env(safe-area-inset-right)) 8px
+    max(16px, env(safe-area-inset-left));
+  border-bottom: 1px solid var(--border);
+  background: var(--background);
+  -webkit-user-select: none;
+  user-select: none;
+}
+.diagram-viewer-title {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+  overflow: hidden;
+  font-size: 14px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.diagram-viewer-zoom {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+.diagram-viewer-scale {
+  min-width: 3.5em;
+  color: var(--muted-foreground);
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+}
+.diagram-viewer-button {
+  display: inline-grid;
+  place-items: center;
+  min-width: 36px;
+  height: 36px;
+  padding: 0 8px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted-foreground);
+  font: inherit;
+  font-weight: 500;
+  cursor: pointer;
+}
+.diagram-viewer-button svg {
+  width: 18px;
+  height: 18px;
+  pointer-events: none;
+}
+.diagram-viewer-button:hover:not([aria-disabled="true"]) {
+  background: var(--accent);
+  color: var(--accent-foreground);
+}
+.diagram-viewer-button[aria-disabled="true"] {
+  opacity: 0.4;
+  cursor: default;
+}
+.diagram-viewer-button:focus-visible,
+.diagram-viewer-stage:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: -2px;
+}
+.diagram-viewer-close {
+  margin-left: 4px;
+  color: var(--foreground);
+}
+.diagram-viewer-stage {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  touch-action: none;
+  cursor: grab;
+  -webkit-user-select: none;
+  user-select: none;
+}
+.diagram-viewer-stage[data-gesture="panning"],
+.diagram-viewer-stage[data-gesture="pinching"] {
+  cursor: grabbing;
+}
+.diagram-viewer-content {
+  position: absolute;
+  top: 0;
+  left: 0;
+  transform-origin: 0 0;
+  line-height: 0;
+}
+.diagram-viewer-content > svg {
+  display: block;
+  max-width: none;
+  pointer-events: none;
+}
 .wordgard-document .remote-edit {
   text-decoration: underline;
   text-decoration-color: var(--peer-color, #b79551);
@@ -533,6 +676,18 @@
     width: 44px;
     height: 44px;
     min-height: 44px;
+  }
+  .diagram-viewer-bar {
+    gap: 4px;
+    padding-left: max(12px, env(safe-area-inset-left));
+    padding-right: max(4px, env(safe-area-inset-right));
+  }
+  .diagram-viewer-button {
+    min-width: 44px;
+    height: 44px;
+  }
+  .diagram-viewer-scale {
+    display: none;
   }
   .wordgard-document .wg-code-language {
     top: 4px;

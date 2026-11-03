@@ -8,7 +8,7 @@ import { schema, CodeBlock, CodeBlockLanguage } from "./wordgard-model.mjs";
 
 // These tests exercise native editor transactions; styles and SVG mounting
 // are qualified separately by the real-browser Wordgard smoke.
-const { wordgardWidgets, selectCodeLanguage, diagramFrame } =
+const { wordgardWidgets, selectCodeLanguage, diagramFrame, maximizeButton, renderedSvg } =
   await import("./wordgard-widgets.mjs");
 
 function withDocument(run) {
@@ -48,6 +48,21 @@ test("an HTML-looking title stays an attribute value, never markup", () =>
     assert.equal(dom.getAttribute("aria-label"), title);
     assert.equal(dom.querySelector("img, b"), null);
     assert.equal(dom.textContent, "");
+  }));
+
+test("Maximize is a labelled dialog opener, hidden until a diagram has rendered", () =>
+  withDocument(() => {
+    const button = maximizeButton();
+    assert.equal(button.getAttribute("aria-label"), "Maximize diagram");
+    assert.equal(button.getAttribute("aria-haspopup"), "dialog");
+    assert.equal(button.type, "button");
+    assert.equal(button.hidden, true);
+    const canvas = document.createElement("div");
+    assert.equal(renderedSvg(canvas), null);
+    canvas.innerHTML = '<div class="pele-zoom"><svg></svg></div>';
+    assert.equal(renderedSvg(canvas), null);
+    canvas.insertAdjacentHTML("afterbegin", '<svg class="pele"></svg>');
+    assert.equal(renderedSvg(canvas)?.getAttribute("class"), "pele");
   }));
 
 function editorFixture(source = "graph TD; A --> B", language) {

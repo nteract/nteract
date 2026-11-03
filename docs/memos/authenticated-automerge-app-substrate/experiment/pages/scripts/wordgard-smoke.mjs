@@ -1005,6 +1005,46 @@ try {
   await saved(a);
   checkpoint(stage);
 
+  stage = "Maximize opens a read-only expanded diagram and returns focus";
+  const beforeMaximize = await call(a, "read_page", { page_id: code.page_id });
+  const maximize = a.getByRole("button", { name: "Maximize diagram", exact: true });
+  await expect(maximize).toBeVisible();
+  await maximize.click();
+  const expanded = a.getByRole("dialog", { name: "Diagram" });
+  await expect(expanded).toBeVisible();
+  await expect(expanded.locator(".diagram-viewer-stage")).toBeFocused();
+  await expect(expanded.locator("svg.pele")).toContainText("Warehouse");
+  {
+    const stageBox = await expanded.locator(".diagram-viewer-stage").boundingBox();
+    const fitted = await expanded.locator("svg.pele").boundingBox();
+    assert.ok(
+      fitted.x >= stageBox.x && fitted.x + fitted.width <= stageBox.x + stageBox.width + 1,
+      "the expanded diagram starts fitted to the viewport",
+    );
+    assert.ok(
+      fitted.y >= stageBox.y && fitted.y + fitted.height <= stageBox.y + stageBox.height + 1,
+    );
+  }
+  const scale = expanded.locator(".diagram-viewer-scale");
+  const fittedScale = await scale.textContent();
+  await a.keyboard.press("+");
+  await expect(scale).not.toHaveText(fittedScale);
+  await expanded.getByRole("button", { name: "Fit diagram to screen" }).click();
+  await expect(scale).toHaveText(fittedScale);
+  await a.screenshot({ path: output + "/diagram-expanded-desktop.png" });
+  await a.keyboard.press("Escape");
+  await expect(expanded).toHaveCount(0);
+  await expect(maximize).toBeFocused();
+  await maximize.press("Enter");
+  await expect(expanded).toBeVisible();
+  await expanded.getByRole("button", { name: "Close", exact: true }).click();
+  await expect(expanded).toHaveCount(0);
+  await expect(maximize).toBeFocused();
+  await expect(content(a).locator("pre:visible")).toHaveCount(0);
+  const afterMaximize = await call(a, "read_page", { page_id: code.page_id });
+  assert.deepEqual(afterMaximize.heads, beforeMaximize.heads, "maximizing writes nothing");
+  checkpoint(stage);
+
   stage = "empty-code clipboard paste, inactive Mermaid, and native table with strikethrough";
   let current = await call(a, "read_page", { page_id: code.page_id });
   await call(a, "patch_page", {
@@ -1230,6 +1270,9 @@ try {
   await expect(reader.getByRole("button", { name: "Edit diagram", exact: true })).toHaveCount(0);
   await expect(reader.getByRole("button", { name: "Preview diagram", exact: true })).toHaveCount(0);
   await expect(reader.getByRole("button", { name: "Copy diagram code", exact: true })).toHaveCount(
+    2,
+  );
+  await expect(reader.getByRole("button", { name: "Maximize diagram", exact: true })).toHaveCount(
     2,
   );
   await expect(content(reader).locator("pre:visible")).toHaveCount(0);

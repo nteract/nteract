@@ -314,7 +314,11 @@ references; it does not publish the Page or change asset access.
 - **Code and diagrams:** three backticks on an empty paragraph followed by Enter
   or Space creates code; a language can follow the backticks. Mermaid renders
   through nteract's Pele renderer and SVG sanitizer. Compact Edit diagram,
-  Preview, and Copy diagram code controls switch the local view. Source and
+  Preview, and Copy diagram code controls switch the local view. Maximize
+  opens a copy of the rendered SVG in a full-viewport dialog that fits it to
+  the screen; wheel, pinch, drag, the zoom buttons and Fit move it, and Escape
+  or Close returns focus to Maximize. The dialog never edits. Pele's inline
+  zoom controls get a gutter beside a shrunk diagram. Source and
   language are shared content; rendered SVG is not stored. Cmd/Ctrl+Enter
   continues in a paragraph. Pages does not execute code.
 - **Tables:** native row/cell markers live in the same rich-text field as prose.
