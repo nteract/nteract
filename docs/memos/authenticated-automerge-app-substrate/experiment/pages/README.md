@@ -608,12 +608,19 @@ trashed rows, and the Trash query walks it from `owner = ?`, joining each row's
 owner access row by primary key for the title snapshot. Continuation pages seek
 `(trash_key, page_id) < (?, ?)`. The Catalog fallback reads the `trash/` entry's
 `trashed_at` the same way, `''` when it is missing, and reconciliation indexes a
-missing or non-string `trashed_at` as null, so both sources order Trash alike,
+missing or malformed `trashed_at` as null, so both sources order Trash alike,
 ties and missing times included. Created and title order Trash as they order
 every other listing.
 
-A stored key that isn't a string, such as a numeric `created_at` in a Catalog
-entry, reads as `''` in every order and sorts last; it never fails the listing.
+A stored time is a listing time only in `Date#toISOString`'s format. Anything
+else in a Catalog entry, such as a number, `"2026-10-01"` or an RFC 1123 date,
+never reaches D1, never jumps the order and never fails a listing or its
+cursor. Reconciliation indexes it as missing: `created_at` falls back to the
+entry's `updated_at`, `updated_at` to its `created_at` and then the pass's own
+time, and `trashed_at` to null. The Catalog fallback reads the same fallbacks,
+and a key with none reads as `''` and sorts last. A host record's trash time is
+converted to that format before it is indexed. A non-string title key reads as
+`''`.
 
 `activity_at` is a virtual generated column, so every writer keeps it current,
 including a build that predates it. The Catalog fallback computes each key from
@@ -646,8 +653,12 @@ from before that route answers non-OK and the flush retries until its node runs
 this build; an earlier route would have read the title-less report as a title.
 Members' Catalogs get the time with the next title projection. Domain readers'
 rows aren't rewritten by a flush, since a domain-wide Page can have any number of
-them: each copies the Page row's time when its reader opens the Page again or
-its account reconciles, and until then sorts by its older time. Every write
+them. The host reports a reader's row again when that reader opens the Page and
+the content time has moved past the one its last report for that reader carried;
+the host keeps those in memory, so its first open of each reader after a restart
+reports too. The reader's own reconcile pass, run by its listings at least every
+six hours, copies the time as well. Until one of those, the row sorts by its
+older time. Every write
 takes the later of the stored and reported time, so a delayed report never moves
 a content time back, and every writer drops a time more than five minutes ahead
 of its own clock, so a node whose clock runs ahead can't pin a Page to the top.
@@ -655,7 +666,10 @@ Times have exactly `Date#toISOString`'s format, the only one whose string order
 is time order. A host evicted before its trailing flush loses at most that
 minute. A failed flush retries with backoff from one minute up to fifteen. The
 time also rides on every full row report, so a restart re-reports it. Deleting a
-Page stops its recorder for good and deletes `host/content-activity`.
+Page, by a purge or a tombstone, stops its recorder for good and deletes
+`host/content-activity`. Trash never stops it, so a restored Page keeps recording.
+A change never starts a flush itself: it queues one (`flushQueued`), and the next
+live request starts it.
 
 The `change` listener runs on the repository's scheduler loop, in the context of
 the request that opened the document, so it starts nothing (see the celld notes
@@ -685,8 +699,22 @@ carries its title key, which makes it longer: cursors may run to 8192 characters
 
 Page hosts report their row after creation, title changes and ACL commits. Writes
 carry the committed ACL revision, so a report that outlives its timeout changes
-nothing once a newer revision has landed. A failed report leaves a marker in the
-Page host and repeats on its next request. Before an ACL restriction or a deletion
+nothing once a newer revision has landed.
+
+Repeating a title observes nothing new, so it moves no `updated_at`. The host
+stores the title it last projected and when it first observed it
+(`host/title-projection`). After a restart, a retried projection or a repaired
+report, the same title goes out with that time, which also stays the host's
+`title_observed_at`. Every such projection and report also carries `keep_time`: a
+Catalog entry or D1 row whose title already equals it keeps its own
+`updated_at`. That covers a host restarted from a build without the stored
+record, and a writer that missed an earlier projection. A title change, a new
+entry or row (a discovery), an ACL commit and a restore still move it. So a host
+restart never reorders a library, even for Pages without a content time, which
+the activity sort orders by `updated_at`.
+
+A failed report leaves a marker in the Page host and repeats on its next request.
+Before an ACL restriction or a deletion
 is durable, the host removes listing rows best-effort; the deleted tombstone is
 written only after the host record is durable. Editing and sync never wait on D1.
 If D1 errors or exceeds its read budget, listing falls back to the Catalog entries

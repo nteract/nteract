@@ -135,7 +135,10 @@ const POST_COMMIT = {
   projectTitle: {
     name: "titleProjection",
     writes: (key) =>
-      key.startsWith("index ") || key.startsWith("owner page/") || key.startsWith("member shared/"),
+      key.startsWith("index ") ||
+      key.startsWith("owner page/") ||
+      key.startsWith("member shared/") ||
+      key === "page host/title-projection",
   },
   refreshAccess: {
     name: "bindingRetirement",
@@ -151,12 +154,21 @@ const POST_COMMIT = {
  * - index: a D1 write rejected. Index writes are best-effort; a failed report
  *   stores the repair marker, and listings verify rows with the Page.
  * - prune: a receipt landed but its prune did not. The store holds one
- *   receipt over the limit until the next receipt write prunes it. */
+ *   receipt over the limit until the next receipt write prunes it.
+ * - titleRecord: the stored title projection's write rejected. It is
+ *   best-effort: without it, the next projection observes the title anew and
+ *   carries keep_time, so no listing's updated_at moves. */
 function allowance(key, run, row, committed) {
   const cutD1 = run.cut && run.mutations[run.cut.index]?.startsWith("d1 ");
   if (key.startsWith("index ") && cutD1) return "index";
   if (key === "page host/index/report-pending") return cutD1 ? "index" : undefined;
   if (key.startsWith("page host/lifecycle/seed-")) return "prune";
+  if (
+    key === "page host/title-projection" &&
+    run.cut &&
+    run.mutations[run.cut.index] === "put host/title-projection"
+  )
+    return "titleRecord";
   if (run.mode !== "crash" || !committed) return undefined;
   for (const [type, effect] of Object.entries(POST_COMMIT)) {
     const owed = row.expect.effects.some((entry) => entry.type === type);
@@ -232,12 +244,14 @@ test("every mutation the lifecycle makes can reject before or after it applies, 
     { cuts, runs, ...tally },
     {
       // The comments document's import and delete are cut points too, and so
-      // is a purge's delete of the stored content time. The active/trash
-      // heads-absent row runs the full trash commit again.
-      cuts: 168,
-      runs: 632,
+      // are a purge's and a tombstone's deletes of the stored content time
+      // and title projection, and a restore's write of that projection. The
+      // active/trash heads-absent row runs the full trash commit again.
+      cuts: 184,
+      runs: 696,
       indexRetirement: 21,
       titleProjection: 14,
+      titleRecord: 4,
       bindingRetirement: 30,
       prune: 22,
       index: 14,
@@ -250,9 +264,17 @@ test("a tombstone whose write or sync rejected repeats its barrier on retry, so 
   const row = s.table.rows.find((r) => r.state.name === "trashed" && r.event.type === "tombstone");
   const options = { view: "synced", mode: "retry", documentAbsent: true };
   const reference = await scenario(s, row, options);
-  assert.deepEqual(reference.mutations.slice(0, 2), ["put host/document", "sync"]);
+  // Dropping the document first forgets its stored times; the document is
+  // already gone, so nothing they describe can come back.
+  const record = reference.mutations.indexOf("put host/document");
+  assert.deepEqual(reference.mutations.slice(0, record + 2), [
+    "delete host/content-activity",
+    "delete host/title-projection",
+    "put host/document",
+    "sync",
+  ]);
   // The record write rejects before it lands; then the sync itself fails.
-  for (const index of [0, 1]) {
+  for (const index of [record, record + 1]) {
     const run = await scenario(s, row, { ...options, cut: { index, outcome: "before" } });
     assert.equal(run.status, 500);
     assert.equal(run.retried, 200);
