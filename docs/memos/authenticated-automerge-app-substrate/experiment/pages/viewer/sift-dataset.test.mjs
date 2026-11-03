@@ -85,7 +85,7 @@ test("Page datasets decode under explicit limits", () => {
     maxBytes: 5 * 1024 * 1024,
     maxRows: 250_000,
     maxColumns: 256,
-    maxDecodedBytes: 96 * 1024 * 1024,
+    maxDecodedBytes: 128 * 1024 * 1024,
   });
 });
 

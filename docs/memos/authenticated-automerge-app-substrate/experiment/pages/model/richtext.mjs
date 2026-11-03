@@ -21,7 +21,7 @@ import {
   updateSpansConfig,
   validateMarkValue,
 } from "./marks.mjs";
-import { FEATURE_REGISTRY, stampSpans } from "./schema-features.mjs";
+import { TEXT_CONTAINERS, FEATURE_REGISTRY, stampSpans } from "./schema-features.mjs";
 import { DATAFRAME_BLOCK, dataframeAttrs, readDataframe } from "../shared/dataset-assets.mjs";
 
 export { safeUrl } from "./marks.mjs";
@@ -1554,7 +1554,6 @@ export function codeTextUnmarked(spans) {
   });
 }
 const knownBlock = (type) => adapter.nodeMappings.some((mapping) => mapping.blockName === type);
-const TEXT_CONTAINERS = new Set(["code-block", "table-cell", "table-header"]);
 /** Spans the ProseMirror adapter can read, for a projection only. Unknown
  * embeds in a code block always become their notice as text (a code block
  * serializes only its text). With `all`, every unknown marker does: one

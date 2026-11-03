@@ -89,7 +89,13 @@ import {
   wordgardHistory,
   wordgardListStarts,
 } from "./wordgard-binding.mjs";
-import { PagesLink, TaskList, elements, filterPastedDataframes } from "./wordgard-model.mjs";
+import {
+  PagesDataframe,
+  PagesLink,
+  TaskList,
+  elements,
+  filterPastedDataframes,
+} from "./wordgard-model.mjs";
 import { DATASET_ACCEPT } from "../shared/dataset-assets.mjs";
 import { taskLists } from "./wordgard-task-lists.mjs";
 import { markdownShortcuts } from "./wordgard-shortcuts.mjs";
@@ -404,6 +410,8 @@ export function WordgardEditor(props) {
         ),
         Wordgard.domEventHandler("drop", (event) => {
           const files = uploadFiles(event.dataTransfer);
+          // Wordgard's own drop reads HTML through clipboardInputHTMLFilter,
+          // so a dataframe from another Page drops as its title.
           if (!files.length) return false;
           return acceptImages(
             files,
@@ -770,6 +778,13 @@ export function WordgardEditor(props) {
       const block = state.sel.head.textblockParent?.node;
       const snapshot = {
         image: !!selectedImage(state),
+        // A selected image or dataframe: text style, marks and lists don't apply.
+        atom:
+          selectedAtom(state)?.node.type === PagesDataframe
+            ? "dataframe"
+            : selectedImage(state)
+              ? "image"
+              : null,
         table: !!selectedTable(state),
         style:
           block?.type === Heading
@@ -1149,7 +1164,13 @@ export function WordgardEditor(props) {
             hidden={!toolbarUsable || (!toolbarOpen && !contextualToolbar)}
             style={floating || undefined}
             role="toolbar"
-            aria-label={format?.image ? "Image actions" : "Text formatting"}
+            aria-label={
+              format?.atom === "dataframe"
+                ? "Table actions"
+                : format?.image
+                  ? "Image actions"
+                  : "Text formatting"
+            }
             onKeyDown={toolbarKeys}
           >
             {toolbarOpen &&
@@ -1169,8 +1190,10 @@ export function WordgardEditor(props) {
             {toolbarOpen && <span className="toolbar-separator" role="separator" />}
             {!editable ? (
               formatButton(commentControl)
-            ) : format?.image ? (
-              <span className="image-selection-label">Image</span>
+            ) : format?.atom ? (
+              <span className="image-selection-label">
+                {format.atom === "dataframe" ? "Table" : "Image"}
+              </span>
             ) : (
               <>
                 <select

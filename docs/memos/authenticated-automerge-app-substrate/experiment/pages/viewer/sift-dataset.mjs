@@ -14,7 +14,8 @@ export const DATAFRAME_LIMITS = Object.freeze({
   maxBytes: DATASET_MAX_BYTES,
   maxRows: 250_000,
   maxColumns: 256,
-  maxDecodedBytes: 96 * 1024 * 1024,
+  // Sift's default, so a table that loads today keeps loading.
+  maxDecodedBytes: 128 * 1024 * 1024,
 });
 
 /**

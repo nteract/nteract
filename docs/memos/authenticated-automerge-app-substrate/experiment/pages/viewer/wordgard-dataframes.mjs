@@ -56,16 +56,41 @@ export function dataframeFrame({ title, media_type }) {
  * inside Sift's canvas is left alone: that's for the grid.
  */
 export function selectDataframeOnPress(editor, dom) {
-  dom.addEventListener("mousedown", (event) => {
-    if (event.button !== 0 || event.target.closest?.(".wordgard-dataframe-canvas")) return;
+  const select = () => {
     const block = editor.nodeFromDOM(dom);
-    if (!block || block.node.type !== PagesDataframe) return;
-    event.preventDefault();
+    if (!block || block.node.type !== PagesDataframe) return false;
     // Focus first: focusing reads the DOM selection, which would replace a
     // node selection made before it.
     editor.focus();
     editor.dispatch({ selection: GardSelection.node(block.pos, block.node) });
+    return true;
+  };
+  dom.addEventListener("mousedown", (event) => {
+    if (event.button !== 0 || event.target.closest?.(".wordgard-dataframe-canvas")) return;
+    if (select()) event.preventDefault();
   });
+  // Enter, Space and assistive technology activate the handle with a click.
+  // A mouse click already selected on mousedown; selecting again is harmless.
+  dom.querySelector(".wordgard-dataframe-select")?.addEventListener("click", (event) => {
+    event.preventDefault();
+    select();
+  });
+}
+
+const EDITING_EVENTS = new Set(["keydown", "keyup", "keypress", "beforeinput", "input"]);
+/**
+ * Which widget events reach the editor. Sift's canvas keeps all of its own.
+ * Typing on a focused frame control (the select handle) stays with that
+ * control, so Enter or Backspace there never runs the editor keymap against
+ * a selection the person can't see. Everything else on the frame (mouse,
+ * clipboard while the node is selected) reaches the editor.
+ */
+export function dataframeEventReachesEditor(event) {
+  const target = event.target;
+  if (target?.closest?.(".wordgard-dataframe-canvas")) return false;
+  if (EDITING_EVENTS.has(event.type) && target?.closest?.("button, input, select, textarea"))
+    return false;
+  return true;
 }
 
 /**
@@ -197,10 +222,7 @@ const dataframeTable = Widget.define({
   disconnect(_value, dom) {
     mounted.get(dom)?.disconnect();
   },
-  // Events inside Sift's canvas are the grid's; the editor ignores them.
-  // Events on the frame (keys and clipboard while the node is selected)
-  // reach the editor, so cut, copy and delete act on the node.
-  propagateEvent: (event) => !event.target?.closest?.(".wordgard-dataframe-canvas"),
+  propagateEvent: dataframeEventReachesEditor,
 });
 
 /**

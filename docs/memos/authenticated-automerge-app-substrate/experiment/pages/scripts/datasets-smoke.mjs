@@ -240,10 +240,17 @@ try {
   // Select the dropped table by its frame, cut it, and paste it back at the
   // top of the Page's first block. The node survives, unknown attrs and all.
   const dropped = tables(owner).filter({ hasText: "dropped usage" });
+  // Hold the mounted Sift root: selecting must keep this same element.
+  const siftRoot = await dropped.locator(".sift-root").first().elementHandle();
   await dropped.getByRole("button", { name: "Select table" }).click();
   await expect(owner.locator(".wg-selected-node section.wordgard-dataframe-table")).toHaveCount(1);
   // Selecting keeps the table mounted, and the text toolbar stays hidden.
-  await expect(dropped.locator(".sift-root").first()).toContainText("browser");
+  await owner.waitForTimeout(1500);
+  assert.equal(
+    await siftRoot.evaluate((element) => element.isConnected),
+    true,
+    "selecting the table reloaded it",
+  );
   await expect(owner.getByRole("toolbar", { name: "Text formatting" })).toBeHidden();
   await owner.screenshot({ path: `${output}/sift-table-selected.png`, fullPage: true });
   await owner.keyboard.press("ControlOrMeta+X");
@@ -258,6 +265,34 @@ try {
   });
   await expect.poll(async () => (await markdownOf()).match(/\[Dataframe/g)?.length ?? 0).toBe(2);
   complete("Selecting a table by its frame, cutting and pasting it moves the node");
+
+  // An HTML drop of a dataframe copied from another Page lands as its title,
+  // never as a node naming another Page's asset.
+  const foreign = `/api/pages/44444444-4444-4444-8444-444444444444/assets/${"a".repeat(64)}`;
+  await content(owner).evaluate((element, src) => {
+    const data = new DataTransfer();
+    const attrs = JSON.stringify({
+      src,
+      media_type: "application/vnd.apache.parquet",
+      title: "Foreign table",
+    });
+    data.setData("text/html", `<figure data-pages-dataframe='${attrs}'>Foreign table</figure>`);
+    data.setData("text/plain", "Foreign table");
+    const rect = element.getBoundingClientRect();
+    element.dispatchEvent(
+      new DragEvent("drop", {
+        dataTransfer: data,
+        clientX: rect.left + 20,
+        clientY: rect.top + 10,
+        bubbles: true,
+        cancelable: true,
+      }),
+    );
+  }, foreign);
+  await expect.poll(markdownOf).toContain("Foreign table");
+  assert.equal((await markdownOf()).includes("44444444-4444-4444-8444-444444444444"), false);
+  await expect(tables(owner)).toHaveCount(2);
+  complete("An HTML drop of another Page's dataframe lands as its title");
 
   for (const page of [owner, viewer])
     assert.equal(await page.locator("[data-block-error]").count(), 0, "a block failed to draw");

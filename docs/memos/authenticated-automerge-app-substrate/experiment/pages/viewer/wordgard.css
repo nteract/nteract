@@ -104,7 +104,10 @@
 /* One rule for the editor's task text and the loading preview's, so the swap
    from preview to editor doesn't move task items. It has to outrank the
    general paragraph rule above. */
-.wordgard-document :is(wg-content, :where(.preview-content)) :is(.wordgard-task-content, li[data-task-checked] > div) > p {
+.wordgard-document
+  :is(wg-content, :where(.preview-content))
+  :is(.wordgard-task-content, li[data-task-checked] > div)
+  > p {
   margin: 0.15em 0;
 }
 .wordgard-task-control {
@@ -574,8 +577,16 @@
   font: inherit;
   font-size: 12px;
   letter-spacing: -2px;
-  cursor: grab;
+  cursor: pointer;
   opacity: 0.6;
+}
+/* Touch: a 44 px target, always visible. */
+@media (pointer: coarse) {
+  .wordgard-dataframe-select {
+    min-width: 44px;
+    min-height: 44px;
+    opacity: 1;
+  }
 }
 .wordgard-dataframe-table:hover .wordgard-dataframe-select,
 .wordgard-dataframe-select:focus-visible {
