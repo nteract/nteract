@@ -47,10 +47,16 @@
    by that much and wg-content pads it back, so text lines up with the title
    and a line-start caret, bold or italic, is drawn whole. Wordgard positions
    its cursor layer from wg-content's border box, which starts at the
-   scroller's edge, so the padding goes on wg-content, not the scroller. */
+   scroller's edge, so the padding goes on wg-content, not the scroller.
+   An ancestor that scrolls or clips sideways, such as the comment popover's
+   draft box (comments.css), must leave the same room or it clips the caret
+   and scrolls by the room. Agent presence marks measure the text column, not
+   wg-content's border box (WordgardEditor.jsx). */
+:root {
+  --wg-caret-room: 4px;
+}
 .wordgard-document > wg-scroller {
   overflow: clip visible;
-  --wg-caret-room: 4px;
   margin-inline: calc(-1 * var(--wg-caret-room));
 }
 .wordgard-document > wg-scroller > wg-content {

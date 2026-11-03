@@ -1463,18 +1463,15 @@ function App() {
                   </section>
                 ))}
                 {/* Blank space below the last block: a click there puts the
-                    caret in an empty paragraph at the end. It shows no text,
-                    so it can't be mistaken for the caret's line. Keyboards
-                    leave the last block with ArrowDown or Mod-Enter instead,
-                    so it stays out of the tab order. */}
+                    caret in an empty paragraph at the end. Its label shows
+                    only under keyboard focus, when the editor has no caret,
+                    so it can't be mistaken for the caret's line. It stays in
+                    the tab order for a last block that ArrowDown and
+                    Mod-Enter can't leave: read-only or not rich text. */}
                 {session.canWrite && (
-                  <button
-                    type="button"
-                    className="writing-continuation"
-                    aria-label="Continue writing"
-                    tabIndex={-1}
-                    onClick={continueWriting}
-                  />
+                  <button type="button" className="writing-continuation" onClick={continueWriting}>
+                    <span className="writing-continuation-label">Continue writing</span>
+                  </button>
                 )}
                 {ownsProject && placement.home && (
                   <ProjectPages

@@ -148,7 +148,9 @@ try {
       }),
     )
     .toBe("whole");
-  await expect(page.getByRole("button", { name: "Continue writing", exact: true })).toHaveText("");
+  // The continuation target's label shows only under keyboard focus.
+  const continuation = page.getByRole("button", { name: "Continue writing", exact: true });
+  await expect(continuation.locator(".writing-continuation-label")).toHaveCSS("opacity", "0");
   assert.ok(receiptCalls >= 2, "temporary receipt error retries");
   await page.unroute("**/api/saved?*");
   const plainId = new URL(plainUrl).pathname.split("/")[2];

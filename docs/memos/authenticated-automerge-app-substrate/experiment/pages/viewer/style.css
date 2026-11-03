@@ -839,20 +839,34 @@ details.document-actions > div button {
 .page-block {
   position: relative;
 }
-/* Blank click target below the last block (main.jsx). */
+/* Blank click target below the last block (main.jsx). Its label shows only
+   under keyboard focus. */
 .writing-continuation {
   display: block;
   width: 100%;
   min-height: 7rem;
   margin-top: 0.25rem;
-  padding: 0;
+  padding: 0.75rem 0 4rem;
   border: 0;
   border-radius: 0;
   background: transparent;
+  color: var(--muted-foreground);
+  font: inherit;
+  text-align: left;
   cursor: text;
 }
 .writing-continuation:hover:not(:disabled) {
   background: transparent;
+}
+.writing-continuation:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
+}
+.writing-continuation-label {
+  opacity: 0;
+}
+.writing-continuation:focus-visible .writing-continuation-label {
+  opacity: 1;
 }
 dialog {
   color: inherit;

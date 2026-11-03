@@ -208,6 +208,22 @@ try {
   await expect(popover).toBeVisible();
   await expect(inline).toBeFocused();
   await expectProseEntry(inline, "the comment composer");
+  // The draft box scrolls; the editor's caret room must neither scroll it
+  // sideways nor clip a line-start caret.
+  await expect
+    .poll(() =>
+      page.evaluate(() => {
+        const box = document.querySelector("#comment-popover .comment-rich-scroll");
+        const caret = box?.querySelector("wg-cursor.wg-cursor-v");
+        if (!caret || getComputedStyle(caret).display === "none") return "no caret";
+        if (box.scrollWidth > box.clientWidth)
+          return `scrolls ${box.scrollWidth - box.clientWidth}px`;
+        const c = caret.getBoundingClientRect(),
+          b = box.getBoundingClientRect();
+        return c.left >= b.left && c.right <= b.right ? "whole" : "clipped";
+      }),
+    )
+    .toBe("whole");
   await expect(panel).toBeHidden();
   await expect(page.locator(".comment-draft-passage")).toHaveText("discussion");
   const first = await firstFrame;

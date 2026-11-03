@@ -234,9 +234,14 @@
   min-height: 0;
   margin: 0 0 0.5rem;
 }
+/* overflow-y: auto makes the box scroll sideways too. It widens into the
+   rich editor's padding by the caret room (wordgard.css), so the editor's
+   wider scroller neither scrolls it nor loses a line-start caret. */
 .comment-popover .comment-rich-scroll {
   min-height: 56px;
   max-height: 40vh;
+  margin-inline: calc(-1 * var(--wg-caret-room));
+  padding-inline: var(--wg-caret-room);
   overflow-y: auto;
   overscroll-behavior: contain;
 }

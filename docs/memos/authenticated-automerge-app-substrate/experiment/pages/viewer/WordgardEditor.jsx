@@ -566,7 +566,16 @@ export function WordgardEditor(props) {
         caretFrame = null;
         if (!alive || !caretLayer.current) return;
         const origin = caretLayer.current.getBoundingClientRect();
-        const bounds = editor.contentDOM.getBoundingClientRect();
+        // The text column: wg-content's inline padding is caret room outside
+        // it (wordgard.css), and the reading bar and image dot sit on its edges.
+        const content = editor.contentDOM.getBoundingClientRect(),
+          padding = getComputedStyle(editor.contentDOM);
+        const bounds = {
+          top: content.top,
+          bottom: content.bottom,
+          left: content.left + parseFloat(padding.paddingLeft),
+          right: content.right - parseFloat(padding.paddingRight),
+        };
         const visibleTop = Math.max(0, bounds.top),
           visibleBottom = Math.min(innerHeight, bounds.bottom);
         // Glide positions are article-relative, so they hold across blocks and scrolling.
