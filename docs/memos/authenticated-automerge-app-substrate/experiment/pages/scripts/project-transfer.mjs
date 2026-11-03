@@ -1,20 +1,24 @@
-// Copy one Project (its Pages' titles, Markdown bodies and Page tree) from one
-// Pages target to another through the public MCP endpoint. Two steps with a
-// reviewable JSON bundle in between:
+// Copy one Project (its Pages' titles, Markdown bodies, dataframes and Page
+// tree) from one Pages target to another through the public MCP endpoint and
+// the asset routes. Two steps with a reviewable JSON bundle in between:
 //
 //   export: read the Project on the source and write a bundle.
 //   import: create the Project and its Pages on the target from the bundle.
 //
 // Nothing here runs inside the Worker, and comments, sharing and private image
-// bytes are not copied. See "Copying a Project to a new target" in
-// DEPLOYMENT.md for usage and credentials.
+// bytes are not copied. Dataframe bytes are, when the credential can use the
+// asset routes (an API key; a Pages OAuth token can't). See "Copying a Project
+// to a new target" in DEPLOYMENT.md for usage and credentials.
 import { open, readFile, rename } from "node:fs/promises";
 import { pathToFileURL } from "node:url";
 import { isProjectId } from "../shared/routes.mjs";
 import { exportMarkdown, parseMarkdown, unsupportedMarkdown } from "../model/richtext.mjs";
+import { DATASET_MAX_BYTES } from "../shared/dataset-assets.mjs";
 
 export const BUNDLE_FORMAT = "nteract-pages-project-bundle";
-export const BUNDLE_VERSION = 1;
+/** Version 2 adds dataframes and their asset bytes. Import reads 1 and 2. */
+export const BUNDLE_VERSION = 2;
+const BUNDLE_VERSIONS = new Set([1, 2]);
 export const STATE_FORMAT = "nteract-pages-project-import-state";
 export const STATE_VERSION = 1;
 export const DRIVER = "Pages project transfer";
@@ -24,6 +28,31 @@ const READ_BUDGET = 262144;
 const UUID = "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}";
 const PAGE_ID = new RegExp(`^${UUID}$`);
 const ASSET_PATH = new RegExp(`/api/pages/${UUID}/assets/[a-f0-9]{64}`, "g");
+const ASSET_ID = /^[a-f0-9]{64}$/;
+/** A dataframe's read-back line: `[Dataframe: <title>](<src>)` alone on a
+ * line. The title is escaped Markdown; the node's own title comes from the
+ * outline. */
+const DATAFRAME_LINE = new RegExp(
+  `^\\[Dataframe(?:: .*)?\\]\\((/api/pages/${UUID}/assets/([a-f0-9]{64}))\\)$`,
+);
+/** One asset's path: the only shape the client sends its credential to. */
+const ASSET_SRC = new RegExp(`^/api/pages/${UUID}/assets/([a-f0-9]{64})$`);
+/** A dataframe's src, when it is a same-origin asset path naming `assetId`. */
+const assetSrc = (src, assetId) => typeof src === "string" && ASSET_SRC.exec(src)?.[1] === assetId;
+/** Asset paths in dataframe-labelled links: dataframes, read back, whether or
+ * not the outline lists them (one in a quote or list isn't top level). */
+const DATAFRAME_LINKS = new RegExp(
+  `\\[Dataframe(?:: [^\\n]*)?\\]\\((/api/pages/${UUID}/assets/[a-f0-9]{64})\\)`,
+  "g",
+);
+/** The most asset bytes one bundle carries. Base64 grows them by a third, and
+ * the bundle is one JSON string, which V8 caps near 512 MiB. */
+export const MAX_BUNDLE_ASSET_BYTES = 256 * 1024 * 1024;
+/** Whether a block's Markdown holds a dataframe's read-back line anywhere:
+ * the server refuses a Markdown rewrite of such a block that drops it. */
+const HOLDS_DATAFRAME = new RegExp(
+  `\\[Dataframe(?:: [^\\n]*)?\\]\\(/api/pages/${UUID}/assets/[a-f0-9]{64}\\)`,
+);
 // Tool errors that say "try the same request again later". Anything else with
 // a body is a definite answer from the server.
 const RETRY_LATER = new Set([
@@ -148,7 +177,101 @@ export function pagesClient({
       uncertain,
     });
   }
-  return { origin: base, call };
+  /** An asset request on this target; refusals of the credential get their
+   * own code, since only API keys can use the asset routes. */
+  async function assetRequest(path, init, what) {
+    let response;
+    try {
+      response = await fetchImpl(`${base}${path}`, {
+        ...init,
+        headers: {
+          Authorization: `Bearer ${token.trim()}`,
+          "X-Pages-Driver": DRIVER,
+          ...init.headers,
+        },
+        signal: AbortSignal.timeout(timeoutMs),
+      });
+    } catch (error) {
+      throw new TransferError(`${what} on ${base}: no response (${error?.name ?? "error"})`, {
+        uncertain: true,
+      });
+    }
+    if (response.ok) return response;
+    // The server's reason, without echoing anything else from the response.
+    let reason = "";
+    try {
+      const body = await response.json();
+      if (typeof body?.error === "string") reason = `: ${body.error.slice(0, 300)}`;
+    } catch {}
+    throw new TransferError(`${what} on ${base}: HTTP ${response.status}${reason}`, {
+      code: response.status === 401 || response.status === 403 ? "unauthorized" : undefined,
+      uncertain: response.status >= 500 || response.status === 429,
+    });
+  }
+  /** The bytes at a same-origin asset path. Anything else is refused before
+   * the request, so the credential never goes to another origin. */
+  async function download(path) {
+    if (typeof path !== "string" || !ASSET_SRC.test(path))
+      throw new TransferError(`Not an asset path: ${String(path).slice(0, 200)}`);
+    const response = await assetRequest(path, { method: "GET", headers: {} }, `GET ${path}`);
+    return new Uint8Array(await response.arrayBuffer());
+  }
+  /** Store `bytes` on Page `pageId`. The asset routes address content by its
+   * SHA-256, so storing the same bytes again is a no-op that returns the same
+   * asset_id. */
+  async function upload(pageId, bytes, mediaType) {
+    if (!PAGE_ID.test(pageId)) throw new TransferError(`Not a Page ID: ${pageId}`);
+    const response = await assetRequest(
+      `/api/pages/${pageId}/assets`,
+      { method: "POST", headers: { "Content-Type": mediaType }, body: bytes },
+      `Upload to Page ${pageId}`,
+    );
+    return response.json();
+  }
+  // The server limits a Pages OAuth token (pages_…) to /mcp, by path, before
+  // any Page lookup (worker/auth.mjs authenticate). Only other credentials,
+  // such as an Anaconda API key, can use the asset routes.
+  const assets = !token.trim().startsWith("pages_");
+  /** Whether this target's edit_page takes insert_node, from its tool list.
+   * The asset routes shipped with it, so a target without it can't hold a
+   * dataframe. */
+  async function insertsNodes() {
+    let response;
+    try {
+      response = await fetchImpl(`${base}/mcp`, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${token.trim()}`,
+          "Content-Type": "application/json",
+          Accept: "application/json, text/event-stream",
+          "X-Pages-Driver": DRIVER,
+        },
+        body: JSON.stringify({ jsonrpc: "2.0", id: ++sequence, method: "tools/list" }),
+        signal: AbortSignal.timeout(timeoutMs),
+      });
+    } catch (error) {
+      throw new TransferError(`tools/list on ${base}: no response (${error?.name ?? "error"})`, {
+        uncertain: true,
+      });
+    }
+    if (!response.ok)
+      throw new TransferError(`tools/list on ${base}: HTTP ${response.status}`, {
+        uncertain: response.status >= 500 || response.status === 429,
+      });
+    const tools = (await response.json().catch(() => null))?.result?.tools;
+    if (!Array.isArray(tools))
+      throw new TransferError(`tools/list on ${base}: unreadable response`);
+    const editPage = tools.find((tool) => tool?.name === "edit_page");
+    const variants = editPage?.inputSchema?.properties?.operations?.items?.oneOf ?? [];
+    return variants.some((variant) => variant?.properties?.op?.const === "insert_node");
+  }
+  return { origin: base, assets, call, download, upload, insertsNodes };
+}
+
+/** The lowercase hex SHA-256 of `bytes`: an asset's id. */
+async function sha256(bytes) {
+  const digest = await crypto.subtle.digest("SHA-256", bytes);
+  return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
 /** Retry an uncertain failure with the identical request; anything else throws. */
@@ -288,6 +411,21 @@ export async function readWholePage(client, pageId, options) {
         kind: block.kind,
       })),
       types: entries.map((entry) => entry.type),
+      // Dataframes on this Page, from the outline's typed fields. One naming
+      // another Page's asset reads as readable:false, with no attrs.
+      dataframes: entries
+        .filter(
+          (entry) =>
+            entry.type === "dataframe" &&
+            ASSET_ID.test(entry.attrs?.asset_id ?? "") &&
+            assetSrc(entry.attrs.src, entry.attrs.asset_id),
+        )
+        .map(({ attrs }) => ({
+          asset_id: attrs.asset_id,
+          src: attrs.src,
+          media_type: attrs.media_type,
+          ...(typeof attrs.title === "string" && { title: attrs.title }),
+        })),
       comment_threads: Array.isArray(comments) ? comments.length : 0,
     };
   }
@@ -305,6 +443,12 @@ const PRESERVED_TYPES = new Set(["pages-opaque", "raw"]);
 function bundlePage(row, parentSourceId, read, homePageId) {
   const blocks = read.blocks.length ? read.blocks.map((block) => block.markdown) : [""];
   const markdown = blocks.join("\n\n");
+  const dataframes = read.dataframes ?? [];
+  const dataframeSources = new Set(dataframes.map((frame) => frame.src));
+  // Dataframe lines the outline didn't list (inside a quote or list): they
+  // import as links, and are reported with the dataframes not copied.
+  const linked = new Set([...markdown.matchAll(DATAFRAME_LINKS)].map((match) => match[1]));
+  const unlisted = [...linked].filter((path) => !dataframeSources.has(path));
   return {
     source_page_id: row.page_id,
     parent_source_id: parentSourceId,
@@ -318,9 +462,59 @@ function bundlePage(row, parentSourceId, read, homePageId) {
     preserved_markdown:
       read.types.some((type) => PRESERVED_TYPES.has(type)) ||
       read.blocks.some((block) => block.kind && block.kind !== "markdown"),
-    private_images: [...new Set(markdown.match(ASSET_PATH) ?? [])],
+    private_images: [...new Set(markdown.match(ASSET_PATH) ?? [])].filter(
+      (path) => !dataframeSources.has(path) && !linked.has(path),
+    ),
+    ...(dataframes.length && { dataframes }),
+    ...(unlisted.length && { unlisted_dataframes: unlisted }),
     comment_threads: read.comment_threads,
   };
+}
+
+/** Each distinct dataframe asset in `pages`, downloaded and checked against
+ * its id. A Pages OAuth token can't use the asset routes, so with one
+ * `assets` stays empty, a warning says why, and those dataframes stay as
+ * links. Any other refusal fails the export. */
+async function exportAssets(client, pages, { log, ...options }) {
+  const wanted = new Map();
+  for (const page of pages)
+    for (const frame of page.dataframes ?? [])
+      if (!wanted.has(frame.asset_id)) wanted.set(frame.asset_id, frame);
+  const assets = {};
+  const warnings = [];
+  if (wanted.size && !client.assets) {
+    warnings.push(
+      `A Pages OAuth token can't read assets, so ${wanted.size} dataframe asset(s) were not exported; they import as links. Export with an Anaconda API key to copy them.`,
+    );
+    return { assets, warnings };
+  }
+  let total = 0;
+  for (const [assetId, frame] of wanted) {
+    let bytes;
+    try {
+      bytes = await withRetries(() => client.download(frame.src), options);
+    } catch (error) {
+      // The node names an asset its Page no longer stores: nothing to copy,
+      // and the dataframe imports as a link, reported with the rest.
+      if (!/: HTTP 404\b/.test(error.message)) throw error;
+      warnings.push(`${frame.src} is missing on the source; that dataframe imports as a link.`);
+      continue;
+    }
+    total += bytes.length;
+    if (total > MAX_BUNDLE_ASSET_BYTES)
+      throw new TransferError(
+        `The Project's dataframes are larger than one bundle carries (${MAX_BUNDLE_ASSET_BYTES} bytes)`,
+      );
+    if ((await sha256(bytes)) !== assetId)
+      throw new TransferError(`The bytes at ${frame.src} don't match asset ${assetId}`);
+    assets[assetId] = {
+      media_type: frame.media_type,
+      size: bytes.length,
+      data: Buffer.from(bytes).toString("base64"),
+    };
+    log(`downloaded dataframe ${frame.title ?? assetId} (${bytes.length} bytes)`);
+  }
+  return { assets, warnings };
 }
 
 export async function exportProject(
@@ -340,6 +534,8 @@ export async function exportProject(
     pages.push(bundlePage(row, parent_source_id, read, project.home_page_id));
     log(`read ${index + 1}/${ordered.length} ${read.title ?? row.title}`);
   }
+  const exported = await exportAssets(client, pages, { log, ...options });
+  warnings.push(...exported.warnings);
   const bundle = {
     format: BUNDLE_FORMAT,
     version: BUNDLE_VERSION,
@@ -352,6 +548,7 @@ export async function exportProject(
     exported_at: new Date(now()).toISOString(),
     project: { title: project.title, description: project.description ?? "" },
     pages,
+    assets: exported.assets,
   };
   return { bundle, report: bundleReport(bundle, warnings) };
 }
@@ -375,12 +572,31 @@ export function bundleReport(bundle, warnings = []) {
     private_images: bundle.pages
       .filter((page) => page.private_images.length)
       .map((page) => ({ ...pageRef(page), assets: page.private_images })),
+    ...dataframeReport(bundle),
     comment_threads: bundle.pages.reduce((sum, page) => sum + page.comment_threads, 0),
     unresolved_links: unresolved,
     warnings,
   };
 }
 const pageRef = (page) => ({ title: page.title, source_page_id: page.source_page_id });
+/** Dataframes the bundle carries bytes for, and ones it doesn't (they import
+ * as links to the source's asset). */
+function dataframeReport(bundle) {
+  const held = (frame) => Object.hasOwn(bundle.assets ?? {}, frame.asset_id);
+  const missing = (page) => [
+    ...(page.dataframes ?? []).filter((frame) => !held(frame)).map((frame) => frame.src),
+    ...(page.unlisted_dataframes ?? []),
+  ];
+  return {
+    dataframes: bundle.pages.reduce(
+      (sum, page) => sum + (page.dataframes ?? []).filter(held).length,
+      0,
+    ),
+    dataframes_not_copied: bundle.pages
+      .filter((page) => missing(page).length)
+      .map((page) => ({ ...pageRef(page), assets: missing(page) })),
+  };
+}
 
 // ---------------------------------------------------------------------------
 // Bundle checks, placement and links
@@ -390,7 +606,16 @@ export function validateBundle(bundle) {
     throw new TransferError(`Invalid bundle: ${message}`);
   };
   if (bundle?.format !== BUNDLE_FORMAT) fail(`format must be ${BUNDLE_FORMAT}`);
-  if (bundle.version !== BUNDLE_VERSION) fail(`unsupported version ${bundle.version}`);
+  if (!BUNDLE_VERSIONS.has(bundle.version)) fail(`unsupported version ${bundle.version}`);
+  if (bundle.assets !== undefined) {
+    if (!bundle.assets || typeof bundle.assets !== "object" || Array.isArray(bundle.assets))
+      fail("assets must be an object keyed by asset_id");
+    for (const [assetId, asset] of Object.entries(bundle.assets)) {
+      if (!ASSET_ID.test(assetId)) fail(`assets: ${assetId} is not an asset_id`);
+      if (typeof asset?.media_type !== "string" || typeof asset.data !== "string")
+        fail(`assets.${assetId} needs media_type and base64 data`);
+    }
+  }
   if (typeof bundle.bundle_id !== "string" || !/^[A-Za-z0-9-]{8,64}$/.test(bundle.bundle_id))
     fail("bundle_id must be 8–64 letters, digits or hyphens");
   checkOrigin(bundle.source?.origin);
@@ -413,6 +638,30 @@ export function validateBundle(bundle) {
       fail(`${at}.parent_source_id must name an earlier Page (parents come before children)`);
     if (typeof page.title !== "string") fail(`${at}.title must be a string`);
     if (typeof page.markdown !== "string") fail(`${at}.markdown must be a string`);
+    if (
+      page.unlisted_dataframes !== undefined &&
+      (!Array.isArray(page.unlisted_dataframes) ||
+        page.unlisted_dataframes.some((path) => typeof path !== "string" || !ASSET_SRC.test(path)))
+    )
+      fail(`${at}.unlisted_dataframes must be asset paths`);
+    if (page.dataframes !== undefined) {
+      if (!Array.isArray(page.dataframes)) fail(`${at}.dataframes must be an array`);
+      for (const frame of page.dataframes)
+        if (
+          !ASSET_ID.test(frame?.asset_id ?? "") ||
+          !assetSrc(frame.src, frame.asset_id) ||
+          typeof frame.media_type !== "string" ||
+          (frame.title !== undefined && typeof frame.title !== "string")
+        )
+          fail(
+            `${at}.dataframes entries need asset_id, a src naming it (/api/pages/<id>/assets/<asset_id>), media_type and an optional title`,
+          );
+        else if (
+          Object.hasOwn(bundle.assets ?? {}, frame.asset_id) &&
+          bundle.assets[frame.asset_id].media_type !== frame.media_type
+        )
+          fail(`${at}: dataframe ${frame.asset_id} and its asset disagree on media_type`);
+    }
     if (page.blocks !== undefined) {
       if (
         !Array.isArray(page.blocks) ||
@@ -436,6 +685,106 @@ export function validateBundle(bundle) {
 const importable = (markdown) =>
   unsupportedMarkdown(markdown) ? exportMarkdown(parseMarkdown(markdown)) : markdown;
 const pageBlocks = (page) => (page.blocks ?? [page.markdown]).map(importable);
+
+/**
+ * A Page body as the units the target writes: `{ markdown }` for a stretch of
+ * Markdown and `{ dataframe }` for a dataframe the bundle has bytes for. A
+ * dataframe's read-back line becomes a unit only on a line of its own,
+ * between blank lines and outside a code fence; anywhere else (in a quote or
+ * list, say) it stays Markdown, and so a link.
+ *
+ * Each dataframe unit becomes its own block on the target, so a dataframe
+ * that sat inside a block splits it there.
+ */
+export function bodyUnits(blocks, page, assets = {}) {
+  // Frames by src, in outline order. Two dataframes can show one asset under
+  // different titles; each standalone line takes the next one.
+  const frames = new Map();
+  for (const frame of page.dataframes ?? [])
+    if (Object.hasOwn(assets, frame.asset_id))
+      frames.set(frame.src, [...(frames.get(frame.src) ?? []), frame]);
+  const taken = new Map();
+  const next = (src) => {
+    const queue = frames.get(src);
+    if (!queue) return undefined;
+    const index = taken.get(src) ?? 0;
+    taken.set(src, index + 1);
+    // More lines than the outline listed: reuse the last one's attrs.
+    return queue[Math.min(index, queue.length - 1)];
+  };
+  const units = [];
+  for (const markdown of blocks) {
+    const lines = markdown.split("\n");
+    let chunk = [];
+    let fence = null;
+    const flush = () => {
+      const text = chunk.join("\n").replace(/^\n+|\n+$/g, "");
+      if (text) units.push({ markdown: text });
+      chunk = [];
+    };
+    for (const [index, line] of lines.entries()) {
+      const marker = /^ {0,3}(`{3,}|~{3,})/.exec(line)?.[1];
+      if (marker && (fence === null || (marker[0] === fence[0] && marker.length >= fence.length)))
+        fence = fence === null ? marker : null;
+      const src = fence === null ? DATAFRAME_LINE.exec(line)?.[1] : undefined;
+      const alone = !lines[index - 1]?.trim() && !lines[index + 1]?.trim();
+      const frame = src && alone ? next(src) : undefined;
+      if (frame) {
+        flush();
+        units.push({ dataframe: frame });
+      } else chunk.push(line);
+    }
+    flush();
+  }
+  return units.length ? units : [{ markdown: "" }];
+}
+
+/** The edit_page operations that make a Page with `blocks` hold `units`, in
+ * order. The first existing block with no dataframe takes the first Markdown
+ * unit; units before it are put first; every other block is deleted; the
+ * rest append. A block holding a dataframe is never rewritten (the server
+ * refuses to drop one), so a rerun over a body an earlier run wrote,
+ * dataframes first, converges instead of being refused. */
+export function bodyOperations(blocks, units) {
+  const write = (unit, after) =>
+    unit.dataframe
+      ? {
+          op: "insert_node",
+          node: {
+            type: "dataframe",
+            attrs: {
+              asset_id: unit.dataframe.asset_id,
+              media_type: unit.dataframe.media_type,
+              ...(unit.dataframe.title !== undefined && { title: unit.dataframe.title }),
+            },
+          },
+          ...(after !== undefined && { after_block_id: after }),
+        }
+      : {
+          op: "insert_markdown",
+          markdown: unit.markdown,
+          ...(after !== undefined && { after_block_id: after }),
+        };
+  const first = units.findIndex((unit) => unit.markdown !== undefined);
+  const target = blocks.find((block) => !HOLDS_DATAFRAME.test(block.markdown ?? ""));
+  const operations = [];
+  if (first === -1 || !target) {
+    for (const unit of units) operations.push(write(unit));
+    for (const block of blocks) operations.push({ op: "delete_block", block_id: block.id });
+    return operations;
+  }
+  // Each goes first, so the leading units go in reverse.
+  for (const unit of units.slice(0, first).reverse()) operations.push(write(unit, null));
+  operations.push({
+    op: "replace_block_markdown",
+    block_id: target.id,
+    markdown: units[first].markdown,
+  });
+  for (const block of blocks)
+    if (block !== target) operations.push({ op: "delete_block", block_id: block.id });
+  for (const unit of units.slice(first + 1)) operations.push(write(unit));
+  return operations;
+}
 
 /**
  * Where a source Page goes on the target. On Page10 a Project is its home Page
@@ -809,7 +1158,30 @@ export async function importBundle(
   if (state.target_origin !== client.origin)
     throw new TransferError(`The state file belongs to ${state.target_origin}`);
   const save = () => store.save(state);
-  const counts = { created: 0, edits: 0, links_rewritten: 0 };
+  const counts = { created: 0, edits: 0, links_rewritten: 0, dataframes: 0 };
+  const assets = bundle.assets ?? {};
+  // Each asset's bytes, checked against its id once, before any write.
+  const bytes = new Map();
+  for (const [assetId, asset] of Object.entries(assets)) {
+    const decoded = new Uint8Array(Buffer.from(asset.data, "base64"));
+    if (decoded.length > DATASET_MAX_BYTES)
+      throw new TransferError(`Asset ${assetId} is larger than the asset routes accept`);
+    if ((await sha256(decoded)) !== assetId)
+      throw new TransferError(`Invalid bundle: the data for asset ${assetId} doesn't match its id`);
+    bytes.set(assetId, decoded);
+  }
+  if (bytes.size && !client.assets)
+    throw new TransferError(
+      "This bundle carries dataframe bytes, and a Pages OAuth token can't store assets. Import with an Anaconda API key, or delete the bundle's assets to import those dataframes as links.",
+      { code: "assets_unauthorized" },
+    );
+  // An older target has no insert_node (or asset routes): find out before the
+  // first write, not after the Project and its Pages exist.
+  if (bytes.size && !(await withRetries(() => client.insertsNodes(), options)))
+    throw new TransferError(
+      `${client.origin} doesn't take dataframes (its edit_page has no insert_node). Import into a current target, or delete the bundle's assets to import those dataframes as links.`,
+      { code: "dataframes_unsupported" },
+    );
   const warnings = [];
 
   // One request at a time. Its exact arguments are saved before sending, so a
@@ -997,14 +1369,31 @@ export async function importBundle(
       for (const url of urls)
         unresolved.push({ title: page.title, source_page_id: page.source_page_id, url });
     if (state.bodies[page.source_page_id] === "done") continue;
-    const desired = rewrites.map((rewrite) => rewrite.markdown);
+    const units = bodyUnits(
+      rewrites.map((rewrite) => rewrite.markdown),
+      page,
+      assets,
+    );
+    const frames = units.filter((unit) => unit.dataframe);
     const rewritten = rewrites.reduce((sum, rewrite) => sum + rewrite.rewritten, 0);
-    if (!page.home && blocks.length === 1 && rewritten === 0) {
+    if (!page.home && blocks.length === 1 && rewritten === 0 && !frames.length) {
       state.bodies[page.source_page_id] = "done";
       await save();
       continue;
     }
-    await writeBody(page, state.pages[page.source_page_id], desired);
+    const targetId = state.pages[page.source_page_id];
+    // Store each dataframe's bytes on the target Page before the body names
+    // them. A rerun stores them again, which changes nothing.
+    for (const assetId of new Set(frames.map((unit) => unit.dataframe.asset_id))) {
+      const stored = await withRetries(
+        () => client.upload(targetId, bytes.get(assetId), assets[assetId].media_type),
+        options,
+      );
+      if (stored.asset_id !== assetId)
+        throw new TransferError(`The target stored asset ${assetId} as ${stored.asset_id}`);
+    }
+    await writeBody(page, targetId, units);
+    counts.dataframes += frames.length;
     counts.links_rewritten += rewritten;
     state.bodies[page.source_page_id] = "done";
     await save();
@@ -1021,20 +1410,15 @@ export async function importBundle(
     }
   }
 
-  // Make the target Page hold exactly `desired`: the first block replaced, any
-  // others deleted, the rest appended in order. Batches past EDIT_BATCH read
-  // again for fresh heads; deletes come before appends, so order holds.
-  async function writeBody(page, pageId, desired) {
+  // Make the target Page hold exactly `units` (bodyOperations). Batches past
+  // EDIT_BATCH read again for fresh heads; deletes come before appends, so
+  // order holds.
+  async function writeBody(page, pageId, units) {
     let read = await readForEdit(pageId);
     const operations = [];
     if (page.home && read.title !== page.title)
       operations.push({ op: "set_title", title: page.title });
-    const [first, ...rest] = read.blocks ?? [];
-    if (first)
-      operations.push({ op: "replace_block_markdown", block_id: first.id, markdown: desired[0] });
-    for (const block of rest) operations.push({ op: "delete_block", block_id: block.id });
-    for (const markdown of first ? desired.slice(1) : desired)
-      operations.push({ op: "insert_markdown", markdown });
+    operations.push(...bodyOperations(read.blocks ?? [], units));
     for (let batch = 0; batch * EDIT_BATCH < operations.length; batch++) {
       if (batch > 0) read = await readForEdit(pageId);
       const args = {
@@ -1064,6 +1448,7 @@ export async function importBundle(
     private_images: bundle.pages
       .filter((page) => page.private_images?.length)
       .map((page) => ({ ...pageRef(page), assets: page.private_images })),
+    dataframes_not_copied: dataframeReport(bundle).dataframes_not_copied,
     comment_threads_not_migrated: bundle.pages.reduce(
       (sum, page) => sum + (page.comment_threads ?? 0),
       0,
@@ -1201,6 +1586,11 @@ function printReport(lines, report) {
     for (const page of report.private_images)
       console.log(`  ${page.title}: ${page.assets.length} image(s)`);
   }
+  if (report.dataframes_not_copied?.length) {
+    console.log("Dataframes not copied (they import as links to source assets):");
+    for (const page of report.dataframes_not_copied)
+      console.log(`  ${page.title}: ${page.assets.length} dataframe(s)`);
+  }
   for (const warning of report.warnings ?? []) console.log(`Warning: ${warning}`);
 }
 
@@ -1217,7 +1607,7 @@ export async function main(argv, env = process.env) {
     await writeAtomic(flags.out, JSON.stringify(bundle, null, 2) + "\n", 0o644);
     printReport(
       [
-        `Exported "${bundle.project.title}": ${report.pages} Pages to ${flags.out}`,
+        `Exported "${bundle.project.title}": ${report.pages} Pages and ${report.dataframes} dataframe(s) to ${flags.out}`,
         `Bundle ${bundle.bundle_id} from ${bundle.source.origin} at ${bundle.exported_at}`,
         `Comments are not exported (${report.comment_threads} thread(s) stay on the source).`,
       ],
@@ -1268,7 +1658,7 @@ export async function main(argv, env = process.env) {
       [
         `Imported "${bundle.project.title}" into ${report.url}`,
         `Home Page: ${report.home_page_url}`,
-        `${report.pages} Pages: ${report.created} created this run, ${report.edits} edit(s), ${report.links_rewritten} link(s) rewritten`,
+        `${report.pages} Pages: ${report.created} created this run, ${report.edits} edit(s), ${report.links_rewritten} link(s) rewritten, ${report.dataframes} dataframe(s) written`,
         `Comments are not migrated (${report.comment_threads_not_migrated} thread(s) stay on the source).`,
         report.verification.ok
           ? "Verified: every Page is listed under its expected parent, in source order."

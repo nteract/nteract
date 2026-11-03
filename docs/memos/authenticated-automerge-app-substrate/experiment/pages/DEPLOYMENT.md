@@ -884,9 +884,10 @@ Page10 release.
 
 Deployment never copies data. When a new target needs a Project from an older
 one, [project-transfer.mjs](scripts/project-transfer.mjs) copies it through the
-public `/mcp` endpoint of each target, from outside the Worker. It copies each
-Page's title and Markdown body, the Page tree and sibling order. It does not
-copy comments, sharing, Trash, history or private image bytes.
+public `/mcp` endpoint and asset routes of each target, from outside the
+Worker. It copies each Page's title and Markdown body, its dataframes with their
+bytes, the Page tree and sibling order. It does not copy comments, sharing,
+Trash, history or private image bytes.
 
 ### Credentials
 
@@ -906,7 +907,11 @@ Channels no access. Save it with the `/connect` instructions, which write
 `~/.config/pages/anaconda-api-key`, and point `*_FILE` at that file so the key
 stays out of shell history. A Pages OAuth access token (`pages_…`) also works on
 `/mcp`, but it expires after ten minutes and the script does not refresh it, so
-use an API key for anything that runs unattended. Only the source Project's owner can
+use an API key for anything that runs unattended. Only an API key can use the
+asset routes. Export with an OAuth token skips dataframe bytes, says so, and
+those dataframes import as links. Import with an OAuth token refuses a bundle
+that carries bytes before it writes anything; use an API key, or delete the
+bundle's `assets` to import those dataframes as links. Only the source Project's owner can
 list it. The target Project belongs to the account that imports it.
 
 ### Export
@@ -924,7 +929,7 @@ The bundle is JSON for review before import:
 ```json
 {
   "format": "nteract-pages-project-bundle",
-  "version": 1,
+  "version": 2,
   "bundle_id": "<uuid>",
   "source": { "origin": "https://page9.runtimed.run", "project_id": "prj_…", "home_page_id": "…" },
   "exported_at": "2026-11-01T00:00:00.000Z",
@@ -940,9 +945,11 @@ The bundle is JSON for review before import:
       "blocks": ["…", "…"],
       "preserved_markdown": false,
       "private_images": [],
+      "dataframes": [{ "asset_id": "<sha256>", "src": "/api/pages/…/assets/<sha256>", "media_type": "application/vnd.apache.parquet", "title": "…" }],
       "comment_threads": 0
     }
-  ]
+  ],
+  "assets": { "<sha256>": { "media_type": "application/vnd.apache.parquet", "size": 1234, "data": "<base64>" } }
 }
 ```
 
@@ -955,12 +962,28 @@ so import writes such a block as the literal text it reads as, the same text
 the target's own conversion of a preserved block produces. If you edit a Page's
 `markdown`, edit `blocks` to match or delete it; import refuses a mismatch.
 
+`dataframes` lists a Page's dataframes from its outline, and `assets` holds each
+one's bytes once, checked against its SHA-256 `asset_id` on export and again on
+import. Import stores the bytes on the target Page (the same content gets the
+same `asset_id`), then writes each dataframe whose read-back line stands alone
+as its own block with `insert_node`. A dataframe inside a block splits that
+block there; one inside a quote or list stays a link. Import never rewrites a
+block holding a dataframe, so rerunning over a body an earlier run wrote
+converges. Before its first write, import asks the target's tool list for
+`insert_node` and refuses a target without it. The client sends its credential
+only to `/api/pages/<id>/assets/<sha256>` paths on the target's own origin; a
+dataframe whose `src` isn't one is skipped. A dataframe whose asset is missing on
+the source, or one inside a quote or list, imports as a link and is reported in
+`dataframes_not_copied`. A bundle carries at most 256 MiB of asset bytes; export
+stops with a message past that. Import reads version 1 bundles, which have no dataframes.
+
 The report lists Pages with `preserved_markdown` (the source stored preserved
 blocks or non-Markdown blocks; check that they read as intended),
 Pages with `private_images` (their
 `/api/pages/<id>/assets/<sha256>` references point at the source Page's assets
-and will not load on the target), comment threads that stay behind, and links to
-source Pages outside the Project.
+and will not load on the target), `dataframes_not_copied` (dataframes the bundle
+has no bytes for), comment threads that stay behind, and links to source Pages
+outside the Project.
 
 ### Import
 
