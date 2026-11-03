@@ -37,7 +37,7 @@ for (const fault of ["metadata", "flush", "final-sync"]) {
     storage.fault = fault;
     let doc;
     let flushes = 0;
-    const handle = { doc: () => doc };
+    const handle = { doc: () => doc, on() {}, off() {} };
     const page = Object.assign(Object.create(Page.prototype), {
       ready: Promise.resolve(),
       env: auth.env,
