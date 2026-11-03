@@ -763,6 +763,26 @@ test("set_node takes {type, attrs} with the names read_page reports", () => {
   );
 });
 
+test("a retype drops only the old type's own attrs and keeps a newer build's", () => {
+  const { doc: plain, id } = fixture("Intro words\n\nSecond words");
+  // A newer build's attr on the second paragraph's marker.
+  const extra = A.change(A.clone(plain), (draft) => {
+    const spans = A.spans(draft, textPath(id)).map((span) =>
+      span.type === "block" ? { ...span, value: { ...span.value, attrs: { anchor: "a1" } } } : span,
+    );
+    A.updateSpans(draft, textPath(id), spans);
+  });
+  assert.deepEqual(markers(extra, id), [["paragraph", { anchor: "a1" }]]);
+  const heading = apply(extra, [
+    { op: "set_node", block_id: id, match_text: "Second", type: "heading", attrs: { level: 2 } },
+  ]).after;
+  assert.deepEqual(markers(heading, id), [["heading", { anchor: "a1", level: 2 }]]);
+  const back = apply(heading, [
+    { op: "set_node", block_id: id, match_text: "Second", type: "paragraph" },
+  ]).after;
+  assert.deepEqual(markers(back, id), [["paragraph", { anchor: "a1" }]]);
+});
+
 test("the flat set_node fields and {type, attrs} write the same marker", () => {
   const { doc: plain, id } = fixture(
     "Intro words\n\n- [ ] task\n\n```\ngraph TD\n```\n\n| a | b |\n| --- | --- |\n| 1 | 2 |",
