@@ -5,7 +5,7 @@ import { createAuthFixture } from "../../auth-fixtures.mjs";
 import { sqliteD1 } from "../test/sqlite-d1.mjs";
 import { Catalog, Page } from "./index.mjs";
 import { DocumentPolicy } from "./policy.mjs";
-import { catalogTitle } from "./catalog.mjs";
+import { catalogTitle, projectLifecycle } from "./catalog.mjs";
 import {
   CATALOG_MIGRATIONS,
   CURSOR_MAX_LENGTH,
@@ -965,6 +965,17 @@ test("a restarted Page host with an unchanged title moves no updated_at and reor
         await f.settle();
         assert.deepEqual(await times(), before, legacy ? "without a record" : "with a record");
         assert.deepEqual(await listed(), [82, 81].map(id));
+        if (!index) continue;
+        // The member's next reconcile pass checks the Page with its host,
+        // which reports the restart's observation time: rows keep theirs.
+        await memberStorage.put("host/index/dirty", `restart-${legacy}`);
+        for (let request = 0; request < 6; request++) {
+          await f.list(member);
+          if ((await memberStorage.get("host/index/dirty")) === undefined) break;
+        }
+        assert.equal(await memberStorage.get("host/index/dirty"), undefined);
+        assert.deepEqual(await times(), before, "after the member's reconcile pass");
+        assert.deepEqual(await listed(member), [81].map(id));
       }
 
       // A real title change still moves it.
@@ -985,26 +996,166 @@ test("a restarted Page host with an unchanged title moves no updated_at and reor
   }
 });
 
-test("a restore and an ACL commit observe an unchanged title anew", async (t) => {
-  const f = await catalogFixture(t);
-  const page = f.addPage(id(83), "Plan", { revision: 1, members: {} });
-  page.cacheTitle();
-  await f.settle();
-  const updated = () =>
-    f.db.rows("SELECT updated_at FROM pages_catalog_access WHERE page_id = ?", id(83))[0]
-      .updated_at;
-  const first = updated();
-  await new Promise((resolve) => setTimeout(resolve, 5));
-  await page.installAccess({
-    ...page.metadata,
-    acl: { revision: 2, members: { [member]: { role: "viewer", generation: 2 } } },
-  });
-  await f.settle();
-  assert.ok(updated() > first, "an ACL commit observes the title now, as it always has");
-  assert.equal(
-    (await page.ctx.storage.get("host/title-projection")).observed_at,
-    page.titleObservedAt,
-  );
+test("a member's reconcile pass keeps a row's time only for an unchanged title its host lets writers keep", async (t) => {
+  const { db, env } = await seededIndex(t);
+  const acl = { revision: 1, members: { [member]: { role: "viewer", generation: 1 } } };
+  const cases = [
+    { title: "Plan", keep: true, moves: false, label: "an unchanged title, keep_time" },
+    { title: "Renamed", keep: true, moves: true, label: "a changed title" },
+    { title: "Plan", keep: false, moves: true, label: "an observation without keep_time" },
+  ];
+  for (const [index, { title, keep, moves, label }] of cases.entries()) {
+    const pageId = id(90 + index);
+    await reportPageIndex(env, testCtx, {
+      metadata: { pageId, owner, deleted: false, acl },
+      title: "Plan",
+      observedAt: at(1),
+    });
+    const storage = new Storage();
+    await storage.put(`shared/${pageId}`, {
+      page_id: pageId,
+      title: "Plan",
+      created_at: at(1),
+      updated_at: at(1),
+      shared: true,
+    });
+    assert.equal(
+      await reconcileAccountIndex({
+        db,
+        storage,
+        principal: member,
+        epoch: "1",
+        verify: async () => ({
+          status: "ok",
+          page: {
+            page_id: pageId,
+            title,
+            owner,
+            role: "viewer",
+            source: "member",
+            revision: 1,
+            lifecycle_revision: 0,
+            state: "active",
+            title_observed_at: at(5),
+            ...(keep && { title_keep_time: true }),
+          },
+        }),
+      }),
+      true,
+    );
+    const [row] = db.rows(
+      `SELECT a.updated_at AS access, a.title, p.updated_at AS page
+      FROM pages_catalog_access a JOIN pages_catalog_pages p USING (page_id)
+      WHERE a.page_id = ? AND a.principal = ?`,
+      pageId,
+      member,
+    );
+    const expected = moves ? at(5) : at(1);
+    assert.deepEqual(row, { access: expected, title, page: expected }, label);
+    await db.prepare("DELETE FROM pages_catalog_accounts").run();
+  }
+});
+
+test("an ACL commit and a restore move updated_at, including through a retried projection or a repaired report", async (t) => {
+  const later = () => new Promise((resolve) => setTimeout(resolve, 5));
+  for (const operation of ["acl", "restore"])
+    for (const failing of ["catalog", "d1"])
+      await t.test(`${operation}, ${failing} write fails first`, async (t) => {
+        const f = await catalogFixture(t);
+        const acl = { revision: 1, members: { [member]: { role: "viewer", generation: 1 } } };
+        const page = f.addPage(id(83), "Plan", acl);
+        const ownerStorage = f.catalog(owner).ctx.storage;
+        await ownerStorage.put(`page/${id(83)}`, {
+          page_id: id(83),
+          title: "Plan",
+          created_at: at(0),
+          updated_at: at(1),
+        });
+        page.cacheTitle();
+        await f.settle();
+        const call = async (name, args) =>
+          (
+            await f
+              .catalog(owner)
+              .fetch(f.request(owner, "/internal/catalog", { operation: name, arguments: args }))
+          ).json();
+        if (operation === "restore") {
+          const trashed = await call("delete_page", {
+            page_id: id(83),
+            base_heads: A.getHeads(page.handle.doc()),
+            idempotency_key: "observe-trash",
+          });
+          assert.equal(trashed.state, "trashed", JSON.stringify(trashed));
+          await f.settle();
+        }
+        const memberStorage = f.catalog(member).ctx.storage;
+        const times = async () => ({
+          member: (await memberStorage.get(`shared/${id(83)}`))?.updated_at,
+          d1: f.db.rows(
+            `SELECT a.principal, a.updated_at AS access, p.updated_at AS page
+            FROM pages_catalog_access a JOIN pages_catalog_pages p USING (page_id)
+            WHERE a.source = 'owner'`,
+          )[0],
+        });
+        const before = await times();
+        assert.ok(before.member, "the member's entry holds the same title");
+        await later();
+
+        // The first write of the observation fails.
+        const memberCatalog = f.catalog(member);
+        const fetch = memberCatalog.fetch.bind(memberCatalog);
+        if (failing === "catalog")
+          memberCatalog.fetch = async (request) => {
+            if (new URL(request.url).pathname !== "/internal/projection") return fetch(request);
+            memberCatalog.fetch = fetch;
+            return Response.json({ error: "busy" }, { status: 503 });
+          };
+        else f.db.mode = "fail";
+        if (operation === "acl")
+          await page.installAccess({
+            ...page.metadata,
+            acl: { revision: 2, members: { [member]: { role: "editor", generation: 2 } } },
+          });
+        else {
+          const restored = await call("restore_page", {
+            page_id: id(83),
+            idempotency_key: "observe-restore",
+          });
+          assert.equal(restored.restored, true, JSON.stringify(restored));
+        }
+        await f.settle();
+        f.db.mode = "ok";
+        const record = await page.ctx.storage.get("host/title-projection");
+        assert.equal(record.keep, false, "an observation lets no writer keep its time");
+        assert.equal(record.observed_at, page.titleObservedAt);
+
+        // The next request retries the projection, or repairs the report.
+        if (failing === "catalog") {
+          assert.equal(page.cachedTitle, undefined, "the failed projection is retried");
+          page.cacheTitle();
+        } else {
+          assert.equal(await page.ctx.storage.get("host/index/report-pending"), true);
+          await page.repairIndex();
+        }
+        await f.settle();
+        const after = await times();
+        assert.equal(after.member, record.observed_at);
+        assert.equal(after.d1.access, record.observed_at);
+        assert.equal(after.d1.page, record.observed_at);
+        assert.ok(after.member > before.member);
+        assert.ok(after.d1.access > before.d1.access);
+
+        // A restart repeats the observation's stored time, and moves nothing.
+        await later();
+        const restarted = f.addPage(id(83), "Plan", page.metadata.acl, {
+          storage: page.ctx.storage,
+        });
+        restarted.metadata = page.metadata;
+        await restarted.restoreTitleProjection();
+        restarted.cacheTitle();
+        await f.settle();
+        assert.deepEqual(await times(), after);
+      });
 });
 
 test("Trash and restore through the Catalog move a Page between indexed listings", async (t) => {
@@ -2834,6 +2985,14 @@ test("a stored time key that isn't an ISO time never jumps the order or breaks a
         created_at: "2026-10-01",
         updated_at: at(2),
       });
+      // Neither time is a listing time, or neither is there.
+      await storage.put(`page/${id(9)}`, {
+        page_id: id(9),
+        title: "Nine",
+        created_at: numeric,
+        updated_at: "yesterday",
+      });
+      await storage.put(`page/${id(10)}`, { page_id: id(10), title: "Ten" });
       for (const [n, trashed] of [
         [4, numeric],
         [5, at(9)],
@@ -2869,28 +3028,113 @@ test("a stored time key that isn't an ISO time never jumps the order or breaks a
         return seen;
       };
       // A malformed created_at reads as the entry's updated_at, and a
-      // malformed updated_at as its created_at, in both sources.
-      const created = await walk({ sort: "created" });
-      assert.deepEqual(created, [2, 3, 8, 1].map(id));
-      const activity = await walk({ sort: "activity" });
-      assert.deepEqual(activity, [2, 3, 8, 1].map(id));
-      // A malformed trash time sorts last, ties by the larger Page ID.
-      const trashed = await walk({ in_trash: true });
-      assert.deepEqual(trashed, [5, 7, 6, 4].map(id));
+      // malformed updated_at as its created_at, in both sources. With
+      // neither, the key is '' and sorts last, ties by the larger Page ID.
+      const orders = async () => ({
+        created: await walk({ sort: "created" }),
+        activity: await walk({ sort: "activity" }),
+        // A malformed trash time sorts last, ties by the larger Page ID.
+        trashed: await walk({ in_trash: true }),
+      });
+      const first = await orders();
+      assert.deepEqual(first, {
+        created: [2, 3, 8, 1, 10, 9].map(id),
+        activity: [2, 3, 8, 1, 10, 9].map(id),
+        trashed: [5, 7, 6, 4].map(id),
+      });
       if (index) {
-        // Only listing times reach D1.
-        for (const { created_at, updated_at, trashed_at } of f.db.rows(
-          "SELECT created_at, updated_at, trashed_at FROM pages_catalog_pages",
-        )) {
-          assert.match(created_at, /^2026-10-01T\d\d:\d\d:00\.000Z$/);
-          assert.match(updated_at, /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/);
+        // Only listing times reach D1, or '' for an entry with none.
+        const rows = () =>
+          f.db.rows(
+            `SELECT p.page_id, p.created_at, p.updated_at, p.trashed_at, a.updated_at AS access
+            FROM pages_catalog_pages p JOIN pages_catalog_access a USING (page_id)
+            ORDER BY p.page_id`,
+          );
+        for (const { page_id, created_at, updated_at, trashed_at, access } of rows()) {
+          const none = [id(9), id(10)].includes(page_id);
+          if (none) assert.deepEqual([created_at, updated_at, access], ["", "", ""]);
+          else {
+            assert.match(created_at, /^2026-10-01T\d\d:\d\d:00\.000Z$/);
+            assert.match(updated_at, /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/);
+          }
           assert.ok(trashed_at === null || trashed_at === at(9), String(trashed_at));
         }
+        // Later passes write the same keys: nothing moves.
+        const indexed = rows();
+        for (let pass = 0; pass < 3; pass++) {
+          await new Promise((resolve) => setTimeout(resolve, 5));
+          await storage.put("host/index/dirty", `pass-${pass}`);
+          for (let request = 0; request < 6; request++) {
+            await f.list(owner);
+            if ((await storage.get("host/index/dirty")) === undefined) break;
+          }
+          assert.equal(await storage.get("host/index/dirty"), undefined);
+          assert.deepEqual(rows(), indexed, `after pass ${pass}`);
+        }
+        assert.deepEqual(await orders(), first);
+        // A real time replaces '' once the entry has one.
+        await storage.put(`page/${id(10)}`, {
+          page_id: id(10),
+          title: "Ten",
+          created_at: at(4),
+          updated_at: at(4),
+        });
+        await storage.put("host/index/dirty", "fixed");
+        for (let request = 0; request < 6; request++) {
+          await f.list(owner);
+          if ((await storage.get("host/index/dirty")) === undefined) break;
+        }
+        const ten = rows().find((row) => row.page_id === id(10));
+        assert.deepEqual([ten.created_at, ten.updated_at, ten.access], [at(4), at(4), at(4)]);
+        assert.deepEqual(await walk({ sort: "created" }), [2, 10, 3, 8, 1, 9].map(id));
       }
-      results[mode] = { created, activity, trashed };
+      results[mode] = first;
     });
   }
   assert.deepEqual(results.index, results.catalog);
+});
+
+test("a host trash time in another format reaches the Catalog's trash entry and D1 as the same ISO time", async (t) => {
+  const { db, env } = await seededIndex(t);
+  for (const [n, reported, stored] of [
+    [61, "2026-10-01", "2026-10-01T00:00:00.000Z"],
+    [62, "Thu, 01 Oct 2026 00:05:00 GMT", at(5)],
+    [63, Date.parse(at(7)), at(7)],
+    [64, at(9), at(9)],
+    [65, "soon", null],
+  ]) {
+    const storage = new Storage();
+    await storage.put(`page/${id(n)}`, {
+      page_id: id(n),
+      title: "Plan",
+      created_at: at(0),
+      updated_at: at(0),
+    });
+    await projectLifecycle(storage, id(n), {
+      state: "trashed",
+      revision: 1,
+      title: "Plan",
+      trashed_at: reported,
+      trashed_by: owner,
+    });
+    assert.equal((await storage.get(`trash/${id(n)}`)).trashed_at, stored, String(reported));
+    const metadata = {
+      pageId: id(n),
+      owner,
+      deleted: true,
+      lifecycleRevision: 1,
+      acl: { revision: 0, members: {} },
+      trash: { trashed_at: reported, trashed_by: owner },
+    };
+    await reportPageIndex(env, testCtx, {
+      metadata: { ...metadata, deleted: false, trash: undefined, lifecycleRevision: 0 },
+      title: "Plan",
+      observedAt: at(0),
+    });
+    await retirePageIndex(env, testCtx, metadata, at(10));
+    const [row] = db.rows("SELECT trashed_at FROM pages_catalog_pages WHERE page_id = ?", id(n));
+    assert.equal(row.trashed_at, stored ?? at(10), String(reported));
+  }
 });
 
 test("listing positions seal into the payload layout every build opens", async () => {

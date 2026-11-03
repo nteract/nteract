@@ -442,8 +442,9 @@ const locationRequest = (query) =>
     body: JSON.stringify(query),
   });
 const INDEX_REPORT_PENDING = "host/index/report-pending";
-/** `{ title, observed_at }`: the title this Page host last projected to the
- * Catalogs and the index, and when it first observed it (`titleObservation`). */
+/** `{ title, observed_at, keep }`: the title this Page host last projected to
+ * the Catalogs and the index, when it first observed it, and whether writers
+ * holding that title keep their own time (`titleObservation`). */
 const TITLE_PROJECTION_KEY = "host/title-projection";
 /** Lifecycle receipts kept per Page for retries; older ones are pruned. */
 const LIFECYCLE_RECEIPT_LIMIT = 256;
@@ -3808,7 +3809,8 @@ export class Page {
       this.titleProjection ??= stored;
   }
 
-  /** When `title` was observed, for a projection or report about to send it.
+  /** When `title` was observed, for a projection or report about to send it,
+   * and whether writers may keep their own time.
    *
    * A title this host already projected keeps the time it was first observed
    * (`TITLE_PROJECTION_KEY`), so a restart, a retried projection or a repeated
@@ -3816,21 +3818,25 @@ export class Page {
    * host's checks. Any other title, and every `observe` (an ACL commit or a
    * restore), is observed now and stored.
    *
-   * `keepTime` is true unless `observe`: a writer whose stored title already
-   * equals this one keeps its own `updated_at`. That covers a host with no
-   * record, such as one from a build without it, and a writer that never got
-   * an earlier projection. Only a title change, a discovery (a row or entry
-   * the writer doesn't have) or an observation moves a writer's time. */
+   * `keepTime` lets a writer whose stored title already equals this one keep
+   * its own `updated_at`. A title observation sets it: that covers a host with
+   * no record, such as one from a build without it, and a writer that never
+   * got an earlier projection. An `observe` clears it, because an ACL commit
+   * and a restore move every writer's time. The record stores it as `keep`,
+   * so a retry or repair of an `observe` still moves the writers it missed; a
+   * resent stored time changes nothing for writers that already took it,
+   * since each takes the later time. A stored record without `keep` keeps:
+   * the build that wrote it stored no flag. */
   titleObservation(title, { observe = false } = {}) {
-    const keepTime = !observe;
-    if (!observe && this.titleProjection?.title === title)
-      return { observedAt: this.titleProjection.observed_at, keepTime };
-    const record = { title, observed_at: new Date().toISOString() };
+    const known = this.titleProjection;
+    if (!observe && known?.title === title)
+      return { observedAt: known.observed_at, keepTime: known.keep !== false };
+    const record = { title, observed_at: new Date().toISOString(), keep: !observe };
     this.titleProjection = record;
     const stored = Promise.resolve()
       .then(() => this.ctx.storage.put(TITLE_PROJECTION_KEY, record))
       .catch((error) => logFailure(error, "title-projection"));
-    return { observedAt: record.observed_at, keepTime, stored };
+    return { observedAt: record.observed_at, keepTime: record.keep, stored };
   }
 
   /** Project this Page's title to the Catalogs that list it, and report its
@@ -3861,7 +3867,10 @@ export class Page {
       ? this.titleObservation(title, { observe })
       : { observedAt: new Date().toISOString(), keepTime: false };
     const { observedAt, keepTime } = observation;
-    if (titleChanged) this.titleObservedAt = observedAt;
+    if (titleChanged) {
+      this.titleObservedAt = observedAt;
+      this.titleObservedKeep = keepTime;
+    }
     const contentUpdatedAt = this.contentActivity?.value ?? null;
     // A projection that times out clears the cached title below, so the next
     // request to this Page sends it again, with the same observation time.
@@ -4294,6 +4303,9 @@ export class Page {
           lifecycle_revision: this.metadata.lifecycleRevision ?? 0,
           state: indexedState(this.metadata),
           title_observed_at: this.titleObservedAt,
+          // A member's reconcile pass keeps its row's time for this title
+          // when the observation lets writers keep theirs (titleObservation).
+          ...(this.titleObservedKeep && { title_keep_time: true }),
           // When this host last accepted a content change, or null.
           content_updated_at: this.contentActivity?.value ?? null,
         });

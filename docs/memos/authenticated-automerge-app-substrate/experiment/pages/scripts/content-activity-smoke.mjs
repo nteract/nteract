@@ -5,9 +5,15 @@
 // there. list_pages must then report when each Page's content changed.
 //
 // Each Page is then edited a second time inside its one-minute window, so its
-// trailing flush runs from work held on a request: the MCP edit's own request
-// for the agent Page, and for the tab, a socket that closes before the window
-// ends. Both Pages run at once, so the window costs the suite one minute.
+// trailing flush runs at the window's end: after a second MCP edit for the
+// agent Page, and for the tab, after its socket closed mid-window. Both Pages
+// run at once, so the window costs the suite one minute.
+//
+// This covers those paths end to end; it doesn't pin how the window's timer
+// stays alive. On a local celld the trailing flush still lands with
+// ContentActivity's hold on the arming request removed, so the unit test "a
+// change observed outside a live request waits for one to run its effects"
+// (worker/content-activity.test.mjs) is what pins that hold.
 import assert from "node:assert/strict";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";

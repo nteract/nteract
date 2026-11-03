@@ -49,6 +49,14 @@ export function catalogTitle(title) {
     cut = cut.slice(0, -1);
   return cut.replace(LONE_SURROGATE, "\uFFFD");
 }
+/** A trash time in `Date#toISOString`'s format, the one format listings
+ * compare, or null. Another date string or a number is converted, so a Trash
+ * key never sorts by its spelling. The Catalog writes this into a `trash/`
+ * entry from the host's report, as the index does into its Page row. */
+export function trashTime(value) {
+  const ms = typeof value === "string" ? Date.parse(value) : value;
+  return Number.isFinite(ms) ? new Date(ms).toISOString() : null;
+}
 export const trashFields = (entry) => ({
   state: "trashed",
   trashed_at: entry.trashed_at,
@@ -304,7 +312,7 @@ async function projectEntries(storage, pageId, current) {
       restoreSpaceId ?? (base.parent_id ? projectOf(await locationEntries(storage), pageId) : null);
     await storage.put(`trash/${pageId}`, {
       ...base,
-      ...trashFields({ ...current, page_id: pageId }),
+      ...trashFields({ ...current, page_id: pageId, trashed_at: trashTime(current.trashed_at) }),
       ...(spaceId && { restore_space_id: spaceId }),
     });
     await storage.delete(`page/${pageId}`);
