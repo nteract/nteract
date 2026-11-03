@@ -15,6 +15,9 @@ import {
   Redo2,
   Strikethrough,
   Table,
+  Rows3,
+  Columns3,
+  Trash2,
   Undo2,
 } from "lucide-react";
 import { MOBILE_COMMENT_HINT, MOBILE_COMMENT_LABELS } from "./mobile-comment.mjs";
@@ -30,6 +33,16 @@ const MORE = [
   ["code", "Inline code", CodeIcon],
   ["table", "Insert table", Table],
   ["link", "Link", LinkIcon],
+];
+// Inside a table, Insert table gives way to row and column actions: a phone
+// keyboard has no Tab to append a row, and the desktop Table menu isn't shown.
+export const TABLE_ACTIONS = [
+  ["row-after", "Insert row below", Rows3],
+  ["row-before", "Insert row above", Rows3],
+  ["column-after", "Insert column right", Columns3],
+  ["column-before", "Insert column left", Columns3],
+  ["row-delete", "Delete row", Trash2],
+  ["column-delete", "Delete column", Trash2],
 ];
 const HINT_MS = 3000;
 
@@ -182,7 +195,10 @@ export function MobileBar({
       </button>
       {more && (
         <div ref={menu} className="mobile-bar-menu" role="menu" aria-label="More formatting">
-          {MORE.map(([name, label, Icon]) => (
+          {(format?.table
+            ? MORE.flatMap((entry) => (entry[0] === "table" ? TABLE_ACTIONS : [entry]))
+            : MORE
+          ).map(([name, label, Icon]) => (
             <button
               key={name}
               type="button"

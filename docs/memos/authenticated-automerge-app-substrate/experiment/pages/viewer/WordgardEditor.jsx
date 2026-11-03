@@ -19,9 +19,19 @@ import {
   canAddMarkInRange,
 } from "wordgard/command";
 import { history, undo, redo, undoDepth, redoDepth } from "wordgard/history";
-import { tables } from "wordgard/table";
+import { tables, addRow, addColumn, deleteRow, deleteColumn } from "wordgard/table";
 import { insertTable, tablePresentation, tableKeys, selectedTable } from "./wordgard-tables.mjs";
 import { TableMenu } from "./TableMenu.jsx";
+
+// The phone bar's table actions, by MobileBar TABLE_ACTIONS name.
+const TABLE_COMMANDS = {
+  "row-after": [addRow, "after"],
+  "row-before": [addRow, "before"],
+  "column-after": [addColumn, "after"],
+  "column-before": [addColumn, "before"],
+  "row-delete": [deleteRow],
+  "column-delete": [deleteColumn],
+};
 import { CODE_LANGUAGES, codeHighlighting } from "./code-highlight.mjs";
 import { MobileBar } from "./MobileBar.jsx";
 import { mobileCommentScope } from "./mobile-comment.mjs";
@@ -1042,6 +1052,10 @@ export function WordgardEditor(props) {
       if (name === "link") return openLink();
       if (name === "highlight") Command.dispatch(editor, toggleHighlight);
       else if (name === "table") insertTable(editor);
+      else if (TABLE_COMMANDS[name]) {
+        if (!selectedTable(editor.state)) return;
+        Command.dispatch(editor, ...TABLE_COMMANDS[name]);
+      }
       else if (marks[name]) Command.dispatch(editor, toggleMark, marks[name]);
       else if (name === "undo" || name === "redo")
         Command.dispatch(editor, name === "undo" ? undo : redo);
