@@ -166,6 +166,15 @@ try {
     for (const text of ["surface", "events", "browser", "mcp"])
       await expect(table).toContainText(text, { timeout: 20000 });
   }
+  // Sift's summaries and selection use a chromatic accent, not the theme's
+  // neutral --ring.
+  const accent = await tables(owner)
+    .first()
+    .locator(".sift-root")
+    .first()
+    .evaluate((element) => getComputedStyle(element).getPropertyValue("--sift-accent").trim());
+  const chroma = Number(/oklch\(\s*[\d.]+%?\s+([\d.]+)/.exec(accent)?.[1]);
+  assert.ok(chroma > 0.05, `Sift accent is achromatic: ${accent}`);
   await owner.screenshot({ path: `${output}/sift-table-owner.png`, fullPage: true });
   await viewer.screenshot({ path: `${output}/sift-table-viewer.png`, fullPage: true });
   complete("insert_node places a dataframe that renders as a Sift table for owner and viewer");

@@ -467,10 +467,18 @@
 /* A dataframe node (viewer/wordgard-dataframes.mjs). Sift sizes its grid
    from the container, so the canvas has a fixed height. Sift's own stylesheet
    is keyed on .sift-root and loads with the table; its neutrals fall back to
-   the theme tokens (--background, --card, --foreground, --border). */
+   the theme tokens (--background, --card, --foreground, --border).
+   The accent (histogram bars, category bars, selection, focus) is the data
+   blue the notebook's classic Sift theme uses (src/isolated-renderer/
+   sift-themes.css). The theme's --ring and --primary are neutral grays,
+   which leave the summaries without contrast. Sift's own `.dark` rule
+   switches the accent to its lighter blue in dark mode. */
 :root {
   --sift-font-family: Inter, ui-sans-serif, system-ui, sans-serif;
-  --sift-color-accent: var(--ring);
+  --sift-color-accent: oklch(0.546 0.245 262.881);
+}
+:root.dark {
+  --sift-color-accent: oklch(0.707 0.165 254.624);
 }
 .wordgard-dataframe-table {
   display: flex;
