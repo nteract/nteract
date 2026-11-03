@@ -156,3 +156,30 @@ test("the More menu no longer repeats Comment on selection", async (t) => {
   assert.equal(items.includes("Comment on selection"), false);
   assert.deepEqual(ran, []);
 });
+
+test("inside a table, More offers row and column actions instead of Insert table", async (t) => {
+  const ran = [];
+  const view = await renderBar(t, { onRun: (name) => ran.push(name) });
+  const items = () =>
+    [...view.bar.querySelectorAll("[role='menuitem']")].map((item) => item.textContent);
+  await click(view.button("More formatting"));
+  assert.ok(items().includes("Insert table"));
+  assert.equal(items().includes("Insert row below"), false);
+  await view.rerender({ table: true });
+  assert.equal(items().includes("Insert table"), false);
+  for (const label of [
+    "Insert row below",
+    "Insert row above",
+    "Insert column right",
+    "Insert column left",
+    "Delete row",
+    "Delete column",
+  ])
+    assert.ok(items().includes(label), label);
+  const row = [...view.bar.querySelectorAll("[role='menuitem']")].find(
+    (item) => item.textContent === "Insert row below",
+  );
+  assert.equal(row.disabled, false);
+  await click(row);
+  assert.deepEqual(ran, ["row-after"]);
+});

@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import * as A from "@automerge/automerge";
 import { Leaf } from "wordgard/doc";
 import { GardState, GardSelection, Transaction } from "wordgard/state";
-import { Command, enter, setTextblockType, toggleList } from "wordgard/command";
+import { Command, deleteUnit, enter, setTextblockType, toggleList } from "wordgard/command";
 import { history, undo } from "wordgard/history";
 import { blockquote, bulletList, code, codeBlock, heading, orderedList } from "wordgard/schema";
 import { textPath, blockMarkdown, validateRich } from "../model/richtext.mjs";
@@ -33,6 +33,7 @@ import {
 } from "./wordgard-binding.mjs";
 import { taskLists } from "./wordgard-task-lists.mjs";
 import { delimitedSpan, markdownShortcuts } from "./wordgard-shortcuts.mjs";
+import { displaySymbols, symbolRanges } from "./wordgard-symbols.mjs";
 
 // The editor configuration WordgardEditor installs, minus the DOM.
 const editorConfig = () => [
@@ -50,7 +51,7 @@ const editorConfig = () => [
   history(),
 ];
 
-function fixture(markdown, { comment } = {}) {
+function fixture(markdown, { comment, extra = [] } = {}) {
   let doc = A.from(createPageData({ pageId: "page_fixture", title: "Shortcuts" }));
   doc = A.change(doc, (d) => initializePage(d, markdown));
   const id = orderedBlockIds(doc)[0];
@@ -76,7 +77,7 @@ function fixture(markdown, { comment } = {}) {
   const binding = createWordgardBinding(replica, id);
   let state = GardState.create({
     doc: binding.current.doc,
-    config: editorConfig(),
+    config: [editorConfig(), extra],
   });
   const editor = {
     get state() {
@@ -811,4 +812,118 @@ test("pasted <del> and <strike> tags read as strikethrough", async () => {
     '<p><del>a</del> <STRIKE class="x">b</STRIKE> <details>c</details> <delta>d</delta></p>',
   );
   assert.equal(html, '<p><s>a</s> <s class="x">b</s> <details>c</details> <delta>d</delta></p>');
+});
+
+test("typing -- makes an em dash, and Backspace right after brings back --", () => {
+  const f = fixture("");
+  f.editor.select(1);
+  f.editor.type("a--b");
+  assert.equal(f.markdownOf(), "a\u2014b");
+  f.binding.destroy();
+  const g = fixture("");
+  g.editor.select(1);
+  g.editor.type("a--");
+  assert.equal(g.markdownOf(), "a\u2014");
+  g.editor.run(deleteUnit, "backward");
+  assert.equal(g.markdownOf(), "a--");
+  assert.equal(g.editor.state.selection.head, 4);
+  // A second Backspace deletes normally.
+  g.editor.run(deleteUnit, "backward");
+  assert.equal(g.markdownOf(), "a-");
+  g.binding.destroy();
+  // Backspace after other typing deletes the dash itself.
+  const h = fixture("");
+  h.editor.select(1);
+  h.editor.type("a--x");
+  h.editor.run(deleteUnit, "backward");
+  h.editor.run(deleteUnit, "backward");
+  assert.equal(h.markdownOf(), "a");
+  h.binding.destroy();
+  // Undo also restores the typed dashes.
+  const u = fixture("");
+  u.editor.select(1);
+  u.editor.type("a--");
+  u.editor.run(undo);
+  assert.equal(u.markdownOf(), "a--");
+  u.binding.destroy();
+});
+
+test("-- stays literal in inline code and code blocks", () => {
+  const f = fixture("Run");
+  f.editor.select(at(f.editor.state, "Run", 3));
+  f.editor.type(" `npm`");
+  // Caret back inside the code span, then type dashes there.
+  f.editor.select(at(f.editor.state, "npm", 3));
+  f.editor.dispatch({
+    selection: GardSelection.Text.create({ anchor: at(f.editor.state, "npm", 3), marks: [Code] }),
+  });
+  f.editor.type("--");
+  assert.equal(f.markdownOf(), "Run `npm--`");
+  f.binding.destroy();
+  const g = fixture("Run `npm x`");
+  g.editor.select(at(g.editor.state, "npm", 3));
+  g.editor.type("--");
+  assert.match(g.markdownOf(), /`npm-- x`/);
+  g.binding.destroy();
+  const c = fixture("```\nx\n```");
+  c.editor.select(at(c.editor.state, "x", 1));
+  c.editor.type("--");
+  assert.match(c.markdownOf(), /x--/);
+  c.binding.destroy();
+});
+
+test("--- alone still makes a horizontal rule with the em dash rule", () => {
+  const f = fixture("");
+  f.editor.select(1);
+  f.editor.type("--");
+  assert.equal(f.editor.state.doc.textContent(), "--");
+  f.editor.type("-");
+  assert.ok(f.editor.state.doc.content.some((node) => node.type === HorizontalRule.type));
+  f.binding.destroy();
+});
+
+test("agent edits containing -- are not rewritten", () => {
+  const f = fixture("");
+  f.editor.dispatch({ changes: { from: 1, to: 1, insert: [Leaf.text("a -- b")] } });
+  assert.equal(f.markdownOf(), "a -- b");
+  f.binding.destroy();
+});
+
+test("!= and -> are drawn as symbols but stored as typed", () => {
+  const f = fixture("a != b `x != y` c", { extra: displaySymbols });
+  const pairs = symbolRanges(f.editor.state.doc).map(([, , pair]) => pair);
+  assert.deepEqual(pairs, ["!="]);
+  assert.equal(f.markdownOf(), "a != b `x != y` c");
+  f.editor.select(at(f.editor.state, " c", 2));
+  f.editor.type(" d->e");
+  assert.equal(f.markdownOf(), "a != b `x != y` c d->e");
+  assert.equal(f.editor.state.doc.textContent(), "a != b x != y c d->e");
+  assert.equal(symbolRanges(f.editor.state.doc).length, 2);
+  f.binding.destroy();
+  const c = fixture("```\na != b\n```", { extra: displaySymbols });
+  assert.equal(symbolRanges(c.editor.state.doc).length, 0);
+  c.binding.destroy();
+});
+
+test("the caret steps over a drawn symbol as one unit", () => {
+  const f = fixture("a!=b", { extra: displaySymbols });
+  const bang = at(f.editor.state, "!=");
+  // Arrow right from before the symbol lands after it, not between `!` and `=`.
+  f.editor.select(bang);
+  f.editor.select(bang + 1);
+  assert.equal(f.editor.state.selection.head, bang + 2);
+  // Arrow left from after it lands before it.
+  f.editor.select(bang + 1);
+  assert.equal(f.editor.state.selection.head, bang);
+  // Typing right after the symbol keeps the caret after the typed character.
+  f.editor.select(bang + 2);
+  f.editor.type("c");
+  assert.equal(f.editor.state.selection.head, bang + 3);
+  assert.equal(f.editor.state.doc.textContent(), "a!=cb");
+  // Shift+Right into the symbol extends over both stored characters.
+  f.editor.select(bang - 1);
+  f.editor.select(bang - 1, bang + 1);
+  const { from, to } = f.editor.state.selection;
+  assert.deepEqual([from, to], [bang - 1, bang + 2]);
+  f.binding.destroy();
 });
