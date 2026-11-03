@@ -1127,27 +1127,29 @@ and trailing spaces are kept. Headings, lists, images and line breaks are refuse
 with invalid_edit_selector; escape a leading #, >, -, *, +, 1. or \`\`\` with a backslash.
 replacement_markdown is refused inside code blocks.
 
-set_node changes the node that holds match_text, addressed the same way, without
-rewriting its text. It is experimental: when block types declare their
-attributes, the fields may move under a typed attrs object. Give exactly one
-field:
+set_node changes the type or attributes of the node that holds match_text,
+addressed the same way, without rewriting its text. It takes the names read_page
+reports: type is the stored block name, and attrs use the outline's attr names.
 
 \`\`\`json
 [
-  {"op": "set_node", "block_id": "<block ID>", "match_text": "Ship the beta", "checked": true},
-  {"op": "set_node", "block_id": "<block ID>", "match_text": "graph TD", "language": "mermaid"},
-  {"op": "set_node", "block_id": "<block ID>", "match_text": "Next steps", "heading_level": 2},
-  {"op": "set_node", "block_id": "<block ID>", "match_text": "Total", "align": "right"}
+  {"op": "set_node", "block_id": "<block ID>", "match_text": "Ship the beta", "attrs": {"checked": true}},
+  {"op": "set_node", "block_id": "<block ID>", "match_text": "graph TD", "attrs": {"language": "mermaid"}},
+  {"op": "set_node", "block_id": "<block ID>", "match_text": "Next steps", "type": "heading", "attrs": {"level": 2}},
+  {"op": "set_node", "block_id": "<block ID>", "match_text": "Total", "attrs": {"align": "right"}}
 ]
 \`\`\`
 
-checked applies to task list items, language to code blocks (an empty string
-makes plain text), heading_level to paragraphs and headings (0 makes a
-paragraph; a quote's or list item's first paragraph belongs to the quote or
-item, so it is refused), and align to table cells: it aligns that cell's whole column,
-header included, and null clears it. Any other node is refused with
-invalid_edit_selector naming the node the text is in. Receipts include matched:
-1 and, for align, cells. heading_level 0 on a paragraph changes nothing.
+type takes paragraph or heading; a heading needs attrs.level (1 to 6), and
+type paragraph drops it. attrs.level changes an existing heading's level.
+attrs.checked applies to task list items, attrs.language to code blocks (an empty
+string makes plain text), and attrs.align to table cells: it aligns that cell's
+whole column, header included, and null clears it. A quote's or list item's first
+paragraph belongs to the quote or item, so a type change there is refused. Any
+other node is refused with invalid_edit_selector naming the node the text is in.
+Receipts include matched: 1 and, for align, cells. type paragraph on a paragraph
+changes nothing. The flat fields checked, language, heading_level and align are
+accepted as aliases for one deploy; use type and attrs.
 
 Markdown is a projection of the rich text, not its storage. Highlights read as
 <mark data-color="green">text</mark>; insert_markdown, replace_block_markdown and

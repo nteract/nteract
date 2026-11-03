@@ -20,10 +20,18 @@
 //   a quote's says "first paragraph".
 // - `feature`: the model/features.json feature that gates it, or null.
 // - `readOnly`: no writer creates it (preserved Markdown).
-// - `label`: how a refusal names a node of this type.
-// - `attrs`: stored attribute name → { type, values | min/max, agent, set }.
-//     `agent` is the name agents read and write when it differs; `set` names
-//     the operation that may change it.
+// - `label` / `plural`: how a refusal names a node, or several, of this type.
+// - `retype`: set_node may change a node between types that share this group
+//   (a paragraph and a heading).
+// - `attrs`: stored attribute name → { type, values | min/max, agent, set,
+//   scope, nullable }. `agent` is the name agents read and write when it
+//   differs from the stored one; `set` names the operation that may change
+//   it; `scope: "column"` applies the change to the whole table column;
+//   `nullable` lets null clear it.
+//
+// Agent-facing names are the same everywhere: a node's `type` is its stored
+// block name (`code-block`), and its attrs are the `agent` names. read_page
+// reports them, set_node and insert_node take them.
 // - `insert`: how agents create it, and which stored asset it names, so the
 //   host can check the asset before the change (worker/index.mjs prepare).
 //
@@ -38,6 +46,8 @@ const entry = (block, fields) =>
   Object.freeze({
     block,
     wrapper: null,
+    retype: null,
+    plural: null,
     governsFirstParagraph: false,
     feature: null,
     readOnly: false,
@@ -47,20 +57,29 @@ const entry = (block, fields) =>
   });
 
 export const NODE_TYPES = Object.freeze([
-  entry("paragraph", { pm: "paragraph", kind: "text", label: "a paragraph" }),
+  entry("paragraph", {
+    pm: "paragraph",
+    kind: "text",
+    retype: "text",
+    label: "a paragraph",
+    plural: "paragraphs",
+  }),
   entry("heading", {
     pm: "heading",
     kind: "text",
+    retype: "text",
     label: "a heading",
+    plural: "headings",
     attrs: Object.freeze({
-      level: { type: "integer", ...HEADING_LEVELS, agent: "heading_level", set: "set_node" },
+      level: { type: "integer", ...HEADING_LEVELS, set: "set_node", required: true },
     }),
   }),
   entry("code-block", {
     pm: "code_block",
     kind: "text-container",
     label: "a code block",
-    attrs: Object.freeze({ params: { type: "string", agent: "language", set: "set_node" } }),
+    plural: "code blocks",
+    attrs: Object.freeze({ params: { type: "language", agent: "language", set: "set_node" } }),
   }),
   entry("blockquote", {
     pm: "blockquote",
@@ -94,6 +113,7 @@ export const NODE_TYPES = Object.freeze([
     wrapper: "task_list",
     kind: "container",
     label: "a task list item",
+    plural: "task list items",
     attrs: Object.freeze({ checked: { type: "boolean", set: "set_node" } }),
   }),
   entry("table", { pm: "table", kind: "container", label: "a table" }),
@@ -102,13 +122,19 @@ export const NODE_TYPES = Object.freeze([
     pm: "table_cell",
     kind: "text-container",
     label: "a table cell",
-    attrs: Object.freeze({ align: { type: "enum", values: ALIGNMENTS, set: "set_node" } }),
+    plural: "table cells",
+    attrs: Object.freeze({
+      align: { type: "enum", values: ALIGNMENTS, nullable: true, scope: "column", set: "set_node" },
+    }),
   }),
   entry("table-header", {
     pm: "table_header",
     kind: "text-container",
     label: "a table header cell",
-    attrs: Object.freeze({ align: { type: "enum", values: ALIGNMENTS, set: "set_node" } }),
+    plural: "table cells",
+    attrs: Object.freeze({
+      align: { type: "enum", values: ALIGNMENTS, nullable: true, scope: "column", set: "set_node" },
+    }),
   }),
   entry("horizontal-rule", {
     pm: "horizontal_rule",
@@ -187,3 +213,59 @@ export const insertOperation = (name) =>
   typeof name === "string" && Object.hasOwn(INSERT_OPERATIONS, name)
     ? INSERT_OPERATIONS[name]
     : undefined;
+
+/** Agent-facing names of the list nodes that wrap list items. A wrapper has
+ * no marker of its own; read_page reports the list under this name. */
+export const LIST_TYPES = Object.freeze({
+  bullet_list: "bullet-list",
+  ordered_list: "ordered-list",
+  task_list: "task-list",
+});
+const BY_PM = new Map(NODE_TYPES.filter((type) => !type.wrapper).map((type) => [type.pm, type]));
+
+/** The agent-facing type of a ProseMirror node: its stored block name, a list
+ * name, or `unknown` for a node this build doesn't know. */
+export function agentType(pmName) {
+  if (pmName === "unknownBlock" || pmName === "unknownLeaf") return "unknown";
+  return LIST_TYPES[pmName] ?? BY_PM.get(pmName)?.block ?? pmName;
+}
+
+/** Every attribute set_node may change, by agent name: its spec and the block
+ * types that hold it. One name has one spec across types. */
+export const SETTABLE_ATTRS = Object.freeze(
+  (() => {
+    const out = {};
+    for (const type of NODE_TYPES)
+      for (const [stored, spec] of Object.entries(type.attrs)) {
+        if (spec.set !== "set_node") continue;
+        const name = spec.agent ?? stored;
+        out[name] ??= { spec, stored, blocks: [] };
+        out[name].blocks.push(type.block);
+      }
+    for (const value of Object.values(out)) Object.freeze(value.blocks);
+    return out;
+  })(),
+);
+
+/** The settable attribute `name` on `block`, as `{ stored, spec }`, or
+ * undefined. */
+export function settableAttr(block, name) {
+  const type = nodeType(block);
+  if (!type) return undefined;
+  for (const [stored, spec] of Object.entries(type.attrs))
+    if (spec.set === "set_node" && (spec.agent ?? stored) === name) return { stored, spec };
+  return undefined;
+}
+
+/** "task list items", "paragraphs and headings": how a refusal names a set of
+ * block types. */
+export function pluralLabel(blocks) {
+  const names = [...new Set(blocks.map((block) => nodeType(block)?.plural ?? `${block} nodes`))];
+  return names.length > 1 ? `${names.slice(0, -1).join(", ")} and ${names.at(-1)}` : names[0];
+}
+
+/** Block types a node of `block`'s type may become through set_node. */
+export const retypeTargets = (block) => {
+  const group = nodeType(block)?.retype;
+  return group ? NODE_TYPES.filter((type) => type.retype === group).map((type) => type.block) : [];
+};

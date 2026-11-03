@@ -1,4 +1,5 @@
 import { orderedBlockIds } from "./order.mjs";
+import { agentType } from "./node-registry.mjs";
 import { DATAFRAME_TITLE_MAX, parseAssetPath, readDataframe } from "../shared/dataset-assets.mjs";
 import {
   exportMarkdown,
@@ -204,7 +205,8 @@ function outlineEntry(entry, pageId) {
   return {
     block_id: entry.blockId,
     node_index: entry.nodeIndex,
-    type: entry.node.type.name,
+    // The agent-facing name set_node and insert_node take (node-registry.mjs).
+    type: agentType(entry.node.type.name),
     heading_path: entry.headingPath,
     // Bytes of this node's standalone Markdown projection, excluding inter-node separators.
     markdown_bytes: utf8.encode(markdownFor([entry.node])).byteLength,

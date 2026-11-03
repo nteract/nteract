@@ -256,14 +256,14 @@ test("read-content, outline and export read converted blocks as native nodes", (
   const before = projectReadContent(doc, { include_content: false });
   assert.deepEqual(
     before.outline.map((entry) => entry.type),
-    ["raw"],
+    ["pages-opaque"],
   );
   assert.equal(projectPage(doc).blocks[0].markdown, "# Title\n\nBody ~~x~~\n\n---\n\n\\$m\\$");
   const after = convert(doc).doc;
   const read = projectReadContent(after, { include_content: false });
   assert.deepEqual(
     read.outline.map((entry) => entry.type),
-    ["heading", "paragraph", "horizontal_rule", "paragraph"],
+    ["heading", "paragraph", "horizontal-rule", "paragraph"],
   );
   assert.equal(projectPage(after).blocks[0].markdown, projectPage(doc).blocks[0].markdown);
   assert.equal(

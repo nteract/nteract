@@ -3,7 +3,7 @@ import { isTokenedRequest } from "./model/retry-key.mjs";
 import { pagesPublicOrigin } from "./agent-guide.mjs";
 import { PRODUCT_NAME } from "./shared/product.mjs";
 import { HIGHLIGHT_COLORS, MARK_NAMES, formatAddSchema } from "./model/marks.mjs";
-import { ALIGNMENTS } from "./model/set-node.mjs";
+import { ALIGNMENTS, SETTABLE_ATTRS, retypeTargets } from "./model/node-registry.mjs";
 import {
   markdownSyntax,
   richContentInstructions,
@@ -257,32 +257,63 @@ const formatMatchOperation = {
   required: ["op", "block_id", "match_text"],
   additionalProperties: false,
 };
+// set_node's attrs schema, from model/node-registry.mjs: one property per
+// settable attribute, under the name read_page reports.
+const ATTR_DESCRIPTIONS = {
+  level: "A heading's level, 1 to 6. With type heading, makes a paragraph a heading.",
+  language:
+    'A code block\'s language, such as python or mermaid ("mermaid" renders as a diagram). An empty string makes it plain text.',
+  checked: "Check or uncheck a task list item.",
+  align:
+    "Align the table column that holds match_text, every row including the header; null clears it.",
+};
+const attrSchema = ({ spec }) =>
+  spec.type === "boolean"
+    ? { type: "boolean" }
+    : spec.type === "integer"
+      ? { type: "integer", minimum: spec.min, maximum: spec.max }
+      : spec.type === "enum"
+        ? {
+            type: spec.nullable ? ["string", "null"] : "string",
+            enum: [...spec.values, ...(spec.nullable ? [null] : [])],
+          }
+        : { ...string, maxLength: 64 };
+const deprecated = (text) => `Deprecated alias, accepted for one deploy: ${text}`;
 const setNodeOperation = {
   type: "object",
   description:
-    "Experimental: the fields may move under a typed attrs object when block types declare their attributes. Change one attribute of the paragraph, heading, list item, code block or table cell that holds match_text. Give exactly one of checked, language, heading_level or align. Text, formatting and comment anchors are unchanged. heading_level changes the node's type (0 makes a paragraph), and align changes the whole table column.",
+    "Change the type or attributes of the paragraph, heading, list item, code block or table cell that holds match_text, without rewriting its text. Names match read_page: type is the stored block name and attrs use the outline's attr names. Text, formatting and comment anchors are unchanged. Give type, attrs, or both; a heading needs attrs.level, type paragraph drops it, and align changes the whole table column.",
   properties: {
     op: { const: "set_node" },
     ...locator,
-    checked: { type: "boolean", description: "Check or uncheck a task list item." },
-    language: {
-      ...string,
-      maxLength: 64,
-      description:
-        'A code block\'s language, such as python or mermaid ("mermaid" renders as a diagram). An empty string makes it plain text.',
+    type: {
+      type: "string",
+      enum: retypeTargets("paragraph"),
+      description: "Make the node a paragraph or a heading.",
     },
+    attrs: {
+      type: "object",
+      properties: Object.fromEntries(
+        Object.entries(SETTABLE_ATTRS).map(([name, attr]) => [
+          name,
+          { ...attrSchema(attr), description: ATTR_DESCRIPTIONS[name] ?? name },
+        ]),
+      ),
+      additionalProperties: false,
+      minProperties: 1,
+    },
+    checked: { type: "boolean", description: deprecated("use attrs.checked.") },
+    language: { ...string, maxLength: 64, description: deprecated("use attrs.language.") },
     heading_level: {
       type: "integer",
       minimum: 0,
       maximum: 6,
-      description:
-        "1 to 6 makes a paragraph or heading that heading level; 0 makes it a paragraph.",
+      description: deprecated('use type "heading" with attrs.level, or type "paragraph".'),
     },
     align: {
       type: ["string", "null"],
       enum: [...ALIGNMENTS, null],
-      description:
-        "Align the table column that holds match_text, every row including the header; null clears it.",
+      description: deprecated("use attrs.align."),
     },
   },
   required: ["op", "block_id", "match_text"],

@@ -366,3 +366,34 @@ test("a Page holding a node this build doesn't know reads, and refuses a Markdow
   assert.equal(rewrite.body.code, "markdownless_node", JSON.stringify(rewrite.body));
   assert.equal(rewrite.status, 400);
 });
+
+test("set_node {type, attrs} goes through the host, and read_page reports the same names", async (t) => {
+  const f = await fixture(t);
+  const edit = await f.tool("owner", "patch_page", {
+    base_heads: f.heads(),
+    idempotency_key: "typed-set-node",
+    operations: [
+      {
+        op: "set_node",
+        block_id: f.blockId,
+        match_text: "We ship",
+        type: "heading",
+        attrs: { level: 3 },
+      },
+    ],
+  });
+  assert.equal(edit.status, 200, JSON.stringify(edit.body));
+  const read = await f.tool("owner", "read_page", { page_id: f.pageId, comments: "none" });
+  const heading = read.body.outline.entries.find((entry) => entry.type === "heading");
+  assert.deepEqual(heading.attrs, { level: 3 });
+  const wrong = await f.tool("owner", "patch_page", {
+    base_heads: f.heads(),
+    idempotency_key: "typed-set-node-wrong",
+    operations: [
+      { op: "set_node", block_id: f.blockId, match_text: "We ship", attrs: { checked: true } },
+    ],
+  });
+  assert.equal(wrong.status, 400);
+  assert.equal(wrong.body.code, "invalid_edit_selector");
+  assert.match(wrong.body.error, /checked applies to task list items; match_text is in a heading/);
+});
