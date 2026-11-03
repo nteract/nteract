@@ -381,7 +381,11 @@ references; it does not publish the Page or change asset access.
   ([`viewer/wordgard-dataframes.mjs`](viewer/wordgard-dataframes.mjs));
   `application/vnd.apache.parquet` renders as a Sift table
   ([`viewer/sift-table.jsx`](viewer/sift-table.jsx)), loaded with its
-  stylesheet and WASM only when a Page shows one. Dropping or pasting a
+  stylesheet and WASM only when a Page shows one, and only once that table
+  comes within 600 px of the viewport; until then it says it loads when you
+  scroll to it. Printing starts every table loading. A loaded table stays
+  loaded offscreen, keeping the reader's sort and filters. The lifecycle is
+  [`viewer/dataframe-table-machine.mjs`](viewer/dataframe-table-machine.mjs). Dropping or pasting a
   `.parquet` file uploads it and inserts the node at the cursor, undoably.
   Agents use `edit_page` `insert_node`. A dataframe has no Markdown syntax:
   it reads as `[Dataframe: <title>](<src>)` on its own line, and Markdown

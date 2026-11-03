@@ -182,6 +182,62 @@ try {
   await viewer.screenshot({ path: `${output}/sift-table-viewer.png`, fullPage: true });
   complete("insert_node places a dataframe that renders as a Sift table for owner and viewer");
 
+  // A table far below the fold waits: no renderer chunk, Sift WASM or
+  // dataset until a reader scrolls near it. A fresh session, so nothing is
+  // cached from the first Page.
+  {
+    const listing = (await tool(owner, "list_pages")).body;
+    const long = await tool(owner, "create_page", {
+      title: "Datasets below the fold",
+      markdown: Array.from({ length: 120 }, (_, n) => `Paragraph ${n + 1} of a long Page.`).join(
+        "\n\n",
+      ),
+      ...retry(listing),
+    });
+    assert.equal(long.status, 200, JSON.stringify(long.body));
+    const longId = long.body.page_id;
+    created.push(longId);
+    const copy = await fetch(`${origin}/api/pages/${longId}/assets`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${keys.owner}`, "Content-Type": PARQUET },
+      body: parquetBytes,
+    });
+    assert.ok([200, 201].includes(copy.status), await copy.clone().text());
+    const asset = await copy.json();
+    const before = (await tool(owner, "read_page", { page_id: longId })).body;
+    const placed = await tool(owner, "edit_page", {
+      page_id: longId,
+      base_heads: before.heads,
+      ...retry(before),
+      operations: [dataframe(asset.asset_id, "Far below")],
+    });
+    assert.equal(placed.status, 200, JSON.stringify(placed.body));
+    const reader = await signIn("dev@localhost");
+    const fetched = { dataset: 0, sift: 0 };
+    reader.on("request", (request) => {
+      const url = request.url();
+      if (url.includes(asset.asset_url)) fetched.dataset++;
+      if (/\/sift-[A-Z0-9]+\.wasm/.test(url)) fetched.sift++;
+    });
+    await reader.goto(`${origin}/p/${longId}`);
+    await expect(tables(reader)).toHaveCount(1, { timeout: 15000 });
+    const far = tables(reader).first();
+    await expect(far).toContainText("This table loads when you scroll to it.");
+    // Long enough for an eager load to have fetched everything.
+    await reader.waitForTimeout(1500);
+    assert.deepEqual(fetched, { dataset: 0, sift: 0 }, "an offscreen table loaded");
+    assert.equal(await far.locator(".sift-root").count(), 0);
+    await far.scrollIntoViewIfNeeded();
+    await expect(far.locator(".sift-root").first()).toBeVisible({ timeout: 20000 });
+    await expect(far).toContainText("browser", { timeout: 20000 });
+    assert.deepEqual(fetched, { dataset: 1, sift: 1 });
+    await reader.context().close();
+    // signIn filed the reader under the owner's email; failure screenshots
+    // read this map.
+    people.set("dev@localhost", owner);
+  }
+  complete("A table below the fold loads Sift and its dataset only when a reader scrolls near it");
+
   const rewrite = await editPage([
     { op: "replace_block_markdown", block_id: node.block_id, markdown: "gone" },
   ]);
