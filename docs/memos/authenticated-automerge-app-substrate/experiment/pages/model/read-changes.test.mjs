@@ -6,7 +6,6 @@ import { enableRich, setRichMarkdown, textPath } from "./richtext.mjs";
 import { replaceMatch } from "./replace-match.mjs";
 import { applyComment as applyCommentTo } from "./comments.mjs";
 import { comment, newCommentsDoc } from "./comments-test-support.mjs";
-import { nodeIds } from "./node-ids.mjs";
 
 const author = { principal: "user", displayName: "Collaborator", driver: "Browser" };
 function page(markdown = "# Start\n\nFirst paragraph.\n\n## Later\n\nSecond paragraph.") {
@@ -31,6 +30,18 @@ function read(doc, since_heads, options = {}) {
   assert.deepEqual(A.getHeads(doc), heads);
   assert.deepEqual(A.save(doc), bytes);
   return result;
+}
+/** The cursor at the nth top-level block marker, found by scanning the
+ * stored spans. Every node in these fixtures opens with its own marker. */
+function markerCursor(doc, n) {
+  let at = 0,
+    seen = 0;
+  for (const span of A.spans(doc, textPath("one"))) {
+    if (span.type === "block" && !span.value.isEmbed && !span.value.parents.length && seen++ === n)
+      return A.getCursor(doc, textPath("one"), at);
+    at += span.type === "text" ? span.value.length : 1;
+  }
+  throw Error(`No marker ${n}`);
 }
 const errorCode = (status, code) => (error) => error.status === status && error.code === code;
 /** Changes since a Page revision and a comments revision, each with its own
@@ -90,7 +101,7 @@ test("one native paragraph edit returns only its current Markdown and revision-b
       scope: "node",
       change: "updated",
       node_index: 3,
-      node_id: nodeIds(doc, "one")[3].id,
+      node_id: markerCursor(doc, 3),
       type: "paragraph",
       heading_path: ["Start", "Later"],
       markdown: "Updated 🌊 paragraph.",
@@ -116,7 +127,7 @@ test("inserting an earlier native node does not report untouched shifted nodes a
       scope: "node",
       change: "inserted",
       node_index: 0,
-      node_id: nodeIds(doc, "one")[0].id,
+      node_id: markerCursor(doc, 0),
       type: "paragraph",
       heading_path: [],
       markdown: "New opening.",
@@ -127,7 +138,7 @@ test("inserting an earlier native node does not report untouched shifted nodes a
 test("native deletion reports its old address without historical text", () => {
   let doc = page();
   const before = A.getHeads(doc);
-  const deletedId = nodeIds(doc, "one")[1].id;
+  const deletedId = markerCursor(doc, 1);
   doc = A.change(doc, (draft) => {
     const path = textPath("one"),
       start = draft.blocks.one.richText.indexOf("First paragraph.") - 1;

@@ -62,13 +62,21 @@ function options(args) {
 // node_index is a revision-bound position. A node's identity is its text
 // object plus its node_id (model/node-ids.mjs), which survives text and mark
 // changes and earlier insertions. Destroying a marker can produce
-// delete+insert; this is a net projection, not an edit audit.
+// delete+insert; this is a net projection, not an edit audit. A block whose
+// nodes have no ids (a marker the binding can't place) returns null and is
+// reported as a whole block, like a legacy one: matching its nodes by index
+// could report the wrong one.
 function nativeNodes(doc, blockId, headings) {
   const block = doc.blocks[blockId],
     tree = richDoc(block, doc.page_id),
-    ids = nodeIds(doc, blockId, tree),
     objectId = A.getObjectId(block, "richText"),
     entries = [];
+  let ids;
+  try {
+    ids = nodeIds(doc, blockId, tree);
+  } catch {
+    return null;
+  }
   tree.forEach((node, _offset, nodeIndex) => {
     if (node.type.name === "heading") {
       while (headings.length && headings.at(-1).level >= node.attrs.level) headings.pop();
@@ -106,14 +114,12 @@ function index(doc) {
     blocks = new Map();
   for (const id of orderedBlockIds(doc)) {
     const block = doc.blocks[id];
-    blocks.set(id, {
-      block,
-      pageId: doc.page_id,
-      nodes: isRich(block) ? nativeNodes(doc, id, headings) : null,
-    });
-    // A preserved/legacy block can contain headings, but its source format has
-    // no native identity. Do not invent a heading path across that boundary.
-    if (!isRich(block)) headings.length = 0;
+    const nodes = isRich(block) ? nativeNodes(doc, id, headings) : null;
+    blocks.set(id, { block, pageId: doc.page_id, nodes });
+    // A preserved/legacy block, or one without node ids, can contain headings,
+    // but has no native identity. Do not invent a heading path across that
+    // boundary.
+    if (!nodes) headings.length = 0;
   }
   return blocks;
 }

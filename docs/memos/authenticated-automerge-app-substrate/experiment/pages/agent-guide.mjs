@@ -123,8 +123,10 @@ Branch on code, not on the error message:
     [Unsupported node: <type>]). Edit around it with replace_match,
     format_match or set_node, or remove it with delete_node.
 - node_not_found: delete_node's node_id doesn't name a node in that block. The
-  node was deleted, or the id came from another block. Read the outline again;
-  repeating the request unchanged fails again.
+  node was deleted, or the id came from another block: read the outline again.
+  It's also returned for a Markdown block, and for a block holding a node this
+  version can't place; neither has node ids, so use delete_block or
+  replace_block_markdown there. Repeating the request unchanged fails again.
 - preserved_markdown_converting (503): Pages is converting Markdown an older
   version saved on this Page. read_page still works. Wait, read_page again,
   retry; if it persists, the Page needs an operator.
@@ -901,10 +903,12 @@ For body work, pass comments:"none". To discover a long Page first, pass
 include_content:false; this returns its title, heads, retry authority and outline
 without body content or comments. The outline has entries, total, offset and
 next_offset; use outline_offset to fetch another page (outline_limit is at most 100).
-Each entry has block_id, node_index, type, heading_path and markdown_bytes, plus
-heading and level for a heading, and typed fields where they apply.
+Each entry has block_id, node_index, node_id, type, heading_path and
+markdown_bytes, plus heading and level for a heading, and typed fields where they
+apply.
 ${typedReadFields()}
-All addresses in an outline describe the returned heads, not stable IDs across edits.
+node_index and node_range describe the returned heads and shift with edits;
+node_id is the one stable address.
 Pass those heads as expected_heads when using node_range or outline_offset > 0.
 A concurrent change returns read_revision_changed and a fresh outline; choose again.
 

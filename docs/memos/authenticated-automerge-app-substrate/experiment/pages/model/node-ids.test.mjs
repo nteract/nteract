@@ -7,7 +7,7 @@ import { applyPageOperation, createPageData, initializePage, orderedBlockIds } f
 import { blockMarkdown, richDoc, textPath } from "./richtext.mjs";
 import { projectReadContent } from "./read-content.mjs";
 import { projectReadChanges } from "./read-changes.mjs";
-import { nodeIds, resolveNodeId } from "./node-ids.mjs";
+import { MAX_NODE_ID, nodeIds, nodeRange, resolveNodeId } from "./node-ids.mjs";
 
 const pageId = "44444444-4444-4444-8444-444444444444";
 const assetId = "e".repeat(64);
@@ -274,7 +274,7 @@ test("delete_node refuses an id that doesn't name a live node in the block", () 
     [{ op: "delete_node", block_id: id, node_id: A.getCursor(doc, textPath(id), 2) }],
     notFound,
   );
-  for (const node_id of [undefined, null, "", 7, "x".repeat(129)])
+  for (const node_id of [undefined, null, "", 7, "x".repeat(MAX_NODE_ID + 1)])
     refuses(doc, [{ op: "delete_node", block_id: id, node_id }], /node_id must be a string/);
   refuses(doc, [{ op: "delete_node", block_id: "missing", node_id: table }], /Block not found/);
   // Nothing in the batch applies when one delete_node is refused.
@@ -339,4 +339,183 @@ test("read_page_changes names the node it reports by id, deleted ones included",
   const updated = changes.find((change) => change.change === "updated");
   assert.equal(updated.node_id, heading);
   assert.equal(resolveNodeId(after, id, heading).index, 1);
+});
+
+test("every node kind gets an id at its own opening marker", () => {
+  const { doc, id } = fixture(
+    [
+      "Intro",
+      "```js\nlet x = 1;\n```",
+      "1. one\n2. two",
+      "- [ ] task\n- [x] done",
+      "- outer\n  - inner",
+      "> quoted\n>\n> - listed",
+      "Closing",
+    ].join("\n\n"),
+  );
+  const entries = outline(doc, id);
+  assert.deepEqual(
+    entries.map((entry) => entry.type),
+    [
+      "paragraph",
+      "code-block",
+      "ordered-list",
+      "task-list",
+      "bullet-list",
+      "blockquote",
+      "paragraph",
+    ],
+  );
+  // Each id is the cursor at the first non-embed top-level marker of its
+  // node, found here by scanning the stored spans, not through nodeIds.
+  const opening = [];
+  let at = 0,
+    previous = null;
+  for (const span of A.spans(doc, textPath(id))) {
+    if (span.type === "block" && !span.value.isEmbed && !span.value.parents.length) {
+      const type = String(span.value.type);
+      // Items of one list share a list; only the first opens it.
+      if (!(type.endsWith("-list-item") && type === previous)) opening.push(at);
+      previous = type;
+    }
+    at += span.type === "text" ? span.value.length : 1;
+  }
+  assert.deepEqual(
+    entries.slice(1).map((entry) => entry.node_id),
+    opening.map((index) => A.getCursor(doc, textPath(id), index)),
+  );
+  // Each kind deletes cleanly, and only itself.
+  for (const entry of entries.slice(1)) {
+    const after = edit(doc, [{ op: "delete_node", block_id: id, node_id: entry.node_id }]).doc;
+    assert.deepEqual(
+      outline(after, id).map((rest) => rest.node_id),
+      entries.map((rest) => rest.node_id).filter((nodeId) => nodeId !== entry.node_id),
+      entry.type,
+    );
+  }
+});
+
+test("a batch can delete the opening node and the paragraph after it", () => {
+  const { doc, id } = fixture("## H\n\nP1\n\nP2");
+  const [heading, first, second] = outline(doc, id).map((entry) => entry.node_id);
+  const { doc: after, result } = edit(doc, [
+    { op: "delete_node", block_id: id, node_id: heading },
+    { op: "delete_node", block_id: id, node_id: first },
+  ]);
+  assert.deepEqual(
+    result.edits.map((entry) => entry.type),
+    ["heading", "paragraph"],
+  );
+  assert.equal(blockMarkdown(after.blocks[id]), "P2");
+  // P2 now opens the block: as the editor writes it, with no marker.
+  assert.equal(A.spans(after, textPath(id))[0].type, "text");
+  assert.equal(outline(after, id)[0].node_id, null);
+  // In the other order too.
+  const reversed = edit(doc, [
+    { op: "delete_node", block_id: id, node_id: first },
+    { op: "delete_node", block_id: id, node_id: heading },
+  ]).doc;
+  assert.equal(blockMarkdown(reversed.blocks[id]), "P2");
+  assert.notEqual(second, null);
+});
+
+test("an explicit opening paragraph keeps its marker when another node is deleted", () => {
+  const { doc: base, id } = fixture("Opening\n\n## Heading\n\nClosing");
+  // An adapter-written block opens with an explicit paragraph marker.
+  const doc = A.change(base, (draft) =>
+    A.splitBlock(draft, textPath(id), 0, {
+      type: S("paragraph"),
+      parents: [],
+      attrs: {},
+      isEmbed: false,
+    }),
+  );
+  const [opening, heading] = outline(doc, id).map((entry) => entry.node_id);
+  assert.equal(typeof opening, "string");
+  const after = edit(doc, [{ op: "delete_node", block_id: id, node_id: heading }]).doc;
+  assert.equal(outline(after, id)[0].node_id, opening);
+});
+
+test("delete_node refuses to join the lists on either side into one", () => {
+  const { doc, id } = fixture("Intro\n\n- a\n\n---\n\n- b");
+  const rule = idOf(doc, id, "horizontal-rule");
+  refuses(
+    doc,
+    [{ op: "delete_node", block_id: id, node_id: rule }],
+    /would join the bullet-lists before and after this node into one list/,
+  );
+  // Different kinds of list stay separate, so that delete goes through.
+  const mixed = fixture("Intro\n\n- a\n\n---\n\n1. b");
+  const after = edit(mixed.doc, [
+    {
+      op: "delete_node",
+      block_id: mixed.id,
+      node_id: idOf(mixed.doc, mixed.id, "horizontal-rule"),
+    },
+  ]).doc;
+  assert.deepEqual(
+    outline(after, mixed.id).map((entry) => entry.type),
+    ["paragraph", "bullet-list", "ordered-list"],
+  );
+  // Deleting the rule and one of the lists in the same batch is fine.
+  const both = edit(doc, [
+    { op: "delete_node", block_id: id, node_id: idOf(doc, id, "bullet-list") },
+    { op: "delete_node", block_id: id, node_id: rule },
+  ]).doc;
+  assert.equal(blockMarkdown(both.blocks[id]), "Intro\n\n- b");
+});
+
+test("a node range never runs past a next node with no marker", () => {
+  const ids = [
+    { id: null, at: null },
+    { id: "a", at: 5 },
+    { id: null, at: null },
+    { id: "b", at: 20 },
+  ];
+  assert.deepEqual(nodeRange(ids, 3, 30), { start: 20, end: 30 });
+  assert.throws(() => nodeRange(ids, 1, 30), /can't tell where this node ends/);
+  assert.deepEqual(
+    nodeRange(
+      [
+        { id: "c", at: 0 },
+        { id: "d", at: 9 },
+      ],
+      0,
+      12,
+    ),
+    { start: 0, end: 9 },
+  );
+});
+
+test("delete_node beside a peer typing into the same node merges into a valid tree", () => {
+  const { doc, id } = fixture();
+  const quote = idOf(doc, id, "blockquote");
+  const deleted = edit(A.clone(doc, { actor: "04".repeat(16) }), [
+    { op: "delete_node", block_id: id, node_id: quote },
+  ]).doc;
+  const typed = patch(A.clone(doc, { actor: "05".repeat(16) }), [
+    { op: "replace_match", block_id: id, match_text: "quoted", replacement: "quoted text" },
+  ]);
+  const merged = A.merge(A.clone(deleted), typed);
+  richDoc(merged.blocks[id], pageId).check();
+  assert.ok(outline(merged, id).every((entry) => entry.node_id !== quote));
+});
+
+test("read_page_changes reports a block without node ids as a whole block", () => {
+  const { doc: base, id } = fixture("| a | b |\n| --- | --- |\n| After | 2 |\n\n## Heading");
+  const since = A.getHeads(base);
+  const doc = A.change(base, (draft) =>
+    A.splitBlock(draft, textPath(id), draft.blocks[id].richText.indexOf("After") + 2, {
+      type: S("future-chart"),
+      parents: [S("table"), S("table-row"), S("table-cell")],
+      attrs: {},
+      isEmbed: false,
+    }),
+  );
+  const { changes } = projectReadChanges(doc, { since_heads: since });
+  assert.deepEqual(
+    changes.map((change) => [change.scope, change.change]),
+    [["block", "updated"]],
+  );
+  assert.match(changes[0].markdown, /Unsupported node: future-chart/);
 });

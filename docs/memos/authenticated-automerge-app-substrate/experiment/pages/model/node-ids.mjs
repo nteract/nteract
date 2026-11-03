@@ -18,7 +18,9 @@ import { eventsWithIndexChanges, traverseSpans } from "@automerge/prosemirror/di
 import { pmDocFromSpans } from "@automerge/prosemirror";
 import { adapter, codeTextUnmarked, richDoc, textPath } from "./richtext.mjs";
 
-const MAX_NODE_ID = 128;
+// A cursor is `<counter>@<actor hex>`; Pages accepts actors of up to 64 bytes
+// (worker/actor-authorship.mjs), 128 hex characters.
+export const MAX_NODE_ID = 192;
 
 /** For each top-level node of rich block `blockId`, in order: `{ id, at }`,
  * the cursor at its opening marker and that marker's index in the text, or
@@ -86,12 +88,22 @@ export function resolveNodeId(doc, blockId, nodeId) {
     throw notFound(
       "node_id doesn't name a node in this block: it was deleted, or it came from another block. Read the outline again for current ids.",
     );
-  const next = ids[index + 1]?.at;
-  const end =
-    next ??
-    A.spans(doc, textPath(blockId)).reduce(
-      (length, span) => length + (span.type === "text" ? span.value.length : 1),
-      0,
+  const length = A.spans(doc, textPath(blockId)).reduce(
+    (total, span) => total + (span.type === "text" ? span.value.length : 1),
+    0,
+  );
+  return { index, ...nodeRange(ids, index, length) };
+}
+
+/** The text range `[start, end)` of node `index`: its marker up to the next
+ * node's marker, or to the end of the text for the last node. A node with no
+ * marker after the first can't bound the range, so that's refused rather
+ * than letting the range run on over the nodes after it. */
+export function nodeRange(ids, index, length) {
+  const next = ids[index + 1];
+  if (next && next.at === null)
+    throw Error(
+      "delete_node can't tell where this node ends: the node after it has no marker. Edit the block with replace_block_markdown or delete_block instead.",
     );
-  return { index, start: ids[index].at, end };
+  return { start: ids[index].at, end: next ? next.at : length };
 }

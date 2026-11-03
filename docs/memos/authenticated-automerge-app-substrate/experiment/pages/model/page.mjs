@@ -199,28 +199,47 @@ function applyEdit(doc, op, trace, context) {
   } else if (op.op === "delete_block") {
     delete doc.blocks[id];
   } else if (op.op === "delete_node") {
-    return deleteNode(doc, id, op, trace);
+    return deleteNode(doc, id, op, trace, context.opened);
   } else throw Error("Unsupported edit operation");
 }
+const LISTS = new Set(["bullet_list", "ordered_list", "task_list"]);
 /** Delete the top-level node `op.node_id` names: its marker through the next
  * node's marker, so its text, marks and children go with it and its
- * neighbours keep their identity. A block left opening with a plain paragraph
- * marker loses that marker, as the editor would on its next edit. */
-function deleteNode(doc, id, op, trace) {
+ * neighbours keep their identity. Refused when it would join the lists on
+ * either side into one: a list has no marker of its own, so they'd merge.
+ * A delete of the node that opens the block is recorded in `opened`; the
+ * batch drops the next node's plain paragraph marker once it's done
+ * (dropOpeningMarkers), so later deletes in the batch still find their ids. */
+function deleteNode(doc, id, op, trace, opened) {
   if (!isRich(doc.blocks[id]))
     throw Object.assign(Error("delete_node needs a rich-text block; this block is Markdown"), {
       code: "node_not_found",
     });
   const { index, start, end } = resolveNodeId(doc, id, op.node_id);
-  const type = agentType(richDoc(doc.blocks[id], doc.page_id).child(index).type.name);
-  const path = textPath(id);
-  A.splice(doc, path, start, end - start);
-  if (redundantFirstMarker(A.spans(doc, path))) A.splice(doc, path, 0, 1);
+  const tree = richDoc(doc.blocks[id], doc.page_id);
+  const before = index > 0 ? tree.child(index - 1).type.name : null;
+  const after = index + 1 < tree.childCount ? tree.child(index + 1).type.name : null;
+  if (before && before === after && LISTS.has(before))
+    throw Error(
+      `delete_node would join the ${agentType(before)}s before and after this node into one list. Delete one of the lists too, or rewrite the block with replace_block_markdown.`,
+    );
+  const type = agentType(tree.child(index).type.name);
+  A.splice(doc, textPath(id), start, end - start);
+  if (start === 0) opened.add(id);
   // Removing whole top-level nodes keeps the tree valid; check it anyway, so
   // a malformed result can never be committed.
   richDoc(doc.blocks[id], doc.page_id).check();
   trace?.push({ type: "block", block_id: id });
   return { op: "delete_node", block_id: id, node_id: op.node_id, type };
+}
+/** A block whose opening node a delete removed loses the plain paragraph
+ * marker it may now open with, as the editor would on its next edit. */
+function dropOpeningMarkers(doc, opened) {
+  for (const id of opened) {
+    if (!Object.hasOwn(doc.blocks, id) || !isRich(doc.blocks[id])) continue;
+    const path = textPath(id);
+    if (redundantFirstMarker(A.spans(doc, path))) A.splice(doc, path, 0, 1);
+  }
 }
 export function applyPageOperation(doc, options) {
   const result = applyOperation(doc, options);
@@ -244,11 +263,12 @@ function applyOperation(doc, { operation, arguments: args = {}, trace }) {
     return anchorOccurrence(doc, id, op);
   });
   const budget = { writes: 0 };
+  const opened = new Set();
   const edits = [],
     inserted_images = [],
     inserted_nodes = [];
   for (const [index, op] of operations.entries()) {
-    const edit = applyEdit(doc, op, trace, { anchor: anchors[index], budget });
+    const edit = applyEdit(doc, op, trace, { anchor: anchors[index], budget, opened });
     if (edit?.op === "insert_image") {
       const { op: _op, ...image } = edit;
       inserted_images.push(image);
@@ -257,6 +277,7 @@ function applyOperation(doc, { operation, arguments: args = {}, trace }) {
       inserted_nodes.push(node);
     } else if (edit) edits.push(edit);
   }
+  dropOpeningMarkers(doc, opened);
   return {
     page_id: doc.page_id,
     ...(edits.length ? { edits } : {}),
