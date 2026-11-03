@@ -9,7 +9,14 @@ import { codeBlock } from "wordgard/schema";
 import { tables } from "wordgard/table";
 import { textPath, blockMarkdown, validateRich } from "../model/richtext.mjs";
 import { createPageData, initializePage, orderedBlockIds } from "../model/page.mjs";
-import { schema, decode, CodeBlock, CodeBlockLanguage, Paragraph } from "./wordgard-model.mjs";
+import {
+  schema,
+  decode,
+  CodeBlock,
+  CodeBlockLanguage,
+  PagesDataframe,
+  Paragraph,
+} from "./wordgard-model.mjs";
 import { createWordgardBinding, wordgardCodeNewlines } from "./wordgard-binding.mjs";
 import { exitBlock, finalBlock, leaveFinalBlock } from "./wordgard-leave-block.mjs";
 
@@ -222,4 +229,13 @@ test("a real empty paragraph after a final code block survives a language change
   // The caret stays on the empty line, and typing there writes after the code.
   f.editor.type("Still here");
   assert.equal(f.markdown(), "Intro\n\n```python\nlet x = 1\n```\n\nStill here");
+});
+
+test("a Page block that ends in a dataframe offers a line below it", () => {
+  const src = `/api/pages/33333333-3333-4333-8333-333333333333/assets/${"a".repeat(64)}`;
+  const doc = schema.doc([
+    Paragraph.create([Leaf.text("Intro")]),
+    PagesDataframe.of({ src, media_type: "application/vnd.apache.parquet", title: "Usage" }),
+  ]);
+  assert.equal(finalBlock(doc)?.node.type, PagesDataframe);
 });

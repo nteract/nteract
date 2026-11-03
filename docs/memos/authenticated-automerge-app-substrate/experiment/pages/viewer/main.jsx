@@ -42,6 +42,7 @@ import { PRODUCT_NAME, tabTitle } from "../shared/product.mjs";
 import { maintainBrowserSession } from "./browser-session.mjs";
 import { earlyConnectAnswer, requestSession } from "./early-session.mjs";
 import { PagePreview } from "./PagePreview.jsx";
+import { BlockBoundary } from "./BlockBoundary.jsx";
 import { BootPreview, visiblePreview } from "./boot-preview.mjs";
 import { openPageWithRetry } from "./page-open.mjs";
 // app.css carries the editor's styles too, ahead of style.css so the cascade
@@ -1437,32 +1438,41 @@ function App() {
                 {page.blocks.map((block, index) => (
                   <section className="page-block" data-block-id={block.id} key={block.id}>
                     {block.format === "automerge-rich-text-v1" ? (
-                      <WordgardEditor
-                        replica={session}
-                        id={block.id}
-                        editable={session.canWrite}
-                        commentable={session.canComment}
-                        onError={setError}
-                        onComment={(selected) => startComment(block.id, selected)}
-                        onRevealComment={selectComment}
-                        toolbarHost={active === block.id ? toolbar : null}
-                        toolbarOpen={toolbarOpen}
-                        placeholder={
-                          emptyPage && index === 0 && session.canWrite
-                            ? editor.module.WRITING_PROMPT
-                            : null
+                      <BlockBoundary
+                        onError={(error) =>
+                          console.error(
+                            `Pages block ${block.id} failed to draw:`,
+                            error?.stack ?? error,
+                          )
                         }
-                        onActivate={() => activateBlock(block.id)}
-                        threads={threads}
-                        commentTarget={target}
-                        commentDraft={
-                          composerState.composer?.draft.blockId === block.id &&
-                          (composerState.state.name === "open" ||
-                            composerState.state.name === "sending")
-                            ? composerState.composer.draft
-                            : null
-                        }
-                      />
+                      >
+                        <WordgardEditor
+                          replica={session}
+                          id={block.id}
+                          editable={session.canWrite}
+                          commentable={session.canComment}
+                          onError={setError}
+                          onComment={(selected) => startComment(block.id, selected)}
+                          onRevealComment={selectComment}
+                          toolbarHost={active === block.id ? toolbar : null}
+                          toolbarOpen={toolbarOpen}
+                          placeholder={
+                            emptyPage && index === 0 && session.canWrite
+                              ? editor.module.WRITING_PROMPT
+                              : null
+                          }
+                          onActivate={() => activateBlock(block.id)}
+                          threads={threads}
+                          commentTarget={target}
+                          commentDraft={
+                            composerState.composer?.draft.blockId === block.id &&
+                            (composerState.state.name === "open" ||
+                              composerState.state.name === "sending")
+                              ? composerState.composer.draft
+                              : null
+                          }
+                        />
+                      </BlockBoundary>
                     ) : (
                       <pre>{block.markdown ?? "Unsupported block"}</pre>
                     )}

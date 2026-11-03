@@ -255,14 +255,14 @@ test("an unknown block or embed decodes to a notice and encodes back exactly", (
   };
   const block = withUnknown(
     "Before\n\nAfter",
-    { type: "dataframe", parents: [], attrs, isEmbed: false },
+    { type: "future-chart", parents: [], attrs, isEmbed: false },
     beforeAfter,
   );
   const decoded = decode(A.spans(block, textPath("one")));
   assert.equal(decoded.lossy, false);
   const node = decoded.doc.content[1];
   assert.equal(node.type, PagesUnknownBlock);
-  assert.equal(node.param.type, "dataframe");
+  assert.equal(node.param.type, "future-chart");
   assert.deepEqual(node.param.immutable, ["title"]);
   assert.deepEqual(node.param.parents, []);
   assert.deepEqual(rewriteWrites(block), []);
@@ -290,7 +290,7 @@ test("an unknown block or embed decodes to a notice and encodes back exactly", (
   }
   const listed = withUnknown(
     "- one\n- After",
-    { type: "dataframe", parents: ["unordered-list-item"], isEmbed: false },
+    { type: "future-chart", parents: ["unordered-list-item"], isEmbed: false },
     (text) => text.length,
   );
   assert.equal(decode(A.spans(listed, textPath("one"))).lossy, false);
@@ -302,7 +302,7 @@ test("decode marks a block it can't draw as stored lossy, and keeps the stored m
     [
       "a block stored in a table cell",
       "| a | b |\n| --- | --- |\n| After | 2 |",
-      { type: "dataframe", parents: ["table", "table-row", "table-cell"], isEmbed: false },
+      { type: "future-chart", parents: ["table", "table-row", "table-cell"], isEmbed: false },
       insideAfter,
       PagesUnknownEmbed,
     ],
@@ -336,7 +336,7 @@ test("decode marks a block it can't draw as stored lossy, and keeps the stored m
     if (drawn === PagesUnknownEmbed) {
       const spans = encode(decoded.doc);
       const stored = spans.find(
-        (span) => span.type === "block" && String(span.value.type) === "dataframe",
+        (span) => span.type === "block" && String(span.value.type) === "future-chart",
       );
       assert.equal(stored.value.isEmbed, false, label);
       assert.deepEqual(
@@ -350,7 +350,7 @@ test("decode marks a block it can't draw as stored lossy, and keeps the stored m
 
 test("an unknown node draws only a notice, so copying it copies no text", () => {
   const value = {
-    type: "dataframe",
+    type: "future-chart",
     attrs: { title: "secret" },
     immutable: [],
     parents: [],
@@ -362,7 +362,7 @@ test("an unknown node draws only a notice, so copying it copies no text", () => 
   const attrs = Object.fromEntries(
     element.attrs.flatMap((_, i, all) => (i % 2 ? [] : [[all[i], all[i + 1]]])),
   );
-  assert.equal(attrs["data-pages-node"], "dataframe");
+  assert.equal(attrs["data-pages-node"], "future-chart");
   assert.ok(!JSON.stringify(element).includes("secret"));
   // A malformed value can't be written back.
   assert.throws(
