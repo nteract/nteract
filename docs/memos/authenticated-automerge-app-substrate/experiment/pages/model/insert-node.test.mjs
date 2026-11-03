@@ -202,12 +202,50 @@ test("replace_block_markdown refuses to drop or edit a dataframe's line", () => 
     );
 });
 
-test("a read-back line for a dataframe the block doesn't hold stays a link", () => {
+test("replace_block_markdown keeps a dataframe only as its own top-level line, once", () => {
   const { doc, id } = mixed();
-  const other = `/api/pages/${pageId}/assets/${"f".repeat(64)}`;
-  const markdown = `${projectPage(doc).blocks[0].markdown}\n\n[Dataframe: Other](${other})`;
-  const { doc: after } = edit(doc, [{ op: "replace_block_markdown", block_id: id, markdown }]);
-  assert.equal(dataframes(after, id).length, 1);
+  const line = `[Dataframe: Usage by day](${src})`;
+  const other = `[Dataframe: Other](/api/pages/${pageId}/assets/${"f".repeat(64)})`;
+  const refused = (markdown, pattern) =>
+    assert.throws(
+      () => edit(doc, [{ op: "replace_block_markdown", block_id: id, markdown }]),
+      (error) => error.code === "markdownless_node" && pattern.test(error.message),
+      markdown,
+    );
+  // Moved into a container: refused with a code, not "Match cannot be null".
+  refused(`hello\n\n- ${line}\n\nworld`, /can't go inside a quote, list or table/);
+  refused(`hello\n\n> ${line}\n\nworld`, /can't go inside a quote, list or table/);
+  refused(`hello\n\n| a |\n| --- |\n| ${line} |`, /can't go inside/);
+  // Duplicated: refused instead of leaving a look-alike link.
+  refused(`hello\n\n${line}\n\n${line}\n\nworld`, /appears more than once/);
+  // A line for a dataframe the block doesn't hold reads like one: refused.
+  refused(`hello\n\n${line}\n\n${other}\n\nworld`, /doesn't hold/);
+  // Text around the line can change; the node keeps its stored marker, the
+  // same Automerge character, so a cursor on it still resolves to it.
+  const before = dataframes(doc, id);
+  const markerAt = (d) => {
+    let at = 0;
+    for (const span of A.spans(d, textPath(id))) {
+      if (span.type === "block" && String(span.value.type) === "dataframe") return at;
+      at += span.type === "block" ? 1 : span.value.length;
+    }
+    return -1;
+  };
+  const cursor = A.getCursor(doc, textPath(id), markerAt(doc));
+  const { doc: after } = edit(doc, [
+    { op: "replace_block_markdown", block_id: id, markdown: `Intro\n\nhello\n\n${line}\n\nworld` },
+  ]);
+  assert.deepEqual(dataframes(after, id), before);
+  assert.equal(A.getCursor(after, textPath(id), markerAt(after)), cursor);
+  // Ordinary links stay links.
+  const { doc: linked } = edit(doc, [
+    {
+      op: "replace_block_markdown",
+      block_id: id,
+      markdown: `hello\n\n${line}\n\n[docs](https://example.com)`,
+    },
+  ]);
+  assert.equal(dataframes(linked, id).length, 1);
 });
 
 test("replace_match and set_node beside a dataframe leave it unchanged", () => {

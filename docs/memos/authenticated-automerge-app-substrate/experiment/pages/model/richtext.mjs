@@ -1778,28 +1778,61 @@ export function setRichMarkdownKeepingNodes(doc, id, source) {
   if (!existing.length) return setRichMarkdown(doc, id, source);
   const tree = parseAgentMarkdown(source);
   const unmatched = [...existing];
-  const restore = (node) => {
+  const refuse = (message) => {
+    throw Object.assign(Error(message), { code: "markdownless_node" });
+  };
+  // Look-alike lines the walk found; the most specific one is reported.
+  const problems = new Set();
+  // The link a paragraph holds when its whole text is one link: the shape of
+  // a dataframe's read-back line.
+  const lineLink = (node) => {
     const only = node.type.name === "paragraph" && node.childCount === 1 ? node.firstChild : null;
     const link = only?.isText ? only.marks.find((mark) => mark.type.name === "link") : null;
-    if (link) {
-      const index = unmatched.findIndex(
-        (candidate) =>
-          candidate.attrs.src === link.attrs.href &&
-          dataframeLabel(candidate.attrs.title) === only.text,
-      );
+    return link ? { href: link.attrs.href, text: only.text } : null;
+  };
+  const sameNode = (candidate, line) =>
+    candidate.attrs.src === line.href && dataframeLabel(candidate.attrs.title) === line.text;
+  // A line that reads as a dataframe's read-back line: a "Dataframe" label
+  // linking a Page asset. Kept as a plain link it would read exactly like the
+  // node, so it's refused unless it brings a node back.
+  const looksLikeNode = (line) =>
+    /^Dataframe(: .*)?$/.test(line.text) && parseAssetPath(line.href) !== null;
+  // A dataframe is a top-level node of its block. Its line becomes the
+  // original node again only there, once per node.
+  const restore = (node, depth) => {
+    const line = depth === 1 ? lineLink(node) : null;
+    if (line) {
+      const index = unmatched.findIndex((candidate) => sameNode(candidate, line));
       if (index !== -1) {
         const [original] = unmatched.splice(index, 1);
         // The original attrs, unknown ones included (the adapter's
         // unknownAttrs); pageSpans stores every string attr immutable.
         return schema.node("dataframe", { ...original.attrs, isAmgBlock: true });
       }
+      if (existing.some((candidate) => sameNode(candidate, line))) problems.add("duplicate");
+      else if (looksLikeNode(line)) problems.add("foreign");
+      return node;
     }
+    // Any text node: a table cell holds its text directly.
+    const nested =
+      depth > 1 && node.isTextblock && node.childCount === 1
+        ? lineLink(schema.node("paragraph", null, node.content))
+        : null;
+    if (
+      nested &&
+      (existing.some((candidate) => sameNode(candidate, nested)) || looksLikeNode(nested))
+    )
+      problems.add("nested");
     if (node.isLeaf || node.isTextblock) return node;
     const children = [];
-    node.forEach((child) => children.push(restore(child)));
+    node.forEach((child) => children.push(restore(child, depth + 1)));
     return node.copy(node.content.constructor.from(children));
   };
-  const kept = restore(tree);
+  const kept = restore(tree, 0);
+  if (problems.has("nested"))
+    refuse(
+      "A dataframe's line can't go inside a quote, list or table. Keep it on its own line at the top level of the block.",
+    );
   if (unmatched.length)
     throw Object.assign(
       Error(
@@ -1812,6 +1845,14 @@ export function setRichMarkdownKeepingNodes(doc, id, source) {
           .join(", ")}. To remove one, use delete_block on a block that holds only it.`,
       ),
       { code: "markdownless_node" },
+    );
+  if (problems.has("duplicate"))
+    refuse(
+      "A dataframe's line appears more than once. Each dataframe keeps exactly one line; to copy one, use insert_node with its asset_id.",
+    );
+  if (problems.has("foreign"))
+    refuse(
+      "This line reads as a dataframe this block doesn't hold. Markdown can't create or move a dataframe; use insert_node with its asset_id.",
     );
   const spans = pageSpans(kept);
   A.updateSpans(doc, textPath(id), spans, updateSpansConfig);
