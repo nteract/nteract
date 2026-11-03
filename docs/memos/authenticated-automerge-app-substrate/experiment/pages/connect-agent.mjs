@@ -116,6 +116,10 @@ export function connectAgentResponse(request, env) {
       <p>Start Kilo from a shell that has the variable. When it's unset, Kilo sends an empty header, and Pages shows no label.</p>
       <p class="setup-note">Labels are optional. Each MCP session already gets its own caret through <code>Mcp-Session-Id</code>, so two unlabeled sessions on one key still show separately.</p>
     </details>
+    <details class="setup-details" id="client-model"><summary>Name your client and model</summary>
+      <p>Two more optional headers tell Pages which harness and model made a request. <code>X-Pages-Client</code> is <code>&lt;harness&gt;/&lt;version&gt;</code>, such as <code>claude-code/2.1.0</code>. <code>X-Pages-Model</code> is the model id, such as <code>anthropic/claude-opus-5.5</code>.</p>
+      <p>Pages records them in usage telemetry only. They never affect access. Send printable ASCII, at most 120 characters each; longer values are truncated. Without <code>X-Pages-Client</code>, Pages uses the MCP client's name and version from <code>initialize</code>. MCP has no model field, so send <code>X-Pages-Model</code> when you know it.</p>
+    </details>
   </section>
   <section aria-labelledby="setup-try"><h2 id="setup-try"><span>4</span> Check the connection</h2>
     <p>Ask your agent: <q>List my Pages.</q> A successful response, even an empty list, means you're connected. A config file or a client status label alone doesn't verify access.</p>

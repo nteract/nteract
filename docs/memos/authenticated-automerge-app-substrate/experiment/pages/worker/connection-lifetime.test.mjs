@@ -752,3 +752,49 @@ test("a tab reconnecting while its dead socket still holds the key replaces that
   assert.equal(f.page.policy.sessions.size, 0);
   assert.equal(f.page.wires.size, 0);
 });
+
+/** Usage lines this test's Page writes from now on. */
+function captureUsage(t) {
+  const lines = [];
+  t.mock.method(console, "info", (line) => {
+    const parsed = JSON.parse(line);
+    if (parsed.event === "pages.usage.v1") lines.push(parsed);
+  });
+  return lines;
+}
+
+test("an admitted sync session records sync.open after admission and sync.close on disconnect", async (t) => {
+  const f = fixture(t, undefined, {
+    metadata: { owner: "user:owner", pageId: "55555555-5555-4555-8555-555555555555" },
+  });
+  const lines = captureUsage(t);
+  await drain();
+  assert.deepEqual(
+    lines.map(({ action, surface, admitted, outcome }) => ({ action, surface, admitted, outcome })),
+    [{ action: "sync.open", surface: "browser-sync", admitted: true, outcome: "ok" }],
+  );
+  assert.equal(lines[0].principal, "user:owner");
+  assert.equal(lines[0].driver, "fixture-browser");
+  assert.equal(lines[0].page_id, "55555555-5555-4555-8555-555555555555");
+  t.mock.timers.tick(5000);
+  f.socket.close();
+  await f.background;
+  const close = lines.filter((line) => line.action === "sync.close");
+  assert.equal(close.length, 1);
+  assert.equal(close[0].latency_ms, 5000);
+});
+
+for (const failure of ["backend", "binding-mismatch"]) {
+  test(`a refused sync admission (${failure}) records sync.open admitted false and no sync.close`, async (t) => {
+    const f = fixture(t, failure);
+    const lines = captureUsage(t);
+    await f.background;
+    f.socket.close();
+    await drain();
+    assert.equal(lines.length, 1);
+    assert.equal(lines[0].action, "sync.open");
+    assert.equal(lines[0].admitted, false);
+    assert.equal(lines[0].outcome, f.admissionLogs[0].reason);
+    assert.equal(lines.filter((line) => line.action === "sync.close").length, 0);
+  });
+}

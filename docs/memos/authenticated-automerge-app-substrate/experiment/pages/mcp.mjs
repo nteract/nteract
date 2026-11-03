@@ -9,6 +9,7 @@ import {
   renamedTool,
   withBrowserLinks,
 } from "./worker/project-api.mjs";
+import { mcpSessionId, usageDropped } from "./worker/usage.mjs";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
 import {
@@ -780,8 +781,10 @@ const failed = (body) => ({
 
 /** Caller verifies credentials before constructing this request-local server.
  * Every invocation goes through the same authorization and model as HTTP tools.
+ * `invoke(operation, args, { kind })` gets kind "resource" for a resource
+ * list or read, and none for a tool call.
  */
-export async function handleMcp(request, invoke, env) {
+export async function handleMcp(request, invoke, env, { onInitialize } = {}) {
   if (request.method !== "POST")
     return new Response(null, { status: 405, headers: { Allow: "POST" } });
   // A tunnel may terminate TLS before this request reaches the runtime. Only
@@ -919,10 +922,14 @@ export async function handleMcp(request, invoke, env) {
     }
   });
   server.setRequestHandler(ListResourcesRequestSchema, async ({ params }) => {
-    const result = await invoke("list_pages", {
-      limit: 100,
-      ...(typeof params?.cursor === "string" && { cursor: params.cursor }),
-    });
+    const result = await invoke(
+      "list_pages",
+      {
+        limit: 100,
+        ...(typeof params?.cursor === "string" && { cursor: params.cursor }),
+      },
+      { kind: "resource" },
+    );
     if (!result.ok) throw Error("Page listing failed");
     const { pages, next_cursor } = await result.json();
     return {
@@ -944,7 +951,7 @@ export async function handleMcp(request, invoke, env) {
       (url.href !== origin + route.path && url.href !== origin + "/?page=" + pageId)
     )
       throw Error("Unknown Page resource");
-    const result = await invoke("read_page", { page_id: pageId });
+    const result = await invoke("read_page", { page_id: pageId }, { kind: "resource" });
     if (!result.ok) throw Error("Page access denied");
     return {
       contents: [{ uri: params.uri, mimeType: "application/json", text: await result.text() }],
@@ -955,9 +962,9 @@ export async function handleMcp(request, invoke, env) {
     enableJsonResponse: true,
   });
   await server.connect(transport);
-  let initialize = false;
+  let initialize;
   try {
-    initialize = isInitialize(await request.clone().json());
+    initialize = initializeParams(await request.clone().json());
   } catch {
     // The transport reports malformed bodies itself.
   }
@@ -981,15 +988,28 @@ export async function handleMcp(request, invoke, env) {
     // Presence session: the transport stays stateless (every request is
     // independent), but initialize hands the client an Mcp-Session-Id. Clients
     // echo it, and Pages uses it only to tell agent sessions apart in presence.
-    if (initialize && response.ok) response.headers.set("Mcp-Session-Id", crypto.randomUUID());
+    // The id also carries clientInfo's name/version (worker/usage.mjs), so
+    // usage events for later tool calls can name the client.
+    if (initialize && response.ok) {
+      response.headers.set("Mcp-Session-Id", mcpSessionId(initialize.clientInfo));
+      try {
+        onInitialize?.(initialize);
+      } catch {
+        // Usage telemetry never fails the request.
+        usageDropped();
+      }
+    }
     return response;
   } finally {
     await server.close();
   }
 }
 
-/** Whether a JSON-RPC body (single or batch) contains an initialize request. */
-function isInitialize(body) {
+/** The params of an initialize request in a JSON-RPC body (single or batch),
+ * or undefined when it has none. */
+function initializeParams(body) {
   const messages = Array.isArray(body) ? body : [body];
-  return messages.some((message) => message?.method === "initialize");
+  const message = messages.find((candidate) => candidate?.method === "initialize");
+  if (!message) return undefined;
+  return message.params && typeof message.params === "object" ? message.params : {};
 }

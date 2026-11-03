@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { handleMcp as handleMcpRequest, tools } from "../mcp.mjs";
 import { PRODUCT_NAME } from "../shared/product.mjs";
+import { logUsage } from "../worker/usage.mjs";
 const env = { NOTEBOOK_CLOUD_PUBLIC_ORIGIN: "https://pages.example" };
 const handleMcp = (request, invoke) => handleMcpRequest(request, invoke, env);
 const request = (method, params = {}, id = 1) =>
@@ -743,7 +744,7 @@ test("initialize hands out a presence session id; other calls don't, and stay st
     },
   );
   const id = init.headers.get("mcp-session-id");
-  assert.match(id, /^[0-9a-f-]{36}$/);
+  assert.match(id, /^[0-9a-f-]{36}\.[A-Za-z0-9_-]+$/);
   const again = await handleMcp(
     request("initialize", {
       protocolVersion: "2025-03-26",
@@ -757,6 +758,67 @@ test("initialize hands out a presence session id; other calls don't, and stay st
   const list = await handleMcp(request("tools/list"), async () => {});
   assert.equal(list.status, 200);
   assert.equal(list.headers.get("mcp-session-id"), null);
+});
+
+test("an initialize whose usage hook throws still succeeds, and the loss is counted", async (t) => {
+  const lines = [];
+  t.mock.method(console, "info", (line) => lines.push(JSON.parse(line)));
+  const init = await handleMcpRequest(
+    request("initialize", {
+      protocolVersion: "2025-03-26",
+      capabilities: {},
+      clientInfo: { name: "hook-test", version: "1" },
+    }),
+    async () => assert.fail("initialize invokes no tool"),
+    env,
+    {
+      onInitialize() {
+        throw Error("usage sink exploded");
+      },
+    },
+  );
+  assert.equal(init.status, 200);
+  assert.equal((await init.json()).result.serverInfo.name.length > 0, true);
+  assert.match(init.headers.get("mcp-session-id"), /^[0-9a-f-]{36}\./);
+  const next = logUsage({ action: "sync.open", surface: "browser-sync" });
+  assert.ok(next.dropped >= 1);
+  assert.equal(lines.at(-1).dropped, next.dropped);
+});
+
+test("MCP resources reach invoke() as kind resource; tool calls carry no kind", async () => {
+  const calls = [];
+  const invoke = async (operation, args, options) => {
+    calls.push({ operation, options });
+    return Response.json(
+      operation === "list_pages"
+        ? { pages: [] }
+        : { page_id: "44444444-4444-4444-8444-444444444444", title: "T", blocks: [] },
+    );
+  };
+  assert.equal((await handleMcp(request("resources/list"), invoke)).status, 200);
+  assert.equal(
+    (
+      await handleMcp(
+        request("resources/read", {
+          uri: "https://pages.example/p/44444444-4444-4444-8444-444444444444",
+        }),
+        invoke,
+      )
+    ).status,
+    200,
+  );
+  await handleMcp(
+    request("tools/call", {
+      name: "read_page",
+      arguments: { page_id: "44444444-4444-4444-8444-444444444444" },
+    }),
+    invoke,
+  );
+  assert.deepEqual(calls, [
+    { operation: "list_pages", options: { kind: "resource" } },
+    { operation: "read_page", options: { kind: "resource" } },
+    { operation: "read_page", options: undefined },
+  ]);
 });
 
 test("MCP advertises thread_ids for batch resolve and keeps the refusal's named IDs", async () => {

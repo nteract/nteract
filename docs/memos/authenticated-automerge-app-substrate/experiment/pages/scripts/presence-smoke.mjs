@@ -3,6 +3,7 @@
 import assert from "node:assert/strict";
 import { mkdir, writeFile } from "node:fs/promises";
 import { chromium, expect } from "@playwright/test";
+import { caretAndQuoteAttached } from "./presence-expectations.mjs";
 import { purgeTrashedFixture } from "./purge-fixture.mjs";
 
 const origin = process.env.PAGES_ORIGIN || "http://localhost:9896";
@@ -235,15 +236,13 @@ try {
   stage = "two authenticated browser selections are readable through MCP";
   await selectText(a, "opening caret", true);
   await selectText(b, selectionText);
+  // Wait for the asserted state, not a count: b's focus caret is attached
+  // before its range selection arrives.
   await expect
-    .poll(
-      async () => {
-        const state = await presence();
-        return state.participants.filter((peer) => peer.selection?.status === "attached").length;
-      },
-      { timeout: 15000 },
-    )
-    .toBe(2);
+    .poll(async () => caretAndQuoteAttached((await presence()).participants, selectionText), {
+      timeout: 15000,
+    })
+    .toBe(true);
   let observed = await presence();
   assert.equal(new Set(observed.participants.map((peer) => peer.peer_id)).size, 2);
   assert.ok(observed.participants.some((peer) => peer.selection.kind === "caret"));
