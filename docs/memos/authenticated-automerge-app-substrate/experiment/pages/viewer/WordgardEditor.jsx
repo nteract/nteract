@@ -97,6 +97,7 @@ import {
 import { PagesLink, TaskList, elements } from "./wordgard-model.mjs";
 import { taskLists } from "./wordgard-task-lists.mjs";
 import { markdownShortcuts } from "./wordgard-shortcuts.mjs";
+import { displaySymbols } from "./wordgard-symbols.mjs";
 import { clickBelowFinalBlock, exitBlock, leaveFinalBlock } from "./wordgard-leave-block.mjs";
 import { projectChanges } from "./wordgard-projection.mjs";
 import {
@@ -409,6 +410,7 @@ export function WordgardEditor(props) {
         wordgardCodeNewlines,
         wordgardListStarts,
         codeHighlighting,
+        displaySymbols,
         uploadPreviews,
         undoHistory.extension,
         permissions.current.of(editConfig(latest.current.editable)),
@@ -1055,8 +1057,7 @@ export function WordgardEditor(props) {
       else if (TABLE_COMMANDS[name]) {
         if (!selectedTable(editor.state)) return;
         Command.dispatch(editor, ...TABLE_COMMANDS[name]);
-      }
-      else if (marks[name]) Command.dispatch(editor, toggleMark, marks[name]);
+      } else if (marks[name]) Command.dispatch(editor, toggleMark, marks[name]);
       else if (name === "undo" || name === "redo")
         Command.dispatch(editor, name === "undo" ? undo : redo);
       else if (["bullet", "ordered", "task"].includes(name))

@@ -870,3 +870,20 @@
 .wordgard-table-convert:hover {
   background: var(--accent);
 }
+
+/* `!=` and `->` drawn as ≠ and →. The typed characters stay in the DOM (for
+   the caret, selection and copy) but are transparent; the symbol is painted
+   over their two-character box. See wordgard-symbols.mjs. */
+.wordgard-document wg-content .wg-symbol {
+  position: relative;
+  /* Hide the glyphs but keep `color`, so the symbol below inherits it. */
+  -webkit-text-fill-color: transparent;
+}
+.wordgard-document wg-content .wg-symbol::after {
+  content: attr(data-symbol);
+  position: absolute;
+  inset: 0;
+  -webkit-text-fill-color: currentColor;
+  text-align: center;
+  pointer-events: none;
+}

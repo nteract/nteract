@@ -1,8 +1,9 @@
-import { ChangeSet, Node, Plot } from "wordgard/doc";
-import { GardSelection } from "wordgard/state";
+import { ChangeSet, Leaf, Node, Plot } from "wordgard/doc";
+import { GardSelection, GardState, Transaction } from "wordgard/state";
 import { InputRule, KeyBinding, Wordgard } from "wordgard/editor";
 import {
   Command,
+  deleteUnit,
   enter,
   setTextblockType,
   toggleBlock,
@@ -478,6 +479,78 @@ export const markInputRules = [
   delimitedMarkRule("_", Emphasis),
 ];
 
+// Whether any text in from..to carries the inline code mark.
+function hasCode(state, from, to) {
+  let coded = false;
+  state.doc.iterate(from, to, (node) => {
+    if (node.isText && Code.isInSet(node.marks)) coded = true;
+  });
+  return coded;
+}
+
+// Marks an em dash substitution, so the field below can remember where it
+// went and Backspace right after it can put the typed `--` back.
+const emDashTyped = Transaction.Annotation.define();
+
+// Position of the em dash the last transaction typed, or -1. Any later
+// transaction (typing, deleting, moving the caret, a remote edit) clears it,
+// so Backspace restores `--` only straight after the substitution.
+const lastEmDash = GardState.Field.define({
+  create: () => -1,
+  update(_value, tr) {
+    const at = tr.annotation(emDashTyped);
+    return at ?? -1;
+  },
+});
+
+// A typed second `-` turns `--` into `—`. Only typing substitutes: Wordgard
+// runs input rules for `input.type` transactions only, so agent and remote
+// edits keep their `--`. Wordgard skips code blocks itself; the rule checks
+// the inline code mark. `--` alone at the start of an empty paragraph is left
+// for the horizontal rule shortcut, which fires on the third `-`.
+export const emDashInputRule = InputRule.define({
+  expr: /--$/,
+  apply(state, [typed]) {
+    if (state.readOnly) return null;
+    const from = typed.from.pos,
+      to = typed.to.pos;
+    const block = typed.to.textblockParent;
+    if (block && from === block.start && to === block.end) return null;
+    if (hasCode(state, from, to)) return null;
+    let marks = state.sel.activeMarks;
+    if (Code.isInSet(marks ?? [])) return null;
+    state.doc.iterate(from, to, (node) => {
+      if (node.isText) marks = node.marks;
+    });
+    return {
+      changes: { from, to, insert: [Leaf.text("\u2014", marks)] },
+      selection: { anchor: from + 1 },
+      annotations: [history.isolate.of(true), emDashTyped.of(from)],
+      userEvent: "input.markdown",
+    };
+  },
+});
+
+// Backspace right after an em dash substitution brings back the typed `--`,
+// in place of deleting the dash.
+export const emDashBackspace = Command.handler(deleteUnit, (editor, direction) => {
+  const { state } = editor;
+  if (direction !== "backward" || state.readOnly) return false;
+  const at = state.field(lastEmDash, false) ?? -1;
+  const { selection } = state;
+  if (at < 0 || !selection.isCursor || selection.head !== at + 1) return false;
+  let marks = null;
+  state.doc.iterate(at, at + 1, (node) => {
+    if (node.isText) marks = node.marks;
+  });
+  return {
+    changes: { from: at, to: at + 1, insert: [Leaf.text("--", marks ?? undefined)] },
+    selection: { anchor: at + 2 },
+    annotations: history.isolate.of(true),
+    userEvent: "delete.backward",
+  };
+});
+
 export const strikethroughKey = KeyBinding.of({
   key: "Mod-Shift-x",
   run: (editor) => !editor.state.readOnly && Command.dispatch(editor, toggleMark, Strikethrough),
@@ -492,6 +565,11 @@ export const markdownShortcuts = () => [
   bulletListOnStarOrPlus,
   // `---` alone in a paragraph becomes a horizontal rule.
   horizontalRule.createOnDashes,
+  // `--` becomes an em dash. Listed after the horizontal rule so `---` alone
+  // in a paragraph still makes a rule.
+  emDashInputRule,
+  lastEmDash,
+  emDashBackspace,
   strikethroughKey,
   pasteStrikethroughTags,
 ];
