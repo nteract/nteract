@@ -607,6 +607,9 @@ const CURSOR_PREFIX = "c2_";
  * position's title key, up to 500 code units of title (`catalogTitle`), so it
  * can run to a few kilobytes; activity cursors stay under 200 characters. */
 export const CURSOR_MAX_LENGTH = 8192;
+/** Longest cursor for a listing whose positions are only `updated_at` and an
+ * ID, such as list_projects. */
+export const SHORT_CURSOR_MAX_LENGTH = 256;
 const isoTime = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?Z$/;
 const cursorKeys = new Map();
 const toBase64url = (bytes) =>
@@ -649,8 +652,9 @@ function cursorKey(env) {
   }
   return key;
 }
-/** `scope` binds a cursor to its listing's filters (a Space, a parent, or
- * the Space listing itself). Cursors without one keep their original bytes. */
+/** `scope` binds a cursor to everything else that shapes its listing: a
+ * Space, a parent, kind, access and sort (see `listScope`), or the Space
+ * listing itself. Cursors without one keep their original bytes. */
 const cursorContext = ({ principal, needle, inTrash, scope }) =>
   encoder.encode(
     JSON.stringify([
@@ -663,10 +667,11 @@ const cursorContext = ({ principal, needle, inTrash, scope }) =>
   );
 
 /** Seal a keyset position. The position stays private, the cursor only
- * opens for the same principal, query and in_trash, and it expires after
- * `cursorMaxAgeMs`. A position with a string `title_search` carries it as a
- * fourth element; without one the payload keeps its three-element shape,
- * which every build since sealed cursors opens. */
+ * opens for the same principal, query, in_trash and scope (location, kind,
+ * access and sort filters), and it expires after `cursorMaxAgeMs`. A position
+ * with a string `title_search` carries it as a fourth element; without one the
+ * payload keeps its three-element shape, which every build since sealed
+ * cursors opens. Callers pass exactly the keyset fields their order needs. */
 export async function sealCursor(
   env,
   context,
@@ -689,14 +694,19 @@ export async function sealCursor(
   return CURSOR_PREFIX + toBase64url(bytes);
 }
 
-export async function openCursor(env, context, cursor, now = Date.now()) {
+/** Open a sealed cursor. `maxLength` is the longest cursor the listing can
+ * issue: `CURSOR_MAX_LENGTH` for Page listings, `SHORT_CURSOR_MAX_LENGTH` for
+ * listings whose positions carry no title key. */
+export async function openCursor(
+  env,
+  context,
+  cursor,
+  now = Date.now(),
+  { maxLength = CURSOR_MAX_LENGTH } = {},
+) {
   const invalid = () =>
     new HttpError(400, "Invalid cursor; restart from the first page", "invalid_cursor");
-  if (
-    typeof cursor !== "string" ||
-    cursor.length > CURSOR_MAX_LENGTH ||
-    !cursor.startsWith(CURSOR_PREFIX)
-  )
+  if (typeof cursor !== "string" || cursor.length > maxLength || !cursor.startsWith(CURSOR_PREFIX))
     throw invalid();
   let value;
   try {
@@ -746,17 +756,11 @@ export function parseListArguments(args = {}) {
   const fail = (message) => new HttpError(400, message, "invalid_list_arguments");
   if (!args || typeof args !== "object" || Array.isArray(args))
     throw fail("Invalid list arguments");
-  const legacy = [
-    "query",
-    "cursor",
-    "limit",
-    "in_trash",
-    "space_id",
-    "parent_id",
-    "kind",
-    "access",
-    "sort",
-  ].every((key) => args[key] === undefined);
+  // null `access` or `sort` is the default, so it leaves a bare call bare.
+  const legacy =
+    ["query", "cursor", "limit", "in_trash", "space_id", "parent_id", "kind"].every(
+      (key) => args[key] === undefined,
+    ) && ["access", "sort"].every((key) => args[key] == null);
   const options = {
     limit: legacy ? LIST_LEGACY_LIMIT : LIST_DEFAULT_LIMIT,
     inTrash: false,
@@ -907,7 +911,8 @@ export const cursorPosition = (row, sort) => ({
 });
 
 /** SQL and parameters for one page of D1 candidates. The SQL text depends
- * only on `access` and `sort`; every value is a bound parameter. */
+ * only on `access`, `sort` and whether `after` holds a position; every value
+ * is a bound parameter. */
 export function listingQuery({
   principal,
   domain,
@@ -926,11 +931,17 @@ export function listingQuery({
       : access === "shared"
         ? "AND a.source != 'owner'"
         : "";
-  const keyset = title
-    ? "(? IS NULL OR a.title_search > ? OR (a.title_search = ? AND a.page_id > ?))"
-    : "(? IS NULL OR a.updated_at < ? OR (a.updated_at = ? AND a.page_id < ?))";
   const order = title ? "a.title_search ASC, a.page_id ASC" : "a.updated_at DESC, a.page_id DESC";
   const key = (title ? after?.title_search : after?.updated_at) ?? null;
+  // A continuation page compares a row value, which SQLite turns into a range
+  // seek on the listing index after `principal = ?`. A first page has no
+  // position, so it carries no keyset predicate at all.
+  const continued = after != null && key !== null;
+  const keyset = !continued
+    ? ""
+    : title
+      ? "AND (a.title_search, a.page_id) > (?, ?)"
+      : "AND (a.updated_at, a.page_id) < (?, ?)";
   return {
     sql: `SELECT a.page_id, a.source, a.updated_at, a.updated_revision, a.title, a.title_search,
         p.created_at, p.trashed_at
@@ -942,7 +953,7 @@ export function listingQuery({
         ${accessFilter}
         AND (a.source != 'domain_opened' OR a.domain = ?)
         AND (? IS NULL OR a.title_search LIKE ? ESCAPE '\\')
-        AND ${keyset}
+        ${keyset}
       ORDER BY ${order}
       LIMIT ?`,
     params: [
@@ -951,10 +962,7 @@ export function listingQuery({
       domain ?? null,
       pattern,
       pattern,
-      key,
-      key,
-      key,
-      after?.page_id ?? null,
+      ...(continued ? [key, after.page_id] : []),
       count,
     ],
   };

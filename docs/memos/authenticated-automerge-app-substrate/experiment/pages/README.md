@@ -543,10 +543,15 @@ shared parent, `"owned"` lists nothing, since only a Page's owner places Pages
 under it.
 
 `sort: "title"` orders by the caller's title snapshot (`title_search`, lowercased)
-in code point order, then Page ID, both ascending. That is SQLite's `BINARY`
-order over the UTF-8 D1 stores, and the Catalog fallback compares the same way
-over keys computed as the index computes them. An empty title sorts first; a
-missing one is stored as "Untitled". The shown title still comes from the check,
+in code point order, then Page ID, both ascending, so accented and non-Latin
+titles come after z. That is SQLite's `BINARY` order over the UTF-8 D1 stores,
+and the Catalog fallback compares the same way over keys computed as the index
+computes them. Listing titles are cut to 500 code units on a code point boundary
+with lone surrogates replaced, so a key reads back from D1 exactly as the
+fallback computes it. An empty title sorts first; a missing one is stored as
+"Untitled". Continuation pages compare a row value against the cursor's
+position, `(title_search, page_id) > (?, ?)` or `(updated_at, page_id) < (?, ?)`,
+which seeks the listing index instead of scanning from the principal's first row. The shown title still comes from the check,
 so a Page renamed since its snapshot can sit out of order until its row is
 rewritten. Children of a shared parent come from IDs alone and order by Page ID
 in either sort. The default `"activity"` sort is `updated_at` newest first.

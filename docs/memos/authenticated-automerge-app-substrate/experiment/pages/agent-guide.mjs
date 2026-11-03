@@ -711,7 +711,8 @@ unsupported_schema_feature and the Page stays readable.
 list_pages accepts optional query (title substring), limit (1-100, default 50) and cursor.
 access "owned" or "shared" narrows it to Pages you own or Pages shared with you; shared does
 not combine with in_trash or project_id. sort "activity" (default) lists most recently changed
-first; "title" lists case-insensitively A to Z, empty titles first.
+first; "title" lists by lowercased title in Unicode code point order: empty titles first,
+accented and non-Latin titles after z.
 Pass next_cursor back as cursor, with the same other arguments, until it is null. Pagination is not a
 snapshot: concurrent title or sharing changes can move Pages across the cursor. A short or
 empty result does not prove a Page is absent. Its quota object is your own account's Page

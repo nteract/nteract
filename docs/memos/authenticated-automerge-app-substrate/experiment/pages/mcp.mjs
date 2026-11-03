@@ -363,7 +363,7 @@ export const tools = [
       sort: {
         enum: ["activity", "title"],
         description:
-          "activity (default) lists most recently changed first. title lists by title, case-insensitive, A to Z, empty titles first.",
+          "activity (default) lists most recently changed first. title lists by lowercased title in Unicode code point order, so empty titles come first and accented and non-Latin titles come after z.",
       },
     },
     [],

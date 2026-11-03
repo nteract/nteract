@@ -2,7 +2,14 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import worker, { lifecycleBounds, sharedChildBounds } from "./index.mjs";
 import { pageState, proposeAccessUpdate } from "./access.mjs";
-import { CATALOG_MIGRATIONS, migrateCatalogIndex, reportPageIndex } from "./catalog-index.mjs";
+import {
+  CATALOG_MIGRATIONS,
+  SHORT_CURSOR_MAX_LENGTH,
+  migrateCatalogIndex,
+  openCursor,
+  reportPageIndex,
+  sealCursor,
+} from "./catalog-index.mjs";
 import { validSpaceId } from "./spaces.mjs";
 import { MAX_DEPTH, checkInvariants, deriveLocation, planMove } from "../model/location.mjs";
 import { locationEntries } from "./catalog-location.mjs";
@@ -606,6 +613,17 @@ test("list_projects pages with a cursor and confirms D1 candidates against the C
     [...first.body.projects, ...second.body.projects].map((project) => project.project_id).sort(),
     created.map((project) => project.project_id).sort(),
   );
+  // Project cursors carry an update time and a Project ID only, and keep
+  // the short bound even for a cursor that would otherwise open.
+  const context = { principal: w.owner, needle: null, inTrash: false, scope: "spaces" };
+  assert.ok(first.body.next_cursor.length <= SHORT_CURSOR_MAX_LENGTH);
+  const position = await openCursor(w.env, context, first.body.next_cursor);
+  assert.deepEqual(Object.keys(position).sort(), ["page_id", "updated_at"]);
+  const long = await sealCursor(w.env, context, { ...position, title_search: "x".repeat(200) });
+  assert.ok(long.length > SHORT_CURSOR_MAX_LENGTH);
+  const refused = await w.call("owner", "list_projects", { cursor: long });
+  assert.equal(refused.status, 400);
+  assert.equal(refused.body.code, "invalid_cursor");
   // A list_pages cursor does not open a Project listing.
   assert.equal(
     (

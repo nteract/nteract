@@ -35,8 +35,19 @@ export async function listAll(storage, prefix, pageSize = 500) {
   }
 }
 
+const LONE_SURROGATE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g;
+
+/** A title as listings store, order and show it: at most 500 UTF-16 code
+ * units, cut on a code point boundary, with any lone surrogate replaced by
+ * U+FFFD. D1 stores text as UTF-8, which has no lone surrogates, so this is
+ * the form that reads back the same from D1 and from Catalog entries. */
 export function catalogTitle(title) {
-  return typeof title === "string" ? title.slice(0, 500) : "Untitled";
+  if (typeof title !== "string") return "Untitled";
+  let cut = title.slice(0, 500);
+  // A surrogate pair split at the limit drops its first half.
+  if (/[\uD800-\uDBFF]$/.test(cut) && /^[\uDC00-\uDFFF]/.test(title.slice(500)))
+    cut = cut.slice(0, -1);
+  return cut.replace(LONE_SURROGATE, "\uFFFD");
 }
 export const trashFields = (entry) => ({
   state: "trashed",

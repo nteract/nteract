@@ -186,6 +186,7 @@ import {
 import { holdsSlot, operationIntent, replies } from "./operation-intent.mjs";
 import {
   CatalogIndexUnavailable,
+  SHORT_CURSOR_MAX_LENGTH,
   catalogIndexDatabase,
   catalogIndexEpoch,
   catalogIndexTimeouts,
@@ -2488,7 +2489,13 @@ export class Catalog {
       inTrash: false,
       scope: "spaces",
     };
-    const after = args.cursor ? await openCursor(this.env, context, args.cursor) : null;
+    // Project positions are an update time and a Project ID, never a title
+    // key, so their cursors keep the short bound.
+    const after = args.cursor
+      ? await openCursor(this.env, context, args.cursor, undefined, {
+          maxLength: SHORT_CURSOR_MAX_LENGTH,
+        })
+      : null;
     let source;
     const epoch = catalogIndexEpoch(this.env);
     if (epoch) {
@@ -2545,7 +2552,12 @@ export class Catalog {
     return json({
       spaces: found.slice(0, limit).map(({ space }) => space),
       limit,
-      next_cursor: more ? await sealCursor(this.env, context, found[limit - 1].row) : null,
+      next_cursor: more
+        ? await sealCursor(this.env, context, {
+            updated_at: found[limit - 1].row.updated_at,
+            page_id: found[limit - 1].row.page_id,
+          })
+        : null,
       ...(await issueRetryToken(storage, {
         scope: `catalog:${identity.principal}`,
         principal: identity.principal,
