@@ -8,13 +8,9 @@ function emptyTrailingBlock(doc) {
   return block?.kind === "markdown" && isRich(block) && !blockMarkdown(block).trim() ? id : null;
 }
 
-/** The words an empty Page shows in its first paragraph, and the "continue
- * writing" button's label below a Page with content. */
-export const WRITING_PROMPT = "Write something…";
-
 /** Whether a projected Page (projectPage) is still empty: one rich paragraph
- * with nothing in it, as a new Page starts. Such a Page shows WRITING_PROMPT
- * as placeholder text inside that paragraph instead of the button below. */
+ * with nothing in it, as a new Page starts. Such a Page opens with the caret
+ * in that paragraph. */
 export function isEmptyPage(page) {
   const blocks = page?.blocks ?? [];
   return (

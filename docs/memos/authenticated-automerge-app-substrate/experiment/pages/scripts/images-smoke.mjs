@@ -463,11 +463,11 @@ try {
   complete("A pending upload whose insertion point is deleted shows its status and Cancel");
 
   const beforeContinuation = await owner.locator(".page-block").count();
-  await owner.getByRole("button", { name: "Write something…", exact: true }).click();
+  await owner.getByRole("button", { name: "Continue writing", exact: true }).click();
   const trailing = owner.locator("wg-content").last();
   await expect(trailing).toBeFocused();
   await expect(owner.locator(".page-block")).toHaveCount(beforeContinuation + 1);
-  await owner.getByRole("button", { name: "Write something…", exact: true }).click();
+  await owner.getByRole("button", { name: "Continue writing", exact: true }).click();
   await expect(trailing).toBeFocused();
   await expect(owner.locator(".page-block")).toHaveCount(beforeContinuation + 1);
   await owner.keyboard.insertText("Writing continues naturally below the images.");
@@ -475,7 +475,7 @@ try {
     await expect(page.locator("wg-content").last()).toContainText(
       "Writing continues naturally below the images.",
     );
-  await expect(viewer.getByRole("button", { name: "Write something…" })).toHaveCount(0);
+  await expect(viewer.getByRole("button", { name: "Continue writing" })).toHaveCount(0);
   complete("Writing continues below images; repeated activation reuses the empty paragraph");
 
   await expect

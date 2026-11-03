@@ -376,7 +376,7 @@ function App() {
     if (next.accessReloadRequired && !next.recoveryPending) void reloadAccess(next);
     const first = next.doc ? (editor.module.orderedBlockIds(next.doc)[0] ?? null) : null;
     activateBlock(first);
-    // An empty Page opens with the caret in its placeholder paragraph, where
+    // An empty Page opens with the caret in its empty paragraph, where
     // a pointer and keyboard are ready for it. A new Page names itself first,
     // and a phone keeps its keyboard down until someone taps.
     const empty =
@@ -636,7 +636,6 @@ function App() {
   }, []);
   const page = session?.snapshot(),
     threads = page?.comments ?? [];
-  const emptyPage = !!page && !!editor.module?.isEmptyPage(page);
   const shownPreview = page
     ? null
     : visiblePreview(bootPreviewState, {
@@ -1434,7 +1433,7 @@ function App() {
                         ?.focus();
                   }}
                 />
-                {page.blocks.map((block, index) => (
+                {page.blocks.map((block) => (
                   <section className="page-block" data-block-id={block.id} key={block.id}>
                     {block.format === "automerge-rich-text-v1" ? (
                       <WordgardEditor
@@ -1447,11 +1446,6 @@ function App() {
                         onRevealComment={selectComment}
                         toolbarHost={active === block.id ? toolbar : null}
                         toolbarOpen={toolbarOpen}
-                        placeholder={
-                          emptyPage && index === 0 && session.canWrite
-                            ? editor.module.WRITING_PROMPT
-                            : null
-                        }
                         onActivate={() => activateBlock(block.id)}
                         threads={threads}
                         commentTarget={target}
@@ -1468,11 +1462,19 @@ function App() {
                     )}
                   </section>
                 ))}
-                {/* An empty Page shows the prompt inside its paragraph instead. */}
-                {session.canWrite && !emptyPage && (
-                  <button type="button" className="writing-continuation" onClick={continueWriting}>
-                    {editor.module.WRITING_PROMPT}
-                  </button>
+                {/* Blank space below the last block: a click there puts the
+                    caret in an empty paragraph at the end. It shows no text,
+                    so it can't be mistaken for the caret's line. Keyboards
+                    leave the last block with ArrowDown or Mod-Enter instead,
+                    so it stays out of the tab order. */}
+                {session.canWrite && (
+                  <button
+                    type="button"
+                    className="writing-continuation"
+                    aria-label="Continue writing"
+                    tabIndex={-1}
+                    onClick={continueWriting}
+                  />
                 )}
                 {ownsProject && placement.home && (
                   <ProjectPages

@@ -3,12 +3,7 @@
 import { Fragment, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import * as A from "@automerge/automerge/slim";
-import {
-  Wordgard,
-  Decoration,
-  KeyBinding,
-  placeholder as wordgardPlaceholder,
-} from "wordgard/editor";
+import { Wordgard, Decoration, KeyBinding } from "wordgard/editor";
 import { GardState, GardSelection, Transaction } from "wordgard/state";
 import {
   Command,
@@ -162,19 +157,6 @@ const editConfig = (editable) => [
   ...(editable ? wordgardCodeLanguages(CODE_LANGUAGES) : []),
 ];
 
-// Placeholder text Wordgard draws while this block is empty. The words are
-// for sight only: the content element carries them as aria-placeholder, so a
-// screen reader doesn't read them as the paragraph's text.
-const placeholderConfig = (text) =>
-  text
-    ? wordgardPlaceholder(() => {
-        const words = document.createElement("span");
-        words.textContent = text;
-        words.setAttribute("aria-hidden", "true");
-        return words;
-      })
-    : [];
-
 // A pending upload is on screen when the editor draws its inline preview.
 // The preview clears itself when its insertion point is deleted; the status
 // row, with Cancel, then shows again.
@@ -192,9 +174,6 @@ export function WordgardEditor(props) {
     threads,
     commentTarget,
     commentDraft,
-    // Shown in this block while it is empty; main.jsx passes it to an empty
-    // Page's only paragraph when this person can edit.
-    placeholder = null,
   } = props;
   // The toolbar shows for an editor, or with only Comment for a commenter.
   const toolbarUsable = editable || commentable;
@@ -211,7 +190,6 @@ export function WordgardEditor(props) {
     imageUploader = useRef(null),
     imageTarget = useRef(null);
   const permissions = useRef(new GardState.Compartment());
-  const hint = useRef(new GardState.Compartment());
   const [format, setFormat] = useState(null),
     [floating, setFloating] = useState(null),
     [contextualToolbar, setContextualToolbar] = useState(false),
@@ -415,7 +393,6 @@ export function WordgardEditor(props) {
         undoHistory.extension,
         // A block decode couldn't draw as stored opens read-only.
         permissions.current.of(editConfig(latest.current.editable && !bound.current.lossy)),
-        hint.current.of(placeholderConfig(latest.current.placeholder)),
         Wordgard.clipboardInputHTMLFilter.of((html) => normalizePastedHTML(html)),
         Wordgard.domEventHandler("paste", (event) => acceptImages(imageFiles(event.clipboardData))),
         Wordgard.domEventHandler("drop", (event) => {
@@ -930,16 +907,6 @@ export function WordgardEditor(props) {
       annotations: remoteAnnotations(),
     });
   }, [editable, generation]);
-  useEffect(() => {
-    const editor = view.current;
-    if (!editor) return;
-    editor.dispatch({
-      effects: hint.current.reconfigure(placeholderConfig(placeholder)),
-      annotations: remoteAnnotations(),
-    });
-    if (placeholder) editor.contentDOM.setAttribute("aria-placeholder", placeholder);
-    else editor.contentDOM.removeAttribute("aria-placeholder");
-  }, [placeholder, generation]);
   useEffect(() => {
     if (view.current && !view.current.composing)
       view.current.dispatch({ annotations: remoteAnnotations() });

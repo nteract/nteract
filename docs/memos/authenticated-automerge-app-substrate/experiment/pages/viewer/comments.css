@@ -131,7 +131,7 @@
 }
 :is(.comments, .comment-popover) .wordgard-document wg-content {
   line-height: 1.5;
-  padding: 0.3rem 0;
+  padding-block: 0.3rem;
 }
 :is(.comments, .comment-popover) .wordgard-document wg-content p {
   margin: 0.25rem 0 0.5rem;

@@ -111,11 +111,10 @@ try {
   await page.getByRole("link", { name: PRODUCT_NAME, exact: true }).click();
   await page.getByRole("button", { name: "New Page", exact: true }).click();
   await expect(titleInput(page)).toBeFocused();
-  // An empty Page shows its prompt inside its paragraph, not as a button below.
-  const prompt = page.getByRole("button", { name: "Write something…", exact: true });
-  await expect(page.locator("wg-placeholder")).toHaveText("Write something…");
-  await expect(editor(page)).toHaveAttribute("aria-placeholder", "Write something…");
-  await expect(prompt).toHaveCount(0);
+  // An empty Page shows no prompt text: nothing to mistake for the caret's line.
+  await expect(page.locator("wg-placeholder")).toHaveCount(0);
+  await expect(page.getByText("Write something…")).toHaveCount(0);
+  await expect(editor(page)).not.toHaveAttribute("aria-placeholder", /./);
   const plainUrl = page.url();
   await titleInput(page).fill("First session saves");
   await titleInput(page).press("Enter");
@@ -133,8 +132,23 @@ try {
   });
   await editor(page).pressSequentially("Written and saved without reopening.");
   await saved(page);
-  await expect(page.locator("wg-placeholder")).toHaveCount(0);
-  await expect(prompt).toBeVisible();
+  // Wordgard centers its caret on the caret position, so at the start of a
+  // line half of it sits left of the text. The editor's sideways clip must
+  // leave it whole.
+  await editor(page).press("Home");
+  await expect
+    .poll(() =>
+      page.evaluate(() => {
+        const caret = document.querySelector(".page-block wg-cursor.wg-cursor-v");
+        const scroller = caret?.closest("wg-scroller");
+        if (!caret || getComputedStyle(caret).display === "none") return "no caret";
+        const c = caret.getBoundingClientRect(),
+          s = scroller.getBoundingClientRect();
+        return c.width > 0 && c.left >= s.left && c.right <= s.right ? "whole" : "clipped";
+      }),
+    )
+    .toBe("whole");
+  await expect(page.getByRole("button", { name: "Continue writing", exact: true })).toHaveText("");
   assert.ok(receiptCalls >= 2, "temporary receipt error retries");
   await page.unroute("**/api/saved?*");
   const plainId = new URL(plainUrl).pathname.split("/")[2];
