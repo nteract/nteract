@@ -208,7 +208,9 @@ references; it does not publish the Page or change asset access.
     item holds a second block, which Markdown can't write tight.
   - Markdown writes store the editor's form ([`pageSpans`](model/richtext.mjs)):
     an implicit top-level first paragraph and immutable-string attrs. The
-    editor's first keystroke in an agent-written block writes no history.
+    editor's first structural edit (Enter, a cross-block delete, a block
+    paste, a list toggle) in an agent-written block writes no history; plain
+    typing never rewrites a block.
     [`markdown-projection.test.mjs`](model/markdown-projection.test.mjs)
     checks every corpus case and lists the two disagreements left for the
     shared encoder.

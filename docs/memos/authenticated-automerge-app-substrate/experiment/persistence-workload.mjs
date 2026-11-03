@@ -4,8 +4,7 @@ import * as A from "@automerge/automerge";
 import { recordBytes } from "@automerge/automerge-repo/sedimentree";
 import { extractRecords } from "@automerge/automerge-repo/sedimentree/automerge";
 import { selectionContext } from "./pages/model/comments.mjs";
-import { pmNodeToSpans } from "@automerge/prosemirror";
-import { RICH_FORMAT, adapter, parseAgentMarkdown } from "./pages/model/richtext.mjs";
+import { RICH_FORMAT, adapterSpans, parseAgentMarkdown } from "./pages/model/richtext.mjs";
 import { updateSpansConfig } from "./pages/model/marks.mjs";
 import { stampSpans } from "./pages/model/schema-features.mjs";
 
@@ -15,7 +14,7 @@ import { stampSpans } from "./pages/model/schema-features.mjs";
 // produces, with an explicit first paragraph marker, independent of the form
 // Pages' own writers use.
 function setRichMarkdown(doc, id, source) {
-  const spans = pmNodeToSpans(adapter, parseAgentMarkdown(source));
+  const spans = adapterSpans(parseAgentMarkdown(source));
   A.updateSpans(doc, ["blocks", id, "richText"], spans, updateSpansConfig);
   stampSpans(doc, spans);
 }

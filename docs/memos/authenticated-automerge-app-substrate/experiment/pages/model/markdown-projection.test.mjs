@@ -15,6 +15,8 @@ import {
   unsupportedMarkdown,
 } from "./richtext.mjs";
 import { decode, encode } from "../viewer/wordgard-model.mjs";
+import { updateSpansConfig } from "./marks.mjs";
+import { richDoc } from "./richtext.mjs";
 
 test("lists read back tight with - bullets, loose only when an item holds several blocks", () => {
   for (const [source, expected] of [
@@ -38,6 +40,27 @@ test("lists read back tight with - bullets, loose only when an item holds severa
   }
 });
 
+test("a nested list that can't interrupt a paragraph gets a blank line", () => {
+  for (const source of [
+    "- outer\n\n  -\n  - b",
+    "1. outer\n\n   1.\n   2. b",
+    "- outer\n\n  3. a\n  4. b",
+  ]) {
+    const out = exportMarkdown(parseMarkdown(source));
+    assert.ok(parseMarkdown(out).eq(parseMarkdown(source)), `${source} -> ${out}`);
+    assert.equal(exportMarkdown(parseMarkdown(out)), out, source);
+  }
+  // A list that can interrupt stays tight under its parent paragraph.
+  assert.equal(exportMarkdown(parseMarkdown("- outer\n  - a\n  - b")), "- outer\n  - a\n  - b");
+});
+
+test("every corpus case reads back as the same tree", () => {
+  for (const { id, markdown } of markdownCorpus.cases) {
+    const tree = parseMarkdown(markdown);
+    assert.ok(parseMarkdown(exportMarkdown(tree)).eq(tree), id);
+  }
+});
+
 test("numbered lists past nine keep continuation lines inside their item", () => {
   const source = `${Array.from({ length: 10 }, (_, i) => `${i + 1}. item`).join("\n")}\n\n    tenth, continued`;
   const out = exportMarkdown(parseMarkdown(source));
@@ -45,13 +68,16 @@ test("numbered lists past nine keep continuation lines inside their item", () =>
   assert.ok(parseMarkdown(out).eq(parseMarkdown(source)));
 });
 
-const editorRewrite = (doc, id) => {
-  const path = textPath(id),
-    heads = A.getHeads(doc);
-  const after = A.change(A.clone(doc), (draft) =>
-    A.updateSpans(draft, path, encode(decode(A.spans(draft, path)).doc)),
+// The binding's structural write: encode the decoded tree, with its config.
+const rewritten = (doc, id) => {
+  const path = textPath(id);
+  return A.change(A.clone(doc), (draft) =>
+    A.updateSpans(draft, path, encode(decode(A.spans(draft, path)).doc), updateSpansConfig),
   );
-  return A.diff(after, heads, A.getHeads(after));
+};
+const editorRewrite = (doc, id) => {
+  const after = rewritten(doc, id);
+  return A.diff(after, A.getHeads(doc), A.getHeads(after));
 };
 
 // Writer disagreements the shared encoder will remove, by corpus id. Each is
@@ -94,6 +120,15 @@ test("an editor rewrite of any block Pages wrote from Markdown writes nothing", 
       const patches = editorRewrite(doc, id);
       if (Object.hasOwn(KNOWN_DISAGREEMENTS, caseId)) {
         if (patches.length) seen.add(caseId);
+        // Invisible: the editor tree and the agent's read are unchanged.
+        const after = rewritten(doc, id);
+        const path = textPath(id);
+        assert.ok(decode(A.spans(after, path)).doc.eq(decode(A.spans(doc, path)).doc), caseId);
+        assert.equal(
+          exportMarkdown(richDoc(after.blocks[id])),
+          exportMarkdown(richDoc(doc.blocks[id])),
+          caseId,
+        );
         continue;
       }
       assert.deepEqual(patches, [], `${literal ? "literal" : "agent"} ${caseId}`);

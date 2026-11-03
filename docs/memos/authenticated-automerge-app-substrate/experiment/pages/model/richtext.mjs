@@ -640,7 +640,24 @@ const looseItem = (item) => {
   });
   return blocks > 1;
 };
+// Markdown lets a list interrupt a paragraph only when its first item has
+// text, and an ordered one only when it starts at 1. Directly under a
+// paragraph, any other list reads as that paragraph's text (or turns it into a
+// setext heading), so it needs a blank line first.
+const cannotInterrupt = (list) => {
+  if (list.type.name === "ordered_list" && (list.attrs.order ?? 1) !== 1) return true;
+  const first = list.firstChild?.firstChild;
+  if (first?.type.name !== "paragraph") return false;
+  let text = false;
+  first.forEach((child) => {
+    text ||= child.isText && child.text.trim() !== "";
+    text ||= child.type.name !== "hard_break" && !child.isText;
+  });
+  return !text;
+};
 function renderList(state, node, delim, firstDelim) {
+  if (state.inTightList && state.closed?.type.name === "paragraph" && cannotInterrupt(node))
+    state.flushClose(2);
   const tight = state.options.tightLists;
   let loose = false;
   node.forEach((item) => {
@@ -1589,10 +1606,15 @@ export function setRichMarkdown(doc, id, source, { literal = false } = {}) {
 /** A Page block's spans for `tree`, in the form the editor writes: a
  * top-level first paragraph has no marker when it has content or is the only
  * node (encode's implicitAt in viewer/wordgard-model.mjs). The adapter always
- * writes that marker, so the first editor keystroke would otherwise delete
+ * writes that marker, so the editor's first structural edit (Enter, a
+ * cross-block delete, a block paste, a list toggle) would otherwise delete
  * it and write history. Two disagreements remain for the shared encoder: a
  * quote whose first child isn't a paragraph, and some mark runs
  * (markdown-projection.test.mjs lists them). */
+/** The spans the ProseMirror adapter writes for `tree`, before pageSpans
+ * puts them in the editor's form. Fixtures whose history must not move with
+ * Pages' writer form use these. */
+export const adapterSpans = (tree) => pmNodeToSpans(adapter, tree);
 export function pageSpans(tree) {
   // String attrs are immutable strings, as encode writes them; the adapter
   // writes an image's alt and title as text.
