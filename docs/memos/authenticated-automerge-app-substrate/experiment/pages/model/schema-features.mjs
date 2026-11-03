@@ -278,6 +278,5 @@ export function schemaUnsupported(features) {
 }
 
 /** Block types whose content is text: a block node can't be placed inside
- * them. The model (richtext.mjs) and the editor (wordgard-model.mjs) both
- * read this. */
-export const TEXT_CONTAINERS = Object.freeze(new Set(["code-block", "table-cell", "table-header"]));
+ * them. Declared by `kind` in model/node-registry.mjs. */
+export { TEXT_CONTAINERS } from "./node-registry.mjs";

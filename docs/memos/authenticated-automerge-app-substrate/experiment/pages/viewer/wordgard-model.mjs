@@ -36,10 +36,10 @@ import {
   updateSpansConfig,
 } from "../model/marks.mjs";
 import { DATAFRAME_BLOCK, readDataframe } from "../shared/dataset-assets.mjs";
-import { TEXT_CONTAINERS } from "../model/schema-features.mjs";
+import { TEXT_CONTAINERS, validAlignment, validHeadingLevel } from "../model/node-registry.mjs";
 // The Pages table format stores physical alignment. Wordgard's stock mark
 // uses logical values and does not round-trip a physical `right` clipboard style.
-const validCellAlignment = (value) => ["left", "center", "right"].includes(value);
+const validCellAlignment = validAlignment;
 export const Alignment = Mark.Type.define("PagesCellAlignment", {
   target: [Cell, HeaderCell],
   keepOnSplit: true,
@@ -484,7 +484,7 @@ function descriptor(type, attrs = {}) {
       return { tag: TableRow };
     case "table-cell":
     case "table-header": {
-      if (attrs.align != null && !["left", "center", "right"].includes(attrs.align))
+      if (attrs.align != null && !validAlignment(attrs.align))
         throw Error("Invalid table alignment");
       const tag = type === "table-cell" ? Cell : HeaderCell;
       return { tag: attrs.align ? tag.withMarks([Alignment.of(attrs.align)]) : tag };
@@ -492,9 +492,9 @@ function descriptor(type, attrs = {}) {
     case "paragraph":
       return { tag: Paragraph };
     case "heading": {
-      const level = Number(attrs.level ?? 1);
-      if (!Number.isInteger(level) || level < 1 || level > 6)
-        throw Error("Invalid Pages heading level");
+      // The same rule registration applies: an integer 1 to 6, 1 when absent.
+      const level = attrs.level === undefined ? 1 : attrs.level;
+      if (!validHeadingLevel(level)) throw Error("Invalid Pages heading level");
       return { tag: Heading.of(level) };
     }
     case "code-block":

@@ -19,9 +19,9 @@ import {
   createPageData,
   initializePage,
   applyPageOperation,
-  validateImageInsertion,
-  validateNodeInsertion,
+  insertedAssets,
 } from "../model/page.mjs";
+import { insertOperation } from "../model/node-registry.mjs";
 import {
   documentFeatures,
   missingFeatures,
@@ -221,7 +221,12 @@ import {
   requireStoredDatasetAsset,
   requireStoredImageAsset,
 } from "./image-assets.mjs";
-import { dataframeFor } from "../shared/dataset-assets.mjs";
+// The host check for each stored asset kind a node can name
+// (INSERT_OPERATIONS in model/node-registry.mjs).
+const ASSET_CHECKS = Object.freeze({
+  image: requireStoredImageAsset,
+  dataset: requireStoredDatasetAsset,
+});
 import {
   appendPosition,
   childrenOf,
@@ -4296,8 +4301,8 @@ export class Page {
         if (!["edit_page", "patch_page"].includes(body.operation))
           throw new HttpError(400, "Unknown document operation");
         const ops = Array.isArray(body.arguments?.operations) ? body.arguments.operations : [];
-        const images = ops.filter((op) => (op?.op ?? op?.type) === "insert_image");
-        const nodes = ops.filter((op) => (op?.op ?? op?.type) === "insert_node");
+        // Ops that create a node naming a stored asset (model/node-registry.mjs).
+        const inserts = ops.filter((op) => insertOperation(op?.op ?? op?.type));
         // Where this batch landed, captured inside the change so the cursors
         // name the characters it wrote. A replayed receipt has no caret.
         let caret = null;
@@ -4309,47 +4314,28 @@ export class Page {
           operation: body.operation,
           args: body.arguments,
           identity,
-          prepare:
-            images.length || nodes.length
-              ? async () => {
-                  if (images.length + nodes.length > 100)
-                    throw new HttpError(
-                      400,
-                      "Provide up to 100 operations",
-                      "invalid_edit_selector",
-                    );
-                  for (const image of images) {
-                    try {
-                      validateImageInsertion(image);
-                    } catch (error) {
-                      throw new HttpError(400, error.message, "invalid_edit_selector");
-                    }
-                  }
-                  for (const assetId of new Set(images.map((image) => image.asset_id))) {
-                    await requireStoredImageAsset(this.env.PAGES_ASSETS, {
-                      pageId: this.metadata.pageId,
-                      assetId,
-                    });
-                  }
-                  // Each dataframe names a stored dataset of its media type.
-                  for (const node of nodes) {
-                    let attrs;
-                    try {
-                      attrs = dataframeFor(this.metadata.pageId, validateNodeInsertion(node));
-                    } catch (error) {
-                      throw new HttpError(400, error.message, "invalid_edit_selector");
-                    }
-                    await requireStoredDatasetAsset(this.env.PAGES_ASSETS, {
-                      pageId: this.metadata.pageId,
-                      assetId: node.node.attrs.asset_id,
-                      mediaType: attrs.media_type,
-                    });
-                  }
-                  // The Page queue orders ACL changes; OAuth/key expiry and revocation
-                  // can still happen while immutable object metadata is being read.
-                  this.policy.account(await authenticate(request, this.env), true);
+          prepare: inserts.length
+            ? async () => {
+                if (inserts.length > 100)
+                  throw new HttpError(400, "Provide up to 100 operations", "invalid_edit_selector");
+                let assets;
+                try {
+                  assets = insertedAssets(inserts, this.metadata.pageId);
+                } catch (error) {
+                  throw new HttpError(400, error.message, "invalid_edit_selector");
                 }
-              : undefined,
+                // Each names an asset stored on this Page, of its kind.
+                for (const { asset, assetId, mediaType } of assets)
+                  await ASSET_CHECKS[asset](this.env.PAGES_ASSETS, {
+                    pageId: this.metadata.pageId,
+                    assetId,
+                    ...(mediaType && { mediaType }),
+                  });
+                // The Page queue orders ACL changes; OAuth/key expiry and revocation
+                // can still happen while immutable object metadata is being read.
+                this.policy.account(await authenticate(request, this.env), true);
+              }
+            : undefined,
           apply: (doc, effectiveArgs) => {
             try {
               const trace = [];
