@@ -7,6 +7,7 @@ import { createPageData, initializePage, orderedBlockIds, applyPageOperation } f
 import { blockMarkdown, textPath } from "./richtext.mjs";
 import { guardPassageEdits } from "./passage-edits.mjs";
 import { documentFeatures } from "./schema-features.mjs";
+import { decode, encode } from "../viewer/wordgard-model.mjs";
 
 function fixture(markdown) {
   let doc = A.from(createPageData({ pageId: "rich_edits", title: "Rich edits" }));
@@ -482,4 +483,38 @@ test("format_match all skips a match that cuts a character", () => {
   ]);
   assert.equal(result.edits[0].matched, 1);
   assert.equal(md(after, id), "cafe\u0301 and **cafe**");
+});
+
+// The editor rewrites a whole block from encode(decode(spans)). If set_node
+// wrote a marker the editor would encode differently, the next keystroke in
+// the block would write history. Compare against the same rewrite of the
+// untouched import, which already drops the importer's explicit first
+// paragraph marker.
+test("an editor rewrite after set_node writes nothing set_node caused", () => {
+  const source =
+    "Intro words\n\n- [ ] task\n\n```py\nx = 1\n```\n\n| a | b |\n| --- | ---: |\n| 1 | 2 |";
+  const rewrite = (doc, id) => {
+    const path = textPath(id);
+    const heads = A.getHeads(doc);
+    const after = A.change(A.clone(doc), (draft) =>
+      A.updateSpans(draft, path, encode(decode(A.spans(draft, path)).doc)),
+    );
+    return A.diff(after, heads, A.getHeads(after)).map((patch) => [
+      patch.action,
+      patch.path.slice(3),
+    ]);
+  };
+  const untouched = fixture(source);
+  const baseline = rewrite(untouched.doc, untouched.id);
+  for (const op of [
+    { match_text: "task", checked: true },
+    { match_text: "x = 1", language: "rust" },
+    { match_text: "x = 1", language: "" },
+    { match_text: "2", align: "center" },
+    { match_text: "2", align: null },
+  ]) {
+    const { doc, id } = fixture(source);
+    const { after } = apply(doc, [{ op: "set_node", block_id: id, ...op }]);
+    assert.deepEqual(rewrite(after, id), baseline, JSON.stringify(op));
+  }
 });
