@@ -82,7 +82,7 @@ export function languageFor(stored) {
 // editor. This field rebuilds each touched code block once, in document order.
 const MAX_HIGHLIGHT = 10_000;
 const tokenClassCache = new Map();
-function tokenClass(token) {
+export function tokenClass(token) {
   if (!tokenClassCache.has(token)) tokenClassCache.set(token, classify(token));
   return tokenClassCache.get(token);
 }
@@ -91,6 +91,9 @@ function classify(token) {
   if (token === "variable-2" || token === "variableName.special") return "special";
   if (token === "def" || token === "variableName.definition") return "def";
   if (token.startsWith("keyword")) return "keyword";
+  // Legacy modes (Python, R, Shell) tag built-in functions such as `print`
+  // as "builtin"; color them like other special names.
+  if (token.startsWith("builtin") || token === "variableName.standard") return "special";
   if (token.startsWith("string")) return "string";
   if (/^(variable|name)/.test(token)) return "name";
   if (/^(type|tag)/.test(token)) return "type";
