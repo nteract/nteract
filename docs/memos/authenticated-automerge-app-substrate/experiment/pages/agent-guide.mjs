@@ -8,6 +8,7 @@ import {
   saveKeyCommand,
 } from "./agent-client-setup.mjs";
 import { PRODUCT_NAME } from "./shared/product.mjs";
+import { richContentGuide } from "./model/rich-content-guide.mjs";
 
 /** Public onboarding contains no account or document data. URLs come only from
  * deployment configuration, never a request Host or forwarded header. */
@@ -568,6 +569,7 @@ Browser/OAuth company proof expires after six hours without fresh sign-in;
 refreshing an OAuth token does not renew that identity proof. A 409 requires reading
 access again. An uncertain request can be retried with its identical key and body.
 
+${richContentGuide()}
 ## Images
 
 In the browser, use Insert image, paste a screenshot, or drop an image into an
@@ -677,7 +679,10 @@ page_quota_exceeded with limit and count; tell the person rather than retrying.
 - report_page_progress: page_id and a short message; optional targets and expected_heads.
   Updates/clear require the returned progress_id and private lease_token. See progress below.
 - read_page_changes: complete net changes since previous heads, with current passage addresses and retry authority.
-- patch_page: replace_match for literal visible-text edits, optionally scoped by node_index; format_match to add or remove formatting over a literal range.
+- patch_page: replace_match for visible-text edits (literal replacement or inline
+  replacement_markdown), format_match to add or remove formatting over one match, the
+  occurrence-th match or every match (all:true), and set_node to check a task, set a
+  code block's language, change a heading level or align a table column. See Rich content.
 - edit_page: set_title, replace_block_markdown, insert_markdown, insert_image,
   move_block, or delete_block operations.
 - manage_page_comment: add, reply, resolve, reopen, edit, or delete_message. resolve and
@@ -973,8 +978,8 @@ matching to one top-level node inside a large block. Node indexes are revision-b
 not permanent IDs; always pair them with the base_heads that supplied them.
 Use optional context_before/context_after to distinguish repeated text; context
 must be in the same segment, between this occurrence and its neighboring matches.
-Exactly one match is required; zero or multiple matches reject the entire batch,
-and so does a match_text that starts or ends inside a character (an accented
+Exactly one match is required unless occurrence (one-based, in document order)
+picks one; zero or multiple matches reject the entire batch, and so does a match_text that starts or ends inside a character (an accented
 letter, an emoji sequence or a flag): include the whole character.
 Successful receipts include result.edits with matched: 1 for each replace_match.
 Only the words that differ between match_text and replacement are written: words
@@ -999,13 +1004,17 @@ marks, follow with format_match over the right ranges. A partial mark none of wh
 words changed still covers them and is not reported.
 
 By default conflict_scope:"page" requires the exact current Page revision. For a
-batch of only replace_match and format_match, opt into conflict_scope:"target" to
+batch of only replace_match, format_match and set_node (without all), opt into
+conflict_scope:"target" to
 allow an older read
 when the addressed native characters, current marks and surrounding node structure
 are unchanged. Unrelated edits, including elsewhere in the same rich-text block,
 are preserved. Deleted/reinserted lookalike text does not count as the same target.
-Overlapping targets in one such batch are rejected; submit one combined edit or
-read again between dependent edits. Structural and Markdown replacements keep the
+Overlapping targets in one such batch are rejected, except a set_node's, which
+changes no text; submit one combined edit or read again between dependent edits.
+In page scope occurrence counts matches when its operation runs, after earlier
+operations in the batch. In target scope it must pick the same characters at
+base_heads, now and after earlier operations, or the batch is an edit_conflict. Structural and Markdown replacements keep the
 exact Page revision guard. Comments have their own rules; see below.
 
 An edit_conflict identifies passages to reread. Catch up with read_page_changes,
@@ -1018,7 +1027,7 @@ matching or applying the text again.
 
 For formatting, use format_match. It finds one literal visible-text range the
 same way replace_match does (match_text, context_before/context_after,
-node_index) and changes only its marks:
+occurrence, node_index) and changes only its marks:
 
 \`\`\`json
 {
@@ -1038,6 +1047,43 @@ add {"highlight": "blue"} recolors a highlight. remove lists mark names to
 clear. Text, comment anchors and CRDT identity are unchanged. Receipts include
 matched: 1 for each format_match. Code blocks are unformatted, so format_match
 refuses text inside one.
+
+To format every match in a block, pass "all": true instead of picking one. It
+formats each non-overlapping match that context and node_index allow, skips
+matches inside code blocks (counted in skipped_in_code) and matches that start
+or end inside a character, and reports matched
+with the number it formatted. At least one is required. all needs
+conflict_scope:"page", because a target is one captured passage.
+
+To rewrite text and its formatting together, give replace_match a
+replacement_markdown instead of replacement: one line of inline Markdown, such as
+"ship on **Monday** with <mark data-color="green">QA</mark>". Only words that
+differ are rewritten, as for a literal replacement, so comment anchors survive.
+The replaced text gets exactly the formatting written there, plus marks that
+covered the whole match; use format_match remove to clear one of those. Leading
+and trailing spaces are kept. Headings, lists, images and line breaks are refused
+with invalid_edit_selector; escape a leading #, >, -, *, +, 1. or \`\`\` with a backslash.
+replacement_markdown is refused inside code blocks.
+
+set_node changes the node that holds match_text, addressed the same way, without
+rewriting its text. Give exactly one field:
+
+\`\`\`json
+[
+  {"op": "set_node", "block_id": "<block ID>", "match_text": "Ship the beta", "checked": true},
+  {"op": "set_node", "block_id": "<block ID>", "match_text": "graph TD", "language": "mermaid"},
+  {"op": "set_node", "block_id": "<block ID>", "match_text": "Next steps", "heading_level": 2},
+  {"op": "set_node", "block_id": "<block ID>", "match_text": "Total", "align": "right"}
+]
+\`\`\`
+
+checked applies to task list items, language to code blocks (an empty string
+makes plain text), heading_level to paragraphs and headings (0 makes a
+paragraph; a quote's or list item's first paragraph belongs to the quote or
+item, so it is refused), and align to table cells: it aligns that cell's whole column,
+header included, and null clears it. Any other node is refused with
+invalid_edit_selector naming the node the text is in. Receipts include matched:
+1, node (the node type after the change) and, for align, cells.
 
 Markdown is a projection of the rich text, not its storage. Highlights read as
 <mark data-color="green">text</mark>; insert_markdown, replace_block_markdown and

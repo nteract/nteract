@@ -5,6 +5,7 @@ import { projectComments } from "./comments.mjs";
 import { COMMENTS_FEATURE } from "./comments-doc.mjs";
 import { orderedBlockIds, positionForInsertion } from "./order.mjs";
 import { formatMatch, replaceMatch } from "./replace-match.mjs";
+import { setNode } from "./set-node.mjs";
 import { stampFeatures } from "./schema-features.mjs";
 export { orderedBlockIds } from "./order.mjs";
 const block = (id = crypto.randomUUID(), position = positionForInsertion()) => ({
@@ -94,6 +95,7 @@ function applyEdit(doc, op, trace) {
   }
   if (op.op === "replace_match") return replaceMatch(doc, id, op, trace);
   if (op.op === "format_match") return formatMatch(doc, id, op, trace);
+  if (op.op === "set_node") return setNode(doc, id, op, trace);
   if (op.op === "replace_block_markdown") {
     setRichMarkdown(doc, id, String(op.markdown ?? ""));
     trace?.push({ type: "block", block_id: id });

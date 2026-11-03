@@ -1,7 +1,7 @@
 import * as A from "@automerge/automerge/slim";
 import { diffArrays } from "diff";
 import { amSpliceIdxToPmIdx, pmRangeToAmRange } from "@automerge/prosemirror/dist/traversal.js";
-import { adapter, isRich, richDoc, textPath } from "./richtext.mjs";
+import { adapter, isRich, parseInlineMarkdown, richDoc, textPath } from "./richtext.mjs";
 import {
   encodeMarkValue,
   isKnownMark,
@@ -69,19 +69,23 @@ export function visibleRangeAddress(doc, id, start, end) {
 
 // Mark boundaries do not interrupt visible text, but rich block/embed markers
 // do. Never expose their object-replacement characters to a literal text edit.
+// Each segment records whether a code block holds it: the nearest block
+// marker before it, as inCodeBlock decides.
 export function textSegments(block) {
   if (!isRich(block)) throw Error("replace_match requires a rich-text block");
   if (block.richText.length > MAX_TEXT_LENGTH) throw Error("Block is too large for replace_match");
   const segments = [];
   let offset = 0;
   let segment;
+  let code = false;
   for (const span of A.spans(block, ["richText"])) {
     if (span.type === "block") {
+      code = String(span.value?.type) === "code-block";
       segment = undefined;
       offset++;
     } else {
       if (!segment) {
-        segment = { offset, text: "" };
+        segment = { offset, text: "", code };
         segments.push(segment);
       }
       segment.text += span.value;
@@ -93,19 +97,39 @@ export function textSegments(block) {
 
 const graphemeSegmenter = new Intl.Segmenter("und", { granularity: "grapheme" });
 const graphemes = (text) => Array.from(graphemeSegmenter.segment(text), (part) => part.segment);
-/** Whether UTF-16 offset `at` in `text` falls between grapheme clusters. */
-function graphemeBoundary(text, at) {
-  if (at <= 0 || at >= text.length) return true;
-  return graphemeSegmenter.segment(text).containing(at).index === at;
+// Each segment's grapheme cluster starts, found once however many matches
+// it holds.
+const clusterStarts = new WeakMap();
+/** Whether UTF-16 offset `at` in `segment.text` falls between grapheme clusters. */
+function graphemeBoundary(segment, at) {
+  if (at <= 0 || at >= segment.text.length) return true;
+  let starts = clusterStarts.get(segment);
+  if (!starts) {
+    starts = new Set(Array.from(graphemeSegmenter.segment(segment.text), (part) => part.index));
+    clusterStarts.set(segment, starts);
+  }
+  return starts.has(at);
 }
 
-/** Resolve one visible range without changing the document. Context is searched
- * between occurrences and cannot cross a paragraph or embedded-node boundary.
- * The match must start and end between grapheme clusters: a match that cuts
- * an accented letter, an emoji sequence or a flag would otherwise leave the
- * rest of that character behind, and a comment anchored on it attached to it.
- */
-export function findUniqueVisibleRange(doc, id, input) {
+const MAX_OCCURRENCE = 10000;
+/** The optional one-based `occurrence` of a passage operation, or undefined. */
+export function occurrenceOf(input) {
+  if (input.occurrence === undefined) return undefined;
+  if (
+    !Number.isSafeInteger(input.occurrence) ||
+    input.occurrence < 1 ||
+    input.occurrence > MAX_OCCURRENCE
+  )
+    throw Error(`occurrence must be an integer from 1 to ${MAX_OCCURRENCE}`);
+  if (input.all !== undefined) throw Error("Use occurrence or all, not both");
+  return input.occurrence;
+}
+
+/** Every visible occurrence of match_text in the block that its context and
+ * node_index allow, in document order. Occurrences may overlap. Context is
+ * searched between occurrences and cannot cross a paragraph or embedded-node
+ * boundary. */
+function visibleMatches(doc, id, input) {
   const match = replacementLiteral(input.match_text, "match_text");
   const before = replacementLiteral(input.context_before, "context_before", true);
   const after = replacementLiteral(input.context_after, "context_after", true);
@@ -134,17 +158,61 @@ export function findUniqueVisibleRange(doc, id, input) {
       matches.push({ at: segment.offset + at, segment, local: at });
     }
   }
+  return matches;
+}
+
+/** One match as a range. It must start and end between grapheme clusters: a
+ * match that cuts an accented letter, an emoji sequence or a flag would
+ * otherwise leave the rest of that character behind, and a comment anchored on
+ * it attached to it. */
+function matchRange(id, input, { at: start, segment, local }) {
+  const op = input.op ?? "replace_match";
+  const length = input.match_text.length;
+  if (!graphemeBoundary(segment, local))
+    throw Error(`${op} match_text starts inside a character; include the whole character`);
+  if (!graphemeBoundary(segment, local + length))
+    throw Error(`${op} match_text ends inside a character; include the whole character`);
+  return { path: textPath(id), start, end: start + length, code: segment.code };
+}
+
+/** Resolve one visible range without changing the document: the only match,
+ * or the one-based `occurrence` among the matches context and node_index
+ * allow. */
+export function findUniqueVisibleRange(doc, id, input) {
+  const occurrence = occurrenceOf(input);
+  const op = input.op ?? "replace_match";
+  if (input.all !== undefined) throw Error(`${op} does not take all`);
+  const matches = visibleMatches(doc, id, input);
+  if (occurrence !== undefined) {
+    if (occurrence > matches.length)
+      throw Error(
+        `${op} found ${matches.length} matches; occurrence ${occurrence} doesn't exist. Read the block again.`,
+      );
+    return matchRange(id, input, matches[occurrence - 1]);
+  }
   if (matches.length !== 1)
     throw Error(
-      `${input.op ?? "replace_match"} found ${matches.length} matches; exactly one is required. Use context_before/context_after or a longer match_text.`,
+      `${op} found ${matches.length} matches; exactly one is required. Use occurrence, context_before/context_after or a longer match_text.`,
     );
-  const [{ at: start, segment, local }] = matches;
-  const op = input.op ?? "replace_match";
-  if (!graphemeBoundary(segment.text, local))
-    throw Error(`${op} match_text starts inside a character; include the whole character`);
-  if (!graphemeBoundary(segment.text, local + match.length))
-    throw Error(`${op} match_text ends inside a character; include the whole character`);
-  return { path: textPath(id), start, end: start + match.length };
+  return matchRange(id, input, matches[0]);
+}
+
+/** Every non-overlapping match, in document order, for an operation with
+ * `all: true`. A match that starts or ends inside a character is skipped. At
+ * least one match is required. */
+export function findAllVisibleRanges(doc, id, input) {
+  if (input.all !== true) throw Error("all takes the value true");
+  if (input.occurrence !== undefined) throw Error("Use occurrence or all, not both");
+  const ranges = [];
+  const length = input.match_text.length;
+  for (const match of visibleMatches(doc, id, input)) {
+    if (ranges.length && match.at < ranges.at(-1).end) continue;
+    if (!graphemeBoundary(match.segment, match.local)) continue;
+    if (!graphemeBoundary(match.segment, match.local + length)) continue;
+    ranges.push(matchRange(id, input, match));
+  }
+  if (!ranges.length) throw Error(`${input.op} found 0 matches; at least one is required`);
+  return ranges;
 }
 
 // Diff tokens are built from grapheme clusters, so a combining accent, a ZWJ
@@ -328,8 +396,12 @@ function marksDroppedWarning(partial, start, end) {
  * whose words changed still covers every character it did; neither is
  * reported. */
 export function replaceMatch(doc, id, input, trace) {
-  const replacement = replacementLiteral(input.replacement, "replacement");
+  const { text: replacement, runs } = replacementOf(input);
   const { path, start, end } = findUniqueVisibleRange(doc, id, input);
+  if (runs && inCodeBlock(doc, path, start))
+    throw Error(
+      "replacement_markdown can't format text inside a code block; code text is unformatted. Use replacement.",
+    );
   const overlapping = A.marks(doc, path).filter((mark) => mark.start < end && mark.end > start);
   const covers = (mark) => mark.start <= start && mark.end >= end;
   const commonMarks = overlapping.filter(covers);
@@ -396,6 +468,7 @@ export function replaceMatch(doc, id, input, trace) {
   }
   if (inserted.length)
     stampMarks(doc, [...new Set(inserted.flatMap(({ keep }) => keep.map((mark) => mark.name)))]);
+  if (runs) applyRuns(doc, path, start, runs, commonMarks);
   // The caret covers the words that changed; a replacement that changed
   // nothing shows the match it addressed.
   trace?.push({
@@ -403,12 +476,55 @@ export function replaceMatch(doc, id, input, trace) {
     block_id: id,
     ...(changed ? { start: start + changed.start, end: start + changed.end } : { start, end }),
   });
+  // Formatting written in replacement_markdown is explicit: nothing to report.
+  const warn = !runs && partialMarks.length;
   return {
     op: "replace_match",
     block_id: id,
     matched: 1,
-    ...(partialMarks.length ? { warnings: [marksDroppedWarning(partialMarks, start, end)] } : {}),
+    ...(warn ? { warnings: [marksDroppedWarning(partialMarks, start, end)] } : {}),
   };
+}
+
+/** The replacement text of a replace_match, and its formatting runs when it
+ * came from replacement_markdown. Exactly one of the two is required. */
+export function replacementOf(input) {
+  const literal = input.replacement !== undefined;
+  if (literal === (input.replacement_markdown !== undefined))
+    throw Error("replace_match takes replacement or replacement_markdown, not both");
+  if (literal) return { text: replacementLiteral(input.replacement, "replacement"), runs: null };
+  const source = replacementLiteral(input.replacement_markdown, "replacement_markdown");
+  const runs = parseInlineMarkdown(source);
+  return { text: runs.map((run) => run.text).join(""), runs };
+}
+
+/** Set the formatting of the replaced text, which now starts at `start`, to
+ * what replacement_markdown wrote. Marks that covered the whole match stay,
+ * as for a literal replacement. Every other mark this build knows is cleared
+ * from the range before the written marks are applied. Marks this build
+ * doesn't know are kept: Markdown can't express them. */
+function applyRuns(doc, path, start, runs, commonMarks) {
+  const end = start + runs.reduce((length, run) => length + run.text.length, 0);
+  if (end === start) return;
+  const kept = new Set(commonMarks.map((mark) => mark.name));
+  const clear = new Set(
+    A.marks(doc, path)
+      .filter((mark) => mark.start < end && mark.end > start)
+      .map((mark) => mark.name)
+      .filter((name) => isKnownMark(name) && !kept.has(name)),
+  );
+  for (const name of clear) A.unmark(doc, path, { start, end, expand: "none" }, name);
+  const written = new Set();
+  let at = start;
+  for (const run of runs) {
+    const next = at + run.text.length;
+    for (const [name, value] of Object.entries(run.marks)) {
+      A.mark(doc, path, { start: at, end: next, expand: markExpand(name) }, name, value);
+      written.add(name);
+    }
+    at = next;
+  }
+  stampMarks(doc, [...written]);
 }
 
 /** Normalize format_match `add` input into stored Automerge mark values. */
@@ -427,10 +543,9 @@ export function formatMarks(add) {
   );
 }
 
-/** Add or remove marks over one visible text range. Text and CRDT identity
- * are unchanged; a mark added over an existing one with a different value
- * replaces that value in the range. */
-export function formatMatch(doc, id, input, trace) {
+/** Validate format_match's add and remove. Returns the stored mark values to
+ * add and the mark names to remove. */
+export function formatChanges(input) {
   const add = formatMarks(input.add);
   const remove = input.remove ?? [];
   if (!Array.isArray(remove) || remove.some((name) => typeof name !== "string"))
@@ -440,20 +555,53 @@ export function formatMatch(doc, id, input, trace) {
     throw Error("format_match requires add or remove");
   if (remove.some((name) => Object.hasOwn(add, name)))
     throw Error("A mark cannot be both added and removed");
-  const { path, start, end } = findUniqueVisibleRange(doc, id, { ...input, op: "format_match" });
-  if (inCodeBlock(doc, path, start))
-    throw Error("format_match can't format text inside a code block; code text is unformatted.");
-  for (const name of remove) A.unmark(doc, path, { start, end, expand: "both" }, name);
-  for (const [name, value] of Object.entries(add))
-    A.mark(doc, path, { start, end, expand: markExpand(name) }, name, value);
+  return { add, remove };
+}
+
+/** Add or remove marks over one visible text range, or over every match with
+ * `all: true`. Text and CRDT identity are unchanged; a mark added over an
+ * existing one with a different value replaces that value in the range.
+ *
+ * Code text is unformatted. One addressed match inside a code block is
+ * refused; with `all`, matches in code are left alone and counted in
+ * `skipped_in_code`. */
+export function formatMatch(doc, id, input, trace) {
+  const { add, remove } = formatChanges(input);
+  const located = { ...input, op: "format_match" };
+  const path = textPath(id);
+  let ranges,
+    skipped = 0;
+  if (input.all === undefined) {
+    const range = findUniqueVisibleRange(doc, id, located);
+    if (inCodeBlock(doc, path, range.start))
+      throw Error("format_match can't format text inside a code block; code text is unformatted.");
+    ranges = [range];
+  } else {
+    const found = findAllVisibleRanges(doc, id, located);
+    ranges = found.filter((range) => !range.code);
+    skipped = found.length - ranges.length;
+    if (!ranges.length)
+      throw Error("format_match found matches only inside code blocks; code text is unformatted.");
+  }
+  for (const { start, end } of ranges) {
+    for (const name of remove) A.unmark(doc, path, { start, end, expand: "both" }, name);
+    for (const [name, value] of Object.entries(add))
+      A.mark(doc, path, { start, end, expand: markExpand(name) }, name, value);
+  }
   stampMarks(doc, Object.keys(add));
+  const { start, end } = ranges.at(-1);
   trace?.push({ type: "text", block_id: id, start, end });
-  return { op: "format_match", block_id: id, matched: 1 };
+  return {
+    op: "format_match",
+    block_id: id,
+    matched: ranges.length,
+    ...(skipped ? { skipped_in_code: skipped } : {}),
+  };
 }
 
 // Whether native position `at` sits in a code block: the nearest block marker
 // before it is a code-block marker.
-function inCodeBlock(doc, path, at) {
+export function inCodeBlock(doc, path, at) {
   let pos = 0,
     code = false;
   for (const span of A.spans(doc, path)) {

@@ -256,3 +256,53 @@ test("a thread batch names unknown threads, refuses readers, and applies for edi
   assert.deepEqual(resolved.body.comment_heads, f.commentHeads());
   assert.equal(f.commentsDoc().threads[threadId].status.value, "resolved");
 });
+
+test("rich edits go through the host: set_node, all and replacement_markdown, with codes on refusal", async (t) => {
+  const f = await fixture(t);
+  const edit = (key, operations, heads = f.heads()) =>
+    f.tool("owner", "patch_page", { base_heads: heads, idempotency_key: key, operations });
+  const wrongNode = await edit("rich-wrong-node", [
+    { op: "set_node", block_id: f.blockId, match_text: "Friday", checked: true },
+  ]);
+  assert.equal(wrongNode.status, 400);
+  assert.equal(wrongNode.body.code, "invalid_edit_selector");
+  assert.match(
+    wrongNode.body.error,
+    /checked applies to task list items; match_text is in a paragraph/,
+  );
+  const math = await edit("rich-math", [
+    { op: "replace_match", block_id: f.blockId, match_text: "Friday", replacement_markdown: "$x$" },
+  ]);
+  assert.equal(math.status, 400);
+  assert.equal(math.body.code, "unsupported_markdown");
+  const applied = await edit("rich-applied", [
+    { op: "set_node", block_id: f.blockId, match_text: "We ship", heading_level: 2 },
+    {
+      op: "replace_match",
+      block_id: f.blockId,
+      match_text: "Friday",
+      replacement_markdown: "**Monday**",
+    },
+    {
+      op: "format_match",
+      block_id: f.blockId,
+      match_text: "e",
+      all: true,
+      add: { highlight: "blue" },
+    },
+  ]);
+  assert.equal(applied.status, 200, JSON.stringify(applied.body));
+  assert.deepEqual(
+    applied.body.result.edits.map((edit) => [edit.op, edit.matched]),
+    [
+      ["set_node", 1],
+      ["replace_match", 1],
+      ["format_match", 1],
+    ],
+  );
+  const read = await f.tool("owner", "read_page", { page_id: f.pageId, comments: "none" });
+  assert.equal(
+    read.body.blocks[0].markdown,
+    '## W<mark data-color="blue">e</mark> ship on **Monday**.',
+  );
+});

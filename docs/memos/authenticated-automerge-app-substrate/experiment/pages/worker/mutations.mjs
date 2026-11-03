@@ -150,7 +150,7 @@ export async function documentMutation({
     if (targetScope && operation !== "patch_page")
       throw Object.assign(
         Error(
-          "Target conflict scope is available only for patch_page replace_match and format_match batches",
+          "Target conflict scope is available only for patch_page replace_match, format_match and set_node batches",
         ),
         {
           status: 400,
