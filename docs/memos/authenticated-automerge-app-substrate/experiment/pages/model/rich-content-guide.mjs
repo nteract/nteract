@@ -93,8 +93,9 @@ code block, table cell, image and dataframe is a node with typed attributes,
 and formatting is a native mark on its characters. Markdown is one way to read
 and write them; node operations (insert_image, insert_node, set_node) are the
 other. Some nodes have no Markdown form: ${NODE_OPERATIONS.map(([, text]) => text).join("; ")}
-(see Datasets below). They read back as a labeled link, and
-replace_block_markdown refuses a block holding one.
+(see Datasets below). They read back as a labeled link on its own line;
+replace_block_markdown keeps the node when that line is unchanged and refuses
+a rewrite that drops or edits it.
 ${richEditOperations()}
 These operations keep comment anchors and untouched characters in place, so
 prefer them to replace_block_markdown for small changes.

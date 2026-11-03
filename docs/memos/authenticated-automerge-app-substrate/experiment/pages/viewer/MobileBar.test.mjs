@@ -110,7 +110,7 @@ test("the bar's Comment button is an action named for its target, never a commen
     "Bold",
     "Italic",
     "Bulleted list",
-    "Insert image",
+    "Insert image or dataset",
     "Comment on selection",
     "More formatting",
   ]);

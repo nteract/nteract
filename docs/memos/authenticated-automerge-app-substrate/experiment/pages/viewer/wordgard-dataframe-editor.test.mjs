@@ -78,3 +78,38 @@ for (const [where, at] of [
       editor.dom.remove();
     }
   });
+
+// A press on the frame (the header or the select handle) selects the table as
+// one node, so cut and paste act on it. A press inside Sift's canvas doesn't.
+test("pressing the frame selects the dataframe as a node; the canvas doesn't", () => {
+  const state = GardState.create({
+    doc: schema.doc([Paragraph.create([Leaf.text("hello")]), PagesDataframe.of(attrs)]),
+    config: [
+      ...schema.elements.map((e) => GardState.schemaElement.of(e)),
+      wordgardDataframes({ pageId }),
+      Wordgard.editable.of(true),
+    ],
+  });
+  const editor = new Wordgard({ state, parent: document.body });
+  try {
+    editor.flush();
+    const frame = document.querySelector("section.wordgard-dataframe-table");
+    const press = (target) =>
+      target.dispatchEvent(new window.MouseEvent("mousedown", { bubbles: true, button: 0 }));
+    press(frame.querySelector(".wordgard-dataframe-canvas"));
+    assert.equal(editor.state.selection instanceof GardSelection.Node, false);
+    for (const target of [
+      frame.querySelector(".wordgard-dataframe-select"),
+      frame.querySelector(".wordgard-dataframe-header"),
+    ]) {
+      editor.dispatch({ selection: GardSelection.cursor(1) });
+      press(target);
+      assert.ok(editor.state.selection instanceof GardSelection.Node);
+      assert.equal(editor.state.selection.node.type, PagesDataframe);
+      editor.flush();
+      assert.ok(document.querySelector(".wg-selected-node section.wordgard-dataframe-table"));
+    }
+  } finally {
+    editor.dom.remove();
+  }
+});

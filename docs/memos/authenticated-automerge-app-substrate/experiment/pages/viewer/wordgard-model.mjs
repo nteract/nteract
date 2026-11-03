@@ -624,8 +624,17 @@ export function decode(spans) {
       outer.push(d.tag);
     }
     // Leaf blocks hold no content of their own.
+    // A dataframe stored inside a text container (a table cell, a code
+    // block) can't be drawn there. No Pages writer puts one there; one from
+    // a peer takes the unknown-node path below (an inline notice, lossy).
+    const inText = value.parents.some((parent) =>
+      ["code-block", "table-cell", "table-header"].includes(String(parent)),
+    );
     const dataframe =
-      type === DATAFRAME_BLOCK && readDataframe(attrs) && Object.values(attrs).every(scalar)
+      type === DATAFRAME_BLOCK &&
+      !inText &&
+      readDataframe(attrs) &&
+      Object.values(attrs).every(scalar)
         ? attrs
         : null;
     const builtIn = type === "pages-opaque" || type === "horizontal-rule" || !!dataframe;

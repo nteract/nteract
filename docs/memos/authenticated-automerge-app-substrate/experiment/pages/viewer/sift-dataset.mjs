@@ -1,4 +1,21 @@
-import { PARQUET_MEDIA_TYPE, parseAssetPath } from "../shared/dataset-assets.mjs";
+import {
+  DATASET_MAX_BYTES,
+  PARQUET_MEDIA_TYPE,
+  parseAssetPath,
+} from "../shared/dataset-assets.mjs";
+
+/**
+ * Sift's decode limits for a Page dataset (sift-table.jsx). maxBytes is the
+ * upload cap; the row, column and memory caps bound what a small, highly
+ * compressed file can expand to in the reader's tab. Sift calls these a
+ * loading guardrail, not a sandbox.
+ */
+export const DATAFRAME_LIMITS = Object.freeze({
+  maxBytes: DATASET_MAX_BYTES,
+  maxRows: 250_000,
+  maxColumns: 256,
+  maxDecodedBytes: 96 * 1024 * 1024,
+});
 
 /**
  * The bytes of a Page's Parquet dataset, read with the reader's own session.
@@ -11,8 +28,7 @@ export async function fetchDataset(src, { pageId, signal, request = fetch } = {}
   if (!path) throw Error("Table source needs a src that is a Page asset path.");
   // A dataframe only shows this Page's datasets. A src naming another Page
   // (written by an older or modified client) is refused before any request.
-  if (pageId !== undefined && path.pageId !== pageId)
-    throw Error("This dataset belongs to another Page.");
+  if (path.pageId !== pageId) throw Error("This dataset belongs to another Page.");
   const response = await request(src, { credentials: "same-origin", signal });
   if (response.status === 401 || response.status === 403)
     throw Error("You don't have access to this dataset.");

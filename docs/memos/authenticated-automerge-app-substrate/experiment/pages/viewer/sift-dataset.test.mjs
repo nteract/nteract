@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { JSDOM } from "jsdom";
 import { PARQUET_MEDIA_TYPE } from "../shared/dataset-assets.mjs";
-import { ensureSiftStyles, fetchDataset } from "./sift-dataset.mjs";
+import { DATAFRAME_LIMITS, ensureSiftStyles, fetchDataset } from "./sift-dataset.mjs";
 
 const src = `/api/pages/33333333-3333-4333-8333-333333333333/assets/${"b".repeat(64)}`;
 const respond =
@@ -17,6 +17,7 @@ test("a dataset is read same-origin with the reader's session", async () => {
   const calls = [];
   const signal = new AbortController().signal;
   const bytes = await fetchDataset(src, {
+    pageId: "33333333-3333-4333-8333-333333333333",
     signal,
     request: async (url, init) => {
       calls.push([url, init]);
@@ -35,7 +36,10 @@ test("access, missing assets and other media types fail with a reason", async ()
     [respond(500), /\(500\)/],
     [respond(200, "image/png"), /isn't a Parquet dataset/],
   ])
-    await assert.rejects(fetchDataset(src, { request }), { message });
+    await assert.rejects(
+      fetchDataset(src, { pageId: "33333333-3333-4333-8333-333333333333", request }),
+      { message },
+    );
 });
 
 test("a src outside this origin's Page assets is never requested", async () => {
@@ -74,4 +78,17 @@ test("Sift's stylesheet is added once", () => {
   assert.equal(styles.length, 1);
   assert.equal(styles[0].textContent, ".sift-root{color:red}");
   window.close();
+});
+
+test("Page datasets decode under explicit limits", () => {
+  assert.deepEqual(DATAFRAME_LIMITS, {
+    maxBytes: 5 * 1024 * 1024,
+    maxRows: 250_000,
+    maxColumns: 256,
+    maxDecodedBytes: 96 * 1024 * 1024,
+  });
+});
+
+test("a fetch without the host Page's id is refused", async () => {
+  await assert.rejects(fetchDataset(src, { request: respond(200) }), /another Page/);
 });

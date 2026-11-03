@@ -106,7 +106,7 @@ import { wordgardDataframes } from "./wordgard-dataframes.mjs";
 import { selectionToolbarPosition } from "./selection-toolbar.mjs";
 import { linkDestination, openInNewTab, wantsNewTab } from "./link-destination.mjs";
 import { LinkPopover } from "./LinkPopover.jsx";
-import { selectedImage } from "./image-selection.mjs";
+import { selectedAtom, selectedImage } from "./image-selection.mjs";
 import { normalizePastedHTML } from "./clipboard-html.mjs";
 import {
   IMAGE_ACCEPT,
@@ -675,10 +675,10 @@ export function WordgardEditor(props) {
         collab.observeChange(event);
         let selection;
         const { anchor, head } = editor.state.selection;
-        // Let Wordgard map a selected image through the projection change set.
+        // Let Wordgard map a selected image or dataframe through the projection change set.
         // Rebuilding it as a text range would bring back text controls on peer edits.
         if (
-          !selectedImage(editor.state) &&
+          !selectedAtom(editor.state) &&
           event.nativeBefore &&
           event.nativeAfter &&
           !event.changes.empty
@@ -982,7 +982,7 @@ export function WordgardEditor(props) {
       const contextual =
         !mobile &&
         !selection.empty &&
-        !selectedImage(editor.state) &&
+        !selectedAtom(editor.state) &&
         !editor.composing &&
         (editor.hasFocus ||
           selectedHere ||

@@ -1560,6 +1560,8 @@ const TEXT_CONTAINERS = new Set(["code-block", "table-cell", "table-header"]);
  * serializes only its text). With `all`, every unknown marker does: one
  * outside a text container becomes a paragraph holding its notice, and
  * unknown parents are dropped. Writers never store these spans. */
+const dataframeInText = (type, parents) =>
+  type === DATAFRAME_BLOCK && parents.some((parent) => TEXT_CONTAINERS.has(parent));
 function readableSpans(spans, all) {
   const known = (types) => types.filter(knownBlock).map((p) => new A.ImmutableString(p));
   const out = [];
@@ -1570,7 +1572,9 @@ function readableSpans(spans, all) {
     }
     const type = String(span.value.type);
     const parents = (span.value.parents ?? []).map(String);
-    const unknown = !knownBlock(type);
+    // A dataframe inside a text container can't be placed; it reads like a
+    // node this build doesn't know (dataframeInText).
+    const unknown = !knownBlock(type) || dataframeInText(type, parents);
     if (unknown && (all || (span.value.isEmbed && parents.includes("code-block")))) {
       if (!span.value.isEmbed && !parents.some((parent) => TEXT_CONTAINERS.has(parent)))
         out.push({
@@ -1706,7 +1710,9 @@ export function markdownlessNode(block) {
   if (!isRich(block)) return null;
   for (const span of A.spans(block, ["richText"])) {
     if (span.type !== "block") continue;
-    for (const type of [span.value?.type, ...(span.value?.parents ?? [])].map(String))
+    const parents = (span.value?.parents ?? []).map(String);
+    if (dataframeInText(String(span.value?.type), parents)) return DATAFRAME_BLOCK;
+    for (const type of [span.value?.type, ...parents].map(String))
       if (!knownBlock(type)) return type;
   }
   return null;
@@ -1723,7 +1729,12 @@ export function setRichNode(doc, id, { type, attrs }) {
   stampSpans(doc, spans);
 }
 /** The read-back line of a dataframe: `[Dataframe: <title>](<src>)`. */
-export const dataframeLabel = (title) => (title ? `Dataframe: ${title}` : "Dataframe");
+export const dataframeLabel = (title) => {
+  // One line, whatever the stored title holds, so the read-back line always
+  // matches itself on a rewrite.
+  const line = title?.replace(/\s+/g, " ").trim();
+  return line ? `Dataframe: ${line}` : "Dataframe";
+};
 
 /**
  * Rewrite a block from agent Markdown, keeping its dataframes. Each existing
