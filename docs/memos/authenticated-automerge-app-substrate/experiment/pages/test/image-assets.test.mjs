@@ -12,8 +12,15 @@ import {
 import { createAuthFixture } from "../../auth-fixtures.mjs";
 import worker, { Page } from "../worker/index.mjs";
 import { DocumentPolicy } from "../worker/policy.mjs";
-import { inspectImage, imageAssetKey, requireStoredImageAsset } from "../worker/image-assets.mjs";
+import {
+  inspectImage,
+  inspectParquet,
+  imageAssetKey,
+  persistImageAsset,
+  requireStoredImageAsset,
+} from "../worker/image-assets.mjs";
 import { IMAGE_MAX_BYTES } from "../shared/image-assets.mjs";
+import { DATASET_MAX_BYTES, PARQUET_MEDIA_TYPE } from "../shared/dataset-assets.mjs";
 
 // Actual 3x2 raster images encoded by Pillow, not hand-built header-only fixtures.
 const fixtures = {
@@ -32,6 +39,10 @@ const extraFixtures = [
   ],
   ["image/webp", "UklGRh4AAABXRUJQVlA4TBEAAAAvAkAAAAdQxSb1t/+BiOh/AAA="],
 ];
+// A real two-row, three-column table written by pyarrow 26 (uncompressed).
+const parquetFixture =
+  "UEFSMRUEFTgVOEwVBBUAEgAACgAAADIwMjYtMTEtMDEKAAAAMjAyNi0xMS0wMhUAFRIVEiwVBBUQFQYVBhw2ACgKMjAyNi0xMS0wMhgKMjAyNi0xMS0wMRERAAAAAgAAAAQBAQMCFQQVJBUkTBUEFQASAAADAAAAbWNwBwAAAGJyb3dzZXIVABUSFRIsFQQVEBUGFQYcNgAoA21jcBgHYnJvd3NlchERAAAAAgAAAAQBAQMCFQQVIBUgTBUEFQASAAAqAAAAAAAAAAcAAAAAAAAAFQAVEhUSLBUEFRAVBhUGHBgIKgAAAAAAAAAYCAcAAAAAAAAAFgAoCCoAAAAAAAAAGAgHAAAAAAAAABERAAAAAgAAAAQBAQMCFQQZTDUAGAZzY2hlbWEVBgAVDCUCGANkYXklAEwcAAAAFQwlAhgHc3VyZmFjZSUATBwAAAAVBCUCGAZldmVudHMAFgQZHBk8JgAcFQwZNQAGEBkYA2RheRUAFgQWxAEWxAEmXCYIHDYAKAoyMDI2LTExLTAyGAoyMDI2LTExLTAxEREAGSwVBBUAFQIAFQAVEBUCADwWKBkGGSYABAAAACYAHBUMGTUABhAZGAdzdXJmYWNlFQAWBBacARacASaMAibMARw2ACgDbWNwGAdicm93c2VyEREAGSwVBBUAFQIAFQAVEBUCADwWFBkGGSYABAAAACYAHBUEGTUABhAZGAZldmVudHMVABYEFswBFswBJqQDJugCHBgIKgAAAAAAAAAYCAcAAAAAAAAAFgAoCCoAAAAAAAAAGAgHAAAAAAAAABERABksFQQVABUCABUAFRAVAgA8KQYZJgAEAAAAFqwEFgQmCBasBAAZHBgMQVJST1c6c2NoZW1hGKwCLy8vLy85Z0FBQUFRQUFBQUFBQUtBQXdBQmdBRkFBZ0FDZ0FBQUFBQkJBQU1BQUFBQ0FBSUFBQUFCQUFJQUFBQUJBQUFBQU1BQUFCOEFBQUFRQUFBQUFRQUFBQ2cvLy8vQUFBQkFoQUFBQUFnQUFBQUJBQUFBQUFBQUFBR0FBQUFaWFpsYm5SekFBQUlBQXdBQ0FBSEFBZ0FBQUFBQUFBQlFBQUFBTmovLy84QUFBRUZFQUFBQUJnQUFBQUVBQUFBQUFBQUFBY0FBQUJ6ZFhKbVlXTmxBTXovLy84UUFCUUFDQUFHQUFjQURBQUFBQkFBRUFBQUFBQUFBUVVRQUFBQUdBQUFBQVFBQUFBQUFBQUFBd0FBQUdSaGVRQUVBQVFBQkFBQUFBQUFBQUE9ABggcGFycXVldC1jcHAtYXJyb3cgdmVyc2lvbiAyNi4wLjAZPBwAABwAABwAAADYAgAAUEFSMQ==";
+const parquetBytes = () => new Uint8Array(Buffer.from(parquetFixture, "base64"));
 const pageId = "33333333-3333-4333-8333-333333333333";
 const otherId = "44444444-4444-4444-8444-444444444444";
 const publicOrigin = "https://page7.runtimed.run";
@@ -530,4 +541,124 @@ test("image insertion and duplicate upload reject inconsistent stored object met
     });
   }
   assert.equal(f.env.PAGES_ASSETS.calls.filter(([method]) => method === "put").length, 1);
+});
+
+test("Parquet containers need PAR1 at both ends and a footer that fits", () => {
+  assert.deepEqual(inspectParquet(parquetBytes()), { mime_type: PARQUET_MEDIA_TYPE });
+  const bytes = parquetBytes();
+  const footerAt = bytes.length - 8;
+  const cases = [
+    bytes.subarray(0, bytes.length - 1),
+    bytes.subarray(1),
+    new Uint8Array([...bytes.subarray(0, bytes.length - 4), ...new TextEncoder().encode("PARE")]),
+    new TextEncoder().encode("PAR1PAR1"),
+    new TextEncoder().encode("PAR1\0\0\0\0PAR1"),
+  ];
+  const tooLong = bytes.slice();
+  new DataView(tooLong.buffer).setUint32(footerAt, bytes.length, true);
+  const empty = bytes.slice();
+  new DataView(empty.buffer).setUint32(footerAt, 0, true);
+  for (const value of [...cases, tooLong, empty])
+    assert.throws(() => inspectParquet(value), { status: 415 });
+});
+
+test("a Parquet upload is stored once, Page-scoped, and served as a download", async (t) => {
+  const f = await fixture(t);
+  for (const contentType of [PARQUET_MEDIA_TYPE, "application/octet-stream"]) {
+    const response = await run(f, {
+      body: parquetBytes(),
+      headers: { "content-type": contentType },
+    });
+    assert.ok([200, 201].includes(response.status), await response.clone().text());
+    privateHeaders(response);
+    const dataset = await response.json();
+    assert.deepEqual(
+      { ...dataset, asset_id: "id", asset_url: "url", url: "url" },
+      {
+        asset_id: "id",
+        asset_url: "url",
+        url: "url",
+        mime_type: PARQUET_MEDIA_TYPE,
+        size: parquetBytes().length,
+      },
+    );
+    assert.equal(dataset.url, `/api/pages/${pageId}/assets/${dataset.asset_id}`);
+    const stored = f.env.PAGES_ASSETS.objects.get(imageAssetKey(pageId, dataset.asset_id));
+    assert.deepEqual(stored.customMetadata, { page_id: pageId, hash: dataset.asset_id });
+    for (const method of ["GET", "HEAD"]) {
+      const read = await run(f, { method, asset: dataset.asset_id });
+      assert.equal(read.status, 200);
+      privateHeaders(read);
+      assert.equal(read.headers.get("content-type"), PARQUET_MEDIA_TYPE);
+      assert.equal(
+        read.headers.get("content-disposition"),
+        `attachment; filename="${dataset.asset_id}.parquet"`,
+      );
+      assert.deepEqual(
+        new Uint8Array(await read.arrayBuffer()),
+        method === "GET" ? parquetBytes() : new Uint8Array(),
+      );
+    }
+    assert.equal((await run(f, { id: otherId, asset: dataset.asset_id })).status, 404);
+  }
+  assert.equal(f.env.PAGES_ASSETS.calls.filter(([method]) => method === "put").length, 1);
+});
+
+test("Parquet bytes under an image Content-Type, or as a broken container, are refused", async (t) => {
+  const f = await fixture(t);
+  const truncated = parquetBytes().subarray(0, 64);
+  for (const options of [
+    { body: parquetBytes(), headers: { "content-type": "image/png" } },
+    { body: truncated, headers: { "content-type": PARQUET_MEDIA_TYPE } },
+    { body: bytesFor(), headers: { "content-type": PARQUET_MEDIA_TYPE } },
+    {
+      body: new Uint8Array(DATASET_MAX_BYTES + 1),
+      headers: { "content-type": PARQUET_MEDIA_TYPE },
+    },
+  ]) {
+    const response = await run(f, options);
+    assert.ok([413, 415].includes(response.status), await response.clone().text());
+    privateHeaders(response);
+  }
+  assert.equal(f.env.PAGES_ASSETS.calls.filter(([method]) => method === "put").length, 0);
+});
+
+test("image paths refuse a Parquet dataset: import, insert_image preflight", async (t) => {
+  const f = await fixture(t);
+  await assert.rejects(persistImageAsset(f.env.PAGES_ASSETS, { pageId, bytes: parquetBytes() }), {
+    status: 415,
+  });
+  const dataset = await upload(f, {
+    body: parquetBytes(),
+    headers: { "content-type": PARQUET_MEDIA_TYPE },
+  });
+  await assert.rejects(
+    requireStoredImageAsset(f.env.PAGES_ASSETS, { pageId, assetId: dataset.asset_id }),
+    { status: 415, message: /insert_node/ },
+  );
+});
+
+test("a stored dataset with image metadata or the wrong Page fails closed", async (t) => {
+  const f = await fixture(t);
+  const dataset = await upload(f, {
+    body: parquetBytes(),
+    headers: { "content-type": PARQUET_MEDIA_TYPE },
+  });
+  const key = imageAssetKey(pageId, dataset.asset_id),
+    stored = f.env.PAGES_ASSETS.objects.get(key);
+  for (const changes of [
+    { width: "3", height: "2" },
+    { page_id: otherId },
+    { hash: "0".repeat(64) },
+  ]) {
+    f.env.PAGES_ASSETS.objects.set(key, {
+      ...stored,
+      customMetadata: { ...stored.customMetadata, ...changes },
+    });
+    const response = await run(f, {
+      body: parquetBytes(),
+      headers: { "content-type": PARQUET_MEDIA_TYPE },
+    });
+    assert.equal(response.status, 500);
+  }
 });

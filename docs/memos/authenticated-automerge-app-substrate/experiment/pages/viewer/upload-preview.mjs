@@ -4,8 +4,9 @@
 import { Decoration, Widget } from "wordgard/editor";
 import { GardState, Transaction } from "wordgard/state";
 
-/** Set or clear the pending upload: `{ resolve, src, name, onCancel }` or
- * null. `resolve()` returns the editor position of the upload's native
+/** Set or clear the pending upload: `{ resolve, src, name, message, onCancel }`
+ * or null. `src` is an image preview, empty for a dataset; `message` is the
+ * status line, "Uploading image…" when empty. `resolve()` returns the editor position of the upload's native
  * Automerge cursor, or throws when that target is gone. It's the same
  * resolution the final insert uses, so the preview always marks the spot the
  * image will land, including in repeated text. */
@@ -44,8 +45,8 @@ export const uploadPreview = GardState.Field.define({
 });
 
 const previewWidget = Widget.define({
-  eq: (a, b) => a.src === b.src && a.name === b.name,
-  render({ src, name, onCancel }) {
+  eq: (a, b) => a.src === b.src && a.name === b.name && a.message === b.message,
+  render({ src, name, message, onCancel }) {
     const host = document.createElement("span");
     host.className = "wordgard-upload-preview";
     host.setAttribute("role", "status");
@@ -57,7 +58,7 @@ const previewWidget = Widget.define({
     }
     const bar = host.appendChild(document.createElement("span"));
     bar.className = "wordgard-upload-preview-bar";
-    bar.appendChild(document.createElement("span")).textContent = "Uploading image…";
+    bar.appendChild(document.createElement("span")).textContent = message || "Uploading image…";
     if (onCancel) {
       const cancel = bar.appendChild(document.createElement("button"));
       cancel.type = "button";

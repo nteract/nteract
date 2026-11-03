@@ -114,10 +114,14 @@ Branch on code, not on the error message:
   "table-cells", "empty-link", "definition" or "unrepresentable"), line,
   column and excerpt. Rewrite that part as code, escaped text or plain
   Markdown and retry with a new key.
-- markdownless_node: replace_block_markdown targeted a block holding a node
-  with no Markdown form, such as one a newer version of Pages added (it reads
-  as [Unsupported node: <type>]). A rewrite would lose it. Edit around it with
-  replace_match, format_match or set_node, or delete the block.
+- markdownless_node: replace_block_markdown would lose a node with no
+  Markdown form. Two causes:
+  - A dataframe's read-back line, [Dataframe: <title>](<src>), is missing or
+    edited. Keep that line unchanged to keep the node; the error lists the
+    lines. To remove a dataframe, delete_block a block that holds only it.
+  - The block holds a node a newer version of Pages added (it reads as
+    [Unsupported node: <type>]). Edit around it with replace_match,
+    format_match or set_node, or delete the block.
 - preserved_markdown_converting (503): Pages is converting Markdown an older
   version saved on this Page. read_page still works. Wait, read_page again,
   retry; if it persists, the Page needs an operator.
@@ -159,9 +163,13 @@ Branch on code, not on the error message:
   progress_capacity_exceeded, progress_budget_exceeded. See Progress and
   presence below.
 - image_not_found (404): the asset isn't stored on this Page.
+- dataset_not_found (404): insert_node named an asset_id that isn't stored on
+  this Page.
 - unsupported_media_type (415): import_page_image or a byte upload got bytes
-  that aren't a PNG, JPEG or static WebP, or don't match their Content-Type.
-  Convert the image and import it again; the same bytes fail again.
+  that aren't a PNG, JPEG or static WebP (or, for a byte upload, an
+  unencrypted Parquet file), or don't match their Content-Type. Convert the
+  file and upload it again; the same bytes fail again. insert_image also
+  returns this for a Parquet asset: show a dataset with insert_node instead.
 - request_canceled (408): an image import or upload was canceled before it
   finished, usually because the client disconnected. Import the same file
   again; identical bytes reuse one asset.
@@ -650,6 +658,43 @@ HTTP endpoint above. MCP can import files and preserve image references, but it
 does not return image pixels. A reference from read_page is not evidence that an
 agent has seen the image. Copying a document to another deployment also requires
 transferring its private assets; copying Markdown alone is insufficient.
+
+## Datasets
+
+A Page can show a Parquet file as an interactive table. The file is a private
+Page asset like an image, up to 5 MiB, and the same upload route stores it:
+POST the raw bytes to ${origin}/api/pages/<page_id>/assets with Content-Type
+application/vnd.apache.parquet and your API-key bearer header. The response
+contains asset_id, asset_url, mime_type and size. In the browser, an editor can
+drop or paste a .parquet file into a block.
+
+Show it with a dataframe node. Dataframes have no Markdown syntax; place one
+with an edit_page operation:
+
+\`\`\`json
+{"op": "insert_node", "node": {"type": "dataframe", "attrs": {"asset_id": "<asset_id>", "title": "Usage by day"}}, "after_block_id": "<block_id>"}
+\`\`\`
+
+asset_id is the upload's asset_id; title is optional, up to 200 characters.
+media_type defaults to application/vnd.apache.parquet, the only one today.
+The node goes in its own block. The receipt's result.inserted_nodes lists
+block_id, type and the stored attrs (src, media_type, title). Pages checks the
+asset exists on this Page and is a dataset: a missing asset is
+dataset_not_found (404), an image is 415.
+
+read_page shows a dataframe as a labeled link on its own line,
+[Dataframe: <title>](<src>), so you can see where it is. replace_block_markdown
+keeps a dataframe when that exact line is still in your Markdown, and refuses
+the rewrite with markdownless_node when it's missing or edited. The line never
+creates a dataframe: in any other block, or naming an asset the block doesn't
+hold, it stays a link. replace_match and set_node edit around a dataframe
+without touching it. A missing asset is dataset_not_found (404).
+
+Readers see a Sift table: they can sort, filter and scroll it, and those
+changes stay in their own view. Nothing they do changes the document. Pages
+does not decode the file on the server, so read the Parquet yourself when you
+need its rows, schema or row count; GET of asset_url with your bearer header
+returns the bytes. The table loads with the reader's own session.
 
 ## JSON tools
 

@@ -50,6 +50,7 @@ const SUITES = Object.freeze([
   { name: "schema-features", script: "scripts/schema-features-smoke.mjs", timeout: 3 * minute },
   { name: "task-lists", harness: sharing("--task-lists"), timeout: 3 * minute },
   { name: "images", harness: sharing("--images"), timeout: 4 * minute },
+  { name: "datasets", harness: sharing("--datasets"), timeout: 4 * minute },
   { name: "mcp-images", harness: sharing("--mcp-images"), timeout: 4 * minute },
   { name: "sharing", harness: sharing(), timeout: 4 * minute },
   { name: "commenter", harness: sharing("--commenter"), timeout: 4 * minute },

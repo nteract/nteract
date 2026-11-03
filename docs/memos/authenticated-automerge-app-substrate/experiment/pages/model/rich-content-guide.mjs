@@ -31,18 +31,28 @@ export const BLOCK_SYNTAX = Object.freeze([
   ["code-block", "fenced code blocks with a language"],
 ]);
 
+/** Block types with no Markdown form, and the node operation that writes
+ * each. A feature block needs an entry here or in BLOCK_SYNTAX. */
+export const NODE_OPERATIONS = Object.freeze([
+  [
+    "dataframe",
+    'insert_node with node {type: "dataframe", attrs: {asset_id, title}} shows an uploaded Parquet dataset as a table',
+  ],
+]);
+
 const markNames = (marks = MARK_REGISTRY) => marks.marks.map((mark) => mark.name);
 
-/** Throws when a registry entry has no syntax here. Runs at import, so a new
- * mark or feature block can't ship without agent guidance. */
+/** Throws when a registry entry has no agent write path here: Markdown syntax,
+ * or for a block, a node operation. Runs at import, so a new mark or feature
+ * block can't ship without agent guidance. */
 export function checkCoverage(marks = MARK_REGISTRY, features = featureFile) {
   const unmarked = markNames(marks).filter((name) => !Object.hasOwn(MARK_SYNTAX, name));
   if (unmarked.length) throw Error(`No agent syntax for marks: ${unmarked.join(", ")}`);
-  const known = new Set(BLOCK_SYNTAX.map(([type]) => type));
+  const known = new Set([...BLOCK_SYNTAX, ...NODE_OPERATIONS].map(([type]) => type));
   const blocks = features.features
     .flatMap((feature) => feature.blocks ?? [])
     .filter((type) => !known.has(type));
-  if (blocks.length) throw Error(`No agent syntax for blocks: ${blocks.join(", ")}`);
+  if (blocks.length) throw Error(`No agent write path for blocks: ${blocks.join(", ")}`);
 }
 checkCoverage();
 
@@ -79,9 +89,12 @@ Page; the rendered SVG is never stored. Upload images to the Page and place
 them with insert_image (see Images below).
 
 Pages stores native nodes, not Markdown. Each paragraph, heading, list item,
-code block, table cell and image is a node with typed attributes, and
-formatting is a native mark on its characters. Markdown is one way to read and
-write them; node operations (insert_image, set_node) are the other.
+code block, table cell, image and dataframe is a node with typed attributes,
+and formatting is a native mark on its characters. Markdown is one way to read
+and write them; node operations (insert_image, insert_node, set_node) are the
+other. Some nodes have no Markdown form: ${NODE_OPERATIONS.map(([, text]) => text).join("; ")}
+(see Datasets below). They read back as a labeled link, and
+replace_block_markdown refuses a block holding one.
 ${richEditOperations()}
 These operations keep comment anchors and untouched characters in place, so
 prefer them to replace_block_markdown for small changes.

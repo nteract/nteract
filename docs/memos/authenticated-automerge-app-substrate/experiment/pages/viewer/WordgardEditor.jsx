@@ -89,7 +89,8 @@ import {
   wordgardHistory,
   wordgardListStarts,
 } from "./wordgard-binding.mjs";
-import { PagesLink, TaskList, elements } from "./wordgard-model.mjs";
+import { PagesLink, TaskList, elements, filterPastedDataframes } from "./wordgard-model.mjs";
+import { DATASET_ACCEPT } from "../shared/dataset-assets.mjs";
 import { taskLists } from "./wordgard-task-lists.mjs";
 import { markdownShortcuts } from "./wordgard-shortcuts.mjs";
 import { displaySymbols } from "./wordgard-symbols.mjs";
@@ -101,6 +102,7 @@ import {
   wordgardCommentSelection,
 } from "./wordgard-collaboration.mjs";
 import { wordgardWidgets, wordgardCodeLanguages } from "./wordgard-widgets.mjs";
+import { wordgardDataframes } from "./wordgard-dataframes.mjs";
 import { selectionToolbarPosition } from "./selection-toolbar.mjs";
 import { linkDestination, openInNewTab, wantsNewTab } from "./link-destination.mjs";
 import { LinkPopover } from "./LinkPopover.jsx";
@@ -110,7 +112,7 @@ import {
   IMAGE_ACCEPT,
   captureImageInsertion,
   createImageUploader,
-  imageFiles,
+  uploadFiles,
   resolveImageInsertion,
 } from "./image-upload.mjs";
 import { caretGlideFor, createGlideRunner, mediaMatches$ } from "./caret-glide.mjs";
@@ -336,7 +338,7 @@ export function WordgardEditor(props) {
       if (!latest.current.editable || replica.canWrite === false) {
         setImageStatus({
           pending: false,
-          message: "You need edit access to add images.",
+          message: "You need edit access to add images or datasets.",
           retryable: false,
         });
         return true;
@@ -385,6 +387,7 @@ export function WordgardEditor(props) {
           },
         }),
         wordgardWidgets(),
+        wordgardDataframes({ pageId: replica.doc.page_id }),
         wordgardCodeNewlines,
         wordgardListStarts,
         codeHighlighting,
@@ -393,10 +396,14 @@ export function WordgardEditor(props) {
         undoHistory.extension,
         // A block decode couldn't draw as stored opens read-only.
         permissions.current.of(editConfig(latest.current.editable && !bound.current.lossy)),
-        Wordgard.clipboardInputHTMLFilter.of((html) => normalizePastedHTML(html)),
-        Wordgard.domEventHandler("paste", (event) => acceptImages(imageFiles(event.clipboardData))),
+        Wordgard.clipboardInputHTMLFilter.of((html) =>
+          filterPastedDataframes(normalizePastedHTML(html), replica.doc.page_id),
+        ),
+        Wordgard.domEventHandler("paste", (event) =>
+          acceptImages(uploadFiles(event.clipboardData)),
+        ),
         Wordgard.domEventHandler("drop", (event) => {
-          const files = imageFiles(event.dataTransfer);
+          const files = uploadFiles(event.dataTransfer);
           if (!files.length) return false;
           return acceptImages(
             files,
@@ -516,6 +523,7 @@ export function WordgardEditor(props) {
             resolve: () => resolveImageInsertion(replica, target, bound.current.map),
             src: state.preview ?? "",
             name: state.name ?? "",
+            message: state.message ?? "",
             onCancel: () => uploader.cancel(),
           };
           try {
@@ -1228,7 +1236,7 @@ export function WordgardEditor(props) {
       <input
         ref={imageInput}
         type="file"
-        accept={IMAGE_ACCEPT}
+        accept={`${IMAGE_ACCEPT},${DATASET_ACCEPT}`}
         aria-label="Choose image"
         hidden
         onChange={(event) => {

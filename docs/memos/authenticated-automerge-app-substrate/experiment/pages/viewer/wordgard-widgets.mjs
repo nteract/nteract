@@ -13,9 +13,16 @@ import { openDiagramViewer } from "./diagram-viewer.mjs";
 // which raises the reload banner when that's the cause.
 const loadMermaid = () => import("../../../../../../src/components/markdown/mermaid-renderer.ts");
 let rendererUnavailable = () => {};
-/** `listener` runs each time the Mermaid renderer fails to load. */
+/** `listener` runs each time a lazily loaded renderer (Mermaid, or a
+ * dataframe's table) fails to load. */
 export function onRendererUnavailable(listener) {
   rendererUnavailable = listener;
+}
+/** Report a renderer chunk that failed to load. */
+export function reportRendererUnavailable() {
+  try {
+    rendererUnavailable();
+  } catch {}
 }
 const mounted = new WeakMap();
 let diagramId = 0;

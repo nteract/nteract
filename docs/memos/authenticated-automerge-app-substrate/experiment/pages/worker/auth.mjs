@@ -326,6 +326,7 @@ export const CLIENT_ERROR_CODES = Object.freeze([
   "edit_conflict",
   "resync_required",
   "image_not_found",
+  "dataset_not_found",
   "invalid_presence_target",
   "presence_revision_changed",
   "presence_target_not_found",

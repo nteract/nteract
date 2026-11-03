@@ -28,10 +28,10 @@ function withUnknown(source, marker, at) {
   );
   return { doc, id };
 }
-const dataframe = (source = "Before\n\nAfter") =>
+const futureChart = (source = "Before\n\nAfter") =>
   withUnknown(
     source,
-    { type: "dataframe", parents: [], attrs: { title: S("Usage") }, isEmbed: false },
+    { type: "future-chart", parents: [], attrs: { title: S("Usage") }, isEmbed: false },
     (text) => text.indexOf("After") - 1,
   );
 const video = (source = "Before\n\nAfter", parents = ["paragraph"]) =>
@@ -46,10 +46,10 @@ const apply = (doc, operations) =>
   );
 
 test("a read shows an unknown block or embed as a notice instead of hiding it", () => {
-  const block = dataframe();
+  const block = futureChart();
   assert.equal(
     blockMarkdown(block.doc.blocks[block.id]),
-    "Before\n\n\\[Unsupported node: dataframe\\]\n\nAfter",
+    "Before\n\n\\[Unsupported node: future-chart\\]\n\nAfter",
   );
   const inline = video();
   assert.equal(
@@ -77,18 +77,18 @@ test("a read shows an unknown block or embed as a notice instead of hiding it", 
 });
 
 test("the notice quotes only a short identifier", () => {
-  assert.equal(unknownNodeNotice("dataframe"), "[Unsupported node: dataframe]");
+  assert.equal(unknownNodeNotice("future-chart"), "[Unsupported node: future-chart]");
   assert.equal(unknownNodeNotice("<script>]"), "[Unsupported node]");
   assert.equal(unknownNodeNotice("x".repeat(65)), "[Unsupported node]");
   assert.equal(unknownNodeNotice(undefined), "[Unsupported node]");
 });
 
 test("replace_block_markdown refuses a block holding an unknown node; text edits keep it", () => {
-  const { doc, id } = dataframe();
-  assert.equal(markdownlessNode(doc.blocks[id]), "dataframe");
+  const { doc, id } = futureChart();
+  assert.equal(markdownlessNode(doc.blocks[id]), "future-chart");
   assert.throws(
     () => apply(doc, [{ op: "replace_block_markdown", block_id: id, markdown: "Before\n\nAfter" }]),
-    (error) => error.code === "markdownless_node" && /holds a dataframe/.test(error.message),
+    (error) => error.code === "markdownless_node" && /holds a future-chart/.test(error.message),
   );
   const edited = apply(doc, [
     { op: "replace_match", block_id: id, match_text: "After", replacement: "Later" },
@@ -97,10 +97,10 @@ test("replace_block_markdown refuses a block holding an unknown node; text edits
   const types = A.spans(edited, textPath(id))
     .filter((span) => span.type === "block")
     .map((span) => String(span.value.type));
-  assert.ok(types.includes("dataframe"));
+  assert.ok(types.includes("future-chart"));
   assert.match(
     blockMarkdown(edited.blocks[id]),
-    /\*\*Before\*\*[\s\S]*Unsupported node: dataframe[\s\S]*Later/,
+    /\*\*Before\*\*[\s\S]*Unsupported node: future-chart[\s\S]*Later/,
   );
 });
 
@@ -142,12 +142,17 @@ test("the refusal quotes only a short identifier", () => {
 test("reads project unknown nodes the adapter can't place", () => {
   const cell = withUnknown(
     "| a | b |\n| --- | --- |\n| After | 2 |",
-    { type: "dataframe", parents: ["table", "table-row", "table-cell"], attrs: {}, isEmbed: false },
+    {
+      type: "future-chart",
+      parents: ["table", "table-row", "table-cell"],
+      attrs: {},
+      isEmbed: false,
+    },
     (text) => text.indexOf("After") + 2,
   );
   assert.ok(
     blockMarkdown(cell.doc.blocks[cell.id]).includes(
-      "| Af\\[Unsupported node: dataframe\\]ter | 2 |",
+      "| Af\\[Unsupported node: future-chart\\]ter | 2 |",
     ),
   );
   const code = withUnknown(
@@ -163,7 +168,7 @@ test("reads project unknown nodes the adapter can't place", () => {
 });
 
 test("registration still refuses a marker this build doesn't know", () => {
-  const { doc, id } = dataframe();
+  const { doc, id } = futureChart();
   assert.throws(
     () => validateRichSpans(A.spans(doc, textPath(id))),
     /Unsupported rich block marker/,
