@@ -550,7 +550,8 @@ candidates) returns a cursor without one, and that can only reflect stale rows
 carrying titles the caller was previously authorized to see. `next_cursor` is sealed (AES-GCM, keyed from
 `NOTEBOOK_CLOUD_APP_SESSION_SECRET`) to the caller, query, `in_trash` and filters,
 and expires after 24 hours. Pagination is best-effort: a Page whose title or sharing
-changes mid-traversal can move across the cursor.
+changes mid-traversal can move across the cursor, and so can a Page whose content
+changes under the activity sort.
 
 `access` narrows a listing to owner rows (`"owned"`) or non-owner rows
 (`"shared"`); every row still passes the same check. An owned-only scan never
@@ -591,6 +592,27 @@ comes from its host's check, like its title.
 | `"activity"` (default) | newest first, then Page ID descending | `activity_at`: `content_updated_at`, else `updated_at` | falls back to `updated_at` |
 | `"created"` | newest first, then Page ID descending | `created_at` | `''`, sorts last |
 | `"title"` | ascending, then Page ID ascending | `title_search` | `"untitled"` |
+| `"activity"` with `in_trash` | newest first, then Page ID descending | `trash_key`: `trashed_at` | `''`, sorts last |
+
+In Trash, a Page's latest activity is being trashed, and a trashed Page takes no
+edits. So `"activity"` (and an omitted `sort`) under `in_trash` lists by when each
+Page was trashed: a Page restored and trashed again goes back to the top, wherever
+its last edit would put it. The caller names no new sort; internally it is the
+`trashed` order. `trash_key` is a virtual column generated from the Page row's
+`trashed_at` (migration 7). Every build
+writes `trashed_at` when it records a trash and clears it on restore, so a build
+that predates the column keeps it right. A partial index,
+`(owner, trash_key DESC, page_id DESC) WHERE state = 'trashed'`, holds only
+trashed rows, and the Trash query walks it from `owner = ?`, joining each row's
+owner access row by primary key for the title snapshot. Continuation pages seek
+`(trash_key, page_id) < (?, ?)`. The Catalog fallback reads the `trash/` entry's
+`trashed_at` the same way, `''` when it is missing, and reconciliation indexes a
+missing or non-string `trashed_at` as null, so both sources order Trash alike,
+ties and missing times included. Created and title order Trash as they order
+every other listing.
+
+A stored key that isn't a string, such as a numeric `created_at` in a Catalog
+entry, reads as `''` in every order and sorts last; it never fails the listing.
 
 `activity_at` is a virtual generated column, so every writer keeps it current,
 including a build that predates it. The Catalog fallback computes each key from
@@ -628,16 +650,18 @@ restart re-reports it.
 Cursors are sealed to the listing's location, kind, `access` and sort. A cursor
 issued under one combination never opens under another; the client gets
 `invalid_cursor` and restarts. The scope names each sort by what its position's
-key means: `content_activity` for `activity_at`, `created` for `created_at` and
-`title` for `title_search`. An activity cursor sealed with no scope, or with a
-scope that names no sort or names `activity`, held an `updated_at` key, so it
-fails with `invalid_cursor`.
+key means: `content_activity` for `activity_at`, `created` for `created_at`,
+`title` for `title_search` and `trashed` for `trash_key`. An activity cursor
+sealed with no scope, or with a scope that names no sort or names `activity`,
+held an `updated_at` key, so it fails with `invalid_cursor`. A Trash cursor
+sealed under `content_activity` held an `activity_at` key and fails the same way;
+created and title cursors in Trash keep their scopes.
 
 A position has one shape per sort, built from the row a page stopped on:
-`{key, page_id}` for activity and created, where `key` is that sort's own key and
+`{key, page_id}` for activity, created and trashed, where `key` is that sort's own key and
 never the row's `updated_at`, and `{title_search, page_id}` for title. The next
 cursor, the position a scan refetches from after rejecting candidates, and every
-source's keyset all use it. Sealed, an activity or created position puts its key
+source's keyset all use it. Sealed, a time-keyed position puts its key
 in the payload's time slot; a title position puts its title key in a fourth slot
 and leaves the time slot empty, which no title listing reads. A title cursor
 carries its title key, which makes it longer: cursors may run to 8192 characters.
