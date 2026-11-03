@@ -3,6 +3,11 @@
 // the request that opened its document has responded: celld drops work
 // started in that request's context, and the repository's change events run
 // there. list_pages must then report when each Page's content changed.
+//
+// Each Page is then edited a second time inside its one-minute window, so its
+// trailing flush runs from work held on a request: the MCP edit's own request
+// for the agent Page, and for the tab, a socket that closes before the window
+// ends. Both Pages run at once, so the window costs the suite one minute.
 import assert from "node:assert/strict";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
@@ -60,19 +65,25 @@ async function listed(pageId) {
   }
 }
 
-async function contentTime(label, pageId, after) {
-  const deadline = Date.now() + 20_000;
-  for (;;) {
-    const item = await listed(pageId);
+/** The Page's listed content time once it is at least `after`. */
+async function contentTime(label, pageId, after, timeout = 20_000) {
+  const deadline = Date.now() + timeout;
+  for (let item; ; ) {
+    item = await listed(pageId);
     if (item?.content_updated_at) {
       assert.match(item.content_updated_at, isoTime);
-      assert.ok(item.content_updated_at >= after, `${label}: ${JSON.stringify(item)}`);
-      return item.content_updated_at;
+      if (item.content_updated_at >= after) return item.content_updated_at;
     }
-    if (Date.now() >= deadline) throw Error(`${label}: list_pages never reported a content time`);
+    if (Date.now() >= deadline)
+      throw Error(
+        `${label}: list_pages never reported a content time from ${after}: ${JSON.stringify(item)}`,
+      );
     await sleep(250);
   }
 }
+
+// Past the one-minute window, plus the flush and listing latency.
+const TRAILING_MS = 100_000;
 
 async function create(title) {
   const created = await mcp("create_page", {
@@ -86,32 +97,37 @@ async function create(title) {
   return created.page_id;
 }
 
-let browser, tab;
-try {
-  const agentPage = await create(`Agent edits ${Date.now()}`);
-  const tabPage = await create(`Tab edits ${Date.now()}`);
-  complete("new Pages list no content time");
-
-  await sleep(SETTLE_MS);
-  const read = await mcp("read_page", { page_id: agentPage, comments: "none" });
-  const before = new Date().toISOString();
+async function patch(pageId, from, to) {
+  const read = await mcp("read_page", { page_id: pageId, comments: "none" });
   await mcp("patch_page", {
-    page_id: agentPage,
+    page_id: pageId,
     base_heads: read.heads,
     retry_token: read.retry_token,
     idempotency_key: `${read.retry_key_prefix}${crypto.randomUUID()}`,
     operations: [
-      {
-        op: "replace_match",
-        block_id: read.blocks[0].id,
-        match_text: "Friday",
-        replacement: "Monday",
-      },
+      { op: "replace_match", block_id: read.blocks[0].id, match_text: from, replacement: to },
     ],
   });
-  const agentTime = await contentTime("patch_page", agentPage, before);
-  complete("patch_page records a content time list_pages returns");
+}
 
+/** Two MCP edits in one window: the first flushes at once, the second waits
+ * for the window's end, held on its own request. */
+async function agentEdits(pageId) {
+  const before = new Date().toISOString();
+  await patch(pageId, "Friday", "Monday");
+  const first = await contentTime("patch_page", pageId, before);
+  complete("patch_page records a content time list_pages returns");
+  const again = new Date().toISOString();
+  await patch(pageId, "Monday", "Tuesday");
+  assert.equal((await listed(pageId)).content_updated_at, first, "the second edit waits");
+  const trailing = await contentTime("a second patch_page", pageId, again, TRAILING_MS);
+  complete("a second patch_page in the window flushes at the window's end");
+  return trailing;
+}
+
+/** Two typed edits in one window, then the tab closes: the trailing flush
+ * runs after its socket is gone. */
+async function tabEdits(pageId) {
   browser = await chromium.launch({ headless: true });
   const context = await browser.newContext({ viewport: { width: 1280, height: 900 } });
   tab = await context.newPage();
@@ -125,7 +141,7 @@ try {
     timeout: 60000,
   });
   await sleep(SETTLE_MS);
-  await tab.goto(`${origin}/p/${tabPage}`);
+  await tab.goto(`${origin}/p/${pageId}`);
   const content = tab.locator("wg-content");
   await expect(content).toContainText("We ship on Friday.");
   await expect(content).toHaveAttribute("contenteditable", "true");
@@ -136,14 +152,35 @@ try {
   const typed = new Date().toISOString();
   await tab.keyboard.type(" Typed in a tab.");
   await expect(content).toContainText("Typed in a tab.");
-  const tabTime = await contentTime("a native edit", tabPage, typed);
-  assert.ok(tabTime > agentTime);
+  const first = await contentTime("a native edit", pageId, typed);
   complete("typing in a tab records a content time list_pages returns");
+  const again = new Date().toISOString();
+  await tab.keyboard.type(" Twice.");
+  await expect(content).toContainText("Twice.");
+  // Long enough for the edit to reach the host over the socket.
+  await sleep(SETTLE_MS);
+  await context.close();
+  tab = undefined;
+  assert.equal((await listed(pageId)).content_updated_at, first, "the second edit waits");
+  const trailing = await contentTime("typing again, then closing", pageId, again, TRAILING_MS);
+  complete("typing again, then closing the tab, flushes at the window's end");
+  return trailing;
+}
+
+let browser, tab;
+try {
+  const agentPage = await create(`Agent edits ${Date.now()}`);
+  const tabPage = await create(`Tab edits ${Date.now()}`);
+  complete("new Pages list no content time");
+
+  await sleep(SETTLE_MS);
+  const [agentTime, tabTime] = await Promise.all([agentEdits(agentPage), tabEdits(tabPage)]);
+  assert.notEqual(agentTime, tabTime);
 
   const top = await mcp("list_pages", { sort: "activity", limit: 2 });
   assert.deepEqual(
     top.pages.map((entry) => entry.page_id),
-    [tabPage, agentPage],
+    tabTime > agentTime ? [tabPage, agentPage] : [agentPage, tabPage],
     "the edited Pages lead sort: activity, newest first",
   );
   complete("the edited Pages lead sort: activity");

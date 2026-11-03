@@ -309,12 +309,20 @@ export function indexedState(metadata) {
   const state = pageState(metadata);
   return state === "missing" ? "active" : state;
 }
+/** The host record's trash time in the one format listings compare
+ * (`validTime`), or null. Another date string or a number is converted, so a
+ * Trash key never sorts by its spelling. */
 function trashedAt(metadata) {
   const value = metadata?.trash?.trashed_at ?? metadata?.trash?.trashedAt;
-  if (typeof value === "string" && Number.isFinite(Date.parse(value))) return value;
-  if (Number.isFinite(value)) return new Date(value).toISOString();
-  return null;
+  const ms = typeof value === "string" ? Date.parse(value) : value;
+  return Number.isFinite(ms) ? new Date(ms).toISOString() : null;
 }
+
+/** The first of `values` that is a listing time (`validTime`), else null. A
+ * Catalog entry's stored time is trusted only in that format: a number would
+ * reach D1 as text such as "1790818740000.0", and another date string would
+ * sort by its spelling. Neither can be sealed into a cursor. */
+const firstTime = (...values) => values.find(validTime) ?? null;
 
 /** Principals a Page's host record lists. Domain readers appear only when
  * observed opening the Page through the current domain view. */
@@ -378,7 +386,9 @@ const laterSql = (a, b) => `nullif(max(coalesce(${a}, ''), coalesce(${b}, '')), 
  * Location lives in the owner's Catalog, and these rows don't carry it. The ACL and
  * lifecycle revisions only move forward, and so does `content_updated_at`:
  * a delayed report can't move it back. A deleted tombstone never changes
- * again. */
+ * again. With `keep_time`, a write whose title and state equal the row's
+ * keeps the row's `updated_at`: it repeats an observation (index.mjs
+ * `titleObservation`). */
 function pageUpsert(db, page) {
   const title = catalogTitle(page.title);
   const newerState = `excluded.lifecycle_revision > pages_catalog_pages.lifecycle_revision
@@ -400,7 +410,10 @@ function pageUpsert(db, page) {
         trashed_at = CASE WHEN ${newerState}
           THEN excluded.trashed_at ELSE pages_catalog_pages.trashed_at END,
         created_at = min(pages_catalog_pages.created_at, excluded.created_at),
-        updated_at = max(pages_catalog_pages.updated_at, excluded.updated_at),
+        updated_at = CASE WHEN ? = 1 AND excluded.title = pages_catalog_pages.title
+            AND excluded.state = pages_catalog_pages.state
+          THEN pages_catalog_pages.updated_at
+          ELSE max(pages_catalog_pages.updated_at, excluded.updated_at) END,
         acl_revision = max(pages_catalog_pages.acl_revision, excluded.acl_revision),
         lifecycle_revision = max(pages_catalog_pages.lifecycle_revision, excluded.lifecycle_revision)
       WHERE pages_catalog_pages.state != 'deleted'`,
@@ -418,6 +431,7 @@ function pageUpsert(db, page) {
       page.lifecycle ?? 0,
       // A time further ahead of this writer's clock than nodes skew is dropped.
       acceptedTime(page.content_updated_at),
+      page.keep_time ? 1 : 0,
     );
 }
 
@@ -470,13 +484,14 @@ function deleteDomainReaders(db, pageId, domain, memberKeys, revision, lifecycle
  *
  * Each row copies the Page row's `created_at` and `content_updated_at`, so
  * call this after `pageUpsert` in the same batch. The content time only moves
- * forward. */
+ * forward. With `keepTime`, a row whose snapshot already equals `title`
+ * keeps its `updated_at`, as `pageUpsert` keeps the Page row's. */
 function upsertAccess(
   db,
   pageId,
   rows,
   revision,
-  { title, updatedAt, owner = false, lifecycle = 0 },
+  { title, updatedAt, owner = false, lifecycle = 0, keepTime = false },
 ) {
   const snapshot = catalogTitle(title);
   return db
@@ -499,7 +514,9 @@ function upsertAccess(
           THEN excluded.title ELSE pages_catalog_access.title END,
         title_search = CASE WHEN excluded.updated_at >= pages_catalog_access.updated_at
           THEN excluded.title_search ELSE pages_catalog_access.title_search END,
-        updated_at = max(pages_catalog_access.updated_at, excluded.updated_at),
+        updated_at = CASE WHEN ? = 1 AND excluded.title = pages_catalog_access.title
+          THEN pages_catalog_access.updated_at
+          ELSE max(pages_catalog_access.updated_at, excluded.updated_at) END,
         updated_revision = max(pages_catalog_access.updated_revision, excluded.updated_revision)
       WHERE ? = 1 OR excluded.updated_revision >= pages_catalog_access.updated_revision`,
     )
@@ -514,6 +531,7 @@ function upsertAccess(
       owner ? 1 : 0,
       revision,
       lifecycle,
+      keepTime ? 1 : 0,
       owner ? 1 : 0,
     );
 }
@@ -534,11 +552,13 @@ function deleteObserved(db, pageId, principal, revision, updatedAt = null) {
 
 /** Full reconcile from a Page DO's committed host record. Runs after commit,
  * so it may add grants. A deleted Page is retired, never reported.
- * `contentUpdatedAt` is the host's newest content time, when it has one. */
+ * `contentUpdatedAt` is the host's newest content time, when it has one.
+ * `keepTime` repeats an observation: rows whose title already equals `title`
+ * keep their `updated_at`, and new rows take `observedAt`. */
 export async function reportPageIndex(
   env,
   ctx,
-  { metadata, title, observedAt, reader, readerOnly, contentUpdatedAt },
+  { metadata, title, observedAt, reader, readerOnly, contentUpdatedAt, keepTime = false },
 ) {
   const state = indexedState(metadata);
   if (state === "deleted") return;
@@ -563,6 +583,7 @@ export async function reportPageIndex(
       revision,
       lifecycle,
       content_updated_at: contentUpdatedAt,
+      keep_time: keepTime,
     }),
     deleteUnlisted(db, pageId, listed, revision, lifecycle),
     deleteDomainReaders(
@@ -573,7 +594,12 @@ export async function reportPageIndex(
       revision,
       lifecycle,
     ),
-    upsertAccess(db, pageId, rows, revision, { title, updatedAt: observedAt, lifecycle }),
+    upsertAccess(db, pageId, rows, revision, {
+      title,
+      updatedAt: observedAt,
+      lifecycle,
+      keepTime,
+    }),
   ]);
 }
 
@@ -588,11 +614,13 @@ export async function reportPageIndex(
  * One report rewrites the Page row plus one row per owner and member, at most
  * once per content window while the Page is edited.
  * Domain readers' rows (`domain_opened`) are unbounded on a domain-wide Page,
- * so they aren't touched here: each copies the Page row's time when its reader
- * opens the Page again or its account reconciles (`reconcileIntervalMs`), and
- * a reader's listing shows the time from the host's check either way. Until
- * then such a row sorts by its older time. A time further ahead of this clock
- * than nodes skew writes nothing. */
+ * so they aren't touched here. The Page host reports a reader's row again
+ * when that reader opens the Page and the host's content time has moved past
+ * the one its last report for that reader carried (index.mjs `cacheTitle`).
+ * Its account's reconcile pass (`reconcileIntervalMs`, on that reader's own
+ * listings) also copies it. Until one of those, the row sorts by its older
+ * time, and a reader's listing shows the time from the host's check either
+ * way. A time further ahead of this clock than nodes skew writes nothing. */
 export async function reportContentActivity(env, ctx, { pageId, contentUpdatedAt }) {
   if (!validTime(contentUpdatedAt)) throw new TypeError("contentUpdatedAt must be an ISO time");
   if (!acceptedTime(contentUpdatedAt)) return;
@@ -1030,16 +1058,21 @@ export function compareText(a, b) {
  * The index generates `activity_at` with the same rule. */
 export const activityKey = (row) => row.content_updated_at || row.updated_at || "";
 const comparePageIds = (a, b) => (a.page_id < b.page_id ? -1 : a.page_id > b.page_id ? 1 : 0);
-/** A stored sort key as the orders read it. Any value but a string reads as
- * "", so a malformed entry (a numeric `created_at`, say) sorts last instead
- * of failing the listing with a position `requirePosition` refuses. */
+/** A stored title key as the title order reads it: any value but a string
+ * reads as "". */
 const keyText = (value) => (typeof value === "string" ? value : "");
+/** A stored time key as the time orders read it: anything but a listing time
+ * (`validTime`) reads as "", so a malformed key (a number, "2026-10-01", an
+ * RFC 1123 date) sorts last instead of jumping the order or sealing a cursor
+ * `openCursor` refuses. Reconciliation indexes the same entry by its fallback
+ * time, and the Catalog source computes that fallback too (`catalogSource`). */
+const timeKey = (value) => (validTime(value) ? value : "");
 /** Newest first by an ISO time key (plain `<` is byte order over ASCII), then
  * Page ID descending. A missing key is "" and sorts last, as SQLite puts ''
  * after every timestamp in a descending index. Positions are
- * `{ key, page_id }`. */
-const newestBy = (stored) => {
-  const key = (row) => keyText(stored(row));
+ * `{ key, page_id }`. `read` turns a stored key into its sort key. */
+const newestBy = (stored, read = timeKey) => {
+  const key = (row) => read(stored(row));
   return {
     fields: ["key", "page_id"],
     position: (row) => ({ key: key(row), page_id: row.page_id }),
@@ -1107,8 +1140,8 @@ export function requirePosition(sort, position) {
 
 /** Spaces list by `updated_at`, newest first. A Space position is
  * `{ updated_at, page_id }`: a Space row's own time is its key, so a raw row
- * is already its position. */
-const newestFirst = newestBy((row) => row.updated_at ?? "").compare;
+ * is already its position, and `before` compares it as stored. */
+const newestFirst = newestBy((row) => row.updated_at ?? "", keyText).compare;
 const before = (row, after) =>
   !after ||
   (row.updated_at ?? "") < after.updated_at ||
@@ -1235,7 +1268,8 @@ export async function queryCatalogIndex(db, query) {
  * from the entry as the index computes it: the title key from its title, the
  * activity key from its `content_updated_at`, else `updated_at`, the
  * created key from its `created_at`, and a `trash/` entry's trash key from
- * its `trashed_at`. For a shared entry those times are this
+ * its `trashed_at`. A time that isn't a listing time falls back as
+ * reconciliation's does (`firstTime`). For a shared entry those times are this
  * account's discovery and the Page host's projections, where D1 holds the
  * Page row's own times, so shared rows can order differently between the
  * two sources. Owned rows converge to one order: a content time reaches both
@@ -1268,10 +1302,13 @@ export async function catalogSource(
         page_id: entry.page_id,
         title: catalogTitle(entry.title),
         title_search: titleKey(entry.title),
-        // Reconciliation indexes an entry without created_at at its updated_at.
-        created_at: entry.created_at ?? entry.updated_at,
-        updated_at: entry.updated_at ?? entry.created_at,
-        content_updated_at: validTime(entry.content_updated_at) ? entry.content_updated_at : null,
+        // As reconciliation indexes them: an entry whose created_at is
+        // missing or malformed at its updated_at, and the other way round.
+        // With neither, reconciliation uses its own time; here the key is
+        // missing and reads as "".
+        created_at: firstTime(entry.created_at, entry.updated_at) ?? undefined,
+        updated_at: firstTime(entry.updated_at, entry.created_at) ?? undefined,
+        content_updated_at: firstTime(entry.content_updated_at),
         owned,
         ...(entry.trashed_at ? { trashed_at: entry.trashed_at } : {}),
       };
@@ -1483,7 +1520,10 @@ export async function reconcileAccountIndex({
       const statements = [];
       for (const [, entry] of listed) {
         if (entry?.pending || !validPageId(entry?.page_id)) continue;
-        const updatedAt = entry.updated_at ?? entry.created_at ?? new Date(now).toISOString();
+        // Only listing times reach D1 (`firstTime`); the fallback reads the
+        // same entry with the same fallbacks (`catalogSource`).
+        const updatedAt =
+          firstTime(entry.updated_at, entry.created_at) ?? new Date(now).toISOString();
         const state = pass.phase === "owned" ? "active" : "trashed";
         statements.push(
           pageUpsert(db, {
@@ -1491,12 +1531,11 @@ export async function reconcileAccountIndex({
             owner: principal,
             title: entry.title,
             state,
-            created_at: entry.created_at ?? updatedAt,
+            created_at: firstTime(entry.created_at) ?? updatedAt,
             updated_at: updatedAt,
             // A trash key the fallback would read as "" is indexed as null,
             // which `trash_key` reads as '': both sort it last.
-            trashed_at:
-              state === "trashed" && typeof entry.trashed_at === "string" ? entry.trashed_at : null,
+            trashed_at: state === "trashed" ? firstTime(entry.trashed_at) : null,
             lifecycle: entry.lifecycle_revision ?? 0,
             content_updated_at: entry.content_updated_at,
           }),
@@ -1540,8 +1579,8 @@ export async function reconcileAccountIndex({
         statements = await checkShared(
           valid.map((entry) => ({
             pageId: entry.page_id,
-            updatedAt: entry.updated_at ?? new Date(now).toISOString(),
-            createdAt: entry.created_at,
+            updatedAt: firstTime(entry.updated_at) ?? new Date(now).toISOString(),
+            createdAt: firstTime(entry.created_at) ?? undefined,
             revision: revisions.get(entry.page_id),
             fromCatalog: true,
           })),
