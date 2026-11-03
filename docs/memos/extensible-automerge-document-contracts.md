@@ -95,6 +95,16 @@ author and comment ownership protections. Unknown blocks must survive older
 clients and export/import workflows, or the exporter must explicitly report
 that its output cannot round-trip them.
 
+Pages now follows this shape for node types inside a block's rich text
+([Pages README](authenticated-automerge-app-substrate/experiment/pages/README.md),
+"Document and editor"). A schema feature stamp makes a Page read-only for a
+build that lacks the feature. That build's editor keeps an unknown marker
+exactly as stored and writes it back unchanged. Its Markdown export projects
+`[Unsupported node: <type>]`, and a Markdown rewrite of that block is refused.
+The `dataframe` node has no Markdown form. Agents add it with `insert_node`,
+and Markdown can only keep an existing one in place. Registration still
+refuses unknown block markers.
+
 NotebookDoc already has an accepted
 [forward-compatibility contract](../adr/schema-evolution-and-genesis.md): frozen
 genesis, additive evolution, tolerant readers, and separate documents for
@@ -156,7 +166,7 @@ newer schema version or discard unknown data merely to mount an older editor.
 
 | Fixture | Initial spike result |
 | --- | --- |
-| Old/new clients edit known fields while unknown fields and blocks survive | Passed through real Repo/Subduction; editor/export round trips remain untested |
+| Old/new clients edit known fields while unknown fields and blocks survive | Passed through real Repo/Subduction. Pages covers unknown node types in its editor and export with unit tests (`model/unknown-nodes.test.mjs`, `viewer/wordgard-model.test.mjs`); no browser test mixes two builds |
 | Malformed known fields and unsupported content yield diagnostics | Passed in the small typed-reader fixture; no actual editor qualification |
 | Concurrent initialization/migration and retry preserve usable content | Planned; not yet run |
 | None/reader/writer grants remain independent of payload | Host-owned registration and native access checks passed; clients cannot change the registered profile |
