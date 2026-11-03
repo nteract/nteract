@@ -12,6 +12,7 @@ import { createPageData, initializePage } from "../model/page.mjs";
 import worker, { Catalog, Page } from "./index.mjs";
 import { readRegistration } from "./registration.mjs";
 import { DEFAULT_PAGE_QUOTA } from "./page-quota.mjs";
+import { REPLAYED_RECEIPT_HEADER } from "./usage.mjs";
 
 class Storage {
   values = new Map();
@@ -582,4 +583,91 @@ test("registration refuses a draft stamped with a schema feature this host lacks
   assert.equal(f.pages.size, 0);
   // The same draft without the stamp registers.
   assert.equal((await f.send(args)).status, 200);
+});
+
+/** Usage lines written while `run` executes. */
+async function usageLines(t, run) {
+  const lines = [];
+  t.mock.method(console, "info", (line) => {
+    const parsed = JSON.parse(line);
+    if (parsed.event === "pages.usage.v1") lines.push(parsed);
+  });
+  await run();
+  return lines;
+}
+
+test("browser registration records page.create once; a replayed receipt records none", async (t) => {
+  const f = await fixture(t),
+    { args } = registration();
+  let first, replay;
+  const lines = await usageLines(t, async () => {
+    first = await f.send(args);
+    replay = await f.send(args);
+  });
+  assert.equal(first.status, 200);
+  assert.equal(replay.status, 200);
+  assert.deepEqual(await replay.json(), await first.json());
+  // The Catalog's replay marker is internal and never leaves the gateway.
+  assert.equal(replay.headers.has(REPLAYED_RECEIPT_HEADER), false);
+  const creates = lines.filter((line) => line.action === "page.create");
+  assert.equal(creates.length, 1);
+  assert.equal(creates[0].surface, "browser-sync");
+  assert.equal(creates[0].operation, "register_page");
+  assert.equal(creates[0].page_id, pageId);
+  assert.equal(creates[0].principal, `user:anaconda-fixture:${f.auth.subject}`);
+  // The fixture registers with an API key, so bearerDriver() reports "API".
+  assert.equal(creates[0].driver, "API");
+  assert.equal(creates[0].credential, "api-key");
+  assert.doesNotMatch(JSON.stringify(lines), /Local Page|Original text/);
+});
+
+test("a replayed create_page on http-tools records the call but not a second page.create", async (t) => {
+  const f = await fixture(t);
+  const body = {
+    operation: "create_page",
+    arguments: { title: "Agent Page", markdown: "Body text", idempotency_key: "usage-create" },
+  };
+  let first, replay;
+  const lines = await usageLines(t, async () => {
+    first = await f.send(body, { path: "/api/tools", headers: { "x-pages-driver": "Codex" } });
+    replay = await f.send(body, { path: "/api/tools", headers: { "x-pages-driver": "Codex" } });
+  });
+  assert.equal(first.status, 200);
+  assert.equal(replay.status, 200);
+  const created = await first.json();
+  assert.equal((await replay.json()).page_id, created.page_id);
+  assert.equal(replay.headers.has(REPLAYED_RECEIPT_HEADER), false);
+  const calls = lines.filter((line) => line.action === "tool.call");
+  assert.deepEqual(
+    calls.map(({ surface, operation, kind, outcome }) => ({ surface, operation, kind, outcome })),
+    [
+      { surface: "http-tools", operation: "create_page", kind: "tool", outcome: "ok" },
+      { surface: "http-tools", operation: "create_page", kind: "tool", outcome: "ok" },
+    ],
+  );
+  const creates = lines.filter((line) => line.action === "page.create");
+  assert.equal(creates.length, 1);
+  assert.equal(creates[0].surface, "http-tools");
+  assert.equal(creates[0].page_id, created.page_id);
+  assert.equal(creates[0].driver, "Codex");
+  assert.doesNotMatch(JSON.stringify(lines), /Agent Page|Body text/);
+});
+
+test("an unknown http-tools operation is recorded as unknown, never as sent", async (t) => {
+  const f = await fixture(t);
+  let response;
+  const lines = await usageLines(t, async () => {
+    response = await f.send(
+      { operation: "summarize_secret_plans", arguments: {} },
+      { path: "/api/tools" },
+    );
+  });
+  assert.equal(response.status, 400);
+  const [call] = lines;
+  assert.equal(lines.length, 1);
+  assert.equal(call.action, "tool.call");
+  assert.equal(call.surface, "http-tools");
+  assert.equal(call.operation, "unknown");
+  assert.equal(call.outcome, "http_400");
+  assert.doesNotMatch(JSON.stringify(lines), /secret_plans/);
 });

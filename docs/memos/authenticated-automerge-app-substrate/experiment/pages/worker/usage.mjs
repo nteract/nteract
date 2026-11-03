@@ -6,16 +6,24 @@
  * Each line is a single JSON object with a versioned `event` name, so duckdb
  * can read it straight from S3 (scripts/usage-report.sql).
  *
- * Never logged: document content, titles, arguments, tokens, keys, cookies,
- * raw MCP session ids or emails. Principals and display names are recorded
+ * Never logged: document content, titles, argument values other than page and
+ * project ids, tokens, keys, cookies, raw MCP session ids or emails. Principals and display names are recorded
  * (Anaconda-internal, authorized). A display name falls back to the account
  * email when the profile has no name, so an email-shaped one is dropped.
  * Client and model labels are self-declared and informational only: nothing
  * reads them for auth.
  *
+ * Surfaces: `mcp` for /mcp, `http-tools` for /api/tools (agents and the
+ * browser UI's own calls, told apart by driver), and `browser-sync` for the
+ * browser's native Page traffic: registering a Page it created, and admitted
+ * sync connections.
+ *
  * Emission never fails or delays a request. A record that can't be built or
  * written is dropped and counted; the next record carries the count as
  * `dropped`. */
+
+import { validPageId } from "./registration.mjs";
+import { validSpaceId } from "./spaces.mjs";
 
 export const USAGE_EVENT = "pages.usage.v1";
 export const USAGE_ACTIONS = Object.freeze([
@@ -26,6 +34,12 @@ export const USAGE_ACTIONS = Object.freeze([
   "sync.close",
 ]);
 export const USAGE_SURFACES = Object.freeze(["mcp", "http-tools", "browser-sync"]);
+/** What an MCP or HTTP call asked for: a tool, or an MCP resource list/read. */
+export const USAGE_KINDS = Object.freeze(["tool", "resource"]);
+/** Set by the Catalog on a create or register response that replays a stored
+ * receipt, so the gateway counts each Page creation once. Internal: the
+ * gateway strips it before a response leaves. */
+export const REPLAYED_RECEIPT_HEADER = "x-pages-receipt-replayed";
 /** Longest client or model label kept; longer values are truncated. */
 export const LABEL_LIMIT = 120;
 
@@ -103,20 +117,55 @@ export function requestClient(request) {
   };
 }
 
+/** Whether `response` replays a stored creation receipt, and the response
+ * without the internal marker, ready to leave the gateway. */
+export function takeReplayedReceipt(response) {
+  try {
+    if (!response.headers.has(REPLAYED_RECEIPT_HEADER)) return { response, replayed: false };
+    const headers = new Headers(response.headers);
+    headers.delete(REPLAYED_RECEIPT_HEADER);
+    return {
+      response: new Response(response.body, { status: response.status, headers }),
+      replayed: true,
+    };
+  } catch {
+    usageDropped();
+    return { response, replayed: false };
+  }
+}
+
+/** The operation name to record: `name` when it is in `known`, else
+ * "unknown". Names come straight from a caller's request, even on a refused
+ * call, so only known names reach the log. */
+export function usageOperation(name, known) {
+  return typeof name === "string" && known.has(name) ? name : "unknown";
+}
+
 const finite = (value) => (Number.isFinite(value) && value >= 0 ? Math.round(value) : undefined);
-// Operation names and ids can come straight from a caller's request, even on
-// a refused call. Only identifier-shaped values are kept, so no free text
-// reaches the log.
-const identifier = (value, limit) =>
-  typeof value === "string" && new RegExp(`^[A-Za-z0-9_.-]{1,${limit}}$`).test(value)
-    ? value
-    : undefined;
-const operationName = (value) =>
-  value === undefined ? undefined : (identifier(value, 64) ?? "invalid");
+// Ids can come straight from a caller's request too. Only real Page and
+// Project ids are kept, so no free text reaches the log.
+const pageIdOf = (value) => (validPageId(value) ? value : undefined);
+const projectIdOf = (value) => (validSpaceId(value) ? value : undefined);
+const outcomeOf = (value) =>
+  typeof value === "string" && /^[a-z0-9_]{1,64}$/.test(value) ? value : undefined;
+// Callers pick operation names through usageOperation; this is the backstop.
+const operationOf = (value) =>
+  value === undefined ? undefined : /^[a-z_]{1,64}$/.test(value) ? value : "unknown";
+
+/** Account-supplied text (driver, agent, display name) with control and
+ * format characters (\p{Cc}, \p{Cf}, including bidi overrides) removed,
+ * trimmed, and capped at `limit` code points. Undefined when nothing is left. */
+export function cleanText(value, limit) {
+  if (typeof value !== "string") return undefined;
+  const cleaned = [...value.replace(/[\p{Cc}\p{Cf}]/gu, "").trim()].slice(0, limit).join("");
+  return cleaned.trim() || undefined;
+}
 // Display names fall back to the account email (apps/notebook-cloud
 // host-session.ts) when a profile has no name or username.
-const displayName = (value) =>
-  typeof value === "string" && !value.includes("@") ? value : undefined;
+const displayName = (value) => {
+  const cleaned = cleanText(value, 256);
+  return cleaned && !cleaned.includes("@") ? cleaned : undefined;
+};
 
 let dropped = 0;
 /** Count a usage record that was lost. The next emitted record reports it. */
@@ -131,6 +180,8 @@ export function usageEvent({
   identity,
   labels = {},
   operation,
+  kind,
+  admitted,
   pageId,
   projectId,
   outcome,
@@ -150,16 +201,18 @@ export function usageEvent({
     display_name: displayName(identity?.displayName),
     namespace: identity?.namespace,
     credential: identity?.credentialKind,
-    driver: identity?.driver,
-    agent: identity?.agent,
+    driver: cleanText(identity?.driver, 80),
+    agent: cleanText(identity?.agent, 80),
     session: identity?.session,
     client: labels.client,
     mcp_client: labels.mcp_client,
     model: labels.model,
-    operation: operationName(operation),
-    page_id: identifier(pageId, 128),
-    project_id: identifier(projectId, 128),
-    outcome: identifier(outcome, 64),
+    operation: operationOf(operation),
+    kind: USAGE_KINDS.includes(kind) ? kind : undefined,
+    admitted: typeof admitted === "boolean" ? admitted : undefined,
+    page_id: pageIdOf(pageId),
+    project_id: projectIdOf(projectId),
+    outcome: outcomeOf(outcome),
     status: Number.isSafeInteger(status) ? status : undefined,
     latency_ms: finite(latencyMs),
     bytes: finite(bytes),

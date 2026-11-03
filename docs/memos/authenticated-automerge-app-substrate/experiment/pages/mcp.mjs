@@ -781,6 +781,8 @@ const failed = (body) => ({
 
 /** Caller verifies credentials before constructing this request-local server.
  * Every invocation goes through the same authorization and model as HTTP tools.
+ * `invoke(operation, args, { kind })` gets kind "resource" for a resource
+ * list or read, and none for a tool call.
  */
 export async function handleMcp(request, invoke, env, { onInitialize } = {}) {
   if (request.method !== "POST")
@@ -920,10 +922,14 @@ export async function handleMcp(request, invoke, env, { onInitialize } = {}) {
     }
   });
   server.setRequestHandler(ListResourcesRequestSchema, async ({ params }) => {
-    const result = await invoke("list_pages", {
-      limit: 100,
-      ...(typeof params?.cursor === "string" && { cursor: params.cursor }),
-    });
+    const result = await invoke(
+      "list_pages",
+      {
+        limit: 100,
+        ...(typeof params?.cursor === "string" && { cursor: params.cursor }),
+      },
+      { kind: "resource" },
+    );
     if (!result.ok) throw Error("Page listing failed");
     const { pages, next_cursor } = await result.json();
     return {
@@ -945,7 +951,7 @@ export async function handleMcp(request, invoke, env, { onInitialize } = {}) {
       (url.href !== origin + route.path && url.href !== origin + "/?page=" + pageId)
     )
       throw Error("Unknown Page resource");
-    const result = await invoke("read_page", { page_id: pageId });
+    const result = await invoke("read_page", { page_id: pageId }, { kind: "resource" });
     if (!result.ok) throw Error("Page access denied");
     return {
       contents: [{ uri: params.uri, mimeType: "application/json", text: await result.text() }],

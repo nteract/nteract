@@ -686,13 +686,26 @@ accordingly; retention is 30 days. Verify actual Parquet delivery under
 `<fleet-prefix>/telemetry/{traces,logs}`; configuration alone is not evidence of
 delivery. Retention collects dated partitions, not an exact rolling-hour cutoff.
 Usage events are `pages.usage.v1` JSON log lines from
-[worker/usage.mjs](worker/usage.mjs): MCP initialize, tool calls on `/mcp` and
-`/api/tools`, Page creation, and browser sync open/close, with principal,
-surface, driver, agent, client and model. They inherit the 30-day log
-retention. celld 0.6.3 did not export lines still buffered at shutdown in a
-local OTLP run, so expect a restart to drop up to one flush interval of
-events. A line the Worker fails to build or
-write is counted, and the next line carries the count as `dropped`.
+[worker/usage.mjs](worker/usage.mjs), with principal, surface, driver, agent,
+client and model:
+
+- `mcp.initialize` on `/mcp`.
+- `tool.call` for each tool call on `/mcp` (surface `mcp`) and `/api/tools`
+  (surface `http-tools`, which includes the browser UI's own calls with
+  driver `Browser`). MCP resource lists and reads are `tool.call` with
+  `kind: "resource"`.
+- `page.create` once per created Page: from `create_page` on either tool
+  surface, and from browser registration on `/api/pages/register` (surface
+  `browser-sync`). A retry that replays a stored receipt records none.
+- `sync.open` once per browser sync connection, after the admission decision:
+  `admitted: true` after the connection joins the Page, or `admitted: false`
+  with the refusal reason as `outcome`. `sync.close` follows only an admitted
+  session, with its duration as `latency_ms`.
+
+They inherit the 30-day log retention. celld 0.6.3 did not export lines still
+buffered at shutdown in a local OTLP run, so expect a restart to drop up to
+one flush interval of events. A line the Worker fails to build or write is
+counted, and the next line carries the count as `dropped`.
 [scripts/usage-report.sql](scripts/usage-report.sql) summarizes them with
 duckdb straight from the log Parquet.
 See the [pinned runtime telemetry contract](https://github.com/denoland/celld/blob/8702f6d186c77698dbfb30cf29e3b1922a88f008/docs/telemetry.md).

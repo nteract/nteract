@@ -52,8 +52,18 @@ import {
 import { readTargets, writeTargets } from "../model/agent-presence.mjs";
 import { BACKEND_LIMITS, assertDocumentLimits, assertIntentSize } from "../model/limits.mjs";
 import { handleMcp } from "../mcp.mjs";
-import { declaredLabels, logUsage, mcpClientLabel, requestClient, usageDropped } from "./usage.mjs";
 import {
+  REPLAYED_RECEIPT_HEADER,
+  declaredLabels,
+  logUsage,
+  mcpClientLabel,
+  requestClient,
+  takeReplayedReceipt,
+  usageDropped,
+  usageOperation,
+} from "./usage.mjs";
+import {
+  RENAMED_TOOLS,
   invalidArguments,
   invokeProjectApi,
   unknownOperation,
@@ -806,32 +816,39 @@ async function locationView(request, env, body, signal) {
   body.breadcrumbs = chain;
 }
 
-/** Records one usage event for a tool call on `surface` once its response is
- * known. `seen` collects the identity invoke() authenticated. A successful
- * create_page also records page.create with the new Page's id. */
-function toolUsage(request, surface, operation, args) {
+/** Operation names a usage event may record: internal operations, the
+ * public tool names that map onto them, and browser registration. */
+const USAGE_OPERATIONS = new Set([...operations, ...Object.values(RENAMED_TOOLS), "register_page"]);
+
+/** Records one usage event for a tool call (or, for MCP, a resource list or
+ * read) on `surface` once its response is known. `seen` collects the identity
+ * the caller authenticated. A create_page that created a Page also records
+ * page.create with its id; a replayed receipt records only the call. */
+function toolUsage(request, surface, operation, args, kind = "tool") {
   const started = Date.now();
   const seen = {};
   const labels = requestClient(request);
   return {
     seen,
-    async finish(response) {
+    async finish(received) {
+      const { response, replayed } = takeReplayedReceipt(received);
       try {
-        const name = typeof operation === "string" ? operation : "invalid";
+        const name = usageOperation(operation, USAGE_OPERATIONS);
         const length = Number(response.headers.get("content-length"));
         const common = {
           surface,
           identity: seen.identity,
           labels,
           operation: name,
-          pageId: typeof args?.page_id === "string" ? args.page_id : undefined,
-          projectId: typeof args?.project_id === "string" ? args.project_id : undefined,
+          kind,
+          pageId: args?.page_id,
+          projectId: args?.project_id,
           status: response.status,
           outcome: response.ok ? "ok" : `http_${response.status}`,
           latencyMs: Date.now() - started,
         };
         logUsage({ action: "tool.call", ...common, bytes: length || undefined });
-        if (name === "create_page" && response.ok) {
+        if (name === "create_page" && response.ok && !replayed) {
           const body = await response.clone().json();
           logUsage({
             action: "page.create",
@@ -935,8 +952,10 @@ const gateway = {
         const identity = await authenticate(request, env);
         return await handleMcp(
           request,
-          async (operation, args) => {
-            const usage = toolUsage(request, "mcp", operation, args);
+          async (operation, args, { kind = "tool" } = {}) => {
+            const usage = toolUsage(request, "mcp", operation, args, kind);
+            // A refusal before invoke() authenticates still names the caller.
+            usage.seen.identity = identity;
             let response;
             try {
               response = await invokeProjectApi(
@@ -971,26 +990,44 @@ const gateway = {
         );
       }
       if (url.pathname === "/api/pages/register" && request.method === "POST") {
+        const started = Date.now();
         const identity = await authenticate(request, env);
         requireWrite(identity);
         const args = await readJson(request);
         const quota = await quotaFields(env, identity, "register_page");
-        return await withinToolDeadline(async (signal) =>
-          bufferedResponse(
-            await untilAborted(
-              env.CATALOGS.getByName(identity.principal).fetch(
-                forwarded(request, "/internal/catalog", {
-                  operation: "register_page",
-                  arguments: args,
-                  ...quota,
-                }),
-                { signal },
+        const { response, replayed } = takeReplayedReceipt(
+          await withinToolDeadline(async (signal) =>
+            bufferedResponse(
+              await untilAborted(
+                env.CATALOGS.getByName(identity.principal).fetch(
+                  forwarded(request, "/internal/catalog", {
+                    operation: "register_page",
+                    arguments: args,
+                    ...quota,
+                  }),
+                  { signal },
+                ),
+                signal,
               ),
               signal,
             ),
-            signal,
           ),
         );
+        // The browser creates a Page by registering it; a retry that replays
+        // the stored receipt created nothing.
+        if (response.ok && !replayed)
+          logUsage({
+            action: "page.create",
+            surface: "browser-sync",
+            identity,
+            labels: requestClient(request),
+            operation: "register_page",
+            pageId: args?.page_id,
+            status: response.status,
+            outcome: "ok",
+            latencyMs: Date.now() - started,
+          });
+        return response;
       }
       if (url.pathname === "/api/tools" && request.method === "POST") {
         let response;
@@ -1381,7 +1418,9 @@ export class Catalog {
       if (intent && !intent.pending) {
         // A previous attempt may have stored its receipt before sync failed.
         await this.storage.sync();
-        return json(intent.receipt);
+        const replay = json(intent.receipt);
+        replay.headers.set(REPLAYED_RECEIPT_HEADER, "1");
+        return replay;
       }
       if (!intent) {
         await this.requirePageRoom(limit);
@@ -4976,11 +5015,15 @@ export class Page {
       labels: requestClient(request),
       pageId: this.metadata?.pageId,
     };
-    const syncOpened = Date.now();
-    logUsage({ action: "sync.open", ...syncUsage });
-    wire.onDisconnect(() =>
-      logUsage({ action: "sync.close", ...syncUsage, latencyMs: Date.now() - syncOpened }),
-    );
+    // sync.open records the admission decision once: admitted after
+    // addConnection, or refused with its reason. Only an admitted session
+    // records sync.close, with its duration.
+    const syncStarted = Date.now();
+    let syncAdmittedAt;
+    wire.onDisconnect(() => {
+      if (syncAdmittedAt !== undefined)
+        logUsage({ action: "sync.close", ...syncUsage, latencyMs: Date.now() - syncAdmittedAt });
+    });
     this.wires.add(wire);
     // HTTP authentication already established this principal. Reserve before
     // waiting on the native handshake, so idle handshakes cannot bypass quotas.
@@ -5076,6 +5119,14 @@ export class Page {
               "native_connection_failed",
             );
           }
+          syncAdmittedAt = Date.now();
+          logUsage({
+            action: "sync.open",
+            ...syncUsage,
+            admitted: true,
+            outcome: "ok",
+            latencyMs: syncAdmittedAt - syncStarted,
+          });
           this.broadcastProfiles();
           this.broadcastActivity();
           this.broadcastActorSnapshot();
@@ -5086,6 +5137,14 @@ export class Page {
         // while the resident socket can trigger authorization and storage work.
         await disconnected;
       })().catch((error) => {
+        if (syncAdmittedAt === undefined)
+          logUsage({
+            action: "sync.open",
+            ...syncUsage,
+            admitted: false,
+            outcome: admissionReason(error),
+            latencyMs: Date.now() - syncStarted,
+          });
         if (error !== refusal) logAdmissionDenied(error, { stage: "native", identity });
         if (admissionReason(error) === "server_error") logFailure(error, "native-admission");
         void close(error);

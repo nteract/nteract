@@ -11,9 +11,11 @@ import {
   mcpClientLabel,
   mcpSessionClient,
   mcpSessionId,
+  cleanText,
   requestClient,
   usageDropped,
   usageEvent,
+  usageOperation,
 } from "./usage.mjs";
 
 const identity = {
@@ -36,7 +38,7 @@ test("usage event has a fixed shape and omits secrets and absent fields", () => 
     identity,
     labels: { client: "kilo-cli/1.2.3", mcp_client: "kilo/1.2.3", model: "claude-opus-5.5" },
     operation: "patch_page",
-    pageId: "page-1",
+    pageId: "44444444-4444-4444-8444-444444444444",
     status: 200,
     outcome: "ok",
     latencyMs: 12.4,
@@ -59,7 +61,7 @@ test("usage event has a fixed shape and omits secrets and absent fields", () => 
     mcp_client: "kilo/1.2.3",
     model: "claude-opus-5.5",
     operation: "patch_page",
-    page_id: "page-1",
+    page_id: "44444444-4444-4444-8444-444444444444",
     outcome: "ok",
     status: 200,
     latency_ms: 12,
@@ -72,24 +74,60 @@ test("usage event has a fixed shape and omits secrets and absent fields", () => 
   assert.equal(usageEvent({ action: "sync.open", surface: "elsewhere" }).surface, "unknown");
 });
 
-test("caller-supplied names and ids are kept only when identifier-shaped", () => {
+test("only known operations and real Page and Project ids reach the record", () => {
+  const known = new Set(["read_page", "create_project"]);
+  assert.equal(usageOperation("read_page", known), "read_page");
+  assert.equal(usageOperation("create_project", known), "create_project");
+  // Identifier-shaped free text is still free text.
+  assert.equal(usageOperation("summarize_secret_plans", known), "unknown");
+  assert.equal(usageOperation(undefined, known), "unknown");
   const record = usageEvent({
     action: "tool.call",
     surface: "http-tools",
     identity: { ...identity, displayName: "kyle@example.com" },
     operation: "Please summarize: secret plans",
-    pageId: "not a page id\nwith text",
-    projectId: "prj_11111111-1111-4111-8111-111111111111",
+    pageId: "secret_plans_page",
+    projectId: "prj_secret-plans",
     outcome: "http_404",
   });
-  assert.equal(record.operation, "invalid");
+  assert.equal(record.operation, "unknown");
   assert.equal(record.page_id, undefined);
-  assert.equal(record.project_id, "prj_11111111-1111-4111-8111-111111111111");
+  assert.equal(record.project_id, undefined);
   assert.equal(record.outcome, "http_404");
   // An email-shaped display name is a profile without a name: never logged.
   assert.equal(record.display_name, undefined);
-  assert.doesNotMatch(JSON.stringify(record), /example\.com|secret plans|with text/);
+  assert.doesNotMatch(JSON.stringify(record), /example\.com|secret/);
+  for (const projectId of [
+    "prj_11111111-1111-4111-8111-111111111111",
+    "sp_11111111-1111-4111-8111-111111111111",
+  ])
+    assert.equal(usageEvent({ action: "page.create", projectId }).project_id, projectId);
+  assert.equal(
+    usageEvent({ action: "page.create", projectId: "prj_11111111-1111-1111-8111-111111111111" })
+      .project_id,
+    undefined,
+  );
   assert.equal(usageEvent({ action: "sync.open" }).operation, undefined);
+});
+
+test("driver, agent and display name lose control and format characters and are capped", () => {
+  const record = usageEvent({
+    action: "tool.call",
+    identity: {
+      ...identity,
+      driver: "Ki\u202elo\u0000\u200b",
+      agent: "rel\u2066ease\u00ad agent " + "a".repeat(200),
+      displayName: "Ky\u200dle\u0007 Kélley " + "名".repeat(400),
+    },
+  });
+  assert.equal(record.driver, "Kilo");
+  assert.equal([...record.agent].length, 80);
+  assert.match(record.agent, /^release agent a+$/);
+  assert.equal([...record.display_name].length, 256);
+  assert.match(record.display_name, /^Kyle Kélley 名+$/);
+  assert.equal(cleanText("\u200e\u0001 ", 80), undefined);
+  assert.equal(cleanText(42, 80), undefined);
+  assert.doesNotMatch(JSON.stringify(record), /[\p{Cc}\p{Cf}]/u);
 });
 
 test("a lost usage record is counted on the next one and never throws", (t) => {
@@ -247,4 +285,28 @@ test("MCP clientInfo from initialize is carried onto tool-call usage events", as
   assert.equal(forgedCall.principal, tool.principal);
   assert.equal(forgedCall.driver, "Claude Code");
   assert.equal(forgedCall.credential, "api-key");
+
+  // A refusal before invoke() authenticates still names the caller.
+  const refused = await post({
+    method: "tools/call",
+    params: { name: "get_project", arguments: { space_id: "sp_x" } },
+  });
+  assert.equal(refused.status, 200);
+  const refusedCall = toolCalls().at(-1);
+  assert.equal(refusedCall.operation, "get_project");
+  assert.equal(refusedCall.outcome, "http_400");
+  assert.equal(refusedCall.principal, tool.principal);
+  assert.equal(refusedCall.kind, "tool");
+
+  // A resource read goes through the same invoke(), recorded as a resource.
+  const resource = await post({
+    method: "resources/read",
+    params: { uri: `https://pages.invalid/p/${pageId}` },
+  });
+  assert.equal(resource.status, 200);
+  const resourceCall = toolCalls().at(-1);
+  assert.equal(resourceCall.operation, "read_page");
+  assert.equal(resourceCall.kind, "resource");
+  assert.equal(resourceCall.page_id, pageId);
+  assert.equal(tool.kind, "tool");
 });
