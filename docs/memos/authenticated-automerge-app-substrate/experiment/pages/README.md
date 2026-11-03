@@ -134,18 +134,36 @@ mobile-keyboard, object-store failover, or deployment reliability.
 
 A Page contains its title, stable ordered block IDs and rich text in Automerge.
 Its comments live in a second Automerge document beside it (see [Comments
-document](#comments-document)). Markdown is the import/export and tool
-projection. A dedicated title
+document](#comments-document)). The native spans are the document. Markdown
+is a lossy projection for import, export and agent prose; node operations
+(`insert_node`, `insert_image`, `set_node`) write what Markdown can't express,
+such as a dataframe (see Dataframes below). A dedicated title
 is displayed above the body; agents should not repeat it as an opening heading.
 Authoring receipts warn about likely duplicates without removing or hiding text.
 
 Wordgard is the sole editor and applies native text splices, marks, and
 structural spans. The shared Markdown codec still uses ProseMirror schema and
-traversal libraries for import/export, validation, and passage-address mapping.
-It does not own an editor or mediate Wordgard keystrokes. Keeping that codec
-preserves existing documents, comment anchors, and MCP operations while the
-browser editor is simplified; replacing it requires a separate compatibility
-pass. Each Pages block has its own continuous editor. Moves update fractional positions without recreating the block or its
+traversal libraries for import/export, validation, outlines and `node_index`,
+change reads, and passage-address mapping. It does not own an editor or mediate
+Wordgard keystrokes. Two encoders write spans:
+
+- Browser edits use Wordgard's `encode` (`viewer/wordgard-model.mjs`).
+- Markdown writes use the ProseMirror adapter, then `pageSpans`
+  (`model/richtext.mjs`), which adjusts its output to the editor's form.
+  [`markdown-projection.test.mjs`](model/markdown-projection.test.mjs) lists
+  where the two still differ.
+
+Block types are still defined separately in the ProseMirror schema and
+serializer and in Wordgard's decode and encode. A gated type is also listed in
+`features.json`, and a node with its own operation in the agent guide and MCP
+schema. There's no shared node registry or node id yet, so `set_node`
+addresses nodes through `match_text` and can't reach a node without text.
+Replacing the codec means, in order: a typed node registry that those places
+read; one span encoder for every writer; stable node ids with node reads; then
+outlines, change reads and Markdown on that node tree instead of ProseMirror.
+Existing documents, comment anchors and MCP addresses must survive each step.
+
+Each Pages block has its own continuous editor. Moves update fractional positions without recreating the block or its
 text object, preserving comment and selection anchors. Concurrent positions use
 block IDs as deterministic ties. Cross-Pages-block selections remain unsupported.
 When a block ends in a code block, table, preserved block or an image, ArrowDown
@@ -212,8 +230,9 @@ references; it does not publish the Page or change asset access.
     paste, a list toggle) in an agent-written block writes no history; plain
     typing never rewrites a block.
     [`markdown-projection.test.mjs`](model/markdown-projection.test.mjs)
-    checks every corpus case and lists the two disagreements left for the
-    shared encoder.
+    checks every corpus case and lists the cases left for a shared encoder:
+    two kinds of disagreement (a quote whose first child isn't a paragraph,
+    and mark runs the editor re-marks) across 11 corpus cases.
   - The scan masks code per table cell, as Markdown-it splits cells first,
     and recognizes a tag of any length, with `>` inside quoted values, in
     linear time.
