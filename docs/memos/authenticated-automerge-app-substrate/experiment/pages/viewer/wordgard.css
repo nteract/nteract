@@ -506,7 +506,21 @@
 .wordgard-dataframe-canvas[hidden] {
   display: none;
 }
+/* The header and the frame's edges select the node
+   (selectDataframeOnPress); the canvas is Sift's. */
+.wordgard-dataframe-table {
+  cursor: default;
+}
+.wordgard-dataframe-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 24px;
+  user-select: none;
+}
 .wordgard-dataframe-title {
+  flex: 1;
+  min-width: 0;
   overflow: hidden;
   color: var(--foreground);
   font-size: 14px;
@@ -514,10 +528,31 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.wordgard-dataframe-table.wg-selected-node .wordgard-dataframe-canvas {
-  outline: 2px solid var(--ring);
-  outline-offset: 2px;
+.wordgard-dataframe-select {
+  padding: 2px 6px;
+  border: 0;
+  border-radius: 4px;
+  background: none;
+  color: var(--muted-foreground);
+  font: inherit;
+  font-size: 12px;
+  letter-spacing: -2px;
+  cursor: grab;
+  opacity: 0.6;
 }
+.wordgard-dataframe-table:hover .wordgard-dataframe-select,
+.wordgard-dataframe-select:focus-visible {
+  opacity: 1;
+}
+.wordgard-dataframe-select:hover {
+  background: var(--accent);
+  color: var(--foreground);
+}
+.wordgard-dataframe-canvas {
+  cursor: auto;
+}
+/* A selected dataframe: Wordgard wraps it in .wg-selected-node, which the
+   editor outlines; it needs no second outline. */
 @media (max-width: 640px) {
   .wordgard-dataframe-canvas {
     height: 320px;

@@ -52,7 +52,12 @@ export function dataframeAttrs(value) {
     throw Error(`A dataframe's media_type must be one of ${DATAFRAME_MEDIA_TYPES.join(", ")}`);
   if (value.title != null && typeof value.title !== "string")
     throw Error("A dataframe's title must be a string");
-  const title = value.title?.trim() ? value.title.trim() : null;
+  // A title is one line: runs of whitespace (newlines included) collapse to
+  // a space, and other control characters are refused.
+  const title = value.title?.replace(/\s+/g, " ").trim() || null;
+  // eslint-disable-next-line no-control-regex
+  if (title && /[\u0000-\u001f\u007f]/.test(title))
+    throw Error("A dataframe's title can't hold control characters");
   if (title && title.length > DATAFRAME_TITLE_MAX)
     throw Error(`A dataframe's title must be ${DATAFRAME_TITLE_MAX} characters or fewer`);
   return { src: value.src, media_type: value.media_type, title };

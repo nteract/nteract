@@ -5,7 +5,7 @@
 import { createRoot } from "react-dom/client";
 import { SiftTable, loadTableFile, setWasmUrl } from "@nteract/sift";
 import { SIFT_CSS, SIFT_WASM_URL } from "pages-sift-assets";
-import { ensureSiftStyles, fetchDataset } from "./sift-dataset.mjs";
+import { DATAFRAME_LIMITS, ensureSiftStyles, fetchDataset } from "./sift-dataset.mjs";
 
 setWasmUrl(SIFT_WASM_URL);
 
@@ -20,7 +20,11 @@ export function mount(container, { src, pageId }) {
   const controller = new AbortController();
   const source = {
     kind: "loader",
-    load: async () => loadTableFile(await fetchDataset(src, { pageId, signal: controller.signal })),
+    load: async () =>
+      loadTableFile(
+        await fetchDataset(src, { pageId, signal: controller.signal }),
+        DATAFRAME_LIMITS,
+      ),
   };
   const root = createRoot(container);
   root.render(<SiftTable source={source} />);

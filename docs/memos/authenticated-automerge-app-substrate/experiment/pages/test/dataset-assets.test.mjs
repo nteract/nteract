@@ -71,3 +71,10 @@ test("Parquet files are recognized by media type or by extension when the type i
   assert.equal(titleFromFile({ name: "usage by day.parquet" }), "usage by day");
   assert.equal(titleFromFile({ name: ".parquet" }), null);
 });
+
+test("a dataframe title is one line; control characters are refused", () => {
+  const attrs = (title) => dataframeAttrs({ src, media_type: PARQUET_MEDIA_TYPE, title });
+  assert.equal(attrs("Usage\nby\r\n  day\t").title, "Usage by day");
+  for (const title of ["a\u0000b", "a\u0007b", "a\u007fb"])
+    assert.throws(() => attrs(title), /control characters/, JSON.stringify(title));
+});

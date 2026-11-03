@@ -50,7 +50,10 @@ async function api(page, path, body) {
 const tool = (page, operation, args = {}) =>
   api(page, "/api/tools", { operation, arguments: args });
 async function signIn(email) {
-  const context = await browser.newContext({ viewport: { width: 1280, height: 900 } });
+  const context = await browser.newContext({
+    viewport: { width: 1280, height: 900 },
+    permissions: ["clipboard-read", "clipboard-write"],
+  });
   const page = await context.newPage();
   people.set(email, page);
   page.on("pageerror", (error) => {
@@ -224,6 +227,28 @@ try {
   await expect.poll(async () => (await markdownOf()).match(/\[Dataframe/g)?.length ?? 0).toBe(2);
   assert.ok((await markdownOf()).includes(`[Dataframe: dropped usage](${dataset.asset_url})`));
   complete("Dropping a .parquet file uploads it and inserts a shared dataframe node");
+
+  // Select the dropped table by its frame, cut it, and paste it back at the
+  // top of the Page's first block. The node survives, unknown attrs and all.
+  const dropped = tables(owner).filter({ hasText: "dropped usage" });
+  await dropped.getByRole("button", { name: "Select table" }).click();
+  await expect(owner.locator(".wg-selected-node section.wordgard-dataframe-table")).toHaveCount(1);
+  // Selecting keeps the table mounted, and the text toolbar stays hidden.
+  await expect(dropped.locator(".sift-root").first()).toContainText("browser");
+  await expect(owner.getByRole("toolbar", { name: "Text formatting" })).toBeHidden();
+  await owner.screenshot({ path: `${output}/sift-table-selected.png`, fullPage: true });
+  await owner.keyboard.press("ControlOrMeta+X");
+  await expect(tables(owner)).toHaveCount(1, { timeout: 10000 });
+  await expect(tables(viewer)).toHaveCount(1, { timeout: 15000 });
+  await content(owner).click();
+  await owner.keyboard.press("ControlOrMeta+Home");
+  await owner.keyboard.press("ControlOrMeta+V");
+  await expect(tables(owner)).toHaveCount(2, { timeout: 10000 });
+  await expect(tables(viewer).filter({ hasText: "dropped usage" })).toContainText("browser", {
+    timeout: 20000,
+  });
+  await expect.poll(async () => (await markdownOf()).match(/\[Dataframe/g)?.length ?? 0).toBe(2);
+  complete("Selecting a table by its frame, cutting and pasting it moves the node");
 
   for (const page of [owner, viewer])
     assert.equal(await page.locator("[data-block-error]").count(), 0, "a block failed to draw");

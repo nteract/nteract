@@ -62,3 +62,13 @@ test("a dataframe from another Page, or a forged figure, pastes as text", (t) =>
   body.innerHTML = `<figure data-pages-dataframe='{"src":"https://evil.example/x","media_type":"x"}'>t</figure>`;
   assert.equal(parse(schema, body).content[0].type === PagesDataframe, false);
 });
+
+test("with no Page (the comment editor), every pasted dataframe becomes text", (t) => {
+  const dom = new JSDOM();
+  t.after(() => dom.window.close());
+  const html = serialize(schema.doc([PagesDataframe.of(attrs(pageId))])).toDOM(dom.window.document)
+    .firstChild.outerHTML;
+  const filtered = filterPastedDataframes(html, null, new dom.window.DOMParser());
+  assert.equal(filtered.includes("data-pages-dataframe"), false);
+  assert.match(filtered, /Usage &lt;by&gt; day/);
+});

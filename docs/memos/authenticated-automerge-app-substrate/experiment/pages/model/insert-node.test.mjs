@@ -259,3 +259,49 @@ test("a stored dataframe this build can't read projects a notice and refuses a r
     (error) => error.code === "markdownless_node",
   );
 });
+
+test("a stored title with a newline reads back on one line and still round-trips", () => {
+  const { doc, id } = mixed([
+    marker("dataframe", {
+      src: S(src),
+      media_type: S(PARQUET_MEDIA_TYPE),
+      title: S("Usage\nby day"),
+    }),
+  ]);
+  const markdown = projectPage(doc).blocks[0].markdown;
+  assert.equal(markdown, `hello\n\n[Dataframe: Usage by day](${src})\n\nworld`);
+  const { doc: after } = edit(doc, [
+    { op: "replace_block_markdown", block_id: id, markdown: markdown.replace("hello", "hi") },
+  ]);
+  assert.deepEqual(dataframes(after, id), dataframes(doc, id));
+});
+
+test("a peer-written dataframe inside a table cell projects a notice and refuses a rewrite", () => {
+  const doc = fresh();
+  const [id] = orderedBlockIds(doc);
+  const cell = ["table", "table-row", "table-cell"];
+  const next = A.change(A.clone(doc), (draft) =>
+    A.updateSpans(
+      draft,
+      textPath(id),
+      [
+        marker("table", { columns: S("[]") }),
+        marker("table-row", {}, ["table"]),
+        marker("table-cell", {}, ["table", "table-row"]),
+        { type: "text", value: "Af" },
+        marker("dataframe", { src: S(src), media_type: S(PARQUET_MEDIA_TYPE) }, cell),
+        { type: "text", value: "ter" },
+      ],
+      { expand: "none" },
+    ),
+  );
+  const markdown = projectPage(next).blocks[0].markdown;
+  assert.match(markdown, /Unsupported node: dataframe/);
+  assert.doesNotMatch(markdown, /assets/);
+  assert.throws(
+    () => edit(next, [{ op: "replace_block_markdown", block_id: id, markdown: "x" }]),
+    (error) => error.code === "markdownless_node",
+  );
+  const decoded = decode(A.spans(next, textPath(id)));
+  assert.equal(decoded.lossy, true);
+});
