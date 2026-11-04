@@ -1,0 +1,400 @@
+import * as A from "@automerge/automerge";
+import { cbor } from "@automerge/automerge-repo";
+import { concat, DocStore } from "./doc-store.mjs";
+
+// The Page host's side of plain Automerge sync. Each connection arrives
+// authenticated, with { principal, role, senderId, sessionId, expiresAt }.
+// Per document the host keeps one live Automerge doc and one sync state per
+// connection. A sync message runs in the document's serialized queue:
+//
+//   1. policy.denied (lease, revocation) on every frame and every delivery
+//   2. role gate: a connection that can't write has its changes stripped,
+//      and the rest of the message stands
+//   3. preview: the message's changes on a clone of the live doc; refuse
+//      missing dependencies; take the changes that are new
+//   4. actor claims: each new change's actor is unclaimed or claimed by this
+//      principal. New claims are reserved before anything awaits, so two
+//      documents can't claim one actor for two principals
+//   5. policy.admit (comment rules for the comments document)
+//   6. persist: chunk, new claims and manifest in one saveMany
+//   7. adopt the preview, reply (the ack), fan out to the other connections
+//
+// A refusal leaves the live doc and every sync state untouched. Changes the
+// host already holds are filtered in step 3, so re-sending accepted history is
+// a no-op whoever sends it. A `trusted` connection is the host's own Repo:
+// it skips the role gate, claims and policy.admit, and is never closed.
+
+/**
+ * A refused frame. `fatal` closes the connection, with `close` as the WebSocket
+ * code and reason when given (default 4400 `request_rejected`).
+ */
+export class Refusal extends Error {
+  constructor(code, message, { fatal = false, close } = {}) {
+    super(message);
+    this.code = code;
+    this.fatal = fatal;
+    this.close = close;
+  }
+}
+
+const ACTOR_PREFIX = "actor/";
+const WRITE_ROLES = {
+  page: ["owner", "editor"],
+  comments: ["owner", "editor", "commenter"],
+};
+const READ_ROLES = ["owner", "editor", "commenter", "viewer"];
+
+/** Lease expiry and role checks; the worker supplies its own policy. */
+export const defaultPolicy = {
+  denied(conn, now) {
+    if (conn.expiresAt !== undefined && conn.expiresAt <= now)
+      return new Refusal("expired", "The connection's lease has expired", {
+        fatal: true,
+      });
+    return null;
+  },
+  canRead: (conn) => READ_ROLES.includes(conn.role),
+  canWrite: (conn, doc) => WRITE_ROLES[doc.kind]?.includes(conn.role) ?? false,
+  admit: (_conn, _doc, _live, _fresh, preview) => preview,
+  /** After persist: `fresh` changes and the actor `claims` made for them. */
+  admitted() {},
+  /** A connection's first frame for `doc`; from now on it receives fan-out. */
+  joined() {},
+  refused() {},
+};
+
+export class SyncHost {
+  #bytes;
+  #actors = new Map();
+  #reserved = new Map();
+  #docs = new Map();
+  #conns = new Set();
+  stats = { admitted: 0, refused: 0, stripped: 0, compactions: 0 };
+
+  constructor({ bytes, policy = {}, hostId = "pages-host", now = () => Date.now() }) {
+    this.#bytes = bytes;
+    this.store = new DocStore(bytes);
+    this.policy = { ...defaultPolicy, ...policy };
+    this.hostId = hostId;
+    this.now = now;
+  }
+
+  /** Read stored actor claims. Call once before accepting connections. */
+  async load() {
+    for (const key of await this.#bytes.list(ACTOR_PREFIX)) {
+      const bytes = await this.#bytes.load(key);
+      if (bytes) this.#actors.set(key.slice(ACTOR_PREFIX.length), cbor.decode(bytes));
+    }
+    return this;
+  }
+
+  /** Declare a document this host serves. Its live doc loads on first use. */
+  register(id, kind = "page") {
+    let doc = this.#docs.get(id);
+    if (!doc) {
+      doc = {
+        id,
+        kind,
+        live: null,
+        loading: null,
+        conns: new Map(),
+        queue: Promise.resolve(),
+      };
+      this.#docs.set(id, doc);
+    }
+    return doc;
+  }
+
+  /** Host-created history (a new Page or comments genesis) as the first snapshot. */
+  async seed(id, kind, automergeDoc) {
+    const doc = this.register(id, kind);
+    await this.#run(doc, async () => {
+      const live = await this.#live(doc);
+      const next = A.merge(A.clone(live), automergeDoc);
+      if (A.getChangesSince(next, A.getHeads(live)).length) {
+        await this.store.compact(id, A.save(next), A.getHeads(next));
+        doc.live = next;
+      }
+    });
+    return doc;
+  }
+
+  /** The live document, loading it from storage if needed. */
+  async document(id) {
+    const doc = this.#docs.get(id);
+    return doc ? this.#live(doc) : null;
+  }
+
+  /** Heads of the last durable commit (what /api/saved reports). */
+  async durableHeads(id) {
+    const doc = this.#docs.get(id);
+    if (!doc) return [];
+    await doc.queue;
+    return (await this.store.open(id))?.heads ?? [];
+  }
+
+  actor(actor) {
+    return this.#actors.get(actor);
+  }
+
+  actors() {
+    return new Map(this.#actors);
+  }
+
+  connections() {
+    return [...this.#conns];
+  }
+
+  accept(transport, identity) {
+    const conn = { transport, ...identity, closed: false };
+    this.#conns.add(conn);
+    transport.onMessage((frame) => this.#onFrame(conn, frame));
+    transport.onClose(() => {
+      conn.closed = true;
+      this.#conns.delete(conn);
+      for (const doc of this.#docs.values()) doc.conns.delete(conn);
+    });
+    return conn;
+  }
+
+  /** Close every connection the predicate selects with an application code. */
+  disconnect(predicate, code = 4409, reason = "access_changed") {
+    for (const conn of [...this.#conns])
+      if (!conn.trusted && predicate(conn)) conn.transport.close(code, reason);
+  }
+
+  /** Send a host message to every reader of `id` (or one connection). */
+  broadcast(id, envelope, { to, sender } = {}) {
+    const doc = this.#docs.get(id);
+    if (!doc) return;
+    for (const conn of to ? [to] : doc.conns.keys())
+      if (this.#deliverable(conn, doc))
+        conn.transport.send({
+          t: "eph",
+          doc: id,
+          e: envelope,
+          sender: sender ?? { kind: "pages-host", id: this.hostId },
+        });
+  }
+
+  #onFrame(conn, frame) {
+    const doc = this.#docs.get(frame.doc);
+    if (!doc || !(conn.trusted || this.policy.canRead(conn, doc))) {
+      conn.transport.send({
+        t: "sync",
+        doc: frame.doc,
+        m: null,
+        r: frame.r,
+        heads: [],
+        has: false,
+      });
+      return;
+    }
+    const denied = !conn.trusted && this.policy.denied(conn, this.now());
+    if (denied) return this.#refuse(conn, doc, frame, denied);
+    if (frame.t === "eph") return this.#ephemeral(conn, doc, frame);
+    if (frame.t !== "sync") return;
+    this.#run(doc, () => this.#sync(conn, doc, frame)).catch((error) =>
+      this.#refuse(conn, doc, frame, error),
+    );
+  }
+
+  #run(doc, work) {
+    const run = doc.queue.catch(() => {}).then(work);
+    doc.queue = run.catch(() => {});
+    return run;
+  }
+
+  async #live(doc) {
+    if (doc.live) return doc.live;
+    doc.loading ??= this.store.read(doc.id).then((stored) => {
+      doc.live = stored
+        ? A.load(concat([stored.snapshot, ...stored.chunks].filter(Boolean)))
+        : A.init();
+      return doc.live;
+    });
+    return doc.loading;
+  }
+
+  async #sync(conn, doc, frame) {
+    let live = await this.#live(doc);
+    if (conn.closed) return;
+    const denied = !conn.trusted && this.policy.denied(conn, this.now());
+    if (denied) throw denied;
+    this.#join(conn, doc);
+    let state = doc.conns.get(conn);
+    let message = frame.m;
+    const decoded = message ? A.decodeSyncMessage(message) : null;
+    if (decoded?.changes.length) {
+      if (!conn.trusted && !this.policy.canWrite(conn, doc)) {
+        this.stats.stripped += decoded.changes.length;
+        decoded.changes = [];
+        message = A.encodeSyncMessage(decoded);
+      } else {
+        const next = await this.#admit(conn, doc, live, decoded.changes);
+        if (next) live = next;
+      }
+    }
+    if (message) [live, state] = A.receiveSyncMessage(live, state, message);
+    doc.live = live;
+    let reply;
+    [state, reply] = A.generateSyncMessage(live, state);
+    doc.conns.set(conn, state);
+    conn.transport.send({
+      t: "sync",
+      doc: doc.id,
+      m: reply ?? null,
+      r: frame.r,
+      heads: A.getHeads(live),
+      has: true,
+    });
+    this.#fanOut(doc, conn);
+    if (this.store.wantsCompaction(doc.id)) {
+      await this.store.compact(doc.id, A.save(doc.live), A.getHeads(doc.live));
+      this.stats.compactions++;
+    }
+  }
+
+  /** Steps 3-6. Returns the admitted doc, or null when nothing was new. */
+  async #admit(conn, doc, live, changes) {
+    const heads = A.getHeads(live);
+    let preview;
+    try {
+      preview = A.loadIncremental(A.clone(live), concat(changes));
+    } catch {
+      throw new Refusal("malformed_change", "A change could not be loaded");
+    }
+    if (A.getMissingDeps(preview, []).length)
+      throw new Refusal("missing_dependencies", "A change arrived before its dependencies");
+    const fresh = A.getChangesSince(preview, heads);
+    if (!fresh.length) return null;
+    const claims = new Map();
+    for (const bytes of fresh) {
+      const { actor } = A.decodeChange(bytes);
+      const claimed = this.#actors.has(actor) || this.#reserved.has(actor);
+      const owner = this.#actors.get(actor)?.principal ?? this.#reserved.get(actor);
+      // The host's own Repo may carry anyone's history; it claims only actors
+      // nobody has claimed yet.
+      if (!conn.trusted && claimed && owner !== conn.principal)
+        throw new Refusal("actor_claimed", `Actor ${actor} belongs to another principal`);
+      if (!claimed && !claims.has(actor)) claims.set(actor, this.#claim(conn));
+    }
+    if (!conn.trusted) {
+      preview = await this.policy.admit(conn, doc, live, fresh, preview, (actor) =>
+        this.#owner(actor, claims, conn),
+      );
+      if (conn.closed) throw new Refusal("closed", "The connection closed during admission");
+      // policy.admit may await: re-check that no other document claimed
+      // these actors meanwhile, before reserving them.
+      for (const actor of claims.keys())
+        if (this.#actors.has(actor) || this.#reserved.has(actor))
+          throw new Refusal("actor_claimed", `Actor ${actor} belongs to another principal`);
+    }
+    for (const actor of claims.keys()) this.#reserved.set(actor, conn.principal);
+    try {
+      const extra = [...claims].map(([actor, claim]) => [ACTOR_PREFIX + actor, cbor.encode(claim)]);
+      await this.store.append(doc.id, concat(fresh), A.getHeads(preview), extra);
+      for (const [actor, claim] of claims) this.#actors.set(actor, claim);
+    } finally {
+      for (const actor of claims.keys()) this.#reserved.delete(actor);
+    }
+    this.stats.admitted += fresh.length;
+    // Before the reply and fan-out, so a host message it sends (who wrote
+    // these changes) reaches each reader ahead of the changes themselves.
+    try {
+      this.policy.admitted(conn, doc, fresh, claims);
+    } catch {
+      /* Reporting must not undo a durable admission. */
+    }
+    return preview;
+  }
+
+  /** The principal an actor is (or, in this admission, would be) claimed by. */
+  #owner(actor, claims, conn) {
+    if (claims.has(actor)) return conn.principal;
+    return this.#actors.get(actor)?.principal ?? this.#reserved.get(actor);
+  }
+
+  #claim(conn) {
+    return conn.trusted
+      ? { host: true, firstSeen: this.now() }
+      : {
+          principal: conn.principal,
+          displayName: conn.displayName,
+          driver: conn.driver,
+          senderId: conn.senderId,
+          firstSeen: this.now(),
+        };
+  }
+
+  #join(conn, doc) {
+    if (doc.conns.has(conn)) return;
+    doc.conns.set(conn, A.initSyncState());
+    try {
+      this.policy.joined(conn, doc);
+    } catch {
+      /* Reporting must not stop the sync. */
+    }
+  }
+
+  #deliverable(conn, doc) {
+    if (conn.closed) return false;
+    if (conn.trusted) return true;
+    const denied = this.policy.denied(conn, this.now());
+    if (!denied) return true;
+    this.#refuse(conn, doc, {}, denied);
+    doc.conns.delete(conn);
+    return false;
+  }
+
+  #fanOut(doc, origin) {
+    for (const [conn, state] of doc.conns) {
+      if (conn === origin || !this.#deliverable(conn, doc)) continue;
+      const [next, m] = A.generateSyncMessage(doc.live, state);
+      doc.conns.set(conn, next);
+      if (m)
+        conn.transport.send({
+          t: "sync",
+          doc: doc.id,
+          m,
+          heads: A.getHeads(doc.live),
+          has: true,
+        });
+    }
+  }
+
+  #refuse(conn, doc, frame, error) {
+    if (!(error instanceof Refusal))
+      error = new Refusal("io", "The host couldn't store this change");
+    this.stats.refused++;
+    try {
+      this.policy.refused(conn, doc, error);
+    } catch {
+      /* Logging must not stop the refusal. */
+    }
+    if (conn.closed) return;
+    conn.transport.send({
+      t: "refused",
+      doc: doc.id,
+      r: frame.r,
+      code: error.code,
+      message: error.message,
+      fatal: error.fatal,
+    });
+    if (error.fatal && !conn.trusted)
+      conn.transport.close(error.close?.code ?? 4400, error.close?.reason ?? "request_rejected");
+  }
+
+  #ephemeral(conn, doc, frame) {
+    if (!conn.trusted && this.policy.ephemeral && !this.policy.ephemeral(conn, doc, frame.e))
+      return;
+    const sender = {
+      kind: conn.trusted ? "pages-host" : "pages-session",
+      id: conn.trusted ? this.hostId : conn.senderId,
+    };
+    this.#join(conn, doc);
+    for (const other of doc.conns.keys())
+      if (other !== conn && this.#deliverable(other, doc))
+        other.transport.send({ t: "eph", doc: doc.id, e: frame.e, sender });
+  }
+}

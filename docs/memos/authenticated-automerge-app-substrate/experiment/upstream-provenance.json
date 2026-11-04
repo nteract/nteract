@@ -103,6 +103,16 @@
       "path": "packages/automerge-repo-subduction/src/index.ts",
       "before": "112a57f36a78db48b7b520a2a24e312ba022e1d380ab9011352a221dbd3cc2d1",
       "after": "5a878143c5d0d7e30de7650f94ac92dec9e813fc5fbdc457ce88a7884d37fff3"
+    },
+    "documentRecord": {
+      "packages/automerge-repo/src/sedimentree/records.ts": {
+        "before": "dc4cdb4aafebf92ed8849383ed24a5d04ce766d0315ad628a513d2808a94b4b2",
+        "after": "2f0786854f4faae9f1c94966570ef93f7955c49f4d5883e02cef0dc9f1599cab"
+      },
+      "packages/automerge-repo/src/sedimentree/automerge/index.ts": {
+        "before": "486268bdce7b4c197c510f3b8f72851d6b7e2eec96df00bc4a8b8529e6759977",
+        "after": "a2e8beec0b9719848d1f180898f56541c68785baefe1882c93831cf762378893"
+      }
     }
   }
 }

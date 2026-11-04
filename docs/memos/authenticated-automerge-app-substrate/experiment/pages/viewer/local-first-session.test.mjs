@@ -204,11 +204,14 @@ test("an expired lost registration response reconciles the same authorized docum
       assert.deepEqual(JSON.parse(options.body), original);
       return expiredRegistration();
     }
-    assert.equal(url, `/api/connect?page=${session.pageId}`);
+    assert.equal(url, `/api/connect?page=${session.pageId}&sync=automerge`);
     return Response.json(connectionFor(session, auth));
   });
   await session.registerDraft();
-  assert.deepEqual(requests, ["/api/pages/register", `/api/connect?page=${session.pageId}`]);
+  assert.deepEqual(requests, [
+    "/api/pages/register",
+    `/api/connect?page=${session.pageId}&sync=automerge`,
+  ]);
   assert.equal(session.localPage.registered, true);
   assert.equal(session.localPage.pending, true, "reconciliation is not a receipt for local edits");
   assert.deepEqual(session.localPage.registration, original);
@@ -238,7 +241,7 @@ test("an expired never-registered draft renews only retry authority after an aut
       assert.deepEqual(JSON.parse(options.body), { operation: "list_pages", arguments: {} });
       return Response.json({ retry_token: "replacement-token" });
     }
-    assert.equal(url, `/api/connect?page=${session.pageId}`);
+    assert.equal(url, `/api/connect?page=${session.pageId}&sync=automerge`);
     probes++;
     return Response.json({ error: "Page not found" }, { status: 404 });
   });
@@ -281,7 +284,7 @@ test("ambiguous or unauthorized expiry reconciliation preserves the draft and or
       t.mock.method(globalThis, "fetch", async (url) => {
         requests.push(url);
         if (url === "/api/pages/register") return expiredRegistration();
-        assert.equal(url, `/api/connect?page=${session.pageId}`);
+        assert.equal(url, `/api/connect?page=${session.pageId}&sync=automerge`);
         if (failure === "offline") throw new TypeError("Network unavailable");
         if (failure === "unavailable")
           return Response.json({ error: "Recovering registration" }, { status: 503 });
@@ -296,7 +299,10 @@ test("ambiguous or unauthorized expiry reconciliation preserves the draft and or
         return Response.json(connection);
       });
       await assert.rejects(session.registerDraft());
-      assert.deepEqual(requests, ["/api/pages/register", `/api/connect?page=${session.pageId}`]);
+      assert.deepEqual(requests, [
+        "/api/pages/register",
+        `/api/connect?page=${session.pageId}&sync=automerge`,
+      ]);
       assert.equal(session.localPage.registered, false);
       assert.deepEqual(session.localPage.registration, original);
       assert.equal(session.doc.title, "Kept offline edits");
@@ -341,7 +347,7 @@ test("expiry reconciliation does not resume a closed or signed-out session", asy
             }
             return Response.json({ retry_token: "replacement-token" });
           }
-          assert.equal(url, `/api/connect?page=${session.pageId}`);
+          assert.equal(url, `/api/connect?page=${session.pageId}&sync=automerge`);
           if (phase === "connect") {
             arrived();
             await waiting;
@@ -381,7 +387,7 @@ test("simultaneous expiry reconciliation adopts one persisted replacement reques
     }
     if (url === "/api/tools")
       return Response.json({ retry_token: `replacement-token-${++preparations}` });
-    assert.equal(url, `/api/connect?page=${first.pageId}`);
+    assert.equal(url, `/api/connect?page=${first.pageId}&sync=automerge`);
     return Response.json({ error: "Page not found" }, { status: 404 });
   });
   await Promise.all([first.registerDraft(), second.registerDraft()]);

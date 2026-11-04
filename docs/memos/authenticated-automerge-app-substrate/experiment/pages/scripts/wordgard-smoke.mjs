@@ -29,7 +29,9 @@ const nativeTable = (page) => content(page).locator("table").first();
 // Document blocks only; comment drafts are Wordgard editors too.
 const content = (page) => page.locator(".page-block wg-content");
 const saved = (page) =>
-  expect(page.getByRole("status").filter({ hasText: /^Saved$/ })).toBeVisible({ timeout: 20000 });
+  expect(page.getByRole("status").filter({ hasText: /^Saved$/ })).toBeVisible({
+    timeout: 20000,
+  });
 function checkpoint(name) {
   report.completed.push(name);
   console.log("PASS " + name);
@@ -292,7 +294,10 @@ async function assertStableSelectionToolbar(page) {
       const placement = await toolbar.evaluate((element) => {
         const box = element.getBoundingClientRect();
         const range = getSelection().getRangeAt(0).getBoundingClientRect();
-        return { width: box.width, gap: Math.max(range.top - box.bottom, box.top - range.bottom) };
+        return {
+          width: box.width,
+          gap: Math.max(range.top - box.bottom, box.top - range.bottom),
+        };
       });
       // Style, bold, italic, strikethrough, code, highlight, link and comment.
       assert.ok(
@@ -425,7 +430,10 @@ async function deniedDiagramCopy(page, block = 0, delayed = false) {
   }, delayed);
   try {
     const editor = content(page).nth(block);
-    const copy = editor.getByRole("button", { name: "Copy diagram code", exact: true });
+    const copy = editor.getByRole("button", {
+      name: "Copy diagram code",
+      exact: true,
+    });
     await copy.click();
     const status = editor.locator(".wordgard-diagram-actions").getByRole("status");
     // Focus leaves Copy backwards: the copy button can be the Page's last tab
@@ -503,8 +511,16 @@ async function cursorGeometry(page, text, { reveal = false } = {}) {
         return {
           count: carets.length,
           insideContent: el.querySelectorAll(".peer-caret").length,
-          expected: { left: expected.left, top: expected.top, height: expected.height },
-          actual: actual && { left: actual.left, top: actual.top, height: actual.height },
+          expected: {
+            left: expected.left,
+            top: expected.top,
+            height: expected.height,
+          },
+          actual: actual && {
+            left: actual.left,
+            top: actual.top,
+            height: actual.height,
+          },
           scrollY,
         };
       },
@@ -561,17 +577,27 @@ try {
   checkpoint("Wordgard boot with local OIDC and two contexts");
 
   stage = "contextual formatting preserves pointer selection and document layout";
-  const selectionBefore = await call(a, "read_page", { page_id: proseFixture.page_id });
+  const selectionBefore = await call(a, "read_page", {
+    page_id: proseFixture.page_id,
+  });
   await assertStableSelectionToolbar(a);
-  const selectionAfter = await call(a, "read_page", { page_id: proseFixture.page_id });
+  const selectionAfter = await call(a, "read_page", {
+    page_id: proseFixture.page_id,
+  });
   assert.deepEqual(selectionAfter.heads.slice().sort(), selectionBefore.heads.slice().sort());
   checkpoint(stage);
 
   stage = "quiet editor and comments list without automatic composition";
   await selectText(a, "fox");
   await assertQuietBlock(a);
-  await a.screenshot({ path: output + "/quiet-editor-desktop.png", fullPage: true });
-  const commentsToggle = a.getByRole("button", { name: "Comments", exact: true });
+  await a.screenshot({
+    path: output + "/quiet-editor-desktop.png",
+    fullPage: true,
+  });
+  const commentsToggle = a.getByRole("button", {
+    name: "Comments",
+    exact: true,
+  });
   await commentsToggle.click();
   await expect(a.locator("#page-comments")).toBeVisible();
   await expect(a.locator(".comment-composer")).toHaveCount(0);
@@ -581,7 +607,10 @@ try {
   await a.setViewportSize({ width: 390, height: 844 });
   await selectText(a, "fox");
   await assertQuietBlock(a);
-  await a.screenshot({ path: output + "/quiet-editor-mobile.png", fullPage: true });
+  await a.screenshot({
+    path: output + "/quiet-editor-mobile.png",
+    fullPage: true,
+  });
   await commentsToggle.click();
   await expect(a.locator(".comment-composer")).toHaveCount(0);
   await a.keyboard.press("Escape");
@@ -631,8 +660,14 @@ try {
   checkpoint(stage);
 
   stage = "inline selection draft survives closing, the thread list, and retargeting";
-  const popover = a.getByRole("dialog", { name: "Comment on selection", exact: true });
-  const draft = popover.getByRole("textbox", { name: "Comment on selection", exact: true });
+  const popover = a.getByRole("dialog", {
+    name: "Comment on selection",
+    exact: true,
+  });
+  const draft = popover.getByRole("textbox", {
+    name: "Comment on selection",
+    exact: true,
+  });
   await selectText(a, "fox");
   await a.getByRole("button", { name: "Comment on selection", exact: true }).click();
   await expect(draft).toBeFocused();
@@ -780,7 +815,11 @@ try {
   stage = "synthetic Chromium composition with intervening remote edit";
   await selectText(a, "garden.", true);
   const cdp = await a.context().newCDPSession(a);
-  await cdp.send("Input.imeSetComposition", { text: "かな", selectionStart: 2, selectionEnd: 2 });
+  await cdp.send("Input.imeSetComposition", {
+    text: "かな",
+    selectionStart: 2,
+    selectionEnd: 2,
+  });
   await insertAfter(b, "Remote stays.", " During composition.");
   await cdp.send("Input.insertText", { text: "かな" });
   await cdp.detach();
@@ -919,7 +958,9 @@ try {
   await b.locator("select.wg-code-language").selectOption("mermaid");
   // The person choosing Mermaid sees the diagram immediately, without another
   // Preview click; the peer actively editing the same source keeps its caret.
-  await expect(b.locator(".wordgard-diagram svg.pele")).toBeVisible({ timeout: 30000 });
+  await expect(b.locator(".wordgard-diagram svg.pele")).toBeVisible({
+    timeout: 30000,
+  });
   await expect(content(b).locator("pre:visible")).toHaveCount(0);
   await expect(b.getByRole("button", { name: "Edit diagram", exact: true })).toBeFocused();
   await expect(a.locator("select.wg-code-language")).toHaveValue("mermaid");
@@ -946,12 +987,18 @@ try {
   await deniedDiagramCopy(a);
   await deniedDiagramCopy(a, 0, true);
   await copyDiagram(a, diagram);
-  await a.screenshot({ path: output + "/diagram-controls-desktop.png", fullPage: true });
+  await a.screenshot({
+    path: output + "/diagram-controls-desktop.png",
+    fullPage: true,
+  });
   await editDiagram(a);
   const desktopSource = await diagramControls(a, "source");
   sameDiagramCorner(desktopPreview, desktopSource);
   await copyDiagram(a, diagram);
-  await a.screenshot({ path: output + "/diagram-source-desktop.png", fullPage: true });
+  await a.screenshot({
+    path: output + "/diagram-source-desktop.png",
+    fullPage: true,
+  });
   await expect.poll(() => textOf(a)).toBe(diagram);
   await expect(content(b).locator("pre:visible")).toHaveCount(0);
   await previewDiagram(a);
@@ -977,7 +1024,9 @@ try {
   await editDiagram(a);
   await selectText(a, "Dashboard");
   await a.keyboard.insertText("Overview");
-  await expect(b.locator(".wordgard-diagram")).toContainText("Overview", { timeout: 30000 });
+  await expect(b.locator(".wordgard-diagram")).toContainText("Overview", {
+    timeout: 30000,
+  });
   await expect(content(b).locator("pre:visible")).toHaveCount(0);
   await copyDiagram(a, diagram.replace("Dashboard", "Overview"));
   await copyDiagram(b, diagram.replace("Dashboard", "Overview"));
@@ -985,7 +1034,9 @@ try {
   await content(a).first().focus();
   await a.keyboard.press("ControlOrMeta+z");
   await expect.poll(() => textOf(a)).toBe(diagram);
-  await expect(b.locator(".wordgard-diagram")).toContainText("Dashboard", { timeout: 30000 });
+  await expect(b.locator(".wordgard-diagram")).toContainText("Dashboard", {
+    timeout: 30000,
+  });
   await previewDiagram(a);
   await saved(a);
   checkpoint(stage);
@@ -1003,13 +1054,18 @@ try {
   await selectText(a, "not-a-supported-diagram");
   await a.keyboard.insertText("graph TD");
   await previewDiagram(a);
-  await expect(b.locator(".wordgard-diagram")).toContainText("Warehouse", { timeout: 30000 });
+  await expect(b.locator(".wordgard-diagram")).toContainText("Warehouse", {
+    timeout: 30000,
+  });
   await saved(a);
   checkpoint(stage);
 
   stage = "Maximize opens a read-only expanded diagram and returns focus";
   const beforeMaximize = await call(a, "read_page", { page_id: code.page_id });
-  const maximize = a.getByRole("button", { name: "Maximize diagram", exact: true });
+  const maximize = a.getByRole("button", {
+    name: "Maximize diagram",
+    exact: true,
+  });
   await expect(maximize).toBeVisible();
   await maximize.click();
   const expanded = a.getByRole("dialog", { name: "Diagram" });
@@ -1059,7 +1115,11 @@ try {
         after_block_id: current.blocks[0].id,
         markdown: "",
       },
-      { op: "insert_markdown", after_block_id: current.blocks[0].id, markdown: table },
+      {
+        op: "insert_markdown",
+        after_block_id: current.blocks[0].id,
+        markdown: table,
+      },
     ],
   });
   for (const page of [a, b]) await expect(content(page)).toHaveCount(3);
@@ -1100,7 +1160,9 @@ try {
   // Moving between blocks keeps inactive diagrams rendered, with no raw source.
   await content(a).first().getByRole("button", { name: "Edit diagram", exact: true }).focus();
   for (const page of [a, b]) {
-    await expect(page.locator(".wordgard-diagram svg.pele")).toHaveCount(2, { timeout: 30000 });
+    await expect(page.locator(".wordgard-diagram svg.pele")).toHaveCount(2, {
+      timeout: 30000,
+    });
     await expect(nativeTable(page)).toBeVisible();
     await expect(nativeTable(page)).toContainText("Ready");
     await expect(content(page).locator("s")).toHaveText("Struck extension");
@@ -1118,7 +1180,9 @@ try {
   checkpoint(stage);
 
   stage = "preview clicks do not create a gap caret; keyboard and source carets remain";
-  const beforePreviewFocus = await call(a, "read_page", { page_id: code.page_id });
+  const beforePreviewFocus = await call(a, "read_page", {
+    page_id: code.page_id,
+  });
   await content(a).first().locator(".wordgard-diagram-canvas").click();
   await expect(a.locator("wg-cursor.wg-cursor-h:visible")).toHaveCount(0);
   assert.equal(
@@ -1139,14 +1203,18 @@ try {
   await editDiagram(a);
   await expect(a.locator("wg-cursor.wg-cursor-v:visible")).toHaveCount(1);
   await previewDiagram(a);
-  const afterPreviewFocus = await call(a, "read_page", { page_id: code.page_id });
+  const afterPreviewFocus = await call(a, "read_page", {
+    page_id: code.page_id,
+  });
   assert.deepEqual(afterPreviewFocus.heads, beforePreviewFocus.heads);
   assert.deepEqual(afterPreviewFocus.blocks, beforePreviewFocus.blocks);
   checkpoint(stage);
 
   stage = "mobile preview toggle and native table";
   await a.setViewportSize({ width: 390, height: 844 });
-  const beforeMobileControls = await call(a, "read_page", { page_id: code.page_id });
+  const beforeMobileControls = await call(a, "read_page", {
+    page_id: code.page_id,
+  });
   const mobilePreview = await diagramControls(a, "preview");
   await copyDiagram(a, diagram);
   await content(a).first().locator(".wordgard-diagram-canvas").click();
@@ -1155,11 +1223,16 @@ try {
   const mobileSource = await diagramControls(a, "source");
   sameDiagramCorner(mobilePreview, mobileSource);
   await copyDiagram(a, diagram);
-  await a.screenshot({ path: output + "/diagram-source-mobile.png", fullPage: true });
+  await a.screenshot({
+    path: output + "/diagram-source-mobile.png",
+    fullPage: true,
+  });
   await expect.poll(() => textOf(a, 0)).toBe(diagram);
   await expect(content(b).first().locator("pre:visible")).toHaveCount(0);
   await previewDiagram(a);
-  const afterMobileControls = await call(a, "read_page", { page_id: code.page_id });
+  const afterMobileControls = await call(a, "read_page", {
+    page_id: code.page_id,
+  });
   assert.deepEqual(
     afterMobileControls.heads,
     beforeMobileControls.heads,
@@ -1232,7 +1305,9 @@ try {
   await saved(a);
   await saved(b);
   await b.reload();
-  await expect(b.locator(".wordgard-diagram svg.pele")).toHaveCount(2, { timeout: 30000 });
+  await expect(b.locator(".wordgard-diagram svg.pele")).toHaveCount(2, {
+    timeout: 30000,
+  });
   await expect(nativeTable(b)).toBeVisible();
   await saved(b);
   await selectText(a, "Dashboard");
@@ -1264,7 +1339,9 @@ try {
   });
   await reader.goto(origin + "/p/" + code.page_id);
   await expect(content(reader).first()).toHaveAttribute("contenteditable", "false");
-  await expect(reader.locator(".wordgard-diagram svg.pele")).toHaveCount(2, { timeout: 30000 });
+  await expect(reader.locator(".wordgard-diagram svg.pele")).toHaveCount(2, {
+    timeout: 30000,
+  });
   await expect(nativeTable(reader)).toBeVisible();
   await expect(reader.getByRole("toolbar", { name: "Text formatting" })).toHaveCount(0);
   await expect(reader.locator(".rich-toolbar")).toBeHidden();
@@ -1343,12 +1420,18 @@ try {
         const scope = await digest(`${identity.principal}\0${pageId}`);
         const seed = sessionStorage.getItem(`pages-native:${scope}`);
         if (!seed) throw Error("Active fixture signer is missing after Saved");
-        const database = `pages-native-${scope}-${seed.slice(0, 16)}`;
+        // A native replica's records, or a plain one's chunks
+        // (PAGES_RECORD_STORAGE=automerge): either is named by the tab's seed.
+        const names = new Set((await indexedDB.databases()).map((entry) => entry.name));
+        const database = [
+          `pages-native-${scope}-${seed.slice(0, 16)}`,
+          `pages-plain-${scope}-${seed.slice(0, 16)}`,
+        ].find((name) => names.has(name));
         // Return fingerprints only, never the private signer seed.
         return {
           signer: await digest(seed),
-          store: await digest(database),
-          storeExists: (await indexedDB.databases()).some((entry) => entry.name === database),
+          store: await digest(database ?? ""),
+          storeExists: !!database,
         };
       }, transport.page_id);
     const originalStorage = await storageFingerprint(a);
@@ -1399,7 +1482,9 @@ try {
     await expect(a.getByRole("alert")).toHaveCount(0);
     assert.equal(await a.evaluate(() => performance.timeOrigin), documentTimeOrigin, "no reload");
     assert.equal(await textOf(a), await textOf(b));
-    const afterReturn = await call(a, "read_page", { page_id: transport.page_id });
+    const afterReturn = await call(a, "read_page", {
+      page_id: transport.page_id,
+    });
     assert.match(afterReturn.blocks[0].markdown, /Returned from another tab\./);
     report.tabReturn = {
       background_visibility: backgroundVisibility,
@@ -1447,7 +1532,9 @@ try {
     await saved(a);
     await saved(b);
     assert.equal(await textOf(a), await textOf(b));
-    const afterRecovery = await call(a, "read_page", { page_id: transport.page_id });
+    const afterRecovery = await call(a, "read_page", {
+      page_id: transport.page_id,
+    });
     assert.match(afterRecovery.blocks[0].markdown, /^Pending Transport recovery fixture\./);
     assert.match(
       afterRecovery.blocks[0].markdown,
@@ -1486,7 +1573,10 @@ try {
   ])
     if (page) {
       await page
-        .screenshot({ path: output + "/failure-" + name + ".png", fullPage: true })
+        .screenshot({
+          path: output + "/failure-" + name + ".png",
+          fullPage: true,
+        })
         .catch(() => {});
       await writeFile(output + "/failure-" + name + ".html", await page.content()).catch(() => {});
     }

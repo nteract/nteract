@@ -274,7 +274,7 @@ test("the blocking theme asset applies preferences without loading the editor", 
   });
   assert.deepEqual(fetches, [
     ["/api/auth/session", ["signal"]],
-    [`/api/connect?page=${pageId}&preview=1`, ["headers", "signal"]],
+    [`/api/connect?page=${pageId}&sync=automerge&preview=1`, ["headers", "signal"]],
   ]);
   assert.equal(root.dataset.theme, "dark");
   assert.equal(root.dataset.colorTheme, undefined);

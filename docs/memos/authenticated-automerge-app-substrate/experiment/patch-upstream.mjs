@@ -9,6 +9,7 @@ import { patchCausalHistory } from "./patch-causal-history.mjs";
 import { patchCatchUpBatching } from "./patch-catch-up-batching.mjs";
 import { patchRecordRefusal } from "./patch-record-refusal.mjs";
 import { patchOutboundSync } from "./patch-outbound-sync.mjs";
+import { patchDocumentRecord } from "./patch-document-record.mjs";
 
 // Source-hash-checked alterations to pinned Repo3. No wire or WASM changes.
 export function patchUpstream(root) {
@@ -53,6 +54,7 @@ export function patchUpstream(root) {
   const catchUpBatching = patchCatchUpBatching(root);
   const recordRefusal = patchRecordRefusal(root);
   const outboundSync = patchOutboundSync(root);
+  const documentRecord = patchDocumentRecord(root);
   const after = createHash("sha256").update(readFileSync(path)).digest("hex");
   return {
     path: "packages/automerge-repo-subduction/src/index.ts",
@@ -66,5 +68,6 @@ export function patchUpstream(root) {
     catchUpBatching,
     recordRefusal,
     outboundSync,
+    documentRecord,
   };
 }
