@@ -141,13 +141,30 @@ export const TRASHED_COPY =
 export const DENIED_COPY =
   "You no longer have access to this Page. Your local copy is kept on this device.";
 export const PAGE_DELETED = "This Page was deleted.";
-/** The edit pause while a refused plain draft moves to native storage. */
+/** The edit pause while a refused plain draft moves to native storage, or a
+ * replica in the wrong storage records the host's. */
 const STORAGE_SWITCH = "storage-switch";
 export const STORAGE_SWITCHING = "This draft is moving to new storage. Try again in a moment.";
 export const STORAGE_SWITCH_FAILED =
   "This draft couldn't move to new storage. Reload to keep editing; it's saved on this device.";
+export const STORAGE_ADOPTED =
+  "This Page's storage changed. Reload to keep editing; your edits are saved on this device.";
 export const STORAGE_REFUSED_AGAIN =
   "The server refused this draft's storage again. Try again to register it.";
+/** Why a storage switch in `state` holds edits. */
+const storageSwitchNotice = (state) =>
+  state.name === "failed"
+    ? STORAGE_SWITCH_FAILED
+    : state.name === "adopting" || state.name === "adopted"
+      ? STORAGE_ADOPTED
+      : STORAGE_SWITCHING;
+/** A checkpoint write's answer that the local copy is no longer this tab's
+ * (local-pages.mjs). */
+const LOCAL_COPY_RETIRED = Object.freeze([
+  "LOCAL_PAGE_DELETED",
+  "LOCAL_PAGE_REVOKED",
+  "LOCAL_PAGE_ACCESS_CHANGED",
+]);
 const storageRefused = (error) =>
   error?.status === 409 && error.code === "record_storage_unsupported";
 /** A failed move's error. Its 409 stops automatic reconnects: only a reload
@@ -2029,7 +2046,7 @@ export class PageSession {
           (done) => done,
           (cause) => {
             error = cause;
-            return { type: "failed" };
+            return { type: LOCAL_COPY_RETIRED.includes(cause?.code) ? "retired" : "failed" };
           },
         );
         if (!this.alive) next = { type: "close" };
@@ -2062,6 +2079,11 @@ export class PageSession {
         return this.#openNativeReplica().then((database) => ({ type: "moved", database }));
       case "record":
         return this.#recordNativeRegistration().then(() => ({ type: "recorded" }));
+      case "adopt":
+        return this.persistLocal(
+          { recordStorage: effect.storage === "automerge" ? "automerge" : undefined },
+          { storageFromHost: true },
+        ).then(() => ({ type: "adopted" }));
     }
   }
   /** Close the plain replica, keeping its database, and import the draft into
@@ -2137,20 +2159,28 @@ export class PageSession {
   /** Discovery names other storage than this open replica's: a stale tab
    * wrote the wrong mode into the local record, or a host's answer changed.
    * The replica's history is in the other format and can't switch live, but
-   * its checkpoint is plain Automerge: record it, with every edit, under the
-   * host's storage. The next open restores it into a replica of that storage,
-   * so a reload recovers instead of failing the same way. Edits made before
-   * then keep reaching the checkpoint. */
+   * its checkpoint is plain Automerge. The storage switch pauses edits, then
+   * records that checkpoint, final, under the host's storage
+   * (storage-switch-machine.mjs). The next open restores it into a replica of
+   * that storage, so a reload recovers instead of failing the same way. */
   async adoptHostStorage(storage) {
-    await this.persistLocal(
-      { recordStorage: storage === "automerge" ? "automerge" : undefined },
-      { storageFromHost: true },
-    );
-    // A 409: reconnecting can't help, a reload does.
-    throw Object.assign(Error("This Page's storage changed. Reload to open it."), {
-      code: "RECORD_STORAGE_CHANGED",
-      status: 409,
-    });
+    const { state, error } = await this.#switchStorage({ type: "mismatched", storage });
+    await this.#retireAfterStorageSwitch(error);
+    // Only a recorded checkpoint makes a reload the answer: a 409 then stops
+    // reconnects. Anything else leaves this replica's record as it was, and
+    // the next attempt adopts again.
+    if (state.name === "adopted")
+      throw Object.assign(Error(STORAGE_ADOPTED), { code: "RECORD_STORAGE_CHANGED", status: 409 });
+    if (error) throw error;
+    if (!this.alive || state.name === "closed") throw Error("Page closed");
+    throw Error("This Page's storage is still changing. Trying again.");
+  }
+  /** A storage switch step found the local copy deleted, revoked or replaced
+   * by another grant: retire this tab the way a checkpoint write does. */
+  async #retireAfterStorageSwitch(error) {
+    if (error?.code === "LOCAL_PAGE_DELETED") await this.markDeleted();
+    else if (error?.code === "LOCAL_PAGE_REVOKED") await this.revoke();
+    else if (error?.code === "LOCAL_PAGE_ACCESS_CHANGED") await this.localAccessChanged();
   }
   /** Merge a stored checkpoint into this replica before a lookup. */
   async storeCheckpoint(id, doc) {
@@ -2219,11 +2249,14 @@ export class PageSession {
     const work = (this.cacheTail ?? Promise.resolve())
       .catch(() => {})
       .then(async () => {
-        this.localPage = { ...this.localPage, ...value };
-        this.localPage = await writeLocalPage(this.identity, this.localPage, {
-          replica: this.replicaId,
-          storageFromHost,
-        });
+        // Memory takes the patch only once it's stored: a failed write must
+        // not leave a field (the host's recordStorage, say) for the next
+        // routine save to write without its guard.
+        this.localPage = await writeLocalPage(
+          this.identity,
+          { ...this.localPage, ...value },
+          { replica: this.replicaId, storageFromHost },
+        );
       });
     this.cacheTail = work;
     return work;
@@ -2292,6 +2325,7 @@ export class PageSession {
   async retryAfterStorageRefusal(error, storageMoved) {
     if (storageMoved) throw Object.assign(Error(STORAGE_REFUSED_AGAIN), { cause: error });
     const moved = await this.moveDraftToNative();
+    await this.#retireAfterStorageSwitch(moved.error);
     if (!this.alive || moved.state.name === "closed") return;
     if (moved.state.name === "failed") throw storageSwitchFailed(moved.error);
     if (moved.error) throw moved.error;
@@ -2802,11 +2836,7 @@ export class PageSession {
   change(fn) {
     if (!this.alive) throw Error("Page closed");
     if (this.editPauses.has(STORAGE_SWITCH))
-      throw Error(
-        this.storageSwitch$.snapshot().name === "failed"
-          ? STORAGE_SWITCH_FAILED
-          : STORAGE_SWITCHING,
-      );
+      throw Error(storageSwitchNotice(this.storageSwitch$.snapshot()));
     if (!this.canWrite) throw Error("This Page is read only");
     return this.#write(this.handle, fn);
   }

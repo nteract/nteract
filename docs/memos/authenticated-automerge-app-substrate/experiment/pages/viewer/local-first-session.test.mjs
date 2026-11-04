@@ -4,6 +4,7 @@ import "fake-indexeddb/auto";
 import * as A from "@automerge/automerge";
 import {
   PageSession,
+  STORAGE_ADOPTED,
   STORAGE_REFUSED_AGAIN,
   STORAGE_SWITCHING,
   STORAGE_SWITCH_FAILED,
@@ -11,6 +12,7 @@ import {
   retireLocalPage,
 } from "./session.mjs";
 import { readLocalPage, decodeSnapshot, writeLocalPage, encodeSnapshot } from "./local-pages.mjs";
+import { store as localCatalog } from "./local-catalog.mjs";
 import { createPageData, initializePage } from "../model/page.mjs";
 import { extractRecords } from "@automerge/automerge-repo/sedimentree/automerge";
 import {
@@ -275,14 +277,18 @@ test("an expired never-registered draft renews only retry authority after an aut
   assert.equal(session.doc.title, "Kept offline edits");
 });
 
-/** A draft created where the session endpoint advertised plain storage. */
-async function plainDraft(t) {
+/** A draft created where the session endpoint advertised plain storage, or
+ * native storage with `recordStorage: "native"`. */
+async function plainDraft(t, { recordStorage = "automerge" } = {}) {
   browser(t);
   t.mock.method(PageSession.prototype, "retryConnection", async () => {});
   const auth = authentication();
   const session = await PageSession.create(
     { title: "Plain draft" },
-    { authentication: { ...auth, recordStorage: "automerge" }, refreshSession: async () => auth },
+    {
+      authentication: recordStorage === "automerge" ? { ...auth, recordStorage } : auth,
+      refreshSession: async () => auth,
+    },
   );
   t.after(() => session.close());
   return { auth, session };
@@ -609,12 +615,79 @@ test("a stale plain tab can't write plain storage back over a draft another tab 
   assert.equal(plain.recordStorage, "automerge");
 });
 
-test("discovery that names other storage than the open replica records it, and the reload opens it", async (t) => {
-  const { auth, session } = await plainDraft(t);
+test("discovery that names other storage than the open replica pauses edits, records it, and the reload opens it", async (t) => {
+  for (const [local, host] of [
+    ["automerge", "native"],
+    ["native", "automerge"],
+  ]) {
+    await t.test(`${local} replica, ${host} Page`, async (t) => {
+      const { auth, session } = await plainDraft(t, { recordStorage: local });
+      const pageId = session.pageId;
+      const documentId = session.handle.documentId;
+      // A replica of a Page the host knows in the other storage: what a
+      // stale tab's write-back used to leave behind.
+      await session.persistLocal({ registered: true, pending: false });
+      await session.close();
+      const reopened = await PageSession.open(pageId, {
+        authentication: auth,
+        refreshSession: async () => auth,
+      });
+      t.after(() => reopened.close());
+      assert.equal(reopened.recordStorage, local);
+      // Typed inside the checkpoint debounce: only the adopt can save it.
+      await reopened.change((doc) => A.updateText(doc, ["title"], "Typed before discovery"));
+      clearTimeout(reopened.savedTimer);
+      const requests = [];
+      t.mock.method(globalThis, "fetch", async (url) => {
+        requests.push(url);
+        assert.equal(url, `/api/connect?page=${pageId}&sync=automerge`);
+        return Response.json({
+          page_id: pageId,
+          documentId,
+          identity: auth.identity,
+          access: { canRead: true, canWrite: true, role: "owner" },
+          ...(host === "automerge" && { recordStorage: "automerge" }),
+        });
+      });
+      const changed = { code: "RECORD_STORAGE_CHANGED", status: 409, message: STORAGE_ADOPTED };
+      await assert.rejects(reopened.connect(), changed);
+      assert.equal(reopened.storageSwitch$.snapshot().name, "adopted");
+      const stored = await readLocalPage(auth.identity, pageId);
+      assert.equal(stored.recordStorage, host === "automerge" ? "automerge" : undefined);
+      assert.equal(A.load(decodeSnapshot(stored.snapshot)).title, "Typed before discovery");
+      // Edits after the adopt are refused visibly: the reload opens the
+      // other storage's replica, which only the recorded checkpoint reaches.
+      assert.equal(reopened.canWrite, false);
+      assert.throws(
+        () => reopened.change((doc) => A.updateText(doc, ["title"], "Typed after the adopt")),
+        { message: STORAGE_ADOPTED },
+      );
+      assert.equal(reopened.doc.title, "Typed before discovery");
+      // A manual retry answers the same way without recording again.
+      await assert.rejects(reopened.connect(), changed);
+      assert.equal(requests.length, 2);
+      await reopened.close();
+      const reloaded = await PageSession.open(pageId, {
+        authentication: auth,
+        refreshSession: async () => auth,
+      });
+      t.after(() => reloaded.close());
+      assert.equal(reloaded.recordStorage, host);
+      assert.equal(reloaded.handle.documentId, documentId);
+      assert.equal(reloaded.doc.title, "Typed before discovery");
+      assert.equal(reloaded.canWrite, true);
+      await reloaded.change((doc) => A.updateText(doc, ["title"], "Typed after the reload"));
+      assert.equal(reloaded.doc.title, "Typed after the reload");
+    });
+  }
+});
+
+/** A reopened `local` replica of a Page the host knows in `host` storage,
+ * with an edit inside the checkpoint debounce and discovery mocked. */
+async function mismatchedReplica(t, { local = "automerge", host = "native" } = {}) {
+  const { auth, session } = await plainDraft(t, { recordStorage: local });
   const pageId = session.pageId;
   const documentId = session.handle.documentId;
-  // A plain replica of a Page the host knows as native: what a stale tab's
-  // write-back used to leave behind.
   await session.persistLocal({ registered: true, pending: false });
   await session.close();
   const reopened = await PageSession.open(pageId, {
@@ -622,7 +695,6 @@ test("discovery that names other storage than the open replica records it, and t
     refreshSession: async () => auth,
   });
   t.after(() => reopened.close());
-  assert.equal(reopened.recordStorage, "automerge");
   await reopened.change((doc) => A.updateText(doc, ["title"], "Typed before discovery"));
   clearTimeout(reopened.savedTimer);
   const requests = [];
@@ -634,23 +706,69 @@ test("discovery that names other storage than the open replica records it, and t
       documentId,
       identity: auth.identity,
       access: { canRead: true, canWrite: true, role: "owner" },
+      ...(host === "automerge" && { recordStorage: "automerge" }),
     });
   });
-  await assert.rejects(reopened.connect(), { code: "RECORD_STORAGE_CHANGED", status: 409 });
-  assert.equal(requests.length, 1);
-  const stored = await readLocalPage(auth.identity, pageId);
-  assert.equal(stored.recordStorage, undefined, "the host's storage is recorded");
-  assert.equal(A.load(decodeSnapshot(stored.snapshot)).title, "Typed before discovery");
-  await reopened.close();
-  // The reload restores the checkpoint into a native replica.
-  const reloaded = await PageSession.open(pageId, {
-    authentication: auth,
-    refreshSession: async () => auth,
+  return { auth, reopened, pageId, requests };
+}
+/** Fail the first local-record write made while adopting with `error`. */
+function failAdoptWrite(t, session, error) {
+  const run = localCatalog.run.bind(localCatalog);
+  let failed = false;
+  t.mock.method(localCatalog, "run", (mode, ...rest) => {
+    if (!failed && mode === "readwrite" && session.storageSwitch$.snapshot().name === "adopting") {
+      failed = true;
+      return Promise.reject(error);
+    }
+    return run(mode, ...rest);
   });
-  t.after(() => reloaded.close());
-  assert.equal(reloaded.recordStorage, "native");
-  assert.equal(reloaded.handle.documentId, documentId);
-  assert.equal(reloaded.doc.title, "Typed before discovery");
+}
+
+test("a failed adopt write leaves the record and memory as they were, and the next attempt adopts", async (t) => {
+  const { auth, reopened, pageId } = await mismatchedReplica(t);
+  failAdoptWrite(t, reopened, Error("simulated IndexedDB failure"));
+  await assert.rejects(reopened.connect(), { message: "simulated IndexedDB failure" });
+  assert.equal(reopened.storageSwitch$.snapshot().name, "idle");
+  assert.equal(reopened.localPage.recordStorage, "automerge", "memory keeps the stored mode");
+  assert.equal(reopened.canWrite, true, "edits resume");
+  // A routine debounced save must not write the host's mode unguarded.
+  await reopened.change((doc) => A.updateText(doc, ["title"], "Typed after the failed adopt"));
+  clearTimeout(reopened.savedTimer);
+  await reopened.saveReceipt();
+  let stored = await readLocalPage(auth.identity, pageId);
+  assert.equal(stored.recordStorage, "automerge");
+  assert.equal(A.load(decodeSnapshot(stored.snapshot)).title, "Typed after the failed adopt");
+  // The next attempt adopts, with that edit.
+  await assert.rejects(reopened.connect(), { code: "RECORD_STORAGE_CHANGED", status: 409 });
+  stored = await readLocalPage(auth.identity, pageId);
+  assert.equal(stored.recordStorage, undefined);
+  assert.equal(A.load(decodeSnapshot(stored.snapshot)).title, "Typed after the failed adopt");
+});
+
+test("a local copy deleted during the adopt retires the tab without resuming edits", async (t) => {
+  const { reopened, requests } = await mismatchedReplica(t);
+  failAdoptWrite(
+    t,
+    reopened,
+    Object.assign(Error("Page was deleted"), { code: "LOCAL_PAGE_DELETED", status: 410 }),
+  );
+  await assert.rejects(reopened.connect(), { code: "LOCAL_PAGE_DELETED" });
+  assert.equal(reopened.storageSwitch$.snapshot().name, "closed");
+  assert.equal(reopened.deleted, true);
+  assert.equal(reopened.canWrite, false);
+  assert.equal(requests.length, 1);
+});
+
+test("an adopt through the reconnect loop shows the reload notice and schedules no retry", async (t) => {
+  const { reopened, requests } = await mismatchedReplica(t);
+  PageSession.prototype.retryConnection.mock.restore();
+  await reopened.retryConnection();
+  assert.equal(reopened.storageSwitch$.snapshot().name, "adopted");
+  assert.equal(reopened.problem, STORAGE_ADOPTED);
+  assert.notEqual(reopened.reconnect$.snapshot().name, "waiting");
+  assert.equal(reopened.retryTimer, undefined);
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  assert.equal(requests.length, 1, "nothing reconnects after the 409");
 });
 
 test("a failed move stops re-sending the plain registration", async (t) => {
