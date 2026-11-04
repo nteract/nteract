@@ -242,7 +242,8 @@ function App() {
   const pickerOpen = pickerSnapshot.state.name !== "closed";
   const pickerLoading =
     pickerSnapshot.state.name === "loading" || pickerSnapshot.state.name === "refreshing";
-  const pickerFailed = pickerSnapshot.state.name === "failed";
+  const pickerFailed =
+    pickerSnapshot.state.name === "failed" || pickerSnapshot.state.name === "checking";
   // Rendered only beside a session; handlers read editor.module when they run.
   const { WordgardEditor, CommentsPanel, CommentPopover, SaveStatus, PageControls } =
     editor.module ?? {};
@@ -775,7 +776,9 @@ function App() {
     // Projects are asked for again. One check runs at a time, a refusal or
     // another account's answer during it runs it once more, and reruns are
     // capped, so a server that keeps refusing tool calls, or keeps answering
-    // for someone else, can't loop the tab.
+    // for someone else, can't loop the tab. When it ends, a Browse picker
+    // waiting on it says to try again if the account is the same; an account
+    // change already closed it.
     const recovery = new SignedOutRecovery({
       forget: forgetRefusedAccountData,
       check: async () => {
@@ -783,6 +786,9 @@ function App() {
         await maintenance.refresh();
         const now = authentication.current?.identity?.principal ?? null;
         if (alive && now && now === before) await projectList.request(now, { fresh: true });
+      },
+      done: () => {
+        if (alive) picker.settled(authentication.current?.identity?.principal ?? null);
       },
     });
     const stopSignedOut = observeSignedOut(() => {

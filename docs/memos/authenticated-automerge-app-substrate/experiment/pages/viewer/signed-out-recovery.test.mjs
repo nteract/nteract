@@ -55,7 +55,7 @@ const ROWS = [
     case: "done",
     state: recovering(),
     event: settled,
-    expect: { state: idle, effects: [] },
+    expect: { state: idle, effects: [{ type: "done" }] },
   },
   {
     label: "a rearmed check runs once more",
@@ -69,7 +69,7 @@ const ROWS = [
     case: "spent",
     state: recovering(true, RECOVERY_RERUNS),
     event: settled,
-    expect: { state: idle, effects: [] },
+    expect: { state: idle, effects: [{ type: "done" }] },
   },
 ];
 
@@ -106,6 +106,7 @@ function shell() {
     newKey: () => `k${++n}`,
   });
   let forgets = 0;
+  let dones = 0;
   let inFlight = 0;
   let mostInFlight = 0;
   const recovery = new SignedOutRecovery({
@@ -124,6 +125,7 @@ function shell() {
         inFlight--;
       }
     },
+    done: () => dones++,
   });
   return {
     recovery,
@@ -131,6 +133,7 @@ function shell() {
     sessions,
     shown: () => projects.store.snapshot(),
     forgets: () => forgets,
+    dones: () => dones,
     mostInFlight: () => mostInFlight,
   };
 }
@@ -138,7 +141,7 @@ function shell() {
 const ALICES = { projects: [{ project_id: "launch" }], next_cursor: null, principal: "alice" };
 
 test("a 401 during recovery still ends with the account's Projects shown", async () => {
-  const { recovery, calls, sessions, shown, forgets } = shell();
+  const { recovery, calls, sessions, shown, forgets, dones } = shell();
   recovery.refused();
   sessions[0].resolve();
   await settle();
@@ -150,6 +153,7 @@ test("a 401 during recovery still ends with the account's Projects shown", async
   calls[0].resolve(ALICES);
   await settle();
   assert.equal(shown().ready, false, "the reset dropped it");
+  assert.equal(dones(), 0, "a rerun is still to come");
   // The rearmed recovery runs once more and asks again.
   assert.equal(sessions.length, 2);
   sessions[1].resolve();
@@ -159,6 +163,7 @@ test("a 401 during recovery still ends with the account's Projects shown", async
   await settle();
   assert.deepEqual(shown(), { principal: "alice", projects: ALICES.projects, ready: true });
   assert.equal(recovery.state.name, "idle");
+  assert.equal(dones(), 1, "done once, after the last check");
 });
 
 test("one check at a time, and a server that keeps refusing stops after the cap", async () => {
@@ -190,7 +195,7 @@ test("one check at a time, and a server that keeps refusing stops after the cap"
 });
 
 test("a stopped recovery runs nothing more", async () => {
-  const { recovery, sessions, forgets } = shell();
+  const { recovery, sessions, forgets, dones } = shell();
   recovery.refused();
   recovery.stop();
   recovery.refused();
@@ -198,6 +203,7 @@ test("a stopped recovery runs nothing more", async () => {
   await settle();
   assert.equal(forgets(), 1);
   assert.equal(sessions.length, 1);
+  assert.equal(dones(), 0);
 });
 
 test("answers for another account recheck the session through the same bounded recovery", async () => {

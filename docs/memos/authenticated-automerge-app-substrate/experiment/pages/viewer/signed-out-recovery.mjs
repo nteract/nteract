@@ -19,14 +19,18 @@
  *
  * States:
  * - idle: no check in flight.
- * - recovering: a check is in flight. `rearm` says a refusal arrived since it
- *   started; `reruns` counts the checks run again in this recovery.
+ * - recovering: a check is in flight. `rearm` says a refusal or another
+ *   account's answer arrived since it started; `reruns` counts the checks run
+ *   again in this recovery.
  *
  * Events: `refused` (a 401), `other` (an answer for another account),
  * `settled` (the check finished, either way).
  *
- * Effects: `forget` (forgetAccountData), `check` (session check, then
- * Projects for the same account).
+ * Effects: `forget` (the shell's forgetRefusedAccountData, which drops the
+ * account's rows and Projects and leaves the Browse picker open to say why),
+ * `check` (session check, then Projects for the same account), `done` (the
+ * recovery ended with no check left to run; the Browse picker, if it waits on
+ * it, learns who is signed in).
  */
 import { defineMachine, reject } from "../shared/machine.mjs";
 
@@ -67,6 +71,7 @@ export const recoverySpec = Object.freeze({
     effects: {
       forget: (value) => only(value, ["type"]),
       check: (value) => only(value, ["type"]),
+      done: (value) => only(value, ["type"]),
     },
   },
 });
@@ -91,7 +96,7 @@ function transition(current, input) {
       state: { name: "recovering", rearm: false, reruns: current.reruns + 1 },
       effects: [{ type: "check" }],
     };
-  return { state: { name: "idle" }, effects: [] };
+  return { state: { name: "idle" }, effects: [{ type: "done" }] };
 }
 
 export const recoveryMachine = defineMachine({
@@ -102,18 +107,20 @@ export const recoveryMachine = defineMachine({
 
 /**
  * Runs the machine. `forget()` clears the account's data; `check()` returns
- * a promise for the session check and the Projects request that follows it.
- * `stop()` ends it: nothing runs after, and a check in flight settles into
- * nothing.
+ * a promise for the session check and the Projects request that follows it;
+ * `done()` runs when the recovery ends. `stop()` ends it: nothing runs after,
+ * and a check in flight settles into nothing.
  */
 export class SignedOutRecovery {
   #state = recoveryMachine.initial;
   #forget;
   #check;
+  #done;
   #stopped = false;
-  constructor({ forget, check }) {
+  constructor({ forget, check, done = () => {} }) {
     this.#forget = forget;
     this.#check = check;
+    this.#done = done;
   }
   get state() {
     return this.#state;
@@ -135,6 +142,7 @@ export class SignedOutRecovery {
     this.#state = result.state;
     for (const effect of result.effects) {
       if (effect.type === "forget") this.#forget();
+      else if (effect.type === "done") this.#done();
       else this.#run();
     }
   }
