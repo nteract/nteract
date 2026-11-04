@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import * as A from "@automerge/automerge";
 import { cbor } from "@automerge/automerge-repo";
+import { AutomergeSyncBackend } from "./backend.mjs";
 import { COMPACT_MAX_CHUNKS, DocStore, MemoryByteStore } from "./doc-store.mjs";
 import { SyncHost } from "./host.mjs";
 import { idle, newId, raw, until } from "./test-helpers.mjs";
@@ -44,6 +45,131 @@ const syncHello = (changes) => {
   return A.encodeSyncMessage(m);
 };
 const ACTOR = "aa".repeat(16);
+
+for (const { title, failure, retry } of [
+  { title: "reply follow-ups wait across local persistence for the scheduled start" },
+  {
+    title: "failed persistence schedules a release that resumes replies and later fan-out",
+    failure: true,
+  },
+  {
+    title: "a duplicate-record retry repairs durability without stranding the sync hold",
+    failure: true,
+    retry: true,
+  },
+])
+  test(title, async () => {
+    const bytes = new TestByteStore();
+    let start;
+    const backend = await AutomergeSyncBackend.load({
+      store: new DocStore(bytes),
+      scheduleLocalSync: (_id, run) => {
+        start = run;
+      },
+    });
+    const id = newId();
+    let local = A.from({ n: 0 });
+    const store = () => {
+      const blob = A.getLastLocalChange(local);
+      const { hash, deps } = A.decodeChange(blob);
+      return backend.store(id, [{ kind: "commit", id: hash, parents: deps, blob }]);
+    };
+    let peer = A.clone(local);
+    let state = A.initSyncState();
+    let receive;
+    const sent = [];
+    const answer = () => {
+      const frame = sent.shift();
+      if (frame.m) [peer, state] = A.receiveSyncMessage(peer, state, frame.m);
+      let m;
+      [state, m] = A.generateSyncMessage(peer, state);
+      receive({ t: "sync", doc: id, m, r: frame.r, has: true, heads: A.getHeads(peer) });
+    };
+    let release;
+    let storing;
+    try {
+      await store();
+      backend.addConnection({
+        send: (frame) => sent.push(frame),
+        onMessage: (run) => {
+          receive = run;
+        },
+        onClose: () => {},
+        close: () => {},
+      });
+      start();
+      while (sent.length) answer();
+      await backend.flush();
+
+      local = A.change(local, (d) => {
+        d.n = 1;
+      });
+      await store();
+      start();
+      assert.equal(sent.length, 1);
+      const synchronized = backend.synchronizeTree(id);
+      void synchronized.catch(() => {});
+      release = bytes.hold();
+      if (failure) bytes.failSave(1);
+      start = null;
+      local = A.change(local, (d) => {
+        d.n = 2;
+      });
+      storing = store();
+      await until(() => bytes.waiting === 1, { label: "local edit persisting" });
+      answer();
+      assert.equal(peer.n, 1);
+      assert.equal(sent.length, 0, "reply must not send the edit still persisting");
+
+      release();
+      if (failure) {
+        await assert.rejects(storing, /injected compaction failure/);
+        await assert.rejects(backend.flush(), (error) => error.code === "io");
+        if (retry) {
+          await store();
+          await backend.flush();
+          const durable = await new DocStore(bytes).read(id);
+          assert.equal(
+            A.load(durable.snapshot).n,
+            2,
+            "duplicate retry repairs the mirror snapshot",
+          );
+        }
+      } else await storing;
+      assert.equal(sent.length, 0, "durability alone must not bypass the scheduler");
+      assert.equal(typeof start, "function", "every local hold gets a scheduled release");
+      start();
+      assert.equal(sent.length, 1);
+      answer();
+      assert.equal(peer.n, 2, "the scheduled batch delivers the held edit");
+      while (sent.length) answer();
+      assert.equal(
+        (await synchronized).outcome,
+        "complete",
+        "the suppressed reply's waiter resumes",
+      );
+
+      peer = A.change(peer, (d) => {
+        d.remote = "fan-out";
+      });
+      let m;
+      [state, m] = A.generateSyncMessage(peer, state);
+      assert.ok(m);
+      receive({ t: "sync", doc: id, m, has: true, heads: A.getHeads(peer) });
+      assert.equal(sent.length, 1, "later host fan-out is acked without another local edit");
+      const ack = A.decodeSyncMessage(sent[0].m);
+      assert.deepEqual(ack.heads, A.getHeads(peer));
+      while (sent.length) answer();
+      await backend.flush();
+      const events = backend.open(id).events[Symbol.asyncIterator]();
+      const { value } = await events.next();
+      assert.deepEqual(A.load(value.records[0].blob), peer, "the replica converges with the host");
+    } finally {
+      release?.();
+      await storing?.catch(() => {});
+      await backend.close().catch(() => {});
+    }
+  });
 
 test("a round's latency runs from the frame's arrival to its ack, on the host's clock", async () => {
   let clock = 1000;
