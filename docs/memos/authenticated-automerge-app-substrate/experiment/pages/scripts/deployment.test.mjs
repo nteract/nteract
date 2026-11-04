@@ -386,6 +386,8 @@ function installFixture(
     "release/wrangler.json": JSON.stringify({
       main: "index.js",
       no_bundle: true,
+      d1_databases: [profiles.AUTH_D1, profiles.USAGE_D1],
+      triggers: { crons: [profiles.USAGE_CRON] },
       durable_objects: { bindings: [{ name: "PAGE_RECORDS", class_name: "PageRecords" }] },
       r2_buckets: [{ binding: "PAGES_ASSETS", bucket_name: "pages-images" }],
       migrations: [{ tag: "fixture", new_sqlite_classes: ["PageRecords"] }],
@@ -1455,6 +1457,24 @@ test("compaction maintenance and company viewing are enabled for Page7 through P
     // Plain Automerge sync for new Pages is on for Page10 only.
     assert.equal(config.vars.PAGES_RECORD_STORAGE, target === "page10" ? "automerge" : undefined);
   }
+});
+
+test("Pages and Page10 retain the local build's isolated usage binding and UTC cron", (t) => {
+  for (const target of ["page10", "pages"]) {
+    const f = installFixture(t, { target });
+    f.execute();
+    const config = JSON.parse(f.read(f.release + "/wrangler.json"));
+    assert.deepEqual(
+      config.d1_databases.find((db) => db.binding === "PAGES_USAGE"),
+      profiles.USAGE_D1,
+    );
+    assert.notEqual(profiles.USAGE_D1.database_id, profiles.AUTH_D1.database_id);
+    assert.deepEqual(config.triggers, { crons: ["5 0 * * *"] });
+  }
+  assert.notEqual(
+    profiles.deploymentProfile("page10").deployment.prefix,
+    profiles.deploymentProfile("pages").deployment.prefix,
+  );
 });
 
 test("fresh Page10 installation owns its origin, storage, runtime and service", (t) => {

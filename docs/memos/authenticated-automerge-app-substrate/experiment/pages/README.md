@@ -546,6 +546,77 @@ or upload a new document snapshot for every edit. Images have a separate private
 blob binding. See [upstream integration contracts](../UPSTREAM.md) and celld's
 [durability guarantees](https://celld.dev/docs/guarantees/).
 
+## Usage history
+
+`PAGES_USAGE` is a separate D1 database, created on first use by celld. Local
+builds and both deployment profiles (`page10`, `pages`) carry the binding and
+the `00:05 UTC` daily cron. Each deployment's fleet prefix isolates its store;
+accounts and hosts are never merged. celld 0.6.3 supports
+[cron triggers](https://github.com/denoland/celld/blob/v0.6.3/docs/services/cron-triggers.md).
+No host-side provisioning is required.
+
+The existing `pages.usage.v1` emission path also queues an allowlisted projection:
+UTC day and timestamp, principal id, driver, surface, action, Page id, outcome.
+It stores no titles, content, emails, display names, client/model labels or
+session ids. Drivers are classified as `Browser`, `API`, `Kilo`, `Codex`,
+`Claude Code`, `Claude Desktop`, `ChatGPT`, `Cursor`, `Gemini`, or `other`.
+Unknown labels, including email-shaped drivers, retain the event as `other`.
+Anonymous/service events and principals containing emails after percent-decoding
+are dropped. Existing console telemetry is unchanged and has its separate 30-day
+retention (DEPLOYMENT.md, Telemetry).
+
+| Table | Meaning | Retention |
+| --- | --- | --- |
+| `pages_usage_events` | Raw projected events | Delete days strictly before UTC today minus 90 days |
+| `pages_usage_daily` | Day x principal x surface x driver x action; `count`, `distinct_pages` | Same 90-day boundary |
+| `pages_usage_weekly` | Monday UTC week; active people, readers, writers, agent people/actions, collaborative Pages; no principals or Page ids | Indefinite |
+
+An admitted browser session qualifies after 30 seconds total, even while idle
+or crossing midnight. Its first visit belongs to the UTC day the 30-second mark
+is reached; a still-connected qualified session counts once on each later UTC
+day. Non-owners emit `page.read`, owners `page.visit`. Daily counts
+union principal x Page x day across reconnects, never count `sync.open/close`.
+The host emits `page.write` and `comment.write` after browser change admission,
+once per session x action x UTC day; daily rollups union those too. Both native
+and plain sync are covered, including comments. Host-authored tool edits do not
+emit browser write signals. Writers are browser `page.create/page.write`, not
+comments or agent edits. Agent actions are non-Browser `tool.call` attempts,
+including failures; query the daily rows for actions per person. Successful
+actions count active people, so an agent-only week is active. A collaborative
+Page has successful activity from two distinct principals during the week,
+including qualified visits, writes, comments and agent tool calls.
+
+The cron rebuilds completed days and weekly unions from available raw events,
+then purges in one fenced transaction. Reruns and missed days are safe. Weekly
+totals freeze when their source week crosses the purge boundary; current-week
+totals are provisional through `through_day`. Missed cron runs delay rollup and
+purge, not event collection, until the next successful cron. Retention describes
+queryable rows, not deletion from celld's historical storage epochs or backups.
+
+Writes are best-effort: 512 queued/in-flight rows per binding per isolate,
+batches of 64, a 25 ms write-behind window, and a five-second request hold.
+No request or document save waits for usage I/O. Failures/overflow log a generic
+drop count, with no event payload, including losses reported on stalled flushes.
+A hung D1 call keeps its permit for a 60-second grace period after timeout.
+Then a subsequent flush abandons the permit and allows fresh work, even if the
+old request's continuation was canceled. At most one call is abandoned per
+timeout-plus-grace window; late completions cannot release a newer permit.
+Ambiguous batches are never retried. Restart can lose queued events.
+Rollback builds ignore the separate database; restoring their configuration
+also removes the cron, pausing both collection and purge without changing Pages.
+A prolonged rollback requires an operator-run purge to maintain the retention
+boundary; this PR performs no host operations.
+
+Query an operator-provided, consistent SQLite snapshot, never an incomplete LTX
+cache file or a writable production database. For example:
+
+```sh
+sqlite3 -readonly /path/to/pages-usage.sqlite \
+  "SELECT * FROM pages_usage_weekly ORDER BY week DESC LIMIT 12;"
+sqlite3 -readonly /path/to/pages-usage.sqlite \
+  "SELECT principal, driver, SUM(count) AS agent_actions FROM pages_usage_daily WHERE day >= '2026-11-02' AND day < '2026-11-09' AND driver <> 'Browser' AND action = 'tool.call' GROUP BY principal, driver;"
+```
+
 ## Catalog index
 
 Each account's `Catalog` Durable Object remains its discovery list: `page/<id>`

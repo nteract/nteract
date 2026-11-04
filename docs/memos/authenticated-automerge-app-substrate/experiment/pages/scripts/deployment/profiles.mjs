@@ -61,6 +61,15 @@ export const AUTH_D1 = Object.freeze({
   cell: "__D1Database:c131e246b9200ef544cc9ae3b62b2878a6704bda1361a6c675d1f0fad09da941",
 });
 
+// celld creates this database on first use within each target's fleet prefix.
+// Auth/catalog storage and usage history have independent identities.
+export const USAGE_D1 = Object.freeze({
+  binding: "PAGES_USAGE",
+  database_name: "pages-usage",
+  database_id: "pages-usage",
+});
+export const USAGE_CRON = "5 0 * * *";
+
 const shared = {
   host: "lab1",
   bucket: "nteract-celld-lab-621741996708",

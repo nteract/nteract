@@ -40,7 +40,7 @@ import {
   detachLegacyComments,
   needsCommentsMigration,
 } from "../model/comments-migration.mjs";
-import { CommentAdmission } from "./comment-admission.mjs";
+import { CommentAdmission, recordFrame } from "./comment-admission.mjs";
 import { commentsDocUuid, commentsDocumentId, commentsTreeOf } from "./comments-store.mjs";
 import {
   conversionFenceError,
@@ -63,6 +63,8 @@ import {
   usageDropped,
   usageOperation,
 } from "./usage.mjs";
+import { flushUsage, runUsageMaintenance } from "./usage-store.mjs";
+import { BrowserWrites, UsageSession } from "./usage-session.mjs";
 import {
   RENAMED_TOOLS,
   invalidArguments,
@@ -997,7 +999,7 @@ const USAGE_OPERATIONS = new Set([...operations, ...Object.values(RENAMED_TOOLS)
  * read) on `surface` once its response is known. `seen` collects the identity
  * the caller authenticated. A create_page that created a Page also records
  * page.create with its id; a replayed receipt records only the call. */
-function toolUsage(request, surface, operation, args, kind = "tool") {
+function toolUsage(request, surface, operation, args, kind = "tool", env) {
   const started = Date.now();
   const seen = {};
   const labels = requestClient(request);
@@ -1020,19 +1022,25 @@ function toolUsage(request, surface, operation, args, kind = "tool") {
           outcome: response.ok ? "ok" : `http_${response.status}`,
           latencyMs: Date.now() - started,
         };
-        logUsage({
-          action: "tool.call",
-          ...common,
-          bytes: length || undefined,
-        });
+        logUsage(
+          {
+            action: "tool.call",
+            ...common,
+            bytes: length || undefined,
+          },
+          env,
+        );
         if (name === "create_page" && response.ok && !replayed) {
           const body = await response.clone().json();
-          logUsage({
-            action: "page.create",
-            ...common,
-            pageId: body?.page_id,
-            projectId: body?.project_id ?? common.projectId,
-          });
+          logUsage(
+            {
+              action: "page.create",
+              ...common,
+              pageId: body?.page_id,
+              projectId: body?.project_id ?? common.projectId,
+            },
+            env,
+          );
         }
       } catch {
         // Usage telemetry never fails the request.
@@ -1044,10 +1052,17 @@ function toolUsage(request, surface, operation, args, kind = "tool") {
 }
 
 export default {
-  async fetch(request, env) {
+  async fetch(request, env, ctx) {
     // celld answers a stub fetch to a saturated object itself, with a plain
     // 503; the gateway is the first code that can name it (host-busy.mjs).
-    return advertiseBuild(request, await gateway.fetch(request, legibleEnv(env)));
+    try {
+      return advertiseBuild(request, await gateway.fetch(request, legibleEnv(env)));
+    } finally {
+      flushUsage(env, ctx);
+    }
+  },
+  async scheduled(_controller, env) {
+    await runUsageMaintenance(env);
   },
 };
 
@@ -1138,7 +1153,7 @@ const gateway = {
         return await handleMcp(
           request,
           async (operation, args, { kind = "tool" } = {}) => {
-            const usage = toolUsage(request, "mcp", operation, args, kind);
+            const usage = toolUsage(request, "mcp", operation, args, kind, env);
             // A refusal before invoke() authenticates still names the caller.
             usage.seen.identity = identity;
             let response;
@@ -1159,17 +1174,20 @@ const gateway = {
             onInitialize: (params) => {
               const declared = declaredLabels(request);
               const mcpClient = mcpClientLabel(params.clientInfo);
-              logUsage({
-                action: "mcp.initialize",
-                surface: "mcp",
-                identity,
-                labels: {
-                  ...declared,
-                  ...(!declared.client && mcpClient && { client: mcpClient }),
-                  ...(mcpClient && { mcp_client: mcpClient }),
+              logUsage(
+                {
+                  action: "mcp.initialize",
+                  surface: "mcp",
+                  identity,
+                  labels: {
+                    ...declared,
+                    ...(!declared.client && mcpClient && { client: mcpClient }),
+                    ...(mcpClient && { mcp_client: mcpClient }),
+                  },
+                  protocolVersion: params.protocolVersion,
                 },
-                protocolVersion: params.protocolVersion,
-              });
+                env,
+              );
             },
           },
         );
@@ -1201,25 +1219,28 @@ const gateway = {
         // The browser creates a Page by registering it; a retry that replays
         // the stored receipt created nothing.
         if (response.ok && !replayed)
-          logUsage({
-            action: "page.create",
-            surface: "browser-sync",
-            identity,
-            labels: requestClient(request),
-            operation: "register_page",
-            pageId: args?.page_id,
-            status: response.status,
-            outcome: "ok",
-            latencyMs: Date.now() - started,
-          });
+          logUsage(
+            {
+              action: "page.create",
+              surface: "browser-sync",
+              identity,
+              labels: requestClient(request),
+              operation: "register_page",
+              pageId: args?.page_id,
+              status: response.status,
+              outcome: "ok",
+              latencyMs: Date.now() - started,
+            },
+            env,
+          );
         return response;
       }
       if (url.pathname === "/api/tools" && request.method === "POST") {
         let response;
-        let usage = toolUsage(request, "http-tools");
+        let usage = toolUsage(request, "http-tools", undefined, undefined, "tool", env);
         try {
           const body = await readJson(request);
-          usage = toolUsage(request, "http-tools", body?.operation, body?.arguments);
+          usage = toolUsage(request, "http-tools", body?.operation, body?.arguments, "tool", env);
           response = await invokeProjectApi(
             (internal, internalArgs) => invoke(request, env, internal, internalArgs, usage.seen),
             body.operation,
@@ -4363,6 +4384,7 @@ export class Page {
       onCompactionFailed: (_doc, error) => logFailure(error, "plain-compaction"),
       // PlainSync already published the delta to the Page's readers.
       onActors: () => {},
+      onWrite: (conn, doc) => this.browserWrite(conn, conn.identity, doc.kind),
       // A browser receives host messages once it has joined the Page document.
       onJoined: (_conn, doc) => {
         if (doc.kind !== "page") return;
@@ -4466,12 +4488,37 @@ export class Page {
    * through ActorPersistence, which retries a failed write until it lands. */
   recordSaved(actorAuthorship, key, value, persistence = this.actorPersistence) {
     persistence?.nudge();
+    // The native save has passed signature, ACL and comment admission. Its
+    // serving handle has not received the change yet; known heads are replays.
+    try {
+      const frame = recordFrame(key, value, BACKEND_LIMITS.maxRecordBytes);
+      const session = frame && this.policy?.sessions.get(frame.issuer);
+      const tree = frame?.tree;
+      const scope =
+        tree && this.policy.scopeOf(tree.endsWith("0".repeat(32)) ? tree.slice(0, 32) : tree);
+      const handle = scope === COMMENTS_SCOPE ? this.commentsHandle : this.handle;
+      if (session && handle) {
+        const hashes =
+          frame.kind === "commit"
+            ? [key.split("/").at(-1)]
+            : A.readBundle(frame.blob).changes.map((change) => change.hash);
+        if (hashes.some((hash) => !A.hasHeads(handle.doc(), [hash])))
+          this.browserWrite(session, session.identity, scope);
+      }
+    } catch {
+      /* Usage reporting never fails a record save. */
+    }
     const author = commitAuthor(key, value, BACKEND_LIMITS.maxRecordBytes);
     if (!author) return;
     const effects = actorAuthorship.observe({ ...author, now: Date.now() });
     if (effects.put.length || effects.remove.length) persistence?.enqueue(effects);
     if (effects.delta || effects.attested)
       this.queueActorDelta(effects.delta ?? {}, effects.attested ?? {});
+  }
+
+  browserWrite(session, identity, kind) {
+    this.browserWrites ??= new BrowserWrites();
+    this.browserWrites.admitted(session, identity, kind, this.metadata?.pageId, this.env);
   }
 
   /** Coalesce actor deltas into one broadcast per microtask, so a batch of
@@ -5262,6 +5309,7 @@ export class Page {
       // This request is live: content effects deferred from the repository's
       // loop, or a coalesced time whose timer never fired, run now.
       this.contentActivity?.pump();
+      flushUsage(this.env, this.ctx);
       // Host-only routes for the owner's Catalog. The gateway never forwards
       // /internal/* paths, so only the host namespace reaches them.
       if (url.pathname === "/internal/lifecycle-state") {
@@ -5663,6 +5711,7 @@ export class Page {
       // waited for a peer's heads) was observed by now, and its flush runs
       // on this request's hold.
       this.contentActivity?.pump();
+      flushUsage(this.env, this.ctx);
     }
   }
 
@@ -6541,14 +6590,24 @@ export class Page {
     // addConnection, or refused with its reason. Only an admitted session
     // records sync.close, with its duration.
     const syncStarted = Date.now();
+    const usageSession = new UsageSession({
+      ...syncUsage,
+      owner: this.metadata.owner,
+      env: this.env,
+      ctx: this.ctx,
+    });
     let syncAdmittedAt;
     wire.onDisconnect(() => {
+      usageSession.event("close");
       if (syncAdmittedAt !== undefined)
-        logUsage({
-          action: "sync.close",
-          ...syncUsage,
-          latencyMs: Date.now() - syncAdmittedAt,
-        });
+        logUsage(
+          {
+            action: "sync.close",
+            ...syncUsage,
+            latencyMs: Date.now() - syncAdmittedAt,
+          },
+          this.env,
+        );
     });
     this.wires.add(wire);
     this.reportActivity();
@@ -6652,13 +6711,17 @@ export class Page {
             );
           }
           syncAdmittedAt = Date.now();
-          logUsage({
-            action: "sync.open",
-            ...syncUsage,
-            admitted: true,
-            outcome: "ok",
-            latencyMs: syncAdmittedAt - syncStarted,
-          });
+          usageSession.event("admit");
+          logUsage(
+            {
+              action: "sync.open",
+              ...syncUsage,
+              admitted: true,
+              outcome: "ok",
+              latencyMs: syncAdmittedAt - syncStarted,
+            },
+            this.env,
+          );
           this.broadcastProfiles();
           this.broadcastActivity();
           this.broadcastActorSnapshot();
@@ -6668,16 +6731,23 @@ export class Page {
         // Native callbacks retain this request's I/O context. Keep it alive
         // while the resident socket can trigger authorization and storage work,
         // and run content effects for the edits it brings (watchContent).
-        await Promise.all([disconnected, this.contentActivity?.serve(disconnected)]);
+        await Promise.all([
+          disconnected,
+          this.contentActivity?.serve(disconnected),
+          usageSession.serve(disconnected),
+        ]);
       })().catch((error) => {
         if (syncAdmittedAt === undefined)
-          logUsage({
-            action: "sync.open",
-            ...syncUsage,
-            admitted: false,
-            outcome: admissionReason(error),
-            latencyMs: Date.now() - syncStarted,
-          });
+          logUsage(
+            {
+              action: "sync.open",
+              ...syncUsage,
+              admitted: false,
+              outcome: admissionReason(error),
+              latencyMs: Date.now() - syncStarted,
+            },
+            this.env,
+          );
         if (error !== refusal) logAdmissionDenied(error, { stage: "native", identity });
         if (admissionReason(error) === "server_error") logFailure(error, "native-admission");
         void close(error);
@@ -6712,13 +6782,16 @@ export class Page {
       });
     } catch (error) {
       logAdmissionDenied(error, { stage: "native", identity });
-      logUsage({
-        action: "sync.open",
-        ...syncUsage,
-        admitted: false,
-        outcome: admissionReason(error),
-        latencyMs: 0,
-      });
+      logUsage(
+        {
+          action: "sync.open",
+          ...syncUsage,
+          admitted: false,
+          outcome: admissionReason(error),
+          latencyMs: 0,
+        },
+        this.env,
+      );
       try {
         socket.close(admissionCloseCode(error), admissionCode(error));
       } catch {
@@ -6770,7 +6843,15 @@ export class Page {
       })().catch((error) => wire.disconnect(admissionCloseCode(error), admissionCode(error)));
     }, 15_000);
     const disconnected = new Promise((resolve) => conn.transport.onClose(resolve));
+    const usageSession = new UsageSession({
+      ...syncUsage,
+      owner: this.metadata.owner,
+      env: this.env,
+      ctx: this.ctx,
+    });
+    usageSession.event("admit");
     conn.transport.onClose(() => {
+      usageSession.event("close");
       clearTimeout(expiry);
       clearInterval(renewal);
       this.wires.delete(wire);
@@ -6778,23 +6859,35 @@ export class Page {
       this.wirePrincipals.delete(wire);
       this.activity?.prune();
       this.broadcastProfiles();
-      logUsage({
-        action: "sync.close",
+      logUsage(
+        {
+          action: "sync.close",
+          ...syncUsage,
+          latencyMs: Date.now() - started,
+        },
+        this.env,
+      );
+    });
+    logUsage(
+      {
+        action: "sync.open",
         ...syncUsage,
+        admitted: true,
+        outcome: "ok",
         latencyMs: Date.now() - started,
-      });
-    });
-    logUsage({
-      action: "sync.open",
-      ...syncUsage,
-      admitted: true,
-      outcome: "ok",
-      latencyMs: Date.now() - started,
-    });
+      },
+      this.env,
+    );
     this.broadcastProfiles();
     this.broadcastActivity();
     this.broadcastActorSnapshot();
-    this.ctx.waitUntil(Promise.all([disconnected, this.contentActivity?.serve(disconnected)]));
+    this.ctx.waitUntil(
+      Promise.all([
+        disconnected,
+        this.contentActivity?.serve(disconnected),
+        usageSession.serve(disconnected),
+      ]),
+    );
     return new Response(null, { status: 101, webSocket: client });
   }
 }
