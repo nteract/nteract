@@ -216,6 +216,15 @@ import {
 import { PAGE_CARD_KEY, PageCardWriter } from "./page-card-writer.mjs";
 import { allowedPageCards, parsePageCardIds, readPageCards } from "./page-cards.mjs";
 import {
+  CardImageGuard,
+  authorizeCardImageUpload,
+  cardImageRefusal,
+  deleteCardImages,
+  handleCardImage,
+  cardImageView,
+  readCardImagePointer,
+} from "./card-images.mjs";
+import {
   CatalogIndexUnavailable,
   SHORT_CURSOR_MAX_LENGTH,
   catalogIndexDatabase,
@@ -746,6 +755,19 @@ function authorizeImage(request, env, pageId, write) {
   return env.PAGES.getByName(pageId).fetch(internal);
 }
 
+/** The Page host's card image upload check (card-images.mjs). Like
+ * authorizeImage, a short host-created request; the bytes stay here. */
+function authorizeCardImage(request, env, pageId, { hash, theme }) {
+  const internal = forwarded(request, "/internal/card-image/authorize", {
+    page_id: pageId,
+    hash,
+    theme,
+  });
+  if (!internal.headers.has("origin"))
+    internal.headers.set("origin", new URL(env.NOTEBOOK_CLOUD_PUBLIC_ORIGIN || request.url).origin);
+  return env.PAGES.getByName(pageId).fetch(internal);
+}
+
 /** Catalog operations that apply the account's Page limit, or report it. */
 const QUOTA_OPERATIONS = new Set([
   "list_pages",
@@ -883,6 +905,7 @@ async function pageCards(request, env, identity, args) {
       const object = await bucket.get(key);
       return object ? await object.text() : null;
     },
+    readImage: async (id) => cardImageView(id, await readCardImagePointer(bucket, id)),
     onError: (error) => logFailure(error, "page-cards"),
   });
   return json({ cards, principal: decided.body.principal ?? identity.principal });
@@ -1263,6 +1286,18 @@ const gateway = {
             authorize: (write) => authorizeImage(request, env, pageId, write),
           }),
         );
+      }
+      const cardImageRoute = url.pathname.match(
+        /^\/api\/pages\/([^/]+)\/card-image(?:\/([^/]+))?$/,
+      );
+      if (cardImageRoute) {
+        const [, pageId, file] = cardImageRoute;
+        return await handleCardImage(request, env, {
+          pageId,
+          file,
+          authorizeUpload: (args) => authorizeCardImage(request, env, pageId, args),
+          authorizeRead: () => authorizeImage(request, env, pageId, false),
+        });
       }
       if (url.pathname === "/api/access") {
         await authenticate(request, env);
@@ -3728,16 +3763,20 @@ export class Page {
     });
   }
 
-  /** Remove this Page's card object, under a short deadline so bucket
-   * trouble never holds a purge or tombstone. Best-effort: page_cards serves
-   * a card only to a caller its Catalog check admits, and a deleted Page
-   * admits no one, so a missed delete leaves an orphan no one reads. */
+  /** Remove this Page's card object and card images (card-images.mjs),
+   * under a short deadline so bucket trouble never holds a purge or
+   * tombstone. Best-effort: page_cards serves a card only to a caller its
+   * Catalog check admits, and a deleted Page admits no one, so a missed
+   * delete leaves an orphan no one reads. */
   async deleteCard() {
     const pageId = this.metadata?.pageId ?? this.ctx.id?.name;
     if (!this.env.PAGES_ASSETS || !validPageId(pageId)) return;
     try {
       await withTimeout(
-        this.env.PAGES_ASSETS.delete(cardKey(pageId)),
+        Promise.all([
+          this.env.PAGES_ASSETS.delete(cardKey(pageId)),
+          deleteCardImages(this.env.PAGES_ASSETS, pageId),
+        ]),
         PAGE_CARD_DELETE_TIMEOUT_MS,
         "Page card delete timed out",
       );
@@ -5460,6 +5499,29 @@ export class Page {
         // in text, and can't attach images until that quota exists.
         this.policy.account(identity, args.write);
         return json({ page_id: this.metadata.pageId });
+      }
+      if (url.pathname === "/internal/card-image/authorize") {
+        // The owner's grid card image (card-images.mjs): this host's policy
+        // and its loaded document decide, never D1.
+        try {
+          const accepted = await authorizeCardImageUpload({
+            args: await readJson(request),
+            pageId: this.metadata.pageId,
+            owner: this.metadata.owner,
+            identity,
+            account: () => this.policy.account(identity, true),
+            currentHash: async () =>
+              this.handle ? (await pageCard(this.handle.doc())).card_hash : null,
+            guard: (this.cardImageGuard ??= new CardImageGuard()),
+          });
+          // The JSON card the grid compares against catches up from this
+          // live request, so a Page untouched since cards shipped gets both.
+          this.pageCard?.request();
+          this.pageCard?.pump();
+          return json(accepted);
+        } catch (error) {
+          return cardImageRefusal(error, "card-image");
+        }
       }
       if (url.pathname === "/internal/catalog") {
         // A loaded host's first check reports this Page's current row and
