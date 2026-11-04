@@ -1235,6 +1235,38 @@ test("a Browse walk answered for another account says to retry once the session 
   await settle();
 });
 
+test("a Browse walk's session check that answers counts, even when the Projects request after it fails", async (t) => {
+  cleanUp(t);
+  history.replaceState(null, "", "/");
+  // The session keeps saying this account. Once the picker opens, every
+  // list_projects fails on the server.
+  const server = { projectsFail: false };
+  const app = await boot(signedIn, {
+    ...catalog,
+    list_pages: (args) => ({
+      pages: [{ page_id: ROADMAP, title: args.limit === 100 ? "Bob's" : "Roadmap" }],
+      next_cursor: null,
+      principal: args.limit === 100 ? "bob" : "one",
+    }),
+    list_projects: () =>
+      server.projectsFail
+        ? Response.json({ error: "Service unavailable" }, { status: 500 })
+        : { projects: [], next_cursor: null, principal: "one" },
+  });
+  await settle();
+  server.projectsFail = true;
+  const from = app.requests.length;
+  await click(document.querySelector('button[aria-label="Browse, switch page"]'));
+  for (let i = 0; i < 6; i++) await settle();
+  assert.ok(listings(app.requests, from).list_projects >= 1, "the check asked for the Projects");
+  assert.equal(
+    document.querySelector("dialog.page-picker .picker-error")?.textContent,
+    SAME_ACCOUNT_MESSAGE,
+  );
+  await click(document.querySelector('button[aria-label="Close Pages"]'));
+  await settle();
+});
+
 test("a Browse walk answered for another account says so when the session check fails", async (t) => {
   cleanUp(t);
   history.replaceState(null, "", "/");
