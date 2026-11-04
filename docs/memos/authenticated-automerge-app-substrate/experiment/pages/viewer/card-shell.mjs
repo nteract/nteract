@@ -39,13 +39,15 @@ const TRANSPARENT =
   "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=";
 
 // Card mode: no diagram or zoom controls, no scrollbars, no motion. The
-// shell's background is the grid card's.
+// shell paints the grid card's background (`--card`) where the Page paints
+// its own (`--surface`), so an image matches the JSON card it replaces.
 const CARD_CSS = `
+:root { --surface: var(--card); --canvas: var(--card); }
 html, body { margin: 0; background: var(--card); }
 .card-shell { box-sizing: border-box; width: ${CARD_WIDTH}px; height: ${CARD_HEIGHT}px;
   max-width: none; margin: 0; padding: 22px 30px; overflow: hidden; background: var(--card);
   color: var(--foreground); }
-.card-shell article { max-width: none; margin: 0; padding: 0; }
+.card-shell article { max-width: none; margin: 0; padding: 0; background: transparent; }
 .card-shell .page-block { margin: 0; }
 .card-shell .wordgard-diagram-actions, .card-shell .pele-zoom,
 .card-shell .wordgard-code-actions, .card-shell .wg-code-language { display: none !important; }
