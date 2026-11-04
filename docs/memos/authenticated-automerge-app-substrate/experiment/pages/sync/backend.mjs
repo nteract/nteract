@@ -404,6 +404,9 @@ export class AutomergeSyncBackend {
     }
     if (frame.t === "refused") {
       if (frame.r !== undefined && frame.r === tree.sync.inflight) tree.sync.inflight = null;
+      // A refusal is not an Automerge ack. Reset send suppression so the next
+      // round can offer the refused history again.
+      tree.sync.state = A.initSyncState();
       // Always retryable for Repo: a fatal refusal also closes the socket, and
       // the app decides from the close code whether to reconnect. A
       // non-retryable failure would leave the handle unavailable after one.
