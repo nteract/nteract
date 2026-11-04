@@ -98,6 +98,7 @@ export async function documentMutation({
   apply,
   flush,
   admission,
+  hostActorPrefix,
   // The host's own migration: its key is in the reserved internal key space,
   // with its own journal capacity (operation-journal.mjs).
   internal = false,
@@ -177,7 +178,16 @@ export async function documentMutation({
       ? { ...args, operations: guarded.operations }
       : (guardedArgs ?? args);
     let result, after;
-    const candidate = A.clone(before);
+    // Each host mutation has a fresh actor so concurrent producers can build
+    // candidates from the same heads without reusing an (actor, seq). SyncHost
+    // refuses host-prefixed actors from browsers, without a per-edit claim.
+    const actor =
+      hostActorPrefix &&
+      hostActorPrefix +
+        Array.from(crypto.getRandomValues(new Uint8Array(8)), (byte) =>
+          byte.toString(16).padStart(2, "0"),
+        ).join("");
+    const candidate = A.clone(before, actor ? { actor } : undefined);
     // No await between the head guard and immutable edit construction.
     try {
       after = A.change(candidate, (doc) => {

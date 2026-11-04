@@ -6,3 +6,7 @@
  * Adding a mode here declares that the Worker reads it; removing one breaks
  * every Page created with it. */
 export const RECORD_STORAGE_MODES = Object.freeze(["local", "buffered", "automerge"]);
+
+/** Plain history format and admission capabilities this build implements.
+ * Deployment requires these for every target that may hold plain Pages. */
+export const PLAIN_STORAGE_FORMATS = Object.freeze(["doc-store-v2-host-actor-prefix"]);

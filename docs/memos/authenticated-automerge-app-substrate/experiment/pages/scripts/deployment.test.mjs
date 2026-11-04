@@ -330,6 +330,7 @@ test("release staging copies only built artifacts, never development credentials
 const DEPLOYED = "c0ffee0123456789";
 // What a build receipt lists as `record_storage` since the list exists.
 const CURRENT_RECORD_STORAGE = ["local", "buffered", "automerge"];
+const CURRENT_PLAIN_STORAGE_FORMATS = ["doc-store-v2-host-actor-prefix"];
 function installFixture(
   t,
   {
@@ -354,7 +355,11 @@ function installFixture(
     // A fake clock that `sleep` advances, for adoption timeouts.
     clock,
     // The staged release's build receipt. The default is a current build.
-    buildReceipt = { build_id: "0123456789ab", record_storage: CURRENT_RECORD_STORAGE },
+    buildReceipt = {
+      build_id: "0123456789ab",
+      record_storage: CURRENT_RECORD_STORAGE,
+      plain_storage_formats: CURRENT_PLAIN_STORAGE_FORMATS,
+    },
   } = {},
 ) {
   const root = mkdtempSync(path.join(tmpdir(), "pages-install-retry-"));
@@ -2062,7 +2067,11 @@ test("a node that never adopts fails the install after the local record", (t) =>
 // hold. A build from before `record_storage` was recorded opens none beyond the
 // native modes.
 const PRE_PLAIN = { source_sha: "d".repeat(40), build_id: "9ae4ed83e44e" };
-const PLAIN = { ...PRE_PLAIN, record_storage: CURRENT_RECORD_STORAGE };
+const PLAIN = {
+  ...PRE_PLAIN,
+  record_storage: CURRENT_RECORD_STORAGE,
+  plain_storage_formats: CURRENT_PLAIN_STORAGE_FORMATS,
+};
 
 test("a release without plain storage is refused for a target that has enabled it", () => {
   for (const receipt of [PRE_PLAIN, { ...PRE_PLAIN, record_storage: ["local", "buffered"] }])
@@ -2080,6 +2089,35 @@ test("a release without plain storage is refused for a target that has enabled i
 
 test("a release that declares plain storage qualifies for a target that has enabled it", () => {
   assert.doesNotThrow(() => profiles.assertReleaseOpensTargetPages("page10", PLAIN));
+});
+
+test("plain targets refuse receipts that know automerge but not the current plain format", () => {
+  for (const formats of [undefined, [], ["v1"]]) {
+    const receipt = { ...PLAIN, plain_storage_formats: formats };
+    assert.throws(
+      () => profiles.assertReleaseOpensTargetPages("page10", receipt),
+      /plain_storage_formats.*doc-store-v2-host-actor-prefix/,
+    );
+    assert.doesNotThrow(() => profiles.assertReleaseOpensTargetPages("pages", receipt));
+    assert.throws(
+      () =>
+        profiles.assertReleaseOpensTargetPages("pages", receipt, [
+          { mode: "automerge", release: "old" },
+        ]),
+      /plain_storage_formats/,
+    );
+  }
+});
+
+test("install refuses an old plain format before any write", (t) => {
+  const f = installFixture(t, {
+    target: "page10",
+    buildReceipt: { ...PLAIN, plain_storage_formats: undefined },
+  });
+  assert.throws(f.execute, /plain_storage_formats/);
+  assert.ok(f.calls.every(({ args }) => args[0] === "--version"));
+  assert.equal(fs.existsSync(f.local(f.release)), false);
+  assert.equal(fs.existsSync(f.local(f.audit)), false);
 });
 
 test("a target that never enabled plain storage accepts a release without it", () => {
@@ -2120,6 +2158,14 @@ test("the build receipt lists every record storage mode the Worker opens", async
   assert.deepEqual([...RECORD_STORAGE_MODES], CURRENT_RECORD_STORAGE);
   const source = fs.readFileSync(new URL("./source-fingerprint.mjs", import.meta.url), "utf8");
   assert.match(source, /record_storage: \[\.\.\.RECORD_STORAGE_MODES\]/);
+  const { PLAIN_STORAGE_FORMATS } = await import("../shared/record-storage.mjs");
+  assert.deepEqual(PLAIN_STORAGE_FORMATS, CURRENT_PLAIN_STORAGE_FORMATS);
+  assert.match(source, /plain_storage_formats: \[\.\.\.PLAIN_STORAGE_FORMATS\]/);
+  for (const entry of ["deploy.mjs", "deployment/install.mjs", "rollback-qualification.mjs"])
+    assert.match(
+      fs.readFileSync(new URL(entry, import.meta.url), "utf8"),
+      /assertReleaseOpensTargetPages\(/,
+    );
   const worker = fs.readFileSync(new URL("../worker/index.mjs", import.meta.url), "utf8");
   assert.match(worker, /!RECORD_STORAGE_MODES\.includes\(metadata\.recordStorage\)/);
 });
@@ -2153,17 +2199,23 @@ test("a host release configured with plain storage blocks a release without it",
   assert.equal(fs.existsSync(f.local(f.release)), false);
 });
 
-test("a timeout does not name a rollback to a release without plain storage", (t) => {
+test("a timeout does not name a rollback to a release without the plain format capability", (t) => {
   const clock = { now: 1_000_000 };
   const f = liveFixture(t, {
     clock,
     health: () =>
       JSON.stringify({ ok: true, prototype: "pages-celld-native", build: "0123456789ab" }),
   });
-  // The previous deployment predates record_storage in build receipts.
+  // The previous deployment knows automerge but not its current storage format.
   const earlier = f.audit + "/manifest.json";
   const recorded = JSON.parse(f.read(earlier));
-  f.write(earlier, JSON.stringify({ ...recorded, build_receipt: { build_id: "0123456789ab" } }));
+  f.write(
+    earlier,
+    JSON.stringify({
+      ...recorded,
+      build_receipt: { build_id: "0123456789ab", record_storage: CURRENT_RECORD_STORAGE },
+    }),
+  );
   nextRelease(f);
   let message = "";
   try {
@@ -2178,4 +2230,5 @@ test("a timeout does not name a rollback to a release without plain storage", (t
   );
   assert.match(message, /Refusing release a{12} \(build 0123456789ab\) for page10: /);
   assert.doesNotMatch(message, /Roll back with/);
+  assert.match(message, /plain_storage_formats/);
 });

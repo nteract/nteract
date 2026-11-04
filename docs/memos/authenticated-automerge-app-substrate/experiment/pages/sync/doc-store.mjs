@@ -1,10 +1,12 @@
 import { cbor } from "@automerge/automerge-repo";
 
 // Snapshot plus incremental chunks per document, over a byte store with
-// `load`, `saveMany` (all entries or none), `remove` and `list`. The browser
+// `load`, `saveMany` (ordered batches), `remove` and `list`. The browser
 // uses IndexedDB (idb-byte-store.mjs); the host uses its Durable Object storage.
 //
-//   sync/<doc>/m                manifest { seq, format, snapshot, chunks[], heads }
+//   sync/<doc>/m2               manifest { version: 2, seq, format, snapshot, heads }
+//   sync/<doc>/m                legacy manifest, read only until upgraded
+//   sync/<doc>/c/<seq>          chunk descriptor { seq, parts, bytes }
 //   sync/<doc>/o/<seq>/<part>   object written by manifest seq, in parts
 //   sync/<doc>/s                the browser's encoded sync state with the host
 //
@@ -12,23 +14,26 @@ import { cbor } from "@automerge/automerge-repo";
 // commits with it (the host's actor claims), and the manifest last. A store
 // that splits a large saveMany still writes the manifest after its objects, so
 // a manifest never names a missing object. Object keys carry the seq that
-// wrote them and are never reused, so reclaiming a replaced manifest's objects
-// can't delete anything a newer manifest names.
+// wrote them. Only unpublished seqs may be retried; reclaiming a replaced
+// manifest's objects can't delete anything a newer manifest names. Descriptors
+// are live only between snapshot.seq (exclusive) and manifest.seq (inclusive).
+// A crash before the manifest leaves only orphaned parts/descriptors.
 //
 // Callers serialize writes per document. The manifest cache is the source of
 // truth between writes; `open` loads it.
 
 export const OBJECT_PART_BYTES = 1024 * 1024;
 export const COMPACT_MIN_BYTES = 64 * 1024;
-// Every append rewrites the manifest, which lists each chunk, and a cold load
-// reads each chunk separately; keystroke-sized chunks reach this long before
-// the byte rule.
+// Bound cold-load reads; keystroke-sized chunks reach this before the byte rule.
 export const COMPACT_MAX_CHUNKS = 256;
 
-const manifestKey = (id) => `sync/${id}/m`;
+const manifestKey = (id) => `sync/${id}/m2`;
+const legacyManifestKey = (id) => `sync/${id}/m`;
 const objectKey = (id, seq, part) => `sync/${id}/o/${seq}/${part}`;
+const chunkKey = (id, seq) => `sync/${id}/c/${seq}`;
 const syncStateKey = (id) => `sync/${id}/s`;
 const EMPTY = Object.freeze({
+  version: 2,
   seq: 0,
   format: "automerge",
   snapshot: null,
@@ -54,7 +59,9 @@ export class DocStore {
   /** Document ids with a stored manifest. Loads every manifest. */
   async ids() {
     const keys = await this.#bytes.list("sync/");
-    const ids = keys.filter((k) => k.endsWith("/m")).map((k) => k.slice(5, -2));
+    const ids = [
+      ...new Set(keys.filter((k) => /\/m2?$/.test(k)).map((k) => k.slice(5, k.lastIndexOf("/")))),
+    ];
     await Promise.all(ids.map((id) => this.open(id)));
     return ids.filter((id) => this.#manifests.get(id));
   }
@@ -62,8 +69,23 @@ export class DocStore {
   /** The stored manifest, or null. Cached after the first call. */
   async open(id) {
     if (this.#manifests.has(id)) return this.#manifests.get(id);
-    const bytes = await this.#bytes.load(manifestKey(id));
+    const bytes =
+      (await this.#bytes.load(manifestKey(id))) ?? (await this.#bytes.load(legacyManifestKey(id)));
     const manifest = bytes ? normalize(cbor.decode(bytes)) : null;
+    if (manifest?.version === 2) {
+      // Every committed seq after the snapshot is an append. Read that exact
+      // range, not a prefix listing that could include an interrupted append.
+      manifest.chunks = await Promise.all(
+        Array.from({ length: manifest.seq - (manifest.snapshot?.seq ?? 0) }, async (_, i) => {
+          const seq = (manifest.snapshot?.seq ?? 0) + i + 1;
+          const bytes = await this.#bytes.load(chunkKey(id, seq));
+          if (!bytes) throw new Error(`Missing stored chunk descriptor ${id}/${seq}`);
+          const chunk = cbor.decode(bytes);
+          if (chunk.seq !== seq) throw new Error(`Invalid stored chunk descriptor ${id}/${seq}`);
+          return chunk;
+        }),
+      );
+    }
     if (!this.#manifests.has(id)) this.#manifests.set(id, manifest);
     return this.#manifests.get(id);
   }
@@ -99,7 +121,11 @@ export class DocStore {
       chunks: [...m.chunks, object],
       heads: [...heads],
     };
-    await this.#commit(id, next, [...this.#parts(id, seq, chunk), ...extra]);
+    await this.#commit(id, next, [
+      ...this.#parts(id, seq, chunk),
+      ...(m.version === 2 ? [[chunkKey(id, seq), cbor.encode(object)]] : []),
+      ...extra,
+    ]);
     return next;
   }
 
@@ -108,8 +134,7 @@ export class DocStore {
    * snapshot and over the floor. Compaction rewrites the whole document, so
    * the byte threshold grows with it: each rewrite follows at least half a
    * snapshot of new history, and a small document waits for the floor rather
-   * than rewriting on every write. The chunk count bounds the manifest each
-   * append rewrites and the reads a cold load makes.
+   * than rewriting on every write. The chunk count bounds cold-load reads.
    */
   wantsCompaction(id) {
     const m = this.#manifests.get(id);
@@ -125,6 +150,7 @@ export class DocStore {
     const seq = m.seq + 1;
     const snapshot = { seq, parts: partCount(save), bytes: save.byteLength };
     const next = {
+      version: 2,
       seq,
       format: "automerge",
       snapshot,
@@ -133,6 +159,7 @@ export class DocStore {
     };
     await this.#commit(id, next, [...this.#parts(id, seq, save), ...extra]);
     await this.#reclaim(id, [m.snapshot, ...m.chunks].filter(Boolean));
+    await this.#reclaimChunks(id, next);
     return next;
   }
 
@@ -140,10 +167,13 @@ export class DocStore {
   async remove(id) {
     const m = await this.open(id);
     if (!m) return;
+    // Remove the fallback first; a crash must never expose a stale legacy doc.
+    await this.#bytes.remove(legacyManifestKey(id));
     await this.#bytes.remove(manifestKey(id));
     this.#manifests.set(id, null);
     await this.#bytes.remove(syncStateKey(id));
     await this.#reclaim(id, [m.snapshot, ...m.chunks].filter(Boolean));
+    await this.#reclaimChunks(id, m);
   }
 
   async syncState(id) {
@@ -155,8 +185,27 @@ export class DocStore {
   }
 
   async #commit(id, next, entries) {
-    await this.#bytes.saveMany([...entries, [manifestKey(id), cbor.encode(next)]]);
+    // Legacy manifests retain their inline chunks until the next compaction.
+    // The v2 cache has the same shape for callers, but disk metadata is O(1)
+    // in chunk count (heads still scale with concurrent writers).
+    const { chunks: _chunks, ...manifest } = next;
+    try {
+      await this.#bytes.saveMany([
+        ...entries,
+        [manifestKey(id), cbor.encode(next.version === 2 ? manifest : next)],
+      ]);
+    } catch (error) {
+      // A rejected put may have committed. Reload before allocating a seq so
+      // a retry cannot overwrite objects the durable manifest already names.
+      this.#manifests.delete(id);
+      await this.open(id).catch(() => {});
+      throw error;
+    }
     this.#manifests.set(id, next);
+    // An old viewer must not read v2 as an empty chunk list and rewrite it as
+    // v1. Publish only at m2; remove the old viewer's key after that commit.
+    if (await this.#bytes.load(legacyManifestKey(id)))
+      await this.#bytes.remove(legacyManifestKey(id));
   }
 
   *#parts(id, seq, bytes) {
@@ -183,6 +232,12 @@ export class DocStore {
     for (const object of objects)
       for (let part = 0; part < object.parts; part++)
         await this.#bytes.remove(objectKey(id, object.seq, part));
+  }
+
+  async #reclaimChunks(id, manifest) {
+    const prefix = `sync/${id}/c/`;
+    for (const key of await this.#bytes.list(prefix))
+      if (Number(key.slice(prefix.length)) <= manifest.seq) await this.#bytes.remove(key);
   }
 }
 
@@ -234,7 +289,10 @@ function partCount(bytes) {
 }
 
 function normalize(m) {
+  if (m.version !== undefined && m.version !== 2)
+    throw new Error(`Unsupported manifest version ${m.version}`);
   return {
+    ...(m.version === 2 && { version: 2 }),
     seq: m.seq,
     format: m.format ?? "automerge",
     snapshot: m.snapshot ?? null,

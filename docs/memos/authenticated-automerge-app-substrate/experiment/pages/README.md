@@ -1619,12 +1619,18 @@ manifest per document ([sync/doc-store.mjs](sync/doc-store.mjs)): IndexedDB in
 the browser ([sync/idb-byte-store.mjs](sync/idb-byte-store.mjs)) and the Page's
 Durable Object storage under `plain/` on the host. Every write is one
 `saveMany` that puts the manifest last, so a manifest never names a missing
-object. A document compacts into one snapshot once it has more than 256
-chunks, or its chunks are over both half the snapshot and 64 KiB. The byte
+object. Manifests are written only at `sync/<doc>/m2`, preferred over legacy
+`m` on read. The legacy key is removed after the new manifest is durable, so
+an old viewer cannot misread v2. Version 2 manifests hold seq, snapshot and heads; chunk descriptors
+have separate keys, read from snapshot.seq + 1 through manifest.seq. An append
+writes constant metadata in chunk count. Legacy inline chunk lists remain
+readable and upgrade on the next compaction. A document compacts into one
+snapshot once it has more than 256 chunks, or its chunks are over both half
+the snapshot and 64 KiB. The byte
 rule means a rewrite of a large Page follows at least half its size in new
-history; the count bounds the manifest each append rewrites and the reads a
-cold load makes. The host compacts after the ack. A failed attempt is logged
-(`request.failed`, stage `plain-compaction`) and later writes back off: each
+history; the count bounds the reads a cold load makes. The host compacts after
+the ack. A failed attempt is logged (`request.failed`, stage `plain-compaction`)
+and later writes back off: each
 failure in a row doubles the writes that skip compaction, up to 256
 ([sync/compaction-machine.mjs](sync/compaction-machine.mjs)).
 
@@ -1663,6 +1669,15 @@ the closed connection has no frame left running, so a frame refused after the
 close counts too. Each connection also logs `page.sync_rounds`, its sync-round
 latency from frame arrival to ack, summarised every 256 rounds and at close rather
 than per keystroke ([worker/plain-sync-log.mjs](worker/plain-sync-log.mjs)).
+
+Journaled host edits use a fresh actor per mutation: the Page host's persisted
+random eight-byte prefix followed by eight random bytes. Concurrent producers
+can build candidates from the same heads without sharing an actor sequence.
+SyncHost refuses new changes from browsers under this prefix, including actors
+it has never seen; trusted host changes need no per-edit claim. Existing host
+claims remain readable. Chunk parts, the descriptor, any browser claims and
+the manifest share one DO put for ordinary appends; the journal's pending and
+terminal writes remain separate barriers.
 
 Attribution is host-attested: an actor binds to the first authenticated
 principal that sends a change with it. With no signatures, the host can't tell

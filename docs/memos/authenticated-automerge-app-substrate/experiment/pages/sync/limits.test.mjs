@@ -191,7 +191,11 @@ test("a replacement from policy.admit is adopted; the preview it replaced, and a
   editor.link.client.send({ t: "sync", doc: id, m: syncHello([A.getLastLocalChange(two)]), r: 2 });
   await until(() => editor.frames.length === 2);
   assert.equal(editor.frames[1].code, "io");
-  assert.equal(h.stats.freed - freed, 2, "the preview and its unstored replacement");
+  assert.equal(
+    h.stats.freed - freed,
+    3,
+    "the preview, its unstored replacement and the invalidated live doc",
+  );
   assert.throws(() => A.getHeads(replacement));
   assert.equal((await h.document(id)).n, 1);
 });

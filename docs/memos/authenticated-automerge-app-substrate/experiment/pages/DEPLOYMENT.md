@@ -370,6 +370,17 @@ Each build receipt lists the modes its Worker opens as `record_storage`
 receipt without the list counts as opening only the native modes, which
 covers every build before the list existed, including a2c9d5dde and #4770.
 
+Plain targets also require `plain_storage_formats` to include
+`doc-store-v2-host-actor-prefix`, from the same shared module. This capability
+covers DocStore v2 and host actor namespace admission. A missing list, even
+with `automerge` in `record_storage`, is refused by every entrypoint below.
+Older builds can discard incremental history or admit forged host actors.
+
+DocStore writes manifests only at `sync/<doc>/m2`. New readers prefer `m2`
+over legacy `m`; the legacy key is removed only after `m2` is durable. Old
+viewer bundles sharing IndexedDB see no manifest for upgraded documents and
+must resync, rather than interpreting a v2 manifest as a v1 document.
+
 A target may hold a mode when `RECORD_STORAGE_HISTORY` in
 `scripts/deployment/profiles.mjs` lists it, its profile sets `recordStorage`,
 or a release installed on the host was configured with that
@@ -393,7 +404,8 @@ release and the reason, by:
 There is no override. A direct `celld deploy` of a release directory bypasses
 every check. Page10 holds `automerge` Pages, so it can't roll back past
 a2c9d5dde, and can't install a2c9d5dde or #4770 through deploy.mjs either,
-because their receipts predate the list.
+because their receipts predate the list. Builds listing `automerge` but lacking
+`doc-store-v2-host-actor-prefix` are also unsafe and refused.
 
 ### Projects and their storage identity
 
