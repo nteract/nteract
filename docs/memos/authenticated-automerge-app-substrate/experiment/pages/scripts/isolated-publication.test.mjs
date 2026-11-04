@@ -2156,7 +2156,7 @@ for (const target of ["page10", "pages"]) {
   });
 }
 
-test("unitActive is true only for exit 0 and `active`; any other exit means not active", () => {
+test("unitActive is true only for exit 0 and `active`; exits 3 and 4 mean not active", () => {
   const exits = (status, stdout) => () =>
     runCommand("sh", ["-c", `echo ${stdout}; exit ${status}`]);
   assert.equal(unitActive("x.service", exits(0, "active")), true);
@@ -2171,6 +2171,13 @@ test("unitActive is true only for exit 0 and `active`; any other exit means not 
   assert.equal(
     unitActive("x.service", () => execFileSync("sh", ["-c", "echo inactive; exit 3"])),
     false,
+  );
+  // Exit 1 is systemctl's own failure (a bus error, an invalid unit name),
+  // not a unit state.
+  assert.throws(() => unitActive("x.service", exits(1, "")), /failed \(status 1\)/);
+  assert.throws(
+    () => unitActive("x.service", () => execFileSync("sh", ["-c", "exit 1"], { stdio: "pipe" })),
+    (error) => error.status === 1,
   );
   // systemctl that can't run at all is not a unit state.
   assert.throws(

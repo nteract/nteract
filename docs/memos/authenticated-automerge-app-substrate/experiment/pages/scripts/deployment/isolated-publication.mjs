@@ -141,13 +141,14 @@ export function runCommand(command, args) {
 
 // `systemctl is-active` prints the unit's state and exits 0 only for
 // `active`: 3 for inactive or failed, 4 for a unit systemd doesn't know.
-// Any non-zero exit means not active. An error without an exit status
-// (systemctl couldn't run) still throws.
+// Those two exits mean not active. Any other failure, such as exit 1 for a
+// bus error or an invalid unit name, or no exit status because systemctl
+// couldn't run, says nothing about the unit and throws.
 export function unitActive(service, run = runCommand) {
   try {
     return run("systemctl", ["is-active", service]) === "active";
   } catch (error) {
-    if (Number.isInteger(error?.status) && error.status !== 0) return false;
+    if (error?.status === 3 || error?.status === 4) return false;
     throw error;
   }
 }
