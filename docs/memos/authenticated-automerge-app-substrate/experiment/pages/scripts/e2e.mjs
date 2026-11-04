@@ -394,7 +394,10 @@ const maxFlaky = envInteger("PAGES_E2E_MAX_FLAKY", 1, SUITES.length);
 // whole list in summary.json, and a row in the GitHub step summary.
 const stepSummary = process.env.GITHUB_STEP_SUMMARY;
 const summarize = (text) => (stepSummary ? appendFile(stepSummary, text) : undefined);
-await summarize("### Pages browser E2E\n\n| Suite | Result | Seconds |\n| --- | --- | --- |\n");
+const syncMode = process.env.PAGES_RECORD_STORAGE === "automerge" ? " (plain Automerge sync)" : "";
+await summarize(
+  `### Pages browser E2E${syncMode}\n\n| Suite | Result | Seconds |\n| --- | --- | --- |\n`,
+);
 const results = [];
 for (const suite of selected) {
   if (interrupted) break;
@@ -423,7 +426,7 @@ for (const suite of selected) {
   await summarize(`| ${result.name} | ${label} | ${result.seconds.toFixed(1)} |\n`);
 }
 
-console.log("\nPages E2E summary");
+console.log(`\nPages E2E summary${syncMode}`);
 for (const { name, result, seconds } of results)
   console.log(`  ${result.toUpperCase().padEnd(5)} ${name.padEnd(16)} ${seconds.toFixed(1)}s`);
 const failed = results.filter((result) => result.result === "fail");

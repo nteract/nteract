@@ -122,6 +122,7 @@ try {
       PAGES_EDITOR: "wordgard",
       PAGES_ASYNC_PERSISTENCE: "true",
       PAGES_COMPACT_RECORDS: "true",
+      PAGES_RECORD_STORAGE: process.env.PAGES_RECORD_STORAGE ?? "",
       PAGES_CATALOG_INDEX: "1",
       NOTEBOOK_CLOUD_APP_SESSION_SECRET: randomBytes(32).toString("hex"),
       NOTEBOOK_CLOUD_LOCAL_OIDC: "true",
