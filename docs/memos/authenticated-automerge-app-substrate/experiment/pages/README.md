@@ -2263,7 +2263,9 @@ account only. Closing it aborts the request in flight, whose answer, a 401
 included, then counts for nothing. A sign-out or account change closes it; a
 401 drops its rows and leaves it open saying why, until the session check
 closes it or the person reopens it. Neither walks again, so a 401 can't start
-another walk. A walk whose pages name different accounts rechecks the session.
+another walk. A walk answered for another account, or whose pages name
+different accounts, rechecks the session; when that recovery ends with the
+same account, the picker says to reopen it and try again.
 A Project's home Page lists its Project with `project_id`. An open Page
 asks `read_page` where it is until it is found: it asks again each time a Page
 created in this tab registers or the session reconnects, and a transient

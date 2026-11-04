@@ -388,6 +388,10 @@ const gatedCatalog = (
 });
 const rows = () =>
   [...document.querySelectorAll(".index-row-link")].map((link) => link.textContent);
+/** The start of what `selector` matches, or null. Assert on this, not on the
+ * element: a failing assertion holding a jsdom node makes the test runner
+ * serialize the whole DOM, which hangs the file instead of naming the test. */
+const markup = (selector) => document.querySelector(selector)?.outerHTML.slice(0, 200) ?? null;
 const click = (element) =>
   act(() => {
     element.dispatchEvent(
@@ -441,7 +445,7 @@ test("Back and Forward over a grouping ask for nothing", async () => {
   history.back();
   await settle();
   assert.equal(location.pathname + location.search, "/");
-  assert.equal(document.querySelector(".library-group"), null);
+  assert.equal(markup(".library-group"), null);
   history.forward();
   await settle();
   assert.equal(location.pathname + location.search, "/?group=project");
@@ -465,7 +469,7 @@ test("Back from a Page paints the library from memory and lists it once", async 
   await click(row);
   await settle();
   assert.equal(location.pathname, `/p/${ROADMAP}`);
-  assert.equal(document.querySelector(".library-view"), null, "the library left the screen");
+  assert.equal(markup(".library-view"), null, "the library left the screen");
   const from = app.requests.length;
   let release;
   gate.promise = new Promise((resolve) => (release = resolve));
@@ -473,7 +477,7 @@ test("Back from a Page paints the library from memory and lists it once", async 
   await settle();
   assert.equal(location.pathname + location.search, "/pages");
   assert.deepEqual(rows(), ["Roadmap"], "the rows paint before list_pages answers");
-  assert.equal(document.querySelector(".index-status[role=status]"), null, "no Loading…");
+  assert.equal(markup(".index-status[role=status]"), null, "no Loading…");
   release();
   await settle();
   assert.deepEqual(rows(), ["Roadmap"]);
@@ -594,7 +598,7 @@ test("navigating away and back to the Page doesn't bring the boot preview back",
 // account's Projects) and the edits that change it, through the real shell.
 const { BehaviorSubject } = await import("rxjs");
 const { RECOVERY_RERUNS } = await import("./signed-out-recovery.mjs");
-const { SIGNED_OUT_MESSAGE } = await import("./picker-walk.mjs");
+const { SAME_ACCOUNT_MESSAGE, SIGNED_OUT_MESSAGE } = await import("./picker-walk.mjs");
 const { createElement } = await import("react");
 const PLAN = "2b160b47-6df1-4983-81eb-489ca5a26812";
 const PROJECT = "prj_3b160b47-6df1-4983-81eb-489ca5a26812";
@@ -683,7 +687,7 @@ const leaveForPage = async (pageId) => {
   history.pushState(null, "", `/p/${pageId}`);
   await act(() => window.dispatchEvent(new window.PopStateEvent("popstate")));
   await settle();
-  assert.equal(document.querySelector(".library-view"), null, "the library left the screen");
+  assert.equal(markup(".library-view"), null, "the library left the screen");
 };
 const closed = () => {
   const gate = {};
@@ -865,7 +869,7 @@ test("Back and Forward between library addresses close the Browse picker", async
   await settle();
   assert.equal(location.pathname + location.search, "/");
   assert.equal(browse.getAttribute("aria-expanded"), "false");
-  assert.equal(document.querySelector("dialog.page-picker[open]"), null);
+  assert.equal(markup("dialog.page-picker[open]"), null);
 });
 
 test("a Page created in this tab finds its place once it registers", async (t) => {
@@ -895,7 +899,7 @@ test("a Page created in this tab finds its place once it registers", async (t) =
   assert.equal(location.pathname, `/p/${PLAN}`);
   assert.ok(await until(() => pageAction("Move to…")), "Move to… is offered");
   assert.equal(toolCalls(app, "read_page"), 1, "asked once, and refused");
-  assert.equal(document.querySelector(".breadcrumbs"), null);
+  assert.equal(markup(".breadcrumbs"), null);
   await click(pageAction("Move to…"));
   await settle();
   assert.match(document.body.textContent, /Wait for this Page to sync before moving it\./);
@@ -1179,7 +1183,7 @@ test("a 401 with the Browse picker open stops, says why while signed in, and clo
       `${label}: ${made.list_projects} list_projects`,
     );
     if (signsOut) {
-      assert.equal(document.querySelector("dialog.page-picker[open]"), null, `${label}: closed`);
+      assert.equal(markup("dialog.page-picker[open]"), null, `${label}: closed`);
       assert.equal(document.querySelector("h1")?.textContent, "A place to write together.");
     } else {
       // Still signed in: the picker stays open, lists nothing and says why.
@@ -1193,6 +1197,41 @@ test("a 401 with the Browse picker open stops, says why while signed in, and clo
       await settle();
     }
   }
+});
+
+test("a Browse walk answered for another account says to retry once the session is the same", async (t) => {
+  cleanUp(t);
+  history.replaceState(null, "", "/");
+  // The library's own first page answers for this account; every walk of the
+  // picker answers for Bob, while the session check keeps saying this account.
+  const app = await boot(signedIn, {
+    ...catalog,
+    list_pages: (args) => ({
+      pages: [{ page_id: ROADMAP, title: args.limit === 100 ? "Bob's" : "Roadmap" }],
+      next_cursor: null,
+      principal: args.limit === 100 ? "bob" : "one",
+    }),
+  });
+  await settle();
+  const from = app.requests.length;
+  const sessions = sessionRequests(app);
+  await click(document.querySelector('button[aria-label="Browse, switch page"]'));
+  for (let i = 0; i < 6; i++) await settle();
+  const error = () => document.querySelector("dialog.page-picker .picker-error")?.textContent;
+  assert.ok(markup("dialog.page-picker[open]"), "the picker stays open");
+  assert.equal(error(), SAME_ACCOUNT_MESSAGE);
+  assert.equal(document.querySelectorAll("dialog.page-picker .picker-page").length, 0);
+  assert.equal(listings(app.requests, from).list_pages, 1, "one walk, and no other");
+  assert.ok(sessionRequests(app) > sessions, "the session was checked");
+  // Reopening is the retry: one more walk.
+  await click(document.querySelector('button[aria-label="Close Pages"]'));
+  await settle();
+  await click(document.querySelector('button[aria-label="Browse, switch page"]'));
+  for (let i = 0; i < 6; i++) await settle();
+  assert.equal(listings(app.requests, from).list_pages, 2);
+  assert.equal(error(), SAME_ACCOUNT_MESSAGE);
+  await click(document.querySelector('button[aria-label="Close Pages"]'));
+  await settle();
 });
 
 test("a 401 during recovery still ends with the account's Projects shown", async (t) => {
@@ -1270,11 +1309,11 @@ test("Move to… opens nothing if the account changed while read_page was asked"
     breadcrumbs: [{ kind: "project", project_id: PROJECT, title: "Launch" }],
   });
   for (let i = 0; i < 10; i++) await new Promise((resolve) => setTimeout(resolve, 10));
-  const dialog = document.querySelector(".move-dialog");
+  const dialog = markup(".move-dialog");
   // A dialog opened by mistake is closed first, so its loads can't keep the
   // file running past the failure.
-  if (dialog) await click(dialog.querySelector(`button[aria-label^="Close"]`));
+  if (dialog) await click(document.querySelector(`.move-dialog button[aria-label^="Close"]`));
   assert.equal(dialog, null, "no dialog for Bob");
   assert.match(document.body.textContent, /Sign in with this Page's original account to move it\./);
-  assert.equal(document.querySelector(".breadcrumbs"), null, "nor the answer's location");
+  assert.equal(markup(".breadcrumbs"), null, "nor the answer's location");
 });

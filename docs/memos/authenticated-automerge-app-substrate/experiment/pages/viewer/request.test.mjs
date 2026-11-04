@@ -463,3 +463,27 @@ test("a tool call its caller cancelled never counts as signed out", async (t) =>
   await assert.rejects(plain, { status: 401 });
   assert.deepEqual(seen, ["unauthenticated"]);
 });
+
+test("a 401 whose call an observer cancelled first tells the observers only once", async (t) => {
+  // Two calls are refused at once: the library's, and a walk's under its own
+  // signal. The first refusal's observer cancels the walk, as the shell's
+  // Browse picker does, after the walk's 401 already arrived. That 401 must
+  // not reach the observers a second time.
+  t.mock.method(globalThis, "fetch", async () =>
+    Response.json({ error: "Sign in required", code: "unauthenticated" }, { status: 401 }),
+  );
+  const walk = new AbortController();
+  const seen = [];
+  const stop = observeSignedOut((error) => {
+    seen.push(error.code);
+    walk.abort(new DOMException("Closed", "AbortError"));
+  });
+  t.after(stop);
+  const library = tool("list_pages");
+  const walking = tool("list_pages", { limit: 100 }, { signal: walk.signal });
+  await assert.rejects(library, { status: 401 });
+  // The walk's answer arrived before the cancel, so it still rejects with it.
+  await assert.rejects(walking, { status: 401 });
+  assert.equal(walk.signal.aborted, true);
+  assert.deepEqual(seen, ["unauthenticated"], "one refusal reached the observers");
+});

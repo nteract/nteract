@@ -9,8 +9,10 @@
  * cancels the walk and drops its rows. A refusal leaves the picker open with
  * a message while the session check decides who is signed in: the shell
  * closes it if the account changed or signed out, and otherwise it stays
- * open saying why its rows went. Nothing but `open` ever starts a walk, so a
- * walk that fails, a 401 included, can't start another.
+ * open saying why its rows went. A walk answered for another account waits
+ * on the same check in `checking`; once the check settles with the picker's
+ * account still signed in, it says to try again. Nothing but `open` ever
+ * starts a walk, so a walk that fails, a 401 included, can't start another.
  *
  * States:
  * - closed: nothing shows and nothing is in flight.
@@ -19,23 +21,29 @@
  * - refreshing: like loading, while the library's remembered first page
  *   (listing-cache.mjs, within its age limit) shows.
  * - ready: the walk's rows show.
- * - failed: the walk failed, or a tool call was refused as signed out, with
- *   `message`; no rows from the server show.
+ * - checking: the walk was answered for another account, and the session
+ *   check it asked for hasn't settled; no rows from the server show.
+ * - failed: the walk failed, a tool call was refused as signed out, or a
+ *   session check found the same account, with `message`; no rows from the
+ *   server show.
  *
  * Events:
  * - open: show the picker for `principal` (never null) and walk under `key`.
  *   `seeded` says the cache holds the library's first page for the account.
- * - loaded / failed: the walk under `key` settled. A key that no longer
- *   matches belongs to a walk this machine already cancelled.
+ * - loaded / failed / foreign: the walk under `key` settled, failed, or was
+ *   answered for another account. A key that no longer matches belongs to a
+ *   walk this machine already cancelled.
  * - close: the person closed the picker, or the shell navigated.
  * - forget: the shell forgot the account's data.
  * - refused: a tool call was refused as signed out (request.mjs
  *   observeSignedOut). The rows go, and the picker says so.
+ * - settled: the session check finished with `principal` signed in. The same
+ *   account means the walk can be retried; another closes the picker.
  *
  * Effects: `fetch` walks under `key` for `principal`; `paint` shows the
  * remembered first page; `show` shows the settled walk's rows; `clear` drops
  * every row; `cancel` aborts the walk in flight; `report` hands a failure to
- * the picker's error line.
+ * the picker's error line; `recheck` asks the shell to check the session.
  */
 import { defineMachine, reject } from "../shared/machine.mjs";
 import { failureMessage } from "./alerts.mjs";
@@ -59,14 +67,17 @@ const event = (...keys) => shape("type", keys);
 
 export const pickerWalkSpec = Object.freeze({
   name: "picker-walk",
-  states: ["closed", "loading", "refreshing", "ready", "failed"],
-  events: ["open", "loaded", "failed", "close", "forget", "refused"],
+  states: ["closed", "loading", "refreshing", "ready", "checking", "failed"],
+  events: ["open", "loaded", "failed", "foreign", "close", "forget", "refused", "settled"],
   cases: {
     "closed/open": ["fresh", "seeded"],
     "loading/loaded": ["current", "stale"],
     "loading/failed": ["current", "stale"],
+    "loading/foreign": ["current", "stale"],
     "refreshing/loaded": ["current", "stale"],
     "refreshing/failed": ["current", "stale"],
+    "refreshing/foreign": ["current", "stale"],
+    "checking/settled": ["same", "changed"],
   },
   validate: {
     states: {
@@ -74,15 +85,18 @@ export const pickerWalkSpec = Object.freeze({
       loading: state("principal", "key"),
       refreshing: state("principal", "key"),
       ready: state("principal"),
+      checking: state("principal"),
       failed: state("principal", "message"),
     },
     events: {
       open: event("principal", "key", "seeded"),
       loaded: event("key"),
       failed: event("key", "message"),
+      foreign: event("key"),
       close: event(),
       forget: event(),
       refused: event(),
+      settled: event("principal"),
     },
     effects: {
       fetch: event("key", "principal"),
@@ -91,6 +105,7 @@ export const pickerWalkSpec = Object.freeze({
       clear: event(),
       cancel: event(),
       report: event("message"),
+      recheck: event(),
     },
   },
 });
@@ -100,12 +115,22 @@ export const REJECT = Object.freeze({
   closed: "The picker is closed",
   idle: "No walk is in flight",
   stale: "A walk this picker cancelled",
+  unchecked: "The picker isn't waiting on a session check",
 });
 
 /** What the picker says once a tool call was refused as signed out. The
  * shell closes it if the session check then finds another account or none. */
 export const SIGNED_OUT_MESSAGE =
   "The server asked this tab to sign in again, so this list was cleared. Close Pages and open it again to retry.";
+
+/** What the picker says when a walk was answered for another account, while
+ * the session check runs. */
+export const OTHER_ACCOUNT_MESSAGE =
+  "This tab's account changed in another window. Checking who is signed in…";
+
+/** What the picker says once that check found the same account. */
+export const SAME_ACCOUNT_MESSAGE =
+  "This tab is still signed in to the same account. Close Pages and open it again to retry.";
 
 const walking = (current) => current.name === "loading" || current.name === "refreshing";
 const CLOSE = Object.freeze([{ type: "cancel" }, { type: "clear" }]);
@@ -138,12 +163,30 @@ function transition(current, input) {
       effects: [...CLOSE, { type: "report", message: SIGNED_OUT_MESSAGE }],
     };
   }
+  if (input.type === "settled") {
+    if (current.name !== "checking") return reject(current, REJECT.unchecked);
+    if (input.principal !== current.principal)
+      return { state: { name: "closed" }, effects: [...CLOSE] };
+    return {
+      state: { name: "failed", principal: current.principal, message: SAME_ACCOUNT_MESSAGE },
+      effects: [{ type: "report", message: SAME_ACCOUNT_MESSAGE }],
+    };
+  }
   if (!walking(current)) return reject(current, REJECT.idle);
   if (input.key !== current.key) return reject(current, REJECT.stale);
   if (input.type === "loaded")
     return {
       state: { name: "ready", principal: current.principal },
       effects: [{ type: "show", key: input.key }],
+    };
+  if (input.type === "foreign")
+    return {
+      state: { name: "checking", principal: current.principal },
+      effects: [
+        { type: "clear" },
+        { type: "report", message: OTHER_ACCOUNT_MESSAGE },
+        { type: "recheck" },
+      ],
     };
   return {
     state: { name: "failed", principal: current.principal, message: input.message },
@@ -157,10 +200,6 @@ export const pickerWalkMachine = defineMachine({
   transition,
 });
 
-/** What the picker says when a walk was answered for another account. */
-export const OTHER_ACCOUNT_MESSAGE =
-  "This tab's account changed in another window. Checking who is signed in…";
-
 const CLOSED = Object.freeze({ state: pickerWalkMachine.initial, items: Object.freeze([]) });
 
 /**
@@ -172,7 +211,7 @@ const CLOSED = Object.freeze({ state: pickerWalkMachine.initial, items: Object.f
  * - report(message): the picker's error line.
  * - onOtherAccount(): a walk was answered for another account, or its pages
  *   named different accounts (page-list.mjs ACCOUNT_CHANGED); the shell
- *   rechecks the session.
+ *   rechecks the session, and calls settled() once that check is done.
  *
  * A walk's answer shows only when it names the picker's account, or names no
  * account (an older API): the same rule as the library listing, which shows
@@ -219,6 +258,12 @@ export class PickerWalk {
   refused() {
     return this.#dispatch({ type: "refused" });
   }
+  /** The session check finished with `principal` signed in. A picker waiting
+   * on it says to try again, or closes if the account changed. */
+  settled(principal) {
+    if (!text(principal)) return false;
+    return this.#dispatch({ type: "settled", principal });
+  }
   #dispatch(input) {
     const result = pickerWalkMachine.step(this.state, input);
     if (result.rejected) return false;
@@ -250,6 +295,8 @@ export class PickerWalk {
         return;
       case "report":
         return this.#report(effect.message);
+      case "recheck":
+        return this.#onOtherAccount();
     }
     throw new Error(`unknown effect ${effect.type}`);
   }
@@ -271,8 +318,7 @@ export class PickerWalk {
         if (signal.aborted) return;
         settled();
         if (answer?.principal && answer.principal !== principal) {
-          this.#dispatch({ type: "failed", key, message: OTHER_ACCOUNT_MESSAGE });
-          this.#onOtherAccount();
+          this.#dispatch({ type: "foreign", key });
           return;
         }
         this.#answer = answer;
@@ -282,8 +328,7 @@ export class PickerWalk {
         if (signal.aborted) return;
         settled();
         if (error?.code === ACCOUNT_CHANGED) {
-          this.#dispatch({ type: "failed", key, message: OTHER_ACCOUNT_MESSAGE });
-          this.#onOtherAccount();
+          this.#dispatch({ type: "foreign", key });
           return;
         }
         this.#dispatch({ type: "failed", key, message: failureMessage(error) });
