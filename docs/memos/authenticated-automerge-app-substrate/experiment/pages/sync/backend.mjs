@@ -213,22 +213,28 @@ export class AutomergeSyncBackend {
     tree.mirror = next;
     const added = A.getChangesSince(next, before);
     const pending = A.getMissingDeps(next, []).length > 0;
-    if (added.length) this.#announce(tree, staged);
-    if (added.length || pending) {
-      const chunk = concat(fresh.map((r) => r.blob));
-      await this.#enqueue(tree, () => this.#persist(tree, chunk));
-    } else if (tree.failure) {
-      await this.#enqueue(tree, async () => {});
-    }
-    if (added.length) {
-      tree.dirty = true;
-      // Held until the app's scheduler starts the round, so a run of stores
-      // goes out in one message even while a round is in flight.
-      tree.held = true;
-      this.#opts.scheduleLocalSync(id, () => {
-        tree.held = false;
-        this.#kick(tree, false);
-      });
+    // The mirror already contains these edits. Hold reply follow-ups across
+    // persistence too, until the app's scheduler can start their batch.
+    if (added.length) tree.held = true;
+    try {
+      if (added.length) this.#announce(tree, staged);
+      if (added.length || pending) {
+        const chunk = concat(fresh.map((r) => r.blob));
+        await this.#enqueue(tree, () => this.#persist(tree, chunk));
+      } else if (tree.failure) {
+        await this.#enqueue(tree, async () => {});
+      }
+    } finally {
+      if (added.length) {
+        tree.dirty = true;
+        // Even a rejected store must release its hold through the scheduler:
+        // a duplicate-record retry repairs persistence without adding edits.
+        tree.held = true;
+        this.#opts.scheduleLocalSync(id, () => {
+          tree.held = false;
+          this.#kick(tree, false);
+        });
+      }
     }
   }
 
