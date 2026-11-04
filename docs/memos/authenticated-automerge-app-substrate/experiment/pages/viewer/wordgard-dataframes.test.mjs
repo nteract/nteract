@@ -13,6 +13,7 @@ const {
 } = await import("./wordgard-dataframes.mjs");
 const { dataframeTableMachine } = await import("./dataframe-table-machine.mjs");
 const { loadTable, runTable } = await import("../shared/machine-test.mjs");
+const { VirtualTimeScheduler } = await import("rxjs");
 const src = `/api/pages/33333333-3333-4333-8333-333333333333/assets/${"e".repeat(64)}`;
 
 function withDocument(run) {
@@ -46,6 +47,19 @@ test("a titled dataframe is named and captioned by its title, as text", () =>
     assert.equal(load, DATAFRAME_RENDERERS[PARQUET_MEDIA_TYPE]);
   }));
 
+test("a table's status starts as its waiting text, over the canvas", () =>
+  withDocument(() => {
+    const { dom, status, canvas } = dataframeFrame({ src, media_type: PARQUET_MEDIA_TYPE });
+    // The lifecycle's first status is the same text, so connecting changes
+    // nothing a live region would announce.
+    assert.equal(status.textContent, DATAFRAME_STATUS.waiting);
+    assert.equal(status.getAttribute("role"), "status");
+    // Both live in one body, the status after the canvas, so CSS can lay it
+    // over the canvas and hiding it moves nothing.
+    const body = dom.querySelector(".wordgard-dataframe-body");
+    assert.deepEqual([...body.children], [canvas, status]);
+  }));
+
 test('an untitled dataframe is named and captioned "Table", muted', () =>
   withDocument(() => {
     const { dom } = dataframeFrame({ src, media_type: PARQUET_MEDIA_TYPE, title: null });
@@ -72,32 +86,20 @@ const deferred = () => {
 // Lets settled promises run their callbacks.
 const flush = () => new Promise((resolve) => setImmediate(resolve));
 
-/** Virtual timers: `advance(ms)` fires every timer due by then, in order. */
+/** RxJS virtual time: `advance(ms)` runs every action due by then, in order. */
 function virtualTimers() {
-  let now = 0,
-    next = 1;
-  const pending = new Map();
+  const scheduler = new VirtualTimeScheduler();
+  let now = 0;
   return {
-    set(run, ms) {
-      pending.set(next, { at: now + ms, run });
-      return next++;
-    },
-    clear: (id) => pending.delete(id),
+    scheduler,
     advance(ms) {
-      const until = now + ms;
-      for (;;) {
-        const due = [...pending.entries()]
-          .filter(([, timer]) => timer.at <= until)
-          .sort(([, a], [, b]) => a.at - b.at)[0];
-        if (!due) break;
-        pending.delete(due[0]);
-        now = due[1].at;
-        due[1].run();
-      }
-      now = until;
+      now += ms;
+      scheduler.maxFrames = now;
+      scheduler.flush();
+      scheduler.frame = now;
     },
     get armed() {
-      return pending.size;
+      return scheduler.actions.filter((action) => !action.closed).length;
     },
   };
 }
@@ -120,7 +122,7 @@ function lifecycleFixture() {
     attrs: { src },
     delay: DELAY,
     park: PARK,
-    timers,
+    scheduler: timers.scheduler,
     observe: (_element, callback) => {
       watch.callback = callback;
       watch.watching++;

@@ -386,7 +386,10 @@ references; it does not publish the Page or change asset access.
   ([`viewer/sift-table.jsx`](viewer/sift-table.jsx)), loaded with its
   stylesheet and WASM only when a Page shows one, and only once that table
   comes within 600 px of the viewport; until then it says it loads when you
-  scroll to it. Printing starts every table loading. A loaded table stays
+  scroll to it, in a status line laid over the canvas so nothing moves when the
+  table draws. Printing starts every table loading, but loads are async, so a
+  print made at once still shows that text for tables not yet drawn. Enter on a
+  selected table focuses its grid, and does nothing before the grid loads. A loaded table stays
   loaded offscreen, keeping the reader's sort and filters. The lifecycle is
   [`viewer/dataframe-table-machine.mjs`](viewer/dataframe-table-machine.mjs). Dropping or pasting a
   `.parquet` file uploads it and inserts the node at the cursor, undoably.
