@@ -767,9 +767,11 @@ restart repair what an older build missed.
 A listing checks each shared candidate with its Page host (`/internal/catalog`),
 up to 16 at a time (`sharedCheckBounds`); each finished check starts the next,
 and one check gets 3 s. A failed check stops new ones and fails the listing
-once the checks already running settle, so none outlives the request. The
-same check confirms a shared parent before a listing of its children, and
-names the ancestors in `read_page` breadcrumbs.
+once the checks already running settle. A check that times out settles then,
+but its Page host's request isn't cancelled: cancelling a Durable Object
+request strands the work it started (request-hold.mjs). The same check
+confirms a shared parent before a listing of its children, and names the
+ancestors in `read_page` breadcrumbs.
 
 A Page host doesn't boot its repo to answer one
 ([page-startup.mjs](worker/page-startup.mjs)). Booting costs about 130 ms cold:
@@ -783,15 +785,30 @@ The check needs only the host record and a title, so the constructor reads
 | `metadata` | a record this build can answer from: no creation intent, a comments document name, a storage mode the boot accepts | answers from the record | boots, then runs |
 | `booting` | the constructor boots at once (a creation intent or an older record), or a request started the boot | waits for it | waits for it |
 | `ready` | the boot finished, or there was nothing to boot | answers from the loaded document, as before | runs |
-| `failed` | the boot threw | gets that error | gets that error |
+| `failed` | the boot threw; the runtime is resetting the object | answers from the record | gets that error |
 
 The repo boots at most once per object; every request that needs the
 document waits on the same boot, and nothing reads the document before it
-finishes. A failed boot fails every later request until the object is
-replaced, as a failed constructor boot did. The boot runs in the context of
-the request that started it, which awaits it and holds it, so the repository's
-loop keeps that request's context, as it kept the constructor's (see the
-celld notes below).
+finishes. Both boots run inside `blockConcurrencyWhile`: the constructor's
+own, or one the request that needs the document opens. That keeps the
+runtime's rules for a boot. Other requests wait until it ends, it gets 30 s,
+and a throw resets the object, so the next request reaches a new object that
+starts from storage again. A transient failure, such as a PageRecords read
+that times out with `record_persistence_timeout`, fails only the requests the
+boot held. A failed boot is never remembered past its object.
+
+On celld 0.6.3 ([celld-boot-probe.mjs](scripts/celld-boot-probe.mjs)):
+
+- `blockConcurrencyWhile` works from a request.
+- A throw inside it resets the object. The failing request gets the error,
+  a request queued behind the boot gets a 500, and the next request reaches a
+  new object, whose boot succeeds.
+- A boot that runs 35 s is ended at 30 s, and the object is reset.
+- A timer chain started inside it keeps running after the request that
+  opened it has responded.
+
+The request that opens the boot awaits it and holds it with `waitUntil`, so a
+caller that goes away doesn't strand it (see the celld notes below).
 
 A check from the record reads `host/document` again, so an ACL change or a
 lifecycle change is seen by the next check: both are host record writes.
@@ -810,8 +827,11 @@ The check boots instead when the record can't answer it the same way:
   the boot adds;
 - an active Page with no stored title, or one stored without a valid
   observation time;
-- an active Page whose last index report failed (`host/index/report-pending`),
-  so the loaded host's check repeats it;
+- an active Page whose last index report failed (`host/index/report-pending`,
+  synced when written), so the loaded host's check repeats it;
+- an active Page whose stored title may not have reached every Catalog
+  (`host/title-projection/pending`), so the loaded host's first check sends
+  it again;
 - a grant holder's check of a trashed Page, which loads the document;
 - an invitation the caller can claim, which the loaded host installs.
 
@@ -831,11 +851,19 @@ every earlier title. A revoked caller is refused before any title.
 
 A check from the record projects nothing and reports nothing to the index.
 A booted host's first check does both, and that remains the repair for a lost
-projection: it runs on the host's next boot (an open, a read, an edit), a
-failed index report makes the check boot, and each reader's reconcile pass
-rewrites its own access row from this answer. Repeating a title projection is
-harmless since `keep_time`, but a cold check sent one to every member's
-Catalog and a row report to D1, for each shared Page a listing checked.
+projection or report. Two marks make a check boot until that repair has run:
+
+- The projection mark is written before a new title is stored, and removed
+  once the latest projection reached the owner's and every member's Catalog
+  and the title is stored. Storage applies one object's writes in the order
+  they are issued, so a stored title the Catalogs may lack always has the
+  mark, without a sync.
+- The index report mark is written after a report fails, and synced.
+
+Each reader's reconcile pass also rewrites its own access row from the
+check's answer. Repeating a title projection is harmless since `keep_time`.
+Still, a cold check used to send one to every member's Catalog, plus a row
+report to D1, for each shared Page a listing checked.
 
 Each check authenticates the caller again in the Page host, as every Page
 request does. The gateway forwards client requests to Page hosts, and a Page

@@ -443,9 +443,7 @@ function refuseSocket(error, identity) {
 export const sharedChildBounds = { scan: 100 };
 /** Shared-Page checks one listing runs at once, each to a different Page
  * host. The caller's Catalog queue waits on the whole listing, so its checks
- * overlap. The bound keeps one listing's burst well under celld's 64
- * requests per object, with room for other listings and the Page's own
- * tabs. */
+ * overlap; this bounds how many requests one Catalog has out at a time. */
 export const sharedCheckBounds = { concurrency: 16 };
 /** Budgets for reading Page lifecycles while the Catalog queue waits. */
 export const lifecycleBounds = { readMs: 2000, passMs: 5000, concurrency: 4 };
@@ -487,6 +485,12 @@ const INDEX_REPORT_PENDING = "host/index/report-pending";
  * the Catalogs and the index, when it first observed it, and whether writers
  * holding that title keep their own time (`titleObservation`). */
 const TITLE_PROJECTION_KEY = "host/title-projection";
+/** `true` while a projection of the title to the owner's and members'
+ * Catalogs hasn't been seen to land everywhere. Written before the title it
+ * sends is stored, removed once every Catalog took it. A check from the host
+ * record boots while it is set, so the loaded host's first check sends the
+ * title again (`cacheTitle`). */
+const PROJECTION_PENDING = "host/title-projection/pending";
 /** Lifecycle receipts kept per Page for retries; older ones are pruned. */
 const LIFECYCLE_RECEIPT_LIMIT = 256;
 const lifecycleReceiptKey = (operationKey) =>
@@ -3185,7 +3189,7 @@ export class Page {
       this.metadata = metadata;
       this.stepStartup({ type: "loaded", start: startupOf(metadata, creation) }, creation);
       if (this.booting) await this.booting;
-      // A failed boot here fails construction, as it always has.
+      // A failed boot fails construction, so the runtime resets the object.
       if (this.startup.name === "failed") throw this.bootError;
     });
   }
@@ -3202,26 +3206,38 @@ export class Page {
     const result = pageStartup.step(this.startup, event);
     this.startupState = result.state;
     for (const effect of result.effects)
-      if (effect.type === "boot") this.startBoot(creation, { held: event.type === "document" });
+      if (effect.type === "boot") this.startBoot(effect.within, creation);
     return result;
   }
 
-  /** Run the one boot. Its promise never rejects: the end is a page-startup
-   * event, and a failure keeps its error for every later request. A boot a
-   * request starts is held on that request, which awaits it too; the
-   * constructor awaits its own inside blockConcurrencyWhile. */
-  startBoot(creation, { held }) {
-    const boot = this.bootHost(creation).then(
-      () => {
-        this.stepStartup({ type: "booted" });
-      },
-      (error) => {
+  /**
+   * Run the one boot, ending it with a page-startup event. `booting` and
+   * `bootError` are the effect's handles (machine state is JSON): `booting`
+   * settles when the boot does and never rejects, and each waiter then asks
+   * the machine again.
+   *
+   * Both boots run inside `blockConcurrencyWhile`: the constructor's own, or
+   * one the request that needs the document opens. A throw there resets the
+   * object, so the next request reaches a new object that starts from storage
+   * again, and a boot gets the runtime's 30 s limit (celld 0.6.3 resets the
+   * object then too; scripts/celld-boot-probe.mjs). The request that opened
+   * the boot awaits it and holds it, so a caller that goes away doesn't
+   * strand it (request-hold.mjs).
+   */
+  startBoot(within, creation) {
+    const boot = async () => {
+      try {
+        await this.bootHost(creation);
+      } catch (error) {
         this.bootError = error;
         this.stepStartup({ type: "bootFailed" });
-      },
-    );
-    this.booting = boot;
-    if (held) holdUntilSettled(this.ctx, boot);
+        throw error;
+      }
+      this.stepStartup({ type: "booted" });
+    };
+    const run = within === "request" ? this.ctx.blockConcurrencyWhile(boot) : boot();
+    this.booting = run.then(noop, noop);
+    if (within === "request") holdUntilSettled(this.ctx, run);
   }
 
   /** Boot the repo and run the lifecycle's boot effects over the durable
@@ -3251,15 +3267,23 @@ export class Page {
       const { response } = this.stepStartup({ type: "document" });
       if (response.serve === "document") return;
       if (response.serve === "failed") throw this.bootError;
-      await this.booting;
+      await this.settledBoot();
     }
+  }
+
+  /** Wait for the running boot. Its end is a page-startup event, so the
+   * state has moved on when this returns. */
+  async settledBoot() {
+    await this.booting;
+    if (this.startup.name === "booting") throw Error("Page startup did not settle");
   }
 
   /**
    * Answer a shared-Page check (`/internal/catalog`) from the host record,
    * without booting the repo, or return null to answer from the loaded host.
    *
-   * Only in page-startup's `metadata`. Storage is read again here: the host
+   * Only in page-startup's `metadata`, or `failed` while the runtime replaces
+   * the object; a running boot is awaited first. Storage is read again: the host
    * record is the access authority, and its current value decides. The
    * order and refusals are run()'s: authenticate, refuse a Page hidden in
    * Trash or deleted, claim an invitation, then `policy.account`. Anything
@@ -3275,20 +3299,31 @@ export class Page {
    *
    * It projects nothing and reports nothing to the index. A loaded host's
    * first check does both, and that stays the repair for a lost projection:
-   * the next boot runs it, a failed index report boots this check instead,
-   * and each reader's reconcile pass rewrites its own row from this answer.
+   * a projection or index report not yet seen to land leaves a mark that
+   * boots this check instead, and each reader's reconcile pass rewrites its
+   * own row from this answer.
    */
   async catalogFromRecord(request) {
-    if (this.stepStartup({ type: "catalog" }).response.serve !== "record") return null;
+    for (;;) {
+      const { serve } = this.stepStartup({ type: "catalog" }).response;
+      if (serve === "document") return null;
+      if (serve === "record") break;
+      await this.settledBoot();
+    }
     const storage = this.ctx.storage;
-    const [metadata, creation, projection, activity, reportPending] = await Promise.all([
-      storage.get("host/document"),
-      storage.get("host/creation"),
-      storage.get(TITLE_PROJECTION_KEY),
-      storage.get(CONTENT_ACTIVITY_KEY),
-      storage.get(INDEX_REPORT_PENDING),
-    ]);
-    if (recordFallback({ record: metadata, creation, projection, reportPending })) return null;
+    const [metadata, creation, projection, activity, reportPending, projectionPending] =
+      await Promise.all([
+        storage.get("host/document"),
+        storage.get("host/creation"),
+        storage.get(TITLE_PROJECTION_KEY),
+        storage.get(CONTENT_ACTIVITY_KEY),
+        storage.get(INDEX_REPORT_PENDING),
+        storage.get(PROJECTION_PENDING),
+      ]);
+    if (
+      recordFallback({ record: metadata, creation, projection, reportPending, projectionPending })
+    )
+      return null;
     const identity = await this.identify(request);
     const hidden = this.hiddenRefusal(identity, request, false, metadata);
     if (hidden) throw hidden;
@@ -3424,6 +3459,7 @@ export class Page {
     this.unwatchContent();
     await this.ctx.storage.delete(CONTENT_ACTIVITY_KEY);
     await this.ctx.storage.delete(TITLE_PROJECTION_KEY);
+    await this.ctx.storage.delete(PROJECTION_PENDING);
   }
 
   /** Report a stored content time: one D1 batch and one call to the owner's
@@ -4217,9 +4253,16 @@ export class Page {
       return { observedAt: known.observed_at, keepTime: known.keep !== false };
     const record = { title, observed_at: new Date().toISOString(), keep: !observe };
     this.titleProjection = record;
+    this.markProjection();
     const stored = Promise.resolve()
       .then(() => this.ctx.storage.put(TITLE_PROJECTION_KEY, record))
-      .catch((error) => logFailure(error, "title-projection"));
+      .then(
+        () => ({ ok: true }),
+        (error) => {
+          logFailure(error, "title-projection");
+          return { ok: false };
+        },
+      );
     return { observedAt: record.observed_at, keepTime: record.keep, stored };
   }
 
@@ -4250,6 +4293,10 @@ export class Page {
     const observation = titleChanged
       ? this.titleObservation(title, { observe })
       : { observedAt: new Date().toISOString(), keepTime: false };
+    // A projection to the owner and members clears the pending mark once it
+    // lands everywhere (settleProjection). A domain reader's own projection
+    // doesn't: a loaded host's check sends readers nothing.
+    const fanout = titleChanged ? (this.projectionSeq = (this.projectionSeq ?? 0) + 1) : undefined;
     const { observedAt, keepTime } = observation;
     // `{ at, keep }`: the title's observation, as the host's check reports it.
     if (titleChanged) this.titleObserved = { at: observedAt, keep: keepTime };
@@ -4275,7 +4322,18 @@ export class Page {
         "Catalog projection timed out",
       ),
     );
-    if (observation.stored) tasks.push(observation.stored.then(() => ({ ok: true })));
+    if (observation.stored) tasks.push(observation.stored);
+    if (fanout)
+      this.ctx.waitUntil(
+        Promise.all(tasks).then(
+          (results) =>
+            this.settleProjection(
+              fanout,
+              results.every((result) => result.ok),
+            ),
+          () => this.settleProjection(fanout, false),
+        ),
+      );
     if (catalogIndexEpoch(this.env)) {
       // A domain reader's row is rewritten when the reader opens the Page for
       // the first time in this host's life, after a title change, and after
@@ -4323,6 +4381,30 @@ export class Page {
     );
   }
 
+  /** Mark the stored title as not yet projected everywhere. Called before the
+   * title is stored, and storage applies one object's writes in the order
+   * they are issued, so a stored title the Catalogs may lack always has the
+   * mark. It moves the sequence on, so a projection already running can't
+   * clear it. */
+  markProjection() {
+    this.projectionSeq = (this.projectionSeq ?? 0) + 1;
+    Promise.resolve()
+      .then(() => this.ctx.storage.put(PROJECTION_PENDING, true))
+      .catch((error) => logFailure(error, "title-projection-pending"));
+  }
+
+  /** Clear the mark once the latest projection reached every Catalog and the
+   * title it sent is stored. An earlier projection finishing late clears
+   * nothing, and a failure leaves the mark for the next boot's first check. */
+  async settleProjection(fanout, delivered) {
+    if (!delivered || fanout !== this.projectionSeq) return;
+    try {
+      await this.ctx.storage.delete(PROJECTION_PENDING);
+    } catch (error) {
+      logFailure(error, "title-projection-pending");
+    }
+  }
+
   /** Post-commit catalog index reconcile. Writes start in order per Page; one
    * that outlives its timeout carries an older ACL revision, which the index
    * ignores once a newer report has landed. A failed report leaves a durable
@@ -4339,7 +4421,10 @@ export class Page {
         );
       } catch (error) {
         this.indexReportPending = true;
+        // Synced: a check from the host record reads it to decide whether
+        // to boot and repeat the report (recordFallback).
         await this.ctx.storage.put(INDEX_REPORT_PENDING, true);
+        await this.ctx.storage.sync();
         throw error;
       }
       if (this.indexReportPending !== false) {

@@ -1,6 +1,6 @@
 {
   "machine": "page-startup",
-  "description": "How a Page host starts: a shared-Page check answers from the host record until a request needs the document, which boots the repo once. Runs against worker/page-startup.mjs in worker/page-startup.test.mjs.",
+  "description": "How a Page host starts: a shared-Page check answers from the host record until a request needs the document, which boots the repo once inside blockConcurrencyWhile; a failed boot resets the object. Runs against worker/page-startup.mjs in worker/page-startup.test.mjs.",
   "states": ["loading", "metadata", "booting", "ready", "failed"],
   "events": ["loaded", "catalog", "document", "booted", "bootFailed"],
   "unreachable": [
@@ -42,7 +42,10 @@
       "label": "a creation intent or a legacy record boots in the constructor",
       "state": { "name": "loading" },
       "event": { "type": "loaded", "start": "eager" },
-      "expect": { "state": { "name": "booting" }, "effects": [{ "type": "boot" }] }
+      "expect": {
+        "state": { "name": "booting" },
+        "effects": [{ "type": "boot", "within": "constructor" }]
+      }
     },
     {
       "label": "a check answers from the record without booting",
@@ -67,14 +70,13 @@
       "expect": { "state": { "name": "ready" }, "effects": [], "response": { "serve": "document" } }
     },
     {
-      "label": "a host that failed to boot answers no check",
+      "label": "a check never gets a failed boot's error: the record needs nothing the boot left",
       "state": { "name": "failed" },
       "event": { "type": "catalog" },
       "expect": {
         "state": { "name": "failed" },
         "effects": [],
-        "response": { "serve": "failed" },
-        "rejected": "the host failed to start"
+        "response": { "serve": "record" }
       }
     },
     {
@@ -83,7 +85,7 @@
       "event": { "type": "document" },
       "expect": {
         "state": { "name": "booting" },
-        "effects": [{ "type": "boot" }],
+        "effects": [{ "type": "boot", "within": "request" }],
         "response": { "serve": "wait" }
       }
     },
@@ -99,7 +101,7 @@
       "expect": { "state": { "name": "ready" }, "effects": [], "response": { "serve": "document" } }
     },
     {
-      "label": "the boot's error, for every request until the object is replaced",
+      "label": "the boot's error, until the runtime replaces the object it reset",
       "state": { "name": "failed" },
       "event": { "type": "document" },
       "expect": {

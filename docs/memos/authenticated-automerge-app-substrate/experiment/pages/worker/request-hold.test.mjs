@@ -154,6 +154,7 @@ test("a Page holds the index migration it starts past its reporting deadline", a
   ctx.storage = {
     put: async (key, value) => void stored.set(key, value),
     delete: async (key) => void stored.delete(key),
+    sync: async () => {},
   };
   const pageId = "55555555-5555-4555-8555-555555555555";
   const host = Object.assign(Object.create(Page.prototype), {

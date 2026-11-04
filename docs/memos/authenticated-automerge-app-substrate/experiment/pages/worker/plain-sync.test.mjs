@@ -158,6 +158,24 @@ test("a restarted automerge Page answers a shared-Page check from its record, th
   assert.equal(again.status, 200);
   assert.ok(restarted.plain, "the read booted the host");
   assert.equal(restarted.startup.name, "ready");
+  await restarted.flush();
+  await restarted.plain.close();
+
+  // The same check, answered from the record and by a booted host over the
+  // same storage, is the same answer.
+  const before = structuredClone(f.storage.values);
+  const lazy = f.page();
+  await lazy.ready;
+  const fromRecord = await (await call(lazy, "/internal/catalog", {})).json();
+  assert.equal(lazy.plain, undefined);
+  f.storage.values = structuredClone(before);
+  const booted = f.page();
+  await booted.ready;
+  await booted.documentReady();
+  const fromDocument = await (await call(booted, "/internal/catalog", {})).json();
+  assert.deepEqual(fromRecord, fromDocument);
+  assert.equal(fromRecord.role, "owner");
+  assert.equal(fromRecord.title, "Plain Page");
 });
 
 test("a browser syncs an automerge Page through connect, and its actor is attributed", async (t) => {

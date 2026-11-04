@@ -53,6 +53,7 @@ test("a check falls back to the loaded host whenever the record can't answer it"
     "legacy_record",
   );
   assert.equal(recordFallback({ ...inputs, reportPending: true }), "index_report_pending");
+  assert.equal(recordFallback({ ...inputs, projectionPending: true }), "projection_pending");
   assert.equal(recordFallback({ ...inputs, projection: undefined }), "no_stored_title");
   assert.equal(
     recordFallback({ ...inputs, projection: { ...projection, observed_at: "yesterday" } }),

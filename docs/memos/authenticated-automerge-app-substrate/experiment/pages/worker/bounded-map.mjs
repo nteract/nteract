@@ -4,9 +4,10 @@
  * rather than a whole wave.
  *
  * The first failure stops new tasks. The ones already running settle before
- * the failure is rethrown, so nothing this started outlives the call: a
- * Durable Object request that returns has no checks still running in its
- * context.
+ * the failure is rethrown, so the call returns only once every task it
+ * started has settled. A task that times out settles then, though the work
+ * it waited on may still be running elsewhere (a shared-Page check's timeout
+ * doesn't cancel the Page host's request).
  */
 export async function boundedMap(items, limit, task) {
   if (!Number.isSafeInteger(limit) || limit < 1) throw new RangeError("limit must be at least 1");

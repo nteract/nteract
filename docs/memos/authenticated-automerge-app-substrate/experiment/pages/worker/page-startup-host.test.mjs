@@ -3,6 +3,7 @@ import { test } from "node:test";
 import * as A from "@automerge/automerge";
 import { proposeAccessUpdate } from "./access.mjs";
 import { CONTENT_ACTIVITY_KEY } from "./content-activity.mjs";
+import { errorResponse } from "./auth.mjs";
 import { Page } from "./index.mjs";
 import { DocumentPolicy } from "./policy.mjs";
 import { proposeSharingMutation } from "./sharing.mjs";
@@ -59,16 +60,44 @@ async function hosts(t, options = {}) {
     this.commentsUuid = commentsUuid;
     await host.onBoot?.();
   });
-  host.cold = () =>
+  host.cold = ({ onReset } = {}) =>
     new Page(
       {
         id: { name: pageId },
         storage: f.storage,
-        blockConcurrencyWhile: (fn) => fn(),
+        // As the runtime does: a throw resets the object (onReset).
+        blockConcurrencyWhile: async (fn) => {
+          try {
+            return await fn();
+          } catch (error) {
+            onReset?.(error);
+            throw error;
+          }
+        },
         waitUntil: (promise) => f.tasks.push(promise),
       },
       f.env,
     );
+  /** A Durable Object stub over this storage: it routes each request to the
+   * live object and starts a new one after a reset, as the runtime does. */
+  host.stub = () => {
+    const stub = { objects: 0 };
+    let live;
+    stub.fetch = async (request) => {
+      if (!live) {
+        const page = host.cold({ onReset: () => live === page && (live = undefined) });
+        live = page;
+        stub.objects++;
+        try {
+          await page.ready;
+        } catch (error) {
+          return errorResponse(error);
+        }
+      }
+      return live.fetch(request);
+    };
+    return stub;
+  };
   host.record = async (metadata) => f.storage.put("host/document", metadata);
   await host.record(f.initial);
   await f.storage.put("host/title-projection", {
@@ -139,6 +168,20 @@ test("a check from the host record answers as a booted host does, for every rela
     const stranger = await sameAnswer(h, "stranger");
     assert.equal(stranger.status, 403);
   }
+});
+
+test("read-only and expired credentials get the same answer from the record as from a booted host", async (t) => {
+  const h = await hosts(t);
+  h.f.tokens.readOnly = h.f.auth.apiKey({ userId: "member-user", scopes: ["cloud:read"] });
+  h.f.tokens.expired = h.f.auth.apiKey({ userId: "member-user", status: 401 });
+  const readOnly = await sameAnswer(h, "readOnly");
+  assert.equal(readOnly.status, 200);
+  // A read-only credential still reports the role its holder has.
+  assert.equal(readOnly.body.role, "editor");
+  // The provider no longer accepts the key: both refuse before any title.
+  const expired = await sameAnswer(h, "expired");
+  assert.equal(expired.status, 401);
+  assert.equal(expired.body.title, undefined);
 });
 
 test("a company reader's check from the record names the domain, as a booted host's does", async (t) => {
@@ -296,6 +339,87 @@ test("a check boots when the record can't answer it", async (t) => {
   }
 });
 
+test("a title projection that misses a Catalog makes the next restart's check boot and send it again", async (t) => {
+  const h = await hosts(t);
+  const catalogs = h.f.env.CATALOGS;
+  const sent = [];
+  let refuse = h.f.member;
+  h.f.env.CATALOGS = {
+    getByName: (principal) => ({
+      fetch: async (request) => {
+        if (new URL(request.url).pathname === "/internal/projection") {
+          sent.push(principal);
+          if (principal === refuse) return Response.json({ error: "Busy" }, { status: 503 });
+        }
+        return catalogs.getByName(principal).fetch(request);
+      },
+    }),
+  };
+  const settle = async () => {
+    while (h.f.tasks.length) await Promise.allSettled(h.f.tasks.splice(0));
+  };
+  const pending = () => h.f.storage.get("host/title-projection/pending");
+  // No stored title: the check boots, observes the title, stores it and
+  // projects it. The member's Catalog refuses, so the mark stays.
+  await h.f.storage.delete("host/title-projection");
+  const first = h.cold();
+  await first.ready;
+  assert.equal((await h.check(first, "member")).status, 200);
+  await settle();
+  assert.equal(h.boots(), 1);
+  assert.deepEqual(sent.sort(), [h.f.member, h.f.owner].sort());
+  assert.equal((await h.f.storage.get("host/title-projection")).title, "Launch plan");
+  assert.equal(await pending(), true);
+
+  // After a restart the stored title is there, but the mark makes the check
+  // boot, and the loaded host's first check sends it to every Catalog again.
+  refuse = undefined;
+  sent.length = 0;
+  const second = h.cold();
+  await second.ready;
+  const answer = await h.check(second, "member");
+  assert.equal(answer.status, 200);
+  assert.equal(answer.body.title, "Launch plan");
+  assert.equal(h.boots(), 2);
+  await settle();
+  assert.deepEqual(sent.sort(), [h.f.member, h.f.owner].sort());
+  assert.equal(await pending(), undefined, "every Catalog took it");
+
+  // Then the record answers again.
+  const third = h.cold();
+  await third.ready;
+  assert.equal((await h.check(third, "member")).status, 200);
+  assert.equal(h.boots(), 2);
+});
+
+test("a projection that finishes after a newer title was stored leaves the mark", async (t) => {
+  const h = await hosts(t);
+  const page = h.cold();
+  await page.ready;
+  await page.documentReady();
+  const settle = async () => {
+    while (h.f.tasks.length) await Promise.allSettled(h.f.tasks.splice(0));
+  };
+  let release;
+  const held = new Promise((resolve) => (release = resolve));
+  const catalogs = h.f.env.CATALOGS;
+  h.f.env.CATALOGS = {
+    getByName: (principal) => ({
+      fetch: async (request) => {
+        await held;
+        return catalogs.getByName(principal).fetch(request);
+      },
+    }),
+  };
+  // A projection of the stored title is running when an ACL commit stores a
+  // new observation of it (marked); the older projection lands after.
+  page.cacheTitle();
+  page.titleObservation("Launch plan", { observe: true });
+  release();
+  await settle();
+  assert.equal(await h.f.storage.get("host/title-projection/pending"), true);
+});
+
 test("a creation intent or a legacy record boots in the constructor, as every host did", async (t) => {
   const h = await hosts(t);
   await h.f.storage.put("host/creation", {
@@ -373,14 +497,47 @@ test("checks around a request that needs the document boot the repo once, before
   assert.ok(later.reads.every((state) => ["booting", "ready"].includes(state)));
 });
 
-test("a failed boot fails every later request, and a check never answers past it", async (t) => {
+test("a failed lazy boot resets the object; checks answer from the record and the next boot succeeds", async (t) => {
+  const h = await hosts(t);
+  let failures = 1;
+  h.onBoot = () => {
+    if (failures-- > 0) throw Error("record store unavailable");
+  };
+  const stub = h.stub();
+  const check = async () => {
+    const response = await stub.fetch(h.f.request(h.f.tokens.member, "/internal/catalog", {}));
+    return { status: response.status, body: await response.json() };
+  };
+  const read = () =>
+    stub.fetch(
+      h.f.request(h.f.tokens.member, "/internal/tool", {
+        operation: "read_page",
+        arguments: { page_id: pageId, comments: "none" },
+      }),
+    );
+  assert.equal((await check()).status, 200, "the record answers first");
+  // The transient failure reaches only the request that needed the boot.
+  assert.equal((await read()).status, 500);
+  assert.equal(h.boots(), 1);
+  // A new object answers from the record, never with the stale error.
+  const after = await check();
+  assert.equal(after.status, 200);
+  assert.equal(after.body.title, "Launch plan");
+  assert.equal(stub.objects, 2, "the failed boot reset the object");
+  assert.equal(h.boots(), 1, "the check booted nothing");
+  // The next request that needs the document boots again, and succeeds.
+  assert.equal((await read()).status, 200);
+  assert.equal(h.boots(), 2);
+  assert.equal((await check()).status, 200);
+});
+
+test("an object a failed boot hasn't been replaced yet still answers checks from its record", async (t) => {
   const h = await hosts(t);
   h.onBoot = () => {
     throw Error("record store unavailable");
   };
   const page = h.cold();
   await page.ready;
-  assert.equal((await h.check(page, "member")).status, 200, "the record answers first");
   const read = await page.fetch(
     h.f.request(h.f.tokens.member, "/internal/tool", {
       operation: "read_page",
@@ -389,7 +546,49 @@ test("a failed boot fails every later request, and a check never answers past it
   );
   assert.equal(read.status, 500);
   assert.equal(page.startup.name, "failed");
+  const check = await h.check(page, "member");
+  assert.equal(check.status, 200);
+  assert.equal(check.body.title, "Launch plan");
+  // A check the record can't answer needs the boot this object can't give.
+  await h.f.storage.put("host/index/report-pending", true);
   assert.equal((await h.check(page, "member")).status, 500);
+  assert.equal(h.boots(), 1);
+});
+
+test("a constructor boot that fails still fails construction", async (t) => {
+  const h = await hosts(t);
+  h.onBoot = () => {
+    throw Error("record store unavailable");
+  };
+  const { comments_doc: _named, ...unnamed } = h.f.initial;
+  await h.record(unnamed);
+  let reset;
+  const page = h.cold({ onReset: (error) => (reset = error) });
+  await assert.rejects(page.ready, /record store unavailable/);
+  assert.equal(reset?.message, "record store unavailable", "inside blockConcurrencyWhile");
+});
+
+test("two requests that need the document boot the repo once", async (t) => {
+  const h = await hosts(t);
+  let release;
+  h.onBoot = () => new Promise((resolve) => (release = resolve));
+  const page = h.cold();
+  await page.ready;
+  const read = () =>
+    page.fetch(
+      h.f.request(h.f.tokens.member, "/internal/tool", {
+        operation: "read_page",
+        arguments: { page_id: pageId, comments: "none" },
+      }),
+    );
+  const first = read();
+  const second = read();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(page.startup.name, "booting");
+  release();
+  const [a, b] = await Promise.all([first, second]);
+  assert.equal(a.status, 200);
+  assert.equal(b.status, 200);
   assert.equal(h.boots(), 1);
 });
 

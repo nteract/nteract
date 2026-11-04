@@ -20,8 +20,11 @@ import { validTime } from "./content-activity.mjs";
  *   and every check, waits for it.
  * - ready: booted, or nothing to boot (no record and no creation intent;
  *   creation boots its own repo). Requests use the loaded host.
- * - failed: the boot threw. Every request gets that error until the object
- *   is replaced, as when a constructor boot failed.
+ * - failed: the boot threw. The runtime is replacing this object:
+ *   both boots run inside `blockConcurrencyWhile`, and a throw there resets
+ *   it, so the next request reaches a new object that starts from storage
+ *   again. Until then a check still answers from the record, and a request
+ *   that needs the document gets the boot's error.
  *
  * Events: `loaded` (the record was read; `start` says how to start),
  * `catalog` (a shared-Page check asks how to answer), `document` (a request
@@ -32,7 +35,10 @@ import { validTime } from "./content-activity.mjs";
  *
  * The one `boot` effect starts the boot; the interpreter keeps its promise, so
  * a second request that needs the document waits on the same boot. The repo
- * boots at most once per object.
+ * boots at most once per object. `within` says where it runs: `constructor`
+ * inside the constructor's own `blockConcurrencyWhile`, `request` in a new
+ * one the request opens. Machine state is JSON, so the boot's promise and
+ * its error stay with the interpreter as the effect's handles.
  */
 export const PAGE_STARTUP_STATES = Object.freeze([
   "loading",
@@ -82,7 +88,12 @@ export const pageStartup = defineMachine({
         if (!STARTS.includes(event.start)) throw Error(`start must be one of ${STARTS}`);
       },
     },
-    effects: { boot: () => {} },
+    effects: {
+      boot: (effect) => {
+        if (!["constructor", "request"].includes(effect.within))
+          throw Error("a boot runs within the constructor or a request");
+      },
+    },
   },
   initial: { name: "loading" },
   transition(state, event) {
@@ -90,17 +101,17 @@ export const pageStartup = defineMachine({
       case "loaded":
         if (event.start === "missing") return { state: { name: "ready" }, effects: [] };
         if (event.start === "lazy") return { state: { name: "metadata" }, effects: [] };
-        return { state: { name: "booting" }, effects: [{ type: "boot" }] };
+        return { state: { name: "booting" }, effects: [{ type: "boot", within: "constructor" }] };
       case "catalog":
-        if (state.name === "metadata") return serve(state, "record");
+        // The record needs nothing the failed boot left behind.
+        if (state.name === "metadata" || state.name === "failed") return serve(state, "record");
         if (state.name === "booting") return serve(state, "wait");
-        if (state.name === "ready") return serve(state, "document");
-        return failed(state);
+        return serve(state, "document");
       case "document":
         if (state.name === "metadata")
           return {
             state: { name: "booting" },
-            effects: [{ type: "boot" }],
+            effects: [{ type: "boot", within: "request" }],
             response: { serve: "wait" },
           };
         if (state.name === "booting") return serve(state, "wait");
@@ -158,6 +169,9 @@ export function storedTitleProjection(value) {
  *   recordAnswerable).
  * - index_report_pending: an active Page's index report failed earlier. The
  *   loaded host's check repeats it (`repairIndex`), so this check boots.
+ * - projection_pending: an active Page's stored title may not have reached
+ *   every Catalog. The loaded host's first check sends it again
+ *   (`cacheTitle`), so this check boots.
  * - no_stored_title: an active Page with no usable stored title, such as one
  *   no host of this build has projected yet.
  *
@@ -166,12 +180,13 @@ export function storedTitleProjection(value) {
  * Page loads its document, as before). The caller decides those after it
  * authenticates.
  */
-export function recordFallback({ record, creation, projection, reportPending }) {
+export function recordFallback({ record, creation, projection, reportPending, projectionPending }) {
   if (creation) return "creation_intent";
   if (!record) return "no_record";
   if (!recordAnswerable(record)) return "legacy_record";
   if (pageState(record) !== "active") return null;
   if (reportPending === true) return "index_report_pending";
+  if (projectionPending === true) return "projection_pending";
   if (!storedTitleProjection(projection)) return "no_stored_title";
   return null;
 }
