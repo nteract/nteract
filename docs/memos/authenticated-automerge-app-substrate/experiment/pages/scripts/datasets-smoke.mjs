@@ -49,10 +49,11 @@ async function api(page, path, body) {
 }
 const tool = (page, operation, args = {}) =>
   api(page, "/api/tools", { operation, arguments: args });
-async function signIn(email) {
+async function signIn(email, contextOptions = {}) {
   const context = await browser.newContext({
     viewport: { width: 1280, height: 900 },
     permissions: ["clipboard-read", "clipboard-write"],
+    ...contextOptions,
   });
   const page = await context.newPage();
   people.set(email, page);
@@ -237,6 +238,26 @@ try {
     people.set("dev@localhost", owner);
   }
   complete("A table below the fold loads Sift and its dataset only when a reader scrolls near it");
+
+  // On a phone, a tap on a table's title row selects it.
+  {
+    const phone = await signIn("dev@localhost", {
+      viewport: { width: 390, height: 844 },
+      hasTouch: true,
+      isMobile: true,
+    });
+    await phone.goto(`${origin}/p/${pageId}`);
+    await expect(tables(phone)).toHaveCount(1, { timeout: 15000 });
+    const table = tables(phone).first();
+    await table.scrollIntoViewIfNeeded();
+    await table.locator(".wordgard-dataframe-title").tap();
+    await expect(
+      table.locator("xpath=ancestor::*[contains(@class,'wg-selected-node')]"),
+    ).toHaveCount(1);
+    await phone.context().close();
+    people.set("dev@localhost", owner);
+  }
+  complete("A tap on a table's title row selects it on a phone");
 
   const rewrite = await editPage([
     { op: "replace_block_markdown", block_id: node.block_id, markdown: "gone" },

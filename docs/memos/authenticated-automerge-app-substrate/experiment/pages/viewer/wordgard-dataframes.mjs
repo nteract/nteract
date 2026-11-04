@@ -232,6 +232,7 @@ const dataframeTable = Widget.define({
     const frame = dataframeFrame(attrs);
     leaveGridOnEscape(editor, frame.dom);
     keepArrowsInGrid(frame.dom);
+    selectOnTap(editor, frame.dom);
     mounted.set(
       frame.dom,
       dataframeLifecycle({
@@ -316,6 +317,31 @@ function leaveGridOnEscape(editor, frame) {
     event.preventDefault();
     editor.focus();
     editor.dispatch({ selection: GardSelection.node(block.pos, block.node) });
+  });
+}
+
+/**
+ * A tap on the frame outside Sift's grid (the title row) selects the table.
+ * A mouse press already does: Wordgard's mousedown handler selects the node.
+ * On touch, Wordgard skips mousedown and selects from the browser's DOM
+ * selection after the tap, and a tap on this non-editable frame doesn't move
+ * it, so nothing was selected. A tap still ends in a click; selecting here
+ * covers it. After a mouse press the table is already selected, and this
+ * does nothing.
+ */
+function selectOnTap(editor, frame) {
+  frame.addEventListener("click", (event) => {
+    if (event.defaultPrevented || event.button !== 0) return;
+    if (event.target?.closest?.(".wordgard-dataframe-canvas")) return;
+    const block = editor.nodeFromDOM(frame);
+    if (!block || block.node.type !== PagesDataframe) return;
+    const selection = editor.state.selection;
+    if (selection instanceof GardSelection.Node && selection.from === block.pos) return;
+    editor.focus();
+    editor.dispatch({
+      selection: GardSelection.node(block.pos, block.node),
+      userEvent: "select.pointer",
+    });
   });
 }
 
