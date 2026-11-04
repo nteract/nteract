@@ -4,6 +4,8 @@ import * as fs from "node:fs";
 import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { execFileSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 import {
   applyControllerStage,
   controllerAppRelativePath,
@@ -23,6 +25,28 @@ const TARGET = "page10";
 const deployment = deploymentProfile(TARGET).deployment;
 const sha256 = (value) => createHash("sha256").update(value).digest("hex");
 const compatibilitySource = `export const controllerDeploymentCompatibility = ${JSON.stringify(controllerDeploymentCompatibility)};\n`;
+
+test("adapter import and install planning work in a clean checkout without TypeScript", (t) => {
+  const root = fs.mkdtempSync(path.join(tmpdir(), "pages-clean-adapter-"));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const source = path.dirname(fileURLToPath(import.meta.url));
+  fs.cpSync(source, path.join(root, "scripts"), {
+    recursive: true,
+    filter: (file) => !file.includes("node_modules"),
+  });
+  fs.cpSync(path.join(source, "../shared"), path.join(root, "shared"), { recursive: true });
+  const output = execFileSync(
+    process.execPath,
+    [
+      "--input-type=module",
+      "-e",
+      `const a=await import(${JSON.stringify(path.join(root, "scripts/controller-deploy.mjs"))}); console.log(a.planControllerApply({mode:'install',stage:'/tmp/nteract-page10-stage-12345678'}).mode);`,
+    ],
+    { encoding: "utf8" },
+  );
+  assert.equal(output.trim(), "install");
+  assert.equal(fs.existsSync(path.join(root, "node_modules")), false);
+});
 
 function listFiles(directory, prefix = "") {
   return fs.readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
