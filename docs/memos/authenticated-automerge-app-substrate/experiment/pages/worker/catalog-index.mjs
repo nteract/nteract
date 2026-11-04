@@ -29,6 +29,7 @@
  * `host/index/spaces-*` markers. project-api.mjs maps `space_id` in results.
  */
 import { pageGrant, pageState } from "./access.mjs";
+import { accountIndexMachine, accountIndexState } from "./account-index-machine.mjs";
 import { HttpError } from "./auth.mjs";
 import { catalogTitle, listAll, trashTime } from "./catalog.mjs";
 import { acceptedTime, validTime } from "./content-activity.mjs";
@@ -1430,8 +1431,10 @@ function sharedStatements(db, principal, pageId, page, fallbackAt, createdAt) {
  * resumes exactly where it stopped and never holds this Catalog's request
  * queue beyond that bound. While D1 calls exceed the budget, the pass waits.
  *
- * Returns true when the account's rows are complete for this epoch: a pass
- * completed now, or one completed before under the same epoch.
+ * Returns true when the account's rows may choose listing candidates: the
+ * account index is `ready` (account-index-machine.mjs) when this call returns.
+ * A pass still running, or one that started before the Catalog's latest write,
+ * leaves it `unsynced` or `behind`, and the listing reads the Catalog entries.
  */
 export async function reconcileAccountIndex({
   db,
@@ -1451,11 +1454,11 @@ export async function reconcileAccountIndex({
   );
   const current = marker?.epoch === epoch;
   const dirty = await storage.get(DIRTY);
+  const state = accountIndexState({ current, dirty });
   let pass = await storage.get(SYNC);
   if (pass && pass.epoch !== epoch) pass = undefined;
   const due =
-    !current ||
-    dirty !== undefined ||
+    state.name !== "ready" ||
     pass !== undefined ||
     !(Date.parse(marker.synced_at) > now - catalogIndexBounds.reconcileIntervalMs);
   if (!due) return true;
@@ -1657,21 +1660,26 @@ export async function reconcileAccountIndex({
       );
     } else if (pass.phase === "done") {
       await storage.delete(SYNC);
-      if (pass.incomplete) return current;
-      await read(
-        db
-          .prepare(
-            `INSERT INTO pages_catalog_accounts (principal, epoch, synced_at) VALUES (?, ?, ?)
-            ON CONFLICT (principal) DO UPDATE SET epoch = excluded.epoch, synced_at = excluded.synced_at`,
-          )
-          .bind(principal, epoch, new Date(now).toISOString())
-          .run(),
-      );
-      if ((await storage.get(DIRTY)) === (pass.dirty ?? undefined)) await storage.delete(DIRTY);
-      return true;
+      const verified = !pass.incomplete;
+      if (verified)
+        await read(
+          db
+            .prepare(
+              `INSERT INTO pages_catalog_accounts (principal, epoch, synced_at) VALUES (?, ?, ?)
+              ON CONFLICT (principal) DO UPDATE SET epoch = excluded.epoch, synced_at = excluded.synced_at`,
+            )
+            .bind(principal, epoch, new Date(now).toISOString())
+            .run(),
+        );
+      // Read after the marker lands: a write that arrived while the pass ran,
+      // or during the marker write, leaves the account behind.
+      const unchanged = (await storage.get(DIRTY)) === (pass.dirty ?? undefined);
+      const step = accountIndexMachine.step(state, { type: "completed", verified, unchanged });
+      for (const effect of step.effects) if (effect.type === "clear") await storage.delete(DIRTY);
+      return step.state.name === "ready";
     }
   }
-  return current;
+  return state.name === "ready";
 }
 
 const SPACES_SYNCED = "host/index/spaces-synced";

@@ -1,0 +1,298 @@
+{
+  "machine": "account-index",
+  "description": "Whether one account's D1 rows may choose list_pages candidates (worker/account-index-machine.mjs). A listing reads D1 only in ready; otherwise the account's Catalog entries serve it, so a Page the Catalog has and D1 lacks never ends a walk early. The state is a function of D1's account marker and the Catalog's dirty token; completed arrives after a verified pass recorded its epoch, and unchanged compares the dirty token read after that with the one the pass started from.",
+  "states": [
+    "unsynced",
+    "behind",
+    "ready"
+  ],
+  "events": [
+    "marked",
+    "epoch",
+    "completed"
+  ],
+  "unreachable": [],
+  "cases": {
+    "unsynced/completed": [
+      "clean",
+      "written-meanwhile",
+      "unverified"
+    ],
+    "behind/completed": [
+      "clean",
+      "written-meanwhile",
+      "unverified"
+    ],
+    "ready/completed": [
+      "clean",
+      "written-meanwhile",
+      "unverified"
+    ]
+  },
+  "rows": [
+    {
+      "label": "a write can't sync an account that never completed a pass",
+      "state": {
+        "name": "unsynced"
+      },
+      "event": {
+        "type": "marked"
+      },
+      "expect": {
+        "state": {
+          "name": "unsynced"
+        },
+        "effects": []
+      }
+    },
+    {
+      "label": "a new epoch needs a new pass",
+      "state": {
+        "name": "unsynced"
+      },
+      "event": {
+        "type": "epoch"
+      },
+      "expect": {
+        "state": {
+          "name": "unsynced"
+        },
+        "effects": []
+      }
+    },
+    {
+      "label": "a verified pass with no write since it started makes D1 ready and clears its mark",
+      "case": "clean",
+      "state": {
+        "name": "unsynced"
+      },
+      "event": {
+        "type": "completed",
+        "verified": true,
+        "unchanged": true
+      },
+      "expect": {
+        "state": {
+          "name": "ready"
+        },
+        "effects": [
+          {
+            "type": "clear"
+          }
+        ]
+      }
+    },
+    {
+      "label": "a write that landed while the pass ran may be missing: the next pass imports it",
+      "case": "written-meanwhile",
+      "state": {
+        "name": "unsynced"
+      },
+      "event": {
+        "type": "completed",
+        "verified": true,
+        "unchanged": false
+      },
+      "expect": {
+        "state": {
+          "name": "behind"
+        },
+        "effects": []
+      }
+    },
+    {
+      "label": "a pass with an unavailable Page check records nothing",
+      "case": "unverified",
+      "state": {
+        "name": "unsynced"
+      },
+      "event": {
+        "type": "completed",
+        "verified": false,
+        "unchanged": true
+      },
+      "expect": {
+        "state": {
+          "name": "unsynced"
+        },
+        "effects": []
+      }
+    },
+    {
+      "label": "a write puts a behind account behind",
+      "state": {
+        "name": "behind"
+      },
+      "event": {
+        "type": "marked"
+      },
+      "expect": {
+        "state": {
+          "name": "behind"
+        },
+        "effects": []
+      }
+    },
+    {
+      "label": "a new epoch needs a new pass",
+      "state": {
+        "name": "behind"
+      },
+      "event": {
+        "type": "epoch"
+      },
+      "expect": {
+        "state": {
+          "name": "unsynced"
+        },
+        "effects": []
+      }
+    },
+    {
+      "label": "a verified pass with no write since it started makes D1 ready and clears its mark",
+      "case": "clean",
+      "state": {
+        "name": "behind"
+      },
+      "event": {
+        "type": "completed",
+        "verified": true,
+        "unchanged": true
+      },
+      "expect": {
+        "state": {
+          "name": "ready"
+        },
+        "effects": [
+          {
+            "type": "clear"
+          }
+        ]
+      }
+    },
+    {
+      "label": "a write that landed while the pass ran may be missing: the next pass imports it",
+      "case": "written-meanwhile",
+      "state": {
+        "name": "behind"
+      },
+      "event": {
+        "type": "completed",
+        "verified": true,
+        "unchanged": false
+      },
+      "expect": {
+        "state": {
+          "name": "behind"
+        },
+        "effects": []
+      }
+    },
+    {
+      "label": "a pass with an unavailable Page check records nothing",
+      "case": "unverified",
+      "state": {
+        "name": "behind"
+      },
+      "event": {
+        "type": "completed",
+        "verified": false,
+        "unchanged": true
+      },
+      "expect": {
+        "state": {
+          "name": "behind"
+        },
+        "effects": []
+      }
+    },
+    {
+      "label": "a write puts a ready account behind",
+      "state": {
+        "name": "ready"
+      },
+      "event": {
+        "type": "marked"
+      },
+      "expect": {
+        "state": {
+          "name": "behind"
+        },
+        "effects": []
+      }
+    },
+    {
+      "label": "a new epoch needs a new pass",
+      "state": {
+        "name": "ready"
+      },
+      "event": {
+        "type": "epoch"
+      },
+      "expect": {
+        "state": {
+          "name": "unsynced"
+        },
+        "effects": []
+      }
+    },
+    {
+      "label": "a verified pass with no write since it started makes D1 ready and clears its mark",
+      "case": "clean",
+      "state": {
+        "name": "ready"
+      },
+      "event": {
+        "type": "completed",
+        "verified": true,
+        "unchanged": true
+      },
+      "expect": {
+        "state": {
+          "name": "ready"
+        },
+        "effects": [
+          {
+            "type": "clear"
+          }
+        ]
+      }
+    },
+    {
+      "label": "a write that landed while the pass ran may be missing: the next pass imports it",
+      "case": "written-meanwhile",
+      "state": {
+        "name": "ready"
+      },
+      "event": {
+        "type": "completed",
+        "verified": true,
+        "unchanged": false
+      },
+      "expect": {
+        "state": {
+          "name": "behind"
+        },
+        "effects": []
+      }
+    },
+    {
+      "label": "a pass with an unavailable Page check records nothing",
+      "case": "unverified",
+      "state": {
+        "name": "ready"
+      },
+      "event": {
+        "type": "completed",
+        "verified": false,
+        "unchanged": true
+      },
+      "expect": {
+        "state": {
+          "name": "ready"
+        },
+        "effects": []
+      }
+    }
+  ]
+}

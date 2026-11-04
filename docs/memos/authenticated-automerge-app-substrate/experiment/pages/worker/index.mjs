@@ -2964,8 +2964,9 @@ export class Catalog {
           verify: (pageId) => this.verifyShared(request, pageId),
         });
         const evidence = identity.domainAccess;
-        // Until an account's first reconcile completes, its D1 rows may be
-        // missing; the Catalog entries serve while the pass advances.
+        // While a pass hasn't imported every Catalog write, D1 may miss
+        // rows, and a walk over it would end early with no cursor; the
+        // Catalog entries serve while the pass advances.
         if (ready)
           source = indexSource(db, {
             principal: identity.principal,

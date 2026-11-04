@@ -759,7 +759,22 @@ call (2.5 s), or plus one check group (3 s) and its commit (1.5 s). Progress is
 saved through the last committed entry, so a pass, which is O(account size) and
 advanced only by listings, resumes exactly and does not hold the Catalog's queue
 beyond that bound. While D1 calls take longer than the budget, the pass waits.
-Until an account's first pass completes, its listings use the Catalog entries.
+
+A listing reads D1 only while the account index is `ready`
+([account-index-machine.mjs](worker/account-index-machine.mjs)): a pass has
+completed under this epoch and the Catalog has recorded no write since. Every
+Catalog write D1 may miss marks the account dirty before its entry lands:
+creating a Page (which writes only its Catalog entry), a Trash, restore or purge
+projection, a move, a new discovery entry, and an owner row a listing found
+stale. A marked account is `behind`, and an account with no completed pass under
+this epoch is `unsynced`; both list from the Catalog entries while the pass
+advances. Once a pass records its epoch, it reads the mark again and clears it
+only if it is still the one the pass started from, so a write that lands
+mid-pass keeps the account behind through the next pass. A missing D1 row would
+hide its Page and could end a walk with no cursor; the Catalog entries hold
+every owned Page.
+Title and content updates to an existing entry don't mark it, since a stale
+snapshot misorders a row but never hides one.
 Changing the epoch value forces an immediate pass everywhere; it is not required
 after a rollback, since the periodic pass and each Page host's first report after
 restart repair what an older build missed.

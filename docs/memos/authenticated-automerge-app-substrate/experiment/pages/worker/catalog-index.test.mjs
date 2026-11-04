@@ -3389,6 +3389,10 @@ test("listings past rejected candidates show every visible Page once, in order, 
         let empty = 0;
         let cursor;
         for (let request = 0; request < 80; request++) {
+          // Each page meets the vanished rows again, and a stale owner row
+          // puts the account behind, which lists from the Catalog. Clear the
+          // mark so every page of this walk reads its own source.
+          await storage.delete("host/index/dirty");
           const result = await f.list(member, { ...args, ...(cursor && { cursor }) });
           assert.equal(result.status, 200, `${label}: ${JSON.stringify(result.body)}`);
           assert.equal(result.source, mode, label);
