@@ -232,8 +232,15 @@ test("ArrowLeft and ArrowRight in the grid scroll it sideways and never move the
     // Stand in for Sift's grid: a focusable container and a wider body.
     const grid = document.createElement("div");
     grid.tabIndex = 0;
+    // A header that clips its label overflows too, and comes first.
+    const header = grid.appendChild(document.createElement("div"));
+    header.className = "sift-th";
+    Object.defineProperty(header, "scrollWidth", { value: 200 });
+    Object.defineProperty(header, "clientWidth", { value: 100 });
     const body = grid.appendChild(document.createElement("div"));
-    Object.defineProperty(body, "scrollWidth", { value: 800 });
+    body.className = "sift-viewport";
+    let width = 800;
+    Object.defineProperty(body, "scrollWidth", { get: () => width });
     Object.defineProperty(body, "clientWidth", { value: 300 });
     frame().querySelector(".wordgard-dataframe-canvas").append(grid);
     select();
@@ -251,10 +258,18 @@ test("ArrowLeft and ArrowRight in the grid scroll it sideways and never move the
     assert.equal(press("ArrowLeft").defaultPrevented, true);
     assert.equal(body.scrollLeft, GRID_ARROW_STEP);
     assert.ok(editor.state.selection.eq(before), "the editor selection stayed on the table");
+    assert.equal(header.scrollLeft, 0, "a clipped header is never scrolled");
+    // A table that fits its frame: the arrow is still kept from the editor,
+    // and nothing scrolls.
+    width = 300;
+    assert.equal(press("ArrowRight").defaultPrevented, true);
+    assert.equal(body.scrollLeft, GRID_ARROW_STEP);
+    assert.equal(header.scrollLeft, 0);
+    width = 800;
     // A key Sift handled itself (a header moving focus) is left to it.
-    const header = grid.appendChild(document.createElement("div"));
-    header.addEventListener("keydown", (event) => event.preventDefault());
-    press("ArrowRight", header);
+    const cell = grid.appendChild(document.createElement("div"));
+    cell.addEventListener("keydown", (event) => event.preventDefault());
+    press("ArrowRight", cell);
     assert.equal(body.scrollLeft, GRID_ARROW_STEP);
     // Outside the canvas, arrows are the editor's: the grid doesn't scroll.
     press("ArrowRight", frame().querySelector(".wordgard-dataframe-title"));

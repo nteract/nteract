@@ -337,22 +337,14 @@ function keepArrowsInGrid(frame) {
     const canvas = event.target?.closest?.(".wordgard-dataframe-canvas");
     if (!canvas) return;
     event.preventDefault();
-    const scroller = horizontalScroller(event.target, canvas);
-    if (scroller)
-      scroller.scrollLeft += event.key === "ArrowRight" ? GRID_ARROW_STEP : -GRID_ARROW_STEP;
+    // Sift's viewport is the only element that scrolls the grid sideways, and
+    // only when the table is wider than the frame; Sift stretches a narrow
+    // table to fill it. Nothing else is scrolled: a header that clips its
+    // label also overflows, and moving it would shift the label for good.
+    const viewport = canvas.querySelector(".sift-viewport");
+    if (viewport && viewport.scrollWidth > viewport.clientWidth)
+      viewport.scrollLeft += event.key === "ArrowRight" ? GRID_ARROW_STEP : -GRID_ARROW_STEP;
   });
-}
-
-/** The element that scrolls the grid sideways: the focused element or the
- * first descendant whose content is wider than it, else the nearest such
- * ancestor inside the canvas. */
-function horizontalScroller(target, canvas) {
-  const wide = (node) => node.scrollWidth > node.clientWidth;
-  if (wide(target)) return target;
-  for (const node of target.querySelectorAll("*")) if (wide(node)) return node;
-  for (let node = target.parentElement; node && canvas.contains(node); node = node.parentElement)
-    if (wide(node)) return node;
-  return null;
 }
 
 /**
