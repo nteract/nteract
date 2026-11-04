@@ -162,10 +162,11 @@ function storeOver(bucket) {
 }
 
 /** A writer over in-memory storage and bucket, with its holds collected. */
-function harness({ cards, bucket = cardBucket() } = {}) {
+function harness({ cards, bucket = cardBucket(), now } = {}) {
   const values = new Map();
   const holds = [];
   const errors = [];
+  const skips = [];
   let built = 0;
   const queue = [...(cards ?? [])];
   const writer = new PageCardWriter({
@@ -180,6 +181,8 @@ function harness({ cards, bucket = cardBucket() } = {}) {
     },
     hold: (work) => holds.push(work),
     onError: (error) => errors.push(error),
+    onSkip: () => skips.push(true),
+    ...(now && { now }),
   });
   const settle = async () => {
     while (holds.length) await Promise.all(holds.splice(0));
@@ -200,6 +203,7 @@ function harness({ cards, bucket = cardBucket() } = {}) {
     bucket,
     values,
     errors,
+    skips,
     puts,
     settle,
     flush,
@@ -472,6 +476,7 @@ test("a writer that was never stopped can't overwrite a newer card after its put
   assert.equal(bucket.refused, 1, "refused once, and not retried");
   assert.deepEqual(old.writer.state, { name: "idle", stored: null }, "nothing of its own landed");
   assert.equal(old.errors.length, 0, "a newer card is not a failure to log");
+  assert.equal(old.skips.length, 1, "the skip is logged");
   // Its next write reads the object again, and a later card writes.
   await old.flush();
   assert.deepEqual(old.object(), card("3".repeat(64), T3));
@@ -526,4 +531,41 @@ test("a stop during the refused put's second read puts nothing", async () => {
   assert.deepEqual(h.object(), card(H2));
   assert.equal(h.writer.state.name, "stopped");
   assert.equal(h.errors.length, 0);
+});
+
+test("an object time past the clock-skew limit never blocks a write; one within it does", async () => {
+  const now = Date.parse(T2);
+  const at = (ms) => new Date(now + ms).toISOString();
+  for (const [label, ahead, expected] of [
+    ["10 minutes ahead counts as missing", 10 * 60_000, [H1]],
+    ["4 minutes ahead is a newer card", 4 * 60_000, []],
+  ]) {
+    const h = harness({ cards: [card(H1, T2)], now: () => now });
+    await h.bucket.put(KEY, JSON.stringify(card(H2, at(ahead))), {
+      customMetadata: { card_hash: H2, content_updated_at: at(ahead) },
+    });
+    h.puts.length = 0;
+    await h.writer.restore();
+    await h.flush();
+    assert.deepEqual(h.puts, expected, label);
+    assert.equal(h.skips.length, expected.length ? 0 : 1, label);
+    assert.equal(h.errors.length, 0, label);
+  }
+});
+
+test("a refused put retries over an object time past the clock-skew limit", async () => {
+  const now = Date.parse(T2);
+  const ahead = new Date(now + 10 * 60_000).toISOString();
+  const h = harness({ cards: [card(H1, T1), card("4".repeat(64), T2)], now: () => now });
+  await h.writer.restore();
+  await h.flush();
+  // A node whose clock ran 10 minutes fast wrote between this host's writes.
+  await h.bucket.put(KEY, JSON.stringify(card(H2, ahead)), {
+    customMetadata: { card_hash: H2, content_updated_at: ahead },
+  });
+  h.puts.length = 0;
+  await h.flush();
+  assert.equal(h.puts.length, 2, "refused, then written");
+  assert.deepEqual(h.object(), card("4".repeat(64), T2));
+  assert.equal(h.skips.length, 0);
 });

@@ -3695,6 +3695,15 @@ export class Page {
       },
       hold: (work) => holdUntilSettled(this.ctx, work),
       onError: (error) => logFailure(error, "page-card"),
+      // A newer host's card stays: one line, no Page ID or content.
+      onSkip: () =>
+        console.info(
+          JSON.stringify({
+            service: "nteract-pages-native",
+            event: "page_card.superseded",
+            timestamp: new Date().toISOString(),
+          }),
+        ),
     });
   }
 

@@ -1,4 +1,5 @@
 import { defineMachine, reject } from "../shared/machine.mjs";
+import { acceptedTime, validTime } from "./content-activity.mjs";
 
 /**
  * Writing a Page's card (model/page-card.mjs) to the Page assets bucket.
@@ -27,14 +28,22 @@ import { defineMachine, reject } from "../shared/machine.mjs";
  * unless the host stopped during that read, or the object's
  * `content_updated_at` is later than the built card's: then a newer host
  * wrote it, and this write puts nothing. A first write skips its put the
- * same way. Such a write ends as `failed` without logging, and the next one
- * reads the object again. Equal times with different hashes still put: the
- * same content built by two builder versions, where the later put wins. A
- * time either side lacks never skips.
+ * same way. Such a write ends as `failed`, logs the skip through `onSkip`,
+ * and the next one reads the object again. Equal times with different
+ * hashes still put: the same content built by two builder versions, where
+ * the later put wins. A time either side lacks never skips, and neither
+ * does an object time more than `CONTENT_ACTIVITY_MAX_SKEW_MS` ahead of this
+ * host's clock: content activity drops such a time (`acceptedTime`), so a
+ * card from a node whose clock ran fast would otherwise block every write
+ * after it.
  *
- * What remains: a late put that lands after the new host's first write
- * skipped an unchanged card. Its card is one this Page held moments before,
- * and the next change to the first screen replaces it.
+ * What remains. The order between live hosts comes from their clocks, so it
+ * holds only within `CONTENT_ACTIVITY_MAX_SKEW_MS`. An old host that is still
+ * live, on a clock fast by less than that, can overwrite a newer card once;
+ * the newer host's writes then skip until its own content times pass the
+ * old one's, at most that long. And a late put can land after the new
+ * host's first write skipped an unchanged card. Its card is one this Page
+ * held moments before, and the next change to the first screen replaces it.
  *
  * States:
  * - unread: the stored hash hasn't been read yet.
@@ -159,6 +168,8 @@ export const pageCardWriterMachine = defineMachine({
  *   `store.delete()` removes it.
  * - `storage` is the host's Durable Object storage, for `PAGE_CARD_KEY`.
  * - `hold(work)` keeps the calling request running until `work` settles.
+ * - `onSkip()` hears a write that put nothing over a newer card.
+ * - `now()` is this host's clock, in ms.
  */
 export class PageCardWriter {
   #state = pageCardWriterMachine.initial;
@@ -169,12 +180,22 @@ export class PageCardWriter {
    * and the transition never branches on it. Folding it in would split
    * `writing` into a state per bucket call. */
   #etag = undefined;
-  constructor({ build, store, storage, hold = () => {}, onError = () => {} }) {
+  constructor({
+    build,
+    store,
+    storage,
+    hold = () => {},
+    onError = () => {},
+    onSkip = () => {},
+    now = () => Date.now(),
+  }) {
     this.build = build;
     this.store = store;
     this.storage = storage;
     this.hold = hold;
     this.onError = onError;
+    this.onSkip = onSkip;
+    this.now = now;
   }
 
   get state() {
@@ -196,7 +217,15 @@ export class PageCardWriter {
    * time. */
   #superseded() {
     this.#etag = undefined;
+    this.onSkip();
     return { type: "failed" };
+  }
+
+  /** Whether the object's content time `stored` is after the built card's
+   * `built`, reading `stored` as content activity would accept it. */
+  #newer(stored, built) {
+    const accepted = acceptedTime(stored, this.now());
+    return accepted !== null && validTime(built) && Date.parse(accepted) > Date.parse(built);
   }
 
   /** Ask for a write. Safe from any context: it waits for `pump()`. */
@@ -247,7 +276,7 @@ export class PageCardWriter {
       else if (bundle.card_hash === known) {
         if (known !== previous) await this.storage.put(PAGE_CARD_KEY, { card_hash: known });
         outcome = { type: "written", hash: known };
-      } else if (object && later(object.contentUpdatedAt, bundle.content_updated_at)) {
+      } else if (object && this.#newer(object.contentUpdatedAt, bundle.content_updated_at)) {
         outcome = this.#superseded();
       } else {
         let landed = await this.store.put(bundle, { etag: this.#etag });
@@ -256,7 +285,7 @@ export class PageCardWriter {
           // Another writer moved the object since this host saw it. A stop
           // during this read ends the write below, before any put.
           const moved = await this.#head();
-          newer = later(moved.contentUpdatedAt, bundle.content_updated_at);
+          newer = this.#newer(moved.contentUpdatedAt, bundle.content_updated_at);
           if (!newer && !this.#stopped) landed = await this.store.put(bundle, { etag: this.#etag });
         }
         if (this.#stopped) {
@@ -292,10 +321,3 @@ export class PageCardWriter {
 }
 
 const validHash = (value) => typeof value === "string" && /^[0-9a-f]{64}$/.test(value);
-
-/** Whether content time `a` is after `b`. A missing or unreadable time is
- * after nothing, and nothing is after it. */
-function later(a, b) {
-  const [left, right] = [Date.parse(a ?? ""), Date.parse(b ?? "")];
-  return Number.isFinite(left) && Number.isFinite(right) && left > right;
-}

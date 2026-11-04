@@ -2454,12 +2454,21 @@ by an older host is rewritten. A retiring host's put that lands late carries
 an etag the next host's write replaced, and the bucket refuses it. A refused
 put reads the object again and retries once, unless the host stopped during
 that read or the object's `content_updated_at` is later than the built card's:
-then a newer host wrote it, and this host puts nothing and reads the object
-again on its next write. A first write skips its put the same way. Equal times
-with different hashes still put, and the later put wins: that is the same
-content built by two builder versions. The case left open is a late put
-landing after the next host's first write skipped an unchanged card: it holds
-a card the Page had moments before, until the next change to its first screen.
+then a newer host wrote it, and this host puts nothing, logs
+`page_card.superseded`, and reads the object again on its next write. A first
+write skips its put the same way. An object time more than 5 minutes
+(`CONTENT_ACTIVITY_MAX_SKEW_MS`) ahead of the host's clock counts as missing,
+as content activity drops it, so a card from a node whose clock ran fast never
+blocks the writes after it. Equal times with different hashes still put, and
+the later put wins: that is the same content built by two builder versions.
+
+Two cases are left open. The order between live hosts comes from their clocks,
+so it holds only within that 5-minute limit: an old host that is still live, on
+a clock fast by less than that, can overwrite a newer card once, and the newer
+host's writes skip until its own content times pass the old one's. And a late
+put can land after the next host's first write skipped an unchanged card: it
+holds a card the Page had moments before, until the next change to its first
+screen.
 
 A purge or tombstone deletes the object and `host/card` with the content time,
 waiting at most 2 seconds on the bucket; a missed delete leaves an object
