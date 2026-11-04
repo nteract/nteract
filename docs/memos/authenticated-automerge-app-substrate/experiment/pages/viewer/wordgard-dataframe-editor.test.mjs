@@ -37,7 +37,7 @@ dom.window.document.elementFromPoint = () => null;
 const { Wordgard } = await import("wordgard/editor");
 const { GardState, GardSelection } = await import("wordgard/state");
 const { Leaf } = await import("wordgard/doc");
-const { schema, Paragraph, PagesDataframe } = await import("./wordgard-model.mjs");
+const { schema, Paragraph, PagesDataframe, HorizontalRule } = await import("./wordgard-model.mjs");
 const { insertTable } = await import("./wordgard-tables.mjs");
 const { wordgardDataframes, dataframeEventReachesEditor, enterDataframeGrid } =
   await import("./wordgard-dataframes.mjs");
@@ -235,6 +235,33 @@ test("insertTable refuses to replace a selected node", () => {
     assert.equal(insertTable(editor), false);
     assert.equal(editor.state.doc.toString(), before);
     assert.match(before, /PagesDataframe/);
+  } finally {
+    editor.dom.remove();
+  }
+});
+
+test("insertTable refuses a node-selected rule, which has no atom label", () => {
+  const state = GardState.create({
+    doc: schema.doc([
+      Paragraph.create([Leaf.text("above")]),
+      HorizontalRule,
+      Paragraph.create([Leaf.text("below")]),
+    ]),
+    config: schema.elements.map((e) => GardState.schemaElement.of(e)),
+  });
+  const editor = new Wordgard({ state, parent: document.body });
+  try {
+    let at = -1;
+    editor.state.doc.content.reduce((pos, node) => {
+      if (node.type === HorizontalRule.type) at = pos;
+      return pos + node.size;
+    }, 0);
+    const rule = editor.state.doc.content.find((node) => node.type === HorizontalRule.type);
+    editor.dispatch({ selection: GardSelection.node(at, rule) });
+    assert.ok(editor.state.selection instanceof GardSelection.Node);
+    const before = editor.state.doc.toString();
+    assert.equal(insertTable(editor), false);
+    assert.equal(editor.state.doc.toString(), before);
   } finally {
     editor.dom.remove();
   }
