@@ -14,7 +14,13 @@ import {
 } from "./deployment/routes.mjs";
 import { isIndexRoute, readPageRoute } from "../shared/routes.mjs";
 import { deploymentProfile } from "./deployment/profiles.mjs";
-import { isolatedPublicationPlan, publishIsolated } from "./deployment/isolated-publication.mjs";
+import {
+  isolatedPublicationPlan,
+  publishIsolated,
+  runCommand,
+  unitActive,
+} from "./deployment/isolated-publication.mjs";
+import { execFileSync } from "node:child_process";
 
 const tunnelId = "12345678-1234-4123-8123-123456789abc";
 const accountId = "1cfb529b94b3d6cde3aaf49d1d6ed5e6";
@@ -169,8 +175,16 @@ function fixture(
           ? (changedFrozenPids.get(args[1]) ?? frozenPid)
           : "not-found";
       }
-      if (args[0] === "is-active")
-        return args[1] === service || activeUnits.has(args[1]) ? "active" : "inactive";
+      // Exit codes as systemctl reports them: is-active exits 0 only for an
+      // active unit, 3 for an inactive one and 4 for one systemd doesn't know.
+      // Lifecycle verbs on a unit without a unit file fail too.
+      const known = args[1] === service || fs.existsSync(local("/etc/systemd/system/" + args[1]));
+      if (args[0] === "is-active") {
+        if (args[1] === service || activeUnits.has(args[1])) return "active";
+        throw systemctlExit(known ? 3 : 4, "inactive");
+      }
+      if (["start", "restart", "stop"].includes(args[0]) && !known) throw systemctlExit(5, "");
+      if (["enable", "disable"].includes(args[0]) && !known) throw systemctlExit(1, "");
       if (args[0] === "restart") {
         if (activeUnits.delete(args[1])) snapshot();
         if (failRestart) {
@@ -253,6 +267,12 @@ function fixture(
     local,
   };
 }
+// The error runCommand throws for a non-zero exit: it keeps the status.
+const systemctlExit = (status, stdout) =>
+  Object.assign(Error("systemctl failed (status " + status + "); inspect restricted server logs"), {
+    status,
+    stdout,
+  });
 function connectorSlots(target) {
   const slots = deploymentProfile(target).tunnelSlots;
   return slots ? ["a", "b"].map((name) => ({ name, ...slots[name] })) : [];
@@ -2135,3 +2155,53 @@ for (const target of ["page10", "pages"]) {
     }
   });
 }
+
+test("unitActive is true only for exit 0 and `active`; any other exit means not active", () => {
+  const exits = (status, stdout) => () =>
+    runCommand("sh", ["-c", `echo ${stdout}; exit ${status}`]);
+  assert.equal(unitActive("x.service", exits(0, "active")), true);
+  assert.equal(unitActive("x.service", exits(0, "activating")), false);
+  for (const [status, state] of [
+    [3, "inactive"],
+    [3, "failed"],
+    [4, "inactive"],
+  ])
+    assert.equal(unitActive("x.service", exits(status, state)), false, `${status} ${state}`);
+  // publish.mjs runs execFileSync directly; its errors carry the status too.
+  assert.equal(
+    unitActive("x.service", () => execFileSync("sh", ["-c", "echo inactive; exit 3"])),
+    false,
+  );
+  // systemctl that can't run at all is not a unit state.
+  assert.throws(
+    () => unitActive("x.service", () => runCommand("/nonexistent/systemctl", [])),
+    /failed \(status null\)/,
+  );
+});
+
+// #4797's first real publish: Page10's legacy connector runs and neither slot
+// unit exists yet, so `systemctl is-active` exits 4 for both slots.
+for (const target of ["page10", "pages"])
+  test(`${target} first publish after slots migrates a running legacy connector whose slots systemd doesn't know`, (t) => {
+    const f = fixture(t, { target });
+    const x = legacyInstall(f, { config: "current" });
+    for (const slot of x.plan.slots) assert.equal(fs.existsSync(f.local(slot.unitPath)), false);
+    const result = f.execute();
+    const slotChecks = f.calls.filter(
+      ({ command, args }) =>
+        command === "systemctl" &&
+        args[0] === "is-active" &&
+        x.plan.slots.some((slot) => slot.service === args[1]),
+    );
+    assert.ok(slotChecks.length >= 2, "both unknown slots were checked");
+    assert.equal(result.connectorSlot, "a");
+    assert.equal(result.connectorHandoff, true);
+    assert.equal(installedReceipt(f), x.final);
+    assert.deepEqual(lifecycle(f), [
+      "start " + x.a,
+      "enable " + x.a,
+      "stop " + x.legacy,
+      "disable " + x.legacy,
+    ]);
+    assertNoGap(f);
+  });
