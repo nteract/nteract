@@ -216,6 +216,7 @@ import {
 import { PAGE_CARD_KEY, PageCardWriter } from "./page-card-writer.mjs";
 import { allowedPageCards, parsePageCardIds, readPageCards } from "./page-cards.mjs";
 import {
+  CARD_IMAGE_REVISION_KEY,
   CardImageGuard,
   authorizeCardImageUpload,
   cardImageRefusal,
@@ -876,6 +877,28 @@ async function invoke(request, env, operation, args = {}, seen) {
   );
 }
 
+/** Which of `ids` the caller's Catalog allows cards for (page-cards.mjs
+ * allowedPageCards): `{ body: { allowed, principal } }`, or `{ refused }`
+ * with the Catalog's own refusal. No Page document loads. */
+async function allowedCards(request, env, identity, ids) {
+  const internal = forwarded(request, "/internal/catalog", {
+    operation: "page_cards",
+    arguments: { page_ids: ids },
+  });
+  // An <img> fetch sends no Origin; this request is the gateway's own.
+  if (!internal.headers.has("origin"))
+    internal.headers.set("origin", new URL(env.NOTEBOOK_CLOUD_PUBLIC_ORIGIN || request.url).origin);
+  return withinToolDeadline(async (signal) => {
+    const response = await untilAborted(
+      env.CATALOGS.getByName(identity.principal).fetch(internal, { signal }),
+      signal,
+    );
+    // A refusal passes through as the Catalog wrote it, JSON or not.
+    if (response.status !== 200) return { refused: await bufferedResponse(response, signal) };
+    return { body: await readResponseJson(response, signal) };
+  });
+}
+
 /**
  * page_cards (page-cards.mjs). The caller's Catalog answers which IDs it
  * allows, from inside its serial queue; the card objects are read here,
@@ -884,19 +907,7 @@ async function invoke(request, env, operation, args = {}, seen) {
  */
 async function pageCards(request, env, identity, args) {
   const ids = parsePageCardIds(args.page_ids);
-  const body = { operation: "page_cards", arguments: { page_ids: ids } };
-  const decided = await withinToolDeadline(async (signal) => {
-    const response = await untilAborted(
-      env.CATALOGS.getByName(identity.principal).fetch(
-        forwarded(request, "/internal/catalog", body),
-        { signal },
-      ),
-      signal,
-    );
-    // A refusal passes through as the Catalog wrote it, JSON or not.
-    if (response.status !== 200) return { refused: await bufferedResponse(response, signal) };
-    return { body: await readResponseJson(response, signal) };
-  });
+  const decided = await allowedCards(request, env, identity, ids);
   if (decided.refused) return decided.refused;
   const allowed = Array.isArray(decided.body?.allowed) ? decided.body.allowed : [];
   const bucket = env.PAGES_ASSETS;
@@ -1296,7 +1307,12 @@ const gateway = {
           pageId,
           file,
           authorizeUpload: (args) => authorizeCardImage(request, env, pageId, args),
-          authorizeRead: () => authorizeImage(request, env, pageId, false),
+          // A card image is read where its card is: page_cards' decision.
+          authorizeRead: async (identity) => {
+            const decided = await allowedCards(request, env, identity, [pageId]);
+            return !decided.refused && decided.body?.allowed?.includes(pageId) === true;
+          },
+          recheckUpload: () => authorizeImage(request, env, pageId, false),
         });
       }
       if (url.pathname === "/api/access") {
@@ -5514,11 +5530,15 @@ export class Page {
               this.handle ? (await pageCard(this.handle.doc())).card_hash : null,
             guard: (this.cardImageGuard ??= new CardImageGuard()),
           });
+          // Admitted uploads are numbered in order, durably, so the bucket can
+          // refuse an older first screen that lands late (card-images.mjs).
+          const revision = ((await this.ctx.storage.get(CARD_IMAGE_REVISION_KEY)) ?? 0) + 1;
+          await this.ctx.storage.put(CARD_IMAGE_REVISION_KEY, revision);
           // The JSON card the grid compares against catches up from this
           // live request, so a Page untouched since cards shipped gets both.
           this.pageCard?.request();
           this.pageCard?.pump();
-          return json(accepted);
+          return json({ ...accepted, revision });
         } catch (error) {
           return cardImageRefusal(error, "card-image");
         }

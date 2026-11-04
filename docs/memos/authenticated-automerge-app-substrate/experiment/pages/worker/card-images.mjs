@@ -21,22 +21,24 @@
 // (`authorizeCardImageUpload`, run inside the Page object), never D1. The
 // host also requires the upload's hash to be the `card_hash` of its loaded
 // document, so a capture of an older first screen is refused, and allows one
-// upload per theme per minute. The server can't check that the pixels match
+// upload per theme per minute. Each admitted upload gets the host's next
+// revision, and the pointer refuses a swap to an older one (storeCardImage).
+// The server can't check that the pixels match
 // the content: that is the same trust as an image the owner inserts into the
 // Page, and only people who can read the Page see it.
 //
-// Who reads. `GET /api/pages/:id/card-image/<hash>-<theme>.<ext>` checks read
-// access with the Page host on every request and streams the object with a
-// private, immutable cache header: the hash is in the URL. No object URL
-// leaves the Worker. `page_cards` names an image only when the pointer's hash
+// Who reads. `GET /api/pages/:id/card-image/<hash>-<theme>.<ext>` decides
+// access as page_cards does, on every request, without loading the Page's
+// document (handleCardImage), and streams the object with a private,
+// immutable cache header: the hash is in the URL. No object URL leaves the
+// Worker. `page_cards` names an image only when the pointer's hash
 // is the stored JSON card's and both themes exist.
 import { authenticate, HttpError, errorResponse } from "./auth.mjs";
 import { validPageId } from "./registration.mjs";
 import { inspectImage, readImageBody } from "./image-assets.mjs";
+import { CARD_IMAGE_MAX_BYTES } from "../shared/card-images.mjs";
 
-/** The largest upload, in bytes. A 1280×960 WebP card is about 15–60 KB;
- * PNG from Safari runs larger. */
-export const CARD_IMAGE_MAX_BYTES = 300 * 1024;
+export { CARD_IMAGE_MAX_BYTES };
 /** The largest side an upload may have. Captures are 1280×960. */
 export const CARD_IMAGE_MAX_DIMENSION = 1600;
 export const CARD_IMAGE_THEMES = Object.freeze(["light", "dark"]);
@@ -52,6 +54,8 @@ const MEDIA_TYPES = Object.freeze(
 );
 const HASH = /^[0-9a-f]{64}$/;
 const FILE = /^([0-9a-f]{64})-(light|dark)\.(webp|png|jpg)$/;
+/** The Page host's storage key for its last card image revision. */
+export const CARD_IMAGE_REVISION_KEY = "host/card-image-revision";
 /** How many times a pointer swap re-reads after its put was refused. */
 const POINTER_ATTEMPTS = 3;
 
@@ -100,9 +104,11 @@ export async function readCardImagePointer(bucket, pageId) {
   const themes = {};
   for (const theme of CARD_IMAGE_THEMES)
     if (MEDIA_TYPES[metadata[theme]]) themes[theme] = metadata[theme];
+  const revision = Number(metadata.revision);
   return {
     etag: object.etag,
     card_hash: validCardHash(metadata.card_hash) ? metadata.card_hash : null,
+    revision: Number.isSafeInteger(revision) && revision > 0 ? revision : 0,
     themes,
   };
 }
@@ -132,20 +138,44 @@ export function cardImageView(pageId, pointer) {
  * pointer swap is fenced on the etag it read; a refused put reads again, up
  * to POINTER_ATTEMPTS times. Once the swap lands, images the previous
  * pointer named and this one doesn't are deleted.
+ *
+ * The etag orders writes to the bucket, not first screens. `revision` does:
+ * the Page host hands out one per admitted upload, in order, from durable
+ * storage, and admits only its current `card_hash`, so a later revision is
+ * always a later (or the same) first screen. The pointer keeps the highest
+ * revision it has seen, and a swap to another hash with a lower revision is
+ * refused as stale (409), its image deleted. Uploads of the same hash merge
+ * whatever their order.
  */
-export async function storeCardImage(bucket, { pageId, hash, theme, bytes, contentType }) {
+export async function storeCardImage(
+  bucket,
+  { pageId, hash, theme, bytes, contentType, revision = 0 },
+) {
   const inspected = matchesContentType(inspectCardImage(bytes), contentType);
-  await bucket.put(cardImageKey(pageId, hash, theme, inspected.ext), bytes, {
+  const imageKey = cardImageKey(pageId, hash, theme, inspected.ext);
+  await bucket.put(imageKey, bytes, {
     httpMetadata: { contentType: inspected.mime_type, cacheControl: "private, no-store" },
     customMetadata: { page_id: pageId, card_hash: hash, theme },
   });
   for (let attempt = 0; attempt < POINTER_ATTEMPTS; attempt++) {
     const previous = await readCardImagePointer(bucket, pageId);
     const same = previous?.card_hash === hash;
+    if (previous && !same && previous.revision > revision) {
+      // A later first screen's image landed first. This upload was admitted
+      // for an older one; its image is an orphan no pointer names.
+      await bucket.delete(imageKey).catch(() => {});
+      throw new HttpError(409, "This card image is for an older first screen", "card_image_stale");
+    }
     const themes = { ...(same ? previous.themes : {}), [theme]: inspected.ext };
+    const kept = same ? Math.max(previous.revision, revision) : revision;
     const written = await bucket.put(cardImagePointerKey(pageId), "", {
       httpMetadata: { contentType: "application/octet-stream" },
-      customMetadata: { card_hash: hash, light: themes.light ?? "", dark: themes.dark ?? "" },
+      customMetadata: {
+        card_hash: hash,
+        revision: String(kept),
+        light: themes.light ?? "",
+        dark: themes.dark ?? "",
+      },
       onlyIf: previous ? { etagMatches: previous.etag } : { etagDoesNotMatch: "*" },
     });
     if (!written) continue;
@@ -158,7 +188,7 @@ export async function storeCardImage(bucket, { pageId, hash, theme, bytes, conte
           .filter((key) => !keep.has(key))
       : [];
     await Promise.allSettled(stale.map((key) => bucket.delete(key)));
-    return { etag: written.etag, card_hash: hash, themes };
+    return { etag: written.etag, card_hash: hash, revision: kept, themes };
   }
   throw new HttpError(503, "Card image storage is busy; try again", "card_image_busy");
 }
@@ -271,20 +301,27 @@ function cardImageHeaders(response, cache = "private, no-store") {
 
 /**
  * The card image routes, at the Worker edge. Bytes never enter a Durable
- * Object; the Page host answers short access checks only.
+ * Object.
  *
  * - `PUT /api/pages/:id/card-image?hash=&theme=`: the owner's upload.
- *   `authorizeUpload({ hash, theme })` runs the host's check. After the
- *   write, `authorizeRead()` runs again: a Page purged meanwhile admits no
- *   one, and its card images are deleted here.
+ *   `authorizeUpload({ hash, theme })` is the Page host's check; it answers
+ *   `{ revision }` (see storeCardImage). After the write, `recheckUpload()`
+ *   asks the host again: a Page purged meanwhile admits no one, and its card
+ *   images are deleted here.
  * - `GET /api/pages/:id/card-image`: the stored image's hash, for the
  *   owner's scheduler: `{ card_hash }`, null until both themes exist.
  * - `GET|HEAD /api/pages/:id/card-image/<hash>-<theme>.<ext>`: the image.
+ *
+ * Both reads ask `authorizeRead(identity)`, the decision page_cards makes:
+ * the caller's own Catalog entry for an owned Page, or its shared entry and
+ * the Page host's record-only check (page-startup.mjs) for a shared one. A
+ * grid of image cards boots no Page document, and a revoked grant fails the
+ * host's check on the next fetch. A refusal reads as "not found".
  */
 export async function handleCardImage(
   request,
   env,
-  { pageId, file, authorizeUpload, authorizeRead },
+  { pageId, file, authorizeUpload, authorizeRead, recheckUpload },
 ) {
   try {
     if (!validPageId(pageId)) throw new HttpError(400, "Invalid page_id", "invalid_page_id");
@@ -300,19 +337,25 @@ export async function handleCardImage(
     const theme = url.searchParams.get("theme");
     if (upload && (!validCardHash(hash) || !validCardTheme(theme)))
       throw new HttpError(400, "Invalid card hash or theme", "invalid_card_image");
-    await authenticate(request, env);
+    const identity = await authenticate(request, env);
     // An upload's bytes are read and checked before the host's check, so a
     // malformed body never spends the theme's one upload a minute.
     let bytes;
+    let revision = 0;
     if (upload) {
       bytes = await readImageBody(request, {
         maxBytes: CARD_IMAGE_MAX_BYTES,
         tooLarge: "Card images must be 300 KB or smaller",
       });
       matchesContentType(inspectCardImage(bytes), request.headers.get("content-type"));
+      const access = await authorizeUpload({ hash, theme });
+      if (!access.ok) return cardImageHeaders(access);
+      revision = (await access.json()).revision;
+      if (!Number.isSafeInteger(revision) || revision < 1)
+        throw new Error("The Page host answered no card image revision");
+    } else if (!(await authorizeRead(identity))) {
+      throw new HttpError(404, "Card image not found");
     }
-    const access = upload ? await authorizeUpload({ hash, theme }) : await authorizeRead();
-    if (!access.ok) return cardImageHeaders(access);
     const bucket = env.PAGES_ASSETS;
     if (!bucket) throw new HttpError(503, "Image storage is unavailable");
     if (upload) {
@@ -322,8 +365,9 @@ export async function handleCardImage(
         theme,
         bytes,
         contentType: request.headers.get("content-type"),
+        revision,
       });
-      const current = await authorizeRead();
+      const current = await recheckUpload();
       if (!current.ok) {
         await deleteCardImages(bucket, pageId).catch(() => {});
         return cardImageHeaders(current);

@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import * as A from "@automerge/automerge";
-import worker from "./index.mjs";
+import zlib from "node:zlib";
+import worker, { Page } from "./index.mjs";
 import { proposeAccessUpdate } from "./access.mjs";
 import { cardKey, pageCard } from "../model/page-card.mjs";
 import { PAGE_CARD_KEY } from "./page-card-writer.mjs";
@@ -17,6 +18,7 @@ import {
   readCardImagePointer,
   storeCardImage,
 } from "./card-images.mjs";
+import { CARD_IMAGE_MAX_BYTES as SHARED_MAX_BYTES } from "../shared/card-images.mjs";
 
 // Real rasters (the image-assets fixtures, encoded by Pillow).
 const fixtures = {
@@ -95,6 +97,15 @@ async function setRole(w, pageId, principal, role) {
   host.metadata = { ...host.metadata, acl };
   await host.ctx.storage.put("host/document", host.metadata);
 }
+
+const discover = (w, principal, pageId) =>
+  w.catalogStorage(principal).put(`shared/${pageId}`, {
+    page_id: pageId,
+    title: "Shared",
+    created_at: new Date().toISOString(),
+    updated_at: new Date().toISOString(),
+    shared: true,
+  });
 
 test("the owner uploads both themes; the pointer names the hash once both land", async (t) => {
   const { w, assets, hashOf, create, send, upload } = await imagesWorld(t);
@@ -214,7 +225,11 @@ test("images are served only to readers, with private immutable caching", async 
   const stranger = await send("stranger", "GET", path);
   assert.ok([403, 404].includes(stranger.status), String(stranger.status));
   assert.equal(stranger.headers.get("content-type")?.startsWith("image/"), false);
+  // A grant alone isn't enough: the read is page_cards' decision, which also
+  // needs the Page in the member's listing (her shared entry).
   await setRole(w, pageId, w.member, "viewer");
+  assert.equal((await send("member", "GET", path)).status, 404);
+  await discover(w, w.member, pageId);
   assert.equal((await send("member", "GET", path)).status, 200);
   assert.equal((await send("reader", "GET", path)).status, 200, "a read-only key reads");
   await setRole(w, pageId, w.member, null);
@@ -341,13 +356,200 @@ test("a pointer swap refused by its fence reads again and keeps both themes", as
   });
 });
 
-test("inspectCardImage refuses large dimensions", () => {
-  // A PNG header claiming 4000×10 never reaches the dimension check without
-  // a valid container, so check the limit on a real fixture's reading.
+/** The 3×2 PNG fixture with its IHDR claiming `width`×`height` and a valid
+ * CRC, so only the dimension check can refuse it. */
+function sizedPng(width, height) {
+  const png = bytes("png").slice();
+  const view = new DataView(png.buffer);
+  view.setUint32(16, width);
+  view.setUint32(20, height);
+  view.setUint32(29, zlib.crc32(png.subarray(12, 29)));
+  return png;
+}
+
+test("inspectCardImage reads each format and refuses an oversized body or side", () => {
   assert.equal(inspectCardImage(bytes("png")).ext, "png");
   assert.equal(inspectCardImage(bytes("webp")).ext, "webp");
   assert.equal(inspectCardImage(bytes("jpeg")).ext, "jpg");
+  assert.equal(SHARED_MAX_BYTES, CARD_IMAGE_MAX_BYTES);
   assert.throws(() => inspectCardImage(new Uint8Array(CARD_IMAGE_MAX_BYTES + 1)), {
     status: 413,
+    code: "card_image_too_large",
   });
+  assert.deepEqual(
+    { width: inspectCardImage(sizedPng(1600, 1200)).width, ext: "png" },
+    { width: 1600, ext: "png" },
+  );
+  for (const [width, height] of [
+    [1601, 10],
+    [10, 1601],
+  ])
+    assert.throws(() => inspectCardImage(sizedPng(width, height)), {
+      status: 413,
+      code: "card_image_too_large",
+      message: "Card image dimensions are too large",
+    });
+});
+
+test("a 1601-pixel-wide upload is refused before the host's check", async (t) => {
+  const { assets, create, upload } = await imagesWorld(t);
+  const pageId = await create();
+  const refused = await upload("owner", pageId, { body: sizedPng(1601, 10), type: "image/png" });
+  assert.equal(refused.status, 413, JSON.stringify(refused.body));
+  assert.equal(refused.body.code, "card_image_too_large");
+  // The refusal spent nothing: the next upload is admitted.
+  assert.equal((await upload("owner", pageId)).status, 201);
+  assert.ok(assets.objects.has(cardImagePointerKey(pageId)));
+});
+
+test("reading a card image boots no Page document", async (t) => {
+  const { w, hashOf, create, send, upload } = await imagesWorld(t);
+  const pageId = await create();
+  const hash = await hashOf(pageId);
+  await upload("owner", pageId, { theme: "light" });
+  await upload("owner", pageId, { theme: "dark" });
+  await setRole(w, pageId, w.member, "viewer");
+  await discover(w, w.member, pageId);
+  // Count what reaches this Page's host from here on.
+  const boots = t.mock.method(Page.prototype, "documentReady");
+  const reached = [];
+  const getByName = w.env.PAGES.getByName;
+  w.env.PAGES.getByName = (id) => {
+    const target = getByName(id);
+    return {
+      fetch: (request, init) => {
+        if (id === pageId) reached.push(new URL(request.url).pathname);
+        return target.fetch(request, init);
+      },
+    };
+  };
+  const ofThisPage = () => boots.mock.calls.filter((call) => call.this?.ctx?.id?.name === pageId);
+  const path = `/api/pages/${pageId}/card-image/${hash}-light.webp`;
+  for (let i = 0; i < 3; i++) assert.equal((await send("owner", "GET", path)).status, 200);
+  assert.equal((await send("owner", "GET", `/api/pages/${pageId}/card-image`)).status, 200);
+  assert.deepEqual(reached, [], "the owner's reads never reach the Page host");
+  assert.equal(ofThisPage().length, 0);
+  // A member's read asks the host the shared-Page question only, the check
+  // list_pages and page_cards already make. A cold host answers it from its
+  // record without booting (page-startup-host.test.mjs); this fixture's host
+  // is already booted, so it answers from the loaded document.
+  assert.equal((await send("member", "GET", path)).status, 200);
+  assert.deepEqual(reached, ["/internal/catalog"]);
+  // And a revoked grant fails that check on the very next read.
+  await setRole(w, pageId, w.member, null);
+  assert.equal((await send("member", "GET", path)).status, 404);
+  assert.deepEqual(reached, ["/internal/catalog", "/internal/catalog"]);
+  assert.ok(
+    !reached.includes("/internal/assets/authorize"),
+    "no read goes through the host's full request path",
+  );
+});
+
+test("a late upload for an older first screen never replaces a newer pointer", async () => {
+  const assets = cardBucket();
+  const pageId = "11111111-1111-4111-8111-111111111111";
+  const H1 = "1".repeat(64);
+  const H2 = "2".repeat(64);
+  const store = (hash, theme, revision) =>
+    storeCardImage(assets, { pageId, hash, theme, bytes: bytes("webp"), revision });
+  // H1 was admitted (revision 1), then the Page moved on and H2 was
+  // admitted twice (2, 3) and landed; H1's request reaches the bucket last.
+  await store(H2, "light", 2);
+  await store(H2, "dark", 3);
+  await assert.rejects(store(H1, "light", 1), { status: 409, code: "card_image_stale" });
+  const pointer = await readCardImagePointer(assets, pageId);
+  assert.equal(pointer.card_hash, H2);
+  assert.equal(pointer.revision, 3);
+  assert.ok(assets.objects.has(cardImageKey(pageId, H2, "light", "webp")));
+  assert.ok(assets.objects.has(cardImageKey(pageId, H2, "dark", "webp")));
+  assert.equal(assets.objects.has(cardImageKey(pageId, H1, "light", "webp")), false);
+  // Same-hash uploads merge in any order and keep the higher revision.
+  await store(H2, "light", 2);
+  assert.equal((await readCardImagePointer(assets, pageId)).revision, 3);
+  // A newer first screen still replaces it.
+  await store(H1, "light", 4);
+  assert.equal((await readCardImagePointer(assets, pageId)).card_hash, H1);
+});
+
+test("two first screens racing to the pointer: the older one loses even if its put is retried", async () => {
+  const assets = cardBucket();
+  const pageId = "11111111-1111-4111-8111-111111111111";
+  const H1 = "1".repeat(64);
+  const H2 = "2".repeat(64);
+  // H1 (revision 1) reads the pointer first, then waits while H2 (revision 2)
+  // swaps it; H1's fenced put is refused, it reads again and sees H2.
+  let release;
+  const held = new Promise((resolve) => (release = resolve));
+  let first = true;
+  assets.beforePut = async (key) => {
+    if (key === cardImagePointerKey(pageId) && first) {
+      first = false;
+      await held;
+    }
+  };
+  const older = storeCardImage(assets, {
+    pageId,
+    hash: H1,
+    theme: "dark",
+    bytes: bytes("webp"),
+    revision: 1,
+  });
+  await new Promise((resolve) => setTimeout(resolve, 5));
+  await storeCardImage(assets, {
+    pageId,
+    hash: H2,
+    theme: "light",
+    bytes: bytes("webp"),
+    revision: 2,
+  });
+  release();
+  await assert.rejects(older, { status: 409, code: "card_image_stale" });
+  const pointer = await readCardImagePointer(assets, pageId);
+  assert.equal(pointer.card_hash, H2);
+  assert.deepEqual([...assets.objects.keys()].filter((key) => key.includes("/card/")).sort(), [
+    cardImageKey(pageId, H2, "light", "webp"),
+    cardImagePointerKey(pageId),
+  ]);
+});
+
+test("each admitted upload gets the host's next revision, kept in its storage", async (t) => {
+  const { w, assets, create, upload } = await imagesWorld(t);
+  const pageId = await create();
+  await upload("owner", pageId, { theme: "light" });
+  await upload("owner", pageId, { theme: "dark" });
+  assert.equal(await w.page(pageId).ctx.storage.get("host/card-image-revision"), 2);
+  assert.equal((await readCardImagePointer(assets, pageId)).revision, 2);
+});
+
+test("a purge that lands between the host's check and the write deletes what the write stored", async (t) => {
+  const { w, assets, create, upload } = await imagesWorld(t);
+  const pageId = await create();
+  // The upload passes the host's check while the Page is active.
+  let purged = null;
+  assets.beforePut = async (key) => {
+    if (purged || !key.endsWith("-light.webp")) return;
+    // The image is about to land: the owner trashes and purges the Page.
+    const again = await w.call("owner", "delete_page", {
+      page_id: pageId,
+      base_heads: w.heads(pageId),
+      idempotency_key: w.key(),
+    });
+    assert.equal(again.status, 200, JSON.stringify(again.body));
+    const confirm = await w.call("owner", "purge_page", { page_id: pageId, action: "preview" });
+    purged = await w.call("owner", "purge_page", {
+      page_id: pageId,
+      action: "confirm",
+      preview_token: confirm.body.preview_token,
+      idempotency_key: w.key(),
+    });
+    while (w.jobs.length) await Promise.allSettled(w.jobs.splice(0));
+  };
+  const answer = await upload("owner", pageId, { theme: "light" });
+  assert.equal(purged?.status, 200, JSON.stringify(purged?.body));
+  assert.notEqual(answer.status, 201, JSON.stringify(answer.body));
+  assert.deepEqual(
+    [...assets.objects.keys()].filter((key) => key.startsWith(`pages/${pageId}/`)),
+    [],
+    "the cleanup after the write removed the image and its pointer",
+  );
 });

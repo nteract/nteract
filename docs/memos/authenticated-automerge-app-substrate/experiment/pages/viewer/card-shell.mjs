@@ -22,14 +22,13 @@ import { cardContent } from "../model/page-card.mjs";
 import { isRich, textPath } from "../model/richtext.mjs";
 import { decode } from "./wordgard-model.mjs";
 import { readOnlyPageConfig } from "./wordgard-page-config.mjs";
+import { CARD_IMAGE_MAX_BYTES } from "../shared/card-images.mjs";
 
 /** The card's first screen in CSS pixels: the grid card's 4:3 body. */
 export const CARD_WIDTH = 640;
 export const CARD_HEIGHT = 480;
 /** Device pixels per CSS pixel in the image: 1280×960. */
 export const CARD_SCALE = 2;
-/** The upload route's limit (worker/card-images.mjs). */
-export const CARD_IMAGE_MAX_BYTES = 300 * 1024;
 /** Top-level nodes and text the shell renders: well past one screen. */
 const MAX_NODES = 24;
 const MAX_TEXT = 4_000;
