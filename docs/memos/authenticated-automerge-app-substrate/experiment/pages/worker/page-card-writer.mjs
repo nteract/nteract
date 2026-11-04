@@ -21,8 +21,9 @@ import { defineMachine, reject } from "../shared/machine.mjs";
  * - idle: `stored` is the hash last written (null: none).
  * - queued: a write waits for a live request to start it.
  * - writing: a write is running; `again` asks for another once it ends.
- * - stopped: the Page is being deleted. Terminal, so a late outcome can't
- *   put a card back after the host deleted it.
+ * - stopped: the host is going away: the Page is being deleted, or this
+ *   object is retiring (an abandoned boot, a closed policy, a storage
+ *   migration). Terminal, so a late outcome changes nothing.
  *
  * Events: `restored` (the stored hash), `requested`, `start` (a live request), `written` (the hash now
  * stored), `failed`, `stop`.
@@ -126,6 +127,7 @@ export const pageCardWriterMachine = defineMachine({
 export class PageCardWriter {
   #state = pageCardWriterMachine.initial;
   #restored;
+  #deleting = false;
   constructor({ build, store, storage, hold = () => {}, onError = () => {} }) {
     this.build = build;
     this.store = store;
@@ -159,9 +161,13 @@ export class PageCardWriter {
     if (this.#state.name === "queued") this.#step({ type: "start" });
   }
 
-  /** Terminal. A write already running finishes, and removes its object if
-   * it landed after the stop. */
-  stop() {
+  /** Terminal. A write already running finishes without storing its hash.
+   * With `deleting` (the Page is being deleted), a put that lands after the
+   * stop removes its own object, so it can't outlive the host's delete. A
+   * retiring object leaves its object: it is a card of the Page as it is,
+   * and the next host's first flush compares against the stored hash. */
+  stop({ deleting = false } = {}) {
+    this.#deleting ||= deleting;
     this.#step({ type: "stop" });
   }
 
@@ -182,7 +188,7 @@ export class PageCardWriter {
         await this.store.put(bundle);
         if (this.#state.name === "stopped") {
           // The host deleted the Page while this put ran.
-          await this.store.delete();
+          if (this.#deleting) await this.store.delete();
           return;
         }
         await this.storage.put(PAGE_CARD_KEY, { card_hash: bundle.card_hash });

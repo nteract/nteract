@@ -15,15 +15,23 @@
 //   and reads as Mermaid.
 // - Task checkboxes keep only whether they are checked.
 //
-// `card_hash` hashes exactly the title, blocks and `truncated` flag the card
-// holds, so an edit below the fold leaves it unchanged and the host skips
-// the write. `rich` says the first screen holds Mermaid, a dataframe or an
+// `card_hash` hashes CARD_BUILDER_VERSION and exactly the title, blocks and
+// `truncated` flag the card holds, so an edit below the fold leaves it
+// unchanged and the host skips the write, while a build that renders cards
+// differently rewrites each one on its Page's next flush. `rich` says the first screen holds Mermaid, a dataframe or an
 // image, which the JSON card can only stand in for. Nothing reads it yet.
 import { isRich, richDoc } from "./richtext.mjs";
 import { orderedBlockIds } from "./order.mjs";
 import { renderNode } from "./page-preview.mjs";
 
 export const CARD_VERSION = 1;
+/**
+ * The builder's own version, hashed into `card_hash`. Bump it whenever this
+ * module renders the same document differently (an override, a placeholder,
+ * the budget), so each Page's next flush rewrites its stored card. It isn't
+ * the bundle's `v`: readers don't need to know it.
+ */
+export const CARD_BUILDER_VERSION = 1;
 /** The most UTF-8 bytes the serialized `blocks` array may take. */
 export const CARD_BLOCKS_MAX_BYTES = 8 * 1024;
 /** The longest title a card keeps, in code points. */
@@ -236,11 +244,15 @@ export function cardContent(doc, { maxBytes = CARD_BLOCKS_MAX_BYTES } = {}) {
   return { title, blocks, truncated, rich: blocks.some((block) => holdsRich(block.content)) };
 }
 
-/** SHA-256 over exactly what the card shows, as lowercase hex. */
-export async function cardHash({ title, blocks, truncated }) {
+/** SHA-256 over the builder version and exactly what the card shows, as
+ * lowercase hex. */
+export async function cardHash(
+  { title, blocks, truncated },
+  { builderVersion = CARD_BUILDER_VERSION } = {},
+) {
   const digest = await crypto.subtle.digest(
     "SHA-256",
-    encoder.encode(JSON.stringify([title, blocks, truncated])),
+    encoder.encode(JSON.stringify([builderVersion, title, blocks, truncated])),
   );
   return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
 }

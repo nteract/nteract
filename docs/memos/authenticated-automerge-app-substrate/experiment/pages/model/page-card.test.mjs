@@ -4,6 +4,8 @@ import * as A from "@automerge/automerge";
 import { applyPageOperation, createPageData, initializePage, orderedBlockIds } from "./page.mjs";
 import {
   CARD_BLOCKS_MAX_BYTES,
+  CARD_BUILDER_VERSION,
+  cardHash,
   CARD_MAX_NODES,
   cardContent,
   cardKey,
@@ -288,4 +290,14 @@ test("readStoredCard keeps only the card fields and refuses other versions", () 
       rich: false,
     },
   );
+});
+
+test("bumping the builder version changes the hash of the same content", async (t) => {
+  const doc = page("Hello");
+  t.after(() => A.free(doc));
+  const content = cardContent(doc);
+  const current = await cardHash(content);
+  assert.equal((await pageCard(doc)).card_hash, current);
+  assert.equal(await cardHash(content, { builderVersion: CARD_BUILDER_VERSION }), current);
+  assert.notEqual(await cardHash(content, { builderVersion: CARD_BUILDER_VERSION + 1 }), current);
 });

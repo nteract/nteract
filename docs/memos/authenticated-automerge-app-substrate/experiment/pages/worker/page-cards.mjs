@@ -3,7 +3,9 @@
 //
 // - An owned ID needs this account's own `page/<id>` entry, settled (not a
 //   pending creation or a reservation). A trashed Page sits under `trash/`,
-//   so it has no card here.
+//   so it answers null here. Trash keeps the card object on purpose: a
+//   restore moves the entry back to `page/` and the card shows at once,
+//   without waiting for an edit. Only a purge or tombstone deletes it.
 // - A shared ID needs this account's `shared/<id>` entry and a fresh check
 //   by its Page host with the caller's own credentials (`verifyShared`, the
 //   metadata check page-startup.mjs answers without booting). A revoked

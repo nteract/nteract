@@ -3677,7 +3677,7 @@ export class Page {
    * removes its own object (page-card-writer.mjs). */
   async forgetContent() {
     this.contentActivity?.stop();
-    this.pageCard?.stop();
+    this.pageCard?.stop({ deleting: true });
     this.unwatchContent();
     await this.ctx.storage.delete(CONTENT_ACTIVITY_KEY);
     await this.ctx.storage.delete(TITLE_PROJECTION_KEY);
@@ -5125,6 +5125,9 @@ export class Page {
     this.recordMaintenance?.stop();
     this.actorPersistence?.stop?.();
     this.contentActivity?.stop();
+    // The card object and host/card stay: the plain host serves the same
+    // Page and its first flush compares against the stored hash.
+    this.pageCard?.stop();
     this.unwatchContent();
     for (const close of [
       () => this.policy?.close?.(),

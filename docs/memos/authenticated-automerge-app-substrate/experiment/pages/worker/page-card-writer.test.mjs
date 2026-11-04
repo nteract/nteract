@@ -218,20 +218,27 @@ test("a request during a write runs one more write in the same request", async (
   assert.deepEqual(h.writer.state, { name: "idle", stored: H2 });
 });
 
-test("a stop during a put removes the object it landed and stores no hash", async () => {
+test("a deleting stop during a put removes the object it landed and stores no hash", async () => {
   let release;
   const gate = new Promise((resolve) => (release = resolve));
+  let entered;
+  const putting = new Promise((resolve) => (entered = resolve));
   const h = harness({ cards: [card(H1)] });
+  let landed = false;
   h.writer.store.put = async (bundle) => {
+    entered();
     await gate;
     h.objects.set("card", bundle);
+    landed = true;
   };
   await h.writer.restore();
   h.writer.request();
   h.writer.pump();
-  h.writer.stop();
+  await putting;
+  h.writer.stop({ deleting: true });
   release();
   await h.settle();
+  assert.equal(landed, true, "the put landed after the stop");
   assert.equal(h.objects.has("card"), false);
   assert.equal(h.values.has(PAGE_CARD_KEY), false);
   assert.equal(h.errors.length, 0);
@@ -245,4 +252,29 @@ test("nothing to build (no document, a Page that isn't active) writes nothing", 
   await h.settle();
   assert.equal(h.objects.size, 0);
   assert.deepEqual(h.writer.state, { name: "idle", stored: null });
+});
+
+test("a retiring stop during a put keeps the object and stores no hash", async () => {
+  let release;
+  const gate = new Promise((resolve) => (release = resolve));
+  let entered;
+  const putting = new Promise((resolve) => (entered = resolve));
+  const h = harness({ cards: [card(H1)] });
+  h.writer.store.put = async (bundle) => {
+    entered();
+    await gate;
+    h.objects.set("card", bundle);
+  };
+  await h.writer.restore();
+  h.writer.request();
+  h.writer.pump();
+  await putting;
+  // An abandoned boot, a closed policy or a storage migration: the Page
+  // lives on under the next host.
+  h.writer.stop();
+  release();
+  await h.settle();
+  assert.deepEqual(h.objects.get("card"), card(H1));
+  assert.equal(h.values.has(PAGE_CARD_KEY), false);
+  assert.equal(h.errors.length, 0);
 });

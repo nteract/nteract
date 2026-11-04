@@ -156,3 +156,22 @@ test("a host without a Page assets bucket has no card writer", async (t) => {
   });
   assert.equal(edit.status, 200, JSON.stringify(edit.body));
 });
+
+test("a host retired by a storage migration stops its writer and keeps the card", async (t) => {
+  const assets = bucket();
+  const f = await fixture(t, { env: { PAGES_ASSETS: assets } });
+  await emitting(f.page).watchContent();
+  const edit = await f.tool("owner", "edit_page", {
+    operations: [{ op: "insert_markdown", markdown: "# Before the move", after_block_id: null }],
+    base_heads: f.heads(),
+    idempotency_key: "card-migrate",
+  });
+  assert.equal(edit.status, 200, JSON.stringify(edit.body));
+  await settle(f);
+  const card = stored(assets);
+  await f.page.retireMigratedHost();
+  assert.equal(f.page.pageCard.state.name, "stopped");
+  // The plain host that boots next reads the same object and stored hash.
+  assert.deepEqual(stored(assets), card);
+  assert.deepEqual(await f.storage.get(PAGE_CARD_KEY), { card_hash: card.card_hash });
+});

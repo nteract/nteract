@@ -2397,8 +2397,9 @@ doesn't fit is clipped to its leading children and text (a table keeps whole
 rows), and the card ends there. Images become a placeholder with their alt
 text, never bytes or a URL; a dataframe becomes a placeholder with its title;
 links lose their `href`; a code block names its language, so Mermaid stays code.
-`card_hash` hashes exactly the title, blocks and `truncated`, so an edit below
-the fold changes nothing. `rich` says the card holds Mermaid, a dataframe or
+`card_hash` hashes `CARD_BUILDER_VERSION` and exactly the title, blocks and
+`truncated`, so an edit below the fold changes nothing, and bumping the version
+for a builder change rewrites each card on its Page's next flush. `rich` says the card holds Mermaid, a dataframe or
 an image, which the JSON can only stand in for; nothing reads it yet.
 
 The card is written beside each content-activity flush and nowhere else
@@ -2411,8 +2412,12 @@ crash between them writes the same card again. A failed write is logged and
 retried by the next flush; it never fails the flush or the edit. A Page that
 hasn't changed since cards shipped has none until its next edit, and the grid
 keeps its icon. A purge or tombstone deletes the object and `host/card` with the
-content time; a write that lands after the stop deletes its own object. Trash
-keeps the card, which `page_cards` won't serve while the Page is trashed.
+content time; a write that lands after the stop deletes its own object. A host
+that retires without a deletion (an abandoned boot, a storage migration) stops
+its writer and leaves the object and `host/card`, which the next host, plain or
+native, compares against. Trash keeps the card on purpose: `page_cards` answers
+`null` while the Page is trashed, and a restore shows the card at once rather
+than after the next edit.
 
 `page_cards` (`/api/tools` only) takes up to 24 `page_ids` and runs in the
 caller's Catalog with `list_pages`' rules
