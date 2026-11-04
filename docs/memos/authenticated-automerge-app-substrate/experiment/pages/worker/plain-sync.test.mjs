@@ -12,6 +12,11 @@ import { Page, recordStorageFor, registeredRecordStorage } from "./index.mjs";
 import { HOST_SENDER_ID, PlainByteStore } from "./plain-sync.mjs";
 import { documentMutation } from "./mutations.mjs";
 import { applyComment } from "../model/comments.mjs";
+import { pmNodeToSpans } from "@automerge/prosemirror";
+import { adapter, schema, textPath } from "../model/richtext.mjs";
+import { hasPreservedBlocks } from "../model/raw-migration.mjs";
+import { legacyComment } from "../model/comments-test-support.mjs";
+import { INTERNAL_PREFIX } from "./operation-journal.mjs";
 
 class Storage {
   values = new Map();
@@ -197,7 +202,8 @@ test("the host prefix survives restart and rejects unseen browser actors without
     const changes = A.getAllChanges(host.handle.doc())
       .map(A.decodeChange)
       .filter((c) => c.actor.startsWith(prefix));
-    assert.equal(changes.length, n);
+    // Both API edits and the preceding direct handle changes use host actors.
+    assert.equal(changes.length, 2 * n - 1);
     assert.ok(changes.every((c) => c.seq === 1));
     assert.ok(changes.every((c) => host.plain.host.actor(c.actor) === undefined));
     assert.deepEqual(
@@ -258,6 +264,233 @@ test("the host prefix survives restart and rejects unseen browser actors without
   assert.deepEqual(f.storage.values, before);
   A.free(forged);
 });
+
+for (const ambiguous of [false, true])
+  test(`API-only append recovery keeps reads and identical retries live (ambiguous: ${ambiguous})`, async (t) => {
+    const f = await fixture(t);
+    f.env.CATALOGS = { getByName: () => ({ fetch: async () => Response.json({ ok: true }) }) };
+    const host = f.page();
+    assert.ok((await f.register(host)).ok);
+    await host.flush();
+    const before = host.handle.doc();
+    const args = {
+      base_heads: A.getHeads(before),
+      idempotency_key: "append-recovery",
+      operations: [{ op: "set_title", title: "API recovered" }],
+    };
+    let failures = 2;
+    const put = f.storage.put.bind(f.storage);
+    t.mock.method(f.storage, "put", async (key, value) => {
+      if (
+        failures > 0 &&
+        typeof key === "object" &&
+        Object.keys(key).some((k) => k.startsWith("plain/sync/") && k.endsWith("/m2"))
+      ) {
+        failures--;
+        if (ambiguous) await put(key, value);
+        throw Error("history append failed");
+      }
+      return put(key, value);
+    });
+    const events = [];
+    host.handle.on("heads-changed", (event) => events.push(event));
+    const first = await tool(f, host, "edit_page", args);
+    assert.equal(first.status, ambiguous ? 200 : 500, await first.clone().text());
+    assert.equal(failures, ambiguous ? 1 : 0);
+    if (!ambiguous) assert.deepEqual(host.handle.doc(), before);
+    assert.equal(host.handle.doc().title, ambiguous ? "API recovered" : "Plain Page");
+    assert.equal(events.length, ambiguous ? 1 : 0);
+    const pending = await f.storage.get("host/operation/append-recovery");
+    assert.equal(pending.pending, !ambiguous);
+    const read = await tool(f, host, "read_page", { comments: "none" });
+    assert.equal(read.status, 200, await read.clone().text());
+    assert.equal((await read.json()).title, ambiguous ? "API recovered" : "Plain Page");
+    const retry = await tool(f, host, "edit_page", args);
+    assert.equal(retry.status, 200, await retry.clone().text());
+    const receipt = await retry.json();
+    for (const [key, value] of Object.entries(pending.receipt))
+      assert.deepEqual(receipt[key], value);
+    assert.equal(host.handle.doc().title, "API recovered");
+    assert.equal(events.length, 1);
+    const saved = await host.fetch(
+      new Request("https://pages.invalid/api/saved", {
+        method: "POST",
+        headers: { authorization: `Bearer ${f.token}`, "x-pages-driver": "ChatGPT" },
+        body: JSON.stringify({ heads: receipt.heads, schema_features: BUILD_FEATURES }),
+      }),
+    );
+    assert.equal(saved.status, 200, await saved.clone().text());
+    assert.deepEqual((await saved.json()).durableHeads, receipt.heads);
+    assert.equal((await tool(f, host, "edit_page", args)).status, 200);
+    assert.equal(A.getChanges(before, host.handle.doc()).length, 1);
+    assert.equal(events.length, 1);
+    assert.equal(host.plain.host.connections().length, 0);
+  });
+
+for (const failures of [0, 1, 2])
+  test(`real plain Page migrates preserved Markdown and legacy comments under its fence (${failures} append failures)`, async (t) => {
+    const f = await fixture(t);
+    f.env.CATALOGS = { getByName: () => ({ fetch: async () => Response.json({ ok: true }) }) };
+    const first = f.page();
+    assert.ok((await f.register(first)).ok);
+    await first.flush();
+    await first.plain.close();
+    let legacy = A.clone(f.doc);
+    const block = Object.keys(legacy.blocks)[0];
+    ({ page: legacy } = legacyComment(
+      legacy,
+      { block_id: block, body: "Legacy comment" },
+      {
+        principal: "user:anaconda-fixture:fixture-user",
+        displayName: "Owner",
+        driver: "Browser",
+      },
+    ));
+    legacy = A.change(legacy, (d) => {
+      delete d.schema;
+      A.updateSpans(
+        d,
+        textPath(block),
+        pmNodeToSpans(
+          adapter,
+          schema.node("doc", null, [
+            schema.node("raw", { source: "Preserved **once**.", importId: "", kind: "markdown" }),
+          ]),
+        ),
+        adapter.updateSpansConfig(),
+      );
+    });
+    await new DocStore(new PlainByteStore(f.storage)).compact(
+      treeHex(f.args.document_id),
+      A.save(legacy),
+      A.getHeads(legacy),
+    );
+    A.free(legacy);
+    let remaining = failures;
+    const put = f.storage.put.bind(f.storage);
+    const intents = new Map();
+    t.mock.method(f.storage, "put", async (key, value) => {
+      if (typeof key === "string" && key.startsWith(INTERNAL_PREFIX))
+        intents.set(key, structuredClone(value));
+      if (
+        remaining &&
+        typeof key === "object" &&
+        Object.keys(key).some((k) => k.startsWith("plain/sync/") && k.includes("/c/"))
+      ) {
+        remaining--;
+        throw Error("interrupted migration append");
+      }
+      return put(key, value);
+    });
+    let page = f.page();
+    await page.ready;
+    await page.documentReady();
+    if (failures === 2) {
+      assert.ok(page.conversionWriteFence());
+      clearTimeout(page.conversionRetry);
+      const api = await tool(f, page, "edit_page", {
+        base_heads: A.getHeads(page.handle.doc()),
+        idempotency_key: "competing-edit",
+        operations: [{ op: "set_title", title: "Refused" }],
+        internal: true,
+      });
+      assert.equal(api.status, 503);
+      const peer = rawSocket(
+        page,
+        {
+          principal: "user:anaconda-fixture:fixture-user",
+          driver: "Browser",
+          canWrite: true,
+          expiresAt: Date.now() + 60_000,
+        },
+        { senderId: "b-migration" },
+      );
+      const candidate = A.change(A.clone(page.handle.doc()), (d) => {
+        d.title = "Browser refused";
+      });
+      peer.client.send({
+        t: "sync",
+        doc: treeHex(f.args.document_id),
+        m: helloWith([A.getLastLocalChange(candidate)]),
+        r: 1,
+        context: { fenceExempt: true },
+      });
+      A.free(candidate);
+      await until(() => peer.frames.some((frame) => frame.t === "refused"));
+      assert.equal(
+        peer.frames.find((frame) => frame.t === "refused").code,
+        "temporarily_unavailable",
+      );
+      peer.client.close();
+      // Rebuild from the journal, not the pending in-memory admission context.
+      await page.plain.close();
+      page = f.page();
+      await page.ready;
+      await page.documentReady();
+      await page.convertPreservedMarkdown();
+    }
+    assert.equal(remaining, 0);
+    assert.equal(hasPreservedBlocks(page.handle.doc()), false);
+    assert.equal(page.handle.doc().comments, undefined);
+    assert.equal(Object.keys(page.commentsHandle.doc().threads).length, 1);
+    assert.equal(page.conversionWriteFence(), undefined);
+    assert.equal(intents.size, 3);
+    assert.ok([...intents.values()].every((entry) => entry.pending === false));
+    const heads = A.getHeads(page.handle.doc());
+    await page.convertPreservedMarkdown();
+    assert.deepEqual(A.getHeads(page.handle.doc()), heads);
+    assert.equal(intents.size, 3);
+  });
+
+for (const gate of ["fence", "capacity", "schema"])
+  test(`trusted host admission refuses ${gate} before storing history`, async (t) => {
+    const f = await fixture(t);
+    const page = f.page();
+    assert.ok((await f.register(page)).ok);
+    await page.flush();
+    const before = structuredClone(f.storage.values);
+    const heads = A.getHeads(page.handle.doc());
+    if (gate === "fence")
+      page.plain.writeFence = () =>
+        Object.assign(Error("Converting"), { code: "preserved_markdown_converting" });
+    if (gate === "schema") page.plain.pageFeatures = () => ["future-schema"];
+    const manifest = page.plain.host.store.manifest(treeHex(f.args.document_id));
+    const original = structuredClone(manifest);
+    if (gate === "capacity") manifest.snapshot = { bytes: 16 * 1024 * 1024 };
+    await assert.rejects(
+      page.handle.change((doc) => {
+        doc.refused = true;
+      }),
+      {
+        code:
+          gate === "capacity"
+            ? "history_capacity"
+            : gate === "schema"
+              ? "schema_unsupported"
+              : "temporarily_unavailable",
+      },
+    );
+    assert.deepEqual(f.storage.values, before);
+    assert.deepEqual(A.getHeads(page.handle.doc()), heads);
+    if (gate !== "fence")
+      await assert.rejects(
+        page.handle.update(
+          (doc) =>
+            A.change(doc, (d) => {
+              d.refused = true;
+            }),
+          { internal: true },
+        ),
+        {
+          code: gate === "capacity" ? "history_capacity" : "schema_unsupported",
+        },
+      );
+    page.plain.writeFence = () => undefined;
+    page.plain.pageFeatures = () => [];
+    Object.assign(manifest, original);
+    await page.flush();
+    assert.equal(page.handle.doc().refused, undefined);
+  });
 
 test("an abandoned pending intent does not block another principal and replays on restart", async (t) => {
   const f = await fixture(t);

@@ -363,6 +363,33 @@ export function handleContract(name, makeFixture) {
         assert.deepEqual(history((await reopened.find(f.documentId)).doc()), expected);
       });
 
+    it("a rejected update leaves the committed root readable and retries without peer traffic", async (t) => {
+      const f = await makeFixture(t);
+      const before = f.handle.doc();
+      const heads = A.getHeads(before);
+      const rejection = f.rejectWrites();
+      t.after(rejection.release);
+      await assert.rejects(async () =>
+        f.handle.update((doc) =>
+          A.change(doc, (d) => {
+            d.title = "Recovered without peers";
+          }),
+        ),
+      );
+      assert.deepEqual(f.handle.doc(), before);
+      assert.deepEqual(A.getHeads(f.handle.doc()), heads);
+      assert.equal(f.handle.doc().title, "Contract Page");
+      rejection.release();
+      await f.handle.update((doc) =>
+        A.change(doc, (d) => {
+          d.future.keep.push(3);
+        }),
+      );
+      assert.equal(f.handle.doc().title, "Recovered without peers");
+      assert.deepEqual(f.handle.doc().future.keep, [1, 2, 3]);
+      await f.flush([f.documentId]);
+    });
+
     // worker/mutations.mjs:286-314: journal enumeration need not be causal.
     it("dependency-reversed recorded changes apply as one closure", async (t) => {
       const f = await makeFixture(t);

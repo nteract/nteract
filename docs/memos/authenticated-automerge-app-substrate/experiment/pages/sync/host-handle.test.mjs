@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { it } from "node:test";
 import * as A from "@automerge/automerge";
 import { Repo, documentIdToBinary, interpretAsDocumentId } from "@automerge/automerge-repo";
 import { PlainByteStore, treeOf } from "../worker/plain-sync.mjs";
@@ -7,8 +8,9 @@ import { DocStore, MemoryByteStore } from "./doc-store.mjs";
 import { handleContract } from "./handle-contract.mjs";
 import { PlainHostStorage, plainHostFixture } from "./plain-host-fixture.mjs";
 import { framePipe } from "./wire.mjs";
+import { handleLifecycle } from "./host-handle.mjs";
 
-handleContract("PlainSync trusted Repo handle", async (t) => {
+handleContract("HostRepo adapter", async (t) => {
   const documentId = interpretAsDocumentId(new Uint8Array(16).fill(1));
   let storage = new PlainHostStorage();
   const documents = new Map([[documentId, "page"]]);
@@ -40,7 +42,6 @@ handleContract("PlainSync trusted Repo handle", async (t) => {
     prepare: async (id, kind) => {
       documents.set(id, kind);
       plain.serve(id, kind);
-      await plain.prime(id);
     },
     forget: (ids) => plain.forget(ids),
     closed: async () => {
@@ -70,20 +71,20 @@ handleContract("PlainSync trusted Repo handle", async (t) => {
       return plain.repo;
     },
     rejectAdmission: () => {
-      const backend = plain.backend;
-      const store = backend.store.bind(backend);
+      const host = plain.host;
+      const applyChanges = host.applyChanges.bind(host);
       let entered;
       const waiting = new Promise((resolve) => {
         entered = resolve;
       });
-      backend.store = async () => {
+      host.applyChanges = async () => {
         entered();
         throw Error("contract admission rejected");
       };
       return {
         entered: waiting,
         release: () => {
-          backend.store = store;
+          host.applyChanges = applyChanges;
         },
       };
     },
@@ -105,8 +106,8 @@ handleContract("PlainSync trusted Repo handle", async (t) => {
       };
     },
     holdAdmission: () => {
-      const backend = plain.backend;
-      const store = backend.store.bind(backend);
+      const host = plain.host;
+      const applyChanges = host.applyChanges.bind(host);
       let release, entered;
       const gate = new Promise((resolve) => {
         release = resolve;
@@ -114,15 +115,15 @@ handleContract("PlainSync trusted Repo handle", async (t) => {
       const waiting = new Promise((resolve) => {
         entered = resolve;
       });
-      backend.store = async (...args) => {
+      host.applyChanges = async (...args) => {
         entered();
         await gate;
-        return store(...args);
+        return applyChanges(...args);
       };
       return {
         entered: waiting,
         release: () => {
-          backend.store = store;
+          host.applyChanges = applyChanges;
           release();
         },
       };
@@ -217,3 +218,147 @@ async function bounded(work, label) {
     clearTimeout(timer);
   }
 }
+
+it("queued updates confirm durable bytes without running callbacks twice", async (t) => {
+  const documentId = interpretAsDocumentId(new Uint8Array(16).fill(10));
+  const plain = await plainHostFixture({ documentId });
+  t.after(() => plain.close());
+  const handle = await plain.repo.find(documentId);
+  await handle.change((d) => {
+    d.items = [];
+  });
+  const put = plain.storage.put.bind(plain.storage);
+  let failures = 1;
+  plain.storage.put = async (...args) => {
+    if (failures-- > 0) throw Error("offline");
+    return put(...args);
+  };
+  let callbacks = 0;
+  await handle.change((d) => {
+    callbacks++;
+    d.items.push("first");
+  });
+  assert.equal(callbacks, 1);
+  assert.deepEqual(handle.doc().items, ["first"]);
+  failures = 10;
+  await assert.rejects(
+    handle.change((d) => {
+      callbacks++;
+      d.items.push("second");
+    }),
+    { queued: true },
+  );
+  await assert.rejects(
+    handle.change((d) => {
+      callbacks++;
+      d.items.push("third");
+    }),
+    { code: "pending_retry_failed", queued: false },
+  );
+  failures = 0;
+  await handle.change((d) => {
+    callbacks++;
+    d.items.push("third");
+  });
+  assert.deepEqual(handle.doc().items, ["first", "second", "third"]);
+  assert.equal(callbacks, 3);
+  assert.equal(plain.host.actors().size, 0);
+});
+
+it("handle lifecycle covers every state and event", () => {
+  const table = {
+    open: { drain: "draining", finish: "open" },
+    draining: { drain: "draining", finish: "closed" },
+    closed: { drain: "closed", finish: "closed" },
+  };
+  for (const [state, events] of Object.entries(table))
+    for (const [event, expected] of Object.entries(events))
+      assert.equal(handleLifecycle(state, event), expected);
+});
+
+it("adapter has one live root, stable handles, and serial updates with fresh host actors", async (t) => {
+  const documentId = interpretAsDocumentId(new Uint8Array(16).fill(7));
+  const plain = await plainHostFixture({ documentId });
+  t.after(() => plain.close());
+  const [handle, again] = await Promise.all([
+    plain.repo.find(documentId),
+    plain.repo.find(documentId),
+  ]);
+  assert.equal(handle, again);
+  assert.equal(handle.doc(), plain.host.doc(treeOf(documentId)));
+  assert.equal(plain.host.connections().length, 0);
+  await Promise.all(
+    Array.from({ length: 8 }, () =>
+      handle.change(
+        (doc) => {
+          doc.count = (doc.count ?? 0) + 1;
+        },
+        { time: 42 },
+      ),
+    ),
+  );
+  assert.equal(handle.doc().count, 8);
+  const changes = A.getAllChanges(handle.doc()).map(A.decodeChange);
+  assert.equal(new Set(changes.map((change) => change.actor)).size, 8);
+  assert.ok(
+    changes.every((change) => change.actor.startsWith(plain.hostActorPrefix) && change.time === 42),
+  );
+  assert.equal(plain.host.actors().size, 0);
+  const before = handle.doc();
+  const actor = plain.hostActorPrefix + "ab".repeat(8);
+  const recorded = A.change(A.clone(before, { actor }), (doc) => {
+    doc.recorded = true;
+  });
+  const bytes = A.getChanges(before, recorded);
+  const heads = A.getHeads(recorded);
+  A.free(recorded);
+  await handle.update((doc) => A.applyChanges(doc, bytes)[0]);
+  assert.deepEqual(A.getHeads(handle.doc()), heads);
+  assert.equal(plain.host.actor(actor), undefined);
+  const controller = new AbortController();
+  controller.abort(Error("cancelled"));
+  await assert.rejects(plain.repo.find(documentId, { signal: controller.signal }), /cancelled/);
+});
+
+it("a failed deletion can retry without restoring history or accepting retained handles", async (t) => {
+  const documentId = interpretAsDocumentId(new Uint8Array(16).fill(8));
+  const plain = await plainHostFixture({ documentId });
+  t.after(() => plain.close());
+  const handle = await plain.repo.find(documentId);
+  await handle.change((doc) => {
+    doc.value = 1;
+  });
+  const remove = plain.storage.delete.bind(plain.storage);
+  plain.storage.delete = async () => {
+    throw Error("delete failed");
+  };
+  await assert.rejects(plain.repo.delete(documentId), /delete failed/);
+  assert.throws(() => handle.change(() => {}), /deleted/);
+  plain.storage.delete = remove;
+  await plain.repo.delete(documentId);
+  assert.equal(await plain.host.store.read(treeOf(documentId)), null);
+  assert.equal(plain.host.doc(treeOf(documentId)), null);
+});
+
+it("abort during a cold find rejects that caller without cancelling the shared load", async (t) => {
+  const documentId = interpretAsDocumentId(new Uint8Array(16).fill(9));
+  const plain = await plainHostFixture({ documentId });
+  t.after(() => plain.close());
+  const get = plain.storage.get.bind(plain.storage);
+  let release;
+  const gate = new Promise((resolve) => {
+    release = resolve;
+  });
+  t.after(release);
+  plain.storage.get = async (...args) => {
+    await gate;
+    return get(...args);
+  };
+  const controller = new AbortController();
+  const finding = plain.repo.find(documentId, { signal: controller.signal });
+  controller.abort(Error("cancelled"));
+  await assert.rejects(finding, /cancelled/);
+  release();
+  const handle = await plain.repo.find(documentId);
+  assert.deepEqual(handle.doc(), {});
+});

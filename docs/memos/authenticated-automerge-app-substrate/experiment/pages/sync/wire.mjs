@@ -145,8 +145,8 @@ export function socketTransport(
 }
 
 /**
- * An in-process transport pair: the host's own Repo talks to SyncHost through
- * one, and tests use it in place of a socket. Frames go through the same codec
+ * An in-process transport pair for tests and benchmarks in place of a socket.
+ * Frames go through the same codec
  * and arrive asynchronously, in order. Bytes and frames are counted.
  */
 export function framePipe() {
