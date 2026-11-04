@@ -194,6 +194,7 @@ import {
   lifecycleSlot,
   lifecycleSlotKey,
   observedLifecycleRevision,
+  lifecycleIndexItem,
   projectLifecycle,
   pruneTombstonedTrash,
   refreshCatalogTitle,
@@ -218,6 +219,7 @@ import {
   catalogIndexTimeouts,
   catalogSource,
   childIdSource,
+  indexOwnedEntries,
   indexSource,
   indexedState,
   listScope,
@@ -225,7 +227,7 @@ import {
   markCatalogIndexDirty,
   markSpaceIndexDirty,
   openCursor,
-  openPosition,
+  openListingCursor,
   positionOf,
   parseListArguments,
   reconcileSpaceIndex,
@@ -239,6 +241,7 @@ import {
   retirePageIndex,
   sealCursor,
   sealPosition,
+  sharedRowIndexed,
   titleMatches,
   withTimeout,
 } from "./catalog-index.mjs";
@@ -1457,6 +1460,16 @@ export class Catalog {
           throw new HttpError(400, "A content report carries only page_id and content_updated_at");
         await this.locationShape();
         const key = `${value.shared ? "shared/" : "page/"}${value.page_id}`;
+        // A shared Page's first projection here is this account discovering
+        // it. When its host's own report already put the row in D1, the new
+        // entry doesn't put the account behind. Asked before the entry is
+        // read, so nothing below waits on D1.
+        const indexed =
+          value.shared === true &&
+          !contentOnly &&
+          !value.remove &&
+          !(await this.storage.get(key)) &&
+          (await this.sharedIndexed(value.page_id));
         const previous = await this.storage.get(key);
         // The Page host's newest content time. It only moves forward, and
         // it never moves `updated_at`, which keeps its own meaning. A time
@@ -1494,8 +1507,8 @@ export class Catalog {
           (value.shared || !(await this.storage.get(`trash/${value.page_id}`))) &&
           (!previous?.updated_at || previous.updated_at <= value.observed_at)
         ) {
-          // A new discovery entry may not have reached D1; reconcile on next listing.
-          if (!previous) await markCatalogIndexDirty(this.storage);
+          // A new entry D1 may not hold: reconcile on the next listing.
+          if (!previous && !indexed) await markCatalogIndexDirty(this.storage);
           await this.storage.put(key, {
             ...previous,
             page_id: value.page_id,
@@ -1605,6 +1618,7 @@ export class Catalog {
           digest,
           inspected,
           limit,
+          principal: identity.principal,
         });
       let intent = inspected.entry;
       if (intent && !intent.pending) {
@@ -1681,14 +1695,12 @@ export class Catalog {
       };
       intent.pending = false;
       const { pending: _pending, ...created } = pending;
-      await markCatalogIndexDirty(this.storage);
-      await this.storage.put({
-        [key]: intent,
-        [`page/${pageId}`]: {
-          ...created,
-          title: catalogTitle(intent.receipt.title),
-        },
-      });
+      const entry = { ...created, title: catalogTitle(intent.receipt.title) };
+      // The owner's D1 row goes first; without it, the account is behind
+      // until a reconcile pass imports the entry.
+      if (!(await this.indexOwned(identity.principal, [{ entry, state: "active" }])))
+        await markCatalogIndexDirty(this.storage);
+      await this.storage.put({ [key]: intent, [`page/${pageId}`]: entry });
       await this.storage.sync();
       return json(intent.receipt);
     } catch (error) {
@@ -1703,7 +1715,7 @@ export class Catalog {
    * Page in order, and feeds the Page's answers back in until it replies.
    * Requests reach it one at a time through this Catalog's queue.
    */
-  async runLifecycle(request, operation, args, { key, digest, inspected, limit }) {
+  async runLifecycle(request, operation, args, { key, digest, inspected, limit, principal }) {
     const storage = this.storage;
     const pageId = args.page_id;
     const run = {
@@ -1715,6 +1727,7 @@ export class Catalog {
       digest,
       retry: inspected.retry,
       limit,
+      principal,
     };
     run.row = inspected.entry;
     let state = await intentState(storage, key, operation, pageId);
@@ -1847,10 +1860,16 @@ export class Catalog {
       case "sync":
         await storage.sync();
         return;
-      case "project":
+      case "project": {
         // A replayed receipt may be older than the Page's current state.
-        await projectLifecycle(storage, pageId, effect.current);
+        // The owner's D1 row goes first, so the projection needn't put the
+        // account behind.
+        const now = new Date().toISOString();
+        const item = await lifecycleIndexItem(storage, pageId, effect.current, now);
+        const indexed = !item || (await this.indexOwned(run.principal, [item]));
+        await projectLifecycle(storage, pageId, effect.current, { indexed, now });
         return;
+      }
       case "forget_trash":
         await storage.delete(`trash/${pageId}`);
         return;
@@ -2415,7 +2434,8 @@ export class Catalog {
         [LOCATION_REVISION_KEY]: plan.revision,
         [key]: row,
       });
-      await markCatalogIndexDirty(target);
+      // D1 rows carry no location, so a move leaves the account index as it
+      // was. Location filters read these entries.
       const perPut = STORAGE_KEYS_PER_CALL - 2;
       for (let at = 0; at < puts.length; at += perPut)
         await target.put(Object.fromEntries(puts.slice(at, at + perPut)));
@@ -2492,13 +2512,13 @@ export class Catalog {
         },
       });
     }
-    return this.completeSpaceCreation(request, key, intent);
+    return this.completeSpaceCreation(request, key, intent, identity.principal);
   }
 
   /** Run the creation lifecycle from its persisted state. Each effect is
    * idempotent; its outcome is persisted with the next state before the
    * following effect starts, so a retry resumes where the last one stopped. */
-  async completeSpaceCreation(request, key, intent) {
+  async completeSpaceCreation(request, key, intent, principal) {
     const storage = this.storage;
     intent.phase ??= "reserved";
     for (let effect = spaceCreationEffect(intent.phase); effect; ) {
@@ -2529,6 +2549,16 @@ export class Catalog {
       } else {
         const space = intent.space;
         intent.receipt = { ...space, home_page_title: intent.homeTitle };
+        const home = {
+          page_id: intent.pageId,
+          title: catalogTitle(intent.homeTitle),
+          created_at: intent.createdAt,
+          updated_at: intent.createdAt,
+          ...homeLocation(intent.spaceId),
+        };
+        // The home Page's D1 row goes first, as a creation's does.
+        if (!(await this.indexOwned(principal, [{ entry: home, state: "active" }])))
+          await markCatalogIndexDirty(storage);
         await storage.put({
           [`space/${intent.spaceId}`]: {
             space_id: intent.spaceId,
@@ -2538,15 +2568,8 @@ export class Catalog {
             created_at: space.created_at,
             updated_at: space.updated_at,
           },
-          [`page/${intent.pageId}`]: {
-            page_id: intent.pageId,
-            title: catalogTitle(intent.homeTitle),
-            created_at: intent.createdAt,
-            updated_at: intent.createdAt,
-            ...homeLocation(intent.spaceId),
-          },
+          [`page/${intent.pageId}`]: home,
         });
-        await markCatalogIndexDirty(storage);
         await markSpaceIndexDirty(storage);
         intent.pending = false;
         event = "committed";
@@ -2787,6 +2810,28 @@ export class Catalog {
     });
   }
 
+  /** Write owned entries' D1 rows before the Catalog writes the entries
+   * (catalog-index.mjs `indexOwnedEntries`). True when they landed; the
+   * caller marks the account dirty otherwise. */
+  async indexOwned(principal, items) {
+    try {
+      return await indexOwnedEntries(this.env, this.ctx, principal, items);
+    } catch (error) {
+      logFailure(error, "catalog-index-write");
+      return false;
+    }
+  }
+
+  /** True when D1 already lists this shared Page for this account. */
+  async sharedIndexed(pageId) {
+    try {
+      return await sharedRowIndexed(this.env, this.ctx, this.ctx.id?.name, pageId);
+    } catch (error) {
+      logFailure(error, "catalog-index-read");
+      return false;
+    }
+  }
+
   /** Ask the Page host, with the caller's own credentials, for one shared
    * title. A host that does not answer within the deadline counts as
    * unavailable, never as denied. */
@@ -2944,10 +2989,11 @@ export class Catalog {
         })),
       });
     // A position in this sort's shape (positionOf); the scan and the next
-    // cursor keep that shape.
-    const after = options.cursor
-      ? await openPosition(this.env, context, options.cursor, options.sort)
-      : null;
+    // cursor keep that shape. `pinned` is the source that issued the cursor,
+    // or null for a first page or a cursor from an earlier build.
+    const { position: after, source: pinned } = options.cursor
+      ? await openListingCursor(this.env, context, options.cursor, options.sort)
+      : { position: null, source: null };
     const epoch = catalogIndexEpoch(this.env);
     let db;
     let source;
@@ -2966,8 +3012,12 @@ export class Catalog {
         const evidence = identity.domainAccess;
         // While a pass hasn't imported every Catalog write, D1 may miss
         // rows, and a walk over it would end early with no cursor; the
-        // Catalog entries serve while the pass advances.
-        if (ready)
+        // Catalog entries serve while the pass advances. A walk continues on
+        // the source that issued its cursor, whatever the account's state
+        // now: the two order shared rows differently (LIST_SOURCES). A walk
+        // that began on a ready D1 misses at most rows written since it
+        // began.
+        if (pinned === "index" || (pinned === null && ready))
           source = indexSource(db, {
             principal: identity.principal,
             domain: evidence?.expiresAt > Date.now() ? evidence.domain : null,
@@ -3020,7 +3070,12 @@ export class Catalog {
       pages: result.pages,
       limit: options.limit,
       next_cursor: result.next
-        ? await sealPosition(this.env, context, options.sort, result.next)
+        ? await sealPosition(
+            this.env,
+            { ...context, source: result.source },
+            options.sort,
+            result.next,
+          )
         : null,
       quota,
       principal: identity.principal,

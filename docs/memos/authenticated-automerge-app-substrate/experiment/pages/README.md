@@ -701,9 +701,10 @@ loop each resident socket's request runs while it's open. A window timer is held
 on the request that armed it, so a Page edited once still flushes at the
 window's end; a longer retry backoff isn't held, and waits for the next request.
 
-Cursors are sealed to the listing's location, kind, `access` and sort. A cursor
-issued under one combination never opens under another; the client gets
-`invalid_cursor` and restarts. The scope names each sort by what its position's
+Cursors are sealed to the listing's location, kind, `access` and sort, and to
+the candidate source that issued them (below). A cursor issued under one
+combination never opens under another; the client gets `invalid_cursor` and
+restarts. The scope names each sort by what its position's
 key means: `content_activity` for `activity_at`, `created` for `created_at`,
 `title` for `title_search` and `trashed` for `trash_key`. An activity cursor
 sealed with no scope, or with a scope that names no sort or names `activity`,
@@ -744,7 +745,12 @@ Before an ACL restriction or a deletion
 is durable, the host removes listing rows best-effort; the deleted tombstone is
 written only after the host record is durable. Editing and sync never wait on D1.
 If D1 errors or exceeds its read budget, listing falls back to the Catalog entries
-(at most 500 per prefix) with the same cursor format.
+with the same cursor format. The fallback reads every entry under `page/`,
+`trash/` and `shared/`: rows order by keys the entries store, not by their
+storage keys, so a listing that read only some of them could put a later entry
+before its cursor and end a walk without it. Owned entries are bounded by the
+Page limit; shared entries grow only as Pages are shared with the account and it
+opens them. Each candidate is still checked within the scan's bound.
 
 Each account reconciles from its Catalog entries: on its first listing under an
 epoch, after a Catalog change that may have missed D1, and at least every six
@@ -762,19 +768,51 @@ beyond that bound. While D1 calls take longer than the budget, the pass waits.
 
 A listing reads D1 only while the account index is `ready`
 ([account-index-machine.mjs](worker/account-index-machine.mjs)): a pass has
-completed under this epoch and the Catalog has recorded no write since. Every
-Catalog write D1 may miss marks the account dirty before its entry lands:
-creating a Page (which writes only its Catalog entry), a Trash, restore or purge
-projection, a move, a new discovery entry, and an owner row a listing found
-stale. A marked account is `behind`, and an account with no completed pass under
-this epoch is `unsynced`; both list from the Catalog entries while the pass
-advances. Once a pass records its epoch, it reads the mark again and clears it
-only if it is still the one the pass started from, so a write that lands
-mid-pass keeps the account behind through the next pass. A missing D1 row would
-hide its Page and could end a walk with no cursor; the Catalog entries hold
-every owned Page.
-Title and content updates to an existing entry don't mark it, since a stale
-snapshot misorders a row but never hides one.
+completed under this epoch and the Catalog has recorded no write since that D1
+may miss. A missing D1 row would hide its Page and could end a walk with no
+cursor; the Catalog entries hold every owned Page.
+
+A Catalog write that adds or moves a listable entry writes that entry's D1 rows
+first, best effort, so the request waits on D1 at most its read and write
+timeouts (4 s): a creation's owner row, a
+Project's home Page, and the owner row a Trash, restore or purge projection
+leaves (a purge leaves a tombstone). The rows are what a pass would write from
+the same entry, fenced by lifecycle revision. Only when that write fails does
+the Catalog mark the account dirty, before the entry lands. A new discovery
+entry checks whether its Page host's own report already put the row in D1, and
+marks the account dirty when it hasn't. Owner entries a listing finds stale mark
+it too. A move writes no mark: D1 rows carry no location, and location filters
+read the entries. Creating a Project marks its Space rows dirty
+(`host/index/spaces-dirty`) for the Project listing, not the Page index. Writing
+D1 first keeps a crash safe: a creation's row stays hidden behind its pending
+entry, since an owner row needs a live, settled entry, and a row whose entry never
+lands is pruned when a listing meets it.
+
+A marked account is `behind`, and an account with no completed pass under this
+epoch is `unsynced`; both list from the Catalog entries while the pass advances.
+Once a pass records its epoch, it reads the mark again and clears it only if it
+is still the one the pass started from, so a write that lands mid-pass keeps the
+account behind through the next pass. A call that doesn't finish its pass reads
+the mark again before it reports `ready`, since a write can land while the
+pass waits on D1.
+
+The two sources order shared rows by different times: D1 holds the Page row's own
+creation and content times, the Catalog this account's discovery time and the
+last projection's. A Page host's content flush moves D1's member rows but not the
+members' Catalog entries. So every Page listing cursor names the source that
+issued it (`index` or `catalog`, sealed into its context beside the scope), and a
+walk continues on that source whatever the account's state is by then. A walk
+that began on a ready D1 can miss only rows written while it ran, as any walk
+can. A cursor from an earlier build names no source; it opens as before and
+continues on whichever source the account's state picks. If D1 fails mid-walk,
+the walk continues on the Catalog with a Catalog cursor.
+
+Title and content updates to an existing entry don't mark the account: a stale
+title or time snapshot misorders a row but doesn't drop it from an unfiltered
+walk. A `query` search is different: D1 matches each principal's title
+snapshot and the fallback matches the entry's title, so a rename that has reached
+one and not yet the other can hide the renamed Page from that source's search
+until its row or entry is rewritten.
 Changing the epoch value forces an immediate pass everywhere; it is not required
 after a rollback, since the periodic pass and each Page host's first report after
 restart repair what an older build missed.

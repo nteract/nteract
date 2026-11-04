@@ -16,17 +16,20 @@
     "unsynced/completed": [
       "clean",
       "written-meanwhile",
-      "unverified"
+      "unverified",
+      "unverified-written"
     ],
     "behind/completed": [
       "clean",
       "written-meanwhile",
-      "unverified"
+      "unverified",
+      "unverified-written"
     ],
     "ready/completed": [
       "clean",
       "written-meanwhile",
-      "unverified"
+      "unverified",
+      "unverified-written"
     ]
   },
   "rows": [
@@ -110,6 +113,24 @@
         "type": "completed",
         "verified": false,
         "unchanged": true
+      },
+      "expect": {
+        "state": {
+          "name": "unsynced"
+        },
+        "effects": []
+      }
+    },
+    {
+      "label": "a write that landed while an unverified pass ran still left its mark",
+      "case": "unverified-written",
+      "state": {
+        "name": "unsynced"
+      },
+      "event": {
+        "type": "completed",
+        "verified": false,
+        "unchanged": false
       },
       "expect": {
         "state": {
@@ -207,6 +228,24 @@
       }
     },
     {
+      "label": "a write that landed while an unverified pass ran still left its mark",
+      "case": "unverified-written",
+      "state": {
+        "name": "behind"
+      },
+      "event": {
+        "type": "completed",
+        "verified": false,
+        "unchanged": false
+      },
+      "expect": {
+        "state": {
+          "name": "behind"
+        },
+        "effects": []
+      }
+    },
+    {
       "label": "a write puts a ready account behind",
       "state": {
         "name": "ready"
@@ -290,6 +329,24 @@
       "expect": {
         "state": {
           "name": "ready"
+        },
+        "effects": []
+      }
+    },
+    {
+      "label": "a write that landed while an unverified pass ran still left its mark",
+      "case": "unverified-written",
+      "state": {
+        "name": "ready"
+      },
+      "event": {
+        "type": "completed",
+        "verified": false,
+        "unchanged": false
+      },
+      "expect": {
+        "state": {
+          "name": "behind"
         },
         "effects": []
       }

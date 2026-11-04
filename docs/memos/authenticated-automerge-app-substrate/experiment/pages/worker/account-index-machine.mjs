@@ -11,17 +11,18 @@ import { defineMachine } from "../shared/machine.mjs";
  * - `unsynced`: no reconcile pass has completed under this epoch. D1's account
  *   marker (`pages_catalog_accounts`) names another epoch, or none.
  * - `behind`: a pass completed under this epoch, but the Catalog has recorded
- *   a write since (`host/index/dirty`) that D1 may not hold. Creating a Page
- *   writes only its Catalog entry, so a new Page is in this gap until a pass
- *   imports it.
+ *   a write since (`host/index/dirty`) that D1 may not hold.
  * - `ready`: a pass completed under this epoch with no write recorded since.
  *
- * Every Catalog write D1 may miss (a creation, a Trash or restore projection,
- * a move, a new discovery entry, a stale owner row a listing met) marks the
- * account dirty before its entry lands (catalog-index.mjs
- * `markCatalogIndexDirty`), so `ready` never outlives such a write. Title and
- * content updates to an existing entry reach D1 from the Page host and don't
- * mark it: a stale snapshot only misorders a row, it never hides one.
+ * A Catalog write that adds a listable entry (a creation, a Project's home
+ * Page, a Trash, restore or purge projection) writes the entry's D1 rows
+ * first (catalog-index.mjs `indexOwnedEntries`) and marks the account dirty
+ * only when that write fails. A new discovery entry marks it unless its Page
+ * host's report is already in D1, and so does a stale owner row a listing
+ * met. Every mark lands before its entry, so `ready` never outlives a write
+ * D1 misses. Title and content updates to an existing entry reach D1 from
+ * the Page host and don't mark it: a stale snapshot misorders a row in an
+ * unfiltered walk but doesn't drop it.
  *
  * The state is a function of two persisted facts, D1's account marker and the
  * Catalog's dirty token (`accountIndexState`). The events say how those facts
@@ -32,7 +33,8 @@ import { defineMachine } from "../shared/machine.mjs";
  *   check was unavailable: the pass recorded nothing. A verified pass has
  *   already recorded its epoch in D1's account marker. `unchanged` says the
  *   dirty token, read after that, still equals the token the pass started
- *   from, so no write landed while it ran.
+ *   from, so no write landed while it ran. A write that landed puts a synced
+ *   account behind whether or not the pass was verified.
  *
  * Effects: `clear` deletes the dirty token the pass started from. It runs with
  * no I/O between reading the token for `unchanged` and deleting it, so it
@@ -44,9 +46,9 @@ export const accountIndexMachine = defineMachine({
   events: ["marked", "epoch", "completed"],
   initial: "unsynced",
   cases: {
-    "unsynced/completed": ["clean", "written-meanwhile", "unverified"],
-    "behind/completed": ["clean", "written-meanwhile", "unverified"],
-    "ready/completed": ["clean", "written-meanwhile", "unverified"],
+    "unsynced/completed": ["clean", "written-meanwhile", "unverified", "unverified-written"],
+    "behind/completed": ["clean", "written-meanwhile", "unverified", "unverified-written"],
+    "ready/completed": ["clean", "written-meanwhile", "unverified", "unverified-written"],
   },
   validate: {
     events: {
@@ -60,15 +62,17 @@ export const accountIndexMachine = defineMachine({
     effects: { clear: () => {} },
   },
   transition(state, event) {
+    // A write can't make D1 synced; it can only put a synced D1 behind.
+    const marked = { name: state.name === "unsynced" ? "unsynced" : "behind" };
     switch (event.type) {
       case "marked":
-        // A write can't make D1 synced; it can only put a synced D1 behind.
-        return { state: { name: state.name === "unsynced" ? "unsynced" : "behind" }, effects: [] };
+        return { state: marked, effects: [] };
       case "epoch":
         return { state: { name: "unsynced" }, effects: [] };
       case "completed":
-        // An unverified pass records nothing, so it changes no fact.
-        if (!event.verified) return { state, effects: [] };
+        // An unverified pass records nothing; only a write that landed while
+        // it ran changes a fact.
+        if (!event.verified) return { state: event.unchanged ? state : marked, effects: [] };
         if (!event.unchanged) return { state: { name: "behind" }, effects: [] };
         return { state: { name: "ready" }, effects: [{ type: "clear" }] };
     }

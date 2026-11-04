@@ -1140,8 +1140,19 @@ test("an ACL commit and a restore move updated_at, including through a retried p
         await f.settle();
         const after = await times();
         assert.equal(after.member, record.observed_at);
-        assert.equal(after.d1.access, record.observed_at);
-        assert.equal(after.d1.page, record.observed_at);
+        // A restore's owner row is the owner Catalog's own projection, which
+        // follows the host's observation, so both sources hold one time.
+        // When D1 refused that write, the account went behind, and the row
+        // holds the host's repaired report until a pass imports the entry.
+        const ownerTime =
+          operation === "restore" && failing === "catalog"
+            ? (await ownerStorage.get(`page/${id(83)}`)).updated_at
+            : record.observed_at;
+        if (operation === "restore" && failing === "d1")
+          assert.ok(await ownerStorage.get("host/index/dirty"), "behind");
+        assert.ok(ownerTime >= record.observed_at);
+        assert.equal(after.d1.access, ownerTime);
+        assert.equal(after.d1.page, ownerTime);
         assert.ok(after.member > before.member);
         assert.ok(after.d1.access > before.d1.access);
 
@@ -2091,7 +2102,7 @@ test("a cursor opens only under the access and sort it was issued for", async (t
   }
 });
 
-test("a title cursor from the Catalog fallback continues on D1 in the same order", async (t) => {
+test("a title cursor from the Catalog fallback continues there in the same order once D1 is back", async (t) => {
   const { f, walk } = await accessWorld(t, "1");
   const expected = (await walk({ sort: "title" })).map((row) => row.page_id);
   shortBounds(t, { read: 30, write: 30 });
@@ -2101,7 +2112,8 @@ test("a title cursor from the Catalog fallback continues on D1 in the same order
   f.db.mode = "ok";
   Object.assign(catalogIndexTimeouts, { read: 2500, write: 1500 });
   const rest = await f.list(member, { sort: "title", limit: 10, cursor: first.body.next_cursor });
-  assert.equal(rest.source, "index");
+  // A walk continues on the source that issued its cursor.
+  assert.equal(rest.source, "catalog");
   assert.deepEqual(
     [...first.body.pages, ...rest.body.pages].map((row) => row.page_id),
     expected,
@@ -2703,7 +2715,7 @@ test("activity and created sorts page alike from D1 and the Catalog, across ties
   assert.deepEqual(results.index, results.catalog);
 });
 
-test("an activity cursor from the Catalog fallback continues on D1 in the same order", async (t) => {
+test("an activity cursor from the Catalog fallback continues there in the same order once D1 is back", async (t) => {
   const f = await catalogFixture(t);
   const storage = f.catalog(owner).ctx.storage;
   for (const [n, created, updated, content] of ACTIVITY_ENTRIES)
@@ -2726,7 +2738,8 @@ test("an activity cursor from the Catalog fallback continues on D1 in the same o
     f.db.mode = "ok";
     Object.assign(catalogIndexTimeouts, { read: 2500, write: 1500 });
     const rest = await f.list(owner, { sort, limit: 10, cursor: first.body.next_cursor });
-    assert.equal(rest.source, "index");
+    // A walk continues on the source that issued its cursor.
+    assert.equal(rest.source, "catalog");
     assert.deepEqual(
       [...first.body.pages, ...rest.body.pages].map((row) => row.page_id),
       expected.map(id),

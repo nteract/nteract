@@ -192,7 +192,6 @@ export const catalogIndexBounds = {
   entriesPerListing: 128,
   verifications: 16,
   concurrency: 4,
-  fallbackScan: 500,
   reconcileIntervalMs: 6 * 60 * 60 * 1000,
   cursorMaxAgeMs: 24 * 60 * 60 * 1000,
 };
@@ -668,6 +667,23 @@ export async function restrictPageIndex(env, ctx, metadata, revision = revisionO
   ]);
 }
 
+/** A deleted Page's tombstone: no title, no access rows, and no later write
+ * changes it. */
+function tombstoneStatements(db, pageId, owner, lifecycle, now = new Date().toISOString()) {
+  return [
+    db
+      .prepare(
+        `INSERT INTO pages_catalog_pages
+          (page_id, owner, title, title_search, state, created_at, updated_at, lifecycle_revision)
+        VALUES (?, ?, '', '', 'deleted', ?, ?, ?)
+        ON CONFLICT (page_id) DO UPDATE SET state = 'deleted', title = '', title_search = '',
+          lifecycle_revision = max(lifecycle_revision, excluded.lifecycle_revision)`,
+      )
+      .bind(pageId, owner, now, now, lifecycle),
+    db.prepare("DELETE FROM pages_catalog_access WHERE page_id = ?").bind(pageId),
+  ];
+}
+
 /** Record a durable trash or deletion. Only call after the host record that
  * says so has crossed its durability barrier: a deleted tombstone is final. */
 export async function retirePageIndex(env, ctx, metadata, now = new Date().toISOString()) {
@@ -676,18 +692,7 @@ export async function retirePageIndex(env, ctx, metadata, now = new Date().toISO
   const db = await catalogIndexDatabase(env, ctx);
   const pageId = metadata.pageId;
   if (state === "deleted") {
-    await db.batch([
-      db
-        .prepare(
-          `INSERT INTO pages_catalog_pages
-            (page_id, owner, title, title_search, state, created_at, updated_at, lifecycle_revision)
-          VALUES (?, ?, '', '', 'deleted', ?, ?, ?)
-          ON CONFLICT (page_id) DO UPDATE SET state = 'deleted', title = '', title_search = '',
-            lifecycle_revision = max(lifecycle_revision, excluded.lifecycle_revision)`,
-        )
-        .bind(pageId, metadata.owner, now, now, lifecycleOf(metadata)),
-      db.prepare("DELETE FROM pages_catalog_access WHERE page_id = ?").bind(pageId),
-    ]);
+    await db.batch(tombstoneStatements(db, pageId, metadata.owner, lifecycleOf(metadata), now));
     return;
   }
   // Fenced by lifecycle revision: a retirement delayed past a restore (or a
@@ -785,17 +790,32 @@ function cursorKey(env) {
 }
 /** `scope` binds a cursor to everything else that shapes its listing: a
  * Space, a parent, kind, access and sort (see `listScope`), or the Space
- * listing itself. Cursors without one keep their original bytes. */
-const cursorContext = ({ principal, needle, inTrash, scope }) =>
-  encoder.encode(
+ * listing itself. Cursors without one keep their original bytes. `source`,
+ * which needs a scope, binds a Page listing's cursor to the candidate source
+ * that issued it (`LIST_SOURCES`); cursors without one keep their bytes too. */
+const cursorContext = ({ principal, needle, inTrash, scope, source }) => {
+  if (source !== undefined && !scope) throw new TypeError("A cursor source needs a scope");
+  return encoder.encode(
     JSON.stringify([
       "pages-list-cursor-v1",
       principal,
       needle ?? "",
       inTrash === true,
       ...(scope ? [scope] : []),
+      ...(source !== undefined ? [source] : []),
     ]),
   );
+};
+
+/**
+ * A Page listing's candidate sources: D1 (`index`) and this account's own
+ * Catalog entries (`catalog`). They order shared rows by different times: D1
+ * holds the Page row's own creation and content times, the Catalog this
+ * account's discovery time and the last projection's. A walk that switched
+ * sources would resume one order from a position in the other and skip or
+ * repeat rows, so every cursor names its source, and a walk continues on it.
+ */
+export const LIST_SOURCES = Object.freeze(["index", "catalog"]);
 
 /** Seal a cursor payload. The payload stays private, the cursor only opens
  * for the same principal, query, in_trash and scope (location, kind, access
@@ -904,6 +924,22 @@ export async function openPosition(env, context, cursor, sort, now = Date.now())
   return title
     ? { title_search: opened.title_search, page_id: opened.page_id }
     : { key: opened.updated_at, page_id: opened.page_id };
+}
+
+/** Open a Page listing cursor: its position, and the source that issued it
+ * (`LIST_SOURCES`), or null for a cursor an earlier build sealed without
+ * one. Each source seals under its own context, so a cursor opens under
+ * exactly one; a cursor from an earlier build opens only without a source.
+ * Anything else fails with `invalid_cursor`. */
+export async function openListingCursor(env, context, cursor, sort, now = Date.now()) {
+  for (const source of [...LIST_SOURCES, undefined]) {
+    try {
+      const position = await openPosition(env, { ...context, source }, cursor, sort, now);
+      return { position, source: source ?? null };
+    } catch (error) {
+      if (error?.code !== "invalid_cursor" || source === undefined) throw error;
+    }
+  }
 }
 
 export const LIST_DEFAULT_LIMIT = 50;
@@ -1264,9 +1300,13 @@ export async function queryCatalogIndex(db, query) {
 /** Candidate source over the Catalog entries: for when the index is off or
  * unavailable, and for listings filtered by location, which only the
  * Catalog's entries record. `owned(entry)` keeps an owned entry; `shared`
- * says whether shared entries are candidates. Owned entries are read whole:
- * the account's Page limit bounds them, and a listing reads them all for
- * location anyway. Shared entries have no limit, so that read is bounded.
+ * says whether shared entries are candidates. Every entry is read: rows
+ * order by keys stored in the entries, not by their storage keys, so a
+ * listing that read only some of them could put a later entry before its
+ * cursor and end a walk without it. Owned entries are bounded by the
+ * account's Page limit; shared entries grow only as Pages are shared with
+ * the account and it opens them. Each row is still checked before it shows,
+ * within the scan's own bound.
  * Rows order as `listingQuery` orders the same `sort`, with each key computed
  * from the entry as the index computes it: the title key from its title, the
  * activity key from its `content_updated_at`, else `updated_at`, the
@@ -1284,12 +1324,7 @@ export async function catalogSource(
   { inTrash, needle, owned = () => true, shared = true, sort = "activity" },
 ) {
   const order = listOrder(sort);
-  const list = async (prefix) => [
-    ...(prefix === "shared/"
-      ? await storage.list({ prefix, limit: catalogIndexBounds.fallbackScan })
-      : await listAll(storage, prefix)
-    ).values(),
-  ];
+  const list = async (prefix) => [...(await listAll(storage, prefix)).values()];
   const entries = inTrash
     ? (await list("trash/")).map((entry) => ({ entry, owned: true }))
     : [
@@ -1410,6 +1445,88 @@ function sharedStatements(db, principal, pageId, page, fallbackAt, createdAt) {
       },
     ),
   ];
+}
+
+/** Statements that index one owned Catalog entry (`page/` as "active",
+ * `trash/` as "trashed") exactly as a reconcile pass does. Only listing
+ * times reach D1 (`firstTime`); the fallback reads the same entry with the
+ * same fallbacks (`catalogSource`). An entry with neither time is indexed at
+ * '', which the fallback reads too: every writer writes the same value, so
+ * it never moves the row. */
+function ownedEntryStatements(db, principal, entry, state) {
+  const updatedAt = firstTime(entry.updated_at, entry.created_at) ?? "";
+  return [
+    pageUpsert(db, {
+      page_id: entry.page_id,
+      owner: principal,
+      title: entry.title,
+      state,
+      created_at: firstTime(entry.created_at) ?? updatedAt,
+      updated_at: updatedAt,
+      // A trash key the fallback would read as "" is indexed as null,
+      // which `trash_key` reads as '': both sort it last.
+      trashed_at: state === "trashed" ? firstTime(entry.trashed_at) : null,
+      lifecycle: entry.lifecycle_revision ?? 0,
+      content_updated_at: entry.content_updated_at,
+    }),
+    upsertAccess(
+      db,
+      entry.page_id,
+      [{ principal, role: "owner", source: "owner", domain: null }],
+      0,
+      { title: entry.title, updatedAt, owner: true },
+    ),
+  ];
+}
+
+/**
+ * Index owned Catalog entries before the Catalog writes them, so the write
+ * doesn't put the account behind (account-index-machine.mjs). `items` are
+ * `{ entry, state }`: state "active" for a `page/` entry, "trashed" for a
+ * `trash/` entry, or "deleted" for a purged Page, whose row becomes a
+ * tombstone. The rows are what a reconcile pass would write from the same
+ * entries, fenced by lifecycle revision as every index write is.
+ *
+ * Best effort and bounded by the read and write timeouts. Returns true when
+ * D1 holds the rows. False when the index is off or the write failed: the
+ * caller marks the account dirty before it writes the entries, as before.
+ *
+ * Writing D1 first keeps every crash safe. Rows without their entry yet
+ * list nothing: an owner row needs a live, settled Catalog entry, so a
+ * creation's row stays hidden behind its pending entry, and a row whose
+ * entry never lands is pruned when a listing meets it. An entry without its
+ * row is the gap this closes.
+ */
+export async function indexOwnedEntries(env, ctx, principal, items) {
+  if (!catalogIndexEpoch(env) || typeof principal !== "string") return false;
+  const db = await withTimeout(catalogIndexDatabase(env, ctx), catalogIndexTimeouts.read);
+  const statements = items.flatMap(({ entry, state }) =>
+    state === "deleted"
+      ? tombstoneStatements(db, entry.page_id, principal, entry.lifecycle_revision ?? 0)
+      : ownedEntryStatements(db, principal, entry, state),
+  );
+  if (statements.length) await withTimeout(db.batch(statements), catalogIndexTimeouts.write);
+  return true;
+}
+
+/** True when D1 already lists `pageId` for `principal` as an active Page:
+ * its Page host's report landed. A Catalog that discovers a shared Page asks
+ * this before it writes the entry, and marks the account dirty when the
+ * answer is no or doesn't come in time. */
+export async function sharedRowIndexed(env, ctx, principal, pageId) {
+  if (!catalogIndexEpoch(env) || typeof principal !== "string") return false;
+  const db = await withTimeout(catalogIndexDatabase(env, ctx), catalogIndexTimeouts.read);
+  const row = await read(
+    db
+      .prepare(
+        `SELECT 1 AS listed FROM pages_catalog_access a
+        JOIN pages_catalog_pages p ON p.page_id = a.page_id
+        WHERE a.page_id = ? AND a.principal = ? AND p.state = 'active'`,
+      )
+      .bind(pageId, principal)
+      .first(),
+  );
+  return row?.listed === 1;
 }
 
 /**
@@ -1534,32 +1651,12 @@ export async function reconcileAccountIndex({
       const statements = [];
       for (const [, entry] of listed) {
         if (entry?.pending || !validPageId(entry?.page_id)) continue;
-        // Only listing times reach D1 (`firstTime`); the fallback reads the
-        // same entry with the same fallbacks (`catalogSource`). An entry with
-        // neither time is indexed at '', which the fallback reads too: every
-        // pass writes the same value, so it never moves the row.
-        const updatedAt = firstTime(entry.updated_at, entry.created_at) ?? "";
-        const state = pass.phase === "owned" ? "active" : "trashed";
         statements.push(
-          pageUpsert(db, {
-            page_id: entry.page_id,
-            owner: principal,
-            title: entry.title,
-            state,
-            created_at: firstTime(entry.created_at) ?? updatedAt,
-            updated_at: updatedAt,
-            // A trash key the fallback would read as "" is indexed as null,
-            // which `trash_key` reads as '': both sort it last.
-            trashed_at: state === "trashed" ? firstTime(entry.trashed_at) : null,
-            lifecycle: entry.lifecycle_revision ?? 0,
-            content_updated_at: entry.content_updated_at,
-          }),
-          upsertAccess(
+          ...ownedEntryStatements(
             db,
-            entry.page_id,
-            [{ principal, role: "owner", source: "owner", domain: null }],
-            0,
-            { title: entry.title, updatedAt, owner: true },
+            principal,
+            entry,
+            pass.phase === "owned" ? "active" : "trashed",
           ),
         );
       }
@@ -1679,7 +1776,10 @@ export async function reconcileAccountIndex({
       return step.state.name === "ready";
     }
   }
-  return state.name === "ready";
+  // Unfinished. The pass's D1 calls let other requests run, and a write one
+  // of them recorded since entry puts a ready account behind.
+  if (state.name !== "ready") return false;
+  return (await storage.get(DIRTY)) === undefined;
 }
 
 const SPACES_SYNCED = "host/index/spaces-synced";

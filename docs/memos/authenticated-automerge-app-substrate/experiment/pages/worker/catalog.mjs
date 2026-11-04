@@ -258,30 +258,75 @@ export async function observedLifecycleRevision(storage, pageId) {
 /** Project the Page's current lifecycle state into the owner's index. The
  * Page record stays authoritative. A retry may replay an older receipt, so
  * this always uses the Page's current state and ignores older revisions.
+ *
+ * `indexed` says the caller already wrote D1's rows for this projection
+ * (`lifecycleIndexItem`, catalog-index.mjs `indexOwnedEntries`), so the
+ * account isn't marked dirty. `now` is the observation time; pass the one
+ * the D1 rows carried, so both sources hold the same `updated_at`.
  */
-export async function projectLifecycle(storage, pageId, current) {
+export async function projectLifecycle(storage, pageId, current, options = {}) {
   // One transaction: a crash leaves the Page in the listing it was in or the
   // one it moves to, never both and never neither. Storage without
   // transactions writes in order.
-  if (typeof storage.transaction !== "function") return projectEntries(storage, pageId, current);
-  return storage.transaction((transaction) => projectEntries(transaction, pageId, current));
+  if (typeof storage.transaction !== "function")
+    return projectEntries(storage, pageId, current, options);
+  return storage.transaction((transaction) =>
+    projectEntries(transaction, pageId, current, options),
+  );
 }
 
-async function projectEntries(storage, pageId, current) {
-  // Every projection changes which listing holds the Page; the D1 index
-  // reconciles from these entries.
-  await markCatalogIndexDirty(storage);
+/** This Page's own entry, `page/` or `trash/`, without reservations. */
+async function knownEntries(storage, pageId) {
+  const [active, trashed] = await Promise.all([
+    storage.get(`page/${pageId}`),
+    storage.get(`trash/${pageId}`),
+  ]);
+  return [active, trashed].filter((entry) => entry && !entry.reservation);
+}
+
+/** The fields a projection of `current` writes to the Page's entry, from the
+ * entry it had. Location fields stay as they were. */
+function projectedBase(entry, pageId, current, now) {
+  return {
+    ...entry,
+    page_id: pageId,
+    title: catalogTitle(current.title ?? entry.title),
+    created_at: entry.created_at ?? trashTime(current.trashed_at) ?? now,
+    updated_at: entry.updated_at && entry.updated_at > now ? entry.updated_at : now,
+    lifecycle_revision: current.revision ?? 0,
+  };
+}
+
+/** What D1 should hold once `projectLifecycle(storage, pageId, current,
+ * { now })` lands: `{ entry, state }` for catalog-index.mjs
+ * `indexOwnedEntries`, or null when the projection changes nothing because
+ * the Catalog already holds a newer revision. */
+export async function lifecycleIndexItem(storage, pageId, current, now) {
+  if (current.state === "deleted")
+    return {
+      entry: { page_id: pageId, lifecycle_revision: current.revision ?? 0 },
+      state: "deleted",
+    };
+  if (current.state !== "active" && current.state !== "trashed") return null;
+  const known = await knownEntries(storage, pageId);
+  if (known.some((entry) => (entry.lifecycle_revision ?? 0) > (current.revision ?? 0))) return null;
+  const entry = projectedBase(known[0] ?? { page_id: pageId }, pageId, current, now);
+  return current.state === "trashed"
+    ? { entry: { ...entry, trashed_at: trashTime(current.trashed_at) }, state: "trashed" }
+    : { entry, state: "active" };
+}
+
+async function projectEntries(storage, pageId, current, { indexed = false, now } = {}) {
+  // Every projection changes which listing holds the Page. Unless the caller
+  // indexed it, the D1 index reconciles from these entries.
+  if (!indexed) await markCatalogIndexDirty(storage);
   if (current.state === "deleted") {
     await storage.put(`host/deleted/${pageId}`, true);
     await storage.delete(`page/${pageId}`);
     await storage.delete(`trash/${pageId}`);
     return;
   }
-  const [active, trashed] = await Promise.all([
-    storage.get(`page/${pageId}`),
-    storage.get(`trash/${pageId}`),
-  ]);
-  const known = [active, trashed].filter((entry) => entry && !entry.reservation);
+  const known = await knownEntries(storage, pageId);
   if (known.some((entry) => (entry.lifecycle_revision ?? 0) > (current.revision ?? 0))) return;
   const {
     pending: _pending,
@@ -292,19 +337,11 @@ async function projectEntries(storage, pageId, current) {
     trash_root_id: _root,
     ...entry
   } = known[0] ?? { page_id: pageId };
-  const now = new Date().toISOString();
   // Each transition is a newer observation: owner reconciliation compares
   // these timestamps, so an older index write cannot win over it. Location
   // stays this Catalog's: the entry keeps its parent and position.
   const { restore_space_id: restoreSpaceId, ...kept } = entry;
-  const base = {
-    ...kept,
-    page_id: pageId,
-    title: catalogTitle(current.title ?? entry.title),
-    created_at: entry.created_at ?? trashTime(current.trashed_at) ?? now,
-    updated_at: entry.updated_at && entry.updated_at > now ? entry.updated_at : now,
-    lifecycle_revision: current.revision ?? 0,
-  };
+  const base = projectedBase(kept, pageId, current, now ?? new Date().toISOString());
   if (current.state === "trashed") {
     // A sub-page records its Project, which a restore needs if its parent
     // is gone by then. A root carries its own space_id.

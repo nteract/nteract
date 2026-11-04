@@ -27,7 +27,7 @@ test("account-index: the table covers every state and event, and the machine agr
     run.pairs + run.unreachable,
     accountIndexMachine.states.length * accountIndexMachine.events.length,
   );
-  assert.equal(run.rows, 15);
+  assert.equal(run.rows, 18);
 });
 
 test("account-index: every transition matches the state its persisted facts give", () => {
@@ -49,7 +49,9 @@ test("account-index: every transition matches the state its persisted facts give
       case "epoch":
         return { ...fact, current: false };
       case "completed": {
-        if (!event.verified) return fact;
+        // An unverified pass records nothing; a write that landed while it
+        // ran still left its mark.
+        if (!event.verified) return event.unchanged ? fact : { ...fact, dirty: "t2" };
         // The pass started from `t1` (or no token) and recorded its epoch.
         const started = fact.dirty;
         const dirty = event.unchanged ? started : "t2";
@@ -230,6 +232,61 @@ test("an unavailable check leaves the state the account had: behind stays out, a
   assert.equal(await reconcile(), true);
 });
 
+test("a write that lands during a call's own D1 awaits is never reported ready", async (t) => {
+  entriesPerListing(t, 4);
+  const a = await account(t, 10);
+  assert.equal(await a.reconcile(), false);
+  for (let listing = 0; listing < 10 && !(await a.reconcile()); listing++);
+  assert.equal(await a.storage.get(DIRTY), undefined, "ready");
+  // A periodic pass runs, and a creation lands while its first write waits.
+  let landed = false;
+  const hooked = {
+    prepare: (sql) => a.db.prepare(sql),
+    batch: async (statements) => {
+      if (!landed) {
+        landed = true;
+        await markCatalogIndexDirty(a.storage);
+        await a.own(11);
+      }
+      return a.db.batch(statements);
+    },
+  };
+  const later = Date.now() + catalogIndexBounds.reconcileIntervalMs + 1000;
+  const periodic = (db) =>
+    reconcileAccountIndex({
+      db,
+      storage: a.storage,
+      principal,
+      epoch: "1",
+      verify: async () => ({ status: "denied" }),
+      now: later,
+    });
+  assert.equal(await periodic(hooked), false, "the pass is unfinished and a write landed");
+  assert.ok(landed);
+  assert.ok(await a.storage.get(SYNC), "the pass continues");
+
+  // An unverified pass that saw a write land is behind too.
+  const b = await account(t, 0);
+  await b.storage.put(`shared/${id(9)}`, { page_id: id(9), title: "Shared", updated_at: at(9) });
+  const pass = (verify, now) =>
+    reconcileAccountIndex({
+      db: b.db,
+      storage: b.storage,
+      principal,
+      epoch: "1",
+      verify,
+      ...(now && { now }),
+    });
+  assert.equal(await pass(async () => ({ status: "denied" })), true);
+  await b.storage.put(`shared/${id(9)}`, { page_id: id(9), title: "Shared", updated_at: at(9) });
+  const unavailable = async () => {
+    await markCatalogIndexDirty(b.storage);
+    return { status: "unavailable" };
+  };
+  assert.equal(await pass(unavailable, later), false);
+  assert.notEqual(await b.storage.get(DIRTY), undefined);
+});
+
 /** One list_pages call to the owner's Catalog, with the source it read. */
 async function list(w, args) {
   const response = await w.catalog().fetch(
@@ -301,3 +358,110 @@ for (const index of ["1", null])
       trail.join("; "),
     );
   });
+
+/** The owner's D1 row for one Page: its state, or undefined. */
+const ownerRow = (w, pageId) =>
+  w.db.rows(
+    `SELECT p.state FROM pages_catalog_access a JOIN pages_catalog_pages p ON p.page_id = a.page_id
+    WHERE a.principal = ? AND a.page_id = ?`,
+    w.owner,
+    pageId,
+  )[0]?.state;
+
+test("creating a Page or a Project writes the owner's D1 row, so the account stays ready", async (t) => {
+  const w = await world(t);
+  assert.equal((await list(w, { limit: 1 })).source, "index", "an empty account is ready");
+  const created = [];
+  for (let n = 0; n < 5; n++) {
+    const page = await w.createPage({ title: `Kept ${n}` });
+    assert.equal(page.status, 200, JSON.stringify(page.body));
+    created.push(page.body.page_id);
+  }
+  const project = await w.createProject("Launch");
+  created.push(project.home_page_id);
+  assert.equal(await w.catalogStorage().get(DIRTY), undefined, "no write left the account behind");
+  for (const pageId of created) assert.equal(ownerRow(w, pageId), "active");
+  const listed = await list(w, { limit: 100 });
+  assert.equal(listed.source, "index");
+  assert.deepEqual(listed.body.pages.map((page) => page.page_id).sort(), [...created].sort());
+});
+
+test("a creation whose D1 write fails marks the account behind, and the Catalog lists it", async (t) => {
+  const w = await world(t);
+  await list(w, { limit: 1 });
+  w.db.mode = "fail";
+  const page = await w.createPage({ title: "Unindexed" });
+  w.db.mode = "ok";
+  assert.equal(page.status, 200, JSON.stringify(page.body));
+  assert.notEqual(await w.catalogStorage().get(DIRTY), undefined);
+  assert.equal(ownerRow(w, page.body.page_id), undefined);
+  // One entry is a pass that finishes within this listing.
+  const listed = await list(w, { limit: 100 });
+  assert.deepEqual(
+    listed.body.pages.map((entry) => entry.page_id),
+    [page.body.page_id],
+  );
+  assert.equal(ownerRow(w, page.body.page_id), "active", "the pass imported it");
+  assert.equal(await w.catalogStorage().get(DIRTY), undefined);
+});
+
+test("moving a Page changes nothing D1 holds and leaves the account ready", async (t) => {
+  const w = await world(t);
+  const parent = (await w.createPage({ title: "Parent" })).body.page_id;
+  const child = (await w.createPage({ title: "Child" })).body.page_id;
+  const authority = (await w.call("owner", "list_pages")).body;
+  const moved = await w.call("owner", "move_page", {
+    page_id: child,
+    parent_id: parent,
+    retry_token: authority.retry_token,
+    idempotency_key: authority.retry_key_prefix + crypto.randomUUID(),
+  });
+  assert.equal(moved.status, 200, JSON.stringify(moved.body));
+  assert.equal(await w.catalogStorage().get(DIRTY), undefined);
+  assert.equal((await list(w, { limit: 100 })).source, "index");
+});
+
+test("Trash, restore and purge write the owner's D1 row, so the account stays ready", async (t) => {
+  const w = await world(t);
+  const pageId = (await w.createPage({ title: "Cycled" })).body.page_id;
+  const kept = (await w.createPage({ title: "Kept" })).body.page_id;
+  const ready = async (label) => {
+    assert.equal(await w.catalogStorage().get(DIRTY), undefined, label);
+    assert.equal((await list(w, { limit: 100 })).source, "index", label);
+  };
+  const trashed = await w.call("owner", "delete_page", {
+    page_id: pageId,
+    idempotency_key: w.key(),
+  });
+  assert.equal(trashed.status, 200, JSON.stringify(trashed.body));
+  assert.equal(ownerRow(w, pageId), "trashed");
+  await ready("after Trash");
+  const inTrash = await list(w, { in_trash: true });
+  assert.equal(inTrash.source, "index");
+  assert.deepEqual(
+    inTrash.body.pages.map((page) => page.page_id),
+    [pageId],
+  );
+  const restored = await w.call("owner", "restore_page", {
+    page_id: pageId,
+    idempotency_key: w.key(),
+  });
+  assert.equal(restored.status, 200, JSON.stringify(restored.body));
+  assert.equal(ownerRow(w, pageId), "active");
+  await ready("after restore");
+  assert.deepEqual(
+    (await list(w, { limit: 100 })).body.pages.map((page) => page.page_id).sort(),
+    [pageId, kept].sort(),
+  );
+  await w.call("owner", "delete_page", { page_id: pageId, idempotency_key: w.key() });
+  const preview = await w.call("owner", "purge_page", { page_id: pageId, action: "preview" });
+  const purged = await w.call("owner", "purge_page", {
+    page_id: pageId,
+    action: "confirm",
+    preview_token: preview.body.preview_token,
+    idempotency_key: w.key(),
+  });
+  assert.equal(purged.status, 200, JSON.stringify(purged.body));
+  assert.equal(ownerRow(w, pageId), undefined);
+  await ready("after purge");
+});
