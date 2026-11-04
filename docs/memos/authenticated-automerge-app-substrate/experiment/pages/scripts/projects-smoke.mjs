@@ -933,14 +933,21 @@ try {
       has: alice.locator(".library-group-label", { hasText: new RegExp(`^${name}$`) }),
     });
   const aliceGroup = groupToggle(aliceProject.title);
+  const aliceCount = aliceGroup.locator(".library-group-count [aria-hidden=true]");
   await expect(aliceGroup).toHaveAttribute("aria-expanded", "true");
+  const countOpen = await aliceCount.textContent();
   await aliceGroup.click();
   await expect(aliceGroup).toHaveAttribute("aria-expanded", "false");
   await expect(rowLink("Alpha survey")).toBeHidden();
-  await expect(aliceGroup.locator(".library-group-count [aria-hidden=true]")).toHaveText("1");
-  await groupToggle("Your items").focus();
-  await alice.keyboard.press("Shift+Tab");
-  await alice.keyboard.press("Shift+Tab");
+  await expect(aliceCount).toHaveText(countOpen);
+  // A folded group's rows leave the tab order: Tab from its Open Project link
+  // reaches the next heading.
+  await alice
+    .locator(".library-group-heading")
+    .filter({ has: aliceGroup })
+    .getByRole("link", { name: `Open Project ${aliceProject.title}` })
+    .focus();
+  await alice.keyboard.press("Tab");
   await expect(groupToggle("Shared with you")).toBeFocused();
   assert.notEqual(
     await groupToggle("Shared with you").evaluate((element) => getComputedStyle(element).outlineStyle),
@@ -980,17 +987,17 @@ try {
   });
   // Fold all and Unfold all, from the Group menu.
   await menu("Group").click();
-  await alice.getByRole("menuitem", { name: "Fold all" }).click();
+  await alice.getByRole("menuitem", { name: "Fold all", exact: true }).click();
   await expect(menu("Group")).toBeFocused();
   for (const name of [aliceProject.title, "Shared with you", "Your items"])
     await expect(groupToggle(name)).toHaveAttribute("aria-expanded", "false");
   await expect(alice.locator(".library-results .index-row")).toHaveCount(0);
   await menu("Group").click();
-  await expect(alice.getByRole("menuitem", { name: "Fold all" })).toHaveAttribute(
+  await expect(alice.getByRole("menuitem", { name: "Fold all", exact: true })).toHaveAttribute(
     "aria-disabled",
     "true",
   );
-  await alice.getByRole("menuitem", { name: "Unfold all" }).click();
+  await alice.getByRole("menuitem", { name: "Unfold all", exact: true }).click();
   for (const name of [aliceProject.title, "Shared with you", "Your items"])
     await expect(groupToggle(name)).toHaveAttribute("aria-expanded", "true");
   await expect(rowLink("Alpha survey")).toBeVisible();
@@ -1061,8 +1068,11 @@ try {
     { timeout: 60000 },
   );
   await expect(
-    alice.getByRole("list", { name: aliceProject.title, exact: true }).locator(".index-card"),
-  ).toHaveCount(1);
+    alice
+      .getByRole("list", { name: aliceProject.title, exact: true })
+      .locator(".index-card")
+      .getByRole("link", { name: "Alpha survey", exact: true }),
+  ).toBeVisible();
   await expect(alice).toHaveURL(at("?group=project"));
   await aliceDisplay.getByRole("button", { name: "List view" }).click();
   await expect(alice.locator(".index-grid")).toHaveCount(0);
