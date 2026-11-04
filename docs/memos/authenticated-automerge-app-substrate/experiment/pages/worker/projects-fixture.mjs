@@ -142,13 +142,19 @@ export async function world(t, { index = "1", storage: newStorage = () => new St
       headers: { authorization: `Bearer ${tokens[who]}`, "x-pages-driver": "Projects test" },
       body: JSON.stringify(body),
     });
-  /** The public HTTP tool route, through the gateway. */
+  /** The public HTTP tool route, through the gateway. A body that isn't
+   * JSON comes back as its text. */
   const call = async (who, operation, args = {}) => {
     const response = await worker.fetch(
       request(who, "/api/tools", { operation, arguments: args }),
       env,
     );
-    return { status: response.status, body: await response.json() };
+    const text = await response.text();
+    try {
+      return { status: response.status, body: JSON.parse(text) };
+    } catch {
+      return { status: response.status, body: text, headers: response.headers };
+    }
   };
   /** A call as the 3548b9750 gateway sent it: Space names, straight to the
    * caller's Catalog, without the Project API. */

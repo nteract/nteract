@@ -724,8 +724,10 @@ test("the grid shows only when enabled, switches with the list, and never nests 
     grid: true,
   });
   window.localStorage.clear();
+  const mounted = [];
   try {
     const app = await mount(createElement(Library, props));
+    mounted.push(app);
     const group = app.host.querySelector('[role=group][aria-label="Display"]');
     const toggle = (name) => group.querySelector(`button[aria-label="${name}"]`);
     assert.deepEqual(
@@ -770,20 +772,24 @@ test("the grid shows only when enabled, switches with the list, and never nests 
     assert.deepEqual(events, [["warm"], ["open", id(1)]]);
     await pick(app.host, "Group", "Project");
     assert.ok(app.host.querySelector('ul.index-grid[aria-label="Launch"]'), "grouped grid");
-    await app.unmount();
+    await mounted.pop().unmount();
 
     const again = await mount(createElement(Library, props));
+    mounted.push(again);
     assert.ok(again.host.querySelector(".index-grid"), "a remount reads the stored mode");
     await click(again.host.querySelector('button[aria-label="List view"]'));
     assert.equal(window.localStorage.getItem("nteract.pages.view"), "list");
-    await again.unmount();
+    await mounted.pop().unmount();
 
     window.localStorage.setItem("nteract.pages.view", "grid");
     const off = await mount(createElement(Library, { ...props, grid: false }));
+    mounted.push(off);
     assert.ok(off.host.querySelector(".index-page-list"), "without the flag, always the list");
     assert.equal(off.host.querySelector('[role=group][aria-label="Display"]'), null);
-    await off.unmount();
+    await mounted.pop().unmount();
   } finally {
+    // A failed assertion must not leave a grid mounted.
+    for (const app of mounted) await app.unmount();
     window.localStorage.clear();
   }
 });

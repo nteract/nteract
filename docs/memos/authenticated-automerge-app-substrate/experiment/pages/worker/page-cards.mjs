@@ -83,9 +83,10 @@ export async function allowedPageCards(ids, { storage, verifyShared, map, checks
  * `allowed`. Runs in the gateway.
  *
  * - `readObject(key, signal)` returns the stored object's text, or null.
- *   Every read starts at once and shares one `deadlineMs`; the signal aborts
- *   when it passes. A read still running then, or one that fails, answers
- *   null.
+ *   Every read starts at once and shares one `deadlineMs`. A read still
+ *   running then, or one that fails, answers null. The signal aborts at the
+ *   deadline for a reader that honors it; R2's `get()` takes no signal, so
+ *   the gateway's reads run on and their late answers are dropped.
  */
 export async function readPageCards(
   ids,
