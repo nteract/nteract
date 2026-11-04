@@ -124,16 +124,32 @@ WantedBy=multi-user.target
   };
 }
 
-function runCommand(command, args) {
+export function runCommand(command, args) {
   try {
     return execFileSync(command, args, {
       encoding: "utf8",
       stdio: ["ignore", "pipe", "pipe"],
     }).trim();
   } catch (error) {
-    throw new Error(
-      command + " failed (status " + error.status + "); inspect restricted server logs",
+    // Keep the exit status: callers such as `unitActive` read it.
+    throw Object.assign(
+      new Error(command + " failed (status " + error.status + "); inspect restricted server logs"),
+      { status: error.status },
     );
+  }
+}
+
+// `systemctl is-active` prints the unit's state and exits 0 only for
+// `active`: 3 for inactive or failed, 4 for a unit systemd doesn't know.
+// Those two exits mean not active. Any other failure, such as exit 1 for a
+// bus error or an invalid unit name, or no exit status because systemctl
+// couldn't run, says nothing about the unit and throws.
+export function unitActive(service, run = runCommand) {
+  try {
+    return run("systemctl", ["is-active", service]) === "active";
+  } catch (error) {
+    if (error?.status === 3 || error?.status === 4) return false;
+    throw error;
   }
 }
 export function publishIsolated(
@@ -192,8 +208,8 @@ export function publishIsolated(
     frozenTunnelConfigs,
     target,
   });
-  if (run("systemctl", ["is-active", profile.deployment.service]) !== "active")
-    throw new Error("Isolated Pages service is not active");
+  if (!unitActive(profile.deployment.service, run))
+    throw new Error("Isolated Pages service " + profile.deployment.service + " is not active");
   const health = JSON.parse(
     run("curl", [
       "--fail",
@@ -342,7 +358,7 @@ export function publishIsolated(
       if (filesystem.existsSync(slot.unitPath) && read(slot.unitPath) !== slot.unit)
         throw new Error("Dedicated tunnel file differs; inspect before retrying");
     if (filesystem.existsSync(connectorPath)) return parseConnectorState(read(connectorPath));
-    if (plan.slots.some((slot) => run("systemctl", ["is-active", slot.service]) === "active"))
+    if (plan.slots.some((slot) => unitActive(slot.service, run)))
       throw new Error("Tunnel connector state is missing while a slot is active; inspect");
     return migration?.legacy
       ? { phase: "serving", live: "legacy", config: hash(migration.config) }
@@ -489,15 +505,14 @@ export function publishIsolated(
     run("systemctl", ["enable", service]);
     try {
       run("systemctl", [upgrading ? "restart" : "start", service]);
-      if (run("systemctl", ["is-active", service]) !== "active")
-        throw new Error("Dedicated tunnel connector is not active");
+      if (!unitActive(service, run)) throw new Error("Dedicated tunnel connector is not active");
     } catch (error) {
       if (upgrading) {
         if (read(configPath) !== plan.config || read(installation) !== migration.pending)
           throw new Error("Dedicated tunnel changed during restart; pending migration retained");
         replace(configPath, migration.config);
         run("systemctl", ["restart", service]);
-        if (run("systemctl", ["is-active", service]) !== "active")
+        if (!unitActive(service, run))
           throw new Error("Dedicated tunnel rollback is not active; pending migration retained");
         replace(installation, migration.sealed);
       }
@@ -511,7 +526,7 @@ export function publishIsolated(
   function handOffConnector() {
     const slotNamed = (name) => plan.slots.find((slot) => slot.name === name);
     const unitOf = (name) => (name === "legacy" ? service : slotNamed(name).service);
-    const active = (name) => run("systemctl", ["is-active", unitOf(name)]) === "active";
+    const active = (name) => unitActive(unitOf(name), run);
     const effects = {
       persist: (state) => replace(connectorPath, serializeConnectorState(state)),
       active,
