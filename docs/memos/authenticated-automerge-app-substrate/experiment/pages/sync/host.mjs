@@ -1,6 +1,8 @@
 import * as A from "@automerge/automerge";
 import { cbor } from "@automerge/automerge-repo";
+import { ADMISSION_OUTCOMES } from "../shared/admission.mjs";
 import { concat, DocStore } from "./doc-store.mjs";
+import { RECEIVE_LIMITS, RECEIVE_OPEN, receiveStep } from "./receive-queue.mjs";
 
 // The Page host's side of plain Automerge sync. Each connection arrives
 // authenticated, with { principal, role, senderId, sessionId, expiresAt }.
@@ -22,7 +24,21 @@ import { concat, DocStore } from "./doc-store.mjs";
 // A refusal leaves the live doc and every sync state untouched. Changes the
 // host already holds are filtered in step 3, so re-sending accepted history is
 // a no-op whoever sends it. A `trusted` connection is the host's own Repo:
-// it skips the role gate, claims and policy.admit, and is never closed.
+// it skips the role gate, claims, policy.admit and the receive limits, and is
+// never closed.
+//
+// Each browser connection has a receive queue bound (receive-queue.mjs) and
+// an ephemeral payload cap; going over either refuses the frame and closes the
+// socket. Every preview the host doesn't adopt is freed, and so is the live
+// doc an adopted preview replaces: each is its own Automerge handle.
+
+/** Receive bounds per browser connection. */
+export const HOST_LIMITS = Object.freeze({
+  ...RECEIVE_LIMITS,
+  // Presence (a selection) is a few hundred bytes; the host fans each
+  // message out to every reader.
+  maxEphemeralBytes: 64 * 1024,
+});
 
 /**
  * A refused frame. `fatal` closes the connection, with `close` as the WebSocket
@@ -55,6 +71,8 @@ export const defaultPolicy = {
   },
   canRead: (conn) => READ_ROLES.includes(conn.role),
   canWrite: (conn, doc) => WRITE_ROLES[doc.kind]?.includes(conn.role) ?? false,
+  /** Returns `preview`, or a replacement on its own handle (the host frees
+   * whichever it doesn't adopt). */
   admit: (_conn, _doc, _live, _fresh, preview) => preview,
   /** After persist: `fresh` changes and the actor `claims` made for them. */
   admitted() {},
@@ -69,14 +87,15 @@ export class SyncHost {
   #reserved = new Map();
   #docs = new Map();
   #conns = new Set();
-  stats = { admitted: 0, refused: 0, stripped: 0, compactions: 0 };
+  stats = { admitted: 0, refused: 0, stripped: 0, compactions: 0, freed: 0 };
 
-  constructor({ bytes, policy = {}, hostId = "pages-host", now = () => Date.now() }) {
+  constructor({ bytes, policy = {}, hostId = "pages-host", now = () => Date.now(), limits = {} }) {
     this.#bytes = bytes;
     this.store = new DocStore(bytes);
     this.policy = { ...defaultPolicy, ...policy };
     this.hostId = hostId;
     this.now = now;
+    this.limits = { ...HOST_LIMITS, ...limits };
   }
 
   /** Read stored actor claims. Call once before accepting connections. */
@@ -111,10 +130,15 @@ export class SyncHost {
     await this.#run(doc, async () => {
       const live = await this.#live(doc);
       const next = A.merge(A.clone(live), automergeDoc);
-      if (A.getChangesSince(next, A.getHeads(live)).length) {
+      if (!A.getChangesSince(next, A.getHeads(live)).length) return this.#free(next);
+      try {
         await this.store.compact(id, A.save(next), A.getHeads(next));
-        doc.live = next;
+      } catch (error) {
+        this.#free(next);
+        throw error;
       }
+      doc.live = next;
+      this.#free(live);
     });
     return doc;
   }
@@ -146,11 +170,12 @@ export class SyncHost {
   }
 
   accept(transport, identity) {
-    const conn = { transport, ...identity, closed: false };
+    const conn = { transport, ...identity, closed: false, receive: RECEIVE_OPEN };
     this.#conns.add(conn);
     transport.onMessage((frame) => this.#onFrame(conn, frame));
     transport.onClose(() => {
       conn.closed = true;
+      conn.receive = receiveStep(conn.receive, { type: "close" }, this.limits).state;
       this.#conns.delete(conn);
       for (const doc of this.#docs.values()) doc.conns.delete(conn);
     });
@@ -194,9 +219,46 @@ export class SyncHost {
     if (denied) return this.#refuse(conn, doc, frame, denied);
     if (frame.t === "eph") return this.#ephemeral(conn, doc, frame);
     if (frame.t !== "sync") return;
-    this.#run(doc, () => this.#sync(conn, doc, frame)).catch((error) =>
-      this.#refuse(conn, doc, frame, error),
-    );
+    if (conn.trusted) {
+      this.#run(doc, () => this.#sync(conn, doc, frame)).catch((error) =>
+        this.#refuse(conn, doc, frame, error),
+      );
+      return;
+    }
+    const bytes = frame.m?.byteLength ?? 0;
+    const arrived = receiveStep(conn.receive, { type: "arrive", bytes }, this.limits);
+    conn.receive = arrived.state;
+    if (arrived.effect === "refuse")
+      return this.#refuse(
+        conn,
+        doc,
+        frame,
+        new Refusal("receive_queue_full", "Too many sync frames are waiting on this connection", {
+          fatal: true,
+          close: {
+            code: ADMISSION_OUTCOMES.temporarily_unavailable.close,
+            reason: "temporarily_unavailable",
+          },
+        }),
+      );
+    if (arrived.effect !== "admit") return;
+    const settle = () => {
+      conn.receive = receiveStep(conn.receive, { type: "settle", bytes }, this.limits).state;
+    };
+    this.#run(doc, () => this.#sync(conn, doc, frame)).then(settle, (error) => {
+      settle();
+      this.#refuse(conn, doc, frame, error);
+    });
+  }
+
+  /** Free an Automerge handle the host no longer holds. */
+  #free(automergeDoc) {
+    try {
+      A.free(automergeDoc);
+      this.stats.freed++;
+    } catch {
+      /* Already freed. */
+    }
   }
 
   #run(doc, work) {
@@ -225,6 +287,7 @@ export class SyncHost {
     let state = doc.conns.get(conn);
     let message = frame.m;
     const decoded = message ? A.decodeSyncMessage(message) : null;
+    let replaced = null;
     if (decoded?.changes.length) {
       if (!conn.trusted && !this.policy.canWrite(conn, doc)) {
         this.stats.stripped += decoded.changes.length;
@@ -232,11 +295,12 @@ export class SyncHost {
         message = A.encodeSyncMessage(decoded);
       } else {
         const next = await this.#admit(conn, doc, live, decoded.changes);
-        if (next) live = next;
+        if (next) [replaced, live] = [live, next];
       }
     }
     if (message) [live, state] = A.receiveSyncMessage(live, state, message);
     doc.live = live;
+    if (replaced) this.#free(replaced);
     let reply;
     [state, reply] = A.generateSyncMessage(live, state);
     doc.conns.set(conn, state);
@@ -255,15 +319,30 @@ export class SyncHost {
     }
   }
 
-  /** Steps 3-6. Returns the admitted doc, or null when nothing was new. */
+  /**
+   * Steps 3-6. Returns the admitted doc, or null when nothing was new. The
+   * preview is a clone of `live`; it is freed unless it is returned.
+   */
   async #admit(conn, doc, live, changes) {
-    const heads = A.getHeads(live);
+    const clone = A.clone(live);
     let preview;
     try {
-      preview = A.loadIncremental(A.clone(live), concat(changes));
+      preview = A.loadIncremental(clone, concat(changes));
     } catch {
+      this.#free(clone);
       throw new Refusal("malformed_change", "A change could not be loaded");
     }
+    let admitted;
+    try {
+      admitted = await this.#admitPreview(conn, doc, live, preview);
+      return admitted;
+    } finally {
+      if (admitted !== preview) this.#free(preview);
+    }
+  }
+
+  async #admitPreview(conn, doc, live, preview) {
+    const heads = A.getHeads(live);
     if (A.getMissingDeps(preview, []).length)
       throw new Refusal("missing_dependencies", "A change arrived before its dependencies");
     const fresh = A.getChangesSince(preview, heads);
@@ -279,10 +358,32 @@ export class SyncHost {
         throw new Refusal("actor_claimed", `Actor ${actor} belongs to another principal`);
       if (!claimed && !claims.has(actor)) claims.set(actor, this.#claim(conn));
     }
+    const next = conn.trusted
+      ? preview
+      : await this.policy.admit(conn, doc, live, fresh, preview, (actor) =>
+          this.#owner(actor, claims, conn),
+        );
+    try {
+      await this.#persist(conn, doc, fresh, next, claims);
+    } catch (error) {
+      // #admit frees the original preview; a replacement is ours to free.
+      if (next !== preview) this.#free(next);
+      throw error;
+    }
+    this.stats.admitted += fresh.length;
+    // Before the reply and fan-out, so a host message it sends (who wrote
+    // these changes) reaches each reader ahead of the changes themselves.
+    try {
+      this.policy.admitted(conn, doc, fresh, claims);
+    } catch {
+      /* Reporting must not undo a durable admission. */
+    }
+    return next;
+  }
+
+  /** Steps 4 (re-check after policy.admit) and 6: claims and history, stored. */
+  async #persist(conn, doc, fresh, next, claims) {
     if (!conn.trusted) {
-      preview = await this.policy.admit(conn, doc, live, fresh, preview, (actor) =>
-        this.#owner(actor, claims, conn),
-      );
       if (conn.closed) throw new Refusal("closed", "The connection closed during admission");
       // policy.admit may await: re-check that no other document claimed
       // these actors meanwhile, before reserving them.
@@ -293,20 +394,11 @@ export class SyncHost {
     for (const actor of claims.keys()) this.#reserved.set(actor, conn.principal);
     try {
       const extra = [...claims].map(([actor, claim]) => [ACTOR_PREFIX + actor, cbor.encode(claim)]);
-      await this.store.append(doc.id, concat(fresh), A.getHeads(preview), extra);
+      await this.store.append(doc.id, concat(fresh), A.getHeads(next), extra);
       for (const [actor, claim] of claims) this.#actors.set(actor, claim);
     } finally {
       for (const actor of claims.keys()) this.#reserved.delete(actor);
     }
-    this.stats.admitted += fresh.length;
-    // Before the reply and fan-out, so a host message it sends (who wrote
-    // these changes) reaches each reader ahead of the changes themselves.
-    try {
-      this.policy.admitted(conn, doc, fresh, claims);
-    } catch {
-      /* Reporting must not undo a durable admission. */
-    }
-    return preview;
   }
 
   /** The principal an actor is (or, in this admission, would be) claimed by. */
@@ -386,6 +478,15 @@ export class SyncHost {
   }
 
   #ephemeral(conn, doc, frame) {
+    if (!conn.trusted && frame.e.payload.byteLength > this.limits.maxEphemeralBytes)
+      return this.#refuse(
+        conn,
+        doc,
+        frame,
+        new Refusal("ephemeral_too_large", "An ephemeral message is over the host's limit", {
+          fatal: true,
+        }),
+      );
     if (!conn.trusted && this.policy.ephemeral && !this.policy.ephemeral(conn, doc, frame.e))
       return;
     const sender = {

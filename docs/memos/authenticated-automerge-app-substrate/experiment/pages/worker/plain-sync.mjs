@@ -86,6 +86,38 @@ const accessShape = (access) => ({
 
 export const treeOf = (documentId) => sedimentreeId(documentIdToBinary(documentId));
 
+const SENDER_ID = /^b-[0-9a-f-]{36}$/;
+
+/**
+ * The presence id for a new browser socket, and the open connection it
+ * replaces. A tab keeps its `sender` across reconnects, so a socket that asks
+ * for an id held by the same principal and driver is that tab reconnecting,
+ * usually after its old socket died without the close reaching the host: the
+ * new socket takes the id and the old one is replaced, as a native signing
+ * key replaces its stale session. A missing, malformed or foreign-held id is
+ * replaced by a fresh one; ids are visible to every reader, so only the
+ * holder's own principal and driver can claim one.
+ */
+export function plainSender(connections, identity, requested, mint) {
+  if (typeof requested !== "string" || !SENDER_ID.test(requested))
+    return { senderId: mint(), replaces: null };
+  const holder = connections.find(
+    (conn) => !conn.trusted && !conn.closed && conn.senderId === requested,
+  );
+  if (!holder) return { senderId: requested, replaces: null };
+  if (holder.principal === identity.principal && holder.driver === identity.driver)
+    return { senderId: requested, replaces: holder };
+  return { senderId: mint(), replaces: null };
+}
+
+/** The close for a connection a newer socket from the same tab replaced. */
+export function plainSessionReplaced() {
+  return withAdmissionReason(
+    new PermissionDenied("This tab connected again on another socket", "plain_session_replaced"),
+    "plain_session_replaced",
+  );
+}
+
 /** The close a refused connection gets, from an admission error. */
 function refusalFrom(error, code = admissionCode(error)) {
   return new Refusal(code, error.message, {
@@ -197,6 +229,11 @@ export class PlainSync {
   /** Durable heads of a document, from its stored manifest. */
   durableHeads(documentId) {
     return this.host.durableHeads(treeOf(documentId));
+  }
+
+  /** plainSender over this host's connections. */
+  sender(identity, requested, mint = () => `b-${crypto.randomUUID()}`) {
+    return plainSender(this.host.connections(), identity, requested, mint);
   }
 
   /** Accept an authenticated browser socket. Returns the connection. */
