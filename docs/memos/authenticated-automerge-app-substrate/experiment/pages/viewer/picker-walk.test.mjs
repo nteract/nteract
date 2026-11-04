@@ -5,6 +5,7 @@ import assert from "node:assert/strict";
 import { VirtualTimeScheduler } from "rxjs";
 import { runTable } from "../shared/machine-test.mjs";
 import {
+  CHECK_FAILED_MESSAGE,
   OTHER_ACCOUNT_MESSAGE,
   PickerWalk,
   REJECT,
@@ -20,7 +21,7 @@ const closed = { name: "closed" };
 const loading = (key = "k1") => ({ name: "loading", principal: "alice", key });
 const refreshing = (key = "k1") => ({ name: "refreshing", principal: "alice", key });
 const ready = { name: "ready", principal: "alice" };
-const checking = { name: "checking", principal: "alice" };
+const checking = { name: "checking", principal: "alice", after: 2 };
 const failed = { name: "failed", principal: "alice", message: "Couldn't reach Pages" };
 const open = (seeded = false) => ({ type: "open", principal: "alice", key: "k2", seeded });
 const loaded = (key = "k1") => ({ type: "loaded", key });
@@ -28,8 +29,13 @@ const failure = (key = "k1") => ({ type: "failed", key, message: "Couldn't reach
 const stays = (state, reason) => ({ state, effects: [], rejected: reason });
 const shut = { state: closed, effects: [{ type: "cancel" }, { type: "clear" }] };
 const refused = { type: "refused" };
-const foreign = (key = "k1") => ({ type: "foreign", key });
-const settled = (principal = "alice") => ({ type: "settled", principal });
+const foreign = (key = "k1") => ({ type: "foreign", key, after: 2 });
+const settled = (principal = "alice", { outcome = "answered", generation = 3 } = {}) => ({
+  type: "settled",
+  principal,
+  outcome,
+  generation,
+});
 const signedOut = {
   state: { name: "failed", principal: "alice", message: SIGNED_OUT_MESSAGE },
   effects: [{ type: "cancel" }, { type: "clear" }, { type: "report", message: SIGNED_OUT_MESSAGE }],
@@ -169,6 +175,23 @@ const ROWS = [
     event: settled("bob"),
     expect: shut,
   },
+  {
+    label: "checking: a check that couldn't answer says so",
+    case: "failed",
+    state: checking,
+    event: settled("alice", { outcome: "failed" }),
+    expect: {
+      state: { name: "failed", principal: "alice", message: CHECK_FAILED_MESSAGE },
+      effects: [{ type: "report", message: CHECK_FAILED_MESSAGE }],
+    },
+  },
+  {
+    label: "checking: a check that started before the walk's answer makes it ask again",
+    case: "stale",
+    state: checking,
+    event: settled("alice", { generation: 2 }),
+    expect: { state: checking, effects: [{ type: "recheck" }] },
+  },
   ...[ready, failed].flatMap((still) => [
     { state: still, event: open(), expect: stays(still, REJECT.open) },
     { state: still, event: loaded(), expect: stays(still, REJECT.idle) },
@@ -197,7 +220,7 @@ test("the picker table runs through the pure machine", async () => {
     rows: ROWS.length,
     pairs: pickerWalkSpec.states.length * pickerWalkSpec.events.length,
     unreachable: 0,
-    cases: 16,
+    cases: 18,
   });
 });
 
@@ -207,6 +230,9 @@ function deferred() {
   return { promise, resolve, reject };
 }
 const settle = () => new Promise((resolve) => setImmediate(resolve));
+/** A session check that started after the walk answered (the harness's
+ * generation stays 0) and found `principal`. */
+const answered = (principal) => ({ principal, outcome: "answered", generation: 1 });
 
 function harness({ seed = () => null } = {}) {
   const walks = [];
@@ -359,7 +385,7 @@ test("a walk whose pages change account partway asks who is signed in", async ()
   await settle();
   assert.deepEqual(reports, [OTHER_ACCOUNT_MESSAGE, "Couldn't reach Pages"]);
   assert.equal(others.length, 1);
-  assert.equal(picker.settled("alice"), false, "a check now has nothing to say");
+  assert.equal(picker.settled(answered("alice")), false, "a check now has nothing to say");
   assert.equal(walks.length, 2);
 });
 
@@ -368,11 +394,11 @@ test("once the session check finds the same account, the picker says to try agai
   picker.open("alice");
   walks[0].resolve({ pages: [{ title: "Bob's" }], principal: "bob" });
   await settle();
-  assert.equal(picker.settled(null), false, "no account, nothing to compare");
-  assert.equal(picker.settled("alice"), true);
+  assert.equal(picker.settled(answered(null)), false, "no account, nothing to compare");
+  assert.equal(picker.settled(answered("alice")), true);
   assert.equal(picker.state.name, "failed");
   assert.deepEqual(reports, [OTHER_ACCOUNT_MESSAGE, SAME_ACCOUNT_MESSAGE]);
-  assert.equal(picker.settled("alice"), false, "said once");
+  assert.equal(picker.settled(answered("alice")), false, "said once");
   assert.equal(walks.length, 1, "and nothing walks again until the person reopens");
   assert.equal(others.length, 1);
   // Reopening is the retry.
@@ -382,7 +408,7 @@ test("once the session check finds the same account, the picker says to try agai
   // A check that finds another account closes a picker waiting on it.
   walks[1].reject(Object.assign(Error("The account changed"), { code: ACCOUNT_CHANGED }));
   await settle();
-  assert.equal(picker.settled("bob"), true);
+  assert.equal(picker.settled(answered("bob")), true);
   assert.equal(picker.state.name, "closed");
   assert.deepEqual(picker.store.snapshot().items, []);
 });
@@ -399,7 +425,7 @@ test("a server that keeps answering the walk for another account costs one walk"
     check: async () => {
       checks++;
     },
-    done: () => picker.settled("alice"),
+    done: (result) => picker.settled({ principal: "alice", ...result }),
   });
   picker = new PickerWalk({
     walk: async () => {
@@ -408,11 +434,12 @@ test("a server that keeps answering the walk for another account costs one walk"
     },
     report: (message) => reports.push(message),
     onOtherAccount: () => recovery.otherAccount(),
+    generation: () => recovery.generation,
   });
   picker.open("alice");
   for (let i = 0; i < 20; i++) await settle();
   assert.equal(walks.length, 1);
-  assert.ok(checks <= 1 + RECOVERY_RERUNS, `${checks} session checks`);
+  assert.equal(checks, 1, "one session check");
   assert.equal(recovery.state.name, "idle");
   assert.equal(picker.state.name, "failed");
   assert.deepEqual(reports, [OTHER_ACCOUNT_MESSAGE, SAME_ACCOUNT_MESSAGE]);
@@ -439,4 +466,82 @@ test("a 401 drops what the picker shows; a closed picker ignores it", async () =
   await settle();
   assert.deepEqual(titles(), []);
   assert.equal(picker.state.name, "failed");
+});
+
+/** The shell's wiring around the real recovery, with session checks that
+ * answer when the test says: `check(n)` is the nth, `answer(n, outcome)`
+ * settles it. Every walk answers for Bob, and a recovery's end settles the
+ * picker with Alice signed in. */
+function recoveryShell() {
+  const sessions = [];
+  const reports = [];
+  const walks = [];
+  let picker;
+  const recovery = new SignedOutRecovery({
+    forget: () => picker.refused(),
+    check: () => {
+      const session = deferred();
+      sessions.push(session);
+      return session.promise;
+    },
+    done: (result) => picker.settled({ principal: "alice", ...result }),
+  });
+  picker = new PickerWalk({
+    walk: async () => {
+      walks.push(true);
+      return { pages: [{ title: "Bob's" }], principal: "bob" };
+    },
+    report: (message) => reports.push(message),
+    onOtherAccount: () => recovery.otherAccount(),
+    generation: () => recovery.generation,
+  });
+  const answer = async (n, outcome = "answered") => {
+    if (outcome === "answered") sessions[n].resolve();
+    else sessions[n].reject(Object.assign(Error("Service unavailable"), { status: 503 }));
+    for (let i = 0; i < 5; i++) await settle();
+  };
+  return { picker, recovery, sessions, reports, walks, answer };
+}
+
+test("a session check that couldn't answer tells the picker so, not that the account is the same", async () => {
+  const { picker, sessions, reports, walks, answer } = recoveryShell();
+  picker.open("alice");
+  for (let i = 0; i < 5; i++) await settle();
+  assert.equal(picker.state.name, "checking");
+  assert.equal(sessions.length, 1);
+  await answer(0, "failed");
+  assert.equal(picker.state.name, "failed");
+  assert.deepEqual(reports, [OTHER_ACCOUNT_MESSAGE, CHECK_FAILED_MESSAGE]);
+  assert.equal(walks.length, 1);
+  assert.equal(sessions.length, 1);
+});
+
+test("a check already on its last rerun when the walk answers doesn't settle the picker", async () => {
+  const { picker, recovery, sessions, reports, walks, answer } = recoveryShell();
+  // Other requests keep answering for Bob, so the recovery runs its check
+  // again up to the cap. The last allowed rerun is in flight.
+  recovery.otherAccount();
+  for (let n = 0; n < RECOVERY_RERUNS; n++) {
+    recovery.otherAccount();
+    await answer(n);
+  }
+  assert.equal(sessions.length, 1 + RECOVERY_RERUNS);
+  assert.equal(recovery.state.reruns, RECOVERY_RERUNS);
+  // The walk's answer for Bob lands now, while that check runs.
+  picker.open("alice");
+  for (let i = 0; i < 5; i++) await settle();
+  assert.equal(picker.state.name, "checking");
+  // That check started before the walk's answer: its verdict says nothing
+  // about it, so the picker asks again and a new check starts.
+  await answer(RECOVERY_RERUNS);
+  assert.equal(picker.state.name, "checking");
+  assert.deepEqual(reports, [OTHER_ACCOUNT_MESSAGE]);
+  assert.equal(sessions.length, 2 + RECOVERY_RERUNS, "one more check, for the picker");
+  // Only a check that started after the answer settles it.
+  await answer(1 + RECOVERY_RERUNS);
+  assert.equal(picker.state.name, "failed");
+  assert.deepEqual(reports, [OTHER_ACCOUNT_MESSAGE, SAME_ACCOUNT_MESSAGE]);
+  assert.equal(recovery.state.name, "idle");
+  assert.equal(sessions.length, 2 + RECOVERY_RERUNS);
+  assert.equal(walks.length, 1);
 });

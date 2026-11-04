@@ -26,10 +26,19 @@ import { RECORD_STORAGE_MODES } from "../shared/record-storage.mjs";
  *   it, so the next request reaches a new object that starts from storage
  *   again. Until then a check still answers from the record, and a request
  *   that needs the document gets the boot's error.
+ * - abandoned: the `blockConcurrencyWhile` holding the record read or the
+ *   boot rejected while it still ran, as when it hit the runtime's 30 s
+ *   limit. The runtime reset the object, but this one keeps running: its
+ *   boot, timers and requests still hold the storage the new object boots
+ *   from (scripts/celld-boot-probe.mjs). The interpreter's storage refuses
+ *   every write from here on (storage-guard.mjs), a record read that finishes
+ *   late starts nothing, and every request here gets the reset's error.
  *
  * Events: `loaded` (the record was read; `start` says how to start),
  * `catalog` (a shared-Page check asks how to answer), `document` (a request
- * needs the document), and `booted` / `bootFailed` (the boot ended).
+ * needs the document), `booted` / `bootFailed` (the boot ended), and `reset`
+ * (a `blockConcurrencyWhile` that held the record read or a boot rejected:
+ * the constructor's own, or the one a request opened).
  * `catalog` and `document` answer with `response.serve`: `record` (answer from
  * the host record), `wait` (await the running boot, then ask again),
  * `document` (use the loaded host) or `failed`.
@@ -47,6 +56,7 @@ export const PAGE_STARTUP_STATES = Object.freeze([
   "booting",
   "ready",
   "failed",
+  "abandoned",
 ]);
 export const PAGE_STARTUP_EVENTS = Object.freeze([
   "loaded",
@@ -54,6 +64,7 @@ export const PAGE_STARTUP_EVENTS = Object.freeze([
   "document",
   "booted",
   "bootFailed",
+  "reset",
 ]);
 const STARTS = ["missing", "lazy", "eager"];
 
@@ -71,11 +82,20 @@ const unreachable = [
   ...["loading", "metadata", "ready", "failed"].flatMap((state) =>
     ["booted", "bootFailed"].map((event) => [state, event, "only a running boot reports its end"]),
   ),
+  [
+    "metadata",
+    "reset",
+    "the constructor's blockConcurrencyWhile has resolved, and no request has opened one",
+  ],
 ];
 
 const serve = (state, how) => ({ state, effects: [], response: { serve: how } });
 const failed = (state) =>
   reject(state, "the host failed to start", { response: { serve: "failed" } });
+const abandoned = (state) =>
+  reject(state, "the runtime reset this object while it started", {
+    response: { serve: "failed" },
+  });
 
 export const pageStartup = defineMachine({
   name: "page-startup",
@@ -100,10 +120,13 @@ export const pageStartup = defineMachine({
   transition(state, event) {
     switch (event.type) {
       case "loaded":
+        // A reset during the read: the object is gone, so nothing starts.
+        if (state.name === "abandoned") return { state, effects: [] };
         if (event.start === "missing") return { state: { name: "ready" }, effects: [] };
         if (event.start === "lazy") return { state: { name: "metadata" }, effects: [] };
         return { state: { name: "booting" }, effects: [{ type: "boot", within: "constructor" }] };
       case "catalog":
+        if (state.name === "abandoned") return abandoned(state);
         // The record needs nothing the failed boot left behind.
         if (state.name === "metadata" || state.name === "failed") return serve(state, "record");
         if (state.name === "booting") return serve(state, "wait");
@@ -117,11 +140,17 @@ export const pageStartup = defineMachine({
           };
         if (state.name === "booting") return serve(state, "wait");
         if (state.name === "ready") return serve(state, "document");
+        if (state.name === "abandoned") return abandoned(state);
         return failed(state);
       case "booted":
-        return { state: { name: "ready" }, effects: [] };
       case "bootFailed":
-        return { state: { name: "failed" }, effects: [] };
+        // An abandoned boot that ends changes nothing: the object is gone.
+        if (state.name === "abandoned") return { state, effects: [] };
+        return { state: { name: event.type === "booted" ? "ready" : "failed" }, effects: [] };
+      case "reset":
+        if (state.name === "booting" || state.name === "loading")
+          return { state: { name: "abandoned" }, effects: [] };
+        return reject(state, "nothing was starting when the object was reset");
     }
   },
 });

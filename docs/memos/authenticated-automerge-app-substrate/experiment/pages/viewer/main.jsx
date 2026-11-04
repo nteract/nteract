@@ -130,8 +130,9 @@ const warmEditor = () => editor.start();
 // (another window signed in): the library's list_pages, the Browse picker's
 // walk and list_projects all report here, and the session's recovery
 // (signed-out-recovery.mjs) rechecks who is signed in, bounded like a 401's.
-// Set while the App is mounted.
-const accountHooks = { otherAccount: () => {} };
+// `generation` is that recovery's session check generation. Set while the
+// App is mounted.
+const accountHooks = { otherAccount: () => {}, generation: () => 0 };
 // The account's Projects, one list_projects request shared by the library's
 // Project filter, the Browse picker, Move to… and /projects.
 const projectList = new ProjectList({
@@ -151,6 +152,7 @@ const picker = new PickerWalk({
   seed: (principal) => listingCache.read(principal, LIBRARY_DEFAULTS),
   report: (message) => pickerHooks.report(message),
   onOtherAccount: () => accountHooks.otherAccount(),
+  generation: () => accountHooks.generation(),
 });
 /** Forget the rows and Projects remembered for the account: it signed out or
  * another one signed in. The Browse picker closes and drops its walk; nothing
@@ -777,18 +779,27 @@ function App() {
     // another account's answer during it runs it once more, and reruns are
     // capped, so a server that keeps refusing tool calls, or keeps answering
     // for someone else, can't loop the tab. When it ends, a Browse picker
-    // waiting on it says to try again if the account is the same; an account
+    // waiting on a check that started after its walk's answer says to try
+    // again if the account is the same, or that the check failed; an account
     // change already closed it.
     const recovery = new SignedOutRecovery({
       forget: forgetRefusedAccountData,
+      // Rejects only when the session check didn't answer: the Projects
+      // request after it doesn't change who is signed in.
       check: async () => {
         const before = authentication.current?.identity?.principal ?? null;
         await maintenance.refresh();
         const now = authentication.current?.identity?.principal ?? null;
-        if (alive && now && now === before) await projectList.request(now, { fresh: true });
+        if (alive && now && now === before)
+          await projectList.request(now, { fresh: true }).catch(() => {});
       },
-      done: () => {
-        if (alive) picker.settled(authentication.current?.identity?.principal ?? null);
+      done: ({ generation, outcome }) => {
+        if (alive)
+          picker.settled({
+            principal: authentication.current?.identity?.principal ?? null,
+            outcome,
+            generation,
+          });
       },
     });
     const stopSignedOut = observeSignedOut(() => {
@@ -797,6 +808,7 @@ function App() {
     accountHooks.otherAccount = () => {
       if (alive) recovery.otherAccount();
     };
+    accountHooks.generation = () => recovery.generation;
     const onPopState = () => {
       if (authentication.current?.identity) followRoute();
       else home(null, { historyMode: "none", refreshCatalog: false });
@@ -810,6 +822,7 @@ function App() {
       alive = false;
       stopSignedOut();
       accountHooks.otherAccount = () => {};
+      accountHooks.generation = () => 0;
       recovery.stop();
       maintenance.stop();
       window.removeEventListener("popstate", onPopState);

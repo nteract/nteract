@@ -483,6 +483,7 @@ test("the persistence lifecycle answers every event in every state", () => {
     writing: { phase: "writing", attempt: 0, cycle: 3, deadline: 0 },
     retrying: { phase: "writing", attempt: 2, cycle: 3, deadline: 5000 },
     failed: { phase: "failed", attempt: 2, cycle: 3, deadline: 5000 },
+    stopped: { phase: "stopped", attempt: 2, cycle: 3, deadline: 5000 },
   };
   const events = {
     enqueueEarly: { type: "enqueue", now: 4999 },
@@ -494,6 +495,7 @@ test("the persistence lifecycle answers every event in every state", () => {
     failed: { type: "failed", now: 6000 },
     timer: { type: "retry", cycle: 3 },
     staleTimer: { type: "retry", cycle: 2 },
+    stop: { type: "stop" },
   };
   // [phase, attempt, cycle, deadline, effect]
   const same = (st) => [st.phase, st.attempt, st.cycle, st.deadline, null];
@@ -501,24 +503,30 @@ test("the persistence lifecycle answers every event in every state", () => {
     Object.fromEntries(Object.keys(events).map((name) => [name, overrides[name] ?? same(st)]));
   const expected = {
     idle: row(states.idle, {
+      stop: ["stopped", 0, 3, 0, null],
       enqueueEarly: ["writing", 0, 3, 0, "write"],
       enqueueDue: ["writing", 0, 3, 0, "write"],
     }),
     writing: row(states.writing, {
+      stop: ["stopped", 0, 3, 0, null],
       done: ["idle", 0, 3, 0, null],
       more: ["writing", 0, 3, 0, "write"],
       failed: ["failed", 1, 4, 7000, "schedule"],
     }),
     retrying: row(states.retrying, {
+      stop: ["stopped", 2, 3, 5000, null],
       done: ["idle", 0, 3, 0, null],
       more: ["writing", 0, 3, 0, "write"],
       failed: ["failed", 3, 4, 10_000, "schedule"],
     }),
     failed: row(states.failed, {
+      stop: ["stopped", 2, 3, 5000, null],
       enqueueDue: ["writing", 2, 3, 5000, "write"],
       nudgeDue: ["writing", 2, 3, 5000, "write"],
       timer: ["writing", 2, 3, 5000, "write"],
     }),
+    // Stopped answers nothing, a batch settling or a timer included.
+    stopped: row(states.stopped, {}),
   };
   for (const [from, state] of Object.entries(states))
     for (const [name, event] of Object.entries(events)) {

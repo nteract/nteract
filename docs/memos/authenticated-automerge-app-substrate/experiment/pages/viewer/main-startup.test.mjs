@@ -598,7 +598,8 @@ test("navigating away and back to the Page doesn't bring the boot preview back",
 // account's Projects) and the edits that change it, through the real shell.
 const { BehaviorSubject } = await import("rxjs");
 const { RECOVERY_RERUNS } = await import("./signed-out-recovery.mjs");
-const { SAME_ACCOUNT_MESSAGE, SIGNED_OUT_MESSAGE } = await import("./picker-walk.mjs");
+const { CHECK_FAILED_MESSAGE, SAME_ACCOUNT_MESSAGE, SIGNED_OUT_MESSAGE } =
+  await import("./picker-walk.mjs");
 const { createElement } = await import("react");
 const PLAN = "2b160b47-6df1-4983-81eb-489ca5a26812";
 const PROJECT = "prj_3b160b47-6df1-4983-81eb-489ca5a26812";
@@ -816,7 +817,7 @@ test("Move to Trash forgets the Page; Move to… hides only on a Project's home 
   assert.ok(pageAction("Move to…"), "offered before read_page answers; it asks when chosen");
   placed.resolve({ page_id: PLAN, project_id: PROJECT, home: true, breadcrumbs: [] });
   await settle();
-  assert.equal(pageAction("Move to…"), undefined, "a Project's home Page stays put");
+  assert.equal(!!pageAction("Move to…"), false, "a Project's home Page stays put");
   Object.assign(gate, closed());
   await click(pageAction("Move to Trash"));
   await settle();
@@ -1230,6 +1231,69 @@ test("a Browse walk answered for another account says to retry once the session 
   for (let i = 0; i < 6; i++) await settle();
   assert.equal(listings(app.requests, from).list_pages, 2);
   assert.equal(error(), SAME_ACCOUNT_MESSAGE);
+  await click(document.querySelector('button[aria-label="Close Pages"]'));
+  await settle();
+});
+
+test("a Browse walk's session check that answers counts, even when the Projects request after it fails", async (t) => {
+  cleanUp(t);
+  history.replaceState(null, "", "/");
+  // The session keeps saying this account. Once the picker opens, every
+  // list_projects fails on the server.
+  const server = { projectsFail: false };
+  const app = await boot(signedIn, {
+    ...catalog,
+    list_pages: (args) => ({
+      pages: [{ page_id: ROADMAP, title: args.limit === 100 ? "Bob's" : "Roadmap" }],
+      next_cursor: null,
+      principal: args.limit === 100 ? "bob" : "one",
+    }),
+    list_projects: () =>
+      server.projectsFail
+        ? Response.json({ error: "Service unavailable" }, { status: 500 })
+        : { projects: [], next_cursor: null, principal: "one" },
+  });
+  await settle();
+  server.projectsFail = true;
+  const from = app.requests.length;
+  await click(document.querySelector('button[aria-label="Browse, switch page"]'));
+  for (let i = 0; i < 6; i++) await settle();
+  assert.ok(listings(app.requests, from).list_projects >= 1, "the check asked for the Projects");
+  assert.equal(
+    document.querySelector("dialog.page-picker .picker-error")?.textContent,
+    SAME_ACCOUNT_MESSAGE,
+  );
+  await click(document.querySelector('button[aria-label="Close Pages"]'));
+  await settle();
+});
+
+test("a Browse walk answered for another account says so when the session check fails", async (t) => {
+  cleanUp(t);
+  history.replaceState(null, "", "/");
+  // The first session check answers; every later one fails on the server.
+  let sessions = 0;
+  const session = () =>
+    sessions++ === 0
+      ? signedIn()
+      : Response.json({ error: "Service unavailable" }, { status: 500 });
+  const app = await boot(session, {
+    ...catalog,
+    list_pages: (args) => ({
+      pages: [{ page_id: ROADMAP, title: args.limit === 100 ? "Bob's" : "Roadmap" }],
+      next_cursor: null,
+      principal: args.limit === 100 ? "bob" : "one",
+    }),
+  });
+  await settle();
+  const from = app.requests.length;
+  await click(document.querySelector('button[aria-label="Browse, switch page"]'));
+  for (let i = 0; i < 6; i++) await settle();
+  const error = () => document.querySelector("dialog.page-picker .picker-error")?.textContent;
+  assert.ok(markup("dialog.page-picker[open]"), "the picker stays open");
+  assert.equal(error(), CHECK_FAILED_MESSAGE, "it never claims the account is the same");
+  assert.equal(document.querySelectorAll("dialog.page-picker .picker-page").length, 0);
+  assert.equal(listings(app.requests, from).list_pages, 1, "one walk, and no other");
+  assert.ok(sessions > 1, "the session was checked");
   await click(document.querySelector('button[aria-label="Close Pages"]'));
   await settle();
 });

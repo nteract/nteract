@@ -507,13 +507,15 @@ export const actorRetryDelay = (attempt) =>
   Math.min(ACTOR_RETRY_MIN_MS * 2 ** Math.max(0, attempt - 1), ACTOR_RETRY_MAX_MS);
 
 /** Actor persistence lifecycle. State: `phase` (`idle`, nothing being
- * written; `writing`, one batch in flight; `failed`, the last batch failed),
+ * written; `writing`, one batch in flight; `failed`, the last batch failed;
+ * `stopped`, nothing more is written),
  * `attempt` (consecutive failures), `cycle` (a counter that grows with every
  * failure and fences retry timers) and `deadline` (when a failed batch may be
  * written again). Events: `enqueue` (new effects merged), `nudge` (a request,
  * connection or save offers a retry), `succeeded` / `failed` (the batch
- * settled; `pending` says whether writes remain), and `retry` (the timer for
- * `cycle` is due). `enqueue`, `nudge` and `failed` carry `now`. Effects:
+ * settled; `pending` says whether writes remain), `retry` (the timer for
+ * `cycle` is due), and `stop` (the storage is gone, as for an abandoned Page
+ * host; a batch in flight settles into nothing). `enqueue`, `nudge` and `failed` carry `now`. Effects:
  * `write` starts a batch; `schedule` arms the one timer for `cycle` after
  * `delay` ms. Before the deadline, `enqueue` and `nudge` only merge effects.
  * A timer from an earlier cycle never matches. Events that do not apply
@@ -527,6 +529,7 @@ export const initialPersistenceState = Object.freeze({
 export function persistenceTransition(state, event) {
   const same = { state, effect: null };
   const write = (next) => ({ state: { ...next, phase: "writing" }, effect: { type: "write" } });
+  if (event.type === "stop") return { state: { ...state, phase: "stopped" }, effect: null };
   switch (state.phase) {
     case "idle":
       return event.type === "enqueue" ? write({ ...state, attempt: 0 }) : same;
@@ -593,6 +596,13 @@ export class ActorPersistence {
 
   nudge() {
     this.dispatch({ type: "nudge", now: this.now() });
+  }
+
+  /** Write nothing more: a retry already waiting finds nothing to do, and
+   * new effects stay pending. For an object whose storage is gone, such as
+   * an abandoned Page host. */
+  stop() {
+    this.dispatch({ type: "stop" });
   }
 
   /** Settles once no batch is in flight. */

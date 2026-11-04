@@ -1,8 +1,8 @@
 {
   "machine": "page-startup",
-  "description": "How a Page host starts: a shared-Page check answers from the host record until a request needs the document, which boots the repo once inside blockConcurrencyWhile; a failed boot resets the object. Runs against worker/page-startup.mjs in worker/page-startup.test.mjs.",
-  "states": ["loading", "metadata", "booting", "ready", "failed"],
-  "events": ["loaded", "catalog", "document", "booted", "bootFailed"],
+  "description": "How a Page host starts: a shared-Page check answers from the host record until a request needs the document, which boots the repo once inside blockConcurrencyWhile; a failed boot resets the object, and an object whose blockConcurrencyWhile rejected while its record read or boot ran is abandoned. Runs against worker/page-startup.mjs in worker/page-startup.test.mjs.",
+  "states": ["loading", "metadata", "booting", "ready", "failed", "abandoned"],
+  "events": ["loaded", "catalog", "document", "booted", "bootFailed", "reset"],
   "unreachable": [
     ["loading", "catalog", "requests wait for the constructor's read (`ready`) before they ask"],
     ["loading", "document", "requests wait for the constructor's read (`ready`) before they ask"],
@@ -17,7 +17,12 @@
     ["ready", "booted", "only a running boot reports its end"],
     ["ready", "bootFailed", "only a running boot reports its end"],
     ["failed", "booted", "only a running boot reports its end"],
-    ["failed", "bootFailed", "only a running boot reports its end"]
+    ["failed", "bootFailed", "only a running boot reports its end"],
+    [
+      "metadata",
+      "reset",
+      "the constructor's blockConcurrencyWhile has resolved, and no request has opened one"
+    ]
   ],
   "cases": {
     "loading/loaded": ["missing", "lazy", "eager"]
@@ -120,6 +125,88 @@
       "state": { "name": "booting" },
       "event": { "type": "bootFailed" },
       "expect": { "state": { "name": "failed" }, "effects": [] }
+    },
+    {
+      "label": "the blockConcurrencyWhile holding a running boot rejected: the runtime reset the object under it, and the boot is abandoned",
+      "state": { "name": "booting" },
+      "event": { "type": "reset" },
+      "expect": { "state": { "name": "abandoned" }, "effects": [] }
+    },
+    {
+      "label": "a check on an abandoned object gets the reset's error: nothing more runs here",
+      "state": { "name": "abandoned" },
+      "event": { "type": "catalog" },
+      "expect": {
+        "state": { "name": "abandoned" },
+        "effects": [],
+        "response": { "serve": "failed" },
+        "rejected": "the runtime reset this object while it started"
+      }
+    },
+    {
+      "label": "a request on an abandoned object gets the reset's error",
+      "state": { "name": "abandoned" },
+      "event": { "type": "document" },
+      "expect": {
+        "state": { "name": "abandoned" },
+        "effects": [],
+        "response": { "serve": "failed" },
+        "rejected": "the runtime reset this object while it started"
+      }
+    },
+    {
+      "label": "an abandoned boot that finishes changes nothing",
+      "state": { "name": "abandoned" },
+      "event": { "type": "booted" },
+      "expect": { "state": { "name": "abandoned" }, "effects": [] }
+    },
+    {
+      "label": "an abandoned boot that ends at a checkpoint or a refused write changes nothing",
+      "state": { "name": "abandoned" },
+      "event": { "type": "bootFailed" },
+      "expect": { "state": { "name": "abandoned" }, "effects": [] }
+    },
+    {
+      "label": "the constructor's blockConcurrencyWhile rejected while the record read ran: the object is abandoned before any boot",
+      "state": { "name": "loading" },
+      "event": { "type": "reset" },
+      "expect": { "state": { "name": "abandoned" }, "effects": [] }
+    },
+    {
+      "label": "a record read that finishes after the reset starts nothing",
+      "state": { "name": "abandoned" },
+      "event": { "type": "loaded", "start": "eager" },
+      "expect": { "state": { "name": "abandoned" }, "effects": [] }
+    },
+    {
+      "label": "the boot had finished",
+      "state": { "name": "ready" },
+      "event": { "type": "reset" },
+      "expect": {
+        "state": { "name": "ready" },
+        "effects": [],
+        "rejected": "nothing was starting when the object was reset"
+      }
+    },
+    {
+      "label": "the boot's own throw reset the object; nothing still runs",
+      "state": { "name": "failed" },
+      "event": { "type": "reset" },
+      "expect": {
+        "state": { "name": "failed" },
+        "effects": [],
+        "rejected": "nothing was starting when the object was reset"
+      }
+    },
+    {
+      "label": "a boot is abandoned once",
+      "state": { "name": "abandoned" },
+      "event": { "type": "reset" },
+      "expect": {
+        "state": { "name": "abandoned" },
+        "effects": [],
+        "rejected": "nothing was starting when the object was reset"
+      }
     }
   ]
 }

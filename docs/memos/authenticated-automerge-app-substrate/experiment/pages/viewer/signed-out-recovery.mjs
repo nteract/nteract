@@ -17,19 +17,25 @@
  * the machine is idle again; only a new refusal or answer starts another
  * recovery.
  *
+ * Each check has a `generation`, one more than the check before it, so a
+ * caller can tell a check that started after its own evidence from one
+ * already running (the Browse picker, picker-walk.mjs).
+ *
  * States:
- * - idle: no check in flight.
- * - recovering: a check is in flight. `rearm` says a refusal or another
- *   account's answer arrived since it started; `reruns` counts the checks run
- *   again in this recovery.
+ * - idle: no check in flight. `generation` is the last check's, 0 before any.
+ * - recovering: check `generation` is in flight. `rearm` says a refusal or
+ *   another account's answer arrived since it started; `reruns` counts the
+ *   checks run again in this recovery.
  *
  * Events: `refused` (a 401), `other` (an answer for another account),
- * `settled` (the check finished, either way).
+ * `settled` (check `generation` finished: `outcome` is `answered` when the
+ * session check answered, `failed` when it didn't).
  *
  * Effects: `forget` (the shell's forgetRefusedAccountData, which drops the
  * account's rows and Projects and leaves the Browse picker open to say why),
- * `check` (session check, then Projects for the same account), `done` (the
- * recovery ended with no check left to run; the Browse picker, if it waits on
+ * `check` (session check `generation`, then Projects for the same account),
+ * `done` (the recovery ended with no check left to run; it carries the last
+ * check's `generation` and `outcome`, and the Browse picker, if it waits on
  * it, learns who is signed in).
  */
 import { defineMachine, reject } from "../shared/machine.mjs";
@@ -43,17 +49,26 @@ const check = (condition, message) => {
 const only = (value, keys) => {
   for (const key of Object.keys(value)) check(keys.includes(key), `unexpected field ${key}`);
 };
+const generation = (value) =>
+  check(Number.isSafeInteger(value.generation) && value.generation >= 0, "generation is a count");
+/** Session check outcomes: it answered, or it didn't (an outage, a 5xx). */
+export const CHECK_OUTCOMES = Object.freeze(["answered", "failed"]);
+const outcome = (value) =>
+  check(CHECK_OUTCOMES.includes(value.outcome), "outcome is answered or failed");
 
 export const recoverySpec = Object.freeze({
   name: "signed-out-recovery",
   states: ["idle", "recovering"],
   events: ["refused", "other", "settled"],
-  cases: { "recovering/settled": ["done", "rerun", "spent"] },
+  cases: { "recovering/settled": ["done", "rerun", "spent", "stale"] },
   validate: {
     states: {
-      idle: (value) => only(value, ["name"]),
+      idle: (value) => {
+        only(value, ["name", "generation"]);
+        generation(value);
+      },
       recovering: (value) => {
-        only(value, ["name", "rearm", "reruns"]);
+        only(value, ["name", "rearm", "reruns", "generation"]);
         check(typeof value.rearm === "boolean", "rearm is a boolean");
         check(
           Number.isSafeInteger(value.reruns) &&
@@ -61,55 +76,84 @@ export const recoverySpec = Object.freeze({
             value.reruns <= RECOVERY_RERUNS,
           "reruns is a count within the cap",
         );
+        generation(value);
+        check(value.generation > 0, "a check in flight has a generation");
       },
     },
     events: {
       refused: (value) => only(value, ["type"]),
       other: (value) => only(value, ["type"]),
-      settled: (value) => only(value, ["type"]),
+      settled: (value) => {
+        only(value, ["type", "generation", "outcome"]);
+        generation(value);
+        outcome(value);
+      },
     },
     effects: {
       forget: (value) => only(value, ["type"]),
-      check: (value) => only(value, ["type"]),
-      done: (value) => only(value, ["type"]),
+      check: (value) => {
+        only(value, ["type", "generation"]);
+        generation(value);
+      },
+      done: (value) => {
+        only(value, ["type", "generation", "outcome"]);
+        generation(value);
+        outcome(value);
+      },
     },
   },
 });
 
-export const REJECT = Object.freeze({ idle: "No check is in flight" });
+export const REJECT = Object.freeze({
+  idle: "No check is in flight",
+  stale: "Not the check in flight",
+});
+
+/** Start check `generation + 1` with `rearm` cleared. */
+const start = (current, reruns) => {
+  const next = current.generation + 1;
+  return {
+    state: { name: "recovering", rearm: false, reruns, generation: next },
+    effect: { type: "check", generation: next },
+  };
+};
 
 function transition(current, input) {
-  if (input.type === "refused")
-    return current.name === "idle"
-      ? {
-          state: { name: "recovering", rearm: false, reruns: 0 },
-          effects: [{ type: "forget" }, { type: "check" }],
-        }
-      : { state: { ...current, rearm: true }, effects: [{ type: "forget" }] };
-  if (input.type === "other")
-    return current.name === "idle"
-      ? { state: { name: "recovering", rearm: false, reruns: 0 }, effects: [{ type: "check" }] }
-      : { state: { ...current, rearm: true }, effects: [] };
+  if (input.type === "refused") {
+    if (current.name !== "idle")
+      return { state: { ...current, rearm: true }, effects: [{ type: "forget" }] };
+    const { state, effect } = start(current, 0);
+    return { state, effects: [{ type: "forget" }, effect] };
+  }
+  if (input.type === "other") {
+    if (current.name !== "idle") return { state: { ...current, rearm: true }, effects: [] };
+    const { state, effect } = start(current, 0);
+    return { state, effects: [effect] };
+  }
   if (current.name === "idle") return reject(current, REJECT.idle);
-  if (current.rearm && current.reruns < RECOVERY_RERUNS)
-    return {
-      state: { name: "recovering", rearm: false, reruns: current.reruns + 1 },
-      effects: [{ type: "check" }],
-    };
-  return { state: { name: "idle" }, effects: [{ type: "done" }] };
+  if (input.generation !== current.generation) return reject(current, REJECT.stale);
+  if (current.rearm && current.reruns < RECOVERY_RERUNS) {
+    const { state, effect } = start(current, current.reruns + 1);
+    return { state, effects: [effect] };
+  }
+  return {
+    state: { name: "idle", generation: current.generation },
+    effects: [{ type: "done", generation: current.generation, outcome: input.outcome }],
+  };
 }
 
 export const recoveryMachine = defineMachine({
   ...recoverySpec,
-  initial: { name: "idle" },
+  initial: { name: "idle", generation: 0 },
   transition,
 });
 
 /**
  * Runs the machine. `forget()` clears the account's data; `check()` returns
- * a promise for the session check and the Projects request that follows it;
- * `done()` runs when the recovery ends. `stop()` ends it: nothing runs after,
- * and a check in flight settles into nothing.
+ * a promise for the session check and the Projects request that follows it,
+ * which rejects when the session check didn't answer; `done({ generation,
+ * outcome })` runs when the recovery ends. `stop()` ends it: nothing runs
+ * after, and a check in flight settles into nothing.
  */
 export class SignedOutRecovery {
   #state = recoveryMachine.initial;
@@ -124,6 +168,11 @@ export class SignedOutRecovery {
   }
   get state() {
     return this.#state;
+  }
+  /** The generation of the check in flight, or of the last one. A check
+   * that settles with a higher one started after this was read. */
+  get generation() {
+    return this.#state.generation;
   }
   refused() {
     this.#dispatch({ type: "refused" });
@@ -142,17 +191,21 @@ export class SignedOutRecovery {
     this.#state = result.state;
     for (const effect of result.effects) {
       if (effect.type === "forget") this.#forget();
-      else if (effect.type === "done") this.#done();
-      else this.#run();
+      else if (effect.type === "done")
+        this.#done({ generation: effect.generation, outcome: effect.outcome });
+      else this.#run(effect.generation);
     }
   }
-  #run() {
+  #run(generation) {
     let pending;
     try {
       pending = Promise.resolve(this.#check());
     } catch (error) {
       pending = Promise.reject(error);
     }
-    pending.catch(() => {}).then(() => this.#dispatch({ type: "settled" }));
+    pending.then(
+      () => this.#dispatch({ type: "settled", generation, outcome: "answered" }),
+      () => this.#dispatch({ type: "settled", generation, outcome: "failed" }),
+    );
   }
 }

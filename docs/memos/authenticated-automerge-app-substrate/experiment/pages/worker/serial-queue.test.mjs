@@ -178,7 +178,12 @@ test("a title projection stranded on a reset Catalog is sent again", async (t) =
         }),
       },
     },
-    ctx: { waitUntil: (promise) => jobs.push(promise) },
+    // Storage that takes the title projection and its mark: a failed store
+    // would make the next request send the title again.
+    ctx: {
+      waitUntil: (promise) => jobs.push(promise),
+      storage: { put: async () => {}, delete: async () => true },
+    },
     metadata: { pageId, owner: "user:owner", deleted: false, acl: { revision: 0, members: {} } },
     handle: { doc: () => ({ title: "Renamed" }) },
   });
