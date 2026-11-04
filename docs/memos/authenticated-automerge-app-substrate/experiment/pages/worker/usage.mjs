@@ -24,12 +24,17 @@
 
 import { validPageId } from "./registration.mjs";
 import { validSpaceId } from "./spaces.mjs";
+import { enqueueUsage } from "./usage-store.mjs";
 
 export const USAGE_EVENT = "pages.usage.v1";
 export const USAGE_ACTIONS = Object.freeze([
   "mcp.initialize",
   "tool.call",
   "page.create",
+  "page.write",
+  "comment.write",
+  "page.read",
+  "page.visit",
   "sync.open",
   "sync.close",
 ]);
@@ -225,9 +230,10 @@ export function usageEvent({
 
 /** Emit one usage line. Telemetry must never fail the request: a failure is
  * counted, and the next line carries the count as `dropped`. */
-export function logUsage(fields) {
+export function logUsage(fields, env) {
   try {
     const record = usageEvent(fields);
+    enqueueUsage(record, env);
     if (dropped) record.dropped = dropped;
     console.info(JSON.stringify(record));
     dropped = 0;

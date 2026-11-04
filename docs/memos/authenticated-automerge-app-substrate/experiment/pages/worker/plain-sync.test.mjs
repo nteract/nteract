@@ -11,6 +11,7 @@ import { framePipe } from "../sync/wire.mjs";
 import { Page, recordStorageFor, registeredRecordStorage } from "./index.mjs";
 import { HOST_SENDER_ID, PlainByteStore } from "./plain-sync.mjs";
 import { documentMutation } from "./mutations.mjs";
+import { applyComment } from "../model/comments.mjs";
 
 class Storage {
   values = new Map();
@@ -680,6 +681,90 @@ async function until(predicate, timeout = 5000) {
     await new Promise((r) => setTimeout(r, 2));
   }
 }
+
+test("browser usage writes follow durable admission, not read-only sync, retries or host tools", async (t) => {
+  const f = await fixture(t);
+  f.env.CATALOGS = { getByName: () => ({ fetch: async () => Response.json({ ok: true }) }) };
+  const host = f.page();
+  assert.ok((await f.register(host)).ok);
+  const events = [];
+  t.mock.method(console, "info", (line) => {
+    const event = JSON.parse(line);
+    if (["page.write", "comment.write"].includes(event.action)) events.push(event);
+  });
+  const identity = {
+    principal: f.args.expected_principal,
+    driver: "Browser",
+    canWrite: true,
+    expiresAt: Date.now() + 3_600_000,
+  };
+  const browser = await connectBrowser(host, identity, "b-usage");
+  t.after(() => browser.repo.shutdown());
+  const handle = await browser.repo.find(f.args.document_id);
+  await browser.backend.synchronizeTree(treeOf(f.args.document_id));
+  assert.deepEqual(events, [], "an idle read of the Page writes nothing");
+  const block = Object.keys(handle.doc().blocks)[0];
+  handle.change((draft) => {
+    draft.title = "Browser edit";
+  });
+  await until(() => host.handle.doc().title === "Browser edit");
+  assert.deepEqual(
+    events.map((event) => event.action),
+    ["page.write"],
+  );
+  assert.equal(events[0].principal, identity.principal);
+  handle.change((draft) => {
+    draft.title = "Second edit";
+  });
+  await until(() => host.handle.doc().title === "Second edit");
+  assert.equal(events.length, 1);
+  const edited = await tool(f, host, "patch_page", {
+    base_heads: A.getHeads(host.handle.doc()),
+    idempotency_key: "usage-agent-edit",
+    operations: [
+      { op: "replace_match", block_id: block, match_text: "Original", replacement: "Agent" },
+    ],
+  });
+  assert.ok(edited.ok, await edited.clone().text());
+  assert.equal(events.length, 1, "host API edits do not count as browser writes");
+  const reader = await connectBrowser(host, { ...identity, canWrite: false }, "b-read-only-usage");
+  t.after(() => reader.repo.shutdown());
+  const read = await reader.repo.find(f.args.document_id);
+  assert.equal(read.doc().title, "Second edit");
+  read.change((draft) => {
+    draft.title = "Refused edit";
+  });
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  assert.equal(host.handle.doc().title, "Second edit");
+  assert.equal(events.length, 1, "refused edits do not count");
+  const comments = await browser.repo.find(host.commentsHandle.documentId);
+  let thread;
+  comments.change((draft) => {
+    thread = applyComment(
+      draft,
+      { action: "add", block_id: block, body: "Browser comment" },
+      identity,
+      undefined,
+      { page: handle.doc(), role: "owner", literal: true },
+    ).thread_id;
+  });
+  await until(() => !!host.commentsHandle.doc().threads[thread]);
+  assert.deepEqual(
+    events.map((event) => event.action),
+    ["page.write", "comment.write"],
+  );
+  comments.change((draft) => {
+    applyComment(
+      draft,
+      { action: "reply", thread_id: thread, body: "Another comment" },
+      identity,
+      undefined,
+      { page: handle.doc(), role: "owner", literal: true },
+    );
+  });
+  await until(() => Object.keys(host.commentsHandle.doc().threads[thread].messages).length === 2);
+  assert.equal(events.length, 2, "comments share the per-session/day dedupe");
+});
 
 test("API edits on plain Pages name their principal independently of the host actor", async (t) => {
   const f = await fixture(t);

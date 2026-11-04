@@ -1,5 +1,5 @@
 import { celldCborPlugin } from "./celld-cbor.mjs";
-import { AUTH_D1 } from "./deployment/profiles.mjs";
+import { AUTH_D1, USAGE_CRON, USAGE_D1 } from "./deployment/profiles.mjs";
 import { mermaidSource } from "./browser-mermaid.mjs";
 import { siftWasmPath } from "./browser-sift.mjs";
 import { sourceFingerprint, writeBuildReceipt } from "./source-fingerprint.mjs";
@@ -205,7 +205,9 @@ await writeFile(
           database_name: AUTH_D1.database_name,
           database_id: AUTH_D1.database_id,
         },
+        USAGE_D1,
       ],
+      triggers: { crons: [USAGE_CRON] },
       // celld scopes this bucket beneath the deployment's fleet prefix.
       r2_buckets: [{ binding: "PAGES_ASSETS", bucket_name: "pages-images" }],
       vars: { NOTEBOOK_CLOUD_OIDC_FLOW: "server" },

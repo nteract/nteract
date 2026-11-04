@@ -23,6 +23,7 @@ import {
 } from "./actor-authorship.mjs";
 import { Page } from "./index.mjs";
 import { BACKEND_LIMITS } from "../model/limits.mjs";
+import { BrowserWrites } from "./usage-session.mjs";
 
 const MAX_RECORD = BACKEND_LIMITS.maxRecordBytes;
 
@@ -1098,10 +1099,20 @@ test("a browser writer's synced commits are attested by hash; fragments and host
   const deltas = [];
   const announced = {};
   let state;
+  const usage = [];
+  let usageNow = Date.now();
+  const sessions = new Map();
+  const usageHost = Object.assign(Object.create(Page.prototype), {
+    metadata: { pageId: "44444444-4444-4444-8444-444444444444" },
+    policy: { sessions, scopeOf: () => "page" },
+    browserWrites: new BrowserWrites({ now: () => usageNow, emit: (event) => usage.push(event) }),
+    queueActorDelta() {},
+  });
   const serverStore = new MemoryByteStore();
   const server = createPeer({
     seed: new Uint8Array(32).fill(51),
     storage: observeRecordSaves(serverStore, (key, value) => {
+      usageHost.recordSaved({ observe: () => ({ put: [], remove: [] }) }, key, value);
       const author = commitAuthor(key, value, MAX_RECORD);
       const effects = author && state.observe({ ...author, now: Date.now() });
       if (effects?.delta) deltas.push(effects.delta);
@@ -1111,6 +1122,7 @@ test("a browser writer's synced commits are attested by hash; fragments and host
   const browser = createPeer({ seed: new Uint8Array(32).fill(52) });
   state = new ActorAuthorship({ serverKey: server.keyId, binding: (key) => bindings.get(key) });
   bindings.set(browser.keyId, writer(ANA));
+  sessions.set(browser.keyId, { identity: ANA });
   const peers = [server, browser];
   const wires = [];
   try {
@@ -1118,10 +1130,12 @@ test("a browser writer's synced commits are attested by hash; fragments and host
       doc.text = "base";
     });
     const hosted = await server.repo.import(A.save(base));
+    usageHost.handle = hosted;
     await server.repo.flush();
     await server.backend.flush();
     const local = await browser.repo.import(A.save(base), { docId: hosted.documentId });
     wires.push(await connectPeers(browser, server));
+    assert.deepEqual(usage, [], "a read-only sync and host bootstrap emit no browser writes");
     // Three edits: a change whose hash starts with a zero byte is stored as a
     // fragment, which names no single change.
     for (let n = 0; n < 3; n++)
@@ -1133,6 +1147,11 @@ test("a browser writer's synced commits are attested by hash; fragments and host
     assert.deepEqual(deltas[0], { [browserActor]: ANA });
     assert.deepEqual(state.profiles(Date.now()), { [browserActor]: ANA });
     await eventually(() => A.getHeads(hosted.doc()).join() === A.getHeads(local.doc()).join());
+    assert.deepEqual(
+      usage.map((event) => event.action),
+      ["page.write"],
+    );
+    assert.equal(usage[0].identity.principal, ANA.principal);
     // Every browser change the host stored as its own commit record is
     // attested by hash, and only those.
     const keys = await serverStore.list("");
@@ -1202,6 +1221,15 @@ test("a browser writer's synced commits are attested by hash; fragments and host
     assert.equal(state.changes.has(fragment.hash), false);
     assert.equal(Object.hasOwn(announced, fragment.hash), false);
     assert.equal(Object.hasOwn(state.attestedChanges(Date.now()), fragment.hash), false);
+    assert.equal(usage.length, 1, "commits and fragments share the session dedupe");
+    usageNow += 86_400_000;
+    for (const key of (await serverStore.list("")).filter((key) => key.includes("/fragments/")))
+      usageHost.recordSaved(
+        { observe: () => ({ put: [], remove: [] }) },
+        key,
+        await serverStore.load(key),
+      );
+    assert.equal(usage.length, 1, "a replayed fragment on another day is not a fresh write");
 
     for (let n = 0; n < 3; n++)
       hosted.change((doc) => {
@@ -1212,6 +1240,7 @@ test("a browser writer's synced commits are attested by hash; fragments and host
     assert.equal(state.actors.get("0f".repeat(16)).host, true, "the imported base is host-signed");
     assert.deepEqual(state.profiles(Date.now()), { [browserActor]: ANA });
     assert.equal(deltas.length, 1);
+    assert.equal(usage.length, 1, "host edits never count as browser writes");
     assert.equal(
       [...state.changes.values()].some((change) => change.actor !== browserActor),
       false,
