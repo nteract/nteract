@@ -1197,9 +1197,15 @@ export function WordgardEditor(props) {
             {toolbarOpen && <span className="toolbar-separator" role="separator" />}
             {!editable ? (
               formatButton(commentControl)
-            ) : format?.atom ? (
+            ) : format?.atom || format?.nodeSelected ? (
+              // A selected node: text style, marks, lists and the table menu
+              // don't apply to it.
               <span className="image-selection-label">
-                {format.atom === "dataframe" ? "Table" : "Image"}
+                {format.atom === "dataframe"
+                  ? "Table"
+                  : format.atom === "image"
+                    ? "Image"
+                    : "Block"}
               </span>
             ) : (
               <>

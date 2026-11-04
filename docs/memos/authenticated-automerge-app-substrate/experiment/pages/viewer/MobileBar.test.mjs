@@ -223,3 +223,9 @@ test("with any other node selected, More offers only undo and redo", async (t) =
     .map((item) => item.textContent);
   assert.deepEqual(enabled, ["Undo", "Redo"]);
 });
+
+test("with any node selected, text style, marks and lists are disabled", async (t) => {
+  const view = await renderBar(t, { format: { atom: null, nodeSelected: true } });
+  for (const label of ["Text style", "Bold", "Italic", "Bulleted list"])
+    assert.equal(view.bar.querySelector(`[aria-label="${label}"]`).disabled, true, label);
+});
