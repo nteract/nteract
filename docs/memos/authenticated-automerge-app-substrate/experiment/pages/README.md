@@ -2451,10 +2451,24 @@ object exists), and the object's `customMetadata` holds its `card_hash` and
 `content_updated_at`. A host's first write after boot reads them (`head()`) and
 compares the built card with the object, not `host/card`, so a stale card left
 by an older host is rewritten. A retiring host's put that lands late carries
-an etag the next host's write replaced, and the bucket refuses it. The case left
-open is a late put landing after the next host's first write skipped an
-unchanged card: it holds a card the Page had moments before, until the next
-change to its first screen.
+an etag the next host's write replaced, and the bucket refuses it. A refused
+put reads the object again and retries once, unless the host stopped during
+that read or the object's `content_updated_at` is later than the built card's:
+then a newer host wrote it, and this host puts nothing, logs
+`page_card.superseded`, and reads the object again on its next write. A first
+write skips its put the same way. An object time more than 5 minutes
+(`CONTENT_ACTIVITY_MAX_SKEW_MS`) ahead of the host's clock counts as missing,
+as content activity drops it, so a card from a node whose clock ran fast never
+blocks the writes after it. Equal times with different hashes still put, and
+the later put wins: that is the same content built by two builder versions.
+
+Two cases are left open. The order between live hosts comes from their clocks,
+so it holds only within that 5-minute limit: an old host that is still live, on
+a clock fast by less than that, can overwrite a newer card once, and the newer
+host's writes skip until its own content times pass the old one's. And a late
+put can land after the next host's first write skipped an unchanged card: it
+holds a card the Page had moments before, until the next change to its first
+screen.
 
 A purge or tombstone deletes the object and `host/card` with the content time,
 waiting at most 2 seconds on the bucket; a missed delete leaves an object
@@ -2483,10 +2497,16 @@ itself, and a card is a drawing aid shaped for the grid, not a reading surface
 worth a stable contract.
 
 In grid mode each card asks for its card when it comes within 400px of the
-viewport ([page-cards.mjs](viewer/page-cards.mjs)). Cards that come into view
-within 200 ms share a request, and a request with room fills toward 24 with the
-next cards in the grid's order that haven't asked, so a slow scroll down a
-100-card grid sends 5 requests, not one per row. Each card follows a small
+viewport ([page-cards.mjs](viewer/page-cards.mjs)). A card that asks waits at
+most 200 ms for others to share its request, counted from the first card
+waiting, and 24 waiting cards go out at once, so a steady scroll keeps loading
+while it runs: with a 150 ms round trip, every card shows within 350 ms of
+coming into view. At most two requests run at once, and a request takes the
+latest cards to come into view first. A card that leaves the viewport, or
+unmounts, before its request goes out stops waiting and goes back to idle, so a
+fling asks only for the cards it stops on. A request with room fills toward 24
+with the next cards in the grid's order that haven't asked, so a slow scroll
+down a 100-card grid sends 5 requests, not one per row. Each card follows a small
 machine, `idle → requested → shown | empty | failed`, keyed by Page ID and the
 row's `content_updated_at`, so a Page edited since the grid asked asks again; a
 failed card asks again when it scrolls back in. One answer is one store update.

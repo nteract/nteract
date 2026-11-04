@@ -4,12 +4,14 @@ import * as A from "@automerge/automerge";
 import { cardKey, pageCard } from "../model/page-card.mjs";
 import { createPageData, initializePage } from "../model/page.mjs";
 import { PAGE_CARD_KEY } from "./page-card-writer.mjs";
+import { CONTENT_ACTIVITY_KEY } from "./content-activity.mjs";
 import { fixture, pageId, trashArgs } from "./trash-fixture.mjs";
 import { cardBucket } from "./card-bucket-fixture.mjs";
 
 // The Page host's side of cards: the write beside each content-activity
 // flush, the skip when the card didn't change, a card write that fails
-// without failing the edit, and card writes racing a purge
+// without failing the edit, the host's own bucket adapter under the
+// ordering fence, and card writes racing a purge
 // (worker/page-card-writer.mjs).
 
 /** Emit `change` with patches from the fixture's handle, as the repo does. */
@@ -130,6 +132,122 @@ test("a failed card write never fails the edit or the flush, and the next flush 
   await f.page.contentActivity.report(new Date().toISOString());
   await settle(f);
   assert.deepEqual(stored(assets).blocks[0].content[0], ["h1", {}, "New opening"]);
+});
+
+test("the host's card puts are conditional on the etag it saw, and retry once when refused", async (t) => {
+  const assets = cardBucket();
+  const f = await fixture(t, { env: { PAGES_ASSETS: assets } });
+  await emitting(f.page).watchContent();
+  const first = await f.tool("owner", "edit_page", {
+    operations: [{ op: "insert_markdown", markdown: "# First", after_block_id: null }],
+    base_heads: f.heads(),
+    idempotency_key: "fence-first",
+  });
+  assert.equal(first.status, 200, JSON.stringify(first.body));
+  await settle(f);
+  assert.equal(assets.puts, 1);
+  // Another writer replaces the object after this host's write.
+  await assets.seed(cardKey(pageId), { v: 1, card_hash: "3".repeat(64), blocks: [] });
+  assets.puts = 0;
+  // This edit's own flush waits out the minute; the report below stands in.
+  f.page.unwatchContent();
+  const second = await f.tool("owner", "edit_page", {
+    operations: [{ op: "insert_markdown", markdown: "# Second", after_block_id: null }],
+    base_heads: f.heads(),
+    idempotency_key: "fence-second",
+  });
+  assert.equal(second.status, 200, JSON.stringify(second.body));
+  await f.page.contentActivity.report(new Date().toISOString());
+  await settle(f);
+  assert.equal(assets.refused, 1, "the put on the old etag is refused");
+  assert.equal(assets.puts, 2, "then read again and put once more");
+  assert.deepEqual(stored(assets).blocks[0].content[0], ["h1", {}, "Second"]);
+  assert.deepEqual(await f.storage.get(PAGE_CARD_KEY), { card_hash: stored(assets).card_hash });
+});
+
+test("a refused put that finds a later content time in the object puts nothing more", async (t) => {
+  const assets = cardBucket();
+  const f = await fixture(t, { env: { PAGES_ASSETS: assets } });
+  await emitting(f.page).watchContent();
+  const first = await f.tool("owner", "edit_page", {
+    operations: [{ op: "insert_markdown", markdown: "# First", after_block_id: null }],
+    base_heads: f.heads(),
+    idempotency_key: "later-first",
+  });
+  assert.equal(first.status, 200, JSON.stringify(first.body));
+  await settle(f);
+  // A newer host, still live beside this one, wrote a later card.
+  const later = {
+    v: 1,
+    card_hash: "3".repeat(64),
+    blocks: [],
+    // Two minutes ahead: within the clock-skew limit, so a newer card.
+    content_updated_at: new Date(Date.now() + 2 * 60_000).toISOString(),
+  };
+  await assets.put(cardKey(pageId), JSON.stringify(later), {
+    customMetadata: { card_hash: later.card_hash, content_updated_at: later.content_updated_at },
+  });
+  assets.puts = 0;
+  f.page.unwatchContent();
+  const second = await f.tool("owner", "edit_page", {
+    operations: [{ op: "insert_markdown", markdown: "# Second", after_block_id: null }],
+    base_heads: f.heads(),
+    idempotency_key: "later-second",
+  });
+  assert.equal(second.status, 200, JSON.stringify(second.body));
+  await f.page.contentActivity.report(new Date().toISOString());
+  await settle(f);
+  assert.equal(assets.refused, 1);
+  assert.equal(assets.puts, 1, "no retry over the later card");
+  assert.deepEqual(stored(assets), later);
+});
+
+test("a card left by a node 10 minutes ahead doesn't block this host's writes", async (t) => {
+  const assets = cardBucket();
+  const f = await fixture(t, { env: { PAGES_ASSETS: assets } });
+  // The previous host ran on a node 10 minutes fast. Content activity drops
+  // its stored time, past the skew limit, so this host's times are earlier.
+  const ahead = new Date(Date.now() + 10 * 60_000).toISOString();
+  await f.storage.put(CONTENT_ACTIVITY_KEY, { content_updated_at: ahead });
+  const old = { v: 1, card_hash: "3".repeat(64), blocks: [], content_updated_at: ahead };
+  await assets.put(cardKey(pageId), JSON.stringify(old), {
+    customMetadata: { card_hash: old.card_hash, content_updated_at: ahead },
+  });
+  assets.puts = 0;
+  await emitting(f.page).watchContent();
+  const edit = await f.tool("owner", "edit_page", {
+    operations: [{ op: "insert_markdown", markdown: "# Fresh opening", after_block_id: null }],
+    base_heads: f.heads(),
+    idempotency_key: "skew-fresh",
+  });
+  assert.equal(edit.status, 200, JSON.stringify(edit.body));
+  await settle(f);
+  assert.ok(f.page.contentActivity.value < ahead, "this host's time is earlier");
+  assert.equal(assets.puts, 1);
+  assert.deepEqual(stored(assets).blocks[0].content[0], ["h1", {}, "Fresh opening"]);
+  assert.equal(stored(assets).content_updated_at, f.page.contentActivity.value);
+});
+
+test("a host's first put requires no object, so one that appears first is not overwritten blind", async (t) => {
+  const assets = cardBucket();
+  const f = await fixture(t, { env: { PAGES_ASSETS: assets } });
+  await emitting(f.page).watchContent();
+  // Another writer's object lands between this host's head() and its put.
+  let raced = false;
+  assets.beforePut = async (key) => {
+    if (raced) return;
+    raced = true;
+    await assets.seed(key, { v: 1, card_hash: "3".repeat(64), blocks: [] });
+  };
+  const edit = await f.tool("owner", "edit_page", {
+    operations: [{ op: "insert_markdown", markdown: "# Mine", after_block_id: null }],
+    base_heads: f.heads(),
+    idempotency_key: "fence-none",
+  });
+  assert.equal(edit.status, 200, JSON.stringify(edit.body));
+  await settle(f);
+  assert.equal(assets.refused, 1, "the put that required no object is refused");
+  assert.deepEqual(stored(assets).blocks[0].content[0], ["h1", {}, "Mine"], "then retried");
 });
 
 test("a host without a Page assets bucket has no card writer", async (t) => {

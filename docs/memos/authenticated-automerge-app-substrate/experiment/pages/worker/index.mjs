@@ -869,9 +869,11 @@ async function pageCards(request, env, identity, args) {
       ),
       signal,
     );
-    return { status: response.status, body: await readResponseJson(response, signal) };
+    // A refusal passes through as the Catalog wrote it, JSON or not.
+    if (response.status !== 200) return { refused: await bufferedResponse(response, signal) };
+    return { body: await readResponseJson(response, signal) };
   });
-  if (decided.status !== 200) return json(decided.body, decided.status);
+  if (decided.refused) return decided.refused;
   const allowed = Array.isArray(decided.body?.allowed) ? decided.body.allowed : [];
   const bucket = env.PAGES_ASSETS;
   const cards = await readPageCards(ids, bucket ? allowed : [], {
@@ -3665,7 +3667,11 @@ export class Page {
             "Page card read timed out",
           );
           return object
-            ? { etag: object.etag, card_hash: object.customMetadata?.card_hash ?? null }
+            ? {
+                etag: object.etag,
+                card_hash: object.customMetadata?.card_hash ?? null,
+                content_updated_at: object.customMetadata?.content_updated_at ?? null,
+              }
             : null;
         },
         put: async (bundle, { etag }) => {
@@ -3676,7 +3682,8 @@ export class Page {
                 card_hash: bundle.card_hash,
                 content_updated_at: bundle.content_updated_at ?? "",
               },
-              // The ordering fence (page-card-writer.mjs).
+              // The ordering fence (page-card-writer.mjs); head() reads both
+              // fields back.
               onlyIf: etag ? { etagMatches: etag } : { etagDoesNotMatch: "*" },
             }),
             PAGE_CARD_STORE_TIMEOUT_MS,
@@ -3688,6 +3695,15 @@ export class Page {
       },
       hold: (work) => holdUntilSettled(this.ctx, work),
       onError: (error) => logFailure(error, "page-card"),
+      // A newer host's card stays: one line, no Page ID or content.
+      onSkip: () =>
+        console.info(
+          JSON.stringify({
+            service: "nteract-pages-native",
+            event: "page_card.superseded",
+            timestamp: new Date().toISOString(),
+          }),
+        ),
     });
   }
 

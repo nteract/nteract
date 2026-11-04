@@ -316,3 +316,24 @@ test("a card read past the deadline answers null, and the call still returns", a
   assert.equal(answer.body.cards[fast].title, "Fast");
   assert.equal(answer.body.cards[slow], null);
 });
+
+test("a Catalog refusal passes through as written, even when it isn't JSON", async (t) => {
+  const { w, create, cards } = await cardsWorld(t);
+  const pageId = await create("Plan", "Body");
+  const catalog = w.catalog();
+  const fetch = catalog.fetch.bind(catalog);
+  let answer = (request) => fetch(request);
+  catalog.fetch = (request, options) => answer(request, options);
+  answer = async () =>
+    new Response("Catalog busy", { status: 503, headers: { "content-type": "text/plain" } });
+  const busy = await cards("owner", [pageId]);
+  assert.equal(busy.status, 503);
+  assert.equal(busy.body, "Catalog busy");
+  assert.equal(busy.headers.get("content-type"), "text/plain");
+  answer = async () => Response.json({ error: "Slow down", code: "rate_limited" }, { status: 429 });
+  const limited = await cards("owner", [pageId]);
+  assert.deepEqual(limited, {
+    status: 429,
+    body: { error: "Slow down", code: "rate_limited" },
+  });
+});

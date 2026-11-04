@@ -9,7 +9,9 @@ const H2 = "2".repeat(64);
 const idle = (stored = H1) => ({ name: "idle", stored });
 const queued = (stored = H1) => ({ name: "queued", stored });
 const writing = (again = false, stored = H1) => ({ name: "writing", stored, again });
-const stopped = { name: "stopped" };
+const stopped = { name: "stopped", deleting: false };
+const deleted = { name: "stopped", deleting: true };
+const stop = { type: "stop", deleting: false };
 const ok = (state, effects = []) => ({ state, effects });
 const no = (state, rejected) => ({ state, effects: [], rejected });
 
@@ -27,7 +29,13 @@ const rows = [
     event: { type: "start" },
     expect: no({ name: "unread" }, "no write is queued"),
   },
-  { state: { name: "unread" }, event: { type: "stop" }, expect: ok(stopped) },
+  { state: { name: "unread" }, event: stop, expect: ok(stopped) },
+  {
+    label: "a deleting stop remembers the deletion",
+    state: { name: "unread" },
+    event: { type: "stop", deleting: true },
+    expect: ok(deleted),
+  },
   // idle
   {
     state: idle(),
@@ -36,7 +44,7 @@ const rows = [
   },
   { state: idle(), event: { type: "requested" }, expect: ok(queued()) },
   { state: idle(), event: { type: "start" }, expect: no(idle(), "no write is queued") },
-  { state: idle(), event: { type: "stop" }, expect: ok(stopped) },
+  { state: idle(), event: stop, expect: ok(stopped) },
   // queued
   {
     state: queued(),
@@ -53,7 +61,7 @@ const rows = [
     event: { type: "start" },
     expect: ok(writing(), [{ type: "write", stored: H1 }]),
   },
-  { state: queued(), event: { type: "stop" }, expect: ok(stopped) },
+  { state: queued(), event: stop, expect: ok(stopped) },
   // writing
   {
     state: writing(),
@@ -87,7 +95,8 @@ const rows = [
     expect: ok(idle()),
   },
   { case: "again", state: writing(true), event: { type: "failed" }, expect: ok(queued()) },
-  { state: writing(), event: { type: "stop" }, expect: ok(stopped) },
+  { state: writing(), event: stop, expect: ok(stopped) },
+  { state: writing(), event: { type: "stop", deleting: true }, expect: ok(deleted) },
   // stopped
   ...[
     { type: "restored", stored: null },
@@ -95,8 +104,28 @@ const rows = [
     { type: "start" },
     { type: "written", hash: H1 },
     { type: "failed" },
-    { type: "stop" },
   ].map((event) => ({ state: stopped, event, expect: no(stopped, "the Page host stopped") })),
+  {
+    case: "deleting",
+    label: "a retired host's Page can still be deleted",
+    state: stopped,
+    event: { type: "stop", deleting: true },
+    expect: ok(deleted),
+  },
+  { case: "again", state: stopped, event: stop, expect: no(stopped, "the Page host stopped") },
+  {
+    case: "again",
+    state: deleted,
+    event: { type: "stop", deleting: true },
+    expect: no(deleted, "the Page host stopped"),
+  },
+  {
+    case: "again",
+    label: "a deletion stays a deletion",
+    state: deleted,
+    event: stop,
+    expect: no(deleted, "the Page host stopped"),
+  },
 ];
 
 test("the page-card-writer machine covers every state and event", async () => {
@@ -111,12 +140,19 @@ function storeOver(bucket) {
     head: async () => {
       const object = await bucket.head(KEY);
       return object
-        ? { etag: object.etag, card_hash: object.customMetadata.card_hash ?? null }
+        ? {
+            etag: object.etag,
+            card_hash: object.customMetadata.card_hash ?? null,
+            content_updated_at: object.customMetadata.content_updated_at ?? null,
+          }
         : null;
     },
     put: async (bundle, { etag }) => {
       const object = await bucket.put(KEY, JSON.stringify(bundle), {
-        customMetadata: { card_hash: bundle.card_hash },
+        customMetadata: {
+          card_hash: bundle.card_hash,
+          content_updated_at: bundle.content_updated_at ?? "",
+        },
         onlyIf: etag ? { etagMatches: etag } : { etagDoesNotMatch: "*" },
       });
       return object ? { etag: object.etag } : null;
@@ -126,10 +162,11 @@ function storeOver(bucket) {
 }
 
 /** A writer over in-memory storage and bucket, with its holds collected. */
-function harness({ cards, bucket = cardBucket() } = {}) {
+function harness({ cards, bucket = cardBucket(), now } = {}) {
   const values = new Map();
   const holds = [];
   const errors = [];
+  const skips = [];
   let built = 0;
   const queue = [...(cards ?? [])];
   const writer = new PageCardWriter({
@@ -144,6 +181,8 @@ function harness({ cards, bucket = cardBucket() } = {}) {
     },
     hold: (work) => holds.push(work),
     onError: (error) => errors.push(error),
+    onSkip: () => skips.push(true),
+    ...(now && { now }),
   });
   const settle = async () => {
     while (holds.length) await Promise.all(holds.splice(0));
@@ -164,6 +203,7 @@ function harness({ cards, bucket = cardBucket() } = {}) {
     bucket,
     values,
     errors,
+    skips,
     puts,
     settle,
     flush,
@@ -172,7 +212,15 @@ function harness({ cards, bucket = cardBucket() } = {}) {
   };
 }
 
-const card = (hash) => ({ v: 1, card_hash: hash, blocks: [] });
+const card = (hash, contentUpdatedAt) => ({
+  v: 1,
+  card_hash: hash,
+  blocks: [],
+  ...(contentUpdatedAt && { content_updated_at: contentUpdatedAt }),
+});
+const T1 = "2026-11-04T10:00:00.000Z";
+const T2 = "2026-11-04T10:01:00.000Z";
+const T3 = "2026-11-04T10:02:00.000Z";
 /** A promise and its resolver. */
 const gate = () => {
   let open;
@@ -407,4 +455,117 @@ test("a put refused by its condition reads the etag again and retries once", asy
   assert.equal(h.puts.length, 2, "refused, then written");
   assert.deepEqual(h.object(), card(H2));
   assert.equal(h.errors.length, 0);
+});
+
+test("a writer that was never stopped can't overwrite a newer card after its put is refused", async () => {
+  const bucket = cardBucket();
+  const old = harness({ bucket, cards: [card(H1, T1), card("3".repeat(64), T3)] });
+  const { release, putting } = heldPut(old);
+  await old.writer.restore();
+  old.writer.request();
+  old.writer.pump();
+  await putting;
+  // A second host writes a newer card while the first is still live.
+  bucket.beforePut = null;
+  const next = harness({ bucket, cards: [card(H2, T2)] });
+  await next.writer.restore();
+  await next.flush();
+  release();
+  await old.settle();
+  assert.deepEqual(next.object(), card(H2, T2), "the newer card stays");
+  assert.equal(bucket.refused, 1, "refused once, and not retried");
+  assert.deepEqual(old.writer.state, { name: "idle", stored: null }, "nothing of its own landed");
+  assert.equal(old.errors.length, 0, "a newer card is not a failure to log");
+  assert.equal(old.skips.length, 1, "the skip is logged");
+  // Its next write reads the object again, and a later card writes.
+  await old.flush();
+  assert.deepEqual(old.object(), card("3".repeat(64), T3));
+  assert.equal(bucket.refused, 1);
+});
+
+test("a host's first write leaves a newer card alone", async () => {
+  const h = harness({ cards: [card(H1, T1), card(H1, T3)] });
+  await h.bucket.put(KEY, JSON.stringify(card(H2, T2)), {
+    customMetadata: { card_hash: H2, content_updated_at: T2 },
+  });
+  h.puts.length = 0;
+  await h.writer.restore();
+  await h.flush();
+  assert.deepEqual(h.puts, []);
+  assert.deepEqual(h.object(), card(H2, T2));
+  assert.deepEqual(h.writer.state, { name: "idle", stored: null });
+  assert.equal(h.errors.length, 0);
+  await h.flush();
+  assert.deepEqual(h.puts, [H1], "a later card writes");
+});
+
+test("equal content times with different hashes still put; the later put wins", async () => {
+  const h = harness({ cards: [card(H1, T2)] });
+  await h.bucket.put(KEY, JSON.stringify(card(H2, T2)), {
+    customMetadata: { card_hash: H2, content_updated_at: T2 },
+  });
+  h.puts.length = 0;
+  await h.writer.restore();
+  await h.flush();
+  assert.deepEqual(h.puts, [H1]);
+  assert.deepEqual(h.object(), card(H1, T2));
+});
+
+test("a stop during the refused put's second read puts nothing", async () => {
+  const h = harness({ cards: [card(H1, T1), card("4".repeat(64), T3)] });
+  await h.writer.restore();
+  await h.flush();
+  // A newer host wrote between this host's writes, without a later time.
+  await h.bucket.seed(KEY, card(H2));
+  const head = h.bucket.head.bind(h.bucket);
+  let reads = 0;
+  h.bucket.head = async (key) => {
+    reads++;
+    h.writer.stop();
+    return head(key);
+  };
+  h.puts.length = 0;
+  await h.flush();
+  assert.equal(reads, 1);
+  assert.deepEqual(h.puts, ["4".repeat(64)], "the refused put, and no retry");
+  assert.deepEqual(h.object(), card(H2));
+  assert.equal(h.writer.state.name, "stopped");
+  assert.equal(h.errors.length, 0);
+});
+
+test("an object time past the clock-skew limit never blocks a write; one within it does", async () => {
+  const now = Date.parse(T2);
+  const at = (ms) => new Date(now + ms).toISOString();
+  for (const [label, ahead, expected] of [
+    ["10 minutes ahead counts as missing", 10 * 60_000, [H1]],
+    ["4 minutes ahead is a newer card", 4 * 60_000, []],
+  ]) {
+    const h = harness({ cards: [card(H1, T2)], now: () => now });
+    await h.bucket.put(KEY, JSON.stringify(card(H2, at(ahead))), {
+      customMetadata: { card_hash: H2, content_updated_at: at(ahead) },
+    });
+    h.puts.length = 0;
+    await h.writer.restore();
+    await h.flush();
+    assert.deepEqual(h.puts, expected, label);
+    assert.equal(h.skips.length, expected.length ? 0 : 1, label);
+    assert.equal(h.errors.length, 0, label);
+  }
+});
+
+test("a refused put retries over an object time past the clock-skew limit", async () => {
+  const now = Date.parse(T2);
+  const ahead = new Date(now + 10 * 60_000).toISOString();
+  const h = harness({ cards: [card(H1, T1), card("4".repeat(64), T2)], now: () => now });
+  await h.writer.restore();
+  await h.flush();
+  // A node whose clock ran 10 minutes fast wrote between this host's writes.
+  await h.bucket.put(KEY, JSON.stringify(card(H2, ahead)), {
+    customMetadata: { card_hash: H2, content_updated_at: ahead },
+  });
+  h.puts.length = 0;
+  await h.flush();
+  assert.equal(h.puts.length, 2, "refused, then written");
+  assert.deepEqual(h.object(), card("4".repeat(64), T2));
+  assert.equal(h.skips.length, 0);
 });
