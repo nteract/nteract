@@ -98,8 +98,14 @@ export async function readLocalPage(identity, pageId, { markers = false } = {}) 
 /** Write a checkpoint, merging it into the stored one. `replica` is the
  * writing session's native replica; it decides that replica's localEdits
  * entries (local-edits.mjs). `regrant` says the host has just verified this
- * account's access, so the checkpoint may replace an access marker. */
-export async function writeLocalPage(identity, page, { replica, regrant = false } = {}) {
+ * account's access, so the checkpoint may replace an access marker.
+ * `storageFromHost` says `recordStorage` is the host's discovery answer, so
+ * it may name plain storage over a record that names native. */
+export async function writeLocalPage(
+  identity,
+  page,
+  { replica, regrant = false, storageFromHost = false } = {},
+) {
   if (!identity?.principal || page.principal !== identity.principal)
     throw Error("Local Page account does not match");
   // Cache checkpoints are shared by independent tab replicas. Merge inside one
@@ -169,6 +175,11 @@ export async function writeLocalPage(identity, page, { replica, regrant = false 
               }),
             recovery_sequence: previous.recovery_sequence ?? 0,
           };
+          // A Page never changes storage mode, so a record that names native
+          // storage keeps it: a stale tab still holding a plain replica of a
+          // draft another tab moved can't write plain storage back. Only the
+          // host's own answer (`storageFromHost`) sets it.
+          if (!previous.recordStorage && !storageFromHost) delete next.recordStorage;
           if (
             (previous.access?.revision ?? -1) > (page.access?.revision ?? -1) ||
             ((previous.access?.revision ?? -1) === (page.access?.revision ?? -1) &&

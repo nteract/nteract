@@ -125,6 +125,34 @@ test("a host without PAGES_RECORD_STORAGE refuses a plain draft before recording
   assert.equal(first.plain, undefined);
 });
 
+test("a plain registration recorded before the flag went off still replays and resumes", async (t) => {
+  // Completed: the receipt replays with its plain metadata.
+  const completed = await fixture(t);
+  const first = completed.page();
+  assert.ok((await completed.register(first)).ok);
+  delete completed.env.PAGES_RECORD_STORAGE;
+  const replayed = await completed.register(completed.page());
+  assert.equal(replayed.status, 201, await replayed.clone().text());
+  assert.equal((await replayed.json()).document_id, completed.args.document_id);
+  // Interrupted after the intent: a restart resumes it as recorded.
+  const interrupted = await fixture(t);
+  const crashed = interrupted.page();
+  t.mock.method(crashed, "initializeRepo", async () => {
+    throw Error("simulated crash after the creation intent");
+  });
+  await interrupted.register(crashed).catch(() => {});
+  assert.equal(
+    (await interrupted.storage.get("host/creation")).metadata.recordStorage,
+    "automerge",
+  );
+  delete interrupted.env.PAGES_RECORD_STORAGE;
+  const restarted = interrupted.page();
+  const resumed = await interrupted.register(restarted);
+  assert.equal(resumed.status, 201, await resumed.clone().text());
+  assert.equal(restarted.metadata.recordStorage, "automerge");
+  assert.ok(restarted.plain, "the resumed Page runs PlainSync");
+});
+
 test("a registered automerge Page stores plain history and survives a restart", async (t) => {
   const f = await fixture(t);
   const first = f.page();

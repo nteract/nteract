@@ -1446,8 +1446,12 @@ keeps the storage its browser replica already uses (`record_storage` in the
 registration). A host without the flag refuses a plain draft with
 `409 record_storage_unsupported` before recording anything, so an older build
 never boots a plain Page it can't open; the browser moves the draft to a native
-replica under the same document ID and registers again. Existing Pages keep
-the mode they were created with, and a Page never changes mode.
+replica under the same document ID and registers again
+([viewer/storage-switch-machine.mjs](viewer/storage-switch-machine.mjs)). Edits
+pause for the move. The plain replica stays on disk until the local record
+names the native one, so a close or crash midway reopens the plain draft and
+repeats the move. Existing Pages keep the mode they were created with, and a
+Page never changes mode.
 
 Both sides keep Repo 3 and run `AutomergeSyncBackend`
 ([sync/backend.mjs](sync/backend.mjs)), a `SedimentreeBackend` that keeps a
