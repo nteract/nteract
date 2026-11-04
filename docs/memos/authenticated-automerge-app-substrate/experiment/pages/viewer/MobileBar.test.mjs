@@ -195,3 +195,19 @@ test("with an image or a dataframe selected, text style, marks and lists are dis
       );
   }
 });
+
+for (const atom of ["image", "dataframe"])
+  test(`with ${atom === "image" ? "an image" : "a dataframe"} selected, More offers only undo and redo`, async (t) => {
+    const ran = [];
+    const view = await renderBar(t, {
+      format: { atom, undo: true, redo: true, link: true },
+      onRun: (name) => ran.push(name),
+    });
+    await click(view.button("More formatting"));
+    const items = [...view.bar.querySelectorAll("[role='menuitem']")];
+    const enabled = items.filter((item) => !item.disabled).map((item) => item.textContent);
+    // Insert table would replace the selected node; the lists would wrap it.
+    assert.deepEqual(enabled, ["Undo", "Redo"], atom);
+    for (const item of items.filter((entry) => entry.disabled)) await click(item);
+    assert.deepEqual(ran, [], `${atom}: a disabled entry ran`);
+  });
