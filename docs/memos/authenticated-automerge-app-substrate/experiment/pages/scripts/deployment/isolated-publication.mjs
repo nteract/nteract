@@ -3,9 +3,11 @@ import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import {
+  MIN_CONNECTIONS,
   SLOTS,
   connectorTransition,
   parseConnectorState,
+  readyVerdict,
   serializeConnectorState,
   settleConnector,
 } from "./connector-slots.mjs";
@@ -279,35 +281,24 @@ export function publishIsolated(
   const replace = (file, contents) => filesystem.renameSync(candidate(file, contents), file);
   let upgrading = false;
   let migration = null;
-  if (filesystem.existsSync(installation)) {
-    const installed = read(installation);
+  let installed = null;
+  let current = null;
+  const fresh = !filesystem.existsSync(installation);
+  if (!fresh) {
+    installed = read(installation);
     if (installed !== receipt) {
       migration =
         predecessors.find(({ sealed, pending }) => installed === sealed || installed === pending) ??
         null;
       if (!migration)
         throw new Error("Dedicated tunnel installation differs; inspect before retrying");
-      const current = read(configPath);
+      current = read(configPath);
       if (
         !unitsInstalled(migration.legacy) ||
         (current !== migration.config &&
           (installed !== migration.pending || current !== plan.config))
       )
         throw new Error("Dedicated tunnel migration requires exact previous files");
-      // Validate the new bytes before changing the active file. The pending
-      // receipt survives a crash on either side of the atomic config rename;
-      // retries must bring up a connector with these bytes before sealing the
-      // final receipt.
-      const next = candidate(configPath, plan.config);
-      validateRoutes(next);
-      if (
-        read(configPath) !== current ||
-        !unitsInstalled(migration.legacy) ||
-        read(installation) !== installed
-      )
-        throw new Error("Dedicated tunnel changed during migration validation");
-      if (installed === migration.sealed) replace(installation, migration.pending);
-      filesystem.renameSync(next, configPath);
       upgrading = true;
     }
   } else {
@@ -323,7 +314,39 @@ export function publishIsolated(
       )
     )
       throw new Error("Unowned dedicated tunnel configuration or service already exists");
-    filesystem.writeFileSync(installation, receipt, { mode: 0o600, flag: "wx" });
+  }
+  // Everything the handoff depends on is checked before the first write.
+  const connectorState = slotted ? loadConnectorState() : null;
+  if (upgrading) {
+    // Validate the new bytes before changing the active file. The pending
+    // receipt survives a crash on either side of the atomic config rename;
+    // retries must bring up a connector with these bytes before sealing the
+    // final receipt.
+    const next = candidate(configPath, plan.config);
+    validateRoutes(next);
+    if (
+      read(configPath) !== current ||
+      !unitsInstalled(migration.legacy) ||
+      read(installation) !== installed
+    )
+      throw new Error("Dedicated tunnel changed during migration validation");
+    if (installed === migration.sealed) replace(installation, migration.pending);
+    filesystem.renameSync(next, configPath);
+  } else if (fresh) filesystem.writeFileSync(installation, receipt, { mode: 0o600, flag: "wx" });
+
+  // Reads only. Slot units must be absent or exact, and the record must parse.
+  // The record is written before any slot starts, so without one no slot may
+  // run: one left running would keep serving routes no record tracks.
+  function loadConnectorState() {
+    for (const slot of plan.slots)
+      if (filesystem.existsSync(slot.unitPath) && read(slot.unitPath) !== slot.unit)
+        throw new Error("Dedicated tunnel file differs; inspect before retrying");
+    if (filesystem.existsSync(connectorPath)) return parseConnectorState(read(connectorPath));
+    if (plan.slots.some((slot) => run("systemctl", ["is-active", slot.service]) === "active"))
+      throw new Error("Tunnel connector state is missing while a slot is active; inspect");
+    return migration?.legacy
+      ? { phase: "serving", live: "legacy", config: hash(migration.config) }
+      : { phase: "absent" };
   }
   // A crash may leave only part of our installation. Fill missing exact files;
   // never overwrite a modified file or adopt another service's unit. A slotted
@@ -484,50 +507,49 @@ export function publishIsolated(
   }
 
   // Bring up the idle slot with the config on disk and stop the live unit only
-  // after the new one holds an edge connection (connector-slots.mjs).
+  // after the new one holds edge connections (connector-slots.mjs).
   function handOffConnector() {
     const slotNamed = (name) => plan.slots.find((slot) => slot.name === name);
     const unitOf = (name) => (name === "legacy" ? service : slotNamed(name).service);
     const active = (name) => run("systemctl", ["is-active", unitOf(name)]) === "active";
-    const persist = (state) => replace(connectorPath, serializeConnectorState(state));
-    const start = (name) => {
-      const slot = slotNamed(name);
-      // A resumed start can find the slot up with older routes: restart it.
-      // The live unit still serves meanwhile.
-      run("systemctl", [active(name) ? "restart" : "start", slot.service]);
-      if (!active(name)) throw new Error("Tunnel connector " + slot.service + " is not active");
-      awaitReady(slot);
-      run("systemctl", ["enable", slot.service]);
-      sleep(CONNECTOR_SETTLE_MS);
+    const effects = {
+      persist: (state) => replace(connectorPath, serializeConnectorState(state)),
+      active,
+      launch: (name, mode) => {
+        const unit = unitOf(name);
+        if (mode !== "adopt") run("systemctl", [mode, unit]);
+        if (!active(name)) throw new Error("Tunnel connector " + unit + " is not active");
+      },
+      // Only slots serve /ready. A legacy unit that systemd runs counts as
+      // serving; it never had a metrics listener.
+      ready: (name) => {
+        if (name !== "legacy") awaitReady(slotNamed(name));
+      },
+      serving: (name) =>
+        active(name) &&
+        (name === "legacy" || readyVerdict(probeReady(slotNamed(name)), true) === "ready"),
+      promote: (name) => {
+        run("systemctl", ["enable", unitOf(name)]);
+        sleep(CONNECTOR_SETTLE_MS);
+      },
+      stop: (name) => {
+        run("systemctl", ["stop", unitOf(name)]);
+        run("systemctl", ["disable", unitOf(name)]);
+        if (active(name)) throw new Error("Tunnel connector " + unitOf(name) + " is still active");
+      },
     };
-    const stop = (name) => {
-      run("systemctl", ["stop", unitOf(name)]);
-      run("systemctl", ["disable", unitOf(name)]);
-      if (active(name)) throw new Error("Tunnel connector " + unitOf(name) + " is still active");
-    };
-    let state;
-    if (filesystem.existsSync(connectorPath)) state = parseConnectorState(read(connectorPath));
-    else if (migration?.legacy)
-      state = { phase: "serving", live: "legacy", config: hash(migration.config) };
-    else {
-      // Without a record or a legacy unit, nothing may already serve this
-      // tunnel; a slot left running would keep serving routes no one tracks.
-      if (plan.slots.some((slot) => active(slot.name)))
-        throw new Error("Tunnel connector state is missing while a slot is active; inspect");
-      state = { phase: "absent" };
-    }
-    const effects = { persist, start, stop };
     // The unit that served when this run began. A retry first finishes the
     // step an interrupted run left in flight.
-    const servedBefore = state.phase === "stopping" ? state.previous : state.live;
-    let { state: settled, failure } = settleConnector(state, effects);
+    const servedBefore =
+      connectorState.phase === "stopping" ? connectorState.previous : connectorState.live;
+    let { state: settled, failure } = settleConnector(connectorState, effects);
     const want = hash(plan.config);
     if (
       !failure &&
       (settled.phase === "absent" || settled.live === "legacy" || settled.config !== want)
     ) {
       const swap = connectorTransition(settled, { type: "swap", config: want });
-      persist(swap);
+      effects.persist(swap);
       ({ state: settled, failure } = settleConnector(swap, effects));
     }
     const handoff = !failure && settled.live !== servedBefore;
@@ -556,27 +578,39 @@ export function publishIsolated(
     return { slot: live, handoff };
   }
 
-  // cloudflared's /ready answers 200 once the connector holds an edge
-  // connection, and 503 until then.
+  // cloudflared's /ready answers 200 with `readyConnections` once the
+  // connector holds an edge connection, and 503 until then. `readyVerdict`
+  // decides how many connections are enough.
+  function probeReady(slot) {
+    try {
+      return JSON.parse(
+        run("curl", [
+          "--fail",
+          "--silent",
+          "--show-error",
+          "--max-time",
+          "2",
+          "http://" + slot.metrics + "/ready",
+        ]),
+      );
+    } catch {
+      // Not ready yet, or the metrics listener is still starting.
+      return null;
+    }
+  }
   function awaitReady(slot) {
     for (let attempt = 1; ; attempt++) {
-      try {
-        const ready = JSON.parse(
-          run("curl", [
-            "--fail",
-            "--silent",
-            "--show-error",
-            "--max-time",
-            "2",
-            "http://" + slot.metrics + "/ready",
-          ]),
+      const report = probeReady(slot);
+      const verdict = readyVerdict(report, attempt >= READY_ATTEMPTS);
+      if (verdict === "ready") return;
+      if (verdict === "fail")
+        throw new Error(
+          "Tunnel connector " +
+            slot.service +
+            " reported fewer than " +
+            MIN_CONNECTIONS +
+            " edge connections",
         );
-        if (ready.status === 200 && ready.readyConnections >= 1) return;
-      } catch {
-        // Not ready yet, or the metrics listener is still starting.
-      }
-      if (attempt >= READY_ATTEMPTS)
-        throw new Error("Tunnel connector " + slot.service + " reported no edge connection");
       sleep(1_000);
     }
   }

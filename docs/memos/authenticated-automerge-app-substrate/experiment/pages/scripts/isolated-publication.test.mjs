@@ -78,6 +78,8 @@ function fixture(
     target = "page3",
     misroutePath = null,
     neverReady = false,
+    readyConnections = 4,
+    failStop = null,
   } = {},
 ) {
   const current = inputFor(target);
@@ -186,6 +188,10 @@ function fixture(
         activeUnits.add(args[1]);
         snapshot();
       }
+      if (args[0] === "stop" && args[1] === failStop) {
+        failStop = null;
+        throw Error("injected connector stop failure");
+      }
       if (args[0] === "stop" && activeUnits.delete(args[1])) snapshot();
       return "";
     }
@@ -195,7 +201,7 @@ function fixture(
       );
       if (!slot || !activeUnits.has(slot.service) || neverReady)
         throw Error("curl failed (status 22)");
-      return JSON.stringify({ status: 200, readyConnections: 4, connectorId: tunnelId });
+      return JSON.stringify({ status: 200, readyConnections, connectorId: tunnelId });
     }
     if (command === "curl") return JSON.stringify({ ok: true, prototype: "pages-celld-native" });
     if (command === "systemd-analyze") return "";
@@ -1850,7 +1856,9 @@ for (const target of ["page10", "pages"]) {
       const x = legacyInstall(f);
       assert.throws(
         f.execute,
-        failure === "start" ? /injected connector startup failure/ : /reported no edge connection/,
+        failure === "start"
+          ? /injected connector startup failure/
+          : /reported fewer than 2 edge connections/,
       );
       assert.equal(fs.readFileSync(f.local(x.plan.configPath), "utf8"), x.oldConfig);
       assert.equal(installedReceipt(f), x.sealed);
@@ -1893,6 +1901,22 @@ for (const target of ["page10", "pages"]) {
       ["legacy", "a"],
       ["stop legacy", "disable legacy"],
     ],
+    // Slot a died after the record said `stopping`: it comes up again before
+    // the legacy connector stops.
+    [
+      "stopping, slot a died",
+      { phase: "stopping", live: "a", previous: "legacy" },
+      ["legacy"],
+      ["start a", "enable a", "stop legacy", "disable legacy"],
+    ],
+    // The legacy connector died after slot a started: slot a is the only
+    // connector, so it is adopted, not restarted.
+    [
+      "starting, slot a up and the legacy connector gone",
+      { phase: "starting", live: "legacy", next: "a" },
+      ["a"],
+      ["enable a", "stop legacy", "disable legacy"],
+    ],
     [
       "reverting slot a",
       { phase: "reverting", live: "legacy", next: "a" },
@@ -1918,7 +1942,9 @@ for (const target of ["page10", "pages"]) {
           ? { ...record, config: old, nextConfig: want }
           : record.phase === "reverting"
             ? { ...record, config: old }
-            : { ...record, config: want };
+            : record.phase === "stopping"
+              ? { ...record, config: want, previousConfig: old }
+              : { ...record, config: want };
       f.write(recordPath(target), JSON.stringify({ schema: 1, ...full }));
       f.activeUnits.clear();
       for (const unit of active) f.activate(units[unit]);
@@ -1965,6 +1991,110 @@ for (const target of ["page10", "pages"]) {
     invalid.execute();
     invalid.write(recordPath(target), JSON.stringify({ schema: 1, phase: "serving", live: "c" }));
     assert.throws(invalid.execute, /Invalid tunnel connector state/);
+  });
+
+  // The connector checks run before the pending receipt, the config rename
+  // and any slot unit are written, so a refused route change leaves the
+  // installation exactly as it was.
+  for (const [problem, setup, error] of [
+    [
+      "an invalid record",
+      (f) => f.write(recordPath(target), "{"),
+      /Invalid tunnel connector state/,
+    ],
+    [
+      "a slot running without a record",
+      (f, x) => f.activate(x.b),
+      /connector state is missing while a slot is active/,
+    ],
+    [
+      "a foreign slot unit",
+      (f, x) => f.write(x.plan.slots[0].unitPath, "foreign unit\n"),
+      /Dedicated tunnel file differs/,
+    ],
+  ])
+    test(`${target} refuses a route change with ${problem} before writing anything`, (t) => {
+      const f = fixture(t, { target });
+      const x = legacyInstall(f);
+      setup(f, x);
+      f.writes.length = 0;
+      assert.throws(f.execute, error);
+      assert.deepEqual(f.writes, []);
+      assert.deepEqual(lifecycle(f), []);
+      assert.equal(fs.readFileSync(f.local(x.plan.configPath), "utf8"), x.oldConfig);
+      assert.equal(installedReceipt(f), x.sealed);
+    });
+
+  test(`${target} waits for every edge connection and settles for two at the end of the budget`, (t) => {
+    const full = fixture(t, { target });
+    legacyInstall(full);
+    full.execute();
+    assert.equal(full.sleeps.filter((ms) => ms === 1_000).length, 0, "four connections: no wait");
+
+    const two = fixture(t, { target, readyConnections: 2 });
+    const x = legacyInstall(two);
+    assert.equal(two.execute().connectorSlot, "a");
+    assert.equal(two.sleeps.filter((ms) => ms === 1_000).length, 29);
+    assert.equal(installedReceipt(two), x.final);
+    assertNoGap(two);
+
+    const one = fixture(t, { target, readyConnections: 1 });
+    const y = legacyInstall(one);
+    assert.throws(one.execute, /reported fewer than 2 edge connections/);
+    assert.ok(one.activeUnits.has(y.legacy), "one connection never replaces the old connector");
+    assert.equal(fs.readFileSync(one.local(y.plan.configPath), "utf8"), y.oldConfig);
+    assert.equal(installedReceipt(one), y.sealed);
+    assertNoGap(one);
+  });
+
+  test(`${target} rollback starts the old connector again when it died during the handoff`, (t) => {
+    const f = fixture(t, { target, failStart: true });
+    const x = legacyInstall(f);
+    f.activeUnits.delete(x.legacy);
+    assert.throws(f.execute, /injected connector startup failure/);
+    assert.deepEqual(lifecycle(f), [
+      "start " + x.a,
+      "stop " + x.a,
+      "disable " + x.a,
+      "start " + x.legacy,
+    ]);
+    // The legacy connector starts only after its old routes are back on disk.
+    assert.equal(fs.readFileSync(f.local(x.plan.configPath), "utf8"), x.oldConfig);
+    assert.ok(f.activeUnits.has(x.legacy));
+    assert.equal(installedReceipt(f), x.sealed);
+    assert.deepEqual(connectorRecord(f), {
+      schema: 1,
+      phase: "serving",
+      live: "legacy",
+      config: digest(x.oldConfig),
+    });
+  });
+
+  test(`${target} a revert whose stop fails reports why the handoff failed and resumes`, (t) => {
+    const f = fixture(t, {
+      target,
+      neverReady: true,
+      failStop: deploymentProfile(target).tunnelSlots.a.service,
+    });
+    const x = legacyInstall(f);
+    let thrown;
+    try {
+      f.execute();
+    } catch (error) {
+      thrown = error;
+    }
+    assert.match(thrown.message, /injected connector stop failure/);
+    assert.match(thrown.cause.message, /reported fewer than 2 edge connections/);
+    // Nothing rolled back: the record still owes the stop, and the pending
+    // receipt keeps the migration resumable.
+    assert.equal(connectorRecord(f).phase, "reverting");
+    assert.equal(JSON.parse(installedReceipt(f)).previous_unit_sha256, digest(x.plan.unit));
+    assert.ok(f.activeUnits.has(x.legacy));
+    f.setNeverReady(false);
+    const retry = f.execute();
+    assert.equal(retry.connectorSlot, "a");
+    assert.equal(installedReceipt(f), x.final);
+    assertNoGap(f);
   });
 
   test(`${target} migration refuses changed legacy or slot files before writes`, (t) => {

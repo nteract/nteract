@@ -879,20 +879,30 @@ live slot started with, it:
 2. Starts the idle slot. Each slot is `Type=notify`, and cloudflared reports
    ready once its first edge connection registers.
 3. Polls the slot's metrics listener, `http://<metrics>/ready`, until it
-   answers 200 with at least one ready connection (30 tries, 1 s apart).
+   answers 200 with all four of cloudflared's default edge connections
+   (30 tries, 1 s apart). If the tries run out with two or three, the slot
+   counts as ready: one lost connection still leaves an origin, and one
+   degraded edge location shouldn't block a deploy. Fewer than two fails the
+   handoff.
 4. Enables the slot, then keeps both connectors up for 5 s.
-5. Stops and disables the old unit. Slots run with `--grace-period 10s`, so a
-   stop finishes requests in flight within 10 s.
+5. Checks once more that the new slot runs and holds at least two
+   connections, then stops and disables the old unit. Slots run with
+   `--grace-period 10s`, so a stop finishes requests in flight within 10 s.
 
 `/etc/<service>/tunnel-connector.json` records which unit is live and which
 step is in flight (`starting`, `stopping`, `reverting`). The record is written
 before each step, so a retry resumes that step and never repeats a reported one.
+A resumed step checks the units first. If the new slot died before the old
+unit stopped, it starts again while the old one serves. If the old unit died,
+a running new slot is used as it is rather than restarted, since it is then
+the only connector.
 [connector-slots.mjs](scripts/deployment/connector-slots.mjs) holds the
 transitions, and its tests cover every state and event.
 
 If the new slot never becomes ready, publication stops it, restores the old
 config and installation receipt, and exits with the error. The old connector
-never stopped, so nothing restarts. While both connectors run, a request can
+never stopped, so nothing restarts; if it died meanwhile, publication starts it
+again after the old config is back. While both connectors run, a request can
 reach either one: for those few seconds a new route can still answer 404 from
 the old connector's catch-all.
 
@@ -900,9 +910,9 @@ Releases before slots ran one unit per target, `cloudflared-page10.service` and
 `cloudflared-pages-live.service`. The first publication from this release takes
 that unit as live and hands off to slot `a` the same way, with or without a
 route change. The old unit's file stays in `/etc/systemd/system`, stopped and
-disabled. A record that is missing while a slot runs, or one that doesn't
-parse, stops publication before it changes anything; inspect both slots with
-`systemctl status` before fixing it by hand. Publishing a release from before
+disabled. A record that is missing while a slot runs, a record that doesn't
+parse, or a slot unit file with other bytes stops publication before it writes
+anything; inspect both slots with `systemctl status` before fixing it by hand. Publishing a release from before
 slots onto a migrated target is refused, because it doesn't know the slot
 receipt; app rollback with `install` never publishes.
 
