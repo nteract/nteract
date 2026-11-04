@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // From pages: node --expose-gc scripts/plain-host-memory.mjs bare 13
-// Also: bridge 13; cycles 13 (eight batches of N load/free pairs).
+// Also: adapter 13; bridge 13 (benchmark-only historical wiring); cycles 13.
 // Optional: --fixture /path/to/page.automerge. No document content is printed.
 // Each invocation samples a fresh process. Generation/inspection runs outside
 // that process so its WASM high-water mark cannot mask the measured allocation.
@@ -16,7 +16,10 @@ const child = args[0] === "--sample";
 if (child) args.shift();
 const [mode, countArg = "13", ...options] = args;
 const count = Number(countArg);
-assert.ok(["bare", "bridge", "cycles"].includes(mode), "Mode must be bare, bridge, or cycles");
+assert.ok(
+  ["bare", "bridge", "adapter", "cycles"].includes(mode),
+  "Mode must be bare, bridge, adapter, or cycles",
+);
 assert.ok(Number.isSafeInteger(count) && count > 0, "N must be a positive integer");
 assert.ok(
   options.length === 0 || (options.length === 2 && options[0] === "--fixture"),
@@ -106,8 +109,12 @@ if (!child) {
   const { register } = await import("tsx/esm/api");
   register({ tsconfig: fileURLToPath(new URL("../tsconfig.json", import.meta.url)) });
   // Every mode loads the same module graph before taking its baseline.
-  const { interpretAsDocumentId } = await import("@automerge/automerge-repo");
+  const { Repo, interpretAsDocumentId, documentIdToBinary } =
+    await import("@automerge/automerge-repo");
   const { plainHostFixture } = await import("../sync/plain-host-fixture.mjs");
+  const { AutomergeSyncBackend } = await import("../sync/backend.mjs");
+  const { DocStore, MemoryByteStore } = await import("../sync/doc-store.mjs");
+  const { framePipe } = await import("../sync/wire.mjs");
   const { fixture, bytes: encoded } = JSON.parse(readFileSync(0, "utf8"));
   const bytes = new Uint8Array(Buffer.from(encoded, "base64"));
   const samples = [];
@@ -126,13 +133,36 @@ if (!child) {
     });
   };
   await sample("baseline", 0);
-  if (mode === "bridge") {
+  if (mode === "bridge" || mode === "adapter") {
     const hosts = [];
     for (let i = 1; i <= count; i++) {
       const documentId = interpretAsDocumentId(
         Uint8Array.from(Buffer.from(i.toString(16).padStart(32, "0"), "hex")),
       );
       const plain = await plainHostFixture({ documentId, bytes, heads: fixture.heads });
+      if (mode === "bridge") {
+        // Reconstruct the retired bridge only for comparative measurements.
+        const backend = await AutomergeSyncBackend.load({
+          store: new DocStore(new MemoryByteStore()),
+        });
+        plain.repo = new Repo({ backend });
+        const link = framePipe();
+        plain.host.accept(link.host, {
+          trusted: true,
+          principal: "service:pages",
+          senderId: "pages-host",
+        });
+        backend.addConnection(link.client, { hostId: "pages-host" });
+        plain.flush = async (ids) => {
+          await plain.repo.flush(ids);
+          await backend.flush();
+          for (const id of ids)
+            assert.equal(
+              (await backend.synchronizeTree(documentIdToBinary(id))).outcome,
+              "complete",
+            );
+        };
+      }
       const handle = await plain.repo.find(documentId);
       await plain.flush([documentId]);
       assert.deepEqual(A.getHeads(handle.doc()), fixture.heads);

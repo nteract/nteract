@@ -1610,7 +1610,7 @@ names the native one, so a close or crash midway reopens the plain draft and
 repeats the move. Existing Pages keep the mode they were created with, and a
 Page never changes mode.
 
-Both sides keep Repo 3 and run `AutomergeSyncBackend`
+Browsers keep Repo 3 and run `AutomergeSyncBackend`
 ([sync/backend.mjs](sync/backend.mjs)), a `SedimentreeBackend` that keeps a
 mirror Automerge document per tree and speaks CBOR frames
 ([sync/wire.mjs](sync/wire.mjs)) over the authenticated WebSocket. Repo
@@ -1638,9 +1638,12 @@ failure in a row doubles the writes that skip compaction, up to 256
 
 On the host, [worker/plain-sync.mjs](worker/plain-sync.mjs) runs a `SyncHost`
 ([sync/host.mjs](sync/host.mjs)). Browsers connect to it directly; the host's
-own Repo, which tools, comments and lifecycle code use through its handles,
-reaches it through an in-process trusted connection, so the host's edits take
-the same per-document queue and `flush()` waits for a completed sync round. A
+`HostRepo` facade ([sync/host-handle.mjs](sync/host-handle.mjs)) gives tools,
+comments and lifecycle code stable handles over SyncHost's single live document.
+Trusted host edits apply exact recorded changes through the same per-document
+queue; `flush()` waits for `durable()` and the worker's storage barrier. No host
+Repo, backend mirror or trusted transport is needed. Borrowed snapshots remain
+readable across commits and rely on Automerge's GC finalizer for reclamation. A
 sync message carrying changes is checked in that queue before anything is
 stored:
 

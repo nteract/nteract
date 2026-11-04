@@ -71,6 +71,12 @@ function durabilityStep(state, event) {
       status: "failed",
       error: event.error,
       heads: [...new Set([...(state.heads ?? []), ...event.heads])],
+      contexts: {
+        ...state.contexts,
+        ...Object.fromEntries(
+          event.changes.map((bytes) => [A.decodeChange(bytes).hash, event.context]),
+        ),
+      },
       pending: [
         ...new Map(
           [...(state.pending ?? []), ...event.changes].map((bytes) => [
@@ -80,7 +86,8 @@ function durabilityStep(state, event) {
         ).values(),
       ],
     };
-  if (event.type === "repaired") return DURABLE;
+  // A terminal refusal retires the pending closure, including dependent bytes.
+  if (event.type === "repaired" || event.type === "refused") return DURABLE;
   return state;
 }
 
@@ -98,7 +105,10 @@ export const defaultPolicy = {
   /** Returns `preview`, or a replacement on its own handle (the host frees
    * whichever it doesn't adopt). */
   admit: (_conn, _doc, _live, _fresh, preview) => preview,
-  /** Trusted write fences and schema/history limits, before persistence. */
+  /** Trusted write fences and schema/history limits, before persistence.
+   * Arguments: (doc, live, fresh, preview, context, conn, origin).
+   * origin is mutate, replay, retry, or bridge (test/benchmark transports).
+   * Already-admitted pending bytes bypass this hook on retry. */
   admitTrusted: (_doc, _live, _fresh, preview) => preview,
   /** After persist: `fresh` changes and the actor `claims` made for them. */
   admitted() {},
@@ -161,6 +171,7 @@ export class SyncHost {
         kind,
         live: null,
         loading: null,
+        reloadNeeded: false,
         conns: new Map(),
         queue: Promise.resolve(),
         durability: DURABLE,
@@ -236,19 +247,28 @@ export class SyncHost {
 
   /** Replay exact recorded bytes, including a dependency-reversed closure.
    * The queued/pending_retry_failed error contract is the same as mutate. */
-  applyChanges(id, changes) {
+  applyChanges(id, changes, { fenceExempt = false } = {}) {
     // Own the queued input; callers may reuse their journal buffers meanwhile.
     const bytes = concat(changes);
-    return this.#mutate(id, (clone) => A.loadIncremental(clone, bytes));
+    return this.#mutate(
+      id,
+      (clone) => A.loadIncremental(clone, bytes),
+      undefined,
+      {
+        fenceExempt: fenceExempt === true,
+      },
+      "replay",
+    );
   }
 
-  #mutate(id, build, options) {
+  #mutate(id, build, options, context = {}, origin = "mutate") {
     const doc = this.#docs.get(id);
     if (!doc) return Promise.reject(new Error(`Unknown document ${id}`));
     return this.#run(doc, async () => {
       try {
         await this.#retryPending(doc);
       } catch (cause) {
+        if (cause.code === "pending_retry_refused") throw cause;
         const error = new Error("Earlier pending changes could not be persisted; retry this call", {
           cause,
         });
@@ -262,7 +282,7 @@ export class SyncHost {
       let next;
       try {
         preview = build(clone);
-        next = await this.#admitPreview({ trusted: true }, doc, live, preview, {});
+        next = await this.#admitPreview({ trusted: true, context, origin }, doc, live, preview, {});
         if (!next) return { heads: A.getHeads(live), changes: [] };
         const changes = A.getChangesSince(next, A.getHeads(live));
         const heads = A.getHeads(next);
@@ -295,6 +315,38 @@ export class SyncHost {
     if (!doc) return [];
     await doc.queue;
     return (await this.store.open(id))?.heads ?? [];
+  }
+
+  /** Unregister before draining, so arriving frames cannot resurrect removed history. */
+  async remove(id) {
+    const doc = this.#docs.get(id);
+    if (doc) {
+      this.#docs.delete(id);
+      await doc.queue;
+      await doc.loading;
+      if (doc.live) this.#free(doc.live);
+    }
+    await this.store.remove(id);
+  }
+
+  /** Close transports and drain admitted work without removing durable history. */
+  async close() {
+    await Promise.all(
+      [...this.#conns].map(
+        (conn) =>
+          new Promise((resolve) => {
+            conn.transport.onClose(resolve);
+            conn.transport.close(1001, "Going away");
+          }),
+      ),
+    );
+    for (const doc of this.#docs.values()) {
+      await doc.queue;
+      await doc.loading;
+      if (doc.live) this.#free(doc.live);
+    }
+    this.#docs.clear();
+    this.#listeners.clear();
   }
 
   actor(actor) {
@@ -463,13 +515,42 @@ export class SyncHost {
     if (!doc.durability.pending?.length) return;
     const live = await this.#live(doc);
     if (!doc.durability.pending?.length) return;
-    const next = await this.#admit({ trusted: true }, doc, live, doc.durability.pending, {});
+    // A retry carries only the capability captured with these exact bytes.
+    // A later internal operation must never exempt an earlier ordinary write.
+    const pending = doc.durability.pending;
+    const context = doc.durability.contexts[A.decodeChange(pending[0]).hash] ?? {};
+    const end = pending.findIndex(
+      (bytes) =>
+        !!doc.durability.contexts[A.decodeChange(bytes).hash]?.fenceExempt !==
+          !!context.fenceExempt ||
+        !!doc.durability.contexts[A.decodeChange(bytes).hash]?.admitted !== !!context.admitted,
+    );
+    let next;
+    try {
+      next = await this.#admit(
+        { trusted: true, context, origin: "retry" },
+        doc,
+        live,
+        pending.slice(0, end < 0 ? pending.length : end),
+        {},
+      );
+    } catch (cause) {
+      if (!(cause instanceof Refusal)) throw cause;
+      // No later durable call may resurrect a refused closure. Ordinary IO
+      // errors still retain exact bytes; dependent pending bytes retire too.
+      doc.durability = durabilityStep(doc.durability, { type: "refused" });
+      throw Object.assign(new Error("Pending changes were refused and discarded", { cause }), {
+        code: "pending_retry_refused",
+        queued: false,
+      });
+    }
     if (!next) return;
     doc.live = next;
     this.#repair(doc, next);
     this.#committed(doc);
     this.#free(live);
     await this.#compact(doc);
+    await this.#retryPending(doc);
   }
 
   /** Free an unexposed Automerge handle the host no longer holds. */
@@ -484,24 +565,29 @@ export class SyncHost {
   }
 
   #run(doc, work) {
-    const run = doc.queue.catch(() => {}).then(work);
+    const run = doc.queue
+      .catch(() => {})
+      .then(async () => {
+        if (doc.reloadNeeded) await this.#live(doc);
+        return work();
+      });
     doc.queue = run.catch(() => {});
     return run;
   }
 
   async #live(doc) {
-    if (doc.live) return doc.live;
-    doc.loading ??= (doc.reloadClaims ? this.load() : Promise.resolve())
-      .then(() => {
-        doc.reloadClaims = false;
-      })
+    if (doc.live && !doc.reloadNeeded) return doc.live;
+    doc.loading ??= (doc.reloadNeeded ? this.load() : Promise.resolve())
       .then(() => this.store.read(doc.id))
       .then((stored) => {
+        const previous = doc.live;
         doc.live = stored
           ? A.load(concat([stored.snapshot, ...stored.chunks].filter(Boolean)))
           : A.init();
+        doc.reloadNeeded = false;
         this.#repair(doc, doc.live);
         this.#committed(doc);
+        if (previous) this.#free(previous);
         doc.loading = null;
         return doc.live;
       })
@@ -637,7 +723,17 @@ export class SyncHost {
       if (!claimed && !claims.has(actor)) claims.set(actor, this.#claim(conn));
     }
     const next = conn.trusted
-      ? await this.policy.admitTrusted(doc, live, fresh, preview)
+      ? conn.origin === "retry" && conn.context?.admitted
+        ? preview
+        : await this.policy.admitTrusted(
+            doc,
+            live,
+            fresh,
+            preview,
+            conn.context ?? {},
+            conn,
+            conn.origin ?? "bridge",
+          )
       : await this.policy.admit(conn, doc, live, fresh, preview, (actor) =>
           this.#owner(actor, claims, conn),
         );
@@ -690,15 +786,16 @@ export class SyncHost {
           error,
           heads: A.getHeads(next),
           changes,
+          // Reaching persistence proves these exact bytes passed trusted policy.
+          // applyChanges never accepts this marker from its caller.
+          context: { ...conn.context, admitted: true },
         });
       }
       // A failed append may have committed before its response was lost.
-      // Reload history and claims before another frame can compact or extend
-      // the durable document; the pre-append live doc is not authoritative.
-      this.#free(doc.live);
-      doc.live = null;
-      doc.loading = null;
-      doc.reloadClaims = true;
+      // Keep the last committed root readable, never the failed candidate.
+      // Reload history and claims before queued work can compact or extend it;
+      // publishedHeads ensures an ambiguous commit is published exactly once.
+      doc.reloadNeeded = true;
       throw error;
     } finally {
       for (const actor of claims.keys()) this.#reserved.delete(actor);

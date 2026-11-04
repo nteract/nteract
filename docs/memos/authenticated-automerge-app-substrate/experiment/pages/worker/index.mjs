@@ -3800,7 +3800,6 @@ export class Page {
     const documentId = commentsDocumentId(this.commentsUuid);
     if (this.plain) {
       this.plain.serve(documentId, "comments");
-      await this.plain.prime(documentId);
     }
     this.commentsHandle = await this.repo.import(A.save(commentsGenesis(this.commentsUuid)), {
       docId: documentId,
@@ -4380,7 +4379,7 @@ export class Page {
       serverSenderId: HOST_SENDER_ID,
       policy,
       plain,
-      backend: plain.backend,
+      backend: undefined,
       repo: plain.repo,
       ...(commentsUuid && { commentsUuid }),
     });
@@ -6184,7 +6183,6 @@ export class Page {
         // A replayed creation may find the document stored already.
         if (this.plain) {
           this.plain.serve(context.intent.metadata.documentId, "page");
-          await this.plain.prime(context.intent.metadata.documentId);
         }
         this.handle = await this.repo.import(context.intent.bytes, {
           docId: context.intent.metadata.documentId,
