@@ -14,6 +14,9 @@
  * the work finishes and anything waiting on it moves on. Call this in the
  * same synchronous step that starts or queues the work, while the request is
  * still live. The hold never rejects; the caller still owns `work`'s result.
+ * When handing work to a continuation or timer, register its successor hold
+ * before settling the current hold. Holding only the producer is not enough:
+ * celld also drops work started after that request's final hold settles.
  * Partial objects without a `ctx`, as unit tests build them, hold nothing.
  */
 export function holdUntilSettled(ctx, work) {

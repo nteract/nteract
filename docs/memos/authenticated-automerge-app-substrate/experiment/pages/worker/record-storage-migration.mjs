@@ -11,15 +11,16 @@ import { pageState } from "./access.mjs";
  * session at a time.
  *
  * States:
- * - off: this object never converts (the switches are off, or the record is
- *   already plain, deleted or not installed).
+ * - off: disabled by configuration/record, or paused after MAX_ATTEMPTS until
+ *   a new browser session. Only the latter carries `retryOnSocket`.
  * - dormant: no browser has connected to this object yet.
  * - connected: a socket is open or a request is running.
  * - quiet: nobody is connected and nothing runs; the quiet timer is armed.
  * - converting: the conversion runs inside blockConcurrencyWhile, so no
  *   request or socket can start until it ends.
  * - backoff: the last attempt skipped or failed before the flip; the retry
- *   timer is armed. `busy` says whether anyone was connected when it ended.
+ *   timer is armed without holding the object resident. `busy` says whether
+ *   anyone was connected when it ended.
  * - retired: the record says plain. The interpreter refuses this object's
  *   storage writes, closes the native host and resets the object, so the
  *   next request boots plain.
@@ -52,6 +53,9 @@ export const MIGRATION_EVENTS = Object.freeze([
 /** How long a Page sits unused before it converts, unless the state says
  * otherwise (`quietMs`, from PAGES_MIGRATE_QUIET_MS). */
 export const QUIET_MS = 30_000;
+export const MAX_ATTEMPTS = 3;
+export const SLOT_WAIT_MS = 5_000;
+export const SLOT_MAX_AGE_MS = 60_000;
 /** Retry waits after a skip or failure: doubling from the quiet window, at
  * most 6 h. */
 export const MAX_BACKOFF_MS = 6 * 60 * 60 * 1000;
@@ -76,10 +80,14 @@ export const recordStorageMigration = defineMachine({
   events: MIGRATION_EVENTS,
   unreachable,
   cases: {
+    "off/activity": ["disabled", "no-socket", "socket"],
     "dormant/activity": ["socket", "no-socket"],
     "connected/activity": ["idle", "busy"],
     "quiet/activity": ["idle", "busy"],
+    "backoff/activity": ["socket", "no-socket"],
     "backoff/elapsed": ["idle", "busy"],
+    "converting/skipped": ["retry", "exhausted"],
+    "converting/failed": ["retry", "exhausted"],
   },
   validate: {
     events: {
@@ -108,6 +116,10 @@ export const recordStorageMigration = defineMachine({
     const keep = (name, extra = {}) => ({ name, attempts, quietMs, ...extra });
     switch (state.name) {
       case "off":
+        if (state.retryOnSocket) {
+          if (event.sockets > 0) return { state: keep("connected", { attempts: 0 }), effects: [] };
+          return reject(state, "only a new browser session retries exhausted attempts");
+        }
         return reject(state, "this object never converts");
       case "retired":
         return reject(state, "the record already says plain");
@@ -141,6 +153,11 @@ export const recordStorageMigration = defineMachine({
               effects: [{ type: "retire" }],
             };
           default: {
+            if (attempts + 1 >= MAX_ATTEMPTS)
+              return {
+                state: keep("off", { attempts: attempts + 1, retryOnSocket: true }),
+                effects: [{ type: "disarm" }],
+              };
             const ms = Math.max(event.retryMs ?? 0, backoffMs(attempts, quietMs));
             return {
               state: {
@@ -154,8 +171,10 @@ export const recordStorageMigration = defineMachine({
           }
         }
       case "backoff":
-        if (event.type === "activity")
+        if (event.type === "activity") {
+          if (event.sockets > 0) return { state: keep("connected"), effects: [{ type: "disarm" }] };
           return { state: { ...state, busy: !idle(event) }, effects: [] };
+        }
         if (state.busy) return { state: keep("connected"), effects: [] };
         return {
           state: keep("quiet"),
@@ -183,13 +202,39 @@ export function migrationStart(env, metadata) {
   };
 }
 
-/** One conversion at a time on each node: each holds a native host, two
- * snapshots and their plain write in memory. */
-let slot = Promise.resolve();
-export function migrationSlot(work) {
-  const run = slot.then(work);
-  slot = run.catch(() => {});
-  return run;
+/** One conversion at a time per isolate: this module's slot is shared by its
+ * Page objects, not by other isolates on the node. Each conversion holds a
+ * native host, two snapshots and their plain write in memory. A timed-out
+ * waiter never takes the slot or runs later. An occupant older than 60 s can
+ * be replaced, beyond blockConcurrencyWhile's 30 s deadline. This only
+ * relaxes the memory limit: different Pages convert in separate objects. */
+let slot;
+export async function migrationSlot(work, { timeoutMs = SLOT_WAIT_MS, now = Date.now } = {}) {
+  let timer;
+  const expired = new Promise((resolve) => {
+    timer = setTimeout(() => resolve(true), timeoutMs);
+  });
+  try {
+    while (slot) {
+      if (now() - slot.started > SLOT_MAX_AGE_MS) break;
+      if (await Promise.race([slot.settled, expired]))
+        return { type: "skipped", reason: "slot_timeout" };
+    }
+  } finally {
+    clearTimeout(timer);
+  }
+  let release;
+  const occupant = {
+    started: now(),
+    settled: new Promise((resolve) => (release = resolve)),
+  };
+  slot = occupant;
+  try {
+    return await work();
+  } finally {
+    if (slot === occupant) slot = undefined;
+    release(false);
+  }
 }
 
 /** The error requests on a retired object get: the next request reaches the
