@@ -1503,9 +1503,30 @@ opens a replica in the storage its local copy or discovery names, and a first
 visit switches its empty replica before the lookup. Presence ids are per tab
 (`sender`), stamped by the host on every relay.
 
+A tab keeps its `sender` across reconnects, so a socket asking for an id an
+open connection holds for the same principal and driver is that tab
+reconnecting, usually after its old socket died without the close reaching
+the host. As with a native signing key, the new socket takes the id and the
+connection slot, and the host closes the old one with `access_changed` and
+logs `plain_session_replaced` ([plainSender](worker/plain-sync.mjs)). An id
+held by anyone else, or a malformed one, is replaced by a fresh id. A reload
+starts a new id, so a reloaded tab's dead socket still holds its slot until
+the close arrives.
+
+Each browser connection may have 256 sync frames or 32 MiB waiting in the
+host's queues, counting a frame until it is stored and acked or refused
+([sync/receive-queue.mjs](sync/receive-queue.mjs)), the native byte
+transport's bounds. Over either, the host refuses the frame with
+`receive_queue_full` and closes with `temporarily_unavailable`. An ephemeral
+message over 64 KiB is refused with `ephemeral_too_large` and closes with
+`request_rejected`; presence is a few hundred bytes. The host's own
+connection has no receive limit. Each preview is a clone of the live
+document; the host frees every preview it doesn't adopt and the live
+document an adopted one replaces.
+
 Not yet on this path: reservations for API edits (`DocumentAdmission`), the
-`PageRecords` buffered sink, record compaction and the per-key native session
-slots. The first three have nothing to do here; edits from the API go through
+`PageRecords` buffered sink and record compaction. None of them have anything
+to do here; edits from the API go through
 the host's Repo and the same admission queue. `sync/*.test.mjs` covers the
 backend, host, store and gates; `worker/plain-sync.test.mjs` covers
 registration, restart and a browser through the Page host;
