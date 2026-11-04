@@ -71,6 +71,12 @@ function durabilityStep(state, event) {
       status: "failed",
       error: event.error,
       heads: [...new Set([...(state.heads ?? []), ...event.heads])],
+      contexts: {
+        ...state.contexts,
+        ...Object.fromEntries(
+          event.changes.map((bytes) => [A.decodeChange(bytes).hash, event.context]),
+        ),
+      },
       pending: [
         ...new Map(
           [...(state.pending ?? []), ...event.changes].map((bytes) => [
@@ -161,6 +167,7 @@ export class SyncHost {
         kind,
         live: null,
         loading: null,
+        reloadNeeded: false,
         conns: new Map(),
         queue: Promise.resolve(),
         durability: DURABLE,
@@ -236,13 +243,15 @@ export class SyncHost {
 
   /** Replay exact recorded bytes, including a dependency-reversed closure.
    * The queued/pending_retry_failed error contract is the same as mutate. */
-  applyChanges(id, changes) {
+  applyChanges(id, changes, { fenceExempt = false } = {}) {
     // Own the queued input; callers may reuse their journal buffers meanwhile.
     const bytes = concat(changes);
-    return this.#mutate(id, (clone) => A.loadIncremental(clone, bytes));
+    return this.#mutate(id, (clone) => A.loadIncremental(clone, bytes), undefined, {
+      fenceExempt: fenceExempt === true,
+    });
   }
 
-  #mutate(id, build, options) {
+  #mutate(id, build, options, context = {}) {
     const doc = this.#docs.get(id);
     if (!doc) return Promise.reject(new Error(`Unknown document ${id}`));
     return this.#run(doc, async () => {
@@ -262,7 +271,7 @@ export class SyncHost {
       let next;
       try {
         preview = build(clone);
-        next = await this.#admitPreview({ trusted: true }, doc, live, preview, {});
+        next = await this.#admitPreview({ trusted: true, context }, doc, live, preview, {});
         if (!next) return { heads: A.getHeads(live), changes: [] };
         const changes = A.getChangesSince(next, A.getHeads(live));
         const heads = A.getHeads(next);
@@ -295,6 +304,38 @@ export class SyncHost {
     if (!doc) return [];
     await doc.queue;
     return (await this.store.open(id))?.heads ?? [];
+  }
+
+  /** Unregister before draining, so arriving frames cannot resurrect removed history. */
+  async remove(id) {
+    const doc = this.#docs.get(id);
+    if (doc) {
+      this.#docs.delete(id);
+      await doc.queue;
+      await doc.loading;
+      if (doc.live) this.#free(doc.live);
+    }
+    await this.store.remove(id);
+  }
+
+  /** Close transports and drain admitted work without removing durable history. */
+  async close() {
+    await Promise.all(
+      [...this.#conns].map(
+        (conn) =>
+          new Promise((resolve) => {
+            conn.transport.onClose(resolve);
+            conn.transport.close(1001, "Going away");
+          }),
+      ),
+    );
+    for (const doc of this.#docs.values()) {
+      await doc.queue;
+      await doc.loading;
+      if (doc.live) this.#free(doc.live);
+    }
+    this.#docs.clear();
+    this.#listeners.clear();
   }
 
   actor(actor) {
@@ -463,13 +504,29 @@ export class SyncHost {
     if (!doc.durability.pending?.length) return;
     const live = await this.#live(doc);
     if (!doc.durability.pending?.length) return;
-    const next = await this.#admit({ trusted: true }, doc, live, doc.durability.pending, {});
+    // A retry carries only the capability captured with these exact bytes.
+    // A later internal operation must never exempt an earlier ordinary write.
+    const pending = doc.durability.pending;
+    const context = doc.durability.contexts[A.decodeChange(pending[0]).hash] ?? {};
+    const end = pending.findIndex(
+      (bytes) =>
+        !!doc.durability.contexts[A.decodeChange(bytes).hash]?.fenceExempt !==
+        !!context.fenceExempt,
+    );
+    const next = await this.#admit(
+      { trusted: true, context },
+      doc,
+      live,
+      pending.slice(0, end < 0 ? pending.length : end),
+      {},
+    );
     if (!next) return;
     doc.live = next;
     this.#repair(doc, next);
     this.#committed(doc);
     this.#free(live);
     await this.#compact(doc);
+    await this.#retryPending(doc);
   }
 
   /** Free an unexposed Automerge handle the host no longer holds. */
@@ -484,24 +541,29 @@ export class SyncHost {
   }
 
   #run(doc, work) {
-    const run = doc.queue.catch(() => {}).then(work);
+    const run = doc.queue
+      .catch(() => {})
+      .then(async () => {
+        if (doc.reloadNeeded) await this.#live(doc);
+        return work();
+      });
     doc.queue = run.catch(() => {});
     return run;
   }
 
   async #live(doc) {
-    if (doc.live) return doc.live;
-    doc.loading ??= (doc.reloadClaims ? this.load() : Promise.resolve())
-      .then(() => {
-        doc.reloadClaims = false;
-      })
+    if (doc.live && !doc.reloadNeeded) return doc.live;
+    doc.loading ??= (doc.reloadNeeded ? this.load() : Promise.resolve())
       .then(() => this.store.read(doc.id))
       .then((stored) => {
+        const previous = doc.live;
         doc.live = stored
           ? A.load(concat([stored.snapshot, ...stored.chunks].filter(Boolean)))
           : A.init();
+        doc.reloadNeeded = false;
         this.#repair(doc, doc.live);
         this.#committed(doc);
+        if (previous) this.#free(previous);
         doc.loading = null;
         return doc.live;
       })
@@ -637,7 +699,7 @@ export class SyncHost {
       if (!claimed && !claims.has(actor)) claims.set(actor, this.#claim(conn));
     }
     const next = conn.trusted
-      ? await this.policy.admitTrusted(doc, live, fresh, preview)
+      ? await this.policy.admitTrusted(doc, live, fresh, preview, conn.context ?? {})
       : await this.policy.admit(conn, doc, live, fresh, preview, (actor) =>
           this.#owner(actor, claims, conn),
         );
@@ -690,15 +752,14 @@ export class SyncHost {
           error,
           heads: A.getHeads(next),
           changes,
+          context: conn.context ?? {},
         });
       }
       // A failed append may have committed before its response was lost.
-      // Reload history and claims before another frame can compact or extend
-      // the durable document; the pre-append live doc is not authoritative.
-      this.#free(doc.live);
-      doc.live = null;
-      doc.loading = null;
-      doc.reloadClaims = true;
+      // Keep the last committed root readable, never the failed candidate.
+      // Reload history and claims before queued work can compact or extend it;
+      // publishedHeads ensures an ambiguous commit is published exactly once.
+      doc.reloadNeeded = true;
       throw error;
     } finally {
       for (const actor of claims.keys()) this.#reserved.delete(actor);

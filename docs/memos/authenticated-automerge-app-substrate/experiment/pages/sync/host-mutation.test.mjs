@@ -326,6 +326,39 @@ test("ambiguous append reload repairs durable without rewriting recorded bytes o
   assert.ok(changesContent(events[0].patches));
 });
 
+for (const recovery of ["mutate", "applyChanges", "durable"])
+  test(`ambiguous append retains the committed root until ${recovery} reloads and publishes once`, async (t) => {
+    const { h, bytes, id } = await fixture(t);
+    const before = await h.document(id);
+    const events = [];
+    h.on("heads-changed", (event) => events.push(event));
+    const changes = recorded(before, (d) => {
+      d.title = "Committed after all";
+    });
+    const save = bytes.saveMany.bind(bytes);
+    bytes.saveMany = async (entries) => {
+      await save(entries);
+      throw Error("lost response");
+    };
+    await assert.rejects(h.applyChanges(id, changes), /lost response/);
+    assert.equal(h.doc(id), before);
+    assert.equal(h.doc(id).title, "Before");
+    assert.equal(events.length, 0);
+    const seq = h.store.manifest(id).seq;
+    bytes.saveMany = save;
+    if (recovery === "mutate")
+      await h.mutate(id, (d) => {
+        assert.equal(d.title, "Committed after all");
+      });
+    else if (recovery === "applyChanges") await h.applyChanges(id, changes);
+    else await h.durable(id);
+    assert.equal(h.doc(id).title, "Committed after all");
+    assert.equal(events.length, 1);
+    await h.durable(id);
+    assert.equal(events.length, 1);
+    assert.equal(h.store.manifest(id).seq, seq);
+  });
+
 test("host mutation fans out to connected browsers", async (t) => {
   const { h, id } = await fixture(t);
   const peers = await Promise.all([
@@ -811,7 +844,45 @@ for (const api of ["mutate", "applyChanges"])
     A.free(saved);
   });
 
-test("string storage rejection is wrapped, invalidates live state, and retains replayable bytes", async (t) => {
+test("pending admission context stays with its bytes, not the later caller's capability", async (t) => {
+  const { h, bytes, id } = await fixture(t);
+  let fenced = false;
+  const contexts = [];
+  h.policy.admitTrusted = (_doc, _live, _fresh, preview, context) => {
+    contexts.push(context.fenceExempt === true);
+    if (fenced && !context.fenceExempt) throw Error("fenced");
+    return preview;
+  };
+  const before = await h.document(id);
+  const ordinary = recorded(before, (d) => {
+    d.title = "Ordinary";
+  });
+  bytes.failNext();
+  await assert.rejects(h.applyChanges(id, ordinary), { queued: true });
+  fenced = true;
+  const internalBase = A.clone(before, { actor: "ef".repeat(16) });
+  const internalDoc = A.change(internalBase, (d) => {
+    d.future.push("migration");
+  });
+  const internal = A.getChanges(before, internalDoc);
+  A.free(internalDoc);
+  await assert.rejects(h.applyChanges(id, internal, { fenceExempt: true }), {
+    code: "pending_retry_failed",
+    queued: false,
+  });
+  assert.deepEqual(contexts, [false, false]);
+  assert.equal(h.doc(id).title, "Before");
+  fenced = false;
+  await h.durable(id);
+  fenced = true;
+  bytes.failNext();
+  await assert.rejects(h.applyChanges(id, internal, { fenceExempt: true }), { queued: true });
+  await h.durable(id);
+  assert.deepEqual(contexts.slice(-2), [true, true]);
+  assert.deepEqual(h.doc(id).future, ["migration"]);
+});
+
+test("string storage rejection is wrapped, retains the committed root and replayable bytes", async (t) => {
   const { h, bytes, id } = await fixture(t);
   const save = bytes.saveMany.bind(bytes);
   bytes.saveMany = async () => {
@@ -834,7 +905,7 @@ test("string storage rejection is wrapped, invalidates live state, and retains r
       return true;
     },
   );
-  assert.equal(h.doc(id), null, "failed append invalidates cached live history");
+  assert.equal(h.doc(id).title, "Before", "failed append preserves committed reads");
   bytes.saveMany = save;
   await h.durable(id);
   assert.equal(h.doc(id).title, "Recovered");

@@ -1,13 +1,17 @@
 import * as A from "@automerge/automerge";
-import { Repo, cbor, documentIdToBinary } from "@automerge/automerge-repo";
-import { sedimentreeId } from "@automerge/automerge-repo/sedimentree";
+import { cbor } from "@automerge/automerge-repo";
 import { BACKEND_LIMITS, assertStoredSize } from "../model/limits.mjs";
-import { documentFeatures, missingFeatures, schemaUnsupported } from "../model/schema-features.mjs";
-import { AutomergeSyncBackend } from "../sync/backend.mjs";
+import {
+  BUILD_FEATURES,
+  documentFeatures,
+  missingFeatures,
+  schemaUnsupported,
+} from "../model/schema-features.mjs";
 import { BLOCKING, commentAdmission } from "../sync/comments.mjs";
-import { DocStore, MemoryByteStore } from "../sync/doc-store.mjs";
+import { DocStore } from "../sync/doc-store.mjs";
+import { HostRepo, hostTreeOf } from "../sync/host-handle.mjs";
 import { Refusal, SyncHost } from "../sync/host.mjs";
-import { framePipe, socketTransport } from "../sync/wire.mjs";
+import { socketTransport } from "../sync/wire.mjs";
 import {
   admissionCloseCode,
   admissionCode,
@@ -19,11 +23,9 @@ import { PermissionDenied, credentialExpired } from "./policy.mjs";
 
 // The Page host for `recordStorage: "automerge"` Pages: plain Automerge sync
 // in place of Subduction. Browsers connect to a SyncHost (sync/host.mjs). The
-// host's own Repo, which the rest of the Page host uses through its handles,
-// runs AutomergeSyncBackend over memory and reaches the SyncHost through an
-// in-process trusted connection, so its edits take the same admission queue
-// and its durability barrier is a completed sync round. History and actor
-// claims live in the Page's own storage under `plain/`.
+// HostRepo facade gives worker code handles over that same live document.
+// Trusted edits and durability barriers use SyncHost's admission queue.
+// History and actor claims live in the Page's own storage under `plain/`.
 //
 // Access comes from DocumentPolicy.account(identity): the same ACL, trash,
 // recovery and credential rules as native connections, checked on every frame
@@ -149,7 +151,7 @@ export async function writeMigratedHistory(
   return { claims: claims.length, bytes };
 }
 
-export const treeOf = (documentId) => sedimentreeId(documentIdToBinary(documentId));
+export const treeOf = hostTreeOf;
 
 const SENDER_ID = /^b-[0-9a-f-]{36}$/;
 
@@ -242,6 +244,13 @@ export class PlainSync {
           this.#gate(conn, doc, live, fresh);
           return guardComments(conn, doc, live, fresh, preview, actorPrincipal);
         },
+        admitTrusted: (doc, live, fresh, preview, context) => {
+          // Host writers support BUILD_FEATURES, not a browser's advertised set.
+          // Keep the fence and history cap, and refuse unknown stored schema
+          // features so an older host cannot edit a newer document blindly.
+          this.#gate({ features: BUILD_FEATURES }, doc, live, fresh, context);
+          return preview;
+        },
         admitted: (conn, doc, fresh, claims) => this.#admitted(conn, doc, fresh, claims),
         joined: (conn, doc) => {
           if (!conn.trusted) onJoined(conn, doc);
@@ -256,7 +265,7 @@ export class PlainSync {
     });
   }
 
-  /** Load claims and blocks, serve `documentIds`, and start the host's Repo. */
+  /** Load claims and blocks, serve `documentIds`, and expose the host handles. */
   async load(documentIds, { deleted = false } = {}) {
     const bytes = new PlainByteStore(this.storage);
     const savedPrefix = await bytes.load("host-actor-prefix");
@@ -273,19 +282,8 @@ export class PlainSync {
     await this.host.load();
     for (const key of (await this.storage.list({ prefix: BLOCKED })).keys())
       this.blocked.add(key.slice(BLOCKED.length));
-    this.backend = await AutomergeSyncBackend.load({
-      store: new DocStore(new MemoryByteStore()),
-      ...BACKEND_LIMITS,
-    });
-    this.repo = new Repo({ backend: this.backend });
+    this.repo = new HostRepo(this.host);
     for (const [documentId, kind] of documentIds) this.serve(documentId, kind);
-    const link = framePipe();
-    this.host.accept(link.host, {
-      trusted: true,
-      principal: "service:pages",
-      senderId: HOST_SENDER_ID,
-    });
-    this.backend.addConnection(link.client, { hostId: HOST_SENDER_ID });
     return this;
   }
 
@@ -293,29 +291,9 @@ export class PlainSync {
     this.host.register(treeOf(documentId), kind);
   }
 
-  /**
-   * Bring the host's Repo up to date with stored history for `documentId`.
-   * Call before `repo.import` of a document that may already exist, so the
-   * import merges into it instead of creating a second history.
-   */
-  async prime(documentId) {
-    await this.#round(documentId, { create: true });
-  }
-
-  /** Every edit the host's Repo made to `documentIds` is stored. */
+  /** Every admitted host edit to `documentIds` is stored. */
   async flush(documentIds) {
     await this.repo.flush(documentIds);
-    await this.backend.flush();
-    for (const documentId of documentIds) await this.#round(documentId);
-  }
-
-  async #round(documentId, { create = false } = {}) {
-    const result = await this.backend.synchronizeTree(documentIdToBinary(documentId), { create });
-    // A tree the host's Repo never touched has nothing to flush.
-    if (result.outcome === "complete" || (!create && result.outcome === "no-peers")) return;
-    throw Object.assign(new Error("The Page host couldn't store its edit; try again"), {
-      status: 503,
-    });
   }
 
   /** Durable heads of a document, from its stored manifest. */
@@ -436,7 +414,7 @@ export class PlainSync {
     this.blocked.clear();
   }
 
-  /** Close every browser connection. The host's Repo keeps running. */
+  /** Close every browser connection. Host handles keep running. */
   disconnectAll(code = 1001, reason = "Going away") {
     for (const conn of this.host.connections())
       if (!conn.trusted) conn.transport.close(code, reason);
@@ -477,8 +455,10 @@ export class PlainSync {
   }
 
   /** Conversion fence, schema gate and history capacity, before comment rules. */
-  #gate(conn, doc, live, fresh) {
-    const fence = this.writeFence();
+  #gate(conn, doc, live, fresh, { fenceExempt = false } = {}) {
+    // Only host journal migrations receive this capability; browser admission
+    // never forwards frame data here. Schema and capacity checks still apply.
+    const fence = !fenceExempt && this.writeFence();
     if (fence) throw new Refusal(admissionCode(fence), fence.message);
     const stamps = [this.pageFeatures()];
     if (doc.kind === "comments") stamps.push(documentFeatures(live));
@@ -494,8 +474,7 @@ export class PlainSync {
       throw new Refusal("history_capacity", "This prototype limits document history to 16 MiB");
   }
 
-  /** Send a host message on `doc` to its readers, as DocHandle.broadcast would
-   * from the host's Repo, but synchronously, ahead of queued sync frames. */
+  /** Send a host message to readers synchronously, ahead of queued sync frames. */
   publish(doc, message) {
     this.host.broadcast(doc.id, {
       messageId: crypto.randomUUID(),

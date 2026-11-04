@@ -250,7 +250,7 @@ export async function documentMutation({
       await storage.sync();
     }
     if (admission) await admission.replay(key, entry, handle);
-    else await handle.update((doc) => A.applyChanges(doc, entry.changes)[0]);
+    else await handle.update((doc) => A.applyChanges(doc, entry.changes)[0], { internal });
     if (!A.hasHeads(handle.doc(), entry.receipt.heads))
       throw new Error("Recorded edit dependencies are unavailable");
     await flush();
@@ -275,7 +275,10 @@ export async function replayRecordedMutation({ storage, handle, key, flush, admi
   const entry = await storage.get(key);
   if (entry?.pending && entry.changes) {
     if (admission) await admission.replay(key, entry, handle);
-    else await handle.update((doc) => A.applyChanges(doc, entry.changes)[0]);
+    else
+      await handle.update((doc) => A.applyChanges(doc, entry.changes)[0], {
+        internal: key.startsWith(INTERNAL_PREFIX),
+      });
     if (!A.hasHeads(handle.doc(), entry.receipt.heads))
       throw new Error("Recorded edit dependencies are unavailable");
     await flush();
@@ -311,7 +314,19 @@ export async function recoverDocumentMutations(storage, handle, flush, admission
         changes,
         handle,
       );
-    } else await handle.update((doc) => A.applyChanges(doc, changes)[0]);
+    } else {
+      // Apply the validated closure in causal order, preserving the capability
+      // of each journal entry rather than exempting a mixed recovery batch.
+      const internalHashes = new Set(
+        pending
+          .filter(([key]) => key.startsWith(INTERNAL_PREFIX))
+          .flatMap(([, entry]) => entry.changes.map((bytes) => A.decodeChange(bytes).hash)),
+      );
+      for (const bytes of A.getChanges(base, candidate))
+        await handle.update((doc) => A.applyChanges(doc, [bytes])[0], {
+          internal: internalHashes.has(A.decodeChange(bytes).hash),
+        });
+    }
   } finally {
     A.free(candidate);
   }
