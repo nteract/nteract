@@ -109,7 +109,20 @@ import {
 import { BufferedRecordStore, RemoteRecordSink } from "./record-persistence.mjs";
 import { RecordMaintenance } from "./record-maintenance.mjs";
 import { guardContext, guardStub } from "./storage-guard.mjs";
-import { HOST_SENDER_ID, PlainSync, plainSessionReplaced } from "./plain-sync.mjs";
+import {
+  HOST_SENDER_ID,
+  PlainSync,
+  clearPlainStorage,
+  clearPrefixes,
+  plainSessionReplaced,
+  writeMigratedHistory,
+} from "./plain-sync.mjs";
+import {
+  migrationSlot,
+  migrationStart,
+  recordStorageMigrated,
+  recordStorageMigration,
+} from "./record-storage-migration.mjs";
 import { logSyncRefused, logSyncRounds } from "./plain-sync-log.mjs";
 import { BLOCKING as BLOCKING_COMMENT_CODES } from "../sync/comments.mjs";
 import {
@@ -3327,6 +3340,8 @@ export class Page {
    * once it is abandoned. Never a falsy value then, which the guard would
    * read as "allowed". */
   storageRefusal() {
+    if (this.migrationAbandoned) return this.migrationAbandoned;
+    if (this.migration?.name === "retired") return (this.migratedError ||= recordStorageMigrated());
     if (this.startup.name !== "abandoned") return undefined;
     return (this.bootError ||= abandonedError());
   }
@@ -3357,12 +3372,16 @@ export class Page {
       creation: creation ? recordOf(creation.metadata) : null,
     });
     await this.applyLifecycle(effects, { intent: creation });
+    // Only a host booted on Subduction can convert (record-storage-migration.mjs).
+    if (!this.plain) this.migration = migrationStart(this.env, this.metadata);
   }
 
   /** Wait until the host is booted, starting the boot if nothing has. Throws
    * the boot's error when it failed. Every request except a check answered
    * from the record passes through here before it reads host state. */
   async documentReady() {
+    if (this.migrationAbandoned) throw this.migrationAbandoned;
+    if (this.migration?.name === "retired") throw (this.migratedError ||= recordStorageMigrated());
     for (;;) {
       const { response } = this.stepStartup({ type: "document" });
       if (response.serve === "document") return;
@@ -3424,7 +3443,13 @@ export class Page {
         storage.get(PROJECTION_PENDING),
       ]);
     if (
-      recordFallback({ record: metadata, creation, projection, reportPending, projectionPending })
+      recordFallback({
+        record: metadata,
+        creation,
+        projection,
+        reportPending,
+        projectionPending,
+      })
     )
       return null;
     const identity = await this.identify(request);
@@ -4385,14 +4410,24 @@ export class Page {
   titleObservation(title, { observe = false } = {}) {
     const known = this.titleProjection;
     if (!observe && known?.title === title) {
-      const observation = { observedAt: known.observed_at, keepTime: known.keep !== false };
+      const observation = {
+        observedAt: known.observed_at,
+        keepTime: known.keep !== false,
+      };
       // A record whose store failed is stored again, with the same time, at
       // most once per retry interval (retryTitleStore).
       return this.titleUnstored === known
-        ? { ...observation, stored: this.retryTitleStore() ?? Promise.resolve({ ok: false }) }
+        ? {
+            ...observation,
+            stored: this.retryTitleStore() ?? Promise.resolve({ ok: false }),
+          }
         : observation;
     }
-    const record = { title, observed_at: new Date().toISOString(), keep: !observe };
+    const record = {
+      title,
+      observed_at: new Date().toISOString(),
+      keep: !observe,
+    };
     this.titleProjection = record;
     return {
       observedAt: record.observed_at,
@@ -4775,15 +4810,240 @@ export class Page {
     // Native frames still run directly through the current DocumentPolicy.
     // Both paths hold the request until it settles (request-hold.mjs): a save
     // waits for heads and drains the record store's own serialized flush.
+    this.requestsRunning = (this.requestsRunning ?? 0) + 1;
+    this.reportActivity();
+    const settle = (work) => {
+      void work.then(noop, noop).then(() => {
+        this.requestsRunning--;
+        this.reportActivity();
+      });
+      return work;
+    };
     if (["/api/sync", "/api/saved"].includes(new URL(request.url).pathname)) {
       const running = this.run(request);
       holdUntilSettled(this.ctx, running);
-      return running;
+      return settle(running);
     }
     const next = this.tail.then(() => this.run(request));
     this.tail = next.catch(() => {});
     holdUntilSettled(this.ctx, next);
-    return next;
+    return settle(next);
+  }
+
+  /** Tell the migration machine how many sockets and requests are live. */
+  reportActivity() {
+    if (!this.migration) return;
+    this.stepMigration({
+      type: "activity",
+      sockets: this.wires.size,
+      requests: this.requestsRunning ?? 0,
+    });
+  }
+
+  /** Step record-storage-migration and run its effects. */
+  stepMigration(event) {
+    const result = recordStorageMigration.step(this.migration, event);
+    if (result.rejected) return result;
+    this.migration = result.state;
+    for (const effect of result.effects) {
+      if (effect.type === "arm") {
+        this.disarmMigration();
+        let release;
+        const held = new Promise((resolve) => (release = resolve));
+        this.migrationRelease = release;
+        this.migrationTimer = setTimeout(() => {
+          this.disarmMigration();
+          this.stepMigration({ type: "elapsed" });
+        }, effect.ms);
+        // Keep the object for its quiet window when the runtime allows it.
+        // Every disarm settles the hold, so cancelled waits don't pile up.
+        holdUntilSettled(this.ctx, held);
+      } else if (effect.type === "disarm") {
+        this.disarmMigration();
+      } else if (effect.type === "convert") {
+        this.runMigration();
+      }
+      // `retire` runs inside runMigration's blockConcurrencyWhile.
+    }
+    return result;
+  }
+
+  /** Clear the migration timer and settle the hold it kept. */
+  disarmMigration() {
+    clearTimeout(this.migrationTimer);
+    this.migrationTimer = undefined;
+    this.migrationRelease?.();
+    this.migrationRelease = undefined;
+  }
+
+  /**
+   * Convert this Subduction Page to plain Automerge sync, in place, while
+   * nobody uses it (record-storage-migration.mjs). Runs inside
+   * blockConcurrencyWhile, so no request or socket starts meanwhile, and one
+   * at a time per node. After the flip the object retires: its storage
+   * refuses writes, its native host closes, and the throw resets it, so the
+   * next request boots plain.
+   */
+  runMigration() {
+    // Wait for the node's slot outside blockConcurrencyWhile, so the wait
+    // can't run into the runtime's deadline; activity is checked again inside.
+    const run = migrationSlot(() =>
+      this.ctx.blockConcurrencyWhile(async () => {
+        const event = await this.convertRecordStorage();
+        const { effects } = this.stepMigration(event);
+        if (effects?.some((effect) => effect.type === "retire")) {
+          await this.retireMigratedHost();
+          throw (this.migratedError ||= recordStorageMigrated());
+        }
+      }),
+    );
+    void run.catch((error) => {
+      if (error === this.migratedError) {
+        // The throw resets the object; abort makes the reset explicit.
+        try {
+          this.ctx.abort?.(error);
+        } catch {}
+        return;
+      }
+      // The runtime gave up on the conversion (its deadline) while it may
+      // still run, and a new object may already serve the Page. Fence this
+      // one: its storage refuses every write from here, so the stale
+      // conversion can't write a snapshot or flip the record.
+      this.migrationAbandoned ||= error || recordStorageMigrated();
+      void this.retireMigratedHost();
+    });
+  }
+
+  /** The conversion itself. Returns `skipped`, `failed` or `converted`. */
+  async convertRecordStorage() {
+    const storage = this.ctx.storage;
+    const from = this.metadata?.recordStorage ?? "local";
+    const log = (outcome, fields = {}) =>
+      console.log(
+        JSON.stringify({
+          event: "record_storage.migration",
+          outcome,
+          from,
+          ...fields,
+        }),
+      );
+    const skip = (reason, retryMs) => {
+      log("skipped", { reason });
+      return { type: "skipped", reason, ...(retryMs && { retryMs }) };
+    };
+    if (this.wires.size || (this.requestsRunning ?? 0) > 0) return skip("busy");
+    if (!this.handle || this.plain || this.migration?.name !== "converting")
+      return skip("not_native");
+    if (this.recoveryBlocked) return skip("recovery_blocked");
+    // An access or lifecycle commit whose barrier failed: the stored record
+    // may be newer than this.metadata, and the flip would overwrite it.
+    if (this.pendingAccess || this.pendingLifecycle) return skip("record_pending");
+    // The flip spreads this.metadata: only when storage holds exactly it.
+    // Nothing writes the record meanwhile: this runs in blockConcurrencyWhile.
+    const stored = await storage.get("host/document");
+    if (JSON.stringify(stored) !== JSON.stringify(this.metadata)) return skip("record_pending");
+    if (this.conversionIntent) return skip("conversion_pending");
+    if (
+      (await pendingEntryKeys(storage, PAGE_DOC)).length ||
+      (await pendingEntryKeys(storage, COMMENTS_DOC)).length
+    )
+      return skip("journal_pending");
+    const started = Date.now();
+    let flipping = false;
+    try {
+      // Everything the native host accepted, in its record store (and the
+      // PageRecords sink for a buffered Page).
+      await this.flush();
+      const complete = (doc) => A.getHeads(doc).length > 0 && !A.getMissingDeps(doc, []).length;
+      const page = this.handle.doc();
+      if (!complete(page)) return skip("page_incomplete");
+      const commentsId = this.commentsUuid && commentsDocumentId(this.commentsUuid);
+      const comments = commentsId && this.commentsHandle?.doc();
+      if (commentsId && !(comments && complete(comments))) return skip("comments_incomplete");
+      await this.actorPersistence?.durable();
+      const actors = await loadActorEntries(storage);
+      const blocked = [...(this.policy?.bindings?.values() ?? [])]
+        .filter((binding) => binding.commentsBlocked && typeof binding.principal === "string")
+        .map((binding) => binding.principal);
+      const { claims, bytes } = await writeMigratedHistory(storage, {
+        documents: [
+          { documentId: this.metadata.documentId, doc: page },
+          ...(comments ? [{ documentId: commentsId, doc: comments }] : []),
+        ],
+        actors,
+        blocked,
+      });
+      flipping = true;
+      await storage.put("host/document", {
+        ...this.metadata,
+        recordStorage: "automerge",
+        recordStorageMigratedFrom: from,
+        recordStorageMigratedAt: new Date().toISOString(),
+      });
+      await storage.sync();
+      log("converted", {
+        claims,
+        blocked: blocked.length,
+        comments: !!comments,
+        bytes,
+        latencyMs: Date.now() - started,
+      });
+      return { type: "converted" };
+    } catch (error) {
+      logFailure(error, "record-storage-migration");
+      // The selector write may have landed even though it, or the barrier
+      // after it, reported failure. The object resets either way, and the
+      // next boot reads the record.
+      if (flipping) return { type: "converted" };
+      return { type: "failed" };
+    }
+  }
+
+  /** A converted Page's Subduction history, which the plain host never reads:
+   * its records, actor entries and signer seed here, and for a buffered Page
+   * the PageRecords object's records. Deleting the Page deletes them too.
+   * Each step is idempotent, so a repeated deletion finishes the job. */
+  async purgeMigratedRecords() {
+    if (this.metadata.recordStorageMigratedFrom === "buffered" && this.env.PAGE_RECORDS) {
+      const records = new BufferedRecordStore(
+        new RemoteRecordSink(
+          guardStub(this.env.PAGE_RECORDS.getByName(this.metadata.pageId), () =>
+            this.storageRefusal(),
+          ),
+        ),
+      );
+      await records.ready;
+      for (const key of await records.list("")) await records.remove(key);
+      await records.flush();
+    }
+    await clearPrefixes(this.ctx.storage, ["repo/", "host/actor/"]);
+    await this.ctx.storage.delete("host/signer");
+  }
+
+  /** Stop and close the native host of a retired object. Its storage already
+   * refuses writes (storageRefusal), so a close that tries one only logs. */
+  async retireMigratedHost() {
+    if (this.migrationRetiring) return;
+    this.migrationRetiring = true;
+    this.disarmMigration();
+    clearTimeout(this.conversionRetry);
+    this.conversionRetry = undefined;
+    this.recordMaintenance?.stop();
+    this.actorPersistence?.stop?.();
+    this.contentActivity?.stop();
+    this.unwatchContent();
+    for (const close of [
+      () => this.policy?.close?.(),
+      () => this.repo?.shutdown?.(),
+      async () => {
+        // The backend borrows its signer until close finishes.
+        await this.backend?.close?.();
+        this.signer?.free?.();
+      },
+    ])
+      await Promise.resolve()
+        .then(close)
+        .catch((error) => logFailure(error, "record-storage-migration-retire"));
   }
 
   async run(request) {
@@ -5688,6 +5948,10 @@ export class Page {
             this.commentsUuid && commentsDocumentId(this.commentsUuid),
           ].filter(Boolean),
         );
+        if (this.metadata.recordStorageMigratedFrom) await this.purgeMigratedRecords();
+        // A Subduction Page may hold plain history from a conversion that
+        // failed before its flip.
+        if (!this.plain) await clearPlainStorage(this.ctx.storage);
         return;
       case "flush":
         if (this.plain) {
@@ -6084,6 +6348,7 @@ export class Page {
         });
     });
     this.wires.add(wire);
+    this.reportActivity();
     // HTTP authentication already established this principal. Reserve before
     // waiting on the native handshake, so idle handshakes cannot bypass quotas.
     this.wirePrincipals.set(wire, identity.principal);
@@ -6111,6 +6376,7 @@ export class Page {
       admission.abort(admissionCancelled());
       release();
       this.wires.delete(wire);
+      this.reportActivity();
       this.wirePrincipals.delete(wire);
       this.activity?.prune();
       this.broadcastProfiles();
@@ -6237,7 +6503,10 @@ export class Page {
     try {
       // The tab's presence id (plainSender): it keys presence labels, and the
       // host stamps every relay with it.
-      conn = this.plain.accept(socket, identity, { features, senderId: sender.senderId });
+      conn = this.plain.accept(socket, identity, {
+        features,
+        senderId: sender.senderId,
+      });
     } catch (error) {
       logAdmissionDenied(error, { stage: "native", identity });
       logUsage({
@@ -6266,6 +6535,7 @@ export class Page {
       sender.replaces.transport.close(admissionCloseCode(replaced), admissionCode(replaced));
     }
     this.wires.add(wire);
+    this.reportActivity();
     this.wirePrincipals.set(wire, identity.principal);
     // Lease: the credential's deadline, re-armed when an API key renews, and
     // a renewal check every 15 s. A deadline past setTimeout's range re-arms
@@ -6301,6 +6571,7 @@ export class Page {
       clearTimeout(expiry);
       clearInterval(renewal);
       this.wires.delete(wire);
+      this.reportActivity();
       this.wirePrincipals.delete(wire);
       this.activity?.prune();
       this.broadcastProfiles();
