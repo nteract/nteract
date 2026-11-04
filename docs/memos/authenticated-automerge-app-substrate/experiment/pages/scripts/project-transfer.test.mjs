@@ -1680,3 +1680,16 @@ test("asset requests never follow a redirect, and a 404 is told apart by status"
   assert.equal(error.status, 404);
   assert.deepEqual(seen, ["error"]);
 });
+
+test("a source path is listed once in the not-copied report", async () => {
+  const source = fakePages(SOURCE, { placement: "page9", token: "pages_oauth-token" });
+  const { project_id, home } = source.seedProject({ title: "Twice" });
+  home.blocks = [{ id: crypto.randomUUID(), kind: "markdown", markdown: "Intro." }];
+  const frame = await source.addDataframe(home, frameBytes("t"), { title: "T" });
+  home.blocks.push({ id: crypto.randomUUID(), kind: "markdown", markdown: `> ${frame.line}` });
+  const { report } = await exportProject(client(source, SOURCE, "pages_oauth-token"), {
+    projectId: project_id,
+    ...quick,
+  });
+  assert.deepEqual(report.dataframes_not_copied[0].assets, [frame.src]);
+});

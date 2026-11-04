@@ -596,8 +596,10 @@ const pageRef = (page) => ({ title: page.title, source_page_id: page.source_page
 function dataframeReport(bundle) {
   const held = (frame) => Object.hasOwn(bundle.assets ?? {}, frame.asset_id);
   const missing = (page) => [
-    ...(page.dataframes ?? []).filter((frame) => !held(frame)).map((frame) => frame.src),
-    ...(page.unlisted_dataframes ?? []),
+    ...new Set([
+      ...(page.dataframes ?? []).filter((frame) => !held(frame)).map((frame) => frame.src),
+      ...(page.unlisted_dataframes ?? []),
+    ]),
   ];
   return {
     dataframes: bundle.pages.reduce(

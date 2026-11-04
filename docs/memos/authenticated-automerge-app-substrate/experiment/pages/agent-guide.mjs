@@ -128,8 +128,9 @@ Branch on code, not on the error message:
   version can't place; neither has node ids, so use delete_block or
   replace_block_markdown there. Repeating the request unchanged fails again.
 - nodes_would_join: delete_node would leave two lists or quotes of the same
-  kind side by side, and they'd merge into one. Delete one of them in the same
-  batch, or rewrite the block with replace_block_markdown.
+  kind side by side, and they'd merge into one. Each delete is checked as it
+  applies, so put a delete_node for one of them before this one in the batch,
+  or rewrite the block with replace_block_markdown.
 - preserved_markdown_converting (503): Pages is converting Markdown an older
   version saved on this Page. read_page still works. Wait, read_page again,
   retry; if it persists, the Page needs an operator.
