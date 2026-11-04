@@ -71,7 +71,9 @@ The Pages experiment workflow runs setup, both unit-test suites, and the Pages
 build in one job. A second job downloads the official celld 0.6.3 Linux x86_64
 release, checks the archive hash and the executable hash in `CELLD_RELEASE`,
 installs Playwright's Chromium with system dependencies, runs `npm run e2e` with
-one retry and a flaky budget of one, and always uploads `test-results/`. On a
+one retry and a flaky budget of one, and always uploads `test-results/`. It
+runs twice: once with the default Subduction storage and once, as "Pages browser
+E2E (local celld, plain sync)", with `PAGES_RECORD_STORAGE=automerge`. On a
 fresh Linux runner, install browser system dependencies with
 `npx playwright install --with-deps chromium`.
 
