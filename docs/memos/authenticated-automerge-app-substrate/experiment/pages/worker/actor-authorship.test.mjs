@@ -1271,6 +1271,7 @@ test("a Page host persists, broadcasts and serves attested actors but never its 
     const page = new Page(contextFor(storage), env);
     pages.push(page);
     await page.ready;
+    await page.documentReady();
     return page;
   };
   const owner = auth.apiKey();
@@ -1420,6 +1421,7 @@ test("a Page restarted before a failed conflict write landed keeps the conflict"
     const page = new Page(contextFor(backing), env);
     pages.push(page);
     await page.ready;
+    await page.documentReady();
     return page;
   };
   const owner = auth.apiKey();

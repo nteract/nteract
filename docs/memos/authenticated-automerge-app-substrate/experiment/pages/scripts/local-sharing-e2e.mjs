@@ -41,6 +41,7 @@ const revocation = process.argv.includes("--revocation");
 const coldOpen = process.argv.includes("--cold-open");
 const commenter = process.argv.includes("--commenter");
 const contentActivity = process.argv.includes("--content-activity");
+const listingBench = process.argv.includes("--listing-bench");
 if (
   [
     domainView,
@@ -56,10 +57,11 @@ if (
     coldOpen,
     commenter,
     contentActivity,
+    listingBench,
   ].filter(Boolean).length > 1
 )
   throw new Error(
-    "Choose one qualification: --domain-view, --images, --datasets, --mcp-images, --task-lists, --admission, --build-update, --trash, --projects, --revocation, --cold-open, --commenter or --content-activity",
+    "Choose one qualification: --domain-view, --images, --datasets, --mcp-images, --task-lists, --admission, --build-update, --trash, --projects, --revocation, --cold-open, --commenter, --content-activity or --listing-bench",
   );
 const children = new Set();
 let canceled = false;
@@ -89,12 +91,13 @@ function start(command, args, options = {}) {
 async function run(command, args, options, onMessage) {
   const child = start(command, args, options);
   if (onMessage) child.on("message", (message) => onMessage(message, child));
-  // The cold-open benchmark runs throttled page loads back to back.
+  // The cold-open benchmark runs throttled page loads back to back, and the
+  // listing benchmark restarts celld between samples.
   const timeout = setTimeout(
     () => {
       void stop(child);
     },
-    coldOpen ? 1_800_000 : 180000,
+    coldOpen || listingBench ? 1_800_000 : 180000,
   );
   let code;
   try {
@@ -338,8 +341,9 @@ try {
     });
     buildId = next;
   }
-  // The admission smoke asks the harness to stop and restart the same runtime
-  // directory, so persisted Pages, sessions, and bindings survive the restart.
+  // The admission smoke and the listing benchmark ask the harness to stop and
+  // restart the same runtime directory, so persisted Pages, sessions, and
+  // bindings survive the restart.
   const restartOnRequest = async (message, child) => {
     if (message?.type !== "restart-celld") return;
     try {
@@ -387,7 +391,9 @@ try {
                               ? "scripts/domain-sharing-smoke.mjs"
                               : buildUpdate
                                 ? "scripts/build-update-smoke.mjs"
-                                : "scripts/sharing-smoke.mjs",
+                                : listingBench
+                                  ? "scripts/listing-benchmark.mjs"
+                                  : "scripts/sharing-smoke.mjs",
     ],
     {
       env: {
@@ -401,15 +407,17 @@ try {
           PAGES_E2E_FIXTURE_ID: imageSource.identity,
         }),
       },
-      ...((admission || buildUpdate) && { stdio: ["inherit", "inherit", "inherit", "ipc"] }),
+      ...((admission || buildUpdate || listingBench) && {
+        stdio: ["inherit", "inherit", "inherit", "ipc"],
+      }),
     },
-    admission || buildUpdate ? restartOnRequest : undefined,
+    admission || buildUpdate || listingBench ? restartOnRequest : undefined,
   );
   const result = JSON.parse(await readFile(path.join(output, "report.json"), "utf8"));
   if (!result.cleaned || result.failure)
     throw new Error("Sharing qualification did not complete cleanly");
   console.log(
-    `${coldOpen ? "Cold-open benchmark" : admission ? "Local admission and reconnect" : buildUpdate ? "Deploy while open" : "Local OIDC, sharing and MCP"} qualification passed. Artifacts: ${output}`,
+    `${coldOpen ? "Cold-open benchmark" : listingBench ? "Listing benchmark" : admission ? "Local admission and reconnect" : buildUpdate ? "Deploy while open" : "Local OIDC, sharing and MCP"} qualification passed. Artifacts: ${output}`,
   );
 } finally {
   await Promise.all([...children].map(stop));

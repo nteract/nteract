@@ -67,10 +67,13 @@ async function host(t, { catalog = () => Response.json({ ok: true }) } = {}) {
       page.signer?.free();
     }
   });
-  const open = async () => {
+  /** A host over the shared storage. `boot: false` leaves it as a restart
+   * does, booting on the first request that needs the document. */
+  const open = async ({ boot = true } = {}) => {
     const page = new Page(contextFor(storage, held), env);
     pages.push(page);
     await page.ready;
+    if (boot) await page.documentReady();
     return page;
   };
   const owner = auth.apiKey();
@@ -452,6 +455,74 @@ test("a restarted host projects an unchanged title with the time it first observ
   assert.equal(changed.body.title, "Launch plan, renamed");
   assert.ok(changed.body.observed_at > initial.body.observed_at);
   assert.ok(rowTimes()[0].access > before[0].access);
+});
+
+test("a restarted host answers checks from its record, then boots for an edit that records and projects", async (t) => {
+  const h = await host(t);
+  const first = await created(h);
+  const read = await h.tool(first, "read_page", { comments: "none" });
+  const edit = await h.tool(first, "edit_page", {
+    base_heads: read.body.heads,
+    idempotency_key: "content-activity-host-lazy-edit",
+    operations: [{ op: "insert_markdown", markdown: "Before the restart." }],
+  });
+  assert.equal(edit.status, 200, JSON.stringify(edit.body));
+  await h.settle();
+  const stored = first.contentActivity.value;
+  assert.ok(stored);
+  const projected = await h.storage.get("host/title-projection");
+  assert.equal(projected.title, "Launch plan");
+  first.contentActivity.stop();
+  first.unwatchContent();
+  await first.repo.shutdown();
+  await first.backend.close();
+  first.signer.free();
+  first.repo = first.backend = first.signer = undefined;
+
+  const page = await h.open({ boot: false });
+  assert.equal(page.startup.name, "metadata");
+  const calls = h.calls.length;
+  const d1 = h.db.calls;
+  const check = await h.call(page, "/internal/catalog", {});
+  assert.equal(check.status, 200, JSON.stringify(check.body));
+  assert.equal(check.body.title, "Launch plan");
+  assert.equal(check.body.title_observed_at, projected.observed_at);
+  assert.equal(check.body.content_updated_at, stored);
+  await h.settle();
+  assert.equal(page.repo, undefined, "the check booted nothing");
+  assert.equal(h.calls.length, calls, "and projected nothing");
+  assert.equal(h.db.calls, d1, "or reported to the index");
+
+  // An edit boots the host; content activity and title projection run as on
+  // any booted host.
+  const again = await h.tool(page, "read_page", { comments: "none" });
+  assert.equal(page.startup.name, "ready");
+  const renamed = await h.tool(page, "edit_page", {
+    base_heads: again.body.heads,
+    idempotency_key: "content-activity-host-lazy-rename",
+    operations: [{ op: "set_title", title: "Launch plan, after restart" }],
+  });
+  assert.equal(renamed.status, 200, JSON.stringify(renamed.body));
+  await h.settle();
+  assert.ok(page.contentActivity.value > stored);
+  assert.equal(h.ownerRow(), page.contentActivity.value);
+  assert.equal(h.contentReports().length, 2);
+  const projection = h.calls.filter(({ path }) => path === "/internal/projection").at(-1);
+  assert.equal(projection.body.title, "Launch plan, after restart");
+  assert.equal((await h.storage.get("host/title-projection")).title, "Launch plan, after restart");
+  const booted = await h.call(page, "/internal/catalog", {});
+  assert.equal(booted.body.title, "Launch plan, after restart");
+  assert.equal(booted.body.content_updated_at, page.contentActivity.value);
+
+  // The next restart answers with the title the edit projected.
+  page.contentActivity.stop();
+  page.unwatchContent();
+  const next = await h.open({ boot: false });
+  const after = await h.call(next, "/internal/catalog", {});
+  assert.equal(next.startup.name, "metadata");
+  assert.equal(after.body.title, "Launch plan, after restart");
+  assert.equal(after.body.title_observed_at, booted.body.title_observed_at);
+  assert.equal(after.body.content_updated_at, page.contentActivity.value);
 });
 
 test("a host whose handle has no event API fails loudly under test", async (t) => {

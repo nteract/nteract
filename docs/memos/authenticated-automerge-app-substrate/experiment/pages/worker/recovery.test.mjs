@@ -120,6 +120,7 @@ test("Page restart recovers an intent based on an unflushed WebSocket edit", asy
   });
   const restarted = new Page(contextFor(storage), {});
   await restarted.ready;
+  await restarted.documentReady();
   assert.equal(restarted.handle.doc().humanNote, "received over WebSocket");
   assert.equal(restarted.handle.doc().toolNote, "survives restart");
   const receipt = await storage.get("host/operation/recoverable-edit");
@@ -641,11 +642,13 @@ for (const [shape, build] of Object.entries(SHAPES))
         });
 
       const restarted = f.open();
+      // The first request that needs the document boots the restarted host.
+      const booted = restarted.ready.then(() => restarted.documentReady());
       if (!frontier.length) {
-        await assert.rejects(within(restarted.ready, "Page startup"), /unavailable/);
+        await assert.rejects(within(booted, "Page startup"), /unavailable/);
         return;
       }
-      await within(restarted.ready, "Page startup");
+      await within(booted, "Page startup");
       const read = async () => {
         const response = await restarted.fetch(
           requestFor(f.owner, "/internal/tool", {

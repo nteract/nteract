@@ -283,6 +283,7 @@ import { countedStorage } from "./catalog-counts.mjs";
 import { forwardedPageLimit, quotaError, quotaRefusal, resolvePageQuota } from "./page-quota.mjs";
 import { serialQueue, serialQueueBounds } from "./serial-queue.mjs";
 import { holdUntilSettled } from "./request-hold.mjs";
+import { boundedMap } from "./bounded-map.mjs";
 import { legibleEnv } from "./host-busy.mjs";
 import { readTool } from "./tool-reads.mjs";
 import { readChangesTool } from "./tool-changes.mjs";
@@ -304,6 +305,7 @@ import {
   recordOf,
   summarizeReceipt,
 } from "./page-lifecycle.mjs";
+import { pageStartup, recordFallback, startupOf, storedTitleProjection } from "./page-startup.mjs";
 
 const operations = new Set([
   "list_pages",
@@ -406,6 +408,12 @@ function refuseSocket(error, identity) {
  * a Page host read made while the caller's Catalog queue waits, so this stays
  * fixed whatever the owner's Page limit is; a cursor reaches the rest. */
 export const sharedChildBounds = { scan: 100 };
+/** Shared-Page checks one listing runs at once, each to a different Page
+ * host. The caller's Catalog queue waits on the whole listing, so its checks
+ * overlap. The bound keeps one listing's burst well under celld's 64
+ * requests per object, with room for other listings and the Page's own
+ * tabs. */
+export const sharedCheckBounds = { concurrency: 16 };
 /** Budgets for reading Page lifecycles while the Catalog queue waits. */
 export const lifecycleBounds = { readMs: 2000, passMs: 5000, concurrency: 4 };
 const lifecycleUnsettled = () =>
@@ -2954,7 +2962,7 @@ export class Catalog {
     // over them. That is safe when every candidate is already disclosed to
     // the caller: its own entries, or Pages it discovered. Candidates from
     // another account's Catalog are not. An exhaustive scan checks up to
-    // sharedChildBounds.scan of them per request, 8 at a time. Within that
+    // sharedChildBounds.scan of them per request, sharedCheckBounds at a time. Within that
     // bound it returns a cursor only when another authorized result follows
     // the page. Past it, the sealed cursor continues from the last child
     // checked; it shows the caller only that the parent has more children.
@@ -2966,11 +2974,9 @@ export class Catalog {
     while (verified.length <= limit && scanned < scanBound) {
       const want = Math.min(limit + 1 - verified.length, scanBound - scanned);
       const rows = await source.next(position, want);
-      for (let index = 0; index < rows.length; index += 8) {
-        const group = rows.slice(index, index + 8);
-        for (const [offset, page] of (await Promise.all(group.map(check))).entries())
-          if (page) verified.push({ page, row: group[offset] });
-      }
+      const checked = await boundedMap(rows, sharedCheckBounds.concurrency, check);
+      for (const [index, page] of checked.entries())
+        if (page) verified.push({ page, row: rows[index] });
       scanned += rows.length;
       if (rows.length) position = resumeAt(rows.at(-1));
       if (rows.length < want) {
@@ -2998,6 +3004,34 @@ export class Catalog {
   }
 }
 
+/** A shared-Page check's answer. A check answered from the host record and
+ * one answered by the loaded host both build it here. Fields after title let
+ * the caller's Catalog index this grant; the listing returns only page_id,
+ * title and content_updated_at from it. `observed` is the title's observation
+ * (`{ at, keep }`, titleObservation). */
+function catalogAnswer(metadata, identity, { title, observed, contentUpdatedAt }) {
+  const access = pageAccess(metadata, identity);
+  const domain = access.source === "domain";
+  return {
+    page_id: metadata.pageId,
+    title: catalogTitle(title),
+    shared: true,
+    owner: metadata.owner,
+    role: access.role,
+    source: domain ? "domain_opened" : "member",
+    ...(domain && { domain: identity.domainAccess?.domain }),
+    revision: metadata.acl?.revision ?? 0,
+    lifecycle_revision: metadata.lifecycleRevision ?? 0,
+    state: indexedState(metadata),
+    title_observed_at: observed?.at,
+    // A member's reconcile pass keeps its row's time for this title when the
+    // observation lets writers keep theirs (titleObservation).
+    ...(observed?.keep && { title_keep_time: true }),
+    // When this host last accepted a content change, or null.
+    content_updated_at: contentUpdatedAt ?? null,
+  };
+}
+
 export class Page {
   constructor(ctx, env) {
     this.ctx = ctx;
@@ -3005,22 +3039,141 @@ export class Page {
     this.wires = new Set();
     this.wirePrincipals = new Map();
     this.tail = Promise.resolve();
+    this.startupState = pageStartup.initial;
+    // `ready` means the host record is read. Booting the repo and loading the
+    // document is page-startup's `boot`: here for a record that needs it at
+    // once, otherwise on the first request that needs the document.
     this.ready = ctx.blockConcurrencyWhile(async () => {
-      this.metadata = await ctx.storage.get("host/document");
+      const metadata = await ctx.storage.get("host/document");
       const creation = await ctx.storage.get("host/creation");
-      // Looking up an unknown page must not create a persisted signer or repo.
-      if (!this.metadata && !creation) return;
-      if (creation && this.metadata) logCreationIntentConflict(creation.metadata, this.metadata);
-      await this.initializeRepo(this.metadata ?? creation?.metadata);
-      // The commit phase lived only in memory: the durable record and any
-      // creation intent decide what boot installs or loads.
-      const { effects } = pageLifecycle.step(this.lifecycleState(), {
-        type: "boot",
-        record: recordOf(this.metadata),
-        creation: creation ? recordOf(creation.metadata) : null,
-      });
-      await this.applyLifecycle(effects, { intent: creation });
+      this.metadata = metadata;
+      this.stepStartup({ type: "loaded", start: startupOf(metadata, creation) }, creation);
+      if (this.booting) await this.booting;
+      // A failed boot here fails construction, as it always has.
+      if (this.startup.name === "failed") throw this.bootError;
     });
+  }
+
+  /** page-startup's state. A host built without the constructor (a test
+   * fixture over a loaded document) is booted. */
+  get startup() {
+    return this.startupState ?? { name: "ready" };
+  }
+
+  /** Step page-startup and run its effect. `creation` is the creation intent
+   * the constructor read; only its boot can have one (startupOf). */
+  stepStartup(event, creation) {
+    const result = pageStartup.step(this.startup, event);
+    this.startupState = result.state;
+    for (const effect of result.effects)
+      if (effect.type === "boot") this.startBoot(creation, { held: event.type === "document" });
+    return result;
+  }
+
+  /** Run the one boot. Its promise never rejects: the end is a page-startup
+   * event, and a failure keeps its error for every later request. A boot a
+   * request starts is held on that request, which awaits it too; the
+   * constructor awaits its own inside blockConcurrencyWhile. */
+  startBoot(creation, { held }) {
+    const boot = this.bootHost(creation).then(
+      () => {
+        this.stepStartup({ type: "booted" });
+      },
+      (error) => {
+        this.bootError = error;
+        this.stepStartup({ type: "bootFailed" });
+      },
+    );
+    this.booting = boot;
+    if (held) holdUntilSettled(this.ctx, boot);
+  }
+
+  /** Boot the repo and run the lifecycle's boot effects over the durable
+   * record and any creation intent the constructor read. A lazy start has no
+   * creation intent (startupOf), and only this host writes its record, which
+   * nothing does before the boot. */
+  async bootHost(creation) {
+    // Looking up an unknown page must not create a persisted signer or repo.
+    if (!this.metadata && !creation) return;
+    if (creation && this.metadata) logCreationIntentConflict(creation.metadata, this.metadata);
+    await this.initializeRepo(this.metadata ?? creation?.metadata);
+    // The commit phase lived only in memory: the durable record and any
+    // creation intent decide what boot installs or loads.
+    const { effects } = pageLifecycle.step(this.lifecycleState(), {
+      type: "boot",
+      record: recordOf(this.metadata),
+      creation: creation ? recordOf(creation.metadata) : null,
+    });
+    await this.applyLifecycle(effects, { intent: creation });
+  }
+
+  /** Wait until the host is booted, starting the boot if nothing has. Throws
+   * the boot's error when it failed. Every request except a check answered
+   * from the record passes through here before it reads host state. */
+  async documentReady() {
+    for (;;) {
+      const { response } = this.stepStartup({ type: "document" });
+      if (response.serve === "document") return;
+      if (response.serve === "failed") throw this.bootError;
+      await this.booting;
+    }
+  }
+
+  /**
+   * Answer a shared-Page check (`/internal/catalog`) from the host record,
+   * without booting the repo, or return null to answer from the loaded host.
+   *
+   * Only in page-startup's `metadata`. Storage is read again here: the host
+   * record is the access authority, and its current value decides. The
+   * order and refusals are run()'s: authenticate, refuse a Page hidden in
+   * Trash or deleted, claim an invitation, then `policy.account`. Anything
+   * the record can't answer the same way returns null (recordFallback, a
+   * grant holder's check of a trashed Page, a claimable invitation).
+   *
+   * The title is the one this host last projected to the Catalogs and the
+   * index (`host/title-projection`), with its observation, and the content
+   * time is the stored one, as the loaded host's first check reports them.
+   * The projection follows each `cacheTitle`, so it can trail the document
+   * only by a title change no booted request has projected yet; it is the
+   * title every member's Catalog was last sent.
+   *
+   * It projects nothing and reports nothing to the index. A loaded host's
+   * first check does both, and that stays the repair for a lost projection:
+   * the next boot runs it, a failed index report boots this check instead,
+   * and each reader's reconcile pass rewrites its own row from this answer.
+   */
+  async catalogFromRecord(request) {
+    if (this.stepStartup({ type: "catalog" }).response.serve !== "record") return null;
+    const storage = this.ctx.storage;
+    const [metadata, creation, projection, activity, reportPending] = await Promise.all([
+      storage.get("host/document"),
+      storage.get("host/creation"),
+      storage.get(TITLE_PROJECTION_KEY),
+      storage.get(CONTENT_ACTIVITY_KEY),
+      storage.get(INDEX_REPORT_PENDING),
+    ]);
+    if (recordFallback({ record: metadata, creation, projection, reportPending })) return null;
+    const identity = await this.identify(request);
+    const hidden = this.hiddenRefusal(identity, request, false, metadata);
+    if (hidden) throw hidden;
+    const deleted = this.deletedRefusal(identity, false, metadata);
+    if (deleted) throw deleted;
+    if (pageState(metadata) === "trashed") return null;
+    if (await claimInvitation(metadata, identity, this.env)) return null;
+    new DocumentPolicy({ storage, metadata: () => metadata }).account(identity);
+    const stored = storedTitleProjection(projection);
+    return json(
+      catalogAnswer(metadata, identity, {
+        title: stored.title,
+        observed: { at: stored.observed_at, keep: stored.keep !== false },
+        contentUpdatedAt: acceptedTime(activity?.content_updated_at),
+      }),
+    );
+  }
+
+  /** Authenticate a request's caller with its own credentials. */
+  identify(request) {
+    return authenticate(request, this.env);
   }
 
   /** Load the serving document. A trashed record whose document cannot be
@@ -3809,9 +3962,8 @@ export class Page {
   /** Read the title this host last projected and when it observed it. Call
    * once the serving document is loaded, before the first projection. */
   async restoreTitleProjection() {
-    const stored = await this.ctx.storage.get(TITLE_PROJECTION_KEY);
-    if (typeof stored?.title === "string" && validTime(stored.observed_at))
-      this.titleProjection ??= stored;
+    const stored = storedTitleProjection(await this.ctx.storage.get(TITLE_PROJECTION_KEY));
+    if (stored) this.titleProjection ??= stored;
   }
 
   /** When `title` was observed, for a projection or report about to send it,
@@ -4117,6 +4269,13 @@ export class Page {
     let identity;
     try {
       await this.ready;
+      // A shared-Page check of a host that hasn't booted answers from its
+      // record when it can (page-startup.mjs).
+      if (url.pathname === "/internal/catalog") {
+        const answer = await this.catalogFromRecord(request);
+        if (answer) return answer;
+      }
+      await this.documentReady();
       // This request is live: content effects deferred from the repository's
       // loop, or a coalesced time whose timer never fired, run now.
       this.contentActivity?.pump();
@@ -4142,7 +4301,7 @@ export class Page {
         if (this.pendingLifecycle) await this.settleLifecycle();
         return await this.acceptTombstone();
       }
-      identity = await authenticate(request, this.env);
+      identity = await this.identify(request);
       // An ambiguous storage failure retains the exact proposed ACL/receipt.
       // Normal HTTP work retries that barrier before reading or changing it.
       if (this.pendingAccess && !["/api/sync", "/api/saved"].includes(url.pathname))
@@ -4226,20 +4385,8 @@ export class Page {
         await this.finishCreation(intent);
         return json(await this.createdReply(intent.metadata.createdReceipt, identity), 201);
       }
-      // Anyone without a current grant cannot tell a trashed Page from a
-      // missing one. Only the owner and current members learn it exists.
-      if (!this.metadata || this.hiddenWhileTrashed(identity)) {
-        // Admission routes answer a missing Page exactly as an unreadable one,
-        // for clients that declare it. The deployed viewer renews an expired
-        // draft registration only on this 404, so other clients keep it.
-        // Remove the legacy branch once older viewers must reload before
-        // reconnecting and every supported viewer handles the unified 403.
-        if (admissionRoute && unifiedMissing(request))
-          throw withAdmissionReason(new PermissionDenied(), "page_not_found");
-        if (admissionRoute)
-          throw withAdmissionReason(new HttpError(404, "Page not found"), "page_not_found_legacy");
-        throw new HttpError(404, "Page not found", "page_not_found");
-      }
+      const hidden = this.hiddenRefusal(identity, request, admissionRoute);
+      if (hidden) throw hidden;
       if (pageState(this.metadata) === "trashed" && !this.handle) {
         await this.loadDocument();
         if (!this.handle) throw new HttpError(503, "Page is temporarily unavailable");
@@ -4261,12 +4408,8 @@ export class Page {
           return response;
         }
       }
-      if (pageState(this.metadata) === "deleted") {
-        // Only the owner and current grant holders learn that it was deleted.
-        if (admissionRoute && !this.disclosesDeletion(identity.principal))
-          throw withAdmissionReason(new PermissionDenied(), "page_deleted", "page_access_denied");
-        throw withAdmissionReason(new HttpError(404, "Page not found"), "page_deleted");
-      }
+      const deleted = this.deletedRefusal(identity, admissionRoute);
+      if (deleted) throw deleted;
       const state = pageState(this.metadata);
       // claimInvitation ignores trashed records, so the ACL stays unchanged.
       if (!["/api/sync", "/api/saved"].includes(url.pathname)) {
@@ -4286,32 +4429,16 @@ export class Page {
         return json({ page_id: this.metadata.pageId });
       }
       if (url.pathname === "/internal/catalog") {
-        // The first check after a restart reports this Page's current row and
+        // A loaded host's first check reports this Page's current row and
         // fixes the time its title was observed.
         this.cacheTitle();
-        // Fields after title let the caller's Catalog index this grant; the
-        // listing returns only page_id, title and content_updated_at from
-        // this response.
-        const access = pageAccess(this.metadata, identity);
-        const domain = access.source === "domain";
-        return json({
-          page_id: this.metadata.pageId,
-          title: catalogTitle(this.handle.doc().title),
-          shared: true,
-          owner: this.metadata.owner,
-          role: access.role,
-          source: domain ? "domain_opened" : "member",
-          ...(domain && { domain: identity.domainAccess?.domain }),
-          revision: this.metadata.acl?.revision ?? 0,
-          lifecycle_revision: this.metadata.lifecycleRevision ?? 0,
-          state: indexedState(this.metadata),
-          title_observed_at: this.titleObserved?.at,
-          // A member's reconcile pass keeps its row's time for this title
-          // when the observation lets writers keep theirs (titleObservation).
-          ...(this.titleObserved?.keep && { title_keep_time: true }),
-          // When this host last accepted a content change, or null.
-          content_updated_at: this.contentActivity?.value ?? null,
-        });
+        return json(
+          catalogAnswer(this.metadata, identity, {
+            title: this.handle.doc().title,
+            observed: this.titleObserved,
+            contentUpdatedAt: this.contentActivity?.value ?? null,
+          }),
+        );
       }
       if (url.pathname === "/internal/access") {
         const args = await readJson(request);
@@ -4681,14 +4808,43 @@ export class Page {
    * "none" row is a deny tombstone, which an owner can create for a principal
    * who never had access, so it discloses nothing. Company view discloses
    * nothing either. */
-  disclosesDeletion(principal) {
-    return pageRelation(this.metadata, principal) !== "none";
+  disclosesDeletion(principal, metadata = this.metadata) {
+    return pageRelation(metadata, principal) !== "none";
   }
 
   /** A trashed Page is disclosed like a deleted one: only to its owner and
    * current viewer/editor grant holders. */
-  hiddenWhileTrashed(identity) {
-    return pageState(this.metadata) === "trashed" && !this.disclosesDeletion(identity?.principal);
+  hiddenWhileTrashed(identity, metadata = this.metadata) {
+    return (
+      pageState(metadata) === "trashed" && !this.disclosesDeletion(identity?.principal, metadata)
+    );
+  }
+
+  /** The refusal for a Page this caller can't know about, or undefined:
+   * there is no record, or it is in Trash and the caller holds no grant.
+   * Anyone without a current grant cannot tell a trashed Page from a missing
+   * one. Only the owner and current members learn it exists. */
+  hiddenRefusal(identity, request, admissionRoute, metadata = this.metadata) {
+    if (metadata && !this.hiddenWhileTrashed(identity, metadata)) return undefined;
+    // Admission routes answer a missing Page exactly as an unreadable one,
+    // for clients that declare it. The deployed viewer renews an expired
+    // draft registration only on this 404, so other clients keep it.
+    // Remove the legacy branch once older viewers must reload before
+    // reconnecting and every supported viewer handles the unified 403.
+    if (admissionRoute && unifiedMissing(request))
+      return withAdmissionReason(new PermissionDenied(), "page_not_found");
+    if (admissionRoute)
+      return withAdmissionReason(new HttpError(404, "Page not found"), "page_not_found_legacy");
+    return new HttpError(404, "Page not found", "page_not_found");
+  }
+
+  /** The refusal for a deleted Page, or undefined. Only the owner and current
+   * grant holders learn that it was deleted. */
+  deletedRefusal(identity, admissionRoute, metadata = this.metadata) {
+    if (pageState(metadata) !== "deleted") return undefined;
+    if (admissionRoute && !this.disclosesDeletion(identity.principal, metadata))
+      return withAdmissionReason(new PermissionDenied(), "page_deleted", "page_access_denied");
+    return withAdmissionReason(new HttpError(404, "Page not found"), "page_deleted");
   }
 
   /** The state page-lifecycle.mjs reads: the installed record, the
