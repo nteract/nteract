@@ -94,7 +94,35 @@ test("PAGES_RECORD_STORAGE=automerge selects plain sync for new Pages only", () 
   assert.equal(recordStorageFor({}), "local");
   // A registered draft keeps its replica's storage; older builds send none.
   assert.equal(registeredRecordStorage({ PAGES_RECORD_STORAGE: "automerge" }, {}), "local");
-  assert.equal(registeredRecordStorage({}, { record_storage: "automerge" }), "automerge");
+  assert.equal(
+    registeredRecordStorage({ PAGES_RECORD_STORAGE: "automerge" }, { record_storage: "automerge" }),
+    "automerge",
+  );
+  assert.equal(registeredRecordStorage({}, { record_storage: "native" }), "local");
+  // Without the flag, a plain draft is refused: an older build can't boot it.
+  for (const env of [{}, { PAGES_ASYNC_PERSISTENCE: "true" }])
+    assert.throws(() => registeredRecordStorage(env, { record_storage: "automerge" }), {
+      status: 409,
+      code: "record_storage_unsupported",
+    });
+});
+
+test("a host without PAGES_RECORD_STORAGE refuses a plain draft before recording it", async (t) => {
+  const f = await fixture(t);
+  delete f.env.PAGES_RECORD_STORAGE;
+  const first = f.page();
+  const refused = await f.register(first);
+  assert.equal(refused.status, 409);
+  assert.equal(refused.headers.get("x-pages-create-rejected"), "before-intent");
+  assert.equal((await refused.json()).code, "record_storage_unsupported");
+  assert.equal(first.metadata, undefined);
+  assert.equal(await f.storage.get("host/creation"), undefined);
+  // The same draft registers natively once it drops record_storage.
+  delete f.args.record_storage;
+  const accepted = await f.register(first);
+  assert.ok(accepted.ok, await accepted.clone().text());
+  assert.equal(first.metadata.recordStorage, "local");
+  assert.equal(first.plain, undefined);
 });
 
 test("a registered automerge Page stores plain history and survives a restart", async (t) => {

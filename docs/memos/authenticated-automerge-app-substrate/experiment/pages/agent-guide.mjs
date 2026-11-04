@@ -109,6 +109,10 @@ Branch on code, not on the error message:
 - edit_conflict, resync_required: see Guarded edits below.
 - unsupported_schema_feature: the Page uses features this version of Pages
   can't edit (listed in unsupported_features). Read it; don't retry the edit.
+- record_storage_unsupported (409): the Pages web app registered a browser draft
+  with plain Automerge storage, and this host doesn't accept it. Nothing was
+  created. The web app re-creates the draft with native storage and registers
+  again; tools never see this code.
 - unsupported_markdown: the Markdown has something Pages can't represent.
   unsupported gives construct ("math", "html", "wrapped-image",
   "table-cells", "empty-link", "definition" or "unrepresentable"), line,

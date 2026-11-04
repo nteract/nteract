@@ -388,9 +388,19 @@ export function recordStorageFor(env) {
 const nativeRecordStorage = (env) =>
   env.PAGES_ASYNC_PERSISTENCE === "true" ? "buffered" : "local";
 
-/** A registered draft keeps the storage its browser replica already uses. */
+/** A registered draft keeps the storage its browser replica already uses.
+ * A plain Automerge draft registers only where `PAGES_RECORD_STORAGE` allows
+ * plain storage: a build without plain sync refuses such a Page at boot, so a
+ * host with the flag off must stay rollback-safe. The refusal comes before
+ * any creation is recorded, and the browser re-creates the draft natively. */
 export function registeredRecordStorage(env, args) {
-  return args.record_storage === "automerge" ? "automerge" : nativeRecordStorage(env);
+  if (args.record_storage !== "automerge") return nativeRecordStorage(env);
+  if (recordStorageFor(env) === "automerge") return "automerge";
+  throw new HttpError(
+    409,
+    "This host doesn't accept plain Automerge Pages",
+    "record_storage_unsupported",
+  );
 }
 
 /** Viewer builds that speak plain Automerge sync send `sync=automerge` on

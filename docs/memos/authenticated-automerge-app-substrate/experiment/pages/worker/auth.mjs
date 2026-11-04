@@ -356,6 +356,7 @@ export const CLIENT_ERROR_CODES = Object.freeze([
   "position_sibling_unknown",
   "lifecycle_unsettled",
   "unsupported_schema_feature",
+  "record_storage_unsupported",
   "unsupported_markdown",
   "markdownless_node",
   "node_not_found",
