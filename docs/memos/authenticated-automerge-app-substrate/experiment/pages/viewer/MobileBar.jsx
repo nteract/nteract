@@ -101,11 +101,13 @@ export function MobileBar({
     return () => document.removeEventListener("focusin", away, true);
   }, [barRef, editorDom, onFocusChange]);
   const keep = (event) => event.preventDefault();
+  // With an image or a dataframe selected, only undo and redo apply: every
+  // other entry would format, wrap or replace the selected node.
   const enabled = (name) =>
     editable &&
-    (name === "undo" || name === "redo" || name === "link"
+    (name === "undo" || name === "redo"
       ? !!format?.[name]
-      : name !== "table" || !format?.table);
+      : !format?.atom && (name === "link" ? !!format?.link : name !== "table" || !format?.table));
   const pick = (name) => {
     setMore(false);
     onRun(name);
