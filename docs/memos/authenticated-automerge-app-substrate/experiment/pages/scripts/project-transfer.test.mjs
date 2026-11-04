@@ -1652,3 +1652,31 @@ test("a dataframe line inside a quote isn't a private image; it's reported as no
   assert.deepEqual(bundle.pages[0].unlisted_dataframes, [frame.src]);
   assert.deepEqual(report.dataframes_not_copied[0].assets, [frame.src]);
 });
+
+test("a quoted copy of a top-level dataframe is reported as not copied", async () => {
+  const source = fakePages(SOURCE, { placement: "page9" });
+  const { project_id, home } = source.seedProject({ title: "Quoted copy" });
+  home.blocks = [{ id: crypto.randomUUID(), kind: "markdown", markdown: "Intro." }];
+  const frame = await source.addDataframe(home, frameBytes("q"), { title: "Q" });
+  home.blocks.push({ id: crypto.randomUUID(), kind: "markdown", markdown: `> ${frame.line}` });
+  const { bundle, report } = await exportProject(client(source, SOURCE), {
+    projectId: project_id,
+    ...quick,
+  });
+  assert.equal(bundle.pages[0].dataframes.length, 1);
+  assert.deepEqual(bundle.pages[0].unlisted_dataframes, [frame.src]);
+  assert.deepEqual(report.dataframes_not_copied[0].assets, [frame.src]);
+});
+
+test("asset requests never follow a redirect, and a 404 is told apart by status", async () => {
+  const seen = [];
+  const fetch = async (url, init) => {
+    seen.push(init.redirect);
+    return Response.json({ error: "Not found" }, { status: 404 });
+  };
+  const transfer = pagesClient({ origin: SOURCE, token: KEY, fetch });
+  const path = `/api/pages/${"1".repeat(8)}-1111-4111-8111-${"1".repeat(12)}/assets/${"a".repeat(64)}`;
+  const error = await transfer.download(path).catch((caught) => caught);
+  assert.equal(error.status, 404);
+  assert.deepEqual(seen, ["error"]);
+});

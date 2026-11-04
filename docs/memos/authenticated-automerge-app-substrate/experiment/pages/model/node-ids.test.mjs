@@ -442,7 +442,11 @@ test("delete_node refuses to join the lists on either side into one", () => {
   refuses(
     doc,
     [{ op: "delete_node", block_id: id, node_id: rule }],
-    /would join the bullet-list before this node and the bullet-list after it into one/,
+    (error) =>
+      error.code === "nodes_would_join" &&
+      /would join the bullet-list before this node and the bullet-list after it into one/.test(
+        error.message,
+      ),
   );
   // A quote whose first child is a list opens under its own marker; deleting
   // the rule would reopen the quote above. Refused too.
@@ -564,4 +568,16 @@ test("read_page_changes reports a block without node ids as a whole block", () =
     [["block", "updated"]],
   );
   assert.match(changes[0].markdown, /Unsupported node: future-chart/);
+});
+
+test("a task list keeps its id when an item is checked", () => {
+  const { doc, id } = fixture("Intro\n\n- [ ] first\n- [ ] second\n\n## After");
+  const list = idOf(doc, id, "task-list");
+  for (const target of ["first", "second"]) {
+    const checked = patch(doc, [
+      { op: "set_node", block_id: id, match_text: target, attrs: { checked: true } },
+    ]);
+    assert.match(blockMarkdown(checked.blocks[id]), new RegExp(`- \\[x\\] ${target}`));
+    assert.equal(idOf(checked, id, "task-list"), list, target);
+  }
 });

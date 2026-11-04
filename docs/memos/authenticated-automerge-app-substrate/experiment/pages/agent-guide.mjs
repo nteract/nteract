@@ -127,6 +127,9 @@ Branch on code, not on the error message:
   It's also returned for a Markdown block, and for a block holding a node this
   version can't place; neither has node ids, so use delete_block or
   replace_block_markdown there. Repeating the request unchanged fails again.
+- nodes_would_join: delete_node would leave two lists or quotes of the same
+  kind side by side, and they'd merge into one. Delete one of them in the same
+  batch, or rewrite the block with replace_block_markdown.
 - preserved_markdown_converting (503): Pages is converting Markdown an older
   version saved on this Page. read_page still works. Wait, read_page again,
   retry; if it persists, the Page needs an operator.
