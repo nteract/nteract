@@ -690,7 +690,9 @@ export async function retirePageIndex(env, ctx, metadata, now = new Date().toISO
     return;
   }
   // Fenced by lifecycle revision: a retirement delayed past a restore (or a
-  // later regrant) finds a newer revision and changes nothing.
+  // later regrant) finds a newer revision and changes nothing. A host trash
+  // time that isn't a date stays null, as in the Catalog's `trash/` entry
+  // (catalog.mjs `trashTime`), so it sorts last in both.
   const lifecycle = lifecycleOf(metadata);
   await db.batch([
     db
@@ -700,7 +702,7 @@ export async function retirePageIndex(env, ctx, metadata, now = new Date().toISO
           lifecycle_revision = ?
         WHERE page_id = ? AND state != 'deleted' AND lifecycle_revision <= ?`,
       )
-      .bind(trashedAt(metadata) ?? now, now, lifecycle, pageId, lifecycle),
+      .bind(trashedAt(metadata), now, lifecycle, pageId, lifecycle),
     db
       .prepare(
         `DELETE FROM pages_catalog_access WHERE page_id = ? AND source != 'owner'

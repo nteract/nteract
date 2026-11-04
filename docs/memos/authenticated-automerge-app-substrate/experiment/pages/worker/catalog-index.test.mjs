@@ -1127,7 +1127,7 @@ test("an ACL commit and a restore move updated_at, including through a retried p
         f.db.mode = "ok";
         const record = await page.ctx.storage.get("host/title-projection");
         assert.equal(record.keep, false, "an observation lets no writer keep its time");
-        assert.equal(record.observed_at, page.titleObservedAt);
+        assert.deepEqual(page.titleObserved, { at: record.observed_at, keep: false });
 
         // The next request retries the projection, or repairs the report.
         if (failing === "catalog") {
@@ -1418,7 +1418,7 @@ test("shared title repair uses the Page host's observation time", async (t) => {
     found.body.pages.map((page) => page.title),
     ["Gamma"],
   );
-  assert.ok(restarted.titleObservedAt, "the check ran this Page's first-use report");
+  assert.ok(restarted.titleObserved?.at, "the check ran this Page's first-use report");
   await f.settle();
   assert.equal(
     f.db.rows("SELECT title FROM pages_catalog_access WHERE principal = ?", member)[0].title,
@@ -2956,6 +2956,7 @@ test("a stored time key that isn't an ISO time never jumps the order or breaks a
   assert.deepEqual(positionOf("title", row), { title_search: "", page_id: id(1) });
 
   const results = {};
+  const shapes = {};
   for (const index of ["1", null]) {
     await t.test(index ? "index" : "catalog", async (t) => {
       const mode = index ? "index" : "catalog";
@@ -3042,6 +3043,17 @@ test("a stored time key that isn't an ISO time never jumps the order or breaks a
         activity: [2, 3, 8, 1, 10, 9].map(id),
         trashed: [5, 7, 6, 4].map(id),
       });
+      // An entry with no listing time answers without either time, from
+      // either source: D1's '' never reaches the response.
+      const listed = (await f.list(owner, { sort: "created" })).body.pages;
+      const ten = listed.find((page) => page.page_id === id(10));
+      assert.equal("created_at" in ten, false, JSON.stringify(ten));
+      assert.equal("updated_at" in ten, false, JSON.stringify(ten));
+      shapes[mode] = listed.map(({ page_id, created_at, updated_at }) => ({
+        page_id,
+        created_at,
+        updated_at,
+      }));
       if (index) {
         // Only listing times reach D1, or '' for an entry with none.
         const rows = () =>
@@ -3092,10 +3104,12 @@ test("a stored time key that isn't an ISO time never jumps the order or breaks a
     });
   }
   assert.deepEqual(results.index, results.catalog);
+  assert.deepEqual(shapes.index, shapes.catalog, "both sources answer the same times");
 });
 
 test("a host trash time in another format reaches the Catalog's trash entry and D1 as the same ISO time", async (t) => {
   const { db, env } = await seededIndex(t);
+  const iso = /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/;
   for (const [n, reported, stored] of [
     [61, "2026-10-01", "2026-10-01T00:00:00.000Z"],
     [62, "Thu, 01 Oct 2026 00:05:00 GMT", at(5)],
@@ -3104,12 +3118,9 @@ test("a host trash time in another format reaches the Catalog's trash entry and 
     [65, "soon", null],
   ]) {
     const storage = new Storage();
-    await storage.put(`page/${id(n)}`, {
-      page_id: id(n),
-      title: "Plan",
-      created_at: at(0),
-      updated_at: at(0),
-    });
+    // No created_at: the trash entry falls back to the trash time, in the
+    // same ISO form, or to the projection's own time without one.
+    await storage.put(`page/${id(n)}`, { page_id: id(n), title: "Plan", updated_at: at(0) });
     await projectLifecycle(storage, id(n), {
       state: "trashed",
       revision: 1,
@@ -3117,7 +3128,10 @@ test("a host trash time in another format reaches the Catalog's trash entry and 
       trashed_at: reported,
       trashed_by: owner,
     });
-    assert.equal((await storage.get(`trash/${id(n)}`)).trashed_at, stored, String(reported));
+    const entry = await storage.get(`trash/${id(n)}`);
+    assert.equal(entry.trashed_at, stored, String(reported));
+    if (stored) assert.equal(entry.created_at, stored, String(reported));
+    else assert.match(entry.created_at, iso, String(reported));
     const metadata = {
       pageId: id(n),
       owner,
@@ -3133,7 +3147,9 @@ test("a host trash time in another format reaches the Catalog's trash entry and 
     });
     await retirePageIndex(env, testCtx, metadata, at(10));
     const [row] = db.rows("SELECT trashed_at FROM pages_catalog_pages WHERE page_id = ?", id(n));
-    assert.equal(row.trashed_at, stored ?? at(10), String(reported));
+    // D1 and the Catalog agree, a trash time that isn't a date included:
+    // null in both, so it sorts last in both.
+    assert.equal(row.trashed_at, entry.trashed_at, String(reported));
   }
 });
 

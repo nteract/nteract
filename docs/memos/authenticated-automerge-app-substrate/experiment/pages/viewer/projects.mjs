@@ -1,3 +1,4 @@
+import { asyncScheduler, timer } from "rxjs";
 import { defineMachine, reject } from "../shared/machine.mjs";
 import { isTransientFailure } from "./request.mjs";
 
@@ -258,24 +259,16 @@ export const pageLocationMachine = defineMachine({
  *
  * `locate()` is read_page through pageLocation; `onFound(location)` hears the
  * answer once, while `current()` holds. Call `changed()` whenever the session
- * notifies, and `stop()` when the shell leaves the Page. `schedule(fn, ms)`
- * returns a cancel function (setTimeout by default; tests pass a virtual one).
+ * notifies, and `stop()` when the shell leaves the Page. Retry timers run on
+ * `scheduler` (an RxJS scheduler; tests pass a VirtualTimeScheduler).
  */
 export function watchPageLocation(
   session,
-  {
-    locate,
-    onFound,
-    current,
-    transient = isTransientFailure,
-    schedule = (fn, ms) => {
-      const timer = setTimeout(fn, ms);
-      return () => clearTimeout(timer);
-    },
-  },
+  { locate, onFound, current, transient = isTransientFailure, scheduler = asyncScheduler },
 ) {
   let state = pageLocationMachine.initial;
-  let cancelTimer = null;
+  // The scheduled retry's subscription while the machine is in backoff.
+  let retry = null;
   let answer;
   const dispatch = (input) => {
     const result = pageLocationMachine.step(state, input);
@@ -307,15 +300,15 @@ export function watchPageLocation(
         return;
       }
       case "schedule":
-        cancelTimer = schedule(() => {
-          cancelTimer = null;
+        retry = timer(effect.ms, scheduler).subscribe(() => {
+          retry = null;
           if (current()) dispatch({ type: "retry" });
           else dispatch({ type: "stop" });
-        }, effect.ms);
+        });
         return;
       case "cancelTimer":
-        cancelTimer?.();
-        cancelTimer = null;
+        retry?.unsubscribe();
+        retry = null;
         return;
       case "found":
         if (current()) onFound(answer);

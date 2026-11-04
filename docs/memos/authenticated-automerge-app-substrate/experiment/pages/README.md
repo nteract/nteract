@@ -634,7 +634,9 @@ cursor. Reconciliation indexes it as missing: `created_at` falls back to the
 entry's `updated_at` and `updated_at` to its `created_at`, and a key with
 neither is `''`; `trashed_at` falls back to null. The Catalog fallback reads the
 same fallbacks, so a key with none sorts last in both, and every reconcile pass
-writes the same `''`, so it never moves the row. D1 keeps an earlier real time
+writes the same `''` for a row it indexes, so it never moves the row. Rows an
+earlier build indexed keep the time they already have: that build wrote its
+pass's own time, and D1 never replaces a time with `''`. D1 keeps an earlier real time
 over `''`: a row the Page host already reported keeps that report's time, as any
 D1 time from the host can differ from the Catalog's (below). A host record's
 trash time is converted to that format before it is indexed, in D1 and in the
@@ -2074,7 +2076,8 @@ A library visit sends one `list_pages`, for its view. `list_projects` is one
 request per account shared by the Project filter, the Browse picker, Move to…
 and the first page of `/projects`; a request made while one is in flight joins
 it ([project-list.mjs](viewer/project-list.mjs)), and an answer that names
-another account (`principal`) never shows as this one's; one that names no
+another account (`principal`) never shows as this one's and rechecks the
+session, as a library or picker answer for another account does; one that names no
 account, from an older API, shows but isn't kept past a failed refresh, just
 as the listing cache never stores a page that names no account. The first page of each view
 this tab has shown stays in memory, keyed by account and request
@@ -2087,9 +2090,12 @@ lists nothing rather than the remembered rows. The cache and Projects are
 cleared on sign-out, account change and any tool call refused with a 401.
 A 401 also starts a recovery
 ([signed-out-recovery.mjs](viewer/signed-out-recovery.mjs)): it rechecks the
-session and, if the same account answers, asks for its Projects again. One
-recovery runs at a time; a 401 during it runs it once more when it settles,
-at most twice in a row, so a server that keeps refusing can't loop the tab. The cache overlays a rename this tab saw, forgets a Page
+session and, if the same account answers, asks for its Projects again. An
+answer for another account starts the same recovery without forgetting
+anything. One recovery runs at a time; a 401 or another account's answer
+during it runs it once more when it settles, at most twice in a row, so a
+server that keeps refusing, or keeps answering for someone else, can't loop
+the tab. The cache overlays a rename this tab saw, forgets a Page
 moved to Trash or hidden by its host, drops the views of the account's own
 Pages after a create, move or restore, and is never persisted. Each patch
 moves the cache's revision, and a reply whose request began under an older
@@ -2097,12 +2103,15 @@ one isn't written back, so a listing in flight across a create can't restore
 what it dropped. The Browse picker
 ([picker-walk.mjs](viewer/picker-walk.mjs)) walks every Page (`list_pages`
 cursors, at most ten requests) afresh each time it opens, for the signed-in
-account only. Closing it cancels the walk between pages, and forgetting the
-account's data closes it without walking again, so a 401 can't start another
-walk. A Project's home Page lists its Project with `project_id`. An open Page
-asks `read_page` where it is, and asks again each time a Page created in this
-tab registers or the session reconnects; a transient failure also retries
-after 2, 4 and 8 seconds. Move to… hides only on a Project's home Page, asks
+account only. Closing it aborts the request in flight, whose answer, a 401
+included, then counts for nothing. A sign-out or account change closes it; a
+401 drops its rows and leaves it open saying why, until the session check
+closes it or the person reopens it. Neither walks again, so a 401 can't start
+another walk. A walk whose pages name different accounts rechecks the session.
+A Project's home Page lists its Project with `project_id`. An open Page
+asks `read_page` where it is until it is found: it asks again each time a Page
+created in this tab registers or the session reconnects, and a transient
+failure also retries after 2, 4 and 8 seconds. Once found, it stops asking. Move to… hides only on a Project's home Page, asks
 when chosen otherwise, and on a draft that hasn't registered says to wait for
 it to sync.
 

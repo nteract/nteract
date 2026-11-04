@@ -213,6 +213,7 @@ const settle = () => new Promise((resolve) => setImmediate(resolve));
 
 function harness() {
   const calls = [];
+  const others = [];
   let n = 0;
   const list = new ProjectList({
     call: (operation, args) => {
@@ -221,8 +222,9 @@ function harness() {
       return reply.promise;
     },
     newKey: () => `k${++n}`,
+    onOtherAccount: () => others.push(true),
   });
-  return { list, calls, shown: () => list.store.snapshot() };
+  return { list, calls, others, shown: () => list.store.snapshot() };
 }
 
 test("screens asking at once share one list_projects request", async () => {
@@ -332,4 +334,36 @@ test("an answer for another account never shows as this one's Projects", async (
   calls[6].resolve({ projects: [{ project_id: "his" }], principal: "bob" });
   await settle();
   assert.deepEqual(shown().projects, [{ project_id: "hers" }]);
+});
+
+test("an answer for another account asks the shell who is signed in, once per request", async () => {
+  const { list, calls, others } = harness();
+  list.request("alice");
+  calls[0].resolve({ projects: [{ project_id: "his" }], principal: "bob" });
+  await settle();
+  assert.equal(others.length, 1, "the shell rechecks the session");
+  // A superseded request answered for Bob says nothing: the current one
+  // decides.
+  list.request("alice");
+  list.request("alice", { fresh: true });
+  calls[1].resolve({ projects: [], principal: "bob" });
+  await settle();
+  assert.equal(others.length, 1);
+  calls[2].resolve({ projects: [], principal: "bob" });
+  await settle();
+  assert.equal(others.length, 2);
+  // Nor does a reply that lands after the account's Projects were reset.
+  list.request("alice");
+  list.reset();
+  calls[3].resolve({ projects: [], principal: "bob" });
+  await settle();
+  assert.equal(others.length, 2);
+  // This account's answers, and ones that name no account, never ask.
+  list.request("alice");
+  calls[4].resolve({ projects: [], principal: "alice" });
+  await settle();
+  list.request("alice");
+  calls[5].resolve({ projects: [] });
+  await settle();
+  assert.equal(others.length, 2);
 });

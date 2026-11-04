@@ -85,9 +85,10 @@ export class ListingCache {
   }
   /** Remember the first page `principal` was shown for `params`, from now.
    * An empty page forgets the view: there is nothing to paint. `revision` is
-   * the one the page's request began under; an older one writes nothing. */
-  write(principal, params, items, { revision = this.#revision } = {}) {
-    if (!principal || revision !== this.#revision) return;
+   * the one the page's request began under (`revision`); an older one, or
+   * none, writes nothing. */
+  write(principal, params, items, { revision } = {}) {
+    if (!principal || revision === undefined || revision !== this.#revision) return;
     const key = keyOf(principal, params);
     this.#entries.delete(key);
     if (!Array.isArray(items) || items.length === 0) return;
@@ -148,7 +149,7 @@ export class ListingCache {
    * when no one is signed in. `write` files a page only when `answeredBy`,
    * the principal the reply named, is this account; any other reply forgets
    * the view. Either way it does nothing when `revision` (the one the request
-   * began under) is no longer current. */
+   * began under) is missing or no longer current. */
   scope(principal) {
     if (!principal) return null;
     return {

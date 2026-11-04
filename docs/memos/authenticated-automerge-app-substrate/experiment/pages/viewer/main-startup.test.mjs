@@ -594,6 +594,7 @@ test("navigating away and back to the Page doesn't bring the boot preview back",
 // account's Projects) and the edits that change it, through the real shell.
 const { BehaviorSubject } = await import("rxjs");
 const { RECOVERY_RERUNS } = await import("./signed-out-recovery.mjs");
+const { SIGNED_OUT_MESSAGE } = await import("./picker-walk.mjs");
 const { createElement } = await import("react");
 const PLAN = "2b160b47-6df1-4983-81eb-489ca5a26812";
 const PROJECT = "prj_3b160b47-6df1-4983-81eb-489ca5a26812";
@@ -962,6 +963,73 @@ test("a library answer for another account sets no quota and checks the session"
   }
 });
 
+test("closing the Browse picker aborts its walk, whose late 401 starts no recovery", async (t) => {
+  cleanUp(t);
+  history.replaceState(null, "", "/");
+  const gate = {};
+  const app = await boot(signedIn, {
+    ...catalog,
+    list_pages: async (args) => {
+      // The library's first page answers; the picker's walk waits, then is
+      // refused as signed out.
+      if (args.limit !== 100)
+        return {
+          pages: [{ page_id: ROADMAP, title: "Roadmap" }],
+          next_cursor: null,
+          principal: "one",
+        };
+      await gate.promise;
+      return Response.json({ error: "Sign in required", code: "unauthenticated" }, { status: 401 });
+    },
+  });
+  await settle();
+  const sessions = sessionRequests(app);
+  const projects = toolCalls(app, "list_projects");
+  Object.assign(gate, closed());
+  await click(document.querySelector('button[aria-label="Browse, switch page"]'));
+  await settle();
+  assert.ok(document.querySelector("dialog.page-picker[open]"), "the walk is in flight");
+  await click(document.querySelector('button[aria-label="Close Pages"]'));
+  await settle();
+  gate.release();
+  await settle();
+  assert.equal(sessionRequests(app), sessions, "the cancelled walk's 401 checks no session");
+  assert.equal(toolCalls(app, "list_projects"), projects, "and asks for no Projects");
+  assert.deepEqual(rows(), ["Roadmap"], "nothing was forgotten");
+});
+
+test("a list_projects answer for another account checks the session, and stops at the cap", async (t) => {
+  cleanUp(t);
+  history.replaceState(null, "", "/pages");
+  // The session check keeps saying this account, while every list_projects
+  // answers for Bob: each answer starts or rearms one bounded recovery.
+  const app = await boot(signedIn, {
+    ...catalog,
+    list_projects: {
+      projects: [{ project_id: PROJECT, title: "His", home_page_id: ROADMAP }],
+      next_cursor: null,
+      principal: "bob",
+    },
+  });
+  for (let i = 0; i < 4; i++) await settle();
+  const sessions = sessionRequests(app);
+  const projects = toolCalls(app, "list_projects");
+  assert.equal(sessions, 2 + RECOVERY_RERUNS, "the first check, then one recovery and its reruns");
+  assert.equal(projects, 2 + RECOVERY_RERUNS, "the library's ask, then one per check");
+  for (let i = 0; i < 4; i++) await settle();
+  assert.equal(sessionRequests(app), sessions, "and then it stops");
+  assert.equal(toolCalls(app, "list_projects"), projects);
+  const menu = document.querySelector('button[aria-haspopup="menu"][aria-label^="Project: "]');
+  if (menu) {
+    await click(menu);
+    await settle();
+  }
+  const choices = [...document.querySelectorAll('[role="menuitemradio"] .library-menu-label')].map(
+    (label) => label.textContent,
+  );
+  assert.equal(choices.includes("His"), false, `Bob's Projects never show: ${choices.join(", ")}`);
+});
+
 test("the Browse picker never repaints a walk past the age limit or after a 401", async (t) => {
   cleanUp(t);
   history.replaceState(null, "", "/");
@@ -1062,7 +1130,7 @@ test("leaving a Page the host deleted or stopped sharing forgets it", async (t) 
   await settle();
 });
 
-test("a 401 with the Browse picker open closes it and stops, signed in or out", async (t) => {
+test("a 401 with the Browse picker open stops, says why while signed in, and closes once signed out", async (t) => {
   cleanUp(t);
   for (const signsOut of [false, true]) {
     history.replaceState(null, "", "/");
@@ -1110,9 +1178,20 @@ test("a 401 with the Browse picker open closes it and stops, signed in or out", 
       made.list_projects <= 1 + RECOVERY_RERUNS,
       `${label}: ${made.list_projects} list_projects`,
     );
-    assert.equal(document.querySelector("dialog.page-picker[open]"), null, `${label}: closed`);
-    if (signsOut)
+    if (signsOut) {
+      assert.equal(document.querySelector("dialog.page-picker[open]"), null, `${label}: closed`);
       assert.equal(document.querySelector("h1")?.textContent, "A place to write together.");
+    } else {
+      // Still signed in: the picker stays open, lists nothing and says why.
+      assert.ok(document.querySelector("dialog.page-picker[open]"), `${label}: open`);
+      assert.equal(
+        document.querySelector("dialog.page-picker .picker-error")?.textContent,
+        SIGNED_OUT_MESSAGE,
+      );
+      assert.equal(document.querySelectorAll("dialog.page-picker .picker-page").length, 0);
+      await click(document.querySelector('button[aria-label="Close Pages"]'));
+      await settle();
+    }
   }
 });
 
@@ -1165,20 +1244,31 @@ test("Move to… opens nothing if the account changed while read_page was asked"
   const who = { current: "one" };
   history.replaceState(null, "", "/pages");
   const placed = deferredAnswer();
+  let asks = 0;
   await boot(accountSession(who), {
     ...gatedCatalog({}, { who, pages: ROADMAP_AND_PLAN }),
-    read_page: () => placed.promise,
+    // The open's own ask is refused, so only Move to…'s ask can place it.
+    read_page: () =>
+      ++asks === 1
+        ? Response.json({ error: "Page not found", code: "page_not_found" }, { status: 404 })
+        : placed.promise,
   });
   await settle();
   globalThis.__openPage = (id) => Promise.resolve(fakeSession(id, "one", "Plan"));
   await openRow("Plan");
   await click(await until(() => pageAction("Move to…")));
+  assert.equal(asks, 2, "Move to… asked read_page");
   // Move to… waits on read_page; meanwhile another window signs in as Bob.
   who.current = "bob";
   await sessionCheck();
   // Plain timers, not act(): an opened dialog's loads must not be able to
   // hold this test past its assertion.
-  placed.resolve({ page_id: PLAN, project_id: null, home: false, breadcrumbs: [] });
+  placed.resolve({
+    page_id: PLAN,
+    project_id: PROJECT,
+    home: false,
+    breadcrumbs: [{ kind: "project", project_id: PROJECT, title: "Launch" }],
+  });
   for (let i = 0; i < 10; i++) await new Promise((resolve) => setTimeout(resolve, 10));
   const dialog = document.querySelector(".move-dialog");
   // A dialog opened by mistake is closed first, so its loads can't keep the
@@ -1186,4 +1276,5 @@ test("Move to… opens nothing if the account changed while read_page was asked"
   if (dialog) await click(dialog.querySelector(`button[aria-label^="Close"]`));
   assert.equal(dialog, null, "no dialog for Bob");
   assert.match(document.body.textContent, /Sign in with this Page's original account to move it\./);
+  assert.equal(document.querySelector(".breadcrumbs"), null, "nor the answer's location");
 });

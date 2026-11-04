@@ -582,20 +582,20 @@ test("switching back to a tab paints it from memory while it refreshes", async (
 test("the listing cache keeps one account's rows to that account", () => {
   const cache = new ListingCache({ limit: 2 });
   const rows = [{ page_id: "p1" }, { page_id: "p2" }];
-  cache.write("alice", { access: "owned" }, rows);
+  cache.write("alice", { access: "owned" }, rows, { revision: cache.revision });
   assert.deepEqual(cache.read("alice", { access: "owned" }), rows);
   assert.equal(cache.read("bob", { access: "owned" }), null, "never across accounts");
   assert.equal(cache.read(null, { access: "owned" }), null);
   assert.equal(cache.scope(null), null, "no account, no cache");
   // Params normalize like the request: a Project implies Your items.
-  cache.write("alice", { projectId }, rows);
+  cache.write("alice", { projectId }, rows, { revision: cache.revision });
   assert.deepEqual(cache.read("alice", { access: "owned", projectId }), rows);
   // An empty first page forgets the view: nothing to paint.
-  cache.write("alice", { projectId }, []);
+  cache.write("alice", { projectId }, [], { revision: cache.revision });
   assert.equal(cache.read("alice", { projectId }), null);
   // The least recently written view goes first.
-  cache.write("alice", { query: "a" }, rows);
-  cache.write("alice", { query: "b" }, rows);
+  cache.write("alice", { query: "a" }, rows, { revision: cache.revision });
+  cache.write("alice", { query: "b" }, rows, { revision: cache.revision });
   assert.equal(cache.read("alice", { access: "owned" }), null);
   assert.equal(cache.size, 2);
   // A Page moved to Trash leaves every remembered page.
@@ -603,9 +603,25 @@ test("the listing cache keeps one account's rows to that account", () => {
   assert.deepEqual(cache.read("alice", { query: "a" }), [{ page_id: "p2" }]);
   cache.forget("p2");
   assert.equal(cache.read("alice", { query: "a" }), null);
-  cache.write("alice", {}, rows);
+  cache.write("alice", {}, rows, { revision: cache.revision });
   cache.clear();
   assert.equal(cache.size, 0);
+});
+
+test("a cache write without the revision its request began under writes nothing", () => {
+  const cache = new ListingCache();
+  const rows = [{ page_id: "p1" }];
+  cache.write("alice", {}, rows);
+  cache.write("alice", {}, rows, { revision: undefined });
+  assert.equal(cache.size, 0, "a missing revision is stale, not current");
+  const scope = cache.scope("alice");
+  scope.write({}, rows, "alice");
+  assert.equal(cache.size, 0);
+  scope.write({}, rows, "alice", scope.revision());
+  assert.deepEqual(cache.read("alice", {}), rows);
+  // Nor does a missing revision forget what is there.
+  scope.write({}, [], "alice");
+  assert.deepEqual(cache.read("alice", {}), rows);
 });
 
 test("the request adapters carry each answer's account and quota, and can share the first Projects page", async () => {
@@ -730,9 +746,9 @@ test("edits this tab made patch what it remembers", () => {
   const roadmap = { page_id: "p1", title: "Roadmap" };
   const notes = { page_id: "p2", title: "Notes" };
   const shared = { page_id: "p3", title: "Theirs", shared: true };
-  cache.write("alice", {}, [roadmap, notes, shared]);
-  cache.write("alice", { access: "owned", projectId }, [roadmap]);
-  cache.write("alice", { access: "shared" }, [shared]);
+  cache.write("alice", {}, [roadmap, notes, shared], { revision: cache.revision });
+  cache.write("alice", { access: "owned", projectId }, [roadmap], { revision: cache.revision });
+  cache.write("alice", { access: "shared" }, [shared], { revision: cache.revision });
   // A rename shows wherever the Page is remembered, and nothing else changes.
   const before = cache.read("alice", {});
   cache.retitle("p2", "Notes");
@@ -749,9 +765,9 @@ test("edits this tab made patch what it remembers", () => {
   assert.deepEqual(cache.read("alice", { access: "shared" }), [shared]);
   // A scope files a page only for the account that answered it.
   const scope = cache.scope("alice");
-  scope.write({}, [notes], "bob");
+  scope.write({}, [notes], "bob", scope.revision());
   assert.equal(cache.read("alice", {}), null);
-  scope.write({}, [notes], "alice");
+  scope.write({}, [notes], "alice", scope.revision());
   assert.deepEqual(scope.read({}), [notes]);
 });
 

@@ -3,6 +3,7 @@ import { test } from "node:test";
 import { readPageRoute, projectPath, writePageRoute } from "../shared/routes.mjs";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
+import { VirtualTimeScheduler } from "rxjs";
 import { runTable } from "../shared/machine-test.mjs";
 import {
   LOCATION_REJECT,
@@ -252,18 +253,14 @@ test("a Page's location is asked for again as its session registers and connects
 
 test("a reconnect asks for a Page's location again, and a transient failure retries three times", async () => {
   const settle = () => new Promise((resolve) => setImmediate(resolve));
-  // A virtual clock: timers run only when `advance` passes their time.
-  let now = 0;
-  const timers = new Set();
-  const schedule = (fn, ms) => {
-    const timer = { at: now + ms, fn };
-    timers.add(timer);
-    return () => timers.delete(timer);
-  };
+  // Virtual time: timers run only when `advance` passes their time.
+  const scheduler = new VirtualTimeScheduler();
   const advance = async (ms) => {
-    now += ms;
-    for (const timer of [...timers].sort((a, b) => a.at - b.at))
-      if (timer.at <= now && timers.delete(timer)) timer.fn();
+    const until = scheduler.frame + ms;
+    // A no-op at the target moves the clock there even when no timer is due.
+    scheduler.schedule(() => {}, ms);
+    scheduler.maxFrames = until;
+    scheduler.flush();
     await settle();
   };
   const session = { connection: {}, connectionGeneration: 1 };
@@ -278,7 +275,7 @@ test("a reconnect asks for a Page's location again, and a transient failure retr
     },
     onFound: (value) => found.push(value),
     current: () => true,
-    schedule,
+    scheduler,
   });
   const unavailable = () => Object.assign(Error("Service unavailable"), { status: 503 });
   asks[0].reject(unavailable());
@@ -426,7 +423,7 @@ test("the page-location table runs through the pure machine", async () => {
 
 test("a watcher stopped during a backoff never asks again", async () => {
   const settle = () => new Promise((resolve) => setImmediate(resolve));
-  const timers = [];
+  const scheduler = new VirtualTimeScheduler();
   let asks = 0;
   const watch = watchPageLocation(
     { connection: {}, connectionGeneration: 1 },
@@ -437,17 +434,15 @@ test("a watcher stopped during a backoff never asks again", async () => {
       },
       onFound: () => assert.fail("never found"),
       current: () => true,
-      schedule: (fn) => {
-        const timer = { fn, cancelled: false };
-        timers.push(timer);
-        return () => (timer.cancelled = true);
-      },
+      scheduler,
     },
   );
   await settle();
   assert.equal(watch.state().name, "backoff");
+  assert.equal(scheduler.actions.length, 1, "the retry is scheduled");
   watch.stop();
-  assert.equal(timers[0].cancelled, true);
   assert.equal(watch.state().name, "stopped");
-  assert.equal(asks, 1);
+  scheduler.flush();
+  await settle();
+  assert.equal(asks, 1, "the cancelled retry never fires");
 });

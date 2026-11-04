@@ -126,30 +126,49 @@ const bootPreview = new BootPreview();
 }
 // A pointer going down on a Page row is a strong hint a Page opens next.
 const warmEditor = () => editor.start();
+// What the App does with an answer for another account than the tab's
+// (another window signed in): the library's list_pages, the Browse picker's
+// walk and list_projects all report here, and the session's recovery
+// (signed-out-recovery.mjs) rechecks who is signed in, bounded like a 401's.
+// Set while the App is mounted.
+const accountHooks = { otherAccount: () => {} };
 // The account's Projects, one list_projects request shared by the library's
 // Project filter, the Browse picker, Move to… and /projects.
-const projectList = new ProjectList({ call: tool });
-// The App's handlers for the Browse picker's error line and a walk answered
-// for another account, set while it is mounted.
-const pickerHooks = { report: () => {}, otherAccount: () => {} };
+const projectList = new ProjectList({
+  call: tool,
+  onOtherAccount: () => accountHooks.otherAccount(),
+});
+// The App's handler for the Browse picker's error line, set while it is
+// mounted.
+const pickerHooks = { report: () => {} };
 // The Browse picker (picker-walk.mjs): open or closed, and the walk of every
 // Page the account can open while it is open. It starts from the library's
 // first page when this tab showed it within the cache's age limit (read
-// only: the walk is not a library view).
+// only: the walk is not a library view). Closing it aborts the request in
+// flight, so a cancelled walk's 401 never starts a recovery.
 const picker = new PickerWalk({
   walk: ({ signal }) => listAllPages(tool, { signal }),
   seed: (principal) => listingCache.read(principal, LIBRARY_DEFAULTS),
   report: (message) => pickerHooks.report(message),
-  onOtherAccount: () => pickerHooks.otherAccount(),
+  onOtherAccount: () => accountHooks.otherAccount(),
 });
-/** Forget the rows and Projects remembered for the account: it signed out,
- * another one signed in, or the server refused a tool call as signed out.
- * The Browse picker closes and drops its walk; nothing here starts a request,
- * so a 401 handled here can't cause another. */
+/** Forget the rows and Projects remembered for the account: it signed out or
+ * another one signed in. The Browse picker closes and drops its walk; nothing
+ * here starts a request. */
 function forgetAccountData() {
   listingCache.clear();
   projectList.reset();
   picker.forget();
+}
+/** The same, for a tool call the server refused as signed out, before the
+ * session check says who is signed in. The Browse picker drops its rows but
+ * stays open to say why; the check's answer closes it through
+ * forgetAccountData if the account changed or signed out. Nothing here starts
+ * a request, so a 401 handled here can't cause another. */
+function forgetRefusedAccountData() {
+  listingCache.clear();
+  projectList.reset();
+  picker.refused();
 }
 const NO_PROJECTS = Object.freeze([]);
 // How long a new thread's passage stays emphasized after the inline composer
@@ -682,13 +701,11 @@ function App() {
   }
   // Publish the visual viewport's edges for the mobile bar and header.
   useEffect(() => trackVisualViewport(), []);
-  // The Browse picker reports here, and a walk answered for another account
-  // asks the session check who is signed in.
+  // The Browse picker reports here.
   useEffect(() => {
     pickerHooks.report = (message) => setPickerError(message);
-    pickerHooks.otherAccount = () => void auth.current?.refresh().catch(() => {});
     return () => {
-      pickerHooks.report = pickerHooks.otherAccount = () => {};
+      pickerHooks.report = () => {};
       picker.close();
     };
   }, []);
@@ -751,14 +768,16 @@ function App() {
       },
     });
     auth.current = maintenance;
-    // A tool call refused as signed out (signed-out-recovery.mjs): what
-    // this tab remembers for the account goes at once, and the session check
-    // decides who is signed in now. When it answers with the same account,
-    // the account's Projects are asked for again. One check runs at a time,
-    // a refusal during it runs it once more, and reruns are capped, so a
-    // server that keeps refusing tool calls can't loop the tab.
+    // A tool call refused as signed out, or answered for another account
+    // (signed-out-recovery.mjs): after a refusal, what this tab remembers for
+    // the account goes at once. Either way the session check decides who is
+    // signed in now. When it answers with the same account, the account's
+    // Projects are asked for again. One check runs at a time, a refusal or
+    // another account's answer during it runs it once more, and reruns are
+    // capped, so a server that keeps refusing tool calls, or keeps answering
+    // for someone else, can't loop the tab.
     const recovery = new SignedOutRecovery({
-      forget: forgetAccountData,
+      forget: forgetRefusedAccountData,
       check: async () => {
         const before = authentication.current?.identity?.principal ?? null;
         await maintenance.refresh();
@@ -769,6 +788,9 @@ function App() {
     const stopSignedOut = observeSignedOut(() => {
       if (alive) recovery.refused();
     });
+    accountHooks.otherAccount = () => {
+      if (alive) recovery.otherAccount();
+    };
     const onPopState = () => {
       if (authentication.current?.identity) followRoute();
       else home(null, { historyMode: "none", refreshCatalog: false });
@@ -781,6 +803,7 @@ function App() {
     return () => {
       alive = false;
       stopSignedOut();
+      accountHooks.otherAccount = () => {};
       recovery.stop();
       maintenance.stop();
       window.removeEventListener("popstate", onPopState);
@@ -1036,12 +1059,13 @@ function App() {
         return;
       }
       if (host.current !== moving) return;
-      setPlacement(where);
-      // The account may have changed while read_page was in flight.
+      // The account may have changed while read_page was in flight; its
+      // answer then isn't shown either.
       if (moving.identity.principal !== authentication.current?.identity?.principal) {
         setError("Sign in with this Page's original account to move it.");
         return;
       }
+      setPlacement(where);
     }
     if (where.home) {
       setError("A Project's home Page stays with its Project.");
@@ -1786,7 +1810,7 @@ function App() {
                 if (answeredBy && answeredBy !== current) {
                   // The cookie belongs to someone else now (another window
                   // signed in). The session check settles who.
-                  void auth.current?.refresh().catch(() => {});
+                  accountHooks.otherAccount();
                   return;
                 }
                 if ((index?.principal ?? account.principal) === current) setQuota(value);

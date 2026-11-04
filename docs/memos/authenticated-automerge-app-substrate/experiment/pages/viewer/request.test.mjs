@@ -424,3 +424,42 @@ test("a tool call the server refuses as signed out tells the observers once", as
   stop();
   stopThrowing();
 });
+
+test("a tool call its caller cancelled never counts as signed out", async (t) => {
+  const answered = [];
+  t.mock.method(globalThis, "fetch", () => {
+    // The server refuses the call, but only after the caller cancelled it.
+    const reply = new Promise((resolve) => answered.push(resolve));
+    return reply.then(() =>
+      Response.json({ error: "Sign in required", code: "unauthenticated" }, { status: 401 }),
+    );
+  });
+  const seen = [];
+  const stop = observeSignedOut((error) => seen.push(error.code));
+  t.after(stop);
+  const controller = new AbortController();
+  const call = tool("list_pages", { limit: 100 }, { signal: controller.signal });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(globalThis.fetch.mock.calls[0].arguments[1].signal.aborted, false);
+  controller.abort(new DOMException("Closed", "AbortError"));
+  assert.equal(
+    globalThis.fetch.mock.calls[0].arguments[1].signal.aborted,
+    true,
+    "the request in flight is aborted",
+  );
+  answered[0]();
+  await assert.rejects(call, { name: "AbortError" });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(seen, [], "no recovery starts");
+  // A call cancelled before it starts never reaches the server.
+  await assert.rejects(tool("list_pages", {}, { signal: controller.signal }), {
+    name: "AbortError",
+  });
+  assert.equal(globalThis.fetch.mock.calls.length, 1);
+  // Without a signal, the same refusal still counts.
+  const plain = tool("list_pages");
+  await new Promise((resolve) => setImmediate(resolve));
+  answered[1]();
+  await assert.rejects(plain, { status: 401 });
+  assert.deepEqual(seen, ["unauthenticated"]);
+});

@@ -2898,8 +2898,10 @@ export class Catalog {
         return {
           page_id: row.page_id,
           title,
-          created_at: entry.created_at ?? row.created_at,
-          updated_at: row.updated_at,
+          // D1 indexes an entry with no listing time at '', where the
+          // Catalog fallback has no key: both leave the field out.
+          created_at: entry.created_at ?? (row.created_at || undefined),
+          updated_at: row.updated_at || undefined,
           // Both are this owner's observations of its own Page.
           content_updated_at: laterTime(entry.content_updated_at, row.content_updated_at),
           ...(entry.trashed_at ? { trashed_at: entry.trashed_at } : {}),
@@ -3870,10 +3872,8 @@ export class Page {
       ? this.titleObservation(title, { observe })
       : { observedAt: new Date().toISOString(), keepTime: false };
     const { observedAt, keepTime } = observation;
-    if (titleChanged) {
-      this.titleObservedAt = observedAt;
-      this.titleObservedKeep = keepTime;
-    }
+    // `{ at, keep }`: the title's observation, as the host's check reports it.
+    if (titleChanged) this.titleObserved = { at: observedAt, keep: keepTime };
     const contentUpdatedAt = this.contentActivity?.value ?? null;
     // A projection that times out clears the cached title below, so the next
     // request to this Page sends it again, with the same observation time.
@@ -4305,10 +4305,10 @@ export class Page {
           revision: this.metadata.acl?.revision ?? 0,
           lifecycle_revision: this.metadata.lifecycleRevision ?? 0,
           state: indexedState(this.metadata),
-          title_observed_at: this.titleObservedAt,
+          title_observed_at: this.titleObserved?.at,
           // A member's reconcile pass keeps its row's time for this title
           // when the observation lets writers keep theirs (titleObservation).
-          ...(this.titleObservedKeep && { title_keep_time: true }),
+          ...(this.titleObserved?.keep && { title_keep_time: true }),
           // When this host last accepted a content change, or null.
           content_updated_at: this.contentActivity?.value ?? null,
         });

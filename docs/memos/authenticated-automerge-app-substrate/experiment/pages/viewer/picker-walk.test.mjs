@@ -8,10 +8,11 @@ import {
   OTHER_ACCOUNT_MESSAGE,
   PickerWalk,
   REJECT,
+  SIGNED_OUT_MESSAGE,
   pickerWalkMachine,
   pickerWalkSpec,
 } from "./picker-walk.mjs";
-import { listAllPages } from "./page-list.mjs";
+import { ACCOUNT_CHANGED, listAllPages } from "./page-list.mjs";
 
 const closed = { name: "closed" };
 const loading = (key = "k1") => ({ name: "loading", principal: "alice", key });
@@ -23,6 +24,11 @@ const loaded = (key = "k1") => ({ type: "loaded", key });
 const failure = (key = "k1") => ({ type: "failed", key, message: "Couldn't reach Pages" });
 const stays = (state, reason) => ({ state, effects: [], rejected: reason });
 const shut = { state: closed, effects: [{ type: "cancel" }, { type: "clear" }] };
+const refused = { type: "refused" };
+const signedOut = {
+  state: { name: "failed", principal: "alice", message: SIGNED_OUT_MESSAGE },
+  effects: [{ type: "cancel" }, { type: "clear" }, { type: "report", message: SIGNED_OUT_MESSAGE }],
+};
 
 const ROWS = [
   {
@@ -52,6 +58,7 @@ const ROWS = [
   { state: closed, event: failure(), expect: stays(closed, REJECT.idle) },
   { state: closed, event: { type: "close" }, expect: stays(closed, REJECT.closed) },
   { state: closed, event: { type: "forget" }, expect: stays(closed, REJECT.closed) },
+  { state: closed, event: refused, expect: stays(closed, REJECT.closed) },
   ...[loading(), refreshing()].flatMap((walking) => [
     { state: walking, event: open(), expect: stays(walking, REJECT.open) },
     {
@@ -97,6 +104,12 @@ const ROWS = [
       event: { type: "forget" },
       expect: shut,
     },
+    {
+      label: `${walking.name}: a 401 cancels the walk and stays open to say so`,
+      state: walking,
+      event: refused,
+      expect: signedOut,
+    },
   ]),
   ...[ready, failed].flatMap((settled) => [
     { state: settled, event: open(), expect: stays(settled, REJECT.open) },
@@ -104,6 +117,12 @@ const ROWS = [
     { state: settled, event: failure(), expect: stays(settled, REJECT.idle) },
     { state: settled, event: { type: "close" }, expect: shut },
     { state: settled, event: { type: "forget" }, expect: shut },
+    {
+      label: `${settled.name}: a 401 drops the rows and says why`,
+      state: settled,
+      event: refused,
+      expect: signedOut,
+    },
   ]),
 ];
 
@@ -203,10 +222,13 @@ test("a remembered first page paints while the walk runs", async () => {
 });
 
 test("a 401 with the picker open makes one request, however long it waits", async () => {
-  // The shell's wiring: every refused tool call forgets the account's data,
-  // which forgets the picker. Every list_pages answers 401.
+  // The shell's wiring: every refused tool call tells the picker, and the
+  // session check closes it if the account changed or signed out. Every
+  // list_pages answers 401.
   const scheduler = new VirtualTimeScheduler();
+  const reports = [];
   let calls = 0;
+  let signedIn = true;
   let picker;
   const call = async () => {
     calls++;
@@ -214,19 +236,84 @@ test("a 401 with the picker open makes one request, however long it waits", asyn
       status: 401,
       code: "unauthenticated",
     });
-    picker.forget();
+    picker.refused();
+    // The session check answers later: still signed in, or signed out.
+    queueMicrotask(() => {
+      if (!signedIn) picker.forget();
+    });
     throw error;
   };
-  picker = new PickerWalk({ walk: ({ signal }) => listAllPages(call, { signal }) });
-  for (const principal of ["alice", null]) {
-    calls = 0;
-    picker.open(principal);
+  const wait = async () => {
     for (let tick = 0; tick < 100; tick++) {
       scheduler.schedule(() => {}, 1000);
       scheduler.flush();
       await settle();
     }
-    assert.ok(calls <= 1, `${principal ?? "signed out"}: ${calls} requests`);
-    assert.equal(picker.state.name, "closed");
-  }
+  };
+  picker = new PickerWalk({
+    walk: ({ signal }) => listAllPages(call, { signal }),
+    report: (message) => reports.push(message),
+  });
+  picker.open("alice");
+  await wait();
+  assert.equal(calls, 1, "signed in: one request");
+  assert.equal(picker.state.name, "failed", "the picker stays open");
+  assert.deepEqual(reports, [SIGNED_OUT_MESSAGE], "and says why its rows went");
+  assert.deepEqual(picker.store.snapshot().items, []);
+  // Reopening is the person's retry, and walks once more.
+  picker.close();
+  signedIn = false;
+  calls = 0;
+  picker.open("alice");
+  await wait();
+  assert.equal(calls, 1, "signed out: one request");
+  assert.equal(picker.state.name, "closed", "the session check closed it");
+  calls = 0;
+  assert.equal(picker.open(null), false);
+  await wait();
+  assert.equal(calls, 0, "no account, no walk");
+});
+
+test("a walk whose pages change account partway asks who is signed in", async () => {
+  const { picker, walks, reports, others } = harness();
+  picker.open("alice");
+  walks[0].reject(
+    Object.assign(Error("The account changed while Pages were listed. Try again."), {
+      code: ACCOUNT_CHANGED,
+    }),
+  );
+  await settle();
+  assert.equal(picker.state.name, "failed");
+  assert.deepEqual(reports, [OTHER_ACCOUNT_MESSAGE]);
+  assert.equal(others.length, 1, "the shell checks the session");
+  // Any other failure only reports.
+  picker.close();
+  picker.open("alice");
+  walks[1].reject(new Error("Couldn't reach Pages"));
+  await settle();
+  assert.deepEqual(reports, [OTHER_ACCOUNT_MESSAGE, "Couldn't reach Pages"]);
+  assert.equal(others.length, 1);
+});
+
+test("a 401 drops what the picker shows; a closed picker ignores it", async () => {
+  const { picker, walks, reports, titles } = harness();
+  assert.equal(picker.refused(), false, "nothing to say while closed");
+  picker.open("alice");
+  walks[0].resolve({ pages: [{ title: "Roadmap" }], principal: "alice" });
+  await settle();
+  assert.deepEqual(titles(), ["Roadmap"]);
+  // Some other request was refused while the picker shows its rows.
+  assert.equal(picker.refused(), true);
+  assert.deepEqual(titles(), []);
+  assert.equal(picker.state.name, "failed");
+  assert.deepEqual(reports, [SIGNED_OUT_MESSAGE]);
+  // A 401 during a walk cancels it; its answer never shows.
+  picker.close();
+  picker.open("alice");
+  picker.refused();
+  assert.equal(walks[1].signal.aborted, true);
+  walks[1].resolve({ pages: [{ title: "Late" }], principal: "alice" });
+  await settle();
+  assert.deepEqual(titles(), []);
+  assert.equal(picker.state.name, "failed");
 });
