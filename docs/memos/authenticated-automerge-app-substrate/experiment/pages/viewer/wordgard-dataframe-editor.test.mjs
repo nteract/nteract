@@ -38,7 +38,7 @@ const { Wordgard } = await import("wordgard/editor");
 const { GardState, GardSelection } = await import("wordgard/state");
 const { Leaf } = await import("wordgard/doc");
 const { schema, Paragraph, PagesDataframe } = await import("./wordgard-model.mjs");
-const { wordgardDataframes, dataframeEventReachesEditor, enterDataframeGrid } =
+const { wordgardDataframes, dataframeEventReachesEditor, enterDataframeGrid, GRID_ARROW_STEP } =
   await import("./wordgard-dataframes.mjs");
 const { collapseAtomOnLeave } = await import("./image-selection.mjs");
 const { PARQUET_MEDIA_TYPE } = await import("../shared/dataset-assets.mjs");
@@ -223,5 +223,58 @@ test("focus moving to another block deselects the table; into its grid or a tool
     editor.dom.remove();
     otherBlock.remove();
     toolbar.remove();
+  }
+});
+
+test("ArrowLeft and ArrowRight in the grid scroll it sideways and never move the editor caret", () => {
+  const { editor, frame, select } = withTable();
+  try {
+    // Stand in for Sift's grid: a focusable container and a wider body.
+    const grid = document.createElement("div");
+    grid.tabIndex = 0;
+    // A header that clips its label overflows too, and comes first.
+    const header = grid.appendChild(document.createElement("div"));
+    header.className = "sift-th";
+    Object.defineProperty(header, "scrollWidth", { value: 200 });
+    Object.defineProperty(header, "clientWidth", { value: 100 });
+    const body = grid.appendChild(document.createElement("div"));
+    body.className = "sift-viewport";
+    let width = 800;
+    Object.defineProperty(body, "scrollWidth", { get: () => width });
+    Object.defineProperty(body, "clientWidth", { value: 300 });
+    frame().querySelector(".wordgard-dataframe-canvas").append(grid);
+    select();
+    assert.equal(enterDataframeGrid(editor), true);
+    const before = editor.state.selection;
+    const press = (key, target = grid) => {
+      const event = new window.KeyboardEvent("keydown", { key, bubbles: true, cancelable: true });
+      target.dispatchEvent(event);
+      return event;
+    };
+    // The browser's default would move the DOM caret out of the table.
+    assert.equal(press("ArrowRight").defaultPrevented, true);
+    assert.equal(press("ArrowRight").defaultPrevented, true);
+    assert.equal(body.scrollLeft, 2 * GRID_ARROW_STEP);
+    assert.equal(press("ArrowLeft").defaultPrevented, true);
+    assert.equal(body.scrollLeft, GRID_ARROW_STEP);
+    assert.ok(editor.state.selection.eq(before), "the editor selection stayed on the table");
+    assert.equal(header.scrollLeft, 0, "a clipped header is never scrolled");
+    // A table that fits its frame: the arrow is still kept from the editor,
+    // and nothing scrolls.
+    width = 300;
+    assert.equal(press("ArrowRight").defaultPrevented, true);
+    assert.equal(body.scrollLeft, GRID_ARROW_STEP);
+    assert.equal(header.scrollLeft, 0);
+    width = 800;
+    // A key Sift handled itself (a header moving focus) is left to it.
+    const cell = grid.appendChild(document.createElement("div"));
+    cell.addEventListener("keydown", (event) => event.preventDefault());
+    press("ArrowRight", cell);
+    assert.equal(body.scrollLeft, GRID_ARROW_STEP);
+    // Outside the canvas, arrows are the editor's: the grid doesn't scroll.
+    press("ArrowRight", frame().querySelector(".wordgard-dataframe-title"));
+    assert.equal(body.scrollLeft, GRID_ARROW_STEP);
+  } finally {
+    editor.dom.remove();
   }
 });
