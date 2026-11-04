@@ -259,10 +259,10 @@ export async function observedLifecycleRevision(storage, pageId) {
  * Page record stays authoritative. A retry may replay an older receipt, so
  * this always uses the Page's current state and ignores older revisions.
  *
- * `indexed` says the caller already wrote D1's rows for this projection
- * (`lifecycleIndexItem`, catalog-index.mjs `indexOwnedEntries`), so the
- * account isn't marked dirty. `now` is the observation time; pass the one
- * the D1 rows carried, so both sources hold the same `updated_at`.
+ * `marked` says the caller already marked the Page for the index
+ * (catalog-index.mjs `markPagesForIndex`), so the account isn't marked
+ * dirty. `now` is the observation time; pass the one the caller's D1 rows
+ * carry (`lifecycleIndexItem`), so both sources hold the same `updated_at`.
  */
 export async function projectLifecycle(storage, pageId, current, options = {}) {
   // One transaction: a crash leaves the Page in the listing it was in or the
@@ -316,10 +316,10 @@ export async function lifecycleIndexItem(storage, pageId, current, now) {
     : { entry, state: "active" };
 }
 
-async function projectEntries(storage, pageId, current, { indexed = false, now } = {}) {
+async function projectEntries(storage, pageId, current, { marked = false, now } = {}) {
   // Every projection changes which listing holds the Page. Unless the caller
-  // indexed it, the D1 index reconciles from these entries.
-  if (!indexed) await markCatalogIndexDirty(storage);
+  // marked the Page, the D1 index reconciles from these entries.
+  if (!marked) await markCatalogIndexDirty(storage);
   if (current.state === "deleted") {
     await storage.put(`host/deleted/${pageId}`, true);
     await storage.delete(`page/${pageId}`);

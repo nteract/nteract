@@ -752,7 +752,12 @@ with the same cursor format. The fallback reads every entry under `page/`,
 storage keys, so a listing that read only some of them could put a later entry
 before its cursor and end a walk without it. Owned entries are bounded by the
 Page limit; shared entries grow only as Pages are shared with the account and it
-opens them. Each candidate is still checked within the scan's bound.
+opens them. Each candidate is still checked within the scan's bound. Reading and
+sorting every entry costs O(entries) per listing, so a full walk costs about
+entries² / limit: with the index off and 5,000 shared Pages, a listing of 50
+took 48 ms and a full walk at limit 100 took 3.0 s in a local run. The fallback
+serves only while D1 is unavailable, unsynced or catching up, so most listings
+pay none of this.
 
 Each account reconciles from its Catalog entries: on its first listing under an
 epoch, after a Catalog change that may have missed D1, and at least every six
@@ -769,26 +774,35 @@ advanced only by listings, resumes exactly and does not hold the Catalog's queue
 beyond that bound. While D1 calls take longer than the budget, the pass waits.
 
 A listing reads D1 only while the account index is `ready`
-([account-index-machine.mjs](worker/account-index-machine.mjs)): a pass has
-completed under this epoch and the Catalog has recorded no write since that D1
-may miss. A missing D1 row would hide its Page and could end a walk with no
-cursor; the Catalog entries hold every owned Page.
+([account-index-machine.mjs](worker/account-index-machine.mjs)) and no Page
+index mark is pending: a pass has completed under this epoch, and the Catalog
+has recorded no write since that D1 may miss. A missing D1 row would hide its
+Page and could end a walk with no cursor; the Catalog entries hold every owned
+Page.
 
-A Catalog write that adds or moves a listable entry writes that entry's D1 rows
-first, best effort, so the request waits on D1 at most its read and write
-timeouts (4 s): a creation's owner row, a
-Project's home Page, and the owner row a Trash, restore or purge projection
-leaves (a purge leaves a tombstone). The rows are what a pass would write from
-the same entry, fenced by lifecycle revision. Only when that write fails does
-the Catalog mark the account dirty, before the entry lands. A new discovery
-entry checks whether its Page host's own report already put the row in D1, and
-marks the account dirty when it hasn't. Owner entries a listing finds stale mark
-it too. A move writes no mark: D1 rows carry no location, and location filters
-read the entries. Creating a Project marks its Space rows dirty
-(`host/index/spaces-dirty`) for the Project listing, not the Page index. Writing
-D1 first keeps a crash safe: a creation's row stays hidden behind its pending
-entry, since an owner row needs a live, settled entry, and a row whose entry never
-lands is pruned when a listing meets it.
+A Catalog write that adds a listable entry for one Page marks that Page
+(`host/index/page/<id>`, `pageIndexMarkMachine`) before it writes the entry: a
+creation, a Project's home Page, a Trash, restore or purge projection, and a new
+entry a Page host projects, including a discovery. A creation, a home Page and a
+lifecycle projection then write the owner's D1 row after the response, started
+in the live request and held with `waitUntil`, and clear the mark once it lands.
+So `create_page`, Project creation, Trash, restore and purge never wait on D1.
+Each listing first settles up to 24 marks from their Pages' current entries: it
+writes an owned entry's row as a pass would, finds a discovered Page's row its
+host already reported, or checks the host within the pass's check budget and
+writes its answer; a refused shared entry is forgotten. A mark clears only if
+it is still the token the writer read, so a newer write's mark survives. While
+a mark is pending, listings read the Catalog entries, so a just-created Page is
+in the very next listing either way: from D1 once its mark settles, or from its
+entry. One write never restarts the account's pass.
+
+With the index off, no listing settles marks, so writes mark the account dirty
+instead. The account is also marked dirty when a listing finds an owner row
+stale. Moves write nothing to D1, since D1 rows carry no location, and mark
+nothing. Creating a Project marks its Space rows dirty
+(`host/index/spaces-dirty`) for the Project listing, not the Page index. A row
+written for an entry that never lands is safe: an owner row needs a live,
+settled entry to list, and a listing that meets one without it prunes it.
 
 A marked account is `behind`, and an account with no completed pass under this
 epoch is `unsynced`; both list from the Catalog entries while the pass advances.
@@ -798,6 +812,12 @@ account behind through the next pass. A call that doesn't finish its pass reads
 the mark again before it reports `ready`, since a write can land while the
 pass waits on D1.
 
+If a restore's Catalog projection fails after the Page host restored the Page,
+the host's report makes D1's row active while the owner's entry stays in Trash.
+The restore's mark settles from that entry, but the lifecycle fence keeps D1's
+newer active state, so D1 lists the Page in neither Home nor Trash, while the
+Catalog lists it in Trash. Retrying the restore projects it again.
+
 The two sources order shared rows by different times: D1 holds the Page row's own
 creation and content times, the Catalog this account's discovery time and the
 last projection's. A Page host's content flush moves D1's member rows but not the
@@ -805,9 +825,13 @@ members' Catalog entries. So every Page listing cursor names the source that
 issued it (`index` or `catalog`, sealed into its context beside the scope), and a
 walk continues on that source whatever the account's state is by then. A walk
 that began on a ready D1 can miss only rows written while it ran, as any walk
-can. A cursor from an earlier build names no source; it opens as before and
-continues on whichever source the account's state picks. If D1 fails mid-walk,
-the walk continues on the Catalog with a Catalog cursor.
+can. If D1 can't serve a walk that began there (the database or the pass fails,
+the scan's read fails, or the index is switched off), the next page fails with
+`invalid_cursor` rather than resume D1's order on the Catalog. The client
+restarts from the first page, which picks the Catalog and stays there; the
+viewer's listing machine already restarts on `invalid_cursor`. A walk that began
+on the Catalog never reads D1. A cursor from an earlier build names no source;
+it opens as before and continues on whichever source the account's state picks.
 
 Title and content updates to an existing entry don't mark the account: a stale
 title or time snapshot misorders a row but doesn't drop it from an unfiltered

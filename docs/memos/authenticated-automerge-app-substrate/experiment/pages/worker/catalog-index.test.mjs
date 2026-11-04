@@ -1142,14 +1142,18 @@ test("an ACL commit and a restore move updated_at, including through a retried p
         assert.equal(after.member, record.observed_at);
         // A restore's owner row is the owner Catalog's own projection, which
         // follows the host's observation, so both sources hold one time.
-        // When D1 refused that write, the account went behind, and the row
-        // holds the host's repaired report until a pass imports the entry.
+        // When D1 refused that write, the Page's mark stays, and the row
+        // holds the host's repaired report until a listing settles the mark.
         const ownerTime =
           operation === "restore" && failing === "catalog"
             ? (await ownerStorage.get(`page/${id(83)}`)).updated_at
             : record.observed_at;
         if (operation === "restore" && failing === "d1")
-          assert.ok(await ownerStorage.get("host/index/dirty"), "behind");
+          assert.equal(
+            (await ownerStorage.list({ prefix: "host/index/page/" })).size,
+            1,
+            "the restore's mark stays",
+          );
         assert.ok(ownerTime >= record.observed_at);
         assert.equal(after.d1.access, ownerTime);
         assert.equal(after.d1.page, ownerTime);

@@ -39,7 +39,14 @@ export async function catalogFixture(t, { index = "1" } = {}) {
         if (!catalogs.has(principal))
           catalogs.set(
             principal,
-            new Catalog({ id: { name: principal }, storage: new Storage() }, env),
+            new Catalog(
+              {
+                id: { name: principal },
+                storage: new Storage(),
+                waitUntil: (promise) => jobs.push(promise),
+              },
+              env,
+            ),
           );
         return catalogs.get(principal);
       },
@@ -50,7 +57,8 @@ export async function catalogFixture(t, { index = "1" } = {}) {
     [member]: auth.apiKey({ userId: "member" }),
   };
   const catalog = (principal) => env.CATALOGS.getByName(principal);
-  const list = async (principal, args = {}) => {
+  /** One list_pages call, whatever its status. */
+  const listRaw = async (principal, args = {}) => {
     const response = await catalog(principal).fetch(
       new Request("https://pages.invalid/internal/catalog", {
         method: "POST",
@@ -58,9 +66,16 @@ export async function catalogFixture(t, { index = "1" } = {}) {
         body: JSON.stringify({ operation: "list_pages", arguments: args }),
       }),
     );
-    const body = await response.json();
-    assert.equal(response.status, 200, JSON.stringify(body));
-    return { source: response.headers.get("x-pages-catalog-source"), body };
+    return {
+      status: response.status,
+      source: response.headers.get("x-pages-catalog-source"),
+      body: await response.json(),
+    };
+  };
+  const list = async (principal, args = {}) => {
+    const { status, source, body } = await listRaw(principal, args);
+    assert.equal(status, 200, JSON.stringify(body));
+    return { source, body };
   };
   /** A real Page host with stubbed native resources. */
   const addPage = (pageId, title, acl = { revision: 0, members: {} }) => {
@@ -113,5 +128,5 @@ export async function catalogFixture(t, { index = "1" } = {}) {
     }
     throw new Error("the walk did not end");
   };
-  return { auth, db, env, pages, catalog, list, addPage, settle, untilReady, walk };
+  return { auth, db, env, pages, catalog, list, listRaw, addPage, settle, untilReady, walk };
 }

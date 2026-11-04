@@ -14,15 +14,18 @@ import { defineMachine } from "../shared/machine.mjs";
  *   a write since (`host/index/dirty`) that D1 may not hold.
  * - `ready`: a pass completed under this epoch with no write recorded since.
  *
- * A Catalog write that adds a listable entry (a creation, a Project's home
- * Page, a Trash, restore or purge projection) writes the entry's D1 rows
- * first (catalog-index.mjs `indexOwnedEntries`) and marks the account dirty
- * only when that write fails. A new discovery entry marks it unless its Page
- * host's report is already in D1, and so does a stale owner row a listing
- * met. Every mark lands before its entry, so `ready` never outlives a write
- * D1 misses. Title and content updates to an existing entry reach D1 from
- * the Page host and don't mark it: a stale snapshot misorders a row in an
- * unfiltered walk but doesn't drop it.
+ * A listing also needs no Page index mark pending (`pageIndexMarkMachine`
+ * below). A Catalog write that adds or moves a listable entry for one Page
+ * marks that Page, not the account: a creation, a Project's home Page, a
+ * Trash, restore or purge projection, and a new entry a Page host projects,
+ * including a discovery. The next listing settles each mark from the Page's
+ * current entries, so one write never restarts a pass. The account is marked
+ * dirty for what a per-Page mark can't name: an owner row a listing found
+ * stale, a capacity check's projection, and every write while the index is
+ * off. Every mark lands before its entry, so a listing never reads D1 while
+ * it misses a write. Title and content updates to an existing entry reach D1
+ * from the Page host and don't mark anything: a stale snapshot misorders a
+ * row in an unfiltered walk but doesn't drop it.
  *
  * The state is a function of two persisted facts, D1's account marker and the
  * Catalog's dirty token (`accountIndexState`). The events say how those facts
@@ -85,4 +88,85 @@ export const accountIndexMachine = defineMachine({
 export function accountIndexState({ current, dirty }) {
   if (!current) return { name: "unsynced" };
   return { name: dirty === undefined ? "ready" : "behind" };
+}
+
+/**
+ * One Page's index mark (`host/index/page/<id>`, catalog-index.mjs): a token
+ * a Catalog write stores before it writes the Page's entry, saying D1 may not
+ * hold that entry yet. While any mark is pending, listings read the Catalog
+ * entries; the account index is otherwise unaffected.
+ *
+ * States:
+ * - `settled`: no mark is stored.
+ * - `pending`: a mark with `token` is stored.
+ *
+ * Events:
+ * - `marked`: a write stored a new mark with `token`.
+ * - `checked`: a writer settled the mark it read (`token`). `outcome` is
+ *   `indexed` when D1 now holds the Page's current entry (the write's own D1
+ *   rows landed, or a listing wrote or found them), `refused` when the Page
+ *   host refused this account the shared Page the entry names, and
+ *   `unavailable` when the host check didn't answer.
+ *
+ * A check whose token is no longer the stored one changes nothing: a newer
+ * write marked the Page again, and its entry may not be in D1 yet.
+ *
+ * Effects: `clear` deletes the mark, and `forget_entry` deletes the refused
+ * shared entry, as a reconcile pass does. The interpreter reads the stored
+ * token and runs both with no I/O between that read and the deletes, so a
+ * mark stored meanwhile always survives.
+ */
+export const pageIndexMarkMachine = defineMachine({
+  name: "page-index-mark",
+  states: ["settled", "pending"],
+  events: ["marked", "checked"],
+  initial: "settled",
+  cases: {
+    "settled/checked": ["indexed", "refused", "unavailable"],
+    "pending/checked": [
+      "indexed",
+      "indexed-superseded",
+      "refused",
+      "refused-superseded",
+      "unavailable",
+    ],
+  },
+  validate: {
+    states: {
+      settled: () => {},
+      pending: (state) => {
+        if (typeof state.token !== "string" || !state.token) throw Error("token must be a string");
+      },
+    },
+    events: {
+      marked: (event) => {
+        if (typeof event.token !== "string" || !event.token) throw Error("token must be a string");
+      },
+      checked: (event) => {
+        if (typeof event.token !== "string" || !event.token) throw Error("token must be a string");
+        if (!["indexed", "refused", "unavailable"].includes(event.outcome))
+          throw Error("outcome must be indexed, refused or unavailable");
+      },
+    },
+    effects: { clear: () => {}, forget_entry: () => {} },
+  },
+  transition(state, event) {
+    if (event.type === "marked")
+      return { state: { name: "pending", token: event.token }, effects: [] };
+    // A check settles only the mark it read.
+    if (state.name !== "pending" || state.token !== event.token || event.outcome === "unavailable")
+      return { state, effects: [] };
+    return {
+      state: { name: "settled" },
+      effects:
+        event.outcome === "refused"
+          ? [{ type: "forget_entry" }, { type: "clear" }]
+          : [{ type: "clear" }],
+    };
+  },
+});
+
+/** The state a stored mark value gives. */
+export function pageIndexMarkState(token) {
+  return typeof token === "string" && token ? { name: "pending", token } : { name: "settled" };
 }

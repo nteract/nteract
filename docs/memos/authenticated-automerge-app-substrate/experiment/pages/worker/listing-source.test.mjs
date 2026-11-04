@@ -268,3 +268,140 @@ test("a cursor from an earlier build, sealed without a source, continues by read
   const refused = await f.list(member, { limit: 5, cursor: bogus }).catch((error) => error);
   assert.match(String(refused.message), /invalid_cursor/);
 });
+
+/** Make D1 calls throw while `broken.on`: every call, or with `broken.scan`
+ * only the listing's own reads, after the account marker reads fine. */
+function breakable(db) {
+  const broken = { on: false, scan: false };
+  for (const name of ["prepare", "batch"]) {
+    const original = db[name].bind(db);
+    db[name] = (...args) => {
+      const marker = name === "prepare" && args[0].includes("pages_catalog_accounts");
+      if (broken.on && !(broken.scan && marker)) throw new Error("injected D1 outage");
+      return original(...args);
+    };
+  }
+  return broken;
+}
+
+/** Walk as the viewer's listing machine does (viewer/listing-machine.mjs): a
+ * next page that fails with `invalid_cursor` restarts the listing from its
+ * first page, whose rows replace the ones shown. */
+async function viewerWalk(f, args, between) {
+  let seen = [];
+  let sources = [];
+  let restarts = 0;
+  let cursor;
+  for (let request = 0; request < 500; request++) {
+    if (between) await between(request);
+    const { status, source, body } = await f.listRaw(member, {
+      ...args,
+      ...(cursor && { cursor }),
+    });
+    if (status === 400 && body.code === "invalid_cursor" && cursor) {
+      restarts++;
+      seen = [];
+      sources = [];
+      cursor = undefined;
+      continue;
+    }
+    assert.equal(status, 200, JSON.stringify(body));
+    seen.push(...body.pages.map((page) => page.page_id));
+    sources.push(source);
+    cursor = body.next_cursor;
+    if (!cursor) return { seen, sources, restarts };
+  }
+  throw new Error("the walk did not end");
+}
+
+for (const sort of ["activity", "created", "title"])
+  test(`a ${sort} walk that began on D1 restarts on the Catalog when D1 fails or the index goes off`, async (t) => {
+    for (const failure of ["outage", "index off", "scan"]) {
+      const f = await catalogFixture(t);
+      const broken = breakable(f.db);
+      const ids = await sharedLibrary(f, 40);
+      await f.untilReady(member);
+      await f.walk(member, { limit: 100 });
+      await f.settle();
+      // Every edit moves D1's member rows away from the Catalog's order.
+      await editElsewhere(f, ids, (index) => 9000 + index);
+      const walked = await viewerWalk(f, { limit: 5, sort }, async (request) => {
+        if (request !== 2) return;
+        if (failure === "index off") delete f.env.PAGES_CATALOG_INDEX;
+        else Object.assign(broken, { on: true, scan: failure === "scan" });
+      });
+      broken.on = false;
+      assertComplete(`${sort} ${failure}`, walked, ids);
+      assert.equal(walked.restarts, 1, `${failure}: one restart`);
+      assert.equal(walked.sources[0], "catalog", `${failure}: the restart reads the Catalog`);
+    }
+  });
+
+test("a walk that began on the Catalog never needs D1", async (t) => {
+  const f = await catalogFixture(t);
+  const broken = breakable(f.db);
+  const storage = f.catalog(member).ctx.storage;
+  const ids = await sharedLibrary(f, 40);
+  await f.untilReady(member);
+  await storage.put(DIRTY, "behind");
+  const walked = await viewerWalk(f, { limit: 5 }, async (request) => {
+    // D1 goes down, comes back and the account turns ready mid-walk.
+    broken.on = request === 2;
+    if (request === 4) await storage.delete(DIRTY);
+  });
+  assert.equal(walked.restarts, 0);
+  assertComplete("catalog walk", walked, ids);
+});
+
+/** A Page host's projection of a newly shared Page to the member's Catalog:
+ * the member discovering it. Its host's own D1 report hasn't landed. */
+async function discover(f, n, acl = viewerAcl) {
+  f.addPage(id(n), `Found ${n}`, acl);
+  const response = await f.catalog(member).fetch(
+    new Request("https://pages.internal/internal/projection", {
+      method: "POST",
+      body: JSON.stringify({
+        page_id: id(n),
+        title: `Found ${n}`,
+        observed_at: at(n),
+        shared: true,
+      }),
+    }),
+  );
+  assert.equal(response.status, 200, await response.text());
+}
+
+test("a discovery marks its Page, and the next listing settles it from D1 without restarting the pass", async (t) => {
+  const f = await catalogFixture(t);
+  const storage = f.catalog(member).ctx.storage;
+  const ids = await sharedLibrary(f, 30);
+  await f.untilReady(member);
+  await discover(f, 900);
+  // A Page shared and then revoked before the member listed.
+  await discover(f, 901, { revision: 2, members: {} });
+  assert.equal(await storage.get(DIRTY), undefined, "the account isn't behind");
+  assert.equal(await storage.get("host/index/sync"), undefined, "no pass started");
+  const listed = await f.walk(member, { limit: 100 });
+  assert.deepEqual(listed.sources, ["index"]);
+  assertComplete("after discovery", listed, [...ids, id(900)]);
+  assert.equal((await storage.list({ prefix: "host/index/page/" })).size, 0);
+  assert.equal(await storage.get(`shared/${id(901)}`), undefined, "the refused entry is gone");
+});
+
+test("discovery marks every few listings keep D1 serving", async (t) => {
+  const table = [];
+  for (const every of [10, 20, 40, 80]) {
+    const f = await catalogFixture(t);
+    await sharedLibrary(f, 300);
+    await f.untilReady(member);
+    let index = 0;
+    let found = 2000;
+    for (let listing = 1; listing <= 240; listing++) {
+      if (listing % every === 0) await discover(f, found++);
+      if ((await f.list(member, { limit: 50 })).source === "index") index++;
+    }
+    table.push(`a discovery every ${every} listings: ${index}/240 from D1`);
+    assert.equal(index, 240, table.at(-1));
+  }
+  t.diagnostic(table.join("; "));
+});

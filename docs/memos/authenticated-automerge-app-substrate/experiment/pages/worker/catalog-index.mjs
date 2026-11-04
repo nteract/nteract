@@ -29,7 +29,12 @@
  * `host/index/spaces-*` markers. project-api.mjs maps `space_id` in results.
  */
 import { pageGrant, pageState } from "./access.mjs";
-import { accountIndexMachine, accountIndexState } from "./account-index-machine.mjs";
+import {
+  accountIndexMachine,
+  accountIndexState,
+  pageIndexMarkMachine,
+  pageIndexMarkState,
+} from "./account-index-machine.mjs";
 import { HttpError } from "./auth.mjs";
 import { catalogTitle, listAll, trashTime } from "./catalog.mjs";
 import { acceptedTime, validTime } from "./content-activity.mjs";
@@ -173,6 +178,9 @@ export const CATALOG_MIGRATIONS = Object.freeze([
 
 const DIRTY = "host/index/dirty";
 const SYNC = "host/index/sync";
+/** One Page's index mark: `PAGE_MARK + pageId` holds a token
+ * (account-index-machine.mjs `pageIndexMarkMachine`). */
+const PAGE_MARK = "host/index/page/";
 const SPACES_DIRTY = "host/index/spaces-dirty";
 const schemas = new WeakMap();
 const encoder = new TextEncoder();
@@ -192,6 +200,8 @@ export const catalogIndexBounds = {
   entriesPerListing: 128,
   verifications: 16,
   concurrency: 4,
+  /** Page index marks one listing settles; owned marks need one D1 write. */
+  pageMarks: 24,
   reconcileIntervalMs: 6 * 60 * 60 * 1000,
   cursorMaxAgeMs: 24 * 60 * 60 * 1000,
 };
@@ -301,6 +311,44 @@ export function catalogIndexDatabase(env, ctx) {
  * arrived while the pass was running. */
 export async function markCatalogIndexDirty(storage) {
   await storage.put(DIRTY, crypto.randomUUID());
+}
+
+/**
+ * Mark `pageIds` before a write to their entries, so listings don't read D1
+ * until it holds them. Returns the marks, each `{ key, pageId, token }`, for
+ * `settlePageMark` once the write's own D1 rows land. With the index off, no
+ * listing settles marks, so the account is marked dirty instead, which the
+ * first pass after the index returns clears.
+ */
+export async function markPagesForIndex(env, storage, pageIds) {
+  if (!catalogIndexEpoch(env)) {
+    await markCatalogIndexDirty(storage);
+    return [];
+  }
+  const marks = pageIds.map((pageId) => ({
+    key: `${PAGE_MARK}${pageId}`,
+    pageId,
+    token: crypto.randomUUID(),
+  }));
+  if (marks.length)
+    await storage.put(Object.fromEntries(marks.map((mark) => [mark.key, mark.token])));
+  return marks;
+}
+
+/** Settle the mark `{ key, pageId, token }` a writer read, with `outcome`
+ * (`pageIndexMarkMachine`). Reads the stored token and runs the effects with
+ * no I/O between, so a newer mark survives. */
+export async function settlePageMark(storage, { key, pageId, token }, outcome) {
+  const state = pageIndexMarkState(await storage.get(key));
+  const step = pageIndexMarkMachine.step(state, { type: "checked", token, outcome });
+  for (const effect of step.effects)
+    if (effect.type === "forget_entry") await storage.delete(`shared/${pageId}`);
+    else if (effect.type === "clear") await storage.delete(key);
+}
+
+/** True while any Page index mark is stored. */
+async function pageMarksPending(storage) {
+  return (await storage.list({ prefix: PAGE_MARK, limit: 1 })).size > 0;
 }
 
 /** Lifecycle as the index stores it. Trash keeps a deleted tombstone plus a
@@ -1480,22 +1528,17 @@ function ownedEntryStatements(db, principal, entry, state) {
 }
 
 /**
- * Index owned Catalog entries before the Catalog writes them, so the write
- * doesn't put the account behind (account-index-machine.mjs). `items` are
+ * Index owned Catalog entries a Catalog request wrote, after its response,
+ * so its Page index marks clear without a listing's help. `items` are
  * `{ entry, state }`: state "active" for a `page/` entry, "trashed" for a
  * `trash/` entry, or "deleted" for a purged Page, whose row becomes a
  * tombstone. The rows are what a reconcile pass would write from the same
  * entries, fenced by lifecycle revision as every index write is.
  *
- * Best effort and bounded by the read and write timeouts. Returns true when
- * D1 holds the rows. False when the index is off or the write failed: the
- * caller marks the account dirty before it writes the entries, as before.
- *
- * Writing D1 first keeps every crash safe. Rows without their entry yet
- * list nothing: an owner row needs a live, settled Catalog entry, so a
- * creation's row stays hidden behind its pending entry, and a row whose
- * entry never lands is pruned when a listing meets it. An entry without its
- * row is the gap this closes.
+ * Bounded by the read and write timeouts. Returns true when D1 holds the
+ * rows, false when the index is off, and rejects when the write fails. The
+ * caller marked the Pages first (`markPagesForIndex`) and settles the marks
+ * only on true; a mark left behind is settled by the next listing.
  */
 export async function indexOwnedEntries(env, ctx, principal, items) {
   if (!catalogIndexEpoch(env) || typeof principal !== "string") return false;
@@ -1507,26 +1550,6 @@ export async function indexOwnedEntries(env, ctx, principal, items) {
   );
   if (statements.length) await withTimeout(db.batch(statements), catalogIndexTimeouts.write);
   return true;
-}
-
-/** True when D1 already lists `pageId` for `principal` as an active Page:
- * its Page host's report landed. A Catalog that discovers a shared Page asks
- * this before it writes the entry, and marks the account dirty when the
- * answer is no or doesn't come in time. */
-export async function sharedRowIndexed(env, ctx, principal, pageId) {
-  if (!catalogIndexEpoch(env) || typeof principal !== "string") return false;
-  const db = await withTimeout(catalogIndexDatabase(env, ctx), catalogIndexTimeouts.read);
-  const row = await read(
-    db
-      .prepare(
-        `SELECT 1 AS listed FROM pages_catalog_access a
-        JOIN pages_catalog_pages p ON p.page_id = a.page_id
-        WHERE a.page_id = ? AND a.principal = ? AND p.state = 'active'`,
-      )
-      .bind(pageId, principal)
-      .first(),
-  );
-  return row?.listed === 1;
 }
 
 /**
@@ -1572,20 +1595,21 @@ export async function reconcileAccountIndex({
   const current = marker?.epoch === epoch;
   const dirty = await storage.get(DIRTY);
   const state = accountIndexState({ current, dirty });
-  let pass = await storage.get(SYNC);
-  if (pass && pass.epoch !== epoch) pass = undefined;
-  const due =
-    state.name !== "ready" ||
-    pass !== undefined ||
-    !(Date.parse(marker.synced_at) > now - catalogIndexBounds.reconcileIntervalMs);
-  if (!due) return true;
-  pass ??= { epoch, phase: "owned", after: null, incomplete: false, dirty: dirty ?? null };
   let verifications = 0;
   let entries = 0;
   const write = (statements) =>
     statements.length
       ? withTimeout(db.batch(statements), catalogIndexTimeouts.write)
       : Promise.resolve();
+  verifications += await settlePageMarks({ db, storage, principal, verify, open, write, now });
+  let pass = await storage.get(SYNC);
+  if (pass && pass.epoch !== epoch) pass = undefined;
+  const due =
+    state.name !== "ready" ||
+    pass !== undefined ||
+    !(Date.parse(marker.synced_at) > now - catalogIndexBounds.reconcileIntervalMs);
+  if (!due) return !(await pageMarksPending(storage));
+  pass ??= { epoch, phase: "owned", after: null, incomplete: false, dirty: dirty ?? null };
   /** Commit a unit and the position after it, in that order. */
   const commit = async (statements, position) => {
     await write(statements);
@@ -1773,13 +1797,112 @@ export async function reconcileAccountIndex({
       const unchanged = (await storage.get(DIRTY)) === (pass.dirty ?? undefined);
       const step = accountIndexMachine.step(state, { type: "completed", verified, unchanged });
       for (const effect of step.effects) if (effect.type === "clear") await storage.delete(DIRTY);
-      return step.state.name === "ready";
+      return step.state.name === "ready" && !(await pageMarksPending(storage));
     }
   }
   // Unfinished. The pass's D1 calls let other requests run, and a write one
   // of them recorded since entry puts a ready account behind.
   if (state.name !== "ready") return false;
-  return (await storage.get(DIRTY)) === undefined;
+  return (await storage.get(DIRTY)) === undefined && !(await pageMarksPending(storage));
+}
+
+/**
+ * Settle up to `pageMarks` Page index marks from their Pages' current
+ * entries (`pageIndexMarkMachine`). An owned entry (`page/` or `trash/`) is
+ * written as a pass writes it, and a purged Page's tombstone likewise. A
+ * shared entry is settled when D1 already holds this account's active row
+ * (its host's report landed); otherwise its host is checked, within the
+ * verification budget, and an answer is written as a pass writes it. A Page
+ * with no entry has nothing to list. Every write lands before a mark clears.
+ * Returns the Page checks it spent.
+ */
+async function settlePageMarks({ db, storage, principal, verify, open, write, now }) {
+  const marks = [
+    ...(await storage.list({ prefix: PAGE_MARK, limit: catalogIndexBounds.pageMarks })).entries(),
+  ].map(([key, token]) => ({ key, pageId: key.slice(PAGE_MARK.length), token }));
+  if (!marks.length) return 0;
+  const live = (entry) =>
+    entry && !entry.pending && !entry.reservation && validPageId(entry.page_id);
+  const statements = [];
+  const indexed = [];
+  const refused = [];
+  const shared = [];
+  for (const mark of marks) {
+    const { pageId } = mark;
+    if (!validPageId(pageId)) {
+      indexed.push(mark);
+      continue;
+    }
+    const active = await storage.get(`page/${pageId}`);
+    const trashed = live(active) ? undefined : await storage.get(`trash/${pageId}`);
+    const entry = live(active) || live(trashed) ? undefined : await storage.get(`shared/${pageId}`);
+    if (live(active)) statements.push(...ownedEntryStatements(db, principal, active, "active"));
+    else if (live(trashed))
+      statements.push(...ownedEntryStatements(db, principal, trashed, "trashed"));
+    else if (entry) {
+      shared.push({ mark, entry });
+      continue;
+    } else if (await storage.get(`host/deleted/${pageId}`))
+      statements.push(...tombstoneStatements(db, pageId, principal, 0));
+    indexed.push(mark);
+  }
+  let checks = 0;
+  if (shared.length && open()) {
+    const rows =
+      (
+        await read(
+          db
+            .prepare(
+              `SELECT a.page_id FROM pages_catalog_access a
+              JOIN pages_catalog_pages p ON p.page_id = a.page_id
+              WHERE a.principal = ? AND p.state = 'active'
+                AND a.page_id IN (SELECT value FROM json_each(?))`,
+            )
+            .bind(principal, JSON.stringify(shared.map(({ mark }) => mark.pageId)))
+            .all(),
+        )
+      ).results ?? [];
+    const found = new Set(rows.map((row) => row.page_id));
+    const unchecked = [];
+    for (const item of shared) (found.has(item.mark.pageId) ? indexed : unchecked).push(item.mark);
+    const entries = new Map(shared.map(({ mark, entry }) => [mark.pageId, entry]));
+    for (
+      let at = 0;
+      at < unchecked.length && open() && checks < catalogIndexBounds.verifications;
+      at += catalogIndexBounds.concurrency
+    ) {
+      const group = unchecked.slice(
+        at,
+        at + Math.min(catalogIndexBounds.concurrency, catalogIndexBounds.verifications - checks),
+      );
+      checks += group.length;
+      const results = await Promise.all(group.map((mark) => verify(mark.pageId)));
+      for (const [index, result] of results.entries()) {
+        const mark = group[index];
+        const entry = entries.get(mark.pageId);
+        if (result.status === "ok" && result.page.state === "active" && result.page.owner) {
+          statements.push(
+            ...sharedStatements(
+              db,
+              principal,
+              mark.pageId,
+              result.page,
+              firstTime(entry.updated_at) ?? new Date(now).toISOString(),
+              firstTime(entry.created_at) ?? undefined,
+            ),
+          );
+          indexed.push(mark);
+        } else if (result.status === "ok" || result.status === "denied") refused.push(mark);
+      }
+    }
+  }
+  if (statements.length) {
+    if (!open()) return checks;
+    await write(statements);
+  }
+  for (const mark of indexed) await settlePageMark(storage, mark, "indexed");
+  for (const mark of refused) await settlePageMark(storage, mark, "refused");
+  return checks;
 }
 
 const SPACES_SYNCED = "host/index/spaces-synced";

@@ -5,16 +5,24 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { loadTable, runTable } from "../shared/machine-test.mjs";
 import { sqliteD1 } from "../test/sqlite-d1.mjs";
-import { accountIndexMachine, accountIndexState } from "./account-index-machine.mjs";
+import {
+  accountIndexMachine,
+  accountIndexState,
+  pageIndexMarkMachine,
+  pageIndexMarkState,
+} from "./account-index-machine.mjs";
 import {
   catalogIndexBounds,
   markCatalogIndexDirty,
+  markPagesForIndex,
   migrateCatalogIndex,
   reconcileAccountIndex,
+  settlePageMark,
 } from "./catalog-index.mjs";
 import { Storage, world } from "./projects-fixture.mjs";
 
 const TABLE = new URL("../test/fixtures/machines/account-index.json", import.meta.url);
+const MARK_TABLE = new URL("../test/fixtures/machines/page-index-mark.json", import.meta.url);
 const DIRTY = "host/index/dirty";
 const SYNC = "host/index/sync";
 const principal = "user:anaconda-fixture:fixture-user";
@@ -28,6 +36,17 @@ test("account-index: the table covers every state and event, and the machine agr
     accountIndexMachine.states.length * accountIndexMachine.events.length,
   );
   assert.equal(run.rows, 18);
+});
+
+test("page-index-mark: the table covers every state and event, and the machine agrees", async () => {
+  const run = await runTable(pageIndexMarkMachine, loadTable(MARK_TABLE));
+  assert.equal(
+    run.pairs + run.unreachable,
+    pageIndexMarkMachine.states.length * pageIndexMarkMachine.events.length,
+  );
+  assert.equal(run.rows, 10);
+  assert.deepEqual(pageIndexMarkState(undefined), { name: "settled" });
+  assert.deepEqual(pageIndexMarkState("t1"), { name: "pending", token: "t1" });
 });
 
 test("account-index: every transition matches the state its persisted facts give", () => {
@@ -368,41 +387,92 @@ const ownerRow = (w, pageId) =>
     pageId,
   )[0]?.state;
 
-test("creating a Page or a Project writes the owner's D1 row, so the account stays ready", async (t) => {
+/** Stored Page index marks. */
+const pageMarks = async (w) => [
+  ...(await w.catalogStorage().list({ prefix: "host/index/page/" })).keys(),
+];
+
+test("creating a Page or a Project marks the Page, answers, then writes the owner's D1 row", async (t) => {
   const w = await world(t);
   assert.equal((await list(w, { limit: 1 })).source, "index", "an empty account is ready");
+  // Each request answers while its D1 write is still held back.
+  let release;
+  const gate = new Promise((resolve) => (release = resolve));
+  const batch = w.db.batch.bind(w.db);
+  w.db.batch = async (statements) => {
+    await gate;
+    return batch(statements);
+  };
   const created = [];
   for (let n = 0; n < 5; n++) {
     const page = await w.createPage({ title: `Kept ${n}` });
     assert.equal(page.status, 200, JSON.stringify(page.body));
     created.push(page.body.page_id);
   }
+  assert.equal((await pageMarks(w)).length, 5, "answered before any row landed");
+  assert.equal(ownerRow(w, created[0]), undefined);
+  release();
   const project = await w.createProject("Launch");
   created.push(project.home_page_id);
-  assert.equal(await w.catalogStorage().get(DIRTY), undefined, "no write left the account behind");
+  assert.equal(await w.catalogStorage().get(DIRTY), undefined, "no write put the account behind");
+  await w.settle();
   for (const pageId of created) assert.equal(ownerRow(w, pageId), "active");
+  assert.deepEqual(await pageMarks(w), [], "each written row cleared its mark");
   const listed = await list(w, { limit: 100 });
   assert.equal(listed.source, "index");
   assert.deepEqual(listed.body.pages.map((page) => page.page_id).sort(), [...created].sort());
 });
 
-test("a creation whose D1 write fails marks the account behind, and the Catalog lists it", async (t) => {
+test("a creation lists in the very next listing, whether or not its D1 write has landed", async (t) => {
   const w = await world(t);
   await list(w, { limit: 1 });
+  // The write hasn't run when the next listing arrives.
   w.db.mode = "fail";
   const page = await w.createPage({ title: "Unindexed" });
   w.db.mode = "ok";
   assert.equal(page.status, 200, JSON.stringify(page.body));
-  assert.notEqual(await w.catalogStorage().get(DIRTY), undefined);
-  assert.equal(ownerRow(w, page.body.page_id), undefined);
-  // One entry is a pass that finishes within this listing.
+  await w.settle();
+  assert.equal(ownerRow(w, page.body.page_id), undefined, "the background write failed");
+  assert.equal((await pageMarks(w)).length, 1, "its mark stays");
+  assert.equal(await w.catalogStorage().get(DIRTY), undefined, "the account isn't behind");
+  // The listing settles the mark from the entry, and lists from D1.
   const listed = await list(w, { limit: 100 });
+  assert.equal(listed.source, "index");
   assert.deepEqual(
     listed.body.pages.map((entry) => entry.page_id),
     [page.body.page_id],
   );
-  assert.equal(ownerRow(w, page.body.page_id), "active", "the pass imported it");
-  assert.equal(await w.catalogStorage().get(DIRTY), undefined);
+  assert.equal(ownerRow(w, page.body.page_id), "active");
+  assert.deepEqual(await pageMarks(w), []);
+});
+
+test("a mark a listing can't settle keeps listings on the Catalog, which lists the Page", async (t) => {
+  const w = await world(t);
+  await list(w, { limit: 1 });
+  w.db.mode = "fail";
+  const page = await w.createPage({ title: "Unindexed" });
+  await w.settle();
+  // D1 is still down at the next listing: the Catalog serves it.
+  const listed = await list(w, { limit: 100 });
+  assert.equal(listed.source, "catalog");
+  assert.deepEqual(
+    listed.body.pages.map((entry) => entry.page_id),
+    [page.body.page_id],
+  );
+  w.db.mode = "ok";
+  assert.equal((await list(w, { limit: 100 })).source, "index");
+});
+
+test("a newer write's mark survives the older write's settle", async (t) => {
+  const w = await world(t);
+  await list(w, { limit: 1 });
+  const storage = w.catalogStorage();
+  const [mark] = await markPagesForIndex(w.env, storage, [id(5)]);
+  const [newer] = await markPagesForIndex(w.env, storage, [id(5)]);
+  await settlePageMark(storage, mark, "indexed");
+  assert.equal(await storage.get(newer.key), newer.token, "the newer mark stays");
+  await settlePageMark(storage, newer, "indexed");
+  assert.equal(await storage.get(newer.key), undefined);
 });
 
 test("moving a Page changes nothing D1 holds and leaves the account ready", async (t) => {
@@ -421,12 +491,13 @@ test("moving a Page changes nothing D1 holds and leaves the account ready", asyn
   assert.equal((await list(w, { limit: 100 })).source, "index");
 });
 
-test("Trash, restore and purge write the owner's D1 row, so the account stays ready", async (t) => {
+test("Trash, restore and purge write the owner's D1 row after answering, so the account stays ready", async (t) => {
   const w = await world(t);
   const pageId = (await w.createPage({ title: "Cycled" })).body.page_id;
   const kept = (await w.createPage({ title: "Kept" })).body.page_id;
   const ready = async (label) => {
     assert.equal(await w.catalogStorage().get(DIRTY), undefined, label);
+    assert.deepEqual(await pageMarks(w), [], label);
     assert.equal((await list(w, { limit: 100 })).source, "index", label);
   };
   const trashed = await w.call("owner", "delete_page", {
@@ -434,6 +505,7 @@ test("Trash, restore and purge write the owner's D1 row, so the account stays re
     idempotency_key: w.key(),
   });
   assert.equal(trashed.status, 200, JSON.stringify(trashed.body));
+  await w.settle();
   assert.equal(ownerRow(w, pageId), "trashed");
   await ready("after Trash");
   const inTrash = await list(w, { in_trash: true });
@@ -447,6 +519,7 @@ test("Trash, restore and purge write the owner's D1 row, so the account stays re
     idempotency_key: w.key(),
   });
   assert.equal(restored.status, 200, JSON.stringify(restored.body));
+  await w.settle();
   assert.equal(ownerRow(w, pageId), "active");
   await ready("after restore");
   assert.deepEqual(
@@ -462,6 +535,7 @@ test("Trash, restore and purge write the owner's D1 row, so the account stays re
     idempotency_key: w.key(),
   });
   assert.equal(purged.status, 200, JSON.stringify(purged.body));
+  await w.settle();
   assert.equal(ownerRow(w, pageId), undefined);
   await ready("after purge");
 });

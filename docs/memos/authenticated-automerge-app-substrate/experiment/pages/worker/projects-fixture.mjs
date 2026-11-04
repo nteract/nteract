@@ -99,7 +99,14 @@ export async function world(t, { index = "1", storage: newStorage = () => new St
         if (!catalogs.has(principal))
           catalogs.set(
             principal,
-            new Catalog({ id: { name: principal }, storage: newStorage(principal) }, env),
+            new Catalog(
+              {
+                id: { name: principal },
+                storage: newStorage(principal),
+                waitUntil: (promise) => jobs.push(promise),
+              },
+              env,
+            ),
           );
         return catalogs.get(principal);
       },
@@ -206,7 +213,12 @@ export async function world(t, { index = "1", storage: newStorage = () => new St
   };
   const heads = (pageId) => A.getHeads(pages.get(pageId).handle.doc());
   const catalogStorage = (principal = owner) => env.CATALOGS.getByName(principal).ctx.storage;
+  /** Run every held background job, including ones they start, to the end. */
+  const settle = async () => {
+    while (jobs.length) await Promise.allSettled(jobs.splice(0));
+  };
   return {
+    settle,
     auth,
     owner,
     member,
