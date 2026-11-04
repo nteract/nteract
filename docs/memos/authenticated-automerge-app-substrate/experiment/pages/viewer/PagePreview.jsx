@@ -41,7 +41,16 @@ const TAGS = new Set([
   "input",
 ]);
 const VOID = new Set(["img", "hr", "br", "input"]);
-const DATA = new Set(["data-task-list", "data-task-checked", "data-align", "data-highlight"]);
+const DATA = new Set([
+  "data-task-list",
+  "data-task-checked",
+  "data-align",
+  "data-highlight",
+  // Cards (model/page-card.mjs): image and dataframe stand-ins, and a code
+  // block's language.
+  "data-card-placeholder",
+  "data-language",
+]);
 
 // Spaces and control characters, which no stored URL holds (model/marks.mjs).
 const unsafeText = (value) =>
@@ -86,16 +95,32 @@ function props(tag, attrs, key) {
   return out;
 }
 
-/** React nodes for preview content: strings and [tag, attrs, ...children]. */
-export function previewNodes(content, prefix = "n") {
+/**
+ * React nodes for preview content: strings and [tag, attrs, ...children].
+ *
+ * `inert` renders content that sits inside another link, as a library card
+ * does (PageCardPreview.jsx): links keep their text in a span, a task
+ * checkbox becomes a drawn box, and images draw nothing. No interactive
+ * element is rendered, so nothing nests inside the card's link.
+ */
+export function previewNodes(content, prefix = "n", { inert = false } = {}) {
   if (!Array.isArray(content)) return [];
   return content.map((node, index) => {
     const key = `${prefix}.${index}`;
     if (typeof node === "string") return node;
     if (!Array.isArray(node) || typeof node[0] !== "string") return null;
     const [tag, attrs, ...children] = node;
-    const inner = previewNodes(children, key);
+    const inner = previewNodes(children, key, { inert });
     if (!TAGS.has(tag)) return createElement(React.Fragment, { key }, inner);
+    if (inert && tag === "a")
+      return createElement("span", { key, className: "preview-link" }, ...inner);
+    if (inert && tag === "img") return null;
+    if (inert && tag === "input")
+      return createElement("span", {
+        key,
+        className: "preview-check",
+        "data-checked": typeof attrs?.checked === "string" ? "true" : "false",
+      });
     const elementProps = props(tag, attrs, key);
     if (!elementProps) return null;
     return VOID.has(tag)

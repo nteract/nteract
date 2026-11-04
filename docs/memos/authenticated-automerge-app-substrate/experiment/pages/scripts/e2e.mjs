@@ -128,6 +128,7 @@ const SUITES = Object.freeze([
     harness: sharing("--content-activity"),
     timeout: 3 * minute,
   },
+  { name: "cards", harness: sharing("--cards"), timeout: 4 * minute },
   {
     name: "oauth",
     harness: ["scripts/local-oauth-e2e.mjs"],

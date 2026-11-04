@@ -328,6 +328,7 @@ test("a /pages row links its Page and labels its Project; shared Pages show no P
     title: "Untitled",
     href: `/p/${pageId}`,
     activityAt: null,
+    contentUpdatedAt: null,
     project: { id: projectId, title: "Launch", href: `/project/${projectId}` },
     shared: false,
     home: false,

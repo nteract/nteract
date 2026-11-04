@@ -112,6 +112,7 @@ was a caret race in the smoke; the editor side is
 | A commenter comments but can't edit; a forged native edit of another author's message is refused | `node scripts/local-sharing-e2e.mjs --commenter` | Starts an isolated fixture |
 | Projects over MCP and in the browser, `/projects` and `/pages` on a phone-sized screen, the Pages library's tabs, Project filter, sort and groups as an account with shared Pages, breadcrumbs, Trash and restore in a Project | `node scripts/local-sharing-e2e.mjs --projects` | Starts an isolated fixture |
 | `list_pages` reports `content_updated_at` after an MCP edit and after typing in a tab, each well after the Page's creation | `node scripts/local-sharing-e2e.mjs --content-activity` | Starts an isolated fixture |
+| Grid cards show each edited Page's first content in light, dark and phone layouts; a shared card shows for its member and `page_cards` answers null on the call after removal | `node scripts/local-sharing-e2e.mjs --cards` | Starts an isolated fixture |
 | Cold first open of a 300-paragraph Page with images on Fast 3G and 4x CPU, phase by phase (records timings, gates on nothing) | `node scripts/local-sharing-e2e.mjs --cold-open` | Starts an isolated fixture behind a brotli proxy; writes `report.json` |
 | Rollback to a previous build and forward again on one data directory | `node scripts/rollback-qualification.mjs --target <target> --previous <previous pages dir>` | Starts an isolated fixture; build the previous commit first |
 | Rich comment tables and drafts | `PAGES_ORIGIN=http://localhost:9894 node scripts/rich-comments-smoke.mjs` | Uses the running Wordgard fixture |
@@ -690,7 +691,8 @@ is time order. A host evicted before its trailing flush loses at most that
 minute. A failed flush retries with backoff from one minute up to fifteen. The
 time also rides on every full row report, so a restart re-reports it. Deleting a
 Page, by a purge or a tombstone, stops its recorder for good and deletes
-`host/content-activity`. Trash never stops it, so a restored Page keeps recording.
+`host/content-activity`, and with it the Page's card (see [Card previews](#card-previews)).
+Trash never stops it, so a restored Page keeps recording.
 A change never starts a flush itself: it queues one (`flushQueued`), and the next
 live request starts it.
 
@@ -2341,7 +2343,62 @@ filter; the account's Projects alone can't say so, since a Project created a
 moment ago may not be in them yet. Load more follows
 `next_cursor`; a cursor that has expired (`invalid_cursor`) starts the listing
 over from its first page. Grid cards are behind the `grid` flag (`?grid=1` or
-`localStorage["pages.grid"] = "1"`) until they show previews.
+`localStorage["pages.grid"] = "1"`); each shows a preview of its Page's first
+content (see [Card previews](#card-previews)).
+
+### Card previews
+
+A grid card shows a scaled, read-only rendering of the Page's first screen.
+The Page host builds a `card.v1` bundle from its document
+([page-card.mjs](model/page-card.mjs)): `{ v, card_hash, content_updated_at,
+title, blocks, truncated, rich }`. `blocks` is
+[page-preview.mjs](model/page-preview.mjs)'s JSON from the schema's own `toDOM`
+specs, never HTML, cut at 8 KiB serialized and 64 top-level nodes. A node that
+doesn't fit is clipped to its leading children and text (a table keeps whole
+rows), and the card ends there. Images become a placeholder with their alt
+text, never bytes or a URL; a dataframe becomes a placeholder with its title;
+links lose their `href`; a code block names its language, so Mermaid stays code.
+`card_hash` hashes exactly the title, blocks and `truncated`, so an edit below
+the fold changes nothing. `rich` says the card holds Mermaid, a dataframe or
+an image, which the JSON can only stand in for; nothing reads it yet.
+
+The card is written beside each content-activity flush and nowhere else
+([page-card-writer.mjs](worker/page-card-writer.mjs)). A flush runs from a live
+request on a booted host with its document loaded, at most once a minute, so
+cards cost no new trigger, timer or alarm. The host stores the last written
+hash under `host/card` and puts `pages/<page_id>/card.json` in the Page assets
+bucket only when the hash changed; the stored hash follows the object, so a
+crash between them writes the same card again. A failed write is logged and
+retried by the next flush; it never fails the flush or the edit. A Page that
+hasn't changed since cards shipped has none until its next edit, and the grid
+keeps its icon. A purge or tombstone deletes the object and `host/card` with the
+content time; a write that lands after the stop deletes its own object. Trash
+keeps the card, which `page_cards` won't serve while the Page is trashed.
+
+`page_cards` (`/api/tools` only) takes up to 24 `page_ids` and runs in the
+caller's Catalog with `list_pages`' rules
+([page-cards.mjs](worker/page-cards.mjs)): an owned ID needs a settled
+`page/<id>` entry (so a trashed Page has none), and a shared ID needs a
+`shared/<id>` entry and a fresh `verifyShared` by its Page host, the metadata
+check that doesn't boot the document. D1 is never read. Allowed objects are read
+eight at a time and returned as JSON; no object URL leaves the Worker. Every
+other ID, unknown, refused, unchecked in time or without a card, answers
+`null`, so a caller can't tell "no access" from "no card". The answer names its
+`principal`. It isn't an MCP tool: an agent can read the Page itself, and a
+card is a drawing aid shaped for the grid, not a reading surface worth a stable
+contract.
+
+In grid mode each card asks for its card when it comes within 200px of the
+viewport ([page-cards.mjs](viewer/page-cards.mjs)). Cards that appear together
+share requests of up to 24 IDs. Each card follows a small machine, `idle →
+requested → shown | empty | failed`, keyed by Page ID and the row's
+`content_updated_at`, so a Page edited since the grid asked asks again; a failed
+card asks again when it scrolls back in. The machines live as long as the
+mounted grid, with no cross-visit cache, and an answer naming another account
+is ignored. [PageCardPreview.jsx](viewer/PageCardPreview.jsx) draws the card
+through PagePreview's allowlist in its inert mode (no links, controls or
+images), laid out at a reading width and scaled with `transform: scale()`,
+`aria-hidden` with pointer events off: the card's link carries the title.
 
 A library visit sends one `list_pages`, for its view. `list_projects` is one
 request per account shared by the Project filter, the Browse picker, Move to…

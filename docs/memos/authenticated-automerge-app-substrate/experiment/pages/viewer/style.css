@@ -2317,6 +2317,243 @@ details.account-actions > div a:hover {
 .index-card-placeholder {
   opacity: 0.55;
 }
+/* A card preview (PageCardPreview.jsx): the Page's first content laid out at
+   a reading width (the card's width divided by --card-scale) and scaled down
+   with a transform, so every card shows the same small type. It is absolutely
+   placed, so the card keeps its 4:3 body however long the content runs, and
+   the last lines fade out. It is decoration: no pointer events, no
+   selection, hidden from assistive tech by the component. */
+.page-card-preview {
+  --card-scale: 0.52;
+  position: relative;
+  display: block;
+  overflow: hidden;
+  background: var(--card);
+  color: var(--foreground);
+  pointer-events: none;
+  user-select: none;
+  -webkit-mask-image: linear-gradient(to bottom, #000 70%, transparent 98%);
+  mask-image: linear-gradient(to bottom, #000 70%, transparent 98%);
+  animation: page-card-in 160ms ease-out;
+}
+@keyframes page-card-in {
+  from {
+    opacity: 0;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .page-card-preview {
+    animation: none;
+  }
+}
+.page-card-scale {
+  position: absolute;
+  top: 0;
+  left: 0;
+  box-sizing: border-box;
+  width: calc(100% / var(--card-scale));
+  padding: 26px 30px;
+  transform: scale(var(--card-scale));
+  transform-origin: 0 0;
+}
+.page-card-doc {
+  font-size: 15px;
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+}
+.page-card-doc > :first-child {
+  margin-top: 0;
+}
+.page-card-doc :is(h1, h2, h3, h4, h5, h6) {
+  margin: 0.9em 0 0.35em;
+  font-weight: 650;
+  line-height: 1.25;
+  letter-spacing: -0.01em;
+}
+.page-card-doc h1 {
+  font-size: 1.95em;
+}
+.page-card-doc h2 {
+  font-size: 1.5em;
+}
+.page-card-doc h3 {
+  font-size: 1.22em;
+}
+.page-card-doc :is(h4, h5, h6) {
+  font-size: 1em;
+}
+.page-card-doc p {
+  margin: 0 0 0.7em;
+}
+.page-card-doc :is(ul, ol) {
+  margin: 0 0 0.7em;
+  padding-inline-start: 1.4em;
+}
+.page-card-doc li {
+  margin: 0.15em 0;
+}
+.page-card-doc li > p,
+.page-card-doc li > div > p {
+  margin: 0;
+}
+.page-card-doc li::marker {
+  color: var(--muted-foreground);
+}
+/* Task items: a drawn box where the editor has a checkbox, since the card is
+   one link and holds no controls. */
+.page-card-doc li[data-task-checked] {
+  position: relative;
+  list-style: none;
+}
+.page-card-doc .preview-check {
+  position: absolute;
+  inset-inline-start: -1.35em;
+  top: 0.32em;
+  box-sizing: border-box;
+  width: 0.95em;
+  height: 0.95em;
+  border: 1.5px solid var(--muted-foreground);
+  border-radius: 0.22em;
+}
+.page-card-doc .preview-check[data-checked="true"] {
+  border-color: var(--primary);
+  background: var(--primary);
+}
+.page-card-doc .preview-check[data-checked="true"]::after {
+  content: "";
+  position: absolute;
+  left: 0.27em;
+  top: 0.08em;
+  width: 0.22em;
+  height: 0.48em;
+  border: solid var(--primary-foreground);
+  border-width: 0 0.13em 0.13em 0;
+  transform: rotate(45deg);
+}
+.page-card-doc li[data-task-checked="true"] > div {
+  color: var(--muted-foreground);
+  text-decoration: line-through;
+}
+.page-card-doc .preview-link {
+  text-decoration: underline;
+  text-decoration-color: color-mix(in srgb, currentColor 45%, transparent);
+  text-underline-offset: 3px;
+}
+.page-card-doc code {
+  padding: 0.1em 0.3em;
+  border-radius: 4px;
+  background: var(--muted);
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Consolas, monospace);
+  font-size: 0.88em;
+}
+.page-card-doc pre {
+  position: relative;
+  margin: 0 0 0.8em;
+  padding: 14px 16px;
+  overflow: hidden;
+  border-radius: 10px;
+  background: var(--muted);
+  font: 13px/1.55 var(--font-mono, ui-monospace, SFMono-Regular, Consolas, monospace);
+  white-space: pre-wrap;
+}
+.page-card-doc pre code {
+  padding: 0;
+  background: none;
+  font-size: inherit;
+}
+.page-card-doc pre[data-language] {
+  padding-top: 34px;
+}
+.page-card-doc pre[data-language]::before {
+  content: attr(data-language);
+  position: absolute;
+  top: 10px;
+  left: 16px;
+  color: var(--muted-foreground);
+  font:
+    12px/1.3 system-ui,
+    sans-serif;
+  text-transform: capitalize;
+}
+/* Mermaid stays code in a card; a dashed edge says it draws a diagram. */
+.page-card-doc pre[data-language="mermaid"] {
+  border: 1.5px dashed color-mix(in srgb, var(--muted-foreground) 45%, transparent);
+  background: color-mix(in srgb, var(--muted) 60%, var(--card));
+}
+.page-card-doc blockquote {
+  margin: 0 0 0.8em;
+  padding-inline-start: 0.9em;
+  border-inline-start: 3px solid var(--border);
+  color: var(--muted-foreground);
+}
+.page-card-doc hr {
+  margin: 1.1em 0;
+  border: 0;
+  border-top: 1px solid var(--border);
+}
+.page-card-doc table {
+  width: 100%;
+  margin: 0 0 0.8em;
+  border-collapse: collapse;
+  font-size: 0.92em;
+}
+.page-card-doc :is(th, td) {
+  padding: 5px 9px;
+  border: 1px solid var(--border);
+  text-align: start;
+  vertical-align: top;
+}
+.page-card-doc th {
+  background: var(--muted);
+  font-weight: 600;
+}
+.page-card-doc :is(th, td)[data-align="center"] {
+  text-align: center;
+}
+.page-card-doc :is(th, td)[data-align="right"] {
+  text-align: end;
+}
+.page-card-doc td > p,
+.page-card-doc th > p {
+  margin: 0;
+}
+/* Images and dataframes stand in as labeled boxes: a card holds no image
+   bytes or dataset, only alt text or a title. */
+.page-card-doc [data-card-placeholder] {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  box-sizing: border-box;
+  min-height: 96px;
+  margin: 0 0 0.8em;
+  padding: 12px 16px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--muted);
+  color: var(--muted-foreground);
+  font-size: 13px;
+  line-height: 1.35;
+}
+.page-card-doc [data-card-placeholder]::before {
+  content: "";
+  flex-shrink: 0;
+  width: 26px;
+  height: 26px;
+  background: currentColor;
+  -webkit-mask: var(--card-placeholder-icon) center / contain no-repeat;
+  mask: var(--card-placeholder-icon) center / contain no-repeat;
+  opacity: 0.8;
+}
+.page-card-doc [data-card-placeholder="image"] {
+  --card-placeholder-icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'%3E%3Crect x='3' y='3' width='18' height='18' rx='2'/%3E%3Ccircle cx='9' cy='9' r='2'/%3E%3Cpath d='m21 15-3.1-3.1a2 2 0 0 0-2.8 0L6 21'/%3E%3C/svg%3E");
+  justify-content: center;
+  min-height: 150px;
+}
+.page-card-doc [data-card-placeholder="dataframe"] {
+  --card-placeholder-icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'%3E%3Crect x='3' y='3' width='18' height='18' rx='2'/%3E%3Cpath d='M3 9h18M3 15h18M9 3v18'/%3E%3C/svg%3E");
+  color: var(--foreground);
+  font-weight: 550;
+}
 /* Phones: Name and Last activity only, with no column labels, two cards to a
    row, and 44px toggles. */
 @media (max-width: 640px) {
@@ -2340,6 +2577,13 @@ details.account-actions > div a:hover {
   .index-grid {
     grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
     gap: 0.75rem;
+  }
+  /* Narrower cards lay out at a narrower reading width, scaled less far. */
+  .page-card-preview {
+    --card-scale: 0.44;
+  }
+  .page-card-scale {
+    padding: 20px 22px;
   }
 }
 /* The Pages library (Library.jsx), at / and /pages. Wider than the reading
