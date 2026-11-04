@@ -77,12 +77,12 @@ const notFound = (message) => Object.assign(Error(message), { code: "node_not_fo
  * block's top-level nodes and its text range `[start, end)`, from its marker
  * to the next node's marker. Throws `node_not_found` when the id doesn't name
  * a live top-level node in this block. */
-export function resolveNodeId(doc, blockId, nodeId) {
+export function resolveNodeId(doc, blockId, nodeId, tree) {
   if (typeof nodeId !== "string" || !nodeId || nodeId.length > MAX_NODE_ID)
     throw Error(`node_id must be a string of up to ${MAX_NODE_ID} characters from read_page`);
   let ids;
   try {
-    ids = nodeIds(doc, blockId);
+    ids = nodeIds(doc, blockId, tree);
   } catch {
     throw notFound(
       "This block holds a node this version of Pages can't place, so its nodes have no ids. Use delete_block, or edit around it with patch_page.",

@@ -63,10 +63,12 @@ const RETRY_LATER = new Set([
 ]);
 
 export class TransferError extends Error {
-  constructor(message, { code, uncertain = false } = {}) {
+  constructor(message, { code, uncertain = false, status } = {}) {
     super(message);
     this.name = "TransferError";
     this.code = code;
+    // The HTTP status of an asset request that failed, when there was one.
+    this.status = status;
     // An uncertain failure may have been applied; only the identical request
     // (same retry_token, idempotency_key and payload) may be sent again.
     this.uncertain = uncertain;
@@ -184,6 +186,8 @@ export function pagesClient({
     try {
       response = await fetchImpl(`${base}${path}`, {
         ...init,
+        // Never follow a redirect: it would carry the credential elsewhere.
+        redirect: "error",
         headers: {
           Authorization: `Bearer ${token.trim()}`,
           "X-Pages-Driver": DRIVER,
@@ -206,6 +210,7 @@ export function pagesClient({
     throw new TransferError(`${what} on ${base}: HTTP ${response.status}${reason}`, {
       code: response.status === 401 || response.status === 403 ? "unauthorized" : undefined,
       uncertain: response.status >= 500 || response.status === 429,
+      status: response.status,
     });
   }
   /** The bytes at a same-origin asset path. Anything else is refused before
@@ -447,8 +452,15 @@ function bundlePage(row, parentSourceId, read, homePageId) {
   const dataframeSources = new Set(dataframes.map((frame) => frame.src));
   // Dataframe lines the outline didn't list (inside a quote or list): they
   // import as links, and are reported with the dataframes not copied.
-  const linked = new Set([...markdown.matchAll(DATAFRAME_LINKS)].map((match) => match[1]));
-  const unlisted = [...linked].filter((path) => !dataframeSources.has(path));
+  const links = [...markdown.matchAll(DATAFRAME_LINKS)].map((match) => match[1]);
+  const linked = new Set(links);
+  // A src with more dataframe lines than the outline has nodes for it: the
+  // extra ones (a copy in a quote, say) import as links, so report them,
+  // once per src.
+  const listed = (path) => dataframes.filter((frame) => frame.src === path).length;
+  const unlisted = [...linked].filter(
+    (path) => links.filter((link) => link === path).length > listed(path),
+  );
   return {
     source_page_id: row.page_id,
     parent_source_id: parentSourceId,
@@ -496,7 +508,7 @@ async function exportAssets(client, pages, { log, ...options }) {
     } catch (error) {
       // The node names an asset its Page no longer stores: nothing to copy,
       // and the dataframe imports as a link, reported with the rest.
-      if (!/: HTTP 404\b/.test(error.message)) throw error;
+      if (error.status !== 404) throw error;
       warnings.push(`${frame.src} is missing on the source; that dataframe imports as a link.`);
       continue;
     }

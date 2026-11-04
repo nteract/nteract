@@ -216,8 +216,8 @@ function deleteNode(doc, id, op, trace, opened) {
     throw Object.assign(Error("delete_node needs a rich-text block; this block is Markdown"), {
       code: "node_not_found",
     });
-  const { index, start, end } = resolveNodeId(doc, id, op.node_id);
   const tree = richDoc(doc.blocks[id], doc.page_id);
+  const { index, start, end } = resolveNodeId(doc, id, op.node_id, tree);
   const type = agentType(tree.child(index).type.name);
   A.splice(doc, textPath(id), start, end - start);
   // Removing whole top-level nodes keeps the tree valid; check it anyway, so
@@ -227,8 +227,11 @@ function deleteNode(doc, id, op, trace, opened) {
   if (result.childCount < tree.childCount - 1) {
     const name = (offset) => agentType(tree.child(index + offset).type.name);
     // Throwing aborts the whole change, the splice included.
-    throw Error(
-      `delete_node would join the ${name(-1)} before this node and the ${name(1)} after it into one. Delete one of them too, or rewrite the block with replace_block_markdown.`,
+    throw Object.assign(
+      Error(
+        `delete_node would join the ${name(-1)} before this node and the ${name(1)} after it into one. Delete one of them too, or rewrite the block with replace_block_markdown.`,
+      ),
+      { code: "nodes_would_join" },
     );
   }
   if (start === 0) opened.add(id);

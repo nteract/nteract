@@ -98,6 +98,7 @@ test("edit_page takes delete_node by node_id, and the guides say where the id co
   assert.match(typedReadFields(), /node_id names a top-level node/);
   const guide = agentGuide({ NOTEBOOK_CLOUD_PUBLIC_ORIGIN: "https://pages.example" });
   assert.match(guide, /- node_not_found:/);
+  assert.match(guide, /- nodes_would_join:/);
   assert.match(guide, /delete_node it by its node_id/);
 });
 
