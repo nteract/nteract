@@ -92,7 +92,7 @@ test("mutate persists before adoption and events, returning exact committed chan
   assert.deepEqual(await bytes.list("actor/"), []);
 });
 
-test("failed host append leaves connection states untouched; the next browser operation repairs and syncs normally", async (t) => {
+test("failed host append leaves connection states untouched; browser operations still sync normally", async (t) => {
   const { h, bytes, id } = await fixture(t);
   const peer = await browser(h, { principal: "account:a" });
   t.after(() => peer.repo.shutdown());
@@ -255,7 +255,7 @@ test("durable fences queued writes but not later writes, retrying a preceding fa
   await h.durable(id);
 });
 
-test("a rejected browser append poisons durable until the recorded history is repaired", async (t) => {
+test("a rejected browser append does not poison host durability even when the browser never resends", async (t) => {
   const { h, bytes, id, base } = await fixture(t);
   const changes = recorded(
     base,
@@ -269,16 +269,18 @@ test("a rejected browser append poisons durable until the recorded history is re
   const gate = holdWrites(t, bytes);
   peer.link.client.send({ t: "sync", doc: id, m: syncMessage(changes), r: 1 });
   await gate.entered;
-  const barrier = assert.rejects(h.durable(id));
+  const barrier = h.durable(id);
   bytes.failNext();
   gate.release();
   await barrier;
   await until(() => peer.frames.some((f) => f.t === "refused"));
   assert.equal(h.doc(id).title, "Before");
-  peer.link.client.send({ t: "sync", doc: id, m: syncMessage(changes), r: 2 });
-  await until(() => peer.frames.some((f) => f.r === 2));
+  await h.mutate(id, (d) => {
+    d.future.push("host");
+  });
   await h.durable(id);
-  assert.equal(h.doc(id).title, "Browser retry");
+  assert.equal(h.doc(id).title, "Before");
+  assert.deepEqual(h.doc(id).future, ["host"]);
 });
 
 test("ambiguous append reload repairs durable without rewriting recorded bytes or losing claims", async (t) => {
@@ -462,6 +464,7 @@ for (const recovery of ["mutate", "durable"])
       ),
       (error) => {
         attempted = error.changes.map((bytes) => bytes.slice());
+        assert.equal(error.queued, true);
         // The error's buffers belong to the caller, not the recovery queue.
         error.changes[0].fill(0);
         return true;
@@ -487,7 +490,7 @@ for (const recovery of ["mutate", "durable"])
     A.free(saved);
   });
 
-test("seed repairs failed browser heads and publishes the snapshot once", async (t) => {
+test("seed repairs pending trusted heads and publishes the snapshot once", async (t) => {
   const { h, bytes, id, base } = await fixture(t);
   const reader = await browser(h, { principal: "account:reader" });
   t.after(() => reader.repo.shutdown());
@@ -498,13 +501,9 @@ test("seed repairs failed browser heads and publishes the snapshot once", async 
     d.title = "Seed repair";
   });
   t.after(() => A.free(candidate));
-  const peer = raw(h, { principal: "account:a", role: "editor", senderId: "a" });
-  t.after(() => peer.link.client.close());
   const changes = A.getChanges(base, candidate);
   bytes.failNext();
-  peer.link.client.send({ t: "sync", doc: id, m: syncMessage(changes), r: 1 });
-  await until(() => peer.frames.some((frame) => frame.t === "refused"));
-  await assert.rejects(h.durable(id));
+  await assert.rejects(h.applyChanges(id, changes));
   const events = [];
   h.on("change", (event) => events.push(event));
   await h.seed(id, "page", candidate);
@@ -606,4 +605,243 @@ test("mutators run against the queue's current root; a thrown callback frees its
   );
   await Promise.all(writes);
   assert.equal(h.doc(id).title, "Before one two");
+});
+
+test("pending trusted writes never retry ahead of viewer or writer browser frames", async (t) => {
+  const { h, bytes, id, base } = await fixture(t);
+  const bridge = raw(h, { trusted: true });
+  t.after(() => bridge.link.client.close());
+  const pending = recorded(base, (d) => {
+    d.title = "Pending";
+  });
+  const save = bytes.saveMany.bind(bytes);
+  let attempts = 0;
+  bytes.saveMany = async () => {
+    attempts++;
+    throw Error("offline");
+  };
+  t.after(() => {
+    bytes.saveMany = save;
+  });
+  bridge.link.client.send({ t: "sync", doc: id, m: syncMessage(pending), r: 1 });
+  await until(() => bridge.frames.some((f) => f.t === "refused"));
+  const viewer = raw(h, { principal: "account:viewer", role: "viewer", senderId: "viewer" });
+  t.after(() => viewer.link.client.close());
+  viewer.link.client.send({ t: "sync", doc: id, m: syncMessage([]), r: 1 });
+  await until(() => viewer.frames.some((f) => f.r === 1));
+  assert.equal(viewer.frames.find((f) => f.r === 1).t, "sync");
+  assert.equal(attempts, 1, "viewer did not retry pending writes");
+  bytes.saveMany = save;
+  const writer = raw(h, { principal: "account:writer", role: "editor", senderId: "writer" });
+  t.after(() => writer.link.client.close());
+  const changes = recorded(
+    base,
+    (d) => {
+      d.future.push("browser");
+    },
+    { actor: "ee".repeat(16) },
+  );
+  writer.link.client.send({ t: "sync", doc: id, m: syncMessage(changes), r: 1 });
+  await until(() => writer.frames.some((f) => f.r === 1));
+  assert.equal(writer.frames.find((f) => f.r === 1).t, "sync");
+  assert.equal(h.doc(id).title, "Before", "writer did not retry pending writes either");
+  await h.durable(id);
+  assert.equal(h.doc(id).title, "Pending");
+  assert.deepEqual(h.doc(id).future, ["browser"]);
+});
+
+test("first load after restart establishes published heads without recording content activity", async (t) => {
+  const { bytes, id } = await fixture(t);
+  const restarted = await host({ bytes });
+  restarted.hostActorPrefix = "ab".repeat(8);
+  restarted.register(id);
+  const changes = [];
+  const heads = [];
+  restarted.on("change", (event) => changes.push(event));
+  restarted.on("heads-changed", (event) => heads.push(event));
+  await restarted.document(id);
+  await restarted.durable(id);
+  assert.deepEqual(changes, []);
+  assert.deepEqual(heads, []);
+  await restarted.mutate(id, (d) => {
+    d.title = "Actual edit";
+  });
+  assert.equal(changes.length, 1);
+  assert.equal(heads.length, 1);
+  assert.ok(changes[0].patches.every((patch) => patch.path[0] === "title"));
+});
+
+test("mutate requires its host namespace and generates unique actors without claims", async (t) => {
+  const { h, bytes, id } = await fixture(t);
+  const prefix = h.hostActorPrefix;
+  h.hostActorPrefix = undefined;
+  assert.throws(() => h.mutate(id, () => {}), /requires hostActorPrefix/);
+  h.hostActorPrefix = prefix;
+  assert.throws(() => h.mutate(id, () => {}, { actor: "ee".repeat(16) }), /must belong/);
+  const actors = [];
+  for (let i = 0; i < 5; i++) {
+    const result = await h.mutate(id, (d) => {
+      d.future.push(i);
+    });
+    actors.push(A.decodeChange(result.changes[0]).actor);
+  }
+  assert.equal(new Set(actors).size, 5);
+  assert.ok(
+    actors.every((value) => value.startsWith(prefix) && value.length === prefix.length + 16),
+  );
+  assert.deepEqual(await bytes.list("actor/"), []);
+});
+
+for (const api of ["mutate", "applyChanges"])
+  test(`${api} passes the trusted gate before persistence and refuses without adoption`, async (t) => {
+    const { h, bytes, id, base } = await fixture(t);
+    const seq = h.store.manifest(id).seq;
+    let calls = 0;
+    h.policy.admitTrusted = (doc, live, fresh, preview) => {
+      calls++;
+      assert.equal(doc.id, id);
+      assert.equal(live.title, "Before");
+      assert.equal(preview.title, "Blocked");
+      assert.equal(fresh.length, 1);
+      throw Error("history_capacity");
+    };
+    const edit = (d) => {
+      d.title = "Blocked";
+    };
+    await assert.rejects(
+      api === "mutate" ? h.mutate(id, edit) : h.applyChanges(id, recorded(base, edit)),
+      (error) => {
+        assert.equal(error.message, "history_capacity");
+        assert.equal(error.queued, undefined);
+        return true;
+      },
+    );
+    assert.equal(calls, 1);
+    assert.equal(h.store.manifest(id).seq, seq);
+    assert.equal(h.doc(id).title, "Before");
+    assert.deepEqual(await bytes.list("actor/"), []);
+    await h.durable(id);
+  });
+
+test("queued rejection directs callers to durable rather than re-running a non-idempotent callback", async (t) => {
+  const { h, bytes, id } = await fixture(t);
+  let calls = 0;
+  bytes.failNext();
+  await assert.rejects(
+    h.mutate(id, (d) => {
+      calls++;
+      d.future.push(1);
+    }),
+    (error) => {
+      assert.equal(error.queued, true);
+      assert.equal(error.changes.length, 1);
+      return true;
+    },
+  );
+  await h.durable(id);
+  await h.durable(id);
+  assert.equal(calls, 1);
+  assert.deepEqual(h.doc(id).future, [1]);
+});
+
+for (const api of ["mutate", "applyChanges"])
+  test(`${api} distinguishes a failed prerequisite retry from its own queued changes`, async (t) => {
+    const { h, bytes, id, base } = await fixture(t);
+    const save = bytes.saveMany.bind(bytes);
+    bytes.saveMany = async () => {
+      throw Error("offline");
+    };
+    t.after(() => {
+      bytes.saveMany = save;
+    });
+    let firstChanges;
+    let firstCalls = 0;
+    await assert.rejects(
+      h.mutate(id, (d) => {
+        firstCalls++;
+        d.future.push("A");
+      }),
+      (error) => {
+        assert.equal(error.queued, true);
+        firstChanges = error.changes;
+        return true;
+      },
+    );
+    const secondChanges = recorded(base, (d) => {
+      d.blocks.b.richText += " B";
+    });
+    let secondCalls = 0;
+    const second = () =>
+      api === "mutate"
+        ? h.mutate(id, (d) => {
+            secondCalls++;
+            d.blocks.b.richText += " B";
+          })
+        : h.applyChanges(id, secondChanges);
+    await assert.rejects(second(), (error) => {
+      assert.equal(error.code, "pending_retry_failed");
+      assert.equal(error.queued, false);
+      assert.equal(Object.hasOwn(error, "changes"), false);
+      assert.equal(error.cause.message, "offline");
+      assert.equal(error.cause.queued, true);
+      assert.deepEqual(error.cause.changes, firstChanges);
+      return true;
+    });
+    assert.equal(secondCalls, 0);
+    const unchanged = await h.document(id);
+    assert.equal(unchanged.blocks.b.richText, "Text");
+    assert.deepEqual(unchanged.future, []);
+    bytes.saveMany = save;
+    const result = await second();
+    await h.durable(id);
+    const saved = await stored(bytes, id);
+    assert.equal(firstCalls, 1);
+    assert.equal(secondCalls, api === "mutate" ? 1 : 0);
+    assert.deepEqual(saved.future, ["A"]);
+    assert.equal(saved.blocks.b.richText, "Text B");
+    const expected = [...firstChanges, ...result.changes];
+    assert.equal(A.getChanges(base, saved).length, 2);
+    assert.ok(
+      A.hasHeads(
+        saved,
+        expected.map((change) => A.decodeChange(change).hash),
+      ),
+    );
+    if (api === "applyChanges") assert.deepEqual(result.changes, secondChanges);
+    A.free(saved);
+  });
+
+test("string storage rejection is wrapped, invalidates live state, and retains replayable bytes", async (t) => {
+  const { h, bytes, id } = await fixture(t);
+  const save = bytes.saveMany.bind(bytes);
+  bytes.saveMany = async () => {
+    throw "offline";
+  };
+  t.after(() => {
+    bytes.saveMany = save;
+  });
+  let changes;
+  await assert.rejects(
+    h.mutate(id, (d) => {
+      d.title = "Recovered";
+    }),
+    (error) => {
+      assert.ok(error instanceof Error);
+      assert.equal(error.message, "offline");
+      assert.equal(error.cause, "offline");
+      assert.equal(error.queued, true);
+      changes = error.changes;
+      return true;
+    },
+  );
+  assert.equal(h.doc(id), null, "failed append invalidates cached live history");
+  bytes.saveMany = save;
+  await h.durable(id);
+  assert.equal(h.doc(id).title, "Recovered");
+  assert.ok(
+    A.hasHeads(
+      h.doc(id),
+      changes.map((change) => A.decodeChange(change).hash),
+    ),
+  );
 });

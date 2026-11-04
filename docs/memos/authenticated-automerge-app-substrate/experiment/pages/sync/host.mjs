@@ -98,6 +98,8 @@ export const defaultPolicy = {
   /** Returns `preview`, or a replacement on its own handle (the host frees
    * whichever it doesn't adopt). */
   admit: (_conn, _doc, _live, _fresh, preview) => preview,
+  /** Trusted write fences and schema/history limits, before persistence. */
+  admitTrusted: (_doc, _live, _fresh, preview) => preview,
   /** After persist: `fresh` changes and the actor `claims` made for them. */
   admitted() {},
   /** A connection's first frame for `doc`; from now on it receives fan-out. */
@@ -162,7 +164,7 @@ export class SyncHost {
         conns: new Map(),
         queue: Promise.resolve(),
         durability: DURABLE,
-        publishedHeads: [],
+        publishedHeads: null,
         compaction: COMPACTION_READY,
       };
       this.#docs.set(id, doc);
@@ -214,13 +216,26 @@ export class SyncHost {
     return this;
   }
 
-  /** Trusted host edits bypass browser policy, but share admission and storage.
-   * fn is synchronous; actor should be a fresh host-prefixed mutation actor. */
+  /** Trusted host edits pass admitTrusted and share admission and storage.
+   * fn is synchronous. Actors must belong to the configured host namespace.
+   * An append rejection with error.queued=true retains this call's exact
+   * changes: do not re-run fn; await durable(id) to confirm it. A prerequisite
+   * retry failure has code pending_retry_failed and queued=false: this call
+   * did not run, so retry it after storage recovers. */
   mutate(id, fn, { actor } = {}) {
+    if (!this.hostActorPrefix) throw new Error("mutate requires hostActorPrefix");
+    actor ??=
+      this.hostActorPrefix +
+      Array.from(crypto.getRandomValues(new Uint8Array(8)), (byte) =>
+        byte.toString(16).padStart(2, "0"),
+      ).join("");
+    if (typeof actor !== "string" || !actor.startsWith(this.hostActorPrefix))
+      throw new Error("Mutation actor must belong to hostActorPrefix");
     return this.#mutate(id, (clone) => A.change(clone, fn), { actor });
   }
 
-  /** Replay exact recorded bytes, including a dependency-reversed closure. */
+  /** Replay exact recorded bytes, including a dependency-reversed closure.
+   * The queued/pending_retry_failed error contract is the same as mutate. */
   applyChanges(id, changes) {
     // Own the queued input; callers may reuse their journal buffers meanwhile.
     const bytes = concat(changes);
@@ -231,6 +246,16 @@ export class SyncHost {
     const doc = this.#docs.get(id);
     if (!doc) return Promise.reject(new Error(`Unknown document ${id}`));
     return this.#run(doc, async () => {
+      try {
+        await this.#retryPending(doc);
+      } catch (cause) {
+        const error = new Error("Earlier pending changes could not be persisted; retry this call", {
+          cause,
+        });
+        error.code = "pending_retry_failed";
+        error.queued = false;
+        throw error;
+      }
       const live = await this.#live(doc);
       const clone = A.clone(live, options);
       let preview = clone;
@@ -258,6 +283,7 @@ export class SyncHost {
     const doc = this.#docs.get(id);
     if (!doc) return Promise.reject(new Error(`Unknown document ${id}`));
     return this.#run(doc, async () => {
+      await this.#retryPending(doc);
       this.#repair(doc, await this.#live(doc));
       if (doc.durability.status === "failed") throw doc.durability.error;
     });
@@ -402,6 +428,10 @@ export class SyncHost {
   #committed(doc, origin) {
     const heads = A.getHeads(doc.live);
     const before = doc.publishedHeads;
+    if (before === null) {
+      doc.publishedHeads = heads;
+      return;
+    }
     if (heads.length === before.length && heads.every((head) => before.includes(head))) return;
     // Publication is independent of loading: an append can commit even when
     // its response is lost. Reload must publish that history exactly once.
@@ -454,12 +484,7 @@ export class SyncHost {
   }
 
   #run(doc, work) {
-    const run = doc.queue
-      .catch(() => {})
-      .then(async () => {
-        await this.#retryPending(doc);
-        return work();
-      });
+    const run = doc.queue.catch(() => {}).then(work);
     doc.queue = run.catch(() => {});
     return run;
   }
@@ -612,7 +637,7 @@ export class SyncHost {
       if (!claimed && !claims.has(actor)) claims.set(actor, this.#claim(conn));
     }
     const next = conn.trusted
-      ? preview
+      ? await this.policy.admitTrusted(doc, live, fresh, preview)
       : await this.policy.admit(conn, doc, live, fresh, preview, (actor) =>
           this.#owner(actor, claims, conn),
         );
@@ -655,14 +680,18 @@ export class SyncHost {
     } catch (error) {
       // Only trusted attempts may be replayed without browser authorization.
       // Keep our own bytes: callers can journal or modify error.changes.
-      const changes = conn.trusted ? fresh.map((bytes) => bytes.slice()) : [];
-      if (conn.trusted) error.changes = fresh.map((bytes) => bytes.slice());
-      doc.durability = durabilityStep(doc.durability, {
-        type: "failed",
-        error,
-        heads: A.getHeads(next),
-        changes,
-      });
+      if (!(error instanceof Error)) error = new Error(String(error), { cause: error });
+      if (conn.trusted) {
+        const changes = fresh.map((bytes) => bytes.slice());
+        error.changes = fresh.map((bytes) => bytes.slice());
+        error.queued = true;
+        doc.durability = durabilityStep(doc.durability, {
+          type: "failed",
+          error,
+          heads: A.getHeads(next),
+          changes,
+        });
+      }
       // A failed append may have committed before its response was lost.
       // Reload history and claims before another frame can compact or extend
       // the durable document; the pre-append live doc is not authoritative.
