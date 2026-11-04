@@ -26,18 +26,19 @@ import { RECORD_STORAGE_MODES } from "../shared/record-storage.mjs";
  *   it, so the next request reaches a new object that starts from storage
  *   again. Until then a check still answers from the record, and a request
  *   that needs the document gets the boot's error.
- * - abandoned: the `blockConcurrencyWhile` holding the boot rejected while
- *   the boot still ran, as when it hit the runtime's 30 s limit. The runtime
- *   reset the object, but this one keeps running: its boot, timers and
- *   requests still write the storage the new object boots from
- *   (scripts/celld-boot-probe.mjs). The boot stops at its next write
- *   (`assertNotAbandoned`), and every request here gets the reset's error.
+ * - abandoned: the `blockConcurrencyWhile` holding the record read or the
+ *   boot rejected while it still ran, as when it hit the runtime's 30 s
+ *   limit. The runtime reset the object, but this one keeps running: its
+ *   boot, timers and requests still hold the storage the new object boots
+ *   from (scripts/celld-boot-probe.mjs). The interpreter's storage refuses
+ *   every write from here on (storage-guard.mjs), a record read that finishes
+ *   late starts nothing, and every request here gets the reset's error.
  *
  * Events: `loaded` (the record was read; `start` says how to start),
  * `catalog` (a shared-Page check asks how to answer), `document` (a request
  * needs the document), `booted` / `bootFailed` (the boot ended), and `reset`
- * (a `blockConcurrencyWhile` that held a boot rejected: the constructor's own,
- * or the one a request opened).
+ * (a `blockConcurrencyWhile` that held the record read or a boot rejected:
+ * the constructor's own, or the one a request opened).
  * `catalog` and `document` answer with `response.serve`: `record` (answer from
  * the host record), `wait` (await the running boot, then ask again),
  * `document` (use the loaded host) or `failed`.
@@ -73,7 +74,7 @@ const unreachable = [
     event,
     "requests wait for the constructor's read (`ready`) before they ask",
   ]),
-  ...["metadata", "booting", "ready", "failed", "abandoned"].map((state) => [
+  ...["metadata", "booting", "ready", "failed"].map((state) => [
     state,
     "loaded",
     "the host record is read once, in the constructor",
@@ -92,7 +93,7 @@ const serve = (state, how) => ({ state, effects: [], response: { serve: how } })
 const failed = (state) =>
   reject(state, "the host failed to start", { response: { serve: "failed" } });
 const abandoned = (state) =>
-  reject(state, "the runtime reset this object while it booted", {
+  reject(state, "the runtime reset this object while it started", {
     response: { serve: "failed" },
   });
 
@@ -119,6 +120,8 @@ export const pageStartup = defineMachine({
   transition(state, event) {
     switch (event.type) {
       case "loaded":
+        // A reset during the read: the object is gone, so nothing starts.
+        if (state.name === "abandoned") return { state, effects: [] };
         if (event.start === "missing") return { state: { name: "ready" }, effects: [] };
         if (event.start === "lazy") return { state: { name: "metadata" }, effects: [] };
         return { state: { name: "booting" }, effects: [{ type: "boot", within: "constructor" }] };
@@ -145,8 +148,9 @@ export const pageStartup = defineMachine({
         if (state.name === "abandoned") return { state, effects: [] };
         return { state: { name: event.type === "booted" ? "ready" : "failed" }, effects: [] };
       case "reset":
-        if (state.name === "booting") return { state: { name: "abandoned" }, effects: [] };
-        return reject(state, "no boot was running when the object was reset");
+        if (state.name === "booting" || state.name === "loading")
+          return { state: { name: "abandoned" }, effects: [] };
+        return reject(state, "nothing was starting when the object was reset");
     }
   },
 });

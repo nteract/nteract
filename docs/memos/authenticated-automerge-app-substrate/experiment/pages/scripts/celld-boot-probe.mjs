@@ -22,8 +22,9 @@
 // Prints each case's observations as JSON. Exit status 0 means a throw reset
 // the object, the next request booted again, and the old object went on
 // writing after the reset (and, with --limit, after the 30 s reset too). A
-// Page host's boot defends against that last part (page-startup's
-// `abandoned`); a change there should be noticed.
+// Page host refuses its own storage writes once it is abandoned this way
+// (page-startup's `abandoned`, worker/storage-guard.mjs); a change in what
+// celld does here should be noticed.
 import { spawn, execFileSync } from "node:child_process";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import net from "node:net";

@@ -788,7 +788,7 @@ The check needs only the host record and a title, so the constructor reads
 | `booting` | the constructor boots at once (a creation intent or an older record), or a request started the boot | waits for it | waits for it |
 | `ready` | the boot finished, or there was nothing to boot | answers from the loaded document, as before | runs |
 | `failed` | the boot threw; the runtime is resetting the object | answers from the record | gets that error |
-| `abandoned` | the `blockConcurrencyWhile` holding the boot rejected while the boot still ran, as at the 30 s limit | gets the reset's error | gets the reset's error |
+| `abandoned` | the `blockConcurrencyWhile` holding the record read or the boot rejected while it still ran, as at the 30 s limit | gets the reset's error | gets the reset's error |
 
 The repo boots at most once per object; every request that needs the
 document waits on the same boot, and nothing reads the document before it
@@ -803,11 +803,28 @@ failed boot is never remembered past its object.
 A reset doesn't stop the old object. A `blockConcurrencyWhile` past 30 s
 rejects and the runtime resets the object, but the boot inside it runs on,
 and so do its timers and any request already running, all writing the
-storage the new object boots from. So a rejection while the boot still runs
-leaves it `abandoned`: the boot checks before it writes (after the repo
-starts, before journal recovery of either document, and before preserved
-Markdown conversion) and stops there, and every request still on the old
-object fails. The constructor's boot is covered the same way.
+storage the new object boots from. A stale write there can undo the new
+object's work, such as a `host/document` put that brings back a revoked
+member. So a rejection while the record read or the boot still runs leaves
+the object `abandoned`, and every request still on it fails.
+
+An abandoned object can't write. The constructor wraps its context once
+([storage-guard.mjs](worker/storage-guard.mjs)), and every storage user the
+host builds (the policy, the journal, the record store and repo storage
+adapter, actor persistence, content activity, plain sync) gets storage from
+that context. Once the object is abandoned, `put`, `delete`, `deleteAll`,
+`sync`, `transaction`, `transactionSync`, `setAlarm` and `deleteAlarm` reject
+with the reset's error; a transaction already open refuses its writes too,
+and rolls back. Reads pass. PageRecords, the remote record store of a
+`buffered` Page, gets the same gate: every request but a GET is refused. The
+object also stops its own background work: the conversion retry timer, record
+maintenance, actor persistence and content activity stop at once, and once
+the boot settles, the policy, plain sync and the native backend close. The
+boot still checks at four points (after the repo starts, before journal
+recovery of either document, and before preserved Markdown conversion) so it
+ends early instead of running into refused writes. A record read that ends
+after the reset starts no boot. The constructor's boot is covered the same
+way.
 
 On celld 0.6.3 ([celld-boot-probe.mjs](scripts/celld-boot-probe.mjs)):
 

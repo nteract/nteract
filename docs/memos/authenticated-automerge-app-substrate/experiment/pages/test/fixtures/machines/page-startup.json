@@ -1,6 +1,6 @@
 {
   "machine": "page-startup",
-  "description": "How a Page host starts: a shared-Page check answers from the host record until a request needs the document, which boots the repo once inside blockConcurrencyWhile; a failed boot resets the object, and a boot whose blockConcurrencyWhile rejected while it ran is abandoned. Runs against worker/page-startup.mjs in worker/page-startup.test.mjs.",
+  "description": "How a Page host starts: a shared-Page check answers from the host record until a request needs the document, which boots the repo once inside blockConcurrencyWhile; a failed boot resets the object, and an object whose blockConcurrencyWhile rejected while its record read or boot ran is abandoned. Runs against worker/page-startup.mjs in worker/page-startup.test.mjs.",
   "states": ["loading", "metadata", "booting", "ready", "failed", "abandoned"],
   "events": ["loaded", "catalog", "document", "booted", "bootFailed", "reset"],
   "unreachable": [
@@ -10,7 +10,6 @@
     ["booting", "loaded", "the host record is read once, in the constructor"],
     ["ready", "loaded", "the host record is read once, in the constructor"],
     ["failed", "loaded", "the host record is read once, in the constructor"],
-    ["abandoned", "loaded", "the host record is read once, in the constructor"],
     ["loading", "booted", "only a running boot reports its end"],
     ["loading", "bootFailed", "only a running boot reports its end"],
     ["metadata", "booted", "only a running boot reports its end"],
@@ -141,7 +140,7 @@
         "state": { "name": "abandoned" },
         "effects": [],
         "response": { "serve": "failed" },
-        "rejected": "the runtime reset this object while it booted"
+        "rejected": "the runtime reset this object while it started"
       }
     },
     {
@@ -152,7 +151,7 @@
         "state": { "name": "abandoned" },
         "effects": [],
         "response": { "serve": "failed" },
-        "rejected": "the runtime reset this object while it booted"
+        "rejected": "the runtime reset this object while it started"
       }
     },
     {
@@ -162,20 +161,22 @@
       "expect": { "state": { "name": "abandoned" }, "effects": [] }
     },
     {
-      "label": "an abandoned boot that stops at its next write changes nothing",
+      "label": "an abandoned boot that ends at a checkpoint or a refused write changes nothing",
       "state": { "name": "abandoned" },
       "event": { "type": "bootFailed" },
       "expect": { "state": { "name": "abandoned" }, "effects": [] }
     },
     {
-      "label": "the constructor's read failed before any boot started",
+      "label": "the constructor's blockConcurrencyWhile rejected while the record read ran: the object is abandoned before any boot",
       "state": { "name": "loading" },
       "event": { "type": "reset" },
-      "expect": {
-        "state": { "name": "loading" },
-        "effects": [],
-        "rejected": "no boot was running when the object was reset"
-      }
+      "expect": { "state": { "name": "abandoned" }, "effects": [] }
+    },
+    {
+      "label": "a record read that finishes after the reset starts nothing",
+      "state": { "name": "abandoned" },
+      "event": { "type": "loaded", "start": "eager" },
+      "expect": { "state": { "name": "abandoned" }, "effects": [] }
     },
     {
       "label": "the boot had finished",
@@ -184,7 +185,7 @@
       "expect": {
         "state": { "name": "ready" },
         "effects": [],
-        "rejected": "no boot was running when the object was reset"
+        "rejected": "nothing was starting when the object was reset"
       }
     },
     {
@@ -194,7 +195,7 @@
       "expect": {
         "state": { "name": "failed" },
         "effects": [],
-        "rejected": "no boot was running when the object was reset"
+        "rejected": "nothing was starting when the object was reset"
       }
     },
     {
@@ -204,7 +205,7 @@
       "expect": {
         "state": { "name": "abandoned" },
         "effects": [],
-        "rejected": "no boot was running when the object was reset"
+        "rejected": "nothing was starting when the object was reset"
       }
     }
   ]

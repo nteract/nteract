@@ -52,13 +52,15 @@ async function hosts(t, options = {}) {
     const page = this;
     this.repo = {
       find: async () => handleOf(page, f.doc),
-      import: async (_bytes, { docId } = {}) =>
-        handleOf(page, docId === f.initial.documentId ? f.doc : f.commentsDoc),
+      import: async (_bytes, { docId } = {}) => {
+        await host.onImport?.(docId);
+        return handleOf(page, docId === f.initial.documentId ? f.doc : f.commentsDoc);
+      },
       async delete() {},
       async flush() {},
     };
     this.commentsUuid = commentsUuid;
-    await host.onBoot?.();
+    await host.onBoot?.(this);
   });
   /** A new object over this storage. `limit(call)` may return a promise that
    * rejects to end the `call`th blockConcurrencyWhile early (0 is the
@@ -652,6 +654,237 @@ test("a constructor boot the runtime gives up on is abandoned and writes nothing
     "the abandoned boot didn't write the record",
   );
   assert.deepEqual(h.reads, []);
+});
+
+const tick = () => new Promise((resolve) => setImmediate(resolve));
+/** Wait until `reached()`, at most 100 turns. */
+async function until(reached, label) {
+  for (let i = 0; i < 100 && !reached(); i++) await tick();
+  assert.ok(reached(), label);
+}
+/** Let a resumed boot and its held work run out. */
+async function drain(h) {
+  for (let i = 0; i < 20; i++) await tick();
+  while (h.f.tasks.length) await Promise.allSettled(h.f.tasks.splice(0));
+  for (let i = 0; i < 5; i++) await tick();
+}
+/** A constructor whose blockConcurrencyWhile the test ends, as celld's 30 s
+ * limit does. Returns the object and `giveUp()`. */
+function abandonable(h) {
+  let giveUp;
+  const page = h.cold({
+    limit: (call) => (call === 0 ? new Promise((_, reject) => (giveUp = reject)) : undefined),
+  });
+  return { page, giveUp: () => giveUp(limitError()) };
+}
+/** Hold the `nth` journal listing (`host/operation/`) until released. The
+ * first is the Page document's recovery, the second the comments'. */
+function holdJournalListing(h, nth) {
+  const list = h.f.storage.list;
+  let lists = 0;
+  let release;
+  const gate = new Promise((resolve) => (release = resolve));
+  h.f.storage.list = async function (options) {
+    if (options?.prefix?.startsWith("host/operation/") && ++lists === nth) await gate;
+    return list.call(this, options);
+  };
+  return { reached: () => lists >= nth, release };
+}
+
+test("an object abandoned during comments recovery writes nothing after the reset", async (t) => {
+  const h = await hosts(t);
+  // An older record: after comments recovery the boot writes its comments
+  // document name into host/document.
+  const { comments_doc: _named, ...unnamed } = h.f.initial;
+  await h.record(unnamed);
+  const held = holdJournalListing(h, 2);
+  const { page, giveUp } = abandonable(h);
+  await until(held.reached, "the boot reached comments recovery, past its checkpoint");
+  assert.equal(page.startup.name, "booting");
+  giveUp();
+  await assert.rejects(page.ready, /waited for too long/);
+  assert.equal(page.startup.name, "abandoned");
+  const before = structuredClone(h.f.storage.values);
+  held.release();
+  await drain(h);
+  assert.deepEqual(h.f.storage.values, before, "no write landed after the reset");
+  assert.equal((await h.f.storage.get("host/document")).comments_doc, undefined);
+});
+
+test("an abandoned object's conversion run writes nothing and leaves no retry armed", async (t) => {
+  const h = await hosts(t);
+  let runs = 0;
+  let releaseRun;
+  const firstRun = new Promise((resolve) => (releaseRun = resolve));
+  t.mock.method(Page.prototype, "convertPreservedOnce", async function () {
+    runs++;
+    if (runs === 1) await firstRun;
+    // The run's journal write, after the reset.
+    await this.ctx.storage.put("host/operation/internal-conversion", { pending: true });
+  });
+  // An unfinished migration: the conversion machine runs it during the boot.
+  h.onBoot = (page) => {
+    page.conversionIntent = { replayKeys: [] };
+  };
+  const { comments_doc: _named, ...unnamed } = h.f.initial;
+  await h.record(unnamed);
+  const { page, giveUp } = abandonable(h);
+  await until(() => runs === 1, "the boot awaits the conversion run");
+  giveUp();
+  await assert.rejects(page.ready, /waited for too long/);
+  assert.equal(page.startup.name, "abandoned");
+  const before = structuredClone(h.f.storage.values);
+  releaseRun();
+  await drain(h);
+  assert.deepEqual(h.f.storage.values, before, "no write landed after the reset");
+  assert.equal(page.conversionRetry, undefined, "no retry timer is armed");
+  // A later observation, as a retry timer armed before the reset would make,
+  // starts no run either.
+  page.observeConversion({ due: true });
+  await drain(h);
+  assert.equal(runs, 1, "and no run starts again");
+  assert.equal(page.conversionRetry, undefined);
+});
+
+test("an object abandoned during the creation commit leaves the intent for the new object", async (t) => {
+  const h = await hosts(t);
+  await h.f.storage.delete("host/document");
+  await h.f.storage.put("host/creation", { metadata: h.f.initial, bytes: A.save(h.f.doc()) });
+  // Hold the boot past its last checkpoint: the created document and its
+  // comments are imported, and the record write comes after the content
+  // time is restored.
+  const get = h.f.storage.get;
+  let releaseRestore;
+  const restored = new Promise((resolve) => (releaseRestore = resolve));
+  let reached = false;
+  h.f.storage.get = async function (key) {
+    if (key === CONTENT_ACTIVITY_KEY && !reached) {
+      reached = true;
+      await restored;
+    }
+    return get.call(this, key);
+  };
+  const { page, giveUp } = abandonable(h);
+  await until(() => reached, "the boot is restoring the created Page's content time");
+  giveUp();
+  await assert.rejects(page.ready, /waited for too long/);
+  const before = structuredClone(h.f.storage.values);
+  releaseRestore();
+  await drain(h);
+  assert.deepEqual(h.f.storage.values, before, "no write landed after the reset");
+  assert.equal(await h.f.storage.get("host/document"), undefined, "no record was committed");
+  assert.ok(await h.f.storage.get("host/creation"), "the intent is left for the new object");
+  // The new object commits it.
+  const next = h.cold();
+  await next.ready;
+  assert.equal(next.startup.name, "ready");
+  assert.equal((await h.f.storage.get("host/document")).pageId, pageId);
+  assert.equal(await h.f.storage.get("host/creation"), undefined);
+});
+
+test("an abandoned object can't put back a member the new object revoked", async (t) => {
+  const h = await hosts(t);
+  const { comments_doc: _named, ...unnamed } = h.f.initial;
+  await h.record(unnamed);
+  const held = holdJournalListing(h, 2);
+  const { page: old, giveUp } = abandonable(h);
+  await until(held.reached, "the old boot holds its record, with the member, in memory");
+  giveUp();
+  await assert.rejects(old.ready);
+  // The new object boots and revokes the member.
+  const next = h.cold();
+  await next.ready;
+  const revoke = await next.fetch(
+    h.f.request(h.f.tokens.owner, "/internal/access", {
+      action: "set_role",
+      principal: h.f.member,
+      role: null,
+      expected_revision: 1,
+      idempotency_key: "abandoned-revoke",
+    }),
+  );
+  assert.equal(revoke.status, 200, JSON.stringify(await revoke.clone().json()));
+  const revoked = await h.f.storage.get("host/document");
+  assert.equal(revoked.acl.members[h.f.member]?.role ?? "none", "none");
+  // The old boot resumes and reaches its host/document write.
+  held.release();
+  await drain(h);
+  assert.deepEqual(await h.f.storage.get("host/document"), revoked, "the revocation holds");
+  const check = h.cold();
+  await check.ready;
+  assert.equal((await h.check(check, "member")).status, 403);
+});
+
+test("a record read the runtime gives up on starts no boot when it finishes", async (t) => {
+  const h = await hosts(t);
+  // An older record boots in the constructor once read.
+  const { comments_doc: _named, ...unnamed } = h.f.initial;
+  await h.record(unnamed);
+  const get = h.f.storage.get;
+  let releaseRead;
+  const read = new Promise((resolve) => (releaseRead = resolve));
+  let reading = false;
+  h.f.storage.get = async function (key) {
+    if (key === "host/document" && !reading) {
+      reading = true;
+      await read;
+    }
+    return get.call(this, key);
+  };
+  const { page, giveUp } = abandonable(h);
+  await until(() => reading, "the constructor is reading the record");
+  giveUp();
+  await assert.rejects(page.ready, /waited for too long/);
+  assert.equal(page.startup.name, "abandoned");
+  const before = structuredClone(h.f.storage.values);
+  releaseRead();
+  await drain(h);
+  assert.equal(page.startup.name, "abandoned");
+  assert.equal(h.boots(), 0, "no boot started");
+  assert.deepEqual(h.f.storage.values, before);
+});
+
+test("a title whose mark write failed is stored, with the same time, by the next observation", async (t) => {
+  const h = await hosts(t);
+  // The stored title is an older one; the document says "Launch plan".
+  await h.f.storage.put("host/title-projection", {
+    title: "Old plan",
+    observed_at: observedAt,
+    keep: true,
+  });
+  const coldTitle = async () => {
+    const page = h.cold();
+    await page.ready;
+    const answer = await h.check(page, "member");
+    assert.equal(answer.status, 200);
+    return answer.body.title;
+  };
+  assert.equal(await coldTitle(), "Old plan");
+  const put = h.f.storage.put;
+  let failMark = true;
+  h.f.storage.put = async function (key, value) {
+    if (key === "host/title-projection/pending" && failMark) {
+      failMark = false;
+      throw Error("storage unavailable");
+    }
+    return put.call(this, key, value);
+  };
+  const page = h.cold();
+  await page.ready;
+  await page.documentReady();
+  assert.equal((await h.check(page, "member")).status, 200);
+  await drain(h);
+  const first = page.titleProjection;
+  assert.equal(first.title, "Launch plan");
+  assert.equal((await h.f.storage.get("host/title-projection")).title, "Old plan", "unstored");
+  assert.equal(await coldTitle(), "Old plan");
+  // The next request on the booted host projects the title again, and this
+  // time it is stored with its first observation's time.
+  assert.equal((await h.check(page, "member")).status, 200);
+  await drain(h);
+  assert.deepEqual(await h.f.storage.get("host/title-projection"), first);
+  assert.equal(await h.f.storage.get("host/title-projection/pending"), undefined);
+  assert.equal(await coldTitle(), "Launch plan");
 });
 
 test("a title whose projection mark can't be written isn't stored, so the next check boots", async (t) => {
