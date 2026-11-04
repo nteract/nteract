@@ -94,12 +94,17 @@ export class DocStore {
     return next;
   }
 
-  /** Chunk bytes over half the snapshot, or over the absolute floor. */
+  /**
+   * Chunk bytes over half the snapshot and over the floor. Compaction rewrites
+   * the whole document, so the threshold grows with it: each rewrite follows
+   * at least half a snapshot of new history, and a small document waits for
+   * the floor rather than rewriting on every write.
+   */
   wantsCompaction(id) {
     const m = this.#manifests.get(id);
     if (!m?.chunks.length) return false;
     const chunkBytes = m.chunks.reduce((n, c) => n + c.bytes, 0);
-    return chunkBytes > (m.snapshot?.bytes ?? 0) / 2 || chunkBytes > this.#compactMinBytes;
+    return chunkBytes > Math.max((m.snapshot?.bytes ?? 0) / 2, this.#compactMinBytes);
   }
 
   /** Replace the live set with one `A.save()` that covers every stored head. */

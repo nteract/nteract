@@ -505,3 +505,130 @@ test("a tab's new plain socket replaces its stale one and takes its connection s
     [{ stage: "native", reason: "plain_session_replaced", code: "access_changed" }],
   );
 });
+
+/** A frame-level browser socket on `page`, without a Repo. */
+function rawSocket(page, identity, { features = [...BUILD_FEATURES], senderId }) {
+  const link = framePipe();
+  const socket = new EventTarget();
+  socket.send = (bytes) => link.host.send(decodeForTest(bytes));
+  socket.close = (code, reason) => link.host.close(code, reason);
+  link.host.onMessage((frame) =>
+    socket.dispatchEvent(Object.assign(new Event("message"), { data: encodeForTest(frame) })),
+  );
+  link.host.onClose(() => socket.dispatchEvent(new Event("close")));
+  page.plain.accept(socket, identity, { features, senderId });
+  const frames = [];
+  link.client.onMessage((frame) => frames.push(frame));
+  return { client: link.client, frames };
+}
+
+const helloWith = (changes) => {
+  const m = A.decodeSyncMessage(A.generateSyncMessage(A.init(), A.initSyncState())[1]);
+  m.changes = changes;
+  return A.encodeSyncMessage(m);
+};
+
+test("every plain refusal logs page.sync_refused once, and its repeats once at close", async (t) => {
+  const f = await fixture(t);
+  const host = f.page();
+  assert.ok((await f.register(host)).ok);
+  const lines = [];
+  t.mock.method(console, "warn", (line) => lines.push(JSON.parse(line)));
+  const refusedLines = () => lines.filter((line) => line.event === "page.sync_refused");
+  const identity = {
+    principal: "user:anaconda-fixture:fixture-user",
+    displayName: "Fixture",
+    driver: "Browser",
+    credentialKind: "api-key",
+    canWrite: true,
+    expiresAt: Date.now() + 3_600_000,
+  };
+  const doc = treeHex(f.args.document_id);
+  const edit = (n) => A.getLastLocalChange(A.change(A.clone(host.handle.doc()), (d) => (d.n = n)));
+
+  // A build without the Page's schema features: fatal, closes the socket.
+  const stale = rawSocket(host, identity, { features: [], senderId: "b-stale" });
+  stale.client.send({ t: "sync", doc, m: helloWith([edit(1)]), r: 1 });
+  await until(() => stale.client.closed);
+  assert.deepEqual(refusedLines(), [
+    {
+      service: "nteract-pages-native",
+      event: "page.sync_refused",
+      page_id: pageId,
+      doc: "page",
+      reason: "schema_unsupported",
+      fatal: true,
+      code: "schema_unsupported",
+      status: 409,
+      close: 4426,
+      credential: "api-key",
+      timestamp: refusedLines()[0].timestamp,
+    },
+  ]);
+
+  // The conversion fence refuses each write, non-fatally: one line now, the
+  // repeats when the socket closes.
+  t.mock.method(host, "conversionWriteFence", () =>
+    Object.assign(new Error("Converting"), { reason: "preserved_markdown_converting" }),
+  );
+  const fenced = rawSocket(host, identity, { senderId: "b-fenced" });
+  for (let r = 1; r <= 3; r++) fenced.client.send({ t: "sync", doc, m: helloWith([edit(r)]), r });
+  await until(() => fenced.frames.filter((frame) => frame.t === "refused").length === 3);
+  assert.equal(refusedLines().length, 2);
+  assert.deepEqual(
+    (({ reason, fatal, repeats }) => ({ reason, fatal, repeats }))(refusedLines()[1]),
+    { reason: "temporarily_unavailable", fatal: false, repeats: undefined },
+  );
+  fenced.client.close();
+  await until(() => refusedLines().length === 3);
+  assert.deepEqual((({ reason, repeats }) => ({ reason, repeats }))(refusedLines()[2]), {
+    reason: "temporarily_unavailable",
+    repeats: 2,
+  });
+  for (const line of refusedLines()) assert.ok(!JSON.stringify(line).includes(identity.principal));
+});
+
+test("a browser connection logs its sync-round latency when it closes", async (t) => {
+  const f = await fixture(t);
+  const host = f.page();
+  assert.ok((await f.register(host)).ok);
+  const lines = [];
+  t.mock.method(console, "info", (line) => {
+    try {
+      lines.push(JSON.parse(line));
+    } catch {
+      /* Not a structured line. */
+    }
+  });
+  const identity = {
+    principal: "user:anaconda-fixture:fixture-user",
+    displayName: "Fixture",
+    driver: "Browser",
+    credentialKind: "oidc",
+    canWrite: true,
+    expiresAt: Date.now() + 3_600_000,
+  };
+  const browser = await connectBrowser(host, identity, "b-rounds");
+  try {
+    const handle = await browser.repo.find(f.args.document_id);
+    for (let n = 1; n <= 3; n++) {
+      handle.change((d) => (d.n = n));
+      await until(() => host.handle.doc().n === n);
+    }
+    assert.equal(lines.filter((line) => line.event === "page.sync_rounds").length, 0);
+  } finally {
+    await browser.repo.shutdown();
+  }
+  browser.link.client.close();
+  await until(() => lines.some((line) => line.event === "page.sync_rounds"));
+  const [record] = lines.filter((line) => line.event === "page.sync_rounds");
+  assert.equal(record.page_id, pageId);
+  assert.equal(record.credential, "oidc");
+  assert.ok(record.rounds >= 1 && record.rounds <= 3, `rounds ${record.rounds}`);
+  assert.ok(record.changes >= 3);
+  assert.equal(
+    Object.values(record.latency_ms_buckets).reduce((a, b) => a + b, 0),
+    record.rounds,
+  );
+  assert.ok(!JSON.stringify(record).includes(identity.principal));
+});

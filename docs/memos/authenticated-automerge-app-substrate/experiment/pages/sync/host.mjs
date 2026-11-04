@@ -20,6 +20,8 @@ import { RECEIVE_LIMITS, RECEIVE_OPEN, receiveStep } from "./receive-queue.mjs";
 //   5. policy.admit (comment rules for the comments document)
 //   6. persist: chunk, new claims and manifest in one saveMany
 //   7. adopt the preview, reply (the ack), fan out to the other connections
+//   8. compact when the chunks outgrow the snapshot. The frame is already
+//      stored and acked, so a compaction failure is reported, not refused
 //
 // A refusal leaves the live doc and every sync state untouched. Changes the
 // host already holds are filtered in step 3, so re-sending accepted history is
@@ -79,6 +81,11 @@ export const defaultPolicy = {
   /** A connection's first frame for `doc`; from now on it receives fan-out. */
   joined() {},
   refused() {},
+  /** A frame whose changes were stored and acked: `ms` from its arrival to
+   * the ack, `waitMs` of that in the document's queue. */
+  synced() {},
+  /** Compaction after an ack failed; the frame's history is already stored. */
+  compactionFailed() {},
 };
 
 export class SyncHost {
@@ -87,7 +94,14 @@ export class SyncHost {
   #reserved = new Map();
   #docs = new Map();
   #conns = new Set();
-  stats = { admitted: 0, refused: 0, stripped: 0, compactions: 0, freed: 0 };
+  stats = {
+    admitted: 0,
+    refused: 0,
+    stripped: 0,
+    compactions: 0,
+    compactionFailures: 0,
+    freed: 0,
+  };
 
   constructor({ bytes, policy = {}, hostId = "pages-host", now = () => Date.now(), limits = {} }) {
     this.#bytes = bytes;
@@ -219,8 +233,9 @@ export class SyncHost {
     if (denied) return this.#refuse(conn, doc, frame, denied);
     if (frame.t === "eph") return this.#ephemeral(conn, doc, frame);
     if (frame.t !== "sync") return;
+    const received = this.now();
     if (conn.trusted) {
-      this.#run(doc, () => this.#sync(conn, doc, frame)).catch((error) =>
+      this.#run(doc, () => this.#sync(conn, doc, frame, received)).catch((error) =>
         this.#refuse(conn, doc, frame, error),
       );
       return;
@@ -245,7 +260,7 @@ export class SyncHost {
     const settle = () => {
       conn.receive = receiveStep(conn.receive, { type: "settle", bytes }, this.limits).state;
     };
-    this.#run(doc, () => this.#sync(conn, doc, frame)).then(settle, (error) => {
+    this.#run(doc, () => this.#sync(conn, doc, frame, received)).then(settle, (error) => {
       settle();
       this.#refuse(conn, doc, frame, error);
     });
@@ -278,7 +293,8 @@ export class SyncHost {
     return doc.loading;
   }
 
-  async #sync(conn, doc, frame) {
+  async #sync(conn, doc, frame, received) {
+    const started = this.now();
     let live = await this.#live(doc);
     if (conn.closed) return;
     const denied = !conn.trusted && this.policy.denied(conn, this.now());
@@ -288,13 +304,14 @@ export class SyncHost {
     let message = frame.m;
     const decoded = message ? A.decodeSyncMessage(message) : null;
     let replaced = null;
+    const round = { changes: 0, bytes: 0 };
     if (decoded?.changes.length) {
       if (!conn.trusted && !this.policy.canWrite(conn, doc)) {
         this.stats.stripped += decoded.changes.length;
         decoded.changes = [];
         message = A.encodeSyncMessage(decoded);
       } else {
-        const next = await this.#admit(conn, doc, live, decoded.changes);
+        const next = await this.#admit(conn, doc, live, decoded.changes, round);
         if (next) [replaced, live] = [live, next];
       }
     }
@@ -312,10 +329,37 @@ export class SyncHost {
       heads: A.getHeads(live),
       has: true,
     });
+    if (round.changes)
+      try {
+        const acked = this.now();
+        this.policy.synced(conn, doc, {
+          ms: acked - received,
+          waitMs: started - received,
+          ...round,
+        });
+      } catch {
+        /* Reporting must not stop the sync. */
+      }
     this.#fanOut(doc, conn);
-    if (this.store.wantsCompaction(doc.id)) {
+    await this.#compact(doc);
+  }
+
+  /**
+   * Fold the chunks into one snapshot, after the ack. The frame's history is
+   * already stored, so a failure is reported and left for the next write.
+   */
+  async #compact(doc) {
+    if (!this.store.wantsCompaction(doc.id)) return;
+    try {
       await this.store.compact(doc.id, A.save(doc.live), A.getHeads(doc.live));
       this.stats.compactions++;
+    } catch (error) {
+      this.stats.compactionFailures++;
+      try {
+        this.policy.compactionFailed(doc, error);
+      } catch {
+        /* Reporting must not fail the frame. */
+      }
     }
   }
 
@@ -323,7 +367,7 @@ export class SyncHost {
    * Steps 3-6. Returns the admitted doc, or null when nothing was new. The
    * preview is a clone of `live`; it is freed unless it is returned.
    */
-  async #admit(conn, doc, live, changes) {
+  async #admit(conn, doc, live, changes, round) {
     const clone = A.clone(live);
     let preview;
     try {
@@ -334,14 +378,14 @@ export class SyncHost {
     }
     let admitted;
     try {
-      admitted = await this.#admitPreview(conn, doc, live, preview);
+      admitted = await this.#admitPreview(conn, doc, live, preview, round);
       return admitted;
     } finally {
       if (admitted !== preview) this.#free(preview);
     }
   }
 
-  async #admitPreview(conn, doc, live, preview) {
+  async #admitPreview(conn, doc, live, preview, round) {
     const heads = A.getHeads(live);
     if (A.getMissingDeps(preview, []).length)
       throw new Refusal("missing_dependencies", "A change arrived before its dependencies");
@@ -371,6 +415,8 @@ export class SyncHost {
       throw error;
     }
     this.stats.admitted += fresh.length;
+    round.changes = fresh.length;
+    round.bytes = fresh.reduce((n, c) => n + c.byteLength, 0);
     // Before the reply and fan-out, so a host message it sends (who wrote
     // these changes) reaches each reader ahead of the changes themselves.
     try {

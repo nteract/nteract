@@ -1460,7 +1460,11 @@ manifest per document ([sync/doc-store.mjs](sync/doc-store.mjs)): IndexedDB in
 the browser ([sync/idb-byte-store.mjs](sync/idb-byte-store.mjs)) and the Page's
 Durable Object storage under `plain/` on the host. Every write is one
 `saveMany` that puts the manifest last, so a manifest never names a missing
-object.
+object. A document compacts into one snapshot once its chunks are over both
+half the snapshot and 64 KiB, so a rewrite of a large Page follows at least
+half its size in new history. The host compacts after the ack; a failure is
+logged (`request.failed`, stage `plain-compaction`) and the next write tries
+again.
 
 On the host, [worker/plain-sync.mjs](worker/plain-sync.mjs) runs a `SyncHost`
 ([sync/host.mjs](sync/host.mjs)). Browsers connect to it directly; the host's
@@ -1490,6 +1494,12 @@ stored:
 A refusal leaves the live document and every connection's sync state as they
 were. The browser gets `{ t: "refused" }` and, when fatal, a close with the
 admission code (`schema_unsupported`, `access_changed`, `sign_in_required`).
+Each browser refusal logs `page.sync_refused` with its reason (`actor_claimed`,
+`schema_unsupported`, `history_capacity`, `receive_queue_full`, …), the first
+per connection and reason at once and its repeats counted into one line at
+close. Each connection also logs `page.sync_rounds`, its sync-round latency
+from frame arrival to ack, summarised every 256 rounds and at close rather
+than per keystroke ([worker/plain-sync-log.mjs](worker/plain-sync-log.mjs)).
 
 Attribution is host-attested: an actor binds to the first authenticated
 principal that sends a change with it. With no signatures, the host can't tell
