@@ -72,6 +72,7 @@ import { closeTrashedSessions, moveToTrashError, restorePage } from "./trash.mjs
 import { listAllPages } from "./page-list.mjs";
 import { listingCache } from "./listing-cache.mjs";
 import { PickerWalk } from "./picker-walk.mjs";
+import { SignedOutRecovery } from "./signed-out-recovery.mjs";
 import { ProjectList } from "./project-list.mjs";
 import { quotaNotice } from "./quota.mjs";
 import { AppearanceControls } from "./AppearanceControls.jsx";
@@ -228,6 +229,9 @@ function App() {
     editor.module ?? {};
   const auth = useRef(null),
     authentication = useRef(null),
+    // Where the installed Page is (projects.mjs watchPageLocation), asked
+    // until found; stopped when the Page is left or replaced.
+    placementWatch = useRef(null),
     catalogRevision = useRef(0),
     indexVisits = useRef(0),
     // What this render shows, for handlers bound at mount (popstate).
@@ -354,6 +358,8 @@ function App() {
     const leaving = host.current;
     if (leaving?.hidden) listingCache.forget(leaving.pageId);
     else if (leaving?.doc) listingCache.retitle(leaving.pageId, leaving.doc.title);
+    placementWatch.current?.stop();
+    placementWatch.current = null;
     host.release({ ...options, onError: showError });
     resetDocumentUI();
   }
@@ -371,7 +377,8 @@ function App() {
     // A Project's home Page also lists the Project's Pages. A Page created in
     // this tab isn't on the server until it registers, so the location is
     // asked for again as the session registers and connects.
-    const location = watchPageLocation(next, {
+    placementWatch.current?.stop();
+    const watch = watchPageLocation(next, {
       locate: () => pageLocation(tool, next.pageId),
       current: () => host.current === next,
       onFound: (value) => {
@@ -385,6 +392,7 @@ function App() {
           );
       },
     });
+    placementWatch.current = watch;
     const listRecoveries = () =>
       void next
         .listRecoveries()
@@ -413,7 +421,7 @@ function App() {
     next.subscribe(() => {
       if (host.current === next) {
         paint((n) => n + 1);
-        location.changed();
+        watch.changed();
         if (next.accessReloadRequired && !next.recoveryPending) void reloadAccess(next);
         if (next.hidden && !hiding) {
           hiding = true;
@@ -743,29 +751,23 @@ function App() {
       },
     });
     auth.current = maintenance;
-    // A tool call refused as signed out: what this tab remembers for the
-    // account goes, and the session check decides who is signed in now. When
-    // it answers with the same account, the account's Projects are asked for
-    // again. One recovery runs at a time, and a 401 during it (its own
-    // list_projects, say) starts no other, so a server that keeps refusing
-    // tool calls can't loop the tab.
-    let recovering = false;
+    // A tool call refused as signed out (signed-out-recovery.mjs): what
+    // this tab remembers for the account goes at once, and the session check
+    // decides who is signed in now. When it answers with the same account,
+    // the account's Projects are asked for again. One check runs at a time,
+    // a refusal during it runs it once more, and reruns are capped, so a
+    // server that keeps refusing tool calls can't loop the tab.
+    const recovery = new SignedOutRecovery({
+      forget: forgetAccountData,
+      check: async () => {
+        const before = authentication.current?.identity?.principal ?? null;
+        await maintenance.refresh();
+        const now = authentication.current?.identity?.principal ?? null;
+        if (alive && now && now === before) await projectList.request(now, { fresh: true });
+      },
+    });
     const stopSignedOut = observeSignedOut(() => {
-      if (!alive) return;
-      forgetAccountData();
-      if (recovering) return;
-      recovering = true;
-      const before = authentication.current?.identity?.principal ?? null;
-      void maintenance
-        .refresh()
-        .then(() => {
-          const now = authentication.current?.identity?.principal ?? null;
-          if (alive && now && now === before) return projectList.request(now, { fresh: true });
-        })
-        .catch(() => {})
-        .finally(() => {
-          recovering = false;
-        });
+      if (alive) recovery.refused();
     });
     const onPopState = () => {
       if (authentication.current?.identity) followRoute();
@@ -779,9 +781,11 @@ function App() {
     return () => {
       alive = false;
       stopSignedOut();
+      recovery.stop();
       maintenance.stop();
       window.removeEventListener("popstate", onPopState);
       catalogRevision.current++;
+      placementWatch.current?.stop();
       host.navigate();
       void host.close(host.current);
     };
@@ -1033,6 +1037,11 @@ function App() {
       }
       if (host.current !== moving) return;
       setPlacement(where);
+      // The account may have changed while read_page was in flight.
+      if (moving.identity.principal !== authentication.current?.identity?.principal) {
+        setError("Sign in with this Page's original account to move it.");
+        return;
+      }
     }
     if (where.home) {
       setError("A Project's home Page stays with its Project.");

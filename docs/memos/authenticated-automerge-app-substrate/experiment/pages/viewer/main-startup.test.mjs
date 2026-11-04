@@ -593,6 +593,7 @@ test("navigating away and back to the Page doesn't bring the boot preview back",
 // What the shell remembers for an account (the library's first pages and the
 // account's Projects) and the edits that change it, through the real shell.
 const { BehaviorSubject } = await import("rxjs");
+const { RECOVERY_RERUNS } = await import("./signed-out-recovery.mjs");
 const { createElement } = await import("react");
 const PLAN = "2b160b47-6df1-4983-81eb-489ca5a26812";
 const PROJECT = "prj_3b160b47-6df1-4983-81eb-489ca5a26812";
@@ -639,6 +640,13 @@ function fakeSession(pageId, principal, title, { draft = false } = {}) {
     rename(next) {
       doc.title = next;
       for (const listener of listeners) listener();
+    },
+    // Another account's session answer leaves this Page waiting to sign in
+    // again, as a real session does.
+    acceptAuthentication(result) {
+      if (result.identity?.principal === principal) return true;
+      this.authRequired = true;
+      return false;
     },
     register() {
       this.localPage = { ...this.localPage, registered: true };
@@ -1095,10 +1103,87 @@ test("a 401 with the Browse picker open closes it and stops, signed in or out", 
     for (let i = 0; i < 20; i++) await settle();
     const made = listings(app.requests, from);
     const label = signsOut ? "signed out" : "signed in";
+    // The walk's 401 starts one recovery. Each of its list_projects is
+    // refused too, which reruns it up to the cap and then stops.
     assert.ok(made.list_pages <= 2, `${label}: ${made.list_pages} list_pages`);
-    assert.ok(made.list_projects <= 2, `${label}: ${made.list_projects} list_projects`);
+    assert.ok(
+      made.list_projects <= 1 + RECOVERY_RERUNS,
+      `${label}: ${made.list_projects} list_projects`,
+    );
     assert.equal(document.querySelector("dialog.page-picker[open]"), null, `${label}: closed`);
     if (signsOut)
       assert.equal(document.querySelector("h1")?.textContent, "A place to write together.");
   }
+});
+
+test("a 401 during recovery still ends with the account's Projects shown", async (t) => {
+  cleanUp(t);
+  history.replaceState(null, "", "/pages");
+  const server = { refusePages: false, projectRefusals: 0 };
+  const refused = () =>
+    Response.json({ error: "Sign in required", code: "unauthenticated" }, { status: 401 });
+  const app = await boot(signedIn, {
+    list_pages: () =>
+      server.refusePages
+        ? refused()
+        : { pages: [{ page_id: ROADMAP, title: "Roadmap" }], next_cursor: null, principal: "one" },
+    // Recovery's own list_projects is refused once, which resets the list
+    // under it; the rearmed recovery asks again.
+    list_projects: () =>
+      server.projectRefusals-- > 0
+        ? refused()
+        : {
+            projects: [{ project_id: PROJECT, title: "Launch", home_page_id: ROADMAP }],
+            next_cursor: null,
+            principal: "one",
+          },
+  });
+  await settle();
+  await leaveForPage(PLAN);
+  server.refusePages = true;
+  // Back's own list_projects and recovery's first one are refused.
+  server.projectRefusals = 2;
+  const projects = toolCalls(app, "list_projects");
+  history.back();
+  await settle();
+  await settle();
+  assert.equal(toolCalls(app, "list_projects"), projects + 3, "Back, recovery, and its rerun");
+  const menu = await until(() =>
+    document.querySelector('button[aria-haspopup="menu"][aria-label^="Project: "]'),
+  );
+  await click(menu);
+  await settle();
+  const choices = [...document.querySelectorAll('[role="menuitemradio"] .library-menu-label')].map(
+    (label) => label.textContent,
+  );
+  assert.ok(choices.includes("Launch"), `the Projects show: ${choices.join(", ")}`);
+});
+
+test("Move to… opens nothing if the account changed while read_page was asked", async (t) => {
+  cleanUp(t);
+  globalThis.__editor = editorSurface;
+  const who = { current: "one" };
+  history.replaceState(null, "", "/pages");
+  const placed = deferredAnswer();
+  await boot(accountSession(who), {
+    ...gatedCatalog({}, { who, pages: ROADMAP_AND_PLAN }),
+    read_page: () => placed.promise,
+  });
+  await settle();
+  globalThis.__openPage = (id) => Promise.resolve(fakeSession(id, "one", "Plan"));
+  await openRow("Plan");
+  await click(await until(() => pageAction("Move to…")));
+  // Move to… waits on read_page; meanwhile another window signs in as Bob.
+  who.current = "bob";
+  await sessionCheck();
+  // Plain timers, not act(): an opened dialog's loads must not be able to
+  // hold this test past its assertion.
+  placed.resolve({ page_id: PLAN, project_id: null, home: false, breadcrumbs: [] });
+  for (let i = 0; i < 10; i++) await new Promise((resolve) => setTimeout(resolve, 10));
+  const dialog = document.querySelector(".move-dialog");
+  // A dialog opened by mistake is closed first, so its loads can't keep the
+  // file running past the failure.
+  if (dialog) await click(dialog.querySelector(`button[aria-label^="Close"]`));
+  assert.equal(dialog, null, "no dialog for Bob");
+  assert.match(document.body.textContent, /Sign in with this Page's original account to move it\./);
 });

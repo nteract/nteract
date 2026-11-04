@@ -3,9 +3,13 @@ import { test } from "node:test";
 import { readPageRoute, projectPath, writePageRoute } from "../shared/routes.mjs";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
+import { runTable } from "../shared/machine-test.mjs";
 import {
+  LOCATION_REJECT,
   LOCATION_RETRIES,
   LOCATION_RETRY_MS,
+  pageLocationMachine,
+  pageLocationSpec,
   listProjectPages,
   projectTree,
   watchPageLocation,
@@ -311,4 +315,139 @@ test("a reconnect asks for a Page's location again, and a transient failure retr
   asks[5].resolve({ home: false });
   await settle();
   assert.deepEqual(found, [{ home: false }]);
+});
+
+test("the page-location table runs through the pure machine", async () => {
+  const waiting = (asked = "true:1", tries = 0) => ({ name: "waiting", asked, tries });
+  const asking = (asked = "true:1", tries = 0) => ({ name: "asking", asked, tries });
+  const backoff = (asked = "true:1", tries = 0) => ({ name: "backoff", asked, tries });
+  const found = { name: "found" };
+  const stopped = { name: "stopped" };
+  const changed = (reach = "true:2") => ({ type: "changed", reach });
+  const failed = (reach = "true:1", transient = true) => ({ type: "failed", reach, transient });
+  const located = { type: "located" };
+  const retry = { type: "retry" };
+  const stop = { type: "stop" };
+  const stays = (state, reason) => ({ state, effects: [], rejected: reason });
+  const locate = [{ type: "locate" }];
+  const rows = [
+    {
+      label: "the first ask, or a change, asks",
+      case: "new",
+      state: waiting(null),
+      event: changed("false:0"),
+      expect: { state: asking("false:0"), effects: locate },
+    },
+    {
+      case: "same",
+      state: waiting(),
+      event: changed("true:1"),
+      expect: stays(waiting(), LOCATION_REJECT.same),
+    },
+    { state: waiting(), event: located, expect: stays(waiting(), LOCATION_REJECT.idle) },
+    { state: waiting(), event: failed(), expect: stays(waiting(), LOCATION_REJECT.idle) },
+    { state: waiting(), event: retry, expect: stays(waiting(), LOCATION_REJECT.idle) },
+    { state: waiting(), event: stop, expect: { state: stopped, effects: [] } },
+    { state: asking(), event: changed(), expect: stays(asking(), LOCATION_REJECT.asking) },
+    {
+      label: "an answer is final",
+      state: asking(),
+      event: located,
+      expect: { state: found, effects: [{ type: "found" }] },
+    },
+    {
+      label: "a failure after a change asks again at once",
+      case: "moved",
+      state: asking("true:1", 2),
+      event: failed("true:2", false),
+      expect: { state: asking("true:2"), effects: locate },
+    },
+    {
+      label: "a transient failure waits 2 s, then 4, then 8",
+      case: "retry",
+      state: asking("true:1", 1),
+      event: failed(),
+      expect: {
+        state: backoff("true:1", 1),
+        effects: [{ type: "schedule", ms: 2 * LOCATION_RETRY_MS }],
+      },
+    },
+    {
+      label: "a lasting failure, or one past the retries, waits for a change",
+      case: "wait",
+      state: asking("true:1", LOCATION_RETRIES),
+      event: failed(),
+      expect: { state: waiting("true:1", LOCATION_RETRIES), effects: [] },
+    },
+    { state: asking(), event: retry, expect: stays(asking(), LOCATION_REJECT.timer) },
+    { state: asking(), event: stop, expect: { state: stopped, effects: [] } },
+    {
+      label: "a change during a backoff asks now and drops the timer",
+      case: "new",
+      state: backoff("true:1", 2),
+      event: changed(),
+      expect: { state: asking("true:2"), effects: [{ type: "cancelTimer" }, ...locate] },
+    },
+    {
+      case: "same",
+      state: backoff(),
+      event: changed("true:1"),
+      expect: stays(backoff(), LOCATION_REJECT.same),
+    },
+    { state: backoff(), event: located, expect: stays(backoff(), LOCATION_REJECT.idle) },
+    { state: backoff(), event: failed(), expect: stays(backoff(), LOCATION_REJECT.idle) },
+    {
+      label: "the retry asks under the same reachability",
+      state: backoff("true:1", 1),
+      event: retry,
+      expect: { state: asking("true:1", 2), effects: locate },
+    },
+    {
+      label: "leaving during a backoff drops the timer",
+      state: backoff(),
+      event: stop,
+      expect: { state: stopped, effects: [{ type: "cancelTimer" }] },
+    },
+    ...[found, stopped].flatMap((done) =>
+      [changed(), located, failed(), retry, stop].map((event) => ({
+        state: done,
+        event,
+        expect: stays(done, LOCATION_REJECT.done),
+      })),
+    ),
+  ];
+  assert.deepEqual(await runTable(pageLocationMachine, rows), {
+    rows: rows.length,
+    pairs: pageLocationSpec.states.length * pageLocationSpec.events.length,
+    unreachable: 0,
+    cases: 7,
+  });
+});
+
+test("a watcher stopped during a backoff never asks again", async () => {
+  const settle = () => new Promise((resolve) => setImmediate(resolve));
+  const timers = [];
+  let asks = 0;
+  const watch = watchPageLocation(
+    { connection: {}, connectionGeneration: 1 },
+    {
+      locate: () => {
+        asks++;
+        return Promise.reject(Object.assign(Error("Unavailable"), { status: 503 }));
+      },
+      onFound: () => assert.fail("never found"),
+      current: () => true,
+      schedule: (fn) => {
+        const timer = { fn, cancelled: false };
+        timers.push(timer);
+        return () => (timer.cancelled = true);
+      },
+    },
+  );
+  await settle();
+  assert.equal(watch.state().name, "backoff");
+  watch.stop();
+  assert.equal(timers[0].cancelled, true);
+  assert.equal(watch.state().name, "stopped");
+  assert.equal(asks, 1);
 });

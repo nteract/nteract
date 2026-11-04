@@ -2063,7 +2063,8 @@ request per account shared by the Project filter, the Browse picker, Move to…
 and the first page of `/projects`; a request made while one is in flight joins
 it ([project-list.mjs](viewer/project-list.mjs)), and an answer that names
 another account (`principal`) never shows as this one's; one that names no
-account, from an older API, shows until the next request. The first page of each view
+account, from an older API, shows but isn't kept past a failed refresh, just
+as the listing cache never stores a page that names no account. The first page of each view
 this tab has shown stays in memory, keyed by account and request
 ([listing-cache.mjs](viewer/listing-cache.mjs)), so a return visit, Back from
 a Page included, paints it while the listing asks again. A page is kept only
@@ -2071,9 +2072,12 @@ under the account that answered it (`list_pages` returns its `principal`),
 and paints for 5 minutes after it was shown: after that, shared titles wait
 for their Page hosts again and the view shows Loading…. A refresh that fails
 lists nothing rather than the remembered rows. The cache and Projects are
-cleared on sign-out, account change and any tool call refused with a 401,
-which also rechecks the session and, if the same account answers, asks for
-its Projects again. The cache overlays a rename this tab saw, forgets a Page
+cleared on sign-out, account change and any tool call refused with a 401.
+A 401 also starts a recovery
+([signed-out-recovery.mjs](viewer/signed-out-recovery.mjs)): it rechecks the
+session and, if the same account answers, asks for its Projects again. One
+recovery runs at a time; a 401 during it runs it once more when it settles,
+at most twice in a row, so a server that keeps refusing can't loop the tab. The cache overlays a rename this tab saw, forgets a Page
 moved to Trash or hidden by its host, drops the views of the account's own
 Pages after a create, move or restore, and is never persisted. Each patch
 moves the cache's revision, and a reply whose request began under an older
