@@ -231,6 +231,7 @@ const dataframeTable = Widget.define({
   render(attrs, editor) {
     const frame = dataframeFrame(attrs);
     leaveGridOnEscape(editor, frame.dom);
+    keepArrowsInGrid(frame.dom);
     mounted.set(
       frame.dom,
       dataframeLifecycle({
@@ -316,6 +317,42 @@ function leaveGridOnEscape(editor, frame) {
     editor.focus();
     editor.dispatch({ selection: GardSelection.node(block.pos, block.node) });
   });
+}
+
+/** How far ArrowLeft and ArrowRight scroll the grid sideways, in pixels. */
+export const GRID_ARROW_STEP = 40;
+
+/**
+ * ArrowLeft and ArrowRight inside the grid scroll it sideways. Sift's grid
+ * body handles the vertical keys itself (and prevents their default) but not
+ * these two. Left to the browser, an unhandled arrow inside the editor's
+ * contenteditable moves the DOM caret out of the table, and Wordgard follows
+ * it through selectionchange. Keys Sift took (a column header moving between
+ * headers, say) are left alone.
+ */
+function keepArrowsInGrid(frame) {
+  frame.addEventListener("keydown", (event) => {
+    if (event.defaultPrevented) return;
+    if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+    const canvas = event.target?.closest?.(".wordgard-dataframe-canvas");
+    if (!canvas) return;
+    event.preventDefault();
+    const scroller = horizontalScroller(event.target, canvas);
+    if (scroller)
+      scroller.scrollLeft += event.key === "ArrowRight" ? GRID_ARROW_STEP : -GRID_ARROW_STEP;
+  });
+}
+
+/** The element that scrolls the grid sideways: the focused element or the
+ * first descendant whose content is wider than it, else the nearest such
+ * ancestor inside the canvas. */
+function horizontalScroller(target, canvas) {
+  const wide = (node) => node.scrollWidth > node.clientWidth;
+  if (wide(target)) return target;
+  for (const node of target.querySelectorAll("*")) if (wide(node)) return node;
+  for (let node = target.parentElement; node && canvas.contains(node); node = node.parentElement)
+    if (wide(node)) return node;
+  return null;
 }
 
 /**

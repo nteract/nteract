@@ -332,12 +332,26 @@ try {
     )
     .toBe(true);
   await owner.keyboard.press("ArrowDown");
+  // Sideways arrows stay in the grid: focus doesn't leave the canvas, so
+  // Escape below still returns to the table.
+  await owner.keyboard.press("ArrowRight");
+  await owner.keyboard.press("ArrowLeft");
+  assert.equal(
+    await dropped.evaluate((frame) =>
+      frame.querySelector(".wordgard-dataframe-canvas")?.contains(document.activeElement),
+    ),
+    true,
+    "ArrowLeft/ArrowRight left the grid",
+  );
+  await expect(selected(dropped)).toHaveCount(1);
   await owner.keyboard.press("Escape");
   await expect(selected(dropped)).toHaveCount(1);
   await expect
     .poll(() => dropped.evaluate((frame) => frame.closest("wg-content") === document.activeElement))
     .toBe(true);
-  complete("Enter enters the grid; Escape returns to the table selected");
+  complete(
+    "Enter enters the grid; sideways arrows stay in it; Escape returns to the table selected",
+  );
 
   await other.locator(".wordgard-dataframe-title").click();
   await expect(selected(other)).toHaveCount(1);
