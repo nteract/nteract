@@ -63,6 +63,7 @@ import {
   viewerReconnectMachine,
 } from "./reconnect-machine.mjs";
 import { commentsOpenMachine } from "./comments-open-machine.mjs";
+import { storageSwitchMachine } from "./storage-switch-machine.mjs";
 import { fullStatus, overlayStatus, viewerSyncStatusMachine } from "./sync-status-machine.mjs";
 import {
   acknowledgedHeads,
@@ -140,6 +141,13 @@ export const TRASHED_COPY =
 export const DENIED_COPY =
   "You no longer have access to this Page. Your local copy is kept on this device.";
 export const PAGE_DELETED = "This Page was deleted.";
+/** The edit pause while a refused plain draft moves to native storage. */
+const STORAGE_SWITCH = "storage-switch";
+export const STORAGE_SWITCHING = "This draft is moving to new storage. Try again in a moment.";
+export const STORAGE_SWITCH_FAILED =
+  "This draft couldn't move to new storage. Reload to keep editing; it's saved on this device.";
+export const STORAGE_REFUSED_AGAIN =
+  "The server refused this draft's storage again. Try again to register it.";
 /** Stands in for the Markdown of a copy that couldn't be projected. */
 export const MARKDOWN_UNAVAILABLE =
   "This copy couldn't be shown as Markdown. Its Automerge snapshots are in this download.";
@@ -358,7 +366,8 @@ export class PageSession {
   socketOutcomes = new WeakMap();
   socketAdmittedAt = new WeakMap();
   // Reasons edits are held while the session keeps syncing: the reload gate's
-  // "reload" and the build floor's "protocol". They are not lifecycle phases.
+  // "reload", the build floor's "protocol" and a draft's "storage-switch".
+  // They are not lifecycle phases.
   editPauses = new Set();
   /** The schema gate (schemaGateStep in model/schema-features.mjs):
    * `editable: false` when the Page is stamped with a feature this build
@@ -378,6 +387,8 @@ export class PageSession {
   reconnect$ = new Store(viewerReconnectMachine.initial);
   // Opening the comments document (comments-open-machine.mjs).
   commentsOpen$ = new Store(commentsOpenMachine.initial);
+  // Moving a refused plain draft to native storage (storage-switch-machine.mjs).
+  storageSwitch$ = new Store(storageSwitchMachine.initial);
   /** What the status line says about receipts and the connection (see
    * sync-status-machine.mjs). `status` renders it with the phase's pauses. */
   sync$ = new Store(viewerSyncStatusMachine.initial);
@@ -1985,33 +1996,123 @@ export class PageSession {
    * (`record_storage_unsupported`): its flag is off, or went off after this
    * tab read the session. The refusal recorded nothing, so the draft moves to
    * a native replica under the same Page and document IDs, with every local
-   * edit, and registers without `record_storage` under fresh retry authority.
-   * The checkpoint is written first: a reload before the move finishes opens
-   * the plain draft again and repeats it. */
-  async recreateNativeDraft() {
-    const registration = this.localPage?.registration;
-    if (this.recordStorage !== "automerge" || !this.handle || !registration?.record_storage)
-      throw Error("This host refused the Page's storage");
-    await this.persistLocal();
+   * edit, and registers without `record_storage` under fresh retry authority
+   * (storage-switch-machine.mjs). Resolves to the settled switch state and
+   * the error that ended it, if any. */
+  moveDraftToNative() {
+    return this.#switchStorage({ type: "refused", storage: this.recordStorage ?? "native" });
+  }
+  /** Step the storage switch from `event` until it settles, running each
+   * effect at the edge. A working state has one step; its result is the next
+   * event. A session that closed meanwhile sends `close` instead. */
+  async #switchStorage(event) {
+    let error;
+    for (let next = event; next; ) {
+      const result = storageSwitchMachine.step(this.storageSwitch$.snapshot(), next);
+      if (result.rejected) break;
+      this.storageSwitch$.update(() => result.state);
+      next = undefined;
+      for (const effect of result.effects) {
+        const work = this.#storageSwitchEffect(effect);
+        if (!work) continue;
+        next = await work.then(
+          (done) => done,
+          (cause) => {
+            error = cause;
+            return { type: "failed" };
+          },
+        );
+        if (!this.alive) next = { type: "close" };
+      }
+    }
+    return { state: this.storageSwitch$.snapshot(), error };
+  }
+  #storageSwitchEffect(effect) {
+    switch (effect.type) {
+      case "pause":
+        this.pauseEdits(STORAGE_SWITCH);
+        return;
+      case "resume":
+        this.pauseEdits(STORAGE_SWITCH, false);
+        return;
+      case "deletePlain":
+        try {
+          globalThis.indexedDB?.deleteDatabase(effect.database);
+        } catch {}
+        return;
+      case "reloadRequired":
+        this.problem = STORAGE_SWITCH_FAILED;
+        this.emit();
+        return;
+      case "strip":
+        return this.#recordNativeRegistration().then(() => ({ type: "stripped" }));
+      case "checkpoint":
+        return this.persistLocal().then(() => ({ type: "checkpointed" }));
+      case "move":
+        return this.#openNativeReplica().then((database) => ({ type: "moved", database }));
+      case "record":
+        return this.#recordNativeRegistration().then(() => ({ type: "recorded" }));
+    }
+  }
+  /** Close the plain replica, keeping its database, and import the draft into
+   * a native one under the same document ID. Edits are paused, so the
+   * history read here is final. The handle is replaced only once the native
+   * one holds it, so the Page keeps rendering. Returns the plain database. */
+  async #openNativeReplica() {
+    if (!this.handle || this.recordStorage !== "automerge")
+      throw Error("This draft has no plain replica to move");
+    const epoch = this.#localEpoch;
     const documentId = this.handle.documentId;
     const history = A.save(this.doc);
-    this.handle = undefined;
-    await this.switchRecordStorage("native");
-    if (!this.alive) return;
-    this.handle = await this.repo.import(history, { docId: documentId });
-    await this.repo.flush();
-    this.handle.on("change", (event) => this.receiveChange(event));
-    this.handle.on("ephemeral-message", (event) => this.ephemeral(event));
+    const plain = { repo: this.repo, backend: this.backend, storage: this.storage };
+    const database = this.databaseName;
+    // From here this move owns the plain replica: a release meanwhile finds
+    // nothing to close.
+    this.repo = this.backend = this.storage = undefined;
+    await this.disconnectSockets();
+    // The plain replica stays complete on disk: a reload before the record
+    // lands reopens it.
+    try {
+      await plain.repo?.flush();
+    } catch {}
+    try {
+      await plain.repo?.shutdown();
+    } catch {}
+    try {
+      await plain.backend?.close();
+    } catch {}
+    await plain.storage?.close();
+    if (!this.alive || epoch !== this.#localEpoch) throw Error("Page closed");
+    this.recordStorage = "native";
+    await this.openBackend();
+    // A release that started meanwhile closes this replica.
+    if (!this.alive || epoch !== this.#localEpoch) throw Error("Page closed");
+    const handle = await this.repo.import(history, { docId: documentId });
+    await this.repo.flush([handle.documentId]);
+    if (!this.alive || epoch !== this.#localEpoch) throw Error("Page closed");
+    this.handle = handle;
+    handle.on("change", (event) => this.receiveChange(event));
+    handle.on("ephemeral-message", (event) => this.ephemeral(event));
+    this.emit();
+    return database;
+  }
+  /** Point the local record at native storage, with a registration that
+   * drops `record_storage` and its retry authority; the next registration
+   * prepares fresh authority. `registrationSupersedes` lets this replace a
+   * stored registration that has a retry token. The import's new actor is
+   * recorded, so this session's next edits count as local. If another tab
+   * wrote its registration in between, that one stays; its refusal strips
+   * it on the next attempt. */
+  async #recordNativeRegistration() {
+    const registration = this.localPage?.registration;
+    if (!registration || this.localPage.registered) throw Error("This Page has no draft to move");
     const { record_storage: _storage, retry_token: _token, ...native } = registration;
-    // The import loaded under a new actor: record it so this session's next
-    // edits count as local.
     await this.persistLocal({
       recordStorage: undefined,
       registrationSupersedes: registration.idempotency_key,
       registration: { ...native, idempotency_key: `v1_${crypto.randomUUID()}` },
       localEdits: this.localEditsWithActor(),
     });
-    this.emit();
   }
   /** Merge a stored checkpoint into this replica before a lookup. */
   async storeCheckpoint(id, doc) {
@@ -2088,7 +2189,10 @@ export class PageSession {
     this.cacheTail = work;
     return work;
   }
-  async registerDraft() {
+  /** Register this browser's draft. `storageMoved` says this attempt already
+   * moved it off plain storage once; a second storage refusal then ends the
+   * attempt rather than looping. */
+  async registerDraft({ storageMoved = false } = {}) {
     if (!this.localPage?.registration || this.localPage.registered) return;
     let result;
     try {
@@ -2124,8 +2228,14 @@ export class PageSession {
       if (error.status === 410 && error.code === "retry_expired") {
         result = await this.reconcileExpiredRegistration();
       } else if (error.status === 409 && error.code === "record_storage_unsupported") {
-        await this.recreateNativeDraft();
-        return this.registerDraft();
+        if (storageMoved) throw Object.assign(Error(STORAGE_REFUSED_AGAIN), { cause: error });
+        const moved = await this.moveDraftToNative();
+        if (!this.alive || moved.state.name === "closed") return;
+        if (moved.state.name === "failed")
+          throw Error(STORAGE_SWITCH_FAILED, { cause: moved.error });
+        if (moved.error) throw moved.error;
+        if (moved.state.name !== "idle") throw Error(STORAGE_SWITCHING);
+        return this.registerDraft({ storageMoved: true });
       } else {
         if (error.status === 409 && error.message === "Page was deleted") await this.markDeleted();
         throw error;
@@ -2637,6 +2747,12 @@ export class PageSession {
   }
   change(fn) {
     if (!this.alive) throw Error("Page closed");
+    if (this.editPauses.has(STORAGE_SWITCH))
+      throw Error(
+        this.storageSwitch$.snapshot().name === "failed"
+          ? STORAGE_SWITCH_FAILED
+          : STORAGE_SWITCHING,
+      );
     if (!this.canWrite) throw Error("This Page is read only");
     return this.#write(this.handle, fn);
   }

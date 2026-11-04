@@ -587,6 +587,23 @@ test("registration refuses a draft stamped with a schema feature this host lacks
   assert.equal((await f.send(args)).status, 200);
 });
 
+test("a host without plain storage refuses a plain draft through the Catalog and frees its key", async (t) => {
+  const f = await fixture(t),
+    { args } = registration();
+  const refused = await f.send({ ...args, record_storage: "automerge" });
+  assert.equal(refused.status, 409);
+  assert.equal((await refused.json()).code, "record_storage_unsupported");
+  // The Page recorded nothing, so the Catalog released the reservation.
+  assert.equal(await f.catalog().storage.get("host/operation/register-fixture"), undefined);
+  assert.equal(await f.catalog().storage.get(`page/${pageId}`), undefined);
+  assert.equal(await f.page().storage.get("host/creation"), undefined);
+  // The same draft and key register once the draft is native.
+  const accepted = await f.send(args);
+  assert.equal(accepted.status, 200, await accepted.clone().text());
+  assert.equal((await accepted.json()).document_id, args.document_id);
+  assert.equal(f.page().page.metadata.recordStorage, "local");
+});
+
 /** Usage lines written while `run` executes. */
 async function usageLines(t, run) {
   const lines = [];
