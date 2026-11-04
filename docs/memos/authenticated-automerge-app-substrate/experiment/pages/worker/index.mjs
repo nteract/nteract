@@ -357,6 +357,8 @@ const lifecycleFingerprint = {
   purge_page: "purge_page",
 };
 const noop = async () => {};
+/** The error an abandoned object refuses with when its reset gave no reason. */
+const abandonedError = () => Object.assign(Error("Page object was reset"), { status: 503 });
 /** Complete the upgrade and close at once with the refusal's admission code.
  * A browser reads a refused HTTP upgrade only as close 1006, which its
  * reconnect treats as transient; the close code lets it count the refusal. */
@@ -498,6 +500,9 @@ const TITLE_PROJECTION_KEY = "host/title-projection";
  * record boots while it is set, so the loaded host's first check sends the
  * title again (`cacheTitle`). */
 const PROJECTION_PENDING = "host/title-projection/pending";
+/** The least time between two stores of the same title projection after a
+ * failed one (retryTitleStore). */
+const TITLE_STORE_RETRY_MS = 30_000;
 /** Lifecycle receipts kept per Page for retries; older ones are pruned. */
 const LIFECYCLE_RECEIPT_LIMIT = 256;
 const lifecycleReceiptKey = (operationKey) =>
@@ -3244,19 +3249,30 @@ export class Page {
    * doesn't strand it (request-hold.mjs).
    */
   startBoot(within, creation) {
+    let started = false;
+    let finish;
+    // Settles when bootHost itself has returned or thrown. A request's
+    // `blockConcurrencyWhile` can reject at the runtime's limit while
+    // bootHost runs on, so `booting` may settle first.
+    this.bootFinished = new Promise((resolve) => (finish = resolve));
     const boot = async () => {
+      started = true;
       try {
         await this.bootHost(creation);
       } catch (error) {
         if (this.startup.name === "booting") this.bootError = error;
         this.stepStartup({ type: "bootFailed" });
         throw error;
+      } finally {
+        finish();
       }
       this.stepStartup({ type: "booted" });
     };
     const run = within === "request" ? this.ctx.blockConcurrencyWhile(boot) : boot();
     // Settles once a rejection is recorded, so a waiter sees `abandoned`.
     this.booting = run.then(noop, (error) => this.resetBoot(error));
+    // A `blockConcurrencyWhile` that never ran the boot has nothing to wait for.
+    void this.booting.then(() => started || finish());
     if (within === "request") holdUntilSettled(this.ctx, run);
   }
 
@@ -3267,14 +3283,16 @@ export class Page {
    * throw, or once it finished, page-startup changes nothing. */
   resetBoot(error) {
     if (this.stepStartup({ type: "reset" }).rejected) return;
-    this.bootError = error;
+    this.bootError = error || abandonedError();
     this.retireAbandoned();
   }
 
   /** Stop what an abandoned object would go on doing. Background work stops
-   * at once; the policy, plain sync and native backend close once the boot,
-   * which may still be building them, has settled. The storage guard already
-   * refuses their writes. */
+   * at once; the policy, plain sync and native backend close once bootHost,
+   * which may still be building them, has returned or thrown
+   * (`bootFinished`). That can be long after a request's
+   * `blockConcurrencyWhile` rejected, since initializeRepo assigns them only
+   * at its end. The storage guard already refuses their writes. */
   retireAbandoned() {
     const stop = () => {
       clearTimeout(this.conversionRetry);
@@ -3286,7 +3304,7 @@ export class Page {
     };
     stop();
     void (async () => {
-      await this.booting;
+      await this.bootFinished;
       // A boot that ran on may have built more since the reset.
       stop();
       const closes = [
@@ -3306,16 +3324,19 @@ export class Page {
   }
 
   /** The error this object's storage writes are refused with: the reset's,
-   * once it is abandoned. */
+   * once it is abandoned. Never a falsy value then, which the guard would
+   * read as "allowed". */
   storageRefusal() {
-    return this.startup.name === "abandoned" ? this.bootError : undefined;
+    if (this.startup.name !== "abandoned") return undefined;
+    return (this.bootError ||= abandonedError());
   }
 
   /** Throw when this object was abandoned (page-startup's `abandoned`). The
    * storage guard refuses every write anyway; these checks end the boot early,
    * before work whose writes would only be refused. */
   assertNotAbandoned() {
-    if (this.startup.name === "abandoned") throw this.bootError;
+    const error = this.storageRefusal();
+    if (error) throw error;
   }
 
   /** Boot the repo and run the lifecycle's boot effects over the durable
@@ -4365,9 +4386,10 @@ export class Page {
     const known = this.titleProjection;
     if (!observe && known?.title === title) {
       const observation = { observedAt: known.observed_at, keepTime: known.keep !== false };
-      // A record whose store failed is stored again, with the same time.
+      // A record whose store failed is stored again, with the same time, at
+      // most once per retry interval (retryTitleStore).
       return this.titleUnstored === known
-        ? { ...observation, stored: this.storeTitleProjection(known) }
+        ? { ...observation, stored: this.retryTitleStore() ?? Promise.resolve({ ok: false }) }
         : observation;
     }
     const record = { title, observed_at: new Date().toISOString(), keep: !observe };
@@ -4382,9 +4404,11 @@ export class Page {
   /** Store `record` as the title projection, after its mark: a stored title
    * the Catalogs may lack always has the mark. Without the mark the title
    * stays unstored, a check from the record answers the last stored title,
-   * and `titleUnstored` holds `record` until a later observation stores it.
+   * and `titleUnstored` holds `record` until a later store lands
+   * (retryTitleStore).
    * Resolves `{ ok }`. */
   storeTitleProjection(record) {
+    this.titleStoreAttemptAt = Date.now();
     const failed = () => {
       this.titleUnstored = record;
       return { ok: false };
@@ -4405,6 +4429,29 @@ export class Page {
     );
   }
 
+  /** Store the current title projection again, alone, if its last store
+   * failed and the last attempt is at least TITLE_STORE_RETRY_MS old.
+   * Returns the store's `{ ok }` promise, or undefined when there is nothing
+   * to retry yet. While storage keeps failing, this bounds the retries; a
+   * failed store never resends the title to the Catalogs (cacheTitle).
+   *
+   * When the Catalogs already got this title (`titleDelivered`), a store
+   * that lands clears the pending mark it wrote, unless a newer mark or
+   * projection started since (settleProjection). */
+  retryTitleStore() {
+    const record = this.titleUnstored;
+    if (!record || record !== this.titleProjection) return undefined;
+    if (Date.now() - (this.titleStoreAttemptAt ?? -Infinity) < TITLE_STORE_RETRY_MS)
+      return undefined;
+    const stored = this.storeTitleProjection(record);
+    // storeTitleProjection's mark moved the sequence on, synchronously.
+    const marked = this.projectionSeq;
+    return stored.then(async (result) => {
+      if (result.ok && this.titleDelivered === record) await this.settleProjection(marked, true);
+      return result;
+    });
+  }
+
   /** Project this Page's title to the Catalogs that list it, and report its
    * row to the index. `observe` marks a new observation of an unchanged
    * title: an ACL commit or a restore. */
@@ -4416,7 +4463,12 @@ export class Page {
       identity && pageAccess(this.metadata, identity).source === "domain"
         ? identity.principal
         : null;
-    if (this.cachedTitle === title && !observedReader) return;
+    if (this.cachedTitle === title) {
+      // The Catalogs have this title; only its store may be left to retry.
+      const retry = this.retryTitleStore();
+      if (retry) this.ctx.waitUntil(retry);
+      if (!observedReader) return;
+    }
     const titleChanged = this.cachedTitle !== title;
     const recipients = !titleChanged
       ? [observedReader]
@@ -4442,7 +4494,10 @@ export class Page {
     const contentUpdatedAt = this.contentActivity?.value ?? null;
     // A projection that times out clears the cached title below, so the next
     // request to this Page sends it again, with the same observation time.
-    const tasks = recipients.map((principal) =>
+    // A failed title store doesn't: the request path retries the store alone
+    // (retryTitleStore).
+    const record = this.titleProjection;
+    const projections = recipients.map((principal) =>
       withTimeout(
         this.env.CATALOGS.getByName(principal).fetch(
           new Request("https://pages.internal/internal/projection", {
@@ -4461,15 +4516,16 @@ export class Page {
         "Catalog projection timed out",
       ),
     );
-    if (observation.stored) tasks.push(observation.stored);
+    const tasks = [...projections];
     if (fanout)
       this.ctx.waitUntil(
-        Promise.all(tasks).then(
-          (results) =>
-            this.settleProjection(
-              fanout,
-              results.every((result) => result.ok),
-            ),
+        Promise.all([Promise.all(projections), observation.stored ?? { ok: true }]).then(
+          ([results, stored]) => {
+            const delivered = results.every((result) => result.ok);
+            // A later store of this record can clear the mark (retryTitleStore).
+            if (delivered && !stored.ok) this.titleDelivered = record;
+            return this.settleProjection(fanout, delivered && stored.ok);
+          },
           () => this.settleProjection(fanout, false),
         ),
       );

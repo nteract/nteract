@@ -588,12 +588,12 @@ async function bufferedPages(t) {
       page.signer?.free();
     }
   });
-  const open = () => {
-    const page = new Page(contextFor(storage), env);
+  const open = (context = contextFor(storage)) => {
+    const page = new Page(context, env);
     pages.push(page);
     return page;
   };
-  return { owner: auth.apiKey(), storage, records, warnings, open };
+  return { owner: auth.apiKey(), storage, records, warnings, env, open };
 }
 
 const within = (promise, label) => {
@@ -605,6 +605,72 @@ const within = (promise, label) => {
     }),
   ]).finally(() => clearTimeout(timer));
 };
+
+test("an abandoned buffered Page sends PageRecords no write", async (t) => {
+  const f = await bufferedPages(t);
+  const sent = [];
+  let stubs = 0;
+  const getByName = f.env.PAGE_RECORDS.getByName;
+  f.env.PAGE_RECORDS.getByName = (name) => {
+    stubs++;
+    const stub = getByName(name);
+    return {
+      fetch: (request) => {
+        sent.push(`${request.method} ${new URL(request.url).pathname}`);
+        return stub.fetch(request);
+      },
+    };
+  };
+  const first = f.open();
+  await first.ready;
+  const created = await first.fetch(
+    requestFor(f.owner, "/internal/create", { page_id: pageId, title: "Kept", markdown: "Body" }),
+  );
+  assert.equal(created.status, 201);
+  await first.flush();
+  assert.ok(sent.includes("POST /lease"), "a live buffered Page takes its lease by POST");
+  // A new object over the same storage: its first request boots it, and the
+  // runtime gives up on that boot while it reads its signer.
+  const get = f.storage.get;
+  let reading = false;
+  let releaseRead;
+  const read = new Promise((resolve) => (releaseRead = resolve));
+  f.storage.get = async function (key) {
+    if (key === "host/signer" && !reading) {
+      reading = true;
+      await read;
+    }
+    return get.call(this, key);
+  };
+  let calls = 0;
+  let giveUp;
+  const next = f.open({
+    ...contextFor(f.storage),
+    blockConcurrencyWhile: async (fn) => {
+      const ended = calls++ === 1 ? new Promise((_, reject) => (giveUp = reject)) : undefined;
+      return await (ended ? Promise.race([fn(), ended]) : fn());
+    },
+  });
+  await next.ready;
+  assert.equal(next.startup.name, "metadata", "a buffered record boots on demand");
+  const opened = next.documentReady();
+  await within(
+    (async () => {
+      while (!reading) await new Promise((resolve) => setImmediate(resolve));
+    })(),
+    "the boot reading its signer",
+  );
+  giveUp(Error("blockConcurrencyWhile waited for too long"));
+  await assert.rejects(opened, /waited for too long/);
+  assert.equal(next.startup.name, "abandoned");
+  const stubsBefore = stubs;
+  const sentBefore = sent.length;
+  releaseRead();
+  await within(next.bootFinished, "the abandoned boot");
+  assert.equal(stubs, stubsBefore + 1, "the boot went on to build its record sink");
+  assert.deepEqual(sent.slice(sentBefore), [], "and PageRecords got no request from it");
+  assert.equal(next.recordStore, undefined);
+});
 
 for (const [shape, build] of Object.entries(SHAPES))
   for (const journal of [false, true]) {

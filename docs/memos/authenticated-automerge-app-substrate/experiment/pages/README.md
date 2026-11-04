@@ -814,12 +814,19 @@ host builds (the policy, the journal, the record store and repo storage
 adapter, actor persistence, content activity, plain sync) gets storage from
 that context. Once the object is abandoned, `put`, `delete`, `deleteAll`,
 `sync`, `transaction`, `transactionSync`, `setAlarm` and `deleteAlarm` reject
-with the reset's error; a transaction already open refuses its writes too,
-and rolls back. Reads pass. PageRecords, the remote record store of a
-`buffered` Page, gets the same gate: every request but a GET is refused. The
-object also stops its own background work: the conversion retry timer, record
-maintenance, actor persistence and content activity stop at once, and once
-the boot settles, the policy, plain sync and the native backend close. The
+with the reset's error. A transaction already open refuses its writes too,
+and rolls back if its closure lets the refusal propagate. Reads pass. The
+Page doesn't use the SQLite APIs, but they're gated as well: `kv.put` and
+`kv.delete` throw, and so does every `sql.exec`, since a statement's text
+doesn't reliably say whether it writes. PageRecords, the remote record store
+of a `buffered` Page, gets the same gate: every request but a GET is refused.
+The object also stops its own background work: the conversion retry timer,
+record maintenance, actor persistence and content activity stop at once.
+The policy, plain sync and the native backend close once the boot itself has
+returned or thrown. For a boot a request opened, that can be well after the
+request's `blockConcurrencyWhile` rejected, because the repo setup builds
+them, and actor persistence, only at its end; they're stopped and closed
+then. The
 boot still checks at four points (after the repo starts, before journal
 recovery of either document, and before preserved Markdown conversion) so it
 ends early instead of running into refused writes. A record read that ends
@@ -890,7 +897,11 @@ projection or report. Two marks make a check boot until that repair has run:
   the mark write succeeds; if it fails, the title isn't stored and the
   projection counts as failed. The mark is removed once the latest
   projection reached the owner's and every member's Catalog and the title is
-  stored. So a stored title the Catalogs may lack always has the mark.
+  stored. So a stored title the Catalogs may lack always has the mark. A
+  failed store doesn't resend the title to the Catalogs: a later request
+  retries the store alone, at most once every 30 s, with the title's first
+  observation time, and clears the mark when it lands if the Catalogs already
+  had that title.
 - The index report mark is written after a report fails, and synced.
 
 Each reader's reconcile pass also rewrites its own access row from the

@@ -5,6 +5,7 @@ import { proposeAccessUpdate } from "./access.mjs";
 import { CONTENT_ACTIVITY_KEY } from "./content-activity.mjs";
 import { errorResponse } from "./auth.mjs";
 import { Page } from "./index.mjs";
+import { ActorPersistence } from "./actor-authorship.mjs";
 import { DocumentPolicy } from "./policy.mjs";
 import { proposeSharingMutation } from "./sharing.mjs";
 import { trashRecord } from "./trash.mjs";
@@ -19,6 +20,8 @@ const observedAt = "2026-10-20T10:00:00.000Z";
 const contentAt = "2026-10-21T10:00:00.000Z";
 const namespace = "user:anaconda-fixture";
 const reader = `${namespace}:company-reader`;
+/** The least time between two stores of a title after a failed one. */
+const TITLE_STORE_RETRY_MS = 30_000;
 
 /** The fixture's Page with its record in storage, as a host after eviction
  * finds it, its stored title projection and content time, and `cold()` to
@@ -656,6 +659,89 @@ test("a constructor boot the runtime gives up on is abandoned and writes nothing
   assert.deepEqual(h.reads, []);
 });
 
+test("a reset with no reason still refuses the abandoned object's writes", async (t) => {
+  const h = await hosts(t);
+  let release;
+  h.onBoot = () => new Promise((resolve) => (release = resolve));
+  const { comments_doc: _named, ...unnamed } = h.f.initial;
+  await h.record(unnamed);
+  let giveUp;
+  const page = h.cold({
+    limit: (call) => (call === 0 ? new Promise((_, reject) => (giveUp = reject)) : undefined),
+  });
+  await until(() => release !== undefined, "the constructor boot is running");
+  giveUp(undefined);
+  await assert.rejects(page.ready);
+  assert.equal(page.startup.name, "abandoned");
+  await assert.rejects(page.ctx.storage.put("host/stale", true), /Page object was reset/);
+  assert.equal(await h.f.storage.get("host/stale"), undefined);
+  release();
+  await drain(h);
+});
+
+for (const within of ["request", "constructor"])
+  test(`a ${within} boot abandoned inside the repo setup closes and stops what it builds once it ends`, async (t) => {
+    const h = await hosts(t);
+    if (within === "constructor") {
+      // An older record boots in the constructor.
+      const { comments_doc: _named, ...unnamed } = h.f.initial;
+      await h.record(unnamed);
+    }
+    const retired = [];
+    let actorFailures = 0;
+    let reached = false;
+    let release;
+    const held = new Promise((resolve) => (release = resolve));
+    let actorPersistence;
+    t.after(() => actorPersistence?.stop());
+    t.mock.method(Page.prototype, "initializeRepo", async function () {
+      reached = true;
+      await held;
+      // As the real setup does, it assigns the policy, backend, signer and
+      // actor persistence together at its end, and replays actor effects.
+      // Its retries wait one turn and aren't held, so a drain ends even
+      // while it would retry forever.
+      actorPersistence = new ActorPersistence(this.ctx.storage, {
+        sleep: () => new Promise((resolve) => setImmediate(resolve)),
+        onError: () => actorFailures++,
+      });
+      Object.assign(this, {
+        policy: { close: async () => retired.push("policy") },
+        backend: { async flush() {}, close: async () => retired.push("backend") },
+        signer: { free: () => retired.push("signer") },
+        actorPersistence,
+        serverKey,
+        serverSenderId: "server-sender",
+        commentsUuid,
+      });
+      actorPersistence.enqueue({ put: [["a".repeat(32), { key: "x" }]] });
+    });
+    let giveUp;
+    const ends = within === "request" ? 1 : 0;
+    const page = h.cold({
+      limit: (call) => (call === ends ? new Promise((_, reject) => (giveUp = reject)) : undefined),
+    });
+    const opened =
+      within === "request"
+        ? page.ready.then(() => page.documentReady())
+        : page.ready.then(() => undefined);
+    await until(() => reached, "the boot is inside the repo setup");
+    giveUp(limitError());
+    await assert.rejects(opened, /waited for too long/);
+    assert.equal(page.startup.name, "abandoned");
+    await drain(h);
+    assert.deepEqual(retired, [], "nothing to close while the setup runs");
+    const before = structuredClone(h.f.storage.values);
+    release();
+    await drain(h);
+    assert.deepEqual(retired, ["policy", "backend", "signer"]);
+    assert.equal(actorPersistence.state.phase, "stopped");
+    const failures = actorFailures;
+    await drain(h);
+    assert.equal(actorFailures, failures, "actor persistence retries nothing more");
+    assert.deepEqual(h.f.storage.values, before, "nothing written after the reset");
+  });
+
 const tick = () => new Promise((resolve) => setImmediate(resolve));
 /** Wait until `reached()`, at most 100 turns. */
 async function until(reached, label) {
@@ -844,8 +930,26 @@ test("a record read the runtime gives up on starts no boot when it finishes", as
   assert.deepEqual(h.f.storage.values, before);
 });
 
-test("a title whose mark write failed is stored, with the same time, by the next observation", async (t) => {
+/** Count the title projections sent to the Catalogs. */
+function countProjections(f) {
+  const counted = { projections: 0 };
+  const getByName = f.env.CATALOGS.getByName.bind(f.env.CATALOGS);
+  f.env.CATALOGS.getByName = (principal) => {
+    const stub = getByName(principal);
+    return {
+      fetch: (request) => {
+        if (new URL(request.url).pathname === "/internal/projection") counted.projections++;
+        return stub.fetch(request);
+      },
+    };
+  };
+  return counted;
+}
+
+test("a title whose mark write failed is stored alone, with the same time, once the retry interval passes", async (t) => {
   const h = await hosts(t);
+  t.mock.timers.enable({ apis: ["Date"], now: Date.now() });
+  const sent = countProjections(h.f);
   // The stored title is an older one; the document says "Launch plan".
   await h.f.storage.put("host/title-projection", {
     title: "Old plan",
@@ -877,14 +981,70 @@ test("a title whose mark write failed is stored, with the same time, by the next
   const first = page.titleProjection;
   assert.equal(first.title, "Launch plan");
   assert.equal((await h.f.storage.get("host/title-projection")).title, "Old plan", "unstored");
+  const projected = sent.projections;
+  assert.ok(projected > 0, "the Catalogs got the title");
   assert.equal(await coldTitle(), "Old plan");
-  // The next request on the booted host projects the title again, and this
-  // time it is stored with its first observation's time.
+  const afterCold = sent.projections;
+  // Within the retry interval, a request on the booted host neither stores
+  // the title nor sends it again.
+  t.mock.timers.tick(TITLE_STORE_RETRY_MS - 1);
   assert.equal((await h.check(page, "member")).status, 200);
   await drain(h);
+  assert.equal((await h.f.storage.get("host/title-projection")).title, "Old plan");
+  assert.equal(sent.projections, afterCold, "no projection resent");
+  // Once it passes, the next request stores it alone, with its first
+  // observation's time, and clears the mark: the Catalogs already have it.
+  t.mock.timers.tick(1);
+  assert.equal((await h.check(page, "member")).status, 200);
+  await drain(h);
+  assert.equal(sent.projections, afterCold, "the store retries alone");
   assert.deepEqual(await h.f.storage.get("host/title-projection"), first);
   assert.equal(await h.f.storage.get("host/title-projection/pending"), undefined);
   assert.equal(await coldTitle(), "Launch plan");
+});
+
+test("while the title store keeps failing, requests resend nothing and the store retries once per interval", async (t) => {
+  const h = await hosts(t);
+  t.mock.timers.enable({ apis: ["Date"], now: Date.now() });
+  const sent = countProjections(h.f);
+  await h.f.storage.put("host/title-projection", {
+    title: "Old plan",
+    observed_at: observedAt,
+    keep: true,
+  });
+  const put = h.f.storage.put;
+  let stores = 0;
+  h.f.storage.put = async function (key, value) {
+    if (key === "host/title-projection") {
+      stores++;
+      throw Error("storage unavailable");
+    }
+    return put.call(this, key, value);
+  };
+  const page = h.cold();
+  await page.ready;
+  await page.documentReady();
+  const request = async () => {
+    assert.equal((await h.check(page, "member")).status, 200);
+    await drain(h);
+  };
+  await request();
+  const projected = sent.projections;
+  assert.ok(projected > 0);
+  assert.equal(stores, 1);
+  for (let i = 0; i < 5; i++) {
+    t.mock.timers.tick(1000);
+    await request();
+  }
+  assert.equal(sent.projections, projected, "no request resends the title");
+  assert.equal(stores, 1, "no retry inside the interval");
+  t.mock.timers.tick(TITLE_STORE_RETRY_MS);
+  for (let i = 0; i < 5; i++) await request();
+  assert.equal(stores, 2, "one retry once the interval passed");
+  assert.equal(sent.projections, projected);
+  assert.equal(page.cachedTitle, "Launch plan", "the failed store left the Catalogs' title cached");
+  // The pending mark stays: the next object's first check sends the title.
+  assert.equal(await h.f.storage.get("host/title-projection/pending"), true);
 });
 
 test("a title whose projection mark can't be written isn't stored, so the next check boots", async (t) => {
