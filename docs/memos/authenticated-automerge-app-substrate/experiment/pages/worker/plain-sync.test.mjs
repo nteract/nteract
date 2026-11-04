@@ -632,3 +632,45 @@ test("a browser connection logs its sync-round latency when it closes", async (t
   );
   assert.ok(!JSON.stringify(record).includes(identity.principal));
 });
+
+test("a refusal that lands after close counts into the connection's line, logged at release", async (t) => {
+  const f = await fixture(t);
+  const host = f.page();
+  assert.ok((await f.register(host)).ok);
+  const lines = [];
+  t.mock.method(console, "warn", (line) => lines.push(JSON.parse(line)));
+  const refused = () =>
+    lines
+      .filter((line) => line.event === "page.sync_refused")
+      .map(({ reason, repeats }) => ({ reason, ...(repeats && { repeats }) }));
+  const socket = Object.assign(new EventTarget(), { send() {}, close() {} });
+  const conn = host.plain.accept(
+    socket,
+    {
+      principal: "user:anaconda-fixture:fixture-user",
+      displayName: "Fixture",
+      driver: "Browser",
+      credentialKind: "oidc",
+      canWrite: true,
+      expiresAt: Date.now() + 3_600_000,
+    },
+    { senderId: "b-late" },
+  );
+  const doc = { kind: "page" };
+  const policy = host.plain.host.policy;
+  const fence = { code: "temporarily_unavailable", fatal: false };
+  policy.refused(conn, doc, fence);
+  conn.closed = true;
+  // Frames still running at close refuse after it, before the release.
+  policy.refused(conn, doc, fence);
+  policy.refused(conn, doc, { code: "closed", fatal: false });
+  policy.refused(conn, doc, { code: "closed", fatal: false });
+  assert.deepEqual(refused(), [{ reason: "temporarily_unavailable" }, { reason: "closed" }]);
+  policy.released(conn);
+  assert.deepEqual(refused(), [
+    { reason: "temporarily_unavailable" },
+    { reason: "closed" },
+    { reason: "temporarily_unavailable", repeats: 1 },
+    { reason: "closed", repeats: 1 },
+  ]);
+});

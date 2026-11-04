@@ -903,7 +903,8 @@ Pages on plain Automerge sync add two lines from
 [worker/plain-sync-log.mjs](worker/plain-sync-log.mjs), with the Page id but
 no principal: `page.sync_refused` for a browser frame the host refused
 (`reason`, and for a fatal refusal the close `code`, `status` and `close`;
-repeats on one connection are counted into one line at close), and
+repeats on one connection, including frames refused after its close, are
+counted into one line once it has nothing left running), and
 `page.sync_rounds`, a per-connection summary of the time from a frame's
 arrival to its ack for frames that stored changes (`latency_ms_sum`,
 `latency_ms_max`, `wait_ms_sum` and `latency_ms_buckets` by inclusive upper

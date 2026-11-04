@@ -57,9 +57,15 @@ test("a connection over the frame limit is refused and closed as temporarily una
   assert.deepEqual([refused.code, refused.r, refused.fatal], ["receive_queue_full", 3, true]);
   assert.equal(editor.link.client.closeCode, 4503);
   assert.equal(editor.link.client.closeReason, "temporarily_unavailable");
-  release();
   await until(() => editor.conn.closed, { label: "closed" });
-  assert.equal(editor.conn.receive.phase, "closed");
+  // Two frames are still running: the connection closes, then drains.
+  assert.deepEqual(editor.conn.receive, {
+    phase: "closing",
+    frames: 2,
+    bytes: editor.conn.receive.bytes,
+  });
+  release();
+  await until(() => editor.conn.receive.phase === "closed", { label: "drained" });
   // The frame admitted before the overflow is still stored.
   await until(async () => (await h.document(id)).n === 1, { label: "first frame stored" });
 });
@@ -188,4 +194,40 @@ test("a replacement from policy.admit is adopted; the preview it replaced, and a
   assert.equal(h.stats.freed - freed, 2, "the preview and its unstored replacement");
   assert.throws(() => A.getHeads(replacement));
   assert.equal((await h.document(id)).n, 1);
+});
+
+test("a closed connection is released only after the refusals of frames still running", async () => {
+  const events = [];
+  let open;
+  const gate = new Promise((resolve) => (open = resolve));
+  const { h, id, base } = await setup({
+    policy: {
+      admit: async (_conn, _doc, _live, _fresh, preview) => {
+        await gate;
+        return preview;
+      },
+      refused: (_conn, _doc, refusal) => events.push(`refused:${refusal.code}`),
+      released: (conn) => events.push(`released:${conn.senderId}`),
+    },
+  });
+  const editor = raw(h, { principal: "account:e", role: "editor", senderId: "e" });
+  editor.link.client.send({
+    t: "sync",
+    doc: id,
+    m: syncHello([edit(base, "aa".repeat(16), 1)]),
+    r: 1,
+  });
+  editor.link.client.send({ t: "sync", doc: id, m: null, r: 2 });
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  editor.link.host.close(1001, "going away");
+  await until(() => editor.conn.closed, { label: "closed" });
+  assert.deepEqual(events, [], "nothing is released while frames run");
+  open();
+  await until(() => events.length === 2, { label: "release" });
+  assert.deepEqual(events, ["refused:closed", "released:e"]);
+  // A socket with nothing running is released at its close.
+  const idle = raw(h, { principal: "account:i", role: "viewer", senderId: "i" });
+  idle.link.host.close(1001, "going away");
+  await until(() => events.length === 3);
+  assert.equal(events[2], "released:i");
 });

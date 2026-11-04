@@ -20,6 +20,10 @@ import { cbor } from "@automerge/automerge-repo";
 
 export const OBJECT_PART_BYTES = 1024 * 1024;
 export const COMPACT_MIN_BYTES = 64 * 1024;
+// Every append rewrites the manifest, which lists each chunk, and a cold load
+// reads each chunk separately; keystroke-sized chunks reach this long before
+// the byte rule.
+export const COMPACT_MAX_CHUNKS = 256;
 
 const manifestKey = (id) => `sync/${id}/m`;
 const objectKey = (id, seq, part) => `sync/${id}/o/${seq}/${part}`;
@@ -36,10 +40,15 @@ export class DocStore {
   #bytes;
   #manifests = new Map();
   #compactMinBytes;
+  #compactMaxChunks;
 
-  constructor(bytes, { compactMinBytes = COMPACT_MIN_BYTES } = {}) {
+  constructor(
+    bytes,
+    { compactMinBytes = COMPACT_MIN_BYTES, compactMaxChunks = COMPACT_MAX_CHUNKS } = {},
+  ) {
     this.#bytes = bytes;
     this.#compactMinBytes = compactMinBytes;
+    this.#compactMaxChunks = compactMaxChunks;
   }
 
   /** Document ids with a stored manifest. Loads every manifest. */
@@ -95,14 +104,17 @@ export class DocStore {
   }
 
   /**
-   * Chunk bytes over half the snapshot and over the floor. Compaction rewrites
-   * the whole document, so the threshold grows with it: each rewrite follows
-   * at least half a snapshot of new history, and a small document waits for
-   * the floor rather than rewriting on every write.
+   * More than COMPACT_MAX_CHUNKS chunks, or chunk bytes over half the
+   * snapshot and over the floor. Compaction rewrites the whole document, so
+   * the byte threshold grows with it: each rewrite follows at least half a
+   * snapshot of new history, and a small document waits for the floor rather
+   * than rewriting on every write. The chunk count bounds the manifest each
+   * append rewrites and the reads a cold load makes.
    */
   wantsCompaction(id) {
     const m = this.#manifests.get(id);
     if (!m?.chunks.length) return false;
+    if (m.chunks.length > this.#compactMaxChunks) return true;
     const chunkBytes = m.chunks.reduce((n, c) => n + c.bytes, 0);
     return chunkBytes > Math.max((m.snapshot?.bytes ?? 0) / 2, this.#compactMinBytes);
   }

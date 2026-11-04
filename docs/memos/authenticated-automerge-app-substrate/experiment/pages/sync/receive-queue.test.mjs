@@ -8,28 +8,35 @@ const overflowed = (frames, bytes) => ({ phase: "overflowed", frames, bytes });
 const closed = { phase: "closed", frames: 0, bytes: 0 };
 
 // Every state the queue can be in, crossed with every event.
+const closing = (frames, bytes) => ({ phase: "closing", frames, bytes });
 const cases = [
   // open, empty
   [open(0, 0), { type: "arrive", bytes: 40 }, open(1, 40), "admit"],
   [open(0, 0), { type: "arrive", bytes: 100 }, open(1, 100), "admit"],
   [open(0, 0), { type: "arrive", bytes: 101 }, overflowed(0, 0), "refuse"],
   [open(0, 0), { type: "settle", bytes: 0 }, open(0, 0), null],
-  [open(0, 0), { type: "close" }, closed, null],
+  [open(0, 0), { type: "close" }, closed, "release"],
   // open, one frame waiting
   [open(1, 40), { type: "arrive", bytes: 60 }, open(2, 100), "admit"],
   [open(1, 40), { type: "arrive", bytes: 61 }, overflowed(1, 40), "refuse"],
   [open(1, 40), { type: "settle", bytes: 40 }, open(0, 0), null],
-  [open(1, 40), { type: "close" }, closed, null],
+  [open(1, 40), { type: "close" }, closing(1, 40), null],
   // open, at the frame limit
   [open(2, 10), { type: "arrive", bytes: 0 }, overflowed(2, 10), "refuse"],
   [open(2, 10), { type: "settle", bytes: 4 }, open(1, 6), null],
-  [open(2, 10), { type: "close" }, closed, null],
+  [open(2, 10), { type: "close" }, closing(2, 10), null],
   // overflowed: later arrivals drop, settles still count down
   [overflowed(2, 10), { type: "arrive", bytes: 0 }, overflowed(2, 10), "drop"],
   [overflowed(2, 10), { type: "settle", bytes: 4 }, overflowed(1, 6), null],
   [overflowed(1, 6), { type: "settle", bytes: 6 }, overflowed(0, 0), null],
-  [overflowed(2, 10), { type: "close" }, closed, null],
-  // closed is terminal
+  [overflowed(2, 10), { type: "close" }, closing(2, 10), null],
+  [overflowed(0, 0), { type: "close" }, closed, "release"],
+  // closing: frames still running after the close
+  [closing(2, 10), { type: "arrive", bytes: 1 }, closing(2, 10), "drop"],
+  [closing(2, 10), { type: "settle", bytes: 4 }, closing(1, 6), null],
+  [closing(1, 6), { type: "settle", bytes: 6 }, closed, "release"],
+  [closing(1, 6), { type: "close" }, closing(1, 6), null],
+  // closed is terminal and releases once
   [closed, { type: "arrive", bytes: 1 }, closed, "drop"],
   [closed, { type: "settle", bytes: 1 }, closed, null],
   [closed, { type: "close" }, closed, null],

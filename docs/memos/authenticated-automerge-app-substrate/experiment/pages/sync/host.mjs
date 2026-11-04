@@ -2,6 +2,7 @@ import * as A from "@automerge/automerge";
 import { cbor } from "@automerge/automerge-repo";
 import { ADMISSION_OUTCOMES } from "../shared/admission.mjs";
 import { concat, DocStore } from "./doc-store.mjs";
+import { COMPACTION_READY, compactionStep } from "./compaction-machine.mjs";
 import { RECEIVE_LIMITS, RECEIVE_OPEN, receiveStep } from "./receive-queue.mjs";
 
 // The Page host's side of plain Automerge sync. Each connection arrives
@@ -21,7 +22,8 @@ import { RECEIVE_LIMITS, RECEIVE_OPEN, receiveStep } from "./receive-queue.mjs";
 //   6. persist: chunk, new claims and manifest in one saveMany
 //   7. adopt the preview, reply (the ack), fan out to the other connections
 //   8. compact when the chunks outgrow the snapshot. The frame is already
-//      stored and acked, so a compaction failure is reported, not refused
+//      stored and acked, so a compaction failure is reported, not refused,
+//      and later writes back off (compaction-machine.mjs)
 //
 // A refusal leaves the live doc and every sync state untouched. Changes the
 // host already holds are filtered in step 3, so re-sending accepted history is
@@ -84,8 +86,12 @@ export const defaultPolicy = {
   /** A frame whose changes were stored and acked: `ms` from its arrival to
    * the ack, `waitMs` of that in the document's queue. */
   synced() {},
-  /** Compaction after an ack failed; the frame's history is already stored. */
+  /** A compaction attempt after an ack failed (`{ failures }` in a row); the
+   * frame's history is already stored. */
   compactionFailed() {},
+  /** A closed browser connection has nothing left running: no later
+   * refusal or round will be reported for it. */
+  released() {},
 };
 
 export class SyncHost {
@@ -132,6 +138,7 @@ export class SyncHost {
         loading: null,
         conns: new Map(),
         queue: Promise.resolve(),
+        compaction: COMPACTION_READY,
       };
       this.#docs.set(id, doc);
     }
@@ -189,7 +196,7 @@ export class SyncHost {
     transport.onMessage((frame) => this.#onFrame(conn, frame));
     transport.onClose(() => {
       conn.closed = true;
-      conn.receive = receiveStep(conn.receive, { type: "close" }, this.limits).state;
+      this.#receive(conn, { type: "close" });
       this.#conns.delete(conn);
       for (const doc of this.#docs.values()) doc.conns.delete(conn);
     });
@@ -257,13 +264,25 @@ export class SyncHost {
         }),
       );
     if (arrived.effect !== "admit") return;
-    const settle = () => {
-      conn.receive = receiveStep(conn.receive, { type: "settle", bytes }, this.limits).state;
-    };
+    const settle = () => this.#receive(conn, { type: "settle", bytes });
+    // Refuse before settling: a closed connection's release follows its
+    // last refusal.
     this.#run(doc, () => this.#sync(conn, doc, frame, received)).then(settle, (error) => {
-      settle();
       this.#refuse(conn, doc, frame, error);
+      settle();
     });
+  }
+
+  /** A close or settle on the receive queue, and its release effect. */
+  #receive(conn, event) {
+    const { state, effect } = receiveStep(conn.receive, event, this.limits);
+    conn.receive = state;
+    if (effect !== "release" || conn.trusted) return;
+    try {
+      this.policy.released(conn);
+    } catch {
+      /* Reporting must not stop the close. */
+    }
   }
 
   /** Free an Automerge handle the host no longer holds. */
@@ -350,16 +369,23 @@ export class SyncHost {
    */
   async #compact(doc) {
     if (!this.store.wantsCompaction(doc.id)) return;
+    const due = compactionStep(doc.compaction, { type: "due" });
+    doc.compaction = due.state;
+    if (due.effect !== "compact") return;
     try {
       await this.store.compact(doc.id, A.save(doc.live), A.getHeads(doc.live));
+      doc.compaction = compactionStep(doc.compaction, { type: "succeeded" }).state;
       this.stats.compactions++;
     } catch (error) {
+      const failed = compactionStep(doc.compaction, { type: "failed" });
+      doc.compaction = failed.state;
       this.stats.compactionFailures++;
-      try {
-        this.policy.compactionFailed(doc, error);
-      } catch {
-        /* Reporting must not fail the frame. */
-      }
+      if (failed.effect === "report")
+        try {
+          this.policy.compactionFailed(doc, error, { failures: failed.state.failures });
+        } catch {
+          /* Reporting must not fail the frame. */
+        }
     }
   }
 

@@ -135,7 +135,8 @@ export class PlainSync {
    *
    * Reporting: `onRefused(conn, refusal, { doc, repeats })` for a refused
    * frame; a browser connection reports each reason once at once, and its
-   * repeats once at close. `onRounds(conn, summary)` reports a browser
+   * repeats once when the closed connection has nothing left running, so a
+   * refusal for a frame still in flight at close is counted too. `onRounds(conn, summary)` reports a browser
    * connection's sync-round latency (plain-sync-log.mjs roundsStep).
    * `onCompactionFailed(doc, error)` reports a compaction that failed after
    * its frame was stored and acked.
@@ -185,7 +186,8 @@ export class PlainSync {
         synced: (conn, _doc, round) => {
           if (!conn.trusted) this.#rounds(conn, { type: "round", ...round });
         },
-        compactionFailed: (doc, error) => onCompactionFailed(doc, error),
+        compactionFailed: (doc, error, attempt) => onCompactionFailed(doc, error, attempt),
+        released: (conn) => this.#released(conn),
       },
     });
   }
@@ -276,7 +278,6 @@ export class PlainSync {
       rounds: ROUNDS_EMPTY,
       refusals: new Map(),
     });
-    transport.onClose(() => this.#closed(conn));
     return conn;
   }
 
@@ -286,8 +287,10 @@ export class PlainSync {
     if (emit) this.onRounds(conn, emit);
   }
 
-  /** A browser socket closed: its last rounds and repeated refusals. */
-  #closed(conn) {
+  /** A closed browser connection with nothing left running: its last rounds
+   * and repeated refusals. */
+  #released(conn) {
+    conn.released = true;
     this.#rounds(conn, { type: "close" });
     for (const { count, refusal, doc } of conn.refusals.values())
       if (count > 1) this.onRefused(conn, refusal, { doc, repeats: count - 1 });
@@ -476,13 +479,14 @@ export class PlainSync {
         .catch(() => {});
     }
     // A client that retries a refused frame refuses again; log the first,
-    // count the rest until the socket closes.
-    const seen = !conn.trusted && !conn.closed && conn.refusals?.get(refusal.code);
+    // count the rest until the closed connection is released.
+    const counted = !conn.trusted && !conn.released && conn.refusals;
+    const seen = counted && conn.refusals.get(refusal.code);
     if (seen) {
       seen.count++;
       return;
     }
-    if (!conn.trusted && !conn.closed) conn.refusals?.set(refusal.code, { count: 1, refusal, doc });
+    if (counted) conn.refusals.set(refusal.code, { count: 1, refusal, doc });
     this.onRefused(conn, refusal, { doc, repeats: 0 });
   }
 }
