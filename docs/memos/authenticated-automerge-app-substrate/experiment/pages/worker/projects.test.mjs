@@ -1882,7 +1882,9 @@ test("a shared parent's readable children past the first 100 are reached through
   const children = [];
   for (let index = 0; index < sharedChildBounds.scan + 5; index++)
     children.push(
-      (await w.createPage({ title: `Child ${index}`, parent_id: parent })).body.page_id,
+      // Padded, so a title search for one child matches no other.
+      (await w.createPage({ title: `Child ${String(index).padStart(3, "0")}`, parent_id: parent }))
+        .body.page_id,
     );
   // Rows order by Page ID, descending, so the two smallest IDs sit past the
   // first 100 children a request checks.
@@ -1912,7 +1914,7 @@ test("a shared parent's readable children past the first 100 are reached through
   assert.deepEqual(all.seen.sort(), readable);
   assert.equal(all.requests, 2);
   // Title search reaches a readable child past the bound too.
-  const title = `Child ${children.indexOf(readable[0])}`;
+  const title = `Child ${String(children.indexOf(readable[0])).padStart(3, "0")}`;
   const searched = await follow({ query: title });
   assert.deepEqual(searched.seen, [readable[0]]);
 });
