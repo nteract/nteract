@@ -20,6 +20,7 @@ import path from "node:path";
 import {
   deploymentProfile,
   assertQualifiedDeploymentTarget,
+  assertReleaseOpensTargetPages,
   stageTarget,
   verifyDeployment,
   verifyRuntime,
@@ -119,6 +120,31 @@ if (owned) {
   if (ownership.prefix !== expected.prefix || ownership.hostname !== expected.hostname)
     throw new Error("Existing service has different ownership");
 }
+// The record storage every release installed here was configured to create
+// Pages with. With the profile and its history, it names the Pages this
+// target may hold; a release that can't open them is refused before any write.
+const releaseStorage = (sha) => {
+  const file = base + "/releases/" + sha + "/wrangler.json";
+  if (!existsSync(file)) return undefined;
+  try {
+    return JSON.parse(readFileSync(file, "utf8")).vars?.PAGES_RECORD_STORAGE;
+  } catch {
+    // A partial copy from an interrupted install has no configured vars yet.
+    return undefined;
+  }
+};
+const installedReleases =
+  owned && existsSync(base + "/releases")
+    ? readdirSync(base + "/releases").filter((name) => /^[a-f0-9]{40}$/.test(name))
+    : [];
+const observedStorage = installedReleases
+  .map((sha) => ({ mode: releaseStorage(sha), release: sha.slice(0, 12) }))
+  .filter(({ mode }) => mode);
+assertReleaseOpensTargetPages(
+  target,
+  { ...manifest.build_receipt, source_sha: manifest.source_sha },
+  observedStorage,
+);
 const helpers = ["firewall.mjs", "profiles.mjs"];
 const helpersHash = (directory) =>
   hash(helpers.map((helper) => hash(readFileSync(directory + "/" + helper))).join("\n"));
@@ -469,6 +495,31 @@ function rollback(error) {
       );
     });
   const release = prior ? base + "/releases/" + prior.slice("rollout-".length) : null;
+  // Name the way back only to a release that opens every Page this target may
+  // hold; its rollout manifest carries its build receipt.
+  let refusal = null;
+  let earlier = null;
+  if (prior)
+    try {
+      earlier = JSON.parse(readFileSync(configDir + "/" + prior + "/manifest.json", "utf8"));
+    } catch {
+      refusal = `Its rollout manifest ${configDir}/${prior}/manifest.json is unreadable, so the Pages it opens are unknown.`;
+    }
+  if (earlier)
+    try {
+      assertReleaseOpensTargetPages(
+        target,
+        { ...earlier.build_receipt, source_sha: earlier.source_sha },
+        observedStorage,
+      );
+    } catch (reason) {
+      refusal = reason.message;
+    }
+  if (refusal)
+    return new Error(
+      `${error.message}. The fleet pointer names ${deployedVersion}; the previous deployment ` +
+        `${previous.version} is recorded in ${previousPath}, but do not roll back to it. ${refusal}`,
+    );
   return new Error(
     `${error.message}. The fleet pointer names ${deployedVersion}; the previous deployment ` +
       `${previous.version} is recorded in ${previousPath}. Roll back with: ` +

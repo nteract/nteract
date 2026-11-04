@@ -328,6 +328,8 @@ test("release staging copies only built artifacts, never development credentials
 
 // The deployment version the fixture's `celld deploy` reports.
 const DEPLOYED = "c0ffee0123456789";
+// What a build receipt lists as `record_storage` since the list exists.
+const CURRENT_RECORD_STORAGE = ["local", "buffered", "automerge"];
 function installFixture(
   t,
   {
@@ -351,6 +353,8 @@ function installFixture(
     health = (build) => JSON.stringify({ ok: true, prototype: "pages-celld-native", build }),
     // A fake clock that `sleep` advances, for adoption timeouts.
     clock,
+    // The staged release's build receipt. The default is a current build.
+    buildReceipt = { build_id: "0123456789ab", record_storage: CURRENT_RECORD_STORAGE },
   } = {},
 ) {
   const root = mkdtempSync(path.join(tmpdir(), "pages-install-retry-"));
@@ -392,7 +396,7 @@ function installFixture(
   const manifest = {
     source_sha: "a".repeat(40),
     source_tree: "b".repeat(40),
-    build_receipt: { build_id: "0123456789ab" },
+    build_receipt: buildReceipt,
     deployment,
     runtime: { version: profiles.CELLD_RELEASE.version, sha256: profiles.CELLD_RELEASE.sha256 },
     files: Object.fromEntries(Object.entries(files).map(([file, value]) => [file, digest(value)])),
@@ -1629,7 +1633,7 @@ function nextRelease(f, build = "ba9876543210", source = "c") {
   const manifest = {
     ...f.manifest,
     source_sha: source.repeat(40),
-    build_receipt: { build_id: build },
+    build_receipt: { ...f.manifest.build_receipt, build_id: build },
   };
   f.write(f.stage + "/manifest.json", JSON.stringify(manifest));
   return manifest;
@@ -2044,4 +2048,126 @@ test("a node that never adopts fails the install after the local record", (t) =>
     ),
   );
   assert.equal(JSON.parse(f.read(f.configDir + "/running.json")).schema, 2);
+});
+
+// Record storage: a release must open every Page record storage its target may
+// hold. A build from before `record_storage` was recorded opens none beyond the
+// native modes.
+const PRE_PLAIN = { source_sha: "d".repeat(40), build_id: "9ae4ed83e44e" };
+const PLAIN = { ...PRE_PLAIN, record_storage: CURRENT_RECORD_STORAGE };
+
+test("a release without plain storage is refused for a target that has enabled it", () => {
+  for (const receipt of [PRE_PLAIN, { ...PRE_PLAIN, record_storage: ["local", "buffered"] }])
+    assert.throws(
+      () => profiles.assertReleaseOpensTargetPages("page10", receipt),
+      (error) => {
+        assert.match(error.message, /^Refusing release d{12} \(build 9ae4ed83e44e\) for page10: /);
+        assert.match(error.message, /page10 may hold "automerge" Pages/);
+        assert.match(error.message, /RECORD_STORAGE_HISTORY lists it; its profile sets/);
+        assert.match(error.message, /Unsupported Page record storage mode/);
+        return true;
+      },
+    );
+});
+
+test("a release that declares plain storage qualifies for a target that has enabled it", () => {
+  assert.doesNotThrow(() => profiles.assertReleaseOpensTargetPages("page10", PLAIN));
+});
+
+test("a target that never enabled plain storage accepts a release without it", () => {
+  assert.equal(profiles.targetRecordStorage("pages").size, 0);
+  assert.doesNotThrow(() => profiles.assertReleaseOpensTargetPages("pages", PRE_PLAIN));
+  // Unless its host has run a release configured to create plain Pages.
+  assert.throws(
+    () =>
+      profiles.assertReleaseOpensTargetPages("pages", PRE_PLAIN, [
+        { mode: "automerge", release: "a2c9d5dded35" },
+      ]),
+    /pages may hold "automerge" Pages \(release a2c9d5dded35 on the host was configured with it\)/,
+  );
+});
+
+test("every target that sets recordStorage records it in RECORD_STORAGE_HISTORY", () => {
+  for (const target of [
+    "pages-next",
+    "page3",
+    "page4",
+    "page5",
+    "page6",
+    "page7",
+    "page8",
+    "page9",
+    "page10",
+    "pages",
+  ]) {
+    const mode = profiles.deploymentProfile(target).recordStorage;
+    if (mode) assert.ok(profiles.RECORD_STORAGE_HISTORY[target]?.includes(mode), target);
+  }
+  // A Page keeps its mode for life, so history outlives the profile flag.
+  assert.deepEqual(profiles.RECORD_STORAGE_HISTORY.page10, ["automerge"]);
+});
+
+test("the build receipt lists every record storage mode the Worker opens", async () => {
+  const { RECORD_STORAGE_MODES } = await import("../shared/record-storage.mjs");
+  assert.deepEqual([...RECORD_STORAGE_MODES], CURRENT_RECORD_STORAGE);
+  const source = fs.readFileSync(new URL("./source-fingerprint.mjs", import.meta.url), "utf8");
+  assert.match(source, /record_storage: \[\.\.\.RECORD_STORAGE_MODES\]/);
+  const worker = fs.readFileSync(new URL("../worker/index.mjs", import.meta.url), "utf8");
+  assert.match(worker, /!RECORD_STORAGE_MODES\.includes\(metadata\.recordStorage\)/);
+});
+
+test("Page10 refuses to install a release without plain storage before any write", (t) => {
+  const f = installFixture(t, {
+    target: "page10",
+    installedRuntime: { version: "celld 0.6.3", bytes: "qualified runtime" },
+    buildReceipt: { build_id: PRE_PLAIN.build_id },
+  });
+  assert.throws(f.execute, /Refusing release a{12} \(build 9ae4ed83e44e\) for page10: /);
+  assert.ok(f.calls.every(({ args }) => args[0] === "--version"));
+  assert.equal(fs.existsSync(f.local(f.release)), false);
+  assert.equal(fs.existsSync(f.local(f.audit)), false);
+  assert.deepEqual(JSON.parse(f.read(f.configDir + "/deployment.json")), { id: "previous" });
+});
+
+test("Pages installs a release without plain storage", (t) => {
+  const f = installFixture(t, { target: "pages", buildReceipt: { build_id: PRE_PLAIN.build_id } });
+  f.execute();
+  assert.equal(f.outputs.at(-1).installed, true);
+});
+
+test("a host release configured with plain storage blocks a release without it", (t) => {
+  const f = installFixture(t, { target: "pages", buildReceipt: { build_id: PRE_PLAIN.build_id } });
+  f.write(
+    "/opt/nteract-pages-live/releases/" + "e".repeat(40) + "/wrangler.json",
+    JSON.stringify({ vars: { PAGES_RECORD_STORAGE: "automerge" } }),
+  );
+  assert.throws(f.execute, /release e{12} on the host was configured with it/);
+  assert.equal(fs.existsSync(f.local(f.release)), false);
+});
+
+test("a timeout does not name a rollback to a release without plain storage", (t) => {
+  const clock = { now: 1_000_000 };
+  const f = liveFixture(t, {
+    clock,
+    health: () =>
+      JSON.stringify({ ok: true, prototype: "pages-celld-native", build: "0123456789ab" }),
+  });
+  // The previous deployment predates record_storage in build receipts.
+  const earlier = f.audit + "/manifest.json";
+  const recorded = JSON.parse(f.read(earlier));
+  f.write(earlier, JSON.stringify({ ...recorded, build_receipt: { build_id: "0123456789ab" } }));
+  nextRelease(f);
+  let message = "";
+  try {
+    f.execute(["--restart"]);
+  } catch (error) {
+    message = error.message;
+  }
+  assert.match(message, /did not serve within 240000 ms/);
+  assert.match(
+    message,
+    /previous deployment c0ffee0123456789 is recorded in .*, but do not roll back/,
+  );
+  assert.match(message, /Refusing release a{12} \(build 0123456789ab\) for page10: /);
+  assert.doesNotMatch(message, /Roll back with/);
 });

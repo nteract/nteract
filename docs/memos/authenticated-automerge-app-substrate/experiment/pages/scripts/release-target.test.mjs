@@ -100,17 +100,49 @@ for (const target of QUALIFIED_TARGETS)
     }
   });
 
+// A fake ssh: `cat <stage>/manifest.json` prints `manifest`; any other command
+// logs its arguments to `log` and prints `{}`.
+const fakeSsh = (log, manifest) =>
+  `#!/bin/sh\ncase "$*" in\n  *"cat "*manifest.json*) cat '${manifest}' ;;\n  *) printf '%s\\n' "$@" > '${log}'; echo '{}' ;;\nesac\n`;
+
+test("install refuses a staged release without plain storage before the host installer", (t) => {
+  const directory = mkdtempSync(path.join(tmpdir(), "page10-install-storage-"));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const log = path.join(directory, "ssh-args");
+  const manifest = path.join(directory, "manifest.json");
+  writeFileSync(
+    manifest,
+    JSON.stringify({ source_sha: "d".repeat(40), build_receipt: { build_id: "9ae4ed83e44e" } }),
+  );
+  writeFileSync(path.join(directory, "ssh"), fakeSsh(log, manifest), { mode: 0o700 });
+  const env = { ...process.env, PATH: directory + path.delimiter + process.env.PATH };
+  const stage = `/tmp/${deploymentProfile("page10").deployment.service}-stage-ZZstorag`;
+  const result = spawnSync(
+    process.execPath,
+    [path.join(scripts, "deploy.mjs"), "--target", "page10", "install", stage, "--apply"],
+    { env, encoding: "utf8", timeout: 5000 },
+  );
+  assert.equal(result.status, 1, result.stderr);
+  assert.match(result.stderr, /Refusing release d{12} \(build 9ae4ed83e44e\) for page10: /);
+  assert.equal(existsSync(log), false, "the host installer must not run");
+});
+
 test("install --restart reaches the host installer; other extra flags do not", (t) => {
   const directory = mkdtempSync(path.join(tmpdir(), "page10-install-restart-"));
   t.after(() => rmSync(directory, { recursive: true, force: true }));
   const log = path.join(directory, "ssh-args");
+  const manifest = path.join(directory, "manifest.json");
   writeFileSync(
-    path.join(directory, "ssh"),
-    `#!/bin/sh\nprintf '%s\\n' "$@" > '${log}'\necho '{}'\n`,
-    {
-      mode: 0o700,
-    },
+    manifest,
+    JSON.stringify({
+      source_sha: "a".repeat(40),
+      build_receipt: {
+        build_id: "0123456789ab",
+        record_storage: ["local", "buffered", "automerge"],
+      },
+    }),
   );
+  writeFileSync(path.join(directory, "ssh"), fakeSsh(log, manifest), { mode: 0o700 });
   const env = { ...process.env, PATH: directory + path.delimiter + process.env.PATH };
   const stage = `/tmp/${deploymentProfile("page10").deployment.service}-stage-ZZrstart`;
   const deploy = (...args) =>
