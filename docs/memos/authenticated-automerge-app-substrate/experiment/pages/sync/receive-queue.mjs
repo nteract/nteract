@@ -7,10 +7,14 @@
 //   open        counting frames; an arrival over either limit overflows
 //   overflowed  the host refused the arrival that overflowed and closed the
 //               socket; later arrivals are dropped, settles still count down
-//   closed      the socket closed; nothing is counted
+//   closing     the socket closed with frames still running; settles count
+//               down, arrivals are dropped
+//   closed      the socket closed and every frame settled
 //
 // `receiveStep` is the only transition. The host runs the effect it returns:
-// "admit" queues the frame, "refuse" refuses it and closes, "drop" ignores it.
+// "admit" queues the frame, "refuse" refuses it and closes, "drop" ignores it,
+// "release" reports that the closed connection has nothing left running, so
+// anything it reported (a refusal, a round) has been reported.
 
 export const RECEIVE_LIMITS = Object.freeze({
   maxFrames: 256,
@@ -25,14 +29,18 @@ const settled = (state, bytes) => ({
   frames: Math.max(0, state.frames - 1),
   bytes: Math.max(0, state.bytes - bytes),
 });
+const closing = (state) =>
+  state.frames === 0
+    ? { state: CLOSED, effect: "release" }
+    : { state: { ...state, phase: "closing" }, effect: null };
 
 /**
  * One transition. Events: `{ type: "arrive", bytes }`, `{ type: "settle",
  * bytes }` (the bytes its arrival counted) and `{ type: "close" }`.
- * Returns `{ state, effect }`; effect is "admit", "refuse", "drop" or null.
+ * Returns `{ state, effect }`; effect is "admit", "refuse", "drop",
+ * "release" or null.
  */
 export function receiveStep(state, event, limits = RECEIVE_LIMITS) {
-  if (event.type === "close") return { state: CLOSED, effect: null };
   switch (state.phase) {
     case "open":
       if (event.type === "arrive") {
@@ -48,14 +56,21 @@ export function receiveStep(state, event, limits = RECEIVE_LIMITS) {
         };
       }
       if (event.type === "settle") return { state: settled(state, event.bytes), effect: null };
+      if (event.type === "close") return closing(state);
       break;
     case "overflowed":
       if (event.type === "arrive") return { state, effect: "drop" };
       if (event.type === "settle") return { state: settled(state, event.bytes), effect: null };
+      if (event.type === "close") return closing(state);
+      break;
+    case "closing":
+      if (event.type === "arrive") return { state, effect: "drop" };
+      if (event.type === "settle") return closing(settled(state, event.bytes));
+      if (event.type === "close") return { state, effect: null };
       break;
     case "closed":
       if (event.type === "arrive") return { state, effect: "drop" };
-      if (event.type === "settle") return { state, effect: null };
+      if (event.type === "settle" || event.type === "close") return { state, effect: null };
       break;
   }
   throw new TypeError(`No receive transition for ${event.type} in ${state.phase}`);

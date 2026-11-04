@@ -109,6 +109,7 @@ import {
 import { BufferedRecordStore, RemoteRecordSink } from "./record-persistence.mjs";
 import { RecordMaintenance } from "./record-maintenance.mjs";
 import { HOST_SENDER_ID, PlainSync, plainSessionReplaced } from "./plain-sync.mjs";
+import { logSyncRefused, logSyncRounds } from "./plain-sync-log.mjs";
 import { BLOCKING as BLOCKING_COMMENT_CODES } from "../sync/comments.mjs";
 import {
   ActorAuthorship,
@@ -3856,11 +3857,26 @@ export class Page {
       policy,
       pageFeatures: () => (this.handle ? documentFeatures(this.handle.doc()) : []),
       writeFence: () => this.conversionWriteFence(),
-      onRefused: (conn, refusal) => {
-        if (conn.trusted) logFailure(refusal, "plain-host-write");
-        else if (BLOCKING_COMMENT_CODES.has(refusal.code))
+      onRefused: (conn, refusal, { doc, repeats }) => {
+        if (conn.trusted) return logFailure(refusal, "plain-host-write");
+        logSyncRefused({
+          pageId: metadata?.pageId,
+          kind: doc.kind,
+          refusal,
+          credential: conn.identity?.credentialKind,
+          repeats,
+        });
+        // Native admission logs this event too; keep it for comment queries.
+        if (!repeats && BLOCKING_COMMENT_CODES.has(refusal.code))
           logCommentRefused(metadata?.pageId, { code: refusal.code });
       },
+      onRounds: (conn, summary) =>
+        logSyncRounds({
+          pageId: metadata?.pageId,
+          summary,
+          credential: conn.identity?.credentialKind,
+        }),
+      onCompactionFailed: (_doc, error) => logFailure(error, "plain-compaction"),
       // PlainSync already published the delta to the Page's readers.
       onActors: () => {},
       // A browser receives host messages once it has joined the Page document.

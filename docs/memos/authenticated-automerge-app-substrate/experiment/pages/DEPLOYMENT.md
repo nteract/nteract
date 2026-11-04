@@ -898,6 +898,17 @@ one flush interval of events. A line the Worker fails to build or write is
 counted, and the next line carries the count as `dropped`.
 [scripts/usage-report.sql](scripts/usage-report.sql) summarizes them with
 duckdb straight from the log Parquet.
+
+Pages on plain Automerge sync add two lines from
+[worker/plain-sync-log.mjs](worker/plain-sync-log.mjs), with the Page id but
+no principal: `page.sync_refused` for a browser frame the host refused
+(`reason`, and for a fatal refusal the close `code`, `status` and `close`;
+repeats on one connection, including frames refused after its close, are
+counted into one line once it has nothing left running), and
+`page.sync_rounds`, a per-connection summary of the time from a frame's
+arrival to its ack for frames that stored changes (`latency_ms_sum`,
+`latency_ms_max`, `wait_ms_sum` and `latency_ms_buckets` by inclusive upper
+bound), every 256 rounds and at close.
 See the [pinned runtime telemetry contract](https://github.com/denoland/celld/blob/8702f6d186c77698dbfb30cf29e3b1922a88f008/docs/telemetry.md).
 
 ## Cloudflare packaging fixture

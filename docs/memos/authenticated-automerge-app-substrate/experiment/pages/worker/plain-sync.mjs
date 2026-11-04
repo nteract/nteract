@@ -14,6 +14,7 @@ import {
   logAdmissionDenied,
   withAdmissionReason,
 } from "./admission-reasons.mjs";
+import { ROUNDS_EMPTY, roundsStep } from "./plain-sync-log.mjs";
 import { PermissionDenied, credentialExpired } from "./policy.mjs";
 
 // The Page host for `recordStorage: "automerge"` Pages: plain Automerge sync
@@ -130,8 +131,15 @@ export class PlainSync {
   /**
    * `policy` is the Page's DocumentPolicy. `features(doc)` is that document's
    * schema stamp; `writeFence()` returns the refusal while the host holds peer
-   * writes. `onRefused(conn, refusal)` logs; `onActors(delta)` publishes actor
-   * profiles and attested changes.
+   * writes. `onActors(delta)` publishes actor profiles and attested changes.
+   *
+   * Reporting: `onRefused(conn, refusal, { doc, repeats })` for a refused
+   * frame; a browser connection reports each reason once at once, and its
+   * repeats once when the closed connection has nothing left running, so a
+   * refusal for a frame still in flight at close is counted too. `onRounds(conn, summary)` reports a browser
+   * connection's sync-round latency (plain-sync-log.mjs roundsStep).
+   * `onCompactionFailed(doc, error)` reports a compaction that failed after
+   * its frame was stored and acked.
    */
   constructor({
     storage,
@@ -140,6 +148,8 @@ export class PlainSync {
     pageFeatures = () => [],
     writeFence = () => undefined,
     onRefused = () => {},
+    onRounds = () => {},
+    onCompactionFailed = () => {},
     onActors = () => {},
     onJoined = () => {},
   }) {
@@ -149,6 +159,7 @@ export class PlainSync {
     this.now = now;
     this.writeFence = writeFence;
     this.onRefused = onRefused;
+    this.onRounds = onRounds;
     this.onActors = onActors;
     this.blocked = new Set();
     this.recent = new Map();
@@ -172,6 +183,11 @@ export class PlainSync {
           if (!conn.trusted) onJoined(conn, doc);
         },
         refused: (conn, doc, refusal) => this.#refused(conn, doc, refusal),
+        synced: (conn, _doc, round) => {
+          if (!conn.trusted) this.#rounds(conn, { type: "round", ...round });
+        },
+        compactionFailed: (doc, error, attempt) => onCompactionFailed(doc, error, attempt),
+        released: (conn) => this.#released(conn),
       },
     });
   }
@@ -249,7 +265,7 @@ export class PlainSync {
         ),
     });
     const access = this.policy.account(identity);
-    return this.host.accept(transport, {
+    const conn = this.host.accept(transport, {
       identity,
       principal: identity.principal,
       displayName: identity.displayName,
@@ -259,7 +275,26 @@ export class PlainSync {
       access: accessShape(access),
       role: access.role,
       expiresAt: this.policy.leaseExpiresAt(identity),
+      rounds: ROUNDS_EMPTY,
+      refusals: new Map(),
     });
+    return conn;
+  }
+
+  #rounds(conn, event) {
+    const { state, emit } = roundsStep(conn.rounds, event);
+    conn.rounds = state;
+    if (emit) this.onRounds(conn, emit);
+  }
+
+  /** A closed browser connection with nothing left running: its last rounds
+   * and repeated refusals. */
+  #released(conn) {
+    conn.released = true;
+    this.#rounds(conn, { type: "close" });
+    for (const { count, refusal, doc } of conn.refusals.values())
+      if (count > 1) this.onRefused(conn, refusal, { doc, repeats: count - 1 });
+    conn.refusals.clear();
   }
 
   /**
@@ -443,6 +478,15 @@ export class PlainSync {
         .put(BLOCKED + conn.principal, { code: refusal.code, at: this.now() })
         .catch(() => {});
     }
-    this.onRefused(conn, refusal);
+    // A client that retries a refused frame refuses again; log the first,
+    // count the rest until the closed connection is released.
+    const counted = !conn.trusted && !conn.released && conn.refusals;
+    const seen = counted && conn.refusals.get(refusal.code);
+    if (seen) {
+      seen.count++;
+      return;
+    }
+    if (counted) conn.refusals.set(refusal.code, { count: 1, refusal, doc });
+    this.onRefused(conn, refusal, { doc, repeats: 0 });
   }
 }
