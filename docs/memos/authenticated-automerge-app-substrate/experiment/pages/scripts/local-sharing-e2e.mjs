@@ -41,6 +41,7 @@ const revocation = process.argv.includes("--revocation");
 const coldOpen = process.argv.includes("--cold-open");
 const commenter = process.argv.includes("--commenter");
 const contentActivity = process.argv.includes("--content-activity");
+const cards = process.argv.includes("--cards");
 const listingBench = process.argv.includes("--listing-bench");
 // Starts native, then restarts celld with plain sync and migration on.
 const migration = process.argv.includes("--migration");
@@ -59,12 +60,13 @@ if (
     coldOpen,
     commenter,
     contentActivity,
+    cards,
     listingBench,
     migration,
   ].filter(Boolean).length > 1
 )
   throw new Error(
-    "Choose one qualification: --domain-view, --images, --datasets, --mcp-images, --task-lists, --admission, --build-update, --trash, --projects, --revocation, --cold-open, --commenter, --content-activity, --listing-bench or --migration",
+    "Choose one qualification: --domain-view, --images, --datasets, --mcp-images, --task-lists, --admission, --build-update, --trash, --projects, --revocation, --cold-open, --commenter, --content-activity, --cards, --listing-bench or --migration",
   );
 const children = new Set();
 let canceled = false;
@@ -385,37 +387,39 @@ try {
   await run(
     process.execPath,
     [
-      contentActivity
-        ? "scripts/content-activity-smoke.mjs"
-        : revocation
-          ? "scripts/revocation-smoke.mjs"
-          : coldOpen
-            ? "scripts/cold-open-benchmark.mjs"
-            : commenter
-              ? "scripts/commenter-smoke.mjs"
-              : projects
-                ? "scripts/projects-smoke.mjs"
-                : trash
-                  ? "scripts/trash-smoke.mjs"
-                  : admission
-                    ? "scripts/admission-smoke.mjs"
-                    : taskLists
-                      ? "scripts/task-lists-smoke.mjs"
-                      : mcpImages
-                        ? "scripts/mcp-image-import-smoke.mjs"
-                        : images
-                          ? "scripts/images-smoke.mjs"
-                          : datasets
-                            ? "scripts/datasets-smoke.mjs"
-                            : domainView
-                              ? "scripts/domain-sharing-smoke.mjs"
-                              : buildUpdate
-                                ? "scripts/build-update-smoke.mjs"
-                                : listingBench
-                                  ? "scripts/listing-benchmark.mjs"
-                                  : migration
-                                    ? "scripts/record-storage-migration-smoke.mjs"
-                                    : "scripts/sharing-smoke.mjs",
+      cards
+        ? "scripts/cards-smoke.mjs"
+        : contentActivity
+          ? "scripts/content-activity-smoke.mjs"
+          : revocation
+            ? "scripts/revocation-smoke.mjs"
+            : coldOpen
+              ? "scripts/cold-open-benchmark.mjs"
+              : commenter
+                ? "scripts/commenter-smoke.mjs"
+                : projects
+                  ? "scripts/projects-smoke.mjs"
+                  : trash
+                    ? "scripts/trash-smoke.mjs"
+                    : admission
+                      ? "scripts/admission-smoke.mjs"
+                      : taskLists
+                        ? "scripts/task-lists-smoke.mjs"
+                        : mcpImages
+                          ? "scripts/mcp-image-import-smoke.mjs"
+                          : images
+                            ? "scripts/images-smoke.mjs"
+                            : datasets
+                              ? "scripts/datasets-smoke.mjs"
+                              : domainView
+                                ? "scripts/domain-sharing-smoke.mjs"
+                                : buildUpdate
+                                  ? "scripts/build-update-smoke.mjs"
+                                  : listingBench
+                                    ? "scripts/listing-benchmark.mjs"
+                                    : migration
+                                      ? "scripts/record-storage-migration-smoke.mjs"
+                                      : "scripts/sharing-smoke.mjs",
     ],
     {
       env: {

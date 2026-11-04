@@ -30,21 +30,39 @@ function fill(spec, children) {
   return out;
 }
 
-function renderNode(node) {
+/**
+ * One schema node as preview content: an array of preview nodes. Without
+ * `overrides` it is the node's toDOM rendering. `overrides.node(node,
+ * children)` may return a replacement array for a node, where `children()`
+ * renders its content with the same overrides; `overrides.mark(mark,
+ * content)` may return a replacement for a mark's wrapper. Returning
+ * undefined keeps the schema's own rendering. Cards (page-card.mjs) use them.
+ */
+export function renderNode(node, overrides) {
   if (node.isText) {
     // Marks apply outermost first, the order ProseMirror's serializer uses.
     let content = [node.text];
     for (const mark of [...node.marks].reverse()) {
+      const replaced = overrides?.mark?.(mark, content);
+      if (replaced) {
+        content = replaced;
+        continue;
+      }
       const toDOM = mark.type.spec.toDOM;
       content = toDOM ? [fill(toDOM(mark, true), content)] : content;
     }
     return content;
   }
-  const children = [];
-  node.forEach((child) => children.push(...renderNode(child)));
+  const children = () => {
+    const out = [];
+    node.forEach((child) => out.push(...renderNode(child, overrides)));
+    return out;
+  };
+  const replaced = overrides?.node?.(node, children);
+  if (replaced) return replaced;
   const toDOM = node.type.spec.toDOM;
   // Unknown or unrenderable nodes keep their text.
-  return toDOM ? [fill(toDOM(node), children)] : children;
+  return toDOM ? [fill(toDOM(node), children())] : children();
 }
 
 /** One block's preview content, or null when it can't be rendered. */

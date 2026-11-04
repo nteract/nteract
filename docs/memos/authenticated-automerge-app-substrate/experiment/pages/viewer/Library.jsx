@@ -11,6 +11,9 @@
 // two library addresses hand the mounted library its new `view`: a grouping
 // alone changes nothing on the wire, and focus stays where it was.
 //
+// In grid mode each card loads its Page's card preview as it scrolls into
+// view (page-cards.mjs); the loader lives as long as this mount.
+//
 // A first page this tab showed before paints from memory (listing-cache.mjs)
 // while the Listing asks for it again, so a return visit within the cache's
 // age limit never starts blank. What a shown page says besides its rows (the
@@ -54,6 +57,7 @@ import { readDisplayMode, writeDisplayMode } from "./display-mode.mjs";
 import { timeCell } from "./relative-time.mjs";
 import { Clock } from "./clock.mjs";
 import { PageCardPreview } from "./PageCardPreview.jsx";
+import { IDLE_CARD, PageCards, cardKeyOf } from "./page-cards.mjs";
 import { ChoiceMenu } from "./ChoiceMenu.jsx";
 import { IndexNav, ListingFooter, follow, useConnected } from "./IndexViews.jsx";
 
@@ -187,6 +191,9 @@ export function Library({
   };
 
   const [display, setDisplay] = useState(() => (grid ? readDisplayMode(browser()) : "list"));
+  // Card previews for grid mode, one loader per mount. List mode never asks,
+  // and neither does a grid that doesn't know its account.
+  const cards = useConnected(() => new PageCards({ tool, principal }));
   const chooseDisplay = useCallback((mode) => {
     const shown = writeDisplayMode(browser(), mode);
     if (shown) setDisplay(shown);
@@ -390,6 +397,7 @@ export function Library({
           onOpenProject={onOpenProject}
           onCopyLink={onCopyLink}
           onWarm={onWarm}
+          cards={cards}
         />
       )}
       {!view.failed && (
@@ -586,33 +594,52 @@ function PageList({ sections, grouping, busy, now, onOpen, onOpenProject, onCopy
 
 /** Grid mode: each card is one link to its Page, so it carries no Project
  * label (a link inside a link). */
-function PageGrid({ sections, busy, onOpen, onOpenProject, onWarm }) {
+function PageGrid({ sections, busy, onOpen, onOpenProject, onWarm, cards }) {
+  // The order batches top up in (page-cards.mjs): the cards as shown.
+  useEffect(() => cards.arrange(sections.flatMap((section) => section.rows)), [cards, sections]);
   return (
     <div className="library-results" aria-busy={busy}>
       <Sections sections={sections} onOpenProject={onOpenProject}>
         {(section, name) => (
           <ul className="index-grid" aria-label={name}>
             {section.rows.map((row) => (
-              <li className="index-card" key={row.id}>
-                <a
-                  className="index-card-link"
-                  href={row.href}
-                  onPointerDown={onWarm}
-                  onClick={follow(() => onOpen(row.id))}
-                >
-                  <span className="index-card-header">
-                    <PageIcon home={row.home} className="index-card-icon" size={16} />
-                    <span className="index-card-title" title={row.title}>
-                      {row.title}
-                    </span>
-                  </span>
-                  <PageCardPreview home={row.home} />
-                </a>
-              </li>
+              <GridCard key={row.id} row={row} cards={cards} onOpen={onOpen} onWarm={onWarm} />
             ))}
           </ul>
         )}
       </Sections>
     </div>
+  );
+}
+
+/** One grid card. A row the server listed asks for its card once it nears
+ * the viewport; a row only this browser holds has none to ask for. */
+function GridCard({ row, cards, onOpen, onWarm }) {
+  const element = useRef(null);
+  const key = cardKeyOf(row);
+  const listed = !row.local;
+  useEffect(
+    () => (listed ? cards.observe(element.current, row) : undefined),
+    // `row` is read when the key changes; its other fields don't change the ask.
+    [cards, key, listed],
+  );
+  const state = useStore(cards.store, (current) => current.get(key) ?? IDLE_CARD);
+  return (
+    <li className="index-card" ref={element}>
+      <a
+        className="index-card-link"
+        href={row.href}
+        onPointerDown={onWarm}
+        onClick={follow(() => onOpen(row.id))}
+      >
+        <span className="index-card-header">
+          <PageIcon home={row.home} className="index-card-icon" size={16} />
+          <span className="index-card-title" title={row.title}>
+            {row.title}
+          </span>
+        </span>
+        <PageCardPreview home={row.home} card={state.name === "shown" ? state.card : null} />
+      </a>
+    </li>
   );
 }
