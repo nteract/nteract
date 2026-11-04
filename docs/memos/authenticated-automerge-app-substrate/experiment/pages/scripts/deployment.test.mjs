@@ -1358,6 +1358,13 @@ test("every deploy profile owns distinct hosts, ports, prefixes and firewall res
     claim("firewallTable", profile.firewallTable, target);
     claim("firewallMark", profile.firewallMark, target);
     claim("tunnelService", profile.tunnelService, target);
+    // Connector slots are tunnel units too, and their metrics listeners share
+    // the host's port namespace with every Pages listener.
+    for (const slot of Object.values(profile.tunnelSlots ?? {})) {
+      claim("tunnelService", slot.service, target);
+      assert.match(slot.metrics, /^127[.]0[.]0[.]1:\d+$/, target);
+      claim("port", slot.metrics.split(":").at(-1), target);
+    }
   }
 });
 
@@ -1528,6 +1535,7 @@ test("fresh Pages installation owns pages.runtimed.run and its -live resources",
     "firewallMark",
     "firewallComment",
     "tunnelService",
+    "tunnelSlots",
     "recordStorage",
   ];
   const flags = (name) =>

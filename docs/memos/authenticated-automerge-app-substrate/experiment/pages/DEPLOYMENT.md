@@ -25,7 +25,7 @@ The `pages` profile owns `pages.runtimed.run`:
 | Prefix | `standalone/pages-live` in the lab1 fleet bucket |
 | Listeners | `127.0.0.1:9481`, internal `127.0.0.1:19481` |
 | Firewall | table `nteract_pages_live`, mark `0x00100000` |
-| Tunnel service | `cloudflared-pages-live.service`, tunnel `nteract-pages-live` |
+| Tunnel connectors | `cloudflared-pages-live-a.service` (metrics `127.0.0.1:29481`) and `cloudflared-pages-live-b.service` (`127.0.0.1:29491`), tunnel `nteract-pages-live`; see [Connector handoff](#connector-handoff) |
 | Frozen neighbors | `page7`, `page8`, `page9` |
 
 It carries every Page10 flag, the Page quota default and D1 binding, and the
@@ -836,7 +836,7 @@ first, and refuses any other file of that shape in `public`.
 
 Page10 and Pages admit `sift-<hash>.wasm` through their own route group, which
 Page9 never had. Each publisher migrates only from its config without that
-group, so the first release with Sift tables restarts that target's connector
+group, so the first release with Sift tables hands off that target's connector
 once; later releases are no-ops.
 
 All three admit Project links: `/project/<id>` and the older `/s/<id>`, where the
@@ -858,6 +858,80 @@ sign-in works on a new target. For Pages, add
 `https://pages.runtimed.run/oidc` to client
 `1a90d36b-5b97-4ebb-a1bc-f3de7ddb70e0`. That change is made in the identity
 provider; no helper here does it.
+
+### Connector handoff
+
+Page10 and Pages run their tunnel on two connector units, slots `a` and `b`
+(`cloudflared-page10-a.service`, `cloudflared-page10-b.service`, and the same
+with `pages-live` for Pages). One is live. Cloudflare balances a tunnel's
+traffic across every connector it holds, so two connectors can serve at once.
+
+cloudflared reads its ingress only at startup. Restarting a lone connector to
+load new routes leaves the edge with no origin: on SIGTERM cloudflared
+unregisters every edge connection at once, then waits out its grace period
+(30 s by default) before it exits, and systemd starts the new process only
+after that. The edge answers 530 the whole time (#4791). So publication never
+stops the last connector. When the routes on disk differ from the ones the
+live slot started with, it:
+
+1. Renames the validated config into place. The live slot keeps its old routes
+   in memory.
+2. Starts the idle slot. Each slot is `Type=notify`, and cloudflared reports
+   ready once its first edge connection registers.
+3. Polls the slot's metrics listener, `http://<metrics>/ready`, until it
+   answers 200 with all four of cloudflared's default edge connections
+   (30 tries, 1 s apart). If the tries run out with two or three, the slot
+   counts as ready: one lost connection still leaves an origin, and one
+   degraded edge location shouldn't block a deploy. Fewer than two fails the
+   handoff.
+4. Enables the slot, then keeps both connectors up for 5 s.
+5. Checks once more that the new slot runs and holds at least two
+   connections, then stops and disables the old unit. Slots run with
+   `--grace-period 10s`, so a stop finishes requests in flight within 10 s.
+
+`/etc/<service>/tunnel-connector.json` records which unit is live and which
+step is in flight (`starting`, `stopping`, `reverting`). The record is written
+before each step, so a retry resumes that step and never repeats a reported one.
+A resumed step checks the units first. If the new slot died before the old
+unit stopped, it starts again while the old one serves. If the old unit died,
+a running new slot is used as it is rather than restarted, since it is then
+the only connector.
+[connector-slots.mjs](scripts/deployment/connector-slots.mjs) holds the
+transitions, and its tests cover every state and event.
+
+If the new slot never becomes ready, publication stops it, restores the old
+config and installation receipt, and exits with the error. The old connector
+never stopped, so nothing restarts; if it died meanwhile, publication starts it
+again after the old config is back. While both connectors run, a request can
+reach either one: for those few seconds a new route can still answer 404 from
+the old connector's catch-all.
+
+Releases before slots ran one unit per target, `cloudflared-page10.service` and
+`cloudflared-pages-live.service`. The first publication from this release takes
+that unit as live and hands off to slot `a` the same way, with or without a
+route change. The old unit's file stays in `/etc/systemd/system`, stopped and
+disabled. A record that is missing while a slot runs, a record that doesn't
+parse, or a slot unit file with other bytes stops publication before it writes
+anything; inspect both slots with `systemctl status` before fixing it by hand. Publishing a release from before
+slots onto a migrated target is refused, because it doesn't know the slot
+receipt; app rollback with `install` never publishes.
+
+To check a route-changing publish, probe health once a second from outside the
+host while `publish` runs, and confirm every sample is 200:
+
+```sh
+while :; do
+  printf '%s %s\n' "$(date -u +%T)" \
+    "$(curl -s -o /dev/null -w '%{http_code}' --max-time 2 https://pages.runtimed.run/health)"
+  sleep 1
+done
+```
+
+The publish result names the live unit (`service`, `connectorSlot`) and says
+whether a handoff ran (`connectorHandoff`). On the host,
+`journalctl -u cloudflared-pages-live-a.service -u cloudflared-pages-live-b.service`
+shows the new slot registering its connections before the old one logs
+`Initiating graceful shutdown`.
 
 ## Telemetry
 

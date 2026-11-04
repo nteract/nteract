@@ -89,6 +89,7 @@ function prepare() {
     "publish.mjs",
     "profiles.mjs",
     "isolated-publication.mjs",
+    "connector-slots.mjs",
     "routes.mjs",
   ])
     cpSync(path.join(scripts, "deployment", name), path.join(output, name));
