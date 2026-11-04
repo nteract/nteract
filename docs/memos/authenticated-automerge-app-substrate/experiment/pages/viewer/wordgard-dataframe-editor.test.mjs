@@ -38,6 +38,7 @@ const { Wordgard } = await import("wordgard/editor");
 const { GardState, GardSelection } = await import("wordgard/state");
 const { Leaf } = await import("wordgard/doc");
 const { schema, Paragraph, PagesDataframe } = await import("./wordgard-model.mjs");
+const { insertTable } = await import("./wordgard-tables.mjs");
 const { wordgardDataframes, dataframeEventReachesEditor, enterDataframeGrid } =
   await import("./wordgard-dataframes.mjs");
 const { collapseAtomOnLeave } = await import("./image-selection.mjs");
@@ -223,5 +224,18 @@ test("focus moving to another block deselects the table; into its grid or a tool
     editor.dom.remove();
     otherBlock.remove();
     toolbar.remove();
+  }
+});
+
+test("insertTable refuses to replace a selected node", () => {
+  const { editor, select } = withTable();
+  try {
+    select();
+    const before = editor.state.doc.toString();
+    assert.equal(insertTable(editor), false);
+    assert.equal(editor.state.doc.toString(), before);
+    assert.match(before, /PagesDataframe/);
+  } finally {
+    editor.dom.remove();
   }
 });

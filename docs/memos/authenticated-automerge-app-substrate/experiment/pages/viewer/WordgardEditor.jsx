@@ -789,6 +789,10 @@ export function WordgardEditor(props) {
               ? "image"
               : null,
         table: !!selectedTable(state),
+        // Any node selection (an image, a dataframe, a preserved block, a
+        // rule): commands that format, wrap or replace the selection don't
+        // apply. `atom` only names the kinds that have a label.
+        nodeSelected: state.selection instanceof GardSelection.Node,
         style:
           block?.type === Heading
             ? `h${block.tag.param}`

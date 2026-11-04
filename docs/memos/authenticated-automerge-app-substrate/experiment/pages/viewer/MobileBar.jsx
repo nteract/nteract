@@ -101,13 +101,17 @@ export function MobileBar({
     return () => document.removeEventListener("focusin", away, true);
   }, [barRef, editorDom, onFocusChange]);
   const keep = (event) => event.preventDefault();
-  // With an image or a dataframe selected, only undo and redo apply: every
-  // other entry would format, wrap or replace the selected node.
+  // With a node selected (an image, a dataframe, a preserved block), only
+  // undo and redo apply. Insert table and Link would replace the node, the
+  // lists would wrap it, and the marks don't apply to it. That includes an
+  // image inside a table cell, so row and column actions are off then too,
+  // as on desktop.
+  const nodeSelected = !!format?.atom || !!format?.nodeSelected;
   const enabled = (name) =>
     editable &&
     (name === "undo" || name === "redo"
       ? !!format?.[name]
-      : !format?.atom && (name === "link" ? !!format?.link : name !== "table" || !format?.table));
+      : !nodeSelected && (name === "link" ? !!format?.link : name !== "table" || !format?.table));
   const pick = (name) => {
     setMore(false);
     onRun(name);
