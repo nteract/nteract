@@ -40,8 +40,10 @@ export const EARLY_CONNECT_MAX_AGE_MS = 20_000;
 // start.
 const VIEWER_ROUTES = new Set(["home", "page", "project", "projects", "pages"]);
 
-/** The discovery request PageSession.openConnection makes for a Page. */
-export const connectUrl = (pageId) => `/api/connect?page=${encodeURIComponent(pageId)}`;
+/** The discovery request PageSession.openConnection makes for a Page.
+ * `sync=automerge` says this build also speaks plain Automerge sync. */
+export const connectUrl = (pageId) =>
+  `/api/connect?page=${encodeURIComponent(pageId)}&sync=automerge`;
 export const CONNECT_HEADERS = Object.freeze({
   [ADMISSION_CAPABILITY.header]: ADMISSION_CAPABILITY.value,
 });

@@ -300,6 +300,9 @@ const targets = Object.freeze({
     compactRecords: true,
     companyViewDomains: "anaconda.com",
     catalogIndex: "1",
+    // New Pages sync with plain Automerge sync instead of Subduction
+    // (README: Plain Automerge sync). Existing Pages keep their mode.
+    recordStorage: "automerge",
     // Each account's Page limit when no quota rule matches it
     // (worker/page-quota.mjs). It also bounds that account's Trash.
     pageQuota: "250",

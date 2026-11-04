@@ -1436,6 +1436,8 @@ test("compaction maintenance and company viewing are enabled for Page7 through P
       config.vars.PAGES_CATALOG_INDEX,
       ["page8", "page9", "page10", "pages"].includes(target) ? "1" : undefined,
     );
+    // Plain Automerge sync for new Pages is on for Page10 only.
+    assert.equal(config.vars.PAGES_RECORD_STORAGE, target === "page10" ? "automerge" : undefined);
   }
 });
 
@@ -1514,8 +1516,16 @@ test("fresh Pages installation owns pages.runtimed.run and its -live resources",
   assert.equal(profile.firewallTable, "nteract_pages_live");
   assert.equal(profile.firewallMark, "0x00100000");
   assert.equal(profile.tunnelService, "cloudflared-pages-live.service");
-  // Every Page10 flag carries over; only the owned resources differ.
-  const owned = ["deployment", "firewallTable", "firewallMark", "firewallComment", "tunnelService"];
+  // Every Page10 flag carries over; only the owned resources differ, and
+  // flags Page10 is trying first (recordStorage: plain Automerge sync).
+  const owned = [
+    "deployment",
+    "firewallTable",
+    "firewallMark",
+    "firewallComment",
+    "tunnelService",
+    "recordStorage",
+  ];
   const flags = (name) =>
     Object.fromEntries(
       Object.entries(profiles.deploymentProfile(name)).filter(([key]) => !owned.includes(key)),

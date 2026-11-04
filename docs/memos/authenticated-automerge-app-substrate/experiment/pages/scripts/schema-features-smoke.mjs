@@ -25,6 +25,7 @@ import { adapter, schema, textPath } from "../model/richtext.mjs";
 import { retryKey } from "../model/retry-key.mjs";
 import { chromium, expect } from "@playwright/test";
 import { closePeers, createPeer, eventually } from "../../backend.mjs";
+import { plainPeer } from "./plain-peer.mjs";
 
 const origin = process.env.PAGES_ORIGIN ?? "http://localhost:9894";
 assert.equal(new URL(origin).hostname, "localhost", "Generated fixture requires local OIDC");
@@ -75,10 +76,12 @@ async function create(title, markdown) {
  * schema features (none: the baseline, like a build from before the stamp). */
 async function nativePeer(cookie, pageId, declared) {
   const headers = { cookie, origin, "X-Pages-Admission": "1" };
-  const discovery = await fetch(`${origin}/api/connect?page=${pageId}`, { headers }).then(
-    (response) => response.json(),
-  );
+  const discovery = await fetch(`${origin}/api/connect?page=${pageId}`, {
+    headers,
+  }).then((response) => response.json());
   assert.ok(discovery.documentId, JSON.stringify(discovery));
+  if (discovery.recordStorage === "automerge")
+    return plainNativePeer(cookie, pageId, declared, discovery);
   const peer = createPeer({ seed: crypto.getRandomValues(new Uint8Array(32)) });
   const address = new URL(`/api/sync?page=${pageId}`, origin);
   address.protocol = "ws:";
@@ -131,6 +134,39 @@ async function nativePeer(cookie, pageId, declared) {
   };
 }
 
+/** nativePeer for an `automerge` Page: plain Automerge sync on the socket. */
+async function plainNativePeer(cookie, pageId, declared, discovery) {
+  const headers = { cookie, origin, "X-Pages-Admission": "1" };
+  const peer = await plainPeer({
+    origin,
+    pageId,
+    cookie,
+    discovery,
+    features: declared,
+  });
+  const handle = await peer.repo.find(discovery.documentId);
+  return {
+    handle,
+    async change(fn) {
+      handle.change(fn);
+      await peer.repo.flush();
+      const heads = A.getHeads(handle.doc());
+      let last;
+      await eventually(async () => {
+        const response = await fetch(`${origin}/api/saved?page=${pageId}`, {
+          method: "POST",
+          headers: { ...headers, "Content-Type": "application/json" },
+          body: JSON.stringify({ heads, schema_features: declared }),
+        });
+        last = { status: response.status, body: await response.json() };
+        return response.ok || last.body.code === "schema_unsupported";
+      }, 20_000);
+      return last;
+    },
+    close: () => peer.close(),
+  };
+}
+
 const content = () => page.locator(".page-block wg-content");
 const title = () => page.getByRole("textbox", { name: "Page title" });
 const notice = () => page.getByRole("alert").filter({ hasText: SCHEMA_UNSUPPORTED });
@@ -148,7 +184,10 @@ try {
 
   stage = "a current Page is editable";
   const baseline = await create("Baseline " + Date.now(), "Plain words.");
-  const baselineRead = await tool("read_page", { page_id: baseline, comments: "none" });
+  const baselineRead = await tool("read_page", {
+    page_id: baseline,
+    comments: "none",
+  });
   // A new Page's comments live in their own document.
   assert.deepEqual(baselineRead.body.schema_features, CURRENT);
   await page.goto(origin + "/p/" + baseline);
@@ -176,7 +215,10 @@ try {
     doc.schema = { features: [...CURRENT, FUTURE] };
   });
   assert.equal(stamping.status, 200, JSON.stringify(stamping.body));
-  const stampedRead = await tool("read_page", { page_id: future, comments: "none" });
+  const stampedRead = await tool("read_page", {
+    page_id: future,
+    comments: "none",
+  });
   assert.equal(stampedRead.status, 200);
   assert.deepEqual(stampedRead.body.schema_features, [...CURRENT, FUTURE]);
   checkpoint("read_page reports the stamp");
@@ -191,7 +233,10 @@ try {
   // native put time to reach the host before checking nothing landed.
   await new Promise((resolve) => setTimeout(resolve, 1500));
   await stale.close();
-  const afterStale = await tool("read_page", { page_id: future, comments: "none" });
+  const afterStale = await tool("read_page", {
+    page_id: future,
+    comments: "none",
+  });
   assert.deepEqual([...afterStale.body.heads].sort(), [...stampedRead.body.heads].sort());
   checkpoint("a stale build's native edit is refused and the Page is unchanged");
 
@@ -202,7 +247,10 @@ try {
   });
   assert.equal(freshEdit.status, 200, JSON.stringify(freshEdit.body));
   await fresh.close();
-  const futureRead = await tool("read_page", { page_id: future, comments: "none" });
+  const futureRead = await tool("read_page", {
+    page_id: future,
+    comments: "none",
+  });
   assert.notDeepEqual([...futureRead.body.heads].sort(), [...stampedRead.body.heads].sort());
   checkpoint("a current build's native edit is accepted");
 
@@ -259,7 +307,10 @@ try {
 
   stage = "strikethrough and rules stamp their features";
   const struck = await create("Struck " + Date.now(), "Old ~~plan~~.\n\n---\n\nNew plan.");
-  const struckRead = await tool("read_page", { page_id: struck, comments: "none" });
+  const struckRead = await tool("read_page", {
+    page_id: struck,
+    comments: "none",
+  });
   assert.deepEqual(struckRead.body.schema_features, [...CURRENT, "horizontal-rule", "strike"]);
   assert.equal(struckRead.body.blocks[0].markdown, "Old ~~plan~~.\n\n---\n\nNew plan.");
   const baselinePeer = await nativePeer(cookie, struck, CURRENT);
@@ -326,7 +377,10 @@ try {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
-      }).then(async (response) => ({ status: response.status, body: await response.json() })),
+      }).then(async (response) => ({
+        status: response.status,
+        body: await response.json(),
+      })),
     {
       expected_principal: session.identity.principal,
       page_id: draftId,
@@ -338,7 +392,10 @@ try {
     },
   );
   assert.equal(registered.status, 200, JSON.stringify(registered.body));
-  const converted = await tool("read_page", { page_id: draftId, comments: "none" });
+  const converted = await tool("read_page", {
+    page_id: draftId,
+    comments: "none",
+  });
   assert.equal(converted.status, 200, JSON.stringify(converted.body));
   assert.equal(
     converted.body.blocks[0].markdown,

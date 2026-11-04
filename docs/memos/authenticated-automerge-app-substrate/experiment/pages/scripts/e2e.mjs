@@ -35,19 +35,67 @@ const minute = 60_000;
 // with one entry: { name, harness: sharing("--mode"), timeout }.
 const sharing = (...flags) => ["scripts/local-sharing-e2e.mjs", ...flags];
 const SUITES = Object.freeze([
-  { name: "wordgard", script: "scripts/wordgard-smoke.mjs", timeout: 5 * minute },
-  { name: "rich-comments", script: "scripts/rich-comments-smoke.mjs", timeout: 3 * minute },
-  { name: "comments-layout", script: "scripts/comments-layout-smoke.mjs", timeout: 3 * minute },
-  { name: "editable-table", script: "scripts/editable-table-smoke.mjs", timeout: 3 * minute },
-  { name: "navigation", script: "scripts/navigation-smoke.mjs", timeout: 3 * minute },
-  { name: "passages", script: "scripts/passages-changes-smoke.mjs", timeout: 3 * minute },
-  { name: "presence", script: "scripts/presence-smoke.mjs", timeout: 3 * minute },
-  { name: "collaboration", script: "scripts/collaboration-smoke.mjs", timeout: 3 * minute },
-  { name: "typing", script: "scripts/typing-batch-smoke.mjs", timeout: 3 * minute },
-  { name: "editor-chrome", script: "scripts/editor-chrome-smoke.mjs", timeout: 3 * minute },
-  { name: "title-warning", script: "scripts/title-warning-smoke.mjs", timeout: 2 * minute },
+  {
+    name: "wordgard",
+    script: "scripts/wordgard-smoke.mjs",
+    timeout: 5 * minute,
+  },
+  {
+    name: "rich-comments",
+    script: "scripts/rich-comments-smoke.mjs",
+    timeout: 3 * minute,
+  },
+  {
+    name: "comments-layout",
+    script: "scripts/comments-layout-smoke.mjs",
+    timeout: 3 * minute,
+  },
+  {
+    name: "editable-table",
+    script: "scripts/editable-table-smoke.mjs",
+    timeout: 3 * minute,
+  },
+  {
+    name: "navigation",
+    script: "scripts/navigation-smoke.mjs",
+    timeout: 3 * minute,
+  },
+  {
+    name: "passages",
+    script: "scripts/passages-changes-smoke.mjs",
+    timeout: 3 * minute,
+  },
+  {
+    name: "presence",
+    script: "scripts/presence-smoke.mjs",
+    timeout: 3 * minute,
+  },
+  {
+    name: "collaboration",
+    script: "scripts/collaboration-smoke.mjs",
+    timeout: 3 * minute,
+  },
+  {
+    name: "typing",
+    script: "scripts/typing-batch-smoke.mjs",
+    timeout: 3 * minute,
+  },
+  {
+    name: "editor-chrome",
+    script: "scripts/editor-chrome-smoke.mjs",
+    timeout: 3 * minute,
+  },
+  {
+    name: "title-warning",
+    script: "scripts/title-warning-smoke.mjs",
+    timeout: 2 * minute,
+  },
   { name: "native", script: "scripts/smoke.mjs", timeout: 2 * minute },
-  { name: "schema-features", script: "scripts/schema-features-smoke.mjs", timeout: 3 * minute },
+  {
+    name: "schema-features",
+    script: "scripts/schema-features-smoke.mjs",
+    timeout: 3 * minute,
+  },
   { name: "task-lists", harness: sharing("--task-lists"), timeout: 3 * minute },
   { name: "images", harness: sharing("--images"), timeout: 4 * minute },
   { name: "datasets", harness: sharing("--datasets"), timeout: 4 * minute },
@@ -55,19 +103,36 @@ const SUITES = Object.freeze([
   { name: "sharing", harness: sharing(), timeout: 4 * minute },
   { name: "commenter", harness: sharing("--commenter"), timeout: 4 * minute },
   { name: "admission", harness: sharing("--admission"), timeout: 4 * minute },
-  { name: "domain-view", harness: sharing("--domain-view"), timeout: 4 * minute },
+  {
+    name: "domain-view",
+    harness: sharing("--domain-view"),
+    timeout: 4 * minute,
+  },
   // Opt-in until a Page reopened after a celld restart reliably reaches Saved;
   // under load it can stall at "The request timed out" (fix in progress on
   // fix/pages-restart-saved-stall). Its text order no longer flakes: #4547 was
   // a caret race in the smoke, and the editor side is #4552.
   // https://github.com/nteract/nteract/issues/4547
   // https://github.com/nteract/nteract/issues/4552
-  { name: "build-update", harness: sharing("--build-update"), timeout: 4 * minute, optIn: true },
+  {
+    name: "build-update",
+    harness: sharing("--build-update"),
+    timeout: 4 * minute,
+    optIn: true,
+  },
   { name: "trash", harness: sharing("--trash"), timeout: 4 * minute },
   { name: "revocation", harness: sharing("--revocation"), timeout: 4 * minute },
   { name: "projects", harness: sharing("--projects"), timeout: 6 * minute },
-  { name: "content-activity", harness: sharing("--content-activity"), timeout: 3 * minute },
-  { name: "oauth", harness: ["scripts/local-oauth-e2e.mjs"], timeout: 4 * minute },
+  {
+    name: "content-activity",
+    harness: sharing("--content-activity"),
+    timeout: 3 * minute,
+  },
+  {
+    name: "oauth",
+    harness: ["scripts/local-oauth-e2e.mjs"],
+    timeout: 4 * minute,
+  },
 ]);
 
 const args = process.argv.slice(2);
@@ -136,7 +201,9 @@ function launch(command, argv, { env, cwd = app, log }) {
   for (const stream of [child.stdout, child.stderr]) {
     stream.pipe(log, { end: false });
     if (log.mirror)
-      stream.pipe(stream === child.stdout ? process.stdout : process.stderr, { end: false });
+      stream.pipe(stream === child.stdout ? process.stdout : process.stderr, {
+        end: false,
+      });
   }
   child.exited = new Promise((resolve) =>
     child.once("exit", (code, signal) => {
@@ -190,7 +257,9 @@ async function startServer(output, deadline) {
   const runtime = path.join(scratch, "runtime");
   await mkdir(runtime);
   for (const name of ["index.js", "public", "automerge.wasm", "subduction.wasm", "wrangler.json"])
-    await cp(path.join(app, "dist", name), path.join(runtime, name), { recursive: true });
+    await cp(path.join(app, "dist", name), path.join(runtime, name), {
+      recursive: true,
+    });
   const port = await freePort();
   const origin = `http://localhost:${port}`;
   await writeFile(
@@ -200,6 +269,9 @@ async function startServer(output, deadline) {
       "NOTEBOOK_CLOUD_LOCAL_OIDC=true",
       "PAGES_ASYNC_PERSISTENCE=true",
       "PAGES_COMPACT_RECORDS=true",
+      // `PAGES_RECORD_STORAGE=automerge npm run e2e` runs every suite on plain
+      // Automerge sync for new Pages.
+      `PAGES_RECORD_STORAGE=${process.env.PAGES_RECORD_STORAGE ?? ""}`,
       "PAGES_CATALOG_INDEX=1",
       "NOTEBOOK_CLOUD_OIDC_FLOW=server",
       `NOTEBOOK_CLOUD_PUBLIC_ORIGIN=${origin}`,
@@ -231,7 +303,9 @@ async function startServer(output, deadline) {
       if (host.exitCode !== null || host.signalCode)
         throw new Error(`celld exited before it became ready; see ${output}/celld.log`);
       try {
-        const response = await fetch(`${origin}/health`, { signal: AbortSignal.timeout(1000) });
+        const response = await fetch(`${origin}/health`, {
+          signal: AbortSignal.timeout(1000),
+        });
         if (response.ok && (await response.json()).prototype === "pages-celld-native") break;
       } catch {
         /* still starting */
@@ -277,7 +351,11 @@ async function runSuite(suite, attempt) {
     const { code, signal } = await child.exited;
     if (timedOut) throw new Error(`timed out after ${suite.timeout / 1000}s`);
     if (code !== 0) throw new Error(signal ? `stopped by ${signal}` : `exited ${code}`);
-    return { name: suite.name, result: "pass", seconds: (Date.now() - started) / 1000 };
+    return {
+      name: suite.name,
+      result: "pass",
+      seconds: (Date.now() - started) / 1000,
+    };
   } catch (error) {
     return {
       name: suite.name,
@@ -294,7 +372,10 @@ async function runSuite(suite, attempt) {
 }
 
 if (!args.includes("--skip-build"))
-  execFileSync(process.execPath, ["scripts/build.mjs"], { cwd: app, stdio: "inherit" });
+  execFileSync(process.execPath, ["scripts/build.mjs"], {
+    cwd: app,
+    stdio: "inherit",
+  });
 
 // PAGES_E2E_RETRIES reruns a failed suite in a fresh fixture. A suite that
 // passes only on retry is reported as flaky and keeps every attempt's

@@ -488,7 +488,7 @@ test("reopening a denied local copy checks once and stays read-only while author
     finish;
   t.mock.method(globalThis, "fetch", async (url) => {
     requests++;
-    assert.equal(url, `/api/connect?page=${session.pageId}`);
+    assert.equal(url, `/api/connect?page=${session.pageId}&sync=automerge`);
     return new Promise((resolve) => {
       finish = resolve;
     });

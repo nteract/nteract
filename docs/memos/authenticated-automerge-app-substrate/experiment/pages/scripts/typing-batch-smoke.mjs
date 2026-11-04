@@ -15,6 +15,7 @@ import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { chromium, expect } from "@playwright/test";
 import { OUTBOUND_DEBOUNCE_MS, OUTBOUND_MAX_WAIT_MS } from "../viewer/outbound-sync-machine.mjs";
+import { decodeFrame } from "../sync/wire.mjs";
 
 const origin = process.env.PAGES_ORIGIN || "http://localhost:9896";
 const url = new URL(origin);
@@ -44,8 +45,19 @@ const frames = [];
 // messages. Sync type 4 opens a sync round; type 0 carries one commit.
 // An unrecognized frame fails the run, so a framing change can't skew the
 // counts.
+//
+// On an `automerge` Page (PAGES_RECORD_STORAGE=automerge) frames are CBOR
+// (sync/wire.mjs): a browser's sync frame carrying a message opens or
+// continues a round and carries its changes, so it counts as a round; "eph"
+// is presence.
 function frameKind(payload) {
   const bytes = Buffer.from(payload);
+  const plain = decodeFrame(bytes);
+  if (plain) {
+    if (plain.t === "eph") return "presence";
+    if (plain.t === "sync") return plain.m ? "round" : "other";
+    return "other";
+  }
   const magic = bytes.subarray(0, 3).toString("latin1");
   if (magic === "SUE") return "presence";
   if (magic !== "SUM" || bytes.length < 9) return "unrecognized";
@@ -61,10 +73,14 @@ const cleanText = (page) =>
     return c.textContent.replace(/\u200b/g, "");
   });
 const saved = (page) =>
-  expect(page.getByRole("status").filter({ hasText: /^Saved$/ })).toBeVisible({ timeout: 30000 });
+  expect(page.getByRole("status").filter({ hasText: /^Saved$/ })).toBeVisible({
+    timeout: 30000,
+  });
 
 async function signIn(label) {
-  const context = await browser.newContext({ viewport: { width: 1280, height: 900 } });
+  const context = await browser.newContext({
+    viewport: { width: 1280, height: 900 },
+  });
   context.setDefaultTimeout(15000);
   const page = await context.newPage();
   page.on("pageerror", (error) => report.errors.push(`${label}: ${error.message.slice(0, 500)}`));
@@ -80,7 +96,9 @@ async function signIn(label) {
         }),
       );
   });
-  await page.goto(origin + "/api/auth/login", { waitUntil: "domcontentloaded" });
+  await page.goto(origin + "/api/auth/login", {
+    waitUntil: "domcontentloaded",
+  });
   await expect(page.getByRole("button", { name: /, switch page$/ })).toBeVisible({
     timeout: 20000,
   });
@@ -121,9 +139,13 @@ async function commitRecords(page, pageId) {
       ),
       (b) => b.toString(16).padStart(2, "0"),
     ).join("");
-    const names = (await indexedDB.databases())
-      .map((d) => d.name)
-      .filter((name) => name?.startsWith("pages-native-" + scope + "-"));
+    const all = (await indexedDB.databases()).map((d) => d.name);
+    // A plain replica stores chunks, one per local store or received
+    // increment, not one record per change; count those instead.
+    const plain = all.filter((name) => name?.startsWith("pages-plain-" + scope + "-"));
+    const names = plain.length
+      ? plain
+      : all.filter((name) => name?.startsWith("pages-native-" + scope + "-"));
     let total = 0;
     for (const name of names) {
       const db = await new Promise((resolve, reject) => {
@@ -137,7 +159,9 @@ async function commitRecords(page, pageId) {
           request.onsuccess = () => resolve(request.result);
           request.onerror = () => reject(request.error);
         });
-        total += keys.filter((k) => String(k).includes("/commits/")).length;
+        total += keys.filter((k) =>
+          plain.length ? /^sync\/[^/]+\/o\//.test(String(k)) : String(k).includes("/commits/"),
+        ).length;
       } finally {
         db.close();
       }
@@ -167,7 +191,11 @@ async function watchRenders(page) {
       if (next !== last) state.renders++;
       last = next;
     });
-    observer.observe(el, { subtree: true, childList: true, characterData: true });
+    observer.observe(el, {
+      subtree: true,
+      childList: true,
+      characterData: true,
+    });
     window.__typingRenders = { state, stop: () => observer.disconnect() };
   });
 }
@@ -272,7 +300,10 @@ async function phase(name, kind, writer, reader, pageId) {
     writer_main_thread_ms: delta(writerAfter, writerBefore),
   };
   // When each round left, relative to the last keystroke, for the report only.
-  report.phases.push({ ...result, writer_round_ms: rounds.map((f) => Math.round(f.at - typed)) });
+  report.phases.push({
+    ...result,
+    writer_round_ms: rounds.map((f) => Math.round(f.at - typed)),
+  });
   assert.ok(
     window.every((f) => f.kind !== "unrecognized"),
     "an unrecognized native frame; requalify frameKind",
@@ -343,7 +374,10 @@ try {
   report.failure = { name: error.name, message: error.message };
   for (const peer of [writer, reader].filter(Boolean))
     await peer.page
-      .screenshot({ path: path.join(output, `failure-${peer.label}.png`), fullPage: true })
+      .screenshot({
+        path: path.join(output, `failure-${peer.label}.png`),
+        fullPage: true,
+      })
       .catch(() => {});
   console.error(error);
   process.exitCode = 1;
