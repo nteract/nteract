@@ -604,6 +604,28 @@ test("a host without plain storage refuses a plain draft through the Catalog and
   assert.equal(f.page().page.metadata.recordStorage, "local");
 });
 
+test("a plain registration the Catalog recorded before the flag went off still replays", async (t) => {
+  const f = await fixture(t),
+    { args } = registration({ record_storage: "automerge" });
+  f.env.PAGES_RECORD_STORAGE = "automerge";
+  const first = await f.send(args);
+  assert.equal(first.status, 200, await first.clone().text());
+  assert.equal(f.page().page.metadata.recordStorage, "automerge");
+  delete f.env.PAGES_RECORD_STORAGE;
+  // The Catalog answers from its receipt.
+  const replayed = await f.send(args);
+  assert.equal(replayed.status, 200, await replayed.clone().text());
+  assert.equal(replayed.headers.get(REPLAYED_RECEIPT_HEADER), null, "the marker stays internal");
+  assert.deepEqual(await replayed.json(), await first.json());
+  // A Catalog that lost its receipt reaches the Page, which replays its own.
+  await f.catalog().storage.delete("host/operation/register-fixture");
+  await f.catalog().storage.delete(`page/${pageId}`);
+  const fromPage = await f.send(args);
+  assert.equal(fromPage.status, 200, await fromPage.clone().text());
+  assert.equal((await fromPage.json()).document_id, args.document_id);
+  assert.equal(f.page().page.metadata.recordStorage, "automerge");
+});
+
 /** Usage lines written while `run` executes. */
 async function usageLines(t, run) {
   const lines = [];

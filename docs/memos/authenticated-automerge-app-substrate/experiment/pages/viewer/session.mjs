@@ -148,6 +148,12 @@ export const STORAGE_SWITCH_FAILED =
   "This draft couldn't move to new storage. Reload to keep editing; it's saved on this device.";
 export const STORAGE_REFUSED_AGAIN =
   "The server refused this draft's storage again. Try again to register it.";
+const storageRefused = (error) =>
+  error?.status === 409 && error.code === "record_storage_unsupported";
+/** A failed move's error. Its 409 stops automatic reconnects: only a reload
+ * moves the draft again. */
+const storageSwitchFailed = (cause) =>
+  Object.assign(Error(STORAGE_SWITCH_FAILED, { cause }), { status: 409 });
 /** Stands in for the Markdown of a copy that couldn't be projected. */
 export const MARKDOWN_UNAVAILABLE =
   "This copy couldn't be shown as Markdown. Its Automerge snapshots are in this download.";
@@ -399,6 +405,8 @@ export class PageSession {
   /** Advances when this session's local copy stops being its own: a
    * retirement starts, or the replica is released or replaced. */
   #localEpoch = 0;
+  /** A storage move's teardown of the plain replica it detached. */
+  #plainTeardown;
   /** A fence for one local write that spans awaits. The returned check
    * passes while the replica, its backend and its copy are still this
    * session's: no retirement, release or replacement since. */
@@ -1772,9 +1780,11 @@ export class PageSession {
         snapshot: encodeSnapshot(A.save(this.doc)),
         localEdits: withActor(emptyLocalEdits(), this.actor(), this.replicaId),
       };
+      // Discovery just named this Page's storage.
       await writeLocalPage(this.identity, this.localPage, {
         replica: this.replicaId,
         regrant: retired,
+        storageFromHost: true,
       });
       unconfirmed = false;
     }
@@ -2067,21 +2077,31 @@ export class PageSession {
     const plain = { repo: this.repo, backend: this.backend, storage: this.storage };
     const database = this.databaseName;
     // From here this move owns the plain replica: a release meanwhile finds
-    // nothing to close.
+    // nothing to close, and waits for this teardown before it gives up the
+    // replica's identity, so another tab can't open the database mid-write.
     this.repo = this.backend = this.storage = undefined;
-    await this.disconnectSockets();
-    // The plain replica stays complete on disk: a reload before the record
-    // lands reopens it.
+    const teardown = (async () => {
+      await this.disconnectSockets();
+      // The plain replica stays complete on disk: a reload before the
+      // record lands reopens it.
+      try {
+        await plain.repo?.flush();
+      } catch {}
+      try {
+        await plain.repo?.shutdown();
+      } catch {}
+      try {
+        await plain.backend?.close();
+      } catch {}
+      await plain.storage?.close();
+    })();
+    const settled = teardown.catch(() => {});
+    this.#plainTeardown = settled;
     try {
-      await plain.repo?.flush();
-    } catch {}
-    try {
-      await plain.repo?.shutdown();
-    } catch {}
-    try {
-      await plain.backend?.close();
-    } catch {}
-    await plain.storage?.close();
+      await teardown;
+    } finally {
+      if (this.#plainTeardown === settled) this.#plainTeardown = undefined;
+    }
     if (!this.alive || epoch !== this.#localEpoch) throw Error("Page closed");
     this.recordStorage = "native";
     await this.openBackend();
@@ -2112,6 +2132,24 @@ export class PageSession {
       registrationSupersedes: registration.idempotency_key,
       registration: { ...native, idempotency_key: `v1_${crypto.randomUUID()}` },
       localEdits: this.localEditsWithActor(),
+    });
+  }
+  /** Discovery names other storage than this open replica's: a stale tab
+   * wrote the wrong mode into the local record, or a host's answer changed.
+   * The replica's history is in the other format and can't switch live, but
+   * its checkpoint is plain Automerge: record it, with every edit, under the
+   * host's storage. The next open restores it into a replica of that storage,
+   * so a reload recovers instead of failing the same way. Edits made before
+   * then keep reaching the checkpoint. */
+  async adoptHostStorage(storage) {
+    await this.persistLocal(
+      { recordStorage: storage === "automerge" ? "automerge" : undefined },
+      { storageFromHost: true },
+    );
+    // A 409: reconnecting can't help, a reload does.
+    throw Object.assign(Error("This Page's storage changed. Reload to open it."), {
+      code: "RECORD_STORAGE_CHANGED",
+      status: 409,
     });
   }
   /** Merge a stored checkpoint into this replica before a lookup. */
@@ -2150,7 +2188,7 @@ export class PageSession {
       { replica: this.replicaId },
     );
   }
-  persistLocal(patch = {}, { allowClosed = false } = {}) {
+  persistLocal(patch = {}, { allowClosed = false, storageFromHost = false } = {}) {
     if (this.hidden || (!this.alive && !allowClosed) || !this.localPage || !this.handle)
       return Promise.resolve();
     const heads = A.getHeads(this.doc).join(",");
@@ -2184,6 +2222,7 @@ export class PageSession {
         this.localPage = { ...this.localPage, ...value };
         this.localPage = await writeLocalPage(this.identity, this.localPage, {
           replica: this.replicaId,
+          storageFromHost,
         });
       });
     this.cacheTail = work;
@@ -2194,6 +2233,9 @@ export class PageSession {
    * attempt rather than looping. */
   async registerDraft({ storageMoved = false } = {}) {
     if (!this.localPage?.registration || this.localPage.registered) return;
+    // A failed move holds edits until a reload; re-sending the plain
+    // registration would only be refused again.
+    if (this.storageSwitch$.snapshot().name === "failed") throw storageSwitchFailed();
     let result;
     try {
       // New drafts prepare once in the background. Persist the token before
@@ -2226,16 +2268,14 @@ export class PageSession {
       });
     } catch (error) {
       if (error.status === 410 && error.code === "retry_expired") {
-        result = await this.reconcileExpiredRegistration();
-      } else if (error.status === 409 && error.code === "record_storage_unsupported") {
-        if (storageMoved) throw Object.assign(Error(STORAGE_REFUSED_AGAIN), { cause: error });
-        const moved = await this.moveDraftToNative();
-        if (!this.alive || moved.state.name === "closed") return;
-        if (moved.state.name === "failed")
-          throw Error(STORAGE_SWITCH_FAILED, { cause: moved.error });
-        if (moved.error) throw moved.error;
-        if (moved.state.name !== "idle") throw Error(STORAGE_SWITCHING);
-        return this.registerDraft({ storageMoved: true });
+        try {
+          result = await this.reconcileExpiredRegistration();
+        } catch (renewed) {
+          if (!storageRefused(renewed)) throw renewed;
+          return this.retryAfterStorageRefusal(renewed, storageMoved);
+        }
+      } else if (storageRefused(error)) {
+        return this.retryAfterStorageRefusal(error, storageMoved);
       } else {
         if (error.status === 409 && error.message === "Page was deleted") await this.markDeleted();
         throw error;
@@ -2245,6 +2285,18 @@ export class PageSession {
     if (result.page_id !== this.pageId || result.document_id !== this.localPage.document_id)
       throw Error("Registered Page identity does not match its local document");
     await this.persistLocal({ registered: true });
+  }
+  /** The host refused the registration's storage: move the draft to native
+   * storage (or strip a native replica's plain registration), then register
+   * once more. A second refusal in the same attempt ends it. */
+  async retryAfterStorageRefusal(error, storageMoved) {
+    if (storageMoved) throw Object.assign(Error(STORAGE_REFUSED_AGAIN), { cause: error });
+    const moved = await this.moveDraftToNative();
+    if (!this.alive || moved.state.name === "closed") return;
+    if (moved.state.name === "failed") throw storageSwitchFailed(moved.error);
+    if (moved.error) throw moved.error;
+    if (moved.state.name !== "idle") throw Error(STORAGE_SWITCHING);
+    return this.registerDraft({ storageMoved: true });
   }
   async reconcileExpiredRegistration() {
     const registration = this.localPage.registration;
@@ -2396,7 +2448,9 @@ export class PageSession {
       if (this.localPage && connection.documentId !== this.localPage.document_id)
         throw Error("Connected Page identity does not match its local document");
       const storage = connection.recordStorage === "automerge" ? "automerge" : "native";
-      if (storage !== (this.recordStorage ?? "native")) await this.switchRecordStorage(storage);
+      if (storage !== (this.recordStorage ?? "native"))
+        if (this.handle || this.commentsHandle) await this.adoptHostStorage(storage);
+        else await this.switchRecordStorage(storage);
       if (!this.alive) return;
       await this.acceptPageAccess(connection.access);
       if (!this.alive) return;
@@ -3721,6 +3775,8 @@ export class PageSession {
   async releaseLocal() {
     this.#localEpoch++;
     await this.disconnectSockets();
+    // A storage move may still be writing the plain replica it detached.
+    await this.#plainTeardown;
     try {
       await this.repo?.shutdown();
     } catch {}
