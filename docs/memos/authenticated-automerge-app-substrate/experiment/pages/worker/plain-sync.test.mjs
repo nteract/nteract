@@ -94,7 +94,35 @@ test("PAGES_RECORD_STORAGE=automerge selects plain sync for new Pages only", () 
   assert.equal(recordStorageFor({}), "local");
   // A registered draft keeps its replica's storage; older builds send none.
   assert.equal(registeredRecordStorage({ PAGES_RECORD_STORAGE: "automerge" }, {}), "local");
-  assert.equal(registeredRecordStorage({}, { record_storage: "automerge" }), "automerge");
+  assert.equal(
+    registeredRecordStorage({ PAGES_RECORD_STORAGE: "automerge" }, { record_storage: "automerge" }),
+    "automerge",
+  );
+  assert.equal(registeredRecordStorage({}, { record_storage: "native" }), "local");
+  // Without the flag, a plain draft is refused: an older build can't boot it.
+  for (const env of [{}, { PAGES_ASYNC_PERSISTENCE: "true" }])
+    assert.throws(() => registeredRecordStorage(env, { record_storage: "automerge" }), {
+      status: 409,
+      code: "record_storage_unsupported",
+    });
+});
+
+test("a host without PAGES_RECORD_STORAGE refuses a plain draft before recording it", async (t) => {
+  const f = await fixture(t);
+  delete f.env.PAGES_RECORD_STORAGE;
+  const first = f.page();
+  const refused = await f.register(first);
+  assert.equal(refused.status, 409);
+  assert.equal(refused.headers.get("x-pages-create-rejected"), "before-intent");
+  assert.equal((await refused.json()).code, "record_storage_unsupported");
+  assert.equal(first.metadata, undefined);
+  assert.equal(await f.storage.get("host/creation"), undefined);
+  // The same draft registers natively once it drops record_storage.
+  delete f.args.record_storage;
+  const accepted = await f.register(first);
+  assert.ok(accepted.ok, await accepted.clone().text());
+  assert.equal(first.metadata.recordStorage, "local");
+  assert.equal(first.plain, undefined);
 });
 
 test("a registered automerge Page stores plain history and survives a restart", async (t) => {
@@ -404,4 +432,129 @@ test("an API key's renewal moves a plain connection's lease; OIDC keeps its dead
     expiresAt: now + 120_000,
   });
   assert.equal(oidc.expiresAt, now + 60_000);
+});
+
+import { plainSender } from "./plain-sync.mjs";
+
+test("plainSender keeps a tab's id, replaces only the same principal and driver, and mints otherwise", () => {
+  const tab = `b-${crypto.randomUUID()}`;
+  const mint = () => "b-minted";
+  const me = { principal: "user:a", driver: "Browser" };
+  const held = { senderId: tab, principal: "user:a", driver: "Browser" };
+  const cases = [
+    ["no id", [], undefined, { senderId: "b-minted", replaces: null }],
+    ["malformed id", [], "b-not-a-uuid", { senderId: "b-minted", replaces: null }],
+    ["free id", [], tab, { senderId: tab, replaces: null }],
+    ["held by this tab", [held], tab, { senderId: tab, replaces: held }],
+    [
+      "held by another principal",
+      [{ ...held, principal: "user:b" }],
+      tab,
+      { senderId: "b-minted", replaces: null },
+    ],
+    [
+      "held by another driver",
+      [{ ...held, driver: "API" }],
+      tab,
+      { senderId: "b-minted", replaces: null },
+    ],
+    [
+      "held by a closed socket",
+      [{ ...held, closed: true }],
+      tab,
+      { senderId: tab, replaces: null },
+    ],
+    ["held by the host", [{ ...held, trusted: true }], tab, { senderId: tab, replaces: null }],
+  ];
+  for (const [label, connections, requested, expected] of cases)
+    assert.deepEqual(plainSender(connections, me, requested, mint), expected, label);
+});
+
+test("a tab's new plain socket replaces its stale one and takes its connection slot", async (t) => {
+  const f = await fixture(t);
+  const host = f.page();
+  assert.ok((await f.register(host)).ok);
+  const sockets = [];
+  class Socket extends EventTarget {
+    accept() {}
+    send() {}
+    close(code, reason) {
+      if (this.closed) return;
+      this.closed = { code, reason };
+      this.dispatchEvent(new Event("close"));
+    }
+  }
+  const globals = {
+    WebSocketPair: class {
+      constructor() {
+        this[0] = new Socket();
+        this[1] = new Socket();
+        sockets.push(this[1]);
+      }
+    },
+    Response: class {
+      constructor(_body, options) {
+        Object.assign(this, options);
+      }
+    },
+  };
+  for (const [name, value] of Object.entries(globals)) {
+    const descriptor = Object.getOwnPropertyDescriptor(globalThis, name);
+    Object.defineProperty(globalThis, name, { configurable: true, writable: true, value });
+    t.after(() => {
+      if (descriptor) Object.defineProperty(globalThis, name, descriptor);
+      else delete globalThis[name];
+    });
+  }
+  const denials = [];
+  t.mock.method(console, "warn", (line) => denials.push(JSON.parse(line)));
+  t.mock.method(console, "info", () => {});
+  const identity = {
+    principal: "user:anaconda-fixture:fixture-user",
+    displayName: "Fixture",
+    driver: "Browser",
+    credentialKind: "api-key",
+    canWrite: true,
+    expiresAt: Date.now() + 3_600_000,
+  };
+  const open = (sender, who = identity) => {
+    const url = new URL("https://pages.invalid/api/sync");
+    url.searchParams.set("sync", "automerge");
+    url.searchParams.set("sender", sender);
+    const response = host.connect(new Request(url, { headers: { upgrade: "websocket" } }), who);
+    assert.equal(response.status, 101);
+    return sockets.at(-1);
+  };
+  const browsers = () =>
+    host.plain.host
+      .connections()
+      .filter((conn) => !conn.trusted)
+      .map((conn) => conn.senderId)
+      .sort();
+  const tabs = [1, 2, 3, 4].map(() => `b-${crypto.randomUUID()}`);
+  const first = tabs.map((tab) => open(tab));
+  assert.equal(host.wires.size, 4);
+  // A fifth tab is over the account's four sockets.
+  assert.deepEqual(open(`b-${crypto.randomUUID()}`).closed, {
+    code: 4503,
+    reason: "temporarily_unavailable",
+  });
+  // The same account through another driver can't take a tab's id.
+  assert.deepEqual(open(tabs[1], { ...identity, driver: "API" }).closed, {
+    code: 4503,
+    reason: "temporarily_unavailable",
+  });
+  assert.equal(first[1].closed, undefined);
+  // Tab 1 reconnects while its old socket still looks open.
+  const before = denials.length;
+  const again = open(tabs[0]);
+  assert.equal(again.closed, undefined);
+  assert.deepEqual(first[0].closed, { code: 4409, reason: "access_changed" });
+  assert.equal(host.wires.size, 4);
+  assert.equal(host.wirePrincipals.size, 4);
+  assert.deepEqual(browsers(), [...tabs].sort());
+  assert.deepEqual(
+    denials.slice(before).map(({ stage, reason, code }) => ({ stage, reason, code })),
+    [{ stage: "native", reason: "plain_session_replaced", code: "access_changed" }],
+  );
 });

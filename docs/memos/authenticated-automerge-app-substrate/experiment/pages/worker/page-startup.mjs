@@ -1,6 +1,7 @@
 import { defineMachine, reject } from "../shared/machine.mjs";
 import { pageState } from "./access.mjs";
 import { validTime } from "./content-activity.mjs";
+import { RECORD_STORAGE_MODES } from "../shared/record-storage.mjs";
 
 /**
  * How a Page host starts: from its stored record to a loaded document.
@@ -125,10 +126,6 @@ export const pageStartup = defineMachine({
   },
 });
 
-/** Record storage modes the host can boot (`initializeRepo`). Any other
- * value fails the boot. */
-export const RECORD_STORAGE_MODES = Object.freeze([undefined, "local", "buffered", "automerge"]);
-
 /** Whether the host record is one this build answers checks from without
  * booting. Records an earlier build wrote without a comments document name
  * (the boot writes it) or with a storage mode the boot refuses boot at once,
@@ -140,7 +137,7 @@ export function recordAnswerable(record) {
     typeof record.pageId === "string" &&
     typeof record.documentId === "string" &&
     typeof record.comments_doc === "string" &&
-    RECORD_STORAGE_MODES.includes(record.recordStorage)
+    (record.recordStorage === undefined || RECORD_STORAGE_MODES.includes(record.recordStorage))
   );
 }
 

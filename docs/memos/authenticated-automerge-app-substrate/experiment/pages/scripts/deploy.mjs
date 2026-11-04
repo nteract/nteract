@@ -18,6 +18,7 @@ import { stageArtifacts } from "./stage-artifacts.mjs";
 import {
   deploymentProfile,
   assertQualifiedDeploymentTarget,
+  assertReleaseOpensTargetPages,
   selectTarget,
   stagePattern,
   verifyDeployment,
@@ -60,6 +61,7 @@ function prepare() {
   const currentFingerprint = sourceFingerprint(pages, { root: repo });
   if (buildReceipt.fingerprint?.sha256 !== currentFingerprint.sha256)
     throw new Error("Bundle source fingerprint is stale; build and validate the current source");
+  assertReleaseOpensTargetPages(target, { ...buildReceipt, source_sha: source });
   const config = JSON.parse(readFileSync(path.join(dist, "wrangler.json")));
   if (config.main !== "index.js" || config.no_bundle !== true || config.build || config.containers)
     throw new Error("Build a static no_bundle Worker before preparing");
@@ -137,6 +139,10 @@ else if (mode === "provision" && [undefined, "--apply"].includes(stage) && !flag
   const absolute = path.resolve(stage);
   const manifest = JSON.parse(readFileSync(path.join(absolute, "manifest.json")));
   verifyDeployment(manifest, target);
+  assertReleaseOpensTargetPages(target, {
+    ...manifest.build_receipt,
+    source_sha: manifest.source_sha,
+  });
   const remote = ssh("mktemp -d /tmp/" + deployment.service + "-stage-XXXXXXXX");
   if (!stagePattern(target).test(remote)) throw new Error("Unexpected remote staging directory");
   run("scp", ["-r", absolute + "/.", deployment.host + ":" + remote]);
@@ -146,6 +152,16 @@ else if (mode === "provision" && [undefined, "--apply"].includes(stage) && !flag
   stagePattern(target).test(stage ?? "") &&
   flag === "--apply"
 ) {
+  // A stage carries its own install.mjs, and one prepared before the record
+  // storage check never runs it. Check the staged release from this checkout
+  // first, so installing an older release (a rollback) is refused here too.
+  if (mode === "install") {
+    const staged = JSON.parse(ssh("cat " + quote(stage + "/manifest.json")));
+    assertReleaseOpensTargetPages(target, {
+      ...staged.build_receipt,
+      source_sha: staged.source_sha,
+    });
+  }
   // Serialize operator commands across the isolated deployment profiles.
   console.log(
     ssh(

@@ -42,6 +42,9 @@ export const ADMISSION_REASONS = Object.freeze({
   // already moved to the new socket; a tab that somehow still uses this one
   // rediscovers, and counts the close toward pausing sync.
   native_session_replaced: "access_changed",
+  // A newer plain-sync socket from the same tab (same principal, driver and
+  // presence id) replaced this one.
+  plain_session_replaced: "access_changed",
   // The native per-author check refused a comment record (comment-admission.mjs).
   // The key's comment authority is gone; discovery reports what remains.
   comment_change_refused: "access_changed",

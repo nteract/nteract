@@ -108,7 +108,7 @@ import {
 } from "./operation-journal.mjs";
 import { BufferedRecordStore, RemoteRecordSink } from "./record-persistence.mjs";
 import { RecordMaintenance } from "./record-maintenance.mjs";
-import { HOST_SENDER_ID, PlainSync } from "./plain-sync.mjs";
+import { HOST_SENDER_ID, PlainSync, plainSessionReplaced } from "./plain-sync.mjs";
 import { BLOCKING as BLOCKING_COMMENT_CODES } from "../sync/comments.mjs";
 import {
   ActorAuthorship,
@@ -143,6 +143,7 @@ import {
 } from "./admission-reasons.mjs";
 import { ADMISSION_CAPABILITY } from "../shared/admission.mjs";
 import { buildAdvertisement } from "../shared/build-identity.mjs";
+import { RECORD_STORAGE_MODES } from "../shared/record-storage.mjs";
 import { advertiseBuild } from "./build-advertisement.mjs";
 import {
   bufferedResponse,
@@ -307,13 +308,7 @@ import {
   recordOf,
   summarizeReceipt,
 } from "./page-lifecycle.mjs";
-import {
-  RECORD_STORAGE_MODES,
-  pageStartup,
-  recordFallback,
-  startupOf,
-  storedTitleProjection,
-} from "./page-startup.mjs";
+import { pageStartup, recordFallback, startupOf, storedTitleProjection } from "./page-startup.mjs";
 
 const operations = new Set([
   "list_pages",
@@ -396,9 +391,19 @@ export function recordStorageFor(env) {
 const nativeRecordStorage = (env) =>
   env.PAGES_ASYNC_PERSISTENCE === "true" ? "buffered" : "local";
 
-/** A registered draft keeps the storage its browser replica already uses. */
+/** A registered draft keeps the storage its browser replica already uses.
+ * A plain Automerge draft registers only where `PAGES_RECORD_STORAGE` allows
+ * plain storage: a build without plain sync refuses such a Page at boot, so a
+ * host with the flag off must stay rollback-safe. The refusal comes before
+ * any creation is recorded, and the browser re-creates the draft natively. */
 export function registeredRecordStorage(env, args) {
-  return args.record_storage === "automerge" ? "automerge" : nativeRecordStorage(env);
+  if (args.record_storage !== "automerge") return nativeRecordStorage(env);
+  if (recordStorageFor(env) === "automerge") return "automerge";
+  throw new HttpError(
+    409,
+    "This host doesn't accept plain Automerge Pages",
+    "record_storage_unsupported",
+  );
 }
 
 /** Viewer builds that speak plain Automerge sync send `sync=automerge` on
@@ -3842,7 +3847,10 @@ export class Page {
       const ctx = this.ctx;
       let signer, backend;
       try {
-        if (!RECORD_STORAGE_MODES.includes(metadata?.recordStorage))
+        if (
+          metadata?.recordStorage !== undefined &&
+          !RECORD_STORAGE_MODES.includes(metadata.recordStorage)
+        )
           throw Error("Unsupported Page record storage mode");
         if (metadata?.recordStorage === "automerge") return await this.initializePlain(metadata);
         signer = N.MemorySigner.fromBytes(await persistentSeed(ctx.storage));
@@ -5772,12 +5780,16 @@ export class Page {
   }
 
   /** The Page, account and member socket quotas. Returns the refusal for a
-   * connection over one, or undefined. */
-  connectionCapacity(identity) {
+   * connection over one, or undefined. `replacing` is a wire the new
+   * connection will close once admitted; it doesn't count. */
+  connectionCapacity(identity, replacing) {
     const full = (message) =>
       withAdmissionReason(new HttpError(429, message), "connection_capacity");
-    if (this.wires.size >= 24) return full("Too many connected peers");
-    const principals = [...this.wirePrincipals.values()];
+    const held = this.wires.size - (replacing && this.wires.has(replacing) ? 1 : 0);
+    if (held >= 24) return full("Too many connected peers");
+    const principals = [...this.wirePrincipals]
+      .filter(([wire]) => wire !== replacing)
+      .map(([, principal]) => principal);
     if (principals.filter((principal) => principal === identity.principal).length >= 4)
       return full("Too many connections for this account");
     if (
@@ -5815,7 +5827,10 @@ export class Page {
     // connect and sync down, read-only: the policy refuses every put, relayed
     // or self-authored, so no competing conversion lands. Discovery tells the
     // viewer it's converting. Each connection retries a failed conversion.
-    const capacity = this.connectionCapacity(identity);
+    // A plain socket from a tab that already holds one replaces it, so the
+    // stale socket's slot is free for this one.
+    const sender = this.plain?.sender(identity, new URL(request.url).searchParams.get("sender"));
+    const capacity = this.connectionCapacity(identity, sender?.replaces?.wire);
     if (capacity) return refuseSocket(capacity, identity);
     // A first observation is due; afterwards a connection only nudges, which
     // never starts a retry before its backoff.
@@ -5838,7 +5853,7 @@ export class Page {
       } catch (error) {
         return refuseSocket(error, identity);
       }
-      return this.connectPlain(request, identity, features);
+      return this.connectPlain(request, identity, features, sender);
     }
     const pair = new WebSocketPair();
     const client = pair[0],
@@ -6011,8 +6026,9 @@ export class Page {
 
   /** connect() for an `automerge` Page. HTTP authentication already named the
    * principal; the socket speaks plain Automerge sync (sync/wire.mjs), and
-   * PlainSync checks access on every frame. No handshake, no signing key. */
-  connectPlain(request, identity, features) {
+   * PlainSync checks access on every frame. No handshake, no signing key.
+   * `sender` is PlainSync.sender's decision for this socket's presence id. */
+  connectPlain(request, identity, features, sender) {
     const pair = new WebSocketPair();
     const client = pair[0],
       socket = pair[1];
@@ -6026,15 +6042,9 @@ export class Page {
     const started = Date.now();
     let conn;
     try {
-      // The tab's presence id. A missing, malformed or taken one is replaced:
-      // the id only keys presence labels, and the host stamps every relay.
-      const requested = new URL(request.url).searchParams.get("sender");
-      const taken = new Set(this.plain.host.connections().map((c) => c.senderId));
-      const senderId =
-        requested && /^b-[0-9a-f-]{36}$/.test(requested) && !taken.has(requested)
-          ? requested
-          : `b-${crypto.randomUUID()}`;
-      conn = this.plain.accept(socket, identity, { features, senderId });
+      // The tab's presence id (plainSender): it keys presence labels, and the
+      // host stamps every relay with it.
+      conn = this.plain.accept(socket, identity, { features, senderId: sender.senderId });
     } catch (error) {
       logAdmissionDenied(error, { stage: "native", identity });
       logUsage({
@@ -6055,6 +6065,13 @@ export class Page {
       disconnect: async (code, reason) =>
         conn.transport.close(code ?? 1000, reason ?? "Disconnected"),
     };
+    conn.wire = wire;
+    // After the new socket is in: the replaced one's close releases its slot.
+    if (sender.replaces && !sender.replaces.closed) {
+      const replaced = plainSessionReplaced();
+      logAdmissionDenied(replaced, { stage: "native", identity });
+      sender.replaces.transport.close(admissionCloseCode(replaced), admissionCode(replaced));
+    }
     this.wires.add(wire);
     this.wirePrincipals.set(wire, identity.principal);
     // Lease: the credential's deadline, re-armed when an API key renews, and

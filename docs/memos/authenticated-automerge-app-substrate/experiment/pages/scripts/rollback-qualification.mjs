@@ -5,7 +5,11 @@
 // serves the same data, updates the Space again and writes another Space; then
 // this build serves all three with both updates. Storage keeps the Space names,
 // so no step moves a record. The previous build must already be built:
-//   node scripts/rollback-qualification.mjs --previous <previous pages dir>
+//   node scripts/rollback-qualification.mjs --target <target> --previous <previous pages dir>
+// The target names the deployment the rollback is for. A previous build that
+// can't open every Page record storage the target may hold is refused before
+// anything starts, and the fixture creates Pages with the target's
+// recordStorage, so the phases cover the storage the target writes.
 // No pre-existing server, provider account or credentials; MCP calls use the
 // synthetic fixture API keys.
 import { execFileSync, spawn } from "node:child_process";
@@ -18,14 +22,30 @@ import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import assert from "node:assert/strict";
 import { build } from "esbuild";
-import { CELLD_RELEASE, parseRuntimeVersion } from "./deployment/profiles.mjs";
+import {
+  CELLD_RELEASE,
+  assertReleaseOpensTargetPages,
+  deploymentProfile,
+  parseRuntimeVersion,
+} from "./deployment/profiles.mjs";
 import { publicShellAssetDefine } from "./viewer-chunks.mjs";
 import { fixtureWhoamiUrl, generateFixtureKeys } from "./fixtures/local-api-keys.mjs";
 
 const current = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const flag = process.argv.indexOf("--previous");
-if (flag < 0 || !process.argv[flag + 1]) throw new Error("Pass --previous <pages dir>");
-const previous = path.resolve(process.argv[flag + 1]);
+const option = (name) => {
+  const flag = process.argv.indexOf(name);
+  return flag < 0 ? undefined : process.argv[flag + 1];
+};
+const target = option("--target");
+if (!target || !option("--previous"))
+  throw new Error("Pass --target <deployment target> --previous <pages dir>");
+const profile = deploymentProfile(target);
+const previous = path.resolve(option("--previous"));
+const receiptOf = async (app) =>
+  JSON.parse(await readFile(path.join(app, "dist/build-receipt.json"), "utf8"));
+// Both builds serve the target's data in turn, so both must open its Pages.
+assertReleaseOpensTargetPages(target, await receiptOf(previous));
+assertReleaseOpensTargetPages(target, await receiptOf(current));
 const output = path.resolve(
   process.env.PAGES_E2E_OUTPUT || path.join(current, "test-results", `rollback-${Date.now()}`),
 );
@@ -52,7 +72,7 @@ await new Promise((resolve) => server.close(resolve));
 const origin = `http://localhost:${port}`;
 const { keys, responses } = generateFixtureKeys();
 const log = createWriteStream(path.join(output, "celld.log"));
-const report = { origin, celld: version, previous, phases: [] };
+const report = { origin, celld: version, target, previous, phases: [] };
 let host;
 
 /** Replace the deployed build in `runtime`, keeping celld state and vars. */
@@ -180,6 +200,7 @@ try {
       PAGES_ASYNC_PERSISTENCE: "true",
       PAGES_COMPACT_RECORDS: "true",
       PAGES_CATALOG_INDEX: "1",
+      ...(profile.recordStorage && { PAGES_RECORD_STORAGE: profile.recordStorage }),
       NOTEBOOK_CLOUD_APP_SESSION_SECRET: randomBytes(32).toString("hex"),
       NOTEBOOK_CLOUD_LOCAL_OIDC: "true",
       NOTEBOOK_CLOUD_OIDC_FLOW: "server",

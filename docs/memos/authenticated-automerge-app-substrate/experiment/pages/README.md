@@ -111,7 +111,7 @@ was a caret race in the smoke; the editor side is
 | Projects over MCP and in the browser, `/projects` and `/pages` on a phone-sized screen, the Pages library's tabs, Project filter, sort and groups as an account with shared Pages, breadcrumbs, Trash and restore in a Project | `node scripts/local-sharing-e2e.mjs --projects` | Starts an isolated fixture |
 | `list_pages` reports `content_updated_at` after an MCP edit and after typing in a tab, each well after the Page's creation | `node scripts/local-sharing-e2e.mjs --content-activity` | Starts an isolated fixture |
 | Cold first open of a 300-paragraph Page with images on Fast 3G and 4x CPU, phase by phase (records timings, gates on nothing) | `node scripts/local-sharing-e2e.mjs --cold-open` | Starts an isolated fixture behind a brotli proxy; writes `report.json` |
-| Rollback to a previous build and forward again on one data directory | `node scripts/rollback-qualification.mjs --previous <previous pages dir>` | Starts an isolated fixture; build the previous commit first |
+| Rollback to a previous build and forward again on one data directory | `node scripts/rollback-qualification.mjs --target <target> --previous <previous pages dir>` | Starts an isolated fixture; build the previous commit first |
 | Rich comment tables and drafts | `PAGES_ORIGIN=http://localhost:9894 node scripts/rich-comments-smoke.mjs` | Uses the running Wordgard fixture |
 | Comments panel placement at 1920/1440/1100/800px | `PAGES_ORIGIN=http://localhost:9894 node scripts/comments-layout-smoke.mjs` | Uses the running Wordgard fixture |
 | Schema-feature gate: a Page stamped with an unknown feature opens read-only and refuses tool writes | `PAGES_ORIGIN=http://localhost:9894 node scripts/schema-features-smoke.mjs` | Uses the running Wordgard fixture |
@@ -1553,8 +1553,11 @@ Automerge sync messages instead of Subduction. `PAGES_RECORD_STORAGE=automerge`
 gives that storage to every Page created through the API, and the session
 endpoint tells the browser to give it to Pages it creates; a registered draft
 keeps the storage its browser replica already uses (`record_storage` in the
-registration). Existing Pages keep the mode they were created with, and a
-Page never changes mode.
+registration). A host without the flag refuses a plain draft with
+`409 record_storage_unsupported` before recording anything, so an older build
+never boots a plain Page it can't open; the browser moves the draft to a native
+replica under the same document ID and registers again. Existing Pages keep
+the mode they were created with, and a Page never changes mode.
 
 Both sides keep Repo 3 and run `AutomergeSyncBackend`
 ([sync/backend.mjs](sync/backend.mjs)), a `SedimentreeBackend` that keeps a
@@ -1610,9 +1613,30 @@ opens a replica in the storage its local copy or discovery names, and a first
 visit switches its empty replica before the lookup. Presence ids are per tab
 (`sender`), stamped by the host on every relay.
 
+A tab keeps its `sender` across reconnects, so a socket asking for an id an
+open connection holds for the same principal and driver is that tab
+reconnecting, usually after its old socket died without the close reaching
+the host. As with a native signing key, the new socket takes the id and the
+connection slot, and the host closes the old one with `access_changed` and
+logs `plain_session_replaced` ([plainSender](worker/plain-sync.mjs)). An id
+held by anyone else, or a malformed one, is replaced by a fresh id. A reload
+starts a new id, so a reloaded tab's dead socket still holds its slot until
+the close arrives.
+
+Each browser connection may have 256 sync frames or 32 MiB waiting in the
+host's queues, counting a frame until it is stored and acked or refused
+([sync/receive-queue.mjs](sync/receive-queue.mjs)), the native byte
+transport's bounds. Over either, the host refuses the frame with
+`receive_queue_full` and closes with `temporarily_unavailable`. An ephemeral
+message over 64 KiB is refused with `ephemeral_too_large` and closes with
+`request_rejected`; presence is a few hundred bytes. The host's own
+connection has no receive limit. Each preview is a clone of the live
+document; the host frees every preview it doesn't adopt and the live
+document an adopted one replaces.
+
 Not yet on this path: reservations for API edits (`DocumentAdmission`), the
-`PageRecords` buffered sink, record compaction and the per-key native session
-slots. The first three have nothing to do here; edits from the API go through
+`PageRecords` buffered sink and record compaction. None of them have anything
+to do here; edits from the API go through
 the host's Repo and the same admission queue. `sync/*.test.mjs` covers the
 backend, host, store and gates; `worker/plain-sync.test.mjs` covers
 registration, restart and a browser through the Page host;

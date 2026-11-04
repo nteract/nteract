@@ -1981,6 +1981,38 @@ export class PageSession {
     this.recordStorage = mode;
     await this.openBackend();
   }
+  /** The host refused this draft's plain Automerge storage
+   * (`record_storage_unsupported`): its flag is off, or went off after this
+   * tab read the session. The refusal recorded nothing, so the draft moves to
+   * a native replica under the same Page and document IDs, with every local
+   * edit, and registers without `record_storage` under fresh retry authority.
+   * The checkpoint is written first: a reload before the move finishes opens
+   * the plain draft again and repeats it. */
+  async recreateNativeDraft() {
+    const registration = this.localPage?.registration;
+    if (this.recordStorage !== "automerge" || !this.handle || !registration?.record_storage)
+      throw Error("This host refused the Page's storage");
+    await this.persistLocal();
+    const documentId = this.handle.documentId;
+    const history = A.save(this.doc);
+    this.handle = undefined;
+    await this.switchRecordStorage("native");
+    if (!this.alive) return;
+    this.handle = await this.repo.import(history, { docId: documentId });
+    await this.repo.flush();
+    this.handle.on("change", (event) => this.receiveChange(event));
+    this.handle.on("ephemeral-message", (event) => this.ephemeral(event));
+    const { record_storage: _storage, retry_token: _token, ...native } = registration;
+    // The import loaded under a new actor: record it so this session's next
+    // edits count as local.
+    await this.persistLocal({
+      recordStorage: undefined,
+      registrationSupersedes: registration.idempotency_key,
+      registration: { ...native, idempotency_key: `v1_${crypto.randomUUID()}` },
+      localEdits: this.localEditsWithActor(),
+    });
+    this.emit();
+  }
   /** Merge a stored checkpoint into this replica before a lookup. */
   async storeCheckpoint(id, doc) {
     if (this.backend instanceof AutomergeSyncBackend) {
@@ -2091,6 +2123,9 @@ export class PageSession {
     } catch (error) {
       if (error.status === 410 && error.code === "retry_expired") {
         result = await this.reconcileExpiredRegistration();
+      } else if (error.status === 409 && error.code === "record_storage_unsupported") {
+        await this.recreateNativeDraft();
+        return this.registerDraft();
       } else {
         if (error.status === 409 && error.message === "Page was deleted") await this.markDeleted();
         throw error;
