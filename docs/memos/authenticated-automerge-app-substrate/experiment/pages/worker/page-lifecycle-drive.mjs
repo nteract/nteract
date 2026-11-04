@@ -806,6 +806,8 @@ export async function boot(h, event, options = {}) {
       f.env,
     );
     await page.ready;
+    // A cold start boots on the first request that needs the document.
+    await page.documentReady();
   } catch (error) {
     failure = error;
   } finally {

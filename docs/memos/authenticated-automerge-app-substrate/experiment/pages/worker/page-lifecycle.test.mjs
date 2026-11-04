@@ -157,12 +157,20 @@ const POST_COMMIT = {
  *   receipt over the limit until the next receipt write prunes it.
  * - titleRecord: the stored title projection's write rejected. It is
  *   best-effort: without it, the next projection observes the title anew and
- *   carries keep_time, so no listing's updated_at moves. */
-function allowance(key, run, row, committed) {
+ *   carries keep_time, so no listing's updated_at moves.
+ * - projectionMark: a projection, or the title it sent, didn't land, so the
+ *   mark stays and the next check boots to send it again. Only a mark the
+ *   reference cleared may remain; a missing mark is never allowed. */
+function allowance(key, run, row, committed, reference) {
   const cutD1 = run.cut && run.mutations[run.cut.index]?.startsWith("d1 ");
   if (key.startsWith("index ") && cutD1) return "index";
   if (key === "page host/index/report-pending") return cutD1 ? "index" : undefined;
   if (key.startsWith("page host/lifecycle/seed-")) return "prune";
+  if (key === "page host/title-projection/pending")
+    return new Map(run.final.page).get("host/title-projection/pending") === true &&
+      !new Map(reference.final.page).has("host/title-projection/pending")
+      ? "projectionMark"
+      : undefined;
   if (
     key === "page host/title-projection" &&
     run.cut &&
@@ -197,7 +205,7 @@ function judge(run, reference, row, tally) {
   const committed = isDeepStrictEqual(run.booted, reference.booted);
   const reasons = new Set();
   for (const key of differences(run.final, reference.final)) {
-    const reason = allowance(key, run, row, committed);
+    const reason = allowance(key, run, row, committed, reference);
     if (reason) reasons.add(reason);
     else problems.push(`replay differs at ${key}`);
   }
@@ -246,15 +254,18 @@ test("every mutation the lifecycle makes can reject before or after it applies, 
       // The comments document's import and delete are cut points too, and so
       // are a purge's and a tombstone's deletes of the stored content time
       // and title projection, and a restore's write of that projection. The
+      // projection mark's write and delete around a restore's projection,
+      // and a purge's or tombstone's delete of it, are cut points too. The
       // active/trash heads-absent row runs the full trash commit again.
-      cuts: 184,
-      runs: 696,
+      cuts: 202,
+      runs: 768,
       indexRetirement: 21,
       titleProjection: 14,
       titleRecord: 4,
       bindingRetirement: 30,
       prune: 22,
       index: 14,
+      projectionMark: 12,
     },
   );
 });
@@ -270,6 +281,7 @@ test("a tombstone whose write or sync rejected repeats its barrier on retry, so 
   assert.deepEqual(reference.mutations.slice(0, record + 2), [
     "delete host/content-activity",
     "delete host/title-projection",
+    "delete host/title-projection/pending",
     "put host/document",
     "sync",
   ]);

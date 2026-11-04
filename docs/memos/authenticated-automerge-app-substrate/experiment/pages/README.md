@@ -124,6 +124,7 @@ was a caret race in the smoke; the editor side is
 | Editing, comments, links, diagrams, and recovery | `PAGES_ORIGIN=http://localhost:9894 npm run smoke:editor` | Uses the running Wordgard fixture |
 | History growth and typing latency | `PAGES_ORIGIN=http://localhost:9894 node scripts/latency-smoke.mjs` | Uses the running Wordgard fixture with buffered persistence |
 | Client catch-up after reopening a Page far behind the host | `node scripts/catch-up-benchmark.mjs --runs 5 2000+2000` | No server; in-process Repo peers over the authenticated wire, Node with MemoryByteStore (no IndexedDB or editor cost) |
+| `list_pages` for 50 shared Pages with cold and warm Page hosts, p50/p95 (records timings, gates on nothing) | `node scripts/local-sharing-e2e.mjs --listing-bench` | Starts an isolated fixture and restarts it between cold samples; writes `listing-benchmark.json` |
 
 Use `PAGES_ASYNC_PERSISTENCE=true` for the latency check. The editor checks
 exercise the same Wordgard path used by deployed Pages.
@@ -749,8 +750,8 @@ Each account reconciles from its Catalog entries: on its first listing under an
 epoch, after a Catalog change that may have missed D1, and at least every six
 hours. A pass rewrites owner rows (title, timestamps, content time, state), re-verifies shared
 entries and non-owner rows (using the Page host's own title observation time), and
-drops owner rows the Catalog no longer has. A Page host's first check after a
-restart also reports its row. Each listing advances the pass until about one
+drops owner rows the Catalog no longer has. A booted Page host's first check
+also reports its row. Each listing advances the pass until about one
 second, 128 entries or 16 Page checks. The deadline is checked before every D1
 call and every group of four Page checks, and nothing new starts after it; only a
 check group already made still commits. Worst case is the deadline plus one D1
@@ -762,6 +763,115 @@ Until an account's first pass completes, its listings use the Catalog entries.
 Changing the epoch value forces an immediate pass everywhere; it is not required
 after a rollback, since the periodic pass and each Page host's first report after
 restart repair what an older build missed.
+
+### Shared-Page checks
+
+A listing checks each shared candidate with its Page host (`/internal/catalog`),
+up to 16 at a time (`sharedCheckBounds`); each finished check starts the next,
+and one check gets 3 s. A failed check stops new ones and fails the listing
+once the checks already running settle. A check that times out settles then,
+but its Page host's request isn't cancelled: cancelling a Durable Object
+request strands the work it started (request-hold.mjs). The same check
+confirms a shared parent before a listing of its children, and names the
+ancestors in `read_page` breadcrumbs.
+
+A Page host doesn't boot its repo to answer one
+([page-startup.mjs](worker/page-startup.mjs)). Booting costs about 130 ms cold:
+the native repo, the document, its comments, and the lifecycle's boot effects.
+The check needs only the host record and a title, so the constructor reads
+`host/document` and `host/creation` and starts the host in `metadata`,
+`booting` or `ready`:
+
+| State | Starts when | A check | Any other request |
+| --- | --- | --- | --- |
+| `metadata` | a record this build can answer from: no creation intent, a comments document name, a storage mode the boot accepts | answers from the record | boots, then runs |
+| `booting` | the constructor boots at once (a creation intent or an older record), or a request started the boot | waits for it | waits for it |
+| `ready` | the boot finished, or there was nothing to boot | answers from the loaded document, as before | runs |
+| `failed` | the boot threw; the runtime is resetting the object | answers from the record | gets that error |
+
+The repo boots at most once per object; every request that needs the
+document waits on the same boot, and nothing reads the document before it
+finishes. Both boots run inside `blockConcurrencyWhile`: the constructor's
+own, or one the request that needs the document opens. That keeps the
+runtime's rules for a boot. Other requests wait until it ends, it gets 30 s,
+and a throw resets the object, so the next request reaches a new object that
+starts from storage again. A transient failure, such as a PageRecords read
+that times out with `record_persistence_timeout`, fails only the requests the
+boot held. A failed boot is never remembered past its object.
+
+On celld 0.6.3 ([celld-boot-probe.mjs](scripts/celld-boot-probe.mjs)):
+
+- `blockConcurrencyWhile` works from a request.
+- A throw inside it resets the object. The failing request gets the error,
+  a request queued behind the boot gets a 500, and the next request reaches a
+  new object, whose boot succeeds.
+- A boot that runs 35 s is ended at 30 s, and the object is reset.
+- A timer chain started inside it keeps running after the request that
+  opened it has responded.
+
+The request that opens the boot awaits it and holds it with `waitUntil`, so a
+caller that goes away doesn't strand it (see the celld notes below).
+
+A check from the record reads `host/document` again, so an ACL change or a
+lifecycle change is seen by the next check: both are host record writes.
+It runs the loaded host's order and refusals: authenticate with the caller's
+own credentials, refuse a Page hidden in Trash or deleted, then
+`policy.account`. The Page host still decides access from its own record;
+D1 never grants it. The answer has the same fields as a booted host's. The
+title is the one the host last projected to the Catalogs and the index
+(`host/title-projection`), with its observation time and `keep` flag, and
+the content time is `host/content-activity`.
+
+The check boots instead when the record can't answer it the same way:
+
+- a creation intent, which the boot commits or replays;
+- a record an earlier build wrote without a comments document name, which
+  the boot adds;
+- an active Page with no stored title, or one stored without a valid
+  observation time;
+- an active Page whose last index report failed (`host/index/report-pending`,
+  synced when written), so the loaded host's check repeats it;
+- an active Page whose stored title may not have reached every Catalog
+  (`host/title-projection/pending`), so the loaded host's first check sends
+  it again;
+- a grant holder's check of a trashed Page, which loads the document;
+- an invitation the caller can claim, which the loaded host installs.
+
+A pending lifecycle commit or preserved Markdown conversion lives only in a
+booted host's memory, which answers checks from its document. A journaled
+edit a restart left pending is recovered by the boot; until then it isn't
+part of the document, so the stored title can't include it.
+
+Every `cacheTitle` (a tool edit, a save receipt, a read, a connect, an ACL
+commit, a restore) stores the title it projects, so the stored title trails
+the document only by a title change no booted request has projected yet, such
+as a native rename from a tab that closed before its save receipt, or a store
+that failed. The next booted request projects and stores it. That is a
+freshness bound, not a leak: it is the title every member's Catalog was last
+sent, and anyone the check admits can read the document's history, which holds
+every earlier title. A revoked caller is refused before any title.
+
+A check from the record projects nothing and reports nothing to the index.
+A booted host's first check does both, and that remains the repair for a lost
+projection or report. Two marks make a check boot until that repair has run:
+
+- The projection mark is written before a new title is stored, and removed
+  once the latest projection reached the owner's and every member's Catalog
+  and the title is stored. Storage applies one object's writes in the order
+  they are issued, so a stored title the Catalogs may lack always has the
+  mark, without a sync.
+- The index report mark is written after a report fails, and synced.
+
+Each reader's reconcile pass also rewrites its own access row from the
+check's answer. Repeating a title projection is harmless since `keep_time`.
+Still, a cold check used to send one to every member's Catalog, plus a row
+report to D1, for each shared Page a listing checked.
+
+Each check authenticates the caller again in the Page host, as every Page
+request does. The gateway forwards client requests to Page hosts, and a Page
+that trusted a caller-supplied identity on this route would turn any
+forwarding mistake into an access bypass; the projection route can trust its
+body because it decides no access.
 
 ## Authentication and sharing
 
@@ -2076,8 +2186,8 @@ and deleted. Trashing, restoring and purging are commits whose sequence has
 started and not finished; that phase lives only in memory, so a restart boots
 from whichever record is durable. Deleting is a durable deleted record whose
 deletion barriers have not run in this process. The lifecycle routes,
-`/internal/lifecycle-state`, `/internal/tombstone` and the constructor are its
-interpreter.
+`/internal/lifecycle-state`, `/internal/tombstone` and the host's boot
+(`bootHost`, run by page-startup) are its interpreter.
 
 Pending trash and restore requests hold a hidden destination slot in the
 owner's Catalog, written in the same storage call as the intent. The intent is

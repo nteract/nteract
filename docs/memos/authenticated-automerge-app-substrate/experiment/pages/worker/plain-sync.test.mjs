@@ -174,12 +174,64 @@ test("a registered automerge Page stores plain history and survives a restart", 
 
   const restarted = f.page();
   await restarted.ready;
+  await restarted.documentReady();
   assert.equal(restarted.handle.documentId, f.args.document_id);
   assert.ok(A.hasHeads(restarted.handle.doc(), A.getHeads(f.doc)));
   assert.equal(restarted.handle.doc().afterRegistration, "Persisted before restart");
   // The host's own edits are claimed by the host, never by a person.
   const claims = await new PlainByteStore(f.storage).list("actor/");
   assert.ok(claims.length >= 1);
+});
+
+test("a restarted automerge Page answers a shared-Page check from its record, then boots for a read", async (t) => {
+  const f = await fixture(t);
+  f.env.CATALOGS = { getByName: () => ({ fetch: async () => Response.json({ ok: true }) }) };
+  const call = (p, path, body) =>
+    p.fetch(
+      new Request(`https://pages.invalid${path}`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${f.token}`, "x-pages-driver": "ChatGPT" },
+        body: JSON.stringify(body),
+      }),
+    );
+  const first = f.page();
+  assert.ok((await f.register(first)).ok);
+  // A read projects the title, which stores it for the next restart.
+  const read = { operation: "read_page", arguments: { page_id: pageId, comments: "none" } };
+  assert.equal((await call(first, "/internal/tool", read)).status, 200);
+  assert.equal((await f.storage.get("host/title-projection")).title, "Plain Page");
+  await first.flush();
+  await first.plain.close();
+
+  const restarted = f.page();
+  await restarted.ready;
+  assert.equal(restarted.startup.name, "metadata");
+  const check = await call(restarted, "/internal/catalog", {});
+  assert.equal(check.status, 200);
+  assert.equal((await check.json()).title, "Plain Page");
+  assert.equal(restarted.plain, undefined, "the check started no PlainSync");
+  const again = await call(restarted, "/internal/tool", read);
+  assert.equal(again.status, 200);
+  assert.ok(restarted.plain, "the read booted the host");
+  assert.equal(restarted.startup.name, "ready");
+  await restarted.flush();
+  await restarted.plain.close();
+
+  // The same check, answered from the record and by a booted host over the
+  // same storage, is the same answer.
+  const before = structuredClone(f.storage.values);
+  const lazy = f.page();
+  await lazy.ready;
+  const fromRecord = await (await call(lazy, "/internal/catalog", {})).json();
+  assert.equal(lazy.plain, undefined);
+  f.storage.values = structuredClone(before);
+  const booted = f.page();
+  await booted.ready;
+  await booted.documentReady();
+  const fromDocument = await (await call(booted, "/internal/catalog", {})).json();
+  assert.deepEqual(fromRecord, fromDocument);
+  assert.equal(fromRecord.role, "owner");
+  assert.equal(fromRecord.title, "Plain Page");
 });
 
 test("a browser syncs an automerge Page through connect, and its actor is attributed", async (t) => {
@@ -354,6 +406,7 @@ test("a restarted automerge Page has its stored comments before the comments han
   await first.plain.close();
   const restarted = f.page();
   await restarted.ready;
+  await restarted.documentReady();
   assert.ok(restarted.commentsHandle.doc().threads.t1, "stored thread present at once");
 });
 

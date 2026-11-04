@@ -1,0 +1,125 @@
+{
+  "machine": "page-startup",
+  "description": "How a Page host starts: a shared-Page check answers from the host record until a request needs the document, which boots the repo once inside blockConcurrencyWhile; a failed boot resets the object. Runs against worker/page-startup.mjs in worker/page-startup.test.mjs.",
+  "states": ["loading", "metadata", "booting", "ready", "failed"],
+  "events": ["loaded", "catalog", "document", "booted", "bootFailed"],
+  "unreachable": [
+    ["loading", "catalog", "requests wait for the constructor's read (`ready`) before they ask"],
+    ["loading", "document", "requests wait for the constructor's read (`ready`) before they ask"],
+    ["metadata", "loaded", "the host record is read once, in the constructor"],
+    ["booting", "loaded", "the host record is read once, in the constructor"],
+    ["ready", "loaded", "the host record is read once, in the constructor"],
+    ["failed", "loaded", "the host record is read once, in the constructor"],
+    ["loading", "booted", "only a running boot reports its end"],
+    ["loading", "bootFailed", "only a running boot reports its end"],
+    ["metadata", "booted", "only a running boot reports its end"],
+    ["metadata", "bootFailed", "only a running boot reports its end"],
+    ["ready", "booted", "only a running boot reports its end"],
+    ["ready", "bootFailed", "only a running boot reports its end"],
+    ["failed", "booted", "only a running boot reports its end"],
+    ["failed", "bootFailed", "only a running boot reports its end"]
+  ],
+  "cases": {
+    "loading/loaded": ["missing", "lazy", "eager"]
+  },
+  "rows": [
+    {
+      "case": "missing",
+      "label": "no record and no creation intent: nothing to boot; creation boots its own repo",
+      "state": { "name": "loading" },
+      "event": { "type": "loaded", "start": "missing" },
+      "expect": { "state": { "name": "ready" }, "effects": [] }
+    },
+    {
+      "case": "lazy",
+      "label": "an answerable record waits for a request that needs the document",
+      "state": { "name": "loading" },
+      "event": { "type": "loaded", "start": "lazy" },
+      "expect": { "state": { "name": "metadata" }, "effects": [] }
+    },
+    {
+      "case": "eager",
+      "label": "a creation intent or a legacy record boots in the constructor",
+      "state": { "name": "loading" },
+      "event": { "type": "loaded", "start": "eager" },
+      "expect": {
+        "state": { "name": "booting" },
+        "effects": [{ "type": "boot", "within": "constructor" }]
+      }
+    },
+    {
+      "label": "a check answers from the record without booting",
+      "state": { "name": "metadata" },
+      "event": { "type": "catalog" },
+      "expect": {
+        "state": { "name": "metadata" },
+        "effects": [],
+        "response": { "serve": "record" }
+      }
+    },
+    {
+      "label": "a check waits for the running boot, then answers from the loaded host",
+      "state": { "name": "booting" },
+      "event": { "type": "catalog" },
+      "expect": { "state": { "name": "booting" }, "effects": [], "response": { "serve": "wait" } }
+    },
+    {
+      "label": "a booted host answers from its document, as before",
+      "state": { "name": "ready" },
+      "event": { "type": "catalog" },
+      "expect": { "state": { "name": "ready" }, "effects": [], "response": { "serve": "document" } }
+    },
+    {
+      "label": "a check never gets a failed boot's error: the record needs nothing the boot left",
+      "state": { "name": "failed" },
+      "event": { "type": "catalog" },
+      "expect": {
+        "state": { "name": "failed" },
+        "effects": [],
+        "response": { "serve": "record" }
+      }
+    },
+    {
+      "label": "the first request that needs the document starts the one boot",
+      "state": { "name": "metadata" },
+      "event": { "type": "document" },
+      "expect": {
+        "state": { "name": "booting" },
+        "effects": [{ "type": "boot", "within": "request" }],
+        "response": { "serve": "wait" }
+      }
+    },
+    {
+      "label": "a second request waits on the same boot and starts none",
+      "state": { "name": "booting" },
+      "event": { "type": "document" },
+      "expect": { "state": { "name": "booting" }, "effects": [], "response": { "serve": "wait" } }
+    },
+    {
+      "state": { "name": "ready" },
+      "event": { "type": "document" },
+      "expect": { "state": { "name": "ready" }, "effects": [], "response": { "serve": "document" } }
+    },
+    {
+      "label": "the boot's error, until the runtime replaces the object it reset",
+      "state": { "name": "failed" },
+      "event": { "type": "document" },
+      "expect": {
+        "state": { "name": "failed" },
+        "effects": [],
+        "response": { "serve": "failed" },
+        "rejected": "the host failed to start"
+      }
+    },
+    {
+      "state": { "name": "booting" },
+      "event": { "type": "booted" },
+      "expect": { "state": { "name": "ready" }, "effects": [] }
+    },
+    {
+      "state": { "name": "booting" },
+      "event": { "type": "bootFailed" },
+      "expect": { "state": { "name": "failed" }, "effects": [] }
+    }
+  ]
+}
