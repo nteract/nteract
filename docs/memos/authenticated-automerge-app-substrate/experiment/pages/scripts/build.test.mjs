@@ -17,6 +17,7 @@ import { fileURLToPath } from "node:url";
 import vm from "node:vm";
 import { build } from "esbuild";
 import { celldCborPlugin } from "./celld-cbor.mjs";
+import { USAGE_CRON, USAGE_D1 } from "./deployment/profiles.mjs";
 import { browserMermaidPlugin, mermaidSource } from "./browser-mermaid.mjs";
 import {
   IMMUTABLE,
@@ -107,81 +108,135 @@ test("celld CBOR workaround fails closed on an unexpected upstream allocation ch
   );
 });
 
-test("failed rebuild removes the previous receipt before replacing any artifacts", () => {
-  const fixture = mkdtempSync(path.join(tmpdir(), "pages-build-failure-"));
-  const write = (relative, contents) => {
-    const file = path.join(fixture, relative);
-    mkdirSync(path.dirname(file), { recursive: true });
-    writeFileSync(file, contents);
-  };
-  try {
-    // Execute the actual build entry point against a failing bundler. This
-    // models an old source-A receipt followed by a partial source-B build.
-    write("scripts/build.mjs", readFileSync(new URL("./build.mjs", import.meta.url), "utf8"));
-    write("scripts/celld-cbor.mjs", "export const celldCborPlugin = () => ({});");
-    write(
-      "scripts/browser-mermaid.mjs",
-      readFileSync(new URL("./browser-mermaid.mjs", import.meta.url), "utf8"),
-    );
-    for (const name of [
-      "browser-wasm.mjs",
-      "browser-sift.mjs",
-      "viewer-chunks.mjs",
-      "deployment/profiles.mjs",
-    ])
-      write(`scripts/${name}`, readFileSync(new URL(`./${name}`, import.meta.url), "utf8"));
-    for (const name of ["favicon.mjs", "product.mjs"])
-      write(`shared/${name}`, readFileSync(new URL(`../shared/${name}`, import.meta.url), "utf8"));
-    write(
-      "scripts/source-fingerprint.mjs",
-      "export const sourceFingerprint = () => ({sha256:'source-B'}); export const writeBuildReceipt = () => {throw new Error('failed build must not certify outputs');};",
-    );
-    write(
-      "node_modules/esbuild/package.json",
-      JSON.stringify({ name: "esbuild", type: "module", exports: "./index.js" }),
-    );
-    write(
-      "node_modules/esbuild/index.js",
-      "import {writeFileSync} from 'node:fs'; export async function build(options) { writeFileSync(options.outfile,'partial source-B bundle'); throw new Error('injected bundler failure'); }",
-    );
-    for (const [name, exported, binary] of [
-      ["automerge", "automerge.wasm", "automerge.wasm"],
-      ["subduction", "wasm", "subduction.wasm"],
-    ]) {
-      write(
-        `node_modules/@automerge/${name}/package.json`,
-        JSON.stringify({
-          name: `@automerge/${name}`,
-          exports: { [`./${exported}`]: `./${binary}` },
-        }),
-      );
-      write(`node_modules/@automerge/${name}/${binary}`, "source-B wasm");
-    }
-    write("dist/build-receipt.json", JSON.stringify({ fingerprint: { sha256: "source-A" } }));
-    write("dist/index.js", "source-A bundle");
-    let failure;
-    try {
-      execFileSync(process.execPath, [path.join(fixture, "scripts/build.mjs")], { stdio: "pipe" });
-    } catch (error) {
-      failure = error;
-    }
-    assert.ok(failure);
-    assert.match(failure.stderr.toString(), /injected bundler failure/);
-    // The first bundle (the theme script) wrote partial output and failed.
-    assert.equal(
-      readFileSync(path.join(fixture, "dist/public/theme.js"), "utf8"),
-      "partial source-B bundle",
-    );
-    assert.equal(existsSync(path.join(fixture, "dist/build-receipt.json")), false);
-    // Returning the checkout to source A cannot make this directory deployable:
-    // prepare requires a receipt, and the failing build removed it.
-    assert.throws(() => readFileSync(path.join(fixture, "dist/build-receipt.json")), {
-      code: "ENOENT",
-    });
-  } finally {
-    rmSync(fixture, { recursive: true, force: true });
-  }
-});
+for (const fails of [true, false])
+  test(
+    fails
+      ? "failed rebuild removes the previous receipt before replacing any artifacts"
+      : "build.mjs emits PAGES_USAGE and its UTC cron into the local release config",
+    () => {
+      const fixture = mkdtempSync(path.join(tmpdir(), "pages-build-failure-"));
+      const write = (relative, contents) => {
+        const file = path.join(fixture, relative);
+        mkdirSync(path.dirname(file), { recursive: true });
+        writeFileSync(file, contents);
+      };
+      try {
+        // Execute the actual build entry point; only bundling and receipts are
+        // stubbed. The fixture never supplies deployment bindings or triggers.
+        write("scripts/build.mjs", readFileSync(new URL("./build.mjs", import.meta.url), "utf8"));
+        write("scripts/celld-cbor.mjs", "export const celldCborPlugin = () => ({});");
+        write(
+          "scripts/browser-mermaid.mjs",
+          readFileSync(new URL("./browser-mermaid.mjs", import.meta.url), "utf8"),
+        );
+        for (const name of [
+          "browser-wasm.mjs",
+          "browser-sift.mjs",
+          "viewer-chunks.mjs",
+          "deployment/profiles.mjs",
+        ])
+          write(`scripts/${name}`, readFileSync(new URL(`./${name}`, import.meta.url), "utf8"));
+        for (const name of ["favicon.mjs", "product.mjs"])
+          write(
+            `shared/${name}`,
+            readFileSync(new URL(`../shared/${name}`, import.meta.url), "utf8"),
+          );
+        write(
+          "scripts/source-fingerprint.mjs",
+          `export const sourceFingerprint = () => ({sha256:'source-B'}); export const writeBuildReceipt = () => {${fails ? "throw new Error('failed build must not certify outputs');" : ""}};`,
+        );
+        write(
+          "node_modules/esbuild/package.json",
+          JSON.stringify({ name: "esbuild", type: "module", exports: "./index.js" }),
+        );
+        write(
+          "node_modules/esbuild/index.js",
+          fails
+            ? "import {writeFileSync} from 'node:fs'; export async function build(options) { writeFileSync(options.outfile,'partial source-B bundle'); throw new Error('injected bundler failure'); }"
+            : `
+        import {writeFileSync, mkdirSync} from 'node:fs';
+        import path from 'node:path';
+        export async function build(options) {
+          if (options.write === false) return {outputFiles: [{contents: new TextEncoder().encode('fixture bundle')}]};
+          if (options.outdir) {
+            mkdirSync(path.join(options.outdir, 'chunks'), {recursive: true});
+            for (const file of ['app.js', 'app.css', 'chunks/ABCDEFGH.js']) writeFileSync(path.join(options.outdir, file), 'fixture bundle');
+            return {metafile: {outputs: {
+              'public/app.js': {inputs: {}, imports: []},
+              'public/app.css': {inputs: {}, imports: []},
+              'public/chunks/ABCDEFGH.js': {inputs: {}, imports: []}
+            }}};
+          }
+          writeFileSync(options.outfile, 'fixture worker');
+        }
+      `,
+        );
+        for (const [name, exported, binary] of [
+          ["automerge", "automerge.wasm", "automerge.wasm"],
+          ["subduction", "wasm", "subduction.wasm"],
+        ]) {
+          write(
+            `node_modules/@automerge/${name}/package.json`,
+            JSON.stringify({
+              name: `@automerge/${name}`,
+              exports: { [`./${exported}`]: `./${binary}` },
+            }),
+          );
+          write(`node_modules/@automerge/${name}/${binary}`, "source-B wasm");
+        }
+        if (!fails) {
+          for (const name of ["react", "react-dom", "lucide-react"])
+            write(`node_modules/${name}/package.json`, JSON.stringify({ name }));
+          write(
+            "node_modules/@nteract/sift/package.json",
+            JSON.stringify({ name: "@nteract/sift", exports: { "./sift.wasm": "./sift.wasm" } }),
+          );
+          write("node_modules/@nteract/sift/sift.wasm", "fixture wasm");
+          write(
+            "viewer/index.html",
+            readFileSync(new URL("../viewer/index.html", import.meta.url), "utf8"),
+          );
+          write("viewer/connect-agent.js", "fixture connect");
+        }
+        write("dist/build-receipt.json", JSON.stringify({ fingerprint: { sha256: "source-A" } }));
+        write("dist/index.js", "source-A bundle");
+        let failure;
+        try {
+          execFileSync(process.execPath, [path.join(fixture, "scripts/build.mjs")], {
+            stdio: "pipe",
+          });
+        } catch (error) {
+          failure = error;
+        }
+        if (!fails) {
+          assert.equal(failure?.stderr?.toString(), undefined);
+          const config = JSON.parse(readFileSync(path.join(fixture, "dist/wrangler.json"), "utf8"));
+          assert.deepEqual(
+            config.d1_databases.filter((db) => db.binding === "PAGES_USAGE"),
+            [USAGE_D1],
+          );
+          assert.deepEqual(config.triggers, { crons: [USAGE_CRON] });
+          assert.equal(USAGE_CRON, "5 0 * * *");
+          return;
+        }
+        assert.ok(failure);
+        assert.match(failure.stderr.toString(), /injected bundler failure/);
+        // The first bundle (the theme script) wrote partial output and failed.
+        assert.equal(
+          readFileSync(path.join(fixture, "dist/public/theme.js"), "utf8"),
+          "partial source-B bundle",
+        );
+        assert.equal(existsSync(path.join(fixture, "dist/build-receipt.json")), false);
+        // Returning the checkout to source A cannot make this directory deployable:
+        // prepare requires a receipt, and the failing build removed it.
+        assert.throws(() => readFileSync(path.join(fixture, "dist/build-receipt.json")), {
+          code: "ENOENT",
+        });
+      } finally {
+        rmSync(fixture, { recursive: true, force: true });
+      }
+    },
+  );
 
 test("browser bundles keep Mermaid as a separate dynamic local module", async () => {
   const result = await build({

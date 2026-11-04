@@ -764,6 +764,37 @@ test("browser usage writes follow durable admission, not read-only sync, retries
   });
   await until(() => Object.keys(host.commentsHandle.doc().threads[thread].messages).length === 2);
   assert.equal(events.length, 2, "comments share the per-session/day dedupe");
+  // The refused writer above can be disconnected; use a healthy observer to
+  // verify that a telemetry exception does not interrupt live publication.
+  const observer = await connectBrowser(host, { ...identity, canWrite: false }, "b-usage-observer");
+  t.after(() => observer.repo.shutdown());
+  const observed = await observer.repo.find(f.args.document_id);
+  const writeHook = t.mock.method(host.plain, "onWrite", () => {
+    throw Error("usage unavailable");
+  });
+  const profiles = [];
+  const publish = host.plain.publish.bind(host.plain);
+  t.mock.method(host.plain, "publish", (doc, message) => {
+    profiles.push(message);
+    publish(doc, message);
+  });
+  const actors = t.mock.method(host.plain, "onActors", () => {});
+  handle.change((draft) => {
+    draft.title = "Edit with broken telemetry";
+  });
+  const hash = A.getHeads(handle.doc())[0];
+  await until(() => host.handle.doc().title === "Edit with broken telemetry");
+  await until(() => observed.doc().title === "Edit with broken telemetry");
+  assert.equal(writeHook.mock.callCount(), 1);
+  assert.ok(
+    host.plain.actorSnapshot().attestedChanges[hash],
+    "attestation survives a usage exception",
+  );
+  assert.ok(
+    profiles.some((message) => message.attestedChanges[hash]),
+    "publication survives a usage exception",
+  );
+  assert.equal(actors.mock.callCount(), 1);
 });
 
 test("API edits on plain Pages name their principal independently of the host actor", async (t) => {

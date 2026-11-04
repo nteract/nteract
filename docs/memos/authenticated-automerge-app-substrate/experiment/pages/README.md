@@ -558,8 +558,11 @@ No host-side provisioning is required.
 The existing `pages.usage.v1` emission path also queues an allowlisted projection:
 UTC day and timestamp, principal id, driver, surface, action, Page id, outcome.
 It stores no titles, content, emails, display names, client/model labels or
-session ids. Anonymous/service events and email-shaped principals/drivers are
-dropped. Existing console telemetry is unchanged and has its separate 30-day
+session ids. Drivers are classified as `Browser`, `API`, `Kilo`, `Codex`,
+`Claude Code`, `Claude Desktop`, `ChatGPT`, `Cursor`, `Gemini`, or `other`.
+Unknown labels, including email-shaped drivers, retain the event as `other`.
+Anonymous/service events and principals containing emails after percent-decoding
+are dropped. Existing console telemetry is unchanged and has its separate 30-day
 retention (DEPLOYMENT.md, Telemetry).
 
 | Table | Meaning | Retention |
@@ -568,8 +571,10 @@ retention (DEPLOYMENT.md, Telemetry).
 | `pages_usage_daily` | Day x principal x surface x driver x action; `count`, `distinct_pages` | Same 90-day boundary |
 | `pages_usage_weekly` | Monday UTC week; active people, readers, writers, agent people/actions, collaborative Pages; no principals or Page ids | Indefinite |
 
-An admitted browser session qualifies after 30 seconds **within each UTC day**,
-even while idle. Non-owners emit `page.read`, owners `page.visit`. Daily counts
+An admitted browser session qualifies after 30 seconds total, even while idle
+or crossing midnight. Its first visit belongs to the UTC day the 30-second mark
+is reached; a still-connected qualified session counts once on each later UTC
+day. Non-owners emit `page.read`, owners `page.visit`. Daily counts
 union principal x Page x day across reconnects, never count `sync.open/close`.
 The host emits `page.write` and `comment.write` after browser change admission,
 once per session x action x UTC day; daily rollups union those too. Both native
@@ -584,17 +589,19 @@ including qualified visits, writes, comments and agent tool calls.
 The cron rebuilds completed days and weekly unions from available raw events,
 then purges in one fenced transaction. Reruns and missed days are safe. Weekly
 totals freeze when their source week crosses the purge boundary; current-week
-totals are provisional through `through_day`. Downtime delays collection until
-the next successful cron. Retention describes queryable rows, not deletion from
-celld's historical storage epochs or backups.
+totals are provisional through `through_day`. Missed cron runs delay rollup and
+purge, not event collection, until the next successful cron. Retention describes
+queryable rows, not deletion from celld's historical storage epochs or backups.
 
 Writes are best-effort: 512 queued/in-flight rows per binding per isolate,
 batches of 64, a 25 ms write-behind window, and a five-second request hold.
 No request or document save waits for usage I/O. Failures/overflow log a generic
-drop count, with no event payload. A hung D1 call keeps its permit and drops new
-events until it settles or the isolate restarts; ambiguous writes are never
-retried. If the runtime cancels that continuation, the isolate stays stalled
-rather than accumulating abandoned writes. Restart can lose queued events.
+drop count, with no event payload, including losses reported on stalled flushes.
+A hung D1 call keeps its permit for a 60-second grace period after timeout.
+Then a subsequent flush abandons the permit and allows fresh work, even if the
+old request's continuation was canceled. At most one call is abandoned per
+timeout-plus-grace window; late completions cannot release a newer permit.
+Ambiguous batches are never retried. Restart can lose queued events.
 Rollback builds ignore the separate database; restoring their configuration
 also removes the cron, pausing both collection and purge without changing Pages.
 A prolonged rollback requires an operator-run purge to maintain the retention

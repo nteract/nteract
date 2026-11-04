@@ -15,6 +15,17 @@ const actions = new Set([
   "sync.close",
 ]);
 const surfaces = new Set(["mcp", "http-tools", "browser-sync"]);
+const drivers = new Set([
+  "Browser",
+  "API",
+  "Kilo",
+  "Codex",
+  "Claude Code",
+  "Claude Desktop",
+  "ChatGPT",
+  "Cursor",
+  "Gemini",
+]);
 const visits = "'page.read', 'page.visit', 'page.write', 'comment.write', 'page.create'";
 
 /** Append-only schema in a database that holds no Page content or profile text.
@@ -59,17 +70,14 @@ export function storedUsage(record) {
     typeof principal !== "string" ||
     !principal ||
     principal.length > 512 ||
-    principal.startsWith("service:") ||
-    /[@\p{Cc}\p{Cf}]/u.test(principal)
+    principal.startsWith("service:")
   )
     return null;
-  if (
-    typeof driver !== "string" ||
-    !driver ||
-    driver.length > 80 ||
-    /[@\p{Cc}\p{Cf}]/u.test(driver)
-  )
+  try {
+    if (/[@\p{Cc}\p{Cf}]/u.test(decodeURIComponent(principal))) return null;
+  } catch {
     return null;
+  }
   if (
     typeof timestamp !== "string" ||
     !/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/.test(timestamp) ||
@@ -85,7 +93,7 @@ export function storedUsage(record) {
     day: timestamp.slice(0, 10),
     ts: timestamp,
     principal,
-    driver,
+    driver: drivers.has(driver) ? driver : "other",
     surface: record.surface,
     action: record.action,
     page_id: page_id ?? null,
@@ -130,8 +138,8 @@ export async function writeUsageBatch(db, records, now = Date.now()) {
   ]);
 }
 
-/** Pure bounded queue lifecycle. A timed-out write retains its physical permit
- * in stalled until it settles. No retry can accumulate hung D1 requests. */
+/** Pure bounded queue lifecycle. A stalled permit is abandoned after a grace
+ * period. Permit identity fences completions from abandoned request contexts. */
 export function usageQueueStep(state, event, { capacity = 512, batchSize = 64 } = {}) {
   switch (event.type) {
     case "enqueue":
@@ -140,32 +148,48 @@ export function usageQueueStep(state, event, { capacity = 512, batchSize = 64 } 
       return { state: { ...state, queue: [...state.queue, event.row] } };
     case "schedule":
       return state.name === "idle" && state.queue.length
-        ? { state: { ...state, name: "scheduled" } }
+        ? { state: { ...state, name: "scheduled", permit: event.permit } }
         : { state };
     case "start":
       return state.name === "scheduled"
         ? {
             state: {
               name: "writing",
+              permit: state.permit,
               batch: state.queue.slice(0, batchSize),
               queue: state.queue.slice(batchSize),
             },
           }
         : { state };
     case "settled":
-      if (!["writing", "stalled"].includes(state.name)) return { state };
+      if (!["writing", "stalled"].includes(state.name) || event.permit !== state.permit)
+        return { state };
       return {
         state: { name: "idle", queue: state.queue },
         dropped: event.failed ? (state.batch?.length ?? 0) : 0,
       };
     case "timeout":
+      if (event.permit !== state.permit) return { state };
       if (state.name === "writing")
         return {
-          state: { name: "stalled", queue: [], batch: [] },
+          state: {
+            name: "stalled",
+            queue: [],
+            batch: [],
+            permit: state.permit,
+            recoverAt: event.recoverAt,
+          },
           dropped: state.queue.length + state.batch.length,
         };
       if (state.name !== "scheduled") return { state };
       return { state: { name: "idle", queue: [] }, dropped: state.queue.length };
+    case "flush":
+      return state.name === "stalled"
+        ? {
+            state: event.now >= state.recoverAt ? { name: "idle", queue: [] } : state,
+            report: true,
+          }
+        : { state };
     case "drop":
       if (state.name !== "idle" && state.name !== "scheduled") return { state };
       return { state: { name: "idle", queue: [] }, dropped: state.queue.length };
@@ -185,6 +209,7 @@ export function createUsageSink(
     batchSize = 64,
     delayMs = 25,
     timeoutMs = 5_000,
+    graceMs = 60_000,
     write = writeUsageBatch,
     warn = (record) => console.warn(JSON.stringify(record)),
   } = {},
@@ -195,6 +220,7 @@ export function createUsageSink(
     const result = usageQueueStep(state, event, { capacity, batchSize });
     state = result.state;
     lost += result.dropped ?? 0;
+    return result;
   };
   const report = () => {
     if (!lost) return;
@@ -219,6 +245,7 @@ export function createUsageSink(
     },
     flush(ctx) {
       try {
+        if (step({ type: "flush", now: now() }).report) report();
         if (state.name !== "idle") return;
         if (typeof ctx?.waitUntil !== "function") {
           step({ type: "drop" });
@@ -229,7 +256,8 @@ export function createUsageSink(
           report();
           return;
         }
-        step({ type: "schedule" });
+        const permit = {};
+        step({ type: "schedule", permit });
         let finish;
         const held = new Promise((resolve) => {
           finish = resolve;
@@ -239,13 +267,13 @@ export function createUsageSink(
         let expired = false;
         const deadline = timer(timeoutMs, scheduler).subscribe(() => {
           expired = true;
-          step({ type: "timeout" });
+          step({ type: "timeout", permit, recoverAt: now() + graceMs });
           report();
           finish();
         });
         timer(delayMs, scheduler).subscribe(() => {
           void (async () => {
-            while (!expired && state.name === "scheduled") {
+            while (!expired && state.name === "scheduled" && state.permit === permit) {
               step({ type: "start" });
               let failed = false;
               try {
@@ -253,10 +281,10 @@ export function createUsageSink(
               } catch {
                 failed = true;
               }
-              step({ type: "settled", failed });
+              step({ type: "settled", permit, failed });
               report();
               if (expired) break;
-              step({ type: "schedule" });
+              step({ type: "schedule", permit });
             }
           })().finally(() => {
             deadline.unsubscribe();

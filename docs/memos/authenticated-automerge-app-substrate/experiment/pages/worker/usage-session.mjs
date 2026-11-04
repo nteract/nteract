@@ -6,7 +6,7 @@ const DAY = 86_400_000;
 export const READER_MS = 30_000;
 const dayStart = (at) => Math.floor(at / DAY) * DAY;
 
-/** An admitted session qualifies separately in each UTC day it spans.
+/** Qualify after 30 seconds total, then once per UTC day still connected.
  * A closed session is terminal. Clock regressions never emit a second visit. */
 export function usageSessionStep(state, event) {
   if (state.name === "closed") return { state, visits: [] };
@@ -14,22 +14,19 @@ export function usageSessionStep(state, event) {
     if (event.type === "close") return { state: { name: "closed" }, visits: [] };
     if (event.type !== "admit") return { state, visits: [] };
     return {
-      state: { name: "open", openedAt: event.now, nextDay: dayStart(event.now) },
+      state: { name: "open", nextAt: event.now + READER_MS },
       visits: [],
     };
   }
   if (!["tick", "close"].includes(event.type)) return { state, visits: [] };
   const visits = [];
-  let nextDay = Math.max(state.nextDay, dayStart(event.now) - 90 * DAY);
-  while (nextDay <= dayStart(event.now)) {
-    const qualifiesAt = Math.max(nextDay, state.openedAt) + READER_MS;
-    if (qualifiesAt > event.now) break;
-    if (qualifiesAt <= nextDay + DAY)
-      visits.push(qualifiesAt - (qualifiesAt === nextDay + DAY ? 1 : 0));
-    nextDay += DAY;
+  let nextAt = Math.max(state.nextAt, dayStart(event.now) - 90 * DAY);
+  while (nextAt <= event.now) {
+    visits.push(nextAt);
+    nextAt = dayStart(nextAt) + DAY;
   }
   return {
-    state: event.type === "close" ? { name: "closed" } : { ...state, nextDay },
+    state: event.type === "close" ? { name: "closed" } : { ...state, nextAt },
     visits,
   };
 }

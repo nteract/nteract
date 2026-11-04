@@ -65,8 +65,11 @@ test("privacy projection has only SQL columns; migrations repeat and tolerate ad
   for (const extra of [
     { principal: "service:pages" },
     { principal: "a@example.com" },
+    { principal: "user:oidc:a%40example.com" },
+    { principal: "user:oidc:%61%40example.com" },
+    { principal: "user:oidc:a%0Ab" },
+    { principal: "user:oidc:bad%" },
     { principal: undefined },
-    { driver: "a@example.com" },
     { page_id: "secret" },
     { timestamp: "2026-02-30T12:00:00.000Z" },
     { timestamp: "2026-11-04T07:00:00-05:00" },
@@ -90,19 +93,68 @@ test("privacy projection has only SQL columns; migrations repeat and tolerate ad
   assert.equal(db.rows("SELECT readers FROM pages_usage_weekly")[0].readers, 1);
 });
 
-test("queue transitions bound every state/event pair and preserve the stalled physical permit", () => {
+test("drivers are classified without dropping caller-labeled events", async (t) => {
+  const db = sqliteD1(t).open();
+  const known = [
+    "Browser",
+    "API",
+    "Kilo",
+    "Codex",
+    "Claude Code",
+    "Claude Desktop",
+    "ChatGPT",
+    "Cursor",
+    "Gemini",
+  ];
+  const unknown = [
+    "Kyle's Claude",
+    "kyle@example.com",
+    "Kilo Desktop",
+    "Kilo\nprivate",
+    "Kilo/1.2",
+    "x".repeat(81),
+    "",
+    undefined,
+    null,
+  ];
+  const events = [...known, ...unknown].map((driver) => event({ driver, action: "tool.call" }));
+  assert.deepEqual(
+    events.map((row) => storedUsage(row).driver),
+    [...known, ...unknown.map(() => "other")],
+  );
+  const principal = "user:oidc:subject%2Fopaque";
+  assert.equal(
+    storedUsage(event({ principal })).principal,
+    principal,
+    "check decoded identity without rewriting its id",
+  );
+  await insert(db, events);
+  await runUsageMaintenance({ PAGES_USAGE: db }, at + DAY);
+  assert.equal(db.rows("SELECT COUNT(*) AS n FROM pages_usage_events")[0].n, events.length);
+  assert.equal(
+    db.rows("SELECT count FROM pages_usage_daily WHERE driver = 'other'")[0].count,
+    unknown.length,
+  );
+  assert.doesNotMatch(
+    JSON.stringify(db.rows("SELECT * FROM pages_usage_events")),
+    /Kyle|example|private|Desktop.*Kilo/,
+  );
+});
+
+test("queue transition table covers stalled reporting, grace recovery and permit fences", () => {
   const row = storedUsage(event());
+  const permit = {};
   const states = [
     { name: "idle", queue: [row] },
-    { name: "scheduled", queue: [row] },
-    { name: "writing", queue: [row], batch: [row] },
-    { name: "stalled", queue: [], batch: [] },
+    { name: "scheduled", queue: [row], permit },
+    { name: "writing", queue: [row], batch: [row], permit },
+    { name: "stalled", queue: [], batch: [], permit, recoverAt: 100 },
   ];
   const expected = {
-    idle: ["idle", "scheduled", "idle", "idle", "idle", "idle"],
-    scheduled: ["scheduled", "scheduled", "writing", "scheduled", "idle", "idle"],
-    writing: ["writing", "writing", "writing", "idle", "stalled", "writing"],
-    stalled: ["stalled", "stalled", "stalled", "idle", "stalled", "stalled"],
+    idle: ["idle", "scheduled", "idle", "idle", "idle", "idle", "idle"],
+    scheduled: ["scheduled", "scheduled", "writing", "scheduled", "idle", "idle", "scheduled"],
+    writing: ["writing", "writing", "writing", "idle", "stalled", "writing", "writing"],
+    stalled: ["stalled", "stalled", "stalled", "idle", "stalled", "stalled", "idle"],
   };
   for (const state of states)
     for (const [i, type] of [
@@ -112,11 +164,25 @@ test("queue transitions bound every state/event pair and preserve the stalled ph
       "settled",
       "timeout",
       "drop",
+      "flush",
     ].entries()) {
-      const result = usageQueueStep(state, { type, row }, { capacity: 2, batchSize: 1 });
+      const result = usageQueueStep(
+        state,
+        { type, row, permit, now: 100, recoverAt: 100 },
+        { capacity: 2, batchSize: 1 },
+      );
       assert.equal(result.state.name, expected[state.name][i], `${state.name}/${type}`);
       assert.ok(result.state.queue.length + (result.state.batch?.length ?? 0) <= 2);
+      assert.equal(result.report === true, type === "flush" && state.name === "stalled");
     }
+  const stalled = states[3];
+  assert.deepEqual(usageQueueStep(stalled, { type: "flush", now: 99 }), {
+    state: stalled,
+    report: true,
+  });
+  for (const state of states)
+    for (const type of ["settled", "timeout"])
+      assert.strictEqual(usageQueueStep(state, { type, permit: {} }).state, state, `stale ${type}`);
 });
 
 test("sink batches outside critical path, bounds queue, isolates failures, and holds work", async () => {
@@ -202,6 +268,87 @@ test("hung writes release the hold but not capacity; a late settlement cannot re
   await advance(scheduler, 11);
   await held[1];
   assert.equal(calls, 2);
+});
+
+test("stalled flushes report drops and recover after grace without a surviving request timer", async () => {
+  for (const failed of [false, true]) {
+    const scheduler = new VirtualTimeScheduler();
+    const pending = [],
+      holds = [],
+      warnings = [];
+    let clock = at;
+    const sink = createUsageSink(
+      {},
+      {
+        scheduler,
+        now: () => clock,
+        delayMs: 1,
+        timeoutMs: 10,
+        graceMs: 100,
+        warn: (record) => warnings.push(record),
+        write: (_db, rows) =>
+          new Promise((resolve, reject) => pending.push({ rows, resolve, reject })),
+      },
+    );
+    const ctx = { waitUntil: (work) => holds.push(work) };
+    sink.enqueue(event());
+    sink.flush(ctx);
+    await advance(scheduler, 10);
+    await holds[0];
+    assert.equal(sink.state.name, "stalled");
+    assert.deepEqual(
+      warnings.map((w) => w.count),
+      [1],
+    );
+    for (let n = 0; n < 3; n++) sink.enqueue(event());
+    clock = at + 99;
+    sink.flush(ctx);
+    assert.deepEqual(
+      warnings.map((w) => w.count),
+      [1, 3],
+      "stalled losses are still reported",
+    );
+    assert.equal(sink.state.name, "stalled");
+    assert.equal(pending.length, 1);
+    // No recovery timer survives in the old context. A new request does it.
+    clock = at + 100;
+    sink.flush(ctx);
+    assert.equal(sink.state.name, "idle");
+    sink.enqueue(event({ page_id: other }));
+    sink.flush(ctx);
+    await advance(scheduler, 11);
+    assert.equal(pending.length, 2);
+    assert.equal(pending[1].rows[0].page_id, other, "the abandoned batch is not retried");
+    const writing = sink.state;
+    if (failed) pending[0].reject(Error("old private failure"));
+    else pending[0].resolve();
+    await tick();
+    assert.strictEqual(sink.state, writing, "an abandoned completion cannot clear the new permit");
+    await advance(scheduler, 20);
+    await holds[1];
+    assert.equal(
+      sink.state.name,
+      "stalled",
+      "the abandoned completion cannot cancel the new deadline",
+    );
+    sink.enqueue(event());
+    sink.flush(ctx);
+    assert.deepEqual(
+      warnings.map((w) => w.count),
+      [1, 3, 1, 1],
+    );
+    assert.equal(pending.length, 2);
+    clock += 99;
+    sink.flush(ctx);
+    assert.equal(sink.state.name, "stalled");
+    clock++;
+    sink.flush(ctx);
+    assert.equal(sink.state.name, "idle");
+    pending[1].resolve();
+    await tick();
+    assert.equal(sink.state.name, "idle");
+    assert.doesNotMatch(JSON.stringify(warnings), /private|principal|page_id/);
+  }
 });
 
 test("missing or throwing request holds and diagnostic sinks never start D1 work", async () => {

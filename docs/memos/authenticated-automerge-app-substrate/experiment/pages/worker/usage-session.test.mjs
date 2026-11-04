@@ -43,25 +43,48 @@ test("read threshold is inclusive, read-only idle sessions qualify, reconnect se
   );
 });
 
-test("sessions qualify separately per UTC day including exact midnight and short tails", () => {
+test("sessions qualify on total length, attributing the 30-second mark to its UTC day", () => {
   const midnight = Date.parse("2026-11-05T00:00:00Z");
-  for (const before of [29_999, 30_000, 30_001]) {
-    let state = usageSessionStep(
-      { name: "waiting" },
-      { type: "admit", now: midnight - before },
-    ).state;
-    const first = usageSessionStep(state, { type: "tick", now: midnight });
-    assert.equal(first.visits.length, before >= READER_MS ? 1 : 0);
-    if (first.visits.length)
-      assert.equal(new Date(first.visits[0]).toISOString().slice(0, 10), "2026-11-04");
-    state = first.state;
-    assert.equal(
-      usageSessionStep(state, { type: "tick", now: midnight + READER_MS - 1 }).visits.length,
-      0,
+  for (const before of [15_000, 29_999, 30_000, 30_001]) {
+    const openedAt = midnight - before;
+    const state = usageSessionStep({ name: "waiting" }, { type: "admit", now: openedAt }).state;
+    assert.deepEqual(
+      usageSessionStep(state, { type: "close", now: openedAt + READER_MS - 1 }).visits,
+      [],
     );
-    const next = usageSessionStep(state, { type: "tick", now: midnight + READER_MS });
-    assert.deepEqual(next.visits, [midnight + READER_MS]);
+    const first = usageSessionStep(state, { type: "tick", now: openedAt + READER_MS });
+    assert.deepEqual(first.visits, [openedAt + READER_MS]);
+    assert.equal(
+      new Date(first.visits[0]).toISOString().slice(0, 10),
+      before > READER_MS ? "2026-11-04" : "2026-11-05",
+    );
+    assert.deepEqual(usageSessionStep(first.state, { type: "tick", now: openedAt }).visits, []);
   }
+  const opened = usageSessionStep(
+    { name: "waiting" },
+    { type: "admit", now: midnight - 15_000 },
+  ).state;
+  assert.deepEqual(usageSessionStep(opened, { type: "close", now: midnight + 20_000 }).visits, [
+    midnight + 15_000,
+  ]);
+});
+
+test("qualified long-lived sessions count once on each following UTC day", () => {
+  const day = 86_400_000;
+  const opened = usageSessionStep({ name: "waiting" }, { type: "admit", now: start }).state;
+  const first = usageSessionStep(opened, { type: "tick", now: start + READER_MS });
+  const midnight = Date.parse("2026-11-05T00:00:00Z");
+  assert.deepEqual(usageSessionStep(first.state, { type: "tick", now: midnight - 1 }).visits, []);
+  const next = usageSessionStep(first.state, { type: "tick", now: midnight });
+  assert.deepEqual(next.visits, [midnight]);
+  assert.deepEqual(
+    usageSessionStep(next.state, { type: "tick", now: midnight + 30_000 }).visits,
+    [],
+  );
+  assert.deepEqual(
+    usageSessionStep(next.state, { type: "close", now: midnight + 2 * day }).visits,
+    [midnight + day, midnight + 2 * day],
+  );
 });
 
 test("virtual-time resident session records owner visits, non-owner reads, and excludes agents", async () => {

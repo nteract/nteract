@@ -508,7 +508,11 @@ export class PlainSync {
 
   #admitted(conn, doc, fresh, claims) {
     if (conn.trusted) return;
-    if (fresh.length) this.onWrite(conn, doc);
+    try {
+      if (fresh.length) this.onWrite(conn, doc);
+    } catch {
+      // Usage reporting must not interrupt attestation or publication.
+    }
     const attested = {};
     for (const bytes of fresh) {
       const { hash, actor } = A.decodeChange(bytes);
