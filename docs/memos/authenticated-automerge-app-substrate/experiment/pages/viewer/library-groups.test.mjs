@@ -154,8 +154,9 @@ test("a Project's accent follows its ID, never its title, and spreads over every
   const seen = new Set();
   for (let index = 0; index < 64; index++)
     seen.add(
-      groupAccent({ key: `project:prj_${String(index).padStart(8, "0")}-6df1-4983-81eb-489ca5a26812` })
-        .accent,
+      groupAccent({
+        key: `project:prj_${String(index).padStart(8, "0")}-6df1-4983-81eb-489ca5a26812`,
+      }).accent,
     );
   assert.equal(seen.size, PROJECT_ACCENTS, "64 Projects use all six accents");
 });
@@ -165,8 +166,8 @@ test("the fixed groups keep their own accents, and date groups fade with age", (
   assert.deepEqual(groupAccent(DEVICE_GROUP), { accent: "device", recency: null });
   assert.deepEqual(groupAccent(ITEMS_GROUP), { accent: "items", recency: null });
   assert.deepEqual(
-    ["today", "yesterday", "week", "month", "m:2026-09", "y:2025", UNDATED_GROUP.key].map(
-      (key) => groupAccent({ key }),
+    ["today", "yesterday", "week", "month", "m:2026-09", "y:2025", UNDATED_GROUP.key].map((key) =>
+      groupAccent({ key }),
     ),
     [0, 1, 2, 3, 4, 5, 5].map((recency) => ({ accent: "date", recency })),
   );
@@ -198,14 +199,17 @@ test("every group accent reads as text at 4.5:1 on the page and its heading tint
     return (high + 0.05) / (low + 0.05);
   };
   // A 10% sRGB mix tints more than the heading's 6% in oklab does.
-  const tint = (accent, surface) => accent.map((value, index) => value * 0.1 + surface[index] * 0.9);
+  const tint = (accent, surface) =>
+    accent.map((value, index) => value * 0.1 + surface[index] * 0.9);
   // --background: oklch(1 0 0) and oklch(0.145 0 0) (src/styles/notebook-tokens.css).
   for (const [selector, surface] of [
     [":root", [255, 255, 255]],
     [":root.dark", [10, 10, 10]],
   ]) {
     const set = tokens(selector);
-    const names = [1, 2, 3, 4, 5, 6].map((n) => `--chart-${n}`).concat(["--group-shared", "--group-device"]);
+    const names = [1, 2, 3, 4, 5, 6]
+      .map((n) => `--chart-${n}`)
+      .concat(["--group-shared", "--group-device"]);
     assert.deepEqual(Object.keys(set).sort(), names.sort(), `${selector} sets every accent`);
     assert.equal(new Set(Object.values(set)).size, names.length, `${selector} accents differ`);
     for (const [name, hex] of Object.entries(set)) {

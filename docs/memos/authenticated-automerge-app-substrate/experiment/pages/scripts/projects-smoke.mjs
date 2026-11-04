@@ -126,6 +126,23 @@ function caretAtEnd(tab, text) {
     return false;
   }, text);
 }
+/** Wait until no CSS transition runs (a chevron turning, the progress bar
+ * fading), with nothing focused, so a screenshot shows the settled screen. */
+async function still(tab) {
+  await tab.evaluate(() => document.activeElement?.blur());
+  await expect
+    .poll(() =>
+      tab.evaluate(
+        () =>
+          document
+            .getAnimations()
+            .filter((animation) => animation instanceof CSSTransition)
+            .filter((animation) => animation.playState === "running").length,
+      ),
+    )
+    .toBe(0);
+  await expect(tab.locator('.library-progress[data-active="true"]')).toHaveCount(0);
+}
 let owner;
 // Phone-sized tabs, captured too when a step fails.
 const phones = new Map();
@@ -451,6 +468,7 @@ try {
     const moved = frames.filter((frame) => frame !== before);
     assert.deepEqual(moved, [], `the library moved switching to an empty tab: ${before}`);
     assert.equal(await sample(), before);
+    await still(owner);
     await owner.screenshot({ path: `${output}/library-empty-shared.png` });
     await record();
     await ownerTab("All").click();
@@ -950,7 +968,9 @@ try {
   await alice.keyboard.press("Tab");
   await expect(groupToggle("Shared with you")).toBeFocused();
   assert.notEqual(
-    await groupToggle("Shared with you").evaluate((element) => getComputedStyle(element).outlineStyle),
+    await groupToggle("Shared with you").evaluate(
+      (element) => getComputedStyle(element).outlineStyle,
+    ),
     "none",
     "a keyboard-focused heading shows its focus",
   );
@@ -964,6 +984,7 @@ try {
   await expect(groupToggle("Your items")).toHaveAttribute("aria-expanded", "true");
   await expect(rowLink("Zeta loose note")).toBeVisible();
   await alice.mouse.move(0, 0);
+  await still(alice);
   await alice.screenshot({ path: `${shots}/library-desktop-folded-light.png` });
   await alice.reload();
   await expect(groupToggle("Shared with you")).toHaveAttribute("aria-expanded", "false", {
@@ -979,6 +1000,7 @@ try {
     timeout: 60000,
   });
   await expect(rowLink("Zeta loose note")).toBeVisible();
+  await still(alice);
   await alice.screenshot({ path: `${shots}/library-desktop-folded-dark.png` });
   await alice.emulateMedia({ colorScheme: "light" });
   await alice.reload();
@@ -1001,7 +1023,9 @@ try {
   for (const name of [aliceProject.title, "Shared with you", "Your items"])
     await expect(groupToggle(name)).toHaveAttribute("aria-expanded", "true");
   await expect(rowLink("Alpha survey")).toBeVisible();
-  complete("Group headings fold by click and keyboard, survive a reload, and Fold all and Unfold all");
+  complete(
+    "Group headings fold by click and keyboard, survive a reload, and Fold all and Unfold all",
+  );
   await alice.reload();
   await expect(heading("Shared with you")).toBeVisible({ timeout: 60000 });
   await expect(menu("Group")).toHaveAttribute("aria-label", "Group: Project");
@@ -1048,6 +1072,7 @@ try {
     "Back from a Page lists the library once",
   );
   complete("Back from a Page lists the library once, painted from memory first");
+  await still(alice);
   await alice.screenshot({ path: `${shots}/library-desktop-grouped-date.png` });
   // The head script picks the theme on load, so reload under a dark system.
   await alice.emulateMedia({ colorScheme: "dark" });
@@ -1135,6 +1160,7 @@ try {
       values.filter((value) => value.scrollWidth > value.clientWidth).map((v) => v.textContent),
     );
   assert.deepEqual(clipped, [], "phone menus show their whole labels");
+  await still(narrow);
   await narrow.screenshot({ path: `${shots}/library-phone.png` });
   await narrow.getByRole("button", { name: /^Sort: / }).tap();
   await expect(narrow.getByRole("menu", { name: "Sort" })).toBeVisible();

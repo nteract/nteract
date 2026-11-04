@@ -541,11 +541,7 @@ function GroupHeading({ labelId, listId, section, folded, onToggle, onOpenProjec
   const { accent, recency } = groupAccent(section);
   const Icon = GROUP_ICONS[accent] ?? Boxes;
   return (
-    <h2
-      className="library-group-heading"
-      data-accent={accent}
-      data-recency={recency ?? undefined}
-    >
+    <h2 className="library-group-heading" data-accent={accent} data-recency={recency ?? undefined}>
       <button
         type="button"
         className="library-group-toggle"
@@ -589,9 +585,7 @@ function Sections({ sections, folded, onToggle, onOpenProject, children }) {
   return sections.map((section, index) => {
     if (section.label === null)
       return (
-        <div key={section.key}>
-          {children(section, "Pages", { id: undefined, folded: false })}
-        </div>
+        <div key={section.key}>{children(section, "Pages", { id: undefined, folded: false })}</div>
       );
     const shut = folded.includes(section.key);
     const list = { id: `${prefix}-list-${index}`, folded: shut };

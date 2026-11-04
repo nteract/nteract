@@ -671,9 +671,7 @@ test("group headings fold their rows, keep their counts, and remember folds per 
   // Fold all and Unfold all, from the Group menu.
   await click(menuButton(host, "Group"));
   const action = (label) =>
-    [...host.querySelectorAll('[role="menuitem"]')].find(
-      (item) => item.textContent === label,
-    );
+    [...host.querySelectorAll('[role="menuitem"]')].find((item) => item.textContent === label);
   assert.ok(host.querySelector('[role="menu"] [role="separator"]'));
   assert.equal(action("Fold all").getAttribute("aria-disabled"), null);
   await click(action("Fold all"));
@@ -685,7 +683,10 @@ test("group headings fold their rows, keep their counts, and remember folds per 
   await click(menuButton(host, "Group"));
   assert.equal(action("Fold all").getAttribute("aria-disabled"), "true");
   await click(action("Fold all"));
-  assert.ok(state().every(([, , expanded]) => expanded === "false"), "a disabled action is inert");
+  assert.ok(
+    state().every(([, , expanded]) => expanded === "false"),
+    "a disabled action is inert",
+  );
   assert.ok(host.querySelector('[role="menu"]'), "and leaves the menu open");
   await click(action("Unfold all"));
   assert.ok(state().every(([, , expanded]) => expanded === "true"));
@@ -715,9 +716,9 @@ test("group headings fold their rows, keep their counts, and remember folds per 
   );
   await click(menuButton(bob.host, "Group"));
   assert.equal(
-    [...bob.host.querySelectorAll('[role="menuitem"]')].find(
-      (item) => item.textContent === "Unfold all",
-    ).getAttribute("aria-disabled"),
+    [...bob.host.querySelectorAll('[role="menuitem"]')]
+      .find((item) => item.textContent === "Unfold all")
+      .getAttribute("aria-disabled"),
     "true",
     "nothing folded, nothing to unfold",
   );
@@ -768,7 +769,10 @@ test("each group heading wears its accent: Projects by ID, fixed groups, and dat
 test("a new view keeps the results in place: no status line above them, and one box for loading and empty", async () => {
   // Nothing is shared with this account. While `held`, each list_pages waits
   // for its answer.
-  const own = catalogTool([], CATALOG.filter((page) => !page.shared));
+  const own = catalogTool(
+    [],
+    CATALOG.filter((page) => !page.shared),
+  );
   let held = false;
   const answers = [];
   const tool = (name, args) => {

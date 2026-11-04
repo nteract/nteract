@@ -21,7 +21,8 @@ export const NO_FOLDS = Object.freeze(
   Object.fromEntries(FOLD_KINDS.map((kind) => [kind, Object.freeze([])])),
 );
 
-const validKey = (key) => typeof key === "string" && key.length > 0 && key.length <= MAX_FOLD_KEY_LENGTH;
+const validKey = (key) =>
+  typeof key === "string" && key.length > 0 && key.length <= MAX_FOLD_KEY_LENGTH;
 
 /** `keys` as a fold list: valid keys, each once (its latest place), at most
  * MAX_FOLDS of the newest. */
