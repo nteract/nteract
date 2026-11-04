@@ -1,6 +1,9 @@
 const check=(condition,message)=>{if(!condition) throw new Error(message);};
 const sourceSha=value=>{check(typeof value==='string' && /^[a-f0-9]{40}$/.test(value),'full source SHA required');return value;};
 export const PAGES_CONTROLLER='https://deploy.runtimed.run';
+// Covers GitHub authorization/settling and the controller's admission subprocess.
+// The paired preview-infra contract test checks this against the server budgets.
+export const PAGES_DEPLOY_TIMEOUT_MS=7*60*1000;
 export async function sendPagesDeployment(env,event,{fetchImpl,clock}) {
   check(env.PAGES_PAGE10_ENABLED==='true','Pages caller is disabled');
   check(env.GITHUB_REPOSITORY==='nteract/nteract' && ['workflow_run','workflow_dispatch'].includes(env.GITHUB_EVENT_NAME),'invalid Pages caller context');
@@ -21,7 +24,7 @@ export async function sendPagesDeployment(env,event,{fetchImpl,clock}) {
     const response=await fetchImpl(oidc,{headers:{Authorization:`Bearer ${env.ACTIONS_ID_TOKEN_REQUEST_TOKEN}`},redirect:'error',signal:AbortSignal.timeout(20000)});
     check(response.ok,'OIDC request failed');const {value}=await response.json();check(typeof value==='string' && value.split('.').length===3,'invalid OIDC token');
     return fetchImpl(`${PAGES_CONTROLLER}${path}`,{method:data?'POST':'GET',headers:{Authorization:`Bearer ${value}`,'Content-Type':'application/json'},
-      ...(data?{body:JSON.stringify(data)}:{}),redirect:'error',signal:AbortSignal.timeout(30000)});
+      ...(data?{body:JSON.stringify(data)}:{}),redirect:'error',signal:AbortSignal.timeout(path==='/deploy'?PAGES_DEPLOY_TIMEOUT_MS:30000)});
   };
   const accepted=await request('/deploy',body);check(accepted.status===202,'Pages request not accepted');
   const {operationId}=await accepted.json();check(/^[a-f0-9-]{36}$/.test(operationId),'invalid Pages operation id');
