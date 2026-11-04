@@ -105,14 +105,20 @@ for (const target of QUALIFIED_TARGETS)
 const fakeSsh = (log, manifest) =>
   `#!/bin/sh\ncase "$*" in\n  *"cat "*manifest.json*) cat '${manifest}' ;;\n  *) printf '%s\\n' "$@" > '${log}'; echo '{}' ;;\nesac\n`;
 
-test("install refuses a staged release without plain storage before the host installer", (t) => {
+test("install refuses an old staged plain format before the host installer", (t) => {
   const directory = mkdtempSync(path.join(tmpdir(), "page10-install-storage-"));
   t.after(() => rmSync(directory, { recursive: true, force: true }));
   const log = path.join(directory, "ssh-args");
   const manifest = path.join(directory, "manifest.json");
   writeFileSync(
     manifest,
-    JSON.stringify({ source_sha: "d".repeat(40), build_receipt: { build_id: "9ae4ed83e44e" } }),
+    JSON.stringify({
+      source_sha: "d".repeat(40),
+      build_receipt: {
+        build_id: "9ae4ed83e44e",
+        record_storage: ["local", "buffered", "automerge"],
+      },
+    }),
   );
   writeFileSync(path.join(directory, "ssh"), fakeSsh(log, manifest), { mode: 0o700 });
   const env = { ...process.env, PATH: directory + path.delimiter + process.env.PATH };
@@ -125,6 +131,7 @@ test("install refuses a staged release without plain storage before the host ins
   assert.equal(result.status, 1, result.stderr);
   assert.match(result.stderr, /Refusing release d{12} \(build 9ae4ed83e44e\) for page10: /);
   assert.equal(existsSync(log), false, "the host installer must not run");
+  assert.match(result.stderr, /plain_storage_formats/);
 });
 
 test("install --restart reaches the host installer; other extra flags do not", (t) => {
@@ -139,6 +146,7 @@ test("install --restart reaches the host installer; other extra flags do not", (
       build_receipt: {
         build_id: "0123456789ab",
         record_storage: ["local", "buffered", "automerge"],
+        plain_storage_formats: ["doc-store-v2-host-actor-prefix"],
       },
     }),
   );

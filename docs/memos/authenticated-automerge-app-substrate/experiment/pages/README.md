@@ -1619,7 +1619,9 @@ manifest per document ([sync/doc-store.mjs](sync/doc-store.mjs)): IndexedDB in
 the browser ([sync/idb-byte-store.mjs](sync/idb-byte-store.mjs)) and the Page's
 Durable Object storage under `plain/` on the host. Every write is one
 `saveMany` that puts the manifest last, so a manifest never names a missing
-object. Version 2 manifests hold seq, snapshot and heads; chunk descriptors
+object. Manifests are written only at `sync/<doc>/m2`, preferred over legacy
+`m` on read. The legacy key is removed after the new manifest is durable, so
+an old viewer cannot misread v2. Version 2 manifests hold seq, snapshot and heads; chunk descriptors
 have separate keys, read from snapshot.seq + 1 through manifest.seq. An append
 writes constant metadata in chunk count. Legacy inline chunk lists remain
 readable and upgrade on the next compaction. A document compacts into one

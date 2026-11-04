@@ -4,7 +4,8 @@ import { cbor } from "@automerge/automerge-repo";
 // `load`, `saveMany` (ordered batches), `remove` and `list`. The browser
 // uses IndexedDB (idb-byte-store.mjs); the host uses its Durable Object storage.
 //
-//   sync/<doc>/m                manifest { version: 2, seq, format, snapshot, heads }
+//   sync/<doc>/m2               manifest { version: 2, seq, format, snapshot, heads }
+//   sync/<doc>/m                legacy manifest, read only until upgraded
 //   sync/<doc>/c/<seq>          chunk descriptor { seq, parts, bytes }
 //   sync/<doc>/o/<seq>/<part>   object written by manifest seq, in parts
 //   sync/<doc>/s                the browser's encoded sync state with the host
@@ -26,7 +27,8 @@ export const COMPACT_MIN_BYTES = 64 * 1024;
 // Bound cold-load reads; keystroke-sized chunks reach this before the byte rule.
 export const COMPACT_MAX_CHUNKS = 256;
 
-const manifestKey = (id) => `sync/${id}/m`;
+const manifestKey = (id) => `sync/${id}/m2`;
+const legacyManifestKey = (id) => `sync/${id}/m`;
 const objectKey = (id, seq, part) => `sync/${id}/o/${seq}/${part}`;
 const chunkKey = (id, seq) => `sync/${id}/c/${seq}`;
 const syncStateKey = (id) => `sync/${id}/s`;
@@ -57,7 +59,9 @@ export class DocStore {
   /** Document ids with a stored manifest. Loads every manifest. */
   async ids() {
     const keys = await this.#bytes.list("sync/");
-    const ids = keys.filter((k) => k.endsWith("/m")).map((k) => k.slice(5, -2));
+    const ids = [
+      ...new Set(keys.filter((k) => /\/m2?$/.test(k)).map((k) => k.slice(5, k.lastIndexOf("/")))),
+    ];
     await Promise.all(ids.map((id) => this.open(id)));
     return ids.filter((id) => this.#manifests.get(id));
   }
@@ -65,7 +69,8 @@ export class DocStore {
   /** The stored manifest, or null. Cached after the first call. */
   async open(id) {
     if (this.#manifests.has(id)) return this.#manifests.get(id);
-    const bytes = await this.#bytes.load(manifestKey(id));
+    const bytes =
+      (await this.#bytes.load(manifestKey(id))) ?? (await this.#bytes.load(legacyManifestKey(id)));
     const manifest = bytes ? normalize(cbor.decode(bytes)) : null;
     if (manifest?.version === 2) {
       // Every committed seq after the snapshot is an append. Read that exact
@@ -154,7 +159,7 @@ export class DocStore {
     };
     await this.#commit(id, next, [...this.#parts(id, seq, save), ...extra]);
     await this.#reclaim(id, [m.snapshot, ...m.chunks].filter(Boolean));
-    await this.#reclaimChunks(id, m);
+    await this.#reclaimChunks(id, next);
     return next;
   }
 
@@ -162,6 +167,8 @@ export class DocStore {
   async remove(id) {
     const m = await this.open(id);
     if (!m) return;
+    // Remove the fallback first; a crash must never expose a stale legacy doc.
+    await this.#bytes.remove(legacyManifestKey(id));
     await this.#bytes.remove(manifestKey(id));
     this.#manifests.set(id, null);
     await this.#bytes.remove(syncStateKey(id));
@@ -195,6 +202,10 @@ export class DocStore {
       throw error;
     }
     this.#manifests.set(id, next);
+    // An old viewer must not read v2 as an empty chunk list and rewrite it as
+    // v1. Publish only at m2; remove the old viewer's key after that commit.
+    if (await this.#bytes.load(legacyManifestKey(id)))
+      await this.#bytes.remove(legacyManifestKey(id));
   }
 
   *#parts(id, seq, bytes) {
@@ -224,8 +235,9 @@ export class DocStore {
   }
 
   async #reclaimChunks(id, manifest) {
-    if (manifest.version === 2)
-      for (const chunk of manifest.chunks) await this.#bytes.remove(chunkKey(id, chunk.seq));
+    const prefix = `sync/${id}/c/`;
+    for (const key of await this.#bytes.list(prefix))
+      if (Number(key.slice(prefix.length)) <= manifest.seq) await this.#bytes.remove(key);
   }
 }
 

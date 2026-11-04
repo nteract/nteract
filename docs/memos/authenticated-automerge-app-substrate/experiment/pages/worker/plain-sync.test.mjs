@@ -185,8 +185,8 @@ test("the host prefix survives restart and rejects unseen browser actors without
   assert.ok((await f.register(host)).ok);
   const prefix = host.plain.hostActorPrefix;
   assert.match(prefix, /^[a-f0-9]{16}$/);
-  assert.equal(await f.storage.get("plain/host-actor"), undefined);
   for (let n = 1; n <= 2; n++) {
+    const initialClaims = new Set((await f.storage.list({ prefix: "plain/actor/" })).keys());
     const response = await tool(f, host, "edit_page", {
       base_heads: A.getHeads(host.handle.doc()),
       idempotency_key: `actor-restart-${n}`,
@@ -199,6 +199,10 @@ test("the host prefix survives restart and rejects unseen browser actors without
     assert.equal(changes.length, n);
     assert.ok(changes.every((c) => c.seq === 1));
     assert.ok(changes.every((c) => host.plain.host.actor(c.actor) === undefined));
+    assert.deepEqual(
+      new Set((await f.storage.list({ prefix: "plain/actor/" })).keys()),
+      initialClaims,
+    );
     const comment = await tool(f, host, "manage_page_comment", {
       idempotency_key: `actor-comment-${n}`,
       action: "add",
@@ -794,6 +798,12 @@ test("purge deletes every plain key, from metadata, and a retry is harmless", as
   const ids = [host.metadata.documentId, host.commentsHandle.documentId];
   assert.ok([...f.storage.values.keys()].some((k) => k.startsWith("plain/actor/")));
   await host.plain.forget(ids);
+  await host.plain.close();
+  const metadata = { ...host.metadata, deleted: true, purged: true };
+  await f.storage.put("host/document", metadata);
+  const restarted = f.page();
+  await restarted.ready;
+  await restarted.initializeRepo(metadata);
   assert.equal(await f.storage.get("plain/host-actor-prefix"), undefined);
   assert.deepEqual(
     [...f.storage.values.keys()].filter((k) => k.startsWith("plain/")),

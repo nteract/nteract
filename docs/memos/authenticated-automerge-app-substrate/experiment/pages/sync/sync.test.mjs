@@ -24,6 +24,28 @@ const syncHello = (changes) => {
   return A.encodeSyncMessage(m);
 };
 
+test("a failed cold load clears its promise and does not reload actor claims", async () => {
+  const bytes = new MemoryByteStore();
+  const h = await host({ bytes });
+  const id = newId();
+  h.register(id);
+  const load = bytes.load.bind(bytes);
+  let fail = true;
+  bytes.load = async (key) => {
+    assert.ok(!key.startsWith("actor/"));
+    if (fail) {
+      fail = false;
+      throw Error("transient read");
+    }
+    return load(key);
+  };
+  h.load = async () => {
+    throw Error("claims must not reload on cold open");
+  };
+  await assert.rejects(h.document(id), /transient read/);
+  assert.deepEqual(A.getHeads(await h.document(id)), []);
+});
+
 test("Repo 3 creates on one browser, finds cold on another, and edits both ways", async () => {
   const h = await host();
   const alice = await browser(h, { principal: "account:alice" });
@@ -160,6 +182,17 @@ test("an ambiguous host append reloads durable history and actor claims before t
   await until(() => writer.frames.length);
   assert.equal(writer.frames[0].code, "io");
   bytes.saveMany = save;
+  const load = bytes.load.bind(bytes);
+  let failedClaimRead = false;
+  bytes.load = async (key) => {
+    if (key.startsWith("actor/") && !failedClaimRead) {
+      failedClaimRead = true;
+      throw Error("transient claim read");
+    }
+    return load(key);
+  };
+  await assert.rejects(h.document(id), /transient claim read/);
+  assert.equal((await h.document(id)).n, 1);
   const two = A.change(one, (d) => {
     d.n = 2;
   });

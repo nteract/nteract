@@ -304,13 +304,20 @@ export class SyncHost {
 
   async #live(doc) {
     if (doc.live) return doc.live;
-    doc.loading ??= this.load()
+    doc.loading ??= (doc.reloadClaims ? this.load() : Promise.resolve())
+      .then(() => {
+        doc.reloadClaims = false;
+      })
       .then(() => this.store.read(doc.id))
       .then((stored) => {
         doc.live = stored
           ? A.load(concat([stored.snapshot, ...stored.chunks].filter(Boolean)))
           : A.init();
         return doc.live;
+      })
+      .catch((error) => {
+        doc.loading = null;
+        throw error;
       });
     return doc.loading;
   }
@@ -486,6 +493,7 @@ export class SyncHost {
       this.#free(doc.live);
       doc.live = null;
       doc.loading = null;
+      doc.reloadClaims = true;
       throw error;
     } finally {
       for (const actor of claims.keys()) this.#reserved.delete(actor);

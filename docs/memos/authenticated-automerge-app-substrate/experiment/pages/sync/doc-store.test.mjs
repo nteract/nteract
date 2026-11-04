@@ -13,7 +13,9 @@ test("append writes constant metadata and cold reads descriptors in numeric orde
     sizes.push(bytes.stats.savedBytes - before);
   }
   assert.ok(Math.max(...sizes) - Math.min(...sizes) <= 2);
-  assert.equal(cbor.decode(await bytes.load("sync/d/m")).chunks, undefined);
+  assert.equal(cbor.decode(await bytes.load("sync/d/m2")).chunks, undefined);
+  assert.equal(await bytes.load("sync/d/m"), undefined);
+  assert.deepEqual(await new DocStore(bytes).ids(), ["d"]);
   assert.deepEqual(
     (await new DocStore(bytes).read("d")).chunks.map((c) => c[0]),
     Array.from({ length: 100 }, (_, i) => i + 1),
@@ -44,18 +46,55 @@ test("legacy inline manifests read and append until compaction upgrades them", a
   const store = new DocStore(bytes);
   assert.deepEqual((await store.read("d")).snapshot, Uint8Array.of(3));
   await store.append("d", Uint8Array.of(5), ["bb"]);
-  assert.equal(cbor.decode(await bytes.load("sync/d/m")).chunks.length, 2);
+  assert.equal(await bytes.load("sync/d/m"), undefined);
+  assert.equal(cbor.decode(await bytes.load("sync/d/m2")).chunks.length, 2);
   assert.deepEqual(
     (await new DocStore(bytes).read("d")).chunks.map((c) => c[0]),
     [4, 5],
   );
   await store.compact("d", Uint8Array.of(6), ["cc"]);
-  assert.equal(cbor.decode(await bytes.load("sync/d/m")).version, 2);
+  assert.equal(cbor.decode(await bytes.load("sync/d/m2")).version, 2);
   await store.append("d", Uint8Array.of(7), ["dd"]);
   const read = await new DocStore(bytes).read("d");
   assert.deepEqual(read.snapshot, Uint8Array.of(6));
   assert.deepEqual(read.chunks, [Uint8Array.of(7)]);
   assert.deepEqual(read.manifest.heads, ["dd"]);
+});
+
+test("m2 wins over legacy m after a crash before legacy removal", async () => {
+  const bytes = new MemoryByteStore();
+  await bytes.saveMany([
+    ["sync/d/o/1/0", Uint8Array.of(1)],
+    ["sync/d/m", cbor.encode({ seq: 1, chunks: [{ seq: 1, parts: 1, bytes: 1 }], heads: ["old"] })],
+  ]);
+  assert.deepEqual(await new DocStore(bytes).ids(), ["d"]);
+  const remove = bytes.remove.bind(bytes);
+  bytes.remove = async () => {
+    throw Error("crash before legacy removal");
+  };
+  await assert.rejects(new DocStore(bytes).compact("d", Uint8Array.of(2), ["new"]), /crash/);
+  assert.ok(await bytes.load("sync/d/m"));
+  const cold = new DocStore(bytes);
+  assert.deepEqual(await cold.ids(), ["d"]);
+  assert.deepEqual((await cold.read("d")).snapshot, Uint8Array.of(2));
+  assert.deepEqual((await cold.read("d")).manifest.heads, ["new"]);
+  bytes.remove = remove;
+  await cold.append("d", Uint8Array.of(3), ["latest"]);
+  assert.equal(await bytes.load("sync/d/m"), undefined);
+});
+
+test("compaction and removal sweep obsolete descriptors but preserve future orphans", async () => {
+  const bytes = new MemoryByteStore();
+  const store = new DocStore(bytes);
+  await store.compact("d", Uint8Array.of(1), []);
+  await bytes.saveMany(
+    [1, 2, 9].map((seq) => [`sync/d/c/${seq}`, cbor.encode({ seq, parts: 1, bytes: 1 })]),
+  );
+  await store.compact("d", Uint8Array.of(2), []);
+  assert.deepEqual(await bytes.list("sync/d/c/"), ["sync/d/c/9"]);
+  await bytes.saveMany([["sync/d/c/1", Uint8Array.of(1)]]);
+  await store.remove("d");
+  assert.deepEqual(await bytes.list("sync/d/c/"), ["sync/d/c/9"]);
 });
 
 test("crashes at each append/compaction write leave an old or complete manifest", async () => {

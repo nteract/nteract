@@ -4218,7 +4218,7 @@ export class Page {
     const documents = [];
     if (metadata?.documentId) documents.push([metadata.documentId, "page"]);
     if (commentsUuid) documents.push([commentsDocumentId(commentsUuid), "comments"]);
-    await plain.load(documents);
+    await plain.load(documents, { deleted: pageState(metadata) === "deleted" });
     Object.assign(this, {
       serverKey: undefined,
       serverSenderId: HOST_SENDER_ID,

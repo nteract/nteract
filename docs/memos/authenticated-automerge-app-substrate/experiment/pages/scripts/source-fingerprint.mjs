@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import { existsSync, lstatSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import ts from "typescript";
-import { RECORD_STORAGE_MODES } from "../shared/record-storage.mjs";
+import { RECORD_STORAGE_MODES, PLAIN_STORAGE_FORMATS } from "../shared/record-storage.mjs";
 
 const excluded = new Set([
   "dist",
@@ -141,6 +141,7 @@ export function writeBuildReceipt(
     // The Page record storage modes this build's Worker opens. Deployment
     // refuses a release whose receipt lacks a mode the target may hold.
     record_storage: [...RECORD_STORAGE_MODES],
+    plain_storage_formats: [...PLAIN_STORAGE_FORMATS],
     viewer_chunks: certify(viewerChunks),
     viewer_assets: certify(viewerAssets),
     fingerprint,
