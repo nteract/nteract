@@ -393,6 +393,19 @@ try {
   await expect(owner.getByRole("toolbar", { name: "Image actions" })).toBeVisible();
   await expect(owner.getByRole("button", { name: "Bold", exact: true })).toHaveCount(0);
   await expect(owner.getByRole("combobox", { name: "Text style" })).toHaveCount(0);
+  // Mark and heading keys on a selected image leave the document alone.
+  {
+    const markdown = async () =>
+      (await tool(owner, "read_page", { page_id: pageId })).body.blocks
+        .map((block) => block.markdown)
+        .join("\n\n");
+    const before = await markdown();
+    for (const key of ["ControlOrMeta+b", "ControlOrMeta+i", "Control+Shift+1", "Control+Shift+2"])
+      await owner.keyboard.press(key);
+    await owner.waitForTimeout(1500);
+    assert.equal(await markdown(), before, "a mark or heading key changed a selected image");
+    await expect(images(owner).first()).toHaveClass(/wg-selected-node/);
+  }
   await atEnd(editor);
   await editor.keyboard.insertText(" A peer keeps writing while the image is selected.");
   await expect(content(owner)).toContainText("peer keeps writing while the image is selected");
@@ -652,12 +665,21 @@ try {
     await owner.keyboard.press("End");
     await owner.keyboard.press("ArrowDown");
     await expect(content(owner).locator(".wg-selected-node")).toHaveCount(1);
-    await expect(owner.getByRole("toolbar", { name: "Text formatting" })).toBeHidden();
+    // The toolbar is unpinned after a load, so this is the floating toolbar:
+    // no toolbar of any name shows over the rule.
+    await owner.waitForTimeout(300);
+    await expect(owner.locator(".rich-toolbar:not([hidden])")).toHaveCount(0);
     await expect(owner.getByRole("button", { name: "Bold", exact: true })).toBeHidden();
     await expect(owner.getByRole("combobox", { name: "Text style" })).toBeHidden();
     await owner.keyboard.press("ControlOrMeta+k");
+    await owner.waitForTimeout(300);
     await expect(owner.getByRole("dialog")).toHaveCount(0);
     await expect(content(owner).locator("hr")).toHaveCount(1);
+    // Pinned, the toolbar names the node and has no text controls.
+    await owner.keyboard.press("Alt+F10");
+    await expect(owner.getByRole("toolbar", { name: "Block actions" })).toBeVisible();
+    await expect(owner.getByRole("button", { name: "Bold", exact: true })).toHaveCount(0);
+    await owner.keyboard.press("Alt+F10");
     // Clicking text brings the text controls back.
     await content(owner).getByText("Below the rule.").click();
     await owner.keyboard.press("Home");

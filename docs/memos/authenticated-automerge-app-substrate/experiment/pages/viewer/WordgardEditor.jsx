@@ -170,6 +170,14 @@ const editConfig = (editable) => [
 // row, with Cancel, then shows again.
 const previewShown = (editor) => !!editor?.state.field(uploadPreview, false);
 
+/** Wordgard's text-formatting keys: marks and Ctrl-Shift-0..6 headings. */
+const NODE_TEXT_KEYS = [
+  "Mod-b",
+  "Mod-i",
+  "Mod-u",
+  "Mod-`",
+  ...Array.from({ length: 7 }, (_, level) => `Ctrl-Shift-${level}`),
+];
 export function WordgardEditor(props) {
   const {
     replica,
@@ -430,16 +438,30 @@ export function WordgardEditor(props) {
           },
         }),
         KeyBinding.of({ key: "Mod-Alt-m", run: () => comment() }),
+        // Wordgard's heading keys retype the textblock around a selected
+        // inline image; its mark keys have nothing to mark. Take them, and do
+        // nothing, while a node is selected.
+        // Highest precedence: Wordgard's schema keymaps would run first.
+        GardState.prec.highest(
+          NODE_TEXT_KEYS.map((key) =>
+            KeyBinding.of({
+              key,
+              run: () => editor.state.selection instanceof GardSelection.Node,
+            }),
+          ),
+        ),
         KeyBinding.of({ key: "Shift-Enter", run: insertPlainLineBreak }),
         KeyBinding.of({ key: "Mod-Enter", run: exitBlock, allowDefault: true }),
         KeyBinding.of({ key: "ArrowDown", run: leaveFinalBlock, allowDefault: true }),
         Wordgard.domEventHandler("mousedown", (event) => clickBelowFinalBlock(editor, event)),
         KeyBinding.of({
           key: "Mod-Shift-h",
+          // On a selected node, take the key and do nothing: returning false
+          // would let the browser run its own Cmd-Shift-H (Safari and Chrome
+          // on macOS open the home page).
           run: () =>
-            latest.current.editable &&
-            !(editor.state.selection instanceof GardSelection.Node) &&
-            Command.dispatch(editor, toggleHighlight),
+            editor.state.selection instanceof GardSelection.Node ||
+            (latest.current.editable && Command.dispatch(editor, toggleHighlight)),
         }),
         Wordgard.contentAttributes.of({ "aria-label": "Document text", ...PROSE_ENTRY_ATTRIBUTES }),
         // On phones the compact bar and the header cover the visual viewport's
