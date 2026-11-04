@@ -92,12 +92,15 @@ import { CommentComposer, hasDraftText } from "./comment-composer.mjs";
 import { focusReturnTarget } from "./focus-return.mjs";
 import { timer } from "rxjs";
 import { MOBILE_EDITOR_QUERY, trackVisualViewport } from "./visual-viewport.mjs";
-import { glideSettings, gridEnabled } from "./feature-flags.mjs";
+import { glideSettings, gridEnabled, gridRequested } from "./feature-flags.mjs";
+import { writeDisplayMode } from "./display-mode.mjs";
 
-// Opening a Page rewrites the address to its canonical path, which drops the
-// query, so read the experiment flags before anything routes.
+// Opening a Page rewrites the address to its canonical path, and the library
+// rewrites its own, both dropping the query, so read the experiment flags
+// before anything routes. `?grid=1` asks for the grid, so it becomes the
+// remembered display that every library this tab mounts opens on.
 glideSettings();
-gridEnabled();
+if (gridEnabled() && gridRequested()) writeDisplayMode(globalThis.window, "grid");
 
 // The editor, and the WASM runtimes it waits for, load beside the shell
 // from boot, except on the index routes (/projects, /pages), which only list;

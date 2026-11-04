@@ -11,6 +11,11 @@
 // A choice with `disabled` stays focusable and says why in its `note`, and
 // choosing it does nothing. A control that is `unavailable` stays focusable
 // too, opens nothing, and names its reason as its description and tooltip.
+//
+// `actions` follow the choices under a separator, as plain menu items that do
+// something rather than pick a value (the Group menu's Fold all and Unfold
+// all). Arrows move through choices and actions alike; an action with
+// `disabled` stays focusable and does nothing.
 import { useEffect, useId, useRef, useState } from "react";
 import { Check, ChevronDown } from "lucide-react";
 
@@ -22,6 +27,7 @@ export function ChoiceMenu({
   onChoose,
   unavailable = null,
   align = "end",
+  actions = [],
 }) {
   const [open, setOpen] = useState(false);
   const root = useRef(null),
@@ -84,7 +90,7 @@ export function ChoiceMenu({
     }
     if (!["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) return;
     event.preventDefault();
-    const items = [...menu.current.querySelectorAll('[role="menuitemradio"]')];
+    const items = [...menu.current.querySelectorAll(MENU_ITEMS)];
     const index = items.indexOf(document.activeElement);
     const next =
       event.key === "Home"
@@ -98,6 +104,11 @@ export function ChoiceMenu({
     if (choice.disabled) return;
     close(true);
     if (choice.value !== value) onChoose(choice.value);
+  }
+  function act(action) {
+    if (action.disabled) return;
+    close(true);
+    action.onSelect();
   }
   return (
     <div className="library-menu-root" ref={root}>
@@ -154,8 +165,31 @@ export function ChoiceMenu({
               </span>
             </button>
           ))}
+          {actions.length > 0 && <div role="separator" className="library-menu-separator" />}
+          {actions.map((action) => (
+            <button
+              key={action.label}
+              type="button"
+              role="menuitem"
+              tabIndex={-1}
+              aria-disabled={action.disabled ? true : undefined}
+              className="library-menu-item library-menu-action"
+              onClick={() => act(action)}
+            >
+              {action.icon ? (
+                <action.icon className="library-menu-check" size={16} aria-hidden="true" />
+              ) : (
+                <span className="library-menu-check" aria-hidden="true" />
+              )}
+              <span className="library-menu-text">
+                <span className="library-menu-label">{action.label}</span>
+              </span>
+            </button>
+          ))}
         </div>
       )}
     </div>
   );
 }
+
+const MENU_ITEMS = '[role="menuitemradio"], [role="menuitem"]';

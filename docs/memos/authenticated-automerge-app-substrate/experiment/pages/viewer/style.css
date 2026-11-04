@@ -2065,7 +2065,6 @@ details.account-actions > div a:hover {
 .index-search {
   margin: 0;
 }
-.index-searching,
 .index-status {
   margin: 0 0 1rem;
 }
@@ -2598,6 +2597,36 @@ details.account-actions > div a:hover {
   width: 100%;
   max-width: 1200px;
 }
+/* The page keeps its scrollbar's room while the library shows, so a view
+   short enough to drop the scrollbar (an empty tab) doesn't slide the
+   centered column sideways. */
+html:has(.library-view) {
+  scrollbar-gutter: stable;
+}
+/* Group accents (library-groups.mjs groupAccent): six for Projects, and one
+   each for Shared with you and On this device. Each reads as text at 4.5:1 or
+   more on the page and on its heading's tint, in both themes
+   (library-groups.test.mjs checks). */
+:root {
+  --chart-1: #4c56c9;
+  --chart-2: #0d7068;
+  --chart-3: #9c3592;
+  --chart-4: #a8521a;
+  --chart-5: #327a36;
+  --chart-6: #be2f55;
+  --group-shared: #1d68a8;
+  --group-device: #806020;
+}
+:root.dark {
+  --chart-1: #a3abff;
+  --chart-2: #5fcfc2;
+  --chart-3: #e796de;
+  --chart-4: #f2a46e;
+  --chart-5: #93d597;
+  --chart-6: #ff94b1;
+  --group-shared: #82c3f3;
+  --group-device: #dec179;
+}
 .library-header {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(12rem, 22rem) auto;
@@ -2634,6 +2663,7 @@ details.account-actions > div a:hover {
   display: none;
 }
 .library-controls {
+  position: relative;
   display: flex;
   flex-wrap: wrap;
   align-items: flex-end;
@@ -2794,58 +2824,259 @@ details.account-actions > div a:hover {
   color: var(--muted-foreground);
   font-size: 0.75rem;
 }
+.library-menu-separator {
+  height: 1px;
+  margin: 0.3rem 0.25rem;
+  background: var(--border);
+}
+.library-menu-action .library-menu-check {
+  flex-shrink: 0;
+  width: 16px;
+  height: 16px;
+  color: var(--muted-foreground);
+  visibility: visible;
+}
+.library-menu-action[aria-disabled="true"] {
+  cursor: not-allowed;
+}
+.library-menu-action[aria-disabled="true"] .library-menu-label,
+.library-menu-action[aria-disabled="true"] .library-menu-check {
+  color: var(--muted-foreground);
+  opacity: 0.6;
+}
+/* A request for another view runs a bar along the control row's bottom
+   rule. It waits a moment before showing, so a quick answer never flashes. */
+.library-progress {
+  position: absolute;
+  right: 0;
+  bottom: -1px;
+  left: 0;
+  height: 2px;
+  overflow: hidden;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 120ms;
+}
+.library-progress[data-active="true"] {
+  opacity: 1;
+  transition-delay: 150ms;
+}
+.library-progress::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 30%;
+  border-radius: 2px;
+  background: var(--foreground);
+  animation: library-progress 1.1s cubic-bezier(0.45, 0, 0.55, 1) infinite;
+}
+@keyframes library-progress {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: translateX(340%);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .library-progress::before {
+    width: 100%;
+    opacity: 0.5;
+    animation: none;
+  }
+}
 .library-view .quota-notice {
   margin: 0 0 0.75rem;
 }
-.library-empty {
-  padding: 2.5rem 0;
+/* The results keep a floor, so a view with few rows, none, or none yet
+   leaves the page as tall as before. Loading, empty and failed views share
+   one box. Rows a new request will replace dim after the bar's pause. */
+.library-body {
+  min-height: max(16rem, calc(100dvh - 30rem));
+}
+.library-state {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 8rem;
+  margin: 0;
+  padding: 1.5rem 1rem;
   text-align: center;
 }
+.library-body > .library-results,
+.library-body > .library-state {
+  transition: opacity 120ms;
+}
+.library-body[data-stale="true"] > .library-results,
+.library-body[data-stale="true"] > .library-state {
+  opacity: 0.55;
+  transition-delay: 150ms;
+}
 /* Group sections: a heading row per group, then its rows. On desktop the
-   heading sticks under the app header while its rows scroll past. */
+   heading sticks under the app header while its rows scroll past. The
+   heading is a disclosure button (the chevron turns when open) with the
+   group's accent: a bar at its start, a faint tint and the label's color.
+   Folded, a group shows its heading and count only. */
 .library-group + .library-group {
   margin-top: 1.25rem;
 }
+.library-group[data-folded="true"] + .library-group {
+  margin-top: 0.4rem;
+}
 .library-group-heading {
+  --group-accent: var(--foreground);
+  --group-bar: var(--muted-foreground);
+  position: relative;
   display: flex;
   align-items: center;
-  gap: 0.5rem;
+  gap: 0.25rem;
   min-height: 40px;
   margin: 0;
-  padding: 0.5rem 0.6rem 0.4rem;
+  padding: 0 0.35rem 0 0.4rem;
   border-bottom: 1px solid var(--border);
-  background: var(--surface);
+  background: color-mix(in oklab, var(--group-bar) 6%, var(--surface));
   color: var(--muted-foreground);
   font-size: 0.8rem;
   font-weight: 600;
   letter-spacing: 0.01em;
 }
-.library-group-label {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.35rem;
-  min-width: 0;
-  color: var(--foreground);
-  text-decoration: none;
+.library-group-heading::before {
+  content: "";
+  position: absolute;
+  top: 8px;
+  bottom: 8px;
+  left: 0;
+  width: 3px;
+  border-radius: 3px;
+  background: var(--group-bar);
 }
-.library-group-label span {
+.library-group-heading[data-accent="1"],
+.library-group-heading[data-accent="2"],
+.library-group-heading[data-accent="3"],
+.library-group-heading[data-accent="4"],
+.library-group-heading[data-accent="5"],
+.library-group-heading[data-accent="6"],
+.library-group-heading[data-accent="shared"],
+.library-group-heading[data-accent="device"] {
+  --group-bar: var(--group-accent);
+}
+.library-group-heading[data-accent="1"] {
+  --group-accent: var(--chart-1);
+}
+.library-group-heading[data-accent="2"] {
+  --group-accent: var(--chart-2);
+}
+.library-group-heading[data-accent="3"] {
+  --group-accent: var(--chart-3);
+}
+.library-group-heading[data-accent="4"] {
+  --group-accent: var(--chart-4);
+}
+.library-group-heading[data-accent="5"] {
+  --group-accent: var(--chart-5);
+}
+.library-group-heading[data-accent="6"] {
+  --group-accent: var(--chart-6);
+}
+.library-group-heading[data-accent="shared"] {
+  --group-accent: var(--group-shared);
+}
+.library-group-heading[data-accent="device"] {
+  --group-accent: var(--group-device);
+}
+/* Date groups: one neutral accent whose bar fades with age, Today darkest. */
+.library-group-heading[data-recency="0"] {
+  --group-bar: var(--foreground);
+}
+.library-group-heading[data-recency="1"] {
+  --group-bar: color-mix(in oklab, var(--foreground) 78%, var(--surface));
+}
+.library-group-heading[data-recency="2"] {
+  --group-bar: color-mix(in oklab, var(--foreground) 60%, var(--surface));
+}
+.library-group-heading[data-recency="3"] {
+  --group-bar: color-mix(in oklab, var(--foreground) 46%, var(--surface));
+}
+.library-group-heading[data-recency="4"] {
+  --group-bar: color-mix(in oklab, var(--foreground) 34%, var(--surface));
+}
+.library-group-heading[data-recency="5"] {
+  --group-bar: color-mix(in oklab, var(--foreground) 24%, var(--surface));
+}
+.library-group-toggle {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  gap: 0.4rem;
+  min-width: 0;
+  min-height: 40px;
+  margin: 0;
+  padding: 0 0.5rem 0 0.5rem;
+  border: 0;
+  border-radius: 0.4rem;
+  color: inherit;
+  font: inherit;
+  letter-spacing: inherit;
+  text-align: start;
+}
+.library-group-toggle:hover:not(:disabled) {
+  background: color-mix(in oklab, var(--group-bar) 8%, transparent);
+}
+.library-group-toggle:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: -2px;
+}
+.library-group-chevron {
+  flex-shrink: 0;
+  color: var(--muted-foreground);
+  transition: transform 150ms ease;
+}
+.library-group-toggle[aria-expanded="true"] .library-group-chevron {
+  transform: rotate(90deg);
+}
+@media (prefers-reduced-motion: reduce) {
+  .library-group-chevron {
+    transition: none;
+  }
+}
+.library-group-icon {
+  flex-shrink: 0;
+  color: var(--group-accent);
+}
+.library-group-label {
+  min-width: 0;
   overflow: hidden;
+  color: var(--group-accent);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-a.library-group-label:hover span {
-  text-decoration: underline;
-}
-.library-group-label svg {
-  flex-shrink: 0;
-  color: var(--muted-foreground);
-}
 .library-group-count {
+  flex-shrink: 0;
   padding: 0 0.45rem;
   border-radius: 1rem;
   background: var(--accent);
   font-size: 0.75rem;
   font-variant-numeric: tabular-nums;
+}
+.library-group-open {
+  flex-shrink: 0;
+  width: 32px;
+  height: 32px;
+  color: var(--muted-foreground);
+}
+.library-group-open:hover {
+  color: var(--foreground);
+}
+.library-group-open:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: -2px;
+}
+/* A folded group's list stays in the page for its heading to control. */
+.library-results .index-grid[hidden],
+.library-results .index-list[hidden] {
+  display: none;
 }
 .library-results .index-grid {
   margin-top: 0.75rem;
@@ -3026,6 +3257,17 @@ a.library-group-label:hover span {
   .index-row-action {
     width: 44px;
     height: 44px;
+  }
+  .library-group-heading,
+  .library-group-toggle {
+    min-height: 44px;
+  }
+  .library-group-open {
+    width: 44px;
+    height: 44px;
+  }
+  .library-body {
+    min-height: 14rem;
   }
 }
 .picker-index {

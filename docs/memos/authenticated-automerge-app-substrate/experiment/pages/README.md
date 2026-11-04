@@ -2471,7 +2471,21 @@ it) or by last activity (Today, Yesterday, Previous 7 days, Previous 30 days,
 each month of the last year, then each year), in the order their first row
 appears. Last activity is `content_updated_at`, else `updated_at`: the key the
 Last activity sort orders by, so date groups follow the rows
-([listing.mjs](viewer/listing.mjs) `activityAt`). The Last activity column
+([listing.mjs](viewer/listing.mjs) `activityAt`). Each group heading is a
+disclosure button that folds its rows and keeps its count; Fold all and
+Unfold all sit in the Group menu. Folds are this browser's, kept per account
+and grouping by group key, so a Project folds by its ID and a rename keeps it
+folded; Load more and rows that join a group later leave it folded
+([library-folds.mjs](viewer/library-folds.mjs), at most 4 accounts and 100
+folds each in `localStorage["nteract.pages.folds"]`). A heading's accent (a
+bar, a faint tint and the label's color) comes from `groupAccent`: a Project
+hashes its ID to one of six, Shared with you and On this device keep their
+own, and date groups share one neutral accent whose bar fades with age. Each
+accent reads at 4.5:1 or more in both themes, and the label still names the
+group. The heading row, tabs and menus never move with the results: loading,
+empty and failed views share one box in a body with a fixed floor, a new
+request runs a bar along the control row and dims the rows it will replace,
+and the page keeps its scrollbar's room. The Last activity column
 shows the same time, and screen readers hear "Last active 2 days ago, …".
 Drafts this browser hasn't synced show first, as "On this device", on All and
 Your items when there is no Project filter. The server can't search them, so a
@@ -2483,7 +2497,10 @@ moment ago may not be in them yet. Load more follows
 `next_cursor`; a cursor that has expired (`invalid_cursor`) starts the listing
 over from its first page. Grid cards are behind the `grid` flag (`?grid=1` or
 `localStorage["pages.grid"] = "1"`); each shows a preview of its Page's first
-content (see [Card previews](#card-previews)).
+content (see [Card previews](#card-previews)). The flag shows the List/Grid
+toggle, and the choice is remembered. `?grid=1` also opens the tab on the
+grid, as a remembered choice; the library then drops the query from its
+address, so after a reload the toggle shows only with the stored flag.
 
 ### Card previews
 
@@ -2535,8 +2552,10 @@ the later put wins: that is the same content built by two builder versions.
 
 Two cases are left open. The order between live hosts comes from their clocks,
 so it holds only within that 5-minute limit: an old host that is still live, on
-a clock fast by less than that, can overwrite a newer card once, and the newer
-host's writes skip until its own content times pass the old one's. And a late
+a clock fast by less than that, can overwrite a newer card once. The newer
+host's writes then skip until its own content times pass the old one's, so the
+stale card can last until the next content change after that, however long
+that takes, not just for the skew window. And a late
 put can land after the next host's first write skipped an unchanged card: it
 holds a card the Page had moments before, until the next change to its first
 screen.
@@ -2575,7 +2594,7 @@ while it runs: with a 150 ms round trip, every card shows within 350 ms of
 coming into view. At most two requests run at once, and a request takes the
 latest cards to come into view first. A card that leaves the viewport, or
 unmounts, before its request goes out stops waiting and goes back to idle, so a
-fling asks only for the cards it stops on. A request with room fills toward 24
+request never carries a card that left view before it went out. A request with room fills toward 24
 with the next cards in the grid's order that haven't asked, so a slow scroll
 down a 100-card grid sends 5 requests, not one per row. Each card follows a small
 machine, `idle → requested → shown | empty | failed`, keyed by Page ID and the
