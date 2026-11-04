@@ -634,6 +634,38 @@ try {
     "Typing after an image paste follows the image, through a slow upload and after an emoji",
   );
 
+  // A rule selected as a node has no text to format: no floating toolbar,
+  // no text controls, and Ctrl+K doesn't open the link dialog over it.
+  {
+    const ruleCatalog = (await tool(owner, "list_pages")).body;
+    const rulePage = await tool(owner, "create_page", {
+      title: "Rule selection",
+      markdown: "Above the rule.\n\n---\n\nBelow the rule.",
+      ...retry(ruleCatalog),
+    });
+    assert.equal(rulePage.status, 200, JSON.stringify(rulePage.body));
+    created.push(rulePage.body.page_id);
+    await owner.goto(`${origin}/p/${rulePage.body.page_id}`);
+    await expect(content(owner)).toContainText("Below the rule.");
+    // Arrow down from the end of the text above selects the rule as a node.
+    await content(owner).getByText("Above the rule.").click();
+    await owner.keyboard.press("End");
+    await owner.keyboard.press("ArrowDown");
+    await expect(content(owner).locator(".wg-selected-node")).toHaveCount(1);
+    await expect(owner.getByRole("toolbar", { name: "Text formatting" })).toBeHidden();
+    await expect(owner.getByRole("button", { name: "Bold", exact: true })).toBeHidden();
+    await expect(owner.getByRole("combobox", { name: "Text style" })).toBeHidden();
+    await owner.keyboard.press("ControlOrMeta+k");
+    await expect(owner.getByRole("dialog")).toHaveCount(0);
+    await expect(content(owner).locator("hr")).toHaveCount(1);
+    // Clicking text brings the text controls back.
+    await content(owner).getByText("Below the rule.").click();
+    await owner.keyboard.press("Home");
+    await owner.keyboard.press("Shift+End");
+    await expect(owner.getByRole("button", { name: "Bold", exact: true })).toBeVisible();
+  }
+  complete("A selected rule hides text controls and the floating toolbar; Ctrl+K does nothing");
+
   await access({
     action: "set_role",
     principal: identities[2].body.identity.principal,
