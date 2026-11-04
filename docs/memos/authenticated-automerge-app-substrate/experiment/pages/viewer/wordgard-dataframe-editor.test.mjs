@@ -343,3 +343,34 @@ test("a tap on the title row (a click with no mousedown) selects the table", () 
     editor.dom.remove();
   }
 });
+
+test("a tap on an already-selected table, or a modified click, dispatches nothing", () => {
+  const { editor, frame } = withTable();
+  try {
+    const title = frame().querySelector(".wordgard-dataframe-title");
+    const click = (init = {}) =>
+      title.dispatchEvent(
+        new window.MouseEvent("click", { bubbles: true, cancelable: true, button: 0, ...init }),
+      );
+    let dispatched = 0;
+    const dispatch = editor.dispatch.bind(editor);
+    editor.dispatch = (...args) => {
+      dispatched++;
+      return dispatch(...args);
+    };
+    click();
+    assert.equal(dispatched, 1);
+    assert.ok(editor.state.selection instanceof GardSelection.Node);
+    click();
+    assert.equal(dispatched, 1, "an already-selected table is selected again");
+    // With the caret in text, modified clicks leave the selection alone.
+    dispatch({ selection: GardSelection.cursor(1) });
+    for (const modifier of ["shiftKey", "metaKey", "ctrlKey", "altKey"]) {
+      click({ [modifier]: true });
+      assert.equal(editor.state.selection instanceof GardSelection.Node, false, modifier);
+    }
+    assert.equal(dispatched, 1);
+  } finally {
+    editor.dom.remove();
+  }
+});

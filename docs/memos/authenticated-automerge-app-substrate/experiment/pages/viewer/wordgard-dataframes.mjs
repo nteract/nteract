@@ -332,6 +332,9 @@ function leaveGridOnEscape(editor, frame) {
 function selectOnTap(editor, frame) {
   frame.addEventListener("click", (event) => {
     if (event.defaultPrevented || event.button !== 0) return;
+    // A modified click extends or edits a selection; leave it to the editor,
+    // as WordgardEditor's own click handler does.
+    if (event.shiftKey || event.metaKey || event.ctrlKey || event.altKey) return;
     if (event.target?.closest?.(".wordgard-dataframe-canvas")) return;
     const block = editor.nodeFromDOM(frame);
     if (!block || block.node.type !== PagesDataframe) return;
