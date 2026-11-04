@@ -34,7 +34,8 @@ jobs:
       contents: read
       actions: read
       id-token: write
-    uses: nteract/preview-infra/.github/workflows/pages-page10-reusable.yml@f973cffc394a4e8d81895fc2061949bc99e3f5c1
+    # Bootstrap pin: repin to merged main reusable before enabling either variable.
+    uses: nteract/nteract/.github/workflows/pages-page10-reusable.yml@2cb95d1a29be7566f3fb1c7712ac58cf837acdfa
     with:
       enabled: true
   manual:
@@ -43,7 +44,7 @@ jobs:
       contents: read
       actions: read
       id-token: write
-    uses: nteract/preview-infra/.github/workflows/pages-page10-reusable.yml@f973cffc394a4e8d81895fc2061949bc99e3f5c1
+    uses: nteract/nteract/.github/workflows/pages-page10-reusable.yml@2cb95d1a29be7566f3fb1c7712ac58cf837acdfa
     with:
       enabled: true
       sha: ${{ inputs.sha }}
