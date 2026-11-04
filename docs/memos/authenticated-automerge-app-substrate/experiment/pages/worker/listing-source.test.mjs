@@ -5,6 +5,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
   catalogIndexBounds,
+  catalogIndexTimeouts,
   listScope,
   parseListArguments,
   reportContentActivity,
@@ -287,12 +288,13 @@ function breakable(db) {
 /** Walk as the viewer's listing machine does (viewer/listing-machine.mjs): a
  * next page that fails with `invalid_cursor` restarts the listing from its
  * first page, whose rows replace the ones shown. */
-async function viewerWalk(f, args, between) {
+async function viewerWalk(f, args, between, onCursor = () => {}) {
   let seen = [];
   let sources = [];
   let restarts = 0;
   let cursor;
-  for (let request = 0; request < 500; request++) {
+  for (let request = 0; request < 300; request++) {
+    onCursor(cursor);
     if (between) await between(request);
     const { status, source, body } = await f.listRaw(member, {
       ...args,
@@ -404,4 +406,116 @@ test("discovery marks every few listings keep D1 serving", async (t) => {
     assert.equal(index, 240, table.at(-1));
   }
   t.diagnostic(table.join("; "));
+});
+
+test("more pending discovery marks than a listing checks keep D1 out until every one settles", async (t) => {
+  const f = await catalogFixture(t);
+  const storage = f.catalog(member).ctx.storage;
+  const ids = await sharedLibrary(f, 10);
+  await f.untilReady(member);
+  // 30 discoveries whose hosts haven't reported: a listing checks 16.
+  for (let n = 0; n < 30; n++) {
+    await discover(f, 700 + n);
+    ids.push(id(700 + n));
+  }
+  const walked = await f.walk(member, { limit: 10 });
+  assert.equal(walked.sources[0], "catalog");
+  assertComplete("pending discoveries", walked, ids);
+  assert.equal((await storage.list({ prefix: "host/index/page/" })).size, 0);
+  assert.equal((await f.list(member, { limit: 1 })).source, "index");
+});
+
+test("a discovery whose host check is unavailable keeps listings off D1 while D1 is healthy", async (t) => {
+  const f = await catalogFixture(t);
+  const storage = f.catalog(member).ctx.storage;
+  const owned = [];
+  for (let n = 1; n <= 5; n++) {
+    await storage.put(`page/${id(n)}`, {
+      page_id: id(n),
+      title: `Own ${n}`,
+      created_at: at(n),
+      updated_at: at(n),
+    });
+    owned.push(id(n));
+  }
+  await f.untilReady(member);
+  await discover(f, 800);
+  const page = f.pages.get(id(800));
+  const run = page.fetch;
+  page.fetch = async () => Response.json({ error: "busy" }, { status: 503 });
+  for (let listing = 0; listing < 3; listing++) {
+    // An owned listing never asks the host; it still can't read D1, which
+    // lacks the discovered Page's row.
+    const listed = await f.list(member, { limit: 100, access: "owned" });
+    assert.equal(listed.source, "catalog", `listing ${listing}`);
+    assert.deepEqual(listed.body.pages.map((row) => row.page_id).sort(), owned);
+  }
+  assert.equal((await storage.list({ prefix: "host/index/page/" })).size, 1, "the mark stays");
+  page.fetch = run;
+  assertComplete("host back", await f.walk(member, { limit: 100 }), [...owned, id(800)]);
+  assert.equal((await f.list(member, { limit: 1 })).source, "index");
+});
+
+for (const [label, down] of [
+  ["down every 2nd request", (request) => request % 2 === 1],
+  ["down every 3rd request", (request) => request % 3 === 2],
+  ["down only on next pages", (request, cursor) => Boolean(cursor) && request % 2 === 0],
+])
+  test(`a D1 that fails pages of its own walks restarts each walk once: ${label}`, async (t) => {
+    const f = await catalogFixture(t);
+    const broken = breakable(f.db);
+    const ids = await sharedLibrary(f, 40);
+    await f.untilReady(member);
+    await f.walk(member, { limit: 100 });
+    await f.settle();
+    await editElsewhere(f, ids, (index) => 9000 + index);
+    let cursor;
+    const walked = await viewerWalk(
+      f,
+      { limit: 5 },
+      async (request) => {
+        broken.on = down(request, cursor);
+      },
+      (next) => (cursor = next),
+    );
+    broken.on = false;
+    assertComplete(label, walked, ids);
+    assert.equal(walked.restarts, 1, label);
+    // Once the cooldown passes, first pages try D1 again.
+    await f.catalog(member).ctx.storage.put("host/index/unavailable-until", Date.now() - 1);
+    assert.equal((await f.list(member, { limit: 1 })).source, "index");
+  });
+
+test("a search whose later D1 pages time out finishes on the Catalog after one restart", async (t) => {
+  const f = await catalogFixture(t);
+  const ids = await sharedLibrary(f, 40);
+  await f.untilReady(member);
+  await f.walk(member, { limit: 100 });
+  await f.settle();
+  const saved = catalogIndexTimeouts.read;
+  t.after(() => {
+    catalogIndexTimeouts.read = saved;
+  });
+  catalogIndexTimeouts.read = 60;
+  const prepare = f.db.prepare.bind(f.db);
+  let hung = 0;
+  f.db.prepare = (sql, ...rest) => {
+    const statement = prepare(sql, ...rest);
+    // A search past its first page: the keyset clause and a LIKE pattern.
+    if (/title_search LIKE \? ESCAPE/.test(sql) && /a\.page_id\) [<>] \(\?, \?\)/.test(sql)) {
+      const bind = statement.bind.bind(statement);
+      statement.bind = (...params) => {
+        const bound = bind(...params);
+        if (params[3] === null) return bound;
+        hung++;
+        return { ...bound, all: () => new Promise(() => {}) };
+      };
+    }
+    return statement;
+  };
+  const walked = await viewerWalk(f, { limit: 5, query: "shared" });
+  catalogIndexTimeouts.read = saved;
+  assert.ok(hung > 0, "a later D1 page hung");
+  assertComplete("slow search", walked, ids);
+  assert.equal(walked.restarts, 1);
 });

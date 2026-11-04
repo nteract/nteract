@@ -15,8 +15,8 @@ import { defineMachine } from "../shared/machine.mjs";
  * - `ready`: a pass completed under this epoch with no write recorded since.
  *
  * A listing also needs no Page index mark pending (`pageIndexMarkMachine`
- * below). A Catalog write that adds or moves a listable entry for one Page
- * marks that Page, not the account: a creation, a Project's home Page, a
+ * below). A Catalog write that adds a listable entry for one Page marks
+ * that Page, not the account: a creation, a Project's home Page, a
  * Trash, restore or purge projection, and a new entry a Page host projects,
  * including a discovery. The next listing settles each mark from the Page's
  * current entries, so one write never restarts a pass. The account is marked
@@ -169,4 +169,87 @@ export const pageIndexMarkMachine = defineMachine({
 /** The state a stored mark value gives. */
 export function pageIndexMarkState(token) {
   return typeof token === "string" && token ? { name: "pending", token } : { name: "settled" };
+}
+
+/**
+ * Whether this account's first pages may try D1 (`host/index/unavailable-until`,
+ * catalog-index.mjs). A walk that began on D1 restarts from its first page
+ * when D1 can't serve one of its later pages (index.mjs `listPages`). If that
+ * restart could pin D1 again, a D1 that serves first pages and fails later
+ * ones would restart the walk forever. So a refusal starts a cooldown, and
+ * while it lasts no listing opens D1 except a page of a walk that began
+ * there (`opensIndex`): first pages read the Catalog entries, whose walks
+ * never need D1. Each walk restarts at most once per cooldown.
+ *
+ * States:
+ * - `open`: no cooldown, or one that has passed. Listings open D1, and first
+ *   pages read it when the account index is ready.
+ * - `cooling`: a refusal at `until` - `cooldownMs` or later. Only walks that
+ *   began on D1 open it; first pages read the Catalog.
+ *
+ * Events:
+ * - `refused`: D1 couldn't serve a page of a walk that began there, at `now`.
+ * - `expired`: `now` is past the cooldown's end.
+ *
+ * Effects: `store` persists `until`. A passed cooldown reads as `open`
+ * (`indexCooldownState`), so expiry needs no write.
+ */
+export const indexCooldownMachine = defineMachine({
+  name: "index-cooldown",
+  states: ["open", "cooling"],
+  events: ["refused", "expired"],
+  initial: "open",
+  cases: { "cooling/refused": ["later", "earlier"], "cooling/expired": ["passed", "early"] },
+  validate: {
+    states: {
+      open: () => {},
+      cooling: (state) => {
+        if (!Number.isFinite(state.until)) throw Error("until must be a time");
+      },
+    },
+    events: {
+      refused: (event) => {
+        if (!Number.isFinite(event.now)) throw Error("now must be a time");
+        if (!(event.cooldownMs > 0)) throw Error("cooldownMs must be positive");
+      },
+      expired: (event) => {
+        if (!Number.isFinite(event.now)) throw Error("now must be a time");
+      },
+    },
+    effects: {
+      store: (effect) => {
+        if (!Number.isFinite(effect.until)) throw Error("until must be a time");
+      },
+    },
+  },
+  transition(state, event) {
+    if (event.type === "refused") {
+      // A later refusal extends the cooldown; an earlier one never shortens it.
+      const until = Math.max(event.now + event.cooldownMs, state.until ?? 0);
+      return { state: { name: "cooling", until }, effects: [{ type: "store", until }] };
+    }
+    if (state.name === "cooling" && event.now >= state.until)
+      return { state: { name: "open" }, effects: [] };
+    return { state, effects: [] };
+  },
+});
+
+/** The state a stored cooldown end gives at `now`. */
+export function indexCooldownState(until, now) {
+  return Number.isFinite(until) && now < until ? { name: "cooling", until } : { name: "open" };
+}
+
+/**
+ * Whether a listing opens D1, from the source its cursor names (`pinned`:
+ * "index", "catalog", or null for a first page or an earlier build's cursor)
+ * and the cooldown's state. Opening D1 advances the account's pass and
+ * settles Page marks, whichever source serves. A walk that began on D1
+ * always opens it, and restarts if D1 can't serve it. Any other listing
+ * skips D1 while it is cooling, so a failing D1 costs those listings nothing
+ * and a restarted walk lands on the Catalog. Which source serves is decided
+ * after: D1 only for a walk that began there, or for a first page while the
+ * account index is `ready`.
+ */
+export function opensIndex({ pinned, cooldown }) {
+  return pinned === "index" || cooldown.name === "open";
 }

@@ -32,6 +32,8 @@ import { pageGrant, pageState } from "./access.mjs";
 import {
   accountIndexMachine,
   accountIndexState,
+  indexCooldownMachine,
+  indexCooldownState,
   pageIndexMarkMachine,
   pageIndexMarkState,
 } from "./account-index-machine.mjs";
@@ -181,6 +183,9 @@ const SYNC = "host/index/sync";
 /** One Page's index mark: `PAGE_MARK + pageId` holds a token
  * (account-index-machine.mjs `pageIndexMarkMachine`). */
 const PAGE_MARK = "host/index/page/";
+/** When this account's first pages may try D1 again, in ms
+ * (account-index-machine.mjs `indexCooldownMachine`). */
+const UNAVAILABLE_UNTIL = "host/index/unavailable-until";
 const SPACES_DIRTY = "host/index/spaces-dirty";
 const schemas = new WeakMap();
 const encoder = new TextEncoder();
@@ -202,6 +207,8 @@ export const catalogIndexBounds = {
   concurrency: 4,
   /** Page index marks one listing settles; owned marks need one D1 write. */
   pageMarks: 24,
+  /** How long first pages read the Catalog after D1 failed a D1 walk. */
+  unavailableCooldownMs: 60_000,
   reconcileIntervalMs: 6 * 60 * 60 * 1000,
   cursorMaxAgeMs: 24 * 60 * 60 * 1000,
 };
@@ -344,6 +351,24 @@ export async function settlePageMark(storage, { key, pageId, token }, outcome) {
   for (const effect of step.effects)
     if (effect.type === "forget_entry") await storage.delete(`shared/${pageId}`);
     else if (effect.type === "clear") await storage.delete(key);
+}
+
+/** The account's D1 cooldown state at `now` (`indexCooldownMachine`). */
+export async function readIndexCooldown(storage, now = Date.now()) {
+  return indexCooldownState(await storage.get(UNAVAILABLE_UNTIL), now);
+}
+
+/** D1 couldn't serve a walk that began there: start or extend the cooldown,
+ * so the walk's restart and other first pages read the Catalog for a while. */
+export async function coolIndex(storage, now = Date.now()) {
+  const state = await readIndexCooldown(storage, now);
+  const step = indexCooldownMachine.step(state, {
+    type: "refused",
+    now,
+    cooldownMs: catalogIndexBounds.unavailableCooldownMs,
+  });
+  for (const effect of step.effects)
+    if (effect.type === "store") await storage.put(UNAVAILABLE_UNTIL, effect.until);
 }
 
 /** True while any Page index mark is stored. */

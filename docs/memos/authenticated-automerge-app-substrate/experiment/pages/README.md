@@ -812,11 +812,21 @@ account behind through the next pass. A call that doesn't finish its pass reads
 the mark again before it reports `ready`, since a write can land while the
 pass waits on D1.
 
-If a restore's Catalog projection fails after the Page host restored the Page,
-the host's report makes D1's row active while the owner's entry stays in Trash.
-The restore's mark settles from that entry, but the lifecycle fence keeps D1's
-newer active state, so D1 lists the Page in neither Home nor Trash, while the
-Catalog lists it in Trash. Retrying the restore projects it again.
+A lifecycle projection can fail after the Page host applied the change. The
+host's report then gives D1's row the new state while the owner's entry keeps
+the old one. The Page's mark settles from that entry, but the lifecycle fence
+keeps D1's newer state. A listing shows an owned D1 row only when the matching
+entry confirms it (`page/` for Home, `trash/` for Trash), so D1 lists the Page
+in neither:
+
+- After a failed restore, D1's row is active and the entry is in Trash. The
+  Catalog lists the Page in Trash.
+- After a failed Trash, D1's row is trashed and the entry is still active. The
+  Catalog lists the Page in Home.
+
+A D1 listing that meets such a row prunes it and marks the account dirty, so
+listings read the Catalog until a pass imports the entry again. Retrying the
+request projects it again and both sources agree.
 
 The two sources order shared rows by different times: D1 holds the Page row's own
 creation and content times, the Catalog this account's discovery time and the
@@ -828,9 +838,14 @@ that began on a ready D1 can miss only rows written while it ran, as any walk
 can. If D1 can't serve a walk that began there (the database or the pass fails,
 the scan's read fails, or the index is switched off), the next page fails with
 `invalid_cursor` rather than resume D1's order on the Catalog. The client
-restarts from the first page, which picks the Catalog and stays there; the
-viewer's listing machine already restarts on `invalid_cursor`. A walk that began
-on the Catalog never reads D1. A cursor from an earlier build names no source;
+restarts from the first page; the viewer's listing machine already restarts on
+`invalid_cursor`. The refusal also stores a cooldown
+(`host/index/unavailable-until`, 60 s, `indexCooldownMachine`). While it lasts,
+no listing opens D1 except a page of a walk that began there, so the restart's
+first page reads the Catalog and its walk stays there, even when D1 serves
+first pages and fails later ones. Each walk restarts at most once per cooldown;
+the pass and the Page marks wait until it ends. A walk that began on the Catalog
+never reads D1. A cursor from an earlier build names no source;
 it opens as before and continues on whichever source the account's state picks.
 
 Title and content updates to an existing entry don't mark the account: a stale

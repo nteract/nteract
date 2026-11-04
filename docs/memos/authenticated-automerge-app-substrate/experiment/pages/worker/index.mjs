@@ -228,6 +228,7 @@ import {
   listScope,
   listingRestricted,
   markCatalogIndexDirty,
+  coolIndex,
   markPagesForIndex,
   markSpaceIndexDirty,
   openCursor,
@@ -238,6 +239,7 @@ import {
   spaceCatalogSource,
   spaceIndexSource,
   pruneIndexRows,
+  readIndexCooldown,
   reconcileAccountIndex,
   reportContentActivity,
   reportPageIndex,
@@ -307,6 +309,7 @@ import { handleImportPageImage } from "./import-image.mjs";
 import { countedStorage } from "./catalog-counts.mjs";
 import { forwardedPageLimit, quotaError, quotaRefusal, resolvePageQuota } from "./page-quota.mjs";
 import { serialQueue, serialQueueBounds } from "./serial-queue.mjs";
+import { opensIndex } from "./account-index-machine.mjs";
 import { holdUntilSettled } from "./request-hold.mjs";
 import { boundedMap } from "./bounded-map.mjs";
 import { legibleEnv } from "./host-busy.mjs";
@@ -2426,7 +2429,8 @@ export class Catalog {
   /**
    * The one put: the moved entry with its new parent and position, the
    * destination siblings the plan rekeyed, the location revision, the
-   * completed journal row with its receipt, and the index's dirty mark.
+   * completed journal row with its receipt. D1 rows carry no location, so
+   * a move writes no index mark.
    * `reserveOperation` checks capacity and writes nothing, so the row goes
    * in with the rest. Storage takes at most STORAGE_KEYS_PER_CALL keys per
    * put, so a large rebalance is several puts inside one transaction; a
@@ -3048,9 +3052,12 @@ export class Catalog {
     const epoch = catalogIndexEpoch(this.env);
     let db;
     let source;
+    // While D1 is cooling after failing a D1 walk, only that kind of walk
+    // opens it, so a restart can't pin D1 again (opensIndex).
+    const opens = opensIndex({ pinned, cooldown: await readIndexCooldown(storage) });
     // D1 rows don't carry the location derived from this account's entries,
     // so a listing filtered by Project or parent reads the entries.
-    if (epoch && !filtered) {
+    if (epoch && !filtered && opens) {
       try {
         db = await withTimeout(catalogIndexDatabase(this.env, this.ctx), catalogIndexTimeouts.read);
         const ready = await reconcileAccountIndex({
@@ -3095,14 +3102,18 @@ export class Catalog {
     // A walk that began on D1 never continues on the Catalog entries: its
     // position is in D1's order. When D1 can't serve it (the database, the
     // pass or the scan failed, or the index is off), the walk restarts from
-    // its first page, which picks the Catalog and stays there. A Catalog
-    // walk never needs D1.
-    if (!result && pinned === "index")
+    // its first page. The refusal starts a cooldown, during which first
+    // pages read the Catalog, so the restart lands there and stays there
+    // even if D1 serves first pages and fails later ones. A Catalog walk
+    // never needs D1.
+    if (!result && pinned === "index") {
+      await coolIndex(storage);
       throw new HttpError(
         400,
         "This listing's source is unavailable; restart from the first page",
         "invalid_cursor",
       );
+    }
     result ??= {
       ...(await this.scanCandidates(
         request,

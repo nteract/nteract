@@ -8,8 +8,11 @@ import { sqliteD1 } from "../test/sqlite-d1.mjs";
 import {
   accountIndexMachine,
   accountIndexState,
+  indexCooldownMachine,
+  indexCooldownState,
   pageIndexMarkMachine,
   pageIndexMarkState,
+  opensIndex,
 } from "./account-index-machine.mjs";
 import {
   catalogIndexBounds,
@@ -23,6 +26,7 @@ import { Storage, world } from "./projects-fixture.mjs";
 
 const TABLE = new URL("../test/fixtures/machines/account-index.json", import.meta.url);
 const MARK_TABLE = new URL("../test/fixtures/machines/page-index-mark.json", import.meta.url);
+const COOLDOWN_TABLE = new URL("../test/fixtures/machines/index-cooldown.json", import.meta.url);
 const DIRTY = "host/index/dirty";
 const SYNC = "host/index/sync";
 const principal = "user:anaconda-fixture:fixture-user";
@@ -47,6 +51,34 @@ test("page-index-mark: the table covers every state and event, and the machine a
   assert.equal(run.rows, 10);
   assert.deepEqual(pageIndexMarkState(undefined), { name: "settled" });
   assert.deepEqual(pageIndexMarkState("t1"), { name: "pending", token: "t1" });
+});
+
+test("index-cooldown: the table covers every state and event, and the machine agrees", async () => {
+  const run = await runTable(indexCooldownMachine, loadTable(COOLDOWN_TABLE));
+  assert.equal(
+    run.pairs + run.unreachable,
+    indexCooldownMachine.states.length * indexCooldownMachine.events.length,
+  );
+  assert.equal(run.rows, 6);
+  // The stored end gives the state: a passed or missing end reads as open.
+  assert.deepEqual(indexCooldownState(undefined, 5), { name: "open" });
+  assert.deepEqual(indexCooldownState(10, 5), { name: "cooling", until: 10 });
+  assert.deepEqual(indexCooldownState(10, 10), { name: "open" });
+});
+
+test("opensIndex: a D1 walk always opens D1; anything else skips it while it is cooling", () => {
+  const open = { name: "open" };
+  const cooling = { name: "cooling", until: 10 };
+  const cases = [
+    ["index", open, true],
+    ["index", cooling, true],
+    ["catalog", open, true],
+    ["catalog", cooling, false],
+    [null, open, true],
+    [null, cooling, false],
+  ];
+  for (const [pinned, cooldown, expected] of cases)
+    assert.equal(opensIndex({ pinned, cooldown }), expected, `${pinned} ${cooldown.name}`);
 });
 
 test("account-index: every transition matches the state its persisted facts give", () => {
@@ -538,4 +570,44 @@ test("Trash, restore and purge write the owner's D1 row after answering, so the 
   await w.settle();
   assert.equal(ownerRow(w, pageId), undefined);
   await ready("after purge");
+});
+
+test("more pending creation marks than a listing settles keep D1 out until every one settles", async (t) => {
+  const w = await world(t);
+  w.env.PAGES_DEFAULT_PAGE_QUOTA = "1000";
+  await list(w, { limit: 1 });
+  // Every background write fails, so all 100 marks stay. Reads stay healthy.
+  const batch = w.db.batch.bind(w.db);
+  let down = true;
+  w.db.batch = async (statements) => {
+    if (down) throw new Error("injected D1 write outage");
+    return batch(statements);
+  };
+  const created = [];
+  for (let n = 0; n < 100; n++) {
+    const page = await w.createPage({ title: `Pending ${n}` });
+    assert.equal(page.status, 200, JSON.stringify(page.body));
+    created.push(page.body.page_id);
+  }
+  await w.settle();
+  down = false;
+  assert.equal((await pageMarks(w)).length, 100);
+  // The first listing settles 24 marks; D1 then holds 24 of 100 Pages, and
+  // reading it would end the walk early.
+  const seen = [];
+  const sources = [];
+  let cursor;
+  for (let request = 0; request < 50; request++) {
+    const { body, source } = await list(w, { limit: 10, ...(cursor && { cursor }) });
+    seen.push(...body.pages.map((page) => page.page_id));
+    sources.push(source);
+    cursor = body.next_cursor;
+    if (!cursor) break;
+  }
+  assert.equal(sources[0], "catalog", `marks were pending: ${sources}`);
+  assert.equal(new Set(seen).size, seen.length);
+  assert.deepEqual([...seen].sort(), [...created].sort(), `${seen.length} of 100: ${sources}`);
+  // The walk's listings settled the rest; the next walk reads D1.
+  assert.deepEqual(await pageMarks(w), []);
+  assert.equal((await list(w, { limit: 1 })).source, "index");
 });
