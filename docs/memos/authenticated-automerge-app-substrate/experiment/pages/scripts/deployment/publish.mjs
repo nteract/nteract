@@ -18,6 +18,7 @@ import {
   assertQualifiedDeploymentTarget,
 } from "./profiles.mjs";
 import { routesFor } from "./routes.mjs";
+import { publishIsolated, unitActive } from "./isolated-publication.mjs";
 export { routesFor } from "./routes.mjs";
 export const legacyRoutes = routesFor("pages-next", true);
 export const routes = routesFor();
@@ -168,7 +169,6 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   if (process.getuid() !== 0 || apply !== "--apply" || extra)
     throw new Error("Explicit root publication with prepared stage required");
   if (deploymentProfile(target).tunnelService) {
-    const { publishIsolated } = await import("./isolated-publication.mjs");
     console.log(JSON.stringify(publishIsolated(stage)));
     process.exit(0);
   }
@@ -183,8 +183,8 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   )
     throw new Error("Unexpected publication target");
   const run = (command, args) => execFileSync(command, args, { encoding: "utf8" }).trim();
-  if (run("systemctl", ["is-active", deployment.service]) !== "active")
-    throw new Error("Prototype service is not active");
+  if (!unitActive(deployment.service, run))
+    throw new Error("Prototype service " + deployment.service + " is not active");
   const health = JSON.parse(
     run("curl", [
       "--fail",
@@ -207,7 +207,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     target,
     restart: () => {
       run("systemctl", ["restart", "cloudflared.service"]);
-      return run("systemctl", ["is-active", "cloudflared.service"]);
+      return unitActive("cloudflared.service", run) ? "active" : "inactive";
     },
   };
   if (resumePublication(publication)) {

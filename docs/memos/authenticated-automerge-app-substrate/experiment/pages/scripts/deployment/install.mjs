@@ -87,7 +87,7 @@ if (
   throw new Error("Stage file set differs from manifest");
 for (const [file, digest] of Object.entries(manifest.files)) {
   if (
-    !/^(release\/[A-Za-z0-9_./-]+|(install|activation|firewall|publish|profiles|isolated-publication|routes)[.]mjs)$/.test(
+    !/^(release\/[A-Za-z0-9_./-]+|(install|activation|firewall|publish|profiles|isolated-publication|connector-slots|routes)[.]mjs)$/.test(
       file,
     ) ||
     file.split("/").includes("..")

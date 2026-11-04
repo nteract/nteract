@@ -100,6 +100,7 @@ export class SyncHost {
   #reserved = new Map();
   #docs = new Map();
   #conns = new Set();
+  hostActorPrefix;
   stats = {
     admitted: 0,
     refused: 0,
@@ -303,12 +304,21 @@ export class SyncHost {
 
   async #live(doc) {
     if (doc.live) return doc.live;
-    doc.loading ??= this.store.read(doc.id).then((stored) => {
-      doc.live = stored
-        ? A.load(concat([stored.snapshot, ...stored.chunks].filter(Boolean)))
-        : A.init();
-      return doc.live;
-    });
+    doc.loading ??= (doc.reloadClaims ? this.load() : Promise.resolve())
+      .then(() => {
+        doc.reloadClaims = false;
+      })
+      .then(() => this.store.read(doc.id))
+      .then((stored) => {
+        doc.live = stored
+          ? A.load(concat([stored.snapshot, ...stored.chunks].filter(Boolean)))
+          : A.init();
+        return doc.live;
+      })
+      .catch((error) => {
+        doc.loading = null;
+        throw error;
+      });
     return doc.loading;
   }
 
@@ -420,6 +430,14 @@ export class SyncHost {
     const claims = new Map();
     for (const bytes of fresh) {
       const { actor } = A.decodeChange(bytes);
+      // This namespace belongs to the host, including actors not seen yet.
+      // Its fresh mutation actors need no persisted claim; knowing the prefix
+      // never grants a browser authority to author or relay new host changes.
+      if (this.hostActorPrefix && actor.startsWith(this.hostActorPrefix)) {
+        if (!conn.trusted)
+          throw new Refusal("actor_claimed", `Actor ${actor} belongs to the host`, { fatal: true });
+        continue;
+      }
       const claimed = this.#actors.has(actor) || this.#reserved.has(actor);
       const owner = this.#actors.get(actor)?.principal ?? this.#reserved.get(actor);
       // The host's own Repo may carry anyone's history; it claims only actors
@@ -468,6 +486,15 @@ export class SyncHost {
       const extra = [...claims].map(([actor, claim]) => [ACTOR_PREFIX + actor, cbor.encode(claim)]);
       await this.store.append(doc.id, concat(fresh), A.getHeads(next), extra);
       for (const [actor, claim] of claims) this.#actors.set(actor, claim);
+    } catch (error) {
+      // A failed append may have committed before its response was lost.
+      // Reload history and claims before another frame can compact or extend
+      // the durable document; the pre-append live doc is not authoritative.
+      this.#free(doc.live);
+      doc.live = null;
+      doc.loading = null;
+      doc.reloadClaims = true;
+      throw error;
     } finally {
       for (const actor of claims.keys()) this.#reserved.delete(actor);
     }

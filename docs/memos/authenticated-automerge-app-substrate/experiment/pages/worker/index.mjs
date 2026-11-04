@@ -80,6 +80,7 @@ import { WebSocketByteTransport } from "../shared/byte-transport.mjs";
 import { MISSING_EDITS_MESSAGE } from "../shared/receipts.mjs";
 import { openingTitleWarning } from "../model/title-warning.mjs";
 import { pagePreview } from "../model/page-preview.mjs";
+import { cardKey, pageCard } from "../model/page-card.mjs";
 import {
   authenticate,
   agentLabel,
@@ -211,6 +212,8 @@ import {
   laterTime,
   validTime,
 } from "./content-activity.mjs";
+import { PAGE_CARD_KEY, PageCardWriter } from "./page-card-writer.mjs";
+import { allowedPageCards, parsePageCardIds, readPageCards } from "./page-cards.mjs";
 import {
   CatalogIndexUnavailable,
   SHORT_CURSOR_MAX_LENGTH,
@@ -330,6 +333,8 @@ import { pageStartup, recordFallback, startupOf, storedTitleProjection } from ".
 
 const operations = new Set([
   "list_pages",
+  // The library grid's cards. /api/tools only: no MCP tool describes it.
+  "page_cards",
   "create_page",
   "read_page",
   "read_page_changes",
@@ -470,6 +475,10 @@ export const sharedChildBounds = { scan: 100 };
  * host. The caller's Catalog queue waits on the whole listing, so its checks
  * overlap; this bounds how many requests one Catalog has out at a time. */
 export const sharedCheckBounds = { concurrency: 16 };
+/** How long a Page host waits on one card object read or write. */
+const PAGE_CARD_STORE_TIMEOUT_MS = 10_000;
+/** How long a deletion waits on the card object's delete. */
+const PAGE_CARD_DELETE_TIMEOUT_MS = 2_000;
 /** Budgets for reading Page lifecycles while the Catalog queue waits. */
 export const lifecycleBounds = { readMs: 2000, passMs: 5000, concurrency: 4 };
 const lifecycleUnsettled = () =>
@@ -757,6 +766,7 @@ async function quotaFields(env, identity, operation) {
 
 const READ_OPERATIONS = [
   "list_pages",
+  "page_cards",
   "read_page",
   "read_page_changes",
   "list_page_comments",
@@ -784,6 +794,7 @@ async function invoke(request, env, operation, args = {}, seen) {
   if (seen) seen.identity = identity;
   if (!READ_OPERATIONS.includes(operation)) requireWrite(identity);
   if (["get_space", "update_space"].includes(operation)) requireSpaceIdArgument(args.space_id);
+  if (operation === "page_cards") return await pageCards(request, env, identity, args);
   if (
     [
       "list_pages",
@@ -842,6 +853,38 @@ async function invoke(request, env, operation, args = {}, seen) {
     },
     { safe: safeToRepeat(operation, args) },
   );
+}
+
+/**
+ * page_cards (page-cards.mjs). The caller's Catalog answers which IDs it
+ * allows, from inside its serial queue; the card objects are read here,
+ * after that queue has moved on, so a slow bucket never holds the account's
+ * listings or writes. Only the allowed IDs reach the bucket.
+ */
+async function pageCards(request, env, identity, args) {
+  const ids = parsePageCardIds(args.page_ids);
+  const body = { operation: "page_cards", arguments: { page_ids: ids } };
+  const decided = await withinToolDeadline(async (signal) => {
+    const response = await untilAborted(
+      env.CATALOGS.getByName(identity.principal).fetch(
+        forwarded(request, "/internal/catalog", body),
+        { signal },
+      ),
+      signal,
+    );
+    return { status: response.status, body: await readResponseJson(response, signal) };
+  });
+  if (decided.status !== 200) return json(decided.body, decided.status);
+  const allowed = Array.isArray(decided.body?.allowed) ? decided.body.allowed : [];
+  const bucket = env.PAGES_ASSETS;
+  const cards = await readPageCards(ids, bucket ? allowed : [], {
+    readObject: async (key) => {
+      const object = await bucket.get(key);
+      return object ? await object.text() : null;
+    },
+    onError: (error) => logFailure(error, "page-cards"),
+  });
+  return json({ cards, principal: decided.body.principal ?? identity.principal });
 }
 
 /**
@@ -1547,6 +1590,7 @@ export class Catalog {
       const limit = forwardedPageLimit(body.page_limit, this.env);
       if (body.operation === "list_pages")
         return await this.listPages(request, identity, args, limit);
+      if (body.operation === "page_cards") return await this.pageCards(request, identity, args);
       if (body.operation === "list_spaces") return await this.listSpaces(request, identity, args);
       if (body.operation === "get_space") return await this.getSpace(request, args);
       requireWrite(identity);
@@ -2832,6 +2876,22 @@ export class Catalog {
     }
   }
 
+  /** The access step of page_cards (page-cards.mjs): which of up to
+   * PAGE_CARDS_MAX IDs the caller may read, each checked as list_pages
+   * checks its row. Answers IDs only; the gateway reads the objects outside
+   * this queue. Read-only: a refused shared entry is pruned by the next
+   * listing that meets it. */
+  async pageCards(request, identity, args) {
+    const ids = parsePageCardIds(args.page_ids);
+    const allowed = await allowedPageCards(ids, {
+      storage: this.storage,
+      verifyShared: (pageId) => this.verifyShared(request, pageId),
+      map: boundedMap,
+      checks: sharedCheckBounds.concurrency,
+    });
+    return json({ allowed, principal: identity.principal });
+  }
+
   /** Ask the Page host, with the caller's own credentials, for one shared
    * title. A host that does not answer within the deadline counts as
    * unavailable, never as denied. */
@@ -3369,6 +3429,7 @@ export class Page {
       this.recordMaintenance?.stop();
       this.actorPersistence?.stop?.();
       this.contentActivity?.stop();
+      this.pageCard?.stop();
       this.unwatchContent();
     };
     stop();
@@ -3614,11 +3675,20 @@ export class Page {
     if (this.contentActivity?.state.name === "stopped") return;
     this.contentActivity ??= new ContentActivity({
       storage: this.ctx.storage,
-      report: (value) => this.reportContent(value),
+      report: (value) => {
+        // Beside each flush, from this live request: the card, if its first
+        // screen changed (page-card-writer.mjs). A card failure is logged
+        // there and never fails the flush.
+        this.pageCard?.request();
+        this.pageCard?.pump();
+        return this.reportContent(value);
+      },
       hold: (work) => holdUntilSettled(this.ctx, work),
       onError: (error) => logFailure(error, "content-activity"),
     });
+    this.pageCard ??= this.cardWriter();
     await this.contentActivity.restore();
+    await this.pageCard?.restore();
     if (this.contentHandle === this.handle) return;
     this.unwatchContent();
     this.contentHandle = this.handle;
@@ -3631,21 +3701,91 @@ export class Page {
     this.handle.on("change", this.contentListener);
   }
 
+  /** The card writer for this host, or null without a Page assets bucket. */
+  cardWriter() {
+    const bucket = this.env.PAGES_ASSETS;
+    if (!bucket) return null;
+    return new PageCardWriter({
+      storage: this.ctx.storage,
+      build: async () => {
+        if (!this.handle || pageState(this.metadata) !== "active") return null;
+        return pageCard(this.handle.doc(), {
+          contentUpdatedAt: this.contentActivity?.value ?? null,
+        });
+      },
+      store: {
+        head: async () => {
+          const object = await withTimeout(
+            bucket.head(cardKey(this.metadata.pageId)),
+            PAGE_CARD_STORE_TIMEOUT_MS,
+            "Page card read timed out",
+          );
+          return object
+            ? { etag: object.etag, card_hash: object.customMetadata?.card_hash ?? null }
+            : null;
+        },
+        put: async (bundle, { etag }) => {
+          const object = await withTimeout(
+            bucket.put(cardKey(this.metadata.pageId), JSON.stringify(bundle), {
+              httpMetadata: { contentType: "application/json" },
+              customMetadata: {
+                card_hash: bundle.card_hash,
+                content_updated_at: bundle.content_updated_at ?? "",
+              },
+              // The ordering fence (page-card-writer.mjs).
+              onlyIf: etag ? { etagMatches: etag } : { etagDoesNotMatch: "*" },
+            }),
+            PAGE_CARD_STORE_TIMEOUT_MS,
+            "Page card write timed out",
+          );
+          return object ? { etag: object.etag } : null;
+        },
+        delete: () => this.deleteCard(),
+      },
+      hold: (work) => holdUntilSettled(this.ctx, work),
+      onError: (error) => logFailure(error, "page-card"),
+    });
+  }
+
+  /** Remove this Page's card object, under a short deadline so bucket
+   * trouble never holds a purge or tombstone. Best-effort: page_cards serves
+   * a card only to a caller its Catalog check admits, and a deleted Page
+   * admits no one, so a missed delete leaves an orphan no one reads. */
+  async deleteCard() {
+    const pageId = this.metadata?.pageId ?? this.ctx.id?.name;
+    if (!this.env.PAGES_ASSETS || !validPageId(pageId)) return;
+    try {
+      await withTimeout(
+        this.env.PAGES_ASSETS.delete(cardKey(pageId)),
+        PAGE_CARD_DELETE_TIMEOUT_MS,
+        "Page card delete timed out",
+      );
+    } catch (error) {
+      logFailure(error, "page-card");
+    }
+  }
+
   /** Detach the content listener from the handle it was attached to. */
   unwatchContent() {
     this.contentHandle?.off?.("change", this.contentListener);
     this.contentHandle = undefined;
   }
 
-  /** Stop recording for good and forget the stored content time and title
-   * projection: the Page is being deleted. A flush already storing its time
-   * lands before this delete. */
+  /** Stop recording for good and forget the stored content time, title
+   * projection and card: the Page is being deleted. A flush already storing
+   * its time lands before this delete. A card write still running when it
+   * stops deletes the object again as it ends, whether its put landed or
+   * timed out (page-card-writer.mjs); a delete that still misses leaves an
+   * object page_cards never serves. */
   async forgetContent() {
     this.contentActivity?.stop();
+    this.pageCard?.stop({ deleting: true });
     this.unwatchContent();
     await this.ctx.storage.delete(CONTENT_ACTIVITY_KEY);
     await this.ctx.storage.delete(TITLE_PROJECTION_KEY);
     await this.ctx.storage.delete(PROJECTION_PENDING);
+    await this.ctx.storage.delete(PAGE_CARD_KEY);
+    await this.deleteCard();
   }
 
   /** Report a stored content time: one D1 batch and one call to the owner's
@@ -3909,6 +4049,7 @@ export class Page {
     try {
       await documentMutation({
         storage: this.ctx.storage,
+        hostActorPrefix: this.plain?.hostActorPrefix,
         admission: this.admission,
         handle: this.handle,
         operation: intent.operation,
@@ -3973,6 +4114,7 @@ export class Page {
         const page = this.handle.doc();
         await documentMutation({
           storage: this.ctx.storage,
+          hostActorPrefix: this.plain?.hostActorPrefix,
           admission: this.commentsAdmission,
           handle: this.commentsHandle,
           doc: COMMENTS_DOC,
@@ -4002,6 +4144,7 @@ export class Page {
       }
       await documentMutation({
         storage: this.ctx.storage,
+        hostActorPrefix: this.plain?.hostActorPrefix,
         admission: this.admission,
         handle: this.handle,
         operation: "migrate_comments_detach",
@@ -4271,7 +4414,7 @@ export class Page {
     const documents = [];
     if (metadata?.documentId) documents.push([metadata.documentId, "page"]);
     if (commentsUuid) documents.push([commentsDocumentId(commentsUuid), "comments"]);
-    await plain.load(documents);
+    await plain.load(documents, { deleted: pageState(metadata) === "deleted" });
     Object.assign(this, {
       serverKey: undefined,
       serverSenderId: HOST_SENDER_ID,
@@ -4869,20 +5012,21 @@ export class Page {
     this.requestsRunning = (this.requestsRunning ?? 0) + 1;
     this.reportActivity();
     const settle = (work) => {
-      void work.then(noop, noop).then(() => {
+      const settled = work.then(noop, noop).then(() => {
         this.requestsRunning--;
         this.reportActivity();
       });
+      // reportActivity may arm a quiet hold. Keep its originating request
+      // live until that handoff has completed, not just until run() settles.
+      holdUntilSettled(this.ctx, settled);
       return work;
     };
     if (["/api/sync", "/api/saved"].includes(new URL(request.url).pathname)) {
       const running = this.run(request);
-      holdUntilSettled(this.ctx, running);
       return settle(running);
     }
     const next = this.tail.then(() => this.run(request));
     this.tail = next.catch(() => {});
-    holdUntilSettled(this.ctx, next);
     return settle(next);
   }
 
@@ -4898,26 +5042,32 @@ export class Page {
 
   /** Step record-storage-migration and run its effects. */
   stepMigration(event) {
+    if (this.migrationAbandoned) return { state: this.migration, effects: [] };
     const result = recordStorageMigration.step(this.migration, event);
     if (result.rejected) return result;
     this.migration = result.state;
     for (const effect of result.effects) {
       if (effect.type === "arm") {
         this.disarmMigration();
-        let release;
-        const held = new Promise((resolve) => (release = resolve));
-        this.migrationRelease = release;
+        if (this.migration.name === "quiet") {
+          const held = new Promise((resolve) => (this.migrationRelease = resolve));
+          holdUntilSettled(this.ctx, held);
+        }
         this.migrationTimer = setTimeout(() => {
-          this.disarmMigration();
+          const release = this.migrationRelease;
+          this.migrationTimer = undefined;
+          this.migrationRelease = undefined;
+          // Register the next hold before releasing this request's quiet hold.
           this.stepMigration({ type: "elapsed" });
+          release?.();
         }, effect.ms);
-        // Keep the object for its quiet window when the runtime allows it.
-        // Every disarm settles the hold, so cancelled waits don't pile up.
-        holdUntilSettled(this.ctx, held);
+        // Backoff is best-effort: no hold keeps an unused native host resident.
       } else if (effect.type === "disarm") {
         this.disarmMigration();
       } else if (effect.type === "convert") {
-        this.runMigration();
+        const run = this.runMigration();
+        holdUntilSettled(this.ctx, run);
+        this.disarmMigration();
       }
       // `retire` runs inside runMigration's blockConcurrencyWhile.
     }
@@ -4936,24 +5086,47 @@ export class Page {
    * Convert this Subduction Page to plain Automerge sync, in place, while
    * nobody uses it (record-storage-migration.mjs). Runs inside
    * blockConcurrencyWhile, so no request or socket starts meanwhile, and one
-   * at a time per node. After the flip the object retires: its storage
-   * refuses writes, its native host closes, and the throw resets it, so the
-   * next request boots plain.
+   * at a time per isolate (the module's shared slot). After the flip the
+   * object retires: its storage refuses writes, its native host closes, and
+   * the throw resets it, so the next request boots plain.
    */
-  runMigration() {
-    // Wait for the node's slot outside blockConcurrencyWhile, so the wait
+  async runMigration() {
+    // Wait for the isolate's slot outside blockConcurrencyWhile, so the wait
     // can't run into the runtime's deadline; activity is checked again inside.
-    const run = migrationSlot(() =>
-      this.ctx.blockConcurrencyWhile(async () => {
-        const event = await this.convertRecordStorage();
-        const { effects } = this.stepMigration(event);
-        if (effects?.some((effect) => effect.type === "retire")) {
-          await this.retireMigratedHost();
-          throw (this.migratedError ||= recordStorageMigrated());
-        }
-      }),
-    );
-    void run.catch((error) => {
+    let callbackSettled;
+    let callbackStarted = false;
+    try {
+      const result = await migrationSlot(() => {
+        let settle;
+        callbackSettled = new Promise((resolve) => (settle = resolve));
+        return this.ctx.blockConcurrencyWhile(async () => {
+          callbackStarted = true;
+          const started = Date.now();
+          try {
+            if (this.migrationAbandoned) return;
+            const event = await this.convertRecordStorage(started);
+            const { effects } = this.stepMigration(event);
+            if (effects?.some((effect) => effect.type === "retire")) {
+              await this.retireMigratedHost();
+              throw (this.migratedError ||= recordStorageMigrated());
+            }
+          } finally {
+            settle();
+          }
+        });
+      });
+      if (result?.reason === "slot_timeout") {
+        console.log(
+          JSON.stringify({
+            event: "record_storage.migration",
+            outcome: "skipped",
+            from: this.metadata?.recordStorage ?? "local",
+            reason: result.reason,
+          }),
+        );
+        this.stepMigration(result);
+      }
+    } catch (error) {
       if (error === this.migratedError) {
         // The throw resets the object; abort makes the reset explicit.
         try {
@@ -4966,12 +5139,17 @@ export class Page {
       // one: its storage refuses every write from here, so the stale
       // conversion can't write a snapshot or flip the record.
       this.migrationAbandoned ||= error || recordStorageMigrated();
-      void this.retireMigratedHost();
-    });
+      this.disarmMigration();
+      // The runtime's deadline is not the callback's settlement. Its borrowed
+      // native resources remain live until the callback has finished with them.
+      // An unstarted callback borrows nothing; a late start sees the fence.
+      if (callbackStarted) await callbackSettled;
+      await this.retireMigratedHost();
+    }
   }
 
   /** The conversion itself. Returns `skipped`, `failed` or `converted`. */
-  async convertRecordStorage() {
+  async convertRecordStorage(started = Date.now()) {
     const storage = this.ctx.storage;
     const from = this.metadata?.recordStorage ?? "local";
     const log = (outcome, fields = {}) =>
@@ -5004,7 +5182,6 @@ export class Page {
       (await pendingEntryKeys(storage, COMMENTS_DOC)).length
     )
       return skip("journal_pending");
-    const started = Date.now();
     let flipping = false;
     try {
       // Everything the native host accepted, in its record store (and the
@@ -5029,6 +5206,9 @@ export class Page {
         actors,
         blocked,
       });
+      // Leave ten seconds of the runtime's 30 s block deadline for the selector
+      // write and barrier; a late flip could strand edits on a fresh native host.
+      if (Date.now() - started > 20_000) return skip("deadline_margin");
       flipping = true;
       await storage.put("host/document", {
         ...this.metadata,
@@ -5056,8 +5236,9 @@ export class Page {
   }
 
   /** A converted Page's Subduction history, which the plain host never reads:
-   * its records, actor entries and signer seed here, and for a buffered Page
-   * the PageRecords object's records. Deleting the Page deletes them too.
+   * its records, actor entries, signing-key bindings and signer seed here,
+   * and for a buffered Page the PageRecords object's records.
+   * Deleting the Page deletes them too.
    * Each step is idempotent, so a repeated deletion finishes the job. */
   async purgeMigratedRecords() {
     if (this.metadata.recordStorageMigratedFrom === "buffered" && this.env.PAGE_RECORDS) {
@@ -5072,7 +5253,7 @@ export class Page {
       for (const key of await records.list("")) await records.remove(key);
       await records.flush();
     }
-    await clearPrefixes(this.ctx.storage, ["repo/", "host/actor/"]);
+    await clearPrefixes(this.ctx.storage, ["repo/", "host/actor/", "host/binding/"]);
     await this.ctx.storage.delete("host/signer");
   }
 
@@ -5087,6 +5268,9 @@ export class Page {
     this.recordMaintenance?.stop();
     this.actorPersistence?.stop?.();
     this.contentActivity?.stop();
+    // The card object and host/card stay: the plain host serves the same
+    // Page and its first flush compares against the stored hash.
+    this.pageCard?.stop();
     this.unwatchContent();
     for (const close of [
       () => this.policy?.close?.(),
@@ -5435,6 +5619,7 @@ export class Page {
         await this.requireConverted();
         const receipt = await documentMutation({
           storage: this.ctx.storage,
+          hostActorPrefix: this.plain?.hostActorPrefix,
           admission: this.admission,
           handle: this.handle,
           operation: body.operation,
@@ -5575,6 +5760,7 @@ export class Page {
     let page;
     const receipt = await documentMutation({
       storage: this.ctx.storage,
+      hostActorPrefix: this.plain?.hostActorPrefix,
       admission: this.commentsAdmission,
       handle: this.commentsHandle,
       doc: COMMENTS_DOC,
@@ -5983,6 +6169,7 @@ export class Page {
       case "closePolicy":
         this.recordMaintenance?.stop();
         this.contentActivity?.stop();
+        this.pageCard?.stop();
         this.unwatchContent();
         this.activity?.close();
         await this.policy.close();

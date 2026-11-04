@@ -312,7 +312,15 @@ const targets = Object.freeze({
     // default parent-based sampler then drops every request-scoped log line.
     otelTracesSampler: "always_on",
     editor: "wordgard",
+    // tunnelService is the single connector unit earlier releases installed.
+    // Publication hands the tunnel to these two slots and alternates between
+    // them, so a route change never stops the last connector
+    // (connector-slots.mjs). Metrics listeners serve cloudflared's /ready.
     tunnelService: "cloudflared-page10.service",
+    tunnelSlots: Object.freeze({
+      a: Object.freeze({ service: "cloudflared-page10-a.service", metrics: "127.0.0.1:29480" }),
+      b: Object.freeze({ service: "cloudflared-page10-b.service", metrics: "127.0.0.1:29490" }),
+    }),
     frozenTargets: Object.freeze(["page7", "page8", "page9"]),
   }),
   // pages.runtimed.run: the lasting home for Pages. It starts empty, with
@@ -363,7 +371,13 @@ const targets = Object.freeze({
     // default parent-based sampler then drops every request-scoped log line.
     otelTracesSampler: "always_on",
     editor: "wordgard",
+    // The single connector unit earlier releases installed, then the two
+    // slots publication alternates between (see Page10).
     tunnelService: "cloudflared-pages-live.service",
+    tunnelSlots: Object.freeze({
+      a: Object.freeze({ service: "cloudflared-pages-live-a.service", metrics: "127.0.0.1:29481" }),
+      b: Object.freeze({ service: "cloudflared-pages-live-b.service", metrics: "127.0.0.1:29491" }),
+    }),
     // Page10 stays deployable, so it is not frozen here.
     frozenTargets: Object.freeze(["page7", "page8", "page9"]),
   }),
@@ -419,22 +433,34 @@ export function targetRecordStorage(target, observed = []) {
  * native modes, so it counts as lacking every other mode. */
 export function assertReleaseOpensTargetPages(target, receipt, observed = []) {
   const declared = Array.isArray(receipt?.record_storage) ? receipt.record_storage : [];
-  const missing = [...targetRecordStorage(target, observed)].filter(
-    ([mode]) => !declared.includes(mode),
-  );
-  if (!missing.length) return;
+  const required = targetRecordStorage(target, observed);
+  const missing = [...required].filter(([mode]) => !declared.includes(mode));
   const release =
     `${typeof receipt?.source_sha === "string" ? receipt.source_sha.slice(0, 12) : "unknown source"}` +
     ` (build ${receipt?.build_id ?? "unknown"})`;
-  throw new Error(
-    `Refusing release ${release} for ${target}: ` +
-      missing
-        .map(([mode, reasons]) => `${target} may hold "${mode}" Pages (${reasons.join("; ")})`)
-        .join(", ") +
-      `, and the release's build receipt lists record_storage ` +
-      `${declared.length ? JSON.stringify(declared) : "none"}. A build without a Page's ` +
-      `record storage fails to open it with "Unsupported Page record storage mode".`,
-  );
+  if (missing.length)
+    throw new Error(
+      `Refusing release ${release} for ${target}: ` +
+        missing
+          .map(([mode, reasons]) => `${target} may hold "${mode}" Pages (${reasons.join("; ")})`)
+          .join(", ") +
+        `, and the release's build receipt lists record_storage ` +
+        `${declared.length ? JSON.stringify(declared) : "none"}. A build without a Page's ` +
+        `record storage fails to open it with "Unsupported Page record storage mode".`,
+    );
+  // Keep the deploy-time requirement here: the staged installer copies this
+  // module without the Worker's shared modules. All operator entrypoints use
+  // this guard, including old-stage install and rollback qualification.
+  const format = "doc-store-v2-host-actor-prefix";
+  const formats = Array.isArray(receipt?.plain_storage_formats)
+    ? receipt.plain_storage_formats
+    : [];
+  if (required.has("automerge") && !formats.includes(format))
+    throw new Error(
+      `Refusing release ${release} for ${target}: ${target} may hold "automerge" Pages ` +
+        `(${required.get("automerge").join("; ")}), requiring plain_storage_formats ${JSON.stringify([format])}; ` +
+        `the release lists ${JSON.stringify(formats)}. Older builds can lose plain history or bypass host actor admission.`,
+    );
 }
 
 export function selectTarget(argv) {

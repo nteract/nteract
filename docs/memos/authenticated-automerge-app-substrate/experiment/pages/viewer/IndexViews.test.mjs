@@ -6,6 +6,7 @@ import { createRequire } from "node:module";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { build } from "esbuild";
 import { JSDOM } from "jsdom";
+import { PAGE_CARDS_GATHER_MS } from "./page-cards.mjs";
 
 const dom = new JSDOM("<!doctype html><body></body>", {
   url: "http://localhost/pages",
@@ -783,6 +784,117 @@ test("the grid shows only when enabled, switches with the list, and never nests 
     assert.equal(off.host.querySelector('[role=group][aria-label="Display"]'), null);
     await off.unmount();
   } finally {
+    window.localStorage.clear();
+  }
+});
+
+test("grid cards show each Page's card preview, inert, and keep the icon without one", async () => {
+  const calls = [];
+  const card = {
+    v: 1,
+    card_hash: "h",
+    title: "Roadmap",
+    truncated: false,
+    rich: true,
+    blocks: [
+      {
+        id: "b1",
+        content: [
+          ["h1", {}, "Goals"],
+          ["p", {}, "See ", ["a", {}, "the plan"], "."],
+          [
+            "ul",
+            { "data-task-list": "true" },
+            [
+              "li",
+              { "data-task-checked": "true" },
+              ["input", { checked: "" }],
+              ["div", {}, ["p", {}, "Done"]],
+            ],
+          ],
+          ["pre", { "data-language": "mermaid" }, ["code", {}, "flowchart LR"]],
+          ["p", {}, ["span", { "data-card-placeholder": "image" }, "A chart"]],
+        ],
+      },
+    ],
+  };
+  const tool = async (name, args) => {
+    calls.push([name, args]);
+    if (name === "page_cards")
+      return {
+        principal: "user:me",
+        cards: Object.fromEntries(
+          args.page_ids.map((pageId) => [pageId, pageId === id(1) ? card : null]),
+        ),
+      };
+    return {
+      pages: [
+        { page_id: id(1), title: "Roadmap", content_updated_at: twoDaysAgo },
+        { page_id: id(2), title: "Empty" },
+      ],
+      next_cursor: null,
+      principal: "user:me",
+    };
+  };
+  window.localStorage.clear();
+  window.localStorage.setItem("nteract.pages.view", "grid");
+  // Past the cards' gather window, so their one request has gone out.
+  const gathered = () =>
+    act(() => new Promise((resolve) => setTimeout(resolve, PAGE_CARDS_GATHER_MS + 100)));
+  const mounted = [];
+  try {
+    const app = await mount(
+      createElement(Library, libraryProps({ tool, principal: "user:me", grid: true })),
+    );
+    mounted.push(app);
+    await gathered();
+    const cardCalls = calls.filter(([name]) => name === "page_cards");
+    assert.deepEqual(cardCalls, [["page_cards", { page_ids: [id(1), id(2)] }]]);
+    const [first, second] = app.host.querySelectorAll(".index-card-link");
+    const preview = first.querySelector(".page-card-preview");
+    assert.ok(preview, "the first card shows its preview");
+    assert.equal(preview.getAttribute("aria-hidden"), "true");
+    assert.equal(preview.querySelector("h1").textContent, "Goals");
+    assert.equal(preview.querySelector(".preview-link").textContent, "the plan");
+    assert.equal(preview.querySelector(".preview-check").dataset.checked, "true");
+    assert.equal(preview.querySelector("pre").dataset.language, "mermaid");
+    assert.equal(preview.querySelector("[data-card-placeholder=image]").textContent, "A chart");
+    assert.equal(first.querySelectorAll("a, input, button, img").length, 0, "nothing interactive");
+    assert.equal(first.textContent.startsWith("Roadmap"), true);
+    assert.equal(second.querySelector(".page-card-preview"), null);
+    assert.ok(second.querySelector(".index-card-placeholder"), "no card keeps the icon");
+    await mounted.pop().unmount();
+
+    // List mode never asks for cards.
+    window.localStorage.setItem("nteract.pages.view", "list");
+    calls.length = 0;
+    mounted.push(
+      await mount(createElement(Library, libraryProps({ tool, principal: "user:me", grid: true }))),
+    );
+    await gathered();
+    assert.deepEqual(
+      calls.filter(([name]) => name === "page_cards"),
+      [],
+    );
+    await mounted.pop().unmount();
+
+    // Neither does a grid that doesn't know its account.
+    window.localStorage.setItem("nteract.pages.view", "grid");
+    calls.length = 0;
+    mounted.push(
+      await mount(createElement(Library, libraryProps({ tool, principal: null, grid: true }))),
+    );
+    await gathered();
+    assert.deepEqual(
+      calls.filter(([name]) => name === "page_cards"),
+      [],
+    );
+    assert.ok(mounted[0].host.querySelector(".index-card-placeholder"));
+    await mounted.pop().unmount();
+  } finally {
+    // A failed assertion must not leave a grid mounted: its timers would
+    // keep the test file running.
+    for (const app of mounted) await app.unmount();
     window.localStorage.clear();
   }
 });

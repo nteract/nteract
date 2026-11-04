@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import * as A from "@automerge/automerge";
-import { Repo, generateAutomergeUrl, interpretAsDocumentId } from "@automerge/automerge-repo";
+import { Repo, cbor, generateAutomergeUrl, interpretAsDocumentId } from "@automerge/automerge-repo";
 import { createAuthFixture } from "../../auth-fixtures.mjs";
 import { createPageData, initializePage } from "../model/page.mjs";
 import { BUILD_FEATURES } from "../model/schema-features.mjs";
@@ -10,6 +10,7 @@ import { DocStore, MemoryByteStore } from "../sync/doc-store.mjs";
 import { framePipe } from "../sync/wire.mjs";
 import { Page, recordStorageFor, registeredRecordStorage } from "./index.mjs";
 import { HOST_SENDER_ID, PlainByteStore } from "./plain-sync.mjs";
+import { documentMutation } from "./mutations.mjs";
 
 class Storage {
   values = new Map();
@@ -87,6 +88,323 @@ async function fixture(t) {
     );
   return { auth, storage, env, token, page, register, args, doc };
 }
+
+const tool = (f, page, operation, args) =>
+  page.fetch(
+    new Request("https://pages.invalid/internal/tool", {
+      method: "POST",
+      headers: { authorization: `Bearer ${f.token}`, "x-pages-driver": "ChatGPT" },
+      body: JSON.stringify({ operation, arguments: { page_id: pageId, ...args } }),
+    }),
+  );
+
+function countWrites(t, storage) {
+  const stats = { puts: 0, keys: 0, bytes: 0, deletes: 0, deletedKeys: 0, plainBytes: 0 };
+  const put = storage.put.bind(storage);
+  const del = storage.delete.bind(storage);
+  t.mock.method(storage, "put", async (key, value) => {
+    stats.puts++;
+    for (const [k, v] of typeof key === "string" ? [[key, value]] : Object.entries(key)) {
+      stats.keys++;
+      // Binary values are charged verbatim; CBOR is a reproducible proxy for
+      // structured values. Include UTF-8 key bytes, but not SQLite/LTX framing.
+      const bytes =
+        Buffer.byteLength(k) + (v instanceof Uint8Array ? v.byteLength : cbor.encode(v).byteLength);
+      stats.bytes += bytes;
+      if (k.startsWith("plain/")) stats.plainBytes += bytes;
+    }
+    return put(key, value);
+  });
+  t.mock.method(storage, "delete", async (keys) => {
+    stats.deletes++;
+    stats.deletedKeys += Array.isArray(keys) ? keys.length : 1;
+    return del(keys);
+  });
+  return stats;
+}
+
+test("plain API edit write costs at 1, 10 and 100 consecutive edits", async (t) => {
+  const f = await fixture(t);
+  f.env.CATALOGS = { getByName: () => ({ fetch: async () => Response.json({ ok: true }) }) };
+  const host = f.page();
+  assert.ok((await f.register(host)).ok);
+  assert.equal((await tool(f, host, "read_page", { comments: "none" })).status, 200);
+  await host.flush();
+  const initialClaims = (await f.storage.list({ prefix: "plain/actor/" })).size;
+  const blockId = Object.keys(host.handle.doc().blocks)[0];
+  const stats = countWrites(t, f.storage);
+  const actors = new Set();
+  let changeBytes = 0;
+  for (let n = 1; n <= 100; n++) {
+    const heads = A.getHeads(host.handle.doc());
+    const response = await tool(f, host, "patch_page", {
+      base_heads: heads,
+      idempotency_key: `write-cost-${String(n).padStart(3, "0")}`,
+      operations: [
+        {
+          op: "replace_match",
+          block_id: blockId,
+          match_text: n % 2 ? "Original" : "Modified",
+          replacement: n % 2 ? "Modified" : "Original",
+        },
+      ],
+    });
+    assert.equal(response.status, 200, await response.clone().text());
+    await host.flush();
+    for (const change of A.getChangesSince(host.handle.doc(), heads)) {
+      actors.add(A.decodeChange(change).actor);
+      changeBytes += change.byteLength;
+    }
+    if ([1, 10, 100].includes(n))
+      t.diagnostic(
+        JSON.stringify({
+          edits: n,
+          ...stats,
+          changeBytes,
+          actors: actors.size,
+          newClaims: (await f.storage.list({ prefix: "plain/actor/" })).size - initialClaims,
+        }),
+      );
+  }
+  assert.equal(actors.size, 100);
+  assert.ok(
+    [...actors].every(
+      (actor) => actor.startsWith(host.plain.hostActorPrefix) && /^[a-f0-9]{32}$/.test(actor),
+    ),
+  );
+  assert.equal((await f.storage.list({ prefix: "plain/actor/" })).size, initialClaims);
+  assert.ok(stats.plainBytes < 60_000, JSON.stringify(stats));
+  assert.ok(stats.puts <= 301, JSON.stringify(stats));
+  assert.equal(stats.deletes, 0);
+});
+
+test("the host prefix survives restart and rejects unseen browser actors without storing anything", async (t) => {
+  const f = await fixture(t);
+  f.env.CATALOGS = { getByName: () => ({ fetch: async () => Response.json({ ok: true }) }) };
+  let host = f.page();
+  assert.ok((await f.register(host)).ok);
+  const prefix = host.plain.hostActorPrefix;
+  assert.match(prefix, /^[a-f0-9]{16}$/);
+  for (let n = 1; n <= 2; n++) {
+    const initialClaims = new Set((await f.storage.list({ prefix: "plain/actor/" })).keys());
+    const response = await tool(f, host, "edit_page", {
+      base_heads: A.getHeads(host.handle.doc()),
+      idempotency_key: `actor-restart-${n}`,
+      operations: [{ op: "set_title", title: `Title ${n}` }],
+    });
+    assert.equal(response.status, 200, await response.clone().text());
+    const changes = A.getAllChanges(host.handle.doc())
+      .map(A.decodeChange)
+      .filter((c) => c.actor.startsWith(prefix));
+    assert.equal(changes.length, n);
+    assert.ok(changes.every((c) => c.seq === 1));
+    assert.ok(changes.every((c) => host.plain.host.actor(c.actor) === undefined));
+    assert.deepEqual(
+      new Set((await f.storage.list({ prefix: "plain/actor/" })).keys()),
+      initialClaims,
+    );
+    const comment = await tool(f, host, "manage_page_comment", {
+      idempotency_key: `actor-comment-${n}`,
+      action: "add",
+      block_id: Object.keys(host.handle.doc().blocks)[0],
+      body: `Comment ${n}`,
+    });
+    assert.equal(comment.status, 200, await comment.clone().text());
+    assert.equal(
+      A.getAllChanges(host.commentsHandle.doc())
+        .map(A.decodeChange)
+        .filter((c) => c.actor.startsWith(prefix)).length,
+      n,
+    );
+    await host.handle.change((d) => {
+      d.direct = n;
+    });
+    await host.flush();
+    await host.plain.close();
+    host = f.page();
+    await host.ready;
+    await host.documentReady();
+    assert.equal(host.plain.hostActorPrefix, prefix);
+    assert.equal(host.handle.doc().title, `Title ${n}`);
+  }
+  const actor = prefix + crypto.randomUUID().replaceAll("-", "").slice(0, 16);
+  assert.ok(!A.getAllChanges(host.handle.doc()).some((c) => A.decodeChange(c).actor === actor));
+  const before = structuredClone(f.storage.values);
+  const forged = A.change(A.clone(host.handle.doc(), { actor }), (d) => {
+    d.title = "Forged";
+  });
+  const browser = rawSocket(
+    host,
+    {
+      principal: "user:anaconda-fixture:fixture-user",
+      driver: "Browser",
+      canWrite: true,
+      expiresAt: Date.now() + 3_600_000,
+    },
+    { senderId: "b-forger" },
+  );
+  browser.client.send({
+    t: "sync",
+    doc: treeHex(f.args.document_id),
+    m: helloWith([A.getLastLocalChange(forged)]),
+    r: 1,
+  });
+  await until(() => browser.frames.some((f) => f.t === "refused"));
+  assert.equal(browser.frames.find((f) => f.t === "refused").code, "actor_claimed");
+  assert.equal(browser.frames.find((f) => f.t === "refused").fatal, true);
+  await until(() => browser.client.closed);
+  assert.equal(host.handle.doc().title, "Title 2");
+  assert.deepEqual(f.storage.values, before);
+  A.free(forged);
+});
+
+test("an abandoned pending intent does not block another principal and replays on restart", async (t) => {
+  const f = await fixture(t);
+  f.env.CATALOGS = { getByName: () => ({ fetch: async () => Response.json({ ok: true }) }) };
+  const host = f.page();
+  assert.ok((await f.register(host)).ok);
+  const put = f.storage.put.bind(f.storage);
+  const args = {
+    base_heads: A.getHeads(host.handle.doc()),
+    idempotency_key: "pending-actor-1",
+    operations: [{ op: "set_title", title: "Recovered" }],
+  };
+  let fail = true;
+  t.mock.method(f.storage, "put", async (key, value) => {
+    await put(key, value);
+    if (key === "host/operation/pending-actor-1" && value.pending && fail) {
+      fail = false;
+      throw Error("ambiguous intent put");
+    }
+  });
+  assert.equal((await tool(f, host, "edit_page", args)).status, 500);
+  const pending = await f.storage.get("host/operation/pending-actor-1");
+  await documentMutation({
+    storage: f.storage,
+    handle: host.handle,
+    hostActorPrefix: host.plain.hostActorPrefix,
+    operation: "edit_page",
+    args: { ...args, idempotency_key: "pending-actor-2" },
+    identity: { principal: "user:other-editor", driver: "API" },
+    apply: (d) => {
+      d.otherEditor = true;
+    },
+    flush: () => host.flush(),
+  });
+  assert.equal(host.handle.doc().otherEditor, true);
+  const retry = await tool(f, host, "edit_page", args);
+  assert.equal(retry.status, 200, await retry.clone().text());
+  assert.deepEqual((await retry.json()).heads, pending.receipt.heads);
+  // Leave a second intent pending across a restart.
+  const args2 = {
+    ...args,
+    base_heads: A.getHeads(host.handle.doc()),
+    idempotency_key: "pending-actor-3",
+    operations: [{ op: "set_title", title: "Restart recovered" }],
+  };
+  t.mock.method(f.storage, "put", async (key, value) => {
+    await put(key, value);
+    if (key === "host/operation/pending-actor-3" && value.pending)
+      throw Error("crash after intent");
+  });
+  assert.equal((await tool(f, host, "edit_page", args2)).status, 500);
+  t.mock.method(f.storage, "put", put);
+  await host.plain.close();
+  const restarted = f.page();
+  await restarted.ready;
+  await restarted.documentReady();
+  assert.equal(restarted.handle.doc().title, "Restart recovered");
+  assert.equal((await f.storage.get("host/operation/pending-actor-3")).pending, false);
+  const next = await tool(f, restarted, "edit_page", {
+    ...args2,
+    base_heads: A.getHeads(restarted.handle.doc()),
+    idempotency_key: "pending-actor-4",
+    operations: [{ op: "set_title", title: "After recovery" }],
+  });
+  assert.equal(next.status, 200, await next.clone().text());
+  assert.deepEqual(
+    A.getAllChanges(restarted.handle.doc())
+      .map(A.decodeChange)
+      .filter((c) => c.actor.startsWith(host.plain.hostActorPrefix))
+      .map((c) => c.seq),
+    [1, 1, 1, 1],
+  );
+});
+
+test("concurrent plain mutation candidates from the same heads use different actors and both apply", async (t) => {
+  const f = await fixture(t);
+  const host = f.page();
+  assert.ok((await f.register(host)).ok);
+  const heads = A.getHeads(host.handle.doc());
+  let release;
+  const gate = new Promise((resolve) => {
+    release = resolve;
+  });
+  const built = [];
+  const mutate = (field) =>
+    documentMutation({
+      storage: f.storage,
+      handle: host.handle,
+      hostActorPrefix: host.plain.hostActorPrefix,
+      operation: "edit_page",
+      args: { base_heads: heads, idempotency_key: `concurrent-${field}` },
+      identity: { principal: `service:${field}`, driver: "API" },
+      apply: (doc) => {
+        built.push(field);
+        doc[field] = true;
+      },
+      flush: async () => {
+        await gate;
+        await host.flush();
+      },
+    });
+  const first = mutate("api");
+  await until(() => built.length === 1);
+  const second = mutate("conversion");
+  await until(() => built.length === 2);
+  assert.deepEqual(
+    A.getHeads(host.handle.doc()),
+    heads,
+    "both candidates precede journaling and application",
+  );
+  release();
+  await Promise.all([first, second]);
+  assert.equal(host.handle.doc().api, true);
+  assert.equal(host.handle.doc().conversion, true);
+  const changes = A.getChangesSince(host.handle.doc(), heads).map(A.decodeChange);
+  assert.equal(changes.length, 2);
+  assert.equal(new Set(changes.map((c) => c.actor)).size, 2);
+  assert.ok(changes.every((c) => c.actor.startsWith(host.plain.hostActorPrefix) && c.seq === 1));
+  await host.plain.close();
+  const restarted = f.page();
+  await restarted.ready;
+  await restarted.documentReady();
+  assert.equal(restarted.handle.doc().api, true);
+  assert.equal(restarted.handle.doc().conversion, true);
+});
+
+test("a split DO put never publishes a manifest before its chunk, descriptor and claims", async () => {
+  const storage = new Storage();
+  const bytes = new PlainByteStore(storage);
+  const store = new DocStore(bytes);
+  await store.append("d", Uint8Array.of(1), ["old"]);
+  const put = storage.put.bind(storage);
+  let puts = 0;
+  storage.put = async (...args) => {
+    if (++puts === 2) throw Error("crash between batches");
+    return put(...args);
+  };
+  const claims = Array.from({ length: 128 }, (_, i) => [`actor/${i}`, cbor.encode({ host: true })]);
+  await assert.rejects(store.append("d", Uint8Array.of(2), ["new"], claims), /crash/);
+  assert.deepEqual((await new DocStore(bytes).read("d")).manifest.heads, ["old"]);
+  storage.put = put;
+  await new DocStore(bytes).append("d", Uint8Array.of(3), ["retry"], claims);
+  assert.deepEqual(
+    (await new DocStore(bytes).read("d")).chunks.map((c) => c[0]),
+    [1, 3],
+  );
+  assert.equal((await storage.list({ prefix: "plain/actor/" })).size, 128);
+});
 
 test("PAGES_RECORD_STORAGE=automerge selects plain sync for new Pages only", () => {
   assert.equal(recordStorageFor({ PAGES_RECORD_STORAGE: "automerge" }), "automerge");
@@ -363,6 +681,67 @@ async function until(predicate, timeout = 5000) {
   }
 }
 
+test("API edits on plain Pages name their principal independently of the host actor", async (t) => {
+  const f = await fixture(t);
+  f.env.CATALOGS = { getByName: () => ({ fetch: async () => Response.json({ ok: true }) }) };
+  const host = f.page();
+  assert.ok((await f.register(host)).ok);
+  const principal = f.args.expected_principal;
+  const browser = await connectBrowser(
+    host,
+    { principal, driver: "Browser", canWrite: true, expiresAt: Date.now() + 3_600_000 },
+    "b-tool-edit",
+  );
+  try {
+    const handle = await browser.repo.find(f.args.document_id);
+    const messages = [];
+    handle.on("ephemeral-message", (event) => messages.push(event));
+    const response = await tool(f, host, "edit_page", {
+      base_heads: A.getHeads(handle.doc()),
+      idempotency_key: "principal-edit",
+      operations: [{ op: "set_title", title: "Named API edit" }],
+    });
+    assert.equal(response.status, 200, await response.clone().text());
+    const receipt = await response.json();
+    await until(() => messages.some((event) => event.message?.kind === "tool-edit"));
+    const edit = messages.find((event) => event.message?.kind === "tool-edit");
+    assert.equal(edit.senderId, HOST_SENDER_ID);
+    assert.equal(edit.message.identity.principal, principal);
+    assert.equal(edit.message.identity.driver, "ChatGPT");
+    assert.deepEqual(edit.message.heads, receipt.heads);
+    await until(() => A.hasHeads(handle.doc(), receipt.heads));
+    assert.equal(handle.doc().title, "Named API edit");
+    assert.equal(receipt.heads.length, 1);
+    const change = A.getAllChanges(handle.doc())
+      .map(A.decodeChange)
+      .find((change) => change.hash === receipt.heads[0]);
+    assert.ok(change);
+    assert.ok(change.actor.startsWith(host.plain.hostActorPrefix));
+    assert.equal(host.plain.host.actor(change.actor), undefined);
+
+    const comments = await browser.repo.find(host.commentsHandle.documentId);
+    const commentMessages = [];
+    comments.on("ephemeral-message", (event) => commentMessages.push(event));
+    const commentResponse = await tool(f, host, "manage_page_comment", {
+      idempotency_key: "principal-comment",
+      action: "add",
+      block_id: Object.keys(handle.doc().blocks)[0],
+      body: "Named API comment",
+    });
+    assert.equal(commentResponse.status, 200, await commentResponse.clone().text());
+    const commentReceipt = await commentResponse.json();
+    await until(() => commentMessages.some((event) => event.message?.kind === "tool-edit"));
+    const comment = commentMessages.find((event) => event.message?.kind === "tool-edit");
+    assert.equal(comment.senderId, HOST_SENDER_ID);
+    assert.equal(comment.message.identity.principal, principal);
+    assert.equal(comment.message.comments, true);
+    assert.deepEqual(comment.message.heads, commentReceipt.comment_heads);
+    await until(() => A.hasHeads(comments.doc(), commentReceipt.comment_heads));
+  } finally {
+    await browser.repo.shutdown();
+  }
+});
+
 test("a second browser learns who wrote the first browser's change", async (t) => {
   const f = await fixture(t);
   const host = f.page();
@@ -419,6 +798,13 @@ test("purge deletes every plain key, from metadata, and a retry is harmless", as
   const ids = [host.metadata.documentId, host.commentsHandle.documentId];
   assert.ok([...f.storage.values.keys()].some((k) => k.startsWith("plain/actor/")));
   await host.plain.forget(ids);
+  await host.plain.close();
+  const metadata = { ...host.metadata, deleted: true, purged: true };
+  await f.storage.put("host/document", metadata);
+  const restarted = f.page();
+  await restarted.ready;
+  await restarted.initializeRepo(metadata);
+  assert.equal(await f.storage.get("plain/host-actor-prefix"), undefined);
   assert.deepEqual(
     [...f.storage.values.keys()].filter((k) => k.startsWith("plain/")),
     [],

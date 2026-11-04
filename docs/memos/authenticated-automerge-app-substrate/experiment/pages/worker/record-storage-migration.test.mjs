@@ -4,6 +4,7 @@ import * as A from "@automerge/automerge";
 import { createAuthFixture } from "../../auth-fixtures.mjs";
 import { Page, PageRecords } from "./index.mjs";
 import { claimFromNative } from "./plain-sync.mjs";
+import { migrationSlot, SLOT_WAIT_MS } from "./record-storage-migration.mjs";
 
 const pageId = "55555555-5555-4555-8555-555555555555";
 
@@ -96,7 +97,7 @@ async function fixture(t, { buffered = false } = {}) {
   };
   const close = async (page) => {
     // A host left in backoff keeps a retry timer armed.
-    clearTimeout(page.migrationTimer);
+    page.disarmMigration();
     if (page.migration) page.migration = { name: "off" };
     await page.plain?.close().catch(() => {});
     await page.policy?.close?.().catch?.(() => {});
@@ -168,6 +169,7 @@ async function fixture(t, { buffered = false } = {}) {
     }
   };
   return {
+    owner,
     storage,
     records,
     native,
@@ -359,7 +361,7 @@ test("a conversion the runtime gave up on is fenced and writes nothing", async (
   const host = await f.open(f.migrating);
   await host.documentReady();
   // The runtime rejects the conversion's blockConcurrencyWhile at its
-  // deadline, while the callback runs on.
+  // deadline, before the callback starts. A late callback must touch nothing.
   let release;
   const gate = new Promise((resolve) => (release = resolve));
   host.ctx.blockConcurrencyWhile = (fn) => {
@@ -370,11 +372,231 @@ test("a conversion the runtime gave up on is fenced and writes nothing", async (
   await f.settled(host, ["converting"]);
   await new Promise((resolve) => setTimeout(resolve, 10));
   assert.ok(host.migrationAbandoned, "fenced at once");
+  assert.equal(host.migrationRetiring, true, "an unstarted callback borrows nothing");
+  const state = host.migration;
+  for (const event of [
+    { type: "failed" },
+    { type: "elapsed" },
+    { type: "activity", sockets: 1, requests: 0 },
+  ]) {
+    assert.deepEqual(host.stepMigration(event), { state, effects: [] });
+    assert.equal(host.migration, state);
+  }
   release();
   await new Promise((resolve) => setTimeout(resolve, 100));
   assert.equal(f.storage.keys("plain/").length, 0, "no snapshot written");
   assert.notEqual((await f.storage.get("host/document")).recordStorage, "automerge");
+  assert.equal(host.migrationRetiring, true);
+  assert.equal(host.migrationTimer, undefined, "abandoned callback cannot re-arm");
   await assert.rejects(host.documentReady(), /timed out/);
+});
+
+// A recorded hold tracks settlement and the handoff order, not just calls to
+// waitUntil. setImmediate drains promise continuations without ticking timers.
+const drain = () => new Promise((resolve) => setImmediate(resolve));
+function heldHost(t) {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const held = [];
+  const host = Object.assign(Object.create(Page.prototype), {
+    migration: { name: "connected", attempts: 0, quietMs: 10 },
+    wires: new Set(),
+    requestsRunning: 0,
+    tail: Promise.resolve(),
+    ctx: {
+      blockConcurrencyWhile: (fn) => fn(),
+      waitUntil(promise) {
+        const hold = { settled: false, successors: 0 };
+        held.push(hold);
+        void promise.then(() => {
+          hold.settled = true;
+          hold.successors = held.length;
+        });
+      },
+    },
+  });
+  t.after(() => host.disarmMigration());
+  return { host, held };
+}
+
+test("quiet hands its hold to the whole conversion; backoff holds nothing", async (t) => {
+  const { host, held } = heldHost(t);
+  let finish;
+  host.convertRecordStorage = () => new Promise((resolve) => (finish = resolve));
+  host.reportActivity();
+  assert.equal(held.length, 1);
+  t.mock.timers.tick(10);
+  await drain();
+  assert.equal(held.length, 2);
+  assert.equal(held[0].settled, true);
+  assert.equal(held[0].successors, 2, "conversion hold exists before quiet settles");
+  assert.equal(held[1].settled, false);
+  finish({ type: "skipped", reason: "test" });
+  await drain();
+  assert.equal(host.migration.name, "backoff");
+  assert.equal(held.length, 2, "no backoff hold");
+  assert.ok(held.every((hold) => hold.settled));
+  assert.equal(host.migrationRelease, undefined);
+  t.mock.timers.tick(10);
+  assert.equal(host.migration.name, "quiet");
+  assert.equal(held.length, 3);
+});
+
+for (const path of ["/api/saved", "/api/sync", "/api/read"]) {
+  test(`fetch holds its settle continuation until quiet is armed: ${path}`, async (t) => {
+    const { host, held } = heldHost(t);
+    let finish;
+    host.run = () => new Promise((resolve) => (finish = resolve));
+    const request = host.fetch(new Request(`https://pages.invalid${path}`));
+    await drain();
+    assert.equal(host.requestsRunning, 1);
+    assert.equal(held.length, 1);
+    finish(new Response("ok"));
+    await request;
+    await drain();
+    assert.equal(host.requestsRunning, 0);
+    assert.equal(host.migration.name, "quiet");
+    assert.equal(held[0].settled, true);
+    assert.equal(held[0].successors, 2, "quiet is held before request hold settles");
+    assert.equal(held[1].settled, false);
+  });
+}
+
+test("slot timeout skips and backs off without abandoning the host", async (t) => {
+  const { host, held } = heldHost(t);
+  let release;
+  const occupant = migrationSlot(() => new Promise((resolve) => (release = resolve)));
+  t.after(async () => {
+    release();
+    await occupant;
+  });
+  host.convertRecordStorage = () => assert.fail("occupied slot cannot convert");
+  host.reportActivity();
+  t.mock.timers.tick(10);
+  await drain();
+  assert.equal(held[1].settled, false, "slot wait is held");
+  t.mock.timers.tick(SLOT_WAIT_MS);
+  await drain();
+  assert.equal(host.migration.name, "backoff");
+  assert.equal(host.migration.attempts, 1);
+  assert.equal(host.migrationAbandoned, undefined);
+  assert.ok(held.every((hold) => hold.settled));
+});
+
+test("three skipped attempts stop timers and holds until a new browser session", async (t) => {
+  const { host, held } = heldHost(t);
+  let attempts = 0;
+  host.convertRecordStorage = async () => {
+    attempts++;
+    return { type: "skipped", reason: "journal_pending" };
+  };
+  host.reportActivity();
+  for (let i = 0; i < 3; i++) {
+    t.mock.timers.tick(10);
+    await drain();
+    if (i < 2) t.mock.timers.tick(10 * 2 ** i);
+  }
+  assert.equal(attempts, 3);
+  assert.equal(host.migration.name, "off");
+  assert.equal(host.migrationTimer, undefined);
+  assert.ok(held.every((hold) => hold.settled));
+  host.requestsRunning = 1;
+  host.reportActivity();
+  assert.equal(host.migration.name, "off", "API traffic cannot restart migration");
+  host.wires.add({});
+  host.reportActivity();
+  assert.equal(host.migration.name, "connected");
+  assert.equal(host.migration.attempts, 0);
+});
+
+test("a browser session retries after celld drops an unheld backoff timer", async (t) => {
+  const { host, held } = heldHost(t);
+  let attempts = 0;
+  host.convertRecordStorage = async () => {
+    attempts++;
+    return { type: "skipped", reason: "journal_pending" };
+  };
+  host.reportActivity();
+  t.mock.timers.tick(10);
+  await drain();
+  assert.equal(host.migration.name, "backoff");
+  assert.ok(held.every((hold) => hold.settled));
+  clearTimeout(host.migrationTimer);
+  const wire = {};
+  host.wires.add(wire);
+  host.reportActivity();
+  assert.equal(host.migration.name, "connected");
+  assert.equal(host.migration.attempts, 1);
+  assert.equal(host.migrationTimer, undefined);
+  host.wires.delete(wire);
+  host.reportActivity();
+  assert.equal(host.migration.name, "quiet");
+  t.mock.timers.tick(10);
+  await drain();
+  assert.equal(attempts, 2);
+  assert.equal(host.migration.attempts, 2);
+});
+
+test("a rejected wrapper that never starts its callback closes and releases its hold", async (t) => {
+  const { host, held } = heldHost(t);
+  host.ctx.blockConcurrencyWhile = () => Promise.reject(Error("deadline before start"));
+  host.convertRecordStorage = () => assert.fail("callback never started");
+  let closed = false;
+  host.retireMigratedHost = async () => {
+    closed = true;
+  };
+  host.reportActivity();
+  t.mock.timers.tick(10);
+  await drain();
+  assert.ok(host.migrationAbandoned);
+  assert.equal(closed, true);
+  assert.ok(held.every((hold) => hold.settled));
+});
+
+test("deadline abandonment waits for an already running conversion before closing", async (t) => {
+  const { host, held } = heldHost(t);
+  let finish, expire;
+  host.convertRecordStorage = () => new Promise((resolve) => (finish = resolve));
+  host.ctx.blockConcurrencyWhile = (fn) => {
+    void fn().catch(() => {});
+    return new Promise((_resolve, reject) => (expire = reject));
+  };
+  let closed = false;
+  host.retireMigratedHost = async () => {
+    closed = true;
+  };
+  host.reportActivity();
+  t.mock.timers.tick(10);
+  expire(Error("deadline"));
+  await drain();
+  assert.ok(host.migrationAbandoned);
+  assert.equal(closed, false);
+  assert.equal(held[1].settled, false);
+  finish({ type: "failed" });
+  await drain();
+  assert.equal(closed, true);
+  assert.equal(held[1].settled, true);
+  assert.equal(host.migration.name, "converting", "abandoned completion is a no-op");
+  assert.equal(host.migrationTimer, undefined);
+});
+
+test("time spent before flushing counts toward the pre-flip deadline margin", async (t) => {
+  const f = await fixture(t);
+  await f.nativePage();
+  const host = await f.open(f.migrating);
+  await host.documentReady();
+  const get = f.storage.get.bind(f.storage);
+  let now = Date.now();
+  t.mock.method(Date, "now", () => now);
+  t.mock.method(f.storage, "get", async (key) => {
+    if (key === "host/document") now += 20_001;
+    return get(key);
+  });
+  host.migration = { name: "converting", attempts: 0, quietMs: 10 };
+  await host.runMigration();
+  assert.equal(f.migrationLines().at(-1).reason, "deadline_margin");
+  assert.equal(host.migration.name, "backoff");
+  assert.notEqual((await get("host/document")).recordStorage, "automerge");
+  assert.ok(f.storage.keys("plain/").length, "snapshots may be orphaned, but never selected");
 });
 
 test("cancelled quiet windows settle their holds", async (t) => {
@@ -433,14 +655,37 @@ for (const buffered of [false, true]) {
     await f.settled(host, ["retired"]);
     const plain = await f.open(f.migrating);
     await plain.documentReady();
-    // Deletion's storage step, as the lifecycle runs it.
+    assert.ok(f.storage.keys("host/binding/").length, "migration preserves native bindings");
+    // Persist the deletion before its barriers, as a purge does.
+    plain.metadata = {
+      ...plain.metadata,
+      deleted: true,
+      deletion: { receipt: { deleted: true, purged: true } },
+    };
+    await f.storage.put("host/document", plain.metadata);
+    await plain.lifecycleEffect({ type: "closePolicy" }, {});
     await plain.lifecycleEffect({ type: "deleteDocument" }, {});
     assert.deepEqual(f.storage.keys("repo/"), []);
     assert.deepEqual(f.storage.keys("host/actor/"), []);
+    assert.deepEqual(f.storage.keys("host/binding/"), []);
     assert.deepEqual(f.storage.keys("plain/"), []);
     assert.equal(await f.storage.get("host/signer"), undefined);
     if (buffered) assert.deepEqual(f.records.keys("repo/"), []);
     // A repeat after a crash finishes cleanly.
     await plain.purgeMigratedRecords();
+    await f.close(plain);
+    const deleted = await f.open(f.migrating);
+    await deleted.documentReady();
+    const replay = await deleted.fetch(
+      requestFor(f.owner, "/internal/purge", {
+        page_id: pageId,
+        action: "confirm",
+        idempotency_key: "purge-replay-after-restart",
+      }),
+    );
+    assert.equal(replay.status, 200, await replay.clone().text());
+    assert.equal(deleted.deletionFinished, true, "cold host replays deletion barriers");
+    assert.equal(deleted.handle, undefined);
+    assert.deepEqual(f.storage.keys("host/binding/"), []);
   });
 }

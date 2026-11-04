@@ -1,22 +1,42 @@
-// The body of a /pages grid card. It always renders a placeholder: a muted
-// Page (or home) icon centered in the card body. The body is decoration; the
-// card's link text is the Page title.
+// The body of a library grid card: a scaled, read-only rendering of the
+// Page's card (model/page-card.mjs), or a muted Page (or home) icon while
+// there is none to show. The body is decoration: the card's link text is
+// the Page title, so the body is aria-hidden and takes no pointer events.
 //
-// It accepts a `card` prop and ignores it. The prop's shape is the preview
-// JSON model/page-preview.mjs builds ({ title, blocks: [{ id, content }] },
-// each node [tag, attrs, ...children]). The card is one link, so anything
-// rendered from that JSON here has to drop the preview's own links.
+// The card's JSON renders through PagePreview.jsx's allowlist in its inert
+// mode: the card is one link, so links render as text, a task checkbox as a
+// drawn box, and images not at all (a card holds placeholders instead).
+// The content lays out at a reading width and is scaled down with
+// `transform: scale()` (style.css, .page-card-scale), so every card shows
+// the same small type whatever its width.
+import { Fragment } from "react";
 import { FileText, Home } from "lucide-react";
+import { previewNodes } from "./PagePreview.jsx";
 
 /**
- * @param {{ card?: { title?: string, blocks: Array<{ id: string, content: unknown[] }> } | null,
+ * @param {{ card?: { blocks: Array<{ id: string, content: unknown[] }> } | null,
  *           home?: boolean }} props
  */
-export function PageCardPreview({ home = false }) {
-  const Icon = home ? Home : FileText;
+export function PageCardPreview({ card = null, home = false }) {
+  if (!card?.blocks?.length) {
+    const Icon = home ? Home : FileText;
+    return (
+      <div className="index-card-preview" aria-hidden="true">
+        <Icon className="index-card-placeholder" size={36} strokeWidth={1.5} />
+      </div>
+    );
+  }
   return (
-    <div className="index-card-preview" aria-hidden="true">
-      <Icon className="index-card-placeholder" size={36} strokeWidth={1.5} />
+    <div className="index-card-preview page-card-preview" aria-hidden="true">
+      <div className="page-card-scale">
+        <div className="page-card-doc">
+          {card.blocks.map((block) => (
+            <Fragment key={block.id}>
+              {previewNodes(block.content, block.id, { inert: true })}
+            </Fragment>
+          ))}
+        </div>
+      </div>
     </div>
   );
 }

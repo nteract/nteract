@@ -263,8 +263,8 @@ test("every mutation the lifecycle makes can reject before or after it applies, 
       // rejected mark write leaves the title unstored (titleRecord), and one
       // that landed before it rejected stays, since the projection failed
       // (projectionMark).
-      cuts: 202,
-      runs: 768,
+      cuts: 212,
+      runs: 808,
       indexRetirement: 21,
       titleProjection: 14,
       titleRecord: 12,
@@ -281,13 +281,14 @@ test("a tombstone whose write or sync rejected repeats its barrier on retry, so 
   const row = s.table.rows.find((r) => r.state.name === "trashed" && r.event.type === "tombstone");
   const options = { view: "synced", mode: "retry", documentAbsent: true };
   const reference = await scenario(s, row, options);
-  // Dropping the document first forgets its stored times; the document is
-  // already gone, so nothing they describe can come back.
+  // Dropping the document first forgets its stored times and card hash; the
+  // document is already gone, so nothing they describe can come back.
   const record = reference.mutations.indexOf("put host/document");
   assert.deepEqual(reference.mutations.slice(0, record + 2), [
     "delete host/content-activity",
     "delete host/title-projection",
     "delete host/title-projection/pending",
+    "delete host/card",
     "put host/document",
     "sync",
   ]);

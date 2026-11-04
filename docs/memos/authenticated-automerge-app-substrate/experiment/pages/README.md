@@ -112,6 +112,7 @@ was a caret race in the smoke; the editor side is
 | A commenter comments but can't edit; a forged native edit of another author's message is refused | `node scripts/local-sharing-e2e.mjs --commenter` | Starts an isolated fixture |
 | Projects over MCP and in the browser, `/projects` and `/pages` on a phone-sized screen, the Pages library's tabs, Project filter, sort and groups as an account with shared Pages, breadcrumbs, Trash and restore in a Project | `node scripts/local-sharing-e2e.mjs --projects` | Starts an isolated fixture |
 | `list_pages` reports `content_updated_at` after an MCP edit and after typing in a tab, each well after the Page's creation | `node scripts/local-sharing-e2e.mjs --content-activity` | Starts an isolated fixture |
+| Grid cards show each edited Page's first content in light, dark and phone layouts; a shared card shows for its member and `page_cards` answers null on the call after removal | `node scripts/local-sharing-e2e.mjs --cards` | Starts an isolated fixture |
 | Cold first open of a 300-paragraph Page with images on Fast 3G and 4x CPU, phase by phase (records timings, gates on nothing) | `node scripts/local-sharing-e2e.mjs --cold-open` | Starts an isolated fixture behind a brotli proxy; writes `report.json` |
 | Rollback to a previous build and forward again on one data directory | `node scripts/rollback-qualification.mjs --target <target> --previous <previous pages dir>` | Starts an isolated fixture; build the previous commit first |
 | Rich comment tables and drafts | `PAGES_ORIGIN=http://localhost:9894 node scripts/rich-comments-smoke.mjs` | Uses the running Wordgard fixture |
@@ -690,7 +691,8 @@ is time order. A host evicted before its trailing flush loses at most that
 minute. A failed flush retries with backoff from one minute up to fifteen. The
 time also rides on every full row report, so a restart re-reports it. Deleting a
 Page, by a purge or a tombstone, stops its recorder for good and deletes
-`host/content-activity`. Trash never stops it, so a restored Page keeps recording.
+`host/content-activity`, and with it the Page's card (see [Card previews](#card-previews)).
+Trash never stops it, so a restored Page keeps recording.
 A change never starts a flush itself: it queues one (`flushQueued`), and the next
 live request starts it.
 
@@ -1672,12 +1674,18 @@ manifest per document ([sync/doc-store.mjs](sync/doc-store.mjs)): IndexedDB in
 the browser ([sync/idb-byte-store.mjs](sync/idb-byte-store.mjs)) and the Page's
 Durable Object storage under `plain/` on the host. Every write is one
 `saveMany` that puts the manifest last, so a manifest never names a missing
-object. A document compacts into one snapshot once it has more than 256
-chunks, or its chunks are over both half the snapshot and 64 KiB. The byte
+object. Manifests are written only at `sync/<doc>/m2`, preferred over legacy
+`m` on read. The legacy key is removed after the new manifest is durable, so
+an old viewer cannot misread v2. Version 2 manifests hold seq, snapshot and heads; chunk descriptors
+have separate keys, read from snapshot.seq + 1 through manifest.seq. An append
+writes constant metadata in chunk count. Legacy inline chunk lists remain
+readable and upgrade on the next compaction. A document compacts into one
+snapshot once it has more than 256 chunks, or its chunks are over both half
+the snapshot and 64 KiB. The byte
 rule means a rewrite of a large Page follows at least half its size in new
-history; the count bounds the manifest each append rewrites and the reads a
-cold load makes. The host compacts after the ack. A failed attempt is logged
-(`request.failed`, stage `plain-compaction`) and later writes back off: each
+history; the count bounds the reads a cold load makes. The host compacts after
+the ack. A failed attempt is logged (`request.failed`, stage `plain-compaction`)
+and later writes back off: each
 failure in a row doubles the writes that skip compaction, up to 256
 ([sync/compaction-machine.mjs](sync/compaction-machine.mjs)).
 
@@ -1716,6 +1724,15 @@ the closed connection has no frame left running, so a frame refused after the
 close counts too. Each connection also logs `page.sync_rounds`, its sync-round
 latency from frame arrival to ack, summarised every 256 rounds and at close rather
 than per keystroke ([worker/plain-sync-log.mjs](worker/plain-sync-log.mjs)).
+
+Journaled host edits use a fresh actor per mutation: the Page host's persisted
+random eight-byte prefix followed by eight random bytes. Concurrent producers
+can build candidates from the same heads without sharing an actor sequence.
+SyncHost refuses new changes from browsers under this prefix, including actors
+it has never seen; trusted host changes need no per-edit claim. Existing host
+claims remain readable. Chunk parts, the descriptor, any browser claims and
+the manifest share one DO put for ordinary appends; the journal's pending and
+terminal writes remain separate barriers.
 
 Attribution is host-attested: an actor binds to the first authenticated
 principal that sends a change with it. With no signatures, the host can't tell
@@ -1768,7 +1785,11 @@ nobody is using it ([worker/record-storage-migration.mjs](worker/record-storage-
 A host becomes eligible when a browser connects to it; when its last socket
 closes and no request runs for a quiet window (30 s, or
 `PAGES_MIGRATE_QUIET_MS`), it converts in place inside
-`blockConcurrencyWhile`, one Page at a time per node. A host booted only by
+`blockConcurrencyWhile`, one Page at a time per isolate: the module's slot is
+shared by its Page objects, not by other isolates on the node. A slot wait
+longer than 5 s skips with `slot_timeout`. An occupant older than 60 s can be
+replaced; this relaxes only the memory limit because Pages have separate objects.
+A host booted only by
 a listing check or an API call never converts, and nothing converts at boot.
 
 The conversion flushes the native host (the `PageRecords` sink too), takes
@@ -1780,7 +1801,17 @@ comment-blocked signing keys as blocked principals, then flips
 retires: its storage refuses writes, its native host closes, and it resets,
 so the next request boots plain. A Page with a journal entry pending, a
 conversion in progress, a blocked recovery or incomplete history is skipped
-and tried again after a doubling backoff (at most 6 h). A crash before the
+and tried again after a doubling backoff (at most 6 h). Backoff timers hold no
+`waitUntil` work, so an unused native host can be evicted. A browser connection
+leaves backoff even if its timer was dropped, keeping the attempt count.
+Three consecutive
+skips or failures pause migration until a new browser session on that object.
+The quiet window hands its hold to the conversion before releasing it; the
+conversion holds its slot wait and storage work until settlement. If more than
+20 s of the block deadline have elapsed before the selector put, it skips with
+`deadline_margin`. An abandoned conversion refuses writes at once but closes
+its native host only after a started conversion callback settles, or immediately
+if the callback never started. A crash before the
 flip leaves a Subduction Page, and the next attempt clears `plain/` first.
 Each attempt logs one `record_storage.migration` line.
 
@@ -1788,7 +1819,7 @@ Migration is one-way. Edits after the flip exist only in plain history, so
 flipping the record back would drop them. `recordStorageMigratedFrom` names the
 Subduction storage the Page left, which still holds its native records,
 unread, until the Page is deleted: deletion then removes `repo/*`,
-`host/actor/*` and `host/signer`, and for a buffered Page the `PageRecords`
+`host/actor/*`, `host/binding/*` and `host/signer`, and for a buffered Page the `PageRecords`
 object's records.
 
 A tab that held the Page on its native replica, offline say, finds plain
@@ -2433,7 +2464,91 @@ filter; the account's Projects alone can't say so, since a Project created a
 moment ago may not be in them yet. Load more follows
 `next_cursor`; a cursor that has expired (`invalid_cursor`) starts the listing
 over from its first page. Grid cards are behind the `grid` flag (`?grid=1` or
-`localStorage["pages.grid"] = "1"`) until they show previews.
+`localStorage["pages.grid"] = "1"`); each shows a preview of its Page's first
+content (see [Card previews](#card-previews)).
+
+### Card previews
+
+A grid card shows a scaled, read-only rendering of the Page's first screen.
+The Page host builds a `card.v1` bundle from its document
+([page-card.mjs](model/page-card.mjs)): `{ v, card_hash, content_updated_at,
+title, blocks, truncated, rich }`. `blocks` is
+[page-preview.mjs](model/page-preview.mjs)'s JSON from the schema's own `toDOM`
+specs, never HTML, cut at 8 KiB serialized and 64 top-level nodes. A node that
+doesn't fit is clipped to its leading children and text (a table keeps whole
+rows), and the card ends there. A top-level node that shows nothing (no text, no
+placeholder, rule or checkbox) is dropped, so an emptied Page has no blocks and
+keeps the grid's icon. Images become a placeholder with their alt text, never
+bytes or a URL; a dataframe becomes a placeholder with its title; links lose
+their `href`; a code block names its language, so Mermaid stays code.
+`card_hash` hashes `CARD_BUILDER_VERSION` and exactly the title, blocks and
+`truncated`, so an edit below the fold changes nothing, and bumping the version
+for a builder change rewrites each card on its Page's next flush. `rich` says
+the card holds Mermaid, a dataframe or an image, which the JSON can only stand
+in for; nothing reads it yet.
+
+The card is written beside each content-activity flush and nowhere else
+([page-card-writer.mjs](worker/page-card-writer.mjs)). A flush runs from a live
+request on a booted host with its document loaded, at most once a minute, so
+cards cost no new trigger, timer or alarm. The host stores the last written
+hash under `host/card` and puts `pages/<page_id>/card.json` in the Page assets
+bucket only when the hash changed; the stored hash follows the object, so a
+crash between them writes the same card again. A failed write is logged and
+retried by the next flush; it never fails the flush or the edit. A Page that
+hasn't changed since cards shipped has none until its next edit, and the grid
+keeps its icon.
+
+Writes from different hosts of one Page are ordered by the object's etag. Each
+put carries `onlyIf` with the etag the host last saw (none yet: only while no
+object exists), and the object's `customMetadata` holds its `card_hash` and
+`content_updated_at`. A host's first write after boot reads them (`head()`) and
+compares the built card with the object, not `host/card`, so a stale card left
+by an older host is rewritten. A retiring host's put that lands late carries
+an etag the next host's write replaced, and the bucket refuses it. The case left
+open is a late put landing after the next host's first write skipped an
+unchanged card: it holds a card the Page had moments before, until the next
+change to its first screen.
+
+A purge or tombstone deletes the object and `host/card` with the content time,
+waiting at most 2 seconds on the bucket; a missed delete leaves an object
+`page_cards` never serves, since a deleted Page admits no one. A write still
+running then deletes the object again when it ends, whether its put landed or
+timed out. A host that retires without a deletion (an abandoned boot, a storage
+migration) stops its writer and leaves the object and `host/card`, which the
+next host, plain or native, compares against. Trash keeps the card on purpose:
+`page_cards` answers `null` while the Page is trashed, and a restore shows the
+card at once rather than after the next edit.
+
+`page_cards` (`/api/tools` only) takes up to 24 `page_ids`
+([page-cards.mjs](worker/page-cards.mjs)). The caller's Catalog decides access
+inside its serial queue with `list_pages`' rules: an owned ID needs a settled
+`page/<id>` entry (so a trashed Page has none), and a shared ID needs a
+`shared/<id>` entry and a fresh `verifyShared` by its Page host, the metadata
+check that doesn't boot the document, finding the Page active. D1 is never
+read. The Catalog answers only the allowed IDs, and the gateway reads their
+objects after the queue has moved on, all at once under one 1.2-second
+deadline, so a slow bucket never holds the account's listings, creates or
+reports. Only allowed IDs reach the bucket, and no object URL leaves the Worker.
+Every other ID, unknown, refused, unchecked in time, read too late or without a
+card, answers `null`, so a caller can't tell "no access" from "no card". The
+answer names its `principal`. It isn't an MCP tool: an agent can read the Page
+itself, and a card is a drawing aid shaped for the grid, not a reading surface
+worth a stable contract.
+
+In grid mode each card asks for its card when it comes within 400px of the
+viewport ([page-cards.mjs](viewer/page-cards.mjs)). Cards that come into view
+within 200 ms share a request, and a request with room fills toward 24 with the
+next cards in the grid's order that haven't asked, so a slow scroll down a
+100-card grid sends 5 requests, not one per row. Each card follows a small
+machine, `idle → requested → shown | empty | failed`, keyed by Page ID and the
+row's `content_updated_at`, so a Page edited since the grid asked asks again; a
+failed card asks again when it scrolls back in. One answer is one store update.
+The machines live as long as the mounted grid, with no cross-visit cache; a grid
+that doesn't know its account asks for nothing, and an answer naming another
+account is ignored. [PageCardPreview.jsx](viewer/PageCardPreview.jsx) draws the
+card through PagePreview's allowlist in its inert mode (no links, controls or
+images), laid out at a reading width and scaled with `transform: scale()`,
+`aria-hidden` with pointer events off: the card's link carries the title.
 
 A library visit sends one `list_pages`, for its view. `list_projects` is one
 request per account shared by the Project filter, the Browse picker, Move to…
