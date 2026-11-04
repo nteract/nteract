@@ -2501,11 +2501,12 @@ viewport ([page-cards.mjs](viewer/page-cards.mjs)). A card that asks waits at
 most 200 ms for others to share its request, counted from the first card
 waiting, and 24 waiting cards go out at once, so a steady scroll keeps loading
 while it runs: with a 150 ms round trip, every card shows within 350 ms of
-coming into view. At most two requests run at once. A request takes the
-waiting cards in view first, the latest to arrive first; a card that scrolled
-out before its request went out waits behind them. A request with room fills
-toward 24 with the next cards in the grid's order that haven't asked, so a slow
-scroll down a 100-card grid sends 5 requests, not one per row. Each card follows a small
+coming into view. At most two requests run at once, and a request takes the
+latest cards to come into view first. A card that leaves the viewport, or
+unmounts, before its request goes out stops waiting and goes back to idle, so a
+fling asks only for the cards it stops on. A request with room fills toward 24
+with the next cards in the grid's order that haven't asked, so a slow scroll
+down a 100-card grid sends 5 requests, not one per row. Each card follows a small
 machine, `idle → requested → shown | empty | failed`, keyed by Page ID and the
 row's `content_updated_at`, so a Page edited since the grid asked asks again; a
 failed card asks again when it scrolls back in. One answer is one store update.

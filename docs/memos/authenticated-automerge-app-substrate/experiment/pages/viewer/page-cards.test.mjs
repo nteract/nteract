@@ -114,13 +114,19 @@ const rows = [
     event: { type: "ahead" },
     expect: no({ name: "failed" }, "already failed"),
   },
+  {
+    label: "a card that leaves before its request goes out asks again when seen",
+    state: { name: "requested" },
+    event: { type: "left" },
+    expect: ok({ name: "idle" }),
+  },
 ];
 
 test("the page-card machine covers every state and event", async () => {
   assert.deepEqual(await runTable(pageCardMachine, rows), {
-    rows: 23,
-    pairs: 22,
-    unreachable: 3,
+    rows: 24,
+    pairs: 23,
+    unreachable: 7,
     cases: 2,
   });
 });
@@ -172,6 +178,36 @@ const batchRows = [
     state: batches("gathering", 2, 1),
     event: { type: "elapsed" },
     expect: ok(batches("quiet", 0, 2), [send(2)]),
+  },
+  {
+    state: batches("quiet", 0, 1),
+    event: { type: "dropped" },
+    expect: no(batches("quiet", 0, 1), "nothing waits"),
+  },
+  {
+    case: "gather",
+    state: batches("gathering", 2, 0),
+    event: { type: "dropped" },
+    expect: ok(batches("gathering", 1, 0)),
+  },
+  {
+    case: "drained",
+    label: "the last waiting card leaving cancels the window",
+    state: batches("gathering", 1, 0),
+    event: { type: "dropped" },
+    expect: ok(batches("quiet", 0, 0), [{ type: "disarm" }]),
+  },
+  {
+    case: "due",
+    state: batches("due", 2, 2),
+    event: { type: "dropped" },
+    expect: ok(batches("due", 1, 2)),
+  },
+  {
+    case: "drained",
+    state: batches("due", 1, 2),
+    event: { type: "dropped" },
+    expect: ok(batches("quiet", 0, 2)),
   },
   {
     case: "due",
@@ -232,10 +268,10 @@ const batchRows = [
 
 test("the page-card-batches machine covers every state and event", async () => {
   assert.deepEqual(await runTable(pageCardBatchMachine, batchRows), {
-    rows: 17,
-    pairs: 9,
+    rows: 22,
+    pairs: 12,
     unreachable: 0,
-    cases: 9,
+    cases: 13,
   });
   assert.deepEqual(pageCardBatchMachine.initial, {
     name: "quiet",
@@ -642,7 +678,7 @@ test("a card waits at most the window for others, and 24 waiting go out at once"
   grid.done();
 });
 
-test("a card that scrolled out before its request waits behind the cards in view", async () => {
+test("a card that leaves before its request goes out stops waiting, and asks again when seen", async () => {
   // Two cards a request, both slots held by the first four cards.
   const grid = virtualGrid({ total: 20, rttMs: 100, batchSize: 2 });
   grid.cards.arrange([]);
@@ -654,12 +690,85 @@ test("a card that scrolled out before its request waits behind the cards in view
   grid.at(30, () => grid.show(4, 5, { leaving: true }));
   grid.at(40, () => grid.show(6, 7));
   grid.at(50, () => grid.show(7, 8));
-  await grid.run(150);
+  await grid.run(35);
+  assert.equal(grid.cards.state(cardKeyOf(grid.rows[4])).name, "idle", "card 4 stopped waiting");
+  // Past the window card 4 started, which card 5 still waits on.
+  await grid.run(PAGE_CARDS_GATHER_MS + 100);
   const ids = (from, to) => grid.rows.slice(from, to).map((each) => each.id);
   assert.deepEqual(
     grid.calls.slice(2).map((call) => call.ids),
-    [ids(7, 8).concat(ids(6, 7)), ids(5, 6).concat(ids(4, 5))],
-    "the latest into view go first; the card that left goes last",
+    [ids(7, 8).concat(ids(6, 7)), ids(5, 6)],
+    "the latest into view go first; the card that left asks for nothing",
   );
+  grid.at(grid.calls.at(-1).at + 300, () => grid.show(4, 5));
+  await grid.run(600);
+  assert.deepEqual(grid.calls.at(-1).ids, ids(4, 5), "back in view, it asks again");
+  assert.equal(grid.cards.state(cardKeyOf(grid.rows[4])).name, "empty");
   grid.done();
+});
+
+test("every card that asked before connect goes out, however many", async () => {
+  for (const total of [10, 30, 60]) {
+    const calls = [];
+    const cards = new PageCards({
+      principal: "me",
+      observer: null,
+      gatherMs: 5,
+      tool: async (_operation, { page_ids: ids }) => {
+        calls.push(ids.length);
+        return { principal: "me", cards: Object.fromEntries(ids.map((id) => [id, null])) };
+      },
+    });
+    const rows = Array.from({ length: total }, (_, n) => row(n));
+    cards.arrange(rows);
+    // React runs the cards' effects before the grid's connect effect.
+    for (const each of rows) cards.observe({}, each);
+    const stop = cards.connect();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    stop();
+    assert.equal(
+      calls.reduce((sum, size) => sum + size, 0),
+      total,
+      `${total} cards: ${JSON.stringify(calls)}`,
+    );
+    for (const each of rows) assert.equal(cards.state(cardKeyOf(each)).name, "empty");
+  }
+});
+
+test("a fling asks only for the cards still in view when their request goes out", async () => {
+  // 5 columns, 5 rows in view, a row every 16 ms down 2,000 cards.
+  const columns = 5;
+  const inView = 5;
+  const total = 2000;
+  const grid = virtualGrid({ total, rttMs: 150 });
+  let top = 0;
+  const gone = [];
+  const tool = grid.cards.tool;
+  grid.cards.tool = (operation, args, options) => {
+    const index = new Map(grid.rows.map((each, n) => [each.id, n]));
+    gone.push(args.page_ids.filter((id) => index.get(id) < top * columns).length);
+    return tool(operation, args, options);
+  };
+  grid.at(0, () => grid.show(0, inView * columns));
+  const lastTop = total / columns - inView;
+  for (let next = 1; next <= lastTop; next++)
+    grid.at(next * 16, () => {
+      top = next;
+      grid.show((next - 1) * columns, next * columns, { leaving: true });
+      grid.show((next + inView - 1) * columns, (next + inView) * columns);
+    });
+  const end = lastTop * 16;
+  await grid.run(end + 1000);
+  grid.done();
+  assert.equal(
+    gone.reduce((sum, count) => sum + count, 0),
+    0,
+    "no request carries a card that already left",
+  );
+  const stoppedOn = grid.rows.slice(lastTop * columns);
+  for (const each of stoppedOn)
+    assert.ok(
+      grid.doneAt.get(each.id) <= end + PAGE_CARDS_GATHER_MS + 150,
+      "the screen the fling stops on loads within the window and a round trip",
+    );
 });

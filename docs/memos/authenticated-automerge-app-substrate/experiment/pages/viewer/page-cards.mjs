@@ -6,11 +6,11 @@
 // Cards that ask wait together for at most 200 ms from the first of them, or
 // until 24 wait, whichever comes first (the page-card-batches machine below),
 // so a steady scroll still sends requests while it runs. A request takes the
-// waiting cards that intersect first, the latest to come into view first;
-// one that scrolled out before its request went out waits behind them. It
-// then fills toward 24 with the next cards in the grid's order that haven't
-// asked yet, so a slow scroll down a phone grid sends one request per 24
-// cards, not one per row.
+// latest cards to come into view first. A card that leaves the viewport, or
+// unmounts, before its request goes out stops waiting and goes back to idle,
+// so a fling asks only for what it stops on. A request then fills toward 24
+// with the next cards in the grid's order that haven't asked yet, so a slow
+// scroll down a phone grid sends one request per 24 cards, not one per row.
 //
 // Each card follows the page-card machine below, keyed by Page ID and the
 // row's `content_updated_at`, so a Page edited since the grid asked shows a
@@ -47,8 +47,9 @@ const card = (state) => {
  * another account).
  *
  * Events: `visible` (the card neared the viewport), `ahead` (a batch with
- * room took this idle card, the next in the grid), `answered` (a card),
- * `missing` (null), `failed`.
+ * room took this idle card, the next in the grid), `left` (a card that
+ * asked left the viewport before its request went out), `answered` (a
+ * card), `missing` (null), `failed`.
  *
  * Effects: `fetch`, which the loader batches. `ahead` has none: the batch
  * that took the card already carries it.
@@ -56,9 +57,13 @@ const card = (state) => {
 export const pageCardMachine = defineMachine({
   name: "page-card",
   states: ["idle", "requested", "shown", "empty", "failed"],
-  events: ["visible", "ahead", "answered", "missing", "failed"],
+  events: ["visible", "ahead", "left", "answered", "missing", "failed"],
   initial: { name: "idle" },
   unreachable: [
+    ["idle", "left", "only a requested card waits to go out"],
+    ["shown", "left", "only a requested card waits to go out"],
+    ["empty", "left", "only a requested card waits to go out"],
+    ["failed", "left", "only a requested card waits to go out"],
     ["idle", "answered", "only a requested card is in a batch"],
     ["idle", "missing", "only a requested card is in a batch"],
     ["idle", "failed", "only a requested card is in a batch"],
@@ -84,6 +89,9 @@ export const pageCardMachine = defineMachine({
         // Only a card that never asked: a failed one waits until it's seen.
         if (state.name === "idle") return { state: { name: "requested" }, effects: [] };
         return reject(state, `already ${state.name}`);
+      case "left":
+        // requested only (see unreachable): it asks again when it's seen.
+        return { state: { name: "idle" }, effects: [] };
       case "answered":
         if (state.name !== "requested") return reject(state, "not waiting for a card");
         return Array.isArray(event.card.blocks) && event.card.blocks.length > 0
@@ -142,8 +150,9 @@ function quietWhenEmpty(state, effects) {
  *   running. A full batch goes out at once if a slot is free.
  * - due: the window ended with every slot busy; the next free slot sends.
  *
- * Events: `wanted` (a card asked), `elapsed` (the window ended), `settled`
- * (a request ended, answered or not).
+ * Events: `wanted` (a card asked), `dropped` (a waiting card left the
+ * viewport), `elapsed` (the window ended), `settled` (a request ended,
+ * answered or not).
  *
  * Effects: `arm` and `disarm` the window, and `send` a request that takes
  * `take` waiting cards. Which cards, and the top-up toward a full batch,
@@ -152,7 +161,7 @@ function quietWhenEmpty(state, effects) {
 export const pageCardBatchMachine = defineMachine({
   name: "page-card-batches",
   states: ["quiet", "gathering", "due"],
-  events: ["wanted", "elapsed", "settled"],
+  events: ["wanted", "dropped", "elapsed", "settled"],
   initial: {
     name: "quiet",
     waiting: 0,
@@ -162,6 +171,8 @@ export const pageCardBatchMachine = defineMachine({
   },
   cases: {
     "gathering/wanted": ["gather", "full"],
+    "gathering/dropped": ["gather", "drained"],
+    "due/dropped": ["due", "drained"],
     "gathering/elapsed": ["sent", "due"],
     "gathering/settled": ["gather", "full", "stray"],
     "due/settled": ["drained", "more"],
@@ -203,6 +214,13 @@ export const pageCardBatchMachine = defineMachine({
         // a full batch or the window's end.
         const sent = sendWaiting(waiting, effects, waiting.name === "due");
         return { state: quietWhenEmpty(sent, effects), effects };
+      }
+      case "dropped": {
+        if (state.waiting === 0) return reject(state, "nothing waits");
+        return {
+          state: quietWhenEmpty({ ...state, waiting: state.waiting - 1 }, effects),
+          effects,
+        };
       }
       case "elapsed": {
         // A timer that fired as the window closed.
@@ -288,8 +306,10 @@ export class PageCards {
     const subscription = this.#window
       .pipe(switchMap((armed) => (armed ? timer(this.gatherMs, this.scheduler) : EMPTY)))
       .subscribe(() => this.#dispatch({ type: "elapsed" }));
-    // Cards that asked under an earlier connection go out under this one.
-    for (let index = 0; index < this.#waiting.size; index++) this.#dispatch({ type: "wanted" });
+    // Cards that asked before this connection go out under it, one `wanted`
+    // each. A send shrinks the waiting set as this runs, so count it first.
+    const asked = this.#waiting.size;
+    for (let index = 0; index < asked; index++) this.#dispatch({ type: "wanted" });
     return () => {
       subscription.unsubscribe();
       abort.abort();
@@ -339,7 +359,7 @@ export class PageCards {
           const seen = this.#rows.get(entry.target);
           if (!seen) continue;
           if (entry.isIntersecting) this.visible(seen, at);
-          else this.#views.delete(cardKeyOf(seen));
+          else this.#left(seen);
         }
       },
       { rootMargin: PAGE_CARDS_ROOT_MARGIN },
@@ -348,9 +368,19 @@ export class PageCards {
     this.#observer.observe(element);
     return () => {
       this.#rows.delete(element);
-      this.#views.delete(cardKeyOf(row));
+      this.#left(row);
       this.#observer?.unobserve(element);
     };
+  }
+
+  /** `row` left the viewport, or unmounted. A card still waiting to go out
+   * goes back to idle and asks again when it's seen. */
+  #left(row) {
+    const key = cardKeyOf(row);
+    this.#views.delete(key);
+    if (!this.#waiting.delete(key)) return;
+    this.#steps([[key, { type: "left" }]]);
+    this.#dispatch({ type: "dropped" });
   }
 
   /** Step the batch machine and run its effects. Before `connect` and after
@@ -375,13 +405,13 @@ export class PageCards {
     });
   }
 
-  /** The `take` waiting cards to send now: those that intersect, the latest
-   * into view first, then those that scrolled out, in the order they asked.
-   * The request lists them in the grid's order. */
+  /** The `take` waiting cards to send now, the latest into view first. One
+   * with no view recorded (it asked before a reconnect) comes after them, in
+   * the order it asked. The request lists them in the grid's order. */
   #pick(take) {
     const waiting = [...this.#waiting.values()];
     const seen = (want) => this.#views.get(want.key) ?? 0;
-    // Array sort is stable: cards out of view keep the order they asked in.
+    // Array sort is stable: cards without a view keep the order they asked in.
     const picked = waiting.sort((a, b) => seen(b) - seen(a)).slice(0, take);
     for (const { key } of picked) this.#waiting.delete(key);
     // Cards the grid hasn't placed keep the order they were picked in.
