@@ -677,6 +677,67 @@ async function until(predicate, timeout = 5000) {
   }
 }
 
+test("API edits on plain Pages name their principal independently of the host actor", async (t) => {
+  const f = await fixture(t);
+  f.env.CATALOGS = { getByName: () => ({ fetch: async () => Response.json({ ok: true }) }) };
+  const host = f.page();
+  assert.ok((await f.register(host)).ok);
+  const principal = f.args.expected_principal;
+  const browser = await connectBrowser(
+    host,
+    { principal, driver: "Browser", canWrite: true, expiresAt: Date.now() + 3_600_000 },
+    "b-tool-edit",
+  );
+  try {
+    const handle = await browser.repo.find(f.args.document_id);
+    const messages = [];
+    handle.on("ephemeral-message", (event) => messages.push(event));
+    const response = await tool(f, host, "edit_page", {
+      base_heads: A.getHeads(handle.doc()),
+      idempotency_key: "principal-edit",
+      operations: [{ op: "set_title", title: "Named API edit" }],
+    });
+    assert.equal(response.status, 200, await response.clone().text());
+    const receipt = await response.json();
+    await until(() => messages.some((event) => event.message?.kind === "tool-edit"));
+    const edit = messages.find((event) => event.message?.kind === "tool-edit");
+    assert.equal(edit.senderId, HOST_SENDER_ID);
+    assert.equal(edit.message.identity.principal, principal);
+    assert.equal(edit.message.identity.driver, "ChatGPT");
+    assert.deepEqual(edit.message.heads, receipt.heads);
+    await until(() => A.hasHeads(handle.doc(), receipt.heads));
+    assert.equal(handle.doc().title, "Named API edit");
+    assert.equal(receipt.heads.length, 1);
+    const change = A.getAllChanges(handle.doc())
+      .map(A.decodeChange)
+      .find((change) => change.hash === receipt.heads[0]);
+    assert.ok(change);
+    assert.ok(change.actor.startsWith(host.plain.hostActorPrefix));
+    assert.equal(host.plain.host.actor(change.actor), undefined);
+
+    const comments = await browser.repo.find(host.commentsHandle.documentId);
+    const commentMessages = [];
+    comments.on("ephemeral-message", (event) => commentMessages.push(event));
+    const commentResponse = await tool(f, host, "manage_page_comment", {
+      idempotency_key: "principal-comment",
+      action: "add",
+      block_id: Object.keys(handle.doc().blocks)[0],
+      body: "Named API comment",
+    });
+    assert.equal(commentResponse.status, 200, await commentResponse.clone().text());
+    const commentReceipt = await commentResponse.json();
+    await until(() => commentMessages.some((event) => event.message?.kind === "tool-edit"));
+    const comment = commentMessages.find((event) => event.message?.kind === "tool-edit");
+    assert.equal(comment.senderId, HOST_SENDER_ID);
+    assert.equal(comment.message.identity.principal, principal);
+    assert.equal(comment.message.comments, true);
+    assert.deepEqual(comment.message.heads, commentReceipt.comment_heads);
+    await until(() => A.hasHeads(comments.doc(), commentReceipt.comment_heads));
+  } finally {
+    await browser.repo.shutdown();
+  }
+});
+
 test("a second browser learns who wrote the first browser's change", async (t) => {
   const f = await fixture(t);
   const host = f.page();
