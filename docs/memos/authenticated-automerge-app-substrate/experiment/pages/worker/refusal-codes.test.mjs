@@ -433,3 +433,22 @@ test("delete_node goes through the host by the outline's node_id, and a gone id 
   assert.equal(again.status, 400);
   assert.equal(again.body.code, "node_not_found", JSON.stringify(again.body));
 });
+
+test("delete_node that would join two lists is refused with nodes_would_join", async (t) => {
+  const f = await fixture(t);
+  const edit = (operations, key) =>
+    f.tool("owner", "edit_page", { base_heads: f.heads(), idempotency_key: key, operations });
+  const written = await edit(
+    [{ op: "replace_block_markdown", block_id: f.blockId, markdown: "Intro\n\n- a\n\n---\n\n- b" }],
+    "join-setup",
+  );
+  assert.equal(written.status, 200, JSON.stringify(written.body));
+  const read = await f.tool("owner", "read_page", { page_id: f.pageId, comments: "none" });
+  const rule = read.body.outline.entries.find((entry) => /horizontal/.test(entry.type));
+  const refused = await edit(
+    [{ op: "delete_node", block_id: f.blockId, node_id: rule.node_id }],
+    "join-refused",
+  );
+  assert.equal(refused.status, 400);
+  assert.equal(refused.body.code, "nodes_would_join", JSON.stringify(refused.body));
+});

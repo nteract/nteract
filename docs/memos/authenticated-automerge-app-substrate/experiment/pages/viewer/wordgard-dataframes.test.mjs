@@ -49,11 +49,16 @@ test("a titled dataframe is named and captioned by its title, as text", () =>
 
 test("a table's status starts as its waiting text, over the canvas", () =>
   withDocument(() => {
-    const { dom, status, canvas } = dataframeFrame({ src, media_type: PARQUET_MEDIA_TYPE });
-    // The lifecycle's first status is the same text, so connecting changes
-    // nothing a live region would announce.
+    const { dom, status, announce, canvas } = dataframeFrame({
+      src,
+      media_type: PARQUET_MEDIA_TYPE,
+    });
     assert.equal(status.textContent, DATAFRAME_STATUS.waiting);
-    assert.equal(status.getAttribute("role"), "status");
+    // Waiting and loading aren't announced; the live region starts empty.
+    assert.equal(status.hasAttribute("role"), false);
+    assert.equal(announce.getAttribute("role"), "status");
+    assert.equal(announce.textContent, "");
+    assert.equal(dom.querySelectorAll("[role=status], [aria-live]").length, 1);
     // Both live in one body, the status after the canvas, so CSS can lay it
     // over the canvas and hiding it moves nothing.
     const body = dom.querySelector(".wordgard-dataframe-body");
@@ -113,12 +118,14 @@ function lifecycleFixture() {
   const loads = [],
     mounts = [];
   const status = { hidden: false, textContent: "" };
+  const announce = { textContent: "" };
   const canvas = { dataset: {} };
   const timers = virtualTimers();
   const watch = { callback: null, watching: 0, stopped: 0 };
   const lifecycle = dataframeLifecycle({
     canvas,
     status,
+    announce,
     attrs: { src },
     delay: DELAY,
     park: PARK,
@@ -142,7 +149,7 @@ function lifecycleFixture() {
     },
   };
   const near = (value) => watch.callback(value);
-  return { lifecycle, loads, mounts, status, module, canvas, watch, near, timers };
+  return { lifecycle, loads, mounts, status, announce, module, canvas, watch, near, timers };
 }
 
 const TABLE = new URL("../test/fixtures/machines/dataframe-table.json", import.meta.url);
@@ -257,6 +264,7 @@ test("a failed load says so", async () => {
   await flush();
   assert.equal(f.lifecycle.state, "failed");
   assert.equal(f.status.textContent, "Table unavailable.");
+  assert.equal(f.announce.textContent, "Table unavailable.");
   assert.equal(f.status.hidden, false);
 });
 
@@ -344,4 +352,20 @@ test("without IntersectionObserver every table counts as near", () => {
   const stop = watch({}, (near) => seen.push(near));
   assert.deepEqual(seen, [true]);
   stop();
+});
+
+test("only failure reaches the live region; waiting, loading and parking stay quiet", async () => {
+  const f = lifecycleFixture();
+  f.lifecycle.connect();
+  f.near(true);
+  f.timers.advance(DELAY);
+  assert.equal(f.status.textContent, DATAFRAME_STATUS.loading);
+  f.loads[0].resolve(f.module);
+  await flush();
+  // Parked past expiry, then reconnected: the visible text resets, quietly.
+  f.lifecycle.disconnect();
+  f.timers.advance(PARK);
+  f.lifecycle.connect();
+  assert.equal(f.status.textContent, DATAFRAME_STATUS.waiting);
+  assert.equal(f.announce.textContent, "");
 });

@@ -44,15 +44,18 @@ export function dataframeFrame({ title, media_type }) {
   body.className = "wordgard-dataframe-body";
   const canvas = body.appendChild(document.createElement("div"));
   canvas.className = "wordgard-dataframe-canvas";
+  // The visible status is plain text: waiting and loading happen for every
+  // table near the viewport, and Sift draws its own loading state, so they
+  // aren't announced. `announce` is a separate live region, empty until a
+  // table fails, so failure is the only thing a screen reader hears.
   const status = body.appendChild(document.createElement("p"));
-  status.setAttribute("role", "status");
+  const announce = dom.appendChild(document.createElement("p"));
+  announce.className = "sr-only";
+  announce.setAttribute("role", "status");
   const load = DATAFRAME_RENDERERS[media_type];
-  // A live region announces changes, not its first text. Starting with the
-  // text the lifecycle shows first means connecting a table announces
-  // nothing; only loading and failure do.
   status.textContent = load ? DATAFRAME_STATUS.waiting : `This build can't show ${media_type}.`;
   canvas.hidden = !load;
-  return { dom, header, status, canvas, load };
+  return { dom, header, status, announce, canvas, load };
 }
 
 /** Events inside Sift's canvas are the grid's; Wordgard never sees them.
@@ -126,6 +129,7 @@ export function dataframeLifecycle({
   dom,
   canvas,
   status,
+  announce,
   attrs,
   delay = 50,
   park = 1000,
@@ -199,6 +203,7 @@ export function dataframeLifecycle({
         onUnavailable?.();
         status.hidden = false;
         status.textContent = "Table unavailable.";
+        if (announce) announce.textContent = "Table unavailable.";
         return;
       case "destroy":
         instance?.destroy();

@@ -229,7 +229,7 @@ function deleteNode(doc, id, op, trace, opened) {
     // Throwing aborts the whole change, the splice included.
     throw Object.assign(
       Error(
-        `delete_node would join the ${name(-1)} before this node and the ${name(1)} after it into one. Delete one of them too, or rewrite the block with replace_block_markdown.`,
+        `delete_node would join the ${name(-1)} before this node and the ${name(1)} after it into one. Delete one of them first, earlier in the same batch, or rewrite the block with replace_block_markdown.`,
       ),
       { code: "nodes_would_join" },
     );
