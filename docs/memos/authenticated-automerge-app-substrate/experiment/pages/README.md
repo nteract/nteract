@@ -788,16 +788,26 @@ The check needs only the host record and a title, so the constructor reads
 | `booting` | the constructor boots at once (a creation intent or an older record), or a request started the boot | waits for it | waits for it |
 | `ready` | the boot finished, or there was nothing to boot | answers from the loaded document, as before | runs |
 | `failed` | the boot threw; the runtime is resetting the object | answers from the record | gets that error |
+| `abandoned` | the `blockConcurrencyWhile` holding the boot rejected while the boot still ran, as at the 30 s limit | gets the reset's error | gets the reset's error |
 
 The repo boots at most once per object; every request that needs the
 document waits on the same boot, and nothing reads the document before it
 finishes. Both boots run inside `blockConcurrencyWhile`: the constructor's
 own, or one the request that needs the document opens. That keeps the
-runtime's rules for a boot. Other requests wait until it ends, it gets 30 s,
-and a throw resets the object, so the next request reaches a new object that
-starts from storage again. A transient failure, such as a PageRecords read
-that times out with `record_persistence_timeout`, fails only the requests the
-boot held. A failed boot is never remembered past its object.
+runtime's rules for a boot. Other requests wait until it ends, and a throw
+resets the object, so the next request reaches a new object that starts from
+storage again. A transient failure, such as a PageRecords read that times out
+with `record_persistence_timeout`, fails only the requests the boot held. A
+failed boot is never remembered past its object.
+
+A reset doesn't stop the old object. A `blockConcurrencyWhile` past 30 s
+rejects and the runtime resets the object, but the boot inside it runs on,
+and so do its timers and any request already running, all writing the
+storage the new object boots from. So a rejection while the boot still runs
+leaves it `abandoned`: the boot checks before it writes (after the repo
+starts, before journal recovery of either document, and before preserved
+Markdown conversion) and stops there, and every request still on the old
+object fails. The constructor's boot is covered the same way.
 
 On celld 0.6.3 ([celld-boot-probe.mjs](scripts/celld-boot-probe.mjs)):
 
@@ -805,7 +815,11 @@ On celld 0.6.3 ([celld-boot-probe.mjs](scripts/celld-boot-probe.mjs)):
 - A throw inside it resets the object. The failing request gets the error,
   a request queued behind the boot gets a 500, and the next request reaches a
   new object, whose boot succeeds.
-- A boot that runs 35 s is ended at 30 s, and the object is reset.
+- After that reset, a timer chain the boot started and a request that was
+  already running on the old object keep writing storage, and the new object
+  reads what they wrote.
+- A boot that runs 35 s gets the rejection at 30 s, and the object is reset.
+  The old callback still runs to 35 s and writes.
 - A timer chain started inside it keeps running after the request that
   opened it has responded.
 
@@ -855,17 +869,18 @@ A check from the record projects nothing and reports nothing to the index.
 A booted host's first check does both, and that remains the repair for a lost
 projection or report. Two marks make a check boot until that repair has run:
 
-- The projection mark is written before a new title is stored, and removed
-  once the latest projection reached the owner's and every member's Catalog
-  and the title is stored. Storage applies one object's writes in the order
-  they are issued, so a stored title the Catalogs may lack always has the
-  mark, without a sync.
+- The projection mark is written first, and a new title is stored only once
+  the mark write succeeds; if it fails, the title isn't stored and the
+  projection counts as failed. The mark is removed once the latest
+  projection reached the owner's and every member's Catalog and the title is
+  stored. So a stored title the Catalogs may lack always has the mark.
 - The index report mark is written after a report fails, and synced.
 
 Each reader's reconcile pass also rewrites its own access row from the
-check's answer. Repeating a title projection is harmless since `keep_time`.
-Still, a cold check used to send one to every member's Catalog, plus a row
-report to D1, for each shared Page a listing checked.
+check's answer. Repeating a title projection is harmless since `keep_time`,
+but a booted host's first check sends one to every member's Catalog, plus a
+row report to D1. A check from the record sends neither, so a listing pays
+for neither per shared Page it checks.
 
 Each check authenticates the caller again in the Page host, as every Page
 request does. The gateway forwards client requests to Page hosts, and a Page

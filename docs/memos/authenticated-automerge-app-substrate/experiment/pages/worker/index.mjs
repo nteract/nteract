@@ -3198,6 +3198,9 @@ export class Page {
       // A failed boot fails construction, so the runtime resets the object.
       if (this.startup.name === "failed") throw this.bootError;
     });
+    // At the runtime's 30 s limit this rejects while the boot inside it runs
+    // on, and the boot is abandoned (startBoot).
+    this.ready.catch((error) => this.resetBoot(error));
   }
 
   /** page-startup's state. A host built without the constructor (a test
@@ -3225,25 +3228,45 @@ export class Page {
    * Both boots run inside `blockConcurrencyWhile`: the constructor's own, or
    * one the request that needs the document opens. A throw there resets the
    * object, so the next request reaches a new object that starts from storage
-   * again, and a boot gets the runtime's 30 s limit (celld 0.6.3 resets the
-   * object then too; scripts/celld-boot-probe.mjs). The request that opened
-   * the boot awaits it and holds it, so a caller that goes away doesn't
-   * strand it (request-hold.mjs).
+   * again. So does the runtime's 30 s limit, but that doesn't stop this
+   * object: on celld 0.6.3 its boot runs on, and so do its timers and
+   * requests, all writing the storage the new object boots from
+   * (scripts/celld-boot-probe.mjs). A `blockConcurrencyWhile` that rejects
+   * while the boot still runs leaves it `abandoned` (resetBoot), and the boot
+   * stops at its next write (assertNotAbandoned). The request that opened the
+   * boot awaits it and holds it, so a caller that goes away doesn't strand it
+   * (request-hold.mjs).
    */
   startBoot(within, creation) {
     const boot = async () => {
       try {
         await this.bootHost(creation);
       } catch (error) {
-        this.bootError = error;
+        if (this.startup.name === "booting") this.bootError = error;
         this.stepStartup({ type: "bootFailed" });
         throw error;
       }
       this.stepStartup({ type: "booted" });
     };
     const run = within === "request" ? this.ctx.blockConcurrencyWhile(boot) : boot();
-    this.booting = run.then(noop, noop);
+    // Settles once a rejection is recorded, so a waiter sees `abandoned`.
+    this.booting = run.then(noop, (error) => this.resetBoot(error));
     if (within === "request") holdUntilSettled(this.ctx, run);
+  }
+
+  /** A `blockConcurrencyWhile` that held the boot rejected. While the boot
+   * still runs, the runtime has reset this object under it: the boot is
+   * abandoned, and every request still here gets `error`. After the boot's
+   * own throw, or with no boot running, page-startup changes nothing. */
+  resetBoot(error) {
+    if (!this.stepStartup({ type: "reset" }).rejected) this.bootError = error;
+  }
+
+  /** Throw when this object's boot was abandoned (page-startup's
+   * `abandoned`). Boot steps call this before they write storage, so a boot
+   * the runtime has given up on stops instead of racing the new object's. */
+  assertNotAbandoned() {
+    if (this.startup.name === "abandoned") throw this.bootError;
   }
 
   /** Boot the repo and run the lifecycle's boot effects over the durable
@@ -3255,6 +3278,7 @@ export class Page {
     if (!this.metadata && !creation) return;
     if (creation && this.metadata) logCreationIntentConflict(creation.metadata, this.metadata);
     await this.initializeRepo(this.metadata ?? creation?.metadata);
+    this.assertNotAbandoned();
     // The commit phase lived only in memory: the durable record and any
     // creation intent decide what boot installs or loads.
     const { effects } = pageLifecycle.step(this.lifecycleState(), {
@@ -3277,8 +3301,10 @@ export class Page {
     }
   }
 
-  /** Wait for the running boot. Its end is a page-startup event, so the
-   * state has moved on when this returns. */
+  /** Wait for the running boot. Its end, or a reset of the object under it,
+   * is a page-startup event recorded before `booting` settles, so the state
+   * has moved on when this returns. The throw guards that invariant: without
+   * it, a waiter would ask the machine again forever. */
   async settledBoot() {
     await this.booting;
     if (this.startup.name === "booting") throw Error("Page startup did not settle");
@@ -3314,6 +3340,7 @@ export class Page {
       const { serve } = this.stepStartup({ type: "catalog" }).response;
       if (serve === "document") return null;
       if (serve === "record") break;
+      if (serve === "failed") throw this.bootError;
       await this.settledBoot();
     }
     const storage = this.ctx.storage;
@@ -3368,6 +3395,8 @@ export class Page {
     }
     logIncompleteHistory(this.handle.doc());
     this.observeActivity();
+    // Journal recovery writes; a boot the runtime gave up on stops here.
+    this.assertNotAbandoned();
     try {
       await recoverDocumentMutations(
         this.ctx.storage,
@@ -3526,6 +3555,7 @@ export class Page {
       docId: documentId,
     });
     this.commentAdmission?.reset();
+    this.assertNotAbandoned();
     try {
       await recoverDocumentMutations(
         this.ctx.storage,
@@ -3567,6 +3597,7 @@ export class Page {
    * Resolves when no run is in flight. A failed run leaves the Page fenced,
    * read-only, with a scheduled retry. */
   async convertPreservedMarkdown() {
+    this.assertNotAbandoned();
     this.observeConversion({ due: true });
     while (this.conversionRun) await this.conversionRun;
   }
@@ -4277,16 +4308,20 @@ export class Page {
       return { observedAt: known.observed_at, keepTime: known.keep !== false };
     const record = { title, observed_at: new Date().toISOString(), keep: !observe };
     this.titleProjection = record;
-    this.markProjection();
-    const stored = Promise.resolve()
-      .then(() => this.ctx.storage.put(TITLE_PROJECTION_KEY, record))
-      .then(
-        () => ({ ok: true }),
-        (error) => {
-          logFailure(error, "title-projection");
-          return { ok: false };
-        },
-      );
+    // The title is stored only once its mark is: a stored title the Catalogs
+    // may lack always has the mark. Without the mark it stays unstored, and
+    // a check from the record answers the last stored title instead.
+    const stored = this.markProjection().then((marked) =>
+      marked
+        ? this.ctx.storage.put(TITLE_PROJECTION_KEY, record).then(
+            () => ({ ok: true }),
+            (error) => {
+              logFailure(error, "title-projection");
+              return { ok: false };
+            },
+          )
+        : { ok: false },
+    );
     return { observedAt: record.observed_at, keepTime: record.keep, stored };
   }
 
@@ -4405,16 +4440,21 @@ export class Page {
     );
   }
 
-  /** Mark the stored title as not yet projected everywhere. Called before the
-   * title is stored, and storage applies one object's writes in the order
-   * they are issued, so a stored title the Catalogs may lack always has the
-   * mark. It moves the sequence on, so a projection already running can't
-   * clear it. */
+  /** Mark the stored title as not yet projected everywhere. Resolves true
+   * once the mark is written, false if the write failed; the title it marks
+   * is written only after true (titleObservation). It moves the sequence on,
+   * so a projection already running can't clear it. */
   markProjection() {
     this.projectionSeq = (this.projectionSeq ?? 0) + 1;
-    Promise.resolve()
+    return Promise.resolve()
       .then(() => this.ctx.storage.put(PROJECTION_PENDING, true))
-      .catch((error) => logFailure(error, "title-projection-pending"));
+      .then(
+        () => true,
+        (error) => {
+          logFailure(error, "title-projection-pending");
+          return false;
+        },
+      );
   }
 
   /** Clear the mark once the latest projection reached every Catalog and the

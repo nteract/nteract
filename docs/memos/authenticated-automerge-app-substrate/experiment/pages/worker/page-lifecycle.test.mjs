@@ -155,7 +155,8 @@ const POST_COMMIT = {
  *   stores the repair marker, and listings verify rows with the Page.
  * - prune: a receipt landed but its prune did not. The store holds one
  *   receipt over the limit until the next receipt write prunes it.
- * - titleRecord: the stored title projection's write rejected. It is
+ * - titleRecord: the stored title projection's write rejected, or its
+ *   projection mark's did, which leaves the title unstored. It is
  *   best-effort: without it, the next projection observes the title anew and
  *   carries keep_time, so no listing's updated_at moves.
  * - projectionMark: a projection, or the title it sent, didn't land, so the
@@ -174,7 +175,9 @@ function allowance(key, run, row, committed, reference) {
   if (
     key === "page host/title-projection" &&
     run.cut &&
-    run.mutations[run.cut.index] === "put host/title-projection"
+    ["put host/title-projection", "put host/title-projection/pending"].includes(
+      run.mutations[run.cut.index],
+    )
   )
     return "titleRecord";
   if (run.mode !== "crash" || !committed) return undefined;
@@ -256,16 +259,19 @@ test("every mutation the lifecycle makes can reject before or after it applies, 
       // and title projection, and a restore's write of that projection. The
       // projection mark's write and delete around a restore's projection,
       // and a purge's or tombstone's delete of it, are cut points too. The
-      // active/trash heads-absent row runs the full trash commit again.
+      // active/trash heads-absent row runs the full trash commit again. A
+      // rejected mark write leaves the title unstored (titleRecord), and one
+      // that landed before it rejected stays, since the projection failed
+      // (projectionMark).
       cuts: 202,
       runs: 768,
       indexRetirement: 21,
       titleProjection: 14,
-      titleRecord: 4,
+      titleRecord: 12,
       bindingRetirement: 30,
       prune: 22,
       index: 14,
-      projectionMark: 12,
+      projectionMark: 16,
     },
   );
 });

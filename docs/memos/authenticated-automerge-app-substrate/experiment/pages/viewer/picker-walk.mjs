@@ -9,10 +9,13 @@
  * cancels the walk and drops its rows. A refusal leaves the picker open with
  * a message while the session check decides who is signed in: the shell
  * closes it if the account changed or signed out, and otherwise it stays
- * open saying why its rows went. A walk answered for another account waits
- * on the same check in `checking`; once the check settles with the picker's
- * account still signed in, it says to try again. Nothing but `open` ever
- * starts a walk, so a walk that fails, a 401 included, can't start another.
+ * open saying why its rows went. A walk answered for another account, or
+ * whose pages named different accounts (page-list.mjs ACCOUNT_CHANGED), waits
+ * on the same check in `checking`. Only a check that started after that
+ * answer counts: once one settles with the picker's account still signed in,
+ * the picker says to try again, and if it couldn't reach the server, it says
+ * so. Nothing but `open` ever starts a walk, so a walk that fails, a 401
+ * included, can't start another.
  *
  * States:
  * - closed: nothing shows and nothing is in flight.
@@ -21,24 +24,30 @@
  * - refreshing: like loading, while the library's remembered first page
  *   (listing-cache.mjs, within its age limit) shows.
  * - ready: the walk's rows show.
- * - checking: the walk was answered for another account, and the session
- *   check it asked for hasn't settled; no rows from the server show.
+ * - checking: the walk was answered for another account, or its pages named
+ *   different accounts, and no session check that started after it has
+ *   settled; no rows from the server show. `after` is the session check
+ *   generation (signed-out-recovery.mjs) the shell had reached when the walk
+ *   answered.
  * - failed: the walk failed, a tool call was refused as signed out, or a
- *   session check found the same account, with `message`; no rows from the
- *   server show.
+ *   session check found the same account or couldn't answer, with `message`;
+ *   no rows from the server show.
  *
  * Events:
  * - open: show the picker for `principal` (never null) and walk under `key`.
  *   `seeded` says the cache holds the library's first page for the account.
  * - loaded / failed / foreign: the walk under `key` settled, failed, or was
  *   answered for another account. A key that no longer matches belongs to a
- *   walk this machine already cancelled.
+ *   walk this machine already cancelled. `foreign` carries `after`.
  * - close: the person closed the picker, or the shell navigated.
  * - forget: the shell forgot the account's data.
  * - refused: a tool call was refused as signed out (request.mjs
  *   observeSignedOut). The rows go, and the picker says so.
- * - settled: the session check finished with `principal` signed in. The same
- *   account means the walk can be retried; another closes the picker.
+ * - settled: session check `generation` finished with `principal` signed in
+ *   and `outcome` `answered`, or couldn't answer (`failed`). A check no later
+ *   than `after` started before the walk's answer: the picker asks again. Of
+ *   a later one, the same account means the walk can be retried, another
+ *   closes the picker, and a failure says the check couldn't be made.
  *
  * Effects: `fetch` walks under `key` for `principal`; `paint` shows the
  * remembered first page; `show` shows the settled walk's rows; `clear` drops
@@ -48,6 +57,7 @@
 import { defineMachine, reject } from "../shared/machine.mjs";
 import { failureMessage } from "./alerts.mjs";
 import { ACCOUNT_CHANGED } from "./page-list.mjs";
+import { CHECK_OUTCOMES } from "./signed-out-recovery.mjs";
 import { Store } from "./store.mjs";
 
 const check = (condition, message) => {
@@ -61,6 +71,11 @@ const shape = (head, keys) => (value) => {
   if (keys.includes("key")) check(text(value.key), "key is required");
   if (keys.includes("message")) check(typeof value.message === "string", "message is a string");
   if (keys.includes("seeded")) check(typeof value.seeded === "boolean", "seeded is a boolean");
+  for (const count of ["after", "generation"])
+    if (keys.includes(count))
+      check(Number.isSafeInteger(value[count]) && value[count] >= 0, `${count} is a count`);
+  if (keys.includes("outcome"))
+    check(CHECK_OUTCOMES.includes(value.outcome), "outcome is answered or failed");
 };
 const state = (...keys) => shape("name", keys);
 const event = (...keys) => shape("type", keys);
@@ -77,7 +92,7 @@ export const pickerWalkSpec = Object.freeze({
     "refreshing/loaded": ["current", "stale"],
     "refreshing/failed": ["current", "stale"],
     "refreshing/foreign": ["current", "stale"],
-    "checking/settled": ["same", "changed"],
+    "checking/settled": ["same", "changed", "failed", "stale"],
   },
   validate: {
     states: {
@@ -85,18 +100,18 @@ export const pickerWalkSpec = Object.freeze({
       loading: state("principal", "key"),
       refreshing: state("principal", "key"),
       ready: state("principal"),
-      checking: state("principal"),
+      checking: state("principal", "after"),
       failed: state("principal", "message"),
     },
     events: {
       open: event("principal", "key", "seeded"),
       loaded: event("key"),
       failed: event("key", "message"),
-      foreign: event("key"),
+      foreign: event("key", "after"),
       close: event(),
       forget: event(),
       refused: event(),
-      settled: event("principal"),
+      settled: event("principal", "outcome", "generation"),
     },
     effects: {
       fetch: event("key", "principal"),
@@ -132,6 +147,11 @@ export const OTHER_ACCOUNT_MESSAGE =
 export const SAME_ACCOUNT_MESSAGE =
   "This tab is still signed in to the same account. Close Pages and open it again to retry.";
 
+/** What the picker says when that check couldn't reach the server, or the
+ * server failed: who is signed in is still unknown. */
+export const CHECK_FAILED_MESSAGE =
+  "Couldn't check who is signed in. Close Pages and open it again to retry.";
+
 const walking = (current) => current.name === "loading" || current.name === "refreshing";
 const CLOSE = Object.freeze([{ type: "cancel" }, { type: "clear" }]);
 
@@ -165,6 +185,15 @@ function transition(current, input) {
   }
   if (input.type === "settled") {
     if (current.name !== "checking") return reject(current, REJECT.unchecked);
+    // A check that started before the walk's answer says nothing about it.
+    // The recovery that ran it is idle now, so asking again starts a check.
+    if (input.generation <= current.after)
+      return { state: current, effects: [{ type: "recheck" }] };
+    if (input.outcome === "failed")
+      return {
+        state: { name: "failed", principal: current.principal, message: CHECK_FAILED_MESSAGE },
+        effects: [{ type: "report", message: CHECK_FAILED_MESSAGE }],
+      };
     if (input.principal !== current.principal)
       return { state: { name: "closed" }, effects: [...CLOSE] };
     return {
@@ -181,7 +210,7 @@ function transition(current, input) {
     };
   if (input.type === "foreign")
     return {
-      state: { name: "checking", principal: current.principal },
+      state: { name: "checking", principal: current.principal, after: input.after },
       effects: [
         { type: "clear" },
         { type: "report", message: OTHER_ACCOUNT_MESSAGE },
@@ -212,6 +241,8 @@ const CLOSED = Object.freeze({ state: pickerWalkMachine.initial, items: Object.f
  * - onOtherAccount(): a walk was answered for another account, or its pages
  *   named different accounts (page-list.mjs ACCOUNT_CHANGED); the shell
  *   rechecks the session, and calls settled() once that check is done.
+ * - generation(): the session check generation the shell has reached
+ *   (SignedOutRecovery's `generation`), read when the walk answers.
  *
  * A walk's answer shows only when it names the picker's account, or names no
  * account (an older API): the same rule as the library listing, which shows
@@ -223,6 +254,7 @@ export class PickerWalk {
   #seed;
   #report;
   #onOtherAccount;
+  #generation;
   #newKey;
   #flight = null;
   #answer = null;
@@ -231,12 +263,14 @@ export class PickerWalk {
     seed = () => null,
     report = () => {},
     onOtherAccount = () => {},
+    generation = () => 0,
     newKey = () => crypto.randomUUID(),
   }) {
     this.#walk = walk;
     this.#seed = seed;
     this.#report = report;
     this.#onOtherAccount = onOtherAccount;
+    this.#generation = generation;
     this.#newKey = newKey;
   }
   get state() {
@@ -258,11 +292,14 @@ export class PickerWalk {
   refused() {
     return this.#dispatch({ type: "refused" });
   }
-  /** The session check finished with `principal` signed in. A picker waiting
-   * on it says to try again, or closes if the account changed. */
-  settled(principal) {
+  /** Session check `generation` finished with `outcome` (`answered` or
+   * `failed`) and `principal` signed in. A picker waiting on a check that
+   * started after its walk's answer says to try again, says the check
+   * failed, or closes if the account changed. A check that started before
+   * the walk's answer makes it ask again. */
+  settled({ principal, outcome, generation }) {
     if (!text(principal)) return false;
-    return this.#dispatch({ type: "settled", principal });
+    return this.#dispatch({ type: "settled", principal, outcome, generation });
   }
   #dispatch(input) {
     const result = pickerWalkMachine.step(this.state, input);
@@ -318,7 +355,7 @@ export class PickerWalk {
         if (signal.aborted) return;
         settled();
         if (answer?.principal && answer.principal !== principal) {
-          this.#dispatch({ type: "foreign", key });
+          this.#dispatch({ type: "foreign", key, after: this.#generation() });
           return;
         }
         this.#answer = answer;
@@ -328,7 +365,7 @@ export class PickerWalk {
         if (signal.aborted) return;
         settled();
         if (error?.code === ACCOUNT_CHANGED) {
-          this.#dispatch({ type: "foreign", key });
+          this.#dispatch({ type: "foreign", key, after: this.#generation() });
           return;
         }
         this.#dispatch({ type: "failed", key, message: failureMessage(error) });
