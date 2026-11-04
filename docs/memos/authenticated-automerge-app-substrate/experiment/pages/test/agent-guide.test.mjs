@@ -6,6 +6,7 @@ import { agentGuide } from "../agent-guide.mjs";
 import { MCP_ERROR_CODES, tools } from "../mcp.mjs";
 import { CLIENT_ERROR_CODES, RETRYABLE_SERVER_CODES } from "../worker/auth.mjs";
 import { MOVE_STATUS } from "../worker/move-page.mjs";
+import { HOST_REFUSAL_CODES } from "../worker/host-busy.mjs";
 import { STATUS_FALLBACK_CODES } from "../worker/project-api.mjs";
 import { READ_ERROR_CODES } from "../worker/tool-reads.mjs";
 import { CHANGE_ERROR_CODES } from "../worker/tool-changes.mjs";
@@ -65,6 +66,7 @@ test("GET llms.txt is readable without authentication and explains the supported
   for (const code of new Set([
     ...CLIENT_ERROR_CODES,
     ...RETRYABLE_SERVER_CODES,
+    ...HOST_REFUSAL_CODES,
     ...Object.keys(MOVE_STATUS),
     ...MCP_ERROR_CODES,
     ...STATUS_FALLBACK_CODES,

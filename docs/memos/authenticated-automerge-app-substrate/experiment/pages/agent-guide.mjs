@@ -205,7 +205,13 @@ Branch on code, not on the error message:
   reason, page_id and space_id blocking the pass.
 - page_busy (503, retryable:true): the Page is answering as many requests as
   it can and did not run this one. retry_after_ms and Retry-After say when to
-  retry; send the same request, including its key and token.
+  retry; send the same request, including its key and token. Back off if it
+  repeats.
+- page_transient_failure (503, retryable:true): the Page's host failed before
+  it answered, for example while it restarted. Wait retry_after_ms, then
+  retry a read, or a write with retry_token, as the same request; the receipt
+  replays. A tokenless write may have completed: read back and reconcile
+  before retrying.
 - request_timeout: the host didn't answer in 60 s but keeps the work it
   accepted. retryable:true (a read, a progress renewal, or a write with
   retry_token): retry the same request; the receipt replays. retryable:false (a

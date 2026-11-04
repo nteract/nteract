@@ -7,6 +7,7 @@ import {
   encodeRecordBatch,
   decodeRecordBatch,
 } from "./record-persistence.mjs";
+import { guardStubs } from "./storage-guard.mjs";
 function deferred() {
   let resolve, reject;
   const promise = new Promise((a, b) => {
@@ -318,3 +319,183 @@ test(
     assert.deepEqual(await reopened.load("tree/second"), bytes("two"));
   },
 );
+
+/** PageRecords stubs from a factory. A broken stub rejects every call with
+ * the error that broke it, like a Cloudflare stub after many exceptions. */
+function stubFactory(owner) {
+  const made = [];
+  const factory = () => {
+    const stub = {
+      calls: [],
+      broken: undefined,
+      breakNext: false,
+      fetch(request) {
+        stub.calls.push(`${request.method} ${new URL(request.url).pathname}`);
+        if (stub.breakNext) {
+          stub.breakNext = false;
+          stub.broken = Object.assign(Error("Network connection lost."), { retryable: true });
+        }
+        if (stub.broken) return Promise.reject(stub.broken);
+        return owner.fetch(request);
+      },
+    };
+    made.push(stub);
+    return stub;
+  };
+  return { factory, made };
+}
+
+test("a sink reuses a working PageRecords stub, and an HTTP error answer keeps it", async () => {
+  const storage = new Storage();
+  const owner = new PageRecords({ storage });
+  const { factory, made } = stubFactory({
+    fetch: (request) =>
+      refuse ? Promise.resolve(new Response(null, { status: 503 })) : owner.fetch(request),
+  });
+  let refuse = false;
+  const live = new BufferedRecordStore(new RemoteRecordSink(factory));
+  for (const name of ["a", "b", "c"]) {
+    await live.save(`tree/${name}`, bytes(name));
+    await live.flush();
+  }
+  refuse = true;
+  await live.save("tree/d", bytes("d"));
+  await assert.rejects(live.flush(), /Could not persist records/);
+  refuse = false;
+  await live.flush();
+  assert.equal(made.length, 1, "consecutive batches go through one stub, in order");
+  assert.deepEqual(made[0].calls, [
+    "POST /lease",
+    "GET /records",
+    "POST /records",
+    "POST /records",
+    "POST /records",
+    "POST /records",
+    "POST /records",
+  ]);
+});
+
+test("a stub that throws once and stays broken is replaced: the next flush persists through a fresh stub", async () => {
+  const storage = new Storage();
+  const owner = new PageRecords({ storage });
+  const { factory, made } = stubFactory(owner);
+  const live = new BufferedRecordStore(new RemoteRecordSink(factory));
+  await live.save("tree/first", bytes("one"));
+  await live.flush();
+  made[0].breakNext = true;
+  await live.save("tree/second", bytes("two"));
+  await assert.rejects(live.flush(), { retryable: true });
+  assert.equal(live.dirty, true, "the failed batch stays pending");
+  // The broken stub would fail every later call at once; it gets none.
+  const before = made[0].calls.length;
+  await live.save("tree/third", bytes("three"));
+  await live.flush();
+  assert.equal(made[0].calls.length, before, "the broken stub is not used again");
+  assert.equal(made.length, 2);
+  assert.deepEqual(made[1].calls, ["POST /records"], "the fresh stub keeps the sink's lease");
+  assert.equal(live.dirty, false);
+  const reopened = new BufferedRecordStore(
+    new RemoteRecordSink({ fetch: (request) => owner.fetch(request) }),
+  );
+  for (const [key, value] of [
+    ["tree/first", "one"],
+    ["tree/second", "two"],
+    ["tree/third", "three"],
+  ])
+    assert.deepEqual(await reopened.load(key), bytes(value), key);
+});
+
+test("a sink whose factory throws asks it again on the next request", async () => {
+  const storage = new Storage();
+  const owner = new PageRecords({ storage });
+  const { factory, made } = stubFactory(owner);
+  let unavailable = false;
+  const live = new BufferedRecordStore(
+    new RemoteRecordSink(() => {
+      if (unavailable) throw Error("binding unavailable");
+      return factory();
+    }),
+  );
+  await live.save("tree/first", bytes("one"));
+  await live.flush();
+  made[0].breakNext = true;
+  await live.save("tree/second", bytes("two"));
+  await assert.rejects(live.flush(), { retryable: true });
+  unavailable = true;
+  await assert.rejects(live.flush(), /binding unavailable/);
+  unavailable = false;
+  await live.flush();
+  assert.equal(made.length, 2);
+  assert.equal(live.dirty, false);
+});
+
+test(
+  "a timed-out request drops its stub, and its late failure never drops the fresh one",
+  { timeout: 5000 },
+  async () => {
+    const storage = new Storage();
+    const owner = new PageRecords({ storage });
+    const made = [];
+    let hang;
+    const sink = new RemoteRecordSink(
+      () => {
+        const stub = {
+          calls: 0,
+          fetch(request) {
+            stub.calls++;
+            if (hang && request.method === "POST" && new URL(request.url).pathname === "/records") {
+              const late = deferred();
+              hang = late;
+              return late.promise;
+            }
+            return owner.fetch(request);
+          },
+        };
+        made.push(stub);
+        return stub;
+      },
+      { timeoutMs: 50 },
+    );
+    const live = new BufferedRecordStore(sink);
+    await live.save("tree/first", bytes("one"));
+    hang = true;
+    await assert.rejects(live.flush(), { code: "record_persistence_timeout" });
+    const late = hang;
+    hang = undefined;
+    await live.flush();
+    assert.equal(made.length, 2, "the next request after a timeout uses a fresh stub");
+    // The abandoned request fails afterwards, on the old stub.
+    late.reject(Error("Network connection lost."));
+    await new Promise((resolve) => setImmediate(resolve));
+    await live.save("tree/second", bytes("two"));
+    await live.flush();
+    assert.equal(made.length, 2, "a late failure on an old stub keeps the current one");
+    assert.equal(made[1].calls, 2);
+  },
+);
+
+test("the storage gate wraps every stub the sink's factory makes", async () => {
+  const storage = new Storage();
+  const owner = new PageRecords({ storage });
+  const { factory, made } = stubFactory(owner);
+  let refusal;
+  const live = new BufferedRecordStore(new RemoteRecordSink(guardStubs(factory, () => refusal)));
+  await live.save("tree/first", bytes("one"));
+  await live.flush();
+  made[0].breakNext = true;
+  await live.save("tree/second", bytes("two"));
+  await assert.rejects(live.flush(), { retryable: true });
+  // The object is abandoned: the replacement stub refuses the write too.
+  refusal = Object.assign(Error("Page object was reset"), { status: 503 });
+  await assert.rejects(live.flush(), /Page object was reset/);
+  assert.ok(made.length >= 2, "the gate refused on a fresh stub");
+  assert.deepEqual(
+    made.slice(1).flatMap((stub) => stub.calls),
+    [],
+    "no write reached PageRecords",
+  );
+  assert.equal(live.dirty, true);
+  refusal = undefined;
+  await live.flush();
+  assert.equal(live.dirty, false);
+});

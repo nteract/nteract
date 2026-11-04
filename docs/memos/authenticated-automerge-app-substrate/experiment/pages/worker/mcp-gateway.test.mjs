@@ -395,3 +395,64 @@ test("a location view that outlasts the tool deadline returns 504, not the raw l
   assert.equal(text.includes(parentId), false);
   assert.equal(text.includes("Placed"), false);
 });
+
+test("a Page stub's thrown overload or transient error reaches HTTP and MCP callers as a retryable code", async (t) => {
+  const auth = await createAuthFixture();
+  t.mock.method(globalThis, "fetch", auth.fetch);
+  t.mock.method(console, "warn", () => {});
+  t.mock.method(console, "error", () => {});
+  let thrown;
+  const env = {
+    ...auth.env,
+    NOTEBOOK_CLOUD_PUBLIC_ORIGIN: publicOrigin,
+    PAGES: answer(() => Promise.reject(thrown)),
+  };
+  const mcpRead = async () => {
+    const response = await worker.fetch(
+      new Request("http://127.0.0.1:9477/mcp", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${auth.apiKey()}`,
+          "Content-Type": "application/json",
+          Accept: "application/json, text/event-stream",
+        },
+        body: JSON.stringify({
+          jsonrpc: "2.0",
+          id: 1,
+          method: "tools/call",
+          params: { name: "read_page", arguments: { page_id: pageId } },
+        }),
+      }),
+      env,
+    );
+    assert.equal(response.status, 200);
+    const { result } = await response.json();
+    assert.equal(result.isError, true);
+    return result.structuredContent;
+  };
+  for (const [flags, code] of [
+    [{ overloaded: true }, "page_busy"],
+    [{ retryable: true }, "page_transient_failure"],
+  ]) {
+    thrown = Object.assign(Error("Durable Object infrastructure error"), flags);
+    const response = await readPage(auth, env);
+    assert.equal(response.status, 503, code);
+    assert.equal(response.headers.get("retry-after"), "1");
+    const body = await response.json();
+    assert.equal(body.code, code);
+    assert.equal(body.retryable, true);
+    const tool = await mcpRead();
+    assert.equal(tool.code, code);
+    assert.equal(tool.retryable, true);
+  }
+  // A plain thrown error keeps its old answer: a 500 server_error.
+  thrown = Error("example error");
+  const failed = await readPage(auth, env);
+  assert.equal(failed.status, 500);
+  const body = await failed.json();
+  assert.equal(body.code, "server_error");
+  assert.equal(body.retryable, undefined);
+  const tool = await mcpRead();
+  assert.equal(tool.code, "server_error");
+  assert.equal(tool.retryable, undefined);
+});

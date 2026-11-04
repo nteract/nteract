@@ -1532,6 +1532,24 @@ refusal `503 page_busy` with `retryable: true`, `retry_after_ms` and a
 `Retry-After` header ([host-busy.mjs](worker/host-busy.mjs)); a refused request
 did no work, so the same request, key and token can be sent again.
 
+Cloudflare reports the same conditions by throwing from the stub fetch
+([error handling](https://developers.cloudflare.com/durable-objects/best-practices/error-handling/)).
+Past its soft per-object limit it queues, then throws an Error with
+`overloaded: true`; a transient failure such as a lost connection or a reset
+throws one with `retryable: true`. The gateway's stub wrapper answers both as
+JSON refusals instead of its generic `500`. An overload is `503 page_busy`,
+like celld's refusal: the object did not run the request, and `Retry-After`
+gives the backoff Cloudflare asks for. A transient failure is
+`503 page_transient_failure` with `retryable: true`, `retry_after_ms` and
+`Retry-After`; the object may have started the request, so its message says to
+retry with the same key and token, and to read back first for a tokenless
+write. Any other thrown error is unchanged. Each mapped error logs
+`host.overloaded` or `host.transient_failure` with the binding name only. MCP
+passes both codes through, and the viewer treats any retryable `503` as an
+outage and retries with backoff. The
+[Cloudflare portability audit](https://pages.runtimed.run/p/460c48f0-dc4b-4702-af82-59910e6bebd0)
+(sections 6 and 7) covers both cases.
+
 The host keeps its own holds short. Record persistence waits one second after a
 write before flushing, so a tool write stays counted for about a second. Agent
 presence sets no timer: its entries carry `idle_at` and `expires_at`, the host
@@ -1586,7 +1604,17 @@ supplies the missing parents.
 
 Every `PageRecords` request settles within 20 seconds. An unanswered batch stays
 pending for the next flush, and a request waiting on it fails with a retryable
-`503 record_persistence_timeout`. Tool requests to a Catalog or Page answer
+`503 record_persistence_timeout`. The sink builds its `PageRecords` stubs from a
+factory. It reuses one stub while it answers, so consecutive batches keep that
+stub's delivery order, and drops it after a fetch throws or misses its
+deadline; the next request gets a fresh stub. On Cloudflare a stub that threw
+can stay broken and fail every later call at once
+([error handling](https://developers.cloudflare.com/durable-objects/best-practices/error-handling/));
+a sink that kept it would never flush again while its replica grew toward the
+48 MiB cap. An HTTP error answer keeps the stub. The storage gate that refuses
+an abandoned object's writes wraps every stub the factory makes
+(`guardStubs` in [storage-guard.mjs](worker/storage-guard.mjs)). Every other
+Durable Object call in the Worker gets its stub per request. Tool requests to a Catalog or Page answer
 within 60 seconds; a slower one returns `504 request_timeout` while the host
 finishes the work it accepted. For a read, a progress renewal or clear
 (`progress_id` and `lease_token` name the session) or a write that carried a
@@ -2234,8 +2262,10 @@ action on a missing thread, message or block is `400 invalid_comment_selector`
 (a `thread_ids` batch adds `not_found_thread_ids`). A full account is
 `409 page_quota_exceeded` and a full Trash `409 trash_capacity`; both carry
 `limit` and `count` (see Page quotas).
-A Page at celld's per-cell request limit is `503 page_busy` with `retryable: true`
-and `retry_after_ms` (see Request limits).
+A Page at celld's per-cell request limit, or one Cloudflare reports overloaded,
+is `503 page_busy` with `retryable: true` and `retry_after_ms`. A transient
+Cloudflare failure between the gateway and an object is
+`503 page_transient_failure`, also retryable (see Request limits).
 An MCP result has no HTTP status, so [mcp.mjs](mcp.mjs) names any refusal the
 Worker left uncoded by its status (`access_denied`, `not_found`, `conflict` and
 so on). It adds `retryable: true` to `stale_heads`, whose retry is a new request

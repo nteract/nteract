@@ -14,6 +14,15 @@
  * `legibleHostRefusal` turns that body into the JSON refusal shape every other
  * Pages error uses, with a stable code and a retry hint. A refused request did
  * no work, so a retry with the same idempotency_key and retry_token is safe.
+ *
+ * Cloudflare reports the same conditions differently: the stub fetch throws.
+ * An overloaded object throws an Error with `overloaded: true`, and a
+ * transient failure (a lost connection, a reset or code update) throws one
+ * with `retryable: true`
+ * (developers.cloudflare.com/durable-objects/best-practices/error-handling/).
+ * `legibleHostError` answers those two with JSON refusals too, so a thrown
+ * overload is `page_busy` rather than the gateway's generic 500. Every other
+ * thrown error is rethrown unchanged.
  */
 
 export const HOST_BUSY_TEXT = "cell request limit reached";
@@ -25,6 +34,20 @@ export const PAGE_BUSY = Object.freeze({
     "This Page is answering as many requests as it can right now; it did not run this one. Retry in a second with the same idempotency_key and retry_token.",
 });
 
+/** A transient failure between the gateway and an object. Unlike an
+ * overload, the object may have started the request, so only a retry that
+ * replays its receipt is blind. */
+export const PAGE_TRANSIENT_FAILURE = Object.freeze({
+  code: "page_transient_failure",
+  status: 503,
+  retryAfterMs: 1000,
+  message:
+    "This Page's host failed before it answered, for example while it restarted. Retry with the same idempotency_key and retry_token. A write without a retry_token may have completed: read back and reconcile before retrying.",
+});
+
+/** Every code the gateway answers a saturated or failed object with. */
+export const HOST_REFUSAL_CODES = Object.freeze([PAGE_BUSY.code, PAGE_TRANSIENT_FAILURE.code]);
+
 /** Only a short plain-text 503 can be celld's refusal; a JSON body is ours. */
 function mayBeHostRefusal(response) {
   if (response.status !== PAGE_BUSY.status || response.body === null) return false;
@@ -34,17 +57,16 @@ function mayBeHostRefusal(response) {
   return length === null || Number(length) <= 128;
 }
 
-/** The JSON refusal for a Page or Catalog at its request limit. */
-export function pageBusyResponse({ retryAfterMs = PAGE_BUSY.retryAfterMs } = {}) {
+function refusalResponse(refusal, retryAfterMs) {
   return new Response(
     JSON.stringify({
-      error: PAGE_BUSY.message,
-      code: PAGE_BUSY.code,
+      error: refusal.message,
+      code: refusal.code,
       retryable: true,
       retry_after_ms: retryAfterMs,
     }),
     {
-      status: PAGE_BUSY.status,
+      status: refusal.status,
       headers: {
         "content-type": "application/json",
         "retry-after": String(Math.max(1, Math.ceil(retryAfterMs / 1000))),
@@ -52,6 +74,38 @@ export function pageBusyResponse({ retryAfterMs = PAGE_BUSY.retryAfterMs } = {})
       },
     },
   );
+}
+
+/** The JSON refusal for a Page or Catalog at its request limit. */
+export function pageBusyResponse({ retryAfterMs = PAGE_BUSY.retryAfterMs } = {}) {
+  return refusalResponse(PAGE_BUSY, retryAfterMs);
+}
+
+/** The JSON refusal for a transient failure between the gateway and an
+ * object. */
+export function pageTransientFailureResponse({
+  retryAfterMs = PAGE_TRANSIENT_FAILURE.retryAfterMs,
+} = {}) {
+  return refusalResponse(PAGE_TRANSIENT_FAILURE, retryAfterMs);
+}
+
+/** The refusal for an error a stub fetch threw, or the error rethrown.
+ * `overloaded` wins over `retryable`: an overloaded object did not run the
+ * request, and Cloudflare says not to retry one at once, which page_busy's
+ * Retry-After covers. `binding` names the namespace in the log line; nothing
+ * from the error's message is logged. */
+export function legibleHostError(error, binding) {
+  const overloaded = error?.overloaded === true;
+  if (!overloaded && error?.retryable !== true) throw error;
+  console.warn(
+    JSON.stringify({
+      service: "nteract-pages-native",
+      event: overloaded ? "host.overloaded" : "host.transient_failure",
+      ...(typeof binding === "string" && { binding }),
+      timestamp: new Date().toISOString(),
+    }),
+  );
+  return overloaded ? pageBusyResponse() : pageTransientFailureResponse();
 }
 
 /**
@@ -68,24 +122,26 @@ export async function legibleHostRefusal(response) {
 }
 
 /** Wrap a Durable Object namespace so every stub fetch through it answers
- * celld's refusal legibly. Other methods and properties pass through. */
-export function legibleNamespace(namespace) {
+ * celld's refusal, and Cloudflare's thrown overload and transient errors,
+ * legibly. Other methods and properties pass through. */
+export function legibleNamespace(namespace, binding) {
   if (!namespace || typeof namespace !== "object") return namespace;
   return new Proxy(namespace, {
     get(target, property) {
       const value = Reflect.get(target, property, target);
       if (typeof value !== "function") return value;
       if (property === "getByName" || property === "get")
-        return (...args) => legibleStub(value.apply(target, args));
+        return (...args) => legibleStub(value.apply(target, args), binding);
       return value.bind(target);
     },
   });
 }
 
-function legibleStub(stub) {
+function legibleStub(stub, binding) {
   if (!stub || typeof stub !== "object") return stub;
   const legible = (response) =>
     mayBeHostRefusal(response) ? legibleHostRefusal(response) : response;
+  const thrown = (error) => legibleHostError(error, binding);
   return new Proxy(stub, {
     get(target, property) {
       const value = Reflect.get(target, property, target);
@@ -94,8 +150,13 @@ function legibleStub(stub) {
       // No extra turn for an answer that isn't the refusal: the caller's
       // deadline and body reader see the response as soon as the stub has it.
       return (...args) => {
-        const result = value.apply(target, args);
-        return typeof result?.then === "function" ? result.then(legible) : legible(result);
+        let result;
+        try {
+          result = value.apply(target, args);
+        } catch (error) {
+          return Promise.resolve().then(() => thrown(error));
+        }
+        return typeof result?.then === "function" ? result.then(legible, thrown) : legible(result);
       };
     },
   });
@@ -111,7 +172,8 @@ export function legibleEnv(env) {
   return new Proxy(env, {
     get(target, property, receiver) {
       if (!LEGIBLE_NAMESPACES.has(property)) return Reflect.get(target, property, receiver);
-      if (!wrapped.has(property)) wrapped.set(property, legibleNamespace(target[property]));
+      if (!wrapped.has(property))
+        wrapped.set(property, legibleNamespace(target[property], property));
       return wrapped.get(property);
     },
   });

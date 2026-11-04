@@ -230,10 +230,33 @@ export function recordPersistenceTimeout() {
   );
 }
 
+/**
+ * The Page's client for its PageRecords object.
+ *
+ * `stubs` is a factory that returns a new PageRecords stub, or one stub for a
+ * caller that never needs another. On Cloudflare a stub whose fetch threw can
+ * stay broken: every later call on it fails at once
+ * (developers.cloudflare.com/durable-objects/best-practices/error-handling/).
+ * A sink that kept that stub could never flush again, and its replica would
+ * grow to its cap. So the sink reuses one stub while it answers, which keeps
+ * the stub's in-order delivery for consecutive batches, and drops it after a
+ * fetch throws or misses its deadline. The next request asks the factory for
+ * a fresh one. An HTTP error answer is not a broken stub and keeps it.
+ */
 export class RemoteRecordSink {
-  constructor(stub, { timeoutMs = RECORD_REQUEST_TIMEOUT_MS } = {}) {
-    this.stub = stub;
+  constructor(stubs, { timeoutMs = RECORD_REQUEST_TIMEOUT_MS } = {}) {
+    this.stubs = typeof stubs === "function" ? stubs : () => stubs;
     this.timeoutMs = timeoutMs;
+    this.current = undefined;
+  }
+  /** The stub for the next request: the current one, or a fresh one. */
+  stub() {
+    return (this.current ??= this.stubs());
+  }
+  /** Drop `stub` if it is still current, so the next request gets a new one.
+   * A request that started on an older stub never drops a newer one. */
+  discard(stub) {
+    if (this.current === stub) this.current = undefined;
   }
   /** Every PageRecords request settles: an unanswered one rejects after
    * `timeoutMs` and aborts its request, and the caller keeps its pending
@@ -244,19 +267,27 @@ export class RemoteRecordSink {
    */
   async request(url, init, read) {
     const abort = new AbortController();
+    const stub = this.stub();
     let timer;
     const deadline = new Promise((_, reject) => {
       timer = setTimeout(() => {
+        this.discard(stub);
         reject(recordPersistenceTimeout());
         abort.abort();
       }, this.timeoutMs);
     });
+    const answer = async () => {
+      let response;
+      try {
+        response = await stub.fetch(new Request(url, { ...init, signal: abort.signal }));
+      } catch (error) {
+        this.discard(stub);
+        throw error;
+      }
+      return read(response);
+    };
     try {
-      return await Promise.race([
-        (async () =>
-          read(await this.stub.fetch(new Request(url, { ...init, signal: abort.signal }))))(),
-        deadline,
-      ]);
+      return await Promise.race([answer(), deadline]);
     } finally {
       clearTimeout(timer);
     }

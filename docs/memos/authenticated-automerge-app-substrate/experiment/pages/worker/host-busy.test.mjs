@@ -2,8 +2,11 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
   HOST_BUSY_TEXT,
+  HOST_REFUSAL_CODES,
   PAGE_BUSY,
+  PAGE_TRANSIENT_FAILURE,
   legibleEnv,
+  legibleHostError,
   legibleHostRefusal,
   legibleNamespace,
 } from "./host-busy.mjs";
@@ -98,4 +101,123 @@ test("legibleEnv wraps the object namespaces the gateway forwards to and nothing
   assert.equal(legible.DB, env.DB);
   assert.equal(legible.PAGES_EDITOR, "wordgard");
   assert.equal(legibleEnv({}).PAGES, undefined);
+});
+
+/** Cloudflare's infrastructure errors: an Error with flags, thrown by fetch. */
+const cloudflareError = (message, flags) => Object.assign(new Error(message), flags);
+
+test("a thrown overload or transient error answers as a JSON refusal; other errors are unchanged", async (t) => {
+  const logged = [];
+  t.mock.method(console, "warn", (line) => logged.push(JSON.parse(line)));
+  let next;
+  const legible = legibleNamespace(
+    {
+      getByName: () => ({
+        fetch() {
+          const error = next();
+          if (error.sync) throw error;
+          return Promise.reject(error);
+        },
+      }),
+    },
+    "PAGES",
+  );
+  const send = (error) => {
+    next = () => error;
+    return legible.getByName("p").fetch(new Request("https://pages.internal/x"));
+  };
+
+  for (const sync of [false, true]) {
+    const overloaded = cloudflareError("Durable Object is overloaded. Too many requests queued.", {
+      overloaded: true,
+      sync,
+    });
+    const busy = await send(overloaded);
+    assert.equal(busy.status, 503);
+    assert.equal(busy.headers.get("retry-after"), "1");
+    const body = await busy.json();
+    assert.equal(body.code, PAGE_BUSY.code);
+    assert.equal(body.retryable, true);
+    assert.equal(body.retry_after_ms, PAGE_BUSY.retryAfterMs);
+
+    const lost = await send(cloudflareError("Network connection lost.", { retryable: true, sync }));
+    assert.equal(lost.status, 503);
+    assert.equal(lost.headers.get("retry-after"), "1");
+    assert.equal(lost.headers.get("content-type"), "application/json");
+    const transient = await lost.json();
+    assert.equal(transient.code, PAGE_TRANSIENT_FAILURE.code);
+    assert.equal(transient.retryable, true);
+    assert.match(transient.error, /read back and reconcile/);
+  }
+
+  // An overload that is also marked retryable did not run: page_busy.
+  const both = await send(cloudflareError("overloaded", { overloaded: true, retryable: true }));
+  assert.equal((await both.json()).code, PAGE_BUSY.code);
+
+  // Anything else reaches the caller as it was thrown, the same object.
+  for (const error of [
+    new Error("example error"),
+    cloudflareError("remote", { remote: true }),
+    cloudflareError("not retryable", { retryable: false, overloaded: false }),
+    Object.assign(new DOMException("aborted", "AbortError"), {}),
+  ]) {
+    await assert.rejects(send(error), (thrown) => thrown === error);
+    await assert.rejects(send(Object.assign(error, { sync: true })), (thrown) => thrown === error);
+  }
+
+  // Each refusal logs one content-free line naming the binding.
+  assert.deepEqual(
+    logged.map(({ event, binding }) => [event, binding]),
+    [
+      ["host.overloaded", "PAGES"],
+      ["host.transient_failure", "PAGES"],
+      ["host.overloaded", "PAGES"],
+      ["host.transient_failure", "PAGES"],
+      ["host.overloaded", "PAGES"],
+    ],
+  );
+  assert.ok(logged.every((line) => !JSON.stringify(line).includes("Network")));
+});
+
+test("legibleHostError is the mapping the stub wrapper uses", async (t) => {
+  t.mock.method(console, "warn", () => {});
+  assert.equal(
+    (await legibleHostError(cloudflareError("x", { overloaded: true })).json()).code,
+    "page_busy",
+  );
+  assert.equal(
+    (await legibleHostError(cloudflareError("x", { retryable: true })).json()).code,
+    "page_transient_failure",
+  );
+  const plain = new Error("plain");
+  assert.throws(
+    () => legibleHostError(plain),
+    (thrown) => thrown === plain,
+  );
+  assert.throws(
+    () => legibleHostError(undefined),
+    (thrown) => thrown === undefined,
+  );
+  assert.deepEqual(HOST_REFUSAL_CODES, ["page_busy", "page_transient_failure"]);
+});
+
+test("legibleEnv maps thrown errors for every namespace it wraps and leaves PAGE_RECORDS raw", async (t) => {
+  t.mock.method(console, "warn", () => {});
+  const overloaded = cloudflareError("overloaded", { overloaded: true });
+  const stub = { fetch: async () => Promise.reject(overloaded) };
+  const env = {
+    PAGES: { getByName: () => stub },
+    CATALOGS: { getByName: () => stub },
+    PROJECTS: { getByName: () => stub },
+    PAGE_RECORDS: { getByName: () => stub },
+  };
+  const legible = legibleEnv(env);
+  for (const name of ["PAGES", "CATALOGS", "PROJECTS"]) {
+    const response = await legible[name].getByName("x").fetch(new Request("https://p.internal"));
+    assert.equal((await response.json()).code, "page_busy", name);
+  }
+  await assert.rejects(
+    legible.PAGE_RECORDS.getByName("x").fetch(new Request("https://p.internal")),
+    (thrown) => thrown === overloaded,
+  );
 });

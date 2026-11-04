@@ -111,7 +111,7 @@ import {
 } from "./operation-journal.mjs";
 import { BufferedRecordStore, RemoteRecordSink } from "./record-persistence.mjs";
 import { RecordMaintenance } from "./record-maintenance.mjs";
-import { guardContext, guardStub } from "./storage-guard.mjs";
+import { guardContext, guardStubs } from "./storage-guard.mjs";
 import {
   HOST_SENDER_ID,
   PlainSync,
@@ -3430,6 +3430,19 @@ export class Page {
     return (this.bootError ||= abandonedError());
   }
 
+  /** A sink for this Page's PageRecords object. PageRecords is this host's
+   * record storage, so the same gate refuses its writes once the object is
+   * abandoned. The sink asks for a new stub after one throws, and the gate
+   * wraps each one. */
+  pageRecordsSink(pageId) {
+    return new RemoteRecordSink(
+      guardStubs(
+        () => this.env.PAGE_RECORDS.getByName(pageId),
+        () => this.storageRefusal(),
+      ),
+    );
+  }
+
   /** Throw when this object was abandoned (page-startup's `abandoned`). The
    * storage guard refuses every write anyway; these checks end the boot early,
    * before work whose writes would only be refused. */
@@ -4216,21 +4229,12 @@ export class Page {
         });
         const recordStore =
           metadata?.recordStorage === "buffered"
-            ? new BufferedRecordStore(
-                new RemoteRecordSink(
-                  // PageRecords is this host's record storage: the same
-                  // gate refuses its writes once the object is abandoned.
-                  guardStub(this.env.PAGE_RECORDS.getByName(metadata.pageId), () =>
-                    this.storageRefusal(),
-                  ),
-                ),
-                {
-                  onDirty: (record) => {
-                    this.recordMaintenance?.recordWrite(record);
-                    this.schedulePersistence();
-                  },
+            ? new BufferedRecordStore(this.pageRecordsSink(metadata.pageId), {
+                onDirty: (record) => {
+                  this.recordMaintenance?.recordWrite(record);
+                  this.schedulePersistence();
                 },
-              )
+              })
             : new DurableByteStore(ctx.storage);
         if (recordStore.ready) await recordStore.ready;
         const actorAuthorship = new ActorAuthorship({
@@ -5249,13 +5253,7 @@ export class Page {
    * Each step is idempotent, so a repeated deletion finishes the job. */
   async purgeMigratedRecords() {
     if (this.metadata.recordStorageMigratedFrom === "buffered" && this.env.PAGE_RECORDS) {
-      const records = new BufferedRecordStore(
-        new RemoteRecordSink(
-          guardStub(this.env.PAGE_RECORDS.getByName(this.metadata.pageId), () =>
-            this.storageRefusal(),
-          ),
-        ),
-      );
+      const records = new BufferedRecordStore(this.pageRecordsSink(this.metadata.pageId));
       await records.ready;
       for (const key of await records.list("")) await records.remove(key);
       await records.flush();
