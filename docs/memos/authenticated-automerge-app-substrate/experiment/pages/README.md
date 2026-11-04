@@ -1443,8 +1443,11 @@ Automerge sync messages instead of Subduction. `PAGES_RECORD_STORAGE=automerge`
 gives that storage to every Page created through the API, and the session
 endpoint tells the browser to give it to Pages it creates; a registered draft
 keeps the storage its browser replica already uses (`record_storage` in the
-registration). Existing Pages keep the mode they were created with, and a
-Page never changes mode.
+registration). A host without the flag refuses a plain draft with
+`409 record_storage_unsupported` before recording anything, so an older build
+never boots a plain Page it can't open; the browser moves the draft to a native
+replica under the same document ID and registers again. Existing Pages keep
+the mode they were created with, and a Page never changes mode.
 
 Both sides keep Repo 3 and run `AutomergeSyncBackend`
 ([sync/backend.mjs](sync/backend.mjs)), a `SedimentreeBackend` that keeps a

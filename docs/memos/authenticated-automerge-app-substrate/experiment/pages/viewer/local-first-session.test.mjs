@@ -268,6 +268,82 @@ test("an expired never-registered draft renews only retry authority after an aut
   assert.equal(session.doc.title, "Kept offline edits");
 });
 
+test("a plain draft the host refuses moves to native storage and registers again", async (t) => {
+  browser(t);
+  t.mock.method(PageSession.prototype, "retryConnection", async () => {});
+  const auth = authentication();
+  // The session endpoint advertised plain storage; the host's flag went off
+  // before registration.
+  const session = await PageSession.create(
+    { title: "Plain draft" },
+    { authentication: { ...auth, recordStorage: "automerge" }, refreshSession: async () => auth },
+  );
+  t.after(() => session.close());
+  assert.equal(session.recordStorage, "automerge");
+  assert.equal(session.localPage.registration.record_storage, "automerge");
+  await session.change((doc) => A.updateText(doc, ["title"], "Typed before the refusal"));
+  clearTimeout(session.savedTimer);
+  const documentId = session.handle.documentId;
+  const heads = A.getHeads(session.doc);
+  const original = structuredClone(session.localPage.registration);
+  const registrations = [];
+  let tokens = 0;
+  t.mock.method(globalThis, "fetch", async (url, options) => {
+    if (url === "/api/tools") return Response.json({ retry_token: `token-${++tokens}` });
+    assert.equal(url, "/api/pages/register");
+    const input = JSON.parse(options.body);
+    registrations.push(input);
+    if (input.record_storage === "automerge")
+      return Response.json(
+        {
+          error: "This host doesn't accept plain Automerge Pages",
+          code: "record_storage_unsupported",
+        },
+        { status: 409 },
+      );
+    return Response.json({ page_id: input.page_id, document_id: input.document_id });
+  });
+  await session.registerDraft();
+  assert.equal(registrations.length, 2);
+  const [refused, accepted] = registrations;
+  assert.equal(refused.record_storage, "automerge");
+  assert.equal(refused.retry_token, "token-1");
+  assert.equal("record_storage" in accepted, false);
+  assert.equal(accepted.retry_token, "token-2");
+  assert.ok(accepted.idempotency_key.startsWith(await retryKeyPrefix("token-2")));
+  assert.notEqual(accepted.idempotency_key, refused.idempotency_key);
+  // Same Page, document and immutable bootstrap.
+  for (const field of ["page_id", "document_id", "expected_principal", "title"])
+    assert.equal(accepted[field], original[field], field);
+  assert.equal(accepted.initial_snapshot_base64, original.initial_snapshot_base64);
+  // The live replica is native now, under the same document ID, with the edit.
+  assert.equal(session.recordStorage, "native");
+  assert.equal(session.handle.documentId, documentId);
+  assert.deepEqual(A.getHeads(session.doc), heads);
+  assert.equal(session.doc.title, "Typed before the refusal");
+  assert.equal(session.localPage.registered, true);
+  assert.equal(session.localPage.recordStorage, undefined);
+  const stored = await readLocalPage(auth.identity, session.pageId);
+  assert.equal(stored.recordStorage, undefined);
+  assert.equal(stored.registered, true);
+  assert.equal(stored.pending, true, "registration is not a receipt for the edit");
+  assert.deepEqual(stored.registration, accepted);
+  // This session's edits after the move still count as its own.
+  assert.ok(stored.localEdits.actors.some(({ actor }) => actor === session.actor()));
+  await session.change((doc) => A.updateText(doc, ["title"], "Typed after the move"));
+  clearTimeout(session.savedTimer);
+  await session.persistLocal();
+  await session.close();
+  const reopened = await PageSession.open(session.pageId, {
+    authentication: auth,
+    refreshSession: async () => auth,
+  });
+  t.after(() => reopened.close());
+  assert.equal(reopened.recordStorage, "native");
+  assert.equal(reopened.handle.documentId, documentId);
+  assert.equal(reopened.doc.title, "Typed after the move");
+});
+
 test("ambiguous or unauthorized expiry reconciliation preserves the draft and original request", async (t) => {
   for (const failure of [
     "offline",
