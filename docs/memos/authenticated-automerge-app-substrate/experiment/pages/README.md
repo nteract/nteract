@@ -1715,7 +1715,11 @@ nobody is using it ([worker/record-storage-migration.mjs](worker/record-storage-
 A host becomes eligible when a browser connects to it; when its last socket
 closes and no request runs for a quiet window (30 s, or
 `PAGES_MIGRATE_QUIET_MS`), it converts in place inside
-`blockConcurrencyWhile`, one Page at a time per node. A host booted only by
+`blockConcurrencyWhile`, one Page at a time per isolate: the module's slot is
+shared by its Page objects, not by other isolates on the node. A slot wait
+longer than 5 s skips with `slot_timeout`. An occupant older than 60 s can be
+replaced; this relaxes only the memory limit because Pages have separate objects.
+A host booted only by
 a listing check or an API call never converts, and nothing converts at boot.
 
 The conversion flushes the native host (the `PageRecords` sink too), takes
@@ -1727,7 +1731,17 @@ comment-blocked signing keys as blocked principals, then flips
 retires: its storage refuses writes, its native host closes, and it resets,
 so the next request boots plain. A Page with a journal entry pending, a
 conversion in progress, a blocked recovery or incomplete history is skipped
-and tried again after a doubling backoff (at most 6 h). A crash before the
+and tried again after a doubling backoff (at most 6 h). Backoff timers hold no
+`waitUntil` work, so an unused native host can be evicted. A browser connection
+leaves backoff even if its timer was dropped, keeping the attempt count.
+Three consecutive
+skips or failures pause migration until a new browser session on that object.
+The quiet window hands its hold to the conversion before releasing it; the
+conversion holds its slot wait and storage work until settlement. If more than
+20 s of the block deadline have elapsed before the selector put, it skips with
+`deadline_margin`. An abandoned conversion refuses writes at once but closes
+its native host only after a started conversion callback settles, or immediately
+if the callback never started. A crash before the
 flip leaves a Subduction Page, and the next attempt clears `plain/` first.
 Each attempt logs one `record_storage.migration` line.
 
@@ -1735,7 +1749,7 @@ Migration is one-way. Edits after the flip exist only in plain history, so
 flipping the record back would drop them. `recordStorageMigratedFrom` names the
 Subduction storage the Page left, which still holds its native records,
 unread, until the Page is deleted: deletion then removes `repo/*`,
-`host/actor/*` and `host/signer`, and for a buffered Page the `PageRecords`
+`host/actor/*`, `host/binding/*` and `host/signer`, and for a buffered Page the `PageRecords`
 object's records.
 
 A tab that held the Page on its native replica, offline say, finds plain
