@@ -332,12 +332,45 @@ try {
     )
     .toBe(true);
   await owner.keyboard.press("ArrowDown");
+  // Sideways arrows stay in the grid: their default (moving the editor caret
+  // in the contenteditable) is cancelled, focus doesn't leave the canvas, and
+  // Escape below still returns to the table. This table fits its frame, so
+  // nothing scrolls, and no header is shifted.
+  await owner.evaluate(() => {
+    window.__arrowDefaults = [];
+    window.addEventListener("keydown", (event) => {
+      if (event.key === "ArrowLeft" || event.key === "ArrowRight")
+        window.__arrowDefaults.push(event.defaultPrevented);
+    });
+  });
+  await owner.keyboard.press("ArrowRight");
+  await owner.keyboard.press("ArrowLeft");
+  assert.deepEqual(await owner.evaluate(() => window.__arrowDefaults), [true, true]);
+  assert.deepEqual(
+    await dropped.evaluate((frame) =>
+      [...frame.querySelectorAll(".wordgard-dataframe-canvas *")]
+        .filter((node) => node.scrollLeft !== 0)
+        .map((node) => node.className),
+    ),
+    [],
+    "an arrow scrolled something in a table that fits",
+  );
+  assert.equal(
+    await dropped.evaluate((frame) =>
+      frame.querySelector(".wordgard-dataframe-canvas")?.contains(document.activeElement),
+    ),
+    true,
+    "ArrowLeft/ArrowRight left the grid",
+  );
+  await expect(selected(dropped)).toHaveCount(1);
   await owner.keyboard.press("Escape");
   await expect(selected(dropped)).toHaveCount(1);
   await expect
     .poll(() => dropped.evaluate((frame) => frame.closest("wg-content") === document.activeElement))
     .toBe(true);
-  complete("Enter enters the grid; Escape returns to the table selected");
+  complete(
+    "Enter enters the grid; sideways arrows stay in it; Escape returns to the table selected",
+  );
 
   await other.locator(".wordgard-dataframe-title").click();
   await expect(selected(other)).toHaveCount(1);

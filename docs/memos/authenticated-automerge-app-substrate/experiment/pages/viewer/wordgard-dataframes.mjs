@@ -231,6 +231,7 @@ const dataframeTable = Widget.define({
   render(attrs, editor) {
     const frame = dataframeFrame(attrs);
     leaveGridOnEscape(editor, frame.dom);
+    keepArrowsInGrid(frame.dom);
     mounted.set(
       frame.dom,
       dataframeLifecycle({
@@ -315,6 +316,34 @@ function leaveGridOnEscape(editor, frame) {
     event.preventDefault();
     editor.focus();
     editor.dispatch({ selection: GardSelection.node(block.pos, block.node) });
+  });
+}
+
+/** How far ArrowLeft and ArrowRight scroll the grid sideways, in pixels. */
+export const GRID_ARROW_STEP = 40;
+
+/**
+ * ArrowLeft and ArrowRight inside the grid scroll it sideways. Sift's grid
+ * body handles the vertical keys itself (and prevents their default) but not
+ * these two. Left to the browser, an unhandled arrow inside the editor's
+ * contenteditable moves the DOM caret out of the table, and Wordgard follows
+ * it through selectionchange. Keys Sift took (a column header moving between
+ * headers, say) are left alone.
+ */
+function keepArrowsInGrid(frame) {
+  frame.addEventListener("keydown", (event) => {
+    if (event.defaultPrevented) return;
+    if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+    const canvas = event.target?.closest?.(".wordgard-dataframe-canvas");
+    if (!canvas) return;
+    event.preventDefault();
+    // Sift's viewport is the only element that scrolls the grid sideways, and
+    // only when the table is wider than the frame; Sift stretches a narrow
+    // table to fill it. Nothing else is scrolled: a header that clips its
+    // label also overflows, and moving it would shift the label for good.
+    const viewport = canvas.querySelector(".sift-viewport");
+    if (viewport && viewport.scrollWidth > viewport.clientWidth)
+      viewport.scrollLeft += event.key === "ArrowRight" ? GRID_ARROW_STEP : -GRID_ARROW_STEP;
   });
 }
 
