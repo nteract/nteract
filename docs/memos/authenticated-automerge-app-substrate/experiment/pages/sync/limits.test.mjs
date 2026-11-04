@@ -136,7 +136,7 @@ test("an ephemeral message over the cap is refused and never fanned out", async 
   );
 });
 
-test("previews the host doesn't adopt are freed, and so is the live doc an adopted one replaces", async () => {
+test("unused previews are freed, but borrowed roots survive replacement", async () => {
   const { h, id, base } = await setup();
   const editor = raw(h, { principal: "account:e", role: "editor", senderId: "e" });
   const send = async (changes, r) => {
@@ -148,8 +148,8 @@ test("previews the host doesn't adopt are freed, and so is the live doc an adopt
   let freed = h.stats.freed;
   const one = A.change(A.clone(base, { actor: "aa".repeat(16) }), (d) => (d.n = 1));
   assert.equal((await send([A.getLastLocalChange(one)], 1)).t, "sync");
-  assert.equal(h.stats.freed - freed, 1, "the replaced live doc");
-  assert.throws(() => A.getHeads(before), "the replaced live doc is unusable");
+  assert.equal(h.stats.freed - freed, 0, "the replaced live doc was borrowed");
+  assert.deepEqual(A.getHeads(before), A.getHeads(base));
   freed = h.stats.freed;
   // Re-sending held history: the preview has nothing new.
   assert.equal((await send([A.getLastLocalChange(one)], 2)).t, "sync");
@@ -193,8 +193,8 @@ test("a replacement from policy.admit is adopted; the preview it replaced, and a
   assert.equal(editor.frames[1].code, "io");
   assert.equal(
     h.stats.freed - freed,
-    3,
-    "the preview, its unstored replacement and the invalidated live doc",
+    2,
+    "the preview and its unstored replacement; the invalidated live doc was borrowed",
   );
   assert.throws(() => A.getHeads(replacement));
   assert.equal((await h.document(id)).n, 1);

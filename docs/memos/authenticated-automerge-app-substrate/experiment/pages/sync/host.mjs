@@ -34,7 +34,7 @@ import { RECEIVE_LIMITS, RECEIVE_OPEN, receiveStep } from "./receive-queue.mjs";
 // Each browser connection has a receive queue bound (receive-queue.mjs) and
 // an ephemeral payload cap; going over either refuses the frame and closes the
 // socket. Every preview the host doesn't adopt is freed, and so is the live
-// doc an adopted preview replaces: each is its own Automerge handle.
+// doc an adopted preview replaces, unless it was handed to a reader.
 
 /** Receive bounds per browser connection. */
 export const HOST_LIMITS = Object.freeze({
@@ -63,6 +63,26 @@ const WRITE_ROLES = {
   comments: ["owner", "editor", "commenter"],
 };
 const READ_ROLES = ["owner", "editor", "commenter", "viewer"];
+
+const DURABLE = Object.freeze({ status: "durable" });
+function durabilityStep(state, event) {
+  if (event.type === "failed")
+    return {
+      status: "failed",
+      error: event.error,
+      heads: [...new Set([...(state.heads ?? []), ...event.heads])],
+      pending: [
+        ...new Map(
+          [...(state.pending ?? []), ...event.changes].map((bytes) => [
+            A.decodeChange(bytes).hash,
+            bytes,
+          ]),
+        ).values(),
+      ],
+    };
+  if (event.type === "repaired") return DURABLE;
+  return state;
+}
 
 /** Lease expiry and role checks; the worker supplies its own policy. */
 export const defaultPolicy = {
@@ -100,6 +120,8 @@ export class SyncHost {
   #reserved = new Map();
   #docs = new Map();
   #conns = new Set();
+  #listeners = new Map();
+  #borrowed = new WeakSet();
   hostActorPrefix;
   stats = {
     admitted: 0,
@@ -139,6 +161,8 @@ export class SyncHost {
         loading: null,
         conns: new Map(),
         queue: Promise.resolve(),
+        durability: DURABLE,
+        publishedHeads: [],
         compaction: COMPACTION_READY,
       };
       this.#docs.set(id, doc);
@@ -160,15 +184,83 @@ export class SyncHost {
         throw error;
       }
       doc.live = next;
+      this.#repair(doc, next);
+      this.#committed(doc);
       this.#free(live);
     });
     return doc;
   }
 
-  /** The live document, loading it from storage if needed. */
+  /** Borrow the committed root synchronously; null until document(id) loads it.
+   * Readers must not mutate or free it. Clone before changing it. */
+  doc(id) {
+    return this.#borrow(this.#docs.get(id)?.live ?? null);
+  }
+
+  /** The borrowed live document, loading it from storage if needed. */
   async document(id) {
     const doc = this.#docs.get(id);
-    return doc ? this.#live(doc) : null;
+    return doc ? this.#borrow(await this.#live(doc)) : null;
+  }
+
+  on(event, listener) {
+    if (!this.#listeners.has(event)) this.#listeners.set(event, new Set());
+    this.#listeners.get(event).add(listener);
+    return this;
+  }
+
+  off(event, listener) {
+    this.#listeners.get(event)?.delete(listener);
+    return this;
+  }
+
+  /** Trusted host edits bypass browser policy, but share admission and storage.
+   * fn is synchronous; actor should be a fresh host-prefixed mutation actor. */
+  mutate(id, fn, { actor } = {}) {
+    return this.#mutate(id, (clone) => A.change(clone, fn), { actor });
+  }
+
+  /** Replay exact recorded bytes, including a dependency-reversed closure. */
+  applyChanges(id, changes) {
+    // Own the queued input; callers may reuse their journal buffers meanwhile.
+    const bytes = concat(changes);
+    return this.#mutate(id, (clone) => A.loadIncremental(clone, bytes));
+  }
+
+  #mutate(id, build, options) {
+    const doc = this.#docs.get(id);
+    if (!doc) return Promise.reject(new Error(`Unknown document ${id}`));
+    return this.#run(doc, async () => {
+      const live = await this.#live(doc);
+      const clone = A.clone(live, options);
+      let preview = clone;
+      let next;
+      try {
+        preview = build(clone);
+        next = await this.#admitPreview({ trusted: true }, doc, live, preview, {});
+        if (!next) return { heads: A.getHeads(live), changes: [] };
+        const changes = A.getChangesSince(next, A.getHeads(live));
+        const heads = A.getHeads(next);
+        doc.live = next;
+        this.#committed(doc);
+        this.#free(live);
+        await this.#compact(doc);
+        return { heads, changes };
+      } finally {
+        if (next !== preview) this.#free(preview);
+      }
+    });
+  }
+
+  /** Fence earlier work and retry pending trusted bytes. Failures clear only
+   * when their exact heads are contained in stored-and-adopted history. */
+  durable(id) {
+    const doc = this.#docs.get(id);
+    if (!doc) return Promise.reject(new Error(`Unknown document ${id}`));
+    return this.#run(doc, async () => {
+      this.#repair(doc, await this.#live(doc));
+      if (doc.durability.status === "failed") throw doc.durability.error;
+    });
   }
 
   /** Heads of the last durable commit (what /api/saved reports). */
@@ -286,8 +378,73 @@ export class SyncHost {
     }
   }
 
-  /** Free an Automerge handle the host no longer holds. */
+  #borrow(doc) {
+    // Roots/views share a WASM handle. Track that handle, not a JS root. Legacy
+    // doc() consumers retain snapshots across awaits without release callbacks,
+    // so exposed handles use Automerge's GC finalizer instead of explicit free.
+    // This keeps reads safe, but retained snapshots and delayed GC raise peak
+    // memory; the WeakSet itself does not keep retired handles alive.
+    if (doc) this.#borrowed.add(A.getBackend(doc));
+    return doc;
+  }
+
+  #emit(event, payload) {
+    // Snapshot subscriptions so listeners added during delivery wait for the next event.
+    const listeners = [...(this.#listeners.get(event) ?? [])];
+    for (const listener of listeners)
+      try {
+        listener(payload);
+      } catch {
+        /* Observers must not turn a durable commit into a failed write. */
+      }
+  }
+
+  #committed(doc, origin) {
+    const heads = A.getHeads(doc.live);
+    const before = doc.publishedHeads;
+    if (heads.length === before.length && heads.every((head) => before.includes(head))) return;
+    // Publication is independent of loading: an append can commit even when
+    // its response is lost. Reload must publish that history exactly once.
+    doc.publishedHeads = heads;
+    if (this.#listeners.get("change")?.size)
+      this.#emit("change", {
+        id: doc.id,
+        patches: A.diff(doc.live, before, heads),
+        heads,
+      });
+    this.#emit("heads-changed", { id: doc.id, heads });
+    this.#fanOut(doc, origin);
+  }
+
+  #repair(doc, live) {
+    if (doc.durability.status !== "failed") return;
+    if (A.hasHeads(live, doc.durability.heads))
+      doc.durability = durabilityStep(doc.durability, { type: "repaired" });
+    else
+      doc.durability = {
+        ...doc.durability,
+        pending: doc.durability.pending.filter(
+          (bytes) => !A.hasHeads(live, [A.decodeChange(bytes).hash]),
+        ),
+      };
+  }
+
+  async #retryPending(doc) {
+    if (!doc.durability.pending?.length) return;
+    const live = await this.#live(doc);
+    if (!doc.durability.pending?.length) return;
+    const next = await this.#admit({ trusted: true }, doc, live, doc.durability.pending, {});
+    if (!next) return;
+    doc.live = next;
+    this.#repair(doc, next);
+    this.#committed(doc);
+    this.#free(live);
+    await this.#compact(doc);
+  }
+
+  /** Free an unexposed Automerge handle the host no longer holds. */
   #free(automergeDoc) {
+    if (this.#borrowed.has(A.getBackend(automergeDoc))) return;
     try {
       A.free(automergeDoc);
       this.stats.freed++;
@@ -297,7 +454,12 @@ export class SyncHost {
   }
 
   #run(doc, work) {
-    const run = doc.queue.catch(() => {}).then(work);
+    const run = doc.queue
+      .catch(() => {})
+      .then(async () => {
+        await this.#retryPending(doc);
+        return work();
+      });
     doc.queue = run.catch(() => {});
     return run;
   }
@@ -313,6 +475,9 @@ export class SyncHost {
         doc.live = stored
           ? A.load(concat([stored.snapshot, ...stored.chunks].filter(Boolean)))
           : A.init();
+        this.#repair(doc, doc.live);
+        this.#committed(doc);
+        doc.loading = null;
         return doc.live;
       })
       .catch((error) => {
@@ -369,7 +534,7 @@ export class SyncHost {
       } catch {
         /* Reporting must not stop the sync. */
       }
-    this.#fanOut(doc, conn);
+    this.#committed(doc, conn);
     await this.#compact(doc);
   }
 
@@ -486,7 +651,18 @@ export class SyncHost {
       const extra = [...claims].map(([actor, claim]) => [ACTOR_PREFIX + actor, cbor.encode(claim)]);
       await this.store.append(doc.id, concat(fresh), A.getHeads(next), extra);
       for (const [actor, claim] of claims) this.#actors.set(actor, claim);
+      this.#repair(doc, next);
     } catch (error) {
+      // Only trusted attempts may be replayed without browser authorization.
+      // Keep our own bytes: callers can journal or modify error.changes.
+      const changes = conn.trusted ? fresh.map((bytes) => bytes.slice()) : [];
+      if (conn.trusted) error.changes = fresh.map((bytes) => bytes.slice());
+      doc.durability = durabilityStep(doc.durability, {
+        type: "failed",
+        error,
+        heads: A.getHeads(next),
+        changes,
+      });
       // A failed append may have committed before its response was lost.
       // Reload history and claims before another frame can compact or extend
       // the durable document; the pre-append live doc is not authoritative.
@@ -593,6 +769,8 @@ export class SyncHost {
       id: conn.trusted ? this.hostId : conn.senderId,
     };
     this.#join(conn, doc);
+    if (!conn.trusted)
+      this.#emit("ephemeral", { id: doc.id, senderId: sender.id, message: frame.e });
     for (const other of doc.conns.keys())
       if (other !== conn && this.#deliverable(other, doc))
         other.transport.send({ t: "eph", doc: doc.id, e: frame.e, sender });
