@@ -140,6 +140,39 @@ test("the store splits large objects into parts and reads them back", async () =
   assert.deepEqual(read.snapshot, blob);
 });
 
+test("an ambiguous host append reloads durable history and actor claims before the next frame", async () => {
+  const bytes = new MemoryByteStore();
+  const h = await host({ bytes });
+  const id = newId();
+  const base = A.from({ n: 0 });
+  await h.seed(id, "page", base);
+  const actor = "ac".repeat(16);
+  const one = A.change(A.clone(base, { actor }), (d) => {
+    d.n = 1;
+  });
+  const save = bytes.saveMany.bind(bytes);
+  bytes.saveMany = async (entries) => {
+    await save(entries);
+    throw Error("committed then failed");
+  };
+  const writer = raw(h, { principal: "account:a", role: "editor", senderId: "a" });
+  writer.link.client.send({ t: "sync", doc: id, m: syncHello([A.getLastLocalChange(one)]), r: 1 });
+  await until(() => writer.frames.length);
+  assert.equal(writer.frames[0].code, "io");
+  bytes.saveMany = save;
+  const two = A.change(one, (d) => {
+    d.n = 2;
+  });
+  const forger = raw(h, { principal: "account:b", role: "editor", senderId: "b" });
+  forger.link.client.send({ t: "sync", doc: id, m: syncHello([A.getLastLocalChange(two)]), r: 1 });
+  await until(() => forger.frames.length);
+  assert.equal(forger.frames[0].code, "actor_claimed");
+  assert.equal((await h.document(id)).n, 1);
+  writer.link.client.send({ t: "sync", doc: id, m: syncHello([A.getLastLocalChange(two)]), r: 2 });
+  await until(() => writer.frames.some((f) => f.r === 2));
+  assert.equal((await h.document(id)).n, 2);
+});
+
 // Regressions for the independent review of the experiment.
 
 test("one actor binds to one principal even across documents admitted at once", async () => {

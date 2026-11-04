@@ -258,6 +258,16 @@ export class PlainSync {
 
   /** Load claims and blocks, serve `documentIds`, and start the host's Repo. */
   async load(documentIds) {
+    const bytes = new PlainByteStore(this.storage);
+    const savedPrefix = await bytes.load("host-actor-prefix");
+    this.hostActorPrefix = savedPrefix
+      ? cbor.decode(savedPrefix)
+      : Array.from(crypto.getRandomValues(new Uint8Array(8)), (byte) =>
+          byte.toString(16).padStart(2, "0"),
+        ).join("");
+    if (!savedPrefix)
+      await bytes.saveMany([["host-actor-prefix", cbor.encode(this.hostActorPrefix)]]);
+    this.host.hostActorPrefix = this.hostActorPrefix;
     await this.host.load();
     for (const key of (await this.storage.list({ prefix: BLOCKED })).keys())
       this.blocked.add(key.slice(BLOCKED.length));

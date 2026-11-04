@@ -3853,6 +3853,7 @@ export class Page {
     try {
       await documentMutation({
         storage: this.ctx.storage,
+        hostActorPrefix: this.plain?.hostActorPrefix,
         admission: this.admission,
         handle: this.handle,
         operation: intent.operation,
@@ -3917,6 +3918,7 @@ export class Page {
         const page = this.handle.doc();
         await documentMutation({
           storage: this.ctx.storage,
+          hostActorPrefix: this.plain?.hostActorPrefix,
           admission: this.commentsAdmission,
           handle: this.commentsHandle,
           doc: COMMENTS_DOC,
@@ -3946,6 +3948,7 @@ export class Page {
       }
       await documentMutation({
         storage: this.ctx.storage,
+        hostActorPrefix: this.plain?.hostActorPrefix,
         admission: this.admission,
         handle: this.handle,
         operation: "migrate_comments_detach",
@@ -5417,6 +5420,7 @@ export class Page {
         await this.requireConverted();
         const receipt = await documentMutation({
           storage: this.ctx.storage,
+          hostActorPrefix: this.plain?.hostActorPrefix,
           admission: this.admission,
           handle: this.handle,
           operation: body.operation,
@@ -5557,6 +5561,7 @@ export class Page {
     let page;
     const receipt = await documentMutation({
       storage: this.ctx.storage,
+      hostActorPrefix: this.plain?.hostActorPrefix,
       admission: this.commentsAdmission,
       handle: this.commentsHandle,
       doc: COMMENTS_DOC,

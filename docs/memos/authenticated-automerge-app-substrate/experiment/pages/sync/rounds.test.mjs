@@ -31,7 +31,7 @@ class TestByteStore extends MemoryByteStore {
     if (this.failAt && --this.failAt === 0) throw new Error("injected compaction failure");
     if (this.failCompactions) {
       const manifest = cbor.decode(entries.at(-1)[1]);
-      if (manifest.snapshot && !manifest.chunks.length)
+      if (manifest.snapshot && manifest.snapshot.seq === manifest.seq)
         throw new Error("injected compaction failure");
     }
     return super.saveMany(entries);
