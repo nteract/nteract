@@ -16,6 +16,7 @@ import { ProjectList } from "./project-list.mjs";
 const idle = { name: "idle" };
 const recovering = (rearm = false, reruns = 0) => ({ name: "recovering", rearm, reruns });
 const refused = { type: "refused" };
+const other = { type: "other" };
 const settled = { type: "settled" };
 
 const ROWS = [
@@ -36,6 +37,18 @@ const ROWS = [
     state: recovering(),
     event: refused,
     expect: { state: recovering(true), effects: [{ type: "forget" }] },
+  },
+  {
+    label: "another account's answer starts a check and forgets nothing",
+    state: idle,
+    event: other,
+    expect: { state: recovering(), effects: [{ type: "check" }] },
+  },
+  {
+    label: "another account's answer during a check rearms it",
+    state: recovering(false, 1),
+    event: other,
+    expect: { state: recovering(true, 1), effects: [] },
   },
   {
     label: "a check with nothing since is done",
@@ -185,4 +198,29 @@ test("a stopped recovery runs nothing more", async () => {
   await settle();
   assert.equal(forgets(), 1);
   assert.equal(sessions.length, 1);
+});
+
+test("answers for another account recheck the session through the same bounded recovery", async () => {
+  const { recovery, calls, sessions, forgets, mostInFlight } = shell();
+  recovery.otherAccount();
+  recovery.otherAccount();
+  assert.equal(sessions.length, 1, "one check at a time");
+  assert.equal(forgets(), 0, "nothing was remembered for the other account");
+  // The session check says Alice, but every list_projects answers for Bob,
+  // and each answer reaches recovery again.
+  for (let round = 0; round < 10; round++) {
+    sessions.at(-1).resolve();
+    await settle();
+    const call = calls.at(-1);
+    if (call && !call.answered) {
+      call.answered = true;
+      recovery.otherAccount();
+      call.resolve({ projects: [], next_cursor: null, principal: "bob" });
+    }
+    await settle();
+  }
+  assert.equal(mostInFlight(), 1);
+  assert.equal(sessions.length, 1 + RECOVERY_RERUNS, "bounded by the cap");
+  assert.equal(recovery.state.name, "idle");
+  assert.equal(forgets(), 0);
 });

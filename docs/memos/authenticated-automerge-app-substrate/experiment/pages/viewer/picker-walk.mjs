@@ -4,10 +4,13 @@
  *
  * The picker lists every Page the account can open by walking list_pages'
  * cursors (page-list.mjs listAllPages). A walk belongs to one opening for one
- * account: closing the picker, or the shell forgetting what it remembers for
- * the account (sign-out, account change, a tool call refused as signed out),
- * cancels the walk and drops its rows. Nothing but `open` ever starts a walk,
- * so a walk that fails, a 401 included, can't start another.
+ * account: closing the picker, the shell forgetting what it remembers for the
+ * account (sign-out, account change), or a tool call refused as signed out
+ * cancels the walk and drops its rows. A refusal leaves the picker open with
+ * a message while the session check decides who is signed in: the shell
+ * closes it if the account changed or signed out, and otherwise it stays
+ * open saying why its rows went. Nothing but `open` ever starts a walk, so a
+ * walk that fails, a 401 included, can't start another.
  *
  * States:
  * - closed: nothing shows and nothing is in flight.
@@ -16,7 +19,8 @@
  * - refreshing: like loading, while the library's remembered first page
  *   (listing-cache.mjs, within its age limit) shows.
  * - ready: the walk's rows show.
- * - failed: the walk failed with `message`; no rows from the server show.
+ * - failed: the walk failed, or a tool call was refused as signed out, with
+ *   `message`; no rows from the server show.
  *
  * Events:
  * - open: show the picker for `principal` (never null) and walk under `key`.
@@ -25,6 +29,8 @@
  *   matches belongs to a walk this machine already cancelled.
  * - close: the person closed the picker, or the shell navigated.
  * - forget: the shell forgot the account's data.
+ * - refused: a tool call was refused as signed out (request.mjs
+ *   observeSignedOut). The rows go, and the picker says so.
  *
  * Effects: `fetch` walks under `key` for `principal`; `paint` shows the
  * remembered first page; `show` shows the settled walk's rows; `clear` drops
@@ -33,6 +39,7 @@
  */
 import { defineMachine, reject } from "../shared/machine.mjs";
 import { failureMessage } from "./alerts.mjs";
+import { ACCOUNT_CHANGED } from "./page-list.mjs";
 import { Store } from "./store.mjs";
 
 const check = (condition, message) => {
@@ -53,7 +60,7 @@ const event = (...keys) => shape("type", keys);
 export const pickerWalkSpec = Object.freeze({
   name: "picker-walk",
   states: ["closed", "loading", "refreshing", "ready", "failed"],
-  events: ["open", "loaded", "failed", "close", "forget"],
+  events: ["open", "loaded", "failed", "close", "forget", "refused"],
   cases: {
     "closed/open": ["fresh", "seeded"],
     "loading/loaded": ["current", "stale"],
@@ -75,6 +82,7 @@ export const pickerWalkSpec = Object.freeze({
       failed: event("key", "message"),
       close: event(),
       forget: event(),
+      refused: event(),
     },
     effects: {
       fetch: event("key", "principal"),
@@ -93,6 +101,11 @@ export const REJECT = Object.freeze({
   idle: "No walk is in flight",
   stale: "A walk this picker cancelled",
 });
+
+/** What the picker says once a tool call was refused as signed out. The
+ * shell closes it if the session check then finds another account or none. */
+export const SIGNED_OUT_MESSAGE =
+  "The server asked this tab to sign in again, so this list was cleared. Close Pages and open it again to retry.";
 
 const walking = (current) => current.name === "loading" || current.name === "refreshing";
 const CLOSE = Object.freeze([{ type: "cancel" }, { type: "clear" }]);
@@ -117,6 +130,13 @@ function transition(current, input) {
   if (input.type === "close" || input.type === "forget") {
     if (current.name === "closed") return reject(current, REJECT.closed);
     return { state: { name: "closed" }, effects: [...CLOSE] };
+  }
+  if (input.type === "refused") {
+    if (current.name === "closed") return reject(current, REJECT.closed);
+    return {
+      state: { name: "failed", principal: current.principal, message: SIGNED_OUT_MESSAGE },
+      effects: [...CLOSE, { type: "report", message: SIGNED_OUT_MESSAGE }],
+    };
   }
   if (!walking(current)) return reject(current, REJECT.idle);
   if (input.key !== current.key) return reject(current, REJECT.stale);
@@ -150,7 +170,8 @@ const CLOSED = Object.freeze({ state: pickerWalkMachine.initial, items: Object.f
  *   `{ pages, principal }`; it stops between pages once `signal` aborts.
  * - seed(principal): the library's remembered first page, or null.
  * - report(message): the picker's error line.
- * - onOtherAccount(): a walk was answered for another account; the shell
+ * - onOtherAccount(): a walk was answered for another account, or its pages
+ *   named different accounts (page-list.mjs ACCOUNT_CHANGED); the shell
  *   rechecks the session.
  *
  * A walk's answer shows only when it names the picker's account, or names no
@@ -193,6 +214,10 @@ export class PickerWalk {
   }
   forget() {
     return this.#dispatch({ type: "forget" });
+  }
+  /** A tool call was refused as signed out: drop the rows, stay open. */
+  refused() {
+    return this.#dispatch({ type: "refused" });
   }
   #dispatch(input) {
     const result = pickerWalkMachine.step(this.state, input);
@@ -256,6 +281,11 @@ export class PickerWalk {
       (error) => {
         if (signal.aborted) return;
         settled();
+        if (error?.code === ACCOUNT_CHANGED) {
+          this.#dispatch({ type: "failed", key, message: OTHER_ACCOUNT_MESSAGE });
+          this.#onOtherAccount();
+          return;
+        }
         this.#dispatch({ type: "failed", key, message: failureMessage(error) });
       },
     );

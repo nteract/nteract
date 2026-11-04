@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { listAllPages, matchingPages } from "./page-list.mjs";
+import { ACCOUNT_CHANGED, listAllPages, matchingPages } from "./page-list.mjs";
 
 test("search matches visible titles case-insensitively without changing catalog identity or order", () => {
   const pages = [
@@ -56,8 +56,9 @@ test("a walk stops between pages once cancelled, and refuses a change of account
   const controller = new AbortController();
   const asked = [];
   const walk = listAllPages(
-    async (operation, args) => {
+    async (operation, args, options) => {
       asked.push(args.cursor ?? null);
+      assert.equal(options.signal, controller.signal, "each request can be aborted");
       controller.abort(new DOMException("closed", "AbortError"));
       return { pages: [{ page_id: "a" }], next_cursor: "c1", principal: "alice" };
     },
@@ -73,6 +74,6 @@ test("a walk stops between pages once cancelled, and refuses a change of account
       next_cursor: page < 2 ? `c${++page}` : null,
       principal: page === 2 ? "bob" : "alice",
     })),
-    /account changed/,
+    { code: ACCOUNT_CHANGED, message: /account changed/ },
   );
 });

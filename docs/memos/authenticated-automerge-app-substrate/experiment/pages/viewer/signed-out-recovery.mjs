@@ -1,23 +1,29 @@
 /**
  * What the shell does when the server refuses a tool call as signed out (a
- * structured 401, request.mjs observeSignedOut), as a state machine.
+ * structured 401, request.mjs observeSignedOut), or answers one for another
+ * account than the tab's (another window signed in), as a state machine.
  *
- * Every refusal forgets what the tab remembers for the account at once. A
- * recovery then asks the session check who is signed in and, when it is the
- * same account, asks for the account's Projects again (`check`). One check
- * runs at a time. A refusal while one runs (its own list_projects, or any
- * other request) forgets again, which may drop the Projects the running
- * check asked for, so it sets `rearm`: when the check settles, it runs once
- * more. Reruns are capped at RECOVERY_RERUNS in a row, so a server that keeps
- * refusing costs at most 1 + RECOVERY_RERUNS checks before the machine is
- * idle again; only a new refusal starts another recovery.
+ * Every refusal forgets what the tab remembers for the account at once. An
+ * answer for another account forgets nothing: nothing remembers it (the
+ * listing cache, ProjectList and the Browse picker each refuse it). Either
+ * way a recovery then asks the session check who is signed in and, when it
+ * is the same account, asks for the account's Projects again (`check`). One
+ * check runs at a time. A refusal or another account's answer while one runs
+ * (its own list_projects, or any other request) sets `rearm`: a refusal
+ * forgets again, which may drop the Projects the running check asked for, so
+ * when the check settles, it runs once more. Reruns are capped at
+ * RECOVERY_RERUNS in a row, so a server that keeps refusing, or keeps
+ * answering for someone else, costs at most 1 + RECOVERY_RERUNS checks before
+ * the machine is idle again; only a new refusal or answer starts another
+ * recovery.
  *
  * States:
  * - idle: no check in flight.
  * - recovering: a check is in flight. `rearm` says a refusal arrived since it
  *   started; `reruns` counts the checks run again in this recovery.
  *
- * Events: `refused` (a 401), `settled` (the check finished, either way).
+ * Events: `refused` (a 401), `other` (an answer for another account),
+ * `settled` (the check finished, either way).
  *
  * Effects: `forget` (forgetAccountData), `check` (session check, then
  * Projects for the same account).
@@ -37,7 +43,7 @@ const only = (value, keys) => {
 export const recoverySpec = Object.freeze({
   name: "signed-out-recovery",
   states: ["idle", "recovering"],
-  events: ["refused", "settled"],
+  events: ["refused", "other", "settled"],
   cases: { "recovering/settled": ["done", "rerun", "spent"] },
   validate: {
     states: {
@@ -55,6 +61,7 @@ export const recoverySpec = Object.freeze({
     },
     events: {
       refused: (value) => only(value, ["type"]),
+      other: (value) => only(value, ["type"]),
       settled: (value) => only(value, ["type"]),
     },
     effects: {
@@ -74,6 +81,10 @@ function transition(current, input) {
           effects: [{ type: "forget" }, { type: "check" }],
         }
       : { state: { ...current, rearm: true }, effects: [{ type: "forget" }] };
+  if (input.type === "other")
+    return current.name === "idle"
+      ? { state: { name: "recovering", rearm: false, reruns: 0 }, effects: [{ type: "check" }] }
+      : { state: { ...current, rearm: true }, effects: [] };
   if (current.name === "idle") return reject(current, REJECT.idle);
   if (current.rearm && current.reruns < RECOVERY_RERUNS)
     return {
@@ -109,6 +120,10 @@ export class SignedOutRecovery {
   }
   refused() {
     this.#dispatch({ type: "refused" });
+  }
+  /** An answer named another account than the tab's. */
+  otherAccount() {
+    this.#dispatch({ type: "other" });
   }
   stop() {
     this.#stopped = true;

@@ -146,16 +146,19 @@ export function observeSignedOut(fn) {
   return () => signedOutObservers.delete(fn);
 }
 
-/** Call one Pages tool through /api/tools. */
-export async function tool(operation, args = {}) {
+/** Call one Pages tool through /api/tools. Once `signal` aborts, the call
+ * rejects with its reason and its answer is never read; a call its caller
+ * cancelled never counts as signed out, whatever the server answered. */
+export async function tool(operation, args = {}, { signal } = {}) {
   try {
     return await request("/api/tools", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ operation, arguments: args }),
+      ...(signal && { signal }),
     });
   } catch (error) {
-    if (error?.status === 401)
+    if (error?.status === 401 && !signal?.aborted)
       for (const observe of signedOutObservers) {
         try {
           observe(error);

@@ -435,7 +435,7 @@ test("a restarted host projects an unchanged title with the time it first observ
   const repeated = projections().slice(seen);
   assert.equal(repeated.length, 1, "the restart re-projects, as the first check always has");
   assert.equal(repeated[0].body.observed_at, initial.body.observed_at);
-  assert.equal(page.titleObservedAt, initial.body.observed_at);
+  assert.equal(page.titleObserved?.at, initial.body.observed_at);
   assert.deepEqual(rowTimes(), before, "the index row keeps its time");
 
   // A title change is a new observation.

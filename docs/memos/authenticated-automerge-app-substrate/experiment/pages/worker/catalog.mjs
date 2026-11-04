@@ -301,7 +301,7 @@ async function projectEntries(storage, pageId, current) {
     ...kept,
     page_id: pageId,
     title: catalogTitle(current.title ?? entry.title),
-    created_at: entry.created_at ?? current.trashed_at ?? now,
+    created_at: entry.created_at ?? trashTime(current.trashed_at) ?? now,
     updated_at: entry.updated_at && entry.updated_at > now ? entry.updated_at : now,
     lifecycle_revision: current.revision ?? 0,
   };

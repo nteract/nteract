@@ -27,7 +27,9 @@
  *
  * list_projects names the `principal` that answered. An answer for any other
  * account than the request's (another window signed in) settles as `failed`,
- * so it never shows as this account's Projects. An answer that names no
+ * so it never shows as this account's Projects, and `onOtherAccount` asks the
+ * shell to recheck who is signed in, as the library and the Browse picker do
+ * for a list_pages answer. An answer that names no
  * account (an older API, during a deploy) shows, as the library listing shows
  * such a page, but it is never authoritative past its own request: the next
  * request replaces it, and if that request fails the unverified Projects go
@@ -142,18 +144,21 @@ const EMPTY = Object.freeze({ principal: null, projects: Object.freeze([]), read
 
 /** Runs the machine against `call` (request.mjs `tool`). The store holds
  * `{ principal, projects, ready }`; `ready` is false until `principal`'s
- * first answer. */
+ * first answer. `onOtherAccount()` hears the current request answered for
+ * another account; a superseded one's answer says nothing. */
 export class ProjectList {
   store = new Store(EMPTY);
   #state = projectListMachine.initial;
   #call;
   #newKey;
+  #onOtherAccount;
   // The request the machine's state names: { key, promise }.
   #flight = null;
   #answer = null;
-  constructor({ call, newKey = () => crypto.randomUUID() }) {
+  constructor({ call, newKey = () => crypto.randomUUID(), onOtherAccount = () => {} }) {
     this.#call = call;
     this.#newKey = newKey;
+    this.#onOtherAccount = onOtherAccount;
   }
   get state() {
     return this.#state;
@@ -200,7 +205,7 @@ export class ProjectList {
         promise.then(
           (answer) => {
             if (answer?.principal && answer.principal !== this.#state.principal) {
-              this.#dispatch({ type: "failed", key });
+              if (this.#dispatch({ type: "failed", key })) this.#onOtherAccount();
               return;
             }
             this.#answer = answer;
