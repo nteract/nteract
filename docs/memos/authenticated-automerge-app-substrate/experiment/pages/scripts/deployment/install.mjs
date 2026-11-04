@@ -285,6 +285,7 @@ config.vars = {
   ...(profile.editor ? { PAGES_EDITOR: profile.editor } : {}),
   ...(profile.companyViewDomains ? { PAGES_COMPANY_VIEW_DOMAINS: profile.companyViewDomains } : {}),
   ...(profile.catalogIndex ? { PAGES_CATALOG_INDEX: profile.catalogIndex } : {}),
+  ...(profile.recordStorage ? { PAGES_RECORD_STORAGE: profile.recordStorage } : {}),
   ...(profile.pageQuota ? { PAGES_DEFAULT_PAGE_QUOTA: profile.pageQuota } : {}),
   NOTEBOOK_CLOUD_OIDC_FLOW: "server",
   NOTEBOOK_CLOUD_PUBLIC_ORIGIN: "https://" + expected.hostname,

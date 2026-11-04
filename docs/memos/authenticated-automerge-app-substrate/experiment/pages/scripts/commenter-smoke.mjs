@@ -14,6 +14,7 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { chromium, expect } from "@playwright/test";
 import * as A from "@automerge/automerge";
 import * as N from "@automerge/subduction";
+import { plainPeer } from "./plain-peer.mjs";
 import { closePeers, createPeer } from "../../backend.mjs";
 
 const origin = process.env.PAGES_ORIGIN || "http://localhost:9894";
@@ -79,6 +80,25 @@ async function nativeCommentsPeer(page) {
     headers,
   }).then((r) => r.json());
   assert.ok(discovery.commentsDocumentId, JSON.stringify(discovery));
+  const features = ["comments-doc", "horizontal-rule", "preserved-markdown-converted", "strike"];
+  if (discovery.recordStorage === "automerge") {
+    const plain = await plainPeer({
+      origin,
+      pageId,
+      cookie,
+      discovery,
+      features,
+    });
+    const handle = await plain.repo.find(discovery.commentsDocumentId);
+    return {
+      handle,
+      async change(fn) {
+        handle.change(fn);
+        await plain.repo.flush().catch(() => {});
+      },
+      close: () => plain.close(),
+    };
+  }
   const peer = createPeer({ seed: crypto.getRandomValues(new Uint8Array(32)) });
   const address = new URL(`/api/sync?page=${pageId}`, origin);
   address.protocol = "ws:";
@@ -312,7 +332,9 @@ try {
   await content(owner).click();
   await owner.keyboard.press("End");
   await owner.keyboard.type(" Still live.");
-  await expect(content(commenter)).toContainText("Still live.", { timeout: 10000 });
+  await expect(content(commenter)).toContainText("Still live.", {
+    timeout: 10000,
+  });
   // A comment the host writes reaches both open tabs.
   const live = await tool(owner, "manage_page_comment", {
     page_id: pageId,

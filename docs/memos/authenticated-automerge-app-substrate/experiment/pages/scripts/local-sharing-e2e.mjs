@@ -83,7 +83,11 @@ process.once("SIGINT", abort);
 process.once("SIGTERM", abort);
 function start(command, args, options = {}) {
   if (canceled) throw new Error("E2E interrupted");
-  const child = spawn(command, args, { cwd: app, stdio: "inherit", ...options });
+  const child = spawn(command, args, {
+    cwd: app,
+    stdio: "inherit",
+    ...options,
+  });
   children.add(child);
   child.once("exit", () => children.delete(child));
   return child;
@@ -152,7 +156,9 @@ try {
   await mkdir(runtime);
   // Whitelist build outputs. Never copy .dev.vars, .celld, or a deployable receipt.
   for (const name of ["public", "automerge.wasm", "subduction.wasm", "wrangler.json"])
-    await cp(path.join(app, "dist", name), path.join(runtime, name), { recursive: true });
+    await cp(path.join(app, "dist", name), path.join(runtime, name), {
+      recursive: true,
+    });
   const { keys, responses } = generateFixtureKeys();
   const keyFile = path.join(scratch, "fixture-keys.json");
   await writeFile(keyFile, JSON.stringify(keys), { mode: 0o600 });
@@ -219,6 +225,7 @@ try {
       PAGES_EDITOR: "wordgard",
       PAGES_ASYNC_PERSISTENCE: "true",
       PAGES_COMPACT_RECORDS: "true",
+      PAGES_RECORD_STORAGE: process.env.PAGES_RECORD_STORAGE ?? "",
       PAGES_CATALOG_INDEX: "1",
       NOTEBOOK_CLOUD_APP_SESSION_SECRET: randomBytes(32).toString("hex"),
       NOTEBOOK_CLOUD_LOCAL_OIDC: "true",
@@ -274,7 +281,9 @@ try {
       if (canceled || host.exitCode !== null || host.signalCode)
         throw new Error("Local celld stopped before qualification");
       try {
-        const response = await fetch(`${origin}/health`, { signal: AbortSignal.timeout(1000) });
+        const response = await fetch(`${origin}/health`, {
+          signal: AbortSignal.timeout(1000),
+        });
         if (response.ok && (await response.json()).prototype === "pages-celld-native") break;
       } catch {
         /* wait for local runtime startup */

@@ -108,6 +108,8 @@ import {
 } from "./operation-journal.mjs";
 import { BufferedRecordStore, RemoteRecordSink } from "./record-persistence.mjs";
 import { RecordMaintenance } from "./record-maintenance.mjs";
+import { HOST_SENDER_ID, PlainSync } from "./plain-sync.mjs";
+import { BLOCKING as BLOCKING_COMMENT_CODES } from "../sync/comments.mjs";
 import {
   ActorAuthorship,
   commitAuthor,
@@ -305,7 +307,13 @@ import {
   recordOf,
   summarizeReceipt,
 } from "./page-lifecycle.mjs";
-import { pageStartup, recordFallback, startupOf, storedTitleProjection } from "./page-startup.mjs";
+import {
+  RECORD_STORAGE_MODES,
+  pageStartup,
+  recordFallback,
+  startupOf,
+  storedTitleProjection,
+} from "./page-startup.mjs";
 
 const operations = new Set([
   "list_pages",
@@ -377,6 +385,31 @@ function logPreservedStuck(pageId, reason) {
     }),
   );
 }
+/** The record storage a new Page gets. `PAGES_RECORD_STORAGE=automerge` selects
+ * plain Automerge sync (worker/plain-sync.mjs); existing Pages keep the mode
+ * they were created with. */
+export function recordStorageFor(env) {
+  if (env.PAGES_RECORD_STORAGE === "automerge") return "automerge";
+  return nativeRecordStorage(env);
+}
+
+const nativeRecordStorage = (env) =>
+  env.PAGES_ASYNC_PERSISTENCE === "true" ? "buffered" : "local";
+
+/** A registered draft keeps the storage its browser replica already uses. */
+export function registeredRecordStorage(env, args) {
+  return args.record_storage === "automerge" ? "automerge" : nativeRecordStorage(env);
+}
+
+/** Viewer builds that speak plain Automerge sync send `sync=automerge` on
+ * the socket. An older build is refused an `automerge` Page's socket as
+ * schema_unsupported, which it shows as "Reload to update". Discovery stays
+ * open to every reader: scripts use it as an access probe. */
+function requirePlainSyncClient(request) {
+  if (new URL(request.url).searchParams.get("sync") === "automerge") return;
+  throw withAdmissionReason(schemaUnsupported(["automerge-sync"]), "schema_unsupported");
+}
+
 /** One structured line when the native per-author check refuses a comment
  * change: the Page, the rule it broke, never content. */
 function logCommentRefused(pageId, reason) {
@@ -489,7 +522,11 @@ function logCountRepair(counts) {
   );
 }
 /** Journal operation names for the Catalog's lifecycle routes. */
-const LIFECYCLE_OPERATIONS = { trash: "trash_page", restore: "restore_page", purge: "purge_page" };
+const LIFECYCLE_OPERATIONS = {
+  trash: "trash_page",
+  restore: "restore_page",
+  purge: "purge_page",
+};
 /** A request's base_heads as requireHeads judges them, or `absent` when the
  * request omitted them. The lifecycle machine decides what absence means. */
 function headsCheck(doc, heads) {
@@ -505,7 +542,11 @@ function headsCheck(doc, heads) {
 }
 const sameHeads = (left, right) =>
   left.length === right.length && [...left].sort().join() === [...right].sort().join();
-const publicIdentity = ({ principal, displayName, driver }) => ({ principal, displayName, driver });
+const publicIdentity = ({ principal, displayName, driver }) => ({
+  principal,
+  displayName,
+  driver,
+});
 /** Lifecycle arguments as the caller sent them. The Catalog alone sets the
  * compare-and-set controls it forwards to a Page. */
 const callerLifecycleArguments = ({
@@ -595,7 +636,11 @@ function forwarded(request, path, body) {
   const agent = agentLabel(request);
   if (agent) headers.set("x-pages-agent", agent);
   headers.set("content-type", "application/json");
-  return new Request(url, { method: "POST", headers, body: JSON.stringify(body) });
+  return new Request(url, {
+    method: "POST",
+    headers,
+    body: JSON.stringify(body),
+  });
 }
 
 const ANONYMOUS_MCP_METHODS = new Set(["tools/list", "ping"]);
@@ -650,7 +695,10 @@ function concatBytes(chunks, size) {
 }
 
 function authorizeImage(request, env, pageId, write) {
-  const internal = forwarded(request, "/internal/assets/authorize", { page_id: pageId, write });
+  const internal = forwarded(request, "/internal/assets/authorize", {
+    page_id: pageId,
+    write,
+  });
   // Only the host creates this request. Reauthenticate on every call so a grant
   // or Page permission revoked during a transfer cannot authorize its result.
   if (!internal.headers.has("origin"))
@@ -713,7 +761,11 @@ async function invoke(request, env, operation, args = {}, seen) {
       ...spaceOperations,
     ].includes(operation)
   ) {
-    const body = { operation, arguments: args, ...(await quotaFields(env, identity, operation)) };
+    const body = {
+      operation,
+      arguments: args,
+      ...(await quotaFields(env, identity, operation)),
+    };
     return withinToolDeadline(
       async (signal) =>
         bufferedResponse(
@@ -826,7 +878,11 @@ async function locationView(request, env, body, signal) {
   const chain = [];
   for (const [index, parent] of parents.entries()) {
     if (!parent || (parent.state && parent.state !== "active")) break;
-    chain.unshift({ kind: "page", page_id: ancestors[index], title: catalogTitle(parent.title) });
+    chain.unshift({
+      kind: "page",
+      page_id: ancestors[index],
+      title: catalogTitle(parent.title),
+    });
   }
   const reachedRoot = location.complete && chain.length === location.ancestors.length;
   if (location.parent_id && chain.at(-1)?.page_id === location.parent_id)
@@ -835,7 +891,9 @@ async function locationView(request, env, body, signal) {
     ? await readable(
         env.PROJECTS,
         location.space_id,
-        forwarded(request, "/internal/space/read", { space_id: location.space_id }),
+        forwarded(request, "/internal/space/read", {
+          space_id: location.space_id,
+        }),
       )
     : null;
   if (space) {
@@ -843,7 +901,12 @@ async function locationView(request, env, body, signal) {
     if (!location.parent_id) body.parent_id = null;
     if (location.home) body.home = true;
     // The whole chain is visible to whoever can read the Project in this build.
-    if (reachedRoot) chain.unshift({ kind: "space", space_id: space.space_id, title: space.title });
+    if (reachedRoot)
+      chain.unshift({
+        kind: "space",
+        space_id: space.space_id,
+        title: space.title,
+      });
     // The home Page stands for its Project; viewers may fold its crumb into
     // the Project's.
     for (const crumb of chain)
@@ -883,7 +946,11 @@ function toolUsage(request, surface, operation, args, kind = "tool") {
           outcome: response.ok ? "ok" : `http_${response.status}`,
           latencyMs: Date.now() - started,
         };
-        logUsage({ action: "tool.call", ...common, bytes: length || undefined });
+        logUsage({
+          action: "tool.call",
+          ...common,
+          bytes: length || undefined,
+        });
         if (name === "create_page" && response.ok && !replayed) {
           const body = await response.clone().json();
           logUsage({
@@ -928,7 +995,11 @@ const gateway = {
       if (url.pathname === "/connect") return connectAgentResponse(request, env);
       if (url.pathname === "/llms.txt") return agentGuideResponse(request, env);
       if (url.pathname === "/health")
-        return json({ ok: true, prototype: "pages-celld-native", ...buildAdvertisement() });
+        return json({
+          ok: true,
+          prototype: "pages-celld-native",
+          ...buildAdvertisement(),
+        });
       try {
         await sessionStoreReady(request, env);
       } catch (error) {
@@ -963,6 +1034,10 @@ const gateway = {
             ? {
                 identity: publicIdentity(identity),
                 editor: "wordgard",
+                // The storage a Page created in this browser should use.
+                ...(recordStorageFor(env) === "automerge" && {
+                  recordStorage: "automerge",
+                }),
                 canWrite: identity.canWrite,
                 expiresAt: identity.expiresAt,
               }
@@ -1146,7 +1221,9 @@ export class Catalog {
   }
   /** Storage that keeps the `page/` and `trash/` key counts (catalog.mjs). */
   get storage() {
-    return (this.counted ??= countedStorage(this.ctx.storage, { ctx: this.ctx }));
+    return (this.counted ??= countedStorage(this.ctx.storage, {
+      ctx: this.ctx,
+    }));
   }
   fetch(request) {
     // Location reads write nothing, so they never wait behind the queue. A
@@ -1289,7 +1366,9 @@ export class Catalog {
   async notifyTombstone(pageId) {
     try {
       await this.env.PAGES.getByName(pageId).fetch(
-        new Request("https://pages.internal/internal/tombstone", { method: "POST" }),
+        new Request("https://pages.internal/internal/tombstone", {
+          method: "POST",
+        }),
       );
     } catch (error) {
       logFailure(error, "catalog-tombstone");
@@ -1323,7 +1402,11 @@ export class Catalog {
         MIGRATION_REQUIRED,
       ),
       shape.name === "blocked" && {
-        details: { reason: shape.reason, page_id: shape.page_id, space_id: shape.space_id },
+        details: {
+          reason: shape.reason,
+          page_id: shape.page_id,
+          space_id: shape.space_id,
+        },
       },
     );
   }
@@ -1358,7 +1441,10 @@ export class Catalog {
         else if (contentOnly) {
           // A content-only report updates an entry that's already listed.
           if (previous && !previous.pending && contentMoved)
-            await this.storage.put(key, { ...previous, content_updated_at: content });
+            await this.storage.put(key, {
+              ...previous,
+              content_updated_at: content,
+            });
         } else if (
           value.keep_time === true &&
           previous &&
@@ -1368,7 +1454,10 @@ export class Catalog {
           // The host repeats an observation of the title this entry holds
           // (a restart, a retry): `updated_at` keeps its time.
           if (contentMoved)
-            await this.storage.put(key, { ...previous, content_updated_at: content });
+            await this.storage.put(key, {
+              ...previous,
+              content_updated_at: content,
+            });
         } else if (
           !previous?.pending &&
           !(await this.storage.get(`host/deleted/${value.page_id}`)) &&
@@ -1389,7 +1478,10 @@ export class Catalog {
           });
         } else if (previous && !previous.pending && contentMoved)
           // An older title observation still carries a newer content time.
-          await this.storage.put(key, { ...previous, content_updated_at: content });
+          await this.storage.put(key, {
+            ...previous,
+            content_updated_at: content,
+          });
         return json({ ok: true });
       }
       const identity = await authenticate(request, this.env);
@@ -1563,7 +1655,10 @@ export class Catalog {
       await markCatalogIndexDirty(this.storage);
       await this.storage.put({
         [key]: intent,
-        [`page/${pageId}`]: { ...created, title: catalogTitle(intent.receipt.title) },
+        [`page/${pageId}`]: {
+          ...created,
+          title: catalogTitle(intent.receipt.title),
+        },
       });
       await this.storage.sync();
       return json(intent.receipt);
@@ -1582,7 +1677,16 @@ export class Catalog {
   async runLifecycle(request, operation, args, { key, digest, inspected, limit }) {
     const storage = this.storage;
     const pageId = args.page_id;
-    const run = { request, operation, args, pageId, key, digest, retry: inspected.retry, limit };
+    const run = {
+      request,
+      operation,
+      args,
+      pageId,
+      key,
+      digest,
+      retry: inspected.retry,
+      limit,
+    };
     run.row = inspected.entry;
     let state = await intentState(storage, key, operation, pageId);
     let outcome;
@@ -1785,7 +1889,10 @@ export class Catalog {
         ? projectOf(await locationEntries(this.storage), location.parent_id)
         : (location.space_id ?? null);
       if (spaceId || location.parent_id)
-        Object.assign(receipt, { space_id: spaceId, parent_id: location.parent_id });
+        Object.assign(receipt, {
+          space_id: spaceId,
+          parent_id: location.parent_id,
+        });
     }
     const known = await knownRevision(this.storage, pageId);
     return {
@@ -1828,13 +1935,19 @@ export class Catalog {
     const storage = this.storage;
     const { operation, pageId, key } = run;
     const entry = state.slot === "live" ? await storage.get(slotPrefix[operation] + pageId) : null;
-    const event = { type: "request", expired: entry ? !(entry.expires_at > Date.now()) : false };
+    const event = {
+      type: "request",
+      expired: entry ? !(entry.expires_at > Date.now()) : false,
+    };
     if (holdsSlot(state, event.expired)) return { event, state };
     const slotKey = lifecycleSlotKey(operation, pageId);
     run.capacity = await this.destinationCapacity(run, slotKey);
     event.capacity = run.capacity.room;
     // Counting may have removed this intent's own expired slot.
-    state = { ...state, slot: (await intentState(storage, key, operation, pageId)).slot };
+    state = {
+      ...state,
+      slot: (await intentState(storage, key, operation, pageId)).slot,
+    };
     // A trash that lost its slot never applied (an applied one leaves a real
     // Trash entry), so it runs the leaf guard again before it may apply: a
     // child can have arrived since.
@@ -2301,7 +2414,10 @@ export class Catalog {
       return json(intent.receipt);
     }
     if (!intent) {
-      const spaces = await storage.list({ prefix: "space/", limit: SPACE_LIMIT + 1 });
+      const spaces = await storage.list({
+        prefix: "space/",
+        limit: SPACE_LIMIT + 1,
+      });
       if (spaces.size >= SPACE_LIMIT)
         throw new HttpError(
           409,
@@ -2454,7 +2570,9 @@ export class Catalog {
         idempotency_key: args.idempotency_key,
         expected_revision: intent.expectedRevision,
         ...(args.title !== undefined && { title: args.title }),
-        ...(args.description !== undefined && { description: args.description }),
+        ...(args.description !== undefined && {
+          description: args.description,
+        }),
       }),
     );
     if (response.status >= 400 && response.status < 500) {
@@ -2464,10 +2582,16 @@ export class Catalog {
       // now; the outcome is the Space as it is.
       if (inspected.entry && failure.code === "project_revision_conflict") {
         const current = await this.env.PROJECTS.getByName(intent.spaceId).fetch(
-          forwarded(request, "/internal/space/read", { space_id: intent.spaceId }),
+          forwarded(request, "/internal/space/read", {
+            space_id: intent.spaceId,
+          }),
         );
         if (!current.ok) return current;
-        intent.receipt = { superseded: true, applied: false, space: await current.json() };
+        intent.receipt = {
+          superseded: true,
+          applied: false,
+          space: await current.json(),
+        };
         intent.pending = false;
         await storage.put(key, intent);
         await storage.sync();
@@ -2567,7 +2691,12 @@ export class Catalog {
           catalogIndexDatabase(this.env, this.ctx),
           catalogIndexTimeouts.read,
         );
-        await reconcileSpaceIndex({ db, storage, principal: identity.principal, epoch });
+        await reconcileSpaceIndex({
+          db,
+          storage,
+          principal: identity.principal,
+          epoch,
+        });
         source = spaceIndexSource(db, { principal: identity.principal });
       } catch (error) {
         logFailure(error, "catalog-index");
@@ -2695,7 +2824,11 @@ export class Catalog {
     // wrote keys without them leaves them wrong until this repairs them.
     const { entries: locations, counts } = await locationScan(storage);
     if (await storage.verifyCounts(counts)) logCountRepair(counts);
-    const quota = { limit, count: counts["page/"], trash_count: counts["trash/"] };
+    const quota = {
+      limit,
+      count: counts["page/"],
+      trash_count: counts["trash/"],
+    };
     // A listing is a read and runs in either shape. A blocked pass shows
     // here, so a caller refused `location_migration_required` can see what
     // stands in the way without another write.
@@ -3000,7 +3133,10 @@ export class Catalog {
       };
     // Only a scan stopped by its bound, not by the end of the candidates,
     // continues from the last scanned row.
-    return { pages: verified.map(({ page }) => page), next: exhausted ? null : position };
+    return {
+      pages: verified.map(({ page }) => page),
+      next: exhausted ? null : position,
+    };
   }
 }
 
@@ -3218,7 +3354,9 @@ export class Page {
         if (!pending.length || !pending.every((key) => key.startsWith(INTERNAL_PREFIX)))
           throw error;
         logFailure(error, "preserved-markdown-recovery");
-        this.conversionIntent = { replayKeys: pending.map((key) => ({ key, doc: PAGE_DOC })) };
+        this.conversionIntent = {
+          replayKeys: pending.map((key) => ({ key, doc: PAGE_DOC })),
+        };
       }
     }
     await this.loadComments();
@@ -3307,7 +3445,10 @@ export class Page {
           this.env.CATALOGS.getByName(this.metadata.owner).fetch(
             new Request("https://pages.internal/internal/content-activity", {
               method: "POST",
-              body: JSON.stringify({ page_id: pageId, content_updated_at: value }),
+              body: JSON.stringify({
+                page_id: pageId,
+                content_updated_at: value,
+              }),
             }),
           ),
           serialQueueBounds.projectionMs,
@@ -3319,7 +3460,10 @@ export class Page {
     if (catalogIndexEpoch(this.env))
       tasks.push(
         withTimeout(
-          reportContentActivity(this.env, this.ctx, { pageId, contentUpdatedAt: value }),
+          reportContentActivity(this.env, this.ctx, {
+            pageId,
+            contentUpdatedAt: value,
+          }),
           catalogIndexTimeouts.write,
         ),
       );
@@ -3332,6 +3476,10 @@ export class Page {
   async loadComments(metadata = this.metadata) {
     if (this.commentsHandle || !this.commentsUuid) return;
     const documentId = commentsDocumentId(this.commentsUuid);
+    if (this.plain) {
+      this.plain.serve(documentId, "comments");
+      await this.plain.prime(documentId);
+    }
     this.commentsHandle = await this.repo.import(A.save(commentsGenesis(this.commentsUuid)), {
       docId: documentId,
     });
@@ -3541,7 +3689,11 @@ export class Page {
         internal: true,
         apply: (draft) => {
           try {
-            return { converted: convertPreservedBlocks(draft, { literal: intent.literal }) };
+            return {
+              converted: convertPreservedBlocks(draft, {
+                literal: intent.literal,
+              }),
+            };
           } catch (error) {
             throw Object.assign(error, { conversion: true });
           }
@@ -3582,7 +3734,9 @@ export class Page {
           await crypto.subtle.digest("SHA-256", new TextEncoder().encode(heads.join(","))),
         ),
       ).slice(0, 32);
-      this.conversionIntent = { comments: { mode, heads, digest, step: "copy" } };
+      this.conversionIntent = {
+        comments: { mode, heads, digest, step: "copy" },
+      };
     }
     const intent = this.conversionIntent.comments;
     const identity = { principal: "service:pages", driver: "API" };
@@ -3652,8 +3806,9 @@ export class Page {
       const ctx = this.ctx;
       let signer, backend;
       try {
-        if (![undefined, "local", "buffered"].includes(metadata?.recordStorage))
+        if (!RECORD_STORAGE_MODES.includes(metadata?.recordStorage))
           throw Error("Unsupported Page record storage mode");
+        if (metadata?.recordStorage === "automerge") return await this.initializePlain(metadata);
         signer = N.MemorySigner.fromBytes(await persistentSeed(ctx.storage));
         const serverKey = hex(signer.verifyingKey());
         // The comments document is named before any peer can connect, so the
@@ -3673,7 +3828,10 @@ export class Page {
           storage: ctx.storage,
           metadata: () =>
             this.recoveryBlocked
-              ? { ...(this.policyMetadata ?? this.metadata), recoveryBlocked: true }
+              ? {
+                  ...(this.policyMetadata ?? this.metadata),
+                  recoveryBlocked: true,
+                }
               : (this.policyMetadata ?? this.metadata),
           serverKey,
           schemaFeatures: (scope) => {
@@ -3815,6 +3973,64 @@ export class Page {
     return attempt;
   }
 
+  /** initializeRepo for an `automerge` Page: DocumentPolicy for access, and
+   * PlainSync for history, admission and the host's Repo. No signer, record
+   * store, native admission or actor replay: claims are made at admission. */
+  async initializePlain(metadata) {
+    const ctx = this.ctx;
+    const commentsUuid = metadata?.pageId
+      ? (metadata.comments_doc ?? (await commentsDocUuid(metadata.pageId)))
+      : undefined;
+    const policy = new DocumentPolicy({
+      storage: ctx.storage,
+      metadata: () =>
+        this.recoveryBlocked
+          ? { ...(this.policyMetadata ?? this.metadata), recoveryBlocked: true }
+          : (this.policyMetadata ?? this.metadata),
+      serverKey: undefined,
+      schemaFeatures: (scope) => {
+        const handle = scope === COMMENTS_SCOPE ? this.commentsHandle : this.handle;
+        return handle ? documentFeatures(handle.doc()) : [];
+      },
+      writeFence: () => this.conversionWriteFence(),
+      commentsTree: () => undefined,
+    });
+    await policy.load();
+    const plain = new PlainSync({
+      storage: ctx.storage,
+      policy,
+      pageFeatures: () => (this.handle ? documentFeatures(this.handle.doc()) : []),
+      writeFence: () => this.conversionWriteFence(),
+      onRefused: (conn, refusal) => {
+        if (conn.trusted) logFailure(refusal, "plain-host-write");
+        else if (BLOCKING_COMMENT_CODES.has(refusal.code))
+          logCommentRefused(metadata?.pageId, { code: refusal.code });
+      },
+      // PlainSync already published the delta to the Page's readers.
+      onActors: () => {},
+      // A browser receives host messages once it has joined the Page document.
+      onJoined: (_conn, doc) => {
+        if (doc.kind !== "page") return;
+        this.broadcastProfiles();
+        this.broadcastActivity();
+        this.broadcastActorSnapshot();
+      },
+    });
+    const documents = [];
+    if (metadata?.documentId) documents.push([metadata.documentId, "page"]);
+    if (commentsUuid) documents.push([commentsDocumentId(commentsUuid), "comments"]);
+    await plain.load(documents);
+    Object.assign(this, {
+      serverKey: undefined,
+      serverSenderId: HOST_SENDER_ID,
+      policy,
+      plain,
+      backend: plain.backend,
+      repo: plain.repo,
+      ...(commentsUuid && { commentsUuid }),
+    });
+  }
+
   /** Finish a recorded creation intent. An installed record wins over it, so
    * a replay never undoes a later Trash, restore or ACL change. */
   async finishCreation(intent) {
@@ -3825,7 +4041,7 @@ export class Page {
 
   profiles() {
     return {
-      ...this.policy.profiles(),
+      ...(this.plain ? this.plain.profiles() : this.policy.profiles()),
       [this.serverSenderId]: {
         principal: "service:pages",
         displayName: "Pages",
@@ -3839,7 +4055,7 @@ export class Page {
       pageId: this.metadata.pageId,
       access: (identity) => this.policy.account(identity, true),
       readAccess: (identity) => this.policy.account(identity),
-      profiles: () => this.policy.profiles(),
+      profiles: () => (this.plain ? this.plain.profiles() : this.policy.profiles()),
       onChange: (snapshot) => this.broadcastActivity(snapshot),
     });
     return this.activity;
@@ -3880,7 +4096,10 @@ export class Page {
   broadcastProfiles() {
     if (!this.handle) return;
     try {
-      this.handle.broadcast({ kind: "identity-profiles", peerProfiles: this.profiles() });
+      this.handle.broadcast({
+        kind: "identity-profiles",
+        peerProfiles: this.profiles(),
+      });
     } catch (error) {
       // Cleanup must still release socket capacity if the document is closing.
       logFailure(error, "presence-profiles");
@@ -3906,7 +4125,10 @@ export class Page {
    * retraction drops that actor's pending hashes, so no hash outlives its
    * actor's retraction. Pending hashes keep the newest MAX_ATTESTED_CHANGES. */
   queueActorDelta(actorProfiles, attestedChanges) {
-    const pending = (this.actorDelta ??= { actorProfiles: {}, attestedChanges: {} });
+    const pending = (this.actorDelta ??= {
+      actorProfiles: {},
+      attestedChanges: {},
+    });
     for (const [actor, profile] of Object.entries(actorProfiles)) {
       pending.actorProfiles[actor] = profile;
       if (profile === null)
@@ -3939,6 +4161,7 @@ export class Page {
 
   /** Attested actors and their recent attested change hashes, now. */
   actorSnapshot() {
+    if (this.plain) return this.plain.actorSnapshot();
     const now = Date.now();
     const actorProfiles = this.actorAuthorship?.profiles(now) ?? {};
     return {
@@ -3950,10 +4173,14 @@ export class Page {
   /** Resend the whole snapshot once a socket subscribes: an attestation made
    * after its /api/connect response reached only earlier subscribers. */
   broadcastActorSnapshot() {
-    if (!this.handle || !this.actorAuthorship) return;
+    if (!this.handle || !(this.actorAuthorship || this.plain)) return;
     this.flushActorDelta();
     try {
-      this.handle.broadcast({ kind: "actor-profiles", ...this.actorSnapshot(), snapshot: true });
+      this.handle.broadcast({
+        kind: "actor-profiles",
+        ...this.actorSnapshot(),
+        snapshot: true,
+      });
     } catch (error) {
       logFailure(error, "actor-profiles");
     }
@@ -4104,7 +4331,10 @@ export class Page {
     const run = async () => {
       try {
         await withTimeout(
-          reportPageIndex(this.env, this.ctx, { metadata: this.metadata, ...details }),
+          reportPageIndex(this.env, this.ctx, {
+            metadata: this.metadata,
+            ...details,
+          }),
           catalogIndexTimeouts.write,
         );
       } catch (error) {
@@ -4188,6 +4418,7 @@ export class Page {
     // Do not persist retired signer rows ahead of their grant generation. If
     // this host record never commits, restart may legitimately retain old access.
     await this.policy.refreshAccess({ persist: false });
+    this.plain?.refresh();
     if (catalogIndexEpoch(this.env) && listingRestricted(previous, restricted, this.env))
       await this.restrictIndex(restricted, metadata.acl?.revision ?? 0);
     await this.ctx.storage.put("host/document", metadata);
@@ -4195,6 +4426,7 @@ export class Page {
     this.metadata = metadata;
     this.policyMetadata = undefined;
     await this.policy.refreshAccess();
+    this.plain?.refresh();
     this.activity?.prune();
     this.pendingAccess = undefined;
     this.cachedTitle = undefined;
@@ -4241,6 +4473,11 @@ export class Page {
   }
 
   async flush() {
+    if (this.plain) {
+      await this.plain.flush(this.documentIds());
+      await this.ctx.storage.sync();
+      return;
+    }
     await this.repo.flush(this.documentIds());
     await this.backend.flush();
     await this.recordStore?.flush?.();
@@ -4289,7 +4526,9 @@ export class Page {
             await this.settleLifecycle();
           } catch (error) {
             logFailure(error, "lifecycle-state");
-            const failed = pageLifecycle.step(this.lifecycleState(), { type: "commitFailed" });
+            const failed = pageLifecycle.step(this.lifecycleState(), {
+              type: "commitFailed",
+            });
             return this.lifecycleReply(failed.response);
           }
         }
@@ -4349,7 +4588,7 @@ export class Page {
             const warning = openingTitleWarning(doc);
             const documentId = interpretAsDocumentId(generateAutomergeUrl());
             const metadata = {
-              recordStorage: this.env.PAGES_ASYNC_PERSISTENCE === "true" ? "buffered" : "local",
+              recordStorage: recordStorageFor(this.env),
               pageId: args.page_id,
               owner: identity.principal,
               ownerName: identity.displayName,
@@ -4467,8 +4706,10 @@ export class Page {
           page_id: this.metadata.pageId,
           documentId: this.metadata.documentId,
           // The comments document syncs on the same socket.
-          ...(this.commentsHandle && { commentsDocumentId: commentsDocumentId(this.commentsUuid) }),
-          serverPeerId: this.serverKey,
+          ...(this.commentsHandle && {
+            commentsDocumentId: commentsDocumentId(this.commentsUuid),
+          }),
+          ...(this.plain ? { recordStorage: "automerge" } : { serverPeerId: this.serverKey }),
           serverSenderId: this.serverSenderId,
           identity: publicIdentity(identity),
           // Access is the grant; `converting` is a temporary hold the viewer
@@ -4479,7 +4720,9 @@ export class Page {
             ...(this.recoveryBlocked && { canWrite: false, canComment: false }),
           },
           ...(this.recoveryBlocked && { recovery: this.recoveryBlocked }),
-          ...(this.conversionWriteFence() && { converting: conversionNotice() }),
+          ...(this.conversionWriteFence() && {
+            converting: conversionNotice(),
+          }),
           ...(incompleteHistory(this.handle.doc()) && {
             historyIncomplete: incompleteHistory(this.handle.doc()),
           }),
@@ -4511,7 +4754,10 @@ export class Page {
         const durableCommentHeads = this.commentsHandle && A.getHeads(this.commentsHandle.doc());
         await this.flush();
         this.cacheTitle();
-        return json({ durableHeads, ...(durableCommentHeads && { durableCommentHeads }) });
+        return json({
+          durableHeads,
+          ...(durableCommentHeads && { durableCommentHeads }),
+        });
       }
       if (url.pathname === "/internal/tool") {
         const body = await readJson(request);
@@ -4992,10 +5238,19 @@ export class Page {
         ...metadata,
         deleted: true,
         lifecycleRevision: revision + 1,
-        trash: trashRecord({ pageId, principal: identity.principal, now, receipt }),
+        trash: trashRecord({
+          pageId,
+          principal: identity.principal,
+          now,
+          receipt,
+        }),
         // Builds that predate Trash read only `deletion`: their delete retry
         // conflicts, and a fresh key completes an ordinary permanent deletion.
-        deletion: { key, fingerprint: digest, receipt: { page_id: pageId, deleted: true } },
+        deletion: {
+          key,
+          fingerprint: digest,
+          receipt: { page_id: pageId, deleted: true },
+        },
       };
       context.next = next;
       context.pending = {
@@ -5045,7 +5300,10 @@ export class Page {
       context.next = {
         ...metadata,
         lifecycleRevision: revision + 1,
-        purged: { purged_at: new Date().toISOString(), purged_by: identity.principal },
+        purged: {
+          purged_at: new Date().toISOString(),
+          purged_by: identity.principal,
+        },
         deletion: { key, fingerprint: digest, receipt },
       };
       context.pending = {
@@ -5096,10 +5354,11 @@ export class Page {
         if (context.intent) {
           this.metadata = context.intent.metadata;
           this.observeActivity();
-          this.admission ??= new DocumentAdmission(
-            this.backend,
-            documentIdToBinary(this.metadata.documentId),
-          );
+          if (!this.plain)
+            this.admission ??= new DocumentAdmission(
+              this.backend,
+              documentIdToBinary(this.metadata.documentId),
+            );
         } else this.metadata = pending.metadata;
         return;
       case "convertPreserved":
@@ -5108,6 +5367,7 @@ export class Page {
         return;
       case "refreshAccess":
         await this.policy.refreshAccess();
+        this.plain?.refresh();
         this.activity?.prune();
         return;
       case "projectTitle":
@@ -5125,6 +5385,7 @@ export class Page {
         this.activity?.close();
         await this.policy.close();
         for (const wire of this.wires) await wire.disconnect();
+        this.plain?.disconnectAll();
         return;
       case "deleteDocument":
         await this.forgetContent();
@@ -5134,8 +5395,19 @@ export class Page {
           this.commentAdmission?.reset();
           await this.repo.delete(commentsDocumentId(this.commentsUuid));
         }
+        // From metadata, not loaded handles: a deleted Page boots without them.
+        await this.plain?.forget(
+          [
+            this.metadata.documentId,
+            this.commentsUuid && commentsDocumentId(this.commentsUuid),
+          ].filter(Boolean),
+        );
         return;
       case "flush":
+        if (this.plain) {
+          if (pageState(this.metadata) !== "deleted") await this.plain.flush(this.documentIds());
+          return;
+        }
         // A deleted document has nothing left in the repo to flush.
         if (pageState(this.metadata) !== "deleted") await this.repo.flush(this.documentIds());
         await this.backend.flush();
@@ -5156,6 +5428,11 @@ export class Page {
         await this.loadDocument();
         return;
       case "importDocument":
+        // A replayed creation may find the document stored already.
+        if (this.plain) {
+          this.plain.serve(context.intent.metadata.documentId, "page");
+          await this.plain.prime(context.intent.metadata.documentId);
+        }
         this.handle = await this.repo.import(context.intent.bytes, {
           docId: context.intent.metadata.documentId,
         });
@@ -5182,7 +5459,9 @@ export class Page {
    * failure leaves the phase for the next request.
    */
   async settleLifecycle() {
-    const { effects } = pageLifecycle.step(this.lifecycleState(), { type: "commitOk" });
+    const { effects } = pageLifecycle.step(this.lifecycleState(), {
+      type: "commitOk",
+    });
     await this.applyLifecycle(effects);
   }
 
@@ -5239,20 +5518,31 @@ export class Page {
    * like a missing one instead of retrying an absent document.
    */
   async acceptTombstone() {
-    const result = pageLifecycle.step(this.lifecycleState(), { type: "tombstone" });
+    const result = pageLifecycle.step(this.lifecycleState(), {
+      type: "tombstone",
+    });
     const context = {};
     if (result.effects.length)
       context.next = {
         ...this.metadata,
         lifecycleRevision: (this.metadata.lifecycleRevision ?? 0) + 1,
-        purged: { purged_at: new Date().toISOString(), reason: "deleted_by_earlier_build" },
+        purged: {
+          purged_at: new Date().toISOString(),
+          reason: "deleted_by_earlier_build",
+        },
       };
     await this.applyLifecycle(result.effects, context);
     return this.lifecycleReply(result.response);
   }
 
   lifecycleRecord(operation, digest, receipt, revision = this.metadata.lifecycleRevision ?? 0) {
-    return { operation, fingerprint: digest, revision, receipt, at: Date.now() };
+    return {
+      operation,
+      fingerprint: digest,
+      revision,
+      receipt,
+      at: Date.now(),
+    };
   }
 
   /** Persist a lifecycle receipt, optionally with the new record, in one
@@ -5309,7 +5599,7 @@ export class Page {
         const { doc, bytes } = readRegistration(args);
         try {
           const metadata = {
-            recordStorage: this.env.PAGES_ASYNC_PERSISTENCE === "true" ? "buffered" : "local",
+            recordStorage: registeredRecordStorage(this.env, args),
             pageId: args.page_id,
             owner: identity.principal,
             ownerName: identity.displayName,
@@ -5457,6 +5747,14 @@ export class Page {
         ),
         identity,
       );
+    if (this.plain) {
+      try {
+        requirePlainSyncClient(request);
+      } catch (error) {
+        return refuseSocket(error, identity);
+      }
+      return this.connectPlain(request, identity, features);
+    }
     const pair = new WebSocketPair();
     const client = pair[0],
       socket = pair[1];
@@ -5486,7 +5784,11 @@ export class Page {
     let syncAdmittedAt;
     wire.onDisconnect(() => {
       if (syncAdmittedAt !== undefined)
-        logUsage({ action: "sync.close", ...syncUsage, latencyMs: Date.now() - syncAdmittedAt });
+        logUsage({
+          action: "sync.close",
+          ...syncUsage,
+          latencyMs: Date.now() - syncAdmittedAt,
+        });
     });
     this.wires.add(wire);
     // HTTP authentication already established this principal. Reserve before
@@ -5529,7 +5831,9 @@ export class Page {
           throw admission.signal.aborted
             ? admission.signal.reason
             : withAdmissionReason(
-                Object.assign(new Error("Native handshake failed", { cause }), { status: 400 }),
+                Object.assign(new Error("Native handshake failed", { cause }), {
+                  status: 400,
+                }),
                 "native_handshake_failed",
               );
         }
@@ -5579,7 +5883,9 @@ export class Page {
             await this.backend.addConnection(transport);
           } catch (cause) {
             throw withAdmissionReason(
-              Object.assign(new Error("Native connection failed", { cause }), { status: 503 }),
+              Object.assign(new Error("Native connection failed", { cause }), {
+                status: 503,
+              }),
               "native_connection_failed",
             );
           }
@@ -5615,6 +5921,111 @@ export class Page {
         void close(error);
       }),
     );
+    return new Response(null, { status: 101, webSocket: client });
+  }
+
+  /** connect() for an `automerge` Page. HTTP authentication already named the
+   * principal; the socket speaks plain Automerge sync (sync/wire.mjs), and
+   * PlainSync checks access on every frame. No handshake, no signing key. */
+  connectPlain(request, identity, features) {
+    const pair = new WebSocketPair();
+    const client = pair[0],
+      socket = pair[1];
+    socket.accept();
+    const syncUsage = {
+      surface: "browser-sync",
+      identity,
+      labels: requestClient(request),
+      pageId: this.metadata?.pageId,
+    };
+    const started = Date.now();
+    let conn;
+    try {
+      // The tab's presence id. A missing, malformed or taken one is replaced:
+      // the id only keys presence labels, and the host stamps every relay.
+      const requested = new URL(request.url).searchParams.get("sender");
+      const taken = new Set(this.plain.host.connections().map((c) => c.senderId));
+      const senderId =
+        requested && /^b-[0-9a-f-]{36}$/.test(requested) && !taken.has(requested)
+          ? requested
+          : `b-${crypto.randomUUID()}`;
+      conn = this.plain.accept(socket, identity, { features, senderId });
+    } catch (error) {
+      logAdmissionDenied(error, { stage: "native", identity });
+      logUsage({
+        action: "sync.open",
+        ...syncUsage,
+        admitted: false,
+        outcome: admissionReason(error),
+        latencyMs: 0,
+      });
+      try {
+        socket.close(admissionCloseCode(error), admissionCode(error));
+      } catch {
+        /* Already closed. */
+      }
+      return new Response(null, { status: 101, webSocket: client });
+    }
+    const wire = {
+      disconnect: async (code, reason) =>
+        conn.transport.close(code ?? 1000, reason ?? "Disconnected"),
+    };
+    this.wires.add(wire);
+    this.wirePrincipals.set(wire, identity.principal);
+    // Lease: the credential's deadline, re-armed when an API key renews, and
+    // a renewal check every 15 s. A deadline past setTimeout's range re-arms
+    // in steps, since a longer delay fires at once.
+    let expiry;
+    const armExpiry = () => {
+      clearTimeout(expiry);
+      if (!Number.isFinite(conn.expiresAt)) return;
+      const left = conn.expiresAt - Date.now();
+      expiry = setTimeout(
+        () =>
+          left > 2 ** 30
+            ? armExpiry()
+            : void wire.disconnect(
+                admissionCloseCode(credentialExpired()),
+                admissionCode(credentialExpired()),
+              ),
+        Math.max(1, Math.min(left, 2 ** 30)),
+      );
+    };
+    armExpiry();
+    const renewal = setInterval(() => {
+      void (async () => {
+        const renewed = await authenticate(request, this.env);
+        if (renewed.principal !== identity.principal || renewed.canWrite !== identity.canWrite)
+          throw new PermissionDenied("Credential changed");
+        this.plain.renew(conn, renewed);
+        armExpiry();
+      })().catch((error) => wire.disconnect(admissionCloseCode(error), admissionCode(error)));
+    }, 15_000);
+    const disconnected = new Promise((resolve) => conn.transport.onClose(resolve));
+    conn.transport.onClose(() => {
+      clearTimeout(expiry);
+      clearInterval(renewal);
+      this.wires.delete(wire);
+      this.wirePrincipals.delete(wire);
+      this.activity?.prune();
+      this.broadcastProfiles();
+      logUsage({
+        action: "sync.close",
+        ...syncUsage,
+        latencyMs: Date.now() - started,
+      });
+    });
+    logUsage({
+      action: "sync.open",
+      ...syncUsage,
+      admitted: true,
+      outcome: "ok",
+      latencyMs: Date.now() - started,
+    });
+    this.broadcastProfiles();
+    this.broadcastActivity();
+    this.broadcastActorSnapshot();
+    this.ctx.waitUntil(Promise.all([disconnected, this.contentActivity?.serve(disconnected)]));
     return new Response(null, { status: 101, webSocket: client });
   }
 }

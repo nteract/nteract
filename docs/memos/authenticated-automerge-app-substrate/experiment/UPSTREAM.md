@@ -269,6 +269,26 @@ sends one frame per commit. Stored keys, frames, signatures and wire messages
 are unchanged. Upstream, this belongs in the backend options next to the
 existing sync timeout.
 
+The document record patch in `patch-document-record.mjs` adds a third record
+kind a backend may deliver to Repo: `{ kind: "document", heads, blob }`, where
+`blob` is one complete Automerge document chunk (`A.save()`). Pages' plain
+Automerge sync backend (`pages/sync`) holds whole documents in that form, and
+the sync reply to a cold client already carries one. Without the kind, the
+document reached Repo as a fragment bundle: Repo validates a bundle by decoding
+every change, then replays it. On the Feedback Page of October 31 that was 65 ms
+plus 77 ms, against 21 ms to load the save chunk, and the cold open missed its
+100 ms target at 259 ms; with the kind it was ready in 60 ms. Validation checks
+the chunk type and checksum; `applyRecords` loads the chunk with the rest of the
+batch, then refuses the batch unless the record's claimed heads are in the
+result. Repo never stores document records: `extractRecords` still produces
+only commits and fragments, and `SedimentreeRecord` and `RecordBatch` are
+unchanged, so `SubductionBackend`, its stored records and `MemoryBackend` behave
+as before. The new `DeliveredRecord` type, `copyDeliveredRecord` and
+`validateDeliveredRecord` name the wider set. `document-record.test.mjs` covers
+loading, mixing with loose commits, refused heads, a bad checksum or chunk type,
+and a real Repo opening a document delivered as one record. Pages carries this
+patch rather than proposing it upstream.
+
 ## Runtime evidence
 
 `upstream.test.mjs` runs real upstream Repo handles, Automerge WASM, Subduction

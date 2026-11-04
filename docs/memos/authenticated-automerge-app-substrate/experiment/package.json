@@ -15,10 +15,12 @@
   "scripts": {
     "build": "tsc -p upstream/packages/automerge-repo && tsc -p upstream/packages/automerge-repo-subduction",
     "test": "tsx --tsconfig tsconfig.test.json --test *.test.mjs",
-    "setup": "node setup.mjs"
+    "setup": "node setup.mjs",
+    "test:contract": "vitest run"
   },
   "devDependencies": {
     "@types/debug": "4.1.12",
-    "tsx": "4.21.0"
+    "tsx": "4.21.0",
+    "vitest": "3.2.7"
   }
 }

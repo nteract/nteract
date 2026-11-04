@@ -114,8 +114,9 @@ export const pageStartup = defineMachine({
   },
 });
 
-/** Record storage modes the host can boot. Any other value fails the boot. */
-const RECORD_STORAGE = [undefined, "local", "buffered"];
+/** Record storage modes the host can boot (`initializeRepo`). Any other
+ * value fails the boot. */
+export const RECORD_STORAGE_MODES = Object.freeze([undefined, "local", "buffered", "automerge"]);
 
 /** Whether the host record is one this build answers checks from without
  * booting. Records an earlier build wrote without a comments document name
@@ -128,7 +129,7 @@ export function recordAnswerable(record) {
     typeof record.pageId === "string" &&
     typeof record.documentId === "string" &&
     typeof record.comments_doc === "string" &&
-    RECORD_STORAGE.includes(record.recordStorage)
+    RECORD_STORAGE_MODES.includes(record.recordStorage)
   );
 }
 

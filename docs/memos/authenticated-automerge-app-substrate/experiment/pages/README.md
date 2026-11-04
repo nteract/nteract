@@ -1518,6 +1518,80 @@ are source-checked and regression-tested; a passing storage probe alone does not
 qualify ephemeral presence. Diagnostics exclude provider messages, credentials,
 request bodies, and document content.
 
+### Plain Automerge sync
+
+A Page whose metadata says `recordStorage: "automerge"` syncs with plain
+Automerge sync messages instead of Subduction. `PAGES_RECORD_STORAGE=automerge`
+gives that storage to every Page created through the API, and the session
+endpoint tells the browser to give it to Pages it creates; a registered draft
+keeps the storage its browser replica already uses (`record_storage` in the
+registration). Existing Pages keep the mode they were created with, and a
+Page never changes mode.
+
+Both sides keep Repo 3 and run `AutomergeSyncBackend`
+([sync/backend.mjs](sync/backend.mjs)), a `SedimentreeBackend` that keeps a
+mirror Automerge document per tree and speaks CBOR frames
+([sync/wire.mjs](sync/wire.mjs)) over the authenticated WebSocket. Repo
+receives a whole document as one `document` record (an `A.save()` chunk; see
+`patch-document-record.mjs` in [UPSTREAM.md](../UPSTREAM.md)) and increments
+as loose commits. History is stored as a snapshot plus chunks under one
+manifest per document ([sync/doc-store.mjs](sync/doc-store.mjs)): IndexedDB in
+the browser ([sync/idb-byte-store.mjs](sync/idb-byte-store.mjs)) and the Page's
+Durable Object storage under `plain/` on the host. Every write is one
+`saveMany` that puts the manifest last, so a manifest never names a missing
+object.
+
+On the host, [worker/plain-sync.mjs](worker/plain-sync.mjs) runs a `SyncHost`
+([sync/host.mjs](sync/host.mjs)). Browsers connect to it directly; the host's
+own Repo, which tools, comments and lifecycle code use through its handles,
+reaches it through an in-process trusted connection, so the host's edits take
+the same per-document queue and `flush()` waits for a completed sync round. A
+sync message carrying changes is checked in that queue before anything is
+stored:
+
+1. The connection's access, from `DocumentPolicy.account`, on every frame and
+   every delivery: lease, ACL generation and role, trash and recovery.
+2. The role gate. A connection that can't write the document has its changes
+   stripped; the rest of the message stands.
+3. A preview on a clone of the live document. Missing dependencies are refused;
+   changes the host already holds are dropped, so re-sending accepted history
+   is a no-op whoever sends it.
+4. Actor claims. Each new change's actor is unclaimed or claimed by this
+   principal. A claim is written in the same `saveMany` as the history it
+   covers, and no other document can claim the actor meanwhile.
+5. The conversion fence, the schema-feature gate and the 16 MiB history
+   bound, then `admitCommentChanges` for the comments document, unchanged
+   from native admission. A comment rule refusal blocks the principal's
+   comment writes (`host/comments-blocked/<principal>`) and closes the socket.
+6. Persist, publish who wrote the changes (`actor-profiles`, ahead of the
+   changes), reply, then fan out.
+
+A refusal leaves the live document and every connection's sync state as they
+were. The browser gets `{ t: "refused" }` and, when fatal, a close with the
+admission code (`schema_unsupported`, `access_changed`, `sign_in_required`).
+
+Attribution is host-attested: an actor binds to the first authenticated
+principal that sends a change with it. With no signatures, the host can't tell
+who authored offline history that reaches it through someone else, so a
+relayed change from an actor the host hasn't seen binds to the relayer. A
+relayed change from a claimed actor is refused.
+
+Discovery and the socket carry `sync=automerge`; a build without it gets
+`schema_unsupported` ("Reload to update") for an `automerge` Page. The browser
+opens a replica in the storage its local copy or discovery names, and a first
+visit switches its empty replica before the lookup. Presence ids are per tab
+(`sender`), stamped by the host on every relay.
+
+Not yet on this path: reservations for API edits (`DocumentAdmission`), the
+`PageRecords` buffered sink, record compaction and the per-key native session
+slots. The first three have nothing to do here; edits from the API go through
+the host's Repo and the same admission queue. `sync/*.test.mjs` covers the
+backend, host, store and gates; `worker/plain-sync.test.mjs` covers
+registration, restart and a browser through the Page host;
+`npm run test:contract` in the experiment runs Repo 3's backend contract.
+`PAGES_RECORD_STORAGE=automerge npm run e2e` runs the browser suites with new
+Pages on this path.
+
 ### Page quotas
 
 Each account has one Page limit. It bounds the account's active Pages and,
@@ -2040,8 +2114,8 @@ and deleted. Trashing, restoring and purging are commits whose sequence has
 started and not finished; that phase lives only in memory, so a restart boots
 from whichever record is durable. Deleting is a durable deleted record whose
 deletion barriers have not run in this process. The lifecycle routes,
-`/internal/lifecycle-state`, `/internal/tombstone` and the constructor are its
-interpreter.
+`/internal/lifecycle-state`, `/internal/tombstone` and the host's boot
+(`bootHost`, run by page-startup) are its interpreter.
 
 Pending trash and restore requests hold a hidden destination slot in the
 owner's Catalog, written in the same storage call as the intent. The intent is

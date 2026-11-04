@@ -31,6 +31,10 @@ export function readRegistration(args) {
     throw new HttpError(400, "Invalid document_id");
   if (typeof args.title !== "string" || args.title.length > 500)
     throw new HttpError(400, "Invalid title");
+  // The draft's local storage: "automerge" for a browser replica on plain
+  // Automerge sync. Absent (older builds) or "native" means Subduction.
+  if (![undefined, "native", "automerge"].includes(args.record_storage))
+    throw new HttpError(400, "Invalid record_storage");
   const source = args.initial_snapshot_base64;
   if (
     typeof source !== "string" ||

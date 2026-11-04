@@ -14,6 +14,10 @@ import {
 } from "rxjs";
 import { Repo, documentIdToBinary } from "@automerge/automerge-repo";
 import { SubductionBackend, IndexedDBByteStore } from "@automerge/automerge-repo-subduction";
+import { AutomergeSyncBackend } from "../sync/backend.mjs";
+import { DocStore } from "../sync/doc-store.mjs";
+import { IdbByteStore } from "../sync/idb-byte-store.mjs";
+import { socketTransport } from "../sync/wire.mjs";
 import { applyComment, commentsMigrated, threadsOf } from "../model/comments.mjs";
 import { createPageData, initializePage, projectPage } from "../model/page.mjs";
 import { commentDraftsMarkdown, unsentCommentsMarkdown } from "../model/markdown-export.mjs";
@@ -41,7 +45,7 @@ import { retryKey } from "../model/retry-key.mjs";
 import { MISSING_EDITS_MESSAGE } from "../shared/receipts.mjs";
 import { ADMISSION_CAPABILITY, admissionCloseOutcome } from "../shared/admission.mjs";
 import { isTransientFailure, request } from "./request.mjs";
-import { requestConnect } from "./early-session.mjs";
+import { connectUrl, requestConnect } from "./early-session.mjs";
 import { SERVER_UNREACHABLE } from "./alerts.mjs";
 import { monotonicNow } from "./monotonic.mjs";
 import { activitySnapshot, presenceLabel } from "./activity.mjs";
@@ -155,7 +159,9 @@ const recordBytes = (record) => ({
   snapshot: record.snapshot,
   ...(record.comments_snapshot && {
     comments_snapshot: record.comments_snapshot,
-    ...(record.comments_document_id && { comments_document_id: record.comments_document_id }),
+    ...(record.comments_document_id && {
+      comments_document_id: record.comments_document_id,
+    }),
   }),
 });
 // Longer than the host's 10-second native admission deadline. A socket that
@@ -184,7 +190,9 @@ const SIGNING_KEY_REFUSED =
   "This Page refused this tab's signing key. Your edits stay on this device. Retry, or open the Page in a new tab.";
 const SYNC_PAUSED =
   "Sync paused: the host kept refusing this connection. Your edits stay on this device. Retry to reconnect.";
-const admissionHeaders = { [ADMISSION_CAPABILITY.header]: ADMISSION_CAPABILITY.value };
+const admissionHeaders = {
+  [ADMISSION_CAPABILITY.header]: ADMISSION_CAPABILITY.value,
+};
 /** Whether a native admission close counts toward pausing sync. A
  * `temporarily_unavailable` close says the host is briefly busy (a handshake
  * deadline, a full socket quota, a storage stall), so it takes the backoff
@@ -210,12 +218,35 @@ export const signingKeyRefused = (admission, cause) =>
     code: "SIGNING_KEY_REFUSED",
     admission,
   });
+/** A whole document as one record for AutomergeSyncBackend.store. */
+const documentRecord = (doc) => ({
+  kind: "document",
+  heads: A.getHeads(doc),
+  blob: A.save(doc),
+});
+/** Resolves when `socket` opens; rejects if it closes or errors first. */
+function socketOpened(socket) {
+  return new Promise((resolve, reject) => {
+    if (socket.readyState === 1) return resolve();
+    const fail = () =>
+      reject(
+        Object.assign(Error("The sync connection closed."), {
+          code: "NETWORK_ERROR",
+        }),
+      );
+    socket.addEventListener("open", () => resolve(), { once: true });
+    socket.addEventListener("close", fail, { once: true });
+    socket.addEventListener("error", fail, { once: true });
+  });
+}
 /** `features` is this build's schema features. The host refuses native edits
  * from a tab whose build lacks an id the Page is stamped with; no parameter
  * means the baseline, as for builds from before the stamp. */
 export function pageSyncAddress(pageId, href, activityEpoch, features = [], { converting } = {}) {
   const address = new URL(`/api/sync?page=${encodeURIComponent(pageId)}`, href);
   address.protocol = address.protocol === "https:" ? "wss:" : "ws:";
+  // This build speaks plain Automerge sync too; an `automerge` Page needs it.
+  address.searchParams.set("sync", "automerge");
   if (activityEpoch) address.searchParams.set("activity_epoch", activityEpoch);
   // Discovery reported the preserved-block conversion. If it finished before
   // this upgrade, the host refuses the socket so the tab rediscovers.
@@ -368,9 +399,9 @@ export class PageSession {
   /** Whether the stored entry still holds `grant`'s copy (entryStanding):
    * read now, after every earlier await. */
   async #storedStanding(grant) {
-    const stored = await readLocalPage(this.identity, this.pageId, { markers: true }).catch(
-      () => undefined,
-    );
+    const stored = await readLocalPage(this.identity, this.pageId, {
+      markers: true,
+    }).catch(() => undefined);
     return entryStanding(stored, grant);
   }
   #archiving;
@@ -565,14 +596,15 @@ export class PageSession {
         return undefined;
       case "persistLocal":
         // Recovery stays local, even when the host no longer permits publication.
-        void this.persistLocal({ access: this.access, pending: this.recoveryPending }).catch(
-          (error) => {
-            // Another tab saw the host's refusal; this copy is archived too.
-            if (error.code === "LOCAL_PAGE_REVOKED") return void this.revoke();
-            this.localProblem = this.problem = error.message;
-            this.emit();
-          },
-        );
+        void this.persistLocal({
+          access: this.access,
+          pending: this.recoveryPending,
+        }).catch((error) => {
+          // Another tab saw the host's refusal; this copy is archived too.
+          if (error.code === "LOCAL_PAGE_REVOKED") return void this.revoke();
+          this.localProblem = this.problem = error.message;
+          this.emit();
+        });
         return undefined;
       case "drain":
         return this.drainBeforeClose();
@@ -592,7 +624,10 @@ export class PageSession {
         // for this open. A failed release doesn't block the open or its retry.
         return Promise.allSettled([this.#released]).then(() =>
           PageSession.open(this.pageId, {
-            authentication: { identity: this.identity, canWrite: this.credentialCanWrite },
+            authentication: {
+              identity: this.identity,
+              canWrite: this.credentialCanWrite,
+            },
             refreshSession: this.refreshSession,
             scheduler: this.scheduler,
             random: this.random,
@@ -844,7 +879,9 @@ export class PageSession {
       this.retireProblem = error instanceof Error ? error.message : String(error);
     }
     if (this.phase$.snapshot().name !== "retiring") return this.#whenReleased();
-    const { done } = this.dispatch({ type: archived ? "retireOk" : "retireFail" });
+    const { done } = this.dispatch({
+      type: archived ? "retireOk" : "retireFail",
+    });
     this.emit();
     return done;
   }
@@ -877,7 +914,10 @@ export class PageSession {
     this.retireProblem = `This browser couldn't copy the Page for the recovery archive: ${message}`;
     this.unarchivedCopy = this.#unarchivedCopy();
     if (this.phase$.snapshot().name !== "retiring") return this.#whenReleased();
-    const { done } = this.dispatch({ type: "retireFail", ...(!released && { held: true }) });
+    const { done } = this.dispatch({
+      type: "retireFail",
+      ...(!released && { held: true }),
+    });
     this.emit();
     return done;
   }
@@ -1070,6 +1110,8 @@ export class PageSession {
     this.authProblem = "";
     this.identity = result.identity;
     this.credentialCanWrite = !!result.canWrite;
+    if (result.recordStorage !== undefined || "editor" in result)
+      this.newPageStorage = result.recordStorage === "automerge" ? "automerge" : "native";
     if (
       this.handle &&
       this.access &&
@@ -1137,7 +1179,11 @@ export class PageSession {
     // The host's admission closes a socket that never proved stable: count a
     // refusal, so a host that keeps refusing pauses instead of retrying
     // forever. A busy host's close only backs off (countsAsRefusal).
-    if (this.scheduleReconnect({ refused: countsAsRefusal(outcome) && !stable }) === "paused")
+    if (
+      this.scheduleReconnect({
+        refused: countsAsRefusal(outcome) && !stable,
+      }) === "paused"
+    )
       return;
     this.syncStatus({ type: "retrying" });
     this.renderStatus();
@@ -1279,7 +1325,9 @@ export class PageSession {
     if (!rejected) this.emit();
   }
   async localAccessChanged() {
-    const latest = await readLocalPage(this.identity, this.pageId, { markers: true });
+    const latest = await readLocalPage(this.identity, this.pageId, {
+      markers: true,
+    });
     if (latest?.revoked) return this.revoke();
     if (latest?.access) this.access = latest.access;
     this.pauseForAccess(
@@ -1304,7 +1352,10 @@ export class PageSession {
     const nextKey = replicaKey(access, this.credentialCanWrite);
     if (!access.canRead) {
       await this.revoke();
-      throw Object.assign(Error(ACCESS_REVOKED), { code: "page_access_denied", status: 403 });
+      throw Object.assign(Error(ACCESS_REVOKED), {
+        code: "page_access_denied",
+        status: 403,
+      });
     }
     if (this.replicaKey !== nextKey) {
       if (this.handle) {
@@ -1343,14 +1394,20 @@ export class PageSession {
       // Try its snapshots again, or fall back to the Markdown it projects.
       try {
         copies.push(
-          this.exportRecovery(undefined, { drafts: this.retiredDrafts, allComments: true }),
+          this.exportRecovery(undefined, {
+            drafts: this.retiredDrafts,
+            allComments: true,
+          }),
         );
       } catch {
         copies.push({ ...this.unarchivedCopy });
       }
     }
     for (const record of records)
-      copies.push({ ...this.exportRecovery(record), archived_at: record.archived_at });
+      copies.push({
+        ...this.exportRecovery(record),
+        archived_at: record.archived_at,
+      });
     return { page_id: this.pageId, copies };
   }
   /** One copy as `{ title, markdown, snapshot, heads, page_id }`: a recovery
@@ -1374,7 +1431,11 @@ export class PageSession {
         ...(commentDrafts?.length && { comment_drafts: commentDrafts }),
       };
     const bytes = record ? recordBytes(record) : this.#liveBytes();
-    const projected = this.#projectCopy(bytes, { record, commentDrafts, allComments });
+    const projected = this.#projectCopy(bytes, {
+      record,
+      commentDrafts,
+      allComments,
+    });
     return {
       title: projected.title,
       markdown: projected.markdown,
@@ -1385,7 +1446,9 @@ export class PageSession {
         ...((bytes.comment_heads ?? projected.comment_heads) && {
           comment_heads: bytes.comment_heads ?? projected.comment_heads,
         }),
-        ...(bytes.comments_document_id && { comments_document_id: bytes.comments_document_id }),
+        ...(bytes.comments_document_id && {
+          comments_document_id: bytes.comments_document_id,
+        }),
       }),
       page_id: this.pageId,
       ...(commentDrafts?.length && { comment_drafts: commentDrafts }),
@@ -1492,6 +1555,11 @@ export class PageSession {
     const checkpoint = A.load(decodeSnapshot(record.comments_snapshot));
     try {
       const id = documentIdToBinary(record.comments_document_id);
+      if (backend instanceof AutomergeSyncBackend) {
+        if (!(await holds())) return;
+        await backend.store(id, [documentRecord(checkpoint)]);
+        return;
+      }
       const records = await checkpointRecords(backend, id, checkpoint);
       if (!(await holds())) return;
       await backend.storeSnapshot(id, records);
@@ -1528,7 +1596,9 @@ export class PageSession {
     if (this.authentication) {
       if (!this.acceptAuthentication(this.authentication)) throw Error(this.authProblem);
     } else await this.refreshAuthentication();
-    const stored = await readLocalPage(this.identity, this.pageId, { markers: true });
+    const stored = await readLocalPage(this.identity, this.pageId, {
+      markers: true,
+    });
     // A marker (retireLocalPage) means this browser's copy is in the recovery
     // archive. Nothing local renders: the host decides, and a host-verified
     // open replaces an access marker.
@@ -1538,6 +1608,11 @@ export class PageSession {
     this.access =
       this.localPage?.access ?? (creation || this.localPage ? ownerAccess() : undefined);
     this.updateCapabilities();
+    // A local copy keeps its storage; a new Page takes the deployment's; a
+    // first visit opens native and switches once discovery names the Page's.
+    this.recordStorage = creation
+      ? (this.newPageStorage ?? "native")
+      : (this.localPage?.recordStorage ?? "native");
     await this.initializeLocal(
       this.localPage?.replicaKey ?? replicaKey(this.access, this.credentialCanWrite),
     );
@@ -1561,6 +1636,9 @@ export class PageSession {
         title: this.doc.title,
         created_at: now,
         updated_at: now,
+        ...(this.recordStorage === "automerge" && {
+          recordStorage: "automerge",
+        }),
         canWrite: true,
         access: this.access,
         replicaKey: this.replicaKey,
@@ -1580,10 +1658,15 @@ export class PageSession {
           document_id: this.handle.documentId,
           initial_snapshot_base64: snapshot,
           title: this.doc.title,
+          ...(this.recordStorage === "automerge" && {
+            record_storage: "automerge",
+          }),
           idempotency_key: `v1_${crypto.randomUUID()}`,
         },
       };
-      await writeLocalPage(this.identity, this.localPage, { replica: this.replicaId });
+      await writeLocalPage(this.identity, this.localPage, {
+        replica: this.replicaId,
+      });
       unconfirmed = true;
     } else if (this.localPage && !this.localPage.resetReplica) {
       // A checkpoint can contain more history than an ordinary edit batch.
@@ -1591,8 +1674,7 @@ export class PageSession {
       // also retries any prefix left by an interrupted local import.
       const checkpoint = A.load(decodeSnapshot(this.localPage.snapshot));
       try {
-        const id = documentIdToBinary(this.localPage.document_id);
-        await this.backend.storeSnapshot(id, await checkpointRecords(this.backend, id, checkpoint));
+        await this.storeCheckpoint(documentIdToBinary(this.localPage.document_id), checkpoint);
       } finally {
         A.free(checkpoint);
       }
@@ -1631,7 +1713,9 @@ export class PageSession {
       });
       try {
         this.handle = await Promise.race([
-          this.repo.find(this.connection.documentId, { signal: lookupDeadline }),
+          this.repo.find(this.connection.documentId, {
+            signal: lookupDeadline,
+          }),
           refused,
         ]);
       } catch (cause) {
@@ -1666,6 +1750,9 @@ export class PageSession {
         title: this.doc.title,
         created_at: now,
         updated_at: now,
+        ...(this.recordStorage === "automerge" && {
+          recordStorage: "automerge",
+        }),
         canWrite: this.canWrite,
         access: this.access,
         replicaKey: this.replicaKey,
@@ -1776,8 +1863,7 @@ export class PageSession {
         globalThis.indexedDB?.deleteDatabase(database);
       } catch {}
       await this.initializeLocal(this.replicaKey, { fresh: true });
-      const id = documentIdToBinary(this.localPage.document_id);
-      await this.backend.storeSnapshot(id, await checkpointRecords(this.backend, id, base));
+      await this.storeCheckpoint(documentIdToBinary(this.localPage.document_id), base);
       // Comments can't rewrite a preserved block: they move to the fresh
       // replica whole.
       await this.restoreCommentsCheckpoint(this.localPage);
@@ -1831,6 +1917,27 @@ export class PageSession {
         ),
       ),
     ).slice(0, 32);
+    this.localScope = scope;
+    await this.openBackend();
+  }
+  /** The Repo and backend for this replica, by `recordStorage`: Subduction
+   * over IndexedDB records, or plain Automerge sync over snapshot + chunks. */
+  async openBackend() {
+    const scope = this.localScope;
+    if (this.recordStorage === "automerge") {
+      // The host names connections; presence from this tab arrives at peers
+      // under the sender id it sends with the socket.
+      this.senderId = `b-${crypto.randomUUID()}`;
+      this.databaseName = `pages-plain-${scope}-${this.local.seed.slice(0, 16)}`;
+      this.storage = new IdbByteStore(this.databaseName);
+      this.backend = await AutomergeSyncBackend.load({
+        store: new DocStore(this.storage),
+        ...BACKEND_LIMITS,
+        scheduleLocalSync: this.outbound.scheduleLocalSync,
+      });
+      this.repo = new Repo({ backend: this.backend });
+      return;
+    }
     this.signer = N.MemorySigner.fromBytes(bytes(this.local.seed));
     const peer = this.signer.peerId();
     this.senderId = peer.toString();
@@ -1845,6 +1952,42 @@ export class PageSession {
       scheduleLocalSync: this.outbound.scheduleLocalSync,
     });
     this.repo = new Repo({ backend: this.backend });
+  }
+  /** Switch an empty replica to the storage discovery named (first visit).
+   * A replica holding a document can't switch: its history lives in the
+   * other format. */
+  async switchRecordStorage(mode) {
+    if (this.handle || this.commentsHandle)
+      throw Object.assign(Error("This Page's storage changed. Reload to open it."), {
+        code: "RECORD_STORAGE_CHANGED",
+      });
+    await this.disconnectSockets();
+    try {
+      await this.repo?.shutdown();
+    } catch {}
+    try {
+      await this.backend?.close();
+    } catch {}
+    const database = this.databaseName;
+    try {
+      await this.storage?.close();
+    } finally {
+      this.signer?.free();
+      this.repo = this.backend = this.storage = this.signer = undefined;
+    }
+    try {
+      globalThis.indexedDB?.deleteDatabase(database);
+    } catch {}
+    this.recordStorage = mode;
+    await this.openBackend();
+  }
+  /** Merge a stored checkpoint into this replica before a lookup. */
+  async storeCheckpoint(id, doc) {
+    if (this.backend instanceof AutomergeSyncBackend) {
+      await this.backend.store(id, [documentRecord(doc)]);
+      return;
+    }
+    await this.backend.storeSnapshot(id, await checkpointRecords(this.backend, id, doc));
   }
   /** This session's Automerge actor: every local edit it makes carries it. */
   actor() {
@@ -1973,10 +2116,9 @@ export class PageSession {
     try {
       // A lost registration response can outlive its retry receipt. Reconcile
       // the exact Page/document identity before considering another request.
-      connection = await this.requestWithRenewal(
-        `/api/connect?page=${encodeURIComponent(this.pageId)}`,
-        { headers: admissionHeaders },
-      );
+      connection = await this.requestWithRenewal(connectUrl(this.pageId), {
+        headers: admissionHeaders,
+      });
     } catch (error) {
       if (!current()) return;
       // Missing and unreadable Pages share one response. Registration
@@ -2000,7 +2142,11 @@ export class PageSession {
       // makes simultaneous tabs adopt the first replacement rather than race.
       await this.persistLocal({
         registrationSupersedes: registration.idempotency_key,
-        registration: { ...registration, retry_token: prepared.retry_token, idempotency_key: key },
+        registration: {
+          ...registration,
+          retry_token: prepared.retry_token,
+          idempotency_key: key,
+        },
       });
       if (!current()) return;
       if (this.localPage.registered)
@@ -2104,6 +2250,9 @@ export class PageSession {
         throw Object.assign(Error(this.authProblem), { status: 401 });
       if (this.localPage && connection.documentId !== this.localPage.document_id)
         throw Error("Connected Page identity does not match its local document");
+      const storage = connection.recordStorage === "automerge" ? "automerge" : "native";
+      if (storage !== (this.recordStorage ?? "native")) await this.switchRecordStorage(storage);
+      if (!this.alive) return;
       await this.acceptPageAccess(connection.access);
       if (!this.alive) return;
       this.connection = connection;
@@ -2139,6 +2288,7 @@ export class PageSession {
     this.receiveActorProfiles(this.connection, { replace: true });
     this.presencePaused = false;
     this.receiveActivity(this.connection.activity, { initial: true });
+    if (this.recordStorage === "automerge") return this.openPlainConnection();
     const expected = new N.PeerId(bytes(this.connection.serverPeerId));
     // Pin admission to the host snapshot we just discovered. If that host
     // restarts before the upgrade, reconnect must discover its new epoch.
@@ -2224,17 +2374,87 @@ export class PageSession {
       expected.free();
     }
   }
+  /** openConnection's socket for an `automerge` Page: plain Automerge sync
+   * frames (sync/wire.mjs) after the WebSocket opens. HTTP authentication
+   * admits it; the host checks access on every frame. */
+  async openPlainConnection() {
+    const address = pageSyncAddress(
+      this.pageId,
+      location.href,
+      this.activityEpoch,
+      this.buildFeatures,
+      {
+        converting: this.converting,
+      },
+    );
+    address.searchParams.set("sender", this.senderId);
+    const socket = guardSocketSend(new WebSocket(address));
+    socket.binaryType = "arraybuffer";
+    socket.addEventListener("close", (event) => {
+      const outcome = admissionCloseOutcome(event);
+      if (outcome) this.socketOutcomes.set(socket, outcome);
+    });
+    this.sockets.add(socket);
+    try {
+      await this.handshakeWithDeadline(socket, null, () => socketOpened(socket));
+      if (
+        !this.alive ||
+        this.authRequired ||
+        this.accessDenied ||
+        this.accessReloadRequired ||
+        !this.sockets.has(socket)
+      ) {
+        socket.close();
+        this.sockets.delete(socket);
+        this.reconnect({ type: "handshakeEnded" });
+        return;
+      }
+      this.reconnect({ type: "admitted" });
+      const transport = socketTransport(socket);
+      transport.onClose(() => this.socketDisconnected(socket));
+      this.backend.addConnection(transport, {
+        hostId: this.connection.serverSenderId,
+      });
+      this.socketAdmittedAt.set(socket, this.now());
+      if (this.handle) {
+        this.openComments();
+        this.commentsOpen({ type: "reconnected" });
+      }
+      this.clearConnectionProblem();
+      this.syncStatus({ type: "admitted" });
+      if (this.handle) this.startCatchUp();
+      if (this.handle) this.queueSaved({ restart: !!this.receiptState?.outage });
+      else {
+        this.renderStatus();
+        this.emit();
+      }
+    } catch (error) {
+      const current = this.sockets.delete(socket);
+      socket.close();
+      if (!current) return;
+      this.clearPresence();
+      const admission = this.socketOutcomes.get(socket);
+      if (admission?.retry === "stop") throw signingKeyRefused(admission, error);
+      if (admission)
+        throw Object.assign(Error(error?.message ?? String(error), { cause: error }), {
+          admission,
+        });
+      throw error;
+    }
+  }
   /** The authenticated handshake on `socket`, under the reconnect machine's
    * deadline. The machine's `abandonHandshake` effect (a timeout, or Retry
    * during the handshake) rejects this with a transient failure and closes
    * the socket, so the attempt ends like one whose socket closed. A
    * handshake that finishes after that is freed and never used. Any other
    * failure ends the handshake state here; the caller classifies it. */
-  handshakeWithDeadline(socket, expected) {
+  handshakeWithDeadline(socket, expected, open) {
     let abandoned = false;
-    const setup = N.SubductionWebSocket.setup(socket, this.signer, expected, () => {
-      this.socketDisconnected(socket);
-    });
+    const setup = open
+      ? open()
+      : N.SubductionWebSocket.setup(socket, this.signer, expected, () => {
+          this.socketDisconnected(socket);
+        });
     const deadline = new Promise((_, reject) => {
       this.handshake = {
         socket,
@@ -2261,7 +2481,7 @@ export class PageSession {
     this.reconnect({ type: "handshake" });
     return Promise.race([
       setup.then((authenticated) => {
-        if (abandoned) authenticated.free();
+        if (abandoned) authenticated?.free?.();
         return authenticated;
       }),
       deadline,
@@ -2775,7 +2995,9 @@ export class PageSession {
         return;
       }
       if (message.kind === "actor-profiles") {
-        this.receiveActorProfiles(message, { replace: message.snapshot === true });
+        this.receiveActorProfiles(message, {
+          replace: message.snapshot === true,
+        });
         return;
       }
       if (message.kind === "tool-edit" && Array.isArray(message.heads)) {
@@ -3068,7 +3290,11 @@ export class PageSession {
         blocked: !!(this.authRequired || this.accessDenied || this.accessReloadRequired),
         problem: "",
       };
-      this.syncStatus({ type: "queued", revision: this.receiptRevision ?? 0, edit: false });
+      this.syncStatus({
+        type: "queued",
+        revision: this.receiptRevision ?? 0,
+        edit: false,
+      });
     } else if (!this.receiptCurrent(this.receiptState)) {
       this.queueSaved();
       return Promise.resolve();
@@ -3136,7 +3362,11 @@ export class PageSession {
       if (!isCurrent()) return;
       if (this.localPage && !this.connection) {
         state.localOnly = true;
-        this.syncStatus({ type: "stalled", revision: receipt, localCopy: true });
+        this.syncStatus({
+          type: "stalled",
+          revision: receipt,
+          localCopy: true,
+        });
         this.renderStatus();
         this.emit();
         return;
@@ -3233,14 +3463,22 @@ export class PageSession {
           // Retrying can't help: these edits need a build with the feature.
           // The schema notice explains it; no second banner.
           this.stepSchema({ type: "refused" });
-          this.syncStatus({ type: "stalled", revision: receipt, localCopy: !!this.localPage });
+          this.syncStatus({
+            type: "stalled",
+            revision: receipt,
+            localCopy: !!this.localPage,
+          });
           this.renderStatus();
           this.showReceiptState();
           return;
         }
         if (error.status === 401) this.requireSignIn();
         if (!this.authRequired && !this.accessDenied && !this.accessReloadRequired) {
-          this.syncStatus({ type: "stalled", revision: receipt, localCopy: !!this.localPage });
+          this.syncStatus({
+            type: "stalled",
+            revision: receipt,
+            localCopy: !!this.localPage,
+          });
           this.renderStatus();
           if (isTransientFailure(error)) {
             // The host may be restarting: retry without a banner. It is an

@@ -32,6 +32,7 @@ test("only a current record without a creation intent starts lazily", () => {
   assert.equal(startupOf(record, undefined), "lazy");
   assert.equal(startupOf({ ...record, recordStorage: undefined }, undefined), "lazy");
   assert.equal(startupOf({ ...record, recordStorage: "local" }, undefined), "lazy");
+  assert.equal(startupOf({ ...record, recordStorage: "automerge" }, undefined), "lazy");
   // The boot refuses this mode; it fails in the constructor, as before.
   assert.equal(startupOf({ ...record, recordStorage: "remote" }, undefined), "eager");
   // The boot writes the comments document's name into an older record.
