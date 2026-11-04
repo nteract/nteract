@@ -1709,6 +1709,45 @@ registration, restart and a browser through the Page host;
 `PAGES_RECORD_STORAGE=automerge npm run e2e` runs the browser suites with new
 Pages on this path.
 
+#### Migrating existing Pages
+
+`PAGES_MIGRATE_RECORD_STORAGE=true`, together with
+`PAGES_RECORD_STORAGE=automerge`, converts a Subduction Page to plain sync once
+nobody is using it ([worker/record-storage-migration.mjs](worker/record-storage-migration.mjs)).
+A host becomes eligible when a browser connects to it; when its last socket
+closes and no request runs for a quiet window (30 s, or
+`PAGES_MIGRATE_QUIET_MS`), it converts in place inside
+`blockConcurrencyWhile`, one Page at a time per node. A host booted only by
+a listing check or an API call never converts, and nothing converts at boot.
+
+The conversion flushes the native host (the `PageRecords` sink too), takes
+both documents from its live handles, writes each as one `A.save()` snapshot
+under `plain/` with the native `host/actor/*` entries as plain claims and
+comment-blocked signing keys as blocked principals, then flips
+`recordStorage` in one put of `host/document`, with
+`recordStorageMigratedFrom` and `recordStorageMigratedAt`. The object then
+retires: its storage refuses writes, its native host closes, and it resets,
+so the next request boots plain. A Page with a journal entry pending, a
+conversion in progress, a blocked recovery or incomplete history is skipped
+and tried again after a doubling backoff (at most 6 h). A crash before the
+flip leaves a Subduction Page, and the next attempt clears `plain/` first.
+Each attempt logs one `record_storage.migration` line.
+
+Migration is one-way. Edits after the flip exist only in plain history, so
+flipping the record back would drop them. `recordStorageMigratedFrom` names the
+Subduction storage the Page left, which still holds its native records,
+unread, until the Page is deleted: deletion then removes `repo/*`,
+`host/actor/*` and `host/signer`, and for a buffered Page the `PageRecords`
+object's records.
+
+A tab that held the Page on its native replica, offline say, finds plain
+storage at its next discovery. The storage switch
+([viewer/storage-switch-machine.mjs](viewer/storage-switch-machine.mjs)) pauses
+edits, records its checkpoint under plain storage and asks for a reload; the
+reloaded tab opens a plain replica from that checkpoint and sends the host the
+changes it lacks. Edits in a browser that never reconnects stay in that
+browser. `node scripts/e2e.mjs migration` covers both tabs.
+
 ### Page quotas
 
 Each account has one Page limit. It bounds the account's active Pages and,

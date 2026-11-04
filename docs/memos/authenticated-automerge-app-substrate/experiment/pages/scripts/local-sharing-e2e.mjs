@@ -43,6 +43,8 @@ const commenter = process.argv.includes("--commenter");
 const contentActivity = process.argv.includes("--content-activity");
 const cards = process.argv.includes("--cards");
 const listingBench = process.argv.includes("--listing-bench");
+// Starts native, then restarts celld with plain sync and migration on.
+const migration = process.argv.includes("--migration");
 if (
   [
     domainView,
@@ -60,10 +62,11 @@ if (
     contentActivity,
     cards,
     listingBench,
+    migration,
   ].filter(Boolean).length > 1
 )
   throw new Error(
-    "Choose one qualification: --domain-view, --images, --datasets, --mcp-images, --task-lists, --admission, --build-update, --trash, --projects, --revocation, --cold-open, --commenter, --content-activity, --cards or --listing-bench",
+    "Choose one qualification: --domain-view, --images, --datasets, --mcp-images, --task-lists, --admission, --build-update, --trash, --projects, --revocation, --cold-open, --commenter, --content-activity, --cards, --listing-bench or --migration",
   );
 const children = new Set();
 let canceled = false;
@@ -219,31 +222,38 @@ try {
     ],
   };
   await build(workerBuild);
-  await writeFile(
-    path.join(runtime, ".dev.vars"),
-    Object.entries({
-      PAGES_E2E_ONLY: "true",
-      ...(domainView ? { PAGES_COMPANY_VIEW_DOMAINS: "anaconda.com" } : {}),
-      PAGES_EDITOR: "wordgard",
-      PAGES_ASYNC_PERSISTENCE: "true",
-      PAGES_COMPACT_RECORDS: "true",
-      PAGES_RECORD_STORAGE: process.env.PAGES_RECORD_STORAGE ?? "",
-      PAGES_CATALOG_INDEX: "1",
-      NOTEBOOK_CLOUD_APP_SESSION_SECRET: randomBytes(32).toString("hex"),
-      NOTEBOOK_CLOUD_LOCAL_OIDC: "true",
-      NOTEBOOK_CLOUD_OIDC_FLOW: "server",
-      NOTEBOOK_CLOUD_PUBLIC_ORIGIN: origin,
-      NOTEBOOK_CLOUD_OIDC_ISSUER: `${origin}/dev/oidc`,
-      NOTEBOOK_CLOUD_OIDC_CLIENT_ID: "pages-e2e",
-      NOTEBOOK_CLOUD_OIDC_AUDIENCE: "pages-e2e",
-      NOTEBOOK_CLOUD_OIDC_PRINCIPAL_NAMESPACE: "pages-e2e",
-      NOTEBOOK_CLOUD_ANACONDA_API_KEY_PRINCIPAL_NAMESPACE: "pages-e2e",
-      NOTEBOOK_CLOUD_ANACONDA_API_KEY_USERINFO_URL: fixtureWhoamiUrl,
-    })
-      .map(([key, value]) => `${key}=${value}`)
-      .join("\n") + "\n",
-    { mode: 0o600 },
-  );
+  // A fixed secret, so sessions survive a restart that rewrites the file.
+  const sessionSecret = randomBytes(32).toString("hex");
+  // `vars` overrides entries, for a restart that changes the host's switches.
+  const writeVars = (vars = {}) =>
+    writeFile(
+      path.join(runtime, ".dev.vars"),
+      Object.entries({
+        PAGES_E2E_ONLY: "true",
+        ...(domainView ? { PAGES_COMPANY_VIEW_DOMAINS: "anaconda.com" } : {}),
+        PAGES_EDITOR: "wordgard",
+        PAGES_ASYNC_PERSISTENCE: "true",
+        PAGES_COMPACT_RECORDS: "true",
+        PAGES_RECORD_STORAGE: process.env.PAGES_RECORD_STORAGE ?? "",
+        PAGES_CATALOG_INDEX: "1",
+        NOTEBOOK_CLOUD_APP_SESSION_SECRET: sessionSecret,
+        NOTEBOOK_CLOUD_LOCAL_OIDC: "true",
+        NOTEBOOK_CLOUD_OIDC_FLOW: "server",
+        NOTEBOOK_CLOUD_PUBLIC_ORIGIN: origin,
+        NOTEBOOK_CLOUD_OIDC_ISSUER: `${origin}/dev/oidc`,
+        NOTEBOOK_CLOUD_OIDC_CLIENT_ID: "pages-e2e",
+        NOTEBOOK_CLOUD_OIDC_AUDIENCE: "pages-e2e",
+        NOTEBOOK_CLOUD_OIDC_PRINCIPAL_NAMESPACE: "pages-e2e",
+        NOTEBOOK_CLOUD_ANACONDA_API_KEY_PRINCIPAL_NAMESPACE: "pages-e2e",
+        NOTEBOOK_CLOUD_ANACONDA_API_KEY_USERINFO_URL: fixtureWhoamiUrl,
+        ...(migration && { PAGES_RECORD_STORAGE: "" }),
+        ...vars,
+      })
+        .map(([key, value]) => `${key}=${value}`)
+        .join("\n") + "\n",
+      { mode: 0o600 },
+    );
+  await writeVars();
   log = createWriteStream(path.join(output, "celld.log"));
   // Do not inherit fleet, object-store, or provider credentials from the shell.
   const hostEnv = Object.fromEntries(
@@ -360,6 +370,7 @@ try {
     try {
       await stop(host);
       if (message.build) await deploy(message.build);
+      if (message.vars) await writeVars(message.vars);
       // celld dev's local node can release the listener after its parent exits.
       const deadline = Date.now() + 30000;
       while (!(await portFree(port))) {
@@ -406,7 +417,9 @@ try {
                                   ? "scripts/build-update-smoke.mjs"
                                   : listingBench
                                     ? "scripts/listing-benchmark.mjs"
-                                    : "scripts/sharing-smoke.mjs",
+                                    : migration
+                                      ? "scripts/record-storage-migration-smoke.mjs"
+                                      : "scripts/sharing-smoke.mjs",
     ],
     {
       env: {
@@ -420,11 +433,11 @@ try {
           PAGES_E2E_FIXTURE_ID: imageSource.identity,
         }),
       },
-      ...((admission || buildUpdate || listingBench) && {
+      ...((admission || buildUpdate || listingBench || migration) && {
         stdio: ["inherit", "inherit", "inherit", "ipc"],
       }),
     },
-    admission || buildUpdate || listingBench ? restartOnRequest : undefined,
+    admission || buildUpdate || listingBench || migration ? restartOnRequest : undefined,
   );
   const result = JSON.parse(await readFile(path.join(output, "report.json"), "utf8"));
   if (!result.cleaned || result.failure)
