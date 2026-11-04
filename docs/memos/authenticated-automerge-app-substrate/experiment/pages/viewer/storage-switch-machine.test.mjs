@@ -29,6 +29,7 @@ const EVENTS = {
   recorded: { type: "recorded" },
   adopted: { type: "adopted" },
   failed: { type: "failed" },
+  retired: { type: "retired" },
   close: { type: "close" },
 };
 const go = (name, effects = [], extra = {}) => ({ state: { name, ...extra }, effects });
@@ -48,6 +49,7 @@ const row = (request, cells = {}) => ({
   recorded: stale,
   adopted: stale,
   failed: stale,
+  retired: stale,
   close: go("closed"),
   ...cells,
 });
@@ -60,21 +62,26 @@ const TABLE = {
     mismatchedPlain: go("adopting", [{ type: "pause" }, { type: "adopt", storage: "automerge" }]),
     mismatchedNative: go("adopting", [{ type: "pause" }, { type: "adopt", storage: "native" }]),
   }),
-  stripping: row(busy, { stripped: go("idle"), failed: go("idle") }),
+  stripping: row(busy, { stripped: go("idle"), failed: go("idle"), retired: go("closed") }),
   checkpointing: row(busy, {
+    retired: go("closed"),
     checkpointed: go("moving", [{ type: "move" }]),
     failed: go("idle", [{ type: "resume" }]),
   }),
   moving: row(busy, {
+    retired: go("closed"),
     moved: go("recording", [{ type: "record" }], { database }),
     failed: go("failed", [{ type: "reloadRequired" }]),
   }),
   recording: row(busy, {
+    retired: go("closed"),
     recorded: go("idle", [{ type: "resume" }, { type: "deletePlain", database }]),
     failed: go("failed", [{ type: "reloadRequired" }]),
   }),
   failed: row(no(REJECT.failed)),
   adopting: row(busy, {
+    // The session retires the copy; edits stay held.
+    retired: go("closed"),
     // Edits stay paused: the recorded checkpoint is what the reload opens.
     adopted: go("adopted"),
     failed: go("idle", [{ type: "resume" }]),

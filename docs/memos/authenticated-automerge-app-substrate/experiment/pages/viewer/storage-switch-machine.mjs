@@ -1,17 +1,23 @@
 /**
- * Moving an unregistered draft off plain Automerge storage, as a state
- * machine.
+ * Changing the record storage of a Page's local replica, as a state machine.
+ * Two lifecycles share it, since both hold edits while they run and only one
+ * can run at a time:
  *
- * A host without `PAGES_RECORD_STORAGE=automerge` refuses a plain draft's
- * registration with `409 record_storage_unsupported` and records nothing.
- * The draft then moves to a native replica under the same Page and document
- * IDs and registers without `record_storage`. Every step that can be
- * interrupted is its own state, and the plain replica stays on disk until the
- * local record names the native one, so a crash or close at any point leaves
- * a draft that reopens and repeats the move.
+ * - Moving an unregistered draft off plain Automerge storage. A host without
+ *   `PAGES_RECORD_STORAGE=automerge` refuses a plain draft's registration
+ *   with `409 record_storage_unsupported` and records nothing. The draft
+ *   moves to a native replica under the same Page and document IDs and
+ *   registers without `record_storage`. Every step that can be interrupted is
+ *   its own state, and the plain replica stays on disk until the local record
+ *   names the native one, so a crash or close at any point leaves a draft
+ *   that reopens and repeats the move.
+ * - Adopting the host's storage for any Page, registered or not, in either
+ *   direction. Discovery names plain or native storage, and the open replica
+ *   is in the other one. Its history can't switch live, so its checkpoint is
+ *   recorded under the host's storage and the reload restores it there.
  *
  * States:
- * - idle: no move is running. Edits follow the session's other pauses.
+ * - idle: no switch is running. Edits follow the session's other pauses.
  * - stripping: the replica is already native (another tab wrote the plain
  *   registration back over this one's); the registration loses
  *   `record_storage` and its retry authority.
@@ -31,7 +37,9 @@
  * - adopted: that checkpoint is recorded and final. Edits stay paused: the
  *   reload restores the checkpoint into a replica of the host's storage, and
  *   an edit after it would reach only this replica.
- * - closed: the session closed. Late completions are ignored.
+ * - closed: the session closed, or its local copy retired (deleted,
+ *   revoked, or replaced by another grant) during a step. Late completions
+ *   are ignored.
  *
  * Events:
  * - refused: the host refused the registration's storage. `storage` is the
@@ -40,12 +48,14 @@
  * - stripped / checkpointed / moved / recorded / adopted: that step
  *   finished. `moved` names the plain replica's database.
  * - failed: the running step failed.
+ * - retired: the running step found the local copy deleted, revoked or
+ *   replaced; the session retires it, and edits stay held.
  * - close: the session closed.
  *
  * Effects:
  * - strip, checkpoint, move, record, adopt: run that step, then send its
  *   event. `adopt` records the checkpoint under `storage`.
- * - pause / resume: hold or release edits for the move.
+ * - pause / resume: hold or release edits while the switch runs.
  * - deletePlain: delete the plain replica's database.
  * - reloadRequired: tell the person to reload to keep editing.
  */
@@ -93,6 +103,7 @@ export const storageSwitchSpec = Object.freeze({
     "recorded",
     "adopted",
     "failed",
+    "retired",
     "close",
   ],
   cases: {
@@ -119,6 +130,7 @@ export const storageSwitchSpec = Object.freeze({
       recorded: bare("type"),
       adopted: bare("type"),
       failed: bare("type"),
+      retired: bare("type"),
       close: bare("type"),
     },
     effects: {
@@ -136,7 +148,7 @@ export const storageSwitchSpec = Object.freeze({
 });
 
 export const REJECT = Object.freeze({
-  busy: "The draft is already moving",
+  busy: "The replica is already switching storage",
   failed: "The move failed; reload to retry it",
   adopted: "The host's storage is recorded; reload to open it",
   closed: "The session closed",
@@ -194,6 +206,9 @@ function transition(state, event) {
         return ok({ name: "idle" }, [{ type: "resume" }]);
       // The plain replica is closed, and the record may still name it.
       return ok({ name: "failed" }, [{ type: "reloadRequired" }]);
+    case "retired":
+      if (!(state.name in DONE)) return reject(state, REJECT.stale);
+      return ok({ name: "closed" });
     case "close":
       return ok({ name: "closed" });
   }
