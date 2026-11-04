@@ -126,6 +126,23 @@ function caretAtEnd(tab, text) {
     return false;
   }, text);
 }
+/** Wait until no CSS transition runs (a chevron turning, the progress bar
+ * fading), with nothing focused, so a screenshot shows the settled screen. */
+async function still(tab) {
+  await tab.evaluate(() => document.activeElement?.blur());
+  await expect
+    .poll(() =>
+      tab.evaluate(
+        () =>
+          document
+            .getAnimations()
+            .filter((animation) => animation instanceof CSSTransition)
+            .filter((animation) => animation.playState === "running").length,
+      ),
+    )
+    .toBe(0);
+  await expect(tab.locator('.library-progress[data-active="true"]')).toHaveCount(0);
+}
 let owner;
 // Phone-sized tabs, captured too when a step fails.
 const phones = new Map();
@@ -383,6 +400,87 @@ try {
   complete(
     "/pages at 1280px shows Source and Last activity columns, a remembered grid of card links, and Project labels that open their Project",
   );
+
+  // The heading row, tabs and menus hold still when a view comes back empty.
+  // Nothing is shared with the owner, so Shared with you lists nothing. Every
+  // frame of the switch keeps the same boxes, and the results start where
+  // the list did: no line is pushed in above them while the request runs.
+  {
+    const ownerTab = (name) =>
+      owner.getByRole("group", { name: "Show" }).getByRole("button", { name, exact: true });
+    const sample = () =>
+      owner.evaluate(() => {
+        const box = (element) => {
+          const rect = element.getBoundingClientRect();
+          return [rect.x, rect.y, rect.width, rect.height].map(Math.round);
+        };
+        const body = document.querySelector(".library-body");
+        const first = [...body.children].find((child) => !child.classList.contains("sr-only"));
+        return JSON.stringify({
+          header: box(document.querySelector(".library-header")),
+          controls: box(document.querySelector(".library-controls")),
+          tabs: [...document.querySelectorAll(".library-tab")].map(box),
+          menus: [...document.querySelectorAll(".library-menu-button")].map(box),
+          body: box(body).slice(0, 3),
+          first: first ? Math.round(first.getBoundingClientRect().y) : null,
+          clientWidth: document.documentElement.clientWidth,
+        });
+      });
+    const record = () =>
+      owner.evaluate(() => {
+        window.__frames = [];
+        const step = () => {
+          const body = document.querySelector(".library-body");
+          const box = (element) => {
+            const rect = element.getBoundingClientRect();
+            return [rect.x, rect.y, rect.width, rect.height].map(Math.round);
+          };
+          const first = [...body.children].find((child) => !child.classList.contains("sr-only"));
+          window.__frames.push(
+            JSON.stringify({
+              header: box(document.querySelector(".library-header")),
+              controls: box(document.querySelector(".library-controls")),
+              tabs: [...document.querySelectorAll(".library-tab")].map(box),
+              menus: [...document.querySelectorAll(".library-menu-button")].map(box),
+              body: box(body).slice(0, 3),
+              first: first ? Math.round(first.getBoundingClientRect().y) : null,
+              clientWidth: document.documentElement.clientWidth,
+            }),
+          );
+          if (window.__frames.length < 90) requestAnimationFrame(step);
+        };
+        requestAnimationFrame(step);
+      });
+    await expect(owner.locator(".library-results")).toHaveAttribute("aria-busy", "false");
+    assert.equal(
+      await owner.evaluate(() => getComputedStyle(document.documentElement).scrollbarGutter),
+      "stable",
+      "the library keeps its scrollbar's room",
+    );
+    const before = await sample();
+    await record();
+    await ownerTab("Shared with you").click();
+    await expect(owner.locator(".library-empty")).toHaveText("Nothing is shared with you yet.", {
+      timeout: 30000,
+    });
+    await expect.poll(() => owner.evaluate(() => window.__frames.length)).toBe(90);
+    const frames = await owner.evaluate(() => window.__frames);
+    const moved = frames.filter((frame) => frame !== before);
+    assert.deepEqual(moved, [], `the library moved switching to an empty tab: ${before}`);
+    assert.equal(await sample(), before);
+    await still(owner);
+    await owner.screenshot({ path: `${output}/library-empty-shared.png` });
+    await record();
+    await ownerTab("All").click();
+    await expect(desktopRow("Q4 plan")).toBeVisible({ timeout: 30000 });
+    await expect.poll(() => owner.evaluate(() => window.__frames.length)).toBe(90);
+    assert.deepEqual(
+      (await owner.evaluate(() => window.__frames)).filter((frame) => frame !== before),
+      [],
+      "the library moved switching back from an empty tab",
+    );
+  }
+  complete("Switching to an empty tab and back moves no control, and the results stay put");
 
   // /pages and /projects on a phone. They list from the shell: the only
   // chunks a fresh load fetches are the ones index.html preloads for app.js,
@@ -846,6 +944,88 @@ try {
       .getByRole("link", { name: "Roadmap", exact: true }),
   ).toBeVisible();
   await alice.screenshot({ path: `${shots}/library-desktop-grouped-project.png` });
+  // Fold a Project group with a click and Shared with you from the keyboard:
+  // their rows go, their counts stay, and the folds survive a reload.
+  const groupToggle = (name) =>
+    alice.locator(".library-group-toggle").filter({
+      has: alice.locator(".library-group-label", { hasText: new RegExp(`^${name}$`) }),
+    });
+  const aliceGroup = groupToggle(aliceProject.title);
+  const aliceCount = aliceGroup.locator(".library-group-count [aria-hidden=true]");
+  await expect(aliceGroup).toHaveAttribute("aria-expanded", "true");
+  const countOpen = await aliceCount.textContent();
+  await aliceGroup.click();
+  await expect(aliceGroup).toHaveAttribute("aria-expanded", "false");
+  await expect(rowLink("Alpha survey")).toBeHidden();
+  await expect(aliceCount).toHaveText(countOpen);
+  // A folded group's rows leave the tab order: Tab from its Open Project link
+  // reaches the next heading.
+  await alice
+    .locator(".library-group-heading")
+    .filter({ has: aliceGroup })
+    .getByRole("link", { name: `Open Project ${aliceProject.title}` })
+    .focus();
+  await alice.keyboard.press("Tab");
+  await expect(groupToggle("Shared with you")).toBeFocused();
+  assert.notEqual(
+    await groupToggle("Shared with you").evaluate(
+      (element) => getComputedStyle(element).outlineStyle,
+    ),
+    "none",
+    "a keyboard-focused heading shows its focus",
+  );
+  await alice.keyboard.press("Enter");
+  await expect(groupToggle("Shared with you")).toHaveAttribute("aria-expanded", "false");
+  await expect(rowLink("Roadmap")).toBeHidden();
+  await alice.keyboard.press(" ");
+  await expect(groupToggle("Shared with you")).toHaveAttribute("aria-expanded", "true");
+  await alice.keyboard.press(" ");
+  await expect(groupToggle("Shared with you")).toHaveAttribute("aria-expanded", "false");
+  await expect(groupToggle("Your items")).toHaveAttribute("aria-expanded", "true");
+  await expect(rowLink("Zeta loose note")).toBeVisible();
+  await alice.mouse.move(0, 0);
+  await still(alice);
+  await alice.screenshot({ path: `${shots}/library-desktop-folded-light.png` });
+  await alice.reload();
+  await expect(groupToggle("Shared with you")).toHaveAttribute("aria-expanded", "false", {
+    timeout: 60000,
+  });
+  await expect(groupToggle(aliceProject.title)).toHaveAttribute("aria-expanded", "false");
+  await expect(groupToggle("Your items")).toHaveAttribute("aria-expanded", "true");
+  await expect(rowLink("Alpha survey")).toBeHidden();
+  await alice.emulateMedia({ colorScheme: "dark" });
+  await alice.reload();
+  await expect(alice.locator("html")).toHaveClass(/dark/);
+  await expect(groupToggle("Shared with you")).toHaveAttribute("aria-expanded", "false", {
+    timeout: 60000,
+  });
+  await expect(rowLink("Zeta loose note")).toBeVisible();
+  await still(alice);
+  await alice.screenshot({ path: `${shots}/library-desktop-folded-dark.png` });
+  await alice.emulateMedia({ colorScheme: "light" });
+  await alice.reload();
+  await expect(groupToggle("Your items")).toHaveAttribute("aria-expanded", "true", {
+    timeout: 60000,
+  });
+  // Fold all and Unfold all, from the Group menu.
+  await menu("Group").click();
+  await alice.getByRole("menuitem", { name: "Fold all", exact: true }).click();
+  await expect(menu("Group")).toBeFocused();
+  for (const name of [aliceProject.title, "Shared with you", "Your items"])
+    await expect(groupToggle(name)).toHaveAttribute("aria-expanded", "false");
+  await expect(alice.locator(".library-results .index-row")).toHaveCount(0);
+  await menu("Group").click();
+  await expect(alice.getByRole("menuitem", { name: "Fold all", exact: true })).toHaveAttribute(
+    "aria-disabled",
+    "true",
+  );
+  await alice.getByRole("menuitem", { name: "Unfold all", exact: true }).click();
+  for (const name of [aliceProject.title, "Shared with you", "Your items"])
+    await expect(groupToggle(name)).toHaveAttribute("aria-expanded", "true");
+  await expect(rowLink("Alpha survey")).toBeVisible();
+  complete(
+    "Group headings fold by click and keyboard, survive a reload, and Fold all and Unfold all",
+  );
   await alice.reload();
   await expect(heading("Shared with you")).toBeVisible({ timeout: 60000 });
   await expect(menu("Group")).toHaveAttribute("aria-label", "Group: Project");
@@ -892,6 +1072,7 @@ try {
     "Back from a Page lists the library once",
   );
   complete("Back from a Page lists the library once, painted from memory first");
+  await still(alice);
   await alice.screenshot({ path: `${shots}/library-desktop-grouped-date.png` });
   // The head script picks the theme on load, so reload under a dark system.
   await alice.emulateMedia({ colorScheme: "dark" });
@@ -902,6 +1083,25 @@ try {
   await expect(heading("Shared with you")).toBeVisible();
   await alice.screenshot({ path: `${shots}/library-desktop-dark.png` });
   await alice.emulateMedia({ colorScheme: "light" });
+  // ?grid=1 opens on the grid, with no stored flag and nothing clicked, and
+  // the library's address drops it.
+  await alice.goto(`${origin}/?group=project&grid=1`);
+  const aliceDisplay = alice.getByRole("group", { name: "Display" });
+  await expect(aliceDisplay.getByRole("button", { name: "Grid view" })).toHaveAttribute(
+    "aria-pressed",
+    "true",
+    { timeout: 60000 },
+  );
+  await expect(
+    alice
+      .getByRole("list", { name: aliceProject.title, exact: true })
+      .locator(".index-card")
+      .getByRole("link", { name: "Alpha survey", exact: true }),
+  ).toBeVisible();
+  await expect(alice).toHaveURL(at("?group=project"));
+  await aliceDisplay.getByRole("button", { name: "List view" }).click();
+  await expect(alice.locator(".index-grid")).toHaveCount(0);
+  complete("?grid=1 opens the library on the grid");
   await alice.evaluate(() => localStorage.setItem("pages.grid", "1"));
   await alice.reload();
   await expect(heading("Shared with you")).toBeVisible({ timeout: 60000 });
@@ -960,6 +1160,7 @@ try {
       values.filter((value) => value.scrollWidth > value.clientWidth).map((v) => v.textContent),
     );
   assert.deepEqual(clipped, [], "phone menus show their whole labels");
+  await still(narrow);
   await narrow.screenshot({ path: `${shots}/library-phone.png` });
   await narrow.getByRole("button", { name: /^Sort: / }).tap();
   await expect(narrow.getByRole("menu", { name: "Sort" })).toBeVisible();
