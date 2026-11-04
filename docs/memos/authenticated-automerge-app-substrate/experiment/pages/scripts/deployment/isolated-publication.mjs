@@ -2,6 +2,13 @@
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import * as fs from "node:fs";
+import {
+  SLOTS,
+  connectorTransition,
+  parseConnectorState,
+  serializeConnectorState,
+  settleConnector,
+} from "./connector-slots.mjs";
 import { deploymentProfile, stageTarget, verifyDeployment } from "./profiles.mjs";
 import { routesFor, imagePaths, indexPaths, siftPaths } from "./routes.mjs";
 
@@ -15,10 +22,16 @@ function publicationPaths(target) {
     service: profile.tunnelService,
     configPath: directory + "/tunnel.yml",
     credentialsPath: directory + "/tunnel.json",
+    connectorPath: directory + "/tunnel-connector.json",
     unitPath: "/etc/systemd/system/" + profile.tunnelService,
   };
 }
 const hash = (text) => createHash("sha256").update(text).digest("hex");
+// A ready slot keeps overlapping the live one this long before the live one
+// stops, so the edge has picked up the new connections first.
+const CONNECTOR_SETTLE_MS = 5_000;
+const READY_ATTEMPTS = 30;
+const sleepSync = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 
 export function isolatedPublicationPlan({
   manifest,
@@ -60,15 +73,18 @@ credentials-file: ${credentialsPath}
 ingress:
 ${routesFor(target)}  - service: http_status:404
 `;
-  const unit = `[Unit]
-Description=Isolated ${target} Cloudflare Tunnel
+  // Type=notify: cloudflared reports ready once its first edge connection
+  // registers, so `systemctl start` returns after that. A slot also serves
+  // /ready on its own metrics listener and stops within a bounded grace period.
+  const unitFor = (slot) => `[Unit]
+Description=Isolated ${target} Cloudflare Tunnel${slot ? " connector " + slot.name : ""}
 After=network-online.target ${deployment.service}.service
 Wants=network-online.target
 
 [Service]
 Type=notify
 User=root
-ExecStart=/usr/bin/cloudflared --no-autoupdate --config ${configPath} tunnel run
+ExecStart=/usr/bin/cloudflared --no-autoupdate --config ${configPath} tunnel${slot ? " --metrics " + slot.metrics + " --grace-period 10s" : ""} run
 Restart=on-failure
 RestartSec=5
 TimeoutStartSec=60
@@ -82,12 +98,24 @@ UMask=0077
 [Install]
 WantedBy=multi-user.target
 `;
+  const unit = unitFor(null);
+  const profile = deploymentProfile(target);
+  // `unit` stays the single connector unit: on a slotted target it is the
+  // legacy unit publication migrates from.
+  const slots = profile.tunnelSlots
+    ? SLOTS.map((name) => {
+        const slot = { name, ...profile.tunnelSlots[name] };
+        return { ...slot, unitPath: "/etc/systemd/system/" + slot.service, unit: unitFor(slot) };
+      })
+    : null;
   return {
     config,
     unit,
     configPath,
     unitPath,
     service,
+    slots,
+    unitSha256: hash(slots ? slots.map((slot) => slot.unit).join("") : unit),
     tunnelId,
     hostname: deployment.hostname,
     listen: deployment.listen,
@@ -106,10 +134,14 @@ function runCommand(command, args) {
     );
   }
 }
-export function publishIsolated(stage, { filesystem = fs, run = runCommand } = {}) {
+export function publishIsolated(
+  stage,
+  { filesystem = fs, run = runCommand, sleep = sleepSync } = {},
+) {
   const target = stageTarget(stage);
   const profile = deploymentProfile(target);
-  const { directory, service, configPath, credentialsPath, unitPath } = publicationPaths(target);
+  const { directory, service, configPath, credentialsPath, connectorPath, unitPath } =
+    publicationPaths(target);
   const read = (file, secret = false) => {
     const stat = filesystem.lstatSync(file);
     if (!stat.isFile() || (secret && (stat.uid !== 0 || stat.mode & 0o077)))
@@ -173,12 +205,13 @@ export function publishIsolated(stage, { filesystem = fs, run = runCommand } = {
   if (health.ok !== true || health.prototype !== "pages-celld-native")
     throw new Error("Unexpected local Pages health response");
   const installation = directory + "/tunnel-installation.json";
-  const receiptFor = (config, extra = {}) =>
+  const slotted = plan.slots !== null;
+  const receiptFor = (config, unitSha256 = plan.unitSha256, extra = {}) =>
     JSON.stringify({
       schema: 1,
       tunnel_id: plan.tunnelId,
       config_sha256: hash(config),
-      unit_sha256: hash(plan.unit),
+      unit_sha256: unitSha256,
       ...extra,
     }) + "\n";
   const receipt = receiptFor(plan.config);
@@ -198,11 +231,42 @@ export function publishIsolated(stage, { filesystem = fs, run = runCommand } = {
               : target === "page10" || target === "pages"
                 ? plan.config.replace(siftPaths, "")
                 : null;
-  const previousReceipt = previousConfig === null ? null : receiptFor(previousConfig);
-  const pendingReceipt =
-    previousConfig === null
-      ? null
-      : receiptFor(plan.config, { previous_config_sha256: hash(previousConfig) });
+  // Each predecessor is an exact (config, units) pair this run may migrate
+  // from. A slotted target also migrates from its legacy single unit, with or
+  // without a route change. Its pending receipt names the units to roll back to.
+  const predecessors = [];
+  const predecessor = (config, legacy) => {
+    const unitSha256 = legacy ? hash(plan.unit) : plan.unitSha256;
+    if (config === plan.config && unitSha256 === plan.unitSha256) return;
+    predecessors.push({
+      config,
+      legacy,
+      sealed: receiptFor(config, unitSha256),
+      pending: receiptFor(plan.config, plan.unitSha256, {
+        previous_config_sha256: hash(config),
+        ...(slotted ? { previous_unit_sha256: unitSha256 } : {}),
+      }),
+    });
+  };
+  if (previousConfig !== null) predecessor(previousConfig, false);
+  if (slotted) {
+    if (previousConfig !== null) {
+      predecessor(previousConfig, true);
+      // The pending receipt a release before slots leaves when interrupted
+      // between its config rename and its connector restart.
+      predecessors.push({
+        ...predecessors.at(-1),
+        pending: receiptFor(plan.config, hash(plan.unit), {
+          previous_config_sha256: hash(previousConfig),
+        }),
+      });
+    }
+    predecessor(plan.config, true);
+  }
+  const exactly = (file, contents) => filesystem.existsSync(file) && read(file) === contents;
+  const slotUnitsInstalled = () => plan.slots.every((slot) => exactly(slot.unitPath, slot.unit));
+  const unitsInstalled = (legacy) =>
+    !slotted || legacy ? exactly(unitPath, plan.unit) : slotUnitsInstalled();
   const candidate = (file, contents) => {
     // Distinct expected byte sequences cannot strand one another after a
     // crash between staging and renaming an upgrade or rollback.
@@ -214,49 +278,62 @@ export function publishIsolated(stage, { filesystem = fs, run = runCommand } = {
   };
   const replace = (file, contents) => filesystem.renameSync(candidate(file, contents), file);
   let upgrading = false;
+  let migration = null;
   if (filesystem.existsSync(installation)) {
     const installed = read(installation);
     if (installed !== receipt) {
-      if (
-        previousConfig === null ||
-        (installed !== previousReceipt && installed !== pendingReceipt)
-      )
+      migration =
+        predecessors.find(({ sealed, pending }) => installed === sealed || installed === pending) ??
+        null;
+      if (!migration)
         throw new Error("Dedicated tunnel installation differs; inspect before retrying");
       const current = read(configPath);
       if (
-        read(unitPath) !== plan.unit ||
-        (current !== previousConfig && (installed !== pendingReceipt || current !== plan.config))
+        !unitsInstalled(migration.legacy) ||
+        (current !== migration.config &&
+          (installed !== migration.pending || current !== plan.config))
       )
         throw new Error("Dedicated tunnel migration requires exact previous files");
       // Validate the new bytes before changing the active file. The pending
       // receipt survives a crash on either side of the atomic config rename;
-      // retries must restart this connector before sealing the final receipt.
+      // retries must bring up a connector with these bytes before sealing the
+      // final receipt.
       const next = candidate(configPath, plan.config);
       validateRoutes(next);
       if (
         read(configPath) !== current ||
-        read(unitPath) !== plan.unit ||
+        !unitsInstalled(migration.legacy) ||
         read(installation) !== installed
       )
         throw new Error("Dedicated tunnel changed during migration validation");
-      if (installed === previousReceipt) replace(installation, pendingReceipt);
+      if (installed === migration.sealed) replace(installation, migration.pending);
       filesystem.renameSync(next, configPath);
       upgrading = true;
     }
   } else {
+    const units = [{ service, unitPath }, ...(plan.slots ?? [])];
     if (
       filesystem.existsSync(configPath) ||
-      filesystem.existsSync(unitPath) ||
-      run("systemctl", ["show", service, "--property=LoadState", "--value"]) !== "not-found"
+      filesystem.existsSync(connectorPath) ||
+      units.some(
+        (unit) =>
+          filesystem.existsSync(unit.unitPath) ||
+          run("systemctl", ["show", unit.service, "--property=LoadState", "--value"]) !==
+            "not-found",
+      )
     )
       throw new Error("Unowned dedicated tunnel configuration or service already exists");
     filesystem.writeFileSync(installation, receipt, { mode: 0o600, flag: "wx" });
   }
   // A crash may leave only part of our installation. Fill missing exact files;
-  // never overwrite a modified file or adopt another service's unit.
+  // never overwrite a modified file or adopt another service's unit. A slotted
+  // target's legacy unit is never written; one installed earlier stays until
+  // its connector hands off, then remains stopped and disabled.
   for (const [file, contents, mode] of [
     [configPath, plan.config, 0o600],
-    [unitPath, plan.unit, 0o644],
+    ...(slotted
+      ? plan.slots.map((slot) => [slot.unitPath, slot.unit, 0o644])
+      : [[unitPath, plan.unit, 0o644]]),
   ]) {
     if (filesystem.existsSync(file)) {
       if (read(file) !== contents)
@@ -378,24 +455,130 @@ export function publishIsolated(stage, { filesystem = fs, run = runCommand } = {
     }
   }
   validateRoutes(configPath);
-  run("systemd-analyze", ["verify", unitPath]);
+  for (const file of slotted ? plan.slots.map((slot) => slot.unitPath) : [unitPath])
+    run("systemd-analyze", ["verify", file]);
   run("systemctl", ["daemon-reload"]);
-  run("systemctl", ["enable", service]);
-  try {
-    run("systemctl", [upgrading ? "restart" : "start", service]);
-    if (run("systemctl", ["is-active", service]) !== "active")
-      throw new Error("Dedicated tunnel connector is not active");
-  } catch (error) {
-    if (upgrading) {
-      if (read(configPath) !== plan.config || read(installation) !== pendingReceipt)
-        throw new Error("Dedicated tunnel changed during restart; pending migration retained");
-      replace(configPath, previousConfig);
-      run("systemctl", ["restart", service]);
+  const connector = slotted ? handOffConnector() : restartConnector();
+
+  // A single connector unit restarts in place. The edge has no connector
+  // while it stops, so only frozen targets without slots take this path.
+  function restartConnector() {
+    run("systemctl", ["enable", service]);
+    try {
+      run("systemctl", [upgrading ? "restart" : "start", service]);
       if (run("systemctl", ["is-active", service]) !== "active")
-        throw new Error("Dedicated tunnel rollback is not active; pending migration retained");
-      replace(installation, previousReceipt);
+        throw new Error("Dedicated tunnel connector is not active");
+    } catch (error) {
+      if (upgrading) {
+        if (read(configPath) !== plan.config || read(installation) !== migration.pending)
+          throw new Error("Dedicated tunnel changed during restart; pending migration retained");
+        replace(configPath, migration.config);
+        run("systemctl", ["restart", service]);
+        if (run("systemctl", ["is-active", service]) !== "active")
+          throw new Error("Dedicated tunnel rollback is not active; pending migration retained");
+        replace(installation, migration.sealed);
+      }
+      throw error;
     }
-    throw error;
+    return null;
+  }
+
+  // Bring up the idle slot with the config on disk and stop the live unit only
+  // after the new one holds an edge connection (connector-slots.mjs).
+  function handOffConnector() {
+    const slotNamed = (name) => plan.slots.find((slot) => slot.name === name);
+    const unitOf = (name) => (name === "legacy" ? service : slotNamed(name).service);
+    const active = (name) => run("systemctl", ["is-active", unitOf(name)]) === "active";
+    const persist = (state) => replace(connectorPath, serializeConnectorState(state));
+    const start = (name) => {
+      const slot = slotNamed(name);
+      // A resumed start can find the slot up with older routes: restart it.
+      // The live unit still serves meanwhile.
+      run("systemctl", [active(name) ? "restart" : "start", slot.service]);
+      if (!active(name)) throw new Error("Tunnel connector " + slot.service + " is not active");
+      awaitReady(slot);
+      run("systemctl", ["enable", slot.service]);
+      sleep(CONNECTOR_SETTLE_MS);
+    };
+    const stop = (name) => {
+      run("systemctl", ["stop", unitOf(name)]);
+      run("systemctl", ["disable", unitOf(name)]);
+      if (active(name)) throw new Error("Tunnel connector " + unitOf(name) + " is still active");
+    };
+    let state;
+    if (filesystem.existsSync(connectorPath)) state = parseConnectorState(read(connectorPath));
+    else if (migration?.legacy)
+      state = { phase: "serving", live: "legacy", config: hash(migration.config) };
+    else {
+      // Without a record or a legacy unit, nothing may already serve this
+      // tunnel; a slot left running would keep serving routes no one tracks.
+      if (plan.slots.some((slot) => active(slot.name)))
+        throw new Error("Tunnel connector state is missing while a slot is active; inspect");
+      state = { phase: "absent" };
+    }
+    const effects = { persist, start, stop };
+    // The unit that served when this run began. A retry first finishes the
+    // step an interrupted run left in flight.
+    const servedBefore = state.phase === "stopping" ? state.previous : state.live;
+    let { state: settled, failure } = settleConnector(state, effects);
+    const want = hash(plan.config);
+    if (
+      !failure &&
+      (settled.phase === "absent" || settled.live === "legacy" || settled.config !== want)
+    ) {
+      const swap = connectorTransition(settled, { type: "swap", config: want });
+      persist(swap);
+      ({ state: settled, failure } = settleConnector(swap, effects));
+    }
+    const handoff = !failure && settled.live !== servedBefore;
+    if (failure) {
+      if (upgrading) {
+        if (read(configPath) !== plan.config || read(installation) !== migration.pending)
+          throw new Error("Dedicated tunnel changed during handoff; pending migration retained");
+        // The live unit never stopped and still serves these bytes.
+        replace(configPath, migration.config);
+        if (settled.phase === "serving" && !active(settled.live)) {
+          run("systemctl", ["start", unitOf(settled.live)]);
+          if (!active(settled.live))
+            throw new Error("Dedicated tunnel rollback is not active; pending migration retained");
+        }
+        replace(installation, migration.sealed);
+      }
+      throw failure;
+    }
+    const live = slotNamed(settled.live);
+    // A handoff just brought this slot up. Otherwise make sure it still runs.
+    if (!handoff) {
+      run("systemctl", ["enable", live.service]);
+      run("systemctl", ["start", live.service]);
+    }
+    if (!active(live.name)) throw new Error("Dedicated tunnel connector is not active");
+    return { slot: live, handoff };
+  }
+
+  // cloudflared's /ready answers 200 once the connector holds an edge
+  // connection, and 503 until then.
+  function awaitReady(slot) {
+    for (let attempt = 1; ; attempt++) {
+      try {
+        const ready = JSON.parse(
+          run("curl", [
+            "--fail",
+            "--silent",
+            "--show-error",
+            "--max-time",
+            "2",
+            "http://" + slot.metrics + "/ready",
+          ]),
+        );
+        if (ready.status === 200 && ready.readyConnections >= 1) return;
+      } catch {
+        // Not ready yet, or the metrics listener is still starting.
+      }
+      if (attempt >= READY_ATTEMPTS)
+        throw new Error("Tunnel connector " + slot.service + " reported no edge connection");
+      sleep(1_000);
+    }
   }
   if (
     read("/etc/cloudflared/config.yml") !== sharedConfig ||
@@ -411,8 +594,8 @@ export function publishIsolated(stage, { filesystem = fs, run = runCommand } = {
   if (upgrading) {
     if (
       read(configPath) !== plan.config ||
-      read(unitPath) !== plan.unit ||
-      read(installation) !== pendingReceipt
+      !unitsInstalled(false) ||
+      read(installation) !== migration.pending
     )
       throw new Error(
         "Dedicated tunnel changed before completing migration; pending receipt retained",
@@ -421,10 +604,13 @@ export function publishIsolated(stage, { filesystem = fs, run = runCommand } = {
   }
   return {
     published: true,
-    routesUpdated: upgrading,
+    routesUpdated: upgrading && migration.config !== plan.config,
     hostname: plan.hostname,
     tunnelId: plan.tunnelId,
-    service,
+    service: connector ? connector.slot.service : service,
+    ...(connector
+      ? { connectorSlot: connector.slot.name, connectorHandoff: connector.handoff }
+      : {}),
     dnsConfigured: false,
     sharedTunnelUnchanged: true,
     ...(profile.frozenTargets ? { frozenTargetsUnchanged: profile.frozenTargets } : {}),

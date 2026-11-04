@@ -77,6 +77,7 @@ function fixture(
     interruptRollback = null,
     target = "page3",
     misroutePath = null,
+    neverReady = false,
   } = {},
 ) {
   const current = inputFor(target);
@@ -142,9 +143,21 @@ function fixture(
       return fs.writeFileSync(local(file), ...args);
     },
   };
-  let active = false,
-    frozenPid = "12345";
+  let frozenPid = "12345";
   const changedFrozenPids = new Map();
+  // Every unit that serves this target's tunnel, and a snapshot of the active
+  // ones after each systemctl change. systemd's restart stops before it starts,
+  // so a restart records the moment its unit is down.
+  const connectors = [profile.tunnelService, ...connectorSlots(target).map((s) => s.service)];
+  const activeUnits = new Set();
+  const timeline = [];
+  const snapshot = () =>
+    timeline.push(
+      connectors
+        .filter((unit) => activeUnits.has(unit))
+        .sort()
+        .join(","),
+    );
   const run = (command, args) => {
     calls.push({ command, args });
     if (command === "systemctl") {
@@ -154,22 +167,35 @@ function fixture(
           ? (changedFrozenPids.get(args[1]) ?? frozenPid)
           : "not-found";
       }
-      if (args[0] === "is-active") return args[1] === service || active ? "active" : "inactive";
+      if (args[0] === "is-active")
+        return args[1] === service || activeUnits.has(args[1]) ? "active" : "inactive";
       if (args[0] === "restart") {
+        if (activeUnits.delete(args[1])) snapshot();
         if (failRestart) {
           failRestart = false;
           throw Error("injected connector restart failure");
         }
-        active = true;
+        activeUnits.add(args[1]);
+        snapshot();
       }
       if (args[0] === "start") {
         if (failStart) {
           failStart = false;
           throw Error("injected connector startup failure");
         }
-        active = true;
+        activeUnits.add(args[1]);
+        snapshot();
       }
+      if (args[0] === "stop" && activeUnits.delete(args[1])) snapshot();
       return "";
+    }
+    if (command === "curl" && args.at(-1).endsWith("/ready")) {
+      const slot = connectorSlots(target).find(
+        (s) => args.at(-1) === "http://" + s.metrics + "/ready",
+      );
+      if (!slot || !activeUnits.has(slot.service) || neverReady)
+        throw Error("curl failed (status 22)");
+      return JSON.stringify({ status: 200, readyConnections: 4, connectorId: tunnelId });
     }
     if (command === "curl") return JSON.stringify({ ok: true, prototype: "pages-celld-native" });
     if (command === "systemd-analyze") return "";
@@ -183,12 +209,15 @@ function fixture(
     }
     throw Error("Unexpected command " + command);
   };
+  const sleep = (ms) => sleeps.push(ms);
+  const sleeps = [];
   return {
     target,
-    execute: () => publishIsolated(stage, { filesystem, run }),
+    execute: () => publishIsolated(stage, { filesystem, run, sleep }),
     executeWith: (mutate) =>
       publishIsolated(stage, {
         filesystem,
+        sleep,
         run: (command, args) => {
           const result = run(command, args);
           if (command === "systemctl" && args[0] === "start") mutate();
@@ -199,12 +228,37 @@ function fixture(
       if (unit) changedFrozenPids.set(unit, "54321");
       else frozenPid = "54321";
     },
+    activate: (unit) => {
+      activeUnits.add(unit);
+      snapshot();
+    },
+    activeUnits,
+    timeline,
+    sleeps,
+    failNextStart: () => {
+      failStart = true;
+    },
+    setNeverReady: (value) => {
+      neverReady = value;
+    },
     write,
     writes,
     calls,
     local,
   };
 }
+function connectorSlots(target) {
+  const slots = deploymentProfile(target).tunnelSlots;
+  return slots ? ["a", "b"].map((name) => ({ name, ...slots[name] })) : [];
+}
+const lifecycle = (f) =>
+  f.calls
+    .filter(
+      ({ command, args }) =>
+        command === "systemctl" &&
+        ["start", "restart", "stop", "enable", "disable"].includes(args[0]),
+    )
+    .map(({ args }) => args.join(" "));
 
 test("publishing and retrying page3 only starts the dedicated connector", (t) => {
   const f = fixture(t);
@@ -636,42 +690,41 @@ test("page10 installs fresh and refuses Page9's route predecessors", (t) => {
   const f = fixture(t, { target: "page10" });
   const plan = isolatedPublicationPlan(inputFor("page10"));
   const installation = "/etc/nteract-page10/tunnel-installation.json";
-  const receipt = (config) =>
+  const receipt = (config, unit = plan.unitSha256) =>
     JSON.stringify({
       schema: 1,
       tunnel_id: tunnelId,
       config_sha256: digest(config),
-      unit_sha256: digest(plan.unit),
+      unit_sha256: unit,
     }) + "\n";
   const result = f.execute();
   assert.equal(result.routesUpdated, false);
+  assert.equal(result.connectorSlot, "a");
   assert.deepEqual(result.frozenTargetsUnchanged, ["page7", "page8", "page9"]);
   assert.equal(fs.readFileSync(f.local(plan.configPath), "utf8"), plan.config);
   assert.equal(fs.readFileSync(f.local(installation), "utf8"), receipt(plan.config));
-  assert.deepEqual(
-    f.calls
-      .filter(
-        ({ command, args }) =>
-          command === "systemctl" && ["start", "restart", "stop", "enable"].includes(args[0]),
-      )
-      .map(({ args }) => args.join(" ")),
-    ["enable cloudflared-page10.service", "start cloudflared-page10.service"],
-  );
-  // Page9's migration predecessors are not Page10's. Each one is refused.
+  assert.deepEqual(lifecycle(f), [
+    "start cloudflared-page10-a.service",
+    "enable cloudflared-page10-a.service",
+  ]);
+  assert.equal(fs.existsSync(f.local(plan.unitPath)), false, "no legacy unit on a fresh install");
+  // Page9's migration predecessors are not Page10's. Each one is refused,
+  // under either connector layout.
   for (const prior of [
     plan.config.replace(indexPaths, ""),
     plan.config.replace(indexPaths, "").replace(projectPaths, ""),
     plan.config.replace("|mermaid[.]js|", "|"),
-  ]) {
-    assert.notEqual(prior, plan.config);
-    const g = fixture(t, { target: "page10" });
-    g.write(plan.configPath, prior);
-    g.write(plan.unitPath, plan.unit);
-    g.write(installation, receipt(prior));
-    assert.throws(g.execute, /Dedicated tunnel installation differs/);
-    assert.equal(g.writes.length, 0);
-    assert.equal(fs.readFileSync(g.local(plan.configPath), "utf8"), prior);
-  }
+  ])
+    for (const unit of [digest(plan.unit), plan.unitSha256]) {
+      assert.notEqual(prior, plan.config);
+      const g = fixture(t, { target: "page10" });
+      g.write(plan.configPath, prior);
+      g.write(plan.unitPath, plan.unit);
+      g.write(installation, receipt(prior, unit));
+      assert.throws(g.execute, /Dedicated tunnel installation differs/);
+      assert.equal(g.writes.length, 0);
+      assert.equal(fs.readFileSync(g.local(plan.configPath), "utf8"), prior);
+    }
 });
 
 test("Page10 refuses Page9 manifests, connector credentials and installation receipts", (t) => {
@@ -736,31 +789,29 @@ test("pages installs fresh and refuses Page10's receipts", (t) => {
   assert.equal(plan.configPath, "/etc/nteract-pages-live/tunnel.yml");
   const result = f.execute();
   assert.equal(result.routesUpdated, false);
+  assert.equal(result.service, "cloudflared-pages-live-a.service");
   assert.deepEqual(result.frozenTargetsUnchanged, ["page7", "page8", "page9"]);
   assert.equal(fs.readFileSync(f.local(plan.configPath), "utf8"), plan.config);
-  assert.deepEqual(
-    f.calls
-      .filter(
-        ({ command, args }) =>
-          command === "systemctl" && ["start", "restart", "stop", "enable"].includes(args[0]),
-      )
-      .map(({ args }) => args.join(" ")),
-    ["enable cloudflared-pages-live.service", "start cloudflared-pages-live.service"],
-  );
-  // Page10's connector bytes are not Pages' to adopt.
+  assert.deepEqual(lifecycle(f), [
+    "start cloudflared-pages-live-a.service",
+    "enable cloudflared-pages-live-a.service",
+  ]);
+  // Page10's connector bytes are not Pages' to adopt, under either layout.
   const page10 = isolatedPublicationPlan(inputFor("page10"));
-  const g = fixture(t, { target: "pages" });
-  g.write(
-    installation,
-    JSON.stringify({
-      schema: 1,
-      tunnel_id: tunnelId,
-      config_sha256: digest(page10.config),
-      unit_sha256: digest(page10.unit),
-    }) + "\n",
-  );
-  assert.throws(g.execute, /Dedicated tunnel installation differs/);
-  assert.equal(g.writes.length, 0);
+  for (const unit of [digest(page10.unit), page10.unitSha256]) {
+    const g = fixture(t, { target: "pages" });
+    g.write(
+      installation,
+      JSON.stringify({
+        schema: 1,
+        tunnel_id: tunnelId,
+        config_sha256: digest(page10.config),
+        unit_sha256: unit,
+      }) + "\n",
+    );
+    assert.throws(g.execute, /Dedicated tunnel installation differs/);
+    assert.equal(g.writes.length, 0);
+  }
   assert.throws(
     () => isolatedPublicationPlan({ ...inputFor("pages"), target: "page10" }),
     /Unexpected deployment target/,
@@ -823,8 +874,9 @@ test("OAuth and private images publish only exact Page7 through Pages routes whi
   }
 });
 
-// Page10 and Pages migrate from their configs before Sift's WASM route.
-for (const target of ["page3", "page5", "page7", "page8", "page9", "page10", "pages"]) {
+// Single-connector targets restart their connector in place. Page10 and Pages
+// hand off between connector slots instead; see the slot tests below.
+for (const target of ["page3", "page5", "page7", "page8", "page9"]) {
   const connector = deploymentProfile(target).tunnelService;
   test(`${target} known route upgrade restarts only its dedicated connector then becomes a no-op`, (t) => {
     const f = fixture(t, { target });
@@ -1299,6 +1351,10 @@ const frozenBy = {
 for (const target of ["page7", "page8", "page9", "page10", "pages"])
   test(`${target} publication retries preserve every earlier deployment`, (t) => {
     const { deployment, tunnelService } = deploymentProfile(target);
+    // A slotted target never installs its legacy unit; it owns only its slots.
+    const units = connectorSlots(target).length
+      ? connectorSlots(target).map((slot) => slot.service)
+      : [tunnelService];
     const f = fixture(t, { target, failStart: true });
     assert.throws(f.execute, /injected connector startup failure/);
     const installation = `/etc/${deployment.service}/tunnel-installation.json`;
@@ -1314,17 +1370,10 @@ for (const target of ["page7", "page8", "page9", "page10", "pages"])
       f.writes.every(
         (file) =>
           file.startsWith(`/etc/${deployment.service}/`) ||
-          file === `/etc/systemd/system/${tunnelService}`,
+          units.some((unit) => file === `/etc/systemd/system/${unit}`),
       ),
     );
-    assert.ok(
-      f.calls
-        .filter(
-          ({ command, args }) =>
-            command === "systemctl" && ["start", "restart", "stop", "enable"].includes(args[0]),
-        )
-        .every(({ args }) => args[1] === tunnelService),
-    );
+    assert.ok(lifecycle(f).every((call) => units.includes(call.split(" ")[1])));
     const route = new RegExp(/^    path: (.+)$/m.exec(routesFor(target))[1]);
     for (const pathname of [
       "/",
@@ -1583,3 +1632,376 @@ for (const misroutePath of [
       false,
     );
   });
+
+// Connector slots: Page10 and Pages hand the tunnel between two units so a
+// route change never leaves the edge without a connector.
+const recordPath = (target) => configDir(target) + "/tunnel-connector.json";
+function connectorRecord(f) {
+  const file = f.local(recordPath(f.target));
+  return fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, "utf8")) : null;
+}
+function assertNoGap(f) {
+  const first = f.timeline.findIndex((units) => units !== "");
+  assert.ok(first >= 0, "a connector came up");
+  assert.ok(
+    f.timeline.slice(first).every((units) => units !== ""),
+    "the edge lost every connector: " + f.timeline.join(" | "),
+  );
+}
+function slotReceipt(config, unit, extra = {}) {
+  return (
+    JSON.stringify({
+      schema: 1,
+      tunnel_id: tunnelId,
+      config_sha256: digest(config),
+      unit_sha256: unit,
+      ...extra,
+    }) + "\n"
+  );
+}
+// An installation made by a release before slots: one legacy unit, running.
+function legacyInstall(f, { config = "previous", pending = null, newConfig = false } = {}) {
+  const plan = isolatedPublicationPlan(inputFor(f.target));
+  const oldConfig = priorConfig(plan.config, f.target);
+  const from = config === "previous" ? oldConfig : plan.config;
+  const legacyUnit = digest(plan.unit);
+  const sealed = slotReceipt(from, legacyUnit);
+  const installed =
+    pending === "slots"
+      ? slotReceipt(plan.config, plan.unitSha256, {
+          previous_config_sha256: digest(from),
+          previous_unit_sha256: legacyUnit,
+        })
+      : pending === "legacy"
+        ? slotReceipt(plan.config, legacyUnit, { previous_config_sha256: digest(oldConfig) })
+        : sealed;
+  f.write(plan.configPath, newConfig ? plan.config : from);
+  f.write(plan.unitPath, plan.unit);
+  f.write(configDir(f.target) + "/tunnel-installation.json", installed);
+  f.activate(plan.service);
+  return {
+    plan,
+    oldConfig,
+    from,
+    sealed,
+    final: slotReceipt(plan.config, plan.unitSha256),
+    legacy: plan.service,
+    a: plan.slots[0].service,
+    b: plan.slots[1].service,
+  };
+}
+const installedReceipt = (f) =>
+  fs.readFileSync(f.local(configDir(f.target) + "/tunnel-installation.json"), "utf8");
+
+for (const target of ["page10", "pages"]) {
+  test(`${target} slot units add metrics and a bounded grace period; the legacy unit is unchanged`, () => {
+    const plan = isolatedPublicationPlan(inputFor(target));
+    const { deployment } = deploymentProfile(target);
+    assert.match(
+      plan.unit,
+      new RegExp(
+        `^ExecStart=/usr/bin/cloudflared --no-autoupdate --config /etc/${deployment.service}/tunnel.yml tunnel run$`,
+        "m",
+      ),
+    );
+    assert.equal(plan.slots.length, 2);
+    const ports = new Set();
+    for (const slot of plan.slots) {
+      assert.equal(slot.unitPath, "/etc/systemd/system/" + slot.service);
+      assert.match(
+        slot.unit,
+        new RegExp(
+          `^ExecStart=/usr/bin/cloudflared --no-autoupdate --config /etc/${deployment.service}/tunnel.yml tunnel --metrics ${slot.metrics.replaceAll(".", "[.]")} --grace-period 10s run$`,
+          "m",
+        ),
+      );
+      assert.match(slot.metrics, /^127[.]0[.]0[.]1:\d+$/);
+      ports.add(slot.metrics);
+      // Everything but the description and ExecStart matches the legacy unit.
+      const strip = (unit) =>
+        unit.replace(/^(Description|ExecStart)=.*$/gm, "").replace(/\n+/g, "\n");
+      assert.equal(strip(slot.unit), strip(plan.unit));
+    }
+    assert.equal(ports.size, 2);
+    assert.equal(plan.unitSha256, digest(plan.slots[0].unit + plan.slots[1].unit));
+  });
+
+  test(`${target} hands a route change from its legacy connector to slot a without a gap`, (t) => {
+    const f = fixture(t, { target });
+    const x = legacyInstall(f);
+    const result = f.execute();
+    assert.equal(result.routesUpdated, true);
+    assert.equal(result.connectorSlot, "a");
+    assert.equal(result.connectorHandoff, true);
+    assert.equal(result.service, x.a);
+    assert.equal(result.sharedTunnelUnchanged, true);
+    assert.equal(fs.readFileSync(f.local(x.plan.configPath), "utf8"), x.plan.config);
+    assert.equal(installedReceipt(f), x.final);
+    assert.deepEqual(connectorRecord(f), {
+      schema: 1,
+      phase: "serving",
+      live: "a",
+      config: digest(x.plan.config),
+    });
+    assert.deepEqual(lifecycle(f), [
+      "start " + x.a,
+      "enable " + x.a,
+      "stop " + x.legacy,
+      "disable " + x.legacy,
+    ]);
+    const ready = f.calls.findIndex(
+      ({ command, args }) => command === "curl" && args.at(-1).endsWith("/ready"),
+    );
+    const stop = f.calls.findIndex(
+      ({ command, args }) => command === "systemctl" && args[0] === "stop",
+    );
+    assert.ok(ready >= 0 && ready < stop, "the old connector stops only after /ready");
+    assert.ok(f.sleeps.includes(5_000), "the slots overlap before the old one stops");
+    assertNoGap(f);
+    assert.deepEqual([...f.activeUnits].sort(), [x.a]);
+    // The legacy unit stays on disk, stopped and disabled.
+    assert.equal(fs.readFileSync(f.local(x.plan.unitPath), "utf8"), x.plan.unit);
+    assert.ok(
+      f.writes.every(
+        (file) =>
+          file.startsWith(configDir(target) + "/") ||
+          x.plan.slots.some((slot) => file === slot.unitPath),
+      ),
+    );
+    assert.ok(
+      f.calls
+        .filter(({ command, args }) => command === "systemctl" && args[1] === "cloudflared.service")
+        .every(({ args }) => args[0] === "show"),
+    );
+    f.calls.length = 0;
+    const again = f.execute();
+    assert.equal(again.routesUpdated, false);
+    assert.equal(again.connectorHandoff, false);
+    assert.deepEqual(lifecycle(f), ["enable " + x.a, "start " + x.a]);
+    assert.equal(installedReceipt(f), x.final);
+  });
+
+  test(`${target} moves a legacy connector with unchanged routes onto slot a`, (t) => {
+    const f = fixture(t, { target });
+    const x = legacyInstall(f, { config: "current" });
+    const result = f.execute();
+    assert.equal(result.routesUpdated, false);
+    assert.equal(result.connectorHandoff, true);
+    assert.equal(fs.readFileSync(f.local(x.plan.configPath), "utf8"), x.plan.config);
+    assert.equal(installedReceipt(f), x.final);
+    assert.deepEqual(lifecycle(f), [
+      "start " + x.a,
+      "enable " + x.a,
+      "stop " + x.legacy,
+      "disable " + x.legacy,
+    ]);
+    assertNoGap(f);
+  });
+
+  test(`${target} alternates slots on each route change`, (t) => {
+    const f = fixture(t, { target });
+    const plan = isolatedPublicationPlan(inputFor(target));
+    const oldConfig = priorConfig(plan.config, target);
+    const [a, b] = plan.slots;
+    for (const slot of plan.slots) f.write(slot.unitPath, slot.unit);
+    for (const [live, next] of [
+      [a, b],
+      [b, a],
+    ]) {
+      f.write(plan.configPath, oldConfig);
+      f.write(
+        configDir(target) + "/tunnel-installation.json",
+        slotReceipt(oldConfig, plan.unitSha256),
+      );
+      f.write(
+        recordPath(target),
+        JSON.stringify({ schema: 1, phase: "serving", live: live.name, config: digest(oldConfig) }),
+      );
+      f.activeUnits.clear();
+      f.activate(live.service);
+      f.calls.length = 0;
+      const result = f.execute();
+      assert.equal(result.routesUpdated, true);
+      assert.equal(result.connectorSlot, next.name);
+      assert.deepEqual(lifecycle(f), [
+        "start " + next.service,
+        "enable " + next.service,
+        "stop " + live.service,
+        "disable " + live.service,
+      ]);
+      assert.deepEqual(connectorRecord(f), {
+        schema: 1,
+        phase: "serving",
+        live: next.name,
+        config: digest(plan.config),
+      });
+      assert.equal(installedReceipt(f), slotReceipt(plan.config, plan.unitSha256));
+      assertNoGap(f);
+    }
+  });
+
+  for (const failure of ["start", "ready"])
+    test(`${target} keeps the legacy connector serving when slot a fails to ${failure}`, (t) => {
+      const f = fixture(t, {
+        target,
+        failStart: failure === "start",
+        neverReady: failure === "ready",
+      });
+      const x = legacyInstall(f);
+      assert.throws(
+        f.execute,
+        failure === "start" ? /injected connector startup failure/ : /reported no edge connection/,
+      );
+      assert.equal(fs.readFileSync(f.local(x.plan.configPath), "utf8"), x.oldConfig);
+      assert.equal(installedReceipt(f), x.sealed);
+      assert.deepEqual(connectorRecord(f), {
+        schema: 1,
+        phase: "serving",
+        live: "legacy",
+        config: digest(x.oldConfig),
+      });
+      assert.deepEqual(lifecycle(f), ["start " + x.a, "stop " + x.a, "disable " + x.a]);
+      if (failure === "ready") assert.equal(f.sleeps.filter((ms) => ms === 1_000).length, 29);
+      assert.ok(f.activeUnits.has(x.legacy), "the legacy connector never stopped");
+      assertNoGap(f);
+      f.setNeverReady(false);
+      const retry = f.execute();
+      assert.equal(retry.routesUpdated, true);
+      assert.equal(retry.connectorSlot, "a");
+      assert.equal(installedReceipt(f), x.final);
+      assertNoGap(f);
+    });
+
+  // Each persisted step resumes on retry. The old connector keeps serving
+  // until the new one is ready, so none of these leave a gap.
+  for (const [name, record, active, expected] of [
+    [
+      "starting, slot a not yet up",
+      { phase: "starting", live: "legacy", next: "a" },
+      ["legacy"],
+      ["start a", "enable a", "stop legacy", "disable legacy"],
+    ],
+    [
+      "starting, slot a already up",
+      { phase: "starting", live: "legacy", next: "a" },
+      ["legacy", "a"],
+      ["restart a", "enable a", "stop legacy", "disable legacy"],
+    ],
+    [
+      "stopping the legacy connector",
+      { phase: "stopping", live: "a", previous: "legacy" },
+      ["legacy", "a"],
+      ["stop legacy", "disable legacy"],
+    ],
+    [
+      "reverting slot a",
+      { phase: "reverting", live: "legacy", next: "a" },
+      ["legacy", "a"],
+      ["stop a", "disable a", "start a", "enable a", "stop legacy", "disable legacy"],
+    ],
+    [
+      "serving slot a before the receipt was sealed",
+      { phase: "serving", live: "a" },
+      ["a"],
+      ["enable a", "start a"],
+    ],
+  ])
+    test(`${target} resumes an interrupted handoff: ${name}`, (t) => {
+      const f = fixture(t, { target });
+      const x = legacyInstall(f, { pending: "slots", newConfig: true });
+      for (const slot of x.plan.slots) f.write(slot.unitPath, slot.unit);
+      const units = { legacy: x.legacy, a: x.a, b: x.b };
+      const want = digest(x.plan.config);
+      const old = digest(x.oldConfig);
+      const full =
+        record.phase === "starting"
+          ? { ...record, config: old, nextConfig: want }
+          : record.phase === "reverting"
+            ? { ...record, config: old }
+            : { ...record, config: want };
+      f.write(recordPath(target), JSON.stringify({ schema: 1, ...full }));
+      f.activeUnits.clear();
+      for (const unit of active) f.activate(units[unit]);
+      const result = f.execute();
+      assert.equal(result.routesUpdated, true);
+      assert.equal(result.connectorSlot, "a");
+      assert.deepEqual(
+        lifecycle(f),
+        expected.map((call) => call.replace(/ (\w+)$/, (_, unit) => " " + units[unit])),
+      );
+      assert.equal(installedReceipt(f), x.final);
+      assert.deepEqual(connectorRecord(f), {
+        schema: 1,
+        phase: "serving",
+        live: "a",
+        config: want,
+      });
+      assert.deepEqual([...f.activeUnits].sort(), [x.a]);
+      assertNoGap(f);
+    });
+
+  for (const newConfig of [false, true])
+    test(`${target} finishes a legacy migration the previous release left pending with ${newConfig ? "new" : "old"} config bytes`, (t) => {
+      const f = fixture(t, { target });
+      const x = legacyInstall(f, { pending: "legacy", newConfig });
+      const result = f.execute();
+      assert.equal(result.routesUpdated, true);
+      assert.equal(result.connectorHandoff, true);
+      assert.equal(installedReceipt(f), x.final);
+      assert.equal(lifecycle(f).includes("stop " + x.legacy), true);
+      assert.equal(
+        lifecycle(f).some((call) => call.startsWith("restart")),
+        false,
+      );
+      assertNoGap(f);
+    });
+
+  test(`${target} refuses to guess when the connector record is missing or invalid`, (t) => {
+    const missing = fixture(t, { target });
+    missing.execute();
+    fs.rmSync(missing.local(recordPath(target)));
+    assert.throws(missing.execute, /connector state is missing while a slot is active/);
+    const invalid = fixture(t, { target });
+    invalid.execute();
+    invalid.write(recordPath(target), JSON.stringify({ schema: 1, phase: "serving", live: "c" }));
+    assert.throws(invalid.execute, /Invalid tunnel connector state/);
+  });
+
+  test(`${target} migration refuses changed legacy or slot files before writes`, (t) => {
+    for (const changed of ["legacy-unit", "receipt", "missing-slot-unit"]) {
+      const f = fixture(t, { target });
+      const x = legacyInstall(f);
+      if (changed === "legacy-unit") f.write(x.plan.unitPath, x.plan.unit + "# foreign\n");
+      if (changed === "receipt")
+        f.write(
+          configDir(target) + "/tunnel-installation.json",
+          slotReceipt(x.oldConfig, "f".repeat(64)),
+        );
+      if (changed === "missing-slot-unit") {
+        f.write(x.plan.slots[0].unitPath, x.plan.slots[0].unit);
+        f.write(
+          configDir(target) + "/tunnel-installation.json",
+          slotReceipt(x.oldConfig, x.plan.unitSha256),
+        );
+      }
+      f.writes.length = 0;
+      assert.throws(
+        f.execute,
+        /Dedicated tunnel (installation differs|migration requires exact previous files)/,
+        changed,
+      );
+      assert.equal(f.writes.length, 0, changed);
+      assert.deepEqual(lifecycle(f), [], changed);
+    }
+  });
+
+  test(`${target} fresh install refuses an existing slot unit or connector record`, (t) => {
+    const plan = isolatedPublicationPlan(inputFor(target));
+    for (const file of [plan.slots[1].unitPath, recordPath(target)]) {
+      const f = fixture(t, { target });
+      f.write(file, "foreign");
+      assert.throws(f.execute, /Unowned dedicated tunnel configuration or service already exists/);
+      assert.equal(f.writes.length, 0);
+    }
+  });
+}

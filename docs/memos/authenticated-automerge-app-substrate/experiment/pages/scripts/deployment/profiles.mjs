@@ -312,7 +312,15 @@ const targets = Object.freeze({
     // default parent-based sampler then drops every request-scoped log line.
     otelTracesSampler: "always_on",
     editor: "wordgard",
+    // tunnelService is the single connector unit earlier releases installed.
+    // Publication hands the tunnel to these two slots and alternates between
+    // them, so a route change never stops the last connector
+    // (connector-slots.mjs). Metrics listeners serve cloudflared's /ready.
     tunnelService: "cloudflared-page10.service",
+    tunnelSlots: Object.freeze({
+      a: Object.freeze({ service: "cloudflared-page10-a.service", metrics: "127.0.0.1:29480" }),
+      b: Object.freeze({ service: "cloudflared-page10-b.service", metrics: "127.0.0.1:29490" }),
+    }),
     frozenTargets: Object.freeze(["page7", "page8", "page9"]),
   }),
   // pages.runtimed.run: the lasting home for Pages. It starts empty, with
@@ -363,7 +371,13 @@ const targets = Object.freeze({
     // default parent-based sampler then drops every request-scoped log line.
     otelTracesSampler: "always_on",
     editor: "wordgard",
+    // The single connector unit earlier releases installed, then the two
+    // slots publication alternates between (see Page10).
     tunnelService: "cloudflared-pages-live.service",
+    tunnelSlots: Object.freeze({
+      a: Object.freeze({ service: "cloudflared-pages-live-a.service", metrics: "127.0.0.1:29481" }),
+      b: Object.freeze({ service: "cloudflared-pages-live-b.service", metrics: "127.0.0.1:29491" }),
+    }),
     // Page10 stays deployable, so it is not frozen here.
     frozenTargets: Object.freeze(["page7", "page8", "page9"]),
   }),
