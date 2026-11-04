@@ -4,33 +4,13 @@ import * as A from "@automerge/automerge";
 import { cardKey, pageCard } from "../model/page-card.mjs";
 import { createPageData, initializePage } from "../model/page.mjs";
 import { PAGE_CARD_KEY } from "./page-card-writer.mjs";
-import { fixture, pageId } from "./trash-fixture.mjs";
+import { fixture, pageId, trashArgs } from "./trash-fixture.mjs";
+import { cardBucket } from "./card-bucket-fixture.mjs";
 
 // The Page host's side of cards: the write beside each content-activity
-// flush, the skip when the card didn't change, and a card write that fails
-// without failing the edit (worker/page-card-writer.mjs).
-
-/** A Page assets bucket in memory that counts puts and can fail them. */
-function bucket() {
-  return {
-    objects: new Map(),
-    puts: 0,
-    fail: false,
-    async put(key, value) {
-      this.puts++;
-      if (this.fail) throw Error("object store unavailable");
-      this.objects.set(key, String(value));
-      return { key };
-    },
-    async get(key) {
-      const value = this.objects.get(key);
-      return value === undefined ? null : { text: async () => value };
-    },
-    async delete(key) {
-      this.objects.delete(key);
-    },
-  };
-}
+// flush, the skip when the card didn't change, a card write that fails
+// without failing the edit, and card writes racing a purge
+// (worker/page-card-writer.mjs).
 
 /** Emit `change` with patches from the fixture's handle, as the repo does. */
 function emitting(page) {
@@ -55,11 +35,11 @@ function emitting(page) {
 const settle = async (f) => {
   while (f.tasks.length) await Promise.allSettled(f.tasks.splice(0));
 };
-const stored = (assets) => JSON.parse(assets.objects.get(cardKey(pageId)));
+const stored = (assets) => assets.card(cardKey(pageId));
 const longBody = Array.from({ length: 120 }, (_, i) => `Paragraph ${i} ${"words ".repeat(30)}`);
 
 test("a booted host writes no card until its content changes", async (t) => {
-  const assets = bucket();
+  const assets = cardBucket();
   const f = await fixture(t, { env: { PAGES_ASSETS: assets } });
   await emitting(f.page).watchContent();
   assert.deepEqual(f.page.pageCard.state, { name: "idle", stored: null });
@@ -70,7 +50,7 @@ test("a booted host writes no card until its content changes", async (t) => {
 });
 
 test("a flush writes the card when its first screen changed", async (t) => {
-  const assets = bucket();
+  const assets = cardBucket();
   const f = await fixture(t, { env: { PAGES_ASSETS: assets } });
   await emitting(f.page).watchContent();
   const top = await f.tool("owner", "edit_page", {
@@ -88,13 +68,18 @@ test("a flush writes the card when its first screen changed", async (t) => {
   assert.deepEqual(card.blocks[0].content[0], ["h2", {}, "Launch"]);
   assert.equal(card.content_updated_at, f.page.contentActivity.value);
   assert.deepEqual(await f.storage.get(PAGE_CARD_KEY), { card_hash: card.card_hash });
+  // The object carries what the writer's ordering check reads back.
+  assert.deepEqual(assets.objects.get(cardKey(pageId)).customMetadata, {
+    card_hash: card.card_hash,
+    content_updated_at: card.content_updated_at,
+  });
 });
 
 test("a flush after an edit below the fold puts nothing", async (t) => {
   const doc = A.change(A.from(createPageData({ pageId, title: "Launch plan" })), (draft) =>
     initializePage(draft, longBody.join("\n\n")),
   );
-  const assets = bucket();
+  const assets = cardBucket();
   const plain = await fixture(t);
   const f = await fixture(t, {
     auth: plain.auth,
@@ -105,6 +90,8 @@ test("a flush after an edit below the fold puts nothing", async (t) => {
   A.free(doc);
   assert.equal(before.truncated, true);
   await f.storage.put(PAGE_CARD_KEY, { card_hash: before.card_hash });
+  await assets.seed(cardKey(pageId), before);
+  assets.puts = 0;
   await emitting(f.page).watchContent();
   const below = await f.tool("owner", "edit_page", {
     operations: [{ op: "insert_markdown", markdown: "A footnote." }],
@@ -119,7 +106,7 @@ test("a flush after an edit below the fold puts nothing", async (t) => {
 });
 
 test("a failed card write never fails the edit or the flush, and the next flush retries", async (t) => {
-  const assets = bucket();
+  const assets = cardBucket();
   const f = await fixture(t, { env: { PAGES_ASSETS: assets } });
   await f.storage.put(PAGE_CARD_KEY, { card_hash: "a".repeat(64) });
   await emitting(f.page).watchContent();
@@ -158,7 +145,7 @@ test("a host without a Page assets bucket has no card writer", async (t) => {
 });
 
 test("a host retired by a storage migration stops its writer and keeps the card", async (t) => {
-  const assets = bucket();
+  const assets = cardBucket();
   const f = await fixture(t, { env: { PAGES_ASSETS: assets } });
   await emitting(f.page).watchContent();
   const edit = await f.tool("owner", "edit_page", {
@@ -175,3 +162,46 @@ test("a host retired by a storage migration stops its writer and keeps the card"
   assert.deepEqual(stored(assets), card);
   assert.deepEqual(await f.storage.get(PAGE_CARD_KEY), { card_hash: card.card_hash });
 });
+
+for (const mode of ["lands", "lands, then times out"])
+  test(`a card put that ${mode} while the Page is purged leaves no object`, async (t) => {
+    const assets = cardBucket();
+    const f = await fixture(t, { env: { PAGES_ASSETS: assets } });
+    await emitting(f.page).watchContent();
+    let release;
+    const gate = new Promise((resolve) => (release = resolve));
+    let entered;
+    const putting = new Promise((resolve) => (entered = resolve));
+    const put = assets.put.bind(assets);
+    assets.put = async (...args) => {
+      entered();
+      await gate;
+      const landed = await put(...args);
+      if (mode !== "lands") throw Error("Page card write timed out");
+      return landed;
+    };
+    const top = await f.tool("owner", "edit_page", {
+      operations: [{ op: "insert_markdown", markdown: "# Racing", after_block_id: null }],
+      base_heads: f.heads(),
+      idempotency_key: "race-top",
+    });
+    assert.equal(top.status, 200, JSON.stringify(top.body));
+    await putting;
+    assert.equal((await f.catalogCall("owner", "delete_page", trashArgs(f))).status, 200);
+    const preview = await f.catalogCall("owner", "purge_page", {
+      page_id: pageId,
+      action: "preview",
+    });
+    const purged = await f.catalogCall("owner", "purge_page", {
+      page_id: pageId,
+      action: "confirm",
+      preview_token: preview.body.preview_token,
+      idempotency_key: "purge-request-1",
+    });
+    assert.equal(purged.status, 200, JSON.stringify(purged.body));
+    release();
+    await settle(f);
+    assert.equal(assets.objects.has(cardKey(pageId)), false, "no orphan card");
+    assert.equal(await f.storage.get(PAGE_CARD_KEY), undefined);
+    assert.equal(f.page.pageCard.state.name, "stopped");
+  });

@@ -191,7 +191,8 @@ export function Library({
   };
 
   const [display, setDisplay] = useState(() => (grid ? readDisplayMode(browser()) : "list"));
-  // Card previews for grid mode, one loader per mount. List mode never asks.
+  // Card previews for grid mode, one loader per mount. List mode never asks,
+  // and neither does a grid that doesn't know its account.
   const cards = useConnected(() => new PageCards({ tool, principal }));
   const chooseDisplay = useCallback((mode) => {
     const shown = writeDisplayMode(browser(), mode);
@@ -594,6 +595,8 @@ function PageList({ sections, grouping, busy, now, onOpen, onOpenProject, onCopy
 /** Grid mode: each card is one link to its Page, so it carries no Project
  * label (a link inside a link). */
 function PageGrid({ sections, busy, onOpen, onOpenProject, onWarm, cards }) {
+  // The order batches top up in (page-cards.mjs): the cards as shown.
+  useEffect(() => cards.arrange(sections.flatMap((section) => section.rows)), [cards, sections]);
   return (
     <div className="library-results" aria-busy={busy}>
       <Sections sections={sections} onOpenProject={onOpenProject}>

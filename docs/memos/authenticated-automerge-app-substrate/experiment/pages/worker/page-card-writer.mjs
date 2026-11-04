@@ -13,8 +13,19 @@ import { defineMachine, reject } from "../shared/machine.mjs";
  * with the stored one; only a changed card is put. The stored hash is
  * written after the object lands, so a crash in between writes the same
  * card again next time. A failed write is logged and left: the next flush
- * tries again. It never fails the
- * flush or the edit that caused it.
+ * tries again. It never fails the flush or the edit that caused it.
+ *
+ * Ordering across hosts. Every put is conditional on the object's etag as
+ * this host last saw it (`onlyIf`; none yet: no object may exist). A
+ * retiring host's put that lands late carries an etag the next host's own
+ * write has replaced, so the bucket refuses it. A host's first write after
+ * boot reads the object's metadata first (`head()`): it learns the etag,
+ * and compares the built hash with the object's own, not `host/card`, so a
+ * stale card that landed before this host booted is rewritten. A put
+ * refused by its condition reads the etag again and retries once. What
+ * remains: a late put that lands after the new host's first write skipped
+ * an unchanged card. Its card is one this Page held moments before, and the
+ * next change to the first screen replaces it.
  *
  * States:
  * - unread: the stored hash hasn't been read yet.
@@ -25,8 +36,8 @@ import { defineMachine, reject } from "../shared/machine.mjs";
  *   object is retiring (an abandoned boot, a closed policy, a storage
  *   migration). Terminal, so a late outcome changes nothing.
  *
- * Events: `restored` (the stored hash), `requested`, `start` (a live request), `written` (the hash now
- * stored), `failed`, `stop`.
+ * Events: `restored` (the stored hash), `requested`, `start` (a live
+ * request), `written` (the hash now stored), `failed`, `stop`.
  *
  * Effects: `write` with the hash it may skip.
  *
@@ -120,7 +131,11 @@ export const pageCardWriterMachine = defineMachine({
  *
  * - `build()` returns the card bundle for the loaded document, or null when
  *   there is nothing to write (no document, a Page that isn't active).
- * - `store.put(bundle)` and `store.delete()` write and remove the object.
+ * - `store.head()` returns `{ etag, card_hash }` for the stored object, or
+ *   null. `store.put(bundle, { etag })` writes it only while the object's
+ *   etag is `etag` (null: only while there is none) and returns
+ *   `{ etag }`, or null when the condition failed. `store.delete()` removes
+ *   it.
  * - `storage` is the host's Durable Object storage, for `PAGE_CARD_KEY`.
  * - `hold(work)` keeps the calling request running until `work` settles.
  */
@@ -128,6 +143,9 @@ export class PageCardWriter {
   #state = pageCardWriterMachine.initial;
   #restored;
   #deleting = false;
+  /** The object's etag as this host last saw it: undefined until read,
+   * null for no object. */
+  #etag = undefined;
   constructor({ build, store, storage, hold = () => {}, onError = () => {} }) {
     this.build = build;
     this.store = store;
@@ -178,24 +196,49 @@ export class PageCardWriter {
       if (effect.type === "write") this.hold(this.#write(effect.stored));
   }
 
+  /** Read the object's etag and hash. */
+  async #head() {
+    const head = await this.store.head();
+    this.#etag = head?.etag ?? null;
+    return head?.card_hash ?? null;
+  }
+
   async #write(previous) {
     let outcome;
     try {
       const bundle = await this.build();
+      // A host's first write compares with the object itself.
+      const known = bundle && this.#etag === undefined ? await this.#head() : previous;
       if (!bundle || this.#state.name === "stopped") outcome = { type: "failed" };
-      else if (bundle.card_hash === previous) outcome = { type: "written", hash: previous };
-      else {
-        await this.store.put(bundle);
+      else if (bundle.card_hash === known) {
+        if (known !== previous) await this.storage.put(PAGE_CARD_KEY, { card_hash: known });
+        outcome = { type: "written", hash: known };
+      } else {
+        let landed = await this.store.put(bundle, { etag: this.#etag });
+        if (!landed && this.#state.name !== "stopped") {
+          // Another writer moved the object since this host saw it.
+          await this.#head();
+          landed = await this.store.put(bundle, { etag: this.#etag });
+        }
         if (this.#state.name === "stopped") {
           // The host deleted the Page while this put ran.
-          if (this.#deleting) await this.store.delete();
+          if (this.#deleting && landed) await this.store.delete();
           return;
         }
+        if (!landed) throw Error("Page card write lost its condition twice");
+        this.#etag = landed.etag;
         await this.storage.put(PAGE_CARD_KEY, { card_hash: bundle.card_hash });
         outcome = { type: "written", hash: bundle.card_hash };
       }
     } catch (error) {
-      if (this.#state.name === "stopped") return;
+      // A put that failed may still land: read the object again next time.
+      this.#etag = undefined;
+      if (this.#state.name === "stopped") {
+        // A put that timed out may land after the host deleted the Page.
+        // Delete again; a miss leaves an object page_cards never serves.
+        if (this.#deleting) await this.store.delete().catch(() => {});
+        return;
+      }
       this.onError(error);
       outcome = { type: "failed" };
     }

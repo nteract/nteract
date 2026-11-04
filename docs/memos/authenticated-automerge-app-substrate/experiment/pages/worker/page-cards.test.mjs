@@ -3,38 +3,21 @@ import { test } from "node:test";
 import { proposeAccessUpdate } from "./access.mjs";
 import { cardKey, pageCard } from "../model/page-card.mjs";
 import { PAGE_CARD_KEY } from "./page-card-writer.mjs";
-import { PAGE_CARDS_MAX, pageCardsFor, parsePageCardIds } from "./page-cards.mjs";
+import {
+  PAGE_CARDS_MAX,
+  allowedPageCards,
+  pageCardReadBounds,
+  parsePageCardIds,
+  readPageCards,
+} from "./page-cards.mjs";
+import { cardBucket } from "./card-bucket-fixture.mjs";
 import { boundedMap } from "./bounded-map.mjs";
 import { tools } from "../mcp.mjs";
 import { world } from "./projects-fixture.mjs";
 
-/** An in-memory Page assets bucket, as R2 answers. */
-function bucket() {
-  const objects = new Map();
-  return {
-    objects,
-    reads: [],
-    async put(key, value) {
-      objects.set(key, String(value));
-      return { key };
-    },
-    async get(key) {
-      this.reads.push(key);
-      const value = objects.get(key);
-      return value === undefined ? null : { text: async () => value };
-    },
-    async head(key) {
-      return objects.has(key) ? { key } : null;
-    },
-    async delete(key) {
-      objects.delete(key);
-    },
-  };
-}
-
 async function cardsWorld(t) {
   const w = await world(t);
-  const assets = bucket();
+  const assets = cardBucket();
   w.env.PAGES_ASSETS = assets;
   const settle = async () => {
     while (w.jobs.length) await Promise.allSettled(w.jobs.splice(0));
@@ -47,7 +30,7 @@ async function cardsWorld(t) {
     await settle();
     const pageId = created.body.page_id;
     const card = await pageCard(w.page(pageId).handle.doc());
-    await assets.put(cardKey(pageId), JSON.stringify(card));
+    await assets.seed(cardKey(pageId), card);
     await w.page(pageId).ctx.storage.put(PAGE_CARD_KEY, { card_hash: card.card_hash });
     return pageId;
   };
@@ -80,7 +63,7 @@ const discover = (w, principal, pageId) =>
 test("an owner reads its Page's card as stored", async (t) => {
   const { w, assets, create, cards } = await cardsWorld(t);
   const pageId = await create("Plan", "# Goals\n\n- Ship cards\n- [ ] Test them");
-  const stored = JSON.parse(assets.objects.get(cardKey(pageId)));
+  const stored = assets.card(cardKey(pageId));
   assert.equal(stored.v, 1);
   assert.deepEqual(await w.page(pageId).ctx.storage.get(PAGE_CARD_KEY), {
     card_hash: stored.card_hash,
@@ -122,7 +105,7 @@ test("trashed, unknown, malformed and other accounts' Pages all answer null", as
   assert.equal(deleted.status, 200, JSON.stringify(deleted.body));
   assert.ok(assets.objects.has(cardKey(trashed)), "Trash keeps the card object");
   const unknown = "44444444-4444-4444-8444-444444444444";
-  assets.objects.set(cardKey(unknown), JSON.stringify({ v: 1, card_hash: "x", blocks: [] }));
+  await assets.seed(cardKey(unknown), { v: 1, card_hash: "x", blocks: [] });
   const answer = await cards("owner", [kept, trashed, unknown, "not-a-page", kept]);
   assert.equal(answer.status, 200, JSON.stringify(answer.body));
   assert.deepEqual(Object.keys(answer.body.cards), [kept, trashed, unknown, "not-a-page"]);
@@ -219,34 +202,117 @@ test("a purge deletes the card object and the host's stored hash", async (t) => 
   assert.equal(await w.page(pageId).ctx.storage.get(PAGE_CARD_KEY), undefined);
 });
 
-test("pageCardsFor checks shared entries at once, reads only allowed objects, and treats a bad object as no card", async () => {
+test("allowedPageCards admits settled owned and active shared Pages only", async () => {
+  const ids = [1, 2, 3, 4, 5, 6, 7].map((n) => `aaaaaaaa-0000-4000-8000-00000000000${n}`);
   const storage = new Map([
-    ["page/aaaaaaaa-0000-4000-8000-000000000001", { page_id: "a" }],
-    ["page/aaaaaaaa-0000-4000-8000-000000000002", { page_id: "b", pending: true }],
-    ["shared/aaaaaaaa-0000-4000-8000-000000000003", { page_id: "c" }],
-    ["shared/aaaaaaaa-0000-4000-8000-000000000004", { page_id: "d" }],
-    ["shared/aaaaaaaa-0000-4000-8000-000000000005", { page_id: "e" }],
+    [`page/${ids[0]}`, { page_id: ids[0] }],
+    [`page/${ids[1]}`, { page_id: ids[1], pending: true }],
+    [`shared/${ids[2]}`, { page_id: ids[2] }],
+    [`shared/${ids[3]}`, { page_id: ids[3] }],
+    [`shared/${ids[4]}`, { page_id: ids[4] }],
+    [`shared/${ids[5]}`, { page_id: ids[5] }],
   ]);
-  const ids = [1, 2, 3, 4, 5, 6].map((n) => `aaaaaaaa-0000-4000-8000-00000000000${n}`);
-  const checks = { [ids[2]]: "ok", [ids[3]]: "denied", [ids[4]]: "unavailable" };
-  const read = [];
-  const errors = [];
-  const cards = await pageCardsFor(ids, {
+  const checks = {
+    [ids[2]]: { status: "ok", page: { state: "active" } },
+    [ids[3]]: { status: "denied" },
+    [ids[4]]: { status: "unavailable" },
+    // The member still holds a grant, but the owner trashed the Page.
+    [ids[5]]: { status: "ok", page: { state: "trashed" } },
+  };
+  const allowed = await allowedPageCards(ids, {
     storage: { get: async (key) => storage.get(key) },
-    verifyShared: async (id) =>
-      checks[id] === "ok" ? { status: "ok", page: { state: "active" } } : { status: checks[id] },
-    readObject: async (key) => {
-      read.push(key);
-      return key.includes(ids[2])
-        ? "{not json"
-        : JSON.stringify({ v: 1, card_hash: "h", blocks: [] });
-    },
+    verifyShared: async (id) => checks[id],
     map: boundedMap,
     checks: 4,
+  });
+  assert.deepEqual(allowed, [ids[0], ids[2]]);
+});
+
+test("readPageCards reads only allowed IDs, at once, and a bad object or a late one is null", async () => {
+  const ids = [1, 2, 3, 4].map((n) => `bbbbbbbb-0000-4000-8000-00000000000${n}`);
+  const read = [];
+  const errors = [];
+  let release;
+  const late = new Promise((resolve) => (release = resolve));
+  let running = 0;
+  let most = 0;
+  const started = Date.now();
+  const cards = await readPageCards(ids, [ids[0], ids[1], ids[2], "not-requested"], {
+    deadlineMs: 50,
+    readObject: async (key, signal) => {
+      read.push(key);
+      most = Math.max(most, ++running);
+      try {
+        await new Promise((resolve) => setTimeout(resolve, 5));
+        if (key.includes(ids[1])) return "{not json";
+        if (key.includes(ids[2])) {
+          await late;
+          assert.equal(signal.aborted, true, "the deadline aborts the read");
+        }
+        return JSON.stringify({ v: 1, card_hash: "h", blocks: [] });
+      } finally {
+        running--;
+      }
+    },
     onError: (error) => errors.push(error),
   });
-  assert.deepEqual(read, [`pages/${ids[0]}/card.json`, `pages/${ids[2]}/card.json`]);
+  release();
+  assert.ok(Date.now() - started < 1000, "one deadline for every read");
+  assert.deepEqual(
+    read,
+    [ids[0], ids[1], ids[2]].map((id) => `pages/${id}/card.json`),
+  );
+  assert.equal(most, 3, "every read starts at once");
   assert.equal(cards[ids[0]].card_hash, "h");
-  for (const id of ids.slice(1)) assert.equal(cards[id], null);
-  assert.equal(errors.length, 1);
+  assert.deepEqual([cards[ids[1]], cards[ids[2]], cards[ids[3]]], [null, null, null]);
+  assert.equal(errors.length, 1, "only the bad object is an error");
+  assert.ok(pageCardReadBounds.deadlineMs <= 1500);
+});
+
+test("slow card reads never hold the account's Catalog queue", async (t) => {
+  const { w, assets, create, cards } = await cardsWorld(t);
+  const pageId = await create("Plan", "Body");
+  let release;
+  const slow = new Promise((resolve) => (release = resolve));
+  assets.beforeGet = () => slow;
+  const deadline = pageCardReadBounds.deadlineMs;
+  pageCardReadBounds.deadlineMs = 10_000;
+  t.after(() => {
+    pageCardReadBounds.deadlineMs = deadline;
+    release();
+  });
+  const pending = cards("owner", [pageId]);
+  // Wait until the gateway is reading the object, past the Catalog.
+  while (!assets.reads.length) await new Promise((resolve) => setTimeout(resolve, 1));
+  let timer;
+  const listed = await Promise.race([
+    w.call("owner", "list_pages"),
+    new Promise((_, reject) => {
+      timer = setTimeout(() => reject(Error("list_pages waited behind the card read")), 2000);
+    }),
+  ]).finally(() => clearTimeout(timer));
+  assert.equal(listed.status, 200, JSON.stringify(listed.body));
+  assert.ok(listed.body.pages.some((page) => page.page_id === pageId));
+  release();
+  const answer = await pending;
+  assert.equal(answer.body.cards[pageId].title, "Plan");
+});
+
+test("a card read past the deadline answers null, and the call still returns", async (t) => {
+  const { assets, create, cards } = await cardsWorld(t);
+  const fast = await create("Fast", "Body");
+  const slow = await create("Slow", "Body");
+  let release;
+  const held = new Promise((resolve) => (release = resolve));
+  assets.beforeGet = (key) => (key.includes(slow) ? held : undefined);
+  const deadline = pageCardReadBounds.deadlineMs;
+  pageCardReadBounds.deadlineMs = 40;
+  t.after(() => {
+    pageCardReadBounds.deadlineMs = deadline;
+    release();
+  });
+  const answer = await cards("owner", [fast, slow]);
+  assert.equal(answer.status, 200);
+  assert.equal(answer.body.cards[fast].title, "Fast");
+  assert.equal(answer.body.cards[slow], null);
 });

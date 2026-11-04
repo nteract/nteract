@@ -18,8 +18,10 @@
 // `card_hash` hashes CARD_BUILDER_VERSION and exactly the title, blocks and
 // `truncated` flag the card holds, so an edit below the fold leaves it
 // unchanged and the host skips the write, while a build that renders cards
-// differently rewrites each one on its Page's next flush. `rich` says the first screen holds Mermaid, a dataframe or an
-// image, which the JSON card can only stand in for. Nothing reads it yet.
+// differently rewrites each one on its Page's next flush.
+//
+// `rich` says the first screen holds Mermaid, a dataframe or an image, which
+// the JSON card can only stand in for. Nothing reads it yet.
 import { isRich, richDoc } from "./richtext.mjs";
 import { orderedBlockIds } from "./order.mjs";
 import { renderNode } from "./page-preview.mjs";
@@ -176,6 +178,17 @@ function blockNodes(block) {
   })();
 }
 
+/** Whether a card node shows anything: text that isn't blank, an image or
+ * dataframe placeholder, a rule, or a task checkbox. A Page emptied to
+ * blank paragraphs then has no blocks, and the grid keeps its icon. */
+export function showsContent(node) {
+  if (typeof node === "string") return node.trim().length > 0;
+  if (!Array.isArray(node) || typeof node[0] !== "string") return false;
+  const [tag, attrs, ...children] = node;
+  if (tag === "hr" || tag === "input" || attrs?.["data-card-placeholder"]) return true;
+  return children.some(showsContent);
+}
+
 /** Whether card content holds Mermaid, a dataframe or an image. */
 export function holdsRich(content) {
   if (!Array.isArray(content)) return false;
@@ -216,6 +229,7 @@ export function cardContent(doc, { maxBytes = CARD_BLOCKS_MAX_BYTES } = {}) {
       break;
     }
     for (const node of rendered) {
+      if (!showsContent(node)) continue;
       const comma = content.length ? 1 : 0;
       if (nodes >= CARD_MAX_NODES) {
         truncated = true;

@@ -9,6 +9,7 @@ import {
   CARD_MAX_NODES,
   cardContent,
   cardKey,
+  showsContent,
   clipNode,
   codeLanguage,
   pageCard,
@@ -300,4 +301,31 @@ test("bumping the builder version changes the hash of the same content", async (
   assert.equal((await pageCard(doc)).card_hash, current);
   assert.equal(await cardHash(content, { builderVersion: CARD_BUILDER_VERSION }), current);
   assert.notEqual(await cardHash(content, { builderVersion: CARD_BUILDER_VERSION + 1 }), current);
+});
+
+test("an emptied Page has no blocks; rules, placeholders and checkboxes count", async (t) => {
+  for (const markdown of ["", "\n\n\n", "   ", "&nbsp;"]) {
+    const doc = page(markdown);
+    t.after(() => A.free(doc));
+    const card = await pageCard(doc);
+    assert.deepEqual(card.blocks, [], JSON.stringify(markdown));
+  }
+  const kept = page(`![](${asset})\n\n---\n\n- [ ] \n\nText\n\n\u00a0`);
+  t.after(() => A.free(kept));
+  const content = (await pageCard(kept)).blocks.flatMap((block) => block.content);
+  assert.deepEqual(
+    content.map((node) => node[0]),
+    ["p", "hr", "ul", "p"],
+    "blank paragraphs drop, the rest stays",
+  );
+  assert.equal(showsContent(["p", {}, " \n "]), false);
+  assert.equal(showsContent(["p", {}, ["strong", {}, "x"]]), true);
+});
+
+test("the hash covers truncated: the same blocks, cut or not, hash apart", async () => {
+  const content = { title: "T", blocks: [{ id: "b", content: [["p", {}, "x"]] }] };
+  assert.notEqual(
+    await cardHash({ ...content, truncated: false }),
+    await cardHash({ ...content, truncated: true }),
+  );
 });

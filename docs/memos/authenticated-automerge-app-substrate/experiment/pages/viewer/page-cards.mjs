@@ -1,27 +1,33 @@
 // Card previews for the library grid (Library.jsx PageGrid). Each card asks
-// for its Page's card (model/page-card.mjs) when it scrolls into view; the
+// for its Page's card (model/page-card.mjs) when it nears the viewport; the
 // requests go out in batches of up to 24 through `page_cards`, which checks
 // access as list_pages does (worker/page-cards.mjs).
+//
+// A batch fills toward 24: the cards that came into view within the gather
+// window, then the next cards in the grid's order that haven't asked yet. A
+// slow scroll down a phone grid sends one request per 24 cards, not one per
+// row.
 //
 // Each card follows the page-card machine below, keyed by Page ID and the
 // row's `content_updated_at`, so a Page edited since the grid asked shows a
 // new key and is asked again. The machines live in one Store per mounted
 // grid; React reads a card's state from it and keeps none of its own.
 // Nothing outlives the mount: a return visit asks again, so there is no
-// cross-visit cache to scope by account or age out. An answer that names
-// another account (`principal`) is ignored and counts as failed.
-import { Subject, buffer, debounceTime, from, mergeMap } from "rxjs";
+// cross-visit cache to scope by account or age out. A grid that doesn't know
+// its account asks nothing, and an answer that names another account
+// (`principal`) is ignored and counts as failed.
+import { Subject, buffer, debounceTime, from, map, mergeMap } from "rxjs";
 import { defineMachine, reject } from "../shared/machine.mjs";
 import { Store } from "./store.mjs";
 
 /** The most IDs one page_cards request carries (worker/page-cards.mjs). */
 export const PAGE_CARDS_BATCH = 24;
-/** How long visible cards gather before one request takes them. */
-export const PAGE_CARDS_GATHER_MS = 40;
+/** How long cards coming into view gather before one request takes them. */
+export const PAGE_CARDS_GATHER_MS = 200;
 /** page_cards requests one grid runs at once. */
 export const PAGE_CARDS_CONCURRENCY = 2;
 /** How far outside the viewport a card starts loading. */
-export const PAGE_CARDS_ROOT_MARGIN = "200px 0px";
+export const PAGE_CARDS_ROOT_MARGIN = "400px 0px";
 
 const card = (state) => {
   if (!state.card || typeof state.card !== "object" || !Array.isArray(state.card.blocks))
@@ -36,15 +42,17 @@ const card = (state) => {
  * or unknown Page answers), failed (the request failed or answered for
  * another account).
  *
- * Events: `visible` (the card scrolled into view), `answered` (a card),
+ * Events: `visible` (the card neared the viewport), `ahead` (a batch with
+ * room took this idle card, the next in the grid), `answered` (a card),
  * `missing` (null), `failed`.
  *
- * Effects: `fetch`, which the loader batches.
+ * Effects: `fetch`, which the loader batches. `ahead` has none: the batch
+ * that took the card already carries it.
  */
 export const pageCardMachine = defineMachine({
   name: "page-card",
   states: ["idle", "requested", "shown", "empty", "failed"],
-  events: ["visible", "answered", "missing", "failed"],
+  events: ["visible", "ahead", "answered", "missing", "failed"],
   initial: { name: "idle" },
   unreachable: [
     ["idle", "answered", "only a requested card is in a batch"],
@@ -67,6 +75,10 @@ export const pageCardMachine = defineMachine({
         // A failed card asks again when it scrolls back into view.
         if (state.name === "idle" || state.name === "failed")
           return { state: { name: "requested" }, effects: [{ type: "fetch" }] };
+        return reject(state, `already ${state.name}`);
+      case "ahead":
+        // Only a card that never asked: a failed one waits until it's seen.
+        if (state.name === "idle") return { state: { name: "requested" }, effects: [] };
         return reject(state, `already ${state.name}`);
       case "answered":
         if (state.name !== "requested") return reject(state, "not waiting for a card");
@@ -98,8 +110,8 @@ export const cardKeyOf = (row) => `${row.id}\n${row.contentUpdatedAt ?? ""}`;
  * The cards of one mounted grid.
  *
  * - `tool(operation, args, { signal })` calls /api/tools.
- * - `principal` is the account the grid lists for; an answer naming another
- *   one is ignored.
+ * - `principal` is the account the grid lists for. Without one the grid asks
+ *   for nothing; an answer naming another account is ignored.
  * - `observer(callback, options)` builds an IntersectionObserver; without
  *   one, `observe` asks at once.
  * - `scheduler` is the RxJS scheduler that gathers batches; tests pass a
@@ -110,6 +122,7 @@ export class PageCards {
   #abort = new AbortController();
   #observer = null;
   #rows = new Map();
+  #order = [];
   constructor({
     tool,
     principal = null,
@@ -131,7 +144,8 @@ export class PageCards {
 
   /** Start batching; returns the stop function (useConnected). Cards that
    * come into view within `gatherMs` of each other share requests of at
-   * most `batchSize`. Nothing runs on a timer while no card is asked for. */
+   * most `batchSize`, topped up with the next cards in the grid's order.
+   * Nothing runs on a timer while no card is asked for. */
   connect() {
     // A fresh signal per connection: React may connect, stop and connect
     // the same loader again (StrictMode, a fast remount).
@@ -141,6 +155,7 @@ export class PageCards {
     const subscription = this.#wants
       .pipe(
         buffer(quiet),
+        map((gathered) => this.#fill(gathered)),
         mergeMap((gathered) => from(chunks(gathered, this.batchSize))),
         mergeMap((batch) => from(this.#fetch(batch)), PAGE_CARDS_CONCURRENCY),
       )
@@ -159,17 +174,23 @@ export class PageCards {
     return this.store.snapshot().get(key) ?? IDLE_CARD;
   }
 
-  /** `row` scrolled into view. */
+  /** The grid's rows in the order it shows them, for topping up batches. */
+  arrange(rows) {
+    this.#order = rows;
+  }
+
+  /** `row` came into view. */
   visible(row) {
+    if (!this.principal) return;
     const key = cardKeyOf(row);
-    const { effects } = this.#step(key, { type: "visible" });
+    const { effects } = this.#steps([[key, { type: "visible" }]])[0];
     if (effects.some((effect) => effect.type === "fetch")) this.#wants.next({ key, id: row.id });
   }
 
-  /** Watch `element` and ask for `row`'s card when it comes into view.
+  /** Watch `element` and ask for `row`'s card when it nears the viewport.
    * Returns the stop function. */
   observe(element, row) {
-    if (!element) return () => {};
+    if (!element || !this.principal) return () => {};
     if (!this.createObserver) {
       this.visible(row);
       return () => {};
@@ -191,31 +212,65 @@ export class PageCards {
     };
   }
 
-  #step(key, event) {
-    const result = pageCardMachine.step(this.state(key), event);
-    if (!result.rejected) this.store.update((current) => new Map(current).set(key, result.state));
-    return result;
+  /** Apply events to cards in one store update; returns each step result. */
+  #steps(pairs) {
+    const current = this.store.snapshot();
+    const next = new Map(current);
+    const results = pairs.map(([key, event]) => {
+      const result = pageCardMachine.step(next.get(key) ?? IDLE_CARD, event);
+      if (!result.rejected) next.set(key, result.state);
+      return result;
+    });
+    if (results.some((result) => !result.rejected)) this.store.update(() => next);
+    return results;
+  }
+
+  /** `gathered`, deduplicated, then the idle cards after the last of them in
+   * the grid's order, until the last batch is full. */
+  #fill(gathered) {
+    const seen = new Set();
+    const wants = gathered.filter(({ key }) => !seen.has(key) && seen.add(key));
+    const room = (this.batchSize - (wants.length % this.batchSize)) % this.batchSize;
+    if (!room || !this.#order.length) return wants;
+    const wanted = new Set(wants.map(({ id }) => id));
+    let last = -1;
+    this.#order.forEach((row, index) => {
+      if (wanted.has(row.id)) last = index;
+    });
+    const ahead = [];
+    for (let index = last + 1; index < this.#order.length && ahead.length < room; index++) {
+      const row = this.#order[index];
+      const key = cardKeyOf(row);
+      if (row.local || seen.has(key) || this.state(key).name !== "idle") continue;
+      seen.add(key);
+      ahead.push({ key, id: row.id });
+    }
+    this.#steps(ahead.map(({ key }) => [key, { type: "ahead" }]));
+    return [...wants, ...ahead];
   }
 
   async #fetch(batch) {
+    // The connection this request belongs to, even if React reconnects.
+    const signal = this.#abort.signal;
     const ids = [...new Set(batch.map((want) => want.id))];
     let answer;
     try {
-      answer = await this.tool("page_cards", { page_ids: ids }, { signal: this.#abort.signal });
+      answer = await this.tool("page_cards", { page_ids: ids }, { signal });
     } catch {
-      if (this.#abort.signal.aborted) return;
-      for (const { key } of batch) this.#step(key, { type: "failed" });
+      if (signal.aborted) return;
+      this.#steps(batch.map(({ key }) => [key, { type: "failed" }]));
       return;
     }
-    if (this.#abort.signal.aborted) return;
-    const own = !this.principal || answer?.principal === this.principal;
-    for (const { key, id } of batch) {
-      const found = own ? answer?.cards?.[id] : undefined;
-      if (!own || !answer?.cards || typeof answer.cards !== "object")
-        this.#step(key, { type: "failed" });
-      else if (found && typeof found === "object")
-        this.#step(key, { type: "answered", card: found });
-      else this.#step(key, { type: "missing" });
-    }
+    if (signal.aborted) return;
+    const own = answer?.principal === this.principal;
+    const cards = own && answer?.cards && typeof answer.cards === "object" ? answer.cards : null;
+    this.#steps(
+      batch.map(({ key, id }) => {
+        const found = cards?.[id];
+        if (!cards) return [key, { type: "failed" }];
+        if (found && typeof found === "object") return [key, { type: "answered", card: found }];
+        return [key, { type: "missing" }];
+      }),
+    );
   }
 }

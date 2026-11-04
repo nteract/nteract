@@ -6,6 +6,7 @@ import { createRequire } from "node:module";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { build } from "esbuild";
 import { JSDOM } from "jsdom";
+import { PAGE_CARDS_GATHER_MS } from "./page-cards.mjs";
 
 const dom = new JSDOM("<!doctype html><body></body>", {
   url: "http://localhost/pages",
@@ -837,11 +838,16 @@ test("grid cards show each Page's card preview, inert, and keep the icon without
   };
   window.localStorage.clear();
   window.localStorage.setItem("nteract.pages.view", "grid");
+  // Past the cards' gather window, so their one request has gone out.
+  const gathered = () =>
+    act(() => new Promise((resolve) => setTimeout(resolve, PAGE_CARDS_GATHER_MS + 100)));
+  const mounted = [];
   try {
     const app = await mount(
       createElement(Library, libraryProps({ tool, principal: "user:me", grid: true })),
     );
-    await act(() => new Promise((resolve) => setTimeout(resolve, 80)));
+    mounted.push(app);
+    await gathered();
     const cardCalls = calls.filter(([name]) => name === "page_cards");
     assert.deepEqual(cardCalls, [["page_cards", { page_ids: [id(1), id(2)] }]]);
     const [first, second] = app.host.querySelectorAll(".index-card-link");
@@ -857,21 +863,38 @@ test("grid cards show each Page's card preview, inert, and keep the icon without
     assert.equal(first.textContent.startsWith("Roadmap"), true);
     assert.equal(second.querySelector(".page-card-preview"), null);
     assert.ok(second.querySelector(".index-card-placeholder"), "no card keeps the icon");
-    await app.unmount();
+    await mounted.pop().unmount();
 
     // List mode never asks for cards.
     window.localStorage.setItem("nteract.pages.view", "list");
     calls.length = 0;
-    const list = await mount(
-      createElement(Library, libraryProps({ tool, principal: "user:me", grid: true })),
+    mounted.push(
+      await mount(createElement(Library, libraryProps({ tool, principal: "user:me", grid: true }))),
     );
-    await act(() => new Promise((resolve) => setTimeout(resolve, 80)));
+    await gathered();
     assert.deepEqual(
       calls.filter(([name]) => name === "page_cards"),
       [],
     );
-    await list.unmount();
+    await mounted.pop().unmount();
+
+    // Neither does a grid that doesn't know its account.
+    window.localStorage.setItem("nteract.pages.view", "grid");
+    calls.length = 0;
+    mounted.push(
+      await mount(createElement(Library, libraryProps({ tool, principal: null, grid: true }))),
+    );
+    await gathered();
+    assert.deepEqual(
+      calls.filter(([name]) => name === "page_cards"),
+      [],
+    );
+    assert.ok(mounted[0].host.querySelector(".index-card-placeholder"));
+    await mounted.pop().unmount();
   } finally {
+    // A failed assertion must not leave a grid mounted: its timers would
+    // keep the test file running.
+    for (const app of mounted) await app.unmount();
     window.localStorage.clear();
   }
 });

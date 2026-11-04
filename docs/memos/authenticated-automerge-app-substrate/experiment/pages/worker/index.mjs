@@ -212,7 +212,7 @@ import {
   validTime,
 } from "./content-activity.mjs";
 import { PAGE_CARD_KEY, PageCardWriter } from "./page-card-writer.mjs";
-import { PAGE_CARD_READ_TIMEOUT_MS, pageCardsFor, parsePageCardIds } from "./page-cards.mjs";
+import { allowedPageCards, parsePageCardIds, readPageCards } from "./page-cards.mjs";
 import {
   CatalogIndexUnavailable,
   SHORT_CURSOR_MAX_LENGTH,
@@ -472,8 +472,10 @@ export const sharedChildBounds = { scan: 100 };
  * host. The caller's Catalog queue waits on the whole listing, so its checks
  * overlap; this bounds how many requests one Catalog has out at a time. */
 export const sharedCheckBounds = { concurrency: 16 };
-/** How long a Page host waits on one card object write or delete. */
+/** How long a Page host waits on one card object read or write. */
 const PAGE_CARD_STORE_TIMEOUT_MS = 10_000;
+/** How long a deletion waits on the card object's delete. */
+const PAGE_CARD_DELETE_TIMEOUT_MS = 2_000;
 /** Budgets for reading Page lifecycles while the Catalog queue waits. */
 export const lifecycleBounds = { readMs: 2000, passMs: 5000, concurrency: 4 };
 const lifecycleUnsettled = () =>
@@ -789,10 +791,10 @@ async function invoke(request, env, operation, args = {}, seen) {
   if (seen) seen.identity = identity;
   if (!READ_OPERATIONS.includes(operation)) requireWrite(identity);
   if (["get_space", "update_space"].includes(operation)) requireSpaceIdArgument(args.space_id);
+  if (operation === "page_cards") return await pageCards(request, env, identity, args);
   if (
     [
       "list_pages",
-      "page_cards",
       "create_page",
       "move_page",
       ...Object.keys(lifecycleRoutes),
@@ -848,6 +850,38 @@ async function invoke(request, env, operation, args = {}, seen) {
     },
     { safe: safeToRepeat(operation, args) },
   );
+}
+
+/**
+ * page_cards (page-cards.mjs). The caller's Catalog answers which IDs it
+ * allows, from inside its serial queue; the card objects are read here,
+ * after that queue has moved on, so a slow bucket never holds the account's
+ * listings or writes. Only the allowed IDs reach the bucket.
+ */
+async function pageCards(request, env, identity, args) {
+  const ids = parsePageCardIds(args.page_ids);
+  const body = { operation: "page_cards", arguments: { page_ids: ids } };
+  const decided = await withinToolDeadline(async (signal) => {
+    const response = await untilAborted(
+      env.CATALOGS.getByName(identity.principal).fetch(
+        forwarded(request, "/internal/catalog", body),
+        { signal },
+      ),
+      signal,
+    );
+    return { status: response.status, body: await readResponseJson(response, signal) };
+  });
+  if (decided.status !== 200) return json(decided.body, decided.status);
+  const allowed = Array.isArray(decided.body?.allowed) ? decided.body.allowed : [];
+  const bucket = env.PAGES_ASSETS;
+  const cards = await readPageCards(ids, bucket ? allowed : [], {
+    readObject: async (key) => {
+      const object = await bucket.get(key);
+      return object ? await object.text() : null;
+    },
+    onError: (error) => logFailure(error, "page-cards"),
+  });
+  return json({ cards, principal: decided.body.principal ?? identity.principal });
 }
 
 /**
@@ -2797,29 +2831,20 @@ export class Catalog {
     });
   }
 
-  /** Up to PAGE_CARDS_MAX cards, each checked as list_pages checks its row
-   * (page-cards.mjs). Read-only: a refused shared entry answers null here
-   * and is pruned by the next listing that meets it. */
+  /** The access step of page_cards (page-cards.mjs): which of up to
+   * PAGE_CARDS_MAX IDs the caller may read, each checked as list_pages
+   * checks its row. Answers IDs only; the gateway reads the objects outside
+   * this queue. Read-only: a refused shared entry is pruned by the next
+   * listing that meets it. */
   async pageCards(request, identity, args) {
     const ids = parsePageCardIds(args.page_ids);
-    const bucket = this.env.PAGES_ASSETS;
-    const cards = await pageCardsFor(ids, {
+    const allowed = await allowedPageCards(ids, {
       storage: this.storage,
       verifyShared: (pageId) => this.verifyShared(request, pageId),
-      readObject: async (key) => {
-        if (!bucket) return null;
-        const object = await withTimeout(
-          bucket.get(key),
-          PAGE_CARD_READ_TIMEOUT_MS,
-          "Page card read timed out",
-        );
-        return object ? await object.text() : null;
-      },
       map: boundedMap,
       checks: sharedCheckBounds.concurrency,
-      onError: (error) => logFailure(error, "page-cards"),
     });
-    return json({ cards, principal: identity.principal });
+    return json({ allowed, principal: identity.principal });
   }
 
   /** Ask the Page host, with the caller's own credentials, for one shared
@@ -3633,14 +3658,32 @@ export class Page {
         });
       },
       store: {
-        put: (bundle) =>
-          withTimeout(
+        head: async () => {
+          const object = await withTimeout(
+            bucket.head(cardKey(this.metadata.pageId)),
+            PAGE_CARD_STORE_TIMEOUT_MS,
+            "Page card read timed out",
+          );
+          return object
+            ? { etag: object.etag, card_hash: object.customMetadata?.card_hash ?? null }
+            : null;
+        },
+        put: async (bundle, { etag }) => {
+          const object = await withTimeout(
             bucket.put(cardKey(this.metadata.pageId), JSON.stringify(bundle), {
               httpMetadata: { contentType: "application/json" },
+              customMetadata: {
+                card_hash: bundle.card_hash,
+                content_updated_at: bundle.content_updated_at ?? "",
+              },
+              // The ordering fence (page-card-writer.mjs).
+              onlyIf: etag ? { etagMatches: etag } : { etagDoesNotMatch: "*" },
             }),
             PAGE_CARD_STORE_TIMEOUT_MS,
             "Page card write timed out",
-          ),
+          );
+          return object ? { etag: object.etag } : null;
+        },
         delete: () => this.deleteCard(),
       },
       hold: (work) => holdUntilSettled(this.ctx, work),
@@ -3648,16 +3691,17 @@ export class Page {
     });
   }
 
-  /** Remove this Page's card object. Best-effort: page_cards serves a card
-   * only to a caller its Catalog check admits, and a deleted Page admits
-   * no one, so a card left behind is never read. */
+  /** Remove this Page's card object, under a short deadline so bucket
+   * trouble never holds a purge or tombstone. Best-effort: page_cards serves
+   * a card only to a caller its Catalog check admits, and a deleted Page
+   * admits no one, so a missed delete leaves an orphan no one reads. */
   async deleteCard() {
     const pageId = this.metadata?.pageId ?? this.ctx.id?.name;
     if (!this.env.PAGES_ASSETS || !validPageId(pageId)) return;
     try {
       await withTimeout(
         this.env.PAGES_ASSETS.delete(cardKey(pageId)),
-        PAGE_CARD_STORE_TIMEOUT_MS,
+        PAGE_CARD_DELETE_TIMEOUT_MS,
         "Page card delete timed out",
       );
     } catch (error) {
@@ -3673,8 +3717,10 @@ export class Page {
 
   /** Stop recording for good and forget the stored content time, title
    * projection and card: the Page is being deleted. A flush already storing
-   * its time lands before this delete; a card write that lands after it
-   * removes its own object (page-card-writer.mjs). */
+   * its time lands before this delete. A card write still running when it
+   * stops deletes the object again as it ends, whether its put landed or
+   * timed out (page-card-writer.mjs); a delete that still misses leaves an
+   * object page_cards never serves. */
   async forgetContent() {
     this.contentActivity?.stop();
     this.pageCard?.stop({ deleting: true });

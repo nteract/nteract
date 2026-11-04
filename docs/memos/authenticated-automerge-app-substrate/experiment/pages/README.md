@@ -2394,13 +2394,16 @@ title, blocks, truncated, rich }`. `blocks` is
 [page-preview.mjs](model/page-preview.mjs)'s JSON from the schema's own `toDOM`
 specs, never HTML, cut at 8 KiB serialized and 64 top-level nodes. A node that
 doesn't fit is clipped to its leading children and text (a table keeps whole
-rows), and the card ends there. Images become a placeholder with their alt
-text, never bytes or a URL; a dataframe becomes a placeholder with its title;
-links lose their `href`; a code block names its language, so Mermaid stays code.
+rows), and the card ends there. A top-level node that shows nothing (no text, no
+placeholder, rule or checkbox) is dropped, so an emptied Page has no blocks and
+keeps the grid's icon. Images become a placeholder with their alt text, never
+bytes or a URL; a dataframe becomes a placeholder with its title; links lose
+their `href`; a code block names its language, so Mermaid stays code.
 `card_hash` hashes `CARD_BUILDER_VERSION` and exactly the title, blocks and
 `truncated`, so an edit below the fold changes nothing, and bumping the version
-for a builder change rewrites each card on its Page's next flush. `rich` says the card holds Mermaid, a dataframe or
-an image, which the JSON can only stand in for; nothing reads it yet.
+for a builder change rewrites each card on its Page's next flush. `rich` says
+the card holds Mermaid, a dataframe or an image, which the JSON can only stand
+in for; nothing reads it yet.
 
 The card is written beside each content-activity flush and nowhere else
 ([page-card-writer.mjs](worker/page-card-writer.mjs)). A flush runs from a live
@@ -2411,36 +2414,57 @@ bucket only when the hash changed; the stored hash follows the object, so a
 crash between them writes the same card again. A failed write is logged and
 retried by the next flush; it never fails the flush or the edit. A Page that
 hasn't changed since cards shipped has none until its next edit, and the grid
-keeps its icon. A purge or tombstone deletes the object and `host/card` with the
-content time; a write that lands after the stop deletes its own object. A host
-that retires without a deletion (an abandoned boot, a storage migration) stops
-its writer and leaves the object and `host/card`, which the next host, plain or
-native, compares against. Trash keeps the card on purpose: `page_cards` answers
-`null` while the Page is trashed, and a restore shows the card at once rather
-than after the next edit.
+keeps its icon.
 
-`page_cards` (`/api/tools` only) takes up to 24 `page_ids` and runs in the
-caller's Catalog with `list_pages`' rules
-([page-cards.mjs](worker/page-cards.mjs)): an owned ID needs a settled
+Writes from different hosts of one Page are ordered by the object's etag. Each
+put carries `onlyIf` with the etag the host last saw (none yet: only while no
+object exists), and the object's `customMetadata` holds its `card_hash` and
+`content_updated_at`. A host's first write after boot reads them (`head()`) and
+compares the built card with the object, not `host/card`, so a stale card left
+by an older host is rewritten. A retiring host's put that lands late carries
+an etag the next host's write replaced, and the bucket refuses it. The case left
+open is a late put landing after the next host's first write skipped an
+unchanged card: it holds a card the Page had moments before, until the next
+change to its first screen.
+
+A purge or tombstone deletes the object and `host/card` with the content time,
+waiting at most 2 seconds on the bucket; a missed delete leaves an object
+`page_cards` never serves, since a deleted Page admits no one. A write still
+running then deletes the object again when it ends, whether its put landed or
+timed out. A host that retires without a deletion (an abandoned boot, a storage
+migration) stops its writer and leaves the object and `host/card`, which the
+next host, plain or native, compares against. Trash keeps the card on purpose:
+`page_cards` answers `null` while the Page is trashed, and a restore shows the
+card at once rather than after the next edit.
+
+`page_cards` (`/api/tools` only) takes up to 24 `page_ids`
+([page-cards.mjs](worker/page-cards.mjs)). The caller's Catalog decides access
+inside its serial queue with `list_pages`' rules: an owned ID needs a settled
 `page/<id>` entry (so a trashed Page has none), and a shared ID needs a
 `shared/<id>` entry and a fresh `verifyShared` by its Page host, the metadata
-check that doesn't boot the document. D1 is never read. Allowed objects are read
-eight at a time and returned as JSON; no object URL leaves the Worker. Every
-other ID, unknown, refused, unchecked in time or without a card, answers
-`null`, so a caller can't tell "no access" from "no card". The answer names its
-`principal`. It isn't an MCP tool: an agent can read the Page itself, and a
-card is a drawing aid shaped for the grid, not a reading surface worth a stable
-contract.
+check that doesn't boot the document, finding the Page active. D1 is never
+read. The Catalog answers only the allowed IDs, and the gateway reads their
+objects after the queue has moved on, all at once under one 1.2-second
+deadline, so a slow bucket never holds the account's listings, creates or
+reports. Only allowed IDs reach the bucket, and no object URL leaves the Worker.
+Every other ID, unknown, refused, unchecked in time, read too late or without a
+card, answers `null`, so a caller can't tell "no access" from "no card". The
+answer names its `principal`. It isn't an MCP tool: an agent can read the Page
+itself, and a card is a drawing aid shaped for the grid, not a reading surface
+worth a stable contract.
 
-In grid mode each card asks for its card when it comes within 200px of the
-viewport ([page-cards.mjs](viewer/page-cards.mjs)). Cards that appear together
-share requests of up to 24 IDs. Each card follows a small machine, `idle →
-requested → shown | empty | failed`, keyed by Page ID and the row's
-`content_updated_at`, so a Page edited since the grid asked asks again; a failed
-card asks again when it scrolls back in. The machines live as long as the
-mounted grid, with no cross-visit cache, and an answer naming another account
-is ignored. [PageCardPreview.jsx](viewer/PageCardPreview.jsx) draws the card
-through PagePreview's allowlist in its inert mode (no links, controls or
+In grid mode each card asks for its card when it comes within 400px of the
+viewport ([page-cards.mjs](viewer/page-cards.mjs)). Cards that come into view
+within 200 ms share a request, and a request with room fills toward 24 with the
+next cards in the grid's order that haven't asked, so a slow scroll down a
+100-card grid sends 5 requests, not one per row. Each card follows a small
+machine, `idle → requested → shown | empty | failed`, keyed by Page ID and the
+row's `content_updated_at`, so a Page edited since the grid asked asks again; a
+failed card asks again when it scrolls back in. One answer is one store update.
+The machines live as long as the mounted grid, with no cross-visit cache; a grid
+that doesn't know its account asks for nothing, and an answer naming another
+account is ignored. [PageCardPreview.jsx](viewer/PageCardPreview.jsx) draws the
+card through PagePreview's allowlist in its inert mode (no links, controls or
 images), laid out at a reading width and scaled with `transform: scale()`,
 `aria-hidden` with pointer events off: the card's link carries the title.
 

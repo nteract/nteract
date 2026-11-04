@@ -1,5 +1,15 @@
 // `page_cards`: the cards (model/page-card.mjs) of up to 24 Pages, for the
-// library grid. It runs in the caller's own Catalog, with list_pages' rules:
+// library grid. It runs in two steps, so object reads never hold the
+// account's Catalog queue:
+//
+// 1. The caller's Catalog decides access, inside its serial queue, with
+//    list_pages' rules (`allowedPageCards`), and answers only the IDs it
+//    allows. That route is internal: the gateway never forwards it.
+// 2. The gateway reads those IDs' card objects, outside every queue, all at
+//    once under one deadline (`readPageCards`). Only the Catalog's allowed
+//    IDs reach the bucket.
+//
+// Access rules:
 //
 // - An owned ID needs this account's own `page/<id>` entry, settled (not a
 //   pending creation or a reservation). A trashed Page sits under `trash/`,
@@ -8,23 +18,25 @@
 //   without waiting for an edit. Only a purge or tombstone deletes it.
 // - A shared ID needs this account's `shared/<id>` entry and a fresh check
 //   by its Page host with the caller's own credentials (`verifyShared`, the
-//   metadata check page-startup.mjs answers without booting). A revoked
-//   grant fails that check on the very next call.
+//   metadata check page-startup.mjs answers without booting), which must
+//   find the Page active. A revoked grant fails that check on the very next
+//   call.
 // - D1 is never read. Nothing grants access but those two.
 //
 // Anything else answers null: an unknown ID, a malformed one, a refusal, a
-// check that didn't answer in time, and a Page with no card yet. The caller
-// can't tell "no access" from "no card". Card objects are read from the Page
-// assets bucket by key and returned as JSON; no object URL leaves the Worker.
+// check that didn't answer in time, an object read that missed the deadline,
+// and a Page with no card yet. The caller can't tell "no access" from "no
+// card". Card objects are read by key and returned as JSON; no object URL
+// leaves the Worker.
 import { HttpError } from "./auth.mjs";
 import { cardKey, readStoredCard } from "../model/page-card.mjs";
 
 /** The most IDs one call takes: about one screen of grid cards. */
 export const PAGE_CARDS_MAX = 24;
-/** Object reads one call runs at once. */
-export const PAGE_CARDS_READ_CONCURRENCY = 8;
-/** How long one object read may take before it counts as no card. */
-export const PAGE_CARD_READ_TIMEOUT_MS = 3_000;
+/** How long the gateway waits for one call's object reads, together. A read
+ * still running then answers null; the card shows on a later visit. Tests
+ * may lower it. */
+export const pageCardReadBounds = { deadlineMs: 1_200 };
 
 const PAGE_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
@@ -45,19 +57,16 @@ export function parsePageCardIds(value) {
 }
 
 /**
- * `{ [id]: card | null }` for `ids`.
+ * The IDs of `ids` whose cards the caller may read, in order. Runs in the
+ * caller's Catalog.
  *
  * - `storage` is the caller's Catalog storage.
  * - `verifyShared(id)` is the Catalog's shared-Page check:
  *   `{ status: "ok", page } | { status: "denied" } | { status: "unavailable" }`.
- * - `readObject(key)` returns the stored object's text, or null.
- * - `map(items, concurrency, fn)` is boundedMap.
- * - `checks` is how many shared checks run at once.
+ * - `map(items, concurrency, fn)` is boundedMap; `checks` is how many
+ *   shared checks run at once.
  */
-export async function pageCardsFor(
-  ids,
-  { storage, verifyShared, readObject, map, checks, onError = () => {} },
-) {
+export async function allowedPageCards(ids, { storage, verifyShared, map, checks }) {
   const allowed = await map(ids, checks, async (id) => {
     if (!PAGE_ID.test(id)) return false;
     const owned = await storage.get(`page/${id}`);
@@ -66,15 +75,50 @@ export async function pageCardsFor(
     const check = await verifyShared(id);
     return check.status === "ok" && (!check.page?.state || check.page.state === "active");
   });
-  const cards = await map(ids, PAGE_CARDS_READ_CONCURRENCY, async (id, index) => {
-    if (!allowed[index]) return null;
-    try {
-      const text = await readObject(cardKey(id));
-      return text === null ? null : readStoredCard(JSON.parse(text));
-    } catch (error) {
-      onError(error);
-      return null;
-    }
+  return ids.filter((_, index) => allowed[index]);
+}
+
+/**
+ * `{ [id]: card | null }` for every ID in `ids`, reading only those in
+ * `allowed`. Runs in the gateway.
+ *
+ * - `readObject(key, signal)` returns the stored object's text, or null.
+ *   Every read starts at once and shares one `deadlineMs`; the signal aborts
+ *   when it passes. A read still running then, or one that fails, answers
+ *   null.
+ */
+export async function readPageCards(
+  ids,
+  allowed,
+  { readObject, deadlineMs = pageCardReadBounds.deadlineMs, onError = () => {} },
+) {
+  const readable = new Set(allowed.filter((id) => ids.includes(id) && PAGE_ID.test(id)));
+  const controller = new AbortController();
+  let timer;
+  const deadline = new Promise((resolve) => {
+    timer = setTimeout(() => {
+      controller.abort(new Error("Page card reads timed out"));
+      resolve(null);
+    }, deadlineMs);
   });
-  return Object.fromEntries(ids.map((id, index) => [id, cards[index]]));
+  try {
+    const cards = await Promise.all(
+      ids.map((id) => {
+        if (!readable.has(id)) return null;
+        const read = (async () => {
+          try {
+            const text = await readObject(cardKey(id), controller.signal);
+            return text === null ? null : readStoredCard(JSON.parse(text));
+          } catch (error) {
+            if (!controller.signal.aborted) onError(error);
+            return null;
+          }
+        })();
+        return Promise.race([read, deadline]);
+      }),
+    );
+    return Object.fromEntries(ids.map((id, index) => [id, cards[index]]));
+  } finally {
+    clearTimeout(timer);
+  }
 }
