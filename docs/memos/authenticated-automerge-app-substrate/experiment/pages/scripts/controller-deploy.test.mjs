@@ -15,6 +15,7 @@ import {
   planControllerApply,
   planControllerPrepare,
   prepareControllerStage,
+  validateControllerCompatibility,
 } from "./controller-deploy.mjs";
 import { sourceFingerprint } from "./source-fingerprint.mjs";
 import { releaseArtifacts } from "./stage-artifacts.mjs";
@@ -25,6 +26,29 @@ const TARGET = "page10";
 const deployment = deploymentProfile(TARGET).deployment;
 const sha256 = (value) => createHash("sha256").update(value).digest("hex");
 const compatibilitySource = `export const controllerDeploymentCompatibility = ${JSON.stringify(controllerDeploymentCompatibility)};\n`;
+
+test("controller compatibility accepts only the canonical marker bytes", () => {
+  assert.equal(
+    validateControllerCompatibility(compatibilitySource, compatibilitySource),
+    controllerDeploymentCompatibility,
+  );
+  for (const source of [
+    compatibilitySource.trimEnd(),
+    compatibilitySource.replaceAll('"', "'"),
+    compatibilitySource + "// pages-controller-v1\n",
+    `/* ${compatibilitySource} */`,
+    compatibilitySource.replace("pages-controller-v1", "not-pages-controller-v1"),
+  ]) {
+    assert.throws(
+      () => validateControllerCompatibility(source, source),
+      /Expected controller compatibility/,
+    );
+    assert.throws(
+      () => validateControllerCompatibility(compatibilitySource, source),
+      /compatibility marker mismatch/,
+    );
+  }
+});
 
 test("adapter import and install planning work in a clean checkout without TypeScript", (t) => {
   const root = fs.mkdtempSync(path.join(tmpdir(), "pages-clean-adapter-"));

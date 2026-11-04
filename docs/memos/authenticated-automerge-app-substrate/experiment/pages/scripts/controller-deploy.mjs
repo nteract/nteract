@@ -137,11 +137,10 @@ export function validateControllerCompatibility(
     throw new Error(
       "Controller compatibility marker mismatch between trusted and source checkouts",
     );
-  const match = /controllerDeploymentCompatibility\s*=\s*["']([^"']+)["']/.exec(trustedText);
-  if (!match) throw new Error("Controller compatibility marker missing");
-  if (match[1] !== expected)
+  const canonical = `export const controllerDeploymentCompatibility = ${JSON.stringify(expected)};\n`;
+  if (trustedText !== canonical)
     throw new Error(`Expected controller compatibility ${JSON.stringify(expected)}`);
-  return match[1];
+  return expected;
 }
 
 export function validateExpectedSourceSha(actual, expected) {
