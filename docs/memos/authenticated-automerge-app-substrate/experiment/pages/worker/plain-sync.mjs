@@ -85,6 +85,70 @@ const accessShape = (access) => ({
   trashed: !!access.trashed,
 });
 
+/** Delete every key plain sync stores for a Page: history, orphaned parts,
+ * actor claims and comment blocks. Idempotent. */
+export async function clearPlainStorage(storage) {
+  await clearPrefixes(storage, [PREFIX, BLOCKED]);
+}
+
+/** Delete every key under each prefix, 128 at a time. Idempotent. */
+export async function clearPrefixes(storage, prefixes) {
+  for (const prefix of prefixes) {
+    let keys;
+    do {
+      keys = [...(await storage.list({ prefix, limit: 128 })).keys()];
+      if (keys.length) await storage.delete(keys);
+    } while (keys.length === 128);
+  }
+}
+
+/** A native `host/actor/<actor>` entry as a plain claim (sync/host.mjs), or
+ * null for an entry plain sync has no use for. A conflict stays a claim no
+ * connection can write as. */
+export function claimFromNative(entry, now) {
+  if (!entry || typeof entry !== "object") return null;
+  if (entry.conflict === true) return { conflict: true, firstSeen: now };
+  if (entry.host === true) return { host: true, firstSeen: now };
+  if (typeof entry.principal !== "string") return null;
+  return {
+    principal: entry.principal,
+    ...(typeof entry.displayName === "string" && {
+      displayName: entry.displayName,
+    }),
+    ...(typeof entry.driver === "string" && { driver: entry.driver }),
+    firstSeen: Number.isFinite(entry.firstSeen) ? entry.firstSeen : now,
+  };
+}
+
+/**
+ * Write a Subduction Page's history in plain form: for each document one
+ * `A.save()` snapshot under its manifest, with the actor claims in the first
+ * document's write, then the principals whose comment writes stay blocked.
+ * Clears plain storage first, so a retry after a crash starts over. The caller
+ * flips `recordStorage` afterwards; until then the keys are unread.
+ */
+export async function writeMigratedHistory(
+  storage,
+  { documents, actors = [], blocked = [], now = Date.now() },
+) {
+  await clearPlainStorage(storage);
+  const store = new DocStore(new PlainByteStore(storage));
+  const claims = [];
+  for (const [actor, entry] of actors) {
+    const claim = claimFromNative(entry, now);
+    if (claim) claims.push([`actor/${actor}`, new Uint8Array(cbor.encode(claim))]);
+  }
+  let bytes = 0;
+  for (const [index, { documentId, doc }] of documents.entries()) {
+    const save = A.save(doc);
+    bytes += save.byteLength;
+    await store.compact(treeOf(documentId), save, A.getHeads(doc), index === 0 ? claims : []);
+  }
+  for (const principal of new Set(blocked))
+    await storage.put(BLOCKED + principal, { code: "migrated", at: now });
+  return { claims: claims.length, bytes };
+}
+
 export const treeOf = (documentId) => sedimentreeId(documentIdToBinary(documentId));
 
 const SENDER_ID = /^b-[0-9a-f-]{36}$/;
@@ -356,13 +420,7 @@ export class PlainSync {
    */
   async forget(documentIds) {
     for (const documentId of documentIds) await this.host.durableHeads(treeOf(documentId));
-    for (const prefix of [PREFIX, BLOCKED]) {
-      let keys;
-      do {
-        keys = [...(await this.storage.list({ prefix, limit: 128 })).keys()];
-        if (keys.length) await this.storage.delete(keys);
-      } while (keys.length === 128);
-    }
+    await clearPlainStorage(this.storage);
     this.blocked.clear();
   }
 
