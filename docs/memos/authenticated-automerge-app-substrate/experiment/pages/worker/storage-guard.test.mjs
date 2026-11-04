@@ -106,3 +106,30 @@ test("a guarded stub refuses every request but a GET", async () => {
   );
   assert.deepEqual(sent, ["GET"]);
 });
+
+test("the SQLite APIs are gated too: every sql.exec and each kv write", () => {
+  const ran = [];
+  const raw = new Storage();
+  raw.sql = {
+    exec: (query) => (ran.push(query), { toArray: () => [] }),
+    databaseSize: 4096,
+  };
+  const kv = new Map();
+  raw.kv = {
+    get: (key) => kv.get(key),
+    put: (key, value) => void kv.set(key, value),
+    delete: (key) => kv.delete(key),
+  };
+  const { state, refusal } = gate();
+  const storage = guardStorage(raw, refusal);
+  storage.sql.exec("SELECT 1");
+  storage.kv.put("a", 1);
+  state.error = Error("reset");
+  // A statement's text doesn't say whether it writes, so reads are refused too.
+  assert.throws(() => storage.sql.exec("SELECT 1; DELETE FROM t"), /reset/);
+  assert.throws(() => storage.kv.put("a", 2), /reset/);
+  assert.throws(() => storage.kv.delete("a"), /reset/);
+  assert.equal(storage.kv.get("a"), 1, "kv reads pass");
+  assert.equal(storage.sql.databaseSize, 4096);
+  assert.deepEqual(ran, ["SELECT 1"]);
+});
