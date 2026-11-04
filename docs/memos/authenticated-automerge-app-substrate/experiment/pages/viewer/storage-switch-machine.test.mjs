@@ -1,6 +1,7 @@
 // The storage switch's transition over every state and event. PageSession's
-// use of it (edits during the move, close, a second refusal, two tabs) is
-// covered in local-first-session.test.mjs.
+// use of it (edits during the move or after adopting the host's storage,
+// close, a second refusal, two tabs) is covered in
+// local-first-session.test.mjs.
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { REJECT, STORAGE_SWITCH_STATES, storageSwitchMachine } from "./storage-switch-machine.mjs";
@@ -13,85 +14,72 @@ const STATES = {
   moving: { name: "moving" },
   recording: { name: "recording", database },
   failed: { name: "failed" },
+  adopting: { name: "adopting" },
+  adopted: { name: "adopted" },
   closed: { name: "closed" },
 };
 const EVENTS = {
   refusedPlain: { type: "refused", storage: "automerge" },
   refusedNative: { type: "refused", storage: "native" },
+  mismatchedPlain: { type: "mismatched", storage: "automerge" },
+  mismatchedNative: { type: "mismatched", storage: "native" },
   stripped: { type: "stripped" },
   checkpointed: { type: "checkpointed" },
   moved: { type: "moved", database },
   recorded: { type: "recorded" },
+  adopted: { type: "adopted" },
   failed: { type: "failed" },
   close: { type: "close" },
 };
 const go = (name, effects = [], extra = {}) => ({ state: { name, ...extra }, effects });
 const no = (reason) => ({ rejected: reason });
-const closed = go("closed");
 const stale = no(REJECT.stale);
+const busy = no(REJECT.busy);
+/** A full row: requests answered `request`, completions stale, close closes,
+ * then `cells`. */
+const row = (request, cells = {}) => ({
+  refusedPlain: request,
+  refusedNative: request,
+  mismatchedPlain: request,
+  mismatchedNative: request,
+  stripped: stale,
+  checkpointed: stale,
+  moved: stale,
+  recorded: stale,
+  adopted: stale,
+  failed: stale,
+  close: go("closed"),
+  ...cells,
+});
 
 // Every row: the result of each event from that state.
 const TABLE = {
-  idle: {
+  idle: row(undefined, {
     refusedPlain: go("checkpointing", [{ type: "pause" }, { type: "checkpoint" }]),
     refusedNative: go("stripping", [{ type: "strip" }]),
-    stripped: stale,
-    checkpointed: stale,
-    moved: stale,
-    recorded: stale,
-    failed: stale,
-    close: closed,
-  },
-  stripping: {
-    refusedPlain: no(REJECT.busy),
-    refusedNative: no(REJECT.busy),
-    stripped: go("idle"),
-    checkpointed: stale,
-    moved: stale,
-    recorded: stale,
-    failed: go("idle"),
-    close: closed,
-  },
-  checkpointing: {
-    refusedPlain: no(REJECT.busy),
-    refusedNative: no(REJECT.busy),
-    stripped: stale,
+    mismatchedPlain: go("adopting", [{ type: "pause" }, { type: "adopt", storage: "automerge" }]),
+    mismatchedNative: go("adopting", [{ type: "pause" }, { type: "adopt", storage: "native" }]),
+  }),
+  stripping: row(busy, { stripped: go("idle"), failed: go("idle") }),
+  checkpointing: row(busy, {
     checkpointed: go("moving", [{ type: "move" }]),
-    moved: stale,
-    recorded: stale,
     failed: go("idle", [{ type: "resume" }]),
-    close: closed,
-  },
-  moving: {
-    refusedPlain: no(REJECT.busy),
-    refusedNative: no(REJECT.busy),
-    stripped: stale,
-    checkpointed: stale,
+  }),
+  moving: row(busy, {
     moved: go("recording", [{ type: "record" }], { database }),
-    recorded: stale,
     failed: go("failed", [{ type: "reloadRequired" }]),
-    close: closed,
-  },
-  recording: {
-    refusedPlain: no(REJECT.busy),
-    refusedNative: no(REJECT.busy),
-    stripped: stale,
-    checkpointed: stale,
-    moved: stale,
+  }),
+  recording: row(busy, {
     recorded: go("idle", [{ type: "resume" }, { type: "deletePlain", database }]),
     failed: go("failed", [{ type: "reloadRequired" }]),
-    close: closed,
-  },
-  failed: {
-    refusedPlain: no(REJECT.failed),
-    refusedNative: no(REJECT.failed),
-    stripped: stale,
-    checkpointed: stale,
-    moved: stale,
-    recorded: stale,
-    failed: stale,
-    close: closed,
-  },
+  }),
+  failed: row(no(REJECT.failed)),
+  adopting: row(busy, {
+    // Edits stay paused: the recorded checkpoint is what the reload opens.
+    adopted: go("adopted"),
+    failed: go("idle", [{ type: "resume" }]),
+  }),
+  adopted: row(no(REJECT.adopted)),
   closed: Object.fromEntries(Object.keys(EVENTS).map((event) => [event, no(REJECT.closed)])),
 };
 

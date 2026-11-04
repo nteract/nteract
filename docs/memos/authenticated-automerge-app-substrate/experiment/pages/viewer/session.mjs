@@ -141,13 +141,23 @@ export const TRASHED_COPY =
 export const DENIED_COPY =
   "You no longer have access to this Page. Your local copy is kept on this device.";
 export const PAGE_DELETED = "This Page was deleted.";
-/** The edit pause while a refused plain draft moves to native storage. */
+/** The edit pause while a refused plain draft moves to native storage, or a
+ * replica in the wrong storage records the host's. */
 const STORAGE_SWITCH = "storage-switch";
 export const STORAGE_SWITCHING = "This draft is moving to new storage. Try again in a moment.";
 export const STORAGE_SWITCH_FAILED =
   "This draft couldn't move to new storage. Reload to keep editing; it's saved on this device.";
+export const STORAGE_ADOPTED =
+  "This Page's storage changed. Reload to keep editing; your edits are saved on this device.";
 export const STORAGE_REFUSED_AGAIN =
   "The server refused this draft's storage again. Try again to register it.";
+/** Why a storage switch in `state` holds edits. */
+const storageSwitchNotice = (state) =>
+  state.name === "failed"
+    ? STORAGE_SWITCH_FAILED
+    : state.name === "adopting" || state.name === "adopted"
+      ? STORAGE_ADOPTED
+      : STORAGE_SWITCHING;
 const storageRefused = (error) =>
   error?.status === 409 && error.code === "record_storage_unsupported";
 /** A failed move's error. Its 409 stops automatic reconnects: only a reload
@@ -2062,6 +2072,11 @@ export class PageSession {
         return this.#openNativeReplica().then((database) => ({ type: "moved", database }));
       case "record":
         return this.#recordNativeRegistration().then(() => ({ type: "recorded" }));
+      case "adopt":
+        return this.persistLocal(
+          { recordStorage: effect.storage === "automerge" ? "automerge" : undefined },
+          { storageFromHost: true },
+        ).then(() => ({ type: "adopted" }));
     }
   }
   /** Close the plain replica, keeping its database, and import the draft into
@@ -2137,20 +2152,16 @@ export class PageSession {
   /** Discovery names other storage than this open replica's: a stale tab
    * wrote the wrong mode into the local record, or a host's answer changed.
    * The replica's history is in the other format and can't switch live, but
-   * its checkpoint is plain Automerge: record it, with every edit, under the
-   * host's storage. The next open restores it into a replica of that storage,
-   * so a reload recovers instead of failing the same way. Edits made before
-   * then keep reaching the checkpoint. */
+   * its checkpoint is plain Automerge. The storage switch pauses edits, then
+   * records that checkpoint, final, under the host's storage
+   * (storage-switch-machine.mjs). The next open restores it into a replica of
+   * that storage, so a reload recovers instead of failing the same way. */
   async adoptHostStorage(storage) {
-    await this.persistLocal(
-      { recordStorage: storage === "automerge" ? "automerge" : undefined },
-      { storageFromHost: true },
-    );
+    const adopted = await this.#switchStorage({ type: "mismatched", storage });
+    if (!this.alive || adopted.state.name === "closed") return;
+    if (adopted.error) throw adopted.error;
     // A 409: reconnecting can't help, a reload does.
-    throw Object.assign(Error("This Page's storage changed. Reload to open it."), {
-      code: "RECORD_STORAGE_CHANGED",
-      status: 409,
-    });
+    throw Object.assign(Error(STORAGE_ADOPTED), { code: "RECORD_STORAGE_CHANGED", status: 409 });
   }
   /** Merge a stored checkpoint into this replica before a lookup. */
   async storeCheckpoint(id, doc) {
@@ -2802,11 +2813,7 @@ export class PageSession {
   change(fn) {
     if (!this.alive) throw Error("Page closed");
     if (this.editPauses.has(STORAGE_SWITCH))
-      throw Error(
-        this.storageSwitch$.snapshot().name === "failed"
-          ? STORAGE_SWITCH_FAILED
-          : STORAGE_SWITCHING,
-      );
+      throw Error(storageSwitchNotice(this.storageSwitch$.snapshot()));
     if (!this.canWrite) throw Error("This Page is read only");
     return this.#write(this.handle, fn);
   }
