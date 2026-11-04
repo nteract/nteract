@@ -65,3 +65,13 @@ test("grid cards are off unless this browser opts in", async () => {
   assert.equal(readGridFlag(browser("", { "pages.grid": "on" })), true);
   assert.equal(readGridFlag(browser("?grid=0", { "pages.grid": "1" })), false);
 });
+
+test("only the address asks for the grid itself; storage just turns the flag on", async () => {
+  const { readGridRequest } = await import("./feature-flags.mjs");
+  assert.equal(readGridRequest(browser("?grid=1")), true);
+  assert.equal(readGridRequest(browser("?show=shared&grid=on")), true);
+  assert.equal(readGridRequest(browser("", { "pages.grid": "1" })), false);
+  assert.equal(readGridRequest(browser("?grid=0", { "pages.grid": "1" })), false);
+  assert.equal(readGridRequest(browser()), false);
+  assert.equal(readGridRequest({}), false);
+});
