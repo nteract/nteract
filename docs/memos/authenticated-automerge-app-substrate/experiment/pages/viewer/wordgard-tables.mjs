@@ -40,6 +40,8 @@ export const tablePresentation = Decoration.Point.source.of((state) => {
 
 export function insertTable(editor, columns = 3, rows = 3) {
   if (!editor.editable || selectedTable(editor.state)) return false;
+  // A table inserted over a node selection would replace the node.
+  if (editor.state.selection instanceof GardSelection.Node) return false;
   if (![columns, rows].every((n) => Number.isInteger(n) && n >= 1 && n <= 20)) return false;
   const table = Table.create(
     Array.from({ length: rows }, (_, r) =>

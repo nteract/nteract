@@ -10,9 +10,10 @@ export function selectedImage(state) {
     : null;
 }
 
-/** A node selection of an atomic embed: an image or a dataframe. Text
- * formatting controls stay hidden for it, and a remote edit maps it through
- * Wordgard's change set instead of rebuilding it as a text range. */
+/** A node selection of an atomic embed: an image or a dataframe. The editor
+ * labels the toolbar for these. Text controls stay hidden, and a remote edit
+ * maps the selection through Wordgard's change set, for any node selection
+ * (WordgardEditor.jsx), not only these. */
 export function selectedAtom(state) {
   const selection = state.selection;
   return selection instanceof GardSelection.Node &&

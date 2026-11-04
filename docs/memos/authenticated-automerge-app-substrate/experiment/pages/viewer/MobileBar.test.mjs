@@ -211,3 +211,21 @@ for (const atom of ["image", "dataframe"])
     for (const item of items.filter((entry) => entry.disabled)) await click(item);
     assert.deepEqual(ran, [], `${atom}: a disabled entry ran`);
   });
+
+test("with any other node selected, More offers only undo and redo", async (t) => {
+  // A preserved block or a rule: selectable as a node, with no atom label.
+  const view = await renderBar(t, {
+    format: { atom: null, nodeSelected: true, undo: true, redo: true, link: true },
+  });
+  await click(view.button("More formatting"));
+  const enabled = [...view.bar.querySelectorAll("[role='menuitem']")]
+    .filter((item) => !item.disabled)
+    .map((item) => item.textContent);
+  assert.deepEqual(enabled, ["Undo", "Redo"]);
+});
+
+test("with any node selected, text style, marks and lists are disabled", async (t) => {
+  const view = await renderBar(t, { format: { atom: null, nodeSelected: true } });
+  for (const label of ["Text style", "Bold", "Italic", "Bulleted list"])
+    assert.equal(view.bar.querySelector(`[aria-label="${label}"]`).disabled, true, label);
+});

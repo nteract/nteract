@@ -37,7 +37,8 @@ dom.window.document.elementFromPoint = () => null;
 const { Wordgard } = await import("wordgard/editor");
 const { GardState, GardSelection } = await import("wordgard/state");
 const { Leaf } = await import("wordgard/doc");
-const { schema, Paragraph, PagesDataframe } = await import("./wordgard-model.mjs");
+const { schema, Paragraph, PagesDataframe, HorizontalRule } = await import("./wordgard-model.mjs");
+const { insertTable } = await import("./wordgard-tables.mjs");
 const { wordgardDataframes, dataframeEventReachesEditor, enterDataframeGrid, GRID_ARROW_STEP } =
   await import("./wordgard-dataframes.mjs");
 const { collapseAtomOnLeave } = await import("./image-selection.mjs");
@@ -226,6 +227,19 @@ test("focus moving to another block deselects the table; into its grid or a tool
   }
 });
 
+test("insertTable refuses to replace a selected node", () => {
+  const { editor, select } = withTable();
+  try {
+    select();
+    const before = editor.state.doc.toString();
+    assert.equal(insertTable(editor), false);
+    assert.equal(editor.state.doc.toString(), before);
+    assert.match(before, /PagesDataframe/);
+  } finally {
+    editor.dom.remove();
+  }
+});
+
 test("ArrowLeft and ArrowRight in the grid scroll it sideways and never move the editor caret", () => {
   const { editor, frame, select } = withTable();
   try {
@@ -274,6 +288,33 @@ test("ArrowLeft and ArrowRight in the grid scroll it sideways and never move the
     // Outside the canvas, arrows are the editor's: the grid doesn't scroll.
     press("ArrowRight", frame().querySelector(".wordgard-dataframe-title"));
     assert.equal(body.scrollLeft, GRID_ARROW_STEP);
+  } finally {
+    editor.dom.remove();
+  }
+});
+
+test("insertTable refuses a node-selected rule, which has no atom label", () => {
+  const state = GardState.create({
+    doc: schema.doc([
+      Paragraph.create([Leaf.text("above")]),
+      HorizontalRule,
+      Paragraph.create([Leaf.text("below")]),
+    ]),
+    config: schema.elements.map((e) => GardState.schemaElement.of(e)),
+  });
+  const editor = new Wordgard({ state, parent: document.body });
+  try {
+    let at = -1;
+    editor.state.doc.content.reduce((pos, node) => {
+      if (node.type === HorizontalRule.type) at = pos;
+      return pos + node.size;
+    }, 0);
+    const rule = editor.state.doc.content.find((node) => node.type === HorizontalRule.type);
+    editor.dispatch({ selection: GardSelection.node(at, rule) });
+    assert.ok(editor.state.selection instanceof GardSelection.Node);
+    const before = editor.state.doc.toString();
+    assert.equal(insertTable(editor), false);
+    assert.equal(editor.state.doc.toString(), before);
   } finally {
     editor.dom.remove();
   }

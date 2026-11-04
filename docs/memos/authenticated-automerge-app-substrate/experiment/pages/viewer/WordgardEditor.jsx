@@ -170,6 +170,14 @@ const editConfig = (editable) => [
 // row, with Cancel, then shows again.
 const previewShown = (editor) => !!editor?.state.field(uploadPreview, false);
 
+/** Wordgard's text-formatting keys: marks and Ctrl-Shift-0..6 headings. */
+const NODE_TEXT_KEYS = [
+  "Mod-b",
+  "Mod-i",
+  "Mod-u",
+  "Mod-`",
+  ...Array.from({ length: 7 }, (_, level) => `Ctrl-Shift-${level}`),
+];
 export function WordgardEditor(props) {
   const {
     replica,
@@ -424,18 +432,36 @@ export function WordgardEditor(props) {
         KeyBinding.of({
           key: "Mod-k",
           run: () => {
-            openLink();
+            // A link would replace a selected node; take the key and do nothing.
+            if (!(editor.state.selection instanceof GardSelection.Node)) openLink();
             return true;
           },
         }),
         KeyBinding.of({ key: "Mod-Alt-m", run: () => comment() }),
+        // Wordgard's heading keys retype the textblock around a selected
+        // inline image; its mark keys have nothing to mark. Take them, and do
+        // nothing, while a node is selected.
+        // Highest precedence: Wordgard's schema keymaps would run first.
+        GardState.prec.highest(
+          NODE_TEXT_KEYS.map((key) =>
+            KeyBinding.of({
+              key,
+              run: () => editor.state.selection instanceof GardSelection.Node,
+            }),
+          ),
+        ),
         KeyBinding.of({ key: "Shift-Enter", run: insertPlainLineBreak }),
         KeyBinding.of({ key: "Mod-Enter", run: exitBlock, allowDefault: true }),
         KeyBinding.of({ key: "ArrowDown", run: leaveFinalBlock, allowDefault: true }),
         Wordgard.domEventHandler("mousedown", (event) => clickBelowFinalBlock(editor, event)),
         KeyBinding.of({
           key: "Mod-Shift-h",
-          run: () => latest.current.editable && Command.dispatch(editor, toggleHighlight),
+          // On a selected node, take the key and do nothing: returning false
+          // would let the browser run its own Cmd-Shift-H (Safari and Chrome
+          // on macOS open the home page).
+          run: () =>
+            editor.state.selection instanceof GardSelection.Node ||
+            (latest.current.editable && Command.dispatch(editor, toggleHighlight)),
         }),
         Wordgard.contentAttributes.of({ "aria-label": "Document text", ...PROSE_ENTRY_ATTRIBUTES }),
         // On phones the compact bar and the header cover the visual viewport's
@@ -686,10 +712,11 @@ export function WordgardEditor(props) {
         collab.observeChange(event);
         let selection;
         const { anchor, head } = editor.state.selection;
-        // Let Wordgard map a selected image or dataframe through the projection change set.
-        // Rebuilding it as a text range would bring back text controls on peer edits.
+        // Let Wordgard map a selected node (an image, a dataframe, a rule) through the
+        // projection change set. Rebuilding it as a text range would bring back text
+        // controls on peer edits.
         if (
-          !selectedAtom(editor.state) &&
+          !(editor.state.selection instanceof GardSelection.Node) &&
           event.nativeBefore &&
           event.nativeAfter &&
           !event.changes.empty
@@ -789,6 +816,10 @@ export function WordgardEditor(props) {
               ? "image"
               : null,
         table: !!selectedTable(state),
+        // Any node selection (an image, a dataframe, a preserved block, a
+        // rule): commands that format, wrap or replace the selection don't
+        // apply. `atom` only names the kinds that have a label.
+        nodeSelected: state.selection instanceof GardSelection.Node,
         style:
           block?.type === Heading
             ? `h${block.tag.param}`
@@ -1000,7 +1031,9 @@ export function WordgardEditor(props) {
       const contextual =
         !mobile &&
         !selection.empty &&
-        !selectedAtom(editor.state) &&
+        // A selected node (an image, a dataframe, a rule, a preserved block)
+        // has no text to format, so the toolbar doesn't float over it.
+        !(selection instanceof GardSelection.Node) &&
         !editor.composing &&
         (editor.hasFocus ||
           selectedHere ||
@@ -1069,6 +1102,10 @@ export function WordgardEditor(props) {
     const editor = view.current;
     if (editor && name === "comment" && commentable) return comment();
     if (!editor || !editable) return;
+    // With a node selected, only undo and redo apply; the toolbars disable
+    // the rest, and this holds for any caller with a stale snapshot.
+    if (editor.state.selection instanceof GardSelection.Node && name !== "undo" && name !== "redo")
+      return;
     try {
       if (name === "link") return openLink();
       if (name === "highlight") Command.dispatch(editor, toggleHighlight);
@@ -1140,6 +1177,18 @@ export function WordgardEditor(props) {
           : (index + (event.key === "ArrowRight" ? 1 : -1) + controls.length) % controls.length
     ].focus();
   }
+  const insertImageButton = (
+    <button
+      className="toolbar-button"
+      aria-label="Insert image"
+      title="Insert image"
+      disabled={!editable || imageStatus?.pending}
+      onPointerDown={(event) => event.preventDefault()}
+      onClick={chooseImage}
+    >
+      <ImagePlus size={18} aria-hidden="true" />
+    </button>
+  );
   function formatButton([name, label, Icon]) {
     const action = actions.has(name);
     return (
@@ -1172,7 +1221,9 @@ export function WordgardEditor(props) {
                 ? "Table actions"
                 : format?.image
                   ? "Image actions"
-                  : "Text formatting"
+                  : format?.nodeSelected
+                    ? "Block actions"
+                    : "Text formatting"
             }
             onKeyDown={toolbarKeys}
           >
@@ -1193,10 +1244,21 @@ export function WordgardEditor(props) {
             {toolbarOpen && <span className="toolbar-separator" role="separator" />}
             {!editable ? (
               formatButton(commentControl)
-            ) : format?.atom ? (
-              <span className="image-selection-label">
-                {format.atom === "dataframe" ? "Table" : "Image"}
-              </span>
+            ) : format?.atom || format?.nodeSelected ? (
+              // A selected node: text style, marks, lists and the table menu
+              // don't apply to it. Insert image (it inserts after the node)
+              // and Comment still do.
+              <>
+                <span className="image-selection-label">
+                  {format.atom === "dataframe"
+                    ? "Table"
+                    : format.atom === "image"
+                      ? "Image"
+                      : "Block"}
+                </span>
+                {toolbarOpen && insertImageButton}
+                {formatButton(commentControl)}
+              </>
             ) : (
               <>
                 <select
@@ -1241,18 +1303,7 @@ export function WordgardEditor(props) {
                     />
                   </>
                 )}
-                {toolbarOpen && (
-                  <button
-                    className="toolbar-button"
-                    aria-label="Insert image"
-                    title="Insert image"
-                    disabled={!editable || imageStatus?.pending}
-                    onPointerDown={(event) => event.preventDefault()}
-                    onClick={chooseImage}
-                  >
-                    <ImagePlus size={18} aria-hidden="true" />
-                  </button>
-                )}
+                {toolbarOpen && insertImageButton}
                 {formatButton(commentControl)}
               </>
             )}
