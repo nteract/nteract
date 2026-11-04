@@ -358,6 +358,43 @@ Rollback past #4712. Builds before #4712 can't replay a `move_page` receipt
 for a request with `parent_id: null`. The move already landed, so after such a
 rollback a client should read or list the Page instead of retrying the move.
 
+### Rollback and Page record storage
+
+A Page keeps the record storage it was created with. A build that doesn't
+know a Page's mode refuses to open it ("Unsupported Page record storage
+mode"), and builds before a2c9d5dde don't know `automerge`. So a target that
+has created plain Automerge Pages can't run such a build.
+
+Each build receipt lists the modes its Worker opens as `record_storage`
+(`shared/record-storage.mjs`); the release manifest carries the receipt. A
+receipt without the list counts as opening only the native modes, which
+covers every build before the list existed, including a2c9d5dde and #4770.
+
+A target may hold a mode when `RECORD_STORAGE_HISTORY` in
+`scripts/deployment/profiles.mjs` lists it, its profile sets `recordStorage`,
+or a release installed on the host was configured with that
+`PAGES_RECORD_STORAGE`. History outlives the profile flag: turning
+`recordStorage` off stops new plain Pages, but the existing ones remain.
+
+A release that lacks one of those modes is refused, naming the target, the
+release and the reason, by:
+
+- `deploy.mjs prepare` and `upload`, from the local manifest;
+- `deploy.mjs install`, which reads the staged manifest over SSH before
+  running the stage's installer. A stage brings its own `install.mjs`, and
+  one from before this check never runs it, so install an older release
+  from a current checkout;
+- `install.mjs` itself, before any write, which also reads the configured
+  `wrangler.json` of every release under `/opt/<service>/releases`;
+- the timeout message, which doesn't name a `celld deploy` rollback to such a
+  release;
+- `scripts/rollback-qualification.mjs`, for both builds it runs.
+
+There is no override. A direct `celld deploy` of a release directory bypasses
+every check. Page10 holds `automerge` Pages, so it can't roll back past
+a2c9d5dde, and can't install a2c9d5dde or #4770 through deploy.mjs either,
+because their receipts predate the list.
+
 ### Projects and their storage identity
 
 Projects were called Spaces through 3548b9750, which Page8 runs. Callers now see
@@ -432,8 +469,15 @@ root `package.json` and `pnpm-lock.yaml`), committed into a scratch repository
 so the build receipt can read it, works. Then:
 
 ```sh
-CELLD_BIN=<celld 0.6.3> node scripts/rollback-qualification.mjs --previous <previous pages dir>
+CELLD_BIN=<celld 0.6.3> node scripts/rollback-qualification.mjs --target <target> --previous <previous pages dir>
 ```
+
+`--target` names the deployment the rollback is for. The script refuses a
+previous build that can't open every record storage the target may hold (see
+Rollback and Page record storage) before it starts celld, and the fixture
+creates Pages with the target's `recordStorage`. The recorded run below
+created only native Pages. 3548b9750 can still be qualified for `pages`; for
+`page10` it is refused.
 
 Against 3548b9750 (build `9ae4ed83e44e`), with the catalog index on:
 

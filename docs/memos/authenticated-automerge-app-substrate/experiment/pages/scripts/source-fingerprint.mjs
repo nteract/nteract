@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { existsSync, lstatSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import ts from "typescript";
+import { RECORD_STORAGE_MODES } from "../shared/record-storage.mjs";
 
 const excluded = new Set([
   "dist",
@@ -137,6 +138,9 @@ export function writeBuildReceipt(
     ),
     // Matches the X-Pages-Build header and /health `build` of this bundle.
     build_id: fingerprint.sha256.slice(0, 12),
+    // The Page record storage modes this build's Worker opens. Deployment
+    // refuses a release whose receipt lacks a mode the target may hold.
+    record_storage: [...RECORD_STORAGE_MODES],
     viewer_chunks: certify(viewerChunks),
     viewer_assets: certify(viewerAssets),
     fingerprint,

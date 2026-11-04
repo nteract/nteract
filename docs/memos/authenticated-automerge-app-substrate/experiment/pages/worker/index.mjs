@@ -143,6 +143,7 @@ import {
 } from "./admission-reasons.mjs";
 import { ADMISSION_CAPABILITY } from "../shared/admission.mjs";
 import { buildAdvertisement } from "../shared/build-identity.mjs";
+import { RECORD_STORAGE_MODES } from "../shared/record-storage.mjs";
 import { advertiseBuild } from "./build-advertisement.mjs";
 import {
   bufferedResponse,
@@ -3647,7 +3648,10 @@ export class Page {
       const ctx = this.ctx;
       let signer, backend;
       try {
-        if (![undefined, "local", "buffered", "automerge"].includes(metadata?.recordStorage))
+        if (
+          metadata?.recordStorage !== undefined &&
+          !RECORD_STORAGE_MODES.includes(metadata.recordStorage)
+        )
           throw Error("Unsupported Page record storage mode");
         if (metadata?.recordStorage === "automerge") return await this.initializePlain(metadata);
         signer = N.MemorySigner.fromBytes(await persistentSeed(ctx.storage));

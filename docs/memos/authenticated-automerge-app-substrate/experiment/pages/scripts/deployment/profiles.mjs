@@ -384,6 +384,59 @@ export function assertQualifiedDeploymentTarget(target) {
     );
 }
 
+// Record storage modes beyond the native ones (`local`, `buffered`) that each
+// target has been configured to create Pages with. A Page keeps its mode for
+// life, so an entry stays after the profile stops setting `recordStorage`: the
+// target still holds those Pages. Remove one only once the target's data holds
+// no Page with that mode. page10 has created `automerge` Pages since a2c9d5dde.
+export const RECORD_STORAGE_HISTORY = Object.freeze({
+  page10: Object.freeze(["automerge"]),
+});
+const NATIVE_RECORD_STORAGE = Object.freeze(["local", "buffered"]);
+
+/** The record storage modes beyond the native ones that `target` may hold
+ * Pages in: its history, its profile, and any `observed` on the host (the
+ * PAGES_RECORD_STORAGE of releases installed there). Each maps to why. */
+export function targetRecordStorage(target, observed = []) {
+  const profile = deploymentProfile(target);
+  const reasons = new Map();
+  const note = (mode, reason) => {
+    if (typeof mode !== "string" || !mode || NATIVE_RECORD_STORAGE.includes(mode)) return;
+    reasons.set(mode, [...(reasons.get(mode) ?? []), reason]);
+  };
+  for (const mode of RECORD_STORAGE_HISTORY[target] ?? [])
+    note(mode, "RECORD_STORAGE_HISTORY lists it");
+  note(profile.recordStorage, "its profile sets recordStorage");
+  for (const { mode, release } of observed)
+    note(mode, `release ${release} on the host was configured with it`);
+  return reasons;
+}
+
+/** Refuse a release whose build cannot open every Page `target` may hold.
+ * `receipt` is the release's build receipt (manifest `build_receipt`, or
+ * dist/build-receipt.json); its `record_storage` lists the modes the Worker
+ * opens. A receipt without the list predates it and opens none beyond the
+ * native modes, so it counts as lacking every other mode. */
+export function assertReleaseOpensTargetPages(target, receipt, observed = []) {
+  const declared = Array.isArray(receipt?.record_storage) ? receipt.record_storage : [];
+  const missing = [...targetRecordStorage(target, observed)].filter(
+    ([mode]) => !declared.includes(mode),
+  );
+  if (!missing.length) return;
+  const release =
+    `${typeof receipt?.source_sha === "string" ? receipt.source_sha.slice(0, 12) : "unknown source"}` +
+    ` (build ${receipt?.build_id ?? "unknown"})`;
+  throw new Error(
+    `Refusing release ${release} for ${target}: ` +
+      missing
+        .map(([mode, reasons]) => `${target} may hold "${mode}" Pages (${reasons.join("; ")})`)
+        .join(", ") +
+      `, and the release's build receipt lists record_storage ` +
+      `${declared.length ? JSON.stringify(declared) : "none"}. A build without a Page's ` +
+      `record storage fails to open it with "Unsupported Page record storage mode".`,
+  );
+}
+
 export function selectTarget(argv) {
   const args = [...argv];
   const target = args[0] === "--target" ? (args.splice(0, 2)[1] ?? "") : "pages-next";
