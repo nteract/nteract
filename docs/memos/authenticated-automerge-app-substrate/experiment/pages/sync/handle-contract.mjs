@@ -19,8 +19,6 @@ import { commentsDocumentId } from "../worker/comments-store.mjs";
  * Barriers/rejection return {entered, release}; closed checks transport teardown.
  * The fixture registers teardown on t. No private Repo/SyncHost state is part
  * of this contract; a replacement host adapter can provide the same fixture.
- * knownFailures.storageRetry is an optional, bridge-only executable TODO;
- * omit it for the adapter so recovery remains a required gate.
  */
 export function handleContract(name, makeFixture) {
   describe(name, { timeout: 60_000 }, () => {
@@ -309,8 +307,6 @@ export function handleContract(name, makeFixture) {
     for (const boundary of ["admission", "storage"])
       it(`${boundary} rejection surfaces, and recorded retry keeps unrelated peer history`, async (t) => {
         const f = await makeFixture(t);
-        if (boundary === "storage" && f.knownFailures?.storageRetry)
-          t.todo(f.knownFailures.storageRetry);
         const peer = await f.peer();
         const base = f.handle.doc();
         const baseHashes = history(base).hashes;

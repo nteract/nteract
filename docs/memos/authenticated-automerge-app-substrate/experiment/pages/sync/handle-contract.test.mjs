@@ -34,14 +34,6 @@ handleContract("PlainSync trusted Repo handle", async (t) => {
   await plain.flush([documentId]);
   return {
     repo: plain.repo,
-    knownFailures: {
-      // Reproduced with a 60-second wait on 55e993b8a: after a host io
-      // refusal, incoming peer history and recorded replay both reach doc(),
-      // but the next PlainSync.flush never settles. Keep the failing gate
-      // executable; the adapter fixture must not inherit this exception.
-      storageRetry:
-        "Bridge storage retry hangs in PlainSync.flush after io refusal and peer delivery (55e993b8a)",
-    },
     handle,
     documentId,
     flush: (ids) => plain.flush(ids),

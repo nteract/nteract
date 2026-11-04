@@ -33,6 +33,7 @@ import { concat } from "./doc-store.mjs";
 // That mode exists for Repo's format-agnostic contract suite.
 
 const LOOSE_LIMIT = 256;
+const TERMINAL_REFUSALS = new Set(["actor_claimed", "history_capacity", "malformed_change"]);
 
 export class AutomergeSyncBackend {
   #opts;
@@ -203,6 +204,7 @@ export class AutomergeSyncBackend {
       tree.opaque = true;
     }
     if (tree.opaque) return this.#storeOpaque(tree, staged);
+    tree.refusedTerminal = false;
 
     const mirror = tree.mirror ?? A.init();
     const before = A.getHeads(mirror);
@@ -313,6 +315,9 @@ export class AutomergeSyncBackend {
     const conn = { transport, hostId };
     this.#conn = conn;
     for (const tree of this.#trees.values()) {
+      this.#settle(tree);
+      tree.sync.state = A.decodeSyncState(A.encodeSyncState(tree.sync.state));
+      tree.refusedTerminal = false;
       tree.sync.inflight = null;
       clearTimeout(tree.sync.timer);
     }
@@ -371,7 +376,20 @@ export class AutomergeSyncBackend {
       return;
     }
     let m;
-    [tree.sync.state, m] = A.generateSyncMessage(tree.mirror ?? A.init(), tree.sync.state);
+    let mirror = tree.mirror ?? A.init();
+    if (tree.refusedTerminal) {
+      // Acknowledge the host's history without advertising refused local heads.
+      // Sync reads the underlying handle, so a view alone does not isolate it.
+      const heads = tree.sync.state.theirHeads ?? tree.sync.state.sharedHeads;
+      mirror = A.clone(
+        A.view(mirror, A.hasHeads(mirror, heads) ? heads : tree.sync.state.sharedHeads),
+      );
+    }
+    try {
+      [tree.sync.state, m] = A.generateSyncMessage(mirror, tree.sync.state);
+    } finally {
+      if (tree.refusedTerminal) A.free(mirror);
+    }
     if (!m && !force) return this.#finishRound(tree, "complete");
     const r = ++this.#frame;
     tree.sync.inflight = r;
@@ -403,7 +421,12 @@ export class AutomergeSyncBackend {
       return;
     }
     if (frame.t === "refused") {
+      const superseded =
+        frame.r !== undefined && tree.sync.inflight !== null && frame.r !== tree.sync.inflight;
       if (frame.r !== undefined && frame.r === tree.sync.inflight) tree.sync.inflight = null;
+      // Keep acknowledged heads, but never treat a refused send as delivered.
+      tree.sync.state = A.decodeSyncState(A.encodeSyncState(tree.sync.state));
+      if (!superseded) tree.refusedTerminal = TERMINAL_REFUSALS.has(frame.code);
       // Always retryable for Repo: a fatal refusal also closes the socket, and
       // the app decides from the close code whether to reconnect. A
       // non-retryable failure would leave the handle unavailable after one.
@@ -419,6 +442,8 @@ export class AutomergeSyncBackend {
         fatal: frame.fatal,
       };
       tree.log.append((sequence) => ({ type: "failure", sequence, error }), 128);
+      // A timed-out frame's refusal must not settle a newer round's waiters.
+      if (superseded) return;
       return this.#finishRound(tree, "failed");
     }
     const reply = frame.r !== undefined && frame.r === tree.sync.inflight;
@@ -492,6 +517,7 @@ export class AutomergeSyncBackend {
 
   #finishRound(tree, outcome) {
     this.#settle(tree);
+    if (outcome === "complete" && tree.refusedTerminal) outcome = "failed";
     if (outcome === "complete") {
       tree.dirty = false;
       this.#saveSyncState(tree);
@@ -522,6 +548,7 @@ export class AutomergeSyncBackend {
   #synchronize(tree, options) {
     this.#assertOpen("synchronize");
     options?.signal?.throwIfAborted();
+    tree.refusedTerminal = false;
     return new Promise((resolve, reject) => {
       const waiter = { resolve, reject };
       tree.sync.waiters.push(waiter);
@@ -672,6 +699,7 @@ export class AutomergeSyncBackend {
         mirror: null,
         deferred: null,
         failure: null,
+        refusedTerminal: false,
         dirty: false,
         deleted: false,
         log: this.#log(),
