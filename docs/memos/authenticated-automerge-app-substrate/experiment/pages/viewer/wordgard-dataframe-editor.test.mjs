@@ -319,3 +319,27 @@ test("insertTable refuses a node-selected rule, which has no atom label", () => 
     editor.dom.remove();
   }
 });
+
+test("a tap on the title row (a click with no mousedown) selects the table", () => {
+  const { editor, frame } = withTable();
+  try {
+    const title = frame().querySelector(".wordgard-dataframe-title");
+    // On touch, Wordgard ignores mousedown and waits for a DOM selection that
+    // a tap on the non-editable frame never makes. Only the click arrives.
+    title.dispatchEvent(
+      new window.MouseEvent("click", { bubbles: true, cancelable: true, button: 0 }),
+    );
+    const selection = editor.state.selection;
+    assert.ok(selection instanceof GardSelection.Node, "the table is selected");
+    assert.equal(selection.node.type, PagesDataframe);
+    // A click inside the grid is Sift's, not a selection.
+    editor.dispatch({ selection: GardSelection.cursor(1) });
+    const canvas = frame().querySelector(".wordgard-dataframe-canvas");
+    canvas.dispatchEvent(
+      new window.MouseEvent("click", { bubbles: true, cancelable: true, button: 0 }),
+    );
+    assert.equal(editor.state.selection instanceof GardSelection.Node, false);
+  } finally {
+    editor.dom.remove();
+  }
+});
