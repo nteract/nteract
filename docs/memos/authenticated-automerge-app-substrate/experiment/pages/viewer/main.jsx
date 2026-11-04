@@ -67,11 +67,12 @@ import {
 import { pageCreations } from "./page-create-machine.mjs";
 import { ProjectsIndex } from "./IndexViews.jsx";
 import { Library } from "./Library.jsx";
-import { listProjectPages, pageLocation } from "./projects.mjs";
+import { listProjectPages, pageLocation, watchPageLocation } from "./projects.mjs";
 import { closeTrashedSessions, moveToTrashError, restorePage } from "./trash.mjs";
 import { listAllPages } from "./page-list.mjs";
-import { Listing, listingView } from "./listing.mjs";
 import { listingCache } from "./listing-cache.mjs";
+import { PickerWalk } from "./picker-walk.mjs";
+import { SignedOutRecovery } from "./signed-out-recovery.mjs";
 import { ProjectList } from "./project-list.mjs";
 import { quotaNotice } from "./quota.mjs";
 import { AppearanceControls } from "./AppearanceControls.jsx";
@@ -128,19 +129,29 @@ const warmEditor = () => editor.start();
 // The account's Projects, one list_projects request shared by the library's
 // Project filter, the Browse picker, Move to… and /projects.
 const projectList = new ProjectList({ call: tool });
+// The App's handlers for the Browse picker's error line and a walk answered
+// for another account, set while it is mounted.
+const pickerHooks = { report: () => {}, otherAccount: () => {} };
+// The Browse picker (picker-walk.mjs): open or closed, and the walk of every
+// Page the account can open while it is open. It starts from the library's
+// first page when this tab showed it within the cache's age limit (read
+// only: the walk is not a library view).
+const picker = new PickerWalk({
+  walk: ({ signal }) => listAllPages(tool, { signal }),
+  seed: (principal) => listingCache.read(principal, LIBRARY_DEFAULTS),
+  report: (message) => pickerHooks.report(message),
+  onOtherAccount: () => pickerHooks.otherAccount(),
+});
 /** Forget the rows and Projects remembered for the account: it signed out,
- * another one signed in, or the server refused a tool call as signed out. */
+ * another one signed in, or the server refused a tool call as signed out.
+ * The Browse picker closes and drops its walk; nothing here starts a request,
+ * so a 401 handled here can't cause another. */
 function forgetAccountData() {
   listingCache.clear();
   projectList.reset();
+  picker.forget();
 }
 const NO_PROJECTS = Object.freeze([]);
-/** The Browse picker's rows: every Page the account can open, walked only
- * while the picker is open. */
-const allPagesRequest = async () => ({
-  items: (await listAllPages(tool)).pages ?? [],
-  cursor: null,
-});
 // How long a new thread's passage stays emphasized after the inline composer
 // sends it.
 const CREATED_FLASH_MS = 1600;
@@ -191,7 +202,6 @@ function App() {
     [active, setActive] = useState(null),
     [commentsOpen, setCommentsOpen] = useState(false),
     [target, setTarget] = useState(null),
-    [pickerOpen, setPickerOpen] = useState(false),
     [pickerError, setPickerError] = useState(""),
     [creating, setCreating] = useState(false),
     // One creation at a time, and placed creates to replay (page-create-machine.mjs).
@@ -208,33 +218,20 @@ function App() {
   const projectsReady =
     !!account?.principal && projectState.principal === account.principal && projectState.ready;
   const projects = projectsReady ? projectState.projects : NO_PROJECTS;
-  // The Browse picker's listing, one per account. It walks every Page each
-  // time the picker opens, starting from the library's first page when this
-  // tab has shown it (read only: the walk is not a library view).
-  const principal = account?.principal ?? null;
-  const pickerListing = React.useMemo(
-    () =>
-      new Listing({
-        fetch: allPagesRequest,
-        report: (message) => setPickerError(message),
-        idOf: (item) => item.page_id,
-        cache: principal
-          ? { read: (params) => listingCache.read(principal, params), write: () => {} }
-          : null,
-      }),
-    [principal],
-  );
-  useEffect(() => pickerListing.connect(), [pickerListing]);
-  const pickerSnapshot = useStore(pickerListing.store);
-  const pickerView = listingView(pickerSnapshot);
-  useEffect(() => {
-    if (pickerOpen) pickerListing.load();
-  }, [pickerOpen, pickerListing]);
+  // The Browse picker: open while its machine is, for the signed-in account.
+  const pickerSnapshot = useStore(picker.store);
+  const pickerOpen = pickerSnapshot.state.name !== "closed";
+  const pickerLoading =
+    pickerSnapshot.state.name === "loading" || pickerSnapshot.state.name === "refreshing";
+  const pickerFailed = pickerSnapshot.state.name === "failed";
   // Rendered only beside a session; handlers read editor.module when they run.
   const { WordgardEditor, CommentsPanel, CommentPopover, SaveStatus, PageControls } =
     editor.module ?? {};
   const auth = useRef(null),
     authentication = useRef(null),
+    // Where the installed Page is (projects.mjs watchPageLocation), asked
+    // until found; stopped when the Page is left or replaced.
+    placementWatch = useRef(null),
     catalogRevision = useRef(0),
     indexVisits = useRef(0),
     // What this render shows, for handlers bound at mount (popstate).
@@ -356,9 +353,13 @@ function App() {
    * so leaving never drops a save; the host tracks the close. */
   function releaseCurrent(options) {
     // A return to the library paints the title this tab last showed, its own
-    // rename or a peer's, over the one it remembered.
+    // rename or a peer's, over the one it remembered. A Page the host deleted
+    // or stopped sharing leaves what this tab remembers instead.
     const leaving = host.current;
-    if (leaving?.doc) listingCache.retitle(leaving.pageId, leaving.doc.title);
+    if (leaving?.hidden) listingCache.forget(leaving.pageId);
+    else if (leaving?.doc) listingCache.retitle(leaving.pageId, leaving.doc.title);
+    placementWatch.current?.stop();
+    placementWatch.current = null;
     host.release({ ...options, onError: showError });
     resetDocumentUI();
   }
@@ -373,11 +374,15 @@ function App() {
     setPlacement(null);
     setProjectPages(null);
     // Breadcrumbs show only the Project and parents this account can open.
-    // A Project's home Page also lists the Project's Pages.
-    void pageLocation(tool, next.pageId).then(
-      (value) => {
-        if (host.current !== next) return;
-        setPlacement(value);
+    // A Project's home Page also lists the Project's Pages. A Page created in
+    // this tab isn't on the server until it registers, so the location is
+    // asked for again as the session registers and connects.
+    placementWatch.current?.stop();
+    const watch = watchPageLocation(next, {
+      locate: () => pageLocation(tool, next.pageId),
+      current: () => host.current === next,
+      onFound: (value) => {
+        setPlacement((shown) => shown ?? value);
         if (value.home && value.project_id)
           void listProjectPages(tool, value.project_id).then(
             (pages) => {
@@ -386,8 +391,8 @@ function App() {
             () => {},
           );
       },
-      () => {},
-    );
+    });
+    placementWatch.current = watch;
     const listRecoveries = () =>
       void next
         .listRecoveries()
@@ -416,6 +421,7 @@ function App() {
     next.subscribe(() => {
       if (host.current === next) {
         paint((n) => n + 1);
+        watch.changed();
         if (next.accessReloadRequired && !next.recoveryPending) void reloadAccess(next);
         if (next.hidden && !hiding) {
           hiding = true;
@@ -472,7 +478,7 @@ function App() {
   async function open(id, { focus = false, historyMode = "push", nameIt = false } = {}) {
     if (historyMode !== "none") writePageRoute(id, { replace: historyMode === "replace" });
     bootPreview.dispatch({ type: "navigated", pageId: id });
-    setPickerOpen(false);
+    picker.close();
     setNotice("");
     if (host.current?.pageId === id) return;
     const controller = new AbortController();
@@ -524,7 +530,7 @@ function App() {
     setError("");
     setNotice("");
     setOpening(false);
-    setPickerOpen(false);
+    picker.close();
     setTrashOpen(false);
     setProjectOpen(null);
     setIndex(listingVisit("home", library));
@@ -649,7 +655,7 @@ function App() {
     if (isLibraryRoute(route) && libraryShowing()) {
       setError("");
       setNotice("");
-      setPickerOpen(false);
+      picker.close();
       setIndex((current) =>
         current ? { ...current, kind: route.kind, library: route.library } : current,
       );
@@ -676,6 +682,16 @@ function App() {
   }
   // Publish the visual viewport's edges for the mobile bar and header.
   useEffect(() => trackVisualViewport(), []);
+  // The Browse picker reports here, and a walk answered for another account
+  // asks the session check who is signed in.
+  useEffect(() => {
+    pickerHooks.report = (message) => setPickerError(message);
+    pickerHooks.otherAccount = () => void auth.current?.refresh().catch(() => {});
+    return () => {
+      pickerHooks.report = pickerHooks.otherAccount = () => {};
+      picker.close();
+    };
+  }, []);
   // On phones the status is a dot (its label stays for screen readers), and
   // Share, activity and the page actions sit under one ⋯ menu.
   const [phoneHeader, setPhoneHeader] = useState(() => matchMedia(MOBILE_EDITOR_QUERY).matches);
@@ -735,12 +751,23 @@ function App() {
       },
     });
     auth.current = maintenance;
-    // A tool call refused as signed out: what this tab remembers for the
-    // account goes, and the session check decides who is signed in now.
+    // A tool call refused as signed out (signed-out-recovery.mjs): what
+    // this tab remembers for the account goes at once, and the session check
+    // decides who is signed in now. When it answers with the same account,
+    // the account's Projects are asked for again. One check runs at a time,
+    // a refusal during it runs it once more, and reruns are capped, so a
+    // server that keeps refusing tool calls can't loop the tab.
+    const recovery = new SignedOutRecovery({
+      forget: forgetAccountData,
+      check: async () => {
+        const before = authentication.current?.identity?.principal ?? null;
+        await maintenance.refresh();
+        const now = authentication.current?.identity?.principal ?? null;
+        if (alive && now && now === before) await projectList.request(now, { fresh: true });
+      },
+    });
     const stopSignedOut = observeSignedOut(() => {
-      if (!alive) return;
-      forgetAccountData();
-      void maintenance.refresh().catch(() => {});
+      if (alive) recovery.refused();
     });
     const onPopState = () => {
       if (authentication.current?.identity) followRoute();
@@ -754,9 +781,11 @@ function App() {
     return () => {
       alive = false;
       stopSignedOut();
+      recovery.stop();
       maintenance.stop();
       window.removeEventListener("popstate", onPopState);
       catalogRevision.current++;
+      placementWatch.current?.stop();
       host.navigate();
       void host.close(host.current);
     };
@@ -909,7 +938,7 @@ function App() {
       }
       releaseCurrent();
       writePageRoute(next.pageId);
-      setPickerOpen(false);
+      picker.close();
       setOpening(false);
       setNotice("");
       // The account's own views gain the new Page.
@@ -981,17 +1010,41 @@ function App() {
     );
   }
   /** Move to…: only the Page's owner, signed in as that account, moves it.
-   * The dialog starts where read_page says the Page is; the action shows only
-   * once read_page answered, since a Project's home Page can't move. */
-  function startMove() {
+   * The dialog starts where read_page says the Page is, asked here when the
+   * shell doesn't know yet. A Project's home Page stays with its Project. */
+  async function startMove() {
     const moving = host.current;
-    const where = placement;
-    if (!moving || !where) return;
+    if (!moving) return;
     if (
       moving.authRequired ||
       moving.identity.principal !== authentication.current?.identity?.principal
     ) {
       setError("Sign in with this Page's original account to move it.");
+      return;
+    }
+    let where = placement;
+    // A draft the host hasn't registered isn't on the server to move yet.
+    if (!where && moving.localPage?.registration && !moving.localPage.registered) {
+      setError("Wait for this Page to sync before moving it.");
+      return;
+    }
+    if (!where) {
+      try {
+        where = await pageLocation(tool, moving.pageId);
+      } catch (error) {
+        showError(error);
+        return;
+      }
+      if (host.current !== moving) return;
+      setPlacement(where);
+      // The account may have changed while read_page was in flight.
+      if (moving.identity.principal !== authentication.current?.identity?.principal) {
+        setError("Sign in with this Page's original account to move it.");
+        return;
+      }
+    }
+    if (where.home) {
+      setError("A Project's home Page stays with its Project.");
       return;
     }
     const projectCrumb = where.breadcrumbs.find((crumb) => crumb.kind === "project");
@@ -1185,10 +1238,9 @@ function App() {
   // The open Page's title as this tab has it, over a listing's older copy.
   const ownTitle = (item) =>
     item.page_id === page?.page_id ? { ...item, title: page.title } : item;
-  const listedPages = mergePageListings(
-    pickerView.failed ? null : pickerSnapshot.items,
-    localPages,
-  ).map(ownTitle);
+  const listedPages = mergePageListings(pickerFailed ? null : pickerSnapshot.items, localPages).map(
+    ownTitle,
+  );
   // The open Page's Project, when read_page shows one: Projects are
   // owner-only in this build, so a visible project_id means this account owns
   // it. Shared viewers see none and get no create affordances. The owner
@@ -1243,11 +1295,10 @@ function App() {
           icon: RotateCcw,
           run: restoreCurrent,
         },
-        // A Project's home Page stays with its Project, so Move to… waits for
-        // read_page to say where the Page is.
+        // A Project's home Page stays with its Project. Until read_page says
+        // where the Page is, Move to… asks when chosen (startMove).
         session.canDelete &&
-          !!placement &&
-          !placement.home && {
+          !placement?.home && {
             key: "move",
             label: "Move to…",
             icon: FolderInput,
@@ -1283,7 +1334,7 @@ function App() {
               title="Switch page"
               onClick={() => {
                 setPickerError("");
-                setPickerOpen(true);
+                picker.open(authentication.current?.identity?.principal ?? null);
               }}
               aria-haspopup="dialog"
               aria-expanded={pickerOpen}
@@ -1419,9 +1470,9 @@ function App() {
           <PagePicker
             open={pickerOpen}
             pages={listedPages}
-            loading={pickerOpen && (pickerView.loading || pickerView.refreshing)}
+            loading={pickerLoading}
             currentId={page?.page_id}
-            onClose={() => setPickerOpen(false)}
+            onClose={() => picker.close()}
             onOpen={open}
             onCreate={create}
             createProject={

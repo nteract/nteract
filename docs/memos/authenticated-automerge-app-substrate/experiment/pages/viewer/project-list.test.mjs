@@ -7,8 +7,13 @@ import { ProjectList, REJECT, projectListMachine } from "./project-list.mjs";
 
 const idle = { name: "idle" };
 const loading = (principal = "alice", key = "k1") => ({ name: "loading", principal, key });
-const ready = (principal = "alice") => ({ name: "ready", principal });
-const refreshing = (principal = "alice", key = "k1") => ({ name: "refreshing", principal, key });
+const ready = (principal = "alice", verified = true) => ({ name: "ready", principal, verified });
+const refreshing = (principal = "alice", key = "k1", verified = true) => ({
+  name: "refreshing",
+  principal,
+  key,
+  verified,
+});
 const request = (principal = "alice", key = "k2", fresh = false) => ({
   type: "request",
   principal,
@@ -84,41 +89,41 @@ const ROWS = [
   {
     label: "nothing answers before a request",
     state: idle,
-    event: { type: "loaded", key: "k1" },
+    event: { type: "loaded", key: "k1", verified: true },
     expect: rejected(idle, REJECT.idle),
   },
   {
     label: "the first answer shows",
     case: "current",
     state: loading(),
-    event: { type: "loaded", key: "k1" },
+    event: { type: "loaded", key: "k1", verified: true },
     expect: { state: ready(), effects: [{ type: "show", key: "k1" }] },
   },
   {
     label: "a superseded answer never shows",
     case: "stale",
     state: loading("alice", "k2"),
-    event: { type: "loaded", key: "k1" },
+    event: { type: "loaded", key: "k1", verified: true },
     expect: rejected(loading("alice", "k2"), REJECT.stale),
   },
   {
     label: "an answer after the last one settled is ignored",
     state: ready(),
-    event: { type: "loaded", key: "k1" },
+    event: { type: "loaded", key: "k1", verified: true },
     expect: rejected(ready(), REJECT.idle),
   },
   {
     label: "a refresh's answer replaces the Projects",
     case: "current",
     state: refreshing(),
-    event: { type: "loaded", key: "k1" },
+    event: { type: "loaded", key: "k1", verified: true },
     expect: { state: ready(), effects: [{ type: "show", key: "k1" }] },
   },
   {
     label: "a superseded refresh never shows",
     case: "stale",
     state: refreshing("alice", "k2"),
-    event: { type: "loaded", key: "k1" },
+    event: { type: "loaded", key: "k1", verified: true },
     expect: rejected(refreshing("alice", "k2"), REJECT.stale),
   },
   {
@@ -149,10 +154,31 @@ const ROWS = [
   },
   {
     label: "a failed refresh keeps the Projects listed",
-    case: "current",
+    case: "kept",
     state: refreshing(),
     event: { type: "failed", key: "k1" },
     expect: { state: ready(), effects: [] },
+  },
+  {
+    label: "a failed refresh drops Projects an answer naming no account listed",
+    case: "dropped",
+    state: refreshing("alice", "k1", false),
+    event: { type: "failed", key: "k1" },
+    expect: { state: idle, effects: [{ type: "clear" }] },
+  },
+  {
+    label: "an answer naming no account shows, unverified",
+    case: "current",
+    state: loading(),
+    event: { type: "loaded", key: "k1", verified: false },
+    expect: { state: ready("alice", false), effects: [{ type: "show", key: "k1" }] },
+  },
+  {
+    label: "a refresh carries whether what's listed was verified",
+    case: "same",
+    state: ready("alice", false),
+    event: request(),
+    expect: { state: refreshing("alice", "k2", false), effects: [fetch("k2")] },
   },
   {
     label: "a superseded refresh's failure changes nothing",
@@ -171,10 +197,10 @@ const ROWS = [
 
 test("the project-list table covers every state and event", async () => {
   assert.deepEqual(await runTable(projectListMachine, ROWS), {
-    rows: 25,
+    rows: 28,
     pairs: 16,
     unreachable: 0,
-    cases: 16,
+    cases: 17,
   });
 });
 
@@ -207,7 +233,7 @@ test("screens asking at once share one list_projects request", async () => {
   assert.deepEqual(calls[0].args, { limit: 100 });
   assert.equal(filter, projectsView, "both wait on the same answer");
   assert.equal(shown().ready, false);
-  calls[0].resolve({ projects: [{ project_id: "p1" }], next_cursor: null });
+  calls[0].resolve({ projects: [{ project_id: "p1" }], next_cursor: null, principal: "alice" });
   assert.deepEqual((await filter).projects, [{ project_id: "p1" }]);
   await settle();
   assert.deepEqual(shown(), { principal: "alice", projects: [{ project_id: "p1" }], ready: true });
@@ -222,10 +248,10 @@ test("a fresh request supersedes the one in flight, whose answer never shows", a
   list.request("alice");
   const fresh = list.request("alice", { fresh: true });
   assert.equal(calls.length, 2);
-  calls[1].resolve({ projects: [{ project_id: "new" }] });
+  calls[1].resolve({ projects: [{ project_id: "new" }], principal: "alice" });
   await fresh;
   await settle();
-  calls[0].resolve({ projects: [{ project_id: "old" }] });
+  calls[0].resolve({ projects: [{ project_id: "old" }], principal: "alice" });
   await settle();
   assert.deepEqual(shown().projects, [{ project_id: "new" }]);
 });
@@ -233,12 +259,12 @@ test("a fresh request supersedes the one in flight, whose answer never shows", a
 test("another account's Projects never show for this one", async () => {
   const { list, calls, shown } = harness();
   list.request("alice");
-  calls[0].resolve({ projects: [{ project_id: "hers" }] });
+  calls[0].resolve({ projects: [{ project_id: "hers" }], principal: "alice" });
   await settle();
   list.request("bob");
   assert.deepEqual(shown(), { principal: null, projects: [], ready: false }, "cleared at once");
   list.reset();
-  calls[1].resolve({ projects: [{ project_id: "his" }] });
+  calls[1].resolve({ projects: [{ project_id: "his" }], principal: "bob" });
   await settle();
   assert.equal(shown().ready, false, "a reply after sign-out shows nothing");
   assert.equal(list.state.name, "idle");
@@ -252,7 +278,7 @@ test("a failed refresh keeps what was listed; a failed first request can be retr
   await settle();
   assert.equal(list.state.name, "idle");
   list.request("alice");
-  calls[1].resolve({ projects: [{ project_id: "p1" }] });
+  calls[1].resolve({ projects: [{ project_id: "p1" }], principal: "alice" });
   await settle();
   const again = list.request("alice");
   calls[2].reject(new TypeError("Failed to fetch"));
@@ -261,4 +287,49 @@ test("a failed refresh keeps what was listed; a failed first request can be retr
   assert.deepEqual(shown().projects, [{ project_id: "p1" }]);
   assert.equal(list.state.name, "ready");
   await assert.rejects(list.request(null), /Sign in/);
+});
+
+test("an answer for another account never shows as this one's Projects", async () => {
+  const { list, calls, shown } = harness();
+  list.request("alice");
+  // Another window signed in as Bob, and the cookie followed.
+  calls[0].resolve({ projects: [{ project_id: "his" }], principal: "bob" });
+  await settle();
+  assert.deepEqual(shown(), { principal: null, projects: [], ready: false });
+  assert.equal(list.state.name, "idle");
+  // An answer that names no account (an older API) shows, as the library
+  // listing shows one; it isn't kept past the next request.
+  list.request("alice");
+  calls[1].resolve({ projects: [{ project_id: "anon" }] });
+  await settle();
+  assert.deepEqual(shown(), {
+    principal: "alice",
+    projects: [{ project_id: "anon" }],
+    ready: true,
+  });
+  list.request("alice");
+  calls[2].resolve({ projects: [{ project_id: "hers" }], principal: "alice" });
+  await settle();
+  assert.deepEqual(shown(), {
+    principal: "alice",
+    projects: [{ project_id: "hers" }],
+    ready: true,
+  });
+  // A failed refresh drops Projects only an unverified answer listed.
+  list.request("alice");
+  calls[3].resolve({ projects: [{ project_id: "anon" }] });
+  await settle();
+  assert.deepEqual(shown().projects, [{ project_id: "anon" }]);
+  list.request("alice");
+  calls[4].reject(new TypeError("Failed to fetch"));
+  await settle();
+  assert.deepEqual(shown(), { principal: null, projects: [], ready: false });
+  list.request("alice");
+  calls[5].resolve({ projects: [{ project_id: "hers" }], principal: "alice" });
+  await settle();
+  // A refresh answered for Bob keeps what Alice was shown.
+  list.request("alice");
+  calls[6].resolve({ projects: [{ project_id: "his" }], principal: "bob" });
+  await settle();
+  assert.deepEqual(shown().projects, [{ project_id: "hers" }]);
 });

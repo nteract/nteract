@@ -99,7 +99,7 @@ const bundle = await build({
             'if (globalThis.__editorFails) throw new TypeError("Failed to fetch dynamically imported module");\n' +
             "export function onRendererUnavailable() {}\n" +
             // A test that opens a Page supplies __openPage; others fail the open.
-            "export const PageSession = { open: (id) => globalThis.__openPage ? globalThis.__openPage(id) : Promise.reject(new Error('No Page in this fixture')) };\n" +
+            "export const PageSession = { open: (id) => globalThis.__openPage ? globalThis.__openPage(id) : Promise.reject(new Error('No Page in this fixture')), create: () => globalThis.__createPage ? globalThis.__createPage() : Promise.reject(new Error('No Page in this fixture')) };\n" +
             // The rest of the editor's surface, from __editor when a test
             // installs a Page, else inert.
             "const pick = (name, fallback) => (...args) => (globalThis.__editor?.[name] ?? fallback)(...args);\n" +
@@ -236,8 +236,8 @@ test("a first visit that can't reach the server says so once", async () => {
 const signedIn = () =>
   Response.json({ identity: { principal: "one", displayName: "Kyle" }, canWrite: true });
 const catalog = {
-  list_pages: { pages: [], next_cursor: null },
-  list_projects: { projects: [], next_cursor: null },
+  list_pages: { pages: [], next_cursor: null, principal: "one" },
+  list_projects: { projects: [], next_cursor: null, principal: "one" },
 };
 const settle = async () => {
   for (let i = 0; i < 10; i++) await act(() => new Promise((resolve) => setTimeout(resolve, 10)));
@@ -593,15 +593,17 @@ test("navigating away and back to the Page doesn't bring the boot preview back",
 // What the shell remembers for an account (the library's first pages and the
 // account's Projects) and the edits that change it, through the real shell.
 const { BehaviorSubject } = await import("rxjs");
+const { RECOVERY_RERUNS } = await import("./signed-out-recovery.mjs");
 const { createElement } = await import("react");
 const PLAN = "2b160b47-6df1-4983-81eb-489ca5a26812";
+const PROJECT = "prj_3b160b47-6df1-4983-81eb-489ca5a26812";
 const ROADMAP_AND_PLAN = [
   { page_id: ROADMAP, title: "Roadmap" },
   { page_id: PLAN, title: "Plan" },
 ];
 /** A Page session the shell can install: it owns the Page, reads only, and
  * holds `title`. `rename` changes the title as an edit would. */
-function fakeSession(pageId, principal, title) {
+function fakeSession(pageId, principal, title, { draft = false } = {}) {
   const phase = new BehaviorSubject({ name: "open" });
   const doc = { title };
   const listeners = new Set();
@@ -620,7 +622,10 @@ function fakeSession(pageId, principal, title) {
     authRequired: false,
     accessReloadRequired: false,
     recoveryPending: false,
-    localPage: { registered: true },
+    // A draft made in this tab registers later (`register`); until then
+    // read_page can't find it.
+    localPage: draft ? { registration: {}, registered: false } : { registered: true },
+    connection: draft ? null : {},
     status: "saved",
     statusKey: "saved",
     saveState: "saving",
@@ -634,6 +639,18 @@ function fakeSession(pageId, principal, title) {
     closeSettled: async () => {},
     rename(next) {
       doc.title = next;
+      for (const listener of listeners) listener();
+    },
+    // Another account's session answer leaves this Page waiting to sign in
+    // again, as a real session does.
+    acceptAuthentication(result) {
+      if (result.identity?.principal === principal) return true;
+      this.authRequired = true;
+      return false;
+    },
+    register() {
+      this.localPage = { ...this.localPage, registered: true };
+      this.connection = {};
       for (const listener of listeners) listener();
     },
   };
@@ -673,6 +690,22 @@ const closed = () => {
   return gate;
 };
 const sessionRequests = (app) => app.requests.filter((path) => path === "/api/auth/session").length;
+/** The library's own button named `name` (the picker has a New Page too). */
+const button = (name) =>
+  [...document.querySelectorAll(".library-view button")].find(
+    (element) => element.textContent.trim() === name,
+  );
+const toolCalls = (app, name) => app.requests.filter((entry) => entry === name).length;
+/** Wait at most `ms` for `found()` to return something, then return it, so a
+ * missing element fails its assertion rather than hanging the file. */
+async function until(found, ms = 2000) {
+  for (const end = Date.now() + ms; Date.now() < end; ) {
+    const value = found();
+    if (value) return value;
+    await act(() => new Promise((resolve) => setTimeout(resolve, 10)));
+  }
+  return found();
+}
 const cleanUp = (t) =>
   t.after(() => {
     delete globalThis.__openPage;
@@ -727,7 +760,7 @@ test("sign-out forgets the rows remembered for the account", async (t) => {
   await settle();
 });
 
-test("a tool call refused as signed out forgets the rows and checks the session", async (t) => {
+test("a tool call refused as signed out forgets the rows, checks the session and asks for the Projects again", async (t) => {
   cleanUp(t);
   history.replaceState(null, "", "/pages");
   const gate = {};
@@ -735,10 +768,15 @@ test("a tool call refused as signed out forgets the rows and checks the session"
   await settle();
   await leaveForPage(PLAN);
   const checks = sessionRequests(app);
+  const projects = toolCalls(app, "list_projects");
   gate.refuse = true;
   history.back();
   await settle();
   assert.equal(sessionRequests(app), checks + 1, "the session is asked again");
+  // Back asks for the Projects once; the same account answering the session
+  // check asks again, since the 401 forgot them.
+  assert.equal(toolCalls(app, "list_projects"), projects + 2);
+  assert.ok(document.querySelector(".library-view"));
   gate.refuse = false;
   await leaveForPage(PLAN);
   Object.assign(gate, closed());
@@ -750,7 +788,7 @@ test("a tool call refused as signed out forgets the rows and checks the session"
   assert.deepEqual(rows(), ["Roadmap"]);
 });
 
-test("Move to Trash forgets the Page, and Move to… waits for read_page", async (t) => {
+test("Move to Trash forgets the Page; Move to… hides only on a Project's home Page", async (t) => {
   cleanUp(t);
   globalThis.__editor = editorSurface;
   globalThis.confirm = () => true;
@@ -769,11 +807,11 @@ test("Move to Trash forgets the Page, and Move to… waits for read_page", async
   globalThis.__openPage = (id) => Promise.resolve(fakeSession(id, "one", "Plan"));
   await openRow("Plan");
   assert.equal(location.pathname, `/p/${PLAN}`);
-  assert.ok(pageAction("Move to Trash"), "the Page is open");
-  assert.equal(pageAction("Move to…"), undefined, "not before read_page says where it is");
-  placed.resolve({ page_id: PLAN, project_id: null, home: false, breadcrumbs: [] });
+  assert.ok(await until(() => pageAction("Move to Trash")), "the Page is open");
+  assert.ok(pageAction("Move to…"), "offered before read_page answers; it asks when chosen");
+  placed.resolve({ page_id: PLAN, project_id: PROJECT, home: true, breadcrumbs: [] });
   await settle();
-  assert.ok(pageAction("Move to…"));
+  assert.equal(pageAction("Move to…"), undefined, "a Project's home Page stays put");
   Object.assign(gate, closed());
   await click(pageAction("Move to Trash"));
   await settle();
@@ -827,4 +865,325 @@ test("Back and Forward between library addresses close the Browse picker", async
   assert.equal(location.pathname + location.search, "/");
   assert.equal(browse.getAttribute("aria-expanded"), "false");
   assert.equal(document.querySelector("dialog.page-picker[open]"), null);
+});
+
+test("a Page created in this tab finds its place once it registers", async (t) => {
+  cleanUp(t);
+  globalThis.__editor = editorSurface;
+  t.after(() => delete globalThis.__createPage);
+  history.replaceState(null, "", "/pages");
+  const draft = fakeSession(PLAN, "one", "Untitled", { draft: true });
+  globalThis.__createPage = () => Promise.resolve(draft);
+  const app = await boot(signedIn, {
+    ...gatedCatalog({}),
+    // read_page can't find a draft the host hasn't registered.
+    read_page: () =>
+      draft.localPage.registered
+        ? {
+            page_id: PLAN,
+            project_id: PROJECT,
+            parent_id: null,
+            home: false,
+            breadcrumbs: [{ kind: "project", project_id: PROJECT, title: "Launch" }],
+          }
+        : Response.json({ error: "Page not found", code: "page_not_found" }, { status: 404 }),
+  });
+  await settle();
+  await click(button("New Page"));
+  await settle();
+  assert.equal(location.pathname, `/p/${PLAN}`);
+  assert.ok(await until(() => pageAction("Move to…")), "Move to… is offered");
+  assert.equal(toolCalls(app, "read_page"), 1, "asked once, and refused");
+  assert.equal(document.querySelector(".breadcrumbs"), null);
+  await click(pageAction("Move to…"));
+  await settle();
+  assert.match(document.body.textContent, /Wait for this Page to sync before moving it\./);
+  assert.equal(toolCalls(app, "read_page"), 1, "Move to… doesn't ask for an unregistered draft");
+  draft.rename("Untitled");
+  await settle();
+  assert.equal(toolCalls(app, "read_page"), 1, "nothing changed, so nothing is asked again");
+  draft.register();
+  await settle();
+  assert.equal(toolCalls(app, "read_page"), 2, "asked again once it registered");
+  assert.equal(
+    (await until(() => document.querySelector(".breadcrumbs a")))?.textContent,
+    "Launch",
+    "the Page shows where it is",
+  );
+  assert.ok(pageAction("Move to…"));
+});
+
+test("a Page created in this tab is in the library when Back returns there", async (t) => {
+  cleanUp(t);
+  globalThis.__editor = editorSurface;
+  t.after(() => delete globalThis.__createPage);
+  history.replaceState(null, "", "/pages");
+  const gate = {};
+  await boot(signedIn, gatedCatalog(gate));
+  await settle();
+  assert.deepEqual(rows(), ["Roadmap"]);
+  globalThis.__createPage = () => Promise.resolve(fakeSession(PLAN, "one", "Untitled"));
+  await click(button("New Page"));
+  await settle();
+  assert.equal(location.pathname, `/p/${PLAN}`);
+  Object.assign(gate, closed());
+  history.back();
+  await settle();
+  assert.equal(location.pathname, "/pages");
+  assert.deepEqual(rows(), [], "the remembered rows lack the new Page, so none paint");
+  gate.release();
+  await settle();
+  assert.deepEqual(rows(), ["Roadmap"]);
+});
+
+test("a library answer for another account sets no quota and checks the session", async (t) => {
+  cleanUp(t);
+  const full = { limit: 10, count: 10, trash_count: 0 };
+  const notice = () => document.querySelector(".quota-notice")?.textContent ?? null;
+  for (const answeredBy of ["one", "bob"]) {
+    history.replaceState(null, "", "/pages");
+    const app = await boot(signedIn, {
+      ...catalog,
+      list_pages: {
+        pages: [{ page_id: ROADMAP, title: "Roadmap" }],
+        next_cursor: null,
+        quota: full,
+        principal: answeredBy,
+      },
+    });
+    await settle();
+    if (answeredBy === "one") {
+      assert.match(notice() ?? "", /10 Pages of 10 Pages/, "this account's quota shows");
+      assert.equal(sessionRequests(app), 1);
+    } else {
+      assert.equal(notice(), null, "Bob's quota is not this account's");
+      assert.equal(sessionRequests(app), 2, "and the session is asked again");
+    }
+  }
+});
+
+test("the Browse picker never repaints a walk past the age limit or after a 401", async (t) => {
+  cleanUp(t);
+  history.replaceState(null, "", "/");
+  const gate = {};
+  const walk = [
+    { page_id: ROADMAP, title: "Roadmap" },
+    { page_id: PLAN, title: "Their plan", shared: true },
+  ];
+  await boot(signedIn, {
+    ...gatedCatalog(gate),
+    list_pages: async (args) => {
+      if (gate.promise) await gate.promise;
+      if (gate.refuse)
+        return Response.json(
+          { error: "Sign in required", code: "unauthenticated" },
+          { status: 401 },
+        );
+      // The library's first page holds Roadmap; the picker's walk finds both.
+      return {
+        pages: args.limit === 100 ? walk : walk.slice(0, 1),
+        next_cursor: null,
+        principal: "one",
+      };
+    },
+  });
+  await settle();
+  const browse = document.querySelector('button[aria-label="Browse, switch page"]');
+  const picked = () =>
+    [...document.querySelectorAll("dialog.page-picker .picker-page span")].map(
+      (span) => span.textContent,
+    );
+  const pickerStatus = () =>
+    document.querySelector('dialog.page-picker [role="status"]')?.textContent ?? null;
+  const reopen = async () => {
+    await click(document.querySelector('button[aria-label="Close Pages"]'));
+    await settle();
+    Object.assign(gate, closed());
+    await click(browse);
+    await settle();
+  };
+  await click(browse);
+  await settle();
+  assert.deepEqual(picked(), ["Roadmap", "Their plan"]);
+
+  // Six minutes on: nothing remembered is young enough to paint.
+  const realNow = performance.now.bind(performance);
+  t.mock.method(performance, "now", () => realNow() + 6 * 60_000);
+  await reopen();
+  assert.deepEqual(picked(), [], "no rows from the last walk");
+  assert.equal(pickerStatus(), "Loading…");
+  gate.release();
+  await settle();
+  assert.deepEqual(picked(), ["Roadmap", "Their plan"]);
+  t.mock.restoreAll();
+
+  // A tool call refused as signed out, while the picker is closed.
+  await click(document.querySelector('button[aria-label="Close Pages"]'));
+  await settle();
+  delete gate.promise;
+  gate.refuse = true;
+  await click(
+    [...document.querySelectorAll('[role="group"][aria-label="Show"] button')].find(
+      (element) => element.textContent === "Your items",
+    ),
+  );
+  await settle();
+  gate.refuse = false;
+  Object.assign(gate, closed());
+  await click(browse);
+  await settle();
+  assert.deepEqual(picked(), [], "no rows from before the 401");
+  assert.equal(pickerStatus(), "Loading…");
+  gate.release();
+  await settle();
+});
+
+test("leaving a Page the host deleted or stopped sharing forgets it", async (t) => {
+  cleanUp(t);
+  globalThis.__editor = editorSurface;
+  history.replaceState(null, "", "/pages");
+  const gate = {};
+  await boot(signedIn, gatedCatalog(gate, { pages: ROADMAP_AND_PLAN }));
+  await settle();
+  const session = fakeSession(PLAN, "one", "Plan");
+  globalThis.__openPage = () => Promise.resolve(session);
+  await openRow("Plan");
+  assert.ok(await until(() => pageAction("Move to Trash")), "the Page is open");
+  // Its owner revoked this account's access: the session hides the Page.
+  session.hidden = true;
+  session.rename("Plan");
+  await settle();
+  Object.assign(gate, closed());
+  history.back();
+  await settle();
+  assert.equal(location.pathname, "/pages");
+  assert.deepEqual(rows(), ["Roadmap"], "the hidden Page doesn't paint from memory");
+  gate.release();
+  await settle();
+});
+
+test("a 401 with the Browse picker open closes it and stops, signed in or out", async (t) => {
+  cleanUp(t);
+  for (const signsOut of [false, true]) {
+    history.replaceState(null, "", "/");
+    const server = { refuse: false, signedIn: true, refusals: 0 };
+    // After 20 refusals the server answers 500 instead, which breaks a loop
+    // so the count below fails the test rather than hanging the file.
+    const refused = () =>
+      ++server.refusals > 20
+        ? Response.json({ error: "Stop", code: "internal" }, { status: 500 })
+        : Response.json({ error: "Sign in required", code: "unauthenticated" }, { status: 401 });
+    const app = await boot(
+      () =>
+        server.signedIn
+          ? signedIn()
+          : Response.json({ error: "Sign in required", code: "unauthenticated" }, { status: 401 }),
+      {
+        list_pages: () =>
+          server.refuse
+            ? refused()
+            : {
+                pages: [{ page_id: ROADMAP, title: "Roadmap" }],
+                next_cursor: null,
+                principal: "one",
+              },
+        list_projects: () =>
+          server.refuse ? refused() : { projects: [], next_cursor: null, principal: "one" },
+      },
+    );
+    await settle();
+    // From here every tool call is refused as signed out; the session check
+    // still says signed in, or says signed out too.
+    server.refuse = true;
+    server.signedIn = !signsOut;
+    const from = app.requests.length;
+    const browse = document.querySelector('button[aria-label="Browse, switch page"]');
+    await click(browse);
+    // Two seconds of real time: a loop would make hundreds of requests.
+    for (let i = 0; i < 20; i++) await settle();
+    const made = listings(app.requests, from);
+    const label = signsOut ? "signed out" : "signed in";
+    // The walk's 401 starts one recovery. Each of its list_projects is
+    // refused too, which reruns it up to the cap and then stops.
+    assert.ok(made.list_pages <= 2, `${label}: ${made.list_pages} list_pages`);
+    assert.ok(
+      made.list_projects <= 1 + RECOVERY_RERUNS,
+      `${label}: ${made.list_projects} list_projects`,
+    );
+    assert.equal(document.querySelector("dialog.page-picker[open]"), null, `${label}: closed`);
+    if (signsOut)
+      assert.equal(document.querySelector("h1")?.textContent, "A place to write together.");
+  }
+});
+
+test("a 401 during recovery still ends with the account's Projects shown", async (t) => {
+  cleanUp(t);
+  history.replaceState(null, "", "/pages");
+  const server = { refusePages: false, projectRefusals: 0 };
+  const refused = () =>
+    Response.json({ error: "Sign in required", code: "unauthenticated" }, { status: 401 });
+  const app = await boot(signedIn, {
+    list_pages: () =>
+      server.refusePages
+        ? refused()
+        : { pages: [{ page_id: ROADMAP, title: "Roadmap" }], next_cursor: null, principal: "one" },
+    // Recovery's own list_projects is refused once, which resets the list
+    // under it; the rearmed recovery asks again.
+    list_projects: () =>
+      server.projectRefusals-- > 0
+        ? refused()
+        : {
+            projects: [{ project_id: PROJECT, title: "Launch", home_page_id: ROADMAP }],
+            next_cursor: null,
+            principal: "one",
+          },
+  });
+  await settle();
+  await leaveForPage(PLAN);
+  server.refusePages = true;
+  // Back's own list_projects and recovery's first one are refused.
+  server.projectRefusals = 2;
+  const projects = toolCalls(app, "list_projects");
+  history.back();
+  await settle();
+  await settle();
+  assert.equal(toolCalls(app, "list_projects"), projects + 3, "Back, recovery, and its rerun");
+  const menu = await until(() =>
+    document.querySelector('button[aria-haspopup="menu"][aria-label^="Project: "]'),
+  );
+  await click(menu);
+  await settle();
+  const choices = [...document.querySelectorAll('[role="menuitemradio"] .library-menu-label')].map(
+    (label) => label.textContent,
+  );
+  assert.ok(choices.includes("Launch"), `the Projects show: ${choices.join(", ")}`);
+});
+
+test("Move to… opens nothing if the account changed while read_page was asked", async (t) => {
+  cleanUp(t);
+  globalThis.__editor = editorSurface;
+  const who = { current: "one" };
+  history.replaceState(null, "", "/pages");
+  const placed = deferredAnswer();
+  await boot(accountSession(who), {
+    ...gatedCatalog({}, { who, pages: ROADMAP_AND_PLAN }),
+    read_page: () => placed.promise,
+  });
+  await settle();
+  globalThis.__openPage = (id) => Promise.resolve(fakeSession(id, "one", "Plan"));
+  await openRow("Plan");
+  await click(await until(() => pageAction("Move to…")));
+  // Move to… waits on read_page; meanwhile another window signs in as Bob.
+  who.current = "bob";
+  await sessionCheck();
+  // Plain timers, not act(): an opened dialog's loads must not be able to
+  // hold this test past its assertion.
+  placed.resolve({ page_id: PLAN, project_id: null, home: false, breadcrumbs: [] });
+  for (let i = 0; i < 10; i++) await new Promise((resolve) => setTimeout(resolve, 10));
+  const dialog = document.querySelector(".move-dialog");
+  // A dialog opened by mistake is closed first, so its loads can't keep the
+  // file running past the failure.
+  if (dialog) await click(dialog.querySelector(`button[aria-label^="Close"]`));
+  assert.equal(dialog, null, "no dialog for Bob");
+  assert.match(document.body.textContent, /Sign in with this Page's original account to move it\./);
 });

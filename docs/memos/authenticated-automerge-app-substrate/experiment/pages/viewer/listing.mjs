@@ -72,10 +72,12 @@ export class Listing {
    * - idOf(item): a row's stable id.
    *   A page may also name the `principal` that answered it and carry the
    *   account's `quota`.
-   * - cache: `{ read(params), write(params, items, principal) }`
-   *   (listing-cache.mjs scope), or null. A load whose params it holds rows
-   *   for paints them while the first page is fetched again; each first page
-   *   shown is written back with the principal that answered it.
+   * - cache: `{ read(params), write(params, items, principal, revision),
+   *   revision() }` (listing-cache.mjs scope), or null. A load whose params
+   *   it holds rows for paints them while the first page is fetched again;
+   *   each first page shown is written back with the principal that answered
+   *   it and the cache revision its request began under, so a patch made
+   *   while it was in flight wins.
    * - onShown({ items, principal, quota, append }): a page the machine
    *   accepted, as it reaches the screen. A superseded or abandoned reply
    *   never gets here.
@@ -163,12 +165,18 @@ export class Listing {
         this.#results.delete(effect.key);
         const { items } = answer;
         if (!effect.append)
-          this.#cache?.write(this.snapshot().state.params, items, answer.principal);
+          this.#cache?.write(
+            this.snapshot().state.params,
+            items,
+            answer.principal,
+            answer.revision,
+          );
         this.store.update((current) => ({
           ...current,
           items: effect.append ? appendRows(current.items, items, this.#idOf) : items,
         }));
-        this.#onShown({ ...answer, append: effect.append });
+        const { revision: _revision, ...shown } = answer;
+        this.#onShown({ ...shown, append: effect.append });
         return;
       }
       case "report":
@@ -178,6 +186,7 @@ export class Listing {
   }
   #request({ key, params, cursor }) {
     const connection = this.#connection;
+    const revision = this.#cache?.revision?.();
     const current = () => connection === this.#connection;
     let pending;
     try {
@@ -192,6 +201,7 @@ export class Listing {
           items: Array.isArray(page?.items) ? page.items : [],
           principal: typeof page?.principal === "string" && page.principal ? page.principal : null,
           quota: page?.quota ?? null,
+          revision,
         });
         const next = typeof page?.cursor === "string" && page.cursor ? page.cursor : null;
         if (!this.#dispatch({ type: "loaded", key, cursor: next })) this.#results.delete(key);
@@ -205,7 +215,12 @@ export class Listing {
   }
 }
 
-const EMPTY_ANSWER = Object.freeze({ items: Object.freeze([]), principal: null, quota: null });
+const EMPTY_ANSWER = Object.freeze({
+  items: Object.freeze([]),
+  principal: null,
+  quota: null,
+  revision: undefined,
+});
 
 const nextCursor = (result) =>
   typeof result?.next_cursor === "string" && result.next_cursor ? result.next_cursor : null;

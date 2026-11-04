@@ -682,6 +682,12 @@ test("a first page is remembered only under the account that answered it", async
   requests[2].resolve({ items: [{ id: "alices" }], cursor: null, principal: "alice" });
   await settle();
   assert.deepEqual(cache.read("alice", {}), [{ id: "alices" }]);
+  // A later reply for someone else forgets the view: this tab just saw
+  // something other than Alice's rows there.
+  listing.load();
+  requests[3].resolve({ items: [{ id: "bobs" }], cursor: null, principal: "bob" });
+  await settle();
+  assert.equal(cache.read("alice", {}), null);
 });
 
 test("a remembered view paints for five minutes after it was shown, then loads normally", async () => {
@@ -758,4 +764,38 @@ test("a failed first page keeps the server's code for the screen", async () => {
   assert.equal(view().failureCode, "project_not_found");
   listing.load();
   assert.equal(view().failureCode, null);
+});
+
+test("a reply asked for before a patch is never written after it", async () => {
+  const { cache, scope } = scoped();
+  const { listing, requests } = harness({ cache: scope });
+  listing.load();
+  requests[0].resolve({ items: [{ id: "a" }], cursor: null, principal: "alice" });
+  await settle();
+  assert.deepEqual(cache.read("alice", {}), [{ id: "a" }]);
+  // A load in flight, then this tab creates a Page: the account's own views
+  // are forgotten while the old reply is still on its way.
+  listing.load({ query: "a" });
+  listing.load();
+  cache.forgetOwnedViews();
+  requests[2].resolve({ items: [{ id: "a" }], cursor: null, principal: "alice" });
+  await settle();
+  assert.deepEqual(listing.snapshot().items, [{ id: "a" }], "the reply still shows");
+  assert.equal(cache.read("alice", {}), null, "but isn't written back");
+  // Every patch moves the revision.
+  for (const patch of [
+    () => cache.forget("x"),
+    () => cache.retitle("x", "X"),
+    () => cache.forgetOwnedViews(),
+    () => cache.clear(),
+  ]) {
+    const before = cache.revision;
+    patch();
+    assert.equal(cache.revision, before + 1);
+  }
+  // A request that starts after the patch writes as usual.
+  listing.load({ access: "owned" });
+  requests[3].resolve({ items: [{ id: "mine" }], cursor: null, principal: "alice" });
+  await settle();
+  assert.deepEqual(cache.read("alice", { access: "owned" }), [{ id: "mine" }]);
 });

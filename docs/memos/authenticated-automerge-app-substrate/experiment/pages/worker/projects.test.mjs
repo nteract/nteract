@@ -55,6 +55,16 @@ test("a Project is created with its home Page, then read, listed and updated", a
     [project.project_id],
   );
   assert.ok(listed.body.retry_token);
+  // Both listings name the account that answered, so a tab can tell an
+  // answer for another account from its own.
+  assert.equal(listed.body.principal, w.owner);
+  const pagesListed = await w.call("owner", "list_pages", { limit: 1 });
+  assert.equal(pagesListed.status, 200);
+  assert.equal(pagesListed.body.principal, w.owner);
+  const notPages = await w.call("owner", "list_pages", { kind: "notebook" });
+  assert.equal(notPages.status, 200, JSON.stringify(notPages.body));
+  assert.deepEqual(notPages.body.pages, []);
+  assert.equal(notPages.body.principal, w.owner, "the kind branch names it too");
 
   const homeRead = await w.call("owner", "read_page", {
     page_id: project.home_page_id,

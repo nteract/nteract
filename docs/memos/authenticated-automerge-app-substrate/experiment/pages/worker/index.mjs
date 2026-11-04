@@ -2613,6 +2613,7 @@ export class Catalog {
             page_id: found[limit - 1].row.page_id,
           })
         : null,
+      principal: identity.principal,
       ...(await issueRetryToken(storage, {
         scope: `catalog:${identity.principal}`,
         principal: identity.principal,
@@ -2766,6 +2767,7 @@ export class Catalog {
         limit: options.limit,
         next_cursor: null,
         quota,
+        principal: identity.principal,
         ...(await issueRetryToken(storage, {
           scope: `catalog:${identity.principal}`,
           principal: identity.principal,

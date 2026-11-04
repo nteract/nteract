@@ -7,21 +7,32 @@
  * States:
  * - idle: nothing known.
  * - loading: the first request for `principal` is in flight under `key`.
- * - ready: `principal`'s Projects are in the store.
+ * - ready: `principal`'s Projects are in the store. `verified` says the
+ *   answer named `principal`; an answer that named no account isn't.
  * - refreshing: a later request for `principal` is in flight under `key`;
- *   the Projects already listed stay.
+ *   the Projects already listed stay, with their `verified`.
  *
  * Events:
  * - request: list `principal`'s Projects. One in flight for the same account
  *   answers it (rejected as joined) unless `fresh` asks for a new one, as
  *   after a create or move this tab made. Another account starts over.
- * - loaded / failed: the request for `key` settled. A key that no longer
- *   matches belongs to a superseded request. A failed first request knows
- *   nothing; a failed refresh keeps what was listed.
+ * - loaded / failed: the request for `key` settled; `loaded` says whether
+ *   the answer was `verified`. A key that no longer matches belongs to a
+ *   superseded request. A failed first request knows nothing; a failed
+ *   refresh keeps what was listed only when it was verified.
  * - reset: another account signed in, or none did.
  *
  * Effects: `fetch` asks list_projects under `key`; `show` puts that answer's
  * Projects in the store for the state's account; `clear` empties the store.
+ *
+ * list_projects names the `principal` that answered. An answer for any other
+ * account than the request's (another window signed in) settles as `failed`,
+ * so it never shows as this account's Projects. An answer that names no
+ * account (an older API, during a deploy) shows, as the library listing shows
+ * such a page, but it is never authoritative past its own request: the next
+ * request replaces it, and if that request fails the unverified Projects go
+ * rather than stay. The listing cache (listing-cache.mjs) applies the same
+ * rule by never storing a page that names no account.
  */
 import { defineMachine, reject } from "../shared/machine.mjs";
 import { Store } from "./store.mjs";
@@ -34,6 +45,8 @@ const text = (value) => typeof value === "string" && value !== "";
 const shape = (head, keys) => (value) => {
   for (const key of Object.keys(value))
     check(key === head || keys.includes(key), `unexpected field ${key}`);
+  if (keys.includes("verified"))
+    check(typeof value.verified === "boolean", "verified is a boolean");
   if (keys.includes("principal")) check(text(value.principal), "principal is required");
   if (keys.includes("key")) check(text(value.key), "key is required");
   if (keys.includes("fresh")) check(typeof value.fresh === "boolean", "fresh is a boolean");
@@ -52,18 +65,18 @@ export const projectListSpec = Object.freeze({
     "loading/loaded": ["current", "stale"],
     "loading/failed": ["current", "stale"],
     "refreshing/loaded": ["current", "stale"],
-    "refreshing/failed": ["current", "stale"],
+    "refreshing/failed": ["kept", "dropped", "stale"],
   },
   validate: {
     states: {
       idle: state(),
       loading: state("principal", "key"),
-      ready: state("principal"),
-      refreshing: state("principal", "key"),
+      ready: state("principal", "verified"),
+      refreshing: state("principal", "key", "verified"),
     },
     events: {
       request: event("principal", "key", "fresh"),
-      loaded: event("key"),
+      loaded: event("key", "verified"),
       failed: event("key"),
       reset: event(),
     },
@@ -85,11 +98,16 @@ function transition(current, input) {
     const same = current.principal === input.principal;
     if (same && inFlight(current) && !input.fresh) return reject(current, REJECT.joined);
     if (same && current.name !== "idle") {
-      const name = current.name === "loading" ? "loading" : "refreshing";
-      return {
-        state: { name, principal: input.principal, key: input.key },
-        effects: [{ type: "fetch", key: input.key }],
-      };
+      const state =
+        current.name === "loading"
+          ? { name: "loading", principal: input.principal, key: input.key }
+          : {
+              name: "refreshing",
+              principal: input.principal,
+              key: input.key,
+              verified: current.verified,
+            };
+      return { state, effects: [{ type: "fetch", key: input.key }] };
     }
     return {
       state: { name: "loading", principal: input.principal, key: input.key },
@@ -103,15 +121,14 @@ function transition(current, input) {
   if (input.key !== current.key) return reject(current, REJECT.stale);
   if (input.type === "loaded")
     return {
-      state: { name: "ready", principal: current.principal },
+      state: { name: "ready", principal: current.principal, verified: input.verified },
       effects: [{ type: "show", key: input.key }],
     };
+  if (current.name === "refreshing" && current.verified)
+    return { state: { name: "ready", principal: current.principal, verified: true }, effects: [] };
   return {
-    state:
-      current.name === "refreshing"
-        ? { name: "ready", principal: current.principal }
-        : { name: "idle" },
-    effects: [],
+    state: { name: "idle" },
+    effects: current.name === "refreshing" ? [{ type: "clear" }] : [],
   };
 }
 
@@ -182,8 +199,13 @@ export class ProjectList {
         this.#flight = { key, promise };
         promise.then(
           (answer) => {
+            if (answer?.principal && answer.principal !== this.#state.principal) {
+              this.#dispatch({ type: "failed", key });
+              return;
+            }
             this.#answer = answer;
-            if (!this.#dispatch({ type: "loaded", key })) this.#answer = null;
+            const verified = answer?.principal === this.#state.principal;
+            if (!this.#dispatch({ type: "loaded", key, verified })) this.#answer = null;
           },
           () => this.#dispatch({ type: "failed", key }),
         );

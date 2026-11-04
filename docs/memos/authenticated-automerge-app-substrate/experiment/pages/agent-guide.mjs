@@ -735,7 +735,7 @@ Pass next_cursor back as cursor, with the same other arguments, until it is null
 snapshot: concurrent title or sharing changes can move Pages across the cursor, and so can
 content edits under the activity sort. A short or
 empty result does not prove a Page is absent. Its quota object is your own account's Page
-limit: {limit, count, trash_count}. At the limit, create_page and restore_page return
+limit: {limit, count, trash_count}, and principal names the account that answered. At the limit, create_page and restore_page return
 page_quota_exceeded with limit and count; tell the person rather than retrying.
 
 - create_page: title, optional markdown, optional project_id or parent_id, and idempotency_key.
@@ -783,7 +783,7 @@ project_id_as_page_id or page_id_as_project_id, naming the right tool and argume
   finishes the same Project; it never creates a second one.
 - get_project: project_id. Returns title, description, revision and home_page_id.
 - list_projects: optional cursor and limit. Also returns a retry_token for
-  create_project and update_project.
+  create_project and update_project, and principal, the account that answered.
 - update_project: project_id, title and/or description, expected_revision (the
   revision from get_project; project_revision_conflict when stale) and
   idempotency_key. A retry whose revision has passed returns superseded:true and

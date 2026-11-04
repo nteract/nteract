@@ -2107,6 +2107,9 @@ export class PageSession {
       await this.acceptPageAccess(connection.access);
       if (!this.alive) return;
       this.connection = connection;
+      // Counts accepted connections, so a reader can tell a reconnect from
+      // the connection it already saw (projects.mjs watchPageLocation).
+      this.connectionGeneration = (this.connectionGeneration ?? 0) + 1;
       // Only the owner can open a trashed Page; it is a read-only preview.
       this.trash = connection.trash ?? null;
       if (connection.recovery?.code === "page_recovery_blocked")

@@ -3,7 +3,17 @@ import { test } from "node:test";
 import { readPageRoute, projectPath, writePageRoute } from "../shared/routes.mjs";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { listProjectPages, projectTree } from "./projects.mjs";
+import { runTable } from "../shared/machine-test.mjs";
+import {
+  LOCATION_REJECT,
+  LOCATION_RETRIES,
+  LOCATION_RETRY_MS,
+  pageLocationMachine,
+  pageLocationSpec,
+  listProjectPages,
+  projectTree,
+  watchPageLocation,
+} from "./projects.mjs";
 import { runPageCreation } from "./page-create-machine.mjs";
 import {
   Breadcrumbs,
@@ -183,4 +193,261 @@ test("the picker offers New Page in the current Project and in Your items", () =
   );
   assert.match(split, /In Launch/);
   assert.match(split, /In Your items/);
+});
+
+test("a Page's location is asked for again as its session registers and connects", async () => {
+  const settle = () => new Promise((resolve) => setImmediate(resolve));
+  // A draft made in this tab: not registered, not connected.
+  const session = { localPage: { registration: {}, registered: false }, connection: null };
+  const asks = [];
+  const found = [];
+  let current = true;
+  const location = watchPageLocation(session, {
+    locate: () => {
+      const answer = {};
+      answer.promise = new Promise((resolve, reject) => Object.assign(answer, { resolve, reject }));
+      asks.push(answer);
+      return answer.promise;
+    },
+    onFound: (value) => found.push(value),
+    current: () => current,
+  });
+  assert.equal(asks.length, 1, "asked at once");
+  asks[0].reject(Object.assign(Error("Page not found"), { status: 404 }));
+  await settle();
+  location.changed();
+  location.changed();
+  assert.equal(asks.length, 1, "nothing changed, so nothing is asked again");
+  // Registration changes what read_page can find, so it asks again.
+  session.localPage.registered = true;
+  location.changed();
+  assert.equal(asks.length, 2);
+  session.connection = {};
+  location.changed();
+  assert.equal(asks.length, 2, "one ask in flight at a time");
+  asks[1].reject(Object.assign(Error("Page not found"), { status: 404 }));
+  await settle();
+  assert.equal(asks.length, 3, "the connection changed while it was asking");
+  asks[2].resolve({ project_id: null, home: false, breadcrumbs: [] });
+  await settle();
+  assert.deepEqual(found, [{ project_id: null, home: false, breadcrumbs: [] }]);
+  session.connection = null;
+  location.changed();
+  assert.equal(asks.length, 3, "found is final");
+
+  // A Page the shell left hears nothing.
+  const left = watchPageLocation(
+    { connection: {} },
+    {
+      locate: async () => ({ home: true }),
+      onFound: (value) => found.push(value),
+      current: () => current,
+    },
+  );
+  current = false;
+  await settle();
+  left.stop();
+  assert.equal(found.length, 1);
+});
+
+test("a reconnect asks for a Page's location again, and a transient failure retries three times", async () => {
+  const settle = () => new Promise((resolve) => setImmediate(resolve));
+  // A virtual clock: timers run only when `advance` passes their time.
+  let now = 0;
+  const timers = new Set();
+  const schedule = (fn, ms) => {
+    const timer = { at: now + ms, fn };
+    timers.add(timer);
+    return () => timers.delete(timer);
+  };
+  const advance = async (ms) => {
+    now += ms;
+    for (const timer of [...timers].sort((a, b) => a.at - b.at))
+      if (timer.at <= now && timers.delete(timer)) timer.fn();
+    await settle();
+  };
+  const session = { connection: {}, connectionGeneration: 1 };
+  const asks = [];
+  const found = [];
+  const location = watchPageLocation(session, {
+    locate: () => {
+      const answer = {};
+      answer.promise = new Promise((resolve, reject) => Object.assign(answer, { resolve, reject }));
+      asks.push(answer);
+      return answer.promise;
+    },
+    onFound: (value) => found.push(value),
+    current: () => true,
+    schedule,
+  });
+  const unavailable = () => Object.assign(Error("Service unavailable"), { status: 503 });
+  asks[0].reject(unavailable());
+  await settle();
+  assert.equal(asks.length, 1);
+  await advance(LOCATION_RETRY_MS - 1);
+  assert.equal(asks.length, 1, "waits 2 s");
+  await advance(1);
+  assert.equal(asks.length, 2);
+  asks[1].reject(unavailable());
+  await settle();
+  await advance(2 * LOCATION_RETRY_MS);
+  assert.equal(asks.length, 3, "then 4 s");
+  asks[2].reject(unavailable());
+  await settle();
+  await advance(4 * LOCATION_RETRY_MS);
+  assert.equal(asks.length, 4, "then 8 s");
+  asks[3].reject(unavailable());
+  await settle();
+  await advance(60_000);
+  assert.equal(asks.length, 1 + LOCATION_RETRIES, "then it waits for a change");
+  // The session reconnects: the same `connection` field, a new generation.
+  session.connectionGeneration = 2;
+  location.changed();
+  assert.equal(asks.length, 5);
+  asks[4].reject(unavailable());
+  await settle();
+  // A reconnect during a backoff asks at once instead of waiting.
+  session.connectionGeneration = 3;
+  location.changed();
+  assert.equal(asks.length, 6);
+  await advance(60_000);
+  assert.equal(asks.length, 6, "the cancelled retry never fires");
+  asks[5].resolve({ home: false });
+  await settle();
+  assert.deepEqual(found, [{ home: false }]);
+});
+
+test("the page-location table runs through the pure machine", async () => {
+  const waiting = (asked = "true:1", tries = 0) => ({ name: "waiting", asked, tries });
+  const asking = (asked = "true:1", tries = 0) => ({ name: "asking", asked, tries });
+  const backoff = (asked = "true:1", tries = 0) => ({ name: "backoff", asked, tries });
+  const found = { name: "found" };
+  const stopped = { name: "stopped" };
+  const changed = (reach = "true:2") => ({ type: "changed", reach });
+  const failed = (reach = "true:1", transient = true) => ({ type: "failed", reach, transient });
+  const located = { type: "located" };
+  const retry = { type: "retry" };
+  const stop = { type: "stop" };
+  const stays = (state, reason) => ({ state, effects: [], rejected: reason });
+  const locate = [{ type: "locate" }];
+  const rows = [
+    {
+      label: "the first ask, or a change, asks",
+      case: "new",
+      state: waiting(null),
+      event: changed("false:0"),
+      expect: { state: asking("false:0"), effects: locate },
+    },
+    {
+      case: "same",
+      state: waiting(),
+      event: changed("true:1"),
+      expect: stays(waiting(), LOCATION_REJECT.same),
+    },
+    { state: waiting(), event: located, expect: stays(waiting(), LOCATION_REJECT.idle) },
+    { state: waiting(), event: failed(), expect: stays(waiting(), LOCATION_REJECT.idle) },
+    { state: waiting(), event: retry, expect: stays(waiting(), LOCATION_REJECT.idle) },
+    { state: waiting(), event: stop, expect: { state: stopped, effects: [] } },
+    { state: asking(), event: changed(), expect: stays(asking(), LOCATION_REJECT.asking) },
+    {
+      label: "an answer is final",
+      state: asking(),
+      event: located,
+      expect: { state: found, effects: [{ type: "found" }] },
+    },
+    {
+      label: "a failure after a change asks again at once",
+      case: "moved",
+      state: asking("true:1", 2),
+      event: failed("true:2", false),
+      expect: { state: asking("true:2"), effects: locate },
+    },
+    {
+      label: "a transient failure waits 2 s, then 4, then 8",
+      case: "retry",
+      state: asking("true:1", 1),
+      event: failed(),
+      expect: {
+        state: backoff("true:1", 1),
+        effects: [{ type: "schedule", ms: 2 * LOCATION_RETRY_MS }],
+      },
+    },
+    {
+      label: "a lasting failure, or one past the retries, waits for a change",
+      case: "wait",
+      state: asking("true:1", LOCATION_RETRIES),
+      event: failed(),
+      expect: { state: waiting("true:1", LOCATION_RETRIES), effects: [] },
+    },
+    { state: asking(), event: retry, expect: stays(asking(), LOCATION_REJECT.timer) },
+    { state: asking(), event: stop, expect: { state: stopped, effects: [] } },
+    {
+      label: "a change during a backoff asks now and drops the timer",
+      case: "new",
+      state: backoff("true:1", 2),
+      event: changed(),
+      expect: { state: asking("true:2"), effects: [{ type: "cancelTimer" }, ...locate] },
+    },
+    {
+      case: "same",
+      state: backoff(),
+      event: changed("true:1"),
+      expect: stays(backoff(), LOCATION_REJECT.same),
+    },
+    { state: backoff(), event: located, expect: stays(backoff(), LOCATION_REJECT.idle) },
+    { state: backoff(), event: failed(), expect: stays(backoff(), LOCATION_REJECT.idle) },
+    {
+      label: "the retry asks under the same reachability",
+      state: backoff("true:1", 1),
+      event: retry,
+      expect: { state: asking("true:1", 2), effects: locate },
+    },
+    {
+      label: "leaving during a backoff drops the timer",
+      state: backoff(),
+      event: stop,
+      expect: { state: stopped, effects: [{ type: "cancelTimer" }] },
+    },
+    ...[found, stopped].flatMap((done) =>
+      [changed(), located, failed(), retry, stop].map((event) => ({
+        state: done,
+        event,
+        expect: stays(done, LOCATION_REJECT.done),
+      })),
+    ),
+  ];
+  assert.deepEqual(await runTable(pageLocationMachine, rows), {
+    rows: rows.length,
+    pairs: pageLocationSpec.states.length * pageLocationSpec.events.length,
+    unreachable: 0,
+    cases: 7,
+  });
+});
+
+test("a watcher stopped during a backoff never asks again", async () => {
+  const settle = () => new Promise((resolve) => setImmediate(resolve));
+  const timers = [];
+  let asks = 0;
+  const watch = watchPageLocation(
+    { connection: {}, connectionGeneration: 1 },
+    {
+      locate: () => {
+        asks++;
+        return Promise.reject(Object.assign(Error("Unavailable"), { status: 503 }));
+      },
+      onFound: () => assert.fail("never found"),
+      current: () => true,
+      schedule: (fn) => {
+        const timer = { fn, cancelled: false };
+        timers.push(timer);
+        return () => (timer.cancelled = true);
+      },
+    },
+  );
+  await settle();
+  assert.equal(watch.state().name, "backoff");
+  watch.stop();
+  assert.equal(timers[0].cancelled, true);
+  assert.equal(watch.state().name, "stopped");
+  assert.equal(asks, 1);
 });
