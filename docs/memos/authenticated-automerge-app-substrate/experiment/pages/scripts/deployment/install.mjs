@@ -19,6 +19,7 @@ import {
 import path from "node:path";
 import {
   deploymentProfile,
+  migrationVars,
   assertQualifiedDeploymentTarget,
   assertReleaseOpensTargetPages,
   stageTarget,
@@ -46,6 +47,7 @@ const requested = flags.length === 1 && flags[0] === "--restart";
 if (process.getuid() !== 0 || apply !== "--apply" || (flags.length && !requested))
   throw new Error("Explicit root installation with a prepared stage is required");
 const profile = deploymentProfile(target);
+const migration = migrationVars(profile);
 const run = (command, args) => {
   try {
     return execFileSync(command, args, {
@@ -306,6 +308,7 @@ const configPath = release + "/wrangler.json",
 if (config.main !== "index.js" || config.no_bundle !== true || config.build || config.containers)
   throw new Error("Unexpected build configuration");
 config.vars = {
+  ...migration,
   ...(profile.asyncPersistence ? { PAGES_ASYNC_PERSISTENCE: "true" } : {}),
   ...(profile.compactRecords ? { PAGES_COMPACT_RECORDS: "true" } : {}),
   ...(profile.editor ? { PAGES_EDITOR: profile.editor } : {}),

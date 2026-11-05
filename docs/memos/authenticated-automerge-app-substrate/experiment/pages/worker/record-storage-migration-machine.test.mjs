@@ -228,12 +228,14 @@ test("the backoff doubles from the quiet window and stops at six hours", () => {
   assert.equal(backoffMs(40, q), MAX_BACKOFF_MS);
 });
 
-test("only a live Subduction Page with both switches on starts eligible", () => {
+test("only an allowlisted live Subduction Page with both switches on starts eligible", () => {
+  const pageId = "55555555-5555-4555-8555-555555555555";
   const env = {
     PAGES_RECORD_STORAGE: "automerge",
     PAGES_MIGRATE_RECORD_STORAGE: "true",
+    PAGES_MIGRATE_PAGE_IDS: JSON.stringify([pageId]),
   };
-  const live = { documentId: "d", recordStorage: "buffered" };
+  const live = { pageId, documentId: "d", recordStorage: "buffered" };
   assert.equal(migrationStart(env, live).name, "dormant");
   assert.equal(migrationStart({ ...env, PAGES_MIGRATE_QUIET_MS: "250" }, live).quietMs, 250);
   assert.equal(migrationStart(env, { ...live, recordStorage: "automerge" }).name, "off");
@@ -243,4 +245,33 @@ test("only a live Subduction Page with both switches on starts eligible", () => 
     "off",
   );
   assert.equal(migrationStart({ ...env, PAGES_RECORD_STORAGE: undefined }, live).name, "off");
+  assert.equal(migrationStart(env, { ...live, deleted: true, trash: {} }).name, "dormant");
+  assert.equal(migrationStart(env, { ...live, pageId: crypto.randomUUID() }).name, "off");
+  assert.equal(migrationStart(env, { ...live, pageId: undefined }).name, "off");
+  for (const flag of [undefined, false, true, "false", "TRUE", "1"])
+    assert.equal(migrationStart({ ...env, PAGES_MIGRATE_RECORD_STORAGE: flag }, live).name, "off");
+  for (const ids of [
+    undefined,
+    null,
+    "",
+    "[",
+    "null",
+    "{}",
+    "true",
+    '"*"',
+    "[]",
+    JSON.stringify([pageId, "*"]),
+    JSON.stringify([pageId, 1]),
+    JSON.stringify([pageId, pageId]),
+    JSON.stringify(["not-a-page"]),
+    JSON.stringify(["aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa".toUpperCase()]),
+    JSON.stringify([` ${pageId}`]),
+    [pageId],
+  ]) {
+    assert.equal(
+      migrationStart({ ...env, PAGES_MIGRATE_PAGE_IDS: ids }, live).name,
+      "off",
+      `invalid allowlist: ${JSON.stringify(ids)}`,
+    );
+  }
 });
