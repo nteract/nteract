@@ -3,9 +3,10 @@ import assert from "node:assert/strict";
 import * as A from "@automerge/automerge";
 import * as N from "@automerge/subduction";
 import { generateAutomergeUrl, interpretAsDocumentId } from "@automerge/automerge-repo";
-import { PageSession } from "./session.mjs";
+import { PageSession, connectionFailureRetries } from "./session.mjs";
 import {
   HANDSHAKE_TIMEOUT_MS,
+  MAX_STEP_MS,
   OUTAGE_ATTEMPTS,
   OUTAGE_MS,
   REFUSAL_LIMIT,
@@ -1251,6 +1252,201 @@ test("a refusal the next discovery answers with 401 or 403 stops there", async (
       else assert.equal(f.session.accessDenied, true);
       assert.equal(f.session.syncPaused, false);
       await f.advance(3_600_000);
+      assert.equal(f.sockets.length, 1);
+    });
+  }
+});
+
+test("only definitive answers stop automatic reconnects", () => {
+  const cases = [
+    [{ status: 401 }, false],
+    [{ status: 403 }, false],
+    [{ status: 403, code: "signing_key_rejected" }, false],
+    [{ code: "SIGNING_KEY_REFUSED" }, false],
+    [{ status: 409, code: "RECORD_STORAGE_CHANGED" }, false],
+    [{ status: 409, code: "STORAGE_SWITCH_FAILED" }, false],
+    [{ status: 409, code: "unsupported_schema_feature" }, false],
+    [{}, true],
+    [{ code: "RECORD_STORAGE_CHANGED" }, true],
+    [{ status: 500 }, true],
+    [{ status: 503 }, true],
+    [{ code: "INVALID_RESPONSE", httpStatus: 404 }, true],
+    [{ status: 400 }, true],
+    [{ status: 404 }, true],
+    [{ status: 404, code: "page_not_found" }, true],
+    [{ status: 408 }, true],
+    [{ status: 409 }, true],
+    [{ status: 409, code: "page_busy" }, true],
+    [{ status: 409, code: "page_quota_exceeded" }, true],
+    [{ status: 410 }, true],
+    [{ status: 425 }, true],
+    [{ status: 429 }, true],
+  ];
+  for (const [fields, retries] of cases)
+    assert.equal(
+      connectionFailureRetries(Object.assign(Error("failed"), fields)),
+      retries,
+      JSON.stringify(fields),
+    );
+});
+
+// During a deploy cutover discovery can answer with a 4xx the session has no
+// meaning for. The host may answer differently in a moment, so it retries.
+const unrecognizedRefusals = [
+  ["a 404 without page_deleted", 404, { error: "Route not found" }],
+  ["a 404 with another code", 404, { error: "Page not found", code: "page_not_found" }],
+  ["a 400", 400, { error: "Invalid request" }],
+  ["a 408", 408, { error: "Request timed out" }],
+  ["a 409", 409, { error: "Page is busy", code: "page_busy" }],
+  ["a 425", 425, { error: "Too early" }],
+  ["a 429", 429, { error: "Too many connections" }],
+];
+
+test("an unrecognized 4xx from discovery keeps retrying, then reconnects", async (t) => {
+  for (const [label, status, body] of unrecognizedRefusals) {
+    await t.test(label, async (t) => {
+      const f = fixture(t, { random: () => 0 });
+      await f.start();
+      f.hooks.connect = () => Response.json(body, { status });
+      await failReconnects(f, 4);
+      assert.equal(f.sockets.length, 1, "no discovery admitted a socket");
+      assert.equal(f.session.problem, body.error);
+      assert.ok(f.session.retryTimer, "it keeps retrying");
+      assert.deepEqual(f.session.reconnect$.snapshot(), {
+        name: "waiting",
+        attempts: 4,
+        refusals: 0,
+      });
+      assert.equal(f.session.syncPaused, false);
+      assert.equal(f.session.authRequired, false);
+      assert.equal(f.session.accessDenied, false);
+
+      f.mutate("Typed during the cutover");
+      f.hooks.connect = undefined;
+      await f.advance(backoffStep(f.session.retryAttempts - 1) / 2);
+      assert.equal(f.sockets.length, 2, "the next discovery admitted a socket");
+      assert.equal(f.session.retryTimer, undefined);
+      assert.equal(f.session.problem, "");
+      await f.advance(300);
+      const receipt = f.requests.at(-1);
+      assert.deepEqual(receipt.heads, A.getHeads(f.session.doc));
+    });
+  }
+});
+
+test("an unrecognized 4xx backs off to the 60 s cap and never pauses", async (t) => {
+  const f = fixture(t, { random: () => 0 });
+  await f.start();
+  f.requests[0].resolve(Response.json({ durableHeads: f.requests[0].heads }));
+  await drain();
+  let asks = 0;
+  f.hooks.connect = () => {
+    asks++;
+    return Response.json({ error: "Route not found" }, { status: 404 });
+  };
+  f.session.socketDisconnected(f.sockets.at(-1));
+  const delays = [];
+  for (let attempt = 1; attempt <= 12; attempt++) {
+    const delay = backoffStep(attempt - 1) / 2;
+    delays.push(delay);
+    await f.advance(delay - 1);
+    assert.equal(asks, attempt - 1, `attempt ${attempt} waits its whole step`);
+    await f.advance(1);
+    assert.equal(asks, attempt);
+    assert.equal(f.session.reconnect$.snapshot().refusals, 0);
+    assert.ok(f.session.retryTimer, `attempt ${attempt} schedules the next`);
+  }
+  assert.deepEqual(delays.slice(-4), Array(4).fill(MAX_STEP_MS / 2));
+  assert.equal(f.session.syncPaused, false);
+  assert.equal(f.session.problem, "Route not found", "the specific answer stays in front");
+  assert.equal(f.session.status, "Offline");
+});
+
+test("a 429's Retry-After is the least wait before the next attempt, up to the cap", async (t) => {
+  for (const [retryAfter, wait] of [
+    ["5", 5000],
+    ["3600", MAX_STEP_MS],
+  ]) {
+    await t.test(`Retry-After: ${retryAfter}`, async (t) => {
+      const f = fixture(t, { random: () => 0 });
+      await f.start();
+      let asks = 0;
+      f.hooks.connect = () => {
+        asks++;
+        return Response.json(
+          { error: "Too many connections" },
+          { status: 429, headers: { "Retry-After": retryAfter } },
+        );
+      };
+      f.session.socketDisconnected(f.sockets.at(-1));
+      await f.advance(backoffStep(0) / 2);
+      assert.equal(asks, 1);
+      await f.advance(wait - 1);
+      assert.equal(asks, 1, "the backoff alone would have retried sooner");
+      await f.advance(1);
+      assert.equal(asks, 2);
+      assert.ok(f.session.retryTimer);
+    });
+  }
+});
+
+test("definitive refusals from discovery stay parked", async (t) => {
+  for (const [label, status, body, parked] of [
+    ["401", 401, { error: "Sign in" }, (s) => s.authRequired],
+    ["403 without a code", 403, { error: "Forbidden" }, (s) => s.accessDenied],
+    [
+      "403 page_access_denied",
+      403,
+      { error: "Document access denied", code: "page_access_denied" },
+      (s) => s.accessDenied,
+    ],
+    ["403 page_trashed", 403, { error: "In Trash", code: "page_trashed" }, (s) => s.accessDenied],
+    [
+      "403 signing_key_rejected",
+      403,
+      { error: "Signing key refused", code: "signing_key_rejected" },
+      (s) => s.problem === "Signing key refused",
+    ],
+    [
+      "404 page_deleted",
+      404,
+      { error: "Page was deleted", code: "page_deleted" },
+      (s) => s.deleted,
+    ],
+    [
+      "409 RECORD_STORAGE_CHANGED",
+      409,
+      { error: "Storage changed", code: "RECORD_STORAGE_CHANGED" },
+      (s) => s.problem === "Storage changed",
+    ],
+    [
+      "409 STORAGE_SWITCH_FAILED",
+      409,
+      { error: "Storage move failed", code: "STORAGE_SWITCH_FAILED" },
+      (s) => s.problem === "Storage move failed",
+    ],
+    [
+      "409 unsupported_schema_feature",
+      409,
+      { error: "Reload for the newest version", code: "unsupported_schema_feature" },
+      (s) => s.problem === "Reload for the newest version",
+    ],
+  ]) {
+    await t.test(label, async (t) => {
+      const f = fixture(t, { random: () => 0 });
+      await f.start();
+      let asks = 0;
+      f.hooks.connect = () => {
+        asks++;
+        return Response.json(body, { status });
+      };
+      f.session.socketDisconnected(f.sockets.at(-1));
+      await f.advance(backoffStep(0) / 2);
+      assert.equal(asks, 1);
+      assert.ok(parked(f.session), "the refusal took effect");
+      assert.equal(f.session.retryTimer, undefined);
+      await f.advance(3_600_000);
+      assert.equal(asks, 1, "no automatic retry");
       assert.equal(f.sockets.length, 1);
     });
   }

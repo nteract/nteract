@@ -5,6 +5,7 @@ import {
   observeSignedOut,
   request,
   REQUEST_TIMEOUT_MS,
+  retryAfterOf,
   tool,
 } from "./request.mjs";
 
@@ -100,6 +101,58 @@ test("application JSON errors retain status, code, and message", async () => {
       assert.equal(timer.jobs.size, 0);
     }
   }
+});
+
+test("a failed answer's requested wait comes from its body, then Retry-After", () => {
+  const headers = (value) => new Headers(value === undefined ? {} : { "Retry-After": value });
+  const now = Date.parse("2026-11-05T12:00:00Z");
+  assert.equal(retryAfterOf(headers("7"), { retry_after_ms: 2500 }, now), 2500);
+  assert.equal(retryAfterOf(headers("7"), {}, now), 7000);
+  assert.equal(retryAfterOf(headers(" 3 "), undefined, now), 3000);
+  assert.equal(retryAfterOf(headers("Thu, 05 Nov 2026 12:00:09 GMT"), {}, now), 9000);
+  for (const value of [undefined, "", "0", "-1", "1.5", "soon", "Thu, 05 Nov 2026 11:59:00 GMT"])
+    assert.equal(retryAfterOf(headers(value), {}, now), undefined, `Retry-After: ${value}`);
+  for (const wait of [0, -5, 1.5, "2000", null])
+    assert.equal(retryAfterOf(headers(), { retry_after_ms: wait }, now), undefined);
+});
+
+test("JSON and proxy errors keep the wait their answer asked for", async () => {
+  await assert.rejects(
+    request(
+      "/api/connect",
+      {},
+      {
+        fetch: async () =>
+          Response.json(
+            { error: "Too many connections" },
+            { status: 429, headers: { "Retry-After": "4" } },
+          ),
+      },
+    ),
+    { status: 429, retryAfterMs: 4000 },
+  );
+  await assert.rejects(
+    request(
+      "/api/connect",
+      {},
+      {
+        fetch: async () =>
+          new Response("<html>Slow down</html>", {
+            status: 429,
+            headers: { "Retry-After": "2" },
+          }),
+      },
+    ),
+    (error) => error.code === "INVALID_RESPONSE" && error.retryAfterMs === 2000,
+  );
+  await assert.rejects(
+    request(
+      "/api/connect",
+      {},
+      { fetch: async () => Response.json({ error: "Not found" }, { status: 404 }) },
+    ),
+    (error) => error.status === 404 && !("retryAfterMs" in error),
+  );
 });
 
 test("proxy HTML cannot signal sign-out, revoked access, or a deleted Page", async () => {
