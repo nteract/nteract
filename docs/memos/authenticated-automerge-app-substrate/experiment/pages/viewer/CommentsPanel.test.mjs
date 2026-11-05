@@ -12,6 +12,7 @@ for (const [key, value] of Object.entries({
   document: dom.window.document,
   navigator: dom.window.navigator,
   HTMLElement: dom.window.HTMLElement,
+  MutationObserver: dom.window.MutationObserver,
   CSS: { escape: (value) => value },
   matchMedia: () => ({ matches: false, addEventListener() {}, removeEventListener() {} }),
   requestAnimationFrame: (callback) => setTimeout(callback, 0),
@@ -411,7 +412,7 @@ test("expanded shows the list and the open thread side by side", async (t) => {
   assert.ok(f.view(), "Escape closes the panel instead of leaving the thread");
 });
 
-test("review walks threads with J/K, resolves and advances with R, and leaves typing alone", async (t) => {
+test("review is a workspace: navigator, passage, conversation; J/K move, E resolves and advances, R replies", async (t) => {
   const f = await fixture(t);
   f.props.session.comment = async (action) => {
     f.calls.push(action);
@@ -424,23 +425,48 @@ test("review walks threads with J/K, resolves and advances with R, and leaves ty
   };
   await f.click(f.container.querySelector(".comments-review-start"));
   assert.ok(dialogOf(f).classList.contains("comments-review"));
+  assert.match(f.container.querySelector(".review-progress-label").textContent, /1 of 3 resolved/);
+  assert.ok(f.container.querySelector(".review-navigator .thread-row[aria-current='true']"));
+  assert.ok(f.container.querySelector(".review-context .page-excerpt"));
   assert.equal(f.view().dataset.threadId, "first");
+  assert.match(
+    f.container.querySelector(".review-up-next").textContent,
+    /Up next.*Full first comment next/,
+  );
   await f.key("j", f.view());
   assert.equal(f.view().dataset.threadId, "next");
   await f.key("k", f.view());
-  await f.key("r", f.view());
+  await f.key("e", f.view());
   assert.deepEqual(f.calls, [{ action: "resolve", thread_id: "first" }]);
   assert.equal(f.view().dataset.threadId, "next", "resolve-and-next");
-  await f.key("e", f.view());
+  assert.match(f.container.querySelector(".review-progress-label").textContent, /2 of 3 resolved/);
+  assert.match(f.container.querySelector(".review-up-next").textContent, /Last open thread/);
+  await f.key("r", f.view());
   await tick();
   const textarea = f.view().querySelector("textarea");
-  assert.ok(textarea, "E opens the reply");
-  assert.equal((await f.key("j", textarea)).defaultPrevented, false);
+  assert.ok(textarea, "R opens the reply");
+  assert.equal((await f.key("j", textarea)).defaultPrevented, false, "keys go to the editor");
   await f.key("Escape", textarea);
   assert.ok(dialogOf(f).classList.contains("comments-review"), "Escape while typing stays");
+  await f.click(
+    f.container.querySelector(".review-navigator .thread-row[data-thread-id='first']") ??
+      [...f.container.querySelectorAll(".review-navigator .comments-list-end")][0],
+  );
   await f.key("Escape", f.view());
   assert.equal(dialogOf(f).classList.contains("comments-review"), false);
-  assert.equal(f.view().dataset.threadId, "next");
+  assert.ok(f.view(), "exit lands on the thread in the panel");
+});
+
+test("Resolve and next button and Open in Page", async (t) => {
+  let closed = 0;
+  const f = await fixture(t, { onClose: () => closed++ });
+  await f.click(f.container.querySelector(".comments-review-start"));
+  await f.click(f.container.querySelector(".review-resolve-next"));
+  assert.deepEqual(f.calls, [{ action: "resolve", thread_id: "first" }]);
+  await f.click(f.container.querySelector(".review-open-page"));
+  assert.equal(closed, 1);
+  await tick();
+  assert.deepEqual(f.revealed, ["next"], "Open in Page shows the thread review moved to");
 });
 
 test("a kept inline-composer draft shows as Unsent comment with Continue and Discard", async (t) => {

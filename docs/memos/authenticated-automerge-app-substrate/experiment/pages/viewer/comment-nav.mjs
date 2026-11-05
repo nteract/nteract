@@ -122,9 +122,9 @@ export function reviewKey(event) {
     case "k":
       return "previous";
     case "r":
-      return "resolve";
-    case "e":
       return "reply";
+    case "e":
+      return "resolve";
     default:
       return null;
   }
