@@ -7,6 +7,9 @@ import {
   PAGE_TRANSIENT_FAILURE,
   legibleEnv,
   legibleHostError,
+  overloadRetryAfterMs,
+  pageTransientFailureResponse,
+  withRepeatSafety,
   legibleHostRefusal,
   legibleNamespace,
 } from "./host-busy.mjs";
@@ -134,11 +137,14 @@ test("a thrown overload or transient error answers as a JSON refusal; other erro
     });
     const busy = await send(overloaded);
     assert.equal(busy.status, 503);
-    assert.equal(busy.headers.get("retry-after"), "1");
     const body = await busy.json();
     assert.equal(body.code, PAGE_BUSY.code);
     assert.equal(body.retryable, true);
-    assert.equal(body.retry_after_ms, PAGE_BUSY.retryAfterMs);
+    // An overload asks for a longer, jittered wait, the same in both places.
+    assert.ok([2000, 3000, 4000, 5000].includes(body.retry_after_ms), body.retry_after_ms);
+    assert.equal(busy.headers.get("retry-after"), String(body.retry_after_ms / 1000));
+    assert.match(body.error, /^This Page /);
+    assert.match(body.error, /back off exponentially/);
 
     const lost = await send(cloudflareError("Network connection lost.", { retryable: true, sync }));
     assert.equal(lost.status, 503);
@@ -220,4 +226,90 @@ test("legibleEnv maps thrown errors for every namespace it wraps and leaves PAGE
     legible.PAGE_RECORDS.getByName("x").fetch(new Request("https://p.internal")),
     (thrown) => thrown === overloaded,
   );
+});
+
+test("an overload's wait is 2 to 5 whole seconds, at random", () => {
+  assert.equal(
+    overloadRetryAfterMs(() => 0),
+    2000,
+  );
+  assert.equal(
+    overloadRetryAfterMs(() => 0.3),
+    3000,
+  );
+  assert.equal(
+    overloadRetryAfterMs(() => 0.6),
+    4000,
+  );
+  assert.equal(
+    overloadRetryAfterMs(() => 0.999999),
+    5000,
+  );
+  assert.equal(
+    overloadRetryAfterMs(() => 1),
+    5000,
+  );
+  for (let n = 0; n < 200; n++) {
+    const ms = overloadRetryAfterMs();
+    assert.ok(ms >= 2000 && ms <= 5000 && ms % 1000 === 0, ms);
+  }
+});
+
+test("refusals name the object the gateway called", async (t) => {
+  t.mock.method(console, "warn", () => {});
+  const subjects = {
+    PAGES: /^This Page /,
+    CATALOGS: /^Your account's Catalog /,
+    PROJECTS: /^This Project /,
+    OTHER: /^This Pages object /,
+  };
+  for (const [binding, subject] of Object.entries(subjects)) {
+    const namespace = legibleNamespace(
+      { getByName: () => ({ fetch: async () => next() }) },
+      binding,
+    );
+    let next = () => hostRefusal();
+    const celld = await (
+      await namespace.getByName("x").fetch(new Request("https://p.internal"))
+    ).json();
+    assert.match(celld.error, subject, binding);
+    assert.equal(
+      celld.retry_after_ms,
+      PAGE_BUSY.retryAfterMs,
+      "celld's refusal keeps its 1 s wait",
+    );
+    for (const flags of [{ overloaded: true }, { retryable: true }]) {
+      next = () => Promise.reject(cloudflareError("x", flags));
+      const body = await (
+        await namespace.getByName("x").fetch(new Request("https://p.internal"))
+      ).json();
+      assert.match(body.error, subject, `${binding} ${JSON.stringify(flags)}`);
+    }
+  }
+});
+
+test("a transient refusal restated for a tool request follows its repeat safety", async (t) => {
+  t.mock.method(console, "warn", () => {});
+  const transient = pageTransientFailureResponse({ binding: "CATALOGS" });
+  const cases = [
+    [true, true, /receipt replays/],
+    [false, false, /Read back and reconcile/],
+    ["lease", false, /do not loop creating sessions/],
+    [undefined, true, /read back and reconcile before retrying/],
+  ];
+  for (const [safe, retryable, advice] of cases) {
+    const response = withRepeatSafety(transient, safe);
+    assert.equal(response.status, 503);
+    const body = await response.json();
+    assert.equal(body.code, "page_transient_failure");
+    assert.equal(body.retryable, retryable, String(safe));
+    assert.match(body.error, advice, String(safe));
+    assert.match(body.error, /^Your account's Catalog /);
+    assert.equal(response.headers.get("retry-after"), "1");
+  }
+  // Anything else, page_busy included, passes through as the same object.
+  const busy = legibleHostError(cloudflareError("x", { overloaded: true }));
+  assert.equal(withRepeatSafety(busy, false), busy);
+  const ok = new Response("ok");
+  assert.equal(withRepeatSafety(ok, false), ok);
 });

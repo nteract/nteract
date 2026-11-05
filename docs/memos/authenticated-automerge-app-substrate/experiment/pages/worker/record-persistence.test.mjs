@@ -8,6 +8,7 @@ import {
   decodeRecordBatch,
 } from "./record-persistence.mjs";
 import { guardStubs } from "./storage-guard.mjs";
+import { errorResponse } from "./auth.mjs";
 function deferred() {
   let resolve, reject;
   const promise = new Promise((a, b) => {
@@ -384,7 +385,7 @@ test("a stub that throws once and stays broken is replaced: the next flush persi
   await live.flush();
   made[0].breakNext = true;
   await live.save("tree/second", bytes("two"));
-  await assert.rejects(live.flush(), { retryable: true });
+  await assert.rejects(live.flush(), { status: 503, code: "record_persistence_unavailable" });
   assert.equal(live.dirty, true, "the failed batch stays pending");
   // The broken stub would fail every later call at once; it gets none.
   const before = made[0].calls.length;
@@ -420,7 +421,7 @@ test("a sink whose factory throws asks it again on the next request", async () =
   await live.flush();
   made[0].breakNext = true;
   await live.save("tree/second", bytes("two"));
-  await assert.rejects(live.flush(), { retryable: true });
+  await assert.rejects(live.flush(), { status: 503, code: "record_persistence_unavailable" });
   unavailable = true;
   await assert.rejects(live.flush(), /binding unavailable/);
   unavailable = false;
@@ -484,7 +485,7 @@ test("the storage gate wraps every stub the sink's factory makes", async () => {
   await live.flush();
   made[0].breakNext = true;
   await live.save("tree/second", bytes("two"));
-  await assert.rejects(live.flush(), { retryable: true });
+  await assert.rejects(live.flush(), { status: 503, code: "record_persistence_unavailable" });
   // The object is abandoned: the replacement stub refuses the write too.
   refusal = Object.assign(Error("Page object was reset"), { status: 503 });
   await assert.rejects(live.flush(), /Page object was reset/);
@@ -652,4 +653,54 @@ test("PageRecords checks the batch sequence header and accepts a batch without o
   assert.equal((await post("5", "again")).headers.get("x-pages-record-batch"), "superseded");
   assert.equal((await post("4", "four")).headers.get("x-pages-record-batch"), "superseded");
   assert.equal(text(storage.values.get("repo/tree/a")), "five");
+});
+
+test("a flagged PageRecords throw is a retryable 503; any other throw passes unchanged", async (t) => {
+  t.mock.method(console, "error", () => {});
+  const storage = new Storage();
+  const owner = new PageRecords({ storage });
+  let fault;
+  const live = new BufferedRecordStore(
+    new RemoteRecordSink(() => ({
+      fetch: (request) => {
+        const error = fault;
+        fault = undefined;
+        return error ? Promise.reject(error) : owner.fetch(request);
+      },
+    })),
+  );
+  await live.save("tree/a", bytes("a"));
+  await live.flush();
+  for (const [flags, waits] of [
+    [{ overloaded: true }, [2000, 3000, 4000, 5000]],
+    [{ overloaded: true, retryable: true }, [2000, 3000, 4000, 5000]],
+    [{ retryable: true }, [1000]],
+  ]) {
+    const cause = Object.assign(Error("Durable Object is overloaded."), flags);
+    fault = cause;
+    await live.save("tree/a", bytes(JSON.stringify(flags)));
+    const error = await live.flush().then(
+      () => assert.fail("the flush must fail"),
+      (thrown) => thrown,
+    );
+    assert.equal(error.code, "record_persistence_unavailable");
+    assert.equal(error.status, 503);
+    assert.equal(error.cause, cause);
+    assert.ok(waits.includes(error.retryAfterMs), String(error.retryAfterMs));
+    assert.equal(live.dirty, true, "the records stay pending");
+    const response = errorResponse(error, "page");
+    assert.equal(response.status, 503);
+    assert.equal(response.headers.get("retry-after"), String(error.retryAfterMs / 1000));
+    const body = await response.json();
+    assert.equal(body.code, "record_persistence_unavailable");
+    assert.equal(body.retryable, true);
+    assert.equal(body.retry_after_ms, error.retryAfterMs);
+    assert.match(body.error, /same idempotency_key and retry_token/);
+    await live.flush();
+    assert.equal(live.dirty, false);
+  }
+  const plain = Error("example error");
+  fault = plain;
+  await live.save("tree/a", bytes("plain"));
+  await assert.rejects(live.flush(), (thrown) => thrown === plain);
 });

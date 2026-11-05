@@ -1629,16 +1629,33 @@ Cloudflare reports the same conditions by throwing from the stub fetch
 Past its soft per-object limit it queues, then throws an Error with
 `overloaded: true`; a transient failure such as a lost connection or a reset
 throws one with `retryable: true`. The gateway's stub wrapper answers both as
-JSON refusals instead of its generic `500`. An overload is `503 page_busy`,
-like celld's refusal: the object did not run the request, and `Retry-After`
-gives the backoff Cloudflare asks for. A transient failure is
-`503 page_transient_failure` with `retryable: true`, `retry_after_ms` and
-`Retry-After`; the object may have started the request, so its message says to
-retry with the same key and token, and to read back first for a tokenless
-write. Any other thrown error is unchanged. Each mapped error logs
-`host.overloaded` or `host.transient_failure` with the binding name only. MCP
-passes both codes through, and the viewer treats any retryable `503` as an
-outage and retries with backoff. The
+JSON refusals instead of its generic `500`, naming the object it called (this
+Page, your account's Catalog, or this Project). Any other thrown error is
+unchanged. Each mapped error logs `host.overloaded` or `host.transient_failure`
+with the binding name only.
+
+- An overload is `503 page_busy`, like celld's refusal: the object did not run
+  the request. Cloudflare says overloaded calls should not be retried, since a
+  retry adds to the overload. So the refusal asks for a longer wait than
+  celld's 1 s: 2 to 5 whole seconds at random, the same in `retry_after_ms`
+  and `Retry-After`, and the agent guide asks for exponential backoff.
+- A transient failure is `503 page_transient_failure` with `retry_after_ms` and
+  `Retry-After`. The object may have started the request. A tool request is
+  told what its repeat safety allows, as a timeout is: a read, a progress
+  renewal or a write with a `retry_token` is `retryable: true` and replays its
+  receipt; a tokenless write is `retryable: false` and told to read back and
+  reconcile; a progress creation gets the lease advice. Outside the tool API
+  the refusal is `retryable: true` and gives both pieces of advice.
+
+The same flags reach code inside an object. A listing that meets a shared Page
+(or its owner's Catalog) that throws or doesn't answer refuses with
+`503 shared_page_unavailable`, `retryable: true`, `retry_after_ms` and
+`Retry-After`; an overloaded Page asks for the jittered 2 to 5 s. A flagged
+throw from `PageRecords` while a write waits for its records is
+`503 record_persistence_unavailable`, retryable like
+`record_persistence_timeout`, and its records stay pending. MCP passes every
+one of these codes through, and the viewer treats any `503` as an outage and
+retries with backoff. The
 [Cloudflare portability audit](https://pages.runtimed.run/p/460c48f0-dc4b-4702-af82-59910e6bebd0)
 (sections 6 and 7) covers both cases.
 
@@ -2373,7 +2390,9 @@ action on a missing thread, message or block is `400 invalid_comment_selector`
 A Page at celld's per-cell request limit, or one Cloudflare reports overloaded,
 is `503 page_busy` with `retryable: true` and `retry_after_ms`. A transient
 Cloudflare failure between the gateway and an object is
-`503 page_transient_failure`, also retryable (see Request limits).
+`503 page_transient_failure`, retryable when the request is safe to repeat.
+A listing that meets an unavailable shared Page is `503 shared_page_unavailable`
+(see Request limits).
 An MCP result has no HTTP status, so [mcp.mjs](mcp.mjs) names any refusal the
 Worker left uncoded by its status (`access_denied`, `not_found`, `conflict` and
 so on). It adds `retryable: true` to `stale_heads`, whose retry is a new request

@@ -437,8 +437,8 @@ test("a Page stub's thrown overload or transient error reaches HTTP and MCP call
     thrown = Object.assign(Error("Durable Object infrastructure error"), flags);
     const response = await readPage(auth, env);
     assert.equal(response.status, 503, code);
-    assert.equal(response.headers.get("retry-after"), "1");
     const body = await response.json();
+    assert.equal(response.headers.get("retry-after"), String(body.retry_after_ms / 1000));
     assert.equal(body.code, code);
     assert.equal(body.retryable, true);
     const tool = await mcpRead();
@@ -455,4 +455,50 @@ test("a Page stub's thrown overload or transient error reaches HTTP and MCP call
   const tool = await mcpRead();
   assert.equal(tool.code, "server_error");
   assert.equal(tool.retryable, undefined);
+});
+
+test("a transient failure is retryable only for a request that is safe to repeat", async (t) => {
+  const auth = await createAuthFixture();
+  t.mock.method(globalThis, "fetch", auth.fetch);
+  t.mock.method(console, "warn", () => {});
+  const lost = () =>
+    Promise.reject(Object.assign(Error("Network connection lost."), { retryable: true }));
+  const env = {
+    ...auth.env,
+    NOTEBOOK_CLOUD_PUBLIC_ORIGIN: publicOrigin,
+    PAGES: answer(lost),
+    CATALOGS: answer(lost),
+  };
+  const token = { idempotency_key: `v1_${"a".repeat(64)}_request-1`, retry_token: "rt" };
+  const call = async (operation, args) => {
+    const response = await worker.fetch(
+      new Request("http://127.0.0.1:9477/api/tools", {
+        method: "POST",
+        headers: { Authorization: `Bearer ${auth.apiKey()}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ operation, arguments: args }),
+      }),
+      env,
+    );
+    assert.equal(response.status, 503, operation);
+    const body = await response.json();
+    assert.equal(body.code, "page_transient_failure", operation);
+    return body;
+  };
+  const cases = [
+    // Catalog operations
+    ["list_pages", {}, true, /receipt replays/],
+    ["create_page", { title: "New" }, false, /Read back and reconcile/],
+    // Page operations
+    ["read_page", { page_id: pageId }, true, /receipt replays/],
+    ["patch_page", { page_id: pageId, operations: [] }, false, /Read back and reconcile/],
+    ["report_page_progress", { page_id: pageId, message: "x" }, false, /do not loop/],
+  ];
+  for (const [operation, args, retryable, advice] of cases) {
+    const body = await call(operation, args);
+    assert.equal(body.retryable, retryable, operation);
+    assert.match(body.error, advice, operation);
+  }
+  // A write that carries its retry_token is safe to repeat.
+  const tokened = await call("create_page", { title: "New", ...token });
+  assert.equal(tokened.retryable, true);
 });

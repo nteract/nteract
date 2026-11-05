@@ -200,18 +200,25 @@ Branch on code, not on the error message:
 - page_recovery_blocked: a pending edit exceeds the Page's history capacity;
   accepted content stays readable. Tell the person.
 - Retryable server waits (503, retryable:true): record_persistence_timeout,
-  comments_migrating and location_migration_required. Retry the same request,
-  including its key and token. location_migration_required also names the
-  reason, page_id and space_id blocking the pass.
-- page_busy (503, retryable:true): the Page is answering as many requests as
-  it can and did not run this one. retry_after_ms and Retry-After say when to
-  retry; send the same request, including its key and token. Back off if it
-  repeats.
-- page_transient_failure (503, retryable:true): the Page's host failed before
-  it answered, for example while it restarted. Wait retry_after_ms, then
-  retry a read, or a write with retry_token, as the same request; the receipt
-  replays. A tokenless write may have completed: read back and reconcile
-  before retrying.
+  record_persistence_unavailable, comments_migrating and
+  location_migration_required. Retry the same request, including its key and
+  token. location_migration_required also names the reason, page_id and
+  space_id blocking the pass. record_persistence_unavailable carries
+  retry_after_ms and Retry-After.
+- shared_page_unavailable (503, retryable:true): a listing met a shared Page,
+  or its owner's Catalog, that did not answer. Retry the listing after
+  retry_after_ms (also Retry-After), with exponential backoff if it repeats.
+- page_busy (503, retryable:true): the Page, Catalog or Project is answering
+  as many requests as it can and did not run this one. Wait retry_after_ms
+  (also Retry-After), then send the same request, including its key and
+  token. Use exponential backoff if it repeats: an overloaded host asks for 2
+  to 5 s, and retrying sooner adds to the overload.
+- page_transient_failure (503): the Page's, Catalog's or Project's host
+  failed before it answered, for example while it restarted. retryable:true (a
+  read, a progress renewal, or a write with retry_token): wait retry_after_ms,
+  then retry the same request; the receipt replays. retryable:false (a
+  tokenless write): it may have completed; read back and reconcile before
+  retrying. A progress creation follows its lease rules.
 - request_timeout: the host didn't answer in 60 s but keeps the work it
   accepted. retryable:true (a read, a progress renewal, or a write with
   retry_token): retry the same request; the receipt replays. retryable:false (a

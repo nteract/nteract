@@ -1,4 +1,5 @@
 import { assertStoredSize } from "../model/limits.mjs";
+import { overloadRetryAfterMs } from "./host-busy.mjs";
 import { holdUntilSettled } from "./request-hold.mjs";
 
 // Kept below the deployment's 2 MiB request cap, including binary framing.
@@ -268,6 +269,23 @@ export function recordPersistenceTimeout() {
   );
 }
 
+/** PageRecords threw an overload or a transient error: Cloudflare's
+ * `overloaded` or `retryable` flag. The records stay pending, as after a
+ * timeout, so the same request can be retried. */
+export function recordPersistenceUnavailable(cause) {
+  return Object.assign(
+    Error(
+      "This Page's storage is busy or briefly unavailable and did not confirm its records. Retry after retry_after_ms with the same idempotency_key and retry_token.",
+      { cause },
+    ),
+    {
+      status: 503,
+      code: "record_persistence_unavailable",
+      retryAfterMs: cause.overloaded === true ? overloadRetryAfterMs() : 1000,
+    },
+  );
+}
+
 /**
  * The Page's client for its PageRecords object.
  *
@@ -322,6 +340,8 @@ export class RemoteRecordSink {
         response = await stub.fetch(new Request(url, { ...init, signal: abort.signal }));
       } catch (error) {
         this.discard(stub);
+        if (error?.overloaded === true || error?.retryable === true)
+          throw recordPersistenceUnavailable(error);
         throw error;
       }
       return read(response);

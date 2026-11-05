@@ -314,7 +314,7 @@ import { serialQueue, serialQueueBounds } from "./serial-queue.mjs";
 import { opensIndex } from "./account-index-machine.mjs";
 import { holdUntilSettled } from "./request-hold.mjs";
 import { boundedMap } from "./bounded-map.mjs";
-import { legibleEnv } from "./host-busy.mjs";
+import { legibleEnv, overloadRetryAfterMs, withRepeatSafety } from "./host-busy.mjs";
 import { readTool } from "./tool-reads.mjs";
 import { readChangesTool } from "./tool-changes.mjs";
 import { PageActivity } from "./page-activity.mjs";
@@ -384,6 +384,18 @@ const lifecycleFingerprint = {
   purge_page: "purge_page",
 };
 const noop = async () => {};
+/** A listing that met a shared Page (or its owner's Catalog) that did not
+ * answer. A listing is a read, so it is retryable; an overloaded host asks
+ * for the longer, jittered wait page_busy uses. */
+const sharedPagesUnavailable = ({ overloaded = false } = {}) =>
+  Object.assign(
+    new HttpError(
+      503,
+      "Shared Pages are temporarily unavailable: a shared Page or its owner's Catalog did not answer. Retry the listing after retry_after_ms, backing off exponentially if it repeats.",
+      "shared_page_unavailable",
+    ),
+    { retryAfterMs: overloaded ? overloadRetryAfterMs() : 1000 },
+  );
 /** The error an abandoned object refuses with when its reset gave no reason. */
 const abandonedError = () => Object.assign(Error("Page object was reset"), { status: 503 });
 /** Complete the upgrade and close at once with the refusal's admission code.
@@ -815,19 +827,23 @@ async function invoke(request, env, operation, args = {}, seen) {
       arguments: args,
       ...(await quotaFields(env, identity, operation)),
     };
+    const safe = safeToRepeat(operation, args);
     return withinToolDeadline(
       async (signal) =>
         bufferedResponse(
-          await untilAborted(
-            env.CATALOGS.getByName(identity.principal).fetch(
-              forwarded(request, "/internal/catalog", body),
-              { signal },
+          withRepeatSafety(
+            await untilAborted(
+              env.CATALOGS.getByName(identity.principal).fetch(
+                forwarded(request, "/internal/catalog", body),
+                { signal },
+              ),
+              signal,
             ),
-            signal,
+            safe,
           ),
           signal,
         ),
-      { safe: safeToRepeat(operation, args) },
+      { safe },
     );
   }
   requirePageIdArgument(args.page_id);
@@ -843,21 +859,27 @@ async function invoke(request, env, operation, args = {}, seen) {
   }
   // One deadline covers the Page fetch, its body and read_page's location
   // view, so a timeout never returns an unfiltered body.
+  const safe = safeToRepeat(operation, args);
   return withinToolDeadline(
     async (signal) => {
-      const response = await untilAborted(
-        env.PAGES.getByName(args.page_id).fetch(
-          forwarded(request, "/internal/tool", { operation, arguments: args }),
-          { signal },
+      // A transient failure is stated for this request's repeat safety, as
+      // a timeout is.
+      const response = withRepeatSafety(
+        await untilAborted(
+          env.PAGES.getByName(args.page_id).fetch(
+            forwarded(request, "/internal/tool", { operation, arguments: args }),
+            { signal },
+          ),
+          signal,
         ),
-        signal,
+        safe,
       );
       if (operation !== "read_page" || !response.ok) return bufferedResponse(response, signal);
       const body = await readResponseJson(response, signal);
       await locationView(request, env, body, signal);
       return json(body, response.status);
     },
-    { safe: safeToRepeat(operation, args) },
+    { safe },
   );
 }
 
@@ -2924,6 +2946,8 @@ export class Catalog {
       if ([403, 404].includes(response.status)) return { status: "denied" };
     } catch (error) {
       logFailure(error, "catalog-verify");
+      // Cloudflare throws from the stub fetch of an overloaded object.
+      if (error?.overloaded === true) return { status: "unavailable", overloaded: true };
     }
     return { status: "unavailable" };
   }
@@ -2943,7 +2967,7 @@ export class Catalog {
       return Array.isArray(children) ? children.filter(validPageId) : [];
     } catch (error) {
       logFailure(error, "catalog-location");
-      throw new HttpError(503, "Shared Pages are temporarily unavailable");
+      throw sharedPagesUnavailable({ overloaded: error?.overloaded === true });
     }
   }
 
@@ -3006,8 +3030,7 @@ export class Catalog {
         // Children of a Page shared with this account: the caller must be
         // able to read the parent before learning what sits under it.
         const shared = await this.verifyShared(request, options.parentId);
-        if (shared.status === "unavailable")
-          throw new HttpError(503, "Shared Pages are temporarily unavailable");
+        if (shared.status === "unavailable") throw sharedPagesUnavailable(shared);
         if (shared.status !== "ok" || (shared.page.state && shared.page.state !== "active"))
           throw new HttpError(404, "Parent Page not found", "parent_unavailable");
         // Only a Page's owner places Pages under it, so no child of a shared
@@ -3238,8 +3261,7 @@ export class Catalog {
       if (options.inTrash || options.spaceId) return null;
       if (options.parentId !== undefined && !scope.sharedChildren?.has(row.page_id)) return null;
       const result = await this.verifyShared(request, row.page_id);
-      if (result.status === "unavailable")
-        throw new HttpError(503, "Shared Pages are temporarily unavailable");
+      if (result.status === "unavailable") throw sharedPagesUnavailable(result);
       if (result.status === "denied" || (result.page.state && result.page.state !== "active")) {
         pruned.push({
           page_id: row.page_id,
