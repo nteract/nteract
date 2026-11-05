@@ -100,11 +100,10 @@ test("destinations list Your items first, then each Project", () => {
   assert.equal(moveDestinations([], { project_id: null }).length, 1);
 });
 
-test("parent choices skip the home Page, shared Pages, and the moved Page's subtree", () => {
+test("parent choices skip shared Pages and the moved Page's subtree", () => {
   const pages = [
-    { page_id: "home", home: true, parent_id: null, position: "a0" },
-    { page_id: "b", title: "B", parent_id: "home", position: "a1" },
-    { page_id: "a", title: "A", parent_id: "home", position: "a0" },
+    { page_id: "b", title: "B", parent_id: null, position: "a1" },
+    { page_id: "a", title: "A", parent_id: null, position: "a0" },
     { page_id: "moving", title: "Moving", parent_id: "a", position: "a0" },
     { page_id: "under", title: "Under", parent_id: "moving", position: "a0" },
     { page_id: "c", title: "", parent_id: "a", position: "a1" },
@@ -121,7 +120,7 @@ test("loadParentChoices lists a Project's Pages, or the Pages outside any Projec
   const { call, calls } = caller({
     list_pages: (args) => ({
       pages: args.project_id
-        ? [{ page_id: "in", title: "In", parent_id: "h", project_id: args.project_id }]
+        ? [{ page_id: "in", title: "In", parent_id: null, project_id: args.project_id }]
         : [
             { page_id: "loose", title: "Loose" },
             { page_id: "in", title: "In", project_id: "prj_a" },

@@ -357,7 +357,7 @@ async function projectEntries(storage, pageId, current, { marked = false, now } 
     // An active Page has an active parent: a restore whose parent is in
     // Trash or gone returns to the top level.
     const { location, rekeyed } = await restoreTarget(storage, pageId);
-    const { space_id: _space, home: _home, ...rest } = base;
+    const { space_id: _space, ...rest } = base;
     await storage.put({
       ...(await rekeyedEntries(storage, rekeyed)),
       [`page/${pageId}`]: { ...rest, ...location },

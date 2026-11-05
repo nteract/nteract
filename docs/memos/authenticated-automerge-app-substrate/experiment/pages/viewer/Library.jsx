@@ -502,13 +502,6 @@ const DISPLAY_CHOICES = Object.freeze([
   { value: "list", label: "List view", Icon: List },
 ]);
 
-const PageIcon = ({ home, className, size }) =>
-  home ? (
-    <Boxes className={className} size={size} aria-hidden="true" />
-  ) : (
-    <FileText className={className} size={size} aria-hidden="true" />
-  );
-
 /** A row's Last activity time: the compact label on screen, and the relative
  * and full local time for screen readers ("Last active 2 days ago, …"). */
 function ActivityTime({ value, now }) {
@@ -683,14 +676,12 @@ function PageList({
             {(list.folded ? EMPTY : section.rows).map((row) => (
               <li className="index-row index-page-row" key={row.id}>
                 <div className="index-cell-name">
-                  <PageIcon home={row.home} className="index-row-icon" size={19} />
+                  <FileText className="index-row-icon" size={19} aria-hidden="true" />
                   <a
                     className="index-row-link"
                     href={row.href}
                     onPointerDown={onWarm}
-                    onClick={follow(() =>
-                      row.home && row.project ? onOpenProject(row.project.id) : onOpen(row.id),
-                    )}
+                    onClick={follow(() => onOpen(row.id))}
                   >
                     {row.title}
                   </a>
@@ -746,14 +737,7 @@ function PageGrid({ sections, folded, onToggle, busy, onOpen, onOpenProject, onW
         {(section, name, list) => (
           <ul className="index-grid" aria-label={name} id={list.id} hidden={list.folded}>
             {(list.folded ? EMPTY : section.rows).map((row) => (
-              <GridCard
-                key={row.id}
-                row={row}
-                cards={cards}
-                onOpen={onOpen}
-                onOpenProject={onOpenProject}
-                onWarm={onWarm}
-              />
+              <GridCard key={row.id} row={row} cards={cards} onOpen={onOpen} onWarm={onWarm} />
             ))}
           </ul>
         )}
@@ -764,7 +748,7 @@ function PageGrid({ sections, folded, onToggle, busy, onOpen, onOpenProject, onW
 
 /** One grid card. A row the server listed asks for its card once it nears
  * the viewport; a row only this browser holds has none to ask for. */
-function GridCard({ row, cards, onOpen, onOpenProject, onWarm }) {
+function GridCard({ row, cards, onOpen, onWarm }) {
   const element = useRef(null);
   const key = cardKeyOf(row);
   const listed = !row.local;
@@ -780,17 +764,15 @@ function GridCard({ row, cards, onOpen, onOpenProject, onWarm }) {
         className="index-card-link"
         href={row.href}
         onPointerDown={onWarm}
-        onClick={follow(() =>
-          row.home && row.project ? onOpenProject(row.project.id) : onOpen(row.id),
-        )}
+        onClick={follow(() => onOpen(row.id))}
       >
         <span className="index-card-header">
-          <PageIcon home={row.home} className="index-card-icon" size={16} />
+          <FileText className="index-card-icon" size={16} aria-hidden="true" />
           <span className="index-card-title" title={row.title}>
             {row.title}
           </span>
         </span>
-        <PageCardPreview home={row.home} card={state.name === "shown" ? state.card : null} />
+        <PageCardPreview card={state.name === "shown" ? state.card : null} />
       </a>
     </li>
   );

@@ -689,6 +689,7 @@ function fakeSession(pageId, principal, title, { draft = false } = {}) {
     subscribe: (listener) => (listeners.add(listener), () => listeners.delete(listener)),
     watchCommentDrafts() {},
     listRecoveries: async () => [],
+    retryConnection: async () => {},
     leave: close,
     close,
     closeSettled: async () => {},
@@ -699,7 +700,10 @@ function fakeSession(pageId, principal, title, { draft = false } = {}) {
     // Another account's session answer leaves this Page waiting to sign in
     // again, as a real session does.
     acceptAuthentication(result) {
-      if (result.identity?.principal === principal) return true;
+      if (result.identity?.principal === principal) {
+        this.authRequired = false;
+        return true;
+      }
       this.authRequired = true;
       return false;
     },
@@ -785,17 +789,14 @@ test("Project and legacy links open the existing document editor and tree", asyn
     opened.push(id);
     return fakeSession(id, "one", "Existing project content");
   };
-  for (const prefix of ["project", "s"]) {
-    history.replaceState(null, "", `/${prefix}/${PROJECT}`);
+  for (const prefix of ["project", "s", "p"]) {
+    history.replaceState(null, "", `/${prefix}/${prefix === "p" ? ROADMAP : PROJECT}`);
     const app = await boot(signedIn, {
       ...catalog,
-      get_project: { project_id: PROJECT, home_page_id: ROADMAP, title: "Launch" },
-      read_page: { project_id: PROJECT, home: true, breadcrumbs: [] },
+      get_project: { project_id: PROJECT, document_id: ROADMAP, title: "Launch", role: "owner" },
+      read_page: { project_id: PROJECT, kind: "project", breadcrumbs: [] },
       list_pages: {
-        pages: [
-          { page_id: ROADMAP, project_id: PROJECT, home: true, title: "Launch" },
-          { page_id: PLAN, project_id: PROJECT, parent_id: ROADMAP, title: "Plan" },
-        ],
+        pages: [{ page_id: PLAN, project_id: PROJECT, parent_id: null, title: "Plan" }],
         next_cursor: null,
       },
     });
@@ -808,11 +809,19 @@ test("Project and legacy links open the existing document editor and tree", asyn
     );
     assert.match(document.querySelector(".project-pages")?.textContent, /Plan/);
     assert.equal(document.querySelector(".project-view"), null);
-    assert.doesNotMatch(document.body.textContent, /home Page/i);
+    assert.equal(document.querySelectorAll(".project-pages a").length, 1);
     assert.equal(toolCalls(app, "get_project"), 1, "resolved Project details are reused");
     const count = opened.length;
     await click(document.querySelector(".project-chip"));
     assert.equal(opened.length, count, "Project chip retains the open document");
+    history.pushState(null, "", `/p/${ROADMAP}`);
+    await act(() => window.dispatchEvent(new window.PopStateEvent("popstate")));
+    assert.equal(
+      location.pathname,
+      `/project/${PROJECT}`,
+      "same-document navigation canonicalizes too",
+    );
+    assert.equal(opened.length, count, "canonicalization never reopens the content document");
     await click(pageAction("Copy link"));
     assert.equal(copied.at(-1), `http://localhost/project/${PROJECT}`);
     assert.equal(!!pageAction("Move to Trash"), false);
@@ -850,7 +859,7 @@ test("leaving a resolving Project cannot install its late document", async (t) =
   history.pushState(null, "", `/p/${PLAN}`);
   await act(() => window.dispatchEvent(new window.PopStateEvent("popstate")));
   await settle();
-  gate.release({ home_page_id: ROADMAP });
+  gate.release({ document_id: ROADMAP });
   await settle();
   assert.deepEqual(opened, [PLAN]);
   assert.equal(location.pathname, `/p/${PLAN}`);
@@ -875,9 +884,14 @@ test("Project navigation detaches the previous Page while its checkpoint drains,
   history.replaceState(null, "", `/p/${PLAN}`);
   await boot(signedIn, {
     ...catalog,
-    read_page: ({ page_id }) => ({ page_id, home: page_id === ROADMAP, breadcrumbs: [] }),
+    read_page: ({ page_id }) => ({
+      page_id,
+      kind: page_id === ROADMAP ? "project" : "page",
+      ...(page_id === ROADMAP && { project_id: PROJECT }),
+      breadcrumbs: [],
+    }),
     get_project: () =>
-      fail ? lookup.promise : { project_id: PROJECT, home_page_id: ROADMAP, role: "owner" },
+      fail ? lookup.promise : { project_id: PROJECT, document_id: ROADMAP, role: "owner" },
   });
   assert.ok(await until(() => pageAction("Copy link")));
   history.pushState(null, "", `/project/${PROJECT}`);
@@ -904,10 +918,11 @@ test("Project navigation detaches the previous Page while its checkpoint drains,
   assert.equal(pageAction("Move to Trash"), undefined);
 });
 
-test("a backing Page's failed Project lookup offers retry and ignores its late answer after navigation", async (t) => {
+test("a content document's failed Project lookup offers retry and ignores its late answer after navigation", async (t) => {
   cleanUp(t);
   globalThis.__editor = editorSurface;
-  globalThis.__openPage = async (id) => fakeSession(id, "one", id === ROADMAP ? "Home" : "Other");
+  globalThis.__openPage = async (id) =>
+    fakeSession(id, "one", id === ROADMAP ? "Project content" : "Other");
   const answer = deferredAnswer();
   let attempts = 0;
   history.replaceState(null, "", `/p/${ROADMAP}`);
@@ -915,7 +930,8 @@ test("a backing Page's failed Project lookup offers retry and ignores its late a
     ...catalog,
     read_page: ({ page_id }) => ({
       page_id,
-      ...(page_id === ROADMAP && { home: true, project_id: PROJECT }),
+      kind: page_id === ROADMAP ? "project" : "page",
+      ...(page_id === ROADMAP && { project_id: PROJECT }),
       breadcrumbs: [],
     }),
     get_project: () =>
@@ -924,7 +940,12 @@ test("a backing Page's failed Project lookup offers retry and ignores its late a
         : answer.promise,
   });
   assert.ok(await until(() => pageAction("Retry Project access")));
-  assert.equal(document.querySelector(".document-print-title")?.textContent, "Home");
+  assert.equal(document.querySelector(".document-print-title")?.textContent, "Project content");
+  assert.equal(
+    location.pathname,
+    `/project/${PROJECT}`,
+    "disclosed content canonicalizes its legacy link",
+  );
   assert.ok(app.banners().length);
   await click(pageAction("Retry Project access"));
   await settle();
@@ -933,13 +954,13 @@ test("a backing Page's failed Project lookup offers retry and ignores its late a
   history.pushState(null, "", `/p/${PLAN}`);
   await act(() => window.dispatchEvent(new window.PopStateEvent("popstate")));
   await settle();
-  await act(() => answer.resolve({ project_id: PROJECT, role: "owner", home_page_id: ROADMAP }));
+  await act(() => answer.resolve({ project_id: PROJECT, role: "owner", document_id: ROADMAP }));
   await settle();
   assert.equal(document.querySelector(".document-print-title")?.textContent, "Other");
   assert.equal(pageAction("Retry Project access"), undefined);
 });
 
-test("retrying Project access updates only the installed backing Page's sharing context", async (t) => {
+test("retrying Project access updates only the installed content document's sharing context", async (t) => {
   cleanUp(t);
   let sharing;
   globalThis.__editor = {
@@ -949,16 +970,16 @@ test("retrying Project access updates only the installed backing Page's sharing 
       return editorSurface.PageControls(props);
     },
   };
-  globalThis.__openPage = async (id) => fakeSession(id, "one", "Home content");
+  globalThis.__openPage = async (id) => fakeSession(id, "one", "Project content");
   history.replaceState(null, "", `/p/${ROADMAP}`);
   let fail = true;
   await boot(signedIn, {
     ...catalog,
-    read_page: { page_id: ROADMAP, home: true, project_id: PROJECT, breadcrumbs: [] },
+    read_page: { page_id: ROADMAP, kind: "project", project_id: PROJECT, breadcrumbs: [] },
     get_project: () =>
       fail
         ? Response.json({ error: "Lookup failed" }, { status: 503 })
-        : { project_id: PROJECT, home_page_id: ROADMAP, role: "owner" },
+        : { project_id: PROJECT, document_id: ROADMAP, role: "owner" },
   });
   assert.ok(await until(() => pageAction("Retry Project access")));
   assert.deepEqual(sharing, { project_id: PROJECT, role: "unavailable" });
@@ -968,22 +989,97 @@ test("retrying Project access updates only the installed backing Page's sharing 
   assert.equal(sharing.project_id, PROJECT);
   assert.equal(sharing.role, "owner");
   assert.equal(pageAction("Retry Project access"), undefined);
-  assert.equal(document.querySelector(".document-print-title")?.textContent, "Home content");
+  assert.equal(document.querySelector(".document-print-title")?.textContent, "Project content");
 });
 
-test("a directly granted backing Page opens without Project access", async (t) => {
+test("a directly granted content document opens without exposing Project access", async (t) => {
   cleanUp(t);
+  let sharing;
+  globalThis.__editor = {
+    ...editorSurface,
+    PageControls: (props) => {
+      sharing = props.project;
+      return editorSurface.PageControls(props);
+    },
+  };
   globalThis.__openPage = async (id) => ({
     ...fakeSession(id, "one", "Shared document"),
     canDelete: false,
   });
   history.replaceState(null, "", `/p/${ROADMAP}`);
-  const app = await boot(signedIn, { ...catalog, read_page: { breadcrumbs: [] } });
+  const app = await boot(signedIn, { ...catalog, read_page: { kind: "page", breadcrumbs: [] } });
   await until(() => document.querySelector(".document-print-title"));
   assert.equal(toolCalls(app, "get_project"), 0);
   assert.equal(location.pathname, `/p/${ROADMAP}`);
   assert.equal(document.querySelector(".project-pages"), null);
+  assert.equal(document.querySelector(".project-chip"), null);
+  assert.equal(sharing, null, "direct access never opens Project membership controls");
   assert.equal(document.querySelector(".document-print-title")?.textContent, "Shared document");
+});
+
+test("a late document location cannot disclose a Project after an account change", async (t) => {
+  cleanUp(t);
+  globalThis.__editor = editorSurface;
+  const who = { current: "alice" };
+  globalThis.__openPage = async (id) => fakeSession(id, "alice", "Content");
+  const placed = deferredAnswer();
+  history.replaceState(null, "", `/p/${ROADMAP}`);
+  const projectListings = [];
+  const app = await boot(accountSession(who), {
+    ...catalog,
+    read_page: () => placed.promise,
+    list_pages: (args) => {
+      if (args.project_id) projectListings.push(args);
+      return catalog.list_pages;
+    },
+  });
+  assert.ok(await until(() => pageAction("Copy link")));
+  who.current = "bob";
+  await sessionCheck();
+  await act(() =>
+    placed.resolve({
+      kind: "project",
+      project_id: PROJECT,
+      breadcrumbs: [{ kind: "project", project_id: PROJECT, title: "Private Project" }],
+    }),
+  );
+  await settle();
+  assert.equal(location.pathname, `/p/${ROADMAP}`, "late metadata cannot rewrite the URL");
+  assert.equal(toolCalls(app, "get_project"), 0);
+  assert.equal(projectListings.length, 0, "the stale Project tree is never requested");
+  assert.equal(document.querySelector(".project-chip"), null);
+  assert.doesNotMatch(document.body.textContent, /Private Project/);
+});
+
+test("late Project tree rows never paint over the next document", async (t) => {
+  cleanUp(t);
+  globalThis.__editor = editorSurface;
+  globalThis.__openPage = async (id) => fakeSession(id, "one", "Content");
+  const listed = deferredAnswer();
+  history.replaceState(null, "", `/project/${PROJECT}`);
+  await boot(signedIn, {
+    ...catalog,
+    get_project: { project_id: PROJECT, document_id: ROADMAP, role: "owner" },
+    read_page: ({ page_id }) => ({
+      kind: page_id === ROADMAP ? "project" : "page",
+      ...(page_id === ROADMAP && { project_id: PROJECT }),
+      breadcrumbs: [],
+    }),
+    list_pages: () => listed.promise,
+  });
+  assert.ok(await until(() => document.querySelector(".project-pages")));
+  history.pushState(null, "", `/p/${PLAN}`);
+  await act(() => window.dispatchEvent(new window.PopStateEvent("popstate")));
+  await settle();
+  await act(() =>
+    listed.resolve({
+      pages: [{ page_id: ROADMAP, project_id: PROJECT, title: "Stale child", parent_id: null }],
+    }),
+  );
+  await settle();
+  assert.equal(location.pathname, `/p/${PLAN}`);
+  assert.equal(document.querySelector(".project-pages"), null);
+  assert.doesNotMatch(document.body.textContent, /Stale child/);
 });
 
 test("a Project member sees shared tree rows but no structure controls", async (t) => {
@@ -995,8 +1091,8 @@ test("a Project member sees shared tree rows but no structure controls", async (
   history.replaceState(null, "", `/project/${PROJECT}`);
   await boot(signedIn, {
     ...catalog,
-    get_project: { project_id: PROJECT, role: "viewer", home_page_id: ROADMAP },
-    read_page: { project_id: PROJECT, home: true, breadcrumbs: [] },
+    get_project: { project_id: PROJECT, role: "viewer", document_id: ROADMAP },
+    read_page: { project_id: PROJECT, kind: "project", breadcrumbs: [] },
     list_pages: {
       pages: [{ page_id: PLAN, project_id: PROJECT, shared: true, title: "Member child" }],
       next_cursor: null,
@@ -1082,7 +1178,7 @@ test("a tool call refused as signed out forgets the rows, checks the session and
   assert.deepEqual(rows(), ["Roadmap"]);
 });
 
-test("Project backing documents offer neither Move nor Trash", async (t) => {
+test("Project content documents offer neither Move nor Trash", async (t) => {
   cleanUp(t);
   globalThis.__editor = editorSurface;
   globalThis.confirm = () => true;
@@ -1104,9 +1200,9 @@ test("Project backing documents offer neither Move nor Trash", async (t) => {
   assert.ok(await until(() => pageAction("Copy link")), "the Page is open");
   assert.equal(!!pageAction("Move to Trash"), false, "unknown placement cannot be trashed");
   assert.ok(pageAction("Move to…"), "offered before read_page answers; it asks when chosen");
-  placed.resolve({ page_id: PLAN, project_id: PROJECT, home: true, breadcrumbs: [] });
+  placed.resolve({ page_id: PLAN, project_id: PROJECT, kind: "project", breadcrumbs: [] });
   await settle();
-  assert.equal(!!pageAction("Move to…"), false, "a Project's home Page stays put");
+  assert.equal(!!pageAction("Move to…"), false, "Project content stays put");
   assert.equal(!!pageAction("Move to Trash"), false);
 });
 
@@ -1119,7 +1215,7 @@ test("an ordinary remote Page offers Trash only once its placement is known", as
   await boot(signedIn, { ...catalog, read_page: () => placed.promise });
   assert.ok(await until(() => pageAction("Copy link")));
   assert.equal(!!pageAction("Move to Trash"), false);
-  await act(() => placed.resolve({ page_id: PLAN, home: false, breadcrumbs: [] }));
+  await act(() => placed.resolve({ page_id: PLAN, kind: "page", breadcrumbs: [] }));
   assert.ok(await until(() => pageAction("Move to Trash")));
 });
 
@@ -1267,7 +1363,7 @@ test("a Page created in this tab finds its place once it registers", async (t) =
             page_id: PLAN,
             project_id: PROJECT,
             parent_id: null,
-            home: false,
+            kind: "page",
             breadcrumbs: [{ kind: "project", project_id: PROJECT, title: "Launch" }],
           }
         : Response.json({ error: "Page not found", code: "page_not_found" }, { status: 404 }),
@@ -1389,7 +1485,7 @@ test("a list_projects answer for another account checks the session, and stops a
   const app = await boot(signedIn, {
     ...catalog,
     list_projects: {
-      projects: [{ project_id: PROJECT, title: "His", home_page_id: ROADMAP }],
+      projects: [{ project_id: PROJECT, title: "His", document_id: ROADMAP }],
       next_cursor: null,
       principal: "bob",
     },
@@ -1693,7 +1789,7 @@ test("a 401 during recovery still ends with the account's Projects shown", async
       server.projectRefusals-- > 0
         ? refused()
         : {
-            projects: [{ project_id: PROJECT, title: "Launch", home_page_id: ROADMAP }],
+            projects: [{ project_id: PROJECT, title: "Launch", document_id: ROADMAP }],
             next_cursor: null,
             principal: "one",
           },
@@ -1747,7 +1843,7 @@ test("Move to… opens nothing if the account changed while read_page was asked"
   placed.resolve({
     page_id: PLAN,
     project_id: PROJECT,
-    home: false,
+    kind: "page",
     breadcrumbs: [{ kind: "project", project_id: PROJECT, title: "Launch" }],
   });
   for (let i = 0; i < 10; i++) await new Promise((resolve) => setTimeout(resolve, 10));

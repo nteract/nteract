@@ -321,7 +321,7 @@ test("the request adapters page with cursors and search only where the API can",
   ]);
 });
 
-test("library rows retain host-disclosed Project membership and route its backing document", () => {
+test("library Page rows retain only host-disclosed Project membership", () => {
   const titles = projectTitles([{ project_id: projectId, title: "Launch" }]);
   assert.deepEqual(pageRow({ page_id: pageId, title: "", project_id: projectId }, titles), {
     id: pageId,
@@ -331,7 +331,6 @@ test("library rows retain host-disclosed Project membership and route its backin
     contentUpdatedAt: null,
     project: { id: projectId, title: "Launch", href: `/project/${projectId}` },
     shared: false,
-    home: false,
     local: null,
   });
   assert.deepEqual(pageRow({ page_id: pageId, title: "Notes" }).project, null);
@@ -343,7 +342,7 @@ test("library rows retain host-disclosed Project membership and route its backin
   assert.equal(activityAt({ page_id: pageId }), null);
   assert.equal(activityAt(undefined), null);
   assert.equal(
-    pageRow({ page_id: pageId, project_id: projectId, home: true }).project.title,
+    pageRow({ page_id: pageId, project_id: projectId }).project.title,
     "Project",
     "a Project that hasn't loaded still links",
   );
@@ -351,11 +350,8 @@ test("library rows retain host-disclosed Project membership and route its backin
   assert.equal(shared.shared, true);
   assert.equal(shared.project.id, projectId);
   assert.equal(pageRow({ page_id: pageId, shared: true }).project, null);
-  assert.equal(
-    pageRow({ page_id: pageId, project_id: projectId, home: true }).href,
-    `/project/${projectId}`,
-  );
-  assert.equal(pageRow({ page_id: pageId, shared: true, home: true }).href, `/p/${pageId}`);
+  assert.equal(pageRow({ page_id: pageId, project_id: projectId }).href, `/p/${pageId}`);
+  assert.equal(pageRow({ page_id: pageId, shared: true }).href, `/p/${pageId}`);
 });
 
 test("a /projects row carries its description only when there is one", () => {

@@ -9,9 +9,9 @@ import {
 
 test("Space creation: every state and event has exactly one outcome", () => {
   const expected = {
-    reserved: { space_recorded: ["space_recorded", "create_home_page"] },
-    space_recorded: { home_created: ["home_created", "commit_catalog"] },
-    home_created: { committed: ["ready", null] },
+    reserved: { space_recorded: ["space_recorded", "create_content_document"] },
+    space_recorded: { content_created: ["content_created", "commit_catalog"] },
+    content_created: { committed: ["ready", null] },
     ready: {},
   };
   for (const state of SPACE_CREATION_STATES)
@@ -26,7 +26,7 @@ test("Space creation: every state and event has exactly one outcome", () => {
     }
   assert.deepEqual(SPACE_CREATION_STATES.map(spaceCreationEffect), [
     "create_space_record",
-    "create_home_page",
+    "create_content_document",
     "commit_catalog",
     null,
   ]);
@@ -39,7 +39,7 @@ test("Space creation resumes from any persisted state to ready", () => {
     const effects = [];
     const events = {
       create_space_record: "space_recorded",
-      create_home_page: "home_created",
+      create_content_document: "content_created",
       commit_catalog: "committed",
     };
     for (let effect = spaceCreationEffect(state); effect; ) {
@@ -49,7 +49,7 @@ test("Space creation resumes from any persisted state to ready", () => {
     assert.equal(state, "ready");
     assert.deepEqual(
       effects,
-      ["create_space_record", "create_home_page", "commit_catalog"].slice(
+      ["create_space_record", "create_content_document", "commit_catalog"].slice(
         SPACE_CREATION_STATES.indexOf(start),
       ),
     );

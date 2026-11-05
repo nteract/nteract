@@ -62,14 +62,11 @@ const PNG = Buffer.from(
  * An in-memory Pages target behind a fetch function that speaks the same
  * stateless JSON-RPC tools/call as /mcp. It enforces the retry contract the
  * importer depends on: v1_ keys need their retry_token and its prefix, and a
- * key replays its receipt only for the identical payload. `placement` picks
- * what project_id alone means: "page9" puts the Page at the Project's top
- * level, "page10" under the home Page.
+ * key replays its receipt only for the identical payload. A Project's content
+ * is a document in `pages` flagged `content`: never listed, addressed by the
+ * Page tools through project_id, named by get_project as document_id.
  */
-function fakePages(
-  origin,
-  { placement = "page10", outlinePage = 100, token = KEY, insertNode = true } = {},
-) {
+function fakePages(origin, { outlinePage = 100, token = KEY, insertNode = true } = {}) {
   const pages = new Map();
   // Stored asset bytes by "<page_id>/<asset_id>", as the asset routes keep them.
   const assets = new Map();
@@ -105,7 +102,14 @@ function fakePages(
     [...pages.values()].filter(
       (page) => page.project_id === projectId && page.parent_id === parentId,
     );
-  function insert({ title, blocks, project_id = null, parent_id = null, home = false, position }) {
+  function insert({
+    title,
+    blocks,
+    project_id = null,
+    parent_id = null,
+    content = false,
+    position,
+  }) {
     const last = siblings(project_id, parent_id)
       .map((page) => page.position)
       .sort()
@@ -115,7 +119,7 @@ function fakePages(
       title,
       project_id,
       parent_id,
-      home,
+      content,
       position: position ?? generateKeyBetween(last ?? null, null),
       blocks: blocks.map((block) =>
         typeof block === "string"
@@ -132,20 +136,20 @@ function fakePages(
   }
   function seedProject({ title, description = "" }) {
     const project_id = `prj_${crypto.randomUUID()}`;
-    const home = insert({
+    const content = insert({
       title,
-      blocks: [`${description || "Describe it."}\n\n## Guidance\n\nThe home Page.`],
+      blocks: [`${description || "Describe it."}\n\n## Guidance\n\nThe Project's content.`],
       project_id,
-      home: true,
+      content: true,
     });
     projects.set(project_id, {
       project_id,
       title,
       description,
-      home_page_id: home.page_id,
-      created_at: home.created_at,
+      document_id: content.page_id,
+      created_at: content.created_at,
     });
-    return { project_id, home };
+    return { project_id, content };
   }
   const row = (page) => ({
     page_id: page.page_id,
@@ -155,9 +159,27 @@ function fakePages(
       project_id: page.project_id,
       parent_id: page.parent_id,
       position: page.position,
-      ...(page.home && { home: true }),
     }),
   });
+  /** The document a Page tool addresses: page_id, or project_id for content. */
+  function resolve(args) {
+    if (args.page_id !== undefined && args.project_id !== undefined)
+      return { error: fail("invalid_arguments", "Give page_id or project_id, not both") };
+    if (args.project_id !== undefined) {
+      const project = projects.get(args.project_id);
+      if (!project) return { error: fail("project_not_found") };
+      const { project_id: _project, page_id: _page, ...rest } = args;
+      return {
+        page: pages.get(project.document_id),
+        rest,
+        extra: { kind: "project", project_id: project.project_id },
+      };
+    }
+    const page = pages.get(args.page_id);
+    if (!page) return { error: fail("page_not_found") };
+    const { page_id: _selector, ...rest } = args;
+    return { page, rest, extra: { kind: "page" } };
+  }
   const outline = (page) =>
     page.blocks.map((block) => ({
       block_id: block.id,
@@ -217,7 +239,10 @@ function fakePages(
   }
   const tools = {
     async list_pages(args) {
-      let rows = [...pages.values()].sort((a, b) => b.changed - a.changed);
+      // The content document is the Project's, never a listed Page.
+      let rows = [...pages.values()]
+        .filter((page) => !page.content)
+        .sort((a, b) => b.changed - a.changed);
       if (args.project_id) rows = rows.filter((page) => page.project_id === args.project_id);
       if (args.parent_id !== undefined)
         rows = rows.filter((page) => page.parent_id === args.parent_id);
@@ -237,7 +262,12 @@ function fakePages(
       return {
         ok: true,
         body: {
-          projects: [...projects.values()].map(({ project_id, title }) => ({ project_id, title })),
+          projects: [...projects.values()].map(({ project_id, title, document_id }) => ({
+            project_id,
+            title,
+            document_id,
+            role: "owner",
+          })),
           next_cursor: null,
           ...(await authority()),
         },
@@ -245,12 +275,24 @@ function fakePages(
     },
     async get_project(args) {
       const project = projects.get(args.project_id);
-      return project ? { ok: true, body: { ...project, revision: 0 } } : fail("project_not_found");
+      return project
+        ? { ok: true, body: { ...project, revision: 0, role: "owner", owner: "anaconda:owner" } }
+        : fail("project_not_found");
     },
     create_project: (args) =>
       idempotent("create_project", args, () => {
-        const { project_id, home } = seedProject(args);
-        return { ok: true, body: { project_id, home_page_id: home.page_id, revision: 0 } };
+        const { project_id, content } = seedProject(args);
+        return {
+          ok: true,
+          body: {
+            project_id,
+            title: args.title,
+            description: args.description ?? "",
+            document_id: content.page_id,
+            revision: 0,
+            role: "owner",
+          },
+        };
       }),
     create_page: (args) =>
       idempotent("create_page", args, () => {
@@ -258,10 +300,9 @@ function fakePages(
         let parent_id = args.parent_id ?? null;
         if (parent_id) {
           const parent = pages.get(parent_id);
-          if (!parent) return fail("parent_not_found");
+          if (!parent || parent.content) return fail("parent_unavailable");
           project_id = parent.project_id;
-        } else if (project_id && placement === "page10")
-          parent_id = projects.get(project_id).home_page_id;
+        } else if (project_id && !projects.has(project_id)) return fail("project_not_found");
         const page = insert({
           title: args.title,
           blocks: [args.markdown ?? ""],
@@ -271,11 +312,12 @@ function fakePages(
         return { ok: true, body: { page_id: page.page_id, project_id, parent_id } };
       }),
     async read_page(args) {
-      const page = pages.get(args.page_id);
-      if (!page) return fail("page_not_found");
-      const common = { page_id: page.page_id, title: page.title, heads: [head(page)] };
+      const { page, rest, extra, error } = resolve(args);
+      if (error) return error;
+      const common = { ...extra, page_id: page.page_id, title: page.title, heads: [head(page)] };
       const blocks = page.blocks.map(({ id, kind, markdown }) => ({ id, kind, markdown }));
-      if (Object.keys(args).length === 1)
+      args = rest;
+      if (Object.keys(args).length === 0)
         return {
           ok: true,
           body: { ...common, blocks, comments: page.comments, ...(await authority()) },
@@ -307,8 +349,8 @@ function fakePages(
     },
     edit_page: (args) =>
       idempotent("edit_page", args, () => {
-        const page = pages.get(args.page_id);
-        if (!page) return fail("page_not_found");
+        const { page, error } = resolve(args);
+        if (error) return error;
         if (JSON.stringify(args.base_heads) !== JSON.stringify([head(page)]))
           return fail("edit_conflict");
         for (const op of args.operations) {
@@ -460,9 +502,10 @@ function fakePages(
         : { isError: true, content: [{ type: "text", text: JSON.stringify(body) }] },
     });
   }
+  /** Pages under `parentId` (null: a Project's top level), in position order. */
   const children = (parentId) =>
     [...pages.values()]
-      .filter((page) => page.parent_id === parentId)
+      .filter((page) => !page.content && page.parent_id === parentId)
       .sort((a, b) => (a.position < b.position ? -1 : 1));
   /** Store `bytes` on `page` and append a block holding it as a dataframe. */
   async function addDataframe(page, bytes, { title, media_type = PARQUET } = {}) {
@@ -494,19 +537,20 @@ const client = (fake, origin, token = KEY) => pagesClient({ origin, token, fetch
 
 async function imageBundle() {
   const source = fakePages(SOURCE);
-  const { project_id, home } = source.seedProject({ title: "Images" });
+  const { project_id, content } = source.seedProject({ title: "Images" });
   const id = createHash("sha256").update(PNG).digest("hex");
-  const src = assetPath(home.page_id, id);
+  const src = assetPath(content.page_id, id);
   const markdown = `> ![quote](${src} "Caption")\n\n- ![list](${src})\n\n| image |\n| --- |\n| ![table](${src}) |\n\n[link](${src})\n\n\`![code](${src})\`\n\n\`\`\`md\n![fenced](${src})\n\`\`\``;
-  home.blocks = [{ id: crypto.randomUUID(), kind: "markdown", markdown }];
-  source.assets.set(`${home.page_id}/${id}`, PNG);
+  content.blocks = [{ id: crypto.randomUUID(), kind: "markdown", markdown }];
+  source.assets.set(`${content.page_id}/${id}`, PNG);
   const result = await exportProject(client(source, SOURCE), { projectId: project_id, ...quick });
-  return { ...result, source, home, id, src, project_id };
+  return { ...result, source, content, id, src, project_id };
 }
 
 test("nested image inventory excludes links/code and remaps only image attrs", async () => {
   const { bundle, source, id, src } = await imageBundle();
-  const page = bundle.pages[0];
+  const page = bundle.project.content;
+  assert.deepEqual(bundle.pages, [], "the content is not a Page");
   assert.equal(page.images.length, 3);
   assert.equal(Object.keys(bundle.assets).length, 1);
   assert.equal(source.assetCalls.length, 1);
@@ -514,25 +558,30 @@ test("nested image inventory excludes links/code and remaps only image attrs", a
   const store = memoryStore();
   const result = await importBundle(client(target, TARGET), bundle, { store, ...quick });
   const body = target.pages
-    .get(result.home_page_id)
+    .get(result.document_id)
     .blocks.map((block) => block.markdown)
     .join("\n\n");
   assert.deepEqual(
     imageInventory([body]).map((image) => image.src),
-    Array(3).fill(assetPath(result.home_page_id, id)),
+    Array(3).fill(assetPath(result.document_id, id)),
   );
+  // Content edits went through the Project, not a Page ID.
+  const edits = target.calls.filter((call) => call.name === "edit_page");
+  assert.ok(edits.length >= 1);
+  assert.ok(edits.every((call) => call.args.project_id === result.project_id));
+  assert.ok(edits.every((call) => call.args.page_id === undefined));
   assert.ok(body.includes(`[link](${src})`));
   assert.ok(body.includes(`![code](${src})`));
   assert.ok(body.includes(`![fenced](${src})`));
   assert.equal(target.assetCalls.length, 1);
   await importBundle(client(target, TARGET), bundle, { store, ...quick });
   assert.equal(target.assetCalls.length, 1, "completed bodies do not upload again");
-  assert.equal(remapImages("unchanged", page.images, result.home_page_id), "unchanged");
+  assert.equal(remapImages("unchanged", page.images, result.document_id), "unchanged");
 });
 
 test("export discovers dark assets from structured occurrences and refuses truncated facts", async () => {
-  const { source, home, id, src, project_id } = await imageBundle();
-  home.blocks[0].outline = [
+  const { source, content, id, src, project_id } = await imageBundle();
+  content.blocks[0].outline = [
     {
       type: "blockquote",
       summary: {
@@ -548,19 +597,19 @@ test("export discovers dark assets from structured occurrences and refuses trunc
     projectId: project_id,
     ...quick,
   });
-  assert.deepEqual(bundle.pages[0].image_variants, [
+  assert.deepEqual(bundle.project.content.image_variants, [
     { ordinal: 0, src, dark_src: src, dark_asset_id: id },
   ]);
   assert.equal(Object.keys(bundle.assets).length, 1);
   const target = fakePages(TARGET),
     store = memoryStore();
   const result = await importBundle(client(target, TARGET), bundle, { store, ...quick });
-  const targetImage = target.pages.get(result.home_page_id).blocks[0].variants[0];
-  assert.equal(targetImage.dark_src, assetPath(result.home_page_id, id));
+  const targetImage = target.pages.get(result.document_id).blocks[0].variants[0];
+  assert.equal(targetImage.dark_src, assetPath(result.document_id, id));
   assert.equal(target.assetCalls.length, 1, "shared light and dark asset uploads once");
   await importBundle(client(target, TARGET), bundle, { store, ...quick });
   assert.equal(target.assetCalls.length, 1);
-  home.blocks[0].outline[0].summary.images_truncated = true;
+  content.blocks[0].outline[0].summary.images_truncated = true;
   await assert.rejects(
     exportProject(client(source, SOURCE), { projectId: project_id, ...quick }),
     /truncated/,
@@ -626,9 +675,10 @@ test("image upload uncertainty resumes before remapping without duplicate stored
 
 test("interrupted duplicate-image variant import replays without rewriting its installed body", async () => {
   const { bundle, id, src } = await imageBundle();
-  bundle.pages[0].markdown = `![same](${src}) ![same](${src})`;
-  bundle.pages[0].images = imageInventory([bundle.pages[0].markdown]);
-  bundle.pages[0].image_variants = [{ ordinal: 0, src, dark_src: src, dark_asset_id: id }];
+  const entry = bundle.project.content;
+  entry.markdown = `![same](${src}) ![same](${src})`;
+  entry.images = imageInventory([entry.markdown]);
+  entry.image_variants = [{ ordinal: 0, src, dark_src: src, dark_asset_id: id }];
   const target = fakePages(TARGET),
     normal = client(target, TARGET),
     store = memoryStore();
@@ -660,7 +710,7 @@ test("interrupted duplicate-image variant import replays without rewriting its i
   );
   const result = await importBundle(flaky, bundle, { store, ...quick });
   assert.equal(result.verification.ok, true);
-  assert.equal(target.pages.get(result.home_page_id).blocks[0].variants[0].dark_asset_id, id);
+  assert.equal(target.pages.get(result.document_id).blocks[0].variants[0].dark_asset_id, id);
 });
 
 for (const stage of ["discovery", "between batches"])
@@ -668,9 +718,10 @@ for (const stage of ["discovery", "between batches"])
     const { bundle, id, src } = await imageBundle();
     const count = stage === "discovery" ? 2 : 101;
     const markdown = Array(count).fill(`![same](${src})`).join(" ");
-    bundle.pages[0].markdown = markdown;
-    bundle.pages[0].images = imageInventory([markdown]);
-    bundle.pages[0].image_variants = Array.from({ length: count }, (_, ordinal) => ({
+    const entry = bundle.project.content;
+    entry.markdown = markdown;
+    entry.images = imageInventory([markdown]);
+    entry.image_variants = Array.from({ length: count }, (_, ordinal) => ({
       ordinal,
       src,
       dark_src: src,
@@ -690,9 +741,10 @@ for (const stage of ["discovery", "between batches"])
           if (variants) variantWrites++;
           if (!changed && (stage === "discovery" ? !variants : variants)) {
             changed = true;
-            const page = target.pages.get(args.page_id);
+            // The content edit is addressed by project_id; find its document.
+            const page = target.pages.get(target.projects.get(args.project_id).document_id);
             page.blocks[0].markdown =
-              `![same](${assetPath(args.page_id, id)}) ` + page.blocks[0].markdown;
+              `![same](${assetPath(page.page_id, id)}) ` + page.blocks[0].markdown;
             page.revision++;
           }
         }
@@ -723,12 +775,16 @@ test("asset download enforces declared and streamed byte limits and never redire
   }
 });
 
-test("duplicate images upload once per destination Page and keep titles", async () => {
+test("duplicate images upload once per destination document and keep titles", async () => {
   const { bundle, id } = await imageBundle();
-  const child = structuredClone(bundle.pages[0]);
-  child.source_page_id = crypto.randomUUID();
-  child.home = false;
-  child.title = "Child";
+  const { source_document_id: _content, ...body } = bundle.project.content;
+  const child = {
+    source_page_id: crypto.randomUUID(),
+    parent_source_id: null,
+    position: null,
+    ...structuredClone(body),
+    title: "Child",
+  };
   bundle.pages.push(child);
   const target = fakePages(TARGET);
   const report = await importBundle(client(target, TARGET), bundle, {
@@ -755,7 +811,7 @@ test("image bundle validation rejects invalid inventory, media and corrupt conta
   const target = fakePages(TARGET);
   for (const mutate of [
     (value) => {
-      value.pages[0].images.pop();
+      value.project.content.images.pop();
     },
     (value) => {
       value.assets[id].media_type = PARQUET;
@@ -771,13 +827,23 @@ test("image bundle validation rejects invalid inventory, media and corrupt conta
     );
   }
   assert.equal(target.calls.length, 0);
-  for (const version of [1, 2]) {
+  // Bundles from before the content model are refused, never read.
+  for (const version of [1, 2, 3, 4]) {
     const legacy = structuredClone(bundle);
     legacy.version = version;
-    delete legacy.pages[0].images;
-    delete legacy.assets;
-    validateBundle(legacy);
+    assert.throws(
+      () => validateBundle(legacy),
+      (error) =>
+        error.code === "bundle_version_unsupported" &&
+        /Export the Project again/.test(error.message),
+      String(version),
+    );
+    await assert.rejects(
+      importBundle(client(target, TARGET), legacy, { store: memoryStore(), ...quick }),
+      { code: "bundle_version_unsupported" },
+    );
   }
+  assert.equal(target.calls.length, 0);
 });
 
 test("an unreadable upload receipt is retryable, without exposing credentials", async () => {
@@ -792,17 +858,16 @@ test("an unreadable upload receipt is retryable, without exposing credentials", 
   );
 });
 
-/** A page9-shaped source: top-level Pages are the home Page's siblings. */
+/** A source Project: content plus top-level Pages with parent_id null. */
 function guideSource({ preservedType = "pages-opaque", ...options } = {}) {
-  const source = fakePages(SOURCE, { placement: "page9", ...options });
-  const { project_id, home } = source.seedProject({
+  const source = fakePages(SOURCE, options);
+  const { project_id, content } = source.seedProject({
     title: "Pages engineering guide",
     description: "How Pages is built.",
   });
-  home.position = "a1";
   const at = (title, blocks, position, parent = null) =>
     source.insert({ title, blocks, project_id, parent_id: parent?.page_id ?? null, position });
-  const before = at("Before home", ["Sorted before the home Page."], "a0");
+  const before = at("Before", ["Sorted first at the top level."], "a0");
   const zeta = at("Zeta", ["Last at the top level."], "a3");
   const alpha = at("Alpha", ["First section.", { markdown: "$$x$$", type: preservedType }], "a2");
   const two = at("Alpha two", ["Second child."], "a1", alpha);
@@ -823,9 +888,9 @@ function guideSource({ preservedType = "pages-opaque", ...options } = {}) {
   const deep = at("Alpha one deep", ["Grandchild."], "a0", one);
   one.comments = [{ id: "thread-1" }, { id: "thread-2" }];
   // Listing is newest first: make it disagree with tree order.
-  for (const [index, page] of [deep, zeta, one, home, before, two, alpha].entries())
+  for (const [index, page] of [deep, zeta, one, content, before, two, alpha].entries())
     page.changed = 100 - index;
-  return { source, project_id, home, before, zeta, alpha, two, one, deep };
+  return { source, project_id, content, before, zeta, alpha, two, one, deep };
 }
 
 async function exportGuide(options) {
@@ -838,23 +903,36 @@ async function exportGuide(options) {
   return { ...fixture, bundle, report };
 }
 
-test("export lists Pages in tree order: home first, parents before children, siblings by position", async () => {
-  const { bundle, report, home, before, zeta, alpha, two, one, deep, project_id } =
+test("export carries the content by document_id and Pages in tree order, siblings by position", async () => {
+  const { bundle, report, source, content, before, zeta, alpha, two, one, deep, project_id } =
     await exportGuide({ outlinePage: 1 });
   assert.equal(bundle.format, BUNDLE_FORMAT);
-  assert.equal(bundle.version, 4);
+  assert.equal(bundle.version, 5);
   assert.equal(bundle.bundle_id, "3f0d6c2e-1f7b-4b8e-9a51-0c2d5e7f8a90");
-  assert.deepEqual(bundle.source, { origin: SOURCE, project_id, home_page_id: home.page_id });
+  assert.deepEqual(bundle.source, { origin: SOURCE, project_id, document_id: content.page_id });
   assert.equal(bundle.exported_at, "2026-11-01T00:00:00.000Z");
-  assert.deepEqual(bundle.project, {
-    title: "Pages engineering guide",
-    description: "How Pages is built.",
-  });
+  assert.equal(bundle.project.title, "Pages engineering guide");
+  assert.equal(bundle.project.description, "How Pages is built.");
+  assert.equal(bundle.project.content.source_document_id, content.page_id);
+  assert.equal(bundle.project.content.title, "Pages engineering guide");
+  assert.match(bundle.project.content.markdown, /The Project's content\.$/);
+  for (const key of ["source_page_id", "parent_source_id", "position"])
+    assert.equal(Object.hasOwn(bundle.project.content, key), false, key);
+  // The content was read through its Project, never by a Page ID.
+  const contentReads = source.calls.filter(
+    (call) => call.name === "read_page" && call.args.project_id === project_id,
+  );
+  assert.ok(contentReads.length >= 1);
+  assert.ok(contentReads.every((call) => call.args.page_id === undefined));
+  assert.ok(
+    source.calls.every(
+      (call) => call.name !== "read_page" || call.args.page_id !== content.page_id,
+    ),
+  );
   assert.deepEqual(
     bundle.pages.map((page) => [page.title, page.parent_source_id, page.position]),
     [
-      ["Pages engineering guide", null, "a1"],
-      ["Before home", null, "a0"],
+      ["Before", null, "a0"],
       ["Alpha", null, "a2"],
       ["Alpha one", alpha.page_id, "a0"],
       ["Alpha one deep", one.page_id, "a0"],
@@ -864,20 +942,18 @@ test("export lists Pages in tree order: home first, parents before children, sib
   );
   assert.deepEqual(
     bundle.pages.map((page) => page.source_page_id),
-    [home, before, alpha, one, deep, two, zeta].map((page) => page.page_id),
+    [before, alpha, one, deep, two, zeta].map((page) => page.page_id),
   );
-  assert.equal(bundle.pages[0].home, true);
-  assert.equal(bundle.pages.filter((page) => page.home).length, 1);
   validateBundle(bundle);
 
-  const alphaEntry = bundle.pages[2];
+  const alphaEntry = bundle.pages[1];
   assert.deepEqual(alphaEntry.blocks, ["First section.", "$$x$$"]);
   assert.equal(alphaEntry.markdown, "First section.\n\n$$x$$");
   // The preserved node is on the second outline page; only paging finds it.
   assert.equal(alphaEntry.preserved_markdown, true);
-  assert.equal(bundle.pages[1].blocks, undefined, "a single block needs no blocks array");
-  assert.equal(bundle.pages[3].private_images.length, 0);
-  assert.equal(bundle.pages[3].comment_threads, 2);
+  assert.equal(bundle.pages[0].blocks, undefined, "a single block needs no blocks array");
+  assert.equal(bundle.pages[2].private_images.length, 0);
+  assert.equal(bundle.pages[2].comment_threads, 2);
   assert.deepEqual(
     report.preserved_markdown.map((page) => page.title),
     ["Alpha"],
@@ -918,7 +994,7 @@ test("export reads an oversized Page through the unbounded read", async () => {
   );
 });
 
-test("import fills the home Page, nests the top level under it and keeps sibling order", async () => {
+test("import fills the content through project_id, puts the top level at parent null and keeps order", async () => {
   const { bundle } = await exportGuide();
   const target = fakePages(TARGET);
   const store = memoryStore();
@@ -928,21 +1004,53 @@ test("import fills the home Page, nests the top level under it and keeps sibling
   const [project] = target.projects.values();
   assert.equal(project.title, "Pages engineering guide");
   assert.equal(project.description, "How Pages is built.");
-  assert.equal(target.pages.size, bundle.pages.length, "no extra Page beside the home Page");
+  assert.equal(
+    target.pages.size,
+    bundle.pages.length + 1,
+    "the content document and the Pages, nothing more",
+  );
 
   const state = store.peek();
   const id = (title) =>
     state.pages[bundle.pages.find((page) => page.title === title).source_page_id];
-  const home = target.pages.get(project.home_page_id);
-  assert.equal(id("Pages engineering guide"), home.page_id);
-  assert.equal(home.home, true);
+  const content = target.pages.get(project.document_id);
+  assert.equal(state.pages[bundle.project.content.source_document_id], content.page_id);
+  assert.equal(content.content, true);
   assert.deepEqual(
-    home.blocks.map((block) => block.markdown),
-    [bundle.pages[0].markdown],
+    content.blocks.map((block) => block.markdown),
+    [bundle.project.content.markdown],
+  );
+  const contentEdits = target.calls.filter(
+    (call) => call.name === "edit_page" && call.args.project_id === project.project_id,
+  );
+  assert.ok(contentEdits.length >= 1, "the content was written through its Project");
+  assert.ok(
+    target.calls.every((call) => call.args?.page_id !== content.page_id),
+    "the content document was never addressed by page_id",
   );
   assert.deepEqual(
-    target.children(home.page_id).map((page) => page.title),
-    ["Before home", "Alpha", "Zeta"],
+    target.children(null).map((page) => page.title),
+    ["Before", "Alpha", "Zeta"],
+  );
+  // Top-level creates name the Project and nothing else as placement.
+  const roots = target.calls.filter(
+    (call) => call.name === "create_page" && call.args.parent_id === undefined,
+  );
+  assert.deepEqual(
+    roots.map((call) => [call.args.title, call.args.project_id]),
+    [
+      ["Before", project.project_id],
+      ["Alpha", project.project_id],
+      ["Zeta", project.project_id],
+    ],
+  );
+  assert.ok(
+    target.calls.every(
+      (call) =>
+        call.name !== "create_page" ||
+        (call.args.parent_id === undefined) !== (call.args.project_id === undefined),
+    ),
+    "a create names a parent or the Project, never both",
   );
   assert.deepEqual(
     target.children(id("Alpha")).map((page) => page.title),
@@ -957,15 +1065,15 @@ test("import fills the home Page, nests the top level under it and keeps sibling
     // Math becomes the literal text Page10 accepts.
     ["First section.", "\\$\\$x\\$\\$"],
   );
-  assert.ok(target.calls.every((call) => call.name !== "create_page" || call.args.parent_id));
   for (const call of target.calls.filter((call) => MUTATIONS.has(call.name))) {
     assert.match(call.args.idempotency_key, /^v1_[a-f0-9]{64}_[a-f0-9]{40}$/);
     assert.ok(call.args.retry_token);
   }
 
   assert.equal(report.verification.ok, true, report.verification.problems.join("\n"));
-  assert.equal(report.pages, 7);
+  assert.equal(report.pages, 6);
   assert.equal(report.created, 6);
+  assert.equal(report.document_id, project.document_id);
   assert.equal(report.comment_threads_not_migrated, 2);
   assert.deepEqual(
     report.preserved_markdown.map((page) => page.title),
@@ -976,6 +1084,8 @@ test("import fills the home Page, nests the top level under it and keeps sibling
     [],
   );
   assert.equal(report.url, `${TARGET}/project/${project.project_id}`);
+  // Nothing in the report, the state or the bundle names the removed concept.
+  assert.doesNotMatch(JSON.stringify([report, store.peek(), bundle]), /home/i);
 });
 
 test("a rerun after a lost response replays the same requests and duplicates nothing", async () => {
@@ -995,7 +1105,7 @@ test("a rerun after a lost response replays the same requests and duplicates not
   const report = await importBundle(client(target, TARGET), bundle, { store, ...quick });
   const replay = target.calls.find((call) => call.replayed);
   assert.deepEqual(replay.args, lost.args, "identical token, key and payload");
-  assert.equal(target.pages.size, bundle.pages.length);
+  assert.equal(target.pages.size, bundle.pages.length + 1);
   assert.equal(new Set([...target.pages.values()].map((page) => page.title)).size, 7);
   assert.equal(report.verification.ok, true);
   assert.equal(store.peek().pending, null);
@@ -1027,45 +1137,48 @@ test("a lost Project creation resumes the same Project", async () => {
 
 function linkBundle() {
   const ids = {
-    home: "11111111-1111-4111-8111-111111111111",
+    content: "11111111-1111-4111-8111-111111111111",
     child: "22222222-2222-4222-8222-222222222222",
     sibling: "33333333-3333-4333-8333-333333333333",
     outside: "44444444-4444-4444-8444-444444444444",
   };
   const project = "prj_55555555-5555-4555-8555-555555555555";
-  const page = (source_page_id, title, markdown, parent_source_id = null, home = false) => ({
-    source_page_id,
-    parent_source_id,
-    position: null,
-    home,
+  const body = (title, markdown) => ({
     title,
     markdown,
     preserved_markdown: false,
     private_images: [],
+    images: [],
     comment_threads: 0,
+  });
+  const page = (source_page_id, title, markdown, parent_source_id = null) => ({
+    source_page_id,
+    parent_source_id,
+    position: null,
+    ...body(title, markdown),
   });
   return {
     ids,
     project,
     bundle: {
       format: BUNDLE_FORMAT,
-      version: 1,
+      version: 5,
       bundle_id: "links-0000-bundle",
-      source: { origin: SOURCE, project_id: project, home_page_id: ids.home },
+      source: { origin: SOURCE, project_id: project, document_id: ids.content },
       exported_at: "2026-11-01T00:00:00.000Z",
-      project: { title: "Linked guide", description: "" },
+      project: {
+        title: "Linked guide",
+        description: "",
+        content: {
+          source_document_id: ids.content,
+          ...body("Linked guide", `Start at [the child](${SOURCE}/p/${ids.child}#intro).`),
+        },
+      },
       pages: [
-        page(
-          ids.home,
-          "Linked guide",
-          `Start at [the child](${SOURCE}/p/${ids.child}#intro).`,
-          null,
-          true,
-        ),
         page(
           ids.child,
           "Child",
-          `Back [home](${SOURCE}/?page=${ids.home}) or the [Project](${SOURCE}/project/${project}).`,
+          `Back [to the content](${SOURCE}/?page=${ids.content}) or the [Project](${SOURCE}/project/${project}).`,
         ),
         page(
           ids.sibling,
@@ -1090,10 +1203,11 @@ test("links point at the target after every Page exists; outside links are repor
       .get(map[source])
       .blocks.map((block) => block.markdown)
       .join("\n\n");
-  assert.equal(body(ids.home), `Start at [the child](${TARGET}/p/${map[ids.child]}#intro).`);
+  assert.equal(body(ids.content), `Start at [the child](${TARGET}/p/${map[ids.child]}#intro).`);
+  assert.equal(map[ids.content], project.document_id, "the content maps to the target document");
   assert.equal(
     body(ids.child),
-    `Back [home](${TARGET}/p/${map[ids.home]}) or the [Project](${TARGET}/project/${project.project_id}).`,
+    `Back [to the content](${TARGET}/p/${map[ids.content]}) or the [Project](${TARGET}/project/${project.project_id}).`,
   );
   assert.equal(
     body(ids.sibling),
@@ -1118,30 +1232,31 @@ test("links point at the target after every Page exists; outside links are repor
   assert.deepEqual(again.unresolved_links, report.unresolved_links);
 });
 
-test("the home Page takes the source home's title and body instead of a new sibling", async () => {
+test("the content document takes the source content's title and body; no Page is created for it", async () => {
   const { bundle } = linkBundle();
-  bundle.pages[0].title = "Start here";
+  bundle.project.content.title = "Start here";
   const target = fakePages(TARGET);
   await importBundle(client(target, TARGET), bundle, { store: memoryStore(), ...quick });
   const [project] = target.projects.values();
-  const home = target.pages.get(project.home_page_id);
+  const content = target.pages.get(project.document_id);
   assert.equal(project.title, "Linked guide");
-  assert.equal(home.title, "Start here");
-  assert.equal(home.blocks.length, 1);
-  assert.match(home.blocks[0].markdown, /^Start at \[the child\]/);
+  assert.equal(content.title, "Start here");
+  assert.equal(content.blocks.length, 1);
+  assert.match(content.blocks[0].markdown, /^Start at \[the child\]/);
   assert.equal(target.pages.size, 3);
   assert.equal([...target.pages.values()].filter((page) => page.title === "Start here").length, 1);
+  assert.equal(target.children(null).length, 1, "Child is the only top-level Page");
 });
 
 test("a body longer than one edit batch keeps its block order", async () => {
   const { bundle } = linkBundle();
   const blocks = Array.from({ length: EDIT_BATCH + 30 }, (_, index) => `Block ${index}`);
-  bundle.pages[2].blocks = blocks;
-  bundle.pages[2].markdown = blocks.join("\n\n");
+  bundle.pages[1].blocks = blocks;
+  bundle.pages[1].markdown = blocks.join("\n\n");
   const target = fakePages(TARGET);
   const store = memoryStore();
   await importBundle(client(target, TARGET), bundle, { store, ...quick });
-  const sibling = target.pages.get(store.peek().pages[bundle.pages[2].source_page_id]);
+  const sibling = target.pages.get(store.peek().pages[bundle.pages[1].source_page_id]);
   assert.deepEqual(
     sibling.blocks.map((block) => block.markdown),
     blocks,
@@ -1202,20 +1317,13 @@ test("import refuses the bundle's own source and a state file from another bundl
   );
 });
 
-test("targetPlacement maps the home, the top level and nested Pages", () => {
+test("targetPlacement maps the top level to project_id and nested Pages to their parent", () => {
   const context = {
-    homeSourceId: "home",
-    targetHomeId: "new-home",
+    projectId: "prj_new",
     pageIds: new Map([["parent", "new-parent"]]),
   };
-  assert.deepEqual(targetPlacement({ source_page_id: "home", parent_source_id: null }, context), {
-    home: true,
-  });
   assert.deepEqual(targetPlacement({ source_page_id: "a", parent_source_id: null }, context), {
-    parent_id: "new-home",
-  });
-  assert.deepEqual(targetPlacement({ source_page_id: "b", parent_source_id: "home" }, context), {
-    parent_id: "new-home",
+    project_id: "prj_new",
   });
   assert.deepEqual(targetPlacement({ source_page_id: "c", parent_source_id: "parent" }, context), {
     parent_id: "new-parent",
@@ -1247,19 +1355,43 @@ test("validateBundle names edits that would import something else", () => {
   edited.pages[1].blocks = ["Two", "blocks"];
   assert.throws(() => validateBundle(edited), /markdown and blocks disagree/);
   const reordered = structuredClone(bundle);
-  reordered.pages = [reordered.pages[0], reordered.pages[2], reordered.pages[1]];
+  reordered.pages = [reordered.pages[1], reordered.pages[0]];
   assert.throws(() => validateBundle(reordered), /parents come before children/);
-  const twoHomes = structuredClone(bundle);
-  twoHomes.pages[1].home = true;
-  assert.throws(() => validateBundle(twoHomes), /exactly one Page/);
+  // The content is not a Page: it carries no placement, and no Page is it.
+  const placed = structuredClone(bundle);
+  placed.project.content.parent_source_id = null;
+  assert.throws(
+    () => validateBundle(placed),
+    /project\.content is not a Page; drop parent_source_id/,
+  );
+  const asPage = structuredClone(bundle);
+  asPage.pages.unshift({
+    source_page_id: asPage.source.document_id,
+    parent_source_id: null,
+    position: null,
+    title: "Linked guide",
+    markdown: "",
+    preserved_markdown: false,
+    private_images: [],
+    images: [],
+    comment_threads: 0,
+  });
+  assert.throws(() => validateBundle(asPage), /belongs in project\.content/);
+  const mismatched = structuredClone(bundle);
+  mismatched.project.content.source_document_id = mismatched.pages[0].source_page_id;
+  assert.throws(() => validateBundle(mismatched), /must equal source\.document_id/);
+  const noContent = structuredClone(bundle);
+  delete noContent.project.content;
+  assert.throws(() => validateBundle(noContent), /project\.content must describe/);
   assert.deepEqual(
     planImport(bundle).map((step) => [step.title, step.action, step.under]),
     [
-      ["Linked guide", "fill the target Project's home Page", null],
-      ["Child", "create", "Linked guide"],
+      ["Linked guide", "fill the target Project's content", null],
+      ["Child", "create", null],
       ["Sibling", "create", "Child"],
     ],
   );
+  assert.equal(planImport(bundle)[0].source_document_id, bundle.source.document_id);
 });
 
 test("the client never puts the token in an error, and sorts errors by certainty", async () => {
@@ -1340,9 +1472,9 @@ test("a source origin with a trailing slash still rewrites its links", async () 
   const target = fakePages(TARGET);
   const store = memoryStore();
   await importBundle(client(target, TARGET), bundle, { store, ...quick });
-  const home = target.pages.get(store.peek().pages[ids.home]);
+  const content = target.pages.get(store.peek().pages[ids.content]);
   assert.equal(
-    home.blocks[0].markdown,
+    content.blocks[0].markdown,
     `Start at [the child](${TARGET}/p/${store.peek().pages[ids.child]}#intro).`,
   );
 });
@@ -1428,7 +1560,7 @@ async function expiredCreate({ applied }) {
   );
   target.hooks.before = null;
   const record = store.peek().reconciliation_required;
-  return { bundle, target, store, record, sibling: bundle.pages[2] };
+  return { bundle, target, store, record, sibling: bundle.pages[1] };
 }
 const writes = (target, from) =>
   target.calls.slice(from).filter((call) => MUTATIONS.has(call.name));
@@ -1496,7 +1628,7 @@ test("an unrelated same-title Page is never adopted, and --adopt checks parent, 
     return page;
   };
   const old = seed("Sibling", parent.page_id, "2026-10-01T00:00:00.000Z");
-  const elsewhere = seed("Sibling", project.home_page_id);
+  const elsewhere = seed("Sibling", null);
   const renamed = seed("Other", parent.page_id);
   const recent = seed("Sibling", parent.page_id);
 
@@ -1611,11 +1743,11 @@ test("an expired body batch is rewritten from a fresh read and converges", async
   for (const applied of [false, true]) {
     const { bundle } = linkBundle();
     const blocks = Array.from({ length: EDIT_BATCH + 30 }, (_, index) => `Block ${index}`);
-    bundle.pages[2].blocks = blocks;
-    bundle.pages[2].markdown = blocks.join("\n\n");
+    bundle.pages[1].blocks = blocks;
+    bundle.pages[1].markdown = blocks.join("\n\n");
     const target = fakePages(TARGET);
     const store = memoryStore();
-    // The Sibling's second batch is the fourth edit_page: home, Child, batch one.
+    // The Sibling's second batch is the fourth edit_page: content, Child, batch one.
     const second = (name, _args, count) => name === "edit_page" && count === 4;
     if (applied) target.hooks.dropResponse = second;
     else target.hooks.before = (...args) => (second(...args) ? "lost" : undefined);
@@ -1631,7 +1763,7 @@ test("an expired body batch is rewritten from a fresh read and converges", async
         ? { ok: false, body: { error: "Retry window expired", code: "retry_expired" } }
         : undefined;
     const report = await importBundle(client(target, TARGET), bundle, { store, ...quick });
-    const page = target.pages.get(store.peek().pages[bundle.pages[2].source_page_id]);
+    const page = target.pages.get(store.peek().pages[bundle.pages[1].source_page_id]);
     assert.deepEqual(
       page.blocks.map((block) => block.markdown),
       blocks,
@@ -1656,18 +1788,18 @@ function frameBytes(label) {
 }
 const base64 = (bytes) => Buffer.from(bytes).toString("base64");
 
-/** A source Project whose home Page holds two dataframes: one in its own
+/** A source Project whose content holds two dataframes: one in its own
  * block between prose blocks, and one inside a prose block. */
 async function dataframeSource({ token = KEY, ...options } = {}) {
-  const source = fakePages(SOURCE, { placement: "page9", token, ...options });
-  const { project_id, home } = source.seedProject({ title: "Usage report" });
-  home.blocks = [{ id: crypto.randomUUID(), kind: "markdown", markdown: "Intro prose." }];
-  const daily = await source.addDataframe(home, frameBytes("daily"), { title: "Usage by day" });
-  home.blocks.push({ id: crypto.randomUUID(), kind: "markdown", markdown: "Between." });
+  const source = fakePages(SOURCE, { token, ...options });
+  const { project_id, content } = source.seedProject({ title: "Usage report" });
+  content.blocks = [{ id: crypto.randomUUID(), kind: "markdown", markdown: "Intro prose." }];
+  const daily = await source.addDataframe(content, frameBytes("daily"), { title: "Usage by day" });
+  content.blocks.push({ id: crypto.randomUUID(), kind: "markdown", markdown: "Between." });
   // A browser drop leaves a dataframe inside a prose block.
-  const weekly = await source.addDataframe(home, frameBytes("weekly"), { title: "By week" });
-  const dropped = home.blocks.pop();
-  home.blocks.push({
+  const weekly = await source.addDataframe(content, frameBytes("weekly"), { title: "By week" });
+  const dropped = content.blocks.pop();
+  content.blocks.push({
     id: crypto.randomUUID(),
     kind: "markdown",
     markdown: `Before the drop.\n\n${dropped.markdown}\n\nAfter the drop.`,
@@ -1684,13 +1816,13 @@ async function dataframeSource({ token = KEY, ...options } = {}) {
       uuid: () => "8c1d6c2e-1f7b-4b8e-9a51-0c2d5e7f8a90",
     });
   const { bundle, report } = await exporting();
-  return { source, home, daily, weekly, bundle, report, exporting };
+  return { source, content, daily, weekly, bundle, report, exporting };
 }
 
 test("export carries each dataframe's bytes, checked against its asset_id", async () => {
   const { bundle, report, daily, weekly } = await dataframeSource();
   validateBundle(bundle);
-  const [page] = bundle.pages;
+  const page = bundle.project.content;
   assert.deepEqual(
     page.dataframes.map((frame) => [frame.asset_id, frame.title]),
     [
@@ -1715,11 +1847,11 @@ test("import stores each dataframe on its target Page and writes it as a node", 
   assert.equal(report.dataframes, 2);
   assert.deepEqual(report.dataframes_not_copied, []);
   const [project] = target.projects.values();
-  const home = target.pages.get(project.home_page_id);
-  const path = (assetId) => `/api/pages/${home.page_id}/assets/${assetId}`;
+  const content = target.pages.get(project.document_id);
+  const path = (assetId) => `/api/pages/${content.page_id}/assets/${assetId}`;
   // The dataframe inside a prose block splits it there.
   assert.deepEqual(
-    home.blocks.map((block) => [block.type ?? "paragraph", block.markdown]),
+    content.blocks.map((block) => [block.type ?? "paragraph", block.markdown]),
     [
       ["paragraph", "Intro prose."],
       ["dataframe", `[Dataframe: Usage by day](${path(daily.asset_id)})`],
@@ -1729,7 +1861,12 @@ test("import stores each dataframe on its target Page and writes it as a node", 
       ["paragraph", "After the drop."],
     ],
   );
-  assert.deepEqual(target.assets.get(`${home.page_id}/${daily.asset_id}`), frameBytes("daily"));
+  assert.deepEqual(target.assets.get(`${content.page_id}/${daily.asset_id}`), frameBytes("daily"));
+  // Bytes went to the content document's asset route; the node was inserted
+  // through the Project.
+  assert.ok(
+    target.assetCalls.every((call) => call.path.startsWith(`/api/pages/${content.page_id}/`)),
+  );
   // A rerun writes nothing and uploads nothing more.
   const uploads = target.assetCalls.length;
   const edits = target.calls.filter((call) => call.name === "edit_page").length;
@@ -1756,9 +1893,9 @@ test("a Pages OAuth token leaves dataframes as reported links", async () => {
   assert.equal(result.dataframes, 0);
   assert.equal(result.dataframes_not_copied.length, 1);
   const [project] = target.projects.values();
-  const home = target.pages.get(project.home_page_id);
-  assert.ok(home.blocks.every((block) => block.type === undefined));
-  assert.ok(home.blocks.some((block) => block.markdown === daily.line));
+  const content = target.pages.get(project.document_id);
+  assert.ok(content.blocks.every((block) => block.type === undefined));
+  assert.ok(content.blocks.some((block) => block.markdown === daily.line));
   assert.equal(target.assetCalls.length, 0);
 });
 
@@ -1772,12 +1909,6 @@ test("import refuses a bundle whose asset bytes don't match their id, before wri
     /data for asset .* doesn't match its id/,
   );
   assert.equal(target.calls.filter((call) => MUTATIONS.has(call.name)).length, 0);
-  // A version 1 bundle, from before dataframes, still imports.
-  const old = structuredClone(bundle);
-  old.version = 1;
-  delete old.assets;
-  for (const page of old.pages) delete page.dataframes;
-  validateBundle(old);
 });
 
 test("bodyUnits takes a dataframe line only alone, outside fences, quotes and lists", () => {
@@ -1832,11 +1963,11 @@ test("bodyOperations puts leading dataframes first and replaces the first block"
 });
 
 test("a rerun over a body an earlier run wrote, dataframes first, converges", async () => {
-  const source = fakePages(SOURCE, { placement: "page9" });
-  const { project_id, home } = source.seedProject({ title: "Frames first" });
-  home.blocks = [];
-  await source.addDataframe(home, frameBytes("lead"), { title: "Lead" });
-  home.blocks.push({ id: crypto.randomUUID(), kind: "markdown", markdown: "After the lead." });
+  const source = fakePages(SOURCE);
+  const { project_id, content } = source.seedProject({ title: "Frames first" });
+  content.blocks = [];
+  await source.addDataframe(content, frameBytes("lead"), { title: "Lead" });
+  content.blocks.push({ id: crypto.randomUUID(), kind: "markdown", markdown: "After the lead." });
   const { bundle } = await exportProject(client(source, SOURCE), {
     projectId: project_id,
     ...quick,
@@ -1851,7 +1982,7 @@ test("a rerun over a body an earlier run wrote, dataframes first, converges", as
   );
   target.hooks.dropResponse = null;
   const [project] = target.projects.values();
-  const page = target.pages.get(project.home_page_id);
+  const page = target.pages.get(project.document_id);
   assert.equal(page.blocks[0].type, "dataframe", "the first run wrote the dataframe first");
   // Forget the pending edit too: the next run must work from what's there.
   store.peek().pending = null;
@@ -1866,12 +1997,12 @@ test("a rerun over a body an earlier run wrote, dataframes first, converges", as
 });
 
 test("two dataframes showing one asset keep their own titles", async () => {
-  const source = fakePages(SOURCE, { placement: "page9" });
-  const { project_id, home } = source.seedProject({ title: "Same asset" });
-  home.blocks = [{ id: crypto.randomUUID(), kind: "markdown", markdown: "Two views." }];
+  const source = fakePages(SOURCE);
+  const { project_id, content } = source.seedProject({ title: "Same asset" });
+  content.blocks = [{ id: crypto.randomUUID(), kind: "markdown", markdown: "Two views." }];
   const bytes = frameBytes("shared");
-  await source.addDataframe(home, bytes, { title: "By day" });
-  await source.addDataframe(home, bytes, { title: "By week" });
+  await source.addDataframe(content, bytes, { title: "By day" });
+  await source.addDataframe(content, bytes, { title: "By week" });
   const { bundle } = await exportProject(client(source, SOURCE), {
     projectId: project_id,
     ...quick,
@@ -1882,7 +2013,7 @@ test("two dataframes showing one asset keep their own titles", async () => {
   const [project] = target.projects.values();
   assert.deepEqual(
     target.pages
-      .get(project.home_page_id)
+      .get(project.document_id)
       .blocks.filter((block) => block.type === "dataframe")
       .map((block) => block.attrs.title),
     ["By day", "By week"],
@@ -1950,35 +2081,35 @@ test("the client sends its credential only to same-origin asset paths", async ()
 });
 
 test("an outline src that isn't its own asset path is never downloaded", async () => {
-  const source = fakePages(SOURCE, { placement: "page9" });
-  const { project_id, home } = source.seedProject({ title: "Hostile src" });
-  home.blocks = [{ id: crypto.randomUUID(), kind: "markdown", markdown: "Intro." }];
-  const frame = await source.addDataframe(home, frameBytes("x"), { title: "X" });
-  home.blocks.at(-1).attrs.src = "@evil.example/steal";
+  const source = fakePages(SOURCE);
+  const { project_id, content } = source.seedProject({ title: "Hostile src" });
+  content.blocks = [{ id: crypto.randomUUID(), kind: "markdown", markdown: "Intro." }];
+  const frame = await source.addDataframe(content, frameBytes("x"), { title: "X" });
+  content.blocks.at(-1).attrs.src = "@evil.example/steal";
   const { bundle } = await exportProject(client(source, SOURCE), {
     projectId: project_id,
     ...quick,
   });
-  assert.equal(bundle.pages[0].dataframes, undefined);
+  assert.equal(bundle.project.content.dataframes, undefined);
   assert.deepEqual(bundle.assets, {});
   assert.equal(source.assetCalls.length, 0);
   // The line itself still reads as a dataframe link, reported as not copied.
-  assert.deepEqual(bundle.pages[0].unlisted_dataframes, [frame.src]);
+  assert.deepEqual(bundle.project.content.unlisted_dataframes, [frame.src]);
   // A bundle edited to point a src elsewhere is refused.
   const { bundle: good, daily } = await dataframeSource();
   const edited = structuredClone(good);
-  edited.pages[0].dataframes[0].src = "@evil.example/steal";
+  edited.project.content.dataframes[0].src = "@evil.example/steal";
   assert.throws(() => validateBundle(edited), /a src naming it/);
   assert.ok(daily);
 });
 
 test("a dataframe whose asset is missing on the source imports as a reported link", async () => {
-  const source = fakePages(SOURCE, { placement: "page9" });
-  const { project_id, home } = source.seedProject({ title: "Missing asset" });
-  home.blocks = [{ id: crypto.randomUUID(), kind: "markdown", markdown: "Intro." }];
-  const kept = await source.addDataframe(home, frameBytes("kept"), { title: "Kept" });
-  const gone = await source.addDataframe(home, frameBytes("gone"), { title: "Gone" });
-  source.assets.delete(`${home.page_id}/${gone.asset_id}`);
+  const source = fakePages(SOURCE);
+  const { project_id, content } = source.seedProject({ title: "Missing asset" });
+  content.blocks = [{ id: crypto.randomUUID(), kind: "markdown", markdown: "Intro." }];
+  const kept = await source.addDataframe(content, frameBytes("kept"), { title: "Kept" });
+  const gone = await source.addDataframe(content, frameBytes("gone"), { title: "Gone" });
+  source.assets.delete(`${content.page_id}/${gone.asset_id}`);
   const { bundle, report } = await exportProject(client(source, SOURCE), {
     projectId: project_id,
     ...quick,
@@ -1986,38 +2117,38 @@ test("a dataframe whose asset is missing on the source imports as a reported lin
   assert.deepEqual(Object.keys(bundle.assets), [kept.asset_id]);
   assert.match(report.warnings.join("\n"), /missing on the source/);
   assert.deepEqual(report.dataframes_not_copied, [
-    { title: "Missing asset", source_page_id: home.page_id, assets: [gone.src] },
+    { title: "Missing asset", source_document_id: content.page_id, assets: [gone.src] },
   ]);
 });
 
 test("a dataframe line inside a quote isn't a private image; it's reported as not copied", async () => {
-  const source = fakePages(SOURCE, { placement: "page9" });
-  const { project_id, home } = source.seedProject({ title: "Quoted" });
-  const frame = await source.addDataframe(home, frameBytes("q"), { title: "Q" });
-  home.blocks = [
+  const source = fakePages(SOURCE);
+  const { project_id, content } = source.seedProject({ title: "Quoted" });
+  const frame = await source.addDataframe(content, frameBytes("q"), { title: "Q" });
+  content.blocks = [
     { id: crypto.randomUUID(), kind: "markdown", markdown: `> ${frame.line}\n>\n> Quoted.` },
   ];
   const { bundle, report } = await exportProject(client(source, SOURCE), {
     projectId: project_id,
     ...quick,
   });
-  assert.deepEqual(bundle.pages[0].private_images, []);
-  assert.deepEqual(bundle.pages[0].unlisted_dataframes, [frame.src]);
+  assert.deepEqual(bundle.project.content.private_images, []);
+  assert.deepEqual(bundle.project.content.unlisted_dataframes, [frame.src]);
   assert.deepEqual(report.dataframes_not_copied[0].assets, [frame.src]);
 });
 
 test("a quoted copy of a top-level dataframe is reported as not copied", async () => {
-  const source = fakePages(SOURCE, { placement: "page9" });
-  const { project_id, home } = source.seedProject({ title: "Quoted copy" });
-  home.blocks = [{ id: crypto.randomUUID(), kind: "markdown", markdown: "Intro." }];
-  const frame = await source.addDataframe(home, frameBytes("q"), { title: "Q" });
-  home.blocks.push({ id: crypto.randomUUID(), kind: "markdown", markdown: `> ${frame.line}` });
+  const source = fakePages(SOURCE);
+  const { project_id, content } = source.seedProject({ title: "Quoted copy" });
+  content.blocks = [{ id: crypto.randomUUID(), kind: "markdown", markdown: "Intro." }];
+  const frame = await source.addDataframe(content, frameBytes("q"), { title: "Q" });
+  content.blocks.push({ id: crypto.randomUUID(), kind: "markdown", markdown: `> ${frame.line}` });
   const { bundle, report } = await exportProject(client(source, SOURCE), {
     projectId: project_id,
     ...quick,
   });
-  assert.equal(bundle.pages[0].dataframes.length, 1);
-  assert.deepEqual(bundle.pages[0].unlisted_dataframes, [frame.src]);
+  assert.equal(bundle.project.content.dataframes.length, 1);
+  assert.deepEqual(bundle.project.content.unlisted_dataframes, [frame.src]);
   assert.deepEqual(report.dataframes_not_copied[0].assets, [frame.src]);
 });
 
@@ -2035,14 +2166,112 @@ test("asset requests never follow a redirect, and a 404 is told apart by status"
 });
 
 test("a source path is listed once in the not-copied report", async () => {
-  const source = fakePages(SOURCE, { placement: "page9", token: "pages_oauth-token" });
-  const { project_id, home } = source.seedProject({ title: "Twice" });
-  home.blocks = [{ id: crypto.randomUUID(), kind: "markdown", markdown: "Intro." }];
-  const frame = await source.addDataframe(home, frameBytes("t"), { title: "T" });
-  home.blocks.push({ id: crypto.randomUUID(), kind: "markdown", markdown: `> ${frame.line}` });
+  const source = fakePages(SOURCE, { token: "pages_oauth-token" });
+  const { project_id, content } = source.seedProject({ title: "Twice" });
+  content.blocks = [{ id: crypto.randomUUID(), kind: "markdown", markdown: "Intro." }];
+  const frame = await source.addDataframe(content, frameBytes("t"), { title: "T" });
+  content.blocks.push({ id: crypto.randomUUID(), kind: "markdown", markdown: `> ${frame.line}` });
   const { report } = await exportProject(client(source, SOURCE, "pages_oauth-token"), {
     projectId: project_id,
     ...quick,
   });
   assert.deepEqual(report.dataframes_not_copied[0].assets, [frame.src]);
+});
+
+test("a source or target whose Projects carry no document_id is refused before any write", async () => {
+  const source = fakePages(SOURCE);
+  const { project_id } = source.seedProject({ title: "Old shape" });
+  delete source.projects.get(project_id).document_id;
+  await assert.rejects(
+    exportProject(client(source, SOURCE), { projectId: project_id, ...quick }),
+    (error) => error.code === "source_unsupported" && /document_id/.test(error.message),
+  );
+  assert.ok(
+    source.calls.every((call) => call.name !== "read_page"),
+    "nothing was guessed",
+  );
+
+  const { bundle } = linkBundle();
+  const target = fakePages(TARGET);
+  target.hooks.before = (name) =>
+    name === "create_project"
+      ? { ok: true, body: { project_id: "prj_11111111-1111-4111-8111-111111111111", revision: 0 } }
+      : undefined;
+  await assert.rejects(
+    importBundle(client(target, TARGET), bundle, { store: memoryStore(), ...quick }),
+    { code: "target_unsupported" },
+  );
+  assert.equal(target.calls.filter((call) => call.name === "create_page").length, 0);
+});
+
+test("an expired top-level create reconciles against the Project's top level, not a parent", async () => {
+  const { bundle } = linkBundle();
+  const target = fakePages(TARGET);
+  const store = memoryStore();
+  // Child is the first create_page, at the top level.
+  target.hooks.dropResponse = (name, _args, count) => name === "create_page" && count === 1;
+  await assert.rejects(
+    importBundle(client(target, TARGET), bundle, { store, attempts: 1, ...quick }),
+    (error) => error.uncertain,
+  );
+  target.hooks.dropResponse = null;
+  target.hooks.before = (name) =>
+    name === "create_page"
+      ? { ok: false, body: { error: "Retry window expired", code: "retry_expired" } }
+      : undefined;
+  await assert.rejects(importBundle(client(target, TARGET), bundle, { store, ...quick }), {
+    code: "reconciliation_required",
+  });
+  target.hooks.before = null;
+  const record = store.peek().reconciliation_required;
+  const [project] = target.projects.values();
+  assert.equal(record.args.parent_id, undefined);
+  assert.equal(record.args.project_id, project.project_id);
+  const made = [...target.pages.values()].find((page) => page.title === "Child");
+  const listed = await importBundle(client(target, TARGET), bundle, {
+    store,
+    reconcile: true,
+    ...quick,
+  });
+  assert.deepEqual(
+    listed.reconciliation.candidates.map((entry) => entry.page_id),
+    [made.page_id],
+  );
+  // The content document is never a candidate, whatever its title.
+  target.pages.get(project.document_id).title = "Child";
+  const again = await importBundle(client(target, TARGET), bundle, {
+    store,
+    reconcile: true,
+    ...quick,
+  });
+  assert.deepEqual(
+    again.reconciliation.candidates.map((entry) => entry.page_id),
+    [made.page_id],
+  );
+  // The content document is already the content's mapping, so it is refused
+  // before placement is even checked.
+  await assert.rejects(
+    importBundle(client(target, TARGET), bundle, { store, adopt: project.document_id, ...quick }),
+    (error) => error.code === "adopt_refused" && /already maps to it/.test(error.message),
+  );
+  const stray = target.insert({
+    title: "Child",
+    blocks: ["Elsewhere."],
+    project_id: project.project_id,
+    parent_id: made.page_id,
+  });
+  await assert.rejects(
+    importBundle(client(target, TARGET), bundle, { store, adopt: stray.page_id, ...quick }),
+    /not at the top level of the recorded Project/,
+  );
+  const report = await importBundle(client(target, TARGET), bundle, {
+    store,
+    adopt: made.page_id,
+    ...quick,
+  });
+  assert.equal(report.verification.ok, true);
+  assert.deepEqual(
+    target.children(null).map((page) => page.page_id),
+    [made.page_id],
+  );
 });

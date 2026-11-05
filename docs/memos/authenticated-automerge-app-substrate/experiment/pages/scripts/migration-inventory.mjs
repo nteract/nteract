@@ -15,8 +15,13 @@
  * provenance, not authenticated proof. The report hashes the input itself.
  *
  * Catalog entries: owner page/, trash/, space/, host/deleted/ keys, including
- * pending placeholders, parent IDs, Project home IDs and deletion tombstones
- * (worker/catalog.mjs). Exclude unrelated keys and shared-title caches. D1
+ * pending placeholders, parent IDs, Project content document IDs and deletion
+ * tombstones (worker/catalog.mjs). A space/ record names its content document
+ * as document_id (location shape v2); a snapshot taken before the content
+ * migration names it with the retired home_page_id field instead. Both are
+ * accepted so pre- and post-migration evidence can be compared: the Page is
+ * retained under catalog kind "content" or "legacy_content", and a record
+ * naming neither, or both, is invalid. Exclude unrelated keys and shared-title caches. D1
  * pages_catalog_* rows are projections, not authoritative enumeration.
  * Host record: decoded host/document or explicit null. creation: null or
  * {metadata} from host/creation, including native registration intents. Do NOT
@@ -28,8 +33,8 @@
  * Missing or empty heads leave document/row verification incomplete; malformed
  * heads block it. Both documents require nonempty independent expected heads.
  *
- * Every observed account/Page is retained, including home/nested/trash/pending/
- * deleted/host-only entries. Inactive/API-only Pages have no special persisted
+ * Every observed account/Page is retained, including content/nested/trash/
+ * pending/deleted/host-only entries. Inactive/API-only Pages have no special persisted
  * category: an exporter must not filter on activity or API visibility. Results
  * verify m2 (preferred) or legacy m, ranges, part sizes, A.load, dependencies,
  * manifest/prior heads, root shape and supported stamps, not all content nodes.
@@ -295,7 +300,15 @@ export async function auditInventory(input) {
         requireEvidence(++entryCount <= LIMITS.entries, "entry_limit");
         if (key.startsWith("space/")) {
           requireEvidence(object(value), "invalid_project");
-          reference(value.home_page_id, catalog.account, "home");
+          // Exactly one of the current and the retired content field.
+          const current = Object.hasOwn(value, "document_id");
+          const legacy = Object.hasOwn(value, "home_page_id");
+          requireEvidence(current !== legacy, "invalid_project");
+          if (current) reference(value.document_id, catalog.account, "content");
+          else {
+            reference(value.home_page_id, catalog.account, "legacy_content");
+            issue("project_content_unmigrated");
+          }
         } else if (key.startsWith("host/deleted/")) {
           requireEvidence(value === true, "invalid_tombstone");
           reference(key.slice(13), catalog.account, "deleted");

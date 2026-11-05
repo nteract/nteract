@@ -194,17 +194,13 @@ test("move: the form starts where the Page is, and Move stays off until it chang
   assert.deepEqual(initialMove().origin, { target: null, parent_id: null });
 });
 
-test("moveOrigin reads read_page's location: the home Page is the top level", () => {
-  const crumbs = [
-    { kind: "project", project_id: PRJ, title: "Launch" },
-    { kind: "page", page_id: "home", title: "Launch", home: true },
-  ];
-  // Top level of a Project: read_page's parent is the home Page.
-  assert.deepEqual(moveOrigin({ project_id: PRJ, parent_id: "home", breadcrumbs: crumbs }), {
+test("moveOrigin reads read_page's location: null parent is the top level", () => {
+  const crumbs = [{ kind: "project", project_id: PRJ, title: "Launch" }];
+  assert.deepEqual(moveOrigin({ project_id: PRJ, parent_id: null, breadcrumbs: crumbs }), {
     target: PRJ,
     parent_id: null,
   });
-  assert.deepEqual(moveOrigin({ project_id: PRJ, parent_id: "home" }, "home"), {
+  assert.deepEqual(moveOrigin({ project_id: PRJ }), {
     target: PRJ,
     parent_id: null,
   });

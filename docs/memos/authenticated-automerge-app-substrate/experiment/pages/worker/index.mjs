@@ -280,10 +280,11 @@ const ASSET_CHECKS = Object.freeze({
 import {
   appendPosition,
   childrenOf,
-  homeEntry,
   locationAnswer,
   locationEntries,
   locationScan,
+  migrationRequired,
+  requireCurrentShape,
   parentActive,
   projectOf,
   publicLocation,
@@ -298,6 +299,14 @@ import {
   migrateLocationShape,
   shapeState,
 } from "./location-shape.mjs";
+// ONE-SHOT MIGRATION imports: delete with home-removal-migration.mjs.
+import {
+  HOME_REMOVAL_MODES,
+  HOME_REMOVAL_STATE_KEY,
+  applyHomeRemoval,
+  planHomeRemoval,
+  readHomeRemovalInput,
+} from "./home-removal-migration.mjs";
 import { LOCATION_REVISION_KEY, movePage } from "./move-page.mjs";
 import {
   PROJECT_ACCESS_EMPTY,
@@ -314,7 +323,7 @@ import {
 } from "../model/location.mjs";
 import {
   SPACE_LIMIT,
-  homePageMarkdown,
+  projectContentMarkdown,
   newSpaceId,
   requirePageIdArgument,
   requireSpaceIdArgument,
@@ -389,6 +398,24 @@ const operations = new Set([
   "get_page_access",
   "manage_page_access",
 ]);
+/** Refuse unless the caller can read Project `spaceId`, with the caller's
+ * own credentials, as every Project read is. A project_id content address
+ * never widens access: a direct grant on the document alone is not a
+ * Project reader and gets not-found. */
+async function requireProjectReader(request, env, spaceId) {
+  requireSpaceIdArgument(spaceId);
+  const response = await env.PROJECTS.getByName(spaceId).fetch(
+    forwarded(request, "/internal/space/read", { space_id: spaceId, claim: false }),
+  );
+  if (response.ok) return void (await response.body?.cancel());
+  if (response.status === 404 || response.status === 403) throw spaceNotFound();
+  const body = await response.json().catch(() => ({}));
+  throw new HttpError(
+    response.status,
+    body.error ?? "Project is temporarily unavailable",
+    body.code,
+  );
+}
 /** Project operations under their stored Space names. Each goes through the
  * caller's own Catalog, which calls the Project with the caller's credentials.
  * Storage keeps the Space name so a rollback build reads the same records;
@@ -542,17 +569,12 @@ const hasChildren = () =>
 /** The reply for a leaf guard that refused a Trash, or undefined for any
  * other failure. */
 const leafRefusalOf = (error) =>
-  ["page_has_children", "home_page_protected"].includes(error.code)
+  ["page_has_children", "project_content_protected"].includes(error.code)
     ? { status: error.status, body: { error: error.message, code: error.code } }
     : undefined;
-/** A home Page's Catalog location: a root of its Project, before every
- * other Page at the Project's top level. */
-const homeLocation = (spaceId) => ({
-  parent_id: null,
-  position: "a0",
-  space_id: spaceId,
-  home: true,
-});
+/** A Project content document's Catalog marker. It has no location: it is
+ * not a Page in the tree (catalog-location.mjs). */
+const contentMarker = (spaceId) => ({ project_content: spaceId });
 /** A Page's owner Catalog, reached with a host request. It answers IDs
  * only; callers filter them with the caller's access. */
 const locationRequest = (query) =>
@@ -650,7 +672,7 @@ function validateCreateInput(args) {
  * - `parent_id`: under that Page, in whichever container it sits (a Project
  *   or Your items);
  * - `space_id` (the API's `project_id`, mapped by the Project API) naming a
- *   Project: its top level, under its home Page;
+ *   Project: its top level, a root carrying its space_id;
  * - `space_id: null`: a root in Your items.
  * Both together must agree (`placement_mismatch`). Naming neither is
  * `move_destination_required`, the one destination this tool can't place.
@@ -901,7 +923,10 @@ async function invoke(request, env, operation, args = {}, seen) {
   const safe = safeToRepeat(operation, args);
   return withinToolDeadline(
     async (signal) => {
-      if (projectId) args = await resolveProjectContent(env, args, signal);
+      if (projectId) {
+        await untilAborted(requireProjectReader(request, env, projectId), signal);
+        args = await resolveProjectContent(env, args, signal);
+      }
       if (operation === "import_page_image") {
         if (Object.keys(args).some((key) => !["page_id", "file"].includes(key)))
           throw new HttpError(400, "Invalid image import arguments");
@@ -934,12 +959,13 @@ async function invoke(request, env, operation, args = {}, seen) {
       if (!response.ok || (operation !== "read_page" && !projectId))
         return bufferedResponse(response, signal);
       const body = await readResponseJson(response, signal);
-      // locationView can claim Project invitations. A content address never
-      // grants Project metadata or membership, even after a direct Page grant.
-      if (projectId) {
+      // A project_id address answers only to a caller who can read the
+      // Project; locationView then reports it as Project content. A direct
+      // grant alone reads by document ID and is never told the Project.
+      if (projectId && operation !== "read_page") {
         delete body._owner;
         body.project_id = projectId;
-      } else await locationView(request, env, body, signal);
+      } else await locationView(request, env, body, signal, identity);
       return json(body, response.status);
     },
     { safe },
@@ -1002,8 +1028,9 @@ async function pageCards(request, env, identity, args) {
  * reveals its Project. This runs in the stateless gateway: a Page never calls
  * its owner's Catalog.
  */
-async function locationView(request, env, body, signal) {
+async function locationView(request, env, body, signal, identity) {
   const owner = body._owner;
+  let migrationRefused = false;
   delete body._owner;
   body.kind = "page";
   body.breadcrumbs = [];
@@ -1024,7 +1051,10 @@ async function locationView(request, env, body, signal) {
         controller.signal,
       );
       if (!response.ok) {
-        await response.body?.cancel().catch(() => {});
+        if (response.status === 503 && namespace === env.CATALOGS) {
+          const refusal = await response.json().catch(() => ({}));
+          if (refusal?.code === MIGRATION_REQUIRED) migrationRefused = true;
+        } else await response.body?.cancel().catch(() => {});
         return null;
       }
       return await readResponseJson(response, controller.signal);
@@ -1041,6 +1071,10 @@ async function locationView(request, env, body, signal) {
     typeof owner === "string"
       ? await readable(env.CATALOGS, owner, locationRequest({ page_id: body.page_id }))
       : null;
+  // The owner's own unmigrated Catalog can't say whether this is Project
+  // content: refuse rather than call it a plain Page. Anyone else keeps the
+  // private direct-grant view, which never names a Project.
+  if (!location && migrationRefused && identity?.principal === owner) throw migrationRequired();
   if (!location) return;
   // Top-level Pages in Your items.
   if (!location.space_id && !location.parent_id) {
@@ -1066,19 +1100,21 @@ async function locationView(request, env, body, signal) {
     ? await readable(
         env.PROJECTS,
         location.space_id,
-        forwarded(request, "/internal/space/read", { space_id: location.space_id }),
+        // Decorating a response never claims an invitation.
+        forwarded(request, "/internal/space/read", {
+          space_id: location.space_id,
+          claim: false,
+        }),
       )
     : null;
   if (space) {
     body.space_id = location.space_id;
     if (!location.parent_id) body.parent_id = null;
-    if (location.home) body.home = true;
+    // A Project's content document reads as the Project itself, only for a
+    // caller who can read the Project.
+    if (location.content) body.kind = "project";
     // The whole chain is visible to whoever can read the Project in this build.
     if (reachedRoot) chain.unshift({ kind: "space", space_id: space.space_id, title: space.title });
-    // The home Page stands for its Project; viewers may fold its crumb into
-    // the Project's.
-    for (const crumb of chain)
-      if (crumb.kind === "page" && crumb.page_id === space.home_page_id) crumb.home = true;
   }
   body.breadcrumbs = chain;
 }
@@ -1341,9 +1377,19 @@ const gateway = {
         }
         return await withRefusalCode(await usage.finish(response));
       }
-      const imageRoute = url.pathname.match(/^\/api\/pages\/([^/]+)\/assets(?:\/([^/]+))?$/);
+      const imageRoute = url.pathname.match(
+        /^\/api\/(pages|projects)\/([^/]+)\/assets(?:\/([^/]+))?$/,
+      );
       if (imageRoute) {
-        const [, pageId, assetId] = imageRoute;
+        const [, container, id, assetId] = imageRoute;
+        // A Project's assets belong to its content document.
+        let pageId = id;
+        if (container === "projects") {
+          await requireProjectReader(request, env, id);
+          pageId = (
+            await resolveProjectContent(env, { project_id: id }, new AbortController().signal)
+          ).page_id;
+        }
         // API-key clients upload here too; their refusals get a code as on /api/tools.
         return await withRefusalCode(
           await handleImageAssets(request, env, {
@@ -1369,6 +1415,15 @@ const gateway = {
           },
           recheckUpload: () => authorizeImage(request, env, pageId, false),
         });
+      }
+      // ONE-SHOT MIGRATION route (home-removal-migration.mjs; delete with it).
+      if (url.pathname === "/api/admin/home-removal" && request.method === "POST") {
+        const identity = await authenticate(request, env);
+        return await withRefusalCode(
+          await env.CATALOGS.getByName(identity.principal).fetch(
+            forwarded(request, "/internal/home-removal", await readJson(request)),
+          ),
+        );
       }
       if (url.pathname === "/api/access") {
         await authenticate(request, env);
@@ -1448,23 +1503,20 @@ export class Catalog {
           throw new HttpError(403, "Account access denied");
       }
       const query = await readJson(request);
-      const entries = await locationEntries(this.storage);
+      const { entries, contents } = await locationScan(this.storage);
       if (query?.project_content !== undefined) {
         if (request.headers.has("authorization") || request.headers.has("cookie"))
           throw spaceNotFound();
         requireSpaceIdArgument(query.project_content);
         const record = await this.storage.get(`space/${query.project_content}`);
-        const location = locationAnswer(entries, query.page_id);
+        const content = contents.get(query.page_id);
         if (
           !record ||
           record.pending ||
           record.space_id !== query.project_content ||
-          record.home_page_id !== query.page_id ||
-          location?.state !== "active" ||
-          !location.complete ||
-          !location.home ||
-          location.parent_id !== null ||
-          location.space_id !== query.project_content
+          record.document_id !== query.page_id ||
+          content?.state !== "active" ||
+          content.space_id !== query.project_content
         )
           throw spaceNotFound();
         await this.storage.sync();
@@ -1487,7 +1539,7 @@ export class Catalog {
         return json({ children: childrenOf(entries, query.children_of) });
       }
       if (!validPageId(query?.page_id)) throw new HttpError(400, "Invalid page_id");
-      const answer = locationAnswer(entries, query.page_id);
+      const answer = locationAnswer(entries, query.page_id, contents);
       if (!answer) throw new HttpError(404, "Page not found");
       return json(answer);
     } catch (error) {
@@ -1607,32 +1659,86 @@ export class Catalog {
    * The Catalog's location shape, brought up to date. Every queued write
    * runs this once its input is sound and before it reserves or writes
    * anything; a `migrated` record costs one read (location-shape.mjs).
-   * Location writes need `migrated`; other writes and every read run in
-   * either shape, because a Page's Project is derived from its root in both.
+   * Location writes need `migrated`. Reads don't record anything, but a
+   * Catalog still holding the retired shape refuses them too
+   * (catalog-location.mjs `locationScan`).
    */
   async locationShape() {
     return migrateLocationShape(this.storage);
+  }
+  /**
+   * ONE-SHOT MIGRATION (home-removal-migration.mjs; delete with it). The
+   * owner's `dry_run` reports; `apply` rewrites Space records, then this
+   * Catalog's entries with backups, then records the current shape. Runs in
+   * the serial queue, so nothing else writes meanwhile; idempotent.
+   */
+  async homeRemoval(request) {
+    const identity = await authenticate(request, this.env);
+    if (this.ctx.id.name && this.ctx.id.name !== identity.principal)
+      throw new HttpError(403, "Account access denied");
+    const { mode } = (await readJson(request)) ?? {};
+    if (!HOME_REMOVAL_MODES.includes(mode))
+      throw new HttpError(400, 'mode must be "dry_run" or "apply"', "invalid_arguments");
+    if (mode === "apply") requireWrite(identity);
+    const storage = this.storage;
+    if (mode === "dry_run") {
+      const plan = planHomeRemoval(await readHomeRemovalInput(storage, listAll));
+      const progress = (await storage.get(HOME_REMOVAL_STATE_KEY)) ?? { phase: "none" };
+      return json({ mode, ...plan.report, writes: plan.writes.size, progress });
+    }
+    let result;
+    try {
+      result = await applyHomeRemoval(storage, {
+        listAll,
+        perBatch: STORAGE_KEYS_PER_CALL - 1,
+        rewriteSpaces: async (spaceIds) => {
+          for (const spaceId of spaceIds) {
+            const response = await this.env.PROJECTS.getByName(spaceId).fetch(
+              new Request("https://pages.internal/internal/space/remove-home", {
+                method: "POST",
+                body: JSON.stringify({ space_id: spaceId, owner: identity.principal }),
+              }),
+            );
+            // A Project this account no longer owns, or whose object was never
+            // created (a creation still `reserved`), has nothing to rewrite.
+            if (!response.ok && response.status !== 404)
+              throw new HttpError(503, `Project ${spaceId} could not be migrated; retry`);
+          }
+        },
+      });
+    } catch (error) {
+      if (!error.blockers) throw error;
+      throw Object.assign(
+        new HttpError(409, "The migration found entries it can't convert", "home_removal_blocked"),
+        { details: { blockers: error.blockers } },
+      );
+    }
+    await markCatalogIndexDirty(storage);
+    await markSpaceIndexDirty(storage);
+    await storage.sync();
+    if (result.state.phase === "failed")
+      throw Object.assign(
+        new HttpError(409, "The migrated Catalog failed validation", "home_removal_invalid"),
+        { details: { problems: result.state.problems } },
+      );
+    return json({
+      mode,
+      ...result.report,
+      writes: result.writes,
+      shape: shapeState(await storage.get(LOCATION_SHAPE_KEY)).name,
+      progress: result.state,
+    });
   }
   /** Refuse a location write while this Catalog isn't in the current shape.
    * A blocked pass names the Project and Page in its way, in the message and
    * as `reason`, `page_id` and `space_id`; the next write tries again. */
   static requireMigrated(shape) {
     if (shape.name === "migrated") return;
-    const detail =
-      shape.name === "blocked"
-        ? shape.reason === "home_pending"
-          ? ` Project ${shape.space_id} is still being created; retry create_project with its original idempotency_key, then retry this. Page ${shape.page_id} waits on it.`
-          : ` Page ${shape.page_id} in Project ${shape.space_id} exceeds the Project nesting limit; trash and purge its deepest sub-page, then retry.`
-        : " Retry shortly.";
-    throw Object.assign(
-      new HttpError(
-        503,
-        `This account's Pages are being reorganized into their Projects.${detail}`,
-        MIGRATION_REQUIRED,
-      ),
-      shape.name === "blocked" && {
-        details: { reason: shape.reason, page_id: shape.page_id, space_id: shape.space_id },
-      },
+    if (shape.name === "blocked") throw migrationRequired();
+    throw new HttpError(
+      503,
+      "This account's Pages are being checked. Retry shortly.",
+      MIGRATION_REQUIRED,
     );
   }
   async run(request) {
@@ -1677,6 +1783,7 @@ export class Catalog {
         });
         return json({ ok: true });
       }
+      if (pathname === "/internal/home-removal") return await this.homeRemoval(request);
       if (pathname === "/internal/projection" || pathname === "/internal/content-activity") {
         // Reachable only through the host's CATALOGS namespace, never the gateway.
         const value = await readJson(request);
@@ -2241,8 +2348,8 @@ export class Catalog {
   /** A new Page's Catalog location from create_page's space_id and
    * parent_id: `{ location, rekeyed }`. A parent implies its Project, which
    * is derived from the parent's root; naming a different Project is an
-   * error. A Project alone means its top level: under its home Page, the
-   * Project's one root. Neither means a root in Your items. Only Pages and
+   * error. A Project alone means its top level: a root carrying its
+   * space_id. Neither means a root in Your items. Only Pages and
    * Projects this account owns can hold new Pages in this build, so this
    * account's own entries settle parent, depth and sibling order, and the
    * Project record confirms the Project.
@@ -2265,9 +2372,6 @@ export class Catalog {
       );
       if (response.status === 404) throw spaceNotFound();
       if (!response.ok) throw new HttpError(503, "Project is temporarily unavailable");
-      const home = homeEntry(await locationEntries(storage), spaceArg);
-      if (!home) throw spaceNotFound();
-      parentId = home.page_id;
     }
     if (parentId) await this.activeParent(parentId);
     const entries = await locationEntries(storage);
@@ -2286,8 +2390,7 @@ export class Catalog {
           "placement_mismatch",
         );
       // Depth is the model's: a root is at depth 1, and the new Page sits one
-      // below its parent. A Project's home Page is its root, so its top-level
-      // Pages are at depth 2.
+      // below its parent.
       if (parent.depth + 1 > MAX_DEPTH)
         throw new HttpError(
           400,
@@ -2297,8 +2400,11 @@ export class Catalog {
       const { position, rekeyed } = appendPosition(entries, parentId);
       return { location: { parent_id: parentId, position }, rekeyed };
     }
-    const { position, rekeyed } = appendPosition(entries, null);
-    return { location: { parent_id: null, position }, rekeyed };
+    const { position, rekeyed } = appendPosition(entries, null, undefined, spaceArg);
+    return {
+      location: { parent_id: null, position, ...(spaceArg && { space_id: spaceArg }) },
+      rekeyed,
+    };
   }
 
   /** The parent's Catalog entry when it can take a new child: owned, created
@@ -2328,8 +2434,9 @@ export class Catalog {
 
   /** Trash moves one Page at a time in this build. A Page with active
    * children, or children still being created, stays put until they move,
-   * so no Page is ever active under a trashed parent. A Space's home Page
-   * stays with its Space. Both checks run before anything is reserved.
+   * so no Page is ever active under a trashed parent. A Project's content
+   * document stays with its Project. Both checks run before anything is
+   * reserved.
    *
    * A child with an unsettled Trash or restore reservation is settled against
    * its Page first: a lost response can hide a transition that already
@@ -2340,11 +2447,11 @@ export class Catalog {
     const storage = this.storage;
     const entry = await storage.get(`page/${pageId}`);
     if (!entry) return;
-    if (entry.home)
+    if (entry.project_content)
       throw new HttpError(
         409,
-        "Project content cannot move to Trash independently of its Project",
-        "home_page_protected",
+        "This is a Project's content. It belongs to its Project and can't move to Trash",
+        "project_content_protected",
       );
     const unsettled = [];
     for (const child of (await listAll(storage, "page/")).values()) {
@@ -2539,7 +2646,12 @@ export class Catalog {
     const storage = this.storage;
     const { pageId, parentId, spaceId, position } = run;
     const refuse = (code, message) => ({ type: "planned", ok: false, code, message });
-    const { entries } = await locationScan(storage);
+    const { entries, contents } = await locationScan(storage);
+    if (contents.has(pageId))
+      return refuse(
+        "project_content_protected",
+        "This is a Project's content. It belongs to its Project and can't be moved",
+      );
     const entry = entries.get(pageId);
     if (!entry) {
       if (await storage.get(`shared/${pageId}`))
@@ -2592,7 +2704,10 @@ export class Catalog {
       ...(parentId && { parent_id: parentId }),
     };
     const revision = (await storage.get(LOCATION_REVISION_KEY)) ?? 0;
-    const plan = planMove({ revision, entries }, pageId, destination, position);
+    const projects = [...(await listAll(storage, "space/")).values()]
+      .filter((record) => record?.space_id && !record.pending)
+      .map((record) => record.space_id);
+    const plan = planMove({ revision, entries, contents, projects }, pageId, destination, position);
     if (!plan.ok) return refuse(plan.code, plan.message);
     const trashedIds = subtreeOf(entries, pageId)
       .filter(({ page_id }) => entries.get(page_id).state === "trashed")
@@ -2647,13 +2762,16 @@ export class Catalog {
     await transact(async (target) => {
       const current = await target.get(`page/${pageId}`);
       if (!current || current.reservation) throw new Error("The moved Page lost its entry");
-      const { space_id: _space, home: _home, ...kept } = current;
+      const { space_id: _space, ...kept } = current;
       const puts = Object.entries({
         ...(await rekeyedEntries(target, rekeyed)),
         [`page/${pageId}`]: {
           ...kept,
           parent_id: plan.moved.parent_id,
           position: plan.moved.position,
+          // Only a root carries its Project.
+          ...(plan.moved.parent_id === null &&
+            plan.moved.space_id && { space_id: plan.moved.space_id }),
         },
         // Trashed sub-pages record the Project they would restore to if
         // their parent is gone by then; after a move that is the
@@ -2673,9 +2791,9 @@ export class Catalog {
   async createSpace(request, identity, args, limit) {
     const storage = this.storage;
     const { title, description } = validateSpaceInput(args, { creating: true });
-    // A Project write isn't a location write, but it is a queued write: the
-    // shape pass runs first. Its home Page is a root in either shape.
-    await this.locationShape();
+    // A Project write records a content document in this Catalog, which
+    // needs the current shape.
+    Catalog.requireMigrated(await this.locationShape());
     const key = mutationKey(args);
     const digest = await fingerprint("create_space", args, identity);
     const inspected = await inspectOperation(storage, {
@@ -2714,15 +2832,15 @@ export class Catalog {
           description: description ?? "",
         },
       });
-      // The intent, the Space entry and the home Page's quota slot commit
-      // together. A crash after this resumes from the same IDs on retry.
+      // The intent, the Space entry and the content document's quota slot
+      // commit together. A crash after this resumes from the same IDs.
       await storage.put({
         [key]: intent,
         [`space/${intent.spaceId}`]: {
           space_id: intent.spaceId,
           title,
           description: intent.description,
-          home_page_id: intent.pageId,
+          document_id: intent.pageId,
           created_at: createdAt,
           updated_at: createdAt,
           pending: true,
@@ -2733,7 +2851,7 @@ export class Catalog {
           created_at: createdAt,
           updated_at: createdAt,
           pending: true,
-          ...homeLocation(intent.spaceId),
+          ...contentMarker(intent.spaceId),
         },
       });
     }
@@ -2754,32 +2872,32 @@ export class Catalog {
             space_id: intent.spaceId,
             title: intent.title,
             description: intent.description,
-            home_page_id: intent.pageId,
+            document_id: intent.pageId,
           }),
         );
         if (!response.ok) return response;
         intent.space = await response.json();
         event = "space_recorded";
-      } else if (effect === "create_home_page") {
+      } else if (effect === "create_content_document") {
         const response = await this.env.PAGES.getByName(intent.pageId).fetch(
           forwarded(request, "/internal/create", {
             page_id: intent.pageId,
             title: intent.title,
-            markdown: homePageMarkdown(intent.description),
+            markdown: projectContentMarkdown(intent.description),
           }),
         );
         if (!response.ok) return response;
-        intent.homeTitle = (await response.json()).title;
-        event = "home_created";
+        intent.contentTitle = (await response.json()).title;
+        event = "content_created";
       } else {
         const space = intent.space;
-        intent.receipt = { ...space, home_page_title: intent.homeTitle };
-        const home = {
+        intent.receipt = { ...space };
+        const content = {
           page_id: intent.pageId,
-          title: catalogTitle(intent.homeTitle),
+          title: catalogTitle(intent.contentTitle),
           created_at: intent.createdAt,
           updated_at: intent.createdAt,
-          ...homeLocation(intent.spaceId),
+          ...contentMarker(intent.spaceId),
         };
         // Marked before its entry, as a creation is.
         const marks = await markPagesForIndex(this.env, storage, [intent.pageId]);
@@ -2788,13 +2906,13 @@ export class Catalog {
             space_id: intent.spaceId,
             title: space.title,
             description: space.description,
-            home_page_id: intent.pageId,
+            document_id: intent.pageId,
             created_at: space.created_at,
             updated_at: space.updated_at,
           },
-          [`page/${intent.pageId}`]: home,
+          [`page/${intent.pageId}`]: content,
         });
-        this.indexInBackground(principal, [{ entry: home, state: "active" }], marks);
+        this.indexInBackground(principal, [{ entry: content, state: "active" }], marks);
         await markSpaceIndexDirty(storage);
         intent.pending = false;
         event = "committed";
@@ -2925,6 +3043,9 @@ export class Catalog {
    * supplies what is returned. */
   async listSpaces(request, identity, args) {
     const storage = this.storage;
+    // The owner's own Project records must be in the current shape; an
+    // unmigrated account refuses rather than list Projects without content.
+    await requireCurrentShape(storage);
     for (const spaceId of await invitedProjects(this.env, identity)) {
       // An invitation is an untrusted candidate, not an existing membership.
       // Capacity conflicts or unavailable candidate hosts must not prevent
@@ -3061,7 +3182,7 @@ export class Catalog {
               owner: identity.principal,
               title: entry.title,
               description: entry.description ?? "",
-              home_page_id: entry.home_page_id,
+              document_id: entry.document_id,
               created_at: entry.created_at,
               updated_at: entry.updated_at,
             },
@@ -3205,21 +3326,6 @@ export class Catalog {
     const { entries: locations, counts } = await locationScan(storage);
     if (await storage.verifyCounts(counts)) logCountRepair(counts);
     const quota = { limit, count: counts["page/"], trash_count: counts["trash/"] };
-    // A listing is a read and runs in either shape. A blocked pass shows
-    // here, so a caller refused `location_migration_required` can see what
-    // stands in the way without another write.
-    const shape = shapeState(await storage.get(LOCATION_SHAPE_KEY));
-    const migration =
-      shape.name === "blocked"
-        ? {
-            location_migration: {
-              state: "blocked",
-              reason: shape.reason,
-              page_id: shape.page_id,
-              space_id: shape.space_id,
-            },
-          }
-        : {};
     // Child IDs of a shared parent, from its owner's Catalog.
     let sharedChildren;
     if (typeof options.parentId === "string") {
@@ -3241,22 +3347,13 @@ export class Catalog {
             : await this.childIdsFromOwner(shared.page.owner, options.parentId);
       }
     }
-    // A Project's top level (`project_id` with `parent_id: null`) is its home
-    // Page and the home Page's children. A Catalog not yet migrated still
-    // holds top-level Pages as roots; they list here too.
-    const projectHome = options.spaceId
-      ? homeEntry(locations, options.spaceId)?.page_id
-      : undefined;
+    // A Project's top level (`project_id` with `parent_id: null`) is its
+    // roots. Its content document is not in `locations`, so never listed.
     const located = (pageId) => {
       const entry = locations.get(pageId);
       if (!entry) return false;
       if (options.spaceId && projectOf(locations, pageId) !== options.spaceId) return false;
-      if (
-        options.parentId === null &&
-        entry.parent_id !== null &&
-        (projectHome === undefined || entry.parent_id !== projectHome)
-      )
-        return false;
+      if (options.parentId === null && entry.parent_id !== null) return false;
       if (options.parentId && entry.parent_id !== options.parentId) return false;
       return true;
     };
@@ -3400,7 +3497,6 @@ export class Catalog {
       quota,
       principal: identity.principal,
       account: accountIdentity(identity),
-      ...migration,
       ...(await issueRetryToken(storage, {
         scope: `catalog:${identity.principal}`,
         principal: identity.principal,
@@ -3432,7 +3528,7 @@ export class Catalog {
       (entry) =>
         options.parentId === undefined ||
         (options.parentId === null
-          ? entry.parent_id === null || entry.parent_id === project.home_page_id
+          ? entry.parent_id === null
           : entry.parent_id === options.parentId),
     );
     const context = {

@@ -1,11 +1,15 @@
-// Copy one Project (its Pages' titles, Markdown bodies, dataframes and Page
-// tree) from one Pages target to another through the public MCP endpoint and
-// the asset routes. Two steps with a reviewable JSON bundle in between:
+// Copy one Project (its content, its Pages' titles, Markdown bodies,
+// dataframes and Page tree) from one Pages target to another through the
+// public MCP endpoint and the asset routes. Two steps with a reviewable JSON
+// bundle in between:
 //
 //   export: read the Project on the source and write a bundle.
-//   import: create the Project and its Pages on the target from the bundle.
+//   import: create the Project, fill its content and create its Pages on the
+//   target from the bundle.
 //
-// Nothing here runs inside the Worker; comments and sharing are not copied.
+// A Project's content is its own document, not a Page: the Page tools address
+// it by project_id, and get_project names it as document_id. Nothing here runs
+// inside the Worker; comments and sharing are not copied.
 // Private image and dataframe bytes require a credential that can use the
 // asset routes (an API key; a Pages OAuth token can't). See "Copying a Project
 // to a new target" in DEPLOYMENT.md for usage and credentials.
@@ -18,9 +22,15 @@ import { IMAGE_MAX_BYTES, IMAGE_MEDIA_TYPES, imageAssetUrl } from "../shared/ima
 import { inspectImage } from "../shared/inspect-image.mjs";
 
 export const BUNDLE_FORMAT = "nteract-pages-project-bundle";
-/** Version 3 adds typed image inventory and bytes. Persisted v1/v2 still import. */
-export const BUNDLE_VERSION = 4;
-const BUNDLE_VERSIONS = new Set([1, 2, 3, 4]);
+/**
+ * Version 5 carries the Project's content as project.content, addressed by
+ * project_id, and names the content document as source.document_id; pages
+ * holds only the Page tree, with parent_source_id null at the top level.
+ * Bundles from before it described the content as a flagged root Page.
+ * They are refused (bundle_version_unsupported) rather than read: export the
+ * Project again from a source running this version.
+ */
+export const BUNDLE_VERSION = 5;
 export const STATE_FORMAT = "nteract-pages-project-import-state";
 export const STATE_VERSION = 1;
 // Persisted theme-body lifecycle. A receipt advances exactly one saved batch;
@@ -373,14 +383,13 @@ const comparePosition = (a, b) => {
 };
 
 /**
- * Rows in tree order: the home Page first, then each root's subtree depth
- * first, siblings by position. A row whose parent isn't in the listing (not
- * expected in a Project) becomes a root and is reported.
+ * Rows in tree order: each top-level Page's subtree depth first, siblings by
+ * position. A row whose parent isn't in the listing (not expected in a
+ * Project) becomes a root and is reported. The Project's content document is
+ * never listed, so it is never here.
  */
-export function treeOrder(rows, homePageId) {
+export function treeOrder(rows) {
   const byId = new Map(rows.map((row) => [row.page_id, row]));
-  if (!byId.has(homePageId))
-    throw new TransferError(`The Project's home Page ${homePageId} is not in its listing`);
   const children = new Map();
   const roots = [];
   const warnings = [];
@@ -394,9 +403,7 @@ export function treeOrder(rows, homePageId) {
     } else if (parent === null) roots.push(row);
     else children.set(parent, [...(children.get(parent) ?? []), row]);
   }
-  roots.sort((a, b) =>
-    a.page_id === homePageId ? -1 : b.page_id === homePageId ? 1 : comparePosition(a, b),
-  );
+  roots.sort(comparePosition);
   const ordered = [];
   const seen = new Set();
   const visit = (row, parentId) => {
@@ -416,22 +423,30 @@ export function treeOrder(rows, homePageId) {
 }
 
 /**
- * Every block's Markdown, the outline's node types and the comment count, all
- * at one revision. An oversized explicit read falls back to the unbounded
- * read_page({page_id}); the outline then comes from include_content:false
- * pages pinned to that read's heads.
+ * How read_page and edit_page name a document: `{ page_id }` for a Page, or
+ * `{ project_id }` for a Project's content. Exactly one key, always.
  */
-export async function readWholePage(client, pageId, options) {
+const describe = (address) =>
+  address.project_id ? `Project ${address.project_id} content` : `Page ${address.page_id}`;
+
+/**
+ * Every block's Markdown, the outline's node types and the comment count, all
+ * at one revision. `address` is `{ page_id }` or `{ project_id }`. An oversized
+ * explicit read falls back to the unbounded read_page(address); the outline
+ * then comes from include_content:false pages pinned to that read's heads.
+ */
+export async function readWholePage(client, address, options) {
   const call = (args) => withRetries(() => client.call("read_page", args), options);
+  const where = describe(address);
   for (let attempt = 0; attempt < 3; attempt++) {
     let read, blocks, comments;
     try {
-      read = await call({ page_id: pageId, comments: "summary", max_bytes: READ_BUDGET });
+      read = await call({ ...address, comments: "summary", max_bytes: READ_BUDGET });
       blocks = read.blocks;
       comments = read.comments;
     } catch (error) {
       if (error.code !== "read_budget_exceeded") throw error;
-      read = await call({ page_id: pageId });
+      read = await call({ ...address });
       blocks = read.blocks;
       comments = read.comments;
       read.outline = { entries: [], next_offset: 0 };
@@ -441,7 +456,7 @@ export async function readWholePage(client, pageId, options) {
     try {
       while (next !== null) {
         const more = await call({
-          page_id: pageId,
+          ...address,
           include_content: false,
           outline_offset: next,
           outline_limit: 100,
@@ -449,7 +464,7 @@ export async function readWholePage(client, pageId, options) {
           max_bytes: READ_BUDGET,
         });
         if (!more.outline?.entries?.length)
-          throw new TransferError(`read_page on ${pageId}: an outline entry exceeds the budget`);
+          throw new TransferError(`read_page on ${where}: an outline entry exceeds the budget`);
         entries.push(...more.outline.entries);
         next = more.outline.next_offset ?? null;
       }
@@ -466,9 +481,10 @@ export async function readWholePage(client, pageId, options) {
       )
     )
       throw new TransferError(
-        `read_page on ${pageId}: image occurrences are truncated; refusing a lossy transfer`,
+        `read_page on ${where}: image occurrences are truncated; refusing a lossy transfer`,
       );
     return {
+      page_id: read.page_id,
       title: read.title,
       heads: read.heads,
       retry_token: read.retry_token,
@@ -499,7 +515,7 @@ export async function readWholePage(client, pageId, options) {
       comment_threads: Array.isArray(comments) ? comments.length : 0,
     };
   }
-  throw new TransferError(`read_page on ${pageId}: the Page kept changing while it was read`);
+  throw new TransferError(`read_page on ${where}: the document kept changing while it was read`);
 }
 
 /**
@@ -546,8 +562,31 @@ export function remapImages(markdown, images, targetId) {
   return changed ? exportMarkdown(mapped) : markdown;
 }
 
-/** A bundle entry for one source Page. */
-function bundlePage(row, parentSourceId, read, homePageId) {
+/** Whether a bundle entry is the Project's content rather than a Page. */
+export const isContent = (entry) => typeof entry?.source_document_id === "string";
+/** The source ID a bundle entry is keyed by in the import state. */
+export const sourceKey = (entry) =>
+  isContent(entry) ? entry.source_document_id : entry.source_page_id;
+/** The Project's content first, then its Pages in tree order. */
+const entriesOf = (bundle) => [bundle.project.content, ...bundle.pages];
+
+/** A bundle entry for one source Page: its placement plus its body. */
+function bundlePage(row, parentSourceId, read) {
+  return {
+    source_page_id: row.page_id,
+    parent_source_id: parentSourceId,
+    position: row.position ?? null,
+    ...bundleBody(read, row.title),
+  };
+}
+
+/** The bundle entry for the Project's content document. */
+function bundleContent(project, read) {
+  return { source_document_id: project.document_id, ...bundleBody(read, project.title) };
+}
+
+/** The body fields shared by a Page entry and the content entry. */
+function bundleBody(read, fallbackTitle) {
   const blocks = read.blocks.length ? read.blocks.map((block) => block.markdown) : [""];
   const markdown = blocks.join("\n\n");
   const dataframes = read.dataframes ?? [];
@@ -585,11 +624,7 @@ function bundlePage(row, parentSourceId, read, homePageId) {
     (path) => links.filter((link) => link === path).length > listed(path),
   );
   return {
-    source_page_id: row.page_id,
-    parent_source_id: parentSourceId,
-    position: row.position ?? null,
-    home: row.page_id === homePageId,
-    title: read.title ?? row.title,
+    title: read.title ?? fallbackTitle,
     markdown,
     // Block boundaries matter only when there are several. A source that
     // stores preserved blocks exports each one's source as its own block.
@@ -679,15 +714,30 @@ export async function exportProject(
     () => client.call("get_project", { project_id: projectId }),
     options,
   );
+  // A source without document_id predates this contract; its content can't be
+  // addressed, so nothing is guessed from older fields.
+  if (!PAGE_ID.test(project.document_id ?? ""))
+    throw new TransferError(
+      `get_project on ${client.origin} returned no document_id for ${projectId}; export from a source running the current Pages`,
+      { code: "source_unsupported" },
+    );
+  // The content is read through its Project, as the Page tools address it.
+  const contentRead = await readWholePage(client, { project_id: projectId }, options);
+  if (contentRead.page_id !== undefined && contentRead.page_id !== project.document_id)
+    throw new TransferError(
+      `read_page for ${projectId} answered with ${contentRead.page_id}, not its document_id ${project.document_id}`,
+    );
+  const content = bundleContent(project, contentRead);
+  log(`read Project content ${content.title}`);
   const rows = await listAll(client, { project_id: projectId }, options);
-  const { ordered, warnings } = treeOrder(rows, project.home_page_id);
+  const { ordered, warnings } = treeOrder(rows);
   const pages = [];
   for (const [index, { row, parent_source_id }] of ordered.entries()) {
-    const read = await readWholePage(client, row.page_id, options);
-    pages.push(bundlePage(row, parent_source_id, read, project.home_page_id));
+    const read = await readWholePage(client, { page_id: row.page_id }, options);
+    pages.push(bundlePage(row, parent_source_id, read));
     log(`read ${index + 1}/${ordered.length} ${read.title ?? row.title}`);
   }
-  const exported = await exportAssets(client, pages, { log, ...options });
+  const exported = await exportAssets(client, [content, ...pages], { log, ...options });
   warnings.push(...exported.warnings);
   const bundle = {
     format: BUNDLE_FORMAT,
@@ -696,10 +746,10 @@ export async function exportProject(
     source: {
       origin: client.origin,
       project_id: projectId,
-      home_page_id: project.home_page_id,
+      document_id: project.document_id,
     },
     exported_at: new Date(now()).toISOString(),
-    project: { title: project.title, description: project.description ?? "" },
+    project: { title: project.title, description: project.description ?? "", content },
     pages,
     assets: exported.assets,
   };
@@ -709,47 +759,57 @@ export async function exportProject(
 /** What a reviewer needs to know before importing. */
 export function bundleReport(bundle, warnings = []) {
   const origin = checkOrigin(bundle.source.origin);
-  const known = new Map(bundle.pages.map((page) => [page.source_page_id, page.source_page_id]));
+  const entries = entriesOf(bundle);
+  // Links to the content document's /p/ URL resolve like links to a Page.
+  const known = new Map(entries.map((entry) => [sourceKey(entry), sourceKey(entry)]));
   const unresolved = [];
-  for (const page of bundle.pages)
-    for (const url of rewriteLinks(page.markdown, {
+  for (const entry of entries)
+    for (const url of rewriteLinks(entry.markdown, {
       sourceOrigin: origin,
       targetOrigin: origin,
       pages: known,
       projects: new Map([[bundle.source.project_id, bundle.source.project_id]]),
     }).unresolved)
-      unresolved.push({ title: page.title, source_page_id: page.source_page_id, url });
+      unresolved.push({ ...pageRef(entry), url });
   return {
     pages: bundle.pages.length,
-    preserved_markdown: bundle.pages.filter((page) => page.preserved_markdown).map(pageRef),
-    private_images: bundle.pages
-      .filter((page) => page.private_images?.length && !page.images)
-      .map((page) => ({ ...pageRef(page), assets: page.private_images })),
+    preserved_markdown: entries.filter((entry) => entry.preserved_markdown).map(pageRef),
+    private_images: entries
+      .filter((entry) => entry.private_images?.length && !entry.images)
+      .map((entry) => ({ ...pageRef(entry), assets: entry.private_images })),
     ...dataframeReport(bundle),
-    comment_threads: bundle.pages.reduce((sum, page) => sum + page.comment_threads, 0),
+    comment_threads: entries.reduce((sum, entry) => sum + entry.comment_threads, 0),
     unresolved_links: unresolved,
     warnings,
   };
 }
-const pageRef = (page) => ({ title: page.title, source_page_id: page.source_page_id });
+/** How a report names an entry: a Page by source_page_id, the Project's
+ * content by source_document_id. */
+const pageRef = (entry) => ({
+  title: entry.title,
+  ...(isContent(entry)
+    ? { source_document_id: entry.source_document_id }
+    : { source_page_id: entry.source_page_id }),
+});
 /** Dataframes the bundle carries bytes for, and ones it doesn't (they import
  * as links to the source's asset). */
 function dataframeReport(bundle) {
+  const entries = entriesOf(bundle);
   const held = (frame) => Object.hasOwn(bundle.assets ?? {}, frame.asset_id);
-  const missing = (page) => [
+  const missing = (entry) => [
     ...new Set([
-      ...(page.dataframes ?? []).filter((frame) => !held(frame)).map((frame) => frame.src),
-      ...(page.unlisted_dataframes ?? []),
+      ...(entry.dataframes ?? []).filter((frame) => !held(frame)).map((frame) => frame.src),
+      ...(entry.unlisted_dataframes ?? []),
     ]),
   ];
   return {
-    dataframes: bundle.pages.reduce(
-      (sum, page) => sum + (page.dataframes ?? []).filter(held).length,
+    dataframes: entries.reduce(
+      (sum, entry) => sum + (entry.dataframes ?? []).filter(held).length,
       0,
     ),
-    dataframes_not_copied: bundle.pages
-      .filter((page) => missing(page).length)
-      .map((page) => ({ ...pageRef(page), assets: missing(page) })),
+    dataframes_not_copied: entries
+      .filter((entry) => missing(entry).length)
+      .map((entry) => ({ ...pageRef(entry), assets: missing(entry) })),
   };
 }
 
@@ -761,7 +821,14 @@ export function validateBundle(bundle) {
     throw new TransferError(`Invalid bundle: ${message}`);
   };
   if (bundle?.format !== BUNDLE_FORMAT) fail(`format must be ${BUNDLE_FORMAT}`);
-  if (!BUNDLE_VERSIONS.has(bundle.version)) fail(`unsupported version ${bundle.version}`);
+  if (Number.isSafeInteger(bundle.version) && bundle.version < BUNDLE_VERSION)
+    // Older bundles described the content as a flagged root Page. Nothing here
+    // reads that shape; the Project is exported again instead.
+    throw new TransferError(
+      `Invalid bundle: version ${bundle.version} predates the Project content model (version ${BUNDLE_VERSION}). Export the Project again from a source running the current Pages; existing bundle files cannot be imported.`,
+      { code: "bundle_version_unsupported" },
+    );
+  if (bundle.version !== BUNDLE_VERSION) fail(`unsupported version ${bundle.version}`);
   if (bundle.assets !== undefined) {
     if (!bundle.assets || typeof bundle.assets !== "object" || Array.isArray(bundle.assets))
       fail("assets must be an object keyed by asset_id");
@@ -775,97 +842,109 @@ export function validateBundle(bundle) {
     fail("bundle_id must be 8–64 letters, digits or hyphens");
   checkOrigin(bundle.source?.origin);
   if (!isProjectId(bundle.source.project_id)) fail("source.project_id is not a Project ID");
+  if (typeof bundle.source.document_id !== "string" || !PAGE_ID.test(bundle.source.document_id))
+    fail("source.document_id is not a document ID");
   if (typeof bundle.project?.title !== "string" || !bundle.project.title.trim())
     fail("project.title is required");
   if (bundle.project.description != null && typeof bundle.project.description !== "string")
     fail("project.description must be a string");
-  if (!Array.isArray(bundle.pages) || !bundle.pages.length) fail("pages must be a nonempty array");
+  const content = bundle.project.content;
+  if (!content || typeof content !== "object" || Array.isArray(content))
+    fail("project.content must describe the Project's content document");
+  if (content.source_document_id !== bundle.source.document_id)
+    fail("project.content.source_document_id must equal source.document_id");
+  for (const key of ["source_page_id", "parent_source_id", "position"])
+    if (Object.hasOwn(content, key)) fail(`project.content is not a Page; drop ${key}`);
+  validateBody(bundle, content, "project.content", fail);
+  if (!Array.isArray(bundle.pages)) fail("pages must be an array");
   const seen = new Set();
-  const homes = bundle.pages.filter((page) => page.home === true);
-  if (homes.length !== 1) fail("exactly one Page must have home: true");
-  if (homes[0].parent_source_id !== null) fail("the home Page must have parent_source_id null");
   for (const [index, page] of bundle.pages.entries()) {
     const at = `pages[${index}]`;
     if (typeof page.source_page_id !== "string" || !PAGE_ID.test(page.source_page_id))
       fail(`${at}.source_page_id is not a Page ID`);
+    if (page.source_page_id === bundle.source.document_id)
+      fail(`${at} is the Project's content document, which belongs in project.content`);
     if (seen.has(page.source_page_id)) fail(`${at} repeats ${page.source_page_id}`);
     if (page.parent_source_id !== null && !seen.has(page.parent_source_id))
       fail(`${at}.parent_source_id must name an earlier Page (parents come before children)`);
-    if (typeof page.title !== "string") fail(`${at}.title must be a string`);
-    if (typeof page.markdown !== "string") fail(`${at}.markdown must be a string`);
-    if (bundle.version >= 3 || page.images !== undefined) {
-      if (!Array.isArray(page.images)) fail(`${at}.images must be an array`);
-      const discovered = imageInventory(page.blocks ?? [page.markdown]);
-      if (JSON.stringify(page.images) !== JSON.stringify(discovered))
-        fail(`${at}.images must match the image nodes in its Markdown`);
-      for (const image of page.images) {
-        const asset = bundle.assets?.[image.asset_id];
-        if (!asset) fail(`${at}: missing bytes for image ${image.asset_id}`);
-        if (!IMAGE_MEDIA_TYPES.includes(asset.media_type))
-          fail(`${at}: unsupported image media_type for ${image.asset_id}`);
-      }
-      if (page.image_variants !== undefined) {
-        if (!Array.isArray(page.image_variants)) fail(`${at}.image_variants must be an array`);
-        const occurrences = [];
-        for (const markdown of page.blocks ?? [page.markdown])
-          parseMarkdown(markdown).descendants((node) => {
-            if (node.type.name === "image") occurrences.push(node.attrs.src);
-          });
-        const ordinals = new Set();
-        for (const variant of page.image_variants) {
-          if (
-            !Number.isSafeInteger(variant.ordinal) ||
-            variant.ordinal < 0 ||
-            ordinals.has(variant.ordinal) ||
-            occurrences[variant.ordinal] !== variant.src ||
-            !ASSET_ID.test(variant.dark_asset_id ?? "") ||
-            !assetSrc(variant.dark_src, variant.dark_asset_id) ||
-            !IMAGE_MEDIA_TYPES.includes(bundle.assets?.[variant.dark_asset_id]?.media_type)
-          )
-            fail(`${at}: invalid image variant occurrence or missing image bytes`);
-          ordinals.add(variant.ordinal);
-        }
-      }
-    }
-    if (
-      page.unlisted_dataframes !== undefined &&
-      (!Array.isArray(page.unlisted_dataframes) ||
-        page.unlisted_dataframes.some((path) => typeof path !== "string" || !ASSET_SRC.test(path)))
-    )
-      fail(`${at}.unlisted_dataframes must be asset paths`);
-    if (page.dataframes !== undefined) {
-      if (!Array.isArray(page.dataframes)) fail(`${at}.dataframes must be an array`);
-      for (const frame of page.dataframes)
-        if (
-          !ASSET_ID.test(frame?.asset_id ?? "") ||
-          !assetSrc(frame.src, frame.asset_id) ||
-          typeof frame.media_type !== "string" ||
-          (frame.title !== undefined && typeof frame.title !== "string")
-        )
-          fail(
-            `${at}.dataframes entries need asset_id, a src naming it (/api/pages/<id>/assets/<asset_id>), media_type and an optional title`,
-          );
-        else if (
-          Object.hasOwn(bundle.assets ?? {}, frame.asset_id) &&
-          bundle.assets[frame.asset_id].media_type !== frame.media_type
-        )
-          fail(`${at}: dataframe ${frame.asset_id} and its asset disagree on media_type`);
-    }
-    if (page.blocks !== undefined) {
-      if (
-        !Array.isArray(page.blocks) ||
-        !page.blocks.length ||
-        page.blocks.some((block) => typeof block !== "string")
-      )
-        fail(`${at}.blocks must be a nonempty array of strings`);
-      if (page.blocks.join("\n\n") !== page.markdown)
-        fail(
-          `${at}: markdown and blocks disagree. Edit both, or delete blocks to import markdown as one block`,
-        );
-    }
+    validateBody(bundle, page, at, fail);
     seen.add(page.source_page_id);
   }
   return bundle;
+}
+
+/** The body fields a Page entry and the content entry share. */
+function validateBody(bundle, page, at, fail) {
+  if (typeof page.title !== "string") fail(`${at}.title must be a string`);
+  if (typeof page.markdown !== "string") fail(`${at}.markdown must be a string`);
+  if (!Array.isArray(page.images)) fail(`${at}.images must be an array`);
+  const discovered = imageInventory(page.blocks ?? [page.markdown]);
+  if (JSON.stringify(page.images) !== JSON.stringify(discovered))
+    fail(`${at}.images must match the image nodes in its Markdown`);
+  for (const image of page.images) {
+    const asset = bundle.assets?.[image.asset_id];
+    if (!asset) fail(`${at}: missing bytes for image ${image.asset_id}`);
+    if (!IMAGE_MEDIA_TYPES.includes(asset.media_type))
+      fail(`${at}: unsupported image media_type for ${image.asset_id}`);
+  }
+  if (page.image_variants !== undefined) {
+    if (!Array.isArray(page.image_variants)) fail(`${at}.image_variants must be an array`);
+    const occurrences = [];
+    for (const markdown of page.blocks ?? [page.markdown])
+      parseMarkdown(markdown).descendants((node) => {
+        if (node.type.name === "image") occurrences.push(node.attrs.src);
+      });
+    const ordinals = new Set();
+    for (const variant of page.image_variants) {
+      if (
+        !Number.isSafeInteger(variant.ordinal) ||
+        variant.ordinal < 0 ||
+        ordinals.has(variant.ordinal) ||
+        occurrences[variant.ordinal] !== variant.src ||
+        !ASSET_ID.test(variant.dark_asset_id ?? "") ||
+        !assetSrc(variant.dark_src, variant.dark_asset_id) ||
+        !IMAGE_MEDIA_TYPES.includes(bundle.assets?.[variant.dark_asset_id]?.media_type)
+      )
+        fail(`${at}: invalid image variant occurrence or missing image bytes`);
+      ordinals.add(variant.ordinal);
+    }
+  }
+  if (
+    page.unlisted_dataframes !== undefined &&
+    (!Array.isArray(page.unlisted_dataframes) ||
+      page.unlisted_dataframes.some((path) => typeof path !== "string" || !ASSET_SRC.test(path)))
+  )
+    fail(`${at}.unlisted_dataframes must be asset paths`);
+  if (page.dataframes !== undefined) {
+    if (!Array.isArray(page.dataframes)) fail(`${at}.dataframes must be an array`);
+    for (const frame of page.dataframes)
+      if (
+        !ASSET_ID.test(frame?.asset_id ?? "") ||
+        !assetSrc(frame.src, frame.asset_id) ||
+        typeof frame.media_type !== "string" ||
+        (frame.title !== undefined && typeof frame.title !== "string")
+      )
+        fail(
+          `${at}.dataframes entries need asset_id, a src naming it (/api/pages/<id>/assets/<asset_id>), media_type and an optional title`,
+        );
+      else if (
+        Object.hasOwn(bundle.assets ?? {}, frame.asset_id) &&
+        bundle.assets[frame.asset_id].media_type !== frame.media_type
+      )
+        fail(`${at}: dataframe ${frame.asset_id} and its asset disagree on media_type`);
+  }
+  if (page.blocks !== undefined) {
+    if (
+      !Array.isArray(page.blocks) ||
+      !page.blocks.length ||
+      page.blocks.some((block) => typeof block !== "string")
+    )
+      fail(`${at}.blocks must be a nonempty array of strings`);
+    if (page.blocks.join("\n\n") !== page.markdown)
+      fail(
+        `${at}: markdown and blocks disagree. Edit both, or delete blocks to import markdown as one block`,
+      );
+  }
 }
 
 // A Page10 target refuses Markdown it can't represent (math and HTML) with
@@ -976,17 +1055,15 @@ export function bodyOperations(blocks, units) {
 }
 
 /**
- * Where a source Page goes on the target. On Page10 a Project is its home Page
- * (a root Page carrying the Project), and project_id alone means "under the
- * home Page". So the source home becomes the target home, filled in rather
- * than created, and every Page that sat at the source Project's top level is
- * created under it by parent_id. This is the one place that knows; change it
- * here when location semantics change.
+ * Where a source Page goes on the target, as create_page's placement
+ * arguments: a top-level Page (parent_source_id null) is created with
+ * project_id alone and lands with parent_id null; any other Page goes under
+ * its parent's target ID. The Project's content is not placed: it exists once
+ * create_project answers and is filled in through project_id. This is the one
+ * place that knows; change it here when location semantics change.
  */
-export function targetPlacement(page, { homeSourceId, targetHomeId, pageIds }) {
-  if (page.source_page_id === homeSourceId) return { home: true };
-  if (page.parent_source_id === null || page.parent_source_id === homeSourceId)
-    return { parent_id: targetHomeId };
+export function targetPlacement(page, { projectId, pageIds }) {
+  if (page.parent_source_id === null) return { project_id: projectId };
   const parent = pageIds.get(page.parent_source_id);
   if (!parent)
     throw new TransferError(
@@ -1180,22 +1257,30 @@ export function memoryStore(initial = null) {
 /** The plan without network calls: where each Page lands and what's flagged. */
 export function planImport(bundle) {
   validateBundle(bundle);
-  const home = bundle.pages.find((page) => page.home);
   const titles = new Map(bundle.pages.map((page) => [page.source_page_id, page.title]));
   const symbolic = new Map(bundle.pages.map((page) => [page.source_page_id, page.source_page_id]));
-  return bundle.pages.map((page) => {
-    const placement = targetPlacement(page, {
-      homeSourceId: home.source_page_id,
-      targetHomeId: home.source_page_id,
-      pageIds: symbolic,
-    });
-    return {
-      title: page.title,
-      source_page_id: page.source_page_id,
-      action: placement.home ? "fill the target Project's home Page" : "create",
-      under: placement.home ? null : titles.get(placement.parent_id),
-    };
-  });
+  const { content } = bundle.project;
+  return [
+    {
+      title: content.title,
+      source_document_id: content.source_document_id,
+      action: "fill the target Project's content",
+      under: null,
+    },
+    ...bundle.pages.map((page) => {
+      const placement = targetPlacement(page, {
+        projectId: bundle.source.project_id,
+        pageIds: symbolic,
+      });
+      return {
+        title: page.title,
+        source_page_id: page.source_page_id,
+        action: "create",
+        // null: at the Project's top level.
+        under: placement.parent_id === undefined ? null : titles.get(placement.parent_id),
+      };
+    }),
+  ];
 }
 
 /** How far the target's created_at may trail a create's local requested_at
@@ -1239,6 +1324,18 @@ async function projectsTitled(client, title, options) {
 const createdAfter = (createdAt, record) =>
   Date.parse(createdAt) >= Date.parse(record.requested_at) - ADOPT_CLOCK_SKEW_MS;
 
+/** The listing that shows an expired create_page's siblings: the recorded
+ * parent's children, or the recorded Project's top level. */
+const siblingListing = (args) =>
+  args.parent_id !== undefined
+    ? { parent_id: args.parent_id }
+    : { project_id: args.project_id, parent_id: null };
+/** Whether a listed row sits where an expired create_page would have put it. */
+const placedLike = (row, args) =>
+  args.parent_id !== undefined
+    ? (row.parent_id ?? null) === args.parent_id
+    : row.project_id === args.project_id && (row.parent_id ?? null) === null;
+
 /**
  * What an expired create might have made: Pages with its title under its
  * parent that no other bundle Page maps to, or Projects with its title. A
@@ -1261,13 +1358,10 @@ async function candidatesFor(client, state, record, options) {
       url: `${client.origin}/project/${project.project_id}`,
     }));
   const mapped = new Set(Object.values(state.pages));
-  const rows = await listAll(client, { parent_id: record.args.parent_id }, options);
+  const rows = await listAll(client, siblingListing(record.args), options);
   return rows
     .filter(
-      (row) =>
-        row.title === title &&
-        (row.parent_id ?? null) === record.args.parent_id &&
-        !mapped.has(row.page_id),
+      (row) => row.title === title && placedLike(row, record.args) && !mapped.has(row.page_id),
     )
     .map((row) => ({
       page_id: row.page_id,
@@ -1300,14 +1394,20 @@ export async function adoptCreate(client, state, record, id, options) {
       refuse(
         `it was created at ${project.created_at}, before the create was sent at ${record.requested_at}`,
       );
-    return { project_id: project.project_id, home_page_id: project.home_page_id };
+    if (!PAGE_ID.test(project.document_id ?? ""))
+      refuse("get_project returned no document_id for it");
+    return { project_id: project.project_id, document_id: project.document_id };
   }
   if (!PAGE_ID.test(id)) refuse("the expired create was a Page; pass a Page ID");
   if (Object.values(state.pages).includes(id)) refuse("another bundle Page already maps to it");
-  const rows = await listAll(client, { parent_id: record.args.parent_id }, options);
+  const rows = await listAll(client, siblingListing(record.args), options);
   const row = rows.find((entry) => entry.page_id === id);
-  if (!row || (row.parent_id ?? null) !== record.args.parent_id)
-    refuse(`it is not under the recorded parent ${record.args.parent_id}`);
+  if (!row || !placedLike(row, record.args))
+    refuse(
+      record.args.parent_id !== undefined
+        ? `it is not under the recorded parent ${record.args.parent_id}`
+        : `it is not at the top level of the recorded Project ${record.args.project_id}`,
+    );
   if (row.title !== title) refuse(`its title is "${row.title}", not "${title}"`);
   if (!row.created_at || !createdAfter(row.created_at, record))
     refuse(
@@ -1338,7 +1438,7 @@ export async function importBundle(
   const sourceOrigin = checkOrigin(bundle.source.origin);
   if (checkOrigin(client.origin) === sourceOrigin)
     throw new TransferError("The target is the bundle's source; import into a different target");
-  const home = bundle.pages.find((page) => page.home);
+  const { content } = bundle.project;
   let state = (await store.load()) ?? freshState(bundle, client.origin);
   if (state.format !== STATE_FORMAT || state.version !== STATE_VERSION)
     throw new TransferError("The state file is not an import state");
@@ -1378,7 +1478,9 @@ export async function importBundle(
   // An older target has no insert_node (or asset routes): find out before the
   // first write, not after the Project and its Pages exist.
   if (
-    bundle.pages.some((page) => page.dataframes?.some((frame) => bytes.has(frame.asset_id))) &&
+    entriesOf(bundle).some((entry) =>
+      entry.dataframes?.some((frame) => bytes.has(frame.asset_id)),
+    ) &&
     !(await withRetries(() => client.insertsNodes(), options))
   )
     throw new TransferError(
@@ -1388,7 +1490,7 @@ export async function importBundle(
   const warnings = [];
 
   if (
-    bundle.pages.some((page) => page.image_variants?.length) &&
+    entriesOf(bundle).some((entry) => entry.image_variants?.length) &&
     !(await withRetries(() => client.setsImages(), options))
   )
     throw new TransferError(
@@ -1445,8 +1547,14 @@ export async function importBundle(
   };
   const commitFor = (step) => (result) => {
     if (step === "project") {
-      state.project = { project_id: result.project_id, home_page_id: result.home_page_id };
-      state.pages[home.source_page_id] = result.home_page_id;
+      if (!PAGE_ID.test(result.document_id ?? ""))
+        throw new TransferError(
+          `create_project on ${client.origin} returned no document_id; import into a target running the current Pages`,
+          { code: "target_unsupported" },
+        );
+      state.project = { project_id: result.project_id, document_id: result.document_id };
+      // The content document maps like a Page, so links to it rewrite too.
+      state.pages[content.source_document_id] = result.document_id;
     } else if (step.startsWith("page:")) {
       state.pages[step.slice(5)] = result.page_id;
       counts.created++;
@@ -1482,7 +1590,7 @@ export async function importBundle(
       const found = await adoptCreate(client, state, record, adopt, options);
       if (record.step === "project") {
         state.project = found;
-        state.pages[home.source_page_id] = found.home_page_id;
+        state.pages[content.source_document_id] = found.document_id;
       } else state.pages[record.step.slice(5)] = found.page_id;
       log(`adopted ${adopt} for ${record.step}`);
       state.reconciliation_required = null;
@@ -1507,7 +1615,7 @@ export async function importBundle(
 
   // Catalog retry authority for creates. Keys are its prefix plus a nonce from
   // (bundle_id, source_page_id). A new window is safe once nothing is pending.
-  const unmapped = bundle.pages.some((page) => !state.pages[page.source_page_id]);
+  const unmapped = entriesOf(bundle).some((entry) => !state.pages[sourceKey(entry)]);
   if (unmapped && (!state.catalog || Date.parse(state.catalog.retry_until) - 60_000 <= now())) {
     const authority = await withRetries(() => client.call("list_pages", { limit: 1 }), options);
     state.catalog = {
@@ -1551,14 +1659,13 @@ export async function importBundle(
   for (const page of bundle.pages) {
     if (state.pages[page.source_page_id]) continue;
     const placement = targetPlacement(page, {
-      homeSourceId: home.source_page_id,
-      targetHomeId: state.project.home_page_id,
+      projectId: state.project.project_id,
       pageIds: pageIds(),
     });
     const args = {
       title: page.title,
       markdown: page.images?.length || page.image_variants?.length ? "" : pageBlocks(page)[0],
-      parent_id: placement.parent_id,
+      ...placement,
       idempotency_key:
         state.catalog.retry_key_prefix +
         (await nonce(bundle.bundle_id, "page", page.source_page_id)),
@@ -1566,17 +1673,23 @@ export async function importBundle(
     };
     const step = `page:${page.source_page_id}`;
     await send(step, "create_page", args, commitFor(step));
-    log(`created ${Object.keys(state.pages).length}/${bundle.pages.length} ${page.title}`);
+    log(`created ${Object.keys(state.pages).length - 1}/${bundle.pages.length} ${page.title}`);
   }
 
-  // Second pass, after every Page exists: bodies that need more than the first
-  // block, link rewrites, and the home Page.
+  // Second pass, after every Page exists: the Project's content, bodies that
+  // need more than the first block, and link rewrites.
   const ids = pageIds();
   const projects = new Map([[bundle.source.project_id, state.project.project_id]]);
   const unresolved = [];
-  for (const page of bundle.pages) {
+  for (const page of entriesOf(bundle)) {
     const images = page.images ?? [];
-    const targetId = state.pages[page.source_page_id];
+    const key = sourceKey(page);
+    // The content is addressed through its Project; its assets live on the
+    // content document, which the asset routes name by document_id.
+    const targetId = state.pages[key];
+    const address = isContent(page)
+      ? { project_id: state.project.project_id }
+      : { page_id: targetId };
     const blocks = pageBlocks(page);
     const rewrites = blocks.map((markdown) =>
       rewriteLinks(markdown, {
@@ -1587,13 +1700,8 @@ export async function importBundle(
       }),
     );
     for (const { unresolved: urls } of rewrites)
-      for (const url of urls)
-        unresolved.push({ title: page.title, source_page_id: page.source_page_id, url });
-    if (
-      state.bodies[page.source_page_id] === "done" ||
-      state.bodies[page.source_page_id]?.phase === "done"
-    )
-      continue;
+      for (const url of urls) unresolved.push({ ...pageRef(page), url });
+    if (state.bodies[key] === "done" || state.bodies[key]?.phase === "done") continue;
     const units = bodyUnits(
       rewrites.map((rewrite) => remapImages(rewrite.markdown, images, targetId)),
       page,
@@ -1601,15 +1709,17 @@ export async function importBundle(
     );
     const frames = units.filter((unit) => unit.dataframe);
     const rewritten = rewrites.reduce((sum, rewrite) => sum + rewrite.rewritten, 0);
+    // A Page's create carried its one block already; the content document
+    // starts with create_project's default text, so it is always written.
     if (
-      !page.home &&
+      !isContent(page) &&
       blocks.length === 1 &&
       rewritten === 0 &&
       !frames.length &&
       !images.length &&
       !page.image_variants?.length
     ) {
-      state.bodies[page.source_page_id] = "done";
+      state.bodies[key] = "done";
       await save();
       continue;
     }
@@ -1628,30 +1738,40 @@ export async function importBundle(
         throw new TransferError(`The target stored asset ${assetId} as ${stored.asset_id}`);
     }
     if (page.image_variants?.length) {
-      await writeThemeBody(page, targetId, units);
-    } else await writeBody(page, targetId, units);
+      await writeThemeBody(page, address, targetId, units);
+    } else await writeBody(page, address, units);
     counts.dataframes += frames.length;
     counts.links_rewritten += rewritten;
-    state.bodies[page.source_page_id] = "done";
+    state.bodies[key] = "done";
     await save();
-    log(`wrote ${page.home ? "home Page" : "body"} ${page.title}`);
+    log(`wrote ${isContent(page) ? "Project content" : "body"} ${page.title}`);
   }
 
-  async function readForEdit(pageId) {
+  async function readForEdit(address) {
     const call = (args) => withRetries(() => client.call("read_page", args), options);
     try {
-      return await call({ page_id: pageId, comments: "none", max_bytes: READ_BUDGET });
+      return await call({ ...address, comments: "none", max_bytes: READ_BUDGET });
     } catch (error) {
       if (error.code !== "read_budget_exceeded") throw error;
-      return call({ page_id: pageId });
+      return call({ ...address });
     }
   }
 
-  async function writeThemeBody(page, pageId, units) {
-    const id = page.source_page_id;
+  /** The content document keeps the Project's title; a Page's title came with
+   * its create. */
+  function titleOperations(page, read) {
+    return isContent(page) && read.title !== page.title
+      ? [{ op: "set_title", title: page.title }]
+      : [];
+  }
+
+  async function writeThemeBody(page, address, targetId, units) {
+    const id = sourceKey(page);
     const step = `themed:${id}`;
     const fencedRead = async (whole = false) => {
-      const read = whole ? await readWholePage(client, pageId, options) : await readForEdit(pageId);
+      const read = whole
+        ? await readWholePage(client, address, options)
+        : await readForEdit(address);
       if (
         JSON.stringify([...read.heads].sort()) !==
         JSON.stringify([...state.bodies[id].heads].sort())
@@ -1663,9 +1783,9 @@ export async function importBundle(
       return read;
     };
     if (!state.bodies[id]) {
-      const read = await readForEdit(pageId);
+      const read = await readForEdit(address);
       const operations = [
-        ...(page.home && read.title !== page.title ? [{ op: "set_title", title: page.title }] : []),
+        ...titleOperations(page, read),
         ...bodyOperations(read.blocks ?? [], units),
       ];
       state.bodies[id] = themeBodyTransition(null, { type: "plan", operations, heads: read.heads });
@@ -1679,7 +1799,7 @@ export async function importBundle(
         const operations = page.image_variants.map((variant) => {
           const image = target.image_occurrences[variant.ordinal];
           const assetId = ASSET_SRC.exec(variant.src)?.[1];
-          const expected = assetId ? imageAssetUrl(pageId, assetId) : variant.src;
+          const expected = assetId ? imageAssetUrl(targetId, assetId) : variant.src;
           if (!image?.image_id || image.src !== expected)
             throw new TransferError("Target image occurrence does not match the installed body");
           return {
@@ -1698,7 +1818,7 @@ export async function importBundle(
         step,
         "edit_page",
         {
-          page_id: pageId,
+          ...address,
           base_heads: progress.heads,
           retry_token: read.retry_token,
           idempotency_key:
@@ -1714,44 +1834,44 @@ export async function importBundle(
   // Make the target Page hold exactly `units` (bodyOperations). Batches past
   // EDIT_BATCH read again for fresh heads; deletes come before appends, so
   // order holds.
-  async function writeBody(page, pageId, units) {
-    let read = await readForEdit(pageId);
-    const operations = [];
-    if (page.home && read.title !== page.title)
-      operations.push({ op: "set_title", title: page.title });
-    operations.push(...bodyOperations(read.blocks ?? [], units));
+  async function writeBody(page, address, units) {
+    let read = await readForEdit(address);
+    const operations = [
+      ...titleOperations(page, read),
+      ...bodyOperations(read.blocks ?? [], units),
+    ];
     for (let batch = 0; batch * EDIT_BATCH < operations.length; batch++) {
-      if (batch > 0) read = await readForEdit(pageId);
+      if (batch > 0) read = await readForEdit(address);
       const args = {
-        page_id: pageId,
+        ...address,
         base_heads: read.heads,
         idempotency_key:
           read.retry_key_prefix +
-          (await nonce(bundle.bundle_id, "body", page.source_page_id, String(batch))),
+          (await nonce(bundle.bundle_id, "body", sourceKey(page), String(batch))),
         retry_token: read.retry_token,
         operations: operations.slice(batch * EDIT_BATCH, (batch + 1) * EDIT_BATCH),
       };
-      const step = `body:${page.source_page_id}`;
+      const step = `body:${sourceKey(page)}`;
       await send(step, "edit_page", args, commitFor(step));
     }
   }
 
   const verification = await verifyImport(client, bundle, state, options);
+  const entries = entriesOf(bundle);
   return {
     project_id: state.project.project_id,
-    home_page_id: state.project.home_page_id,
+    document_id: state.project.document_id,
     url: `${client.origin}/project/${state.project.project_id}`,
-    home_page_url: `${client.origin}/p/${state.project.home_page_id}`,
     pages: bundle.pages.length,
     ...counts,
     unresolved_links: unresolved,
-    preserved_markdown: bundle.pages.filter((page) => page.preserved_markdown).map(pageRef),
-    private_images: bundle.pages
-      .filter((page) => page.private_images?.length && !page.images)
-      .map((page) => ({ ...pageRef(page), assets: page.private_images })),
+    preserved_markdown: entries.filter((entry) => entry.preserved_markdown).map(pageRef),
+    private_images: entries
+      .filter((entry) => entry.private_images?.length && !entry.images)
+      .map((entry) => ({ ...pageRef(entry), assets: entry.private_images })),
     dataframes_not_copied: dataframeReport(bundle).dataframes_not_copied,
-    comment_threads_not_migrated: bundle.pages.reduce(
-      (sum, page) => sum + (page.comment_threads ?? 0),
+    comment_threads_not_migrated: entries.reduce(
+      (sum, entry) => sum + (entry.comment_threads ?? 0),
       0,
     ),
     warnings,
@@ -1759,14 +1879,24 @@ export async function importBundle(
   };
 }
 
-/** Every Page is in the target Project, under the expected parent, in order. */
+/** Every Page is in the target Project, under the expected parent, in order;
+ * the content document is the Project's and is not listed as a Page. */
 export async function verifyImport(client, bundle, state, options) {
   const rows = await listAll(client, { project_id: state.project.project_id }, options);
   const byId = new Map(rows.map((row) => [row.page_id, row]));
-  const home = bundle.pages.find((page) => page.home);
   const pageIds = new Map(Object.entries(state.pages));
   const problems = [];
   const expectedOrder = new Map();
+  if (byId.has(state.project.document_id))
+    problems.push(`The content document ${state.project.document_id} is listed as a Page`);
+  const project = await withRetries(
+    () => client.call("get_project", { project_id: state.project.project_id }),
+    options,
+  );
+  if (project.document_id !== state.project.document_id)
+    problems.push(
+      `The Project's document_id is ${project.document_id}, not the ${state.project.document_id} the content was written to`,
+    );
   for (const page of bundle.pages) {
     const id = state.pages[page.source_page_id];
     const row = byId.get(id);
@@ -1774,25 +1904,19 @@ export async function verifyImport(client, bundle, state, options) {
       problems.push(`"${page.title}" (${id}) is not listed in the target Project`);
       continue;
     }
-    const placement = targetPlacement(page, {
-      homeSourceId: home.source_page_id,
-      targetHomeId: state.project.home_page_id,
-      pageIds,
-    });
-    if (placement.home) {
-      if (row.home !== true) problems.push(`"${page.title}" is not the target home Page`);
-      continue;
-    }
-    if ((row.parent_id ?? null) !== placement.parent_id)
+    const placement = targetPlacement(page, { projectId: state.project.project_id, pageIds });
+    // null: the Project's top level.
+    const parent = placement.parent_id ?? null;
+    if ((row.parent_id ?? null) !== parent)
       problems.push(
-        `"${page.title}" is under ${row.parent_id ?? "the top level"}, expected ${placement.parent_id}`,
+        `"${page.title}" is under ${row.parent_id ?? "the top level"}, expected ${parent ?? "the top level"}`,
       );
-    expectedOrder.set(placement.parent_id, [...(expectedOrder.get(placement.parent_id) ?? []), id]);
+    expectedOrder.set(parent, [...(expectedOrder.get(parent) ?? []), id]);
   }
   for (const [parent, expected] of expectedOrder) {
     const wanted = new Set(expected);
     const actual = rows
-      .filter((row) => row.parent_id === parent && wanted.has(row.page_id))
+      .filter((row) => (row.parent_id ?? null) === parent && wanted.has(row.page_id))
       .sort(comparePosition)
       .map((row) => row.page_id);
     if (JSON.stringify(actual) !== JSON.stringify(expected))
@@ -1922,9 +2046,11 @@ export async function main(argv, env = process.env) {
     if (flags["dry-run"]) {
       for (const step of planImport(bundle))
         console.log(
-          step.under === null
-            ? `${step.title}: ${step.action}`
-            : `${step.title}: ${step.action} under "${step.under}"`,
+          step.under !== null
+            ? `${step.title}: ${step.action} under "${step.under}"`
+            : step.action === "create"
+              ? `${step.title}: create at the Project's top level`
+              : `${step.title}: ${step.action}`,
         );
       printReport([], bundleReport(bundle));
       return 0;
@@ -1958,7 +2084,7 @@ export async function main(argv, env = process.env) {
     printReport(
       [
         `Imported "${bundle.project.title}" into ${report.url}`,
-        `Home Page: ${report.home_page_url}`,
+        `Content document: ${report.document_id}`,
         `${report.pages} Pages: ${report.created} created this run, ${report.edits} edit(s), ${report.links_rewritten} link(s) rewritten, ${report.dataframes} dataframe(s) written`,
         `Comments are not migrated (${report.comment_threads_not_migrated} thread(s) stay on the source).`,
         report.verification.ok

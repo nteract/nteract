@@ -284,7 +284,7 @@ export function pageRow(page, projectTitles = new Map(), { local = false } = {})
   return {
     id: page.page_id,
     title: page.title || "Untitled",
-    href: page.home && projectId ? projectPath(projectId) : pagePath(page.page_id),
+    href: pagePath(page.page_id),
     activityAt: activityAt(page),
     // The grid keys a card by it, so an edit since the last ask asks again.
     contentUpdatedAt: page.content_updated_at ?? null,
@@ -296,7 +296,6 @@ export function pageRow(page, projectTitles = new Map(), { local = false } = {})
         }
       : null,
     shared: page.shared === true,
-    home: page.home === true,
     local: local ? (page.pending ? "pending" : "copy") : null,
   };
 }

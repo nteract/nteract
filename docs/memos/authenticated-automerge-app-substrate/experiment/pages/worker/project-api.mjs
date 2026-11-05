@@ -97,7 +97,6 @@ export function toProjectBody(operation, body) {
     else if (key === "space") out.project = project(value);
     else if (key === "spaces" && Array.isArray(value)) out.projects = value.map(project);
     else if (key === "pages" && Array.isArray(value)) out.pages = value.map(placement);
-    else if (key === "location_migration") out.location_migration = placement(value);
     else if (key === "breadcrumbs" && Array.isArray(value)) out.breadcrumbs = value.map(breadcrumb);
     else out[key] = value;
   }
@@ -106,16 +105,17 @@ export function toProjectBody(operation, body) {
 }
 
 /** Browser links for a successful result, the same over JSON and MCP: url for
- * a Page that still exists (a purge receipt carries `deleted`), url and
- * home_page_url for a Project, and url on each listed Page or Project. */
+ * a Page that still exists (a purge receipt carries `deleted`), url for a
+ * Project, and url on each listed Page or Project. Project content read with
+ * read_page links to its Project. */
 export function withBrowserLinks(body, origin) {
   if (!body || typeof body !== "object" || Array.isArray(body)) return body;
   const out = { ...body };
-  if (out.page_id && !out.deleted) out.url = new URL(pagePath(out.page_id), origin).href;
-  else if (out.project_id && out.home_page_id) {
+  if (out.kind === "project" && out.project_id)
     out.url = new URL(projectPath(out.project_id), origin).href;
-    out.home_page_url = new URL(pagePath(out.home_page_id), origin).href;
-  }
+  else if (out.page_id && !out.deleted) out.url = new URL(pagePath(out.page_id), origin).href;
+  else if (out.project_id && out.document_id)
+    out.url = new URL(projectPath(out.project_id), origin).href;
   if (Array.isArray(out.pages))
     out.pages = out.pages.map((page) => ({
       ...page,

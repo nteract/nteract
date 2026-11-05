@@ -282,7 +282,6 @@ const ownerCatalog = (seen = []) =>
       ancestors: [parentId],
       complete: true,
       space_id: spaceId,
-      home: false,
     });
   });
 

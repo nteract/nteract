@@ -7,7 +7,6 @@ import { createAuthFixture } from "../../auth-fixtures.mjs";
 import { sqliteD1 } from "../test/sqlite-d1.mjs";
 import worker, { Catalog, Page, Space } from "./index.mjs";
 import { DocumentPolicy } from "./policy.mjs";
-import { locationEntries } from "./catalog-location.mjs";
 import { LOCATION_SHAPE_KEY, shapeState } from "./location-shape.mjs";
 
 export class Storage {
@@ -255,32 +254,9 @@ export const ids = (listing) => listing.body.pages.map((page) => page.page_id).s
 /** A Catalog entry's location fields. */
 export const locationOf = (entry) =>
   Object.fromEntries(
-    ["parent_id", "position", "space_id", "home", "restore_space_id"]
+    ["parent_id", "position", "space_id", "project_content", "restore_space_id"]
       .filter((field) => Object.hasOwn(entry, field))
       .map((field) => [field, entry[field]]),
   );
-
-/** Rewrite a live Catalog into the shape builds before this one wrote: every
- * Project top-level Page a root with space_id, and no shape record. */
-export async function unmigrate(storage) {
-  const entries = await locationEntries(storage);
-  for (const [prefix, state] of [
-    ["page/", "active"],
-    ["trash/", "trashed"],
-  ])
-    for (const entry of (await storage.list({ prefix })).values()) {
-      if (!entry?.page_id || entry.reservation) continue;
-      const location = entries.get(entry.page_id);
-      const home = location?.parent_id && entries.get(location.parent_id);
-      if (!home?.home || location.state !== state) continue;
-      const { restore_space_id: _restore, ...rest } = entry;
-      await storage.put(`${prefix}${entry.page_id}`, {
-        ...rest,
-        parent_id: null,
-        space_id: home.space_id,
-      });
-    }
-  await storage.delete(LOCATION_SHAPE_KEY);
-}
 
 export const shapeOf = async (storage) => shapeState(await storage.get(LOCATION_SHAPE_KEY));

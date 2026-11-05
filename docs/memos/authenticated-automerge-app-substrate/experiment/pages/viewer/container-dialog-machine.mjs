@@ -70,15 +70,10 @@ export function formReady(kind, form, origin = null) {
 
 /**
  * Where a Page is, from read_page's location fields, as a Move form:
- * `{ target, parent_id }`. A Project's top-level Pages sit under its home
- * Page, which the dialog shows as "Top level", so that parent becomes null.
- * The home Page is the breadcrumb marked `home`, or `homePageId` if given.
+ * `{ target, parent_id }`. Top-level Pages have parent_id null.
  */
-export function moveOrigin(location, homePageId = null) {
-  const target = location?.project_id ?? null;
-  const home = homePageId ?? location?.breadcrumbs?.find((crumb) => crumb.home)?.page_id ?? null;
-  const parent = location?.parent_id ?? null;
-  return { target, parent_id: parent && parent !== home ? parent : null };
+export function moveOrigin(location) {
+  return { target: location?.project_id ?? null, parent_id: location?.parent_id ?? null };
 }
 
 /** The New Project dialog's first state. */

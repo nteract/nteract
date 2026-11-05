@@ -120,6 +120,7 @@ export const CATALOG_MIGRATIONS = Object.freeze([
         owner TEXT NOT NULL,
         title TEXT NOT NULL,
         title_search TEXT NOT NULL,
+        -- Legacy schema history: v8 drops this never-read column.
         home_page_id TEXT NOT NULL,
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL
@@ -174,6 +175,31 @@ export const CATALOG_MIGRATIONS = Object.freeze([
         GENERATED ALWAYS AS (coalesce(trashed_at, '')) VIRTUAL`,
       `CREATE INDEX IF NOT EXISTS pages_catalog_pages_trash
         ON pages_catalog_pages (owner, trash_key DESC, page_id DESC) WHERE state = 'trashed'`,
+    ]),
+  }),
+  // Projects have no separate root Page any more; their rows lose the column
+  // that named it. Nothing read it. SQLite can't drop a NOT NULL column that
+  // an index doesn't cover on every D1 version, so the table is rebuilt.
+  Object.freeze({
+    version: 8,
+    name: "spaces_without_root_page",
+    statements: Object.freeze([
+      `CREATE TABLE pages_catalog_spaces_v8 (
+        space_id TEXT PRIMARY KEY,
+        owner TEXT NOT NULL,
+        title TEXT NOT NULL,
+        title_search TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      )`,
+      `INSERT INTO pages_catalog_spaces_v8
+        (space_id, owner, title, title_search, created_at, updated_at)
+        SELECT space_id, owner, title, title_search, created_at, updated_at
+        FROM pages_catalog_spaces`,
+      "DROP TABLE pages_catalog_spaces",
+      "ALTER TABLE pages_catalog_spaces_v8 RENAME TO pages_catalog_spaces",
+      `CREATE INDEX IF NOT EXISTS pages_catalog_spaces_listing
+        ON pages_catalog_spaces (owner, updated_at DESC, space_id DESC)`,
     ]),
   }),
 ]);
@@ -2011,8 +2037,8 @@ function spaceUpsert(db, owner, entry) {
   return db
     .prepare(
       `INSERT INTO pages_catalog_spaces
-        (space_id, owner, title, title_search, home_page_id, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?)
+        (space_id, owner, title, title_search, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?)
       ON CONFLICT (space_id) DO UPDATE SET
         title = CASE WHEN excluded.updated_at >= pages_catalog_spaces.updated_at
           THEN excluded.title ELSE pages_catalog_spaces.title END,
@@ -2026,7 +2052,6 @@ function spaceUpsert(db, owner, entry) {
       owner,
       title,
       searchText(title),
-      entry.home_page_id,
       entry.created_at,
       entry.updated_at ?? entry.created_at,
     );
