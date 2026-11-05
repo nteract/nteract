@@ -87,7 +87,8 @@ import { CommentComposer, hasDraftText } from "./comment-composer.mjs";
 import { focusReturnTarget } from "./focus-return.mjs";
 import { timer } from "rxjs";
 import { MOBILE_EDITOR_QUERY, trackVisualViewport } from "./visual-viewport.mjs";
-import { glideSettings, gridRequested } from "./feature-flags.mjs";
+import { glideSettings, gridRequested, marginRequested } from "./feature-flags.mjs";
+import { MarginThreads } from "./MarginThreads.jsx";
 import { writeDisplayMode } from "./display-mode.mjs";
 
 // Opening a Page rewrites the address to its canonical path, and the library
@@ -95,6 +96,7 @@ import { writeDisplayMode } from "./display-mode.mjs";
 // before anything routes. `?grid=1` asks for the grid, so it becomes the
 // remembered display that every library this tab mounts opens on.
 glideSettings();
+marginRequested();
 if (gridRequested()) writeDisplayMode(globalThis.window, "grid");
 
 // The editor, and the WASM runtimes it waits for, load beside the shell
@@ -1812,6 +1814,15 @@ function App() {
                   />
                 )}
               </article>
+              {marginRequested() && !commentsOpen && (
+                <MarginThreads
+                  key={`margin-${session.pageId}`}
+                  article={article}
+                  threads={threads}
+                  activeId={target?.id ?? null}
+                  onOpen={selectComment}
+                />
+              )}
               <CommentsPanel
                 key={session.pageId}
                 open={commentsOpen}

@@ -97,3 +97,18 @@ export function glideSettings() {
   tabGlide ??= readGlideSettings(globalThis);
   return tabGlide;
 }
+
+/**
+ * Margin threads: comment cards beside their passages when the window is
+ * wide enough, instead of only in the comments panel. `?margin=1` or
+ * `localStorage["pages.margin"] = "1"`. Read once per tab, like glideSettings.
+ */
+export function readMarginRequest(browser = globalThis) {
+  return enabled(readFlag("margin", browser));
+}
+
+let tabMargin = null;
+export function marginRequested() {
+  tabMargin ??= readMarginRequest(globalThis);
+  return tabMargin;
+}

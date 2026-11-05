@@ -732,3 +732,72 @@ button.anchor-chip:hover {
     display: none;
   }
 }
+
+/* Margin threads (?margin=1): compact cards beside their passages. */
+.workspace.document:has(> .comment-margin) {
+  position: relative;
+}
+.comment-margin {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 0;
+  height: 0;
+}
+.margin-thread {
+  all: unset;
+  box-sizing: border-box;
+  position: absolute;
+  display: grid;
+  gap: 0.2rem;
+  padding: 0.5rem 0.65rem;
+  border: 1px solid var(--line);
+  border-radius: 0.6rem;
+  background: var(--surface);
+  font-size: 0.8rem;
+  line-height: 1.35;
+  cursor: pointer;
+  transition:
+    top 160ms ease,
+    border-color 120ms ease;
+}
+.margin-thread:hover {
+  border-color: var(--border);
+  background: var(--card);
+}
+.margin-thread:focus-visible {
+  outline: 2px solid var(--ring, var(--comment-anchor-line));
+  outline-offset: 2px;
+}
+.margin-thread-active {
+  border-color: var(--comment-anchor-line);
+  box-shadow: inset 2px 0 0 var(--comment-anchor-line);
+}
+.margin-thread-meta {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.74rem;
+}
+.margin-thread-author {
+  font-weight: 600;
+}
+.margin-thread-title {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.margin-thread-replies {
+  font-size: 0.72rem;
+}
+@media (prefers-reduced-motion: reduce) {
+  .margin-thread {
+    transition: none;
+  }
+}
+@media print {
+  .comment-margin {
+    display: none;
+  }
+}
