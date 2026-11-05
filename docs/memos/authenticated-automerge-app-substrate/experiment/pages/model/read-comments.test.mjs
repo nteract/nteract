@@ -284,3 +284,16 @@ test("message order is chronological and full quotes/bodies are never silently s
   assert.equal(thread.selectionContext.text, quote);
   assert.deepEqual(A.getHeads(doc), before);
 });
+
+test("a replica that hasn't synced yet projects no comments; legacy threads fail closed", async () => {
+  const { projectPage } = await import("./page.mjs");
+  const { threadsOf } = await import("./comments.mjs");
+  // A browser replica opens empty and fills when the Page syncs.
+  for (const empty of [A.init(), A.from({ blocks: {} })]) {
+    assert.deepEqual(threadsOf(empty, undefined), {});
+    assert.deepEqual(projectPage(empty, undefined).comments, []);
+  }
+  // A Page whose threads an earlier build kept in the Page document.
+  const legacy = A.from({ blocks: {}, comments: { t1: { messages: {} } } });
+  assert.throws(() => threadsOf(legacy, undefined), { code: "stored_form_unsupported" });
+});

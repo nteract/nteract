@@ -42,11 +42,14 @@ export function selectionContext(doc, target) {
  * their own document. */
 export const commentsMigrated = (page) => documentFeatures(page).includes(COMMENTS_FEATURE);
 
-/** A Page's threads, from its comments document (none until it's open). A
- * Page without the `comments-doc` stamp holds them in a form an earlier
- * build wrote, and fails closed. */
+/** A Page's threads, from its comments document (none until it's open).
+ * An unstamped Page that still holds a `comments` map kept its threads in
+ * the Page document, as an earlier build wrote them, and fails closed. An
+ * unstamped Page without one holds nothing to misread: a browser replica
+ * opens empty and gets the stamp when the Page syncs. */
 export function threadsOf(page, commentsDoc) {
-  if (page && !commentsMigrated(page)) throw storedFormUnsupported("this Page's comments");
+  if (page && !commentsMigrated(page) && page.comments !== undefined)
+    throw storedFormUnsupported("this Page's comments");
   return commentsDoc ? commentThreads(commentsDoc) : {};
 }
 
