@@ -26,10 +26,13 @@ const SECRET = "s".repeat(48);
 
 class Storage {
   values = new Map();
+  /** Called with the keys of each put, before it lands. */
+  onPut = null;
   async get(key) {
     return structuredClone(this.values.get(key));
   }
   async put(key, value) {
+    await this.onPut?.(typeof key === "string" ? [key] : Object.keys(key));
     if (typeof key === "object") {
       for (const [name, entry] of Object.entries(key))
         this.values.set(name, structuredClone(entry));
@@ -288,6 +291,34 @@ test("a requested run that skips arms no retry, and the next request converts", 
   await f.storage.delete("host/operation/pending-test");
   const converted = await f.operate(host, { mode: "convert", page_id: pageId, owner });
   assert.equal(converted.body.result, "converted");
+});
+
+test("a Page that changes while its history is written skips with heads_moved, then converts", async (t) => {
+  const f = await fixture(t);
+  const { owner } = await f.nativePage();
+  const host = await f.open(f.plain);
+  await host.documentReady();
+  // An edit lands on the live document while the plain snapshot is written.
+  let moved = false;
+  f.storage.onPut = async (keys) => {
+    if (moved || !keys.some((key) => key.startsWith("plain/"))) return;
+    moved = true;
+    await host.handle.change((d) => (d.during = "the snapshot write"));
+  };
+  const skipped = await f.operate(host, { mode: "convert", page_id: pageId, owner });
+  assert.equal(moved, true, "the history write ran");
+  assert.deepEqual(skipped.body, { result: "skipped", reason: "heads_moved" });
+  assert.equal((await f.storage.get("host/document")).recordStorage, "buffered");
+  assert.deepEqual(host.migration, { name: "off" });
+  assert.equal(host.handle.doc().during, "the snapshot write");
+  // Nothing moves it now: the next request converts, edit included.
+  f.storage.onPut = null;
+  const converted = await f.operate(host, { mode: "convert", page_id: pageId, owner });
+  assert.equal(converted.body.result, "converted");
+  assert.equal((await f.storage.get("host/document")).recordStorage, "automerge");
+  const next = await f.open(f.plain);
+  await next.documentReady();
+  assert.equal(next.handle.doc().during, "the snapshot write");
 });
 
 /** A WebSocketPair whose ends deliver binary frames to each other, as
