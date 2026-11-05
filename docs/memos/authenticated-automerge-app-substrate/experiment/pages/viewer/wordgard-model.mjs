@@ -166,7 +166,9 @@ function imageMetadata(value) {
   const attrs = imageAttrs(value);
   if (!attrs || Object.keys(attrs).length > 64 || Object.keys(attrs).some((k) => k.length > 256))
     throw Error("Invalid Pages image metadata");
-  const json = JSON.stringify(attrs);
+  const json = JSON.stringify(
+    Object.fromEntries(Object.entries(attrs).sort(([a], [b]) => a.localeCompare(b))),
+  );
   if (json.length > IMAGE_METADATA_LIMIT) throw Error("Pages image metadata is too large to copy");
   return json;
 }

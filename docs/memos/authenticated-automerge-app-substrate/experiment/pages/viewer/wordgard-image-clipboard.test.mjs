@@ -28,6 +28,15 @@ test("image scalar attrs survive native and clipboard codecs without becoming DO
   assert.equal(img.getAttribute("onerror"), null);
   assert.equal(img.getAttribute("style"), null);
   assert.ok(parse(schema, fragment).eq(original));
+  const reordered = Object.fromEntries(Object.entries(value).reverse());
+  assert.equal(
+    serialize(tree(reordered))
+      .toDOM(dom.window.document)
+      .querySelector("img")
+      .getAttribute("data-pages-image"),
+    img.getAttribute("data-pages-image"),
+    "native key ordering must not redraw the selected image after a peer edit",
+  );
 });
 test("malformed, oversized and identity-changing clipboard metadata refuses the image", (t) => {
   const dom = new JSDOM();
