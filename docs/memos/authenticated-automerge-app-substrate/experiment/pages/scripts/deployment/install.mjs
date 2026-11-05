@@ -4,11 +4,15 @@ import { createHash, randomBytes } from "node:crypto";
 import {
   chmodSync,
   chownSync,
+  closeSync,
+  constants as fsConstants,
   cpSync,
   existsSync,
+  fstatSync,
   lstatSync,
   mkdirSync,
   mkdtempSync,
+  openSync,
   readFileSync,
   readdirSync,
   renameSync,
@@ -20,12 +24,15 @@ import path from "node:path";
 import {
   deploymentProfile,
   migrationVars,
+  migrationPolicyPath,
+  MAX_MIGRATION_POLICY_BYTES,
   assertQualifiedDeploymentTarget,
   assertReleaseOpensTargetPages,
   stageTarget,
   verifyDeployment,
   verifyRuntime,
   parseRuntimeVersion,
+  unitMemory,
 } from "./profiles.mjs";
 import {
   awaitServing,
@@ -47,7 +54,60 @@ const requested = flags.length === 1 && flags[0] === "--restart";
 if (process.getuid() !== 0 || apply !== "--apply" || (flags.length && !requested))
   throw new Error("Explicit root installation with a prepared stage is required");
 const profile = deploymentProfile(target);
-const migration = migrationVars(profile);
+// The operator's canary list, if any, from a root-only file in the service's
+// own config directory. Only a missing file is absent. A symlink (dangling or
+// not), a file owned by anyone but the installing user (root, checked above),
+// or a group- or world-writable one is refused.
+// The checks run on the opened descriptor, so the bytes read are the bytes checked.
+const operatorPolicyPath = migrationPolicyPath(profile);
+const readOperatorPolicy = (file) => {
+  const configDirStat = (() => {
+    try {
+      return lstatSync(path.dirname(file));
+    } catch (error) {
+      if (error.code === "ENOENT") return null;
+      throw error;
+    }
+  })();
+  if (!configDirStat) return undefined;
+  if (
+    !configDirStat.isDirectory() ||
+    configDirStat.uid !== process.getuid() ||
+    configDirStat.mode & 0o077
+  )
+    throw new Error(
+      "Refusing canary file: " + path.dirname(file) + " must be a root-owned 0700 directory",
+    );
+  let fd;
+  try {
+    fd = openSync(file, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW);
+  } catch (error) {
+    if (error.code === "ENOENT") return undefined;
+    if (error.code === "ELOOP") throw new Error("Refusing canary file: " + file + " is a symlink");
+    throw error;
+  }
+  try {
+    const stat = fstatSync(fd);
+    if (
+      !stat.isFile() ||
+      stat.uid !== process.getuid() ||
+      stat.mode & 0o022 ||
+      stat.size > MAX_MIGRATION_POLICY_BYTES
+    )
+      throw new Error(
+        "Invalid record storage migration canary file: " +
+          file +
+          " must be a regular root-owned file, not group- or world-writable, at most " +
+          MAX_MIGRATION_POLICY_BYTES +
+          " bytes",
+      );
+    return readFileSync(fd, "utf8");
+  } finally {
+    closeSync(fd);
+  }
+};
+const operatorPolicy = readOperatorPolicy(operatorPolicyPath);
+const migration = migrationVars(profile, operatorPolicy);
 const run = (command, args) => {
   try {
     return execFileSync(command, args, {
@@ -352,11 +412,27 @@ if (existsSync(release) && !lstatSync(release).isDirectory())
 mkdirSync(release, { recursive: true, mode: 0o750 });
 // Retry only the same verified bytes. A partial copy may have missing files,
 // but never replace an unexpected file or a modified existing artifact.
+// The installer writes the configured wrangler.json's vars itself, so an
+// earlier install of this release with other vars (a changed migration
+// canary) is accepted when everything but `vars` matches this configuration.
+const sameButVars = (bytes) => {
+  try {
+    const existing = JSON.parse(bytes);
+    return (
+      Object.hasOwn(existing, "vars") &&
+      JSON.stringify({ ...existing, vars: null }) === JSON.stringify({ ...config, vars: null })
+    );
+  } catch {
+    return false;
+  }
+};
 for (const file of stagedFiles(release)) {
-  const digest = hash(readFileSync(path.join(release, file)));
+  const bytes = readFileSync(path.join(release, file));
+  const digest = hash(bytes);
   if (
     !Object.hasOwn(releaseFiles, file) ||
-    (digest !== releaseFiles[file] && !(file === "wrangler.json" && digest === hash(configured)))
+    (digest !== releaseFiles[file] &&
+      !(file === "wrangler.json" && (digest === hash(configured) || sameButVars(bytes))))
   )
     throw new Error("Existing release differs from prepared artifacts: " + file);
 }
@@ -377,6 +453,17 @@ if (existsSync(audit + "/manifest.json")) {
     JSON.stringify(JSON.parse(readFileSync(audit + "/manifest.json"))) !== JSON.stringify(manifest)
   )
     throw new Error("Existing rollout manifest differs from prepared deployment");
+  // A reinstall of the same stage (a canary change) keeps the first snapshot
+  // as previous-deployment.json; the deployment it replaces is kept by version.
+  if (existsSync(configDir + "/deployment.json")) {
+    const current = readFileSync(configDir + "/deployment.json");
+    const version = JSON.parse(current)?.version;
+    if (
+      /^[a-f0-9]{16}$/.test(version ?? "") &&
+      !existsSync(audit + "/deployment-" + version + ".json")
+    )
+      writeFileSync(audit + "/deployment-" + version + ".json", current, { mode: 0o600 });
+  }
 } else {
   // Record absence too, so a retry after deploy cannot mistake its own receipt
   // for the previous deployment. Keep this first snapshot across all retries.
@@ -423,7 +510,8 @@ for (const helper of helpers) {
   cpSync(stage + "/" + helper, base + "/" + helper);
   chmodSync(base + "/" + helper, 0o644);
 }
-const unitText = `[Unit]\nDescription=Isolated native Pages experiment on celld\nAfter=network-online.target\nWants=network-online.target\n\n[Service]\nType=simple\nUser=${expected.service}\nGroup=${expected.service}\nWorkingDirectory=${state}\nEnvironment=AWS_REGION=us-east-1\nEnvironment=CELLD_DURABILITY=bucket\nEnvironment=CELLD_OTEL=1\nEnvironment=CELLD_OTEL_RETENTION=30d\n${profile.otelTracesSampler ? `Environment=OTEL_TRACES_SAMPLER=${profile.otelTracesSampler}\n` : ""}Environment=CELLD_TOKIO_THREADS=2\nEnvironment=CELLD_V8_HEAP_LIMIT_MB=256\nEnvironment=CELLD_MAX_REQUEST_BODY_BYTES=6291456\nEnvironment=CELLD_MAX_RSS_MB=768\nEnvironment=CELLD_LOCAL_CACHE_MAX_BYTES=536870912\nEnvironment=CELLD_TEST_DATA_DIR=${state}/cache\nExecStartPre=+/usr/bin/node ${base}/firewall.mjs --target ${target}\nExecStart=${base}/celld --bucket s3://${expected.bucket}/${expected.prefix} --region ${expected.region} --listen ${expected.listen} --internal-listen ${expected.internalListen}\nRestart=on-failure\nRestartSec=5\nTimeoutStopSec=60\nLimitNOFILE=65536\nMemoryMax=1G\nCPUQuota=100%\nTasksMax=256\nNoNewPrivileges=true\nPrivateTmp=true\nProtectHome=true\nProtectSystem=strict\nReadWritePaths=${state}\nUMask=0077\n\n[Install]\nWantedBy=multi-user.target\n`;
+const memory = unitMemory(profile);
+const unitText = `[Unit]\nDescription=Isolated native Pages experiment on celld\nAfter=network-online.target\nWants=network-online.target\n\n[Service]\nType=simple\nUser=${expected.service}\nGroup=${expected.service}\nWorkingDirectory=${state}\nEnvironment=AWS_REGION=us-east-1\nEnvironment=CELLD_DURABILITY=bucket\nEnvironment=CELLD_OTEL=1\nEnvironment=CELLD_OTEL_RETENTION=30d\n${profile.otelTracesSampler ? `Environment=OTEL_TRACES_SAMPLER=${profile.otelTracesSampler}\n` : ""}Environment=CELLD_TOKIO_THREADS=2\nEnvironment=CELLD_V8_HEAP_LIMIT_MB=256\nEnvironment=CELLD_MAX_REQUEST_BODY_BYTES=6291456\nEnvironment=CELLD_MAX_RSS_MB=${memory.maxRssMb}\nEnvironment=CELLD_LOCAL_CACHE_MAX_BYTES=536870912\nEnvironment=CELLD_TEST_DATA_DIR=${state}/cache\nExecStartPre=+/usr/bin/node ${base}/firewall.mjs --target ${target}\nExecStart=${base}/celld --bucket s3://${expected.bucket}/${expected.prefix} --region ${expected.region} --listen ${expected.listen} --internal-listen ${expected.internalListen}\nRestart=on-failure\nRestartSec=5\nTimeoutStopSec=60\nLimitNOFILE=65536\nMemoryMax=${memory.memoryMax}\nCPUQuota=100%\nTasksMax=256\nNoNewPrivileges=true\nPrivateTmp=true\nProtectHome=true\nProtectSystem=strict\nReadWritePaths=${state}\nUMask=0077\n\n[Install]\nWantedBy=multi-user.target\n`;
 // Stage and verify the unit under its own basename, then rename it into place,
 // so a failed verify leaves the loaded definition and the file in agreement.
 // /etc/systemd is the same filesystem as /etc/systemd/system.

@@ -77,6 +77,24 @@ const shared = {
   runtime: CELLD_RELEASE.path,
   requiredVersion: CELLD_RELEASE.version,
 };
+// Unit limits for targets without a memory field, matching what they shipped with.
+export const DEFAULT_MEMORY = Object.freeze({ maxRssMb: 768, memoryMax: "1G" });
+const SERVING_MEMORY = Object.freeze({ maxRssMb: 2560, memoryMax: "4G" });
+/**
+ * The celld shedding threshold and systemd ceiling for a profile's unit.
+ * MemoryMax must leave headroom above the shedding threshold, or systemd kills
+ * celld before it sheds.
+ */
+export function unitMemory(profile) {
+  const { maxRssMb, memoryMax } = profile.memory ?? DEFAULT_MEMORY;
+  if (!Number.isSafeInteger(maxRssMb) || maxRssMb < 256 || maxRssMb > 16384)
+    throw new Error("memory.maxRssMb must be an integer from 256 to 16384");
+  const match = /^([1-9][0-9]?)G$/.exec(memoryMax ?? "");
+  if (!match) throw new Error("memory.memoryMax must be whole gigabytes, such as 4G");
+  if (Number(match[1]) * 1024 < maxRssMb * 1.25)
+    throw new Error("memory.memoryMax must be at least 25% above memory.maxRssMb");
+  return { maxRssMb, memoryMax };
+}
 const DISABLED_MIGRATION = Object.freeze({ enabled: false, pageIds: Object.freeze([]) });
 const targets = Object.freeze({
   "pages-next": Object.freeze({
@@ -336,6 +354,10 @@ const targets = Object.freeze({
     // default parent-based sampler then drops every request-scoped log line.
     otelTracesSampler: "always_on",
     editor: "wordgard",
+    // celld sheds cells above CELLD_MAX_RSS_MB. At 768 MB production shed its
+    // D1 cell repeatedly and signed-in requests failed while it restored.
+    // lab1 has 31 GB; MemoryMax stays above the shedding threshold.
+    memory: SERVING_MEMORY,
     // tunnelService is the single connector unit earlier releases installed.
     // Publication hands the tunnel to these two slots and alternates between
     // them, so a route change never stops the last connector
@@ -388,6 +410,11 @@ const targets = Object.freeze({
     compactRecords: true,
     companyViewDomains: "anaconda.com",
     catalogIndex: "1",
+    // New Pages sync with plain Automerge sync instead of Subduction
+    // (README: Plain Automerge sync). Pages created before this keep
+    // Subduction until a migration canary converts them (DEPLOYMENT.md:
+    // Moving pages off Subduction).
+    recordStorage: "automerge",
     // Each account's Page limit when no quota rule matches it
     // (worker/page-quota.mjs). It also bounds that account's Trash.
     pageQuota: "250",
@@ -401,6 +428,8 @@ const targets = Object.freeze({
     // default parent-based sampler then drops every request-scoped log line.
     otelTracesSampler: "always_on",
     editor: "wordgard",
+    // Same limits as Page10; see its memory comment.
+    memory: SERVING_MEMORY,
     // The single connector unit earlier releases installed, then the two
     // slots publication alternates between (see Page10).
     tunnelService: "cloudflared-pages-live.service",
@@ -417,29 +446,88 @@ export function deploymentProfile(target = "pages-next") {
   return targets[target];
 }
 
-/** Serialize only reviewed profile policy, never the installer's environment.
+/** The operator's migration canary on the host, beside the session secret:
+ * `/etc/<service>/record-storage-migration.json`, root-owned in the 0700
+ * config directory the installer creates. It holds the same
+ * `{enabled, pageIds}` shape as a profile's `recordStorageMigration`. */
+export const MIGRATION_POLICY_FILE = "record-storage-migration.json";
+export function migrationPolicyPath(profile) {
+  return "/etc/" + profile.deployment.service + "/" + MIGRATION_POLICY_FILE;
+}
+/** At most this many Page IDs in one canary, from either source. Widening
+ * past it is a reason to review the rollout, not to raise the cap. */
+export const MAX_MIGRATION_PAGE_IDS = 500;
+/** The operator file's byte limit: 500 quoted UUIDs need about 20 KiB. */
+export const MAX_MIGRATION_POLICY_BYTES = 64 * 1024;
+const PAGE_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+const disabledPolicy = (policy) =>
+  policy !== null &&
+  typeof policy === "object" &&
+  policy.enabled === false &&
+  Array.isArray(policy.pageIds) &&
+  policy.pageIds.length === 0;
+
+function validMigrationPolicy(policy, profile) {
+  return (
+    policy &&
+    typeof policy === "object" &&
+    !Array.isArray(policy) &&
+    !Object.keys(policy).some((key) => !["enabled", "pageIds"].includes(key)) &&
+    typeof policy.enabled === "boolean" &&
+    Array.isArray(policy.pageIds) &&
+    policy.pageIds.length <= MAX_MIGRATION_PAGE_IDS &&
+    Array.from(policy.pageIds).every((id) => typeof id === "string" && PAGE_UUID.test(id)) &&
+    new Set(policy.pageIds).size === policy.pageIds.length &&
+    !(policy.enabled && (!policy.pageIds.length || profile.recordStorage !== "automerge"))
+  );
+}
+
+/** Parse and check the operator file's text. Stricter than a profile policy:
+ * the file only makes sense where new Pages are already plain, so any file,
+ * even a disabled one, requires `recordStorage: "automerge"`. */
+export function operatorMigrationPolicy(profile, text) {
+  if (typeof text !== "string" || Buffer.byteLength(text) > MAX_MIGRATION_POLICY_BYTES)
+    throw new Error(
+      `Invalid record storage migration canary file: over ${MAX_MIGRATION_POLICY_BYTES} bytes`,
+    );
+  let policy;
+  try {
+    policy = JSON.parse(text);
+  } catch {
+    throw new Error("Invalid record storage migration canary file: not JSON");
+  }
+  if (profile.recordStorage !== "automerge")
+    throw new Error(
+      "Invalid record storage migration canary file: the profile does not set recordStorage automerge",
+    );
+  if (!validMigrationPolicy(policy, profile))
+    throw new Error(
+      "Invalid record storage migration canary file: expected {enabled, pageIds} with at most " +
+        `${MAX_MIGRATION_PAGE_IDS} unique lowercase Page UUIDs; there is no wildcard`,
+    );
+  return policy;
+}
+
+/** Serialize reviewed profile policy, or the operator file on the host
+ * (`operatorText`, its contents, or undefined when there is none). Never the
+ * installer's environment. The file may only stand in for a disabled, empty
+ * profile policy: two sources for one list is refused, not merged.
  * This module is staged alone; keep validation independent of Worker imports. */
-export function migrationVars(profile) {
-  const policy =
+export function migrationVars(profile, operatorText) {
+  const reviewed =
     profile.recordStorageMigration === undefined
       ? DISABLED_MIGRATION
       : profile.recordStorageMigration;
-  if (
-    !policy ||
-    typeof policy !== "object" ||
-    Array.isArray(policy) ||
-    Object.keys(policy).some((key) => !["enabled", "pageIds"].includes(key)) ||
-    typeof policy.enabled !== "boolean" ||
-    !Array.isArray(policy.pageIds) ||
-    !Array.from(policy.pageIds).every(
-      (id) =>
-        typeof id === "string" &&
-        /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(id),
-    ) ||
-    new Set(policy.pageIds).size !== policy.pageIds.length ||
-    (policy.enabled && (!policy.pageIds.length || profile.recordStorage !== "automerge"))
-  )
+  if (!validMigrationPolicy(reviewed, profile))
     throw new Error("Invalid record storage migration canary policy");
+  let policy = reviewed;
+  if (operatorText !== undefined) {
+    if (!disabledPolicy(reviewed))
+      throw new Error(
+        "Invalid record storage migration canary policy: both the profile and the operator file set one",
+      );
+    policy = operatorMigrationPolicy(profile, operatorText);
+  }
   // Preserve app-only adoption for targets that have never enabled migration.
   if (!policy.enabled && !policy.pageIds.length) return {};
   return {
@@ -464,8 +552,12 @@ export function assertQualifiedDeploymentTarget(target) {
 // life, so an entry stays after the profile stops setting `recordStorage`: the
 // target still holds those Pages. Remove one only once the target's data holds
 // no Page with that mode. page10 has created `automerge` Pages since a2c9d5dde.
+// pages creates `automerge` Pages once a release configured from its profile
+// runs there. Its entry holds whether or not that install has happened, so no
+// checkout that knows the profile can install a build without plain sync.
 export const RECORD_STORAGE_HISTORY = Object.freeze({
   page10: Object.freeze(["automerge"]),
+  pages: Object.freeze(["automerge"]),
 });
 const NATIVE_RECORD_STORAGE = Object.freeze(["local", "buffered"]);
 

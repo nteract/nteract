@@ -2042,13 +2042,21 @@ Pages on this path.
 Migration is default-off. The reviewed deployment profile's
 `recordStorageMigration: { enabled: false, pageIds: [] }` selects an explicit
 canary. Enabling it requires `recordStorage: "automerge"` and a nonempty list
-of unique Page UUIDs. The installer validates this policy before host commands
-and emits `PAGES_MIGRATE_RECORD_STORAGE` and the JSON array
-`PAGES_MIGRATE_PAGE_IDS`; it does not inherit activation from its environment.
-All shipped profiles remain disabled with empty lists. There is no wildcard
-or target-wide activation mode. The disabled, empty default emits neither
-migration variable, preserving existing deployment configuration and avoiding
-a restart just to install disabled controls.
+of at most 500 unique Page UUIDs. When the profile's policy is disabled and
+empty, the operator may put the same `{enabled, pageIds}` shape in
+`/etc/<service>/record-storage-migration.json` on the host instead, so
+production Page IDs stay out of the repository. That file must be a regular,
+non-group- or world-writable file under 64 KiB, and its profile must set
+`recordStorage: "automerge"`; a profile canary and a file together are refused.
+The installer validates either source before host commands and emits
+`PAGES_MIGRATE_RECORD_STORAGE` and the JSON array `PAGES_MIGRATE_PAGE_IDS`; it
+does not inherit activation from its environment. All shipped profiles remain
+disabled with empty lists. There is no wildcard or target-wide activation mode.
+The disabled, empty default with no file emits neither migration variable,
+preserving existing deployment configuration and avoiding a restart just to
+install disabled controls. Changing the list changes the configured vars, so
+each install that applies it restarts the service; DEPLOYMENT.md's "Moving
+pages off Subduction" is the runbook.
 
 `PAGES_MIGRATE_RECORD_STORAGE=true`, together with
 `PAGES_RECORD_STORAGE=automerge`, converts only Pages named in a valid
