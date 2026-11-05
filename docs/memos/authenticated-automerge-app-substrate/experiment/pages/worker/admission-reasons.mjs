@@ -29,6 +29,9 @@ export const ADMISSION_REASONS = Object.freeze({
   schema_unsupported: "schema_unsupported",
   // The host is converting the Page's preserved Markdown blocks.
   preserved_markdown_converting: "temporarily_unavailable",
+  // An operator is moving the Page to plain Automerge sync: its native
+  // sockets close, and the tab's next discovery names plain storage.
+  record_storage_migrating: "temporarily_unavailable",
   // Native signing-key admission after the WebSocket upgrade.
   native_handshake_failed: "temporarily_unavailable",
   native_admission_cancelled: "temporarily_unavailable",
