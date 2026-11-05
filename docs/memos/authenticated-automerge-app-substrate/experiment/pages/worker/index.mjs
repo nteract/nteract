@@ -109,17 +109,9 @@ import {
 import {
   migrationSlot,
   migrationStart,
-  operatorRefusal,
   recordStorageMigrated,
   recordStorageMigration,
 } from "./record-storage-migration.mjs";
-// ONE-SHOT MIGRATION imports: delete with record-storage-operator.mjs.
-import {
-  OPERATOR_PATH as RECORD_STORAGE_OPERATOR_PATH,
-  OPERATOR_ROUTE as RECORD_STORAGE_OPERATOR_ROUTE,
-  OPERATOR_TARGETS_ROUTE as RECORD_STORAGE_TARGETS_ROUTE,
-  operatorRecordStorage,
-} from "./record-storage-operator.mjs";
 import { logSyncRefused, logSyncRounds } from "./plain-sync-log.mjs";
 import { BLOCKING as BLOCKING_COMMENT_CODES } from "../sync/comments.mjs";
 import {
@@ -1366,12 +1358,6 @@ const gateway = {
           recheckUpload: () => authorizeImage(request, env, pageId, false),
         });
       }
-      // ONE-SHOT MIGRATION route (record-storage-operator.mjs; delete with
-      // it). Lab only, behind the same gate: otherwise the unknown path.
-      if (url.pathname === RECORD_STORAGE_OPERATOR_PATH && request.method === "POST") {
-        const response = await operatorRecordStorage(request, env);
-        if (response) return response;
-      }
       if (url.pathname === "/api/access") {
         await authenticate(request, env);
         const pageId = url.searchParams.get("page");
@@ -1610,35 +1596,6 @@ export class Catalog {
   async locationShape() {
     return migrateLocationShape(this.storage);
   }
-  /**
-   * ONE-SHOT MIGRATION (record-storage-operator.mjs; delete with it). The
-   * Page ids this Catalog names for the operator's record-storage
-   * conversion: every `page/` entry (Project content included) and every
-   * `trash/` entry. Host only: a request that carries a credential is refused.
-   */
-  async operatorRecordStorageTargets(request) {
-    if (request.headers.has("authorization") || request.headers.has("cookie"))
-      return json({ error: "Not found" }, 404);
-    const body = (await readJson(request)) ?? {};
-    if (!this.ctx.id.name || body.principal !== this.ctx.id.name)
-      throw new HttpError(400, "principal must name this Catalog's account", "invalid_arguments");
-    const kinds = new Map();
-    for (const [prefix, kind] of [
-      ["page/", "page"],
-      ["trash/", "trash"],
-    ])
-      for (const key of (await listAll(this.storage, prefix)).keys()) {
-        const id = key.slice(prefix.length);
-        if (validPageId(id) && !kinds.has(id)) kinds.set(id, kind);
-      }
-    return json({
-      principal: body.principal,
-      pages: [...kinds]
-        .sort(([a], [b]) => (a < b ? -1 : 1))
-        .map(([page_id, kind]) => ({ page_id, kind })),
-    });
-  }
-
   async run(request) {
     try {
       const pathname = new URL(request.url).pathname;
@@ -1681,9 +1638,6 @@ export class Catalog {
         });
         return json({ ok: true });
       }
-      // ONE-SHOT MIGRATION route (record-storage-operator.mjs; delete with it).
-      if (pathname === RECORD_STORAGE_TARGETS_ROUTE)
-        return await this.operatorRecordStorageTargets(request);
       if (pathname === "/internal/projection" || pathname === "/internal/content-activity") {
         // Reachable only through the host's CATALOGS namespace, never the gateway.
         const value = await readJson(request);
@@ -4964,8 +4918,6 @@ export class Page {
         this.disarmMigration();
       } else if (effect.type === "convert") {
         const run = this.runMigration();
-        // An operator's request waits for it (recordStorageOperator).
-        this.migrationRun = run;
         holdUntilSettled(this.ctx, run);
         this.disarmMigration();
       }
@@ -5005,7 +4957,6 @@ export class Page {
           try {
             if (this.migrationAbandoned) return;
             const event = await this.convertRecordStorage(started);
-            this.migrationOutcome = event;
             const { effects } = this.stepMigration(event);
             if (effects?.some((effect) => effect.type === "retire")) {
               await this.retireMigratedHost();
@@ -5026,7 +4977,6 @@ export class Page {
             reason: result.reason,
           }),
         );
-        this.migrationOutcome = result;
         this.stepMigration(result);
       }
     } catch (error) {
@@ -5055,18 +5005,14 @@ export class Page {
   async convertRecordStorage(started = Date.now()) {
     const storage = this.ctx.storage;
     const from = this.metadata?.recordStorage ?? "local";
-    // An operator's request (ONE-SHOT MIGRATION, record-storage-operator.mjs)
-    // converts with peers connected: it closes them first.
-    const requested = !!this.migration?.requested;
     const log = (outcome, fields = {}) =>
       console.log(
         JSON.stringify({
           event: "record_storage.migration",
           outcome,
           from,
-          // Canaries and operator runs go Page by Page; the line says which.
+          // Canaries go Page by Page; the line says which.
           page_id: this.metadata?.pageId,
-          ...(requested && { trigger: "operator" }),
           ...fields,
         }),
       );
@@ -5074,10 +5020,7 @@ export class Page {
       log("skipped", { reason });
       return { type: "skipped", reason, ...(retryMs && { retryMs }) };
     };
-    if (requested && this.handle && !this.plain) await this.closeWiresForMigration();
-    // The operator's own request is running, and holds the serial queue, so
-    // no other request can; only sockets count for it.
-    if (this.wires.size || (!requested && (this.requestsRunning ?? 0) > 0)) return skip("busy");
+    if (this.wires.size || (this.requestsRunning ?? 0) > 0) return skip("busy");
     if (!this.handle || this.plain || this.migration?.name !== "converting")
       return skip("not_native");
     if (this.recoveryBlocked) return skip("recovery_blocked");
@@ -5155,71 +5098,6 @@ export class Page {
     }
   }
 
-  /** Close every native socket before an operator's conversion, with a
-   * transient admission code: each tab reconnects, finds plain storage at
-   * its next discovery and switches (viewer/storage-switch-machine.mjs). */
-  async closeWiresForMigration() {
-    const moving = withAdmissionReason(
-      Object.assign(Error("This Page is moving to plain sync"), { status: 503 }),
-      "record_storage_migrating",
-    );
-    await Promise.all(
-      [...this.wires].map((wire) =>
-        Promise.resolve()
-          .then(() => wire.disconnect(admissionCloseCode(moving), admissionCode(moving)))
-          .catch((error) => logFailure(error, "record-storage-migration-close")),
-      ),
-    );
-  }
-
-  /**
-   * ONE-SHOT MIGRATION (record-storage-operator.mjs; delete with it). The
-   * operator's host-only route. `status` answers from the record without
-   * booting the host. `convert` boots it, checks the switch, the Page id,
-   * the owner when given and the record, then steps the migration machine's
-   * `requested` and waits for the conversion. Runs in the serial queue like
-   * any host write. A converted object resets, so its reply may never
-   * arrive; the gateway reads `status` from the next object.
-   */
-  async recordStorageOperator(request) {
-    if (request.headers.has("authorization") || request.headers.has("cookie"))
-      return json({ error: "Not found" }, 404);
-    const { mode, page_id: pageId, owner } = (await readJson(request)) ?? {};
-    const metadata = this.metadata;
-    if (mode === "status")
-      return json({
-        page_id: metadata?.pageId ?? null,
-        owner: metadata?.owner ?? null,
-        state: pageState(metadata),
-        record_storage: metadata ? (metadata.recordStorage ?? "local") : null,
-        migrated_from: metadata?.recordStorageMigratedFrom ?? null,
-        migrated_at: metadata?.recordStorageMigratedAt ?? null,
-        refusal: operatorRefusal(this.env, metadata),
-        migration: this.migration?.name ?? null,
-        connected: this.wires.size,
-      });
-    if (mode !== "convert")
-      throw new HttpError(400, 'mode must be "status" or "convert"', "invalid_arguments");
-    if (!validPageId(pageId)) throw new HttpError(400, "page_id is required", "invalid_arguments");
-    if (!metadata || metadata.pageId !== pageId) return json({ result: "missing" });
-    if (owner !== undefined && metadata.owner !== owner) return json({ result: "not_owner" });
-    const refusal = operatorRefusal(this.env, metadata);
-    if (refusal === "plain") return json({ result: "plain" });
-    if (refusal) return json({ result: "refused", reason: refusal });
-    await this.documentReady();
-    if (this.plain) return json({ result: "plain" });
-    this.migrationOutcome = undefined;
-    const stepped = this.stepMigration({ type: "requested" });
-    if (stepped.rejected) return json({ result: "busy", reason: stepped.rejected });
-    await this.migrationRun;
-    if (this.migration?.name === "retired") return json({ result: "converted" });
-    const outcome = this.migrationOutcome;
-    return json({
-      result: outcome?.type === "failed" ? "failed" : "skipped",
-      reason: outcome?.reason ?? outcome?.type ?? "unknown",
-    });
-  }
-
   /** A converted Page's Subduction history, which the plain host never reads:
    * its records, actor entries, signing-key bindings and signer seed here,
    * and for a buffered Page the PageRecords object's records.
@@ -5275,10 +5153,6 @@ export class Page {
         const answer = await this.catalogFromRecord(request);
         if (answer) return answer;
       }
-      // ONE-SHOT MIGRATION route (record-storage-operator.mjs; delete with
-      // it). Before the boot: a status read boots nothing.
-      if (url.pathname === RECORD_STORAGE_OPERATOR_ROUTE)
-        return await this.recordStorageOperator(request);
       await this.documentReady();
       // This request is live: content effects deferred from the repository's
       // loop, or a coalesced time whose timer never fired, run now.

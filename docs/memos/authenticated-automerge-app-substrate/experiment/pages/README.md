@@ -2016,7 +2016,8 @@ conversion holds its slot wait and storage work until settlement. If more than
 its native host only after a started conversion callback settles, or immediately
 if the callback never started. A crash before the
 flip leaves a Subduction Page, and the next attempt clears `plain/` first.
-Each attempt logs one `record_storage.migration` line naming its `page_id`.
+The conversion refuses to flip if the live heads moved after the snapshot
+(`heads_moved`). Each attempt logs one `record_storage.migration` line naming its `page_id`.
 
 Migration is one-way. Edits after the flip exist only in plain history, so
 flipping the record back would drop them. `recordStorageMigratedFrom` names the
@@ -2024,17 +2025,6 @@ Subduction storage the Page left, which still holds its native records,
 unread, until the Page is deleted: deletion then removes `repo/*`,
 `host/actor/*`, `host/binding/*` and `host/signer`, and for a buffered Page the `PageRecords`
 object's records.
-
-On a lab target an operator can also convert named Pages now, open tabs or
-not ([worker/record-storage-operator.mjs](worker/record-storage-operator.mjs),
-DEPLOYMENT.md "Operator conversion to plain sync"). The machine's `requested`
-event moves any state but `converting` and `retired` to `converting`; the
-conversion first closes the host's native sockets with a transient admission
-code (`record_storage_migrating`), counts only sockets as busy (the
-operator's request holds the serial queue). Both paths refuse to flip if the
-live heads moved after the snapshot (`heads_moved`). A requested run that doesn't convert goes back
-to `dormant` or `off` with no timer. It needs `PAGES_RECORD_STORAGE=automerge`
-on the host.
 
 A tab that held the Page on its native replica, offline say, finds plain
 storage at its next discovery. The storage switch

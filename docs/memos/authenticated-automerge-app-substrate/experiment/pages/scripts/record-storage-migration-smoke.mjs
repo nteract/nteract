@@ -2,8 +2,7 @@
 // `node scripts/local-sharing-e2e.mjs --migration`. The harness starts celld
 // with new Pages on Subduction; on request it restarts celld with plain
 // Automerge sync and PAGES_MIGRATE_RECORD_STORAGE on. A Page converts once
-// its last tab leaves (record-storage-migration.mjs). A second Page converts
-// on the operator's request with a tab open (record-storage-operator.mjs).
+// its last tab leaves (record-storage-migration.mjs).
 import assert from "node:assert/strict";
 import { mkdir, writeFile } from "node:fs/promises";
 import { chromium, expect } from "@playwright/test";
@@ -16,9 +15,7 @@ assert.equal(typeof process.send, "function", "run through local-sharing-e2e.mjs
 
 const report = { completed: [], errors: [] };
 const browser = await chromium.launch({ headless: true });
-// The lab installer's operator secret, for the operator conversion.
-const operatorSecret = crypto.randomUUID() + crypto.randomUUID();
-let api, pageId, operatorPageId;
+let api, pageId;
 
 function restart(vars) {
   return new Promise((resolve, reject) => {
@@ -99,13 +96,6 @@ try {
   });
   assert.equal(comment.status, 200, JSON.stringify(comment.body));
   assert.equal((await call(`/api/connect?page=${pageId}`)).body.recordStorage, undefined);
-  const second = await tool("create_page", {
-    title: `Operator fixture ${Date.now()}`,
-    markdown: "Operator garden.",
-    idempotency_key: crypto.randomUUID(),
-  });
-  assert.equal(second.status, 200, JSON.stringify(second.body));
-  operatorPageId = report.operatorPageId = second.body.page_id;
 
   // Tab B opens the Page, then loses its network and types.
   await b.page.goto(`${origin}/p/${pageId}`);
@@ -123,7 +113,6 @@ try {
     PAGES_MIGRATE_RECORD_STORAGE: "true",
     PAGES_MIGRATE_PAGE_IDS: JSON.stringify([pageId]),
     PAGES_MIGRATE_QUIET_MS: "500",
-    PAGES_OPERATOR_SECRET: operatorSecret,
   });
   await a.page.goto(`${origin}/p/${pageId}`);
   await expect(content(a.page)).toContainText("Native garden.", {
@@ -182,50 +171,6 @@ try {
   await expect.poll(hostText, { timeout: 30000 }).toContain("Typed offline.");
   assert.match(await hostText(), /From tab A\./);
   report.completed.push("Tab B reconnected, reloaded on plain sync, and its offline edit arrived");
-
-  // The operator converts the second Page while tab D has it open. Its
-  // socket closes, its next discovery names plain storage, and it reloads.
-  const d = await signIn();
-  await d.page.goto(`${origin}/p/${operatorPageId}`);
-  await expect(content(d.page)).toContainText("Operator garden.", { timeout: 60000 });
-  await typeAtEnd(d.page, " Before the operator.");
-  await expect(saved(d.page)).toBeVisible({ timeout: 30000 });
-  const operate = async (body) => {
-    const response = await fetch(`${origin}/api/operator/record-storage`, {
-      method: "POST",
-      headers: { "content-type": "application/json", "x-pages-operator-secret": operatorSecret },
-      body: JSON.stringify(body),
-    });
-    return { status: response.status, body: await response.json() };
-  };
-  const converted = await operate({ action: "convert", page_id: operatorPageId });
-  assert.equal(converted.status, 200, JSON.stringify(converted.body));
-  report.operator = converted.body;
-  assert.equal(converted.body.status.record_storage, "automerge", JSON.stringify(converted.body));
-  assert.equal(converted.body.status.migrated_from, "buffered");
-  await expect(d.page.getByText("This Page's storage changed")).toBeVisible({ timeout: 60000 });
-  await d.page.screenshot({ path: `${output}/operator-storage-changed.png` });
-  await d.page.reload({ waitUntil: "domcontentloaded" });
-  await expect(content(d.page)).toContainText("Before the operator.", { timeout: 60000 });
-  await typeAtEnd(d.page, " After the operator.");
-  await expect(saved(d.page)).toBeVisible({ timeout: 60000 });
-  const operatorText = async () =>
-    (await tool("read_page", { page_id: operatorPageId })).body.blocks
-      .map((block) => block.markdown)
-      .join("\n");
-  await expect.poll(operatorText, { timeout: 30000 }).toContain("After the operator.");
-  assert.match(await operatorText(), /Before the operator\./);
-  const plainDbs = await d.page.evaluate(async () =>
-    (await indexedDB.databases()).map((x) => x.name),
-  );
-  assert.ok(
-    plainDbs.some((name) => name.startsWith("pages-plain-")),
-    "a plain replica after reload",
-  );
-  report.completed.push(
-    "The operator converted a Page with a tab open; the tab reloaded plain and kept editing",
-  );
-  await d.context.close();
   assert.deepEqual(report.errors, []);
 } catch (error) {
   report.failure = error.message;
@@ -242,16 +187,6 @@ try {
     }
   throw error;
 } finally {
-  for (const id of [operatorPageId].filter(Boolean))
-    if (api)
-      try {
-        const r = await tool("read_page", { page_id: id });
-        await tool("delete_page", {
-          page_id: id,
-          base_heads: r.body.heads,
-          idempotency_key: crypto.randomUUID(),
-        });
-      } catch {}
   if (pageId && api) {
     try {
       await b?.context.setOffline(false).catch(() => {});
