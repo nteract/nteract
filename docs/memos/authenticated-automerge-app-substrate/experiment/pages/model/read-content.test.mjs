@@ -504,58 +504,95 @@ test("outline fields bound per-item values, cover ragged tables and name unknown
   assert.deepEqual(small.summary, { rows: 2, columns: 3, align: ["left", null, null] });
 });
 
-test("a list item that opens with a block other than a paragraph reads back", async () => {
-  const { createPageData, initializePage, orderedBlockIds } = await import("./page.mjs");
-  const { textPath } = await import("./richtext.mjs");
+test("a list item that opens with a block other than a paragraph reads back and writes back unchanged", async () => {
+  const { applyPageOperation, createPageData, initializePage, orderedBlockIds } =
+    await import("./page.mjs");
+  const { blockMarkdown, textPath } = await import("./richtext.mjs");
   const { updateSpansConfig } = await import("./marks.mjs");
+  const { stampSpans } = await import("./schema-features.mjs");
   const pageId = "44444444-4444-4444-8444-444444444444";
-  const written = (markdown) => {
-    let doc = A.from(createPageData({ pageId, title: "Items" }));
-    doc = A.change(doc, (draft) => initializePage(draft, markdown));
-    return doc;
-  };
-  // Agent writes: each item's opening block reads back as written.
-  for (const markdown of [
-    "- ```\n  x\n  ```",
-    "- a\n- ```\n  x\n  ```",
-    "- # Heading",
-    "1. > quoted",
-  ]) {
-    const read = projectReadContent(written(markdown), {});
-    assert.equal(read.blocks[0].markdown, markdown, markdown);
-    assert.equal(read.outline.length, 1, markdown);
-  }
-  // The editor stores an item that opens with a dataframe as the item's
-  // marker, then the dataframe's.
+  const src = `/api/pages/${pageId}/assets/${"e".repeat(64)}`;
   const S = (value) => new A.ImmutableString(value);
   const marker = (type, parents = [], attrs = {}) => ({
     type: "block",
     value: { type: S(type), parents: parents.map(S), attrs, isEmbed: false },
   });
-  let doc = written("Intro");
-  const id = orderedBlockIds(doc)[0];
-  doc = A.change(doc, (draft) =>
-    A.updateSpans(
-      draft,
-      textPath(id),
+  const text = (value) => ({ type: "text", value });
+  const dataframe = (parents) =>
+    marker("dataframe", parents, {
+      src: S(src),
+      media_type: S("application/vnd.apache.parquet"),
+      title: S("Usage"),
+    });
+  const ul = "unordered-list-item",
+    ol = "ordered-list-item",
+    task = "task-list-item";
+  // Each item stored as the editor writes it: the item's marker, then its
+  // first block's marker. Before list_item took block+, none of these read.
+  const shapes = [
+    [
+      "- \n  ```\n  x\n  ```",
+      [marker(ul), marker("code-block", [ul], { params: S("") }), text("x")],
+    ],
+    ["- \n  ## H", [marker(ul), marker("heading", [ul], { level: 2 }), text("H")]],
+    ["1. \n   > q", [marker(ol), marker("blockquote", [ol]), text("q")]],
+    ["- \n  ---", [marker(ul), marker("horizontal-rule", [ul])]],
+    [
+      "- \n  | A |\n  | --- |",
       [
-        marker("unordered-list-item"),
-        { type: "text", value: "a" },
-        marker("unordered-list-item"),
-        marker("dataframe", ["unordered-list-item"], {
-          src: S(`/api/pages/${pageId}/assets/${"e".repeat(64)}`),
-          media_type: S("application/vnd.apache.parquet"),
-          title: S("Usage"),
-        }),
+        marker(ul),
+        marker("table", [ul]),
+        marker("table-row", [ul, "table"]),
+        marker("table-header", [ul, "table", "table-row"]),
+        text("A"),
       ],
-      updateSpansConfig,
-    ),
-  );
-  const read = projectReadContent(doc, {});
-  assert.equal(
-    read.blocks[0].markdown,
-    `- a\n- [Dataframe: Usage](/api/pages/${pageId}/assets/${"e".repeat(64)})`,
-  );
-  assert.equal(read.outline[0].type, "bullet-list");
-  assert.ok(read.outline[0].node_id);
+    ],
+    [
+      "- a\n- \n  [Dataframe: Usage](" + src + ")",
+      [marker(ul), text("a"), marker(ul), dataframe([ul])],
+    ],
+    [
+      "- [x] \n\n  [Dataframe: Usage](" + src + ")",
+      [marker(task, [], { checked: true }), dataframe([task])],
+    ],
+    [
+      "- [x] \n\n  ## H",
+      [marker(task, [], { checked: true }), marker("heading", [task], { level: 2 }), text("H")],
+    ],
+    [
+      "- [ ] \n\n  - [x] a",
+      [marker(task, [], { checked: false }), marker(task, [task], { checked: true }), text("a")],
+    ],
+    ["- \n  - \n    - ", [marker(ul), marker(ul, [ul]), marker(ul, [ul, ul])]],
+  ];
+  for (const [expected, spans] of shapes) {
+    let doc = A.from(createPageData({ pageId, title: "Items" }));
+    doc = A.change(doc, (draft) => initializePage(draft, "Intro"));
+    const id = orderedBlockIds(doc)[0];
+    doc = A.change(doc, (draft) => {
+      A.updateSpans(draft, textPath(id), spans, updateSpansConfig);
+      stampSpans(draft, spans);
+    });
+    const read = projectReadContent(doc, {});
+    assert.equal(read.blocks[0].markdown, expected);
+    assert.equal(read.outline.length, 1, expected);
+    assert.ok(read.outline[0].node_id, expected);
+    // Writing the read back unchanged writes nothing.
+    const after = A.change(A.clone(doc), (draft) =>
+      applyPageOperation(draft, {
+        operation: "edit_page",
+        arguments: {
+          operations: [{ op: "replace_block_markdown", block_id: id, markdown: expected }],
+        },
+      }),
+    );
+    assert.deepEqual(A.getHeads(after), A.getHeads(doc), expected);
+    assert.equal(blockMarkdown(after.blocks[id]), expected);
+  }
+  // Agent writes of the same shapes read back.
+  for (const markdown of ["- # Heading", "- a\n- ```\n  x\n  ```", "- ***"]) {
+    let doc = A.from(createPageData({ pageId, title: "Items" }));
+    doc = A.change(doc, (draft) => initializePage(draft, markdown));
+    assert.equal(projectReadContent(doc, {}).outline.length, 1, markdown);
+  }
 });

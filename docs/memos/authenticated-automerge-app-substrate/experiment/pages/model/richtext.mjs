@@ -757,6 +757,16 @@ const serializer = new MarkdownSerializer(
       }
       state.text(node.text, !state.inAutolink);
     },
+    // An item that opens with a block other than a paragraph puts its marker
+    // on a line of its own: on the marker's line, a rule or a nested list's
+    // marker would read as a thematic break. A task box is paragraph text, so
+    // a blank line follows it; otherwise a line that can't interrupt a
+    // paragraph, such as a dataframe's, would join the box's text.
+    list_item(state, node, parent, index) {
+      if (node.firstChild && node.firstChild.type !== schema.nodes.paragraph)
+        state.write(parent.type === schema.nodes.task_list ? "\n\n" : "\n");
+      defaultMarkdownSerializer.nodes.list_item(state, node, parent, index);
+    },
     bullet_list(state, node) {
       renderList(state, node, "  ", () => "- ");
     },
@@ -1909,7 +1919,9 @@ export function setRichMarkdownKeepingNodes(doc, id, source) {
     return node.copy(node.content.constructor.from(children));
   };
   // Without stored dataframes, dataframe-like lines are ordinary links.
-  const kept = existing.length ? restore(tree, "") : tree;
+  // A dataframe restored as an item's first child needs the item's empty
+  // first paragraph back, or the adapter writes no marker for the item.
+  const kept = existing.length ? paragraphFirstItems(restore(tree, "")) : tree;
   if (problems.has("moved"))
     refuse(
       "A dataframe's line can't go inside a quote, list or table, into a heading, or out of the quote or list item it's stored in. Keep it where read_page shows it; it may move among its neighbours.",

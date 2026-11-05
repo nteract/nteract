@@ -144,3 +144,26 @@ test("an editor rewrite of any block Pages wrote from Markdown writes nothing", 
   doc = A.change(doc, (draft) => initializePage(draft, "Intro\n\n- a\n- b"));
   assert.deepEqual(editorRewrite(doc, orderedBlockIds(doc)[0]), []);
 });
+
+test("an agent that writes back what it read writes nothing", () => {
+  for (const { id: caseId, markdown } of markdownCorpus.cases)
+    for (const literal of unsupportedMarkdown(markdown) ? [true] : [false, true]) {
+      let doc = A.from(createPageData({ pageId: "projection", title: "Projection" }));
+      const id = orderedBlockIds(doc)[0];
+      try {
+        doc = A.change(doc, (draft) => setRichMarkdown(draft, id, markdown, { literal }));
+      } catch {
+        continue;
+      }
+      const read = exportMarkdown(richDoc(doc.blocks[id]));
+      const after = A.change(A.clone(doc), (draft) => setRichMarkdown(draft, id, read));
+      if (Object.hasOwn(KNOWN_DISAGREEMENTS, caseId))
+        assert.equal(exportMarkdown(richDoc(after.blocks[id])), read, caseId);
+      else
+        assert.deepEqual(
+          A.getHeads(after),
+          A.getHeads(doc),
+          `${literal ? "literal" : "agent"} ${caseId}`,
+        );
+    }
+});
