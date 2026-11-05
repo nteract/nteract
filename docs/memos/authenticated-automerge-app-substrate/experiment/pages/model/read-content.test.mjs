@@ -565,6 +565,30 @@ test("a list item that opens with a block other than a paragraph reads back and 
       [marker(task, [], { checked: false }), marker(task, [task], { checked: true }), text("a")],
     ],
     ["- \n  - \n    - ", [marker(ul), marker(ul, [ul]), marker(ul, [ul, ul])]],
+    [
+      "- outer\n\n  - \n    ## H",
+      [
+        marker(ul),
+        text("outer"),
+        marker(ul, [ul]),
+        marker("heading", [ul, ul], { level: 2 }),
+        text("H"),
+      ],
+    ],
+    [
+      "- outer\n\n  - \n    ---",
+      [marker(ul), text("outer"), marker(ul, [ul]), marker("horizontal-rule", [ul, ul])],
+    ],
+    [
+      "- outer\n\n  1. \n     ```\n     x\n     ```",
+      [
+        marker(ul),
+        text("outer"),
+        marker(ol, [ul]),
+        marker("code-block", [ul, ol], { params: S("") }),
+        text("x"),
+      ],
+    ],
   ];
   for (const [expected, spans] of shapes) {
     let doc = A.from(createPageData({ pageId, title: "Items" }));

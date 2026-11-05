@@ -720,7 +720,8 @@ const looseItem = (item) => {
 const cannotInterrupt = (list) => {
   if (list.type.name === "ordered_list" && (list.attrs.order ?? 1) !== 1) return true;
   const first = list.firstChild?.firstChild;
-  if (first?.type.name !== "paragraph") return false;
+  // Block-first items serialize with an empty marker line.
+  if (first?.type.name !== "paragraph") return true;
   let text = false;
   first.forEach((child) => {
     text ||= child.isText && child.text.trim() !== "";

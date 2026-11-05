@@ -205,6 +205,42 @@ test("an editor rewrite of any block Pages wrote from Markdown writes nothing", 
   assert.deepEqual(editorRewrite(doc, orderedBlockIds(doc)[0]), []);
 });
 
+test("nested-only sibling items keep separate outer markers through the shared encoder", () => {
+  const tree = parseAgentMarkdown("-\n  - a\n-\n  - b");
+  const expected = [
+    {
+      type: "block",
+      value: { type: "unordered-list-item", parents: [], attrs: {}, isEmbed: false },
+    },
+    {
+      type: "block",
+      value: {
+        type: "unordered-list-item",
+        parents: ["unordered-list-item"],
+        attrs: {},
+        isEmbed: false,
+      },
+    },
+    { type: "text", value: "a", marks: {} },
+    {
+      type: "block",
+      value: { type: "unordered-list-item", parents: [], attrs: {}, isEmbed: false },
+    },
+    {
+      type: "block",
+      value: {
+        type: "unordered-list-item",
+        parents: ["unordered-list-item"],
+        attrs: {},
+        isEmbed: false,
+      },
+    },
+    { type: "text", value: "b", marks: {} },
+  ];
+  assert.deepEqual(plainSpans(adapterSpans(tree)), expected);
+  assert.deepEqual(plainSpans(pageSpans(tree)), expected);
+});
+
 test("an agent that writes back what it read writes nothing", () => {
   for (const { id: caseId, markdown } of markdownCorpus.cases)
     for (const literal of unsupportedMarkdown(markdown) ? [true] : [false, true]) {
