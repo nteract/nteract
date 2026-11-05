@@ -505,6 +505,65 @@ test("planner abort schedules cleanup without exposing recovery state to the nex
   assert.ok(disposals >= 1, "aborted planner cleanup runs in the background");
 });
 
+test("planner abort disposes the interpreter and leaves no reusable busy reservation", async () => {
+  const started = deferred(),
+    ended = deferred();
+  let disposals = 0;
+  const resolver = new PackageResolver({
+    create: async () => ({
+      plan: async () => {
+        started.resolve();
+        await ended.promise;
+        return { status: "ready", wheels: [] };
+      },
+      dispose: async () => {
+        disposals++;
+        ended.resolve();
+      },
+    }),
+  });
+  const abort = new AbortController();
+  const pending = resolver.resolve("session-a", ["six"], { signal: abort.signal });
+  await started.promise;
+  abort.abort();
+  await assert.rejects(pending, /abort/i);
+  assert.ok(disposals > 0);
+  assert.equal(resolver.status, "ready", "the aborted resolve no longer holds a busy reservation");
+  await resolver.resolve("session-a", []);
+});
+
+test("failed planner cleanup retains its sole reservation", async () => {
+  let now = 0;
+  let creates = 0;
+  const started = deferred(),
+    ended = deferred();
+  const resolver = new PackageResolver({
+    clock: () => now,
+    create: async () => {
+      creates++;
+      return {
+        plan: async () => {
+          started.resolve();
+          await ended.promise;
+          return { status: "ready", wheels: [] };
+        },
+        dispose: async () => {
+          ended.resolve();
+          throw new Error("host termination unconfirmed");
+        },
+      };
+    },
+  });
+  const abort = new AbortController();
+  const pending = resolver.resolve("session-a", ["six"], { signal: abort.signal });
+  await started.promise;
+  abort.abort();
+  await assert.rejects(pending, /abort/i);
+  now += 300_000;
+  await assert.rejects(resolver.resolve("session-a", ["six"]), { code: "planner_failed" });
+  assert.equal(creates, 1, "no replacement interpreter starts while termination is unconfirmed");
+});
+
 test("package-not-found keeps the warm planner and the next add runs immediately", async () => {
   let creates = 0;
   let plans = 0;
