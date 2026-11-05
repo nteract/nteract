@@ -7,7 +7,9 @@ import {
   projectComments as projectCommentsOf,
 } from "../model/comments.mjs";
 import { createProgressTargets } from "../model/presence.mjs";
-import { enableRich, textPath } from "../model/richtext.mjs";
+import { textPath } from "../model/richtext.mjs";
+import { richFromSource } from "../model/richtext-test-support.mjs";
+import { stampFeatures } from "../model/schema-features.mjs";
 import { captureCommentDraft, resolveCommentDraft } from "./comment-draft.mjs";
 import { decode } from "./wordgard-model.mjs";
 import { projectChanges } from "./wordgard-projection.mjs";
@@ -31,8 +33,9 @@ function fixture(source = "Same passage here and same passage again 😀.") {
       ["second", "a1"],
     ]) {
       d.blocks[id] = { id, position, kind: "markdown", markdown: source };
-      enableRich(d, id);
+      richFromSource(d, id);
     }
+    stampFeatures(d, ["comments-doc"]);
   });
   return doc;
 }

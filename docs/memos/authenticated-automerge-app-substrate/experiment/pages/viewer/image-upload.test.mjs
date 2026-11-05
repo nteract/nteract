@@ -9,7 +9,8 @@ import { Command } from "wordgard/command";
 import { createWordgardBinding } from "./wordgard-binding.mjs";
 import { projectChanges } from "./wordgard-projection.mjs";
 import { schema, encode, decode, PagesImage, Paragraph } from "./wordgard-model.mjs";
-import { blockMarkdown, enableRich, textPath, validateRich } from "../model/richtext.mjs";
+import { blockMarkdown, textPath, validateRich } from "../model/richtext.mjs";
+import { richFromSource } from "../model/richtext-test-support.mjs";
 import { IMAGE_MAX_BYTES, imageAssetUrl } from "../shared/image-assets.mjs";
 import { DATASET_MAX_BYTES, PARQUET_MEDIA_TYPE } from "../shared/dataset-assets.mjs";
 import {
@@ -31,7 +32,7 @@ function fixture(markdown = "hello world", { anchor = 7 } = {}) {
       page_id: pageId,
       blocks: { one: { id: "one", position: "a0", kind: "markdown", markdown } },
     }),
-    (d) => enableRich(d, "one"),
+    (d) => richFromSource(d, "one"),
   );
   const observers = new Set(),
     replica = {
@@ -104,7 +105,7 @@ test("image clipboard HTML preserves the native reference, alt and title without
           one: { kind: "markdown", markdown: `Before ![Screenshot](${asset.url} "A title") after` },
         },
       }),
-      (d) => enableRich(d, "one"),
+      (d) => richFromSource(d, "one"),
     );
     const original = decode(A.spans(native, textPath("one"))).doc,
       fragment = serialize(original).toDOM(dom.window.document),

@@ -1,12 +1,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import * as A from "@automerge/automerge";
-import { pmNodeToSpans } from "@automerge/prosemirror";
 import { closePeers, connectPeers, createPeer, eventually } from "../../backend.mjs";
 import { createAuthFixture } from "../../auth-fixtures.mjs";
-import { orderedBlockIds } from "../model/page.mjs";
-import { hasPreservedBlocks } from "../model/raw-migration.mjs";
-import { adapter, schema, textPath } from "../model/richtext.mjs";
 import { BUILD_FEATURES } from "../model/schema-features.mjs";
 import { sqliteD1 } from "../test/sqlite-d1.mjs";
 import { CONTENT_ACTIVITY_KEY } from "./content-activity.mjs";
@@ -258,53 +254,6 @@ test("the next request runs a native edit's flush when no socket serves it", asy
   await h.settle();
   assert.equal(page.contentActivity.pending, false);
   assert.equal(h.ownerRow(), page.contentActivity.value);
-});
-
-test("a preserved Markdown conversion on load records nothing; an edit after it does", async (t) => {
-  const h = await host(t);
-  const first = await created(h);
-  // A preserved block, as an earlier build stored one, written by the host.
-  const block = orderedBlockIds(first.handle.doc())[0];
-  const tree = schema.node("doc", null, [
-    schema.node("paragraph", null, [schema.text("We ship on Friday.")]),
-    schema.node("raw", { source: "Old ~~text~~.", importId: "", kind: "markdown" }),
-  ]);
-  first.contentActivity.stop();
-  first.unwatchContent();
-  await first.handle.update((doc) =>
-    A.change(doc, (draft) =>
-      A.updateSpans(
-        draft,
-        textPath(block),
-        pmNodeToSpans(adapter, tree),
-        adapter.updateSpansConfig(),
-      ),
-    ),
-  );
-  await first.flush();
-  assert.equal(hasPreservedBlocks(first.handle.doc()), true);
-  await first.repo.shutdown();
-  await first.backend.close();
-  first.signer.free();
-  first.repo = first.backend = first.signer = undefined;
-
-  const page = await h.open();
-  await h.settle();
-  assert.equal(hasPreservedBlocks(page.handle.doc()), false, "the host converted it on load");
-  assert.equal(page.contentActivity.value, null);
-  assert.equal(page.contentActivity.pending, false);
-  assert.equal(await h.storage.get(CONTENT_ACTIVITY_KEY), undefined);
-  assert.equal(h.contentReports().length, 0);
-  const read = await h.tool(page, "read_page", { comments: "none" });
-  const edit = await h.tool(page, "edit_page", {
-    base_heads: read.body.heads,
-    idempotency_key: "content-activity-host-after-conversion",
-    operations: [{ op: "insert_markdown", markdown: "One more line." }],
-  });
-  assert.equal(edit.status, 200, JSON.stringify(edit.body));
-  await h.settle();
-  assert.ok(page.contentActivity.value);
-  assert.equal(h.contentReports().length, 1);
 });
 
 test("a Catalog from before the content route answers non-OK, and the flush retries", async (t) => {

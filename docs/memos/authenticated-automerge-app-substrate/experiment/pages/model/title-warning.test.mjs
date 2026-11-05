@@ -2,11 +2,13 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import * as A from "@automerge/automerge";
 import { applyPageOperation, projectPage } from "./page.mjs";
-import { enableRich, setRichMarkdown, textPath } from "./richtext.mjs";
+import { setRichMarkdown, textPath } from "./richtext.mjs";
+import { richFromSource } from "./richtext-test-support.mjs";
 import { openingTitleWarning } from "./title-warning.mjs";
+import { stampFeatures } from "./schema-features.mjs";
 
 function page(title, blocks) {
-  return A.change(A.from({ title, blocks: {}, comments: {} }), (doc) => {
+  return A.change(A.from({ title, blocks: {} }), (doc) => {
     for (const [index, entry] of blocks.entries()) {
       const { id = `block-${index}`, markdown, rich = true, kind = "markdown", position } = entry;
       doc.blocks[id] = {
@@ -15,8 +17,9 @@ function page(title, blocks) {
         position: new A.RawString(position ?? `a${index}`),
         markdown,
       };
-      if (rich) enableRich(doc, id);
+      if (rich) richFromSource(doc, id);
     }
+    stampFeatures(doc, ["comments-doc"]);
   });
 }
 function warning(title, markdown, options = {}) {
@@ -139,21 +142,8 @@ test("empty text nodes are skipped across native blocks using fractional order a
   assert.equal(openingTitleWarning(tied), null);
 });
 
-test("Markdown-only blocks use the native parser without guessing inside unknown content", () => {
-  assert.equal(
-    warning("Shared title", "# Shared title", { rich: false }).match_kind,
-    "normalized_exact",
-  );
-  assert.equal(
-    warning("Shared title", "Shared title\n===", { rich: false }).match_kind,
-    "normalized_exact",
-  );
-  assert.equal(
-    warning("Shared title", "# Shared title", { rich: false, kind: "instruction" }),
-    null,
-  );
-  assert.equal(warning("Shared title", "<aside>\n# Shared title\n</aside>", { rich: false }), null);
-  assert.equal(warning("Shared title", "***\n\n# Shared title", { rich: false }), null);
+test("a block without rich text, or one this build can't read, gives no warning", () => {
+  assert.equal(warning("Shared title", "# Shared title", { rich: false }), null);
   assert.equal(
     openingTitleWarning({ title: "Shared title", blocks: { bad: { kind: "unknown" } } }),
     null,

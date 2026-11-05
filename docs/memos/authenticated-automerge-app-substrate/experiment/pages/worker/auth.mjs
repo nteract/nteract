@@ -391,7 +391,7 @@ export const CLIENT_ERROR_CODES = Object.freeze([
   "markdownless_node",
   "node_not_found",
   "nodes_would_join",
-  "preserved_markdown_converting",
+  "stored_form_unsupported",
   "comment_not_author",
   "comment_access_denied",
   "operation_pending",
@@ -400,11 +400,6 @@ export const CLIENT_ERROR_CODES = Object.freeze([
 export const RETRYABLE_SERVER_CODES = Object.freeze([
   "record_persistence_timeout",
   "request_timeout",
-  // The host is moving a Page's comments to their own document.
-  "comments_migrating",
-  // The owner's Catalog isn't in the current location shape yet
-  // (location-shape.mjs); the next write tries the pass again.
-  "location_migration_required",
   // PageRecords threw an overload or a transient error (record-persistence.mjs).
   "record_persistence_unavailable",
   // A listing met a shared Page or owner Catalog that did not answer.
@@ -515,14 +510,6 @@ export function errorResponse(error, stage = "request") {
         Number.isSafeInteger(error.details?.count) && {
           limit: error.details.limit,
           count: error.details.count,
-        }),
-      // A blocked location pass names what stands in its way; the gateway
-      // renames space_id to project_id.
-      ...(error?.code === "location_migration_required" &&
-        typeof error.details?.reason === "string" && {
-          reason: error.details.reason.slice(0, 64),
-          page_id: String(error.details.page_id ?? "").slice(0, 64) || null,
-          space_id: String(error.details.space_id ?? "").slice(0, 64) || null,
         }),
       ...(error?.code === "unsupported_schema_feature" &&
         Array.isArray(error.details?.features) && {

@@ -7,6 +7,7 @@ import {
   recordFallback,
   startupOf,
   storedTitleProjection,
+  recordCommentsUuid,
 } from "./page-startup.mjs";
 
 const TABLE = new URL("../test/fixtures/machines/page-startup.json", import.meta.url);
@@ -78,4 +79,26 @@ test("a stored projection stands in for the title only with its observation time
   assert.equal(storedTitleProjection({ ...projection, title: 7 }), null);
   assert.equal(storedTitleProjection({ title: "Launch plan" }), null);
   assert.equal(storedTitleProjection(undefined), null);
+});
+
+test("a host record names its comments document; one without the name fails closed", () => {
+  assert.equal(recordCommentsUuid(undefined), undefined);
+  assert.equal(recordCommentsUuid({}), undefined);
+  assert.equal(recordCommentsUuid({ pageId: "p", comments_doc: "uuid" }), "uuid");
+  for (const record of [{ pageId: "p" }, { pageId: "p", comments_doc: 3 }])
+    assert.throws(() => recordCommentsUuid(record), { code: "stored_form_unsupported" });
+});
+
+test("a deleted Page's record without comments_doc names none, and answers from the record", () => {
+  const tombstone = { pageId: "p", documentId: "d", deleted: true };
+  const purged = { ...tombstone, purged: { purged_at: "2026-11-05T00:00:00.000Z" } };
+  for (const record of [tombstone, purged]) {
+    assert.equal(recordCommentsUuid(record), undefined);
+    assert.equal(recordAnswerable(record), true);
+    assert.equal(startupOf(record, undefined), "lazy");
+  }
+  // A trashed Page still needs its comments document.
+  const trashed = { pageId: "p", documentId: "d", deleted: true, trash: {} };
+  assert.throws(() => recordCommentsUuid(trashed), { code: "stored_form_unsupported" });
+  assert.equal(recordAnswerable(trashed), false);
 });

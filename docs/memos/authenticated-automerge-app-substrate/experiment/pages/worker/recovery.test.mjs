@@ -269,7 +269,7 @@ test("a new purge key completes failed deletion barriers before clearing its cat
     storage.syncs++;
     if (failing) throw Error("deletion sync failed");
   };
-  const doc = A.from({ page_id: pageId, text: "Delete me" });
+  const doc = A.from({ page_id: pageId, text: "Delete me", schema: { features: ["comments-doc"] } });
   let deletions = 0;
   const page = Object.assign(Object.create(Page.prototype), {
     ready: Promise.resolve(),

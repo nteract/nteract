@@ -98,7 +98,6 @@ export class DocumentPolicy {
     serverKey,
     now = Date.now,
     schemaFeatures = () => [],
-    writeFence = () => undefined,
     commentsTree = () => undefined,
   }) {
     this.storage = storage;
@@ -107,8 +106,6 @@ export class DocumentPolicy {
     this.now = now;
     this.schemaFeatures = schemaFeatures;
     this.commentsTree = commentsTree;
-    // Returns the refusal while the host holds peer writes, or undefined.
-    this.writeFence = writeFence;
     this.bindings = new Map();
     // Each key's admitted connection. Changed only through slot(), which
     // steps nativeSessionMachine.
@@ -665,10 +662,6 @@ export class DocumentPolicy {
     // key never gains write authority through relay. A commenter's key
     // authors only the comments document.
     if (!this.authorAllowed(binding, scope)) throw new PermissionDenied("Unknown document author");
-    // While the host converts preserved Markdown blocks, no peer record lands,
-    // relayed or self-authored: either could be a competing conversion.
-    const fence = this.writeFence();
-    if (fence) throw fence;
     // The native schema gate. A peer's own edits arrive with itself as the
     // author; refuse them while its build lacks an id in the current stamp.
     // Records signed by another key are relayed history: the relay rule above
@@ -677,10 +670,7 @@ export class DocumentPolicy {
     // author published while admitted. Refusing every self-authored put is
     // acceptable: edits a stale tab made before the stamp stay in its local
     // store and sync after it reloads, because a reload keeps the tab's key
-    // and the new build declares the feature. The one exception is an edit
-    // to a preserved Markdown block, which the host converts itself. This
-    // gate sees keys, not records, so the reloaded viewer sets such edits
-    // aside before it connects (PageSession.recoverPreservedBlockEdits).
+    // and the new build declares the feature.
     if (requestor === author) {
       // The Page's stamp gates both documents: a build without the
       // comments-doc feature must not write either. The comments document's

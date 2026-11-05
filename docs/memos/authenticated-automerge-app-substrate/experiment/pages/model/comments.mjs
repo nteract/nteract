@@ -1,29 +1,29 @@
 import * as A from "@automerge/automerge/slim";
-import { isRich } from "./richtext-format.mjs";
+import { requireRich } from "./richtext-format.mjs";
 import { commentBodyProjection, setCommentContent } from "./comment-content.mjs";
 import { COMMENTS_FEATURE, commentThreads } from "./comments-doc.mjs";
 import { commentDecision, requireCommentDecision } from "./comment-rules.mjs";
 import { documentFeatures } from "./schema-features.mjs";
-const field = (block) => (isRich(block) ? "richText" : "markdown");
+import { storedFormUnsupported } from "./stored-form.mjs";
 
 // The text object and final selected character must both survive. Repeated
 // quotes never cause an old comment to silently attach to a different passage.
 export function selectionContext(doc, target) {
   if (target?.kind !== "selection") return undefined;
+  const a = target.anchor,
+    b = target.head;
+  if (!Object.hasOwn(doc.blocks, a?.blockId) || a.blockId !== b?.blockId)
+    return { status: "detached" };
+  const block = requireRich(doc.blocks[a.blockId]);
   try {
-    const a = target.anchor,
-      b = target.head;
-    if (!Object.hasOwn(doc.blocks, a.blockId) || a.blockId !== b.blockId)
-      return { status: "detached" };
-    const block = doc.blocks[a.blockId],
-      path = ["blocks", a.blockId, field(block)];
-    if ([a, b].some((p) => A.getObjectId(block, field(block)) !== String(p.textObjectId)))
+    const path = ["blocks", a.blockId, "richText"];
+    if ([a, b].some((p) => A.getObjectId(block, "richText") !== String(p.textObjectId)))
       return { status: "detached" };
     const from = A.getCursorPosition(doc, path, atob(String(a.relativePositionBase64)));
     const last = A.getCursorPosition(doc, path, atob(String(b.relativePositionBase64)));
     if (A.getCursor(doc, path, last) !== atob(String(b.relativePositionBase64)))
       return { status: "detached" };
-    const point = block[field(block)].codePointAt(last);
+    const point = block.richText.codePointAt(last);
     if (point === undefined) return { status: "detached" };
     const to = last + (point > 0xffff ? 2 : 1);
     if (to <= from) return { status: "detached" };
@@ -31,24 +31,26 @@ export function selectionContext(doc, target) {
       status: "attached",
       start: { blockId: a.blockId, offsetUtf16: from },
       end: { blockId: b.blockId, offsetUtf16: to },
-      text: block[field(block)].slice(from, to).replaceAll("\ufffc", "\n"),
+      text: block.richText.slice(from, to).replaceAll("\ufffc", "\n"),
     };
   } catch {
     return { status: "detached" };
   }
 }
 
-/** Whether the Page's comments moved to their own document. */
+/** Whether the Page carries the `comments-doc` stamp: its comments live in
+ * their own document. */
 export const commentsMigrated = (page) => documentFeatures(page).includes(COMMENTS_FEATURE);
 
-/** A Page's threads: the comments document's once it exists. A Page that
- * hasn't migrated yet still holds them in its own `comments` map, read-only.
- * A migrated Page's leftover map is never read. */
+/** A Page's threads, from its comments document (none until it's open).
+ * An unstamped Page that still holds a `comments` map kept its threads in
+ * the Page document, as an earlier build wrote them, and fails closed. An
+ * unstamped Page without one holds nothing to misread: a browser replica
+ * opens empty and gets the stamp when the Page syncs. */
 export function threadsOf(page, commentsDoc) {
-  if (commentsDoc) return commentThreads(commentsDoc);
-  if (!page || commentsMigrated(page)) return {};
-  const legacy = page.comments;
-  return legacy && typeof legacy === "object" && !Array.isArray(legacy) ? legacy : {};
+  if (page && !commentsMigrated(page) && page.comments !== undefined)
+    throw storedFormUnsupported("this Page's comments");
+  return commentsDoc ? commentThreads(commentsDoc) : {};
 }
 
 export function projectComments(page, commentsDoc) {
@@ -83,7 +85,8 @@ export function captureSelectionTarget(doc, id, selected, occurrence = 1) {
   if (!Object.hasOwn(doc.blocks, id) || !block) throw Error("Comment block not found");
   if (!Number.isSafeInteger(occurrence) || occurrence < 1 || occurrence > 10000)
     throw Error("Invalid selection occurrence");
-  const name = field(block);
+  requireRich(block);
+  const name = "richText";
   let start = -1;
   for (let i = 0; i < occurrence; i++) {
     start = block[name].indexOf(selected, start + 1);
@@ -181,22 +184,20 @@ function applyThreadStatuses(threads, action, ids, now) {
  * captures cursors into it. `role` is the caller's Page role; comment-rules
  * decides what it may do. `literal: true` keeps Markdown math and HTML in a
  * body as text, for the browser's own drafts; agent writes leave it false and
- * get `unsupported_markdown` instead. `threadsKey` names the thread map;
- * only fixtures that build a Page as an older build stored it, with
- * `page.comments`, pass anything else.
+ * get `unsupported_markdown` instead.
  */
 export function applyComment(
   commentsDoc,
   input,
   identity,
   nativeSpans,
-  { literal = false, page, role, threadsKey = "threads" } = {},
+  { literal = false, page, role } = {},
 ) {
   const action = input.action ?? "add",
     now = new Date().toISOString();
   if (!page) throw Error("A comment needs its Page");
-  if (!commentsDoc[threadsKey]) throw Error("Comments are not available for this Page yet");
-  const threads = commentsDoc[threadsKey];
+  if (!commentsDoc.threads) throw Error("Comments are not available for this Page yet");
+  const threads = commentsDoc.threads;
   const principal = identity?.principal ?? "";
   const batch = threadBatch(input, action);
   if (batch) {
@@ -213,7 +214,7 @@ export function applyComment(
     throw Error("Comment must contain 1–16000 characters");
   const threadId = action === "add" ? crypto.randomUUID() : input.thread_id;
   const messageId = ["add", "reply"].includes(action) ? crypto.randomUUID() : input.message_id;
-  const path = (id) => [threadsKey, threadId, "messages", id];
+  const path = (id) => ["threads", threadId, "messages", id];
   if (action === "add") {
     requireCommentDecision(commentDecision({ action, role, principal }));
     const id = input.block_id,

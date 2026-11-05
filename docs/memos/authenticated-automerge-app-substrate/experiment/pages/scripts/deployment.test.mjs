@@ -2493,7 +2493,7 @@ test("the build receipt lists every record storage mode the Worker opens", async
   const { PLAIN_STORAGE_FORMATS } = await import("../shared/record-storage.mjs");
   assert.deepEqual(PLAIN_STORAGE_FORMATS, CURRENT_PLAIN_STORAGE_FORMATS);
   assert.match(source, /plain_storage_formats: \[\.\.\.PLAIN_STORAGE_FORMATS\]/);
-  for (const entry of ["deploy.mjs", "deployment/install.mjs", "rollback-qualification.mjs"])
+  for (const entry of ["deploy.mjs", "deployment/install.mjs"])
     assert.match(
       fs.readFileSync(new URL(entry, import.meta.url), "utf8"),
       /assertReleaseOpensTargetPages\(/,
@@ -2582,36 +2582,6 @@ test("a timeout does not name a rollback to a release without the plain format c
   assert.match(message, /Refusing release a{12} \(build 0123456789ab\) for page10: /);
   assert.doesNotMatch(message, /Roll back with/);
   assert.match(message, /plain_storage_formats/);
-});
-
-// ONE-SHOT MIGRATION: delete with worker/content-migration.mjs.
-test("lab installs carry a root-only operator secret for the content migration", (t) => {
-  for (const target of ["pages", "page10"]) {
-    const f = installFixture(t, { target });
-    f.execute();
-    const secret = f.read(f.configDir + "/operator-secret").trim();
-    assert.match(secret, /^[A-Za-z0-9_-]{64}$/);
-    const config = JSON.parse(f.read(f.release + "/wrangler.json"));
-    assert.equal(config.vars.PAGES_OPERATOR_SECRET, secret);
-    assert.equal(fs.statSync(f.local(f.configDir + "/operator-secret")).mode & 0o777, 0o600);
-    // A later install keeps the same secret.
-    const again = installFixture(t, { target });
-    again.write(again.configDir + "/operator-secret", "kept-operator-secret-" + "k".repeat(43));
-    again.execute();
-    assert.equal(
-      JSON.parse(again.read(again.release + "/wrangler.json")).vars.PAGES_OPERATOR_SECRET,
-      "kept-operator-secret-" + "k".repeat(43),
-    );
-  }
-  // A profile without the flag gets no secret.
-  const other = installFixture(t, {
-    target: "page10",
-    profile: { ...profiles.deploymentProfile("page10"), operatorMigration: undefined },
-  });
-  other.execute();
-  const config = JSON.parse(other.read(other.release + "/wrangler.json"));
-  assert.equal(config.vars.PAGES_OPERATOR_SECRET, undefined);
-  assert.equal(fs.existsSync(other.local(other.configDir + "/operator-secret")), false);
 });
 
 test("serving targets shed above 2.5 GB and older targets keep their shipped limits", () => {

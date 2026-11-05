@@ -202,7 +202,6 @@ export async function fixture(
       storage,
       metadata: () => instance.metadata,
       serverKey,
-      writeFence: () => instance.conversionWriteFence(),
       commentsTree: () => "c".repeat(32),
       // As the Page host wires it: each document's own stamp.
       schemaFeatures: (scope) =>
@@ -297,7 +296,7 @@ export async function fixture(
     },
     /** A new Page object loaded from durable storage alone, as after a crash:
      * the document is the bytes the last flush wrote, and the load path runs
-     * (journal recovery, then preserved-block conversion). */
+     * (journal recovery, then the comments document). */
     async crashRestart() {
       doc = A.load(persisted);
       commentsDoc = A.load(persistedComments);

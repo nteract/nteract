@@ -158,6 +158,8 @@ function outline(doc) {
   order.forEach((blockId, index) => {
     const block = doc.blocks[blockId];
     const entry = { index, before: [...path], changes: [], kind: "Block" };
+    // A block without rich text is in a form this build doesn't read: it
+    // stays a plain "Block" and adds no headings.
     if (isRich(block)) {
       let offset = 0,
         first = true,
@@ -186,31 +188,6 @@ function outline(doc) {
           }
           offset += text.length;
         }
-      }
-    } else {
-      const source = String(block?.markdown ?? "");
-      let offset = 0;
-      for (const line of source.split("\n")) {
-        const match = /^\s{0,3}(#{1,6})\s+(.*)$/.exec(line);
-        if (offset === 0)
-          entry.kind = match
-            ? "Section"
-            : /^\s*[-*+]\s+\[[ xX]\]/.test(line)
-              ? "Checklist"
-              : /^\s*([-*+]|\d+[.)])\s+/.test(line)
-                ? "List"
-                : /^\s*\|/.test(line)
-                  ? "Table"
-                  : /^\s*```/.test(line)
-                    ? "Code"
-                    : "Paragraph";
-        if (match) {
-          const level = match[1].length;
-          while (path.length && path.at(-1).level >= level) path.pop();
-          path.push({ level, text: plainText(match[2]) });
-          entry.changes.push({ offset, path: [...path] });
-        }
-        offset += line.length + 1;
       }
     }
     blocks.set(blockId, entry);
@@ -288,7 +265,7 @@ export function passageExcerpt(doc, thread, { before = 60, after = 110 } = {}) {
     return { before: "", passage: context.text ?? "", after: "" };
   if (context?.status === "attached") {
     const block = doc?.blocks?.[context.start.blockId];
-    const source = String((isRich(block) ? block.richText : block?.markdown) ?? "");
+    const source = isRich(block) ? String(block.richText ?? "") : "";
     const from = context.start.offsetUtf16,
       to = context.end.offsetUtf16;
     if (!source || to > source.length) return { before: "", passage: context.text, after: "" };
@@ -317,8 +294,8 @@ export function passageExcerpt(doc, thread, { before = 60, after = 110 } = {}) {
   }
   if (target.kind === "block") {
     const block = doc?.blocks?.[target.blockId];
-    if (!block) return null;
-    const source = isRich(block) ? String(block.richText ?? "") : plainText(block.markdown);
+    if (!isRich(block)) return null;
+    const source = String(block.richText ?? "");
     const text = source.replace(/[\ufffc\n]+/g, " ").trim();
     if (!text) return null;
     return { before: "", passage: ellipsis(text, before + after), after: "" };

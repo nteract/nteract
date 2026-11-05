@@ -19,7 +19,8 @@ import { AutomergeSyncBackend } from "../sync/backend.mjs";
 import { DocStore } from "../sync/doc-store.mjs";
 import { IdbByteStore } from "../sync/idb-byte-store.mjs";
 import { socketTransport } from "../sync/wire.mjs";
-import { applyComment, commentsMigrated, threadsOf } from "../model/comments.mjs";
+import { applyComment, commentsMigrated } from "../model/comments.mjs";
+import { commentThreads } from "../model/comments-doc.mjs";
 import { createPageData, initializePage, projectPage } from "../model/page.mjs";
 import { commentDraftsMarkdown, unsentCommentsMarkdown } from "../model/markdown-export.mjs";
 import {
@@ -52,7 +53,6 @@ import { monotonicNow } from "./monotonic.mjs";
 import { activitySnapshot, presenceLabel } from "./activity.mjs";
 import { checkpointRecords } from "./checkpoint-records.mjs";
 import { guardSocketSend } from "./socket-send.mjs";
-import { preservedBlockEdits } from "../model/raw-migration.mjs";
 import { Store } from "./store.mjs";
 import { OutboundSync } from "./outbound-sync.mjs";
 import { REJECT, isLive, pauseOf, retirementOf, viewerSessionMachine } from "./session-machine.mjs";
@@ -133,13 +133,30 @@ export function classifyRefusal(error) {
   if (error.code === "signing_key_rejected") return undefined;
   return "denied";
 }
-// 409s that say only a reload helps: the replica's storage changed under it,
-// a draft's storage move failed, or this build lacks a feature the Page uses.
+// 409s that retrying can't fix: the replica's storage changed under it, a
+// draft's storage move failed, this build lacks a feature the Page uses, or
+// the host can't read a draft an earlier build saved.
 const RELOAD_REQUIRED_CODES = new Set([
   "RECORD_STORAGE_CHANGED",
   "STORAGE_SWITCH_FAILED",
   "unsupported_schema_feature",
+  "stored_form_unsupported",
 ]);
+/** Shown when the host refuses to register a draft an earlier version of
+ * Pages saved in a form this build doesn't read. */
+export const DRAFT_FORM_UNSUPPORTED =
+  "This Page was drafted with an earlier version of Pages and can't be saved to your account. Its local copy stays on this device: copy its content into a new Page, or reload.";
+/** The person-facing stop for a registration the host refused as a stored
+ * form it can't read, or undefined for any other error. Retrying would send
+ * the same saved bytes, so the draft stays local. */
+function draftUnreadable(error) {
+  if (error?.status !== 409 || error.code !== "stored_form_unsupported") return undefined;
+  return Object.assign(Error(DRAFT_FORM_UNSUPPORTED), {
+    status: 409,
+    code: error.code,
+    cause: error,
+  });
+}
 /** Whether a failed connection attempt retries on the reconnect backoff. It
  * runs after attemptConnection has handled classifyRefusal, a 401, and the
  * native admission's own stop, so it decides what remains.
@@ -300,22 +317,15 @@ function socketOpened(socket) {
 /** `features` is this build's schema features. The host refuses native edits
  * from a tab whose build lacks an id the Page is stamped with; no parameter
  * means the baseline, as for builds from before the stamp. */
-export function pageSyncAddress(pageId, href, activityEpoch, features = [], { converting } = {}) {
+export function pageSyncAddress(pageId, href, activityEpoch, features = []) {
   const address = new URL(`/api/sync?page=${encodeURIComponent(pageId)}`, href);
   address.protocol = address.protocol === "https:" ? "wss:" : "ws:";
   // This build speaks plain Automerge sync too; an `automerge` Page needs it.
   address.searchParams.set("sync", "automerge");
   if (activityEpoch) address.searchParams.set("activity_epoch", activityEpoch);
-  // Discovery reported the preserved-block conversion. If it finished before
-  // this upgrade, the host refuses the socket so the tab rediscovers.
-  if (converting) address.searchParams.set("converting", "1");
   if (features.length) address.searchParams.set("schema_features", [...features].sort().join(","));
   return address;
 }
-/** Shown when reopening set aside edits an older build made to a preserved
- * Markdown block (recoverPreservedBlockEdits). */
-export const PRESERVED_EDITS_RECOVERED =
-  "Edits this browser made with an older version of Pages changed a block Pages has since converted. They weren't synced, so the block isn't duplicated. Download them from the Page menu: Download previous local draft.";
 /** `fresh` starts a new native replica instead of reopening this tab's. */
 async function exclusiveIdentity(scope, { fresh = false } = {}) {
   const key = `pages-native:${scope}`;
@@ -556,16 +566,17 @@ export class PageSession {
   get commentsDoc() {
     return this.commentsHandle?.doc();
   }
-  /** The comments document readers use: the Page's once its comments have
-   * moved there (model/comments.mjs threadsOf). Before that the Page's own
-   * legacy threads show, read-only. */
+  /** The comments document readers use, once the Page carries the
+   * `comments-doc` stamp. A Page without it shows no comments and takes none:
+   * its comments are in a form this build doesn't read. */
   get commentsView() {
     const doc = this.doc;
     return doc && commentsMigrated(doc) ? this.commentsDoc : undefined;
   }
   /** Every thread as stored, by id. A hidden Page shows none. */
   get commentThreads() {
-    return this.hidden ? {} : threadsOf(this.doc, this.commentsView);
+    const comments = this.hidden ? undefined : this.commentsView;
+    return comments ? commentThreads(comments) : {};
   }
   /** One stored message, for rich rendering, or undefined. */
   commentMessage(threadId, messageId) {
@@ -1211,7 +1222,7 @@ export class PageSession {
   updateCapabilities() {
     const enabled = !this.accessDenied && !this.accessReloadRequired && !this.editsPaused;
     // Content and comments are document writes; the schema gate holds both.
-    const content = enabled && this.schemaGate.editable && !this.converting;
+    const content = enabled && this.schemaGate.editable;
     this.canWrite = content && !!this.credentialCanWrite && !!this.access?.canWrite;
     // Comments are written to the comments document, so they wait for it and
     // for the Page's stamp saying the comments moved there.
@@ -1772,12 +1783,8 @@ export class PageSession {
       // Native storage can hold an edit the checkpoint never saw, so decide
       // from the restored document. A record without localEdits predates
       // them; its receipt flag is all there is.
-      let edits = readLocalEdits(this.localPage.localEdits);
+      const edits = readLocalEdits(this.localPage.localEdits);
       unconfirmed = edits ? hasUnconfirmedLocalEdits(this.doc, edits) : !!this.localPage.pending;
-      if (unconfirmed && (await this.recoverPreservedBlockEdits(edits))) {
-        edits = readLocalEdits(this.localPage.localEdits);
-        unconfirmed = edits ? hasUnconfirmedLocalEdits(this.doc, edits) : false;
-      }
       // Without unconfirmed local edits, every change here is acknowledged or
       // came from the host.
       if (!unconfirmed) this.savedHeads = A.getHeads(this.doc);
@@ -1919,68 +1926,6 @@ export class PageSession {
     for (const [target, type, listener] of this.lifecycleListeners ?? [])
       target?.removeEventListener?.(type, listener);
     this.lifecycleListeners = undefined;
-  }
-  /**
-   * Set aside unconfirmed history that rewrote a preserved Markdown block,
-   * before this replica connects. Only a build from before the conversion
-   * could make them (its Edit table action). The host converts every
-   * preserved block itself, and Automerge keeps both conversions, so
-   * publishing them would duplicate the block's content. Native admission
-   * can't refuse them by content: it sees only the signing keys.
-   *
-   * The whole replica becomes a recovery record (Download previous local
-   * draft), and this session reopens on a fresh native replica holding only
-   * history the host already has. Returns whether it did.
-   */
-  async recoverPreservedBlockEdits(edits) {
-    // Without a record of acknowledged heads, the whole history is read.
-    const found = preservedBlockEdits(this.doc, edits ? acknowledgedHeads(this.doc, edits) : []);
-    if (!found) return false;
-    const base = A.clone(A.view(this.doc, found.baseHeads));
-    try {
-      const canWrite = this.localPage.canWrite;
-      const retired = this.replicaId;
-      this.localPage = await prepareLocalPageReload(
-        this.identity,
-        { ...this.localPage, snapshot: encodeSnapshot(A.save(this.doc)) },
-        this.access,
-        this.replicaKey,
-      );
-      this.handle = undefined;
-      const database = this.databaseName;
-      await this.releaseLocal();
-      try {
-        globalThis.indexedDB?.deleteDatabase(database);
-      } catch {}
-      await this.initializeLocal(this.replicaKey, { fresh: true });
-      await this.storeCheckpoint(documentIdToBinary(this.localPage.document_id), base);
-      // Comments can't rewrite a preserved block: they move to the fresh
-      // replica whole.
-      await this.restoreCommentsCheckpoint(this.localPage);
-      this.handle = await this.repo.find(this.localPage.document_id);
-      this.localPage = await writeLocalPage(
-        this.identity,
-        {
-          ...this.localPage,
-          resetReplica: undefined,
-          canWrite,
-          pending: false,
-          snapshot: encodeSnapshot(A.save(base)),
-          // Other replicas keep their entries, so a tab that holds the same
-          // edits sets them aside when it reopens too.
-          localEdits: {
-            ...(edits ? retireReplica(edits, retired) : emptyLocalEdits()),
-            unattributed: false,
-          },
-        },
-        { replica: this.replicaId },
-      );
-    } finally {
-      A.free(base);
-    }
-    this.recoveredPreservedEdits = true;
-    this.problem = PRESERVED_EDITS_RECOVERED;
-    return true;
   }
   async initializeLocal(
     key = replicaKey(this.access, this.credentialCanWrite),
@@ -2370,12 +2315,15 @@ export class PageSession {
           result = await this.reconcileExpiredRegistration();
         } catch (renewed) {
           if (storageRefused(renewed)) return this.retryAfterStorageRefusal(renewed, storageMoved);
+          if (draftUnreadable(renewed)) throw draftUnreadable(renewed);
           if (renewed.status === 409 && renewed.message === "Page was deleted")
             await this.markDeleted();
           throw renewed;
         }
       } else if (storageRefused(error)) {
         return this.retryAfterStorageRefusal(error, storageMoved);
+      } else if (draftUnreadable(error)) {
+        throw draftUnreadable(error);
       } else {
         if (error.status === 409 && error.message === "Page was deleted") await this.markDeleted();
         throw error;
@@ -2562,18 +2510,6 @@ export class PageSession {
       this.trash = connection.trash ?? null;
       if (connection.recovery?.code === "page_recovery_blocked")
         this.problem = connection.recovery.message;
-      // The host is converting Markdown an older build saved: read-only
-      // until it finishes. Access is unchanged, so the writer key stays; the
-      // host closes the socket when it's done and the next discovery clears
-      // this.
-      const converting = connection.converting?.code === "preserved_markdown_converting";
-      if (converting !== !!this.converting) {
-        if (converting)
-          this.problem = this.convertingNotice = String(connection.converting.message);
-        else if (this.problem === this.convertingNotice) this.problem = "";
-        this.converting = converting;
-        this.updateCapabilities();
-      }
       if (this.localPage && !this.localPage.resetReplica)
         await this.persistLocal({ canWrite: this.canWrite });
       if (this.accessDenied || this.accessReloadRequired) return;
@@ -2596,7 +2532,6 @@ export class PageSession {
       location.href,
       this.activityEpoch,
       this.buildFeatures,
-      { converting: this.converting },
     );
     // Keep the browser socket itself: toTransport consumes the native wrapper,
     // whereas the raw socket remains cancellable when account/page access changes.
@@ -2682,9 +2617,6 @@ export class PageSession {
       location.href,
       this.activityEpoch,
       this.buildFeatures,
-      {
-        converting: this.converting,
-      },
     );
     address.searchParams.set("sender", this.senderId);
     const socket = guardSocketSend(new WebSocket(address));

@@ -1,12 +1,20 @@
 // The rich-text block format and span helpers that need no codec. The browser
 // imports these without loading markdown-it or ProseMirror.
 import * as A from "@automerge/automerge/slim";
+import { storedFormUnsupported } from "./stored-form.mjs";
 
 export { safeUrl } from "./marks.mjs";
 
 export const RICH_FORMAT = "automerge-rich-text-v1";
 export const textPath = (id) => ["blocks", id, "richText"];
 export const isRich = (block) => block?.format === RICH_FORMAT;
+/** `block`, when it holds rich text. Every block this build or the one
+ * before wrote does; one an earlier build stored as Markdown alone fails
+ * closed. */
+export function requireRich(block) {
+  if (!isRich(block)) throw storedFormUnsupported("a block on this Page");
+  return block;
+}
 // Code text is unformatted: ProseMirror's code_block allows no marks and a
 // Markdown fence can't express them. Marks a writer left on code text are not
 // read, so one stray mark can't make the whole Page unreadable.

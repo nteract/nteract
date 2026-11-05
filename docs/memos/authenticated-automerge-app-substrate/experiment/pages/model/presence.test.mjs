@@ -1,7 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import * as A from "@automerge/automerge";
-import { enableRich, textPath } from "./richtext.mjs";
+import { textPath } from "./richtext.mjs";
+import { richFromSource } from "./richtext-test-support.mjs";
 import {
   createProgressTargets,
   resolveProgressTargets,
@@ -12,9 +13,9 @@ import {
 function fixture(markdown = "Before **🌊 passage** and after.") {
   return A.change(A.from({ blocks: {}, comments: {} }), (doc) => {
     doc.blocks.one = { id: "one", kind: "markdown", markdown };
-    enableRich(doc, "one");
+    richFromSource(doc, "one");
     doc.blocks.two = { id: "two", kind: "markdown", markdown: "Other passage" };
-    enableRich(doc, "two");
+    richFromSource(doc, "two");
   });
 }
 const targets = (doc, match_text = "🌊 passage", extra = {}) =>

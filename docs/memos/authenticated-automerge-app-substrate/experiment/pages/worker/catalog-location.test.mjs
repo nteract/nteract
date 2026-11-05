@@ -13,7 +13,6 @@ import {
 import {
   LOCATION_SHAPE_KEY,
   LOCATION_SHAPE_VERSION,
-  SHAPE_BLOCKS,
   SHAPE_STATES,
   locationShape,
   migrateLocationShape,
@@ -280,19 +279,16 @@ test("locationShape: every state takes exactly the events a check can send", () 
     unmigrated: { name: "unmigrated" },
     checking: { name: "checking" },
     migrated: { name: "migrated" },
-    blocked: { name: "blocked", reason: "home_removal_required" },
   };
   assert.deepEqual(Object.keys(states), [...SHAPE_STATES]);
-  const block = { type: "block", reason: "home_removal_required" };
   const expected = {
-    unmigrated: { start: "checking", done: undefined, block: undefined },
-    checking: { start: undefined, done: "migrated", block: "blocked" },
-    migrated: { start: undefined, done: undefined, block: undefined },
-    blocked: { start: "checking", done: undefined, block: undefined },
+    unmigrated: { start: "checking", done: undefined },
+    checking: { start: undefined, done: "migrated" },
+    migrated: { start: undefined, done: undefined },
   };
   for (const [name, state] of Object.entries(states))
     for (const [type, next] of Object.entries(expected[name])) {
-      const result = locationShape(state, type === "block" ? block : { type });
+      const result = locationShape(state, { type });
       const where = `${name} + ${type}`;
       if (next === undefined) {
         assert.ok(result.rejected, where);
@@ -302,33 +298,22 @@ test("locationShape: every state takes exactly the events a check can send", () 
         assert.equal(result.state.name, next, where);
       }
     }
-  assert.ok(locationShape(states.checking, { type: "block", reason: "other" }).rejected);
+  assert.ok(locationShape(states.checking, { type: "block" }).rejected);
   assert.ok(locationShape(states.checking, { type: "nope" }).rejected);
-  assert.deepEqual(SHAPE_BLOCKS, ["home_removal_required"]);
   assert.equal(
     LOCATION_SHAPE_VERSION,
     2,
     "a rollback-and-forward requires a bump (location-shape.mjs)",
   );
   // Stored records: absent, another version (v1 included), an unknown state
-  // or an interrupted check all read as unmigrated; a blocked record keeps
-  // its reason.
+  // (a `blocked` record an earlier build wrote among them) or an interrupted
+  // check all read as unmigrated.
   assert.deepEqual(shapeState(undefined), { name: "unmigrated" });
   assert.deepEqual(shapeState({ version: 1, state: "migrated" }), { name: "unmigrated" });
-  assert.deepEqual(shapeState({ version: LOCATION_SHAPE_VERSION, state: "weird" }), {
-    name: "unmigrated",
-  });
-  assert.deepEqual(shapeState({ version: LOCATION_SHAPE_VERSION, state: "checking" }), {
-    name: "unmigrated",
-  });
-  assert.deepEqual(
-    shapeState({
-      version: LOCATION_SHAPE_VERSION,
-      state: "blocked",
-      reason: "home_removal_required",
-    }),
-    { name: "blocked", reason: "home_removal_required" },
-  );
+  for (const state of ["weird", "checking", "blocked"])
+    assert.deepEqual(shapeState({ version: LOCATION_SHAPE_VERSION, state }), {
+      name: "unmigrated",
+    });
 });
 
 test("a current Catalog is recorded migrated on its first check, and then costs one read", async () => {
@@ -350,46 +335,4 @@ test("a current Catalog is recorded migrated on its first check, and then costs 
     [`page/${loose}`]: entry(loose, { parent_id: null, position: "a0" }),
   });
   assert.deepEqual(await migrateLocationShape(v1), { name: "migrated" });
-});
-
-/** The retired shape, as builds before this one wrote it. */
-const retired = () =>
-  new Storage({
-    [LOCATION_SHAPE_KEY]: { version: 1, state: "migrated" },
-    [`space/${PROJECT}`]: { space_id: PROJECT, home_page_id: content },
-    [`page/${content}`]: entry(content, {
-      parent_id: null,
-      position: "a0",
-      space_id: PROJECT,
-      home: true,
-    }),
-    [`page/${top}`]: entry(top, { parent_id: content, position: "a0" }),
-  });
-
-test("a Catalog in the retired shape blocks: reads and writes fail closed, nothing is converted", async () => {
-  const storage = retired();
-  const before = structuredClone([...storage.values]);
-  await assert.rejects(locationScan(storage), (error) => {
-    assert.equal(error.status, 503);
-    assert.equal(error.code, "location_migration_required");
-    assert.deepEqual(error.details, { reason: "home_removal_required" });
-    return true;
-  });
-  assert.deepEqual(await migrateLocationShape(storage), {
-    name: "blocked",
-    reason: "home_removal_required",
-  });
-  // Only the shape record changed.
-  const after = new Map(storage.values);
-  after.delete(LOCATION_SHAPE_KEY);
-  const expected = new Map(before);
-  expected.delete(LOCATION_SHAPE_KEY);
-  assert.deepEqual(after, expected);
-  await assert.rejects(locationScan(storage), /one-time migration/);
-  // A record-only leftover (a space record naming the old field) blocks too.
-  const recordOnly = tree({ [`space/${PROJECT}`]: { space_id: PROJECT, home_page_id: content } });
-  recordOnly.values.delete(LOCATION_SHAPE_KEY);
-  assert.equal((await migrateLocationShape(recordOnly)).name, "blocked");
-  // A stale migrated v2 record is trusted: the check never reruns.
-  assert.equal((await locationScan(tree())).entries.size, 4);
 });

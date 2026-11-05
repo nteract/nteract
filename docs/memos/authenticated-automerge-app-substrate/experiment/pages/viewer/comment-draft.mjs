@@ -1,8 +1,10 @@
 import * as A from "@automerge/automerge/slim";
 import { selectionContext } from "../model/comments.mjs";
-import { isRich } from "../model/richtext-format.mjs";
+import { requireRich } from "../model/richtext-format.mjs";
 
-const textField = (block) => (isRich(block) ? "richText" : "markdown");
+// A block without rich text is in a form this build doesn't read; commenting
+// on it fails closed.
+const textField = (block) => (requireRich(block), "richText");
 const changedPassage = () => Error("Selected passage was removed or replaced; select it again");
 
 function commentBlock(doc, blockId) {

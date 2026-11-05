@@ -5,7 +5,7 @@
 // [tag, attributes, ...children] and each text run is a string. The viewer
 // (viewer/PagePreview.jsx) builds elements from an allowlist; nothing here is
 // HTML.
-import { isRich } from "./richtext-format.mjs";
+import { requireRich } from "./richtext-format.mjs";
 import { richDoc } from "./richtext-spans.mjs";
 import { orderedBlockIds } from "./order.mjs";
 import { safeUrl } from "./marks.mjs";
@@ -83,8 +83,7 @@ export function renderNode(node, overrides) {
 /** One block's preview content, or null when it can't be rendered. */
 export function blockPreview(block) {
   try {
-    if (!isRich(block)) return [["pre", {}, String(block.markdown ?? "")]];
-    const doc = richDoc(block);
+    const doc = richDoc(requireRich(block));
     const out = [];
     doc.forEach((child) => out.push(...renderNode(child)));
     return out;

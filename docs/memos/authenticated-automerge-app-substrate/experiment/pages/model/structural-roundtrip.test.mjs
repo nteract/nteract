@@ -12,7 +12,7 @@ import { applyPageOperation, createPageData, orderedBlockIds } from "./page.mjs"
 import { projectReadContent } from "./read-content.mjs";
 import { textPath, RICH_FORMAT } from "./richtext.mjs";
 import { updateSpansConfig } from "./marks.mjs";
-import { stampSpans } from "./schema-features.mjs";
+import { stampFeatures, stampSpans } from "./schema-features.mjs";
 import { projectComments } from "./comments.mjs";
 import { comment, newCommentsDoc } from "./comments-test-support.mjs";
 import { decode, encode, Paragraph, schema } from "../viewer/wordgard-model.mjs";
@@ -63,6 +63,8 @@ function pageWith(tree) {
     draft.blocks[id].richText = "";
     A.updateSpans(draft, textPath(id), spans, updateSpansConfig);
     stampSpans(draft, spans);
+    // A new Page's comments live in their own document (initializePage).
+    stampFeatures(draft, ["comments-doc"]);
   });
   return { doc, id };
 }

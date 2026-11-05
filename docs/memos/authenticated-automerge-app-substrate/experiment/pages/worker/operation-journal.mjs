@@ -24,8 +24,7 @@ export const JOURNAL_LIMITS = Object.freeze({
   pendingBytes: 4 * 1024 * 1024,
 });
 const PREFIX = "host/operation/";
-/** The host's own migrations, such as the preserved-block conversion. A
- * client key can't reach it: client keys hold only letters, digits, `_` and
+/** The host's own writes. A client key can't reach it: client keys hold only letters, digits, `_` and
  * `-`, never `:`. Its entries count against neither client lane nor the
  * client pending budget, so a full legacy receipt store can't block them. */
 export const INTERNAL_PREFIX = `${PREFIX}internal:`;

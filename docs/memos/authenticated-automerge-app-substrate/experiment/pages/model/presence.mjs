@@ -16,7 +16,6 @@ const fail = (status, code, message) => {
   throw Object.assign(new Error(message), { status, code });
 };
 const invalid = (message) => fail(400, "invalid_presence_target", message);
-const field = (block) => (isRich(block) ? "richText" : "markdown");
 const quote = (text) => {
   const visible = text.replaceAll("\ufffc", "\n");
   // Slice at a Unicode code-point boundary while retaining a UTF-16 budget.
@@ -181,14 +180,16 @@ export function resolvePeerSelection(doc, input) {
       id = value.block_id;
     if (!Object.hasOwn(original.blocks ?? {}, id) || !Object.hasOwn(doc.blocks ?? {}, id))
       return base;
-    const name = field(original.blocks[id]),
+    // A selection resolves only in rich text: a block without it is never
+    // placed.
+    if (!isRich(original.blocks[id]) || !isRich(doc.blocks[id])) return base;
+    const name = "richText",
       path = ["blocks", id, name],
       before = original.blocks[id][name],
       current = doc.blocks[id][name];
     if (
       typeof before !== "string" ||
       typeof current !== "string" ||
-      name !== field(doc.blocks[id]) ||
       A.getObjectId(original.blocks[id], name) !== A.getObjectId(doc.blocks[id], name)
     )
       return base;

@@ -28,28 +28,14 @@ import {
   parseDeclaredFeatures,
   requireSupportedSchema,
   schemaUnsupported,
-  unsupportedFeatures,
 } from "../model/schema-features.mjs";
 import { unsupportedMarkdown, unsupportedMarkdownError } from "../model/markdown-scan.mjs";
-import { convertPreservedBlocks, hasPreservedBlocks } from "../model/raw-migration.mjs";
 import { commentsGenesis } from "../model/comments-doc.mjs";
 import { applyComment, commentsMigrated } from "../model/comments.mjs";
 import { guardCommentIntent } from "../model/comment-guard.mjs";
-import {
-  copyLegacyThreads,
-  detachLegacyComments,
-  needsCommentsMigration,
-} from "../model/comments-migration.mjs";
 import { CommentAdmission, recordFrame } from "./comment-admission.mjs";
 import { commentsDocUuid, commentsDocumentId, commentsTreeOf } from "./comments-store.mjs";
-import {
-  conversionFenceError,
-  conversionFenced,
-  conversionNotice,
-  conversionRetryDelay,
-  permanentFailure,
-  preservedConversionMachine,
-} from "./preserved-conversion.mjs";
+import { storedFormUnsupported } from "../model/stored-form.mjs";
 import { readTargets, writeTargets } from "../model/agent-presence.mjs";
 import { BACKEND_LIMITS, assertDocumentLimits, assertIntentSize } from "../model/limits.mjs";
 import { handleMcp } from "../mcp.mjs";
@@ -104,7 +90,6 @@ import {
   logIncompleteHistory,
 } from "./history-admission.mjs";
 import {
-  INTERNAL_PREFIX,
   listOperationEntries,
   issueRetryToken,
   inspectOperation,
@@ -124,17 +109,9 @@ import {
 import {
   migrationSlot,
   migrationStart,
-  operatorRefusal,
   recordStorageMigrated,
   recordStorageMigration,
 } from "./record-storage-migration.mjs";
-// ONE-SHOT MIGRATION imports: delete with record-storage-operator.mjs.
-import {
-  OPERATOR_PATH as RECORD_STORAGE_OPERATOR_PATH,
-  OPERATOR_ROUTE as RECORD_STORAGE_OPERATOR_ROUTE,
-  OPERATOR_TARGETS_ROUTE as RECORD_STORAGE_TARGETS_ROUTE,
-  operatorRecordStorage,
-} from "./record-storage-operator.mjs";
 import { logSyncRefused, logSyncRounds } from "./plain-sync-log.mjs";
 import { BLOCKING as BLOCKING_COMMENT_CODES } from "../sync/comments.mjs";
 import {
@@ -184,7 +161,6 @@ import {
   PAGE_DOC,
   documentMutation,
   recoverDocumentMutations,
-  replayRecordedMutation,
   mutationKey,
   fingerprint,
   requireHeads,
@@ -288,8 +264,6 @@ import {
   locationAnswer,
   locationEntries,
   locationScan,
-  migrationRequired,
-  requireCurrentShape,
   parentActive,
   projectOf,
   publicLocation,
@@ -298,33 +272,7 @@ import {
   rekeyedEntries,
   restoreTarget,
 } from "./catalog-location.mjs";
-import {
-  LOCATION_SHAPE_KEY,
-  MIGRATION_REQUIRED,
-  migrateLocationShape,
-  shapeState,
-} from "./location-shape.mjs";
-// ONE-SHOT MIGRATION imports: delete with home-removal-migration.mjs.
-import {
-  HOME_REMOVAL_MODES,
-  HOME_REMOVAL_STATE_KEY,
-  applyHomeRemoval,
-  planHomeRemoval,
-  readHomeRemovalInput,
-} from "./home-removal-migration.mjs";
-// ONE-SHOT MIGRATION imports: delete with content-migration.mjs.
-import {
-  contentMigrationArguments,
-  operatorAuthorized,
-  operatorContentMigration,
-  runContentMigration,
-} from "./content-migration.mjs";
-import {
-  applyPageNormalization,
-  normalizationBlocked,
-  normalizationProblems,
-  planPageNormalization,
-} from "../model/content-normalization.mjs";
+import { migrateLocationShape } from "./location-shape.mjs";
 import { LOCATION_REVISION_KEY, movePage } from "./move-page.mjs";
 import {
   PROJECT_ACCESS_EMPTY,
@@ -385,7 +333,13 @@ import {
   recordOf,
   summarizeReceipt,
 } from "./page-lifecycle.mjs";
-import { pageStartup, recordFallback, startupOf, storedTitleProjection } from "./page-startup.mjs";
+import {
+  pageStartup,
+  recordCommentsUuid,
+  recordFallback,
+  startupOf,
+  storedTitleProjection,
+} from "./page-startup.mjs";
 import { titleProjection } from "./title-projection.mjs";
 
 const operations = new Set([
@@ -474,28 +428,6 @@ const abandonedError = () => Object.assign(Error("Page object was reset"), { sta
 /** Complete the upgrade and close at once with the refusal's admission code.
  * A browser reads a refused HTTP upgrade only as close 1006, which its
  * reconnect treats as transient; the close code lets it count the refusal. */
-/** A bounded, content-free reason for a failed conversion run. */
-function failureReason(error) {
-  if (isHistoryCapacityError(error)) return "history_capacity";
-  if (error?.conversion) return "conversion_error";
-  if (typeof error?.code === "string") return error.code.slice(0, 64);
-  if (Number.isInteger(error?.status)) return `status_${error.status}`;
-  return "storage_or_runtime";
-}
-/** One structured line when a Page's preserved blocks can't be converted:
- * its Page ID, like `page.creation_intent_conflict`, and a bounded reason,
- * never content. DEPLOYMENT.md describes the recovery. */
-function logPreservedStuck(pageId, reason) {
-  console.error(
-    JSON.stringify({
-      service: "nteract-pages-native",
-      event: "page.preserved_markdown_stuck",
-      page_id: pageId,
-      reason,
-      timestamp: new Date().toISOString(),
-    }),
-  );
-}
 /** The record storage a new Page gets. `PAGES_RECORD_STORAGE=automerge` selects
  * plain Automerge sync (worker/plain-sync.mjs); existing Pages keep the mode
  * they were created with. */
@@ -570,11 +502,6 @@ export const sharedCheckBounds = { concurrency: 16 };
 const PAGE_CARD_STORE_TIMEOUT_MS = 10_000;
 /** How long a deletion waits on the card object's delete. */
 const PAGE_CARD_DELETE_TIMEOUT_MS = 2_000;
-/** ONE-SHOT MIGRATION: how long the Catalog waits for one Page's content
- * migration call. A call stops starting visits after its batch budget
- * (content-migration.mjs), so the last visit still ends inside the serial
- * queue's 120 s bound. */
-const CONTENT_MIGRATION_PAGE_MS = 20_000;
 /** Budgets for reading Page lifecycles while the Catalog queue waits. */
 export const lifecycleBounds = { readMs: 2000, passMs: 5000, concurrency: 4 };
 const lifecycleUnsettled = () =>
@@ -988,7 +915,7 @@ async function invoke(request, env, operation, args = {}, seen) {
       if (projectId && operation !== "read_page") {
         delete body._owner;
         body.project_id = projectId;
-      } else await locationView(request, env, body, signal, identity);
+      } else await locationView(request, env, body, signal);
       return json(body, response.status);
     },
     { safe },
@@ -1051,9 +978,8 @@ async function pageCards(request, env, identity, args) {
  * reveals its Project. This runs in the stateless gateway: a Page never calls
  * its owner's Catalog.
  */
-async function locationView(request, env, body, signal, identity) {
+async function locationView(request, env, body, signal) {
   const owner = body._owner;
-  let migrationRefused = false;
   delete body._owner;
   body.kind = "page";
   body.breadcrumbs = [];
@@ -1074,10 +1000,7 @@ async function locationView(request, env, body, signal, identity) {
         controller.signal,
       );
       if (!response.ok) {
-        if (response.status === 503 && namespace === env.CATALOGS) {
-          const refusal = await response.json().catch(() => ({}));
-          if (refusal?.code === MIGRATION_REQUIRED) migrationRefused = true;
-        } else await response.body?.cancel().catch(() => {});
+        await response.body?.cancel().catch(() => {});
         return null;
       }
       return await readResponseJson(response, controller.signal);
@@ -1094,10 +1017,6 @@ async function locationView(request, env, body, signal, identity) {
     typeof owner === "string"
       ? await readable(env.CATALOGS, owner, locationRequest({ page_id: body.page_id }))
       : null;
-  // The owner's own unmigrated Catalog can't say whether this is Project
-  // content: refuse rather than call it a plain Page. Anyone else keeps the
-  // private direct-grant view, which never names a Project.
-  if (!location && migrationRefused && identity?.principal === owner) throw migrationRequired();
   if (!location) return;
   // Top-level Pages in Your items.
   if (!location.space_id && !location.parent_id) {
@@ -1439,39 +1358,6 @@ const gateway = {
           recheckUpload: () => authorizeImage(request, env, pageId, false),
         });
       }
-      // ONE-SHOT MIGRATION route (home-removal-migration.mjs; delete with it).
-      if (url.pathname === "/api/admin/home-removal" && request.method === "POST") {
-        const identity = await authenticate(request, env);
-        return await withRefusalCode(
-          await env.CATALOGS.getByName(identity.principal).fetch(
-            forwarded(request, "/internal/home-removal", await readJson(request)),
-          ),
-        );
-      }
-      // ONE-SHOT MIGRATION route (content-migration.mjs; delete with it). Lab
-      // only: without PAGES_OPERATOR_SECRET, with a wrong secret, or for a
-      // request the Cloudflare edge forwarded, it is the unknown path below.
-      if (
-        url.pathname === "/api/operator/content-migration" &&
-        request.method === "POST" &&
-        (await operatorAuthorized(request, env))
-      )
-        return await operatorContentMigration(request, env);
-      // ONE-SHOT MIGRATION route (record-storage-operator.mjs; delete with
-      // it). Lab only, behind the same gate: otherwise the unknown path.
-      if (url.pathname === RECORD_STORAGE_OPERATOR_PATH && request.method === "POST") {
-        const response = await operatorRecordStorage(request, env);
-        if (response) return response;
-      }
-      // ONE-SHOT MIGRATION route (content-migration.mjs; delete with it).
-      if (url.pathname === "/api/admin/content-migration" && request.method === "POST") {
-        const identity = await authenticate(request, env);
-        return await withRefusalCode(
-          await env.CATALOGS.getByName(identity.principal).fetch(
-            forwarded(request, "/internal/content-migration", await readJson(request)),
-          ),
-        );
-      }
       if (url.pathname === "/api/access") {
         await authenticate(request, env);
         const pageId = url.searchParams.get("page");
@@ -1706,201 +1592,9 @@ export class Catalog {
    * The Catalog's location shape, brought up to date. Every queued write
    * runs this once its input is sound and before it reserves or writes
    * anything; a `migrated` record costs one read (location-shape.mjs).
-   * Location writes need `migrated`. Reads don't record anything, but a
-   * Catalog still holding the retired shape refuses them too
-   * (catalog-location.mjs `locationScan`).
    */
   async locationShape() {
     return migrateLocationShape(this.storage);
-  }
-  /**
-   * ONE-SHOT MIGRATION (home-removal-migration.mjs; delete with it). The
-   * owner's `dry_run` reports; `apply` rewrites Space records, then this
-   * Catalog's entries with backups, then records the current shape. Runs in
-   * the serial queue, so nothing else writes meanwhile; idempotent.
-   */
-  async homeRemoval(request) {
-    const identity = await authenticate(request, this.env);
-    if (this.ctx.id.name && this.ctx.id.name !== identity.principal)
-      throw new HttpError(403, "Account access denied");
-    const { mode } = (await readJson(request)) ?? {};
-    if (!HOME_REMOVAL_MODES.includes(mode))
-      throw new HttpError(400, 'mode must be "dry_run" or "apply"', "invalid_arguments");
-    if (mode === "apply") requireWrite(identity);
-    const storage = this.storage;
-    if (mode === "dry_run") {
-      const plan = planHomeRemoval(await readHomeRemovalInput(storage, listAll));
-      const progress = (await storage.get(HOME_REMOVAL_STATE_KEY)) ?? { phase: "none" };
-      return json({ mode, ...plan.report, writes: plan.writes.size, progress });
-    }
-    let result;
-    try {
-      result = await applyHomeRemoval(storage, {
-        listAll,
-        perBatch: STORAGE_KEYS_PER_CALL - 1,
-        rewriteSpaces: async (spaceIds) => {
-          for (const spaceId of spaceIds) {
-            const response = await this.env.PROJECTS.getByName(spaceId).fetch(
-              new Request("https://pages.internal/internal/space/remove-home", {
-                method: "POST",
-                body: JSON.stringify({ space_id: spaceId, owner: identity.principal }),
-              }),
-            );
-            // A Project this account no longer owns, or whose object was never
-            // created (a creation still `reserved`), has nothing to rewrite.
-            if (!response.ok && response.status !== 404)
-              throw new HttpError(503, `Project ${spaceId} could not be migrated; retry`);
-          }
-        },
-      });
-    } catch (error) {
-      if (!error.blockers) throw error;
-      throw Object.assign(
-        new HttpError(409, "The migration found entries it can't convert", "home_removal_blocked"),
-        { details: { blockers: error.blockers } },
-      );
-    }
-    await markCatalogIndexDirty(storage);
-    await markSpaceIndexDirty(storage);
-    await storage.sync();
-    if (result.state.phase === "failed")
-      throw Object.assign(
-        new HttpError(409, "The migrated Catalog failed validation", "home_removal_invalid"),
-        { details: { problems: result.state.problems } },
-      );
-    return json({
-      mode,
-      ...result.report,
-      writes: result.writes,
-      shape: shapeState(await storage.get(LOCATION_SHAPE_KEY)).name,
-      progress: result.state,
-    });
-  }
-  /**
-   * ONE-SHOT MIGRATION (content-migration.mjs; delete with it). The owner's
-   * content migration over this Catalog's Pages: `dry_run` reports a batch,
-   * `apply` advances the stored run by a batch. Runs in the serial queue; each
-   * Page call has its own deadline so a batch stays inside the queue's bound.
-   */
-  async contentMigration(request) {
-    const identity = await authenticate(request, this.env);
-    if (this.ctx.id.name && this.ctx.id.name !== identity.principal)
-      throw new HttpError(403, "Account access denied");
-    const args = Catalog.contentMigrationArgs(await readJson(request));
-    if (args.mode === "apply") requireWrite(identity);
-    return json(await this.runOwnersContentMigration(identity.principal, args));
-  }
-
-  /**
-   * ONE-SHOT MIGRATION (content-migration.mjs; delete with it). The operator's
-   * run over this Catalog, from the lab-only `/api/operator/content-migration`
-   * route. Host only: a request that carries a credential is refused, so only
-   * the gateway's operator route (or another host object) reaches it. The run
-   * acts for this Catalog's own account; each Page host still checks that its
-   * record names that account as owner.
-   */
-  async operatorContentMigration(request) {
-    if (request.headers.has("authorization") || request.headers.has("cookie"))
-      return json({ error: "Not found" }, 404);
-    const body = (await readJson(request)) ?? {};
-    const principal = this.ctx.id.name;
-    if (!principal || body.principal !== principal)
-      throw new HttpError(400, "principal must name this Catalog's account", "invalid_arguments");
-    const { principal: _principal, ...rest } = body;
-    return json(
-      await this.runOwnersContentMigration(principal, Catalog.contentMigrationArgs(rest)),
-    );
-  }
-
-  static contentMigrationArgs(body) {
-    try {
-      return contentMigrationArguments(body);
-    } catch (error) {
-      throw new HttpError(400, error.message, "invalid_arguments");
-    }
-  }
-
-  /** One call of the content migration over this Catalog, acting for
-   * `owner`, the account the Page hosts check their records against. */
-  async runOwnersContentMigration(owner, args) {
-    const body = await runContentMigration(this.storage, {
-      args,
-      listAll,
-      // The current build's tombstone path: the effects operation-intent
-      // gives a `tombstone` event, run by the same effect runner.
-      finalize: async (pageId) => {
-        const result = operationIntent.step({ name: "absent" }, { type: "tombstone" });
-        for (const effect of result.effects) await this.runIntentEffect({ pageId }, effect);
-      },
-      visit: async (pageId, mode, options) => {
-        // The cell's id, so an operator can diff the run against
-        // `celld cell list Page`.
-        const cell = this.env.PAGES.idFromName ? String(this.env.PAGES.idFromName(pageId)) : null;
-        const response = await withTimeout(
-          this.env.PAGES.getByName(pageId).fetch(
-            new Request("https://pages.internal/internal/content-migration", {
-              method: "POST",
-              body: JSON.stringify({
-                page_id: pageId,
-                owner,
-                mode,
-                include_connected: options?.include_connected === true,
-              }),
-            }),
-          ),
-          CONTENT_MIGRATION_PAGE_MS,
-          "Page content migration timed out",
-        );
-        const value = await response.json().catch(() => ({}));
-        const result = response.ok
-          ? value
-          : { status: "error", error: String(value.error ?? response.status).slice(0, 200) };
-        return cell ? { ...result, cell_id: cell } : result;
-      },
-    });
-    await this.storage.sync();
-    return body;
-  }
-  /**
-   * ONE-SHOT MIGRATION (record-storage-operator.mjs; delete with it). The
-   * Page ids this Catalog names for the operator's record-storage
-   * conversion: every `page/` entry (Project content included) and every
-   * `trash/` entry. Host only, like operatorContentMigration.
-   */
-  async operatorRecordStorageTargets(request) {
-    if (request.headers.has("authorization") || request.headers.has("cookie"))
-      return json({ error: "Not found" }, 404);
-    const body = (await readJson(request)) ?? {};
-    if (!this.ctx.id.name || body.principal !== this.ctx.id.name)
-      throw new HttpError(400, "principal must name this Catalog's account", "invalid_arguments");
-    const kinds = new Map();
-    for (const [prefix, kind] of [
-      ["page/", "page"],
-      ["trash/", "trash"],
-    ])
-      for (const key of (await listAll(this.storage, prefix)).keys()) {
-        const id = key.slice(prefix.length);
-        if (validPageId(id) && !kinds.has(id)) kinds.set(id, kind);
-      }
-    return json({
-      principal: body.principal,
-      pages: [...kinds]
-        .sort(([a], [b]) => (a < b ? -1 : 1))
-        .map(([page_id, kind]) => ({ page_id, kind })),
-    });
-  }
-
-  /** Refuse a location write while this Catalog isn't in the current shape.
-   * A blocked pass names the Project and Page in its way, in the message and
-   * as `reason`, `page_id` and `space_id`; the next write tries again. */
-  static requireMigrated(shape) {
-    if (shape.name === "migrated") return;
-    if (shape.name === "blocked") throw migrationRequired();
-    throw new HttpError(
-      503,
-      "This account's Pages are being checked. Retry shortly.",
-      MIGRATION_REQUIRED,
-    );
   }
   async run(request) {
     try {
@@ -1944,13 +1638,6 @@ export class Catalog {
         });
         return json({ ok: true });
       }
-      if (pathname === "/internal/home-removal") return await this.homeRemoval(request);
-      if (pathname === "/internal/content-migration") return await this.contentMigration(request);
-      if (pathname === "/internal/operator-content-migration")
-        return await this.operatorContentMigration(request);
-      // ONE-SHOT MIGRATION route (record-storage-operator.mjs; delete with it).
-      if (pathname === RECORD_STORAGE_TARGETS_ROUTE)
-        return await this.operatorRecordStorageTargets(request);
       if (pathname === "/internal/projection" || pathname === "/internal/content-activity") {
         // Reachable only through the host's CATALOGS namespace, never the gateway.
         const value = await readJson(request);
@@ -2083,17 +1770,26 @@ export class Catalog {
       if (body.operation === "create_page") validateCreateInput(args);
       if (registering) {
         requireRegistrationAccount(args, identity);
-        A.free(readRegistration(args).doc);
+        // A retry of a registration this Catalog already recorded resends the
+        // bytes the browser saved with the draft, which this build may no
+        // longer accept fresh. Its receipt, or for a pending one the Page
+        // host's record, answers it, so only a new request is validated.
+        const recorded = await this.storage.get(mutationKey(args));
+        const digest =
+          recorded &&
+          (await fingerprint(
+            lifecycleFingerprint[body.operation] ?? body.operation,
+            args,
+            identity,
+          ));
+        if (recorded?.fingerprint !== digest || !digest) A.free(readRegistration(args).doc);
         // The browser knows its UUID before the Page host has an intent. A
         // successful deletion must also cancel retries of that local creation.
         if (await this.storage.get(`host/deleted/${args.page_id}`))
           throw new HttpError(409, "Page was deleted");
       }
-      // Input is sound: this write runs the shape pass first. Creating,
-      // trashing and restoring place a Page, so they also wait for the
-      // current shape. Purging removes a Trash entry in either shape.
-      const shape = await this.locationShape();
-      if (body.operation !== "purge_page") Catalog.requireMigrated(shape);
+      // Input is sound: this write runs the shape pass first.
+      await this.locationShape();
       const key = mutationKey(args);
       const digest = await fingerprint(
         lifecycleFingerprint[body.operation] ?? body.operation,
@@ -2721,7 +2417,7 @@ export class Catalog {
   async movePage(identity, args) {
     const { pageId, parentId, spaceId, position } = validateMoveInput(args);
     // Input is sound: the shape pass runs first, as for every queued write.
-    Catalog.requireMigrated(await this.locationShape());
+    await this.locationShape();
     const run = {
       identity,
       pageId,
@@ -2958,9 +2654,8 @@ export class Catalog {
   async createSpace(request, identity, args, limit) {
     const storage = this.storage;
     const { title, description } = validateSpaceInput(args, { creating: true });
-    // A Project write records a content document in this Catalog, which
-    // needs the current shape.
-    Catalog.requireMigrated(await this.locationShape());
+    // Input is sound: the shape pass runs first, as for every queued write.
+    await this.locationShape();
     const key = mutationKey(args);
     const digest = await fingerprint("create_space", args, identity);
     const inspected = await inspectOperation(storage, {
@@ -3210,9 +2905,6 @@ export class Catalog {
    * supplies what is returned. */
   async listSpaces(request, identity, args) {
     const storage = this.storage;
-    // The owner's own Project records must be in the current shape; an
-    // unmigrated account refuses rather than list Projects without content.
-    await requireCurrentShape(storage);
     for (const spaceId of await invitedProjects(this.env, identity)) {
       // An invitation is an untrusted candidate, not an existing membership.
       // Capacity conflicts or unavailable candidate hosts must not prevent
@@ -4014,8 +3706,6 @@ export class Page {
    * at its end. The storage guard already refuses their writes. */
   retireAbandoned() {
     const stop = () => {
-      clearTimeout(this.conversionRetry);
-      this.conversionRetry = undefined;
       this.recordMaintenance?.stop();
       this.actorPersistence?.stop?.();
       this.contentActivity?.stop();
@@ -4247,33 +3937,19 @@ export class Page {
           message:
             "A pending edit exceeds this Page's history capacity. Accepted content is available read-only.",
         };
-      } else {
-        // A pending host migration whose records still can't be stored (a
-        // 413 on record capacity, say) mustn't stop the Page from starting:
-        // it stays readable, fenced, and the conversion machine retries the
-        // same journal entries with backoff. A pending client edit still
-        // rejects startup, as before.
-        const pending = await pendingEntryKeys(this.ctx.storage, PAGE_DOC);
-        if (!pending.length || !pending.every((key) => key.startsWith(INTERNAL_PREFIX)))
-          throw error;
-        logFailure(error, "preserved-markdown-recovery");
-        this.conversionIntent = { replayKeys: pending.map((key) => ({ key, doc: PAGE_DOC })) };
-      }
+      } else throw error;
     }
     await this.loadComments();
     await this.restoreTitleProjection();
     // After recovery: a replayed journal entry was accepted before the
     // restart, not now.
     await this.watchContent();
-    // Before native connections open, so peers sync the converted content.
-    await this.convertPreservedMarkdown();
   }
 
   /** Record content changes on the serving document (content-activity.mjs).
    * The stored time is restored first, so this host's next report carries
-   * it. A change counts when its patches touch the title or blocks and the
-   * conversion machine isn't `converting`; the comments document isn't
-   * observed.
+   * it. A change counts when its patches touch the title or blocks; the
+   * comments document isn't observed.
    *
    * The listener runs on the repository's scheduler loop, in a request that
    * may have responded long ago, so it only records: requests pump the
@@ -4312,17 +3988,7 @@ export class Page {
     this.unwatchContent();
     this.contentHandle = this.handle;
     this.contentListener ??= ({ patches }) => {
-      // While `converting`, the fence holds every other writer, so each Page
-      // change is the host's own migration.
-      // ONE-SHOT MIGRATION: the content normalization isn't an edit either
-      // (contentMigration; delete the flag with it).
-      if (
-        this.conversion.name === "converting" ||
-        this.contentMigrating ||
-        !changesContent(patches)
-      )
-        return;
-      this.contentActivity.changed();
+      if (changesContent(patches)) this.contentActivity.changed();
     };
     this.handle.on("change", this.contentListener);
   }
@@ -4473,7 +4139,7 @@ export class Page {
   /** Open the Page's comments document (model/comments-doc.mjs) and finish
    * any journaled write to it. Importing its deterministic genesis is a
    * no-op once it exists, so this also creates it the first time. */
-  async loadComments(metadata = this.metadata) {
+  async loadComments() {
     if (this.commentsHandle || !this.commentsUuid) return;
     const documentId = commentsDocumentId(this.commentsUuid);
     if (this.plain) {
@@ -4484,483 +4150,13 @@ export class Page {
     });
     this.commentAdmission?.reset();
     this.assertNotAbandoned();
-    try {
-      await recoverDocumentMutations(
-        this.ctx.storage,
-        this.commentsHandle,
-        () => this.flush(),
-        this.commentsAdmission,
-        COMMENTS_DOC,
-      );
-    } catch (error) {
-      // As for the Page document: a pending host migration retries under the
-      // conversion machine; a pending client comment stops startup.
-      const pending = await pendingEntryKeys(this.ctx.storage, COMMENTS_DOC);
-      if (!pending.length || !pending.every((key) => key.startsWith(INTERNAL_PREFIX))) throw error;
-      logFailure(error, "comments-migration-recovery");
-      this.conversionIntent = {
-        replayKeys: [
-          ...(this.conversionIntent?.replayKeys ?? []),
-          ...pending.map((key) => ({ key, doc: COMMENTS_DOC })),
-        ],
-      };
-    }
-    // The Page record names its comments document. Derivation gives the same
-    // ID, so a record written without it loses nothing.
-    if (
-      metadata &&
-      metadata === this.metadata &&
-      !metadata.comments_doc &&
-      !this.pendingAccess &&
-      !this.pendingLifecycle
-    ) {
-      this.metadata = { ...metadata, comments_doc: this.commentsUuid };
-      await this.ctx.storage.put("host/document", this.metadata);
-    }
-  }
-
-  /** Replace the Page's preserved Markdown blocks with native rich text, and
-   * hold the write fence until that's done (worker/preserved-conversion.mjs).
-   * The host is the only writer of this conversion (model/raw-migration.mjs).
-   * Resolves when no run is in flight. A failed run leaves the Page fenced,
-   * read-only, with a scheduled retry. */
-  async convertPreservedMarkdown() {
-    this.assertNotAbandoned();
-    this.observeConversion({ due: true });
-    while (this.conversionRun) await this.conversionRun;
-  }
-
-  /** The conversion machine's state; fenced until the first observation. */
-  get conversion() {
-    return this.conversionState ?? preservedConversionMachine.initial;
-  }
-
-  /** Whether peer writes are refused now. */
-  conversionFenced() {
-    return conversionFenced(this.conversion);
-  }
-
-  /** The refusal for a native put or connection while the fence is up on an
-   * active Page, or undefined. A trashed Page keeps its own rules. */
-  conversionWriteFence() {
-    return this.conversionFenced() && pageState(this.metadata) === "active"
-      ? withAdmissionReason(conversionFenceError(), "preserved_markdown_converting")
-      : undefined;
-  }
-
-  /** Feed what the host sees now into the conversion machine. Without a
-   * document there is nothing to observe, and the state stays as it is. */
-  observeConversion({ due = false } = {}) {
-    // An abandoned object starts no run; its retry timer is cleared.
-    if (this.startup.name === "abandoned") return;
-    const doc = typeof this.handle?.doc === "function" ? this.handle.doc() : undefined;
-    if (!doc) return;
-    // The host's migrations share one fence: preserved blocks to rich text,
-    // then legacy comments into the comments document.
-    const preserved =
-      hasPreservedBlocks(doc) || (!!this.commentsHandle && needsCommentsMigration(doc));
-    const unfinished = !!this.conversionIntent;
-    this.conversionEvent({
-      type: "observe",
-      due,
-      preserved,
-      unfinished,
-      eligible:
-        (preserved || unfinished) &&
-        !this.recoveryBlocked &&
-        pageState(this.metadata) === "active" &&
-        !unsupportedFeatures(doc).length,
-    });
-  }
-
-  conversionEvent(event) {
-    const wasFenced = this.conversionFenced();
-    const result = preservedConversionMachine.step(this.conversion, event);
-    this.conversionState = result.state;
-    // Peers connected read-only while fenced. Once the fence drops, close
-    // their sockets with a transient code: they reconnect, discovery no
-    // longer reports `converting`, and editing resumes.
-    if (wasFenced && !this.conversionFenced() && this.wires?.size) {
-      const done = withAdmissionReason(
-        Object.assign(Error("Preserved Markdown converted"), { status: 503 }),
-        "preserved_markdown_converting",
-      );
-      for (const wire of this.wires)
-        void wire.disconnect(admissionCloseCode(done), admissionCode(done));
-    }
-    for (const effect of result.effects) {
-      if (effect.type === "observe") this.observeConversion({ due: true });
-      else if (effect.type === "scheduleRetry") {
-        clearTimeout(this.conversionRetry);
-        // A run that failed because its object was abandoned retries nowhere.
-        if (this.startup.name === "abandoned") continue;
-        this.conversionRetry = setTimeout(
-          () => this.observeConversion({ due: true }),
-          conversionRetryDelay(effect.attempt),
-        );
-        // Node keeps no process alive for it; a Durable Object stays resident.
-        this.conversionRetry?.unref?.();
-      } else if (effect.type === "logStuck")
-        logPreservedStuck(this.metadata?.pageId ?? this.handle.doc().page_id, effect.reason);
-      else if (effect.type === "convert") {
-        // `converting` until this run's outcome steps the machine: the content
-        // listener ignores every Page change in between (watchContent).
-        const run = this.convertPreservedOnce(effect.mode).then(
-          () => ({ type: "succeeded" }),
-          (error) => {
-            logFailure(error, "preserved-markdown");
-            return {
-              type: "failed",
-              permanent: permanentFailure(error, { isHistoryCapacityError }),
-              // Whether the run's journal entry is still reserved.
-              unfinished: !!this.conversionIntent,
-              reason: failureReason(error),
-            };
-          },
-        );
-        this.conversionRun = run.then((outcome) => {
-          this.conversionRun = undefined;
-          this.conversionEvent(outcome);
-        });
-      }
-    }
-  }
-
-  /** Before an HTTP edit: while fenced, try the conversion once more, then
-   * refuse with `preserved_markdown_converting` if the fence stays. */
-  async requireConverted() {
-    if (this.conversion.name === "unchecked") await this.convertPreservedMarkdown();
-    else if (this.conversionFenced()) {
-      // A nudge: it may clear the fence, but a retry waits for its backoff.
-      this.observeConversion();
-      while (this.conversionRun) await this.conversionRun;
-    }
-    if (this.conversionFenced()) throw conversionFenceError();
-  }
-
-  /** One journaled conversion run. A run is a host intent in the journal's
-   * internal key space, keyed by the heads it converted, so a restart replays
-   * the recorded change instead of converting again. The intent is kept
-   * until its journal entry is terminal: a run that applied but failed to
-   * finish replays under the same key, so its reservation completes. Throws
-   * on failure; an error from the conversion itself carries `conversion`. */
-  async convertPreservedOnce(mode) {
-    if (this.conversionIntent?.replayKeys) {
-      // Entries startup recovery couldn't finish: replay them as recorded.
-      for (const { key, doc } of this.conversionIntent.replayKeys) {
-        const comments = doc === COMMENTS_DOC;
-        await replayRecordedMutation({
-          storage: this.ctx.storage,
-          handle: comments ? this.commentsHandle : this.handle,
-          key,
-          flush: () => this.flush(),
-          admission: comments ? this.commentsAdmission : this.admission,
-        });
-      }
-      this.conversionIntent = undefined;
-      return;
-    }
-    // Preserved blocks convert first; legacy comments move once they're done.
-    // A conversion run past its first step finishes before comments move.
-    const converting = !!this.conversionIntent && !this.conversionIntent.comments;
-    if (this.conversionIntent?.comments || (!converting && !hasPreservedBlocks(this.handle.doc())))
-      return this.migrateCommentsOnce(mode === "literal" ? "drop" : "copy");
-    if (!this.conversionIntent) {
-      const heads = A.getHeads(this.handle.doc()).sort();
-      const digest = hex(
-        new Uint8Array(
-          await crypto.subtle.digest("SHA-256", new TextEncoder().encode(heads.join(","))),
-        ),
-      );
-      const literal = mode === "literal";
-      this.conversionIntent = {
-        operation: literal ? "convert_preserved_markdown_literal" : "convert_preserved_markdown",
-        literal,
-        args: {
-          idempotency_key: `preserved_${literal ? "literal" : "markdown"}_${digest.slice(0, 32)}`,
-          base_heads: heads,
-        },
-      };
-    }
-    const intent = this.conversionIntent;
-    try {
-      await documentMutation({
-        storage: this.ctx.storage,
-        hostActorPrefix: this.plain?.hostActorPrefix,
-        admission: this.admission,
-        handle: this.handle,
-        operation: intent.operation,
-        args: intent.args,
-        identity: { principal: "service:pages", driver: "API" },
-        internal: true,
-        apply: (draft) => {
-          try {
-            return { converted: convertPreservedBlocks(draft, { literal: intent.literal }) };
-          } catch (error) {
-            throw Object.assign(error, { conversion: true });
-          }
-        },
-        flush: () => this.flush(),
-      });
-      this.conversionIntent = undefined;
-    } catch (error) {
-      // Keep the intent while its journal entry is pending: the next run
-      // replays it. Without one, the next run starts over from current heads.
-      const key = `${INTERNAL_PREFIX}${intent.args.idempotency_key}`;
-      const entry = await this.ctx.storage.get(key).catch(() => ({ pending: true }));
-      if (!entry?.pending && !this.admission?.pending(key)) this.conversionIntent = undefined;
-      throw error;
-    }
-  }
-
-  /**
-   * Move legacy comments out of the Page document (model/comments-migration.mjs),
-   * as two journaled host intents under the conversion fence:
-   *
-   * 1. copy: every legacy thread into the comments document, keyed by the
-   *    Page heads it read. Threads already there are skipped.
-   * 2. detach: drop the Page's legacy map and stamp `comments-doc`, at
-   *    exactly those heads.
-   *
-   * The fence holds peer writes, so the heads can't move between the steps.
-   * If they do anyway, detach fails with stale heads and the next run copies
-   * again from the new heads. A run that fails after reserving its entry
-   * replays that entry. `mode` is `copy`, or `drop` after a copy keeps
-   * failing for good: then no thread moves and the Page still detaches.
-   */
-  async migrateCommentsOnce(mode) {
-    if (!this.conversionIntent?.comments) {
-      const heads = A.getHeads(this.handle.doc()).sort();
-      const digest = hex(
-        new Uint8Array(
-          await crypto.subtle.digest("SHA-256", new TextEncoder().encode(heads.join(","))),
-        ),
-      ).slice(0, 32);
-      this.conversionIntent = { comments: { mode, heads, digest, step: "copy" } };
-    }
-    const intent = this.conversionIntent.comments;
-    const identity = { principal: "service:pages", driver: "API" };
-    try {
-      if (intent.step === "copy") {
-        const page = this.handle.doc();
-        await documentMutation({
-          storage: this.ctx.storage,
-          hostActorPrefix: this.plain?.hostActorPrefix,
-          admission: this.commentsAdmission,
-          handle: this.commentsHandle,
-          doc: COMMENTS_DOC,
-          pageId: this.metadata.pageId,
-          operation: "migrate_comments_copy",
-          args: {
-            idempotency_key: `comments_copy_${intent.mode}_${intent.digest}`,
-            base_heads: intent.heads,
-          },
-          identity,
-          internal: true,
-          // The copy reads the Page at the heads it names, never later.
-          guard: (args) => {
-            requireHeads(this.handle.doc(), intent.heads);
-            return args;
-          },
-          apply: (draft) => {
-            try {
-              return copyLegacyThreads(draft, page, { mode: intent.mode });
-            } catch (error) {
-              throw Object.assign(error, { conversion: true });
-            }
-          },
-          flush: () => this.flush(),
-        });
-        intent.step = "detach";
-      }
-      await documentMutation({
-        storage: this.ctx.storage,
-        hostActorPrefix: this.plain?.hostActorPrefix,
-        admission: this.admission,
-        handle: this.handle,
-        operation: "migrate_comments_detach",
-        args: {
-          idempotency_key: `comments_detach_${intent.mode}_${intent.digest}`,
-          base_heads: intent.heads,
-        },
-        identity,
-        internal: true,
-        apply: (draft) => detachLegacyComments(draft),
-        flush: () => this.flush(),
-      });
-      this.conversionIntent = undefined;
-    } catch (error) {
-      // Keep the intent while its journal entry is pending: the next run
-      // replays it. Without one, the next run starts over from current heads.
-      const key = `${INTERNAL_PREFIX}comments_${intent.step}_${intent.mode}_${intent.digest}`;
-      const admission = intent.step === "copy" ? this.commentsAdmission : this.admission;
-      const entry = await this.ctx.storage.get(key).catch(() => ({ pending: true }));
-      if (!entry?.pending && !admission?.pending(key)) this.conversionIntent = undefined;
-      throw error;
-    }
-  }
-
-  /**
-   * ONE-SHOT MIGRATION (model/content-normalization.mjs and
-   * worker/content-migration.mjs; delete with them). The owner's Catalog asks
-   * this host to report (`dry_run`) or normalize (`apply`) its content. Host
-   * only: a request that carries a credential is refused, and the named owner
-   * must be the record's.
-   *
-   * The host is the document's only writer: the write is one journaled host
-   * change keyed by the heads it read, so a restart replays its recorded
-   * bytes and a later visit plans nothing. A Page with a live socket is
-   * skipped as `busy` unless the run passed `include_connected`; a fenced or blocked Page as `held`; a Page whose plan
-   * refuses any block, or whose on-load work is unfinished, as `partial`,
-   * with nothing written.
-   */
-  async contentMigration(request) {
-    if (request.headers.has("authorization") || request.headers.has("cookie"))
-      throw spaceNotFound();
-    const {
-      page_id: pageId,
-      owner,
-      mode,
-      include_connected: includeConnected = false,
-    } = (await readJson(request)) ?? {};
-    const metadata = this.metadata;
-    // The operator's probe of a cell no run reached: who it belongs to.
-    if (mode === "probe")
-      return json({
-        page_id: metadata?.pageId ?? null,
-        owner: metadata?.owner ?? null,
-        state: metadata ? pageState(metadata) : "missing",
-      });
-    if (!["dry_run", "apply"].includes(mode))
-      throw new HttpError(400, 'mode must be "dry_run" or "apply"', "invalid_arguments");
-    if (!metadata || metadata.pageId !== pageId)
-      return json({ status: "missing", state: "missing" });
-    const state = pageState(metadata);
-    if (metadata.owner !== owner) return json({ status: "not_owner", state });
-    const base = {
-      state,
-      record_comments_doc: typeof metadata.comments_doc === "string",
-      conversion: this.conversion.name,
-      connected: this.wires.size,
-    };
-    if (state === "deleted") return json({ ...base, status: "deleted" });
-    if (this.pendingAccess || this.pendingLifecycle)
-      return json({ ...base, status: "record_pending" });
-    if (!this.handle) return json({ ...base, status: "unavailable" });
-    if (this.recoveryBlocked || this.conversionFenced()) return json({ ...base, status: "held" });
-    // Before the plan: nothing awaits between reading the heads and the
-    // journaled write but the write's own checks.
-    const revert = await this.contentRevertRecords();
-    const doc = this.handle.doc();
-    const heads = A.getHeads(doc).sort();
-    const { report, writes } = planPageNormalization(doc, {
-      commentsDoc: this.commentsHandle?.doc(),
-    });
-    // The gate holds here, against the Page as it is now: a blocked plan
-    // writes nothing, whatever its dry run said.
-    const blocked = normalizationBlocked(report);
-    if (mode === "dry_run" || !writes.length || blocked)
-      return json({
-        ...base,
-        status: blocked ? "partial" : writes.length ? "would_normalize" : "unchanged",
-        heads,
-        report,
-        problems: normalizationProblems(report),
-        ...(revert.length && { revert }),
-      });
-    // A connected peer receives the write over sync like any host change.
-    // Its own edit either merges (made before or after the write) or, landing
-    // between the plan and the write, fails the exact-heads check (`stale`).
-    if (this.wires.size && includeConnected !== true)
-      return json({ ...base, status: "busy", heads, report });
-    const digest = hex(
-      new Uint8Array(
-        await crypto.subtle.digest("SHA-256", new TextEncoder().encode(heads.join(","))),
-      ),
-    ).slice(0, 32);
-    let receipt;
-    this.contentMigrating = true;
-    try {
-      receipt = await documentMutation({
-        storage: this.ctx.storage,
-        hostActorPrefix: this.plain?.hostActorPrefix,
-        admission: this.admission,
-        handle: this.handle,
-        operation: "normalize_content",
-        args: { idempotency_key: `content_norm_${digest}`, base_heads: heads },
-        identity: { principal: "service:pages", driver: "API" },
-        internal: true,
-        apply: (draft) => ({
-          writes: applyPageNormalization(draft, writes),
-          before_heads: heads,
-          blocks: report.blocks.map(({ block_id, action, forms, reason }) => ({
-            block_id,
-            action,
-            ...(forms && { forms }),
-            ...(reason && { reason }),
-          })),
-        }),
-        flush: () => this.flush(),
-      });
-    } catch (error) {
-      // A native edit landed after the plan: nothing was written, and the
-      // next pass plans again from the new heads.
-      if (error?.code === "stale_heads")
-        return json({ ...base, status: "stale", heads, ...(revert.length && { revert }) });
-      throw error;
-    } finally {
-      this.contentMigrating = false;
-    }
-    const recorded = await this.contentRevertRecords();
-    const problems = normalizationProblems(
-      planPageNormalization(this.handle.doc(), { commentsDoc: this.commentsHandle?.doc() }).report,
+    await recoverDocumentMutations(
+      this.ctx.storage,
+      this.commentsHandle,
+      () => this.flush(),
+      this.commentsAdmission,
+      COMMENTS_DOC,
     );
-    return json({
-      ...base,
-      status: problems.length ? "partial" : "normalized",
-      before_heads: heads,
-      after_heads: receipt.heads,
-      report,
-      problems,
-      revert: recorded,
-    });
-  }
-
-  /**
-   * ONE-SHOT MIGRATION (delete with contentMigration). This Page's content
-   * migration writes, `[{ key, before_heads, after_heads, blocks }]`, kept in
-   * `host/content-migration/revert`: the revert reference. Each comes from a
-   * finished `content_norm_` journal receipt, copied here before it can be
-   * dropped. The journal drops finished internal receipts only when another
-   * internal intent reserves, and the next such reservation on a migrated
-   * Page is this route's own, which copies first. A write a crash cut short
-   * finishes in journal recovery at boot and is copied on the next visit.
-   */
-  async contentRevertRecords() {
-    const key = "host/content-migration/revert";
-    const records = (await this.ctx.storage.get(key)) ?? [];
-    const known = new Set(records.map((record) => record.key));
-    let added = false;
-    for (const [name, entry] of await this.ctx.storage.list({
-      prefix: `${INTERNAL_PREFIX}content_norm_`,
-    })) {
-      if (known.has(name) || entry?.pending !== false || !entry.receipt?.result) continue;
-      const { result, heads } = entry.receipt;
-      records.push({
-        key: name,
-        before_heads: result.before_heads,
-        after_heads: heads,
-        blocks: (result.blocks ?? [])
-          .filter((block) => block.action !== "refused")
-          .map(({ block_id, action }) => ({ block_id, action })),
-      });
-      added = true;
-    }
-    if (added) {
-      await this.ctx.storage.put(key, records);
-      await this.ctx.storage.sync();
-    }
-    return records;
   }
 
   initializeRepo(metadata = this.metadata) {
@@ -4981,9 +4177,7 @@ export class Page {
         const serverKey = hex(signer.verifyingKey());
         // The comments document is named before any peer can connect, so the
         // policy serves its tree from the first frame.
-        const commentsUuid = metadata?.pageId
-          ? (metadata.comments_doc ?? (await commentsDocUuid(metadata.pageId)))
-          : undefined;
+        const commentsUuid = recordCommentsUuid(metadata);
         const commentsTree = commentsUuid && commentsTreeOf(commentsUuid);
         const peer = signer.peerId();
         let serverSenderId;
@@ -5007,8 +4201,6 @@ export class Page {
             const handle = scope === COMMENTS_SCOPE ? this.commentsHandle : this.handle;
             return handle ? documentFeatures(handle.doc()) : [];
           },
-          // Peer puts wait for the host's own migrations.
-          writeFence: () => this.conversionWriteFence(),
           commentsTree: () => commentsTree,
         });
         await policy.load();
@@ -5144,9 +4336,7 @@ export class Page {
    * store, native admission or actor replay: claims are made at admission. */
   async initializePlain(metadata) {
     const ctx = this.ctx;
-    const commentsUuid = metadata?.pageId
-      ? (metadata.comments_doc ?? (await commentsDocUuid(metadata.pageId)))
-      : undefined;
+    const commentsUuid = recordCommentsUuid(metadata);
     const policy = new DocumentPolicy({
       storage: ctx.storage,
       metadata: () =>
@@ -5162,7 +4352,6 @@ export class Page {
         const handle = scope === COMMENTS_SCOPE ? this.commentsHandle : this.handle;
         return handle ? documentFeatures(handle.doc()) : [];
       },
-      writeFence: () => this.conversionWriteFence(),
       commentsTree: () => undefined,
     });
     await policy.load();
@@ -5170,7 +4359,6 @@ export class Page {
       storage: ctx.storage,
       policy,
       pageFeatures: () => (this.handle ? documentFeatures(this.handle.doc()) : []),
-      writeFence: () => this.conversionWriteFence(),
       onRefused: (conn, refusal, { doc, repeats }) => {
         if (conn.trusted) return logFailure(refusal, "plain-host-write");
         logSyncRefused({
@@ -5221,8 +4409,6 @@ export class Page {
    * a replay never undoes a later Trash, restore or ACL change. */
   async finishCreation(intent) {
     await this.applyLifecycle(this.metadata ? CREATION_REPLAY : CREATION_COMMIT, { intent });
-    // A registered draft from an older build can hold preserved blocks.
-    await this.convertPreservedMarkdown();
   }
 
   profiles() {
@@ -5653,13 +4839,12 @@ export class Page {
     );
   }
 
-  /** The comments document readers use: the Page's once its comments have
-   * moved there. Before that, readers fall back to the Page's legacy map
-   * (model/comments.mjs threadsOf) and comment writes wait. */
+  /** The Page's comments document. The Page's `comments-doc` stamp says its
+   * comments live there; a Page without the stamp fails closed. */
   commentsView() {
-    return this.commentsHandle && this.handle && commentsMigrated(this.handle.doc())
-      ? this.commentsHandle.doc()
-      : undefined;
+    if (this.handle && !commentsMigrated(this.handle.doc()))
+      throw storedFormUnsupported("this Page's comments");
+    return this.commentsHandle?.doc();
   }
 
   /** The repo document IDs this Page host holds: the Page and, once open,
@@ -5745,8 +4930,6 @@ export class Page {
         this.disarmMigration();
       } else if (effect.type === "convert") {
         const run = this.runMigration();
-        // An operator's request waits for it (recordStorageOperator).
-        this.migrationRun = run;
         holdUntilSettled(this.ctx, run);
         this.disarmMigration();
       }
@@ -5786,7 +4969,6 @@ export class Page {
           try {
             if (this.migrationAbandoned) return;
             const event = await this.convertRecordStorage(started);
-            this.migrationOutcome = event;
             const { effects } = this.stepMigration(event);
             if (effects?.some((effect) => effect.type === "retire")) {
               await this.retireMigratedHost();
@@ -5807,7 +4989,6 @@ export class Page {
             reason: result.reason,
           }),
         );
-        this.migrationOutcome = result;
         this.stepMigration(result);
       }
     } catch (error) {
@@ -5836,18 +5017,14 @@ export class Page {
   async convertRecordStorage(started = Date.now()) {
     const storage = this.ctx.storage;
     const from = this.metadata?.recordStorage ?? "local";
-    // An operator's request (ONE-SHOT MIGRATION, record-storage-operator.mjs)
-    // converts with peers connected: it closes them first.
-    const requested = !!this.migration?.requested;
     const log = (outcome, fields = {}) =>
       console.log(
         JSON.stringify({
           event: "record_storage.migration",
           outcome,
           from,
-          // Canaries and operator runs go Page by Page; the line says which.
+          // Canaries go Page by Page; the line says which.
           page_id: this.metadata?.pageId,
-          ...(requested && { trigger: "operator" }),
           ...fields,
         }),
       );
@@ -5855,10 +5032,7 @@ export class Page {
       log("skipped", { reason });
       return { type: "skipped", reason, ...(retryMs && { retryMs }) };
     };
-    if (requested && this.handle && !this.plain) await this.closeWiresForMigration();
-    // The operator's own request is running, and holds the serial queue, so
-    // no other request can; only sockets count for it.
-    if (this.wires.size || (!requested && (this.requestsRunning ?? 0) > 0)) return skip("busy");
+    if (this.wires.size || (this.requestsRunning ?? 0) > 0) return skip("busy");
     if (!this.handle || this.plain || this.migration?.name !== "converting")
       return skip("not_native");
     if (this.recoveryBlocked) return skip("recovery_blocked");
@@ -5869,7 +5043,6 @@ export class Page {
     // Nothing writes the record meanwhile: this runs in blockConcurrencyWhile.
     const stored = await storage.get("host/document");
     if (JSON.stringify(stored) !== JSON.stringify(this.metadata)) return skip("record_pending");
-    if (this.conversionIntent) return skip("conversion_pending");
     if (
       (await pendingEntryKeys(storage, PAGE_DOC)).length ||
       (await pendingEntryKeys(storage, COMMENTS_DOC)).length
@@ -5937,71 +5110,6 @@ export class Page {
     }
   }
 
-  /** Close every native socket before an operator's conversion, with a
-   * transient admission code: each tab reconnects, finds plain storage at
-   * its next discovery and switches (viewer/storage-switch-machine.mjs). */
-  async closeWiresForMigration() {
-    const moving = withAdmissionReason(
-      Object.assign(Error("This Page is moving to plain sync"), { status: 503 }),
-      "record_storage_migrating",
-    );
-    await Promise.all(
-      [...this.wires].map((wire) =>
-        Promise.resolve()
-          .then(() => wire.disconnect(admissionCloseCode(moving), admissionCode(moving)))
-          .catch((error) => logFailure(error, "record-storage-migration-close")),
-      ),
-    );
-  }
-
-  /**
-   * ONE-SHOT MIGRATION (record-storage-operator.mjs; delete with it). The
-   * operator's host-only route. `status` answers from the record without
-   * booting the host. `convert` boots it, checks the switch, the Page id,
-   * the owner when given and the record, then steps the migration machine's
-   * `requested` and waits for the conversion. Runs in the serial queue like
-   * any host write. A converted object resets, so its reply may never
-   * arrive; the gateway reads `status` from the next object.
-   */
-  async recordStorageOperator(request) {
-    if (request.headers.has("authorization") || request.headers.has("cookie"))
-      return json({ error: "Not found" }, 404);
-    const { mode, page_id: pageId, owner } = (await readJson(request)) ?? {};
-    const metadata = this.metadata;
-    if (mode === "status")
-      return json({
-        page_id: metadata?.pageId ?? null,
-        owner: metadata?.owner ?? null,
-        state: pageState(metadata),
-        record_storage: metadata ? (metadata.recordStorage ?? "local") : null,
-        migrated_from: metadata?.recordStorageMigratedFrom ?? null,
-        migrated_at: metadata?.recordStorageMigratedAt ?? null,
-        refusal: operatorRefusal(this.env, metadata),
-        migration: this.migration?.name ?? null,
-        connected: this.wires.size,
-      });
-    if (mode !== "convert")
-      throw new HttpError(400, 'mode must be "status" or "convert"', "invalid_arguments");
-    if (!validPageId(pageId)) throw new HttpError(400, "page_id is required", "invalid_arguments");
-    if (!metadata || metadata.pageId !== pageId) return json({ result: "missing" });
-    if (owner !== undefined && metadata.owner !== owner) return json({ result: "not_owner" });
-    const refusal = operatorRefusal(this.env, metadata);
-    if (refusal === "plain") return json({ result: "plain" });
-    if (refusal) return json({ result: "refused", reason: refusal });
-    await this.documentReady();
-    if (this.plain) return json({ result: "plain" });
-    this.migrationOutcome = undefined;
-    const stepped = this.stepMigration({ type: "requested" });
-    if (stepped.rejected) return json({ result: "busy", reason: stepped.rejected });
-    await this.migrationRun;
-    if (this.migration?.name === "retired") return json({ result: "converted" });
-    const outcome = this.migrationOutcome;
-    return json({
-      result: outcome?.type === "failed" ? "failed" : "skipped",
-      reason: outcome?.reason ?? outcome?.type ?? "unknown",
-    });
-  }
-
   /** A converted Page's Subduction history, which the plain host never reads:
    * its records, actor entries, signing-key bindings and signer seed here,
    * and for a buffered Page the PageRecords object's records.
@@ -6024,8 +5132,6 @@ export class Page {
     if (this.migrationRetiring) return;
     this.migrationRetiring = true;
     this.disarmMigration();
-    clearTimeout(this.conversionRetry);
-    this.conversionRetry = undefined;
     this.recordMaintenance?.stop();
     this.actorPersistence?.stop?.();
     this.contentActivity?.stop();
@@ -6059,10 +5165,6 @@ export class Page {
         const answer = await this.catalogFromRecord(request);
         if (answer) return answer;
       }
-      // ONE-SHOT MIGRATION route (record-storage-operator.mjs; delete with
-      // it). Before the boot: a status read boots nothing.
-      if (url.pathname === RECORD_STORAGE_OPERATOR_ROUTE)
-        return await this.recordStorageOperator(request);
       await this.documentReady();
       // This request is live: content effects deferred from the repository's
       // loop, or a coalesced time whose timer never fired, run now.
@@ -6090,9 +5192,6 @@ export class Page {
         if (this.pendingLifecycle) await this.settleLifecycle();
         return await this.acceptTombstone();
       }
-      // ONE-SHOT MIGRATION route (content-migration.mjs; delete with it).
-      if (url.pathname === "/internal/content-migration")
-        return await this.contentMigration(request);
       if (url.pathname === "/internal/content-target") {
         if (request.headers.has("authorization") || request.headers.has("cookie"))
           throw spaceNotFound();
@@ -6310,15 +5409,12 @@ export class Page {
           ...(this.plain ? { recordStorage: "automerge" } : { serverPeerId: this.serverKey }),
           serverSenderId: this.serverSenderId,
           identity: publicIdentity(identity),
-          // Access is the grant; `converting` is a temporary hold the viewer
-          // shows as read-only without retiring its writer key.
           canWrite: !this.recoveryBlocked && this.policy.account(identity).canWrite,
           access: {
             ...this.policy.account(identity),
             ...(this.recoveryBlocked && { canWrite: false, canComment: false }),
           },
           ...(this.recoveryBlocked && { recovery: this.recoveryBlocked }),
-          ...(this.conversionWriteFence() && { converting: conversionNotice() }),
           ...(incompleteHistory(this.handle.doc()) && {
             historyIncomplete: incompleteHistory(this.handle.doc()),
           }),
@@ -6423,7 +5519,6 @@ export class Page {
         // Where this batch landed, captured inside the change so the cursors
         // name the characters it wrote. A replayed receipt has no caret.
         let caret = null;
-        await this.requireConverted();
         const receipt = await documentMutation({
           storage: this.ctx.storage,
           hostActorPrefix: this.plain?.hostActorPrefix,
@@ -6553,13 +5648,7 @@ export class Page {
    */
   async writeComment(request, identity, body) {
     this.policy.account(identity, "comment");
-    await this.requireConverted();
-    if (!this.commentsView())
-      throw new HttpError(
-        503,
-        "This Page's comments are moving to their own document; try again shortly",
-        "comments_migrating",
-      );
+    this.commentsView();
     const role = this.policy.account(identity).role;
     const operation = body.operation;
     const args = body.arguments ?? {};
@@ -6938,10 +6027,6 @@ export class Page {
             );
         } else this.metadata = pending.metadata;
         return;
-      case "convertPreserved":
-        // Journaled and idempotent, so a repeated commit sequence is safe.
-        await this.convertPreservedMarkdown();
-        return;
       case "refreshAccess":
         await this.policy.refreshAccess();
         this.plain?.refresh();
@@ -7016,11 +6101,8 @@ export class Page {
         this.handle = await this.repo.import(context.intent.bytes, {
           docId: context.intent.metadata.documentId,
         });
-        await this.loadComments(context.intent.metadata);
+        await this.loadComments();
         await this.watchContent();
-        // Not active yet: preserved blocks are held, fenced, until
-        // finishCreation observes again after the record is installed.
-        this.observeConversion();
         // Before its record is installed, `install` starts presence instead.
         if (this.metadata) this.observeActivity();
         return;
@@ -7297,30 +6379,11 @@ export class Page {
     const declared = new URL(request.url).searchParams.getAll("schema_features");
     const features = declared.length > 1 ? null : parseDeclaredFeatures(declared[0]);
     if (!features) throw new HttpError(400, "Invalid schema_features");
-    // While the preserved-block conversion holds the fence, peers still
-    // connect and sync down, read-only: the policy refuses every put, relayed
-    // or self-authored, so no competing conversion lands. Discovery tells the
-    // viewer it's converting. Each connection retries a failed conversion.
     // A plain socket from a tab that already holds one replaces it, so the
     // stale socket's slot is free for this one.
     const sender = this.plain?.sender(identity, new URL(request.url).searchParams.get("sender"));
     const capacity = this.connectionCapacity(identity, sender?.replaces?.wire);
     if (capacity) return refuseSocket(capacity, identity);
-    // A first observation is due; afterwards a connection only nudges, which
-    // never starts a retry before its backoff.
-    this.observeConversion({ due: this.conversion.name === "unchecked" });
-    // The viewer discovered `converting` but the fence dropped before this
-    // upgrade, so it would miss the completion close: send it back to
-    // discovery. Synchronous with the wire's registration below, so the
-    // fence can't drop between this check and the socket joining `wires`.
-    if (new URL(request.url).searchParams.get("converting") === "1" && !this.conversionWriteFence())
-      return refuseSocket(
-        withAdmissionReason(
-          Object.assign(Error("Preserved Markdown converted"), { status: 503 }),
-          "preserved_markdown_converting",
-        ),
-        identity,
-      );
     if (this.plain) {
       try {
         requirePlainSyncClient(request);

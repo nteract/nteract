@@ -196,45 +196,6 @@ nodes.dataframe = {
     node.attrs.title ?? "Dataframe",
   ],
 };
-// `raw` (`pages-opaque`) is read-only and exists only to read documents that
-// still hold one. No writer creates it: Markdown import never emits it, and the
-// Page host replaces every stored one with native content on load (see
-// raw-migration.mjs). Remove it once no stored Page can hold one.
-nodes.raw = {
-  group: "block",
-  content: "text*",
-  marks: "",
-  atom: true,
-  selectable: true,
-  attrs: {
-    source: { default: "" },
-    importId: { default: "" },
-    kind: { default: "markdown" },
-  },
-  automerge: {
-    block: "pages-opaque",
-    attrParsers: {
-      fromAutomerge: (block) =>
-        Object.fromEntries(
-          ["source", "importId", "kind"].map((k) => [k, String(block.attrs[k] ?? "")]),
-        ),
-      fromProsemirror: (node) =>
-        Object.fromEntries(
-          ["source", "importId", "kind"].map((k) => [k, new A.ImmutableString(node.attrs[k])]),
-        ),
-    },
-  },
-  toDOM: (node) => [
-    "section",
-    {
-      class: "opaque",
-      contenteditable: "false",
-      "aria-label": `Preserved ${node.attrs.kind}`,
-    },
-    ["small", node.attrs.kind === "instruction" ? "Instruction" : "Preserved Markdown"],
-    ["pre", node.attrs.source],
-  ],
-};
 // Table structure lives in the same Automerge text as prose. Explicit markers
 // keep adjacent rows/cells distinct even when their contents are empty.
 nodes.table = {

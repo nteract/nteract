@@ -143,31 +143,6 @@ export const PagesForeignMarks = Mark.Type.define("PagesForeignMarks", {
     attributes: (value) => ({ "data-pages-foreign-marks": Object.keys(value).sort().join(" ") }),
   },
 });
-// A preserved Markdown block from an older build. Read-only: no writer
-// creates one, and the Page host converts each stored one to native content
-// (model/raw-migration.mjs). The editor still decodes it so a Page that holds
-// one opens; remove it once no stored Page can hold one.
-export const OpaqueBlock = Leaf.Type.define("PagesOpaque", {
-  group: Node.Group.Content,
-  selectable: true,
-  validate(value) {
-    if (!value || ["source", "importId", "kind"].some((k) => typeof value[k] !== "string"))
-      throw Error("Invalid preserved Pages block");
-  },
-  shape: {
-    structure: (value) =>
-      // The notice is a CSS attribute, not content, so copying the block
-      // copies only its source, which pastes as an editable code block.
-      Elt.mk(
-        "section",
-        { class: "opaque", "data-pages-opaque": "true", "data-pages-notice": PRESERVED_NOTICE },
-        [Elt.mk("pre", [value.source])],
-      ),
-  },
-});
-/** Shown above a preserved block until the host's conversion arrives. */
-export const PRESERVED_NOTICE =
-  "Saved by an older version of Pages. It becomes editable text once Pages finishes converting it; this happens when the Page syncs.";
 const IMAGE_ATTR = "data-pages-image";
 const IMAGE_METADATA_LIMIT = 16 * 1024;
 function imageMetadata(value) {
@@ -406,7 +381,6 @@ export const elements = [
   TaskList,
   TaskChecked,
   HorizontalRule,
-  OpaqueBlock,
   PagesImage,
   PagesDataframe,
   PagesUnknownBlock,
@@ -671,7 +645,7 @@ export function decode(spans) {
       Object.values(attrs).every(scalar)
         ? attrs
         : null;
-    const builtIn = type === "pages-opaque" || type === "horizontal-rule" || !!dataframe;
+    const builtIn = type === "horizontal-rule" || !!dataframe;
     const desc = builtIn ? null : descriptor(type, attrs);
     const unknown = !builtIn && !desc;
     if (desc?.outer) outer.push(desc.outer);
@@ -693,15 +667,7 @@ export function decode(spans) {
       } else leaf(PagesUnknownBlock.of(unknownValue(value)));
     } else if (type === "horizontal-rule") leaf(HorizontalRule);
     else if (dataframe) leaf(PagesDataframe.of(dataframe));
-    else if (type === "pages-opaque") {
-      leaf(
-        OpaqueBlock.of({
-          source: String(attrs.source ?? ""),
-          importId: String(attrs.importId ?? ""),
-          kind: String(attrs.kind ?? "markdown"),
-        }),
-      );
-    } else open(desc.tag, true);
+    else open(desc.tag, true);
   }
   if (!blocks.length && !stack.length) open(Paragraph);
   // Empty list items and containers still need an editable paragraph.
@@ -760,10 +726,6 @@ export function encode(doc) {
   const implicitAt = (siblings, i) =>
     i === 0 && (siblings.length === 1 || siblings[0].content?.length > 0);
   const block = (node, parents, implicit = false, listType = null) => {
-    if (node.type === OpaqueBlock) {
-      marker("pages-opaque", parents, node.param);
-      return;
-    }
     if (node.type === PagesUnknownBlock) {
       unknownMarker(node);
       return;

@@ -6,7 +6,8 @@ import { GardState, Transaction } from "wordgard/state";
 import { Command, enter, toggleList } from "wordgard/command";
 import { bulletList, orderedList } from "wordgard/schema";
 import { history, undo, redo } from "wordgard/history";
-import { enableRich, textPath, blockMarkdown, validateRich } from "../model/richtext.mjs";
+import { textPath, blockMarkdown, validateRich } from "../model/richtext.mjs";
+import { richFromSource } from "../model/richtext-test-support.mjs";
 import {
   schema,
   TaskList,
@@ -22,7 +23,7 @@ const path = textPath("one");
 
 function fixture(markdown, readOnly = false) {
   let doc = A.change(A.from({ blocks: { one: { id: "one", kind: "markdown", markdown } } }), (d) =>
-    enableRich(d, "one"),
+    richFromSource(d, "one"),
   );
   const observers = new Set();
   const publish = (before, remote) => {

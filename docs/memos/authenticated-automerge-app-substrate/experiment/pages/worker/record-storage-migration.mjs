@@ -26,22 +26,12 @@ import { pageState } from "./access.mjs";
  *   next request boots plain.
  *
  * Events: `activity` ({ sockets, requests }: the counts after any change),
- * `elapsed` (the armed timer fired), `requested` (an operator asked this host
- * to convert now; see "Operator conversion" below), `converted` (the flip was attempted:
+ * `elapsed` (the armed timer fired), `converted` (the flip was attempted:
  * whatever the put reported, the object resets and the next boot reads the
  * record), `skipped` ({ reason, retryMs? }: not quiet enough to convert;
  * nothing written) and `failed` (a step before the flip threw).
  *
  * Effects: `arm` ({ ms }), `disarm`, `convert`, `retire`.
- *
- * Operator conversion (ONE-SHOT MIGRATION, lab only; delete with the
- * operator route in worker/record-storage-operator.mjs): `requested` moves
- * any state but `converting` and `retired` straight to `converting`, open
- * sockets or not. The host closes them inside the conversion. Its
- * `converting` state carries `requested`: where a run that doesn't convert
- * goes, `dormant` when the passive policy was on for this object, `off`
- * when it wasn't. Neither arms a timer, so a failed request never starts
- * passive retries; the operator asks again.
  */
 export const MIGRATION_STATES = Object.freeze([
   "off",
@@ -55,7 +45,6 @@ export const MIGRATION_STATES = Object.freeze([
 export const MIGRATION_EVENTS = Object.freeze([
   "activity",
   "elapsed",
-  "requested",
   "converted",
   "skipped",
   "failed",
@@ -92,14 +81,13 @@ export const recordStorageMigration = defineMachine({
   unreachable,
   cases: {
     "off/activity": ["disabled", "no-socket", "socket"],
-    "off/requested": ["disabled", "paused"],
     "dormant/activity": ["socket", "no-socket"],
     "connected/activity": ["idle", "busy"],
     "quiet/activity": ["idle", "busy"],
     "backoff/activity": ["socket", "no-socket"],
     "backoff/elapsed": ["idle", "busy"],
-    "converting/skipped": ["retry", "exhausted", "requested"],
-    "converting/failed": ["retry", "exhausted", "requested"],
+    "converting/skipped": ["retry", "exhausted"],
+    "converting/failed": ["retry", "exhausted"],
   },
   validate: {
     events: {
@@ -126,16 +114,6 @@ export const recordStorageMigration = defineMachine({
     const quietMs = state.quietMs ?? QUIET_MS;
     // What every state but `retired` carries forward.
     const keep = (name, extra = {}) => ({ name, attempts, quietMs, ...extra });
-    if (event.type === "requested") {
-      if (state.name === "converting") return reject(state, "a conversion is already running");
-      if (state.name === "retired") return reject(state, "the record already says plain");
-      // Plain `off`: this object has no passive policy to go back to.
-      const passive = state.name !== "off" || !!state.retryOnSocket;
-      return {
-        state: keep("converting", { requested: passive ? "dormant" : "off" }),
-        effects: [{ type: "disarm" }, { type: "convert" }],
-      };
-    }
     switch (state.name) {
       case "off":
         if (state.retryOnSocket) {
@@ -175,8 +153,6 @@ export const recordStorageMigration = defineMachine({
               effects: [{ type: "retire" }],
             };
           default: {
-            if (state.requested === "off") return { state: { name: "off" }, effects: [] };
-            if (state.requested) return { state: keep("dormant"), effects: [] };
             if (attempts + 1 >= MAX_ATTEMPTS)
               return {
                 state: keep("off", { attempts: attempts + 1, retryOnSocket: true }),
@@ -246,22 +222,6 @@ export function migrationStart(env, metadata) {
     attempts: 0,
     quietMs: Number.isSafeInteger(quietMs) && quietMs > 0 ? quietMs : QUIET_MS,
   };
-}
-
-/** Why an operator may not convert this Page host's record now, or null.
- * The switch is `PAGES_RECORD_STORAGE=automerge`: the profile that sets it
- * also declares the target holds plain Pages, so deployment refuses a
- * rollback to a build that can't open them (scripts/deployment/profiles.mjs).
- * ONE-SHOT MIGRATION: delete with worker/record-storage-operator.mjs. */
-export function operatorRefusal(env, metadata) {
-  if (env?.PAGES_RECORD_STORAGE !== "automerge") return "switch_off";
-  if (!metadata) return "missing";
-  if (metadata.recordStorage === "automerge") return "plain";
-  if (![undefined, "local", "buffered"].includes(metadata.recordStorage))
-    return "unsupported_storage";
-  if (!metadata.documentId) return "no_document";
-  if (!["active", "trashed"].includes(pageState(metadata))) return "deleted";
-  return null;
 }
 
 /** One conversion at a time per isolate: this module's slot is shared by its

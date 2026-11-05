@@ -497,7 +497,7 @@ for (const fails of [false, true]) {
   });
 }
 
-test("a creation intent or a legacy record boots in the constructor, as every host did", async (t) => {
+test("a creation intent or a record without comments_doc boots in the constructor", async (t) => {
   const h = await hosts(t);
   await h.f.storage.put("host/creation", {
     metadata: h.f.initial,
@@ -510,14 +510,14 @@ test("a creation intent or a legacy record boots in the constructor, as every ho
   assert.equal(await h.f.storage.get("host/creation"), undefined, "the boot replayed it");
   assert.equal((await h.check(page, "member")).status, 200);
 
+  // A record without its comments document name boots at once
+  // (recordCommentsUuid refuses it there).
   const legacy = await hosts(t);
   const { comments_doc: _named, ...unnamed } = legacy.f.initial;
   await legacy.record(unnamed);
   const old = legacy.cold();
   await old.ready;
-  assert.equal(old.startup.name, "ready");
   assert.equal(legacy.boots(), 1);
-  assert.equal((await legacy.f.storage.get("host/document")).comments_doc, commentsUuid);
 });
 
 test("checks around a request that needs the document boot the repo once, before any read", async (t) => {
@@ -844,8 +844,8 @@ function holdJournalListing(h, nth) {
 
 test("an object abandoned during comments recovery writes nothing after the reset", async (t) => {
   const h = await hosts(t);
-  // An older record: after comments recovery the boot writes its comments
-  // document name into host/document.
+  // A record without comments_doc boots in the constructor. This harness
+  // stubs initializeRepo, so the boot gets as far as comments recovery.
   const { comments_doc: _named, ...unnamed } = h.f.initial;
   await h.record(unnamed);
   const held = holdJournalListing(h, 2);
@@ -859,42 +859,6 @@ test("an object abandoned during comments recovery writes nothing after the rese
   held.release();
   await drain(h);
   assert.deepEqual(h.f.storage.values, before, "no write landed after the reset");
-  assert.equal((await h.f.storage.get("host/document")).comments_doc, undefined);
-});
-
-test("an abandoned object's conversion run writes nothing and leaves no retry armed", async (t) => {
-  const h = await hosts(t);
-  let runs = 0;
-  let releaseRun;
-  const firstRun = new Promise((resolve) => (releaseRun = resolve));
-  t.mock.method(Page.prototype, "convertPreservedOnce", async function () {
-    runs++;
-    if (runs === 1) await firstRun;
-    // The run's journal write, after the reset.
-    await this.ctx.storage.put("host/operation/internal-conversion", { pending: true });
-  });
-  // An unfinished migration: the conversion machine runs it during the boot.
-  h.onBoot = (page) => {
-    page.conversionIntent = { replayKeys: [] };
-  };
-  const { comments_doc: _named, ...unnamed } = h.f.initial;
-  await h.record(unnamed);
-  const { page, giveUp } = abandonable(h);
-  await until(() => runs === 1, "the boot awaits the conversion run");
-  giveUp();
-  await assert.rejects(page.ready, /waited for too long/);
-  assert.equal(page.startup.name, "abandoned");
-  const before = structuredClone(h.f.storage.values);
-  releaseRun();
-  await drain(h);
-  assert.deepEqual(h.f.storage.values, before, "no write landed after the reset");
-  assert.equal(page.conversionRetry, undefined, "no retry timer is armed");
-  // A later observation, as a retry timer armed before the reset would make,
-  // starts no run either.
-  page.observeConversion({ due: true });
-  await drain(h);
-  assert.equal(runs, 1, "and no run starts again");
-  assert.equal(page.conversionRetry, undefined);
 });
 
 test("an object abandoned during the creation commit leaves the intent for the new object", async (t) => {

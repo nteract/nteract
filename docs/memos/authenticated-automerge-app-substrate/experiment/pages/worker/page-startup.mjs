@@ -2,6 +2,7 @@ import { defineMachine, reject } from "../shared/machine.mjs";
 import { pageState } from "./access.mjs";
 import { validTime } from "./content-activity.mjs";
 import { RECORD_STORAGE_MODES } from "../shared/record-storage.mjs";
+import { storedFormUnsupported } from "../model/stored-form.mjs";
 
 /**
  * How a Page host starts: from its stored record to a loaded document.
@@ -156,18 +157,31 @@ export const pageStartup = defineMachine({
 });
 
 /** Whether the host record is one this build answers checks from without
- * booting. Records an earlier build wrote without a comments document name
- * (the boot writes it) or with a storage mode the boot refuses boot at once,
- * as every host did before. */
+ * booting. A live or trashed Page's record without a comments document name,
+ * or a record with a storage mode the boot refuses, boots at once, and the
+ * boot refuses it. A deleted Page's record needs no comments document: it
+ * answers as deleted either way. */
 export function recordAnswerable(record) {
   return (
     !!record &&
     typeof record === "object" &&
     typeof record.pageId === "string" &&
     typeof record.documentId === "string" &&
-    typeof record.comments_doc === "string" &&
+    (typeof record.comments_doc === "string" || pageState(record) === "deleted") &&
     (record.recordStorage === undefined || RECORD_STORAGE_MODES.includes(record.recordStorage))
   );
+}
+
+/** The comments document a host record names, or undefined without one to
+ * serve. A live or trashed Page's record carries `comments_doc`, and one
+ * without it fails closed. A deleted Page serves no comments: its record may
+ * lack the name, since earlier builds wrote it at boot and a tombstone never
+ * booted again, so it names none and keeps answering as deleted. */
+export function recordCommentsUuid(record) {
+  if (!record?.pageId) return undefined;
+  if (typeof record.comments_doc === "string") return record.comments_doc;
+  if (pageState(record) === "deleted") return undefined;
+  throw storedFormUnsupported("this Page's host record");
 }
 
 /** How the constructor starts the host from what it read. A creation intent

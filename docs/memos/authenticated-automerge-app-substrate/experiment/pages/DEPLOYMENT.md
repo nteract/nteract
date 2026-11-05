@@ -324,8 +324,7 @@ records wait for a roll forward. Such a build does not refuse to trash a Page
 with sub-pages and does not protect a Project's content document. After rolling
 forward, a Page whose parent is in Trash shows at the top level of the Project
 view and a resumed creation under such a parent answers `parent_unavailable`.
-Rolling back that far is only possible before the content migration below has
-run. At startup a build without the `Space` class logs `celld runtime start failed for
+Rolling back that far is no longer possible (see the rollback rule below). At startup a build without the `Space` class logs `celld runtime start failed for
 Space:<id>: no Worker exports Durable Object class Space` once per Project cell
 celld resumes, then serves normally. On Cloudflare, removing a Durable Object
 class takes a `deleted_classes` migration that erases its storage, so a
@@ -343,110 +342,23 @@ row and any direct grants stay where they were) marked `project_content:
 `document_id`. This is location shape 2 (`LOCATION_SHAPE_VERSION` in
 `worker/location-shape.mjs`, stamped in `host/location/shape`).
 
-Shape 1, which every build before this one wrote, kept the content as a Page: a
-root entry flagged `home: true` whose children were the Project's top level, and
-`space/<id>.home_page_id` naming it. Nothing in this build reads that shape.
-Every reader of the retired fields lives in one module,
-`worker/home-removal-migration.mjs`, marked for deletion once production has
-migrated, together with the imports that call it from `location-shape`,
-`catalog-location`, `spaces` and `index`. The one other trace is D1 migration 4's
-historical `CREATE TABLE`, which migration 8 rebuilds without the column.
+Shape 1, which builds before #4853 wrote, kept the content as a Page: a root
+entry flagged `home: true` whose children were the Project's top level, and
+`space/<id>.home_page_id` naming it. Nothing in this build reads or checks for
+that shape. An owner-run one-shot migration converted production's only account
+with Projects on 2026-11-05; no other production account held a Project. On
+page10, which deploys main automatically, the same migration had already run:
+every Project there carries `document_id`. The
+one other trace is D1 migration 4's historical `CREATE TABLE`, which migration 8
+rebuilds without the column.
 
-**Fail closed.** A Catalog that still holds `home: true` entries or a
-`space/<id>.home_page_id`, and a Space record without `document_id`, answer `503
-location_migration_required` with `details.reason: "home_removal_required"` on
-every location read and write: `list_projects`, `get_project`, `list_pages` and
-`read_page` by `project_id`, `create_page` into the Project, moves, Trash and
-restore. Loose Pages and reads by `page_id` keep working. Nothing is converted on
-its own. A Catalog with no Project (every account without one) stamps shape 2 on
-its next queued write. Code that meets the old shape anywhere else refuses the
-request rather than guessing where a Page belongs.
+**Rollback rule.** Never roll back past #4853. An older build's location pass
+takes shape 2 for shape 1 and would move a Project's root Pages back under its
+content document; its D1 Space upserts also fail against schema 8. Any future
+rewrite of location entries must bump `LOCATION_SHAPE_VERSION` (to 3) and check
+for the shape it retires before stamping a Catalog.
 
-**The migration.** The owner runs it, once per account, as a signed-in session or
-with an API key (Pages OAuth tokens are not allowlisted):
-
-```sh
-curl -sS https://pages.runtimed.run/api/admin/home-removal \
-  -H "Authorization: Bearer $ANACONDA_API_KEY" -H "Content-Type: application/json" \
-  -d '{"mode":"dry_run"}'
-```
-
-`dry_run` writes nothing and answers `200 {mode, projects: [{project_id,
-document_id, content_found, reparented, reparented_trashed}], entries_changed,
-intents_changed, blockers: [{code, page_id, project_id}], writes}`. `apply` with
-the same body answers `409 home_removal_blocked` with `details.blockers` when any
-blocker exists (`content_trashed`: the content document is in Trash;
-`content_not_root`: it sits under another Page) and otherwise rewrites, in the
-owner Catalog's serial queue:
-
-1. each live Space record and its stored receipts (`home_page_id` →
-   `document_id`, `home_page_title` dropped);
-2. the Catalog, in transactional batches: the content entry loses `home`,
-   `space_id`, `parent_id` and `position` and gains `project_content`; its
-   children, active and trashed, become roots with `parent_id: null` and
-   `space_id`, re-keyed where positions tie; pending `create_project` intents and
-   receipts take the new field names (`home_created` → `content_created`,
-   `homeTitle` → `contentTitle`), so a create retried with the same key and
-   payload finishes without the old fields;
-3. the D1 Space rows are marked dirty and `host/location/shape` is stamped
-   version 2, `migrated`.
-
-Before each batch, the prior value of every key it changes is saved once and
-never overwritten; the value `{"home_removal_absent": true}` records a key that
-did not exist. In the Catalog: `host/home-removal/before/<key>` for every
-rewritten `page/`, `trash/`, `space/` and `host/operation/` key, plus
-`host/home-removal/before/host/location/shape`. In each Space object:
-`host/home-removal/before/space/record` and
-`host/home-removal/before/host/receipt/<id>`. Progress is kept in
-`host/home-removal/state` (`{phase: planning | applying | done | failed, next,
-total, problems}`) with the saved plan under `host/home-removal/plan/<8-digit
-index>`, so an interrupted `apply` resumes the same plan in the same order rather
-than replanning over half-converted siblings. Both responses carry `progress`;
-`apply` answers `409 home_removal_invalid` with `details.problems` when the saved
-plan no longer matches what is stored. The response otherwise carries the
-`dry_run` fields plus `shape: "migrated"`. The operation is idempotent and
-resumable: a rerun plans only what is left, and a second `apply` reports
-`writes: 0`. There are no pending create intents or receipts to carry across
-this deployment by hand: the migration finalizes or renames them, including a
-Project whose create was still pending, and a Catalog that is refused `503` has
-not accepted new ones. Run `dry_run` first and have Kyle approve its report
-before `apply` on production; the production inventory (10 Projects, one content
-document each, direct editor grants on nine of them, and since 2026-11-05 one
-editor member on all ten) is the expected shape of that report, and
-`content_found: true` on every row is the gate. Project ACLs are not touched by
-the migration; verify after `apply` that the member still sees all ten through
-`list_projects`, reads each content through `project_id`, and lists each tree.
-
-To restore by hand: copy each before-image back over its key (delete the keys
-whose image is the absent value), in the Catalog and in every Space object, then
-delete `host/home-removal/state` and `host/home-removal/plan/*`.
-
-Direct grants survive by construction: the content entry and the Page record it
-points at don't move, and the migration makes no call to any Page, so a
-collaborator with a grant on the content document (by its `document_id`) opens
-it after `apply` exactly as before, as `kind: "page"`, without learning of the
-Project; a `project_id` read by that collaborator stays `project_not_found`. The integration test turns a live
-account back into shape 1 and checks the 503, a dry run that writes nothing,
-`apply`, a no-op second `apply`, the backups, the surviving direct grant, reads
-through `project_id` and `document_id`, and a pending create receipt replayed
-without the old fields.
-
-**Rollback rule.** Rolling back to a build before this one is safe only while no
-Catalog has had `apply` run: those builds read and write shape 1, and this build
-goes on refusing that shape until the owner migrates, so nothing written in
-between is misread. After `apply`, never roll back past this build. The older
-build's location pass takes shape 2 for shape 1 and would move the now-root Pages
-back under the content document; its D1 Space upserts also fail against schema
-8. If a rollback is unavoidable, restore each key from
-`host/home-removal/before/` first. And any future rewrite of location entries
-must bump `LOCATION_SHAPE_VERSION` (to 3) so every Catalog is checked again: a
-roll-forward after a rollback that wrote shape 1 is exactly that case. The
-older lazy pass (shape 1's own, which nested roots under the content document)
-is gone with it; a Catalog from before that pass is shape 1 too and is migrated
-by the same operation.
-
-`scripts/migration-inventory.mjs` audits offline Catalog evidence from either
-side of the migration: a `space/` record with `document_id` is counted as
+`scripts/migration-inventory.mjs` audits offline Catalog evidence: a `space/` record with `document_id` is counted as
 `content`, one with the retired field as `legacy_content` with the issue
 `project_content_unmigrated`, and one with both or neither is invalid.
 
@@ -494,8 +406,7 @@ release and the reason, by:
 - `install.mjs` itself, before any write, which also reads the configured
   `wrangler.json` of every release under `/opt/<service>/releases`;
 - the timeout message, which doesn't name a `celld deploy` rollback to such a
-  release;
-- `scripts/rollback-qualification.mjs`, for both builds it runs.
+  release.
 
 There is no override. A direct `celld deploy` of a release directory bypasses
 every check. Page10 holds `automerge` Pages, so it can't roll back past
@@ -662,16 +573,13 @@ and a Durable Object that stores one value showed:
 New Projects get `prj_` IDs; `sp_` IDs stay valid. IDs aren't key names, so a
 `prj_` Project is stored under `space/prj_<uuid>` like any other.
 
-Because stored intents are unchanged, work 3548b9750 left pending resumes here
-once the account's Catalog has run the content migration above, which renames
-the intent's phases and receipts. A `create_space` interrupted before its content
-document finishes when retried as `create_project` with the same key and
-payload: the fingerprint still uses the stored operation name. A `create_page` interrupted before its Page finishes
-when retried with `project_id`, the same key and the arguments in the same
-order: its pending Catalog entry holds the location. Fingerprints have always covered argument order.
-Both cases are tested by writing the intent through the Catalog exactly as the
-3548b9750 gateway does, then retrying through the Project API. So Page8 needs no
-cleanup of pending intents before this build deploys.
+Stored intents keep the Space names. A `create_space` interrupted before its
+content document finishes when retried as `create_project` with the same key
+and payload: the fingerprint still uses the stored operation name. A
+`create_page` interrupted before its Page finishes when retried with
+`project_id`, the same key and the arguments in the same order: its pending
+Catalog entry holds the location. Fingerprints have always covered argument
+order.
 
 Clients with a cached tool list or bundle are refused before anything runs, so
 no idempotency key is consumed. The old tool names answer
@@ -679,94 +587,8 @@ no idempotency key is consumed. The old tool names answer
 same for the other three). A `space_id` argument answers
 `` `space_id` is now `project_id` `` (`argument_renamed`).
 
-Rolling back to 3548b9750 is subject to the rollback rule above: possible only
-before `apply` has run on the account. Until then that build serves every Space
-and every Page it wrote. It can't address `prj_` IDs: `get_space` on one answers
-`Invalid space_id`, and its `list_spaces` skips them. It refuses a child under a
-Page in a `prj_` Project rather than file it elsewhere. Its
-restore-to-top-level path rejects a `prj_` placement, because its
-`validatePlacement` accepts only `sp_` IDs, so a Page never drops out of its
-Project. Rolling forward refuses its shape-1 writes until the owner migrates,
-then serves everything again.
-
-### Rollback qualification for Projects
-
-`scripts/rollback-qualification.mjs` runs four phases on local celld 0.6.3 with
-one persistent data directory: the previous build, this build, the previous
-build, this build. Build the previous commit in a separate checkout first. A
-`git archive` of the experiment and the sources it imports (`src`,
-`apps/notebook-cloud/src`, `packages/local-oidc`, `packages/runtimed/src`, the
-root `package.json` and `pnpm-lock.yaml`), committed into a scratch repository
-so the build receipt can read it, works. Then:
-
-```sh
-CELLD_BIN=<celld 0.6.3> node scripts/rollback-qualification.mjs --target <target> --previous <previous pages dir>
-```
-
-`--target` names the deployment the rollback is for. The script refuses a
-previous build that can't open every record storage the target may hold (see
-Rollback and Page record storage) before it starts celld, and the fixture
-creates Pages with the target's `recordStorage`. 3548b9750 can still be
-qualified for `pages`; for `page10` it is refused.
-
-The phases qualify the one rollback that is supported, before `apply`, and the
-migration itself:
-
-1. The previous build creates a Space with a Page and lists both, so D1 holds
-   Space rows and the Catalog shape 1.
-2. This build fails closed: `list_projects`, `get_project`, `list_pages` and
-   `read_page` by `project_id` and `create_page` into the Space all answer
-   `location_migration_required`, reason `home_removal_required`,
-   `retryable: true`. A `dry_run` reports the Space with its `document_id`,
-   `content_found: true`, no blockers and a positive `writes`; the refusals hold
-   after it. A loose Page is created normally.
-3. The previous build serves its Space untouched at revision 0, updates it,
-   lists the loose Page, creates a second Space with a nested Page and trashes
-   the child.
-4. This build still fails closed over everything the previous build wrote, then
-   `apply` reports both Spaces converted (`reparented: 1` for the second: its
-   top-level Page became a root; the trashed child stayed under it) and
-   `shape: "migrated"`; a second `apply` reports `writes: 0`. `list_projects`
-   names both with `document_id` and `role: "owner"`; the first shows the
-   previous build's title at revision 1 and takes another update. Each Project
-   lists only its Pages, at the top level with `parent_id: null`, never the
-   content document; the trashed child is still in Trash. The content reads by
-   `project_id` as `kind: "project"` with one Project breadcrumb, an edit by
-   `project_id` is read back by `document_id` with the same heads, and giving
-   both selectors is `invalid_arguments`. `delete_page` and `move_page` on the
-   content document answer `project_content_protected`. A new Project carries
-   `document_id` and no retired field, its Pages land with `parent_id: null`
-   and Project › parent breadcrumbs, the trashed child restores under its
-   parent, and trashing either parent is refused with `page_has_children`.
-
-Not run, by design: the previous build over a migrated directory. The report
-records `rollback_after_apply: "unsupported"`. This revision of the script has
-not yet been run against a built previous commit; the recorded run below is from
-the Space-to-Project build and predates the content migration.
-
-Against 3548b9750 (build `9ae4ed83e44e`), with the catalog index on, before the
-content migration existed:
-
-1. The previous build created a Space with a Page and listed both, so D1 held
-   Space rows.
-2. This build listed that Space as a Project with its `sp_` ID and both Pages,
-   and updated its title (revision 1). It created a `prj_` Project, a top-level
-   Page and two Pages nested under it.
-3. The previous build read the Space with this build's title at revision 1,
-   updated it again (revision 2) and listed it. It listed, read and edited the
-   nested Page and trashed the other one. `get_space` on the `prj_` ID answered
-   `Invalid space_id`, and a child under the `prj_` Project's top-level Page was
-   refused. It created a second Space with two nested Pages.
-4. This build listed all three Projects. The first showed the previous build's
-   title at revision 2 and took another update (revision 3). The second Space
-   answered `get_project` with `org: null`, listed its three Pages, and showed
-   breadcrumbs Project › parent. A new Page landed in it by `project_id`. The
-   `prj_` Project kept its Pages, the edit and its breadcrumbs, and the refused
-   child existed nowhere. The trashed child restored under its parent, and
-   trashing either parent was refused with `page_has_children`.
-
-celld logged no errors (only its usual allocator and `fleet_sample_failed`
-lines), and nothing crashed.
+Rolling back to 3548b9750 is not supported: it predates #4853 (see the rollback
+rule above).
 
 ### Creation intent conflicts
 
@@ -809,377 +631,31 @@ There is no repair tool. To repair a Page:
    the receipts. Restore it from a backup, or ask the owner to grant access
    again.
 
-### Preserved Markdown conversion
+### Stored forms this build refuses
 
-Older builds stored Markdown they couldn't import as one read-only preserved
-block. The Page host converts each one when it loads, creates, registers or
-restores a Page (README, "Preserved blocks"). While it converts, the Page is
-read-only: viewers connect and sync it down, discovery reports `converting`
-and the viewer shows a read-only notice, native puts are refused, and HTTP
-edits get `503 preserved_markdown_converting`. A restart while records still
-can't be stored doesn't stop the Page from starting; it stays readable and
-keeps retrying.
+Every Page on pages and page10 was rewritten to the current stored forms on
+2026-11-05: rich-text blocks, comments in their own document, `comments_doc`
+in every live or trashed host record. On pages, the verifying dry run at 19:27
+UTC reported 137 Pages unchanged, 1 deleted, 0 writes pending and 0 problems,
+with `comments_doc` on every host record. On page10, the run from 22:24 to
+22:27 UTC reported 86 unchanged, 19 deleted (their tombstones finished), 0
+problems, no preserved blocks and no pending comments move.
 
-The conversion journals in its own key space (`host/operation/internal:`),
-outside the client receipt budgets, so a full legacy receipt store can't
-block it. A run that fails for a reason that passes (storage, a pending edit)
-retries with backoff, 5 seconds doubling to 5 minutes. Connections and edits
-don't start retries early.
+This build doesn't read the earlier forms. A Page that still holds one answers
+`409 stored_form_unsupported` on the read or write that meets it, and a live or
+trashed Page's host record without `comments_doc` fails at boot. A deleted
+Page's record needs none: it names no comments document and answers as deleted.
+page10 holds one such record (59361b99-fc53-40ec-a733-a74a4db24630). Don't
+restore a backup taken before 2026-11-05 onto a target running this build.
 
-Once a run's journal entry is reserved, the host retries that exact intent,
-indefinitely, whatever the failure, and the Page stays fenced and read-only.
-It never reauthors or abandons the run, because its change may already be in
-the serving document. A restart replays the same journal entry. Every five
-failures it logs `page.preserved_markdown_stuck` (below). Such a Page usually
-can't store records at all, for example a `413` on record capacity, so it
-couldn't take writes anyway. An operator frees storage or record capacity
-(see Page quotas); the host's next retry then finishes the same intent on its
-own, and the fence clears.
+### Plain sync on pages.runtimed.run
 
-A run that fails before anything is reserved, for a reason that won't pass
-(the change is too large, the conversion throws, or a request-shaped
-refusal), retries once converting each source as plain text. If that fails
-too, the host logs one line:
-
-```json
-{"service":"nteract-pages-native","event":"page.preserved_markdown_stuck","page_id":"…","reason":"history_capacity","timestamp":"…"}
-```
-
-`reason` is a bounded code (`history_capacity`, `conversion_error`, an error
-code, or `status_<n>`); the line carries no content. After a deploy, search the
-target's logs for `page.preserved_markdown_stuck`. If the Page is still
-fenced (reads work, edits get `preserved_markdown_converting`), it is retrying
-a reserved run: free storage or capacity as above. Otherwise the Page is stuck
-and not fenced: it edits normally, and its preserved blocks stay read-only with a notice. The next
-load tries again. To recover a Page now, as its owner or with an agent:
-
-1. `read_page` the Page. A preserved block reads as the Markdown it would
-   convert to.
-2. `edit_page` with `replace_block_markdown` on that block, passing the
-   Markdown from step 1. If it's refused with `unsupported_markdown` or for
-   size, simplify or split the Markdown and retry.
-
-The replacement removes the preserved block, so nothing is left to convert.
-
-### Content migration
-
-One owner-run pass puts every Page document in the forms this build writes,
-so the readers of older forms can be deleted. The code lives in
-`model/content-normalization.mjs` (what changes in a document) and
-`worker/content-migration.mjs` (the run), both marked for deletion after
-production has migrated, with `scripts/content-migration.mjs`,
-`scripts/content-migration-operator.mjs`, the `/api/admin/content-migration`
-and `/api/operator/content-migration` routes and their Catalog and Page
-routes and the content listener's `contentMigrating` flag in `worker/index.mjs`.
-The operator gate (`worker/operator-gate.mjs`, `scripts/operator-ssh.mjs`) and
-the installer's `operatorMigration` secret go with the last operator route
-(see [Operator conversion to plain sync](#operator-conversion-to-plain-sync)).
-
-Per Page, in one journaled host change (`host/operation/internal:content_norm_<digest of
-heads>`):
-
-- each rich block body is rewritten to the editor's canonical spans,
-  `encode(decode(spans).doc)`, with `A.updateSpans`, so unchanged text and
-  markers keep their identity (comment anchors, cursors, node ids). The old
-  forms it removes: an explicit marker before a top-level first paragraph
-  (`first_marker`), a quote without its own marker (`quote_marker`), `\n` in
-  prose instead of a hard break (`prose_newline`), marks on code text
-  (`code_marks`) and missing default attrs (`attrs`);
-- a Markdown-era block (no `format`) becomes rich text (`markdown_block`),
-  already in the editor's form after this one pass. One with no `kind` at
-  all is refused as `kind_missing` and one of another kind as `not_prose`,
-  so the dry run shows whether production holds any;
-  its selection comments detach, and the report counts them first;
-- the schema stamp is repaired to name what the content needs.
-
-A block is refused when its decode is lossy or throws, when it still holds a
-preserved block, when the rewrite would delete any character other than a
-prose `\n` (`identity_lost`) or add text (`text_changed`), or when it would
-detach a comment anchor (`anchors_detached`). Every character is checked,
-from the rewrite's own delete operations (a 256 KiB block plans in about
-100 ms). A Page
-with any refused block, or with on-load work still to do, is `partial`, and
-`apply` writes nothing to it: the gate holds in the Page host at apply time,
-against the Page as it is then, whatever its dry run said. Comment message
-bodies aren't touched. Preserved
-blocks, the comments move and the record's `comments_doc` field are the Page
-host's existing on-load work; the migration reports them and refuses a Page
-whose conversion fence is up (`held`). A Page with a live socket is skipped
-(`busy`) and visited again on the next pass, unless the run passes
-`include_connected: true` (script flag `--include-connected`).
-
-**Connected peers.** With `include_connected`, the host writes while browsers
-or agents are connected. The change reaches them over sync like any host
-change: the editor re-decodes the block, unchanged text and markers keep their
-identity, so carets and comment anchors stay put. No peer is disconnected and
-no fence goes up: the change adds no schema feature, so a stale tab from an
-earlier build keeps editing (the schema gate refuses a tab only for a feature
-its build lacks, and a stamp repair adds only a feature the content already
-uses), and build freshness is untouched because nothing is deployed. A peer's
-own edit either merges (made before the write and synced after it, or made
-after it) or, if it reaches the host between the plan and the write, fails
-the write's exact-heads check: the Page answers `stale`, nothing is written,
-and the next pass plans again. Default to skipping; use `include_connected`
-for Pages that stay `busy` because a tab is left open.
-
-**Half-finished permanent deletions.** A build without Trash could delete a
-trashed Page for good and leave its `trash/` entry beside the Catalog's
-`host/deleted/<id>` tombstone, with the Page record still trashed. `dry_run`
-lists each under `tombstones` (`{page_id, trash_entry, finalize}`) and on the
-Page's row (`tombstone`). `apply` finishes it the way the current build does
-when it meets such a tombstone: the operation-intent machine's `tombstone`
-effects, `forget_trash` (drop the `trash/` entry) and `notify_tombstone`
-(the Page host records the deletion as `deleted_by_earlier_build`, drops its
-document, withdraws access and retires its index row). A tombstone whose
-`trash/` entry a Trash listing already pruned is finished too when the Page
-still reports itself trashed. Before the first change, the Catalog saves the
-`trash/` entry and `host/count/trash` under `host/content-migration/before/`
-(`{content_migration_absent: true}` for a key that didn't exist), once. Until
-the Page reports `deleted`, the visit stays `tombstone_pending`. To undo the
-Catalog side, put each before-image back through the Catalog's counted storage;
-the Page side can't be undone: the earlier build already deleted the document.
-
-**Operator run (lab targets: every account).** On the celld lab targets
-(`pages`, `page10`; profiles with `operatorMigration`), an operator runs it for
-every account from an operator machine over SSH:
-
-```sh
-cd docs/memos/authenticated-automerge-app-substrate/experiment/pages
-node scripts/content-migration-operator.mjs --target pages --mode dry_run > dry-run.json
-node scripts/content-migration-operator.mjs --target pages --mode apply \
-  --include-connected > apply.json
-```
-
-Each call is one SSH command to lab1. It reads the root-only
-`/etc/<service>/operator-secret` with `sudo -n` and posts, as the service user,
-to `http://<listen>/api/operator/content-migration` on loopback. The secret
-reaches curl in its config on stdin, never on a command line. The script lists
-the accounts, drives each account's Catalog until it covered every Page (the
-same `dry_run`/`apply` responses as the owner run below), then lists the Page
-cells with `celld cell list Page` (read-only), and probes every cell no run
-reached for its `page_id`, `owner` and `state`. The report holds per-account
-totals and progress, `reached`, `page_cells` and `unreached`. Each response,
-refusals included, is appended to a JSON-lines log as it arrives
-(`--log`, default `content-migration-operator-<target>-<mode>-<time>.jsonl`). A
-leftover with an owner can be passed to that owner's run (`--principal <owner>`
-here runs one account; `page_ids` in the route body adds Pages). Options:
-`--principal` (repeatable), `--include-connected`, `--limit`, `--no-cells`,
-`--ssh-host`.
-
-How the route is gated:
-
-- celld's internal listener (`internalListen`, 19481 for `pages`) answers its
-  own operator routes and never forwards to the Worker (on lab1, `GET /health`
-  and any other path there return celld's `{"error":"not_found"}`), so the
-  Worker can't gate on how a request arrives. It gates on a secret instead.
-- The installer creates `/etc/<service>/operator-secret` (48 random bytes,
-  root-only, kept across installs) on profiles with `operatorMigration` and
-  passes it to the Worker as `PAGES_OPERATOR_SECRET`. The route exists only
-  when that variable holds at least 32 characters: a Cloudflare deployment, or
-  any profile without the flag, answers the gateway's plain
-  `404 {"error":"Not found"}`.
-- The request must carry the secret in `x-pages-operator-secret`, compared in
-  constant time, and must carry none of `cf-ray`, `cf-connecting-ip`,
-  `cf-visitor`, `cdn-loop`. The Cloudflare edge adds those to everything it
-  forwards through the tunnel, and a client can't remove them, so even a leaked
-  secret doesn't open the route from the public hostname. Every refusal is the
-  same 404 as an unknown path.
-- The listeners' firewall admits only root and the service user, which is why
-  the script runs curl as the service user.
-
-The operator selects a Catalog; it doesn't bypass Page authority. The route
-forwards to that account's Catalog on a host-only path, and the run acts for
-the Catalog's own account: each Page host still answers `not_owner` unless its
-record names that account. Accounts come from the D1 catalog projection
-(`pages_catalog_pages` and `pages_catalog_spaces` owners, and
-`pages_catalog_accounts`), because the Worker can't list Catalog cells; the
-cell diff above is the cross-check. The secret needs an install of a build
-with this route; the route is deleted with the migration.
-
-**Owner run (alternative, any deployment).** The owner runs it for their own
-account with an API key that has write access. It reaches only that account's
-Pages: every `page/` (Project content included), `trash/` and `host/deleted/`
-key in the owner's Catalog, plus any `page_ids` in the body, which the Page host
-checks against its record's owner.
-
-```sh
-cd docs/memos/authenticated-automerge-app-substrate/experiment/pages
-PAGES_API_KEY=$ANACONDA_API_KEY node scripts/content-migration.mjs \
-  --origin https://pages.runtimed.run --mode dry_run > dry-run.json
-```
-
-The script calls the endpoint until it has covered every Page and prints one
-report. It appends every response, refusals included, to a JSON-lines log
-(`--log`, by default `content-migration-<mode>-<time>.jsonl`) as it arrives;
-for `apply` that log is where the per-block detail lives. A failed call stops
-the script, which still prints the report so far. One call by hand:
-
-```sh
-curl -sS https://pages.runtimed.run/api/admin/content-migration \
-  -H "Authorization: Bearer $ANACONDA_API_KEY" -H "Content-Type: application/json" \
-  -d '{"mode":"dry_run","limit":10}'
-```
-
-`dry_run` writes nothing of its own (booting a Page runs its on-load work, as
-any read does) and answers `{mode, targets: {total, page, trash, deleted,
-extra}, tombstones: [{page_id, trash_entry}], pages, visited, next, totals,
-progress}`. Pass `next` back as `after` until it is null. Each page reports
-`status` (`would_normalize`, `unchanged`, `partial`, `held`, `unavailable`,
-`record_pending`, `missing`, `deleted`, `not_owner`, `error`), `state`,
-`record_comments_doc`, `conversion`, `connected`, `heads`, `report` (per-block
-`forms`, markers kept, removed and added by type, characters before and
-after with `lost`, `newlines` and `unexpected`, anchors attached and detached; page `forms`, `refused`, `stamp_repair`,
-`preserved_blocks`, `comments_move_pending`, `refused_reasons`) and
-`problems`. `totals` counts pages by status, blocks by form and refusals by
-reason. Before `apply`, read the report: `partial` Pages won't be written, and
-`markdown_block` conversions detach the selection comments their `anchors`
-count.
-
-Page cells no Catalog key names don't appear in an owner run. `celld cell list
-Page` lists cells by Durable Object id, not page id; each visited page reports
-its `cell_id` when the runtime exposes `idFromName`, and the operator script
-diffs and probes the rest. Pass a leftover as `--page-id` in its owner's run.
-
-Then `apply`, after Kyle approves the dry-run reports:
-
-```sh
-PAGES_API_KEY=$ANACONDA_API_KEY node scripts/content-migration.mjs \
-  --origin https://pages.runtimed.run --mode apply > apply.json
-```
-
-Each call visits up to `limit` Pages (at most 25, and none after 60 s), so it
-stays inside the Catalog queue's 120 s bound. Progress is in
-`host/content-migration/state` (`{phase: applying | incomplete | done, ids,
-next, pass, pending}`), and each Page's latest result in
-`host/content-migration/result/<page_id>`. A pass ends `done` when every Page
-settled (`normalized`, `unchanged`, `deleted`, `missing`, `not_owner`),
-otherwise `incomplete` with `pending`; the next `apply` visits only those. A
-Page that changed between its plan and its write answers `stale` and is
-written on a later pass. An interrupted `apply` resumes at its cursor. A crash
-inside the Page's write replays the journaled change at its next boot. `done`
-is terminal: run `dry_run` again to verify. It should report
-`would_normalize: 0`, no `partial`, and `problems: []` on every Page.
-
-**Revert records.** Every write is recorded twice, durably, as `{key,
-before_heads, after_heads, blocks: [{block_id, action}]}`: in the Page's
-`host/content-migration/revert`, copied from its journal receipt before
-anything can drop that receipt, and in the Catalog's `result/<page_id>`
-`revert` list, which every later visit carries forward. The journal receipt
-itself is not a restore source: the next internal host intent deletes it.
-
-**Restore.** Page documents keep their history, so there are no before-images.
-To revert a Page, take each record from its `revert` list, newest first, and,
-as a host change, write `A.spans(A.view(doc, before_heads), path)` back to
-each listed `normalize` block with `A.updateSpans`; for an `enable_rich`
-block, delete `format` and `richText` (`markdown` still holds the source).
-This also undoes later edits to those blocks. Removed first-paragraph markers
-come back as new markers, so those nodes get new ids. To run the migration
-again, delete only `host/content-migration/state`; keep `result/*`, which
-holds the revert records.
-
-**Rollback rule.** No schema feature is added, so earlier builds still edit a
-migrated Page. Every Page-body writer in this build and the one before writes
-the editor's form, so a rollback doesn't reintroduce old forms.
-
-### Operator conversion to plain sync
-
-The passive migration (README, "Migrating existing Pages") converts a listed
-Page only after its last tab closes and it's quiet for 30 s. The operator
-conversion converts named Pages now, open tabs or not, through the same Page
-host machine and conversion. It's lab only, behind the operator gate above,
-and marked for deletion with `worker/record-storage-operator.mjs`,
-`scripts/record-storage-operator.mjs`, the `requested` event in
-`worker/record-storage-migration.mjs` and its routes in `worker/index.mjs`.
-
-**Prerequisite.** An installed release whose profile sets
-`recordStorage: "automerge"` (and lists `automerge` in
-`RECORD_STORAGE_HISTORY`), so the target's hosts run with
-`PAGES_RECORD_STORAGE=automerge`. That's the switch: a host without it
-refuses with `switch_off`, and the script stops before converting anything.
-The same profile makes deployment refuse a rollback past #4795, the floor for
-a target holding plain Pages (see
-[Rollback and Page record storage](#rollback-and-page-record-storage)).
-Changing those vars restarts the service on install. The passive canary
-(`recordStorageMigration` or its operator file) isn't needed; the two compose,
-since both drive the same machine and a converted Page is plain for both.
-
-Per Page, in the host's serial request queue:
-
-1. The host checks the switch, the Page id, the owner the script names (from
-   the host's own status) and its record (`active` or `trashed`, Subduction
-   storage, a document).
-2. It steps its migration machine with `requested` and runs the conversion
-   inside `blockConcurrencyWhile`. It first closes every native socket with
-   close code 4503 (`temporarily_unavailable`, internal reason
-   `record_storage_migrating`); new sockets and frames wait behind the block.
-3. The existing conversion runs: flush, snapshot both documents into
-   `plain/`, flip `host/document` to `recordStorage: "automerge"` with
-   `recordStorageMigratedFrom` and `recordStorageMigratedAt`, retire, reset.
-   It refuses to flip if the live heads moved after the snapshot
-   (`heads_moved`). A skip or failure (`journal_pending`, `record_pending`,
-   `deadline_margin`, …) arms no retry: the Page stays on Subduction until the
-   operator asks again.
-
-Each attempt logs one `record_storage.migration` line with its `page_id` and
-`"trigger":"operator"`.
-
-What people see: a tab on a converted Page reconnects, its discovery names
-plain storage, and it reopens the Page in place on a plain replica from the
-tab's checkpoint, then sends the host any edit it lacks. It shows "This Page's
-storage changed" with a reload only if that reopen fails. Tabs on other Pages are untouched. MCP and HTTP tool calls that
-land during a conversion get a 503 and retry; agent harnesses need a restart
-only if one parks on that 503.
-
-Run it from `pages`, after a restore point (see
-[Restore points](#restore-points)). Read-only first:
-
-```sh
-node scripts/record-storage-operator.mjs --target pages --mode status --all > status.json
-```
-
-`--all` lists every `Page` cell with `celld cell list Page` (read-only) and
-reads each host's record without booting it. It also lists every account's
-Catalog (`page/` and `trash/`, so Project content and Trash are included)
-from the D1 projection; `catalog_only` names Pages a Catalog lists that no
-cell holds. `remaining` lists every `active` or `trashed` Page not yet plain.
-
-A canary, then everything:
-
-```sh
-node scripts/record-storage-operator.mjs --target pages --mode convert --page-id <uuid> --page-id <uuid>
-node scripts/record-storage-operator.mjs --target pages --mode convert --all --max 5
-node scripts/record-storage-operator.mjs --target pages --mode convert --all
-```
-
-`--principal P` (repeatable) limits a run to one account's Catalog. `--max N`
-stops after N conversions; `--pause-ms` paces them (default 500). Under
-`--all` each conversion addresses its cell id, which the route resolves to
-the Page its record names; the other scopes address the Page id. Each
-`convert` call answers `{cell_id, page_id, outcome, status}`. A converted
-object resets under its own request, so `outcome` may be an error; `status`
-is read from the next object and is what counts. The script converts every
-target its host calls convertible, reads them all again, and prints
-`converted`, `failed`, `not_converted`, `remaining`, `unreadable` (statuses
-that came back as errors: those Pages may still be on Subduction) and `done`.
-`done` is true only when `remaining` and `unreadable` are both empty. Either
-mode exits 0 only when `done` and no conversion failed, otherwise 2; run it
-again to retry. Every request and response is
-in the JSON-lines log (`--log`, default
-`record-storage-operator-<target>-<mode>-<time>.jsonl`).
-
-Verify:
-
-```sh
-node scripts/record-storage-operator.mjs --target pages --mode status --all > after.json
-ssh lab1 'sudo -n journalctl -u nteract-pages-live --since -1h | grep -c "\"trigger\":\"operator\""'
-```
-
-`after.json` must say `"done": true` (empty `remaining` and `unreadable`), and
-the script must exit 0; only `deleted` and `missing` cells may still name
-Subduction storage. Locally,
-`node scripts/e2e.mjs migration` runs both paths against celld and Chromium:
-a tab on a passively converted Page, and a tab open on a Page the operator
-converts, which reloads plain and keeps editing.
+Every Page on pages.runtimed.run is on plain Automerge sync: an operator
+conversion on 2026-11-05 left 136 active and 3 trashed Pages on `automerge`, 0
+remaining and 0 unreadable. That operator route is gone; this build has no
+operator routes and the installer writes no operator secret. A Subduction Page
+on another target converts only through the passive canary (README,
+"Migrating existing Pages").
 
 ## Page quotas
 
@@ -1736,8 +1212,8 @@ Project again from a source running the current Pages. A source whose
 `markdown` is the body: the Page's blocks joined by a blank line. `blocks`
 appears only when a Page has more than one block. Each block is written
 separately. A Page10 target refuses math and HTML with `unsupported_markdown`,
-so import writes such a block as the literal text it reads as, the same text
-the target's own conversion of a preserved block produces. If you edit a Page's
+so import writes such a block as the literal text it reads as, as the
+target's literal Markdown import would. If you edit a Page's
 `markdown`, edit `blocks` to match or delete it; import refuses a mismatch.
 
 `dataframes` lists a Page's dataframes from its outline, and `assets` holds each

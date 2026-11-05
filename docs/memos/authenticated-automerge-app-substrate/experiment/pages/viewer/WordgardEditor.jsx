@@ -794,7 +794,7 @@ export function WordgardEditor(props) {
               ? "image"
               : null,
         table: !!selectedTable(state),
-        // Any node selection (an image, a dataframe, a preserved block, a
+        // Any node selection (an image, a dataframe, an unknown block, a
         // rule): commands that format, wrap or replace the selection don't
         // apply. `atom` only names the kinds that have a label.
         nodeSelected: state.selection instanceof GardSelection.Node,
@@ -1009,7 +1009,7 @@ export function WordgardEditor(props) {
       const contextual =
         !mobile &&
         !selection.empty &&
-        // A selected node (an image, a dataframe, a rule, a preserved block)
+        // A selected node (an image, a dataframe, a rule, an unknown block)
         // has no text to format, so the toolbar doesn't float over it.
         !(selection instanceof GardSelection.Node) &&
         !editor.composing &&

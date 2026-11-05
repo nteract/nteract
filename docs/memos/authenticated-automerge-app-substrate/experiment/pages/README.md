@@ -129,7 +129,6 @@ was a caret race in the smoke; the editor side is
 | `list_pages` reports `content_updated_at` after an MCP edit and after typing in a tab, each well after the Page's creation | `node scripts/local-sharing-e2e.mjs --content-activity` | Starts an isolated fixture |
 | Grid cards show each edited Page's first content in light, dark and phone layouts; a shared card shows for its member and `page_cards` answers null on the call after removal | `node scripts/local-sharing-e2e.mjs --cards` | Starts an isolated fixture |
 | Cold first open of a 300-paragraph Page with images on Fast 3G and 4x CPU, phase by phase (records timings, gates on nothing) | `node scripts/local-sharing-e2e.mjs --cold-open` | Starts an isolated fixture behind a brotli proxy; writes `report.json` |
-| Rollback to a previous build and forward again on one data directory | `node scripts/rollback-qualification.mjs --target <target> --previous <previous pages dir>` | Starts an isolated fixture; build the previous commit first |
 | Rich comment tables and drafts | `PAGES_ORIGIN=http://localhost:9894 node scripts/rich-comments-smoke.mjs` | Uses the running Wordgard fixture |
 | Comments panel placement at 1920/1440/1100/800px | `PAGES_ORIGIN=http://localhost:9894 node scripts/comments-layout-smoke.mjs` | Uses the running Wordgard fixture |
 | Schema-feature gate: a Page stamped with an unknown feature opens read-only and refuses tool writes | `PAGES_ORIGIN=http://localhost:9894 node scripts/schema-features-smoke.mjs` | Uses the running Wordgard fixture |
@@ -171,8 +170,6 @@ share one span encoder, Wordgard's `encode` (`model/wordgard-doc.mjs`):
 - Browser edits encode the editor's document.
 - Page-body Markdown writes parse with the ProseMirror codec, and `pageSpans`
   (`model/richtext-spans.mjs`) re-encodes the adapter's spans with `encode`.
-- Preserved-block conversion (`model/raw-migration.mjs`) writes `pageSpans`
-  output under the block's parents.
 
 Agent-written comments still store the ProseMirror adapter's spans: moving
 them to `pageSpans` shifts the comment length rule, which counts block
@@ -200,7 +197,7 @@ Existing documents, comment anchors and MCP addresses must survive each step.
 Each Pages block has its own continuous editor. Moves update fractional positions without recreating the block or its
 text object, preserving comment and selection anchors. Concurrent positions use
 block IDs as deterministic ties. Cross-Pages-block selections remain unsupported.
-When a block ends in a code block, table, preserved block or an image, ArrowDown
+When a block ends in a code block, table, unknown block or an image, ArrowDown
 on its last line, Mod-Enter, or a click below it adds an empty paragraph and puts
 the caret there. Mod-Enter also leaves a code block anywhere else. The paragraph
 is an ordinary edit, written only when someone asks for it, so opening a Page
@@ -271,9 +268,9 @@ references; it does not publish the Page or change asset access.
   - The scan masks code per table cell, as Markdown-it splits cells first,
     and recognizes a tag of any length, with `>` inside quoted values, in
     linear time.
-  - Nothing writes a preserved block (`raw`, `pages-opaque`). The schema keeps
-    it read-only so older Pages open; the Page host converts each stored one
-    on load (see Preserved blocks below).
+  - Nothing writes a preserved block (`pages-opaque`), and the schema has no
+    node for one. A stored marker an older build wrote reads as an unknown
+    block, as below (see Stored forms).
   - A node this build doesn't know, from a newer build, still opens. Its
     feature stamp makes the Page read-only here and refuses this build's
     writes. The editor draws a notice (`PagesUnknownBlock`,
@@ -307,71 +304,16 @@ references; it does not publish the Page or change asset access.
   `features.json` and [`shared/code-languages.mjs`](shared/code-languages.mjs).
   Importing it throws when a mark or feature block has no agent syntax, so a
   new one can't reach people without reaching agents.
-- **Preserved blocks:** older builds stored Markdown they couldn't import as one
-  read-only `pages-opaque` block holding its source. The Page host replaces
-  each with what its source imports as today, in
-  [`model/raw-migration.mjs`](model/raw-migration.mjs):
-  - Where: in place, under the block's own parents, in block bodies and
-    comment messages. Text around it keeps its identity, so anchors survive.
-  - Who: only the host, the Page's single serialized writer. Two peers that
-    each replaced the same marker would each insert a copy, and Automerge keeps
-    both. Browsers show the block read-only with a notice until the host's
-    change syncs.
-  - When: on load, before native connections open, after creating or
-    registering a Page, and when restoring one from Trash, before access
-    reopens.
-  - Fence: [`worker/preserved-conversion.mjs`](worker/preserved-conversion.mjs)
-    is the conversion's state machine (`unchecked`, `clear`, `held`,
-    `converting`, `failed`, `stuck`). In `held`, `converting` and `failed`,
-    on an active Page the host refuses every native put, relayed or
-    self-authored, and answers HTTP edits with
-    `503 preserved_markdown_converting` after one more attempt. Peers still
-    connect and sync down: discovery reports `converting`, and the viewer
-    shows the Page read-only without retiring its writer key. When the fence
-    drops, the host closes their sockets with `temporarily_unavailable`, so
-    they rediscover and edit. A tab that discovered `converting` says so on
-    its upgrade (`converting=1`); if the fence dropped in between, the host
-    refuses that upgrade the same way, so no tab misses the completion. Refusing puts is what keeps an old tab's
-    competing conversion out, so admitting the connection reopens nothing.
-    A trashed Page is `held`, so the fence is up before restore installs the
-    active record. A failed run keeps the fence and retries with backoff.
-    Connections (after their capacity check) and edits only nudge the
-    machine: a nudge can clear the fence, but never starts a retry before
-    its timer. If startup's journal recovery
-    can't finish a pending conversion (its records still can't be stored),
-    startup completes anyway and hands that entry to the retry loop, so the
-    Page stays readable. The conversion journals in its own
-    key space (`host/operation/internal:`), so full client receipt budgets
-    can't block it, and a run that applied but didn't finish replays under its
-    own key until the journal entry is terminal before the fence clears.
-  - Reserved runs: once a run's journal entry is reserved, it keeps the
-    fence and retries that exact intent with capped backoff, indefinitely,
-    whatever the failure. It is never reauthored, abandoned or unfenced; it
-    logs `page.preserved_markdown_stuck` every five failures.
-  - Permanent failure before anything was reserved: the run falls back to
-    converting each source as plain text. If that fails too, the Page is
-    `stuck`: logged (`page.preserved_markdown_stuck`), unfenced, and its
-    preserved blocks stay read-only until an edit replaces them
-    (DEPLOYMENT.md, "Preserved Markdown conversion"). Runs are serialized, and each is a journaled host
-    intent keyed by the heads it converted, so a restart replays the recorded
-    change instead of converting again. A Page with nothing to convert gets
-    no change.
-  - Stamp: the change stamps `preserved-markdown-converted`, so a build that
-    could still write or convert one opens the Page read-only and the host
-    refuses its writes. Viewer protocol 2 retires those builds everywhere.
-  - Reload: native admission sees signing keys, not records, and a reloaded
-    tab keeps its key. So before connecting, a reopened Page checks its
-    unconfirmed history for edits to a preserved block that aren't the
-    host's stamped conversion (an old build's Edit table, or a deletion).
-    If it finds any, the whole replica becomes a recovery record (Download
-    previous local draft), and the tab reopens on a fresh replica holding
-    only history the host has. The block syncs once.
-  - Limits: the reload check runs in the browser, so it guards honest older
-    tabs, not hostile clients. An authorized writer can already delete or
-    rewrite content; the host's fence and stamp bound what a client of an
-    older build writes, not what a malicious one does.
-  - Remove `nodes.raw`, `OpaqueBlock` and the conversion once no stored Page
-    can hold a preserved block.
+- **Stored forms:** every block is rich text (`format: "automerge-rich-text-v1"`)
+  and every Page carries the `comments-doc` stamp. Earlier builds also stored
+  Markdown-only blocks, read-only `pages-opaque` preserved blocks and threads
+  in the Page document; a one-shot content migration rewrote every stored Page
+  before this build stopped reading those forms. A reader that meets one now
+  refuses it: tool reads answer `409 stored_form_unsupported`
+  ([`model/stored-form.mjs`](model/stored-form.mjs)), the viewer shows a notice
+  in place of a Markdown-only block, and a stored `pages-opaque` marker reads
+  as an unknown block, kept as stored. The `preserved-markdown-converted` id
+  stays in `features.json`: ids are never dropped.
 - **Schema features:** every mark and block type that existed when Page10
   launched is baseline. A later one names a feature id: a mark in
   `marks.json`, a block type in [`model/features.json`](model/features.json).
@@ -711,9 +653,7 @@ Every listed Page carries `content_updated_at`: when its Page host last accepted
 a change to its title or blocks, or `null` when no host has reported one. It is
 the host's clock at acceptance, from any writer: a browser, an agent tool, a
 peer syncing old offline edits. Comments (their own document), presence, sharing,
-Trash and moves don't change it, and neither do the host's own migrations
-(preserved Markdown conversion, moving legacy comments out), which rewrite how
-content is stored, not what it says. `updated_at` keeps its meaning: the newest
+Trash and moves don't change it. `updated_at` keeps its meaning: the newest
 title, discovery or lifecycle observation. A shared Page's `content_updated_at`
 comes from its host's check, like its title.
 
@@ -1053,8 +993,8 @@ returned or thrown. For a boot a request opened, that can be well after the
 request's `blockConcurrencyWhile` rejected, because the repo setup builds
 them, and actor persistence, only at its end; they're stopped and closed
 then. The
-boot still checks at four points (after the repo starts, before journal
-recovery of either document, and before preserved Markdown conversion) so it
+boot still checks at three points (after the repo starts, before journal
+recovery of either document) so it
 ends early instead of running into refused writes. A record read that ends
 after the reset starts no boot. The constructor's boot is covered the same
 way.
@@ -1101,7 +1041,7 @@ The check boots instead when the record can't answer it the same way:
 - a grant holder's check of a trashed Page, which loads the document;
 - an invitation the caller can claim, which the loaded host installs.
 
-A pending lifecycle commit or preserved Markdown conversion lives only in a
+A pending lifecycle commit lives only in a
 booted host's memory, which answers checks from its document. A journaled
 edit a restart left pending is recovered by the boot; until then it isn't
 part of the document, so the stored title can't include it.
@@ -1371,7 +1311,9 @@ checked against the signer (see [Comments document](#comments-document)).
 
 A Page's comments live in their own Automerge document, owned by the same Page
 Durable Object. The Page record names it by a deployment-relative id,
-`comments_doc: "<uuid>"`, derived from the Page ID. There is no hostname and no
+`comments_doc: "<uuid>"`, derived from the Page ID when the Page is created.
+A live or trashed Page's record without it fails closed at boot; a deleted
+Page's record may lack it and serves no comments. There is no hostname and no
 origin: comments are platform data, not part of the Page. The browser syncs it
 on the same socket as the Page; `/api/connect` returns `commentsDocumentId`.
 Trash, restore, permanent deletion and the purge preview cover both documents.
@@ -1459,32 +1401,12 @@ replaced replica cancels its lookup. Offline, the local record's comments
 checkpoint restores the document before lookup; checkpoints, recovery
 archives and Download draft carry both documents with separate heads.
 
-### Moving existing comments
+### Pages without the comments stamp
 
-Pages created before the comments document kept threads at `page.comments`.
-The host moves them the first time the Page loads, under the same fence and
-journal as the preserved-block conversion
-([model/comments-migration.mjs](model/comments-migration.mjs)):
-
-1. Copy: every legacy thread into the comments document under its original
-   ID, as one journaled host change keyed by the Page heads it read. Threads
-   already there are skipped, so a rerun copies nothing twice.
-2. Detach: remove the Page's `comments` map and stamp the `comments-doc` schema
-   feature, in one journaled host change at those heads.
-
-Page text is never touched. Peer writes wait while it runs. A restart replays
-whichever step's journal entry is pending, then finishes the other. The stamp
-makes an older build open the Page read-only, and the host refuses its native
-writes with `schema_unsupported`, so it can't write comments back into the
-Page document. Until the move finishes, reads come from the Page's legacy map
-and comment writes wait for it.
-
-What the move drops: a thread or message whose ID isn't 1–128 letters, digits,
-`-` or `_` (Pages always wrote UUIDs); a thread whose content can't be read or
-written, such as unreadable rich text, which is skipped whole; every thread if
-the copy keeps failing for good and the host falls back to `drop` mode; and a
-comment an older tab wrote locally that the host hadn't accepted before the
-move. That last one lands in the detached map on sync, where nothing reads it.
+The `comments-doc` stamp on the Page says its comments live in the comments
+document. A Page without it holds threads in a form an earlier build wrote;
+comment reads and writes on it answer `409 stored_form_unsupported`, and the
+viewer shows no comments.
 
 ## Authorization
 
@@ -2095,7 +2017,8 @@ conversion holds its slot wait and storage work until settlement. If more than
 its native host only after a started conversion callback settles, or immediately
 if the callback never started. A crash before the
 flip leaves a Subduction Page, and the next attempt clears `plain/` first.
-Each attempt logs one `record_storage.migration` line naming its `page_id`.
+The conversion refuses to flip if the live heads moved after the snapshot
+(`heads_moved`). Each attempt logs one `record_storage.migration` line naming its `page_id`.
 
 Migration is one-way. Edits after the flip exist only in plain history, so
 flipping the record back would drop them. `recordStorageMigratedFrom` names the
@@ -2103,17 +2026,6 @@ Subduction storage the Page left, which still holds its native records,
 unread, until the Page is deleted: deletion then removes `repo/*`,
 `host/actor/*`, `host/binding/*` and `host/signer`, and for a buffered Page the `PageRecords`
 object's records.
-
-On a lab target an operator can also convert named Pages now, open tabs or
-not ([worker/record-storage-operator.mjs](worker/record-storage-operator.mjs),
-DEPLOYMENT.md "Operator conversion to plain sync"). The machine's `requested`
-event moves any state but `converting` and `retired` to `converting`; the
-conversion first closes the host's native sockets with a transient admission
-code (`record_storage_migrating`), counts only sockets as busy (the
-operator's request holds the serial queue). Both paths refuse to flip if the
-live heads moved after the snapshot (`heads_moved`). A requested run that doesn't convert goes back
-to `dormant` or `off` with no timer. It needs `PAGES_RECORD_STORAGE=automerge`
-on the host.
 
 A tab that held the Page on its native replica, offline say, finds plain
 storage at its next discovery. The storage switch
@@ -2967,9 +2879,8 @@ Project stores the Project's `space_id` with `parent_id: null`; the content
 document's entry stores `project_content` and no location; a sub-page's Project
 is derived by walking parents to its root with
 [model/location.mjs](model/location.mjs). The Catalog stamps its location shape
-version (`LOCATION_SHAPE_VERSION`, now 2); a Catalog holding the earlier shape
-answers `503 location_migration_required` on location reads and writes until
-its owner runs the one-shot migration described in DEPLOYMENT.md. `create_page` writes the location
+version (`LOCATION_SHAPE_VERSION`, now 2); this build reads only that shape.
+`create_page` writes the location
 into the pending Catalog entry in the same put as its journal intent, so a
 retry finds its parent there, and the Page learns only its content. Results
 call `space_id` `project_id`. A parent implies its Project; a different
