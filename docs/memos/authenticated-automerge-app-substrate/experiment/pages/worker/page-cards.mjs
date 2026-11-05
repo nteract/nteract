@@ -28,6 +28,11 @@
 // and a Page with no card yet. The caller can't tell "no access" from "no
 // card". Card objects are read by key and returned as JSON; no object URL
 // leaves the Worker.
+//
+// A card whose Page has card images (card-images.mjs) for the same
+// `card_hash` also carries `image: { card_hash, light, dark }`, the
+// access-checked image routes. A missing, partial or older image leaves the
+// JSON card as it is.
 import { HttpError } from "./auth.mjs";
 import { cardKey, readStoredCard } from "../model/page-card.mjs";
 
@@ -87,11 +92,14 @@ export async function allowedPageCards(ids, { storage, verifyShared, map, checks
  *   running then, or one that fails, answers null. The signal aborts at the
  *   deadline for a reader that honors it; R2's `get()` takes no signal, so
  *   the gateway's reads run on and their late answers are dropped.
+ * - `readImage(id, signal)` returns the Page's card image view
+ *   (card-images.mjs cardImageView), or null. It runs beside `readObject`
+ *   under the same deadline; a failure only drops the image.
  */
 export async function readPageCards(
   ids,
   allowed,
-  { readObject, deadlineMs = pageCardReadBounds.deadlineMs, onError = () => {} },
+  { readObject, readImage = null, deadlineMs = pageCardReadBounds.deadlineMs, onError = () => {} },
 ) {
   const readable = new Set(allowed.filter((id) => ids.includes(id) && PAGE_ID.test(id)));
   const controller = new AbortController();
@@ -108,8 +116,17 @@ export async function readPageCards(
         if (!readable.has(id)) return null;
         const read = (async () => {
           try {
-            const text = await readObject(cardKey(id), controller.signal);
-            return text === null ? null : readStoredCard(JSON.parse(text));
+            const [text, image] = await Promise.all([
+              readObject(cardKey(id), controller.signal),
+              readImage
+                ? readImage(id, controller.signal).catch((error) => {
+                    if (!controller.signal.aborted) onError(error);
+                    return null;
+                  })
+                : null,
+            ]);
+            const card = text === null ? null : readStoredCard(JSON.parse(text));
+            return card && image?.card_hash === card.card_hash ? { ...card, image } : card;
           } catch (error) {
             if (!controller.signal.aborted) onError(error);
             return null;

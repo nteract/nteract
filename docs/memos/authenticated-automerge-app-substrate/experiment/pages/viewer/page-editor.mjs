@@ -15,6 +15,7 @@ export { CommentsPanel } from "./CommentsPanel.jsx";
 export { CommentPopover } from "./CommentPopover.jsx";
 export { SaveStatus } from "./SaveStatus.jsx";
 export { PageControls } from "./PageControls.jsx";
+export { captureCards } from "./card-capture.mjs";
 export {
   TITLE_IDLE,
   TITLE_MAX_LENGTH,

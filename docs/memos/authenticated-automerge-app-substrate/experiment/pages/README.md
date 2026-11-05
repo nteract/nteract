@@ -2906,6 +2906,48 @@ so a retry can never apply once the Project has moved past that revision, even
 after the Project evicted the key's receipt (it keeps the latest 64). Such a retry
 returns `superseded: true, applied: false` with the current Project.
 
+### Card images
+
+The JSON card can't draw a diagram, a table's rows or highlighted code. The
+Page owner's own browser can, so it draws them. Other tabs do nothing:
+[card-capture.mjs](viewer/card-capture.mjs) starts only once the session
+shows the owner's write access. While the owner's tab is visible, it rebuilds
+the card's `card_hash` from its local document with the host's code. When
+that hash differs from the stored image's, it waits for 3 s with no edit or
+input (pointer, key, wheel or scroll), then renders the card's blocks
+read-only. The renderer
+([card-shell.mjs](viewer/card-shell.mjs)) uses the editor's own widgets in a
+hidden same-origin iframe, light and dark. It rasterizes them with
+`modern-screenshot`, a lazy chunk loaded on the first capture, at
+640×480 CSS px and 2x. It uploads WebP, or PNG where the browser has no WebP
+encoder (Safari). A capture starts at most once every two minutes, never on
+Save-Data or under 2 GB of device memory, and never runs beside another one. A
+changed first screen, a hidden tab or leaving the Page cancels it. Input
+cancels it too, and the cancelled capture doesn't count against the
+two-minute rest. The tab
+learns the stored hash from one `GET /api/pages/:id/card-image` when the Page
+opens, then from each upload's answer.
+
+`PUT /api/pages/:id/card-image?hash=&theme=` admits only the Page owner, by the
+Page host's own policy ([card-images.mjs](worker/card-images.mjs)). The bytes
+must be a static WebP, PNG or JPEG of at most 300 KB, never SVG. `hash` must be
+the `card_hash` of the host's loaded document, and each theme uploads at most
+once a minute. The host numbers each admitted upload from its durable storage.
+The images live at `pages/<id>/card/<hash>-<theme>.<ext>`. An etag-fenced
+`card/latest` pointer names the current hash and the highest revision it has
+seen. A swap to another hash with a lower revision is refused as stale, so an
+upload for an older first screen that lands late can't replace a newer one. A
+new hash deletes the old images, so a Page keeps at most one image per theme.
+`page_cards` adds `image: { card_hash, light, dark }` only when the pointer's
+hash is the stored JSON card's and both themes exist. The image route decides
+access as `page_cards` does, on every request: the caller's own Catalog entry
+for an owned Page, or its shared entry plus the Page host's record-only check.
+A grid of image cards boots no Page document, and a revoked grant fails on
+the next fetch. Its responses are `private, immutable`
+and carry `nosniff`. Purge and tombstone delete the images with `card.json`.
+The server can't check that the pixels match the content. That is the trust of
+any image the owner inserts into the Page, and only the Page's readers see it.
+
 ### Retry contract
 
 After a conflict, reread before constructing new work. For an uncertain outcome,

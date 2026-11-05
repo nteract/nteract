@@ -1,7 +1,8 @@
 // An in-memory Page assets bucket for card tests, with the R2 behavior the
 // card writer leans on: a new etag per put, `customMetadata` on `head()`,
 // and `onlyIf` conditions (`etagMatches`, `etagDoesNotMatch: "*"`) that make
-// `put()` answer null instead of writing.
+// `put()` answer null instead of writing. Binary values (card images) keep
+// their bytes, `httpMetadata` and size, and `list()` pages by prefix.
 export function cardBucket() {
   let next = 0;
   return {
@@ -28,10 +29,14 @@ export function cardBucket() {
         this.refused++;
         return null;
       }
+      const bytes = value instanceof Uint8Array ? value : null;
       const object = {
         key,
         etag: `etag-${++next}`,
-        text: String(value),
+        text: bytes ? "" : String(value),
+        bytes,
+        size: bytes ? bytes.byteLength : new TextEncoder().encode(String(value)).length,
+        httpMetadata: { ...options.httpMetadata },
         customMetadata: { ...options.customMetadata },
       };
       this.objects.set(key, object);
@@ -41,11 +46,32 @@ export function cardBucket() {
       this.reads.push(key);
       await this.beforeGet?.(key);
       const object = this.objects.get(key);
-      return object ? { ...object, text: async () => object.text } : null;
+      if (!object) return null;
+      const bytes = object.bytes ?? new TextEncoder().encode(object.text);
+      return {
+        ...object,
+        text: async () => object.text,
+        body: new Response(bytes).body,
+      };
     },
     async head(key) {
       const object = this.objects.get(key);
-      return object ? { key, etag: object.etag, customMetadata: object.customMetadata } : null;
+      return object
+        ? {
+            key,
+            etag: object.etag,
+            size: object.size,
+            httpMetadata: object.httpMetadata,
+            customMetadata: object.customMetadata,
+          }
+        : null;
+    },
+    async list({ prefix = "" } = {}) {
+      const objects = [...this.objects.keys()]
+        .filter((key) => key.startsWith(prefix))
+        .sort()
+        .map((key) => ({ key }));
+      return { objects, truncated: false };
     },
     async delete(key) {
       this.objects.delete(key);
