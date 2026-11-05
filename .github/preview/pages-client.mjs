@@ -4,7 +4,29 @@ export const PAGES_CONTROLLER='https://deploy.runtimed.run';
 // Covers GitHub authorization/settling and the controller's admission subprocess.
 // The paired preview-infra contract test checks this against the server budgets.
 export const PAGES_DEPLOY_TIMEOUT_MS=7*60*1000;
-export async function sendPagesDeployment(env,event,{fetchImpl,clock}) {
+const failures=new WeakMap();
+const operationIdPattern=/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/;
+export function pagesFailureDiagnostic(error) {
+  return {...failures.get(error)??{phase:'client',code:'unexpected',elapsedMs:0,pollCount:0}};
+}
+export async function sendPagesDeployment(env,event,{fetchImpl,clock,onAccepted=()=>{}}) {
+  const started=clock.now();let phase='context',code='validation',operationId,pollCount=0,httpStatus;
+  const signals=new WeakMap();
+  const diagnostic=()=>({phase,code,elapsedMs:Math.max(0,Math.min(48*60*1000,Math.trunc(clock.now()-started)||0)),
+    pollCount:Math.min(pollCount,100000),...(operationId?{operationId}:{}),
+    ...(Number.isInteger(httpStatus)&&httpStatus>=100&&httpStatus<=599?{httpStatus}:{})});
+  const stage=(next,nextCode)=>{phase=next;code=nextCode;httpStatus=undefined;};
+  const transport=async(next,url,options,timeout)=>{
+    stage(next,'transport');const signal=AbortSignal.timeout(timeout);
+    try {const response=await fetchImpl(url,{...options,signal});signals.set(response,signal);return response;}
+    catch(error) {if(signal.aborted&&signal.reason?.name==='TimeoutError') code='timeout';throw error;}
+  };
+  const json=async(next,response)=>{
+    stage(next,'parse');
+    try {return await response.json();}
+    catch(error) {const signal=signals.get(response);if(signal?.aborted&&signal.reason?.name==='TimeoutError') code='timeout';throw error;}
+  };
+  try {
   check(env.PAGES_PAGE10_ENABLED==='true','Pages caller is disabled');
   check(env.GITHUB_REPOSITORY==='nteract/nteract' && ['workflow_run','workflow_dispatch'].includes(env.GITHUB_EVENT_NAME),'invalid Pages caller context');
   const automatic=env.GITHUB_EVENT_NAME==='workflow_run',run=event.workflow_run;
@@ -20,25 +42,40 @@ export async function sendPagesDeployment(env,event,{fetchImpl,clock}) {
   oidc.searchParams.set('audience',PAGES_CONTROLLER);
   const deadline=clock.now()+48*60*1000;
   const request=async(path,data)=>{
+    stage('polling','deadline');
     check(clock.now()<deadline,'Pages polling deadline exceeded; inspect operation, never repost');
-    const response=await fetchImpl(oidc,{headers:{Authorization:`Bearer ${env.ACTIONS_ID_TOKEN_REQUEST_TOKEN}`},redirect:'error',signal:AbortSignal.timeout(20000)});
-    check(response.ok,'OIDC request failed');const {value}=await response.json();check(typeof value==='string' && value.split('.').length===3,'invalid OIDC token');
-    return fetchImpl(`${PAGES_CONTROLLER}${path}`,{method:data?'POST':'GET',headers:{Authorization:`Bearer ${value}`,'Content-Type':'application/json'},
-      ...(data?{body:JSON.stringify(data)}:{}),redirect:'error',signal:AbortSignal.timeout(path==='/deploy'?PAGES_DEPLOY_TIMEOUT_MS:30000)});
+    const response=await transport('oidc',oidc,{headers:{Authorization:`Bearer ${env.ACTIONS_ID_TOKEN_REQUEST_TOKEN}`},redirect:'error'},20000);
+    stage('oidc','http');httpStatus=response.status;check(response.ok,'OIDC request failed');
+    const token=await json('oidc',response);stage('oidc','schema');const value=token?.value;
+    check(typeof value==='string' && value.split('.').length===3,'invalid OIDC token');
+    return transport(data?'admission':'status',`${PAGES_CONTROLLER}${path}`,{method:data?'POST':'GET',headers:{Authorization:`Bearer ${value}`,'Content-Type':'application/json'},
+      ...(data?{body:JSON.stringify(data)}:{}),redirect:'error'},path==='/deploy'?PAGES_DEPLOY_TIMEOUT_MS:30000);
   };
-  const accepted=await request('/deploy',body);check(accepted.status===202,'Pages request not accepted');
-  const {operationId}=await accepted.json();check(/^[a-f0-9-]{36}$/.test(operationId),'invalid Pages operation id');
+  const accepted=await request('/deploy',body);stage('admission','http');httpStatus=accepted.status;check(accepted.status===202,'Pages request not accepted');
+  const acceptance=await json('admission',accepted);stage('admission','schema');
+  check(typeof acceptance?.operationId==='string'&&operationIdPattern.test(acceptance.operationId),'invalid Pages operation id');
+  operationId=acceptance.operationId;
+  stage('admission','accepted');onAccepted({operationId});
   while(true) {
+    stage('polling','wait');
     await clock.sleep(5000);
-    const response=await request(`/pages-deployments/${operationId}`);check(response.ok,'Pages poll failed');
-    const result=await response.json();
-    check(result.operationId===operationId && result.target==='page10' && result.requestedSha===sha,'Pages result identity mismatch');
+    pollCount++;
+    const response=await request(`/pages-deployments/${operationId}`);stage('status','http');httpStatus=response.status;check(response.ok,'Pages poll failed');
+    const result=await json('status',response);stage('status','identity');
+    check(result?.operationId===operationId && result.target==='page10' && result.requestedSha===sha,'Pages result identity mismatch');
+    stage('status','schema');
     check(['running','failed','succeeded'].includes(result.status),'invalid Pages operation status');
+    stage('status','operation_failed');
     check(result.status!=='failed','Pages operation failed; inspect operation, never replay');
     if(result.status==='succeeded') {
+      stage('status','evidence');
       check(result.sha===sha && /^[a-f0-9]{12}$/.test(result.build) && typeof result.restorePointKey==='string' &&
         Number.isSafeInteger(result.counts?.total),'Pages result missing verified release evidence');return result;
     }
+  }
+  } catch(cause) {
+    const error=new Error('Pages deployment failed',{cause});
+    failures.set(error,Object.freeze(diagnostic()));throw error;
   }
 }
 export function pagesStepSummary(result) {
