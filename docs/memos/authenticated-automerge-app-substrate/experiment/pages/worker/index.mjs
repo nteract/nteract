@@ -1768,6 +1768,12 @@ export class Catalog {
     const body = await runContentMigration(this.storage, {
       args,
       listAll,
+      // The current build's tombstone path: the effects operation-intent
+      // gives a `tombstone` event, run by the same effect runner.
+      finalize: async (pageId) => {
+        const result = operationIntent.step({ name: "absent" }, { type: "tombstone" });
+        for (const effect of result.effects) await this.runIntentEffect({ pageId }, effect);
+      },
       visit: async (pageId, mode, options) => {
         const response = await withTimeout(
           this.env.PAGES.getByName(pageId).fetch(

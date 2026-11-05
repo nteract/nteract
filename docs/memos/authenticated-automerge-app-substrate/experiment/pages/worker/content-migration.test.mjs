@@ -3,6 +3,8 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import * as A from "@automerge/automerge";
 import {
+  CONTENT_MIGRATION_ABSENT,
+  CONTENT_MIGRATION_BEFORE_PREFIX,
   CONTENT_MIGRATION_RESULT_PREFIX,
   CONTENT_MIGRATION_STATE_KEY,
   contentMigrationArguments,
@@ -12,7 +14,8 @@ import {
 } from "./content-migration.mjs";
 import { listAll } from "./catalog.mjs";
 import { INTERNAL_PREFIX, reserveOperation } from "./operation-journal.mjs";
-import { Storage, fixture, pageId } from "./trash-fixture.mjs";
+import { Storage, fixture, pageId, trashArgs } from "./trash-fixture.mjs";
+import { pageState } from "./access.mjs";
 import { createPageData, initializePage, orderedBlockIds } from "../model/page.mjs";
 import { adapterSpans } from "../model/richtext-spans.mjs";
 import { parseMarkdown } from "../model/markdown-import.mjs";
@@ -92,12 +95,12 @@ test("targets: owned, trashed, tombstoned and named Pages, never shared ones", a
   assert.deepEqual(targets, [
     { page_id: id(1), kind: "trash" },
     { page_id: id(3), kind: "page" },
-    { page_id: id(4), kind: "trash" },
+    { page_id: id(4), kind: "deleted" },
     { page_id: id(5), kind: "deleted" },
     { page_id: id(7), kind: "extra" },
   ]);
   assert.deepEqual(tombstones, [
-    { page_id: id(4), trash_entry: true },
+    { page_id: id(4), trash_entry: true, finalize: ["forget_trash", "notify_tombstone"] },
     { page_id: id(5), trash_entry: false },
   ]);
 });
@@ -556,4 +559,87 @@ test("end to end: with include_connected, a peer edit inside the window makes th
   assert.equal(applied.body.pages[0].status, "stale");
   assert.ok(!canonical(f.doc(), block));
   assert.equal(f.doc().title, "Typed by a peer");
+});
+
+// Half-finished permanent deletions (inventory #22).
+
+/** A Page an earlier build deleted for good from Trash: the owner's Catalog
+ * holds the tombstone beside the `trash/` entry, and the Page record still
+ * says trashed. */
+async function tombstonedFixture(t) {
+  const f = await fixture(t);
+  const trashed = await f.catalogCall("owner", "delete_page", trashArgs(f));
+  assert.equal(trashed.status, 200, JSON.stringify(trashed.body));
+  const catalog = f.catalogOf(f.owner);
+  await catalog.storage.put(`host/deleted/${pageId}`, true);
+  const run = async (body) => {
+    const response = await catalog.catalog.fetch(
+      f.request(f.tokens.owner, "/internal/content-migration", body),
+    );
+    return { status: response.status, body: await response.json() };
+  };
+  return { f, catalog, run };
+}
+
+test("end to end: dry run reports a half-finished deletion and what finalizing does", async (t) => {
+  const { f, catalog, run } = await tombstonedFixture(t);
+  const before = structuredClone(catalog.storage.values);
+  const dry = await run({ mode: "dry_run" });
+  assert.equal(dry.status, 200);
+  assert.deepEqual(dry.body.tombstones, [
+    { page_id: pageId, trash_entry: true, finalize: ["forget_trash", "notify_tombstone"] },
+  ]);
+  assert.equal(dry.body.pages[0].kind, "deleted");
+  assert.equal(dry.body.pages[0].state, "trashed");
+  assert.deepEqual(dry.body.pages[0].tombstone, {
+    trash_entry: true,
+    finalize: ["forget_trash", "notify_tombstone"],
+  });
+  assert.deepEqual(catalog.storage.values, before, "dry run wrote nothing");
+  assert.equal(pageState(f.page.metadata), "trashed");
+});
+
+test("end to end: apply finalizes it as the current build does, with before-images", async (t) => {
+  const { f, catalog, run } = await tombstonedFixture(t);
+  const entry = await catalog.storage.get(`trash/${pageId}`);
+  const applied = await run({ mode: "apply" });
+  assert.equal(applied.status, 200);
+  const page = applied.body.pages[0];
+  assert.equal(page.status, "deleted");
+  assert.deepEqual(page.tombstone, { finalized: ["forget_trash", "notify_tombstone"] });
+  assert.equal(await catalog.storage.get(`trash/${pageId}`), undefined);
+  assert.deepEqual(
+    await catalog.storage.get(`${CONTENT_MIGRATION_BEFORE_PREFIX}trash/${pageId}`),
+    entry,
+  );
+  assert.equal(pageState(f.page.metadata), "deleted");
+  assert.equal(f.page.metadata.purged.reason, "deleted_by_earlier_build");
+  assert.equal(await catalog.catalog.countEntries("trash/"), 0);
+  assert.deepEqual(applied.body.progress, { phase: "done", pass: 1 });
+  // A rerun finds nothing half-finished and keeps the first before-image.
+  await catalog.storage.delete(CONTENT_MIGRATION_STATE_KEY);
+  const again = await run({ mode: "apply" });
+  assert.equal(again.body.pages[0].tombstone, undefined);
+  assert.deepEqual(
+    await catalog.storage.get(`${CONTENT_MIGRATION_BEFORE_PREFIX}trash/${pageId}`),
+    entry,
+  );
+});
+
+test("end to end: a tombstone whose Trash entry was pruned still finishes the Page record", async (t) => {
+  const { f, catalog, run } = await tombstonedFixture(t);
+  // A Trash listing prunes the entry; the Page record stays trashed.
+  await catalog.storage.delete(`trash/${pageId}`);
+  const dry = await run({ mode: "dry_run" });
+  assert.deepEqual(dry.body.pages[0].tombstone, {
+    trash_entry: false,
+    finalize: ["forget_trash", "notify_tombstone"],
+  });
+  const applied = await run({ mode: "apply" });
+  assert.equal(applied.body.pages[0].status, "deleted");
+  assert.equal(pageState(f.page.metadata), "deleted");
+  assert.deepEqual(
+    await catalog.storage.get(`${CONTENT_MIGRATION_BEFORE_PREFIX}trash/${pageId}`),
+    CONTENT_MIGRATION_ABSENT,
+  );
 });

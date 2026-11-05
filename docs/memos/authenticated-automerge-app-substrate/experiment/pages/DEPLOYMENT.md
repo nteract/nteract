@@ -789,9 +789,24 @@ own edit either merges (made before the write and synced after it, or made
 after it) or, if it reaches the host between the plan and the write, fails
 the write's exact-heads check: the Page answers `stale`, nothing is written,
 and the next pass plans again. Default to skipping; use `include_connected`
-for Pages that stay `busy` because a tab is left open. Permanent deletions an earlier
-build left half-finished (a `host/deleted/` tombstone beside a `trash/`
-entry) are reported under `tombstones`, not changed.
+for Pages that stay `busy` because a tab is left open.
+
+**Half-finished permanent deletions.** A build without Trash could delete a
+trashed Page for good and leave its `trash/` entry beside the Catalog's
+`host/deleted/<id>` tombstone, with the Page record still trashed. `dry_run`
+lists each under `tombstones` (`{page_id, trash_entry, finalize}`) and on the
+Page's row (`tombstone`). `apply` finishes it the way the current build does
+when it meets such a tombstone: the operation-intent machine's `tombstone`
+effects, `forget_trash` (drop the `trash/` entry) and `notify_tombstone`
+(the Page host records the deletion as `deleted_by_earlier_build`, drops its
+document, withdraws access and retires its index row). A tombstone whose
+`trash/` entry a Trash listing already pruned is finished too when the Page
+still reports itself trashed. Before the first change, the Catalog saves the
+`trash/` entry and `host/count/trash` under `host/content-migration/before/`
+(`{content_migration_absent: true}` for a key that didn't exist), once. Until
+the Page reports `deleted`, the visit stays `tombstone_pending`. To undo the
+Catalog side, put each before-image back through the Catalog's counted storage;
+the Page side can't be undone: the earlier build already deleted the document.
 
 The owner runs it, once per account, with an API key that has write access.
 It reaches only that account's Pages: every `page/` (Project content

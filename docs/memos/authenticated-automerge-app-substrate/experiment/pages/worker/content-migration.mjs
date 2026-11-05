@@ -18,6 +18,13 @@
  * `host/deleted/` tombstone, and any `page_ids` from the body. `shared/`
  * entries belong to other owners' runs.
  *
+ * Half-finished permanent deletions (inventory #22): a build without Trash
+ * could delete a trashed Page for good, writing the tombstone but leaving the
+ * `trash/` entry and the Page record trashed. `dry_run` lists each with what
+ * finalizing runs; `apply` runs the current build's own tombstone effects
+ * (TOMBSTONE_EFFECTS, through the Catalog's operation-intent effect runner)
+ * after saving before-images under `host/content-migration/before/`.
+ *
  * - `dry_run` writes nothing of its own. It visits up to `limit` targets
  *   after `after` and answers their reports, the next cursor, and the Catalog
  *   summary (targets by kind, tombstones). Booting a Page runs its existing
@@ -39,6 +46,17 @@ import { validPageId } from "./registration.mjs";
 export const CONTENT_MIGRATION_MODES = Object.freeze(["dry_run", "apply"]);
 export const CONTENT_MIGRATION_STATE_KEY = "host/content-migration/state";
 export const CONTENT_MIGRATION_RESULT_PREFIX = "host/content-migration/result/";
+/** Before-images of the Catalog keys the tombstone step rewrites or deletes:
+ * `<prefix><key>` holds the prior value, saved once and never overwritten;
+ * CONTENT_MIGRATION_ABSENT records a key that didn't exist. */
+export const CONTENT_MIGRATION_BEFORE_PREFIX = "host/content-migration/before/";
+export const CONTENT_MIGRATION_ABSENT = Object.freeze({ content_migration_absent: true });
+/** What finishing an earlier build's permanent deletion runs: the effects the
+ * current build's operation-intent machine gives a `tombstone` event
+ * (worker/operation-intent.mjs): drop the `trash/` entry, then tell the Page,
+ * whose host records the deletion (`acceptTombstone`). */
+export const TOMBSTONE_EFFECTS = Object.freeze(["forget_trash", "notify_tombstone"]);
+const TRASH_COUNT_KEY = "host/count/trash";
 /** `budgetMs`: a call starts no visit after this long, so with each visit's
  * own deadline it ends inside the Catalog queue's 120 s bound. */
 export const CONTENT_MIGRATION_LIMITS = Object.freeze({
@@ -48,7 +66,8 @@ export const CONTENT_MIGRATION_LIMITS = Object.freeze({
   budgetMs: 60_000,
 });
 /** Page outcomes that need no further visit. Every other status (busy,
- * stale, held, partial, unavailable, record_pending, error) stays pending. */
+ * stale, held, partial, unavailable, record_pending, tombstone_pending,
+ * error) stays pending. */
 export const SETTLED_STATUSES = new Set([
   "normalized",
   "unchanged",
@@ -57,10 +76,12 @@ export const SETTLED_STATUSES = new Set([
   "not_owner",
 ]);
 
+// A Page named twice keeps the first kind: a tombstone beside a `trash/`
+// entry is a deletion to finish, not a Page in Trash.
 const KINDS = [
   ["page/", "page"],
-  ["trash/", "trash"],
   ["host/deleted/", "deleted"],
+  ["trash/", "trash"],
 ];
 
 /** The run's arguments, validated. Throws `{ status: 400, code }`. */
@@ -92,9 +113,9 @@ export function contentMigrationArguments(body) {
  * Every Page this Catalog can name, sorted by page_id: `[{ page_id, kind }]`,
  * where kind is `page`, `trash`, `deleted` or `extra` (named only by the
  * request). A Page named twice keeps the first kind in that order. Also
- * returns the tombstones: `[{ page_id, trash_entry }]`, where `trash_entry`
- * says a `trash/` entry remains beside the tombstone (inventory #22, which
- * this migration reports and doesn't finish).
+ * returns the tombstones: `[{ page_id, trash_entry, finalize? }]`, where
+ * `trash_entry` says a `trash/` entry remains beside the tombstone and
+ * `finalize` lists what apply runs for it (TOMBSTONE_EFFECTS).
  */
 export async function contentMigrationTargets(storage, listAll, extra = []) {
   const kinds = new Map();
@@ -113,7 +134,11 @@ export async function contentMigrationTargets(storage, listAll, extra = []) {
     .filter((key) => key.startsWith("host/deleted/"))
     .map((key) => key.slice("host/deleted/".length))
     .sort()
-    .map((page_id) => ({ page_id, trash_entry: keys.has(`trash/${page_id}`) }));
+    .map((page_id) =>
+      keys.has(`trash/${page_id}`)
+        ? { page_id, trash_entry: true, finalize: [...TOMBSTONE_EFFECTS] }
+        : { page_id, trash_entry: false },
+    );
   return { targets, tombstones };
 }
 
@@ -240,15 +265,49 @@ async function visitSafely(visit, page_id, mode, options) {
   }
 }
 
+/** Save `key`'s current value as its before-image, once. */
+async function saveBefore(storage, key) {
+  const backup = `${CONTENT_MIGRATION_BEFORE_PREFIX}${key}`;
+  if ((await storage.get(backup)) !== undefined) return;
+  const value = await storage.get(key);
+  await storage.put(backup, value === undefined ? CONTENT_MIGRATION_ABSENT : value);
+}
+
+/**
+ * Finish an earlier build's permanent deletion of `page_id`, if one is
+ * half-finished: the tombstone is there and so is the `trash/` entry, or the
+ * Page last reported its record as trashed. Saves the before-images of the
+ * `trash/` entry and the Trash count, then runs `finalize(page_id)`, the
+ * current build's tombstone effects. Returns `{ finalized }`, or null when
+ * nothing was half-finished.
+ */
+async function finishDeletion(storage, page_id, finalize, { pageTrashed = false } = {}) {
+  if (!(await storage.get(`host/deleted/${page_id}`))) return null;
+  const trashKey = `trash/${page_id}`;
+  if ((await storage.get(trashKey)) === undefined && !pageTrashed) return null;
+  await saveBefore(storage, trashKey);
+  await saveBefore(storage, TRASH_COUNT_KEY);
+  await finalize(page_id);
+  return { finalized: [...TOMBSTONE_EFFECTS] };
+}
+
 /**
  * Run one call of the migration against Catalog storage. `visit(page_id,
  * mode, options)` asks the Page host and answers its result (`options`:
  * `{ include_connected }`); `listAll` reads a prefix;
- * `clock()` is milliseconds (Date.now). Returns the response body.
+ * `clock()` is milliseconds (Date.now); `finalize(page_id)` runs
+ * TOMBSTONE_EFFECTS in the Catalog. Returns the response body.
  */
 export async function runContentMigration(
   storage,
-  { args, listAll, visit, clock = Date.now, budgetMs = CONTENT_MIGRATION_LIMITS.budgetMs },
+  {
+    args,
+    listAll,
+    visit,
+    finalize,
+    clock = Date.now,
+    budgetMs = CONTENT_MIGRATION_LIMITS.budgetMs,
+  },
 ) {
   const { mode, limit, after, page_ids, include_connected } = args;
   const options = { include_connected };
@@ -258,11 +317,23 @@ export async function runContentMigration(
     const { targets, tombstones } = await contentMigrationTargets(storage, listAll, page_ids);
     const start = after === null ? 0 : targets.findIndex((target) => target.page_id > after);
     const pages = [];
+    const pendingDeletion = new Map(
+      tombstones.filter((tombstone) => tombstone.finalize).map((t) => [t.page_id, t]),
+    );
     for (const target of start < 0 ? [] : targets.slice(start, start + limit)) {
       if (!inBudget(pages.length)) break;
+      const result = await visitSafely(visit, target.page_id, mode, options);
+      const tombstone =
+        pendingDeletion.get(target.page_id) ??
+        (target.kind === "deleted" && result.state === "trashed"
+          ? { trash_entry: false, finalize: [...TOMBSTONE_EFFECTS] }
+          : null);
       pages.push({
-        ...(await visitSafely(visit, target.page_id, mode, options)),
+        ...result,
         kind: target.kind,
+        ...(tombstone && {
+          tombstone: { trash_entry: tombstone.trash_entry, finalize: tombstone.finalize },
+        }),
       });
     }
     const last = pages.at(-1)?.page_id ?? null;
@@ -298,7 +369,19 @@ export async function runContentMigration(
   const pages = [];
   while (state.next < state.ids.length && pages.length < limit && inBudget(pages.length)) {
     const page_id = state.ids[state.next];
-    const result = await visitSafely(visit, page_id, mode, options);
+    // A half-finished deletion is finished before its Page is visited, so the
+    // visit reports the Page as the current build leaves it.
+    let tombstone = finalize ? await finishDeletion(storage, page_id, finalize) : null;
+    let result = await visitSafely(visit, page_id, mode, options);
+    if (!tombstone && finalize && result.state === "trashed") {
+      tombstone = await finishDeletion(storage, page_id, finalize, { pageTrashed: true });
+      if (tombstone) result = await visitSafely(visit, page_id, mode, options);
+    }
+    if (tombstone) {
+      result = { ...result, tombstone };
+      // The Page must have recorded the deletion; until it has, it stays pending.
+      if (result.state === "trashed") result.status = "tombstone_pending";
+    }
     pages.push(result);
     step({ type: "visited", page_id });
     const resultKey = `${CONTENT_MIGRATION_RESULT_PREFIX}${page_id}`;
