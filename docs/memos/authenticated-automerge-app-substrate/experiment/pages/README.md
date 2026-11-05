@@ -2705,12 +2705,12 @@ copies show there too. A `project` that `list_pages` refuses with
 filter; the account's Projects alone can't say so, since a Project created a
 moment ago may not be in them yet. Load more follows
 `next_cursor`; a cursor that has expired (`invalid_cursor`) starts the listing
-over from its first page. Grid cards are behind the `grid` flag (`?grid=1` or
-`localStorage["pages.grid"] = "1"`); each shows a preview of its Page's first
-content (see [Card previews](#card-previews)). The flag shows the List/Grid
-toggle, and the choice is remembered. `?grid=1` also opens the tab on the
-grid, as a remembered choice; the library then drops the query from its
-address, so after a reload the toggle shows only with the stored flag.
+over from its first page. The List/Grid toggle is always available. List is
+the default, and this browser remembers the choice in `nteract.pages.view`.
+Each grid card shows a preview of its Page's first content (see
+[Card previews](#card-previews)). The `?grid=1` shortcut opens the tab on the
+grid and remembers that choice; the library drops the query from its address,
+and a reload keeps the chosen view. No `pages.grid` flag is needed.
 
 ### Card previews
 

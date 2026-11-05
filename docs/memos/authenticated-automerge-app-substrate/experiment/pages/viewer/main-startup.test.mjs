@@ -271,9 +271,14 @@ test("Home is the Pages library and starts the editor import at boot", async () 
   const nav = [...document.querySelectorAll(".index-nav a")].map((link) => link.textContent);
   assert.deepEqual(nav, ["Pages", "Projects"]);
   assert.equal(document.querySelector(".index-nav [aria-current=page]")?.textContent, "Pages");
+  assert.ok(document.querySelector('[role="group"][aria-label="Display"]'), "no flag needed");
+  assert.equal(
+    document.querySelector('[aria-label="List view"]').getAttribute("aria-pressed"),
+    "true",
+  );
 });
 
-test("?grid=1 opens the library on the grid; the address drops it and a reload keeps the list", async () => {
+test("?grid=1 opens the library on the grid; a no-query reload keeps the stored choice", async () => {
   const listing = {
     ...catalog,
     list_pages: {
@@ -296,16 +301,20 @@ test("?grid=1 opens the library on the grid; the address drops it and a reload k
     );
     assert.equal(location.pathname + location.search, "/pages", "the library's own address");
     assert.equal(window.localStorage.getItem("nteract.pages.view"), "grid");
-    // Without the query or the stored flag, the grid and its toggle stay off.
-    await boot(signedIn, listing);
-    await settle();
-    assert.equal(document.querySelector(".index-grid"), null);
-    assert.equal(document.querySelector('[role="group"][aria-label="Display"]'), null);
-    // The stored flag shows the toggle, and the remembered grid.
-    window.localStorage.setItem("pages.grid", "1");
+    // The preference survives without the query or a stored flag.
     await boot(signedIn, listing);
     await settle();
     assert.ok(document.querySelector(".index-grid"));
+    assert.ok(document.querySelector('[role="group"][aria-label="Display"]'));
+    await act(() => document.querySelector('[aria-label="List view"]').click());
+    assert.equal(window.localStorage.getItem("nteract.pages.view"), "list");
+    await boot(signedIn, listing);
+    await settle();
+    assert.equal(document.querySelector(".index-grid"), null);
+    assert.equal(
+      document.querySelector('[aria-label="List view"]').getAttribute("aria-pressed"),
+      "true",
+    );
   } finally {
     window.localStorage.removeItem("nteract.pages.view");
     window.localStorage.removeItem("pages.grid");
