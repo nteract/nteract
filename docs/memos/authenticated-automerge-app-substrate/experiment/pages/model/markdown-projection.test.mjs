@@ -205,6 +205,65 @@ test("an editor rewrite of any block Pages wrote from Markdown writes nothing", 
   assert.deepEqual(editorRewrite(doc, orderedBlockIds(doc)[0]), []);
 });
 
+test("nested-only sibling items keep separate outer markers through the shared encoder", () => {
+  const tree = parseAgentMarkdown("-\n  - a\n-\n  - b");
+  const expected = [
+    {
+      type: "block",
+      value: { type: "unordered-list-item", parents: [], attrs: {}, isEmbed: false },
+    },
+    {
+      type: "block",
+      value: {
+        type: "unordered-list-item",
+        parents: ["unordered-list-item"],
+        attrs: {},
+        isEmbed: false,
+      },
+    },
+    { type: "text", value: "a", marks: {} },
+    {
+      type: "block",
+      value: { type: "unordered-list-item", parents: [], attrs: {}, isEmbed: false },
+    },
+    {
+      type: "block",
+      value: {
+        type: "unordered-list-item",
+        parents: ["unordered-list-item"],
+        attrs: {},
+        isEmbed: false,
+      },
+    },
+    { type: "text", value: "b", marks: {} },
+  ];
+  assert.deepEqual(plainSpans(adapterSpans(tree)), expected);
+  assert.deepEqual(plainSpans(pageSpans(tree)), expected);
+});
+
+test("an agent that writes back what it read writes nothing", () => {
+  for (const { id: caseId, markdown } of markdownCorpus.cases)
+    for (const literal of unsupportedMarkdown(markdown) ? [true] : [false, true]) {
+      let doc = A.from(createPageData({ pageId: "projection", title: "Projection" }));
+      const id = orderedBlockIds(doc)[0];
+      try {
+        doc = A.change(doc, (draft) => setRichMarkdown(draft, id, markdown, { literal }));
+      } catch {
+        continue;
+      }
+      const read = exportMarkdown(richDoc(doc.blocks[id]));
+      const after = A.change(A.clone(doc), (draft) => setRichMarkdown(draft, id, read));
+      if (Object.hasOwn(KNOWN_DISAGREEMENTS, caseId))
+        assert.equal(exportMarkdown(richDoc(after.blocks[id])), read, caseId);
+      else
+        assert.deepEqual(
+          A.getHeads(after),
+          A.getHeads(doc),
+          `${literal ? "literal" : "agent"} ${caseId}`,
+        );
+    }
+});
+
 // A block's content as an agent reads it, from its stored spans.
 const storedRead = (spans) => {
   let doc = A.from(createPageData({ pageId: "projection", title: "Projection" }));

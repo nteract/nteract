@@ -99,8 +99,13 @@ nodes.task_list = {
   toDOM: () => ["ul", { "data-task-list": "true" }, 0],
   parseDOM: [{ tag: 'ul[data-task-list="true"]', priority: 60 }],
 };
+// A list item can open with any block, as Wordgard's ListItem can. The
+// adapter's `paragraph block*` can't read an item stored as a list-item
+// marker followed by another block's marker, which both writers produce for
+// an item that opens with a code block, heading, quote, rule or dataframe.
 nodes.list_item = {
   ...nodes.list_item,
+  content: "block+",
   attrs: { ...nodes.list_item.attrs, checked: { default: null } },
   toDOM: (node) =>
     typeof node.attrs.checked === "boolean"
@@ -715,7 +720,8 @@ const looseItem = (item) => {
 const cannotInterrupt = (list) => {
   if (list.type.name === "ordered_list" && (list.attrs.order ?? 1) !== 1) return true;
   const first = list.firstChild?.firstChild;
-  if (first?.type.name !== "paragraph") return false;
+  // Block-first items serialize with an empty marker line.
+  if (first?.type.name !== "paragraph") return true;
   let text = false;
   first.forEach((child) => {
     text ||= child.isText && child.text.trim() !== "";
@@ -772,6 +778,16 @@ const serializer = new MarkdownSerializer(
         }
       }
       state.text(node.text, !state.inAutolink);
+    },
+    // An item that opens with a block other than a paragraph puts its marker
+    // on a line of its own: on the marker's line, a rule or a nested list's
+    // marker would read as a thematic break. A task box is paragraph text, so
+    // a blank line follows it; otherwise a line that can't interrupt a
+    // paragraph, such as a dataframe's, would join the box's text.
+    list_item(state, node, parent, index) {
+      if (node.firstChild && node.firstChild.type !== schema.nodes.paragraph)
+        state.write(parent.type === schema.nodes.task_list ? "\n\n" : "\n");
+      defaultMarkdownSerializer.nodes.list_item(state, node, parent, index);
     },
     bullet_list(state, node) {
       renderList(state, node, "  ", () => "- ");
@@ -1535,10 +1551,24 @@ function parseTokens(tokens) {
   const own = parser.tokenizer;
   parser.tokenizer = { parse: () => tokens };
   try {
-    return parser.parse("");
+    return paragraphFirstItems(parser.parse(""));
   } finally {
     parser.tokenizer = own;
   }
+}
+
+/** `tree` with an empty paragraph opening every list item that opens with
+ * another block. The adapter writes an item's marker for its first
+ * paragraph, so without one an item that opens with a list has no marker and
+ * joins the item before it. Reads accept either form (`list_item` is
+ * `block+`). */
+function paragraphFirstItems(node) {
+  if (node.isTextblock || node.isLeaf) return node;
+  const children = [];
+  node.forEach((child) => children.push(paragraphFirstItems(child)));
+  if (node.type === schema.nodes.list_item && children[0]?.type !== schema.nodes.paragraph)
+    children.unshift(schema.nodes.paragraph.create());
+  return node.copy(node.content.constructor.from(children));
 }
 
 // Export escapes literal text that would otherwise read back as math or HTML:
@@ -1905,7 +1935,9 @@ export function setRichMarkdownKeepingNodes(doc, id, source) {
     return node.copy(node.content.constructor.from(children));
   };
   // Without stored dataframes, dataframe-like lines are ordinary links.
-  const kept = existing.length ? restore(tree, "") : tree;
+  // A dataframe restored as an item's first child needs the item's empty
+  // first paragraph back, or the adapter writes no marker for the item.
+  const kept = existing.length ? paragraphFirstItems(restore(tree, "")) : tree;
   if (problems.has("moved"))
     refuse(
       "A dataframe's line can't go inside a quote, list or table, into a heading, or out of the quote or list item it's stored in. Keep it where read_page shows it; it may move among its neighbours.",
