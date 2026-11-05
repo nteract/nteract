@@ -25,6 +25,12 @@ npm test
 Setup fetches an exact upstream commit, installs locked dependencies without
 lifecycle scripts, applies a source-hash-checked adapter patch, and builds the
 two upstream packages. Generated sources and dependencies remain ignored.
+For a controller that separates online acquisition from offline execution,
+`node setup.mjs --acquire-only` requires a regular `package-lock.json` matching HEAD
+and stops after installation and patching, before compilation. It never falls back
+to `npm install`. Run `npm run build` before tests in the offline phase. The flag
+does not isolate networking itself; the host must enforce a private network namespace.
+Normal `npm run setup` retains its combined acquisition/build behavior.
 Tests generate their own credentials and temporary document storage. Provider
 responses are fixture data; no Anaconda account, API key, or live document is
 needed. Runtime tests use real upstream WASM over an in-process byte transport.
