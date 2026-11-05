@@ -1420,7 +1420,8 @@ export function lostContent(tokens, doc) {
       if (token.type === "inline") walk(token.children ?? []);
       else if (["text", "code_inline", "fence", "code_block"].includes(token.type)) {
         carried.text.push(token.content);
-        if (open && token.content) open.text = true;
+        // Entity newlines become unmarked Wordgard LineBreak leaves.
+        if (open && /[^\n]/.test(token.content)) open.text = true;
       } else if (token.type === "link_open") {
         open = { href: token.attrGet("href"), text: false };
         carried.links.add(open.href);
