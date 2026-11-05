@@ -3,9 +3,45 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
+/** D1 refuses a `LIKE` or `GLOB` pattern longer than this many UTF-8 bytes
+ * (https://developers.cloudflare.com/d1/platform/limits/). Plain SQLite allows
+ * 50,000. Kept here apart from the Worker's own constant, so loosening that
+ * one can't loosen the test database. */
+export const D1_LIKE_PATTERN_MAX_BYTES = 50;
+
+const utf8 = new TextEncoder();
+const asciiLower = (text) => text.replace(/[A-Z]+/g, (run) => run.toLowerCase());
+const literal = (char) => char.replace(/[\\^$.*+?()[\]{}|/]/g, "\\$&");
+
+/** SQLite's `LIKE`: `%` matches any run of characters, `_` one character,
+ * the escape character makes the next one literal, and ASCII letters match
+ * either case. Throws D1's error for a pattern over D1's limit. */
+function like(pattern, text, escape) {
+  if (pattern === null || text === null || escape === null) return null;
+  pattern = String(pattern);
+  if (utf8.encode(pattern).length > D1_LIKE_PATTERN_MAX_BYTES)
+    throw new Error("LIKE or GLOB pattern too complex: SQLITE_ERROR");
+  if (escape !== undefined && [...String(escape)].length !== 1)
+    throw new Error("ESCAPE expression must be a single character");
+  let source = "";
+  const chars = [...asciiLower(pattern)];
+  for (let index = 0; index < chars.length; index++) {
+    const char = chars[index];
+    if (escape !== undefined && char === String(escape)) {
+      index++;
+      if (index === chars.length) return 0;
+      source += literal(chars[index]);
+    } else if (char === "%") source += "[^]*";
+    else if (char === "_") source += "[^]";
+    else source += literal(char);
+  }
+  return new RegExp(`^${source}$`, "u").test(asciiLower(String(text))) ? 1 : 0;
+}
+
 /** Real SQLite behind the subset of the D1 binding Pages uses. A batch runs as
- * one transaction, like D1. `mode` injects an outage: "fail" rejects every
- * call, "hang" never settles. `delay` adds latency to every call. */
+ * one transaction, like D1. `LIKE` refuses patterns over D1's limit. `mode`
+ * injects an outage: "fail" rejects every call, "hang" never settles. `delay`
+ * adds latency to every call. */
 export class SqliteD1 {
   mode = "ok";
   calls = 0;
@@ -14,6 +50,9 @@ export class SqliteD1 {
   delay = 0;
   constructor(path) {
     this.sqlite = new DatabaseSync(path);
+    // An application-defined like() replaces SQLite's, in both arities.
+    this.sqlite.function("like", { deterministic: true }, (pattern, text) => like(pattern, text));
+    this.sqlite.function("like", { deterministic: true }, like);
   }
   async #gate() {
     this.calls++;

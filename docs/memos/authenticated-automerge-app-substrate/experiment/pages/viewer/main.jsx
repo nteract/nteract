@@ -79,6 +79,7 @@ import { AppearanceControls } from "./AppearanceControls.jsx";
 import { retryKey } from "../model/retry-key.mjs";
 import "./style.css";
 import "./formatting-toolbar.css";
+import "./card-image.css";
 import { focusCreatedPageTitle, titleHandsOffToBody } from "./title-navigation.mjs";
 import { BuildUpdate, buildMonitor } from "./BuildUpdate.jsx";
 import { SchemaNotice } from "./SchemaNotice.jsx";
@@ -863,6 +864,9 @@ function App() {
     titleCompositionRef.current = null;
     setTitleComposing(null);
   }, [session]);
+  // The owner's tab draws the Page's grid card images (card-capture.mjs);
+  // it watches the session for the owner's access itself.
+  useEffect(() => (session ? editor.module?.captureCards?.(session) : undefined), [session]);
   function composing() {
     const state = titleCompositionRef.current;
     return !!state && !!editor.module?.composingTitle(state, session);

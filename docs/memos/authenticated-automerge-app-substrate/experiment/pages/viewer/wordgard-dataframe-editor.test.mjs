@@ -44,6 +44,68 @@ const { wordgardDataframes, dataframeEventReachesEditor, enterDataframeGrid, GRI
 const { collapseAtomOnLeave } = await import("./image-selection.mjs");
 const { PARQUET_MEDIA_TYPE } = await import("../shared/dataset-assets.mjs");
 
+for (const direction of ["insert", "delete"])
+  for (const count of [1, 2])
+    test(`remote ${direction} before ${count} changed Mermaid shapes updates the view`, async () => {
+      const { CodeBlock, CodeBlockLanguage } = await import("./wordgard-model.mjs");
+      const { wordgardWidgets } = await import("./wordgard-widgets.mjs");
+      const { Transaction } = await import("wordgard/state");
+      const paragraph = Paragraph.create([Leaf.text("Weekly usage review")]);
+      const diagrams = Array.from({ length: count }, (_, i) =>
+        CodeBlock.withMarks([CodeBlockLanguage.of("mermaid")]).create([
+          Leaf.text(`graph TD; A --> B${i}`),
+        ]),
+      );
+      const state = GardState.create({
+        doc: schema.doc([
+          ...(direction === "delete" ? [paragraph] : []),
+          ...diagrams,
+          Paragraph.create([Leaf.text("after")]),
+        ]),
+        config: [
+          schema.elements.map((e) => GardState.schemaElement.of(e)),
+          wordgardWidgets(),
+          GardState.readOnly.of(true),
+        ],
+      });
+      const editor = new Wordgard({ state, parent: document.body });
+      try {
+        editor.flush();
+        editor.dispatch({
+          changes:
+            direction === "insert"
+              ? { from: 0, insert: [paragraph] }
+              : { from: 0, to: paragraph.length },
+          annotations: Transaction.remote.of(true),
+        });
+        let pos = direction === "insert" ? paragraph.length : 0;
+        const changes = diagrams.map((node) => {
+          const from = pos + 2;
+          pos += node.length;
+          return { from, insert: [Leaf.text(" ")] };
+        });
+        editor.dispatch({
+          changes,
+          annotations: Transaction.remote.of(true),
+        });
+        assert.doesNotThrow(() => editor.flush());
+        assert.equal(
+          editor.contentDOM.querySelectorAll(
+            "pre[data-language='mermaid'], .wordgard-diagram-block",
+          ).length,
+          count,
+        );
+        assert.equal(
+          editor.state.doc.textContent().includes("Weekly usage review"),
+          direction === "insert",
+        );
+        for (let i = 0; i < count; i++)
+          assert.ok(editor.state.doc.textContent().includes(`g raph TD; A --> B${i}`));
+      } finally {
+        editor.dom.remove();
+      }
+    });
+
 const pageId = "33333333-3333-4333-8333-333333333333";
 const attrs = {
   src: `/api/pages/${pageId}/assets/${"a".repeat(64)}`,

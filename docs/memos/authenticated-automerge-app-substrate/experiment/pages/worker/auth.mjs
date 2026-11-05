@@ -142,6 +142,7 @@ export async function authenticate(request, env) {
       // Internal routes are only reachable through host namespace forwarding.
       // An MCP grant cannot be used to change ACLs or open a native sync socket.
       if (
+        !(new URL(request.url).pathname === "/whoami" && request.method === "GET") &&
         ![
           "/mcp",
           "/internal/catalog",
@@ -171,6 +172,11 @@ export async function authenticate(request, env) {
         {
           principal: grant.identity.principal,
           displayName: grant.identity.displayName || grant.identity.principal,
+          // Older consent snapshots filled a missing name with the principal.
+          accountDisplayName:
+            grant.identity.displayName === grant.identity.principal
+              ? null
+              : grant.identity.displayName || null,
           driver:
             request.headers.has("x-pages-driver") || new URL(request.url).searchParams.has("driver")
               ? bearerDriver(driver)
@@ -234,6 +240,7 @@ export async function authenticate(request, env) {
       {
         principal: identity.principal,
         displayName: identity.metadata.displayName || identity.principal,
+        accountDisplayName: identity.metadata.displayName || null,
         driver: bearerDriver(driver),
         ...(agent && { agent }),
         ...(await mcpSession(request, identity.principal)),
@@ -266,6 +273,7 @@ export async function authenticate(request, env) {
     {
       principal: session.principal,
       displayName: session.displayName || session.principal,
+      accountDisplayName: session.displayName || null,
       driver,
       canWrite: true,
       credentialKind: "oidc",
@@ -282,6 +290,18 @@ export async function authenticate(request, env) {
     },
     env,
   );
+}
+
+/** Self-account data only; never use this projection for collaborative presence. */
+export function accountIdentity(identity) {
+  return {
+    principal: identity.principal,
+    display_name: identity.accountDisplayName ?? null,
+    ...(identity.credentialKind === "api-key" &&
+      identity.verifiedEmail && {
+        email: identity.verifiedEmail,
+      }),
+  };
 }
 
 export function requireWrite(identity) {

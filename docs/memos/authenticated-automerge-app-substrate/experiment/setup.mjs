@@ -2,6 +2,7 @@ import { cpSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node
 import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { patchUpstream } from "./patch-upstream.mjs";
+import { patchWordgard } from "./patch-wordgard.mjs";
 import { subductionRelease, pinSubductionDependency } from "./native-version.mjs";
 
 export const revision = "afec0444191a5a662e065f24193bef58ab07122a";
@@ -68,4 +69,5 @@ execFileSync(
   ],
   { stdio: "inherit" },
 );
+patchWordgard("node_modules/wordgard");
 execFileSync("npm", ["run", "build"], { stdio: "inherit" });

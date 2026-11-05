@@ -302,6 +302,7 @@ const targets = Object.freeze({
     indexRoutes: true,
     // Sift's hashed WASM, for Parquet dataframe nodes.
     siftTables: true,
+    whoami: true,
     firewallTable: "nteract_page10",
     firewallMark: "0x00200000",
     firewallComment: "nteract/preview-infra standalone-page10",
@@ -364,6 +365,7 @@ const targets = Object.freeze({
     indexRoutes: true,
     // Sift's hashed WASM, for Parquet dataframe nodes.
     siftTables: true,
+    whoami: true,
     firewallTable: "nteract_pages_live",
     firewallMark: "0x00100000",
     firewallComment: "nteract/preview-infra standalone-pages-live",

@@ -627,6 +627,19 @@ entries into D1 tables (`pages_catalog_pages`, `pages_catalog_access`) so
 shared Page. Migrations are versioned in
 [catalog-index.mjs](worker/catalog-index.mjs) and applied lazily on first use.
 
+Durable Objects in one isolate share module state but not I/O contexts. If the
+object that started a migration resets mid-flight, its D1 call and its expiry
+timer can be dropped, and a promise shared with other objects would never
+settle. So objects share only settled readiness: once any attempt succeeds,
+later callers use the binding without a D1 call. An object that finds no
+attempt of its own starts one under its own 120 s expiry, even while another
+object's runs, and never awaits another object's. Racing attempts are safe:
+each migration commits with its version row in one batch, and the loser rolls
+back and reads the winner's version. A failed or expired attempt is forgotten,
+and the next call retries. The
+[Cloudflare portability audit](https://pages.runtimed.run/p/460c48f0-dc4b-4702-af82-59910e6bebd0)
+(§7) covers why celld's single context hid this.
+
 D1 picks candidates; it never grants access. Every non-owner row returned by a
 listing is verified by its Page host with the caller's credentials, and owner rows
 must match the account's own Catalog entry. Each access row keeps its own title
@@ -774,9 +787,10 @@ loop each resident socket's request runs while it's open. A window timer is held
 on the request that armed it, so a Page edited once still flushes at the
 window's end; a longer retry backoff isn't held, and waits for the next request.
 
-Cursors are sealed to the listing's location, kind, `access` and sort. A cursor
-issued under one combination never opens under another; the client gets
-`invalid_cursor` and restarts. The scope names each sort by what its position's
+Cursors are sealed to the listing's location, kind, `access` and sort, and to
+the candidate source that issued them (below). A cursor issued under one
+combination never opens under another; the client gets `invalid_cursor` and
+restarts. The scope names each sort by what its position's
 key means: `content_activity` for `activity_at`, `created` for `created_at`,
 `title` for `title_search` and `trashed` for `trash_key`. An activity cursor
 sealed with no scope, or with a scope that names no sort or names `activity`,
@@ -817,7 +831,17 @@ Before an ACL restriction or a deletion
 is durable, the host removes listing rows best-effort; the deleted tombstone is
 written only after the host record is durable. Editing and sync never wait on D1.
 If D1 errors or exceeds its read budget, listing falls back to the Catalog entries
-(at most 500 per prefix) with the same cursor format.
+with the same cursor format. The fallback reads every entry under `page/`,
+`trash/` and `shared/`: rows order by keys the entries store, not by their
+storage keys, so a listing that read only some of them could put a later entry
+before its cursor and end a walk without it. Owned entries are bounded by the
+Page limit; shared entries grow only as Pages are shared with the account and it
+opens them. Each candidate is still checked within the scan's bound. Reading and
+sorting every entry costs O(entries) per listing, so a full walk costs about
+entries² / limit: with the index off and 5,000 shared Pages, a listing of 50
+took 48 ms and a full walk at limit 100 took 3.0 s in a local run. The fallback
+serves only while D1 is unavailable, unsynced or catching up, so most listings
+pay none of this.
 
 Each account reconciles from its Catalog entries: on its first listing under an
 epoch, after a Catalog change that may have missed D1, and at least every six
@@ -832,7 +856,109 @@ call (2.5 s), or plus one check group (3 s) and its commit (1.5 s). Progress is
 saved through the last committed entry, so a pass, which is O(account size) and
 advanced only by listings, resumes exactly and does not hold the Catalog's queue
 beyond that bound. While D1 calls take longer than the budget, the pass waits.
-Until an account's first pass completes, its listings use the Catalog entries.
+
+A listing reads D1 only while the account index is `ready`
+([account-index-machine.mjs](worker/account-index-machine.mjs)) and no Page
+index mark is pending: a pass has completed under this epoch, and the Catalog
+has recorded no write since that D1 may miss. A missing D1 row would hide its
+Page and could end a walk with no cursor; the Catalog entries hold every owned
+Page.
+
+A Catalog write that adds a listable entry for one Page marks that Page
+(`host/index/page/<id>`, `pageIndexMarkMachine`) before it writes the entry: a
+creation, a Project's home Page, a Trash, restore or purge projection, and a new
+entry a Page host projects, including a discovery. A creation, a home Page and a
+lifecycle projection then write the owner's D1 row after the response, started
+in the live request and held with `waitUntil`, and clear the mark once it lands.
+So `create_page`, Project creation, Trash, restore and purge never wait on D1.
+Each listing first settles up to 24 marks from their Pages' current entries: it
+writes an owned entry's row as a pass would, finds a discovered Page's row its
+host already reported, or checks the host within the pass's check budget and
+writes its answer; a refused shared entry is forgotten. A mark clears only if
+it is still the token the writer read, so a newer write's mark survives. While
+a mark is pending, listings read the Catalog entries, so a just-created Page is
+in the very next listing either way: from D1 once its mark settles, or from its
+entry. One write never restarts the account's pass.
+
+With the index off, no listing settles marks, so writes mark the account dirty
+instead. The account is also marked dirty when a listing finds an owner row
+stale. Moves write nothing to D1, since D1 rows carry no location, and mark
+nothing. Creating a Project marks its Space rows dirty
+(`host/index/spaces-dirty`) for the Project listing, not the Page index. A row
+written for an entry that never lands is safe: an owner row needs a live,
+settled entry to list, and a listing that meets one without it prunes it.
+
+A marked account is `behind`, and an account with no completed pass under this
+epoch is `unsynced`; both list from the Catalog entries while the pass advances.
+Once a pass records its epoch, it reads the mark again and clears it only if it
+is still the one the pass started from, so a write that lands mid-pass keeps the
+account behind through the next pass. A call that doesn't finish its pass reads
+the mark again before it reports `ready`, since a write can land while the
+pass waits on D1.
+
+A lifecycle projection can fail after the Page host applied the change. The
+host's report then gives D1's row the new state while the owner's entry keeps
+the old one. The Page's mark settles from that entry, but the lifecycle fence
+keeps D1's newer state. A listing shows an owned D1 row only when the matching
+entry confirms it (`page/` for Home, `trash/` for Trash), so D1 lists the Page
+in neither:
+
+- After a failed restore, D1's row is active and the entry is in Trash. The
+  Catalog lists the Page in Trash.
+- After a failed Trash, D1's row is trashed and the entry is still active. The
+  Catalog lists the Page in Home.
+
+A D1 listing that meets such a row prunes it and marks the account dirty, so
+listings read the Catalog until a pass imports the entry again. Retrying the
+request projects it again and both sources agree.
+
+The two sources order shared rows by different times: D1 holds the Page row's own
+creation and content times, the Catalog this account's discovery time and the
+last projection's. A Page host's content flush moves D1's member rows but not the
+members' Catalog entries. So every Page listing cursor names the source that
+issued it (`index` or `catalog`, sealed into its context beside the scope), and a
+walk continues on that source whatever the account's state is by then. A walk
+that began on a ready D1 can miss only rows written while it ran, as any walk
+can. If D1 can't serve a walk that began there (the database or the pass fails,
+the scan's read fails, or the index is switched off), the next page fails with
+`invalid_cursor` rather than resume D1's order on the Catalog. The client
+restarts from the first page; the viewer's listing machine already restarts on
+`invalid_cursor`. The refusal also stores a cooldown
+(`host/index/unavailable-until`, 60 s, `indexCooldownMachine`). While it lasts,
+no listing opens D1 except a page of a walk that began there, so the restart's
+first page reads the Catalog and its walk stays there, even when D1 serves
+first pages and fails later ones. Each walk restarts at most once per cooldown;
+the pass and the Page marks wait until it ends. A walk that began on the Catalog
+never reads D1. A cursor from an earlier build names no source;
+it opens as before and continues on whichever source the account's state picks.
+
+Title and content updates to an existing entry don't mark the account: a stale
+title or time snapshot misorders a row but doesn't drop it from an unfiltered
+walk. A `query` search is different: D1 matches each principal's title
+snapshot and the fallback matches the entry's title, so a rename that has reached
+one and not yet the other can hide the renamed Page from that source's search
+until its row or entry is rewritten.
+
+D1 refuses a `LIKE` pattern over 50 bytes
+([D1 limits](https://developers.cloudflare.com/d1/platform/limits/)), and
+`query` allows 200 characters. So a search binds `%…%` around the longest
+prefix of the lowercased query whose escaped form keeps the pattern within 50
+UTF-8 bytes (`likePattern`). The cut falls between code points, and `\`, `%`
+and `_` keep their escapes. A row the cut pattern matched whose title snapshot
+lacks the whole query comes back marked `unmatched`, in its place in the order.
+It counts toward the scan's `2 × limit + 16` bound and moves the scan's
+position, but never lists and never asks a Page host. So a long query whose
+prefix many titles share can return a short or empty page with a cursor, as
+stale rows can; the walk still reaches every match. Dropping those rows in the
+query instead would return a short batch, which the scan reads as the end of
+the walk. Every database binds the same pattern, so celld's SQLite, which has
+no such limit, searches the same way, and the test D1 (`test/sqlite-d1.mjs`)
+refuses longer patterns as D1 does. Without the cut, any query over about 48
+bytes failed on D1. Its first page then fell back to the Catalog and pinned
+the walk there, so the walk never restarted and no cooldown started, but every
+long search paid the fallback's full read. See the
+[Cloudflare portability audit](https://pages.runtimed.run/p/460c48f0-dc4b-4702-af82-59910e6bebd0)
+(§4).
 Changing the epoch value forces an immediate pass everywhere; it is not required
 after a rollback, since the periodic pass and each Page host's first report after
 restart repair what an older build missed.
@@ -2790,12 +2916,13 @@ when it queues it, through [request-hold.mjs](worker/request-hold.mjs). A
 Page's `/api/saved` and `/api/sync` skip its queue but are held the same way: a
 save waits for heads and drains the record store's serialized flush, and a
 sync's resident socket already holds its own request. A Catalog also holds the
-lifecycle reads that later requests reuse. The catalog index migration is
-shared by every object in an isolate, and its callers stop waiting after 1.5
+lifecycle reads that later requests reuse. A catalog index migration attempt
+belongs to the object that started it, and its callers stop waiting after 1.5
 or 2.5 s, so `catalogIndexDatabase(env, ctx)` requires the caller's `ctx` and
-holds the migration on it; no Catalog or Page call site can skip the hold. The
+holds the attempt on it; no Catalog or Page call site can skip the hold. The
 work runs to completion after its caller leaves, and its response is
-discarded.
+discarded. Objects share only a settled result (see
+[Catalog index](#catalog-index)).
 
 A continuation inside a Durable Object runs under the request that started the
 code awaiting, not the one that settled the promise, and celld 0.6.3 drops the
@@ -2813,6 +2940,48 @@ journal intent before the Project sees the request, and every attempt carries it
 so a retry can never apply once the Project has moved past that revision, even
 after the Project evicted the key's receipt (it keeps the latest 64). Such a retry
 returns `superseded: true, applied: false` with the current Project.
+
+### Card images
+
+The JSON card can't draw a diagram, a table's rows or highlighted code. The
+Page owner's own browser can, so it draws them. Other tabs do nothing:
+[card-capture.mjs](viewer/card-capture.mjs) starts only once the session
+shows the owner's write access. While the owner's tab is visible, it rebuilds
+the card's `card_hash` from its local document with the host's code. When
+that hash differs from the stored image's, it waits for 3 s with no edit or
+input (pointer, key, wheel or scroll), then renders the card's blocks
+read-only. The renderer
+([card-shell.mjs](viewer/card-shell.mjs)) uses the editor's own widgets in a
+hidden same-origin iframe, light and dark. It rasterizes them with
+`modern-screenshot`, a lazy chunk loaded on the first capture, at
+640×480 CSS px and 2x. It uploads WebP, or PNG where the browser has no WebP
+encoder (Safari). A capture starts at most once every two minutes, never on
+Save-Data or under 2 GB of device memory, and never runs beside another one. A
+changed first screen, a hidden tab or leaving the Page cancels it. Input
+cancels it too, and the cancelled capture doesn't count against the
+two-minute rest. The tab
+learns the stored hash from one `GET /api/pages/:id/card-image` when the Page
+opens, then from each upload's answer.
+
+`PUT /api/pages/:id/card-image?hash=&theme=` admits only the Page owner, by the
+Page host's own policy ([card-images.mjs](worker/card-images.mjs)). The bytes
+must be a static WebP, PNG or JPEG of at most 300 KB, never SVG. `hash` must be
+the `card_hash` of the host's loaded document, and each theme uploads at most
+once a minute. The host numbers each admitted upload from its durable storage.
+The images live at `pages/<id>/card/<hash>-<theme>.<ext>`. An etag-fenced
+`card/latest` pointer names the current hash and the highest revision it has
+seen. A swap to another hash with a lower revision is refused as stale, so an
+upload for an older first screen that lands late can't replace a newer one. A
+new hash deletes the old images, so a Page keeps at most one image per theme.
+`page_cards` adds `image: { card_hash, light, dark }` only when the pointer's
+hash is the stored JSON card's and both themes exist. The image route decides
+access as `page_cards` does, on every request: the caller's own Catalog entry
+for an owned Page, or its shared entry plus the Page host's record-only check.
+A grid of image cards boots no Page document, and a revoked grant fails on
+the next fetch. Its responses are `private, immutable`
+and carry `nosniff`. Purge and tombstone delete the images with `card.json`.
+The server can't check that the pixels match the content. That is the trust of
+any image the owner inserts into the Page, and only the Page's readers see it.
 
 ### Retry contract
 
