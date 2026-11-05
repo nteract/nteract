@@ -84,6 +84,42 @@ const state = (binding) =>
     doc: binding.current.doc,
     config: schema.elements.map((e) => GardState.schemaElement.of(e)),
   });
+test("structural edits keep nested opaque image attrs; unsupported values refuse writes", () => {
+  for (const source of [
+    "![cat](https://example.com/cat.png)",
+    "> - ![cat](https://example.com/cat.png)",
+  ]) {
+    for (const future of ["opaque", { nested: true }]) {
+      const replica = fixture(source);
+      replica.change((d) => {
+        const spans = A.spans(d, textPath("one"));
+        for (const span of spans)
+          if (span.type === "block" && String(span.value.type) === "image")
+            span.value.attrs.future = future;
+        A.updateSpans(d, textPath("one"), spans);
+      });
+      const binding = createWordgardBinding(replica, "one");
+      const before = A.spans(replica.doc, textPath("one"));
+      const tr = state(binding).update({
+        changes: {
+          from: binding.current.doc.length,
+          insert: [Paragraph.create([Leaf.text("After")])],
+        },
+      });
+      if (typeof future === "object") {
+        assert.throws(() => binding.applyEditorTransaction(tr), /newer version/);
+        assert.deepEqual(A.spans(replica.doc, textPath("one")), before);
+      } else {
+        binding.applyEditorTransaction(tr);
+        const image = A.spans(replica.doc, textPath("one")).find(
+          (s) => s.type === "block" && String(s.value.type) === "image",
+        );
+        assert.equal(String(image.value.attrs.future), future);
+      }
+      binding.destroy();
+    }
+  }
+});
 test("typing and formatting retain native object identity and exact implicit offsets", () => {
   const replica = fixture(),
     binding = createWordgardBinding(replica, "one");

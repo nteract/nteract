@@ -1,0 +1,63 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import * as A from "@automerge/automerge";
+import { enableRich, textPath, blockMarkdown, setRichMarkdownKeepingNodes } from "./richtext.mjs";
+
+function fixture(markdown, extra = { future: "opaque", enabled: false, count: 2, empty: null }) {
+  return A.change(A.from({ blocks: { one: { id: "one", kind: "markdown", markdown } } }), (d) => {
+    enableRich(d, "one");
+    const spans = A.spans(d, textPath("one"));
+    for (const span of spans)
+      if (span.type === "block" && String(span.value.type) === "image")
+        Object.assign(span.value.attrs, extra);
+    A.updateSpans(d, textPath("one"), spans);
+  });
+}
+const attrs = (doc) =>
+  A.spans(doc, textPath("one"))
+    .filter((s) => s.type === "block" && String(s.value.type) === "image")
+    .map((s) => s.value.attrs);
+const image = '![Diagram](https://example.com/image.png "Title")';
+test("Markdown rewrites preserve opaque image attrs in paragraphs, headings, quotes, lists and tables", () => {
+  for (const source of [
+    image,
+    `## ${image}`,
+    `> ${image}`,
+    `- ${image}`,
+    `> - ${image}`,
+    `| A |\n| --- |\n| ${image} |`,
+  ]) {
+    const doc = fixture(source);
+    const changed = A.change(doc, (d) =>
+      setRichMarkdownKeepingNodes(d, "one", `${blockMarkdown(doc.blocks.one)}\n\nAfter`),
+    );
+    assert.deepEqual(attrs(changed), attrs(doc), source);
+  }
+});
+test("Markdown refuses edited, removed, moved or ambiguous opaque images atomically", () => {
+  for (const [source, replacement] of [
+    [image, "Gone"],
+    [image, image.replace("Diagram", "Changed")],
+    [image, `> ${image}`],
+    [image, `${image} ${image}`],
+    [`${image} ${image}`, `${image} ${image}`],
+  ]) {
+    const doc = fixture(source);
+    const heads = A.getHeads(doc);
+    assert.throws(
+      () => A.change(doc, (d) => setRichMarkdownKeepingNodes(d, "one", replacement)),
+      (e) => e.code === "markdownless_node",
+    );
+    assert.deepEqual(A.getHeads(doc), heads);
+  }
+});
+test("Markdown refuses unrepresentable image values, while ordinary images remain editable", () => {
+  const doc = fixture(image, { future: { nested: "value" } });
+  assert.throws(
+    () => A.change(doc, (d) => setRichMarkdownKeepingNodes(d, "one", image)),
+    (e) => e.code === "markdownless_node",
+  );
+  const plain = fixture(image, {});
+  const changed = A.change(plain, (d) => setRichMarkdownKeepingNodes(d, "one", "Gone"));
+  assert.equal(blockMarkdown(changed.blocks.one), "Gone");
+});
