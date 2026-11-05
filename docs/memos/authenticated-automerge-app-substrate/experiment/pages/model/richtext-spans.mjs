@@ -6,6 +6,7 @@ import { markSpec, safeUrl, validateMarkValue } from "./marks.mjs";
 import {
   TEXT_CONTAINERS,
   isKnownBlock,
+  nodeType,
   validAlignment,
   validHeadingLevel,
 } from "./node-registry.mjs";
@@ -31,10 +32,27 @@ const foreignDataframe = (span, pageId) =>
   pageId !== undefined &&
   String(span.value?.type) === DATAFRAME_BLOCK &&
   parseAssetPath(String(span.value?.attrs?.src ?? ""))?.pageId !== pageId;
+// Text or an inline node stored right after a rule or a dataframe, as when a
+// peer types into a node another peer deletes: the editor draws it as a
+// paragraph beside the leaf, and the adapter can't place it at all.
+// Preserved Markdown keeps text after it as its own content. A leaf inside a
+// text container reads as a notice instead (dataframeInText).
+const textlessLeaf = ({ type, parents, isEmbed }) =>
+  !isEmbed &&
+  nodeType(type)?.kind === "leaf" &&
+  String(type) !== "pages-opaque" &&
+  !parents.some((parent) => TEXT_CONTAINERS.has(String(parent)));
+const paragraphMarker = (parents) => ({
+  type: "block",
+  value: { type: new A.ImmutableString("paragraph"), parents, attrs: {}, isEmbed: false },
+});
 function readableSpans(spans, all, pageId) {
   const known = (types) => types.filter(knownBlock).map((p) => new A.ImmutableString(p));
   const out = [];
   for (const span of spans) {
+    const leaf = out.at(-1)?.type === "block" ? out.at(-1).value : null;
+    if ((span.type !== "block" || span.value?.isEmbed) && leaf && textlessLeaf(leaf))
+      out.push(paragraphMarker(leaf.parents));
     if (span.type !== "block") {
       out.push(span);
       continue;
