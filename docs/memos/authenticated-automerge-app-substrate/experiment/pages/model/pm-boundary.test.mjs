@@ -5,6 +5,8 @@ import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
+// Production code: these directories, recursively, and the root modules.
+// scripts/ is dev tooling and may use ProseMirror directly.
 const PRODUCTION_DIRS = ["authz", "model", "shared", "sync", "viewer", "worker"];
 const PM_MODULES = [
   "model/pm-adapter.mjs",
@@ -12,20 +14,41 @@ const PM_MODULES = [
   "model/pm-markdown-serializer.mjs",
 ];
 const PM_IMPORT =
-  /(?:from\s*|import\s*\(\s*)["'](?:@automerge\/prosemirror|prosemirror-[a-z-]+)(?:\/[^"']*)?["']/;
+  /(?:from\s*|import\s*\(\s*|import\s+|require\s*\(\s*)["'](?:@automerge\/prosemirror|prosemirror-[a-z-]+)(?:\/[^"']*)?["']/;
+const SOURCE = /\.(mjs|cjs|js|jsx|ts|tsx)$/;
+const isTest = (name) => /\.test\.[cm]?[jt]sx?$/.test(name);
 
 function sources(dir) {
   return readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
     const path = join(dir, entry.name);
     if (entry.isDirectory()) return entry.name === "node_modules" ? [] : sources(path);
-    return /\.(mjs|js|jsx)$/.test(entry.name) && !entry.name.endsWith(".test.mjs") ? [path] : [];
+    return SOURCE.test(entry.name) && !isTest(entry.name) ? [path] : [];
   });
 }
+const rootModules = () =>
+  readdirSync(root, { withFileTypes: true })
+    .filter((entry) => entry.isFile() && SOURCE.test(entry.name) && !isTest(entry.name))
+    .map((entry) => join(root, entry.name));
 
 test("only the pm-* modules import ProseMirror packages", () => {
-  const importers = PRODUCTION_DIRS.flatMap((dir) => sources(join(root, dir)))
+  const importers = [
+    ...PRODUCTION_DIRS.flatMap((dir) => sources(join(root, dir))),
+    ...rootModules(),
+  ]
     .filter((path) => PM_IMPORT.test(readFileSync(path, "utf8")))
     .map((path) => relative(root, path).split("\\").join("/"))
     .sort();
   assert.deepEqual(importers, PM_MODULES);
+});
+
+test("the boundary pattern catches every import form", () => {
+  for (const line of [
+    'import { Schema } from "prosemirror-model";',
+    "import 'prosemirror-view/style/prosemirror.css';",
+    'const pm = await import("@automerge/prosemirror/dist/traversal.js");',
+    'export { MarkdownParser } from "prosemirror-markdown";',
+    'const { Schema } = require("prosemirror-model");',
+  ])
+    assert.ok(PM_IMPORT.test(line), line);
+  assert.ok(!PM_IMPORT.test('import { adapter } from "./pm-adapter.mjs";'));
 });
